@@ -34,6 +34,7 @@ import { loadTerminalFont } from '../tabs/terminal-font'
 import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { startChime } from '../notify/chime'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
+import { keyedFetch, pageSocketProtocols, storeDeviceKey } from './device-key'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
 import { projectHref, takeTabParam } from './picker-model'
@@ -90,8 +91,11 @@ if (tabParam !== undefined) {
   if (project !== '' && tabParam.tabId !== undefined) armLoadTab(tabParam.tabId)
 }
 
-/** The browser's fetch, bound (an unbound `fetch` throws "Illegal invocation" in some browsers). */
-const browserFetch = (input: string, init?: RequestInit): Promise<Response> => fetch(input, init)
+/**
+ * The browser's fetch, bound (an unbound `fetch` throws "Illegal invocation" in some browsers), with
+ * this browser's origin key on every request (device-key.ts): the device cookie alone signs nothing in.
+ */
+const browserFetch = keyedFetch
 
 /** Back to the project list: the picker, a fresh page (and a fresh sign-in check). */
 function PickerLink(): React.JSX.Element {
@@ -211,14 +215,15 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     ...(darkQuery ? { dark: () => darkQuery.matches } : {}),
     // The DOM WebSocket's handler types name its own event classes; the bridge reads `data`,
     // `code` and `reason` only.
-    createSocket: (url) => new WebSocket(url) as unknown as SocketLike,
+    // The origin key goes as a second offered subprotocol: a WebSocket takes no headers (device-key.ts).
+    createSocket: (url) => new WebSocket(url, pageSocketProtocols()) as unknown as SocketLike,
     // Plugin files and inline overlays: the shell maps main's cc-plugin:// URLs through these.
     onPagePaths: setPagePaths,
     // Panel ports main opens for this view go to the panel that asked, as the preload's do.
     onPort: deliverPanelPort,
     // Only a definite "device: null" counts as signed out; a failed request means the host is away.
     checkSession: async () => {
-      const res = await fetch(SESSION_PATH, { credentials: 'same-origin', cache: 'no-store' })
+      const res = await keyedFetch(SESSION_PATH, { credentials: 'same-origin', cache: 'no-store' })
       if (!res.ok) return true
       const body = (await res.json()) as { device?: unknown }
       return body.device !== null
@@ -269,7 +274,8 @@ void signIn({
   location,
   replaceUrl: (url) => history.replaceState(null, '', url),
   fetch: browserFetch,
-  userAgent: navigator.userAgent
+  userAgent: navigator.userAgent,
+  storeKey: (key) => storeDeviceKey(key)
 }).then((state) => {
   if (state.state === 'unreachable') {
     reactRoot.render(

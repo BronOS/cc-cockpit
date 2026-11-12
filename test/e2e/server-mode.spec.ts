@@ -15,7 +15,7 @@ import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
 import { MAX_PASTE_ATTEMPTS } from '../../src/main/oauth/plugin-oauth'
-import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
+import { PROTOCOL_VERSION, socketProtocols } from '../../src/shared/web-protocol'
 import { OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../src/shared/oauth-paste'
 import { FakeOAuthServer } from '../fakes/fake-oauth-server'
 import { launchCockpit } from './fixtures'
@@ -857,9 +857,10 @@ test('server mode: the web access card in the browser lists a second device, rev
     body: JSON.stringify({ token, name: 'Second phone' })
   })
   expect(signed.status).toBe(200)
-  await signed.body?.cancel()
+  // The origin key comes in the body only (design-web.md §4.1); the socket offers it as a subprotocol.
+  const { key } = (await signed.json()) as { key: string }
   const cookie = (signed.headers.get('set-cookie') ?? '').split(';')[0] ?? ''
-  const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { origin, headers: { Cookie: cookie } })
+  const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, socketProtocols(key), { origin, headers: { Cookie: cookie } })
   const wsClosed = new Promise<void>((resolve) => ws.on('close', () => resolve()))
   await new Promise<void>((resolve, reject) => {
     ws.on('open', () => resolve())
@@ -940,7 +941,7 @@ test('server mode: the web access card in the browser lists a second device, rev
 // server mode, listed by `ccc web status`, never an OS notification and never an in-page notice. A
 // revoked plugin's line is checked in marketplace-revoked.spec.ts (it is printed at start, before a
 // spec can listen).
-test('server mode: a new device and a newer release are stdout lines, listed in ccc web status', async () => {
+test('server mode: a new device, a shell change and a newer release are stdout lines, listed in ccc web status; the access ones reach the browsers', async () => {
   test.setTimeout(120_000)
   server = await launchServer({ mode: 'link', settings: { updateCheck: true } })
   const { cockpit } = server
@@ -968,8 +969,10 @@ test('server mode: a new device and a newer release are stdout lines, listed in 
     const status = await statusOf()
     const device = status.devices[0]
     expect(device).toBeDefined()
-    expect(status.notices.map((n) => n.kind)).toEqual(['update', 'new-device'])
-    expect(status.notices[1]).toMatchObject({ text: `A new device signed in to web access: ${device!.name}`, device: device!.id })
+    // `ccc web add-device` hands out sign-in material from the shell: an access-changed notice (design-web.md §9.12).
+    expect(status.notices.map((n) => n.kind)).toEqual(['update', 'access-changed', 'new-device'])
+    expect(status.notices[1]).toMatchObject({ text: 'Web access was changed from the server shell: ccc web add-device' })
+    expect(status.notices[2]).toMatchObject({ text: `A new device signed in to web access: ${device!.name}`, device: device!.id })
     expect(status.notices[0]?.text).toMatch(/^A new cc-cockpit version is available: 99\.0\.0 \(running /)
     // Beside its web-access.log entry: the sign-in with that device id.
     const log = readFileSync(join(cockpit.dataDir, 'logs', 'web-access.log'), 'utf8')
@@ -979,13 +982,24 @@ test('server mode: a new device and a newer release are stdout lines, listed in 
     expect(log.some((e) => e.event === 'sign-in' && e.device === device!.id)).toBe(true)
     // The text form lists them too, and neither carries a link or a token.
     const text = (await ccc(server, ['web', 'status'])).stdout
-    expect(text).toContain('notices: 2')
+    expect(text).toContain('notices: 3')
     expect(text).toContain(`device ${device!.id} (sign-in in web-access.log)`)
     expect(`${text}\n${lines.join('\n')}`).not.toMatch(/#t=|[?&]token=/)
-    // Neither is an OS notification (none exists in server mode) or an in-page notice, here or in the browser.
+    // None is an OS notification (none exists in server mode). The access ones are app-wide in-page
+    // notices: the picker shows none, a project view gets them in its `ready` (a new device, the shell's
+    // add-device), and a shell change made while it is open arrives live. The update stays a line, and the
+    // hidden page never shows one.
     expect(await cockpit.hook<unknown[]>('notifications')).toEqual([])
-    await expect(cockpit.page.getByTestId('page-notice')).toHaveCount(0)
     await expect(page.getByTestId('page-notice')).toHaveCount(0)
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const notices = page.getByTestId('page-notice')
+    await expect(notices.filter({ hasText: `A new device signed in to web access: ${device!.name}` })).toHaveCount(1)
+    await expect(notices.filter({ hasText: 'Web access was changed from the server shell: ccc web add-device' })).toHaveCount(1)
+    await ccc(server, ['web', 'add-device'])
+    await expect(notices.filter({ hasText: 'Web access was changed from the server shell: ccc web add-device' })).toHaveCount(2)
+    await expect(notices.filter({ hasText: 'cc-cockpit version' })).toHaveCount(0)
+    await expect(cockpit.page.getByTestId('page-notice')).toHaveCount(0)
+    expect(lines.filter((l) => l.startsWith('cc-cockpit: Web access was changed from the server shell')).length).toBe(2)
     await expectMainAlive(server)
   } finally {
     await browser.close()

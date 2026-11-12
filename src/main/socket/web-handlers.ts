@@ -75,8 +75,17 @@ export interface WebHandlerDeps {
   setPassword(password: string): Promise<WebActionReply>
   /** The Settings page's change path (WebAccessService.set, `applyWebAccessPatch` with main's `server`). */
   set(patch: WebAccessPatch): Promise<WebAccessSetReply>
-  /** One `web-access.log` line for a change made from the shell: what changed, never a secret. */
+  /**
+   * One `web-access.log` line for a change made from the shell: what changed, never a secret. Main's
+   * wiring also raises a core notice with it (`access-changed`: in server mode a stdout line and an
+   * in-page notice in every browser), so a widening from a shell is seen where the person looks.
+   */
   logShell(detail: string): void
+}
+
+/** The core notice for a change made from the server shell: the command and its flags, never a value. */
+export function shellChangeNotice(detail: string): string {
+  return `Web access was changed from the server shell: ${detail}`
 }
 
 /**
@@ -99,6 +108,8 @@ export function webHandlerDeps(input: {
   /** The core notices of this run (core-notices.ts). */
   notices: () => WebCliNotice[]
   accessLog: Pick<AccessLog, 'write'>
+  /** A core notice (`access-changed`) for each change made from the shell (core-notices.ts). Absent: none. */
+  notice?: (text: string) => void
   quit: () => void
   setTimer?: (fn: () => void, ms: number) => void
 }): WebHandlerDeps {
@@ -114,7 +125,10 @@ export function webHandlerDeps(input: {
     addDevice: () => access.addDevice(),
     setPassword: (password) => access.setPassword(password),
     set: (patch) => access.set(patch),
-    logShell: (detail) => input.accessLog.write({ event: 'shell', detail })
+    logShell: (detail) => {
+      input.accessLog.write({ event: 'shell', detail })
+      input.notice?.(shellChangeNotice(detail))
+    }
   }
 }
 

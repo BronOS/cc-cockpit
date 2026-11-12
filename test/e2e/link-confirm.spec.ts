@@ -6,12 +6,12 @@ import { request } from 'node:http'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import type { CockpitApi } from '../../src/shared/ipc'
-import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
+import { PROTOCOL_VERSION, socketProtocols } from '../../src/shared/web-protocol'
 import { expect, test } from './fixtures'
 
 type Frame = { t: string; ch?: string; p?: { requestId?: string }; id?: number; ok?: boolean; v?: unknown }
 
-function post(port: number, path: string, body: unknown): Promise<{ status: number; cookie: string }> {
+function post(port: number, path: string, body: unknown): Promise<{ status: number; cookie: string; key: string }> {
   return new Promise((resolve, reject) => {
     const text = JSON.stringify(body)
     const req = request(
@@ -23,8 +23,16 @@ function post(port: number, path: string, body: unknown): Promise<{ status: numb
         headers: { Host: `127.0.0.1:${port}`, Origin: `http://127.0.0.1:${port}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text) }
       },
       (res) => {
-        res.resume()
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, cookie: String(res.headers['set-cookie']?.[0] ?? '').split(';')[0] ?? '' }))
+        let data = ''
+        res.on('data', (d: Buffer) => (data += d.toString()))
+        // The device cookie, and the origin key the answer carries in its body only (design-web.md §4.1).
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            cookie: String(res.headers['set-cookie']?.[0] ?? '').split(';')[0] ?? '',
+            key: data === '' ? '' : String((JSON.parse(data) as { key?: unknown }).key ?? '')
+          })
+        )
       }
     )
     req.on('error', reject)
@@ -58,7 +66,7 @@ test('link confirm with a browser attached: desktop dialog focus and Esc, a brow
   const signed = await post(port, '/auth/link', { token, name: 'Test phone' })
   expect(signed.status).toBe(200)
   const frames: Frame[] = []
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: `http://127.0.0.1:${port}`, headers: { Cookie: signed.cookie } })
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, socketProtocols(signed.key), { origin: `http://127.0.0.1:${port}`, headers: { Cookie: signed.cookie } })
   ws.on('message', (data) => frames.push(JSON.parse(String(data)) as Frame))
   await new Promise<void>((resolve, reject) => {
     ws.on('open', () => resolve())

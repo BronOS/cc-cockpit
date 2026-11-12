@@ -13,7 +13,7 @@ import { request } from 'node:http'
 import type { Page } from '@playwright/test'
 import { WebSocket } from 'ws'
 import type { CockpitApi } from '../../src/shared/ipc'
-import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
+import { PROTOCOL_VERSION, socketProtocols } from '../../src/shared/web-protocol'
 import { expect, test } from './fixtures'
 import { enableWebAccess, openBrowser } from './web-fixtures'
 
@@ -113,7 +113,7 @@ test('web access settings: Show hides the link, a device is listed and revoked, 
     const info = await (window as unknown as { cockpit: CockpitApi }).cockpit.invoke('window.info')
     return info.kind === 'project' ? info.project.id : ''
   })
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: `http://127.0.0.1:${port}`, headers: { Cookie: signed.cookie } })
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, socketProtocols((JSON.parse(signed.body) as { key: string }).key), { origin: `http://127.0.0.1:${port}`, headers: { Cookie: signed.cookie } })
   const closed = new Promise<void>((resolve) => ws.on('close', () => resolve()))
   await new Promise<void>((resolve, reject) => {
     ws.on('open', () => resolve())

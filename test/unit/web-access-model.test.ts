@@ -130,7 +130,7 @@ describe('the address form', () => {
 describe('the §4.3 confirms (plan Task 28)', () => {
   it('a needsConfirm reply asks, a page reply does not', () => {
     expect(confirmsNeeded({ needsConfirm: ['none-network', 'plain-http'] })).toEqual(['none-network', 'plain-http'])
-    const page = { form, network: false, gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false, credentials: { accessLink: 'unset' as const, password: 'unset' as const } }
+    const page = { form, network: false, gateway: { state: 'off' as const }, devices: [], risks: [], passwordSet: false, passwordMinLength: 8, passwordShort: false, credentials: { accessLink: 'unset' as const, password: 'unset' as const } }
     expect(confirmsNeeded(page)).toBeUndefined()
   })
 
@@ -244,6 +244,8 @@ describe("a server's browser card", () => {
     devices: [],
     risks: [],
     passwordSet: false,
+    passwordMinLength: 8,
+    passwordShort: false,
     credentials: { accessLink: 'set', password: 'unset' },
     secrets: { store: 'keyfile', unavailable: null, otherMode: 0, replaced: 0 },
     ...over

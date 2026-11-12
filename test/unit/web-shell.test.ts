@@ -36,9 +36,13 @@ import {
   signInWithPassword,
   type SignInEnv
 } from '../../src/renderer/web/sign-in'
+import { DEVICE_KEY_STORAGE, deviceKeyOf, readDeviceKey, storeDeviceKey, withDeviceKey, type KeyStorage } from '../../src/renderer/web/device-key'
 import {
   CONFIRM_ASK_PATH,
   CONFIRM_POLL_PATH,
+  DEVICE_KEY_HEADER,
+  socketProtocols,
+  WS_PROTOCOL,
   FOLDERS_PATH,
   MAX_FOLDER_ENTRIES,
   PROJECTS_PATH,
@@ -92,10 +96,11 @@ function env(opts: {
   link?: { status: number; body: unknown } | 'throw'
   /** The SESSION_PATH answer; a list answers in turn (the last one repeats). */
   session?: SessionAnswer | SessionAnswer[]
-}): { env: SignInEnv; calls: Array<{ url: string; init?: unknown }>; urls: string[]; order: string[] } {
+}): { env: SignInEnv; calls: Array<{ url: string; init?: unknown }>; urls: string[]; order: string[]; keys: string[] } {
   const calls: Array<{ url: string; init?: unknown }> = []
   const urls: string[] = []
   const order: string[] = []
+  const keys: string[] = []
   const sessions = Array.isArray(opts.session) ? [...opts.session] : [opts.session]
   const answer = (a: { status: number; body: unknown } | 'throw' | undefined) => {
     if (a === 'throw' || a === undefined) throw new TypeError('Failed to fetch')
@@ -105,7 +110,12 @@ function env(opts: {
     calls,
     urls,
     order,
+    keys,
     env: {
+      storeKey: (key) => {
+        keys.push(key)
+        order.push('store key')
+      },
       location: { hash: opts.hash ?? '', pathname: '/', search: opts.search ?? '' },
       replaceUrl: (url) => {
         urls.push(url)
@@ -123,16 +133,20 @@ function env(opts: {
 }
 
 const signedIn = { status: 200, body: { mode: 'link', device: { id: 'd1', name: 'Chrome on Android' } } }
+/** An origin key as the gateway answers it (43 base64url characters). */
+const KEY = 'K'.repeat(42) + '_'
 const signedOut = { status: 200, body: { mode: 'link', device: null } }
 
 describe('the sign-in step', () => {
   it('reads #t=, clears the URL, checks it is signed out, posts the link once, and is signed in', async () => {
-    const s = env({ hash: '#t=tok_123', search: '?project=abc', link: { status: 200, body: {} }, session: [signedOut, signedIn] })
+    const s = env({ hash: '#t=tok_123', search: '?project=abc', link: { status: 200, body: { device: { id: 'd1', name: 'n' }, key: KEY } }, session: [signedOut, signedIn] })
     const state = await signIn(s.env)
     expect(state).toEqual({ state: 'signed-in', device: { id: 'd1', name: 'Chrome on Android' } })
     // The token leaves the address bar (and history) first; the project stays.
     expect(s.urls).toEqual(['/?project=abc'])
-    expect(s.order).toEqual(['replace', SESSION_PATH, SIGN_IN_LINK_PATH, SESSION_PATH])
+    // The answer's origin key is kept before the session is asked again (it goes with that ask).
+    expect(s.order).toEqual(['replace', SESSION_PATH, SIGN_IN_LINK_PATH, 'store key', SESSION_PATH])
+    expect(s.keys).toEqual([KEY])
     const post = s.calls[1]!
     expect(post.init).toMatchObject({ method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' })
     expect(JSON.parse((post.init as { body: string }).body)).toEqual({ token: 'tok_123', name: 'Chrome on Android' })
@@ -168,14 +182,14 @@ describe('the sign-in step', () => {
   it('a link opened on a browser that is already signed in is cleared and never posted', async () => {
     // Posting it would add a second device (a "new device" notice, a place under the cap) every
     // time the QR is scanned again, and use up a one-time "add a device" token for nothing.
-    const s = env({ hash: '#t=again', link: { status: 200, body: {} }, session: signedIn })
+    const s = env({ hash: '#t=again', link: { status: 200, body: { device: { id: 'd1', name: 'n' }, key: KEY } }, session: signedIn })
     expect((await signIn(s.env)).state).toBe('signed-in')
     expect(s.urls).toEqual(['/'])
     expect(s.order).toEqual(['replace', SESSION_PATH])
   })
 
   it('a link with the host unreachable is cleared and not posted', async () => {
-    const s = env({ hash: '#t=tok', link: { status: 200, body: {} }, session: 'throw' })
+    const s = env({ hash: '#t=tok', link: { status: 200, body: { device: { id: 'd1', name: 'n' }, key: KEY } }, session: 'throw' })
     expect((await signIn(s.env)).state).toBe('unreachable')
     expect(s.urls).toEqual(['/'])
     expect(s.calls.map((c) => c.url)).toEqual([SESSION_PATH])
@@ -238,14 +252,18 @@ describe('the sign-in step', () => {
 describe('password and desktop-confirm sign-in (plan Task 27)', () => {
   const UA = 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36'
   function fetcher(answers: Record<string, { status: number; body: unknown } | 'throw'>): {
-    env: Pick<SignInEnv, 'fetch' | 'userAgent'>
+    env: Pick<SignInEnv, 'fetch' | 'userAgent' | 'storeKey'>
     calls: Array<{ url: string; body: unknown }>
+    keys: string[]
   } {
     const calls: Array<{ url: string; body: unknown }> = []
+    const keys: string[] = []
     return {
       calls,
+      keys,
       env: {
         userAgent: UA,
+        storeKey: (key) => keys.push(key),
         fetch: async (url, init) => {
           calls.push({ url, body: init?.body === undefined ? undefined : JSON.parse(init.body) })
           const a = answers[url]
@@ -257,9 +275,14 @@ describe('password and desktop-confirm sign-in (plan Task 27)', () => {
   }
 
   it('posts the password with the device name; the gateway\'s reason on a refusal', async () => {
-    const ok = fetcher({ [SIGN_IN_PASSWORD_PATH]: { status: 200, body: { device: { id: 'd', name: 'x' } } } })
+    const ok = fetcher({ [SIGN_IN_PASSWORD_PATH]: { status: 200, body: { device: { id: 'd', name: 'x' }, key: KEY } } })
     expect(await signInWithPassword(ok.env, 'hunter22hunter')).toBeUndefined()
     expect(ok.calls).toEqual([{ url: SIGN_IN_PASSWORD_PATH, body: { password: 'hunter22hunter', name: 'Chrome on Android' } }])
+    expect(ok.keys).toEqual([KEY])
+    // A 200 with no (or a malformed) key lets nothing in: the cookie alone is no device.
+    const keyless = fetcher({ [SIGN_IN_PASSWORD_PATH]: { status: 200, body: { device: { id: 'd', name: 'x' }, key: 'not a key!' } } })
+    expect(await signInWithPassword(keyless.env, 'hunter22hunter')).toBe('the host answered no device key')
+    expect(keyless.keys).toEqual([])
     expect(await signInWithPassword(fetcher({ [SIGN_IN_PASSWORD_PATH]: { status: 401, body: { error: 'wrong password' } } }).env, 'x')).toBe('wrong password')
     expect(await signInWithPassword(fetcher({}).env, 'x')).toBe('the host did not answer the sign-in')
   })
@@ -286,6 +309,14 @@ describe('password and desktop-confirm sign-in (plan Task 27)', () => {
       error: 'too many devices'
     })
     expect(await pollConfirm(fetcher({}).env, 't')).toEqual({ state: 'error', error: 'the host did not answer' })
+    // Allowed: the key that came with it is kept.
+    const allowed = fetcher({ [CONFIRM_POLL_PATH]: { status: 200, body: { state: 'allowed', device: { id: 'd', name: 'n' }, key: KEY } } })
+    expect(await pollConfirm(allowed.env, 't')).toEqual({ state: 'allowed', device: { id: 'd', name: 'n' } })
+    expect(allowed.keys).toEqual([KEY])
+    expect(await pollConfirm(fetcher({ [CONFIRM_POLL_PATH]: { status: 200, body: { state: 'allowed', device: { id: 'd', name: 'n' } } } }).env, 't')).toEqual({
+      state: 'error',
+      error: 'the host answered no device key'
+    })
     expect(confirmPollOf({ state: 'allowed', device: { id: 'd', name: 'n' } })).toEqual({ state: 'allowed', device: { id: 'd', name: 'n' } })
     expect(confirmPollOf({ state: 'gone' })).toEqual({ state: 'gone' })
     expect(confirmPollOf({ state: 'allowed' })).toBeUndefined()
@@ -617,5 +648,50 @@ describe('the "This computer" chip', () => {
     expect(showsThisComputerChip(true, desktop)).toBe(true)
     expect(showsThisComputerChip(true, 'Mozilla/5.0 Chrome/140')).toBe(false)
     expect(showsThisComputerChip(false, desktop)).toBe(false)
+  })
+})
+
+// The origin key's keeping (renderer/web/device-key.ts, design-web.md §4.1 "Origin-bound device").
+describe('the origin key in the page', () => {
+  function mapStorage(): KeyStorage & { map: Map<string, string> } {
+    const map = new Map<string, string>()
+    return { map, getItem: (k) => map.get(k) ?? null, setItem: (k, v) => void map.set(k, v) }
+  }
+
+  it('reads only a well-formed key from a sign-in answer', () => {
+    expect(deviceKeyOf({ key: KEY })).toBe(KEY)
+    for (const body of [null, 'x', {}, { key: 5 }, { key: '' }, { key: 'has space' }, { key: 'k'.repeat(300) }]) expect(deviceKeyOf(body), JSON.stringify(body)).toBeUndefined()
+  })
+
+  it('keeps it per origin in the storage given; a storage that throws is no key and keeps nothing', () => {
+    const storage = mapStorage()
+    expect(readDeviceKey(storage)).toBeUndefined()
+    storeDeviceKey(KEY, storage)
+    expect(storage.map.get(DEVICE_KEY_STORAGE)).toBe(KEY)
+    expect(readDeviceKey(storage)).toBe(KEY)
+    storeDeviceKey('bad key', storage)
+    expect(readDeviceKey(storage)).toBe(KEY)
+    const throwing: KeyStorage = {
+      getItem: () => {
+        throw new Error('SecurityError')
+      },
+      setItem: () => {
+        throw new Error('QuotaExceededError')
+      }
+    }
+    expect(readDeviceKey(throwing)).toBeUndefined()
+    expect(() => storeDeviceKey(KEY, throwing)).not.toThrow()
+    expect(readDeviceKey(undefined)).toBeUndefined()
+  })
+
+  it('adds the key as a header to a request, and as a second subprotocol to the socket', () => {
+    const init = withDeviceKey({ method: 'POST', headers: { 'Content-Type': 'application/json' } }, KEY)
+    const headers = new Headers(init?.headers)
+    expect(headers.get(DEVICE_KEY_HEADER)).toBe(KEY)
+    expect(headers.get('content-type')).toBe('application/json')
+    expect(init?.method).toBe('POST')
+    expect(withDeviceKey(undefined, undefined)).toBeUndefined()
+    expect(socketProtocols(KEY)).toEqual([WS_PROTOCOL, `cc-key.${KEY}`])
+    expect(socketProtocols(undefined)).toEqual([WS_PROTOCOL])
   })
 })

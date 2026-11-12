@@ -1,7 +1,7 @@
 // Core notices (notifications/core-notices.ts, server-mode plan Task 22): the desktop's OS
 // notification as before, and in server mode one stdout line each, kept for `ccc web status`.
 import { describe, expect, it } from 'vitest'
-import { CORE_NOTICE_PREFIX, CoreNotices, MAX_CORE_NOTICE_LINE, MAX_CORE_NOTICES } from '../../src/main/notifications/core-notices'
+import { CORE_NOTICE_PREFIX, CORE_PAGE_TITLE, CoreNotices, MAX_CORE_NOTICE_LINE, MAX_CORE_NOTICES } from '../../src/main/notifications/core-notices'
 import { revocationNoticeLines } from '../../src/main/marketplace/marketplace-view'
 
 function make(server: boolean): { notices: CoreNotices; desktop: Array<[string, string | undefined]>; out: string[] } {
@@ -61,6 +61,45 @@ describe('CoreNotices in server mode', () => {
     notices.show({ kind: 'update', text: 'v1' })
     notices.list()[0]!.text = 'changed'
     expect(notices.list()[0]?.text).toBe('v1')
+  })
+})
+
+// The access kinds reach every browser view of a server as an in-page notice too: on a server the
+// browsers are the only screen, and a device nobody knows must be seen where the person looks.
+describe('CoreNotices in-page copies (server mode)', () => {
+  function withPage(server: boolean, page: (text: string, title: string) => void): { notices: CoreNotices; out: string[] } {
+    const out: string[] = []
+    const notices = new CoreNotices({ server, desktop: () => undefined, page, out: (line) => out.push(line), now: () => 1 })
+    return { notices, out }
+  }
+
+  it('sends a new device, failed sign-ins and a shell change to the page; a revoke and an update stay stdout lines', () => {
+    const pages: Array<[string, string]> = []
+    const { notices, out } = withPage(true, (text, title) => pages.push([text, title]))
+    notices.show({ kind: 'new-device', text: 'A new device signed in to web access: Phone', title: 'cc-cockpit web access' })
+    notices.show({ kind: 'sign-in-failures', text: '20 failed sign-ins\nin 10 minutes' })
+    notices.show({ kind: 'access-changed', text: 'Web access was changed from the server shell: password set' })
+    notices.show({ kind: 'revoked', text: 'Plugin a.b was stopped' })
+    notices.show({ kind: 'update', text: 'A new cc-cockpit version is available: 1.2.3' })
+    expect(pages).toEqual([
+      ['A new device signed in to web access: Phone', 'cc-cockpit web access'],
+      // The same plain line as stdout, never the raw text.
+      ['20 failed sign-insin 10 minutes', CORE_PAGE_TITLE],
+      ['Web access was changed from the server shell: password set', CORE_PAGE_TITLE]
+    ])
+    expect(out).toHaveLength(5)
+  })
+
+  it('never on the desktop (its notice is the OS one), and a page that throws loses neither the line nor the entry', () => {
+    const pages: string[] = []
+    withPage(false, (text) => pages.push(text)).notices.show({ kind: 'new-device', text: 'Phone' })
+    expect(pages).toEqual([])
+    const { notices, out } = withPage(true, () => {
+      throw new Error('no views')
+    })
+    expect(() => notices.show({ kind: 'new-device', text: 'Phone' })).not.toThrow()
+    expect(out).toEqual([`${CORE_NOTICE_PREFIX}Phone`])
+    expect(notices.list()).toHaveLength(1)
   })
 })
 

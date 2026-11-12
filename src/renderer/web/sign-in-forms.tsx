@@ -3,11 +3,14 @@
 // draws them and keeps the poll going. A success loads the page again: the fresh page asks the
 // gateway (sign-in.ts `signIn`), finds the device cookie and goes on to the picker or the project.
 import { useEffect, useState } from 'react'
+import { keyedFetch, storeDeviceKey } from './device-key'
 import { askConfirm, pollConfirm, shownCode, signInWithPassword } from './sign-in'
 
 const env = {
-  fetch: (input: string, init?: RequestInit): Promise<Response> => fetch(input, init),
-  userAgent: navigator.userAgent
+  fetch: keyedFetch,
+  userAgent: navigator.userAgent,
+  // The sign-in's origin key, kept for this origin before the page loads again (device-key.ts).
+  storeKey: (key: string) => storeDeviceKey(key)
 }
 
 /** The password form. A wrong password can take a while to answer (the host slows guesses). */

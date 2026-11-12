@@ -1338,7 +1338,7 @@ describe('registerPanelHandlers', () => {
 
 describe('registerSettingsHandlers', () => {
   /** A deps object that records every call as `name(args)` and answers with harmless values. */
-  function settingsSetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
+  function settingsSetup(options: { server?: boolean } = {}): { ipc: FakeIpcMain; calls: unknown[][]; router: IpcRouter } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     const rec =
@@ -1368,9 +1368,23 @@ describe('registerSettingsHandlers', () => {
       marketplacePreview: async (...args) => rec('marketplacePreview', null)(...args),
       setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args)
     }
-    registerSettingsHandlers(router, deps)
-    return { ipc, calls }
+    registerSettingsHandlers(router, deps, options)
+    return { ipc, calls, router }
   }
+
+  // settings.projectOpen is `adapted`: it makes a window on the host's screen, which a browser view of
+  // a desktop may not do; a server's browser may (its window is the hidden page). Decided by main's
+  // bound view and its own flag, never the payload.
+  it('projectOpen: the desktop and a server\'s browser open; a desktop\'s browser is refused', async () => {
+    const desktop = settingsSetup()
+    await desktop.ipc.invoke('settings.projectOpen', 11, [{ id: 'p1' }])
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    await expect(desktop.router.dispatch(browser, 'settings.projectOpen', { id: 'p2', remote: false })).rejects.toThrow(/outside server mode/)
+    expect(desktop.calls).toEqual([['openProject', 'p1']])
+    const server = settingsSetup({ server: true })
+    await server.router.dispatch(browser, 'settings.projectOpen', { id: 'p3' })
+    expect(server.calls).toEqual([['openProject', 'p3']])
+  })
 
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
@@ -1838,6 +1852,8 @@ describe('registerWebAccessHandlers', () => {
       devices: [],
       risks: [],
       passwordSet: false,
+      passwordMinLength: 8,
+      passwordShort: false,
       credentials: { accessLink: 'unset' as const, password: 'unset' as const }
     }
     registerWebAccessHandlers(router, {

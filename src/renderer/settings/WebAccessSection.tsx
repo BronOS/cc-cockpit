@@ -187,6 +187,12 @@ function WebAccessCard(props: {
           {note}
         </p>
       ))}
+      {data.passwordShort && (
+        <p role="alert" className="settings-alert warn" data-testid="web-access-password-short">
+          The password is shorter than {data.passwordMinLength} characters, too short for an address others can reach. It still works; change it
+          below.
+        </p>
+      )}
       {data.risks.length > 0 && (
         <div role="alert" className="settings-alert" data-testid="web-access-risks">
           {data.risks.map((r) => (
@@ -252,6 +258,7 @@ function WebAccessCard(props: {
         {shownMode === 'password' && (
           <PasswordRows
             passwordSet={data.passwordSet}
+            minLength={data.passwordMinLength}
             busy={busy}
             run={run}
             onSaved={() => {
@@ -417,6 +424,7 @@ function AddressForm(props: {
  */
 function PasswordRows(props: {
   passwordSet: boolean
+  minLength: number
   busy: string | null
   run: Action['run']
   onSaved: () => void
@@ -427,7 +435,7 @@ function PasswordRows(props: {
   const [repeat, setRepeat] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
   const submit = (): void => {
-    const local = passwordDraftProblem(password, repeat)
+    const local = passwordDraftProblem(password, repeat, props.minLength)
     if (local !== undefined) {
       setProblem(local)
       return
@@ -452,7 +460,7 @@ function PasswordRows(props: {
         help={
           props.passwordSet
             ? 'A password is set. Saving a new one signs out every browser that signed in with the old one.'
-            : `Set a password to sign in with (at least 8 characters). Browsers ask for it on their sign-in page.`
+            : `Set a password to sign in with (at least ${props.minLength} characters). Browsers ask for it on their sign-in page.`
         }
       >
         <input

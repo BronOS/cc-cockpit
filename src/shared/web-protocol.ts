@@ -28,6 +28,32 @@ export const SIGN_IN_PASSWORD_PATH = '/auth/password'
 export const CONFIRM_ASK_PATH = '/auth/confirm'
 /** The page polls its ask here (`{ ticket }`, JSON); the answer is a `WebConfirmPoll`, with the cookie once allowed. */
 export const CONFIRM_POLL_PATH = '/auth/confirm/poll'
+/**
+ * The header the page sends its origin key in (main/web/auth.ts, design-web.md §4.1 "Origin-bound
+ * device") on every request behind sign-in and on SESSION_PATH: the device cookie alone signs nothing
+ * in. The key is answered once, in a sign-in's JSON body (`key`), and kept in the origin's
+ * localStorage, which unlike a cookie is port-scoped. Lower case, as Node reads header names.
+ */
+export const DEVICE_KEY_HEADER = 'x-cc-device-key'
+/** The WebSocket subprotocol the page asks for and the gateway answers with (it must answer one the page offered). */
+export const WS_PROTOCOL = 'cc-cockpit'
+/**
+ * The origin key on the upgrade: a second offered subprotocol `cc-key.<key>` (a browser cannot set a
+ * header on a WebSocket, and a query string ends up in proxy logs). Never answered back.
+ */
+export const WS_KEY_PROTOCOL_PREFIX = 'cc-key.'
+
+/** The subprotocols a page offers: WS_PROTOCOL, and its origin key when it has one. */
+export function socketProtocols(key: string | undefined): string[] {
+  return key === undefined || key === '' ? [WS_PROTOCOL] : [WS_PROTOCOL, `${WS_KEY_PROTOCOL_PREFIX}${key}`]
+}
+
+/** A sign-in's answer (SIGN_IN_LINK_PATH, SIGN_IN_PASSWORD_PATH, an allowed CONFIRM_POLL_PATH): the device, and its origin key. */
+export interface WebSignInReply {
+  device: { id: string; name: string }
+  key: string
+}
+
 /** The open project windows a signed-in browser may join (the web project picker, picker.tsx). */
 export const PROJECTS_PATH = '/api/projects'
 /**

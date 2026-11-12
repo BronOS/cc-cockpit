@@ -116,7 +116,9 @@ fails when one has none:
 - `no`: needs the host's screen or would let a remote view widen its own access — the auth mode, bind and secrets, device management,
   device management, `projects.openFolder`, `settings.pluginLink` (native dialogs), `window.reopen`, full screen,
   `webviews.placement` (the desktop's native layer; the other `webviews.*` are `adapted`, §9.9), URL overlays.
-- `adapted`: answered differently for a remote view (§6.3).
+- `adapted`: answered differently for a remote view (§6.3). `settings.projectOpen` (Settings › Projects › Open) is
+  one: it makes a window on the host's screen, so a desktop's browser view is refused and a server's (where the window
+  is the hidden page) may open, decided by main's `server` flag and the bound view, never the payload.
 
 ## 3. Wire protocol
 
@@ -153,14 +155,38 @@ their own browser. They apply in every auth mode, None included:
   external origin. On loopback, cookies ignore ports and every `localhost:*` page is same-site, so this check, not
   `SameSite`, is the control that matters; the code says so where it checks. (A future desktop client sends no
   Origin: it gets a bearer handshake of its own, §10.)
-- **Secrets**: compared in constant time, stored hashed. Failed attempts are slowed (a token bucket with a fixed
-  delay), never locked out: a lockout lets anyone who can reach the address keep the person out. Never keyed by peer
+- **Secrets**: compared in constant time, stored hashed. Failed attempts are slowed (a token bucket with a delay),
+  never locked out: a lockout lets anyone who can reach the address keep the person out. Never keyed by peer
   address: behind `tailscale serve` or a proxy every peer is 127.0.0.1. The waiting queue is capped, so a sustained
   flood makes new sign-ins answer "busy" for as long as it lasts (signed-in devices are untouched); accepted, since
-  one global bucket cannot tell the person's attempt from the flood's.
+  one global bucket cannot tell the person's attempt from the flood's. Under sustained failures the bucket slows
+  further: every 20 failures double both the delay and the refill time, up to 16 times, back to normal after 10
+  minutes with none (`AttemptLimiter`, `auth.ts`). 20 failures within 10 minutes raise a core notice (§9.9; at most
+  one an hour), so a guessing run is seen, not only logged.
+- **Password length**: 8 characters on loopback, 12 when others can reach the gateway (a network bind, an external
+  origin, server mode). A shorter password set before keeps working (refusing it would lock the person out of a
+  server); the card and `ccc web status` say it is too short. Only a `long` bit is stored, learned at set time or at
+  the next good sign-in, never the length.
 - **Device cookie**: `HttpOnly`, `SameSite=Strict`, `Secure` unless the external origin is loopback http. Not rotated
   (a rotation races a device's parallel requests and its open WebSockets, which cannot receive `Set-Cookie`); the
   server keeps a sliding expiry instead (30 days of no use).
+- **Origin-bound device**: cookies ignore ports, so every other server on the same host that the browser visits
+  (another app on `localhost:3000`, a second cockpit) receives the device cookie with its requests and could replay
+  it. So each device also has an *origin key* (256 bits, stored hashed like the cookie's secret, compared in constant
+  time): it is answered only in the sign-in's JSON body (never `Set-Cookie`, never a URL), kept by the page in
+  `localStorage`, which is per origin with the port, and sent by script, as the `x-cc-device-key` header on every
+  `/api/*` and session request and as a second WebSocket subprotocol `cc-key.<key>` on the upgrade (a browser cannot
+  set a header on a WebSocket; a query string would land in proxy logs; checked at the upgrade, so a cookie alone
+  never gets a socket at all). A cookie without its key, or with a wrong one, is signed out. Plugin pages keep their
+  path tokens (§5.5): the token is their only credential. A device signed in before the key existed has no key hash:
+  it is dropped at load (logged as a revoke) and signs in again. Remote windows (design-remote-desktop.md) keep the
+  key in their `persist:remote-<id>` partition's localStorage, which is on disk; accepted, as in any browser profile
+  (the device cookie stays a session cookie there). The device cookie's value list is scanned whole, capped at 200
+  values, so a planted `ccc_device` cookie for a broader path cannot hide the real one.
+- **Connections before sign-in**: a connection must send its first request within 10 s, and at most 64 connections
+  with no signed-in request may be open at once (a new one is dropped past that); a connection that carries a
+  device, signs in or loads a plugin page is no longer counted, so signed-in devices are never dropped. Refused origins, dropped and silent connections are logged
+  collapsed (the first line, then a count per 10 minutes), so a scan cannot fill the log.
 - **Visible on the desktop**: the top bar shows connected devices; one click lists them with Disconnect, Revoke and
   Revoke all. Revoking closes their sockets and kills their plugin-page tokens (§5.5) at once. Every new device
   raises a desktop notification (server mode: a stdout line, §9.9).
@@ -973,8 +999,10 @@ that shell already gives, so the boundary does not move: it is sign-in. What kee
 
 What server mode gives up, and what stands in:
 - **Seeing a new device**: no desktop notification. Instead a stdout line, `web-access.log`, `ccc web status`, and the
-  device list on every browser's card, live. A start link used by someone else first shows as an unknown device, and
-  the person's own copy answers "already used"; Revoke on the card or `ccc web revoke` ends it.
+  device list on every browser's card, live, and an app-wide in-page notice in every browser's project view, replayed
+  to one that opens within its 10-minute life (a new device, 20 failed sign-ins in 10 minutes, and every `ccc web`
+  write that changes who may get in: the browsers are the server's only screen). A start link used by someone else first shows as an unknown device, and the person's own copy answers
+  "already used"; Revoke on the card or `ccc web revoke` ends it.
 - **The keychain**: the key file (§9.5); the same user and root read the secrets, as they read `~/.claude`.
 - **Loopback is no longer one person.** On a desktop loopback is the person's machine; on a shared server every local
   user reaches 127.0.0.1, so None on loopback (or the local end of an SSH tunnel on a shared client) hands the account

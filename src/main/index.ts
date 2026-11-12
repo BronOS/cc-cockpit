@@ -1372,12 +1372,14 @@ function start(server: boolean): void {
   /** A core or `ccc notify` notice; `windowId` places an in-page one (server mode), the OS ignores it. */
   const showNotification = (text: string, title = 'cc-cockpit', windowId?: number): void =>
     notifier.show({ title, body: text, ...(windowId !== undefined ? { windowId } : {}) })
-  // The app's own notices (a new device, a revoked plugin, a newer release): the OS's on the desktop,
-  // one stdout line each in server mode, kept for `ccc web status` (notifications/core-notices.ts,
-  // design-web.md §9.9). Never an in-page notice: those are the plugins' and `ccc notify`'s.
+  // The app's own notices (a new device, a revoked plugin, a newer release, failed sign-ins, a `ccc web`
+  // change): the OS's on the desktop, one stdout line each in server mode, kept for `ccc web status`
+  // (notifications/core-notices.ts, design-web.md §9.9); the ones about access also an in-page notice
+  // in every browser view there (`page`: the notifier's in-page backend, app-wide).
   const coreNotices = new CoreNotices({
     server,
     desktop: (text, title) => showNotification(text, title),
+    ...(server ? { page: (text: string, title: string) => showNotification(text, title) } : {}),
     out: (line) => console.log(line)
   })
   /** Windows a chime was sent to and the sound id it rang, oldest first, in a test run only. */
@@ -1807,7 +1809,9 @@ function start(server: boolean): void {
     secrets: secretStore,
     accessLog: webAccessLog,
     // A browser asking for a desktop confirm: the person may be in another app.
-    notify: (text) => showNotification(text, 'cc-cockpit web access')
+    notify: (text) => showNotification(text, 'cc-cockpit web access'),
+    // Many failed sign-ins in a short time: a core notice (the desktop's, or server mode's line and in-page notice).
+    alarm: (text) => coreNotices.show({ kind: 'sign-in-failures', text, title: 'cc-cockpit web access' })
   })
   // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
   // plugin), served only while the device has a view bound to a project the plugin is enabled in
@@ -2022,6 +2026,7 @@ function start(server: boolean): void {
       secrets: webSecretsStatus,
       notices: () => coreNotices.list(),
       accessLog: webAccessLog,
+      notice: (text) => coreNotices.show({ kind: 'access-changed', text, title: 'cc-cockpit web access' }),
       quit: quitLikeSigterm
     })
   )
@@ -2307,7 +2312,7 @@ function start(server: boolean): void {
     restart: (projectId) => hosts.restart(projectId),
     slotsChanged: (projectId) => layouts.refreshSlots(projectId)
   })
-  registerSettingsHandlers(router, settings)
+  registerSettingsHandlers(router, settings, { server })
   registerServiceHandlers(router, serviceChoices)
 
   // "This Project", "General" and "Appearance": per-project plugin set, project settings

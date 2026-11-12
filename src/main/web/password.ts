@@ -17,6 +17,7 @@
 // still costs one full hash, so the time taken does not say whether a password is set.
 // No regexes (the project rule for parsing stored text): `split` and number checks.
 import { randomBytes, scrypt as nodeScryptCallback, timingSafeEqual } from 'node:crypto'
+import { MIN_NETWORK_PASSWORD_LENGTH } from '../../shared/web-access'
 
 export interface ScryptOptions {
   N: number
@@ -42,8 +43,15 @@ export const SCRYPT_MAXMEM = 128 * 2 ** 16 * 8 + 1024 * 1024
 /** Hashes computed at once; the rest wait their turn. */
 export const DEFAULT_MAX_CONCURRENT = 2
 
-/** Shortest password the desktop accepts. Guessing is slowed to about one a second (auth.ts), not stopped. */
+/** Shortest password the desktop accepts. Guessing is slowed (auth.ts AttemptLimiter), not stopped. */
 export const MIN_PASSWORD_LENGTH = 8
+/**
+ * Shortest password accepted when others can reach the gateway: a network bind, an external origin
+ * (a proxy), or server mode (access-service.ts `passwordMinLength`). The limiter slows guessing, but
+ * a reachable address is guessed at for as long as it is up; 12 characters keep that out of reach.
+ * A password set before this rule keeps working; the settings and `ccc web status` say it is short.
+ */
+export { MIN_NETWORK_PASSWORD_LENGTH }
 /** A cap so a sign-in body cannot make scrypt hash megabytes; far above any real password. */
 export const MAX_PASSWORD_LENGTH = 256
 /**
@@ -67,11 +75,20 @@ function normalizePassword(password: string): string {
   return password.normalize('NFC')
 }
 
-/** Why a password cannot be set, or undefined when it can. Counted in code points, as people count. */
-export function passwordProblem(password: unknown): string | undefined {
+/** A password's length as passwordProblem counts it: code points after NFC. */
+export function passwordLength(password: string): number {
+  return [...normalizePassword(password)].length
+}
+
+/**
+ * Why a password cannot be set, or undefined when it can. Counted in code points, as people count.
+ * `minLength`: MIN_PASSWORD_LENGTH, or MIN_NETWORK_PASSWORD_LENGTH when others can reach the gateway.
+ */
+export function passwordProblem(password: unknown, minLength = MIN_PASSWORD_LENGTH): string | undefined {
   if (typeof password !== 'string') return 'the password must be text'
-  const length = [...normalizePassword(password)].length
-  if (length < MIN_PASSWORD_LENGTH) return `the password needs at least ${MIN_PASSWORD_LENGTH} characters`
+  const length = passwordLength(password)
+  const min = Math.max(MIN_PASSWORD_LENGTH, minLength)
+  if (length < min) return `the password needs at least ${min} characters`
   if (length > MAX_PASSWORD_LENGTH) return `the password may have at most ${MAX_PASSWORD_LENGTH} characters`
   return undefined
 }

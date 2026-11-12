@@ -23,6 +23,7 @@ import type { AccessActor, AccessEntry } from './access-log'
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
 import type { GatewayStatus } from './gateway'
+import { MIN_NETWORK_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from './password'
 import {
   applyWebAccessPatch,
   isLoopbackBind,
@@ -155,6 +156,8 @@ export class WebAccessService {
       // A risky choice that is refused (nothing listens) is no risk: the badge is for what is live.
       risks: gateway.state === 'listening' ? webAccessRisks(settings) : [],
       passwordSet: this.deps.auth.hasPassword(),
+      passwordMinLength: this.passwordMinLength(settings),
+      passwordShort: this.passwordShort(settings),
       // States only (synchronous, no decrypt): the card says when one must be made again (§9.5).
       credentials: this.deps.auth.credentialStates()
     }
@@ -187,6 +190,7 @@ export class WebAccessService {
       secrets: { store: secrets.store, unavailable: secrets.unavailable, otherMode: secrets.otherMode, replaced: secrets.replaced },
       accessLink: credentials.accessLink,
       password: credentials.password,
+      passwordShort: this.passwordShort(settings),
       devices: this.devicesView(),
       notices
     }
@@ -338,9 +342,24 @@ export class WebAccessService {
     return { ok: true, link, expiresAt }
   }
 
+  /**
+   * The shortest password accepted now: MIN_NETWORK_PASSWORD_LENGTH when others can reach the gateway
+   * (server mode, a network bind, or an external origin: a proxy brings others in over loopback), else
+   * MIN_PASSWORD_LENGTH. Read at each set, from the saved settings.
+   */
+  private passwordMinLength(settings: WebAccessSettings): number {
+    const reachable = this.deps.server === true || !isLoopbackBind(settings.bind) || settings.externalOrigin !== undefined
+    return reachable ? MIN_NETWORK_PASSWORD_LENGTH : MIN_PASSWORD_LENGTH
+  }
+
+  /** A password is set, the gateway is reachable by others, and the password is known to be shorter than that asks. */
+  private passwordShort(settings: WebAccessSettings): boolean {
+    return this.passwordMinLength(settings) > MIN_PASSWORD_LENGTH && this.deps.auth.passwordShort()
+  }
+
   /** Sets or changes the password (WebAuth.setPassword: hashed off the main thread, devices of the old one signed out). */
   async setPassword(password: unknown): Promise<WebActionReply> {
-    const reply = await this.deps.auth.setPassword(password)
+    const reply = await this.deps.auth.setPassword(password, this.passwordMinLength(this.settings()))
     if (reply.ok) this.changed()
     return reply
   }

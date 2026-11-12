@@ -29,7 +29,8 @@ import type { Page } from '@playwright/test'
 import { WebSocket as WsClient } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { CockpitApi } from '../../src/shared/ipc'
-import { PROTOCOL_VERSION } from '../../src/shared/web-protocol'
+import { DEVICE_KEY_HEADER, PROTOCOL_VERSION, socketProtocols } from '../../src/shared/web-protocol'
+import { DEVICE_KEY_STORAGE } from '../../src/renderer/web/device-key'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { enableWebAccess, openBrowser, type WebAccessOn, type WebBrowser } from './web-fixtures'
 
@@ -446,6 +447,13 @@ async function cookieHeader(browser: WebBrowser): Promise<string> {
   return cookies.map((k) => `${k.name}=${k.value}`).join('; ')
 }
 
+/** The origin key the web client keeps in its localStorage (design-web.md §4.1): never a cookie. */
+async function deviceKey(browser: WebBrowser): Promise<string> {
+  const key = await browser.page.evaluate((name) => localStorage.getItem(name), DEVICE_KEY_STORAGE)
+  expect(key).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+  return key ?? ''
+}
+
 /** A WebSocket upgrade by hand: the HTTP status the gateway answered (101 when it upgraded). */
 function upgradeStatus(port: number, headers: Record<string, string>): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -506,18 +514,24 @@ test('security: a foreign Origin and a missing cookie are refused; a revoked dev
     const webPage = browser.page
     await expect(page.locator('header.top-strip .web-access-chip')).toContainText('1 device')
     const cookie = await cookieHeader(browser)
+    const key = await deviceKey(browser)
+    expect(cookie).not.toContain(key)
+    const offer = { 'Sec-WebSocket-Protocol': socketProtocols(key).join(', ') }
 
-    // The right Origin with the cookie upgrades (the control: what follows fails for its one
+    // The right Origin with the cookie and the key upgrades (the control: what follows fails for its one
     // difference, not for a request the gateway would refuse anyway).
-    expect(await upgradeStatus(web.port, { Origin: web.origin, Cookie: cookie })).toBe(101)
+    expect(await upgradeStatus(web.port, { Origin: web.origin, Cookie: cookie, ...offer })).toBe(101)
+    // The cookie without the key (what another port's server on this host receives): not signed in.
+    expect(await upgradeStatus(web.port, { Origin: web.origin, Cookie: cookie })).toBe(401)
+    expect(await projectsStatus(web.port, { Cookie: cookie })).toBe(401)
     // Wrong Origin, the cookie still there: refused, on the upgrade and on a state-changing post.
-    expect(await upgradeStatus(web.port, { Origin: foreignUrl.slice(0, -1), Cookie: cookie })).toBe(403)
-    expect(await upgradeStatus(web.port, { Origin: 'http://localhost.evil.example', Cookie: cookie })).toBe(403)
-    expect(await upgradeStatus(web.port, { Cookie: cookie })).toBe(403)
+    expect(await upgradeStatus(web.port, { Origin: foreignUrl.slice(0, -1), Cookie: cookie, ...offer })).toBe(403)
+    expect(await upgradeStatus(web.port, { Origin: 'http://localhost.evil.example', Cookie: cookie, ...offer })).toBe(403)
+    expect(await upgradeStatus(web.port, { Cookie: cookie, ...offer })).toBe(403)
     // No cookie, the right Origin: not signed in.
     expect(await upgradeStatus(web.port, { Origin: web.origin })).toBe(401)
     expect(await projectsStatus(web.port, {})).toBe(401)
-    expect(await projectsStatus(web.port, { Cookie: cookie })).toBe(200)
+    expect(await projectsStatus(web.port, { Cookie: cookie, [DEVICE_KEY_HEADER]: key })).toBe(200)
 
     // The same refusal from inside the browser: the foreign page's socket never opens.
     const opened = browser.app.waitForEvent('window')
@@ -540,7 +554,7 @@ test('security: a foreign Origin and a missing cookie are refused; a revoked dev
     await foreignPage.close()
 
     // A second live view of the same device (the cookie on a socket of our own, past `hello`).
-    socket = new WsClient(`ws://127.0.0.1:${web.port}/ws`, { headers: { Origin: web.origin, Cookie: cookie } })
+    socket = new WsClient(`ws://127.0.0.1:${web.port}/ws`, socketProtocols(key), { headers: { Origin: web.origin, Cookie: cookie } })
     const live = socket
     const ready = new Promise<string>((resolve, reject) => {
       live.on('message', (data: Buffer) => {
@@ -574,8 +588,8 @@ test('security: a foreign Origin and a missing cookie are refused; a revoked dev
     await expect(webPage.getByText('This browser is signed out of the host. Sign in again.')).toBeVisible()
     // No device connected: the desktop's chip goes (it counts connected devices only).
     await expect(page.locator('header.top-strip .web-access-chip')).toHaveCount(0)
-    expect(await upgradeStatus(web.port, { Origin: web.origin, Cookie: cookie })).toBe(401)
-    expect(await projectsStatus(web.port, { Cookie: cookie })).toBe(401)
+    expect(await upgradeStatus(web.port, { Origin: web.origin, Cookie: cookie, ...offer })).toBe(401)
+    expect(await projectsStatus(web.port, { Cookie: cookie, [DEVICE_KEY_HEADER]: key })).toBe(401)
   } finally {
     socket?.terminate()
     await new Promise<void>((resolve) => foreign.close(() => resolve()))

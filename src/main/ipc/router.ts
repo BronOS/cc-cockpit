@@ -690,7 +690,7 @@ export interface SettingsHandlerDeps {
  * project handlers (a picker has no settings screen); the data they act on is app-wide. Nothing
  * a payload names is trusted: ids are looked up in main's own tables inside the service.
  */
-export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandlerDeps): void {
+export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandlerDeps, options: { server?: boolean } = {}): void {
   const idOf = (channel: string, payload: unknown): unknown => fields(channel, payload).id
   // The confirmation's repo and commit must travel with an install: a call without them would skip the check.
   const expectOf = (v: unknown): { repo: unknown; commit: unknown } => {
@@ -700,7 +700,12 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
   }
 
   router.handleProject('settings.projects', () => deps.projects())
-  router.handleProject('settings.projectOpen', (_ctx, payload) => {
+  // `adapted`: opening a project makes its window on the host's screen. A browser view of a desktop
+  // may not put windows on the person's screen (design-web.md §2.3); in server mode the window is the
+  // hidden page and a browser is the only screen, so it may. Decided by the view main bound the call
+  // to and main's own `server` flag, never by the payload.
+  router.handleProject('settings.projectOpen', (_ctx, payload, view) => {
+    if (view.remote && options.server !== true) throw new Error('settings.projectOpen: refused for a browser view outside server mode')
     deps.openProject(idOf('settings.projectOpen', payload))
   })
   router.handleProject('settings.projectRelink', (ctx, payload) => {

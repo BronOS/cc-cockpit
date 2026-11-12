@@ -198,9 +198,13 @@ export function modeOptions(): ModeOption[] {
 /** Same as main's minimum (main/web/password.ts), checked here only to say so before a round trip. */
 export const MIN_PASSWORD_LENGTH = 8
 
-/** Why the two password fields cannot be saved, or undefined when they can (main checks again). */
-export function passwordDraftProblem(password: string, repeat: string): string | undefined {
-  if ([...password.normalize('NFC')].length < MIN_PASSWORD_LENGTH) return `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+/**
+ * Why the two password fields cannot be saved, or undefined when they can (main checks again).
+ * `minLength`: the view's `passwordMinLength` (12 when others can reach the gateway).
+ */
+export function passwordDraftProblem(password: string, repeat: string, minLength = MIN_PASSWORD_LENGTH): string | undefined {
+  const min = Math.max(MIN_PASSWORD_LENGTH, minLength)
+  if ([...password.normalize('NFC')].length < min) return `Use at least ${min} characters.`
   if (password !== repeat) return 'The two passwords differ.'
   return undefined
 }

@@ -16,8 +16,14 @@
 // polls with its ticket until the desktop answers. The ticket is kept in sessionStorage by the
 // page, so a reload while waiting goes on with the same request (one waits at a time) instead of
 // asking again. Both end in the same device cookie and a fresh page load.
+//
+// Every sign-in also answers the device's origin key (device-key.ts, design-web.md §4.1): the page
+// keeps it (`storeKey`) before it loads again, and sends it with every request behind sign-in, the
+// session check included (main.tsx passes a fetch that adds it). A browser with the cookie but not the
+// key (its site data cleared, a device from before the key) is signed out and signs in again.
 // DOM-free (the location, history and fetch are passed in) so unit tests run it in plain Node.
 import { parseDesktopAgent } from '../../shared/remote-agent'
+import { deviceKeyOf } from './device-key'
 import type { WebAccessMode } from '../../shared/types'
 import {
   CONFIRM_ASK_PATH,
@@ -52,6 +58,8 @@ export interface SignInEnv {
   }>
   /** navigator.userAgent, for the device's name on the desktop's list. */
   userAgent: string
+  /** Keeps a sign-in's origin key for this origin (device-key.ts storeDeviceKey). */
+  storeKey(key: string): void
 }
 
 /** The access link's token in a URL fragment (`#t=<token>`), or undefined. */
@@ -140,12 +148,19 @@ function postJson(env: Pick<SignInEnv, 'fetch'>, path: string, body: unknown): R
   })
 }
 
-/** Posts a sign-in; the error text when it did not let this browser in. */
-async function postSignIn(env: Pick<SignInEnv, 'fetch'>, path: string, body: unknown): Promise<string | undefined> {
+/** Posts a sign-in; the error text when it did not let this browser in. Keeps the answer's origin key. */
+async function postSignIn(env: Pick<SignInEnv, 'fetch' | 'storeKey'>, path: string, body: unknown): Promise<string | undefined> {
   try {
     const res = await postJson(env, path, body)
-    if (res.ok) return undefined
-    return errorOf(await res.json().catch(() => undefined)) ?? `sign-in failed (${res.status})`
+    const answer: unknown = await res.json().catch(() => undefined)
+    if (res.ok) {
+      const key = deviceKeyOf(answer)
+      // A gateway that let this browser in always answers a key; without one the cookie is no use.
+      if (key === undefined) return 'the host answered no device key'
+      env.storeKey(key)
+      return undefined
+    }
+    return errorOf(answer) ?? `sign-in failed (${res.status})`
   } catch {
     return 'the host did not answer the sign-in'
   }
@@ -160,7 +175,7 @@ function postLink(env: SignInEnv, token: string): Promise<string | undefined> {
  * Signs in with the password; the error text when it did not let this browser in. A wrong one can
  * take a moment to answer (the host slows guesses down), which the page says while it waits.
  */
-export function signInWithPassword(env: Pick<SignInEnv, 'fetch' | 'userAgent'>, password: string): Promise<string | undefined> {
+export function signInWithPassword(env: Pick<SignInEnv, 'fetch' | 'userAgent' | 'storeKey'>, password: string): Promise<string | undefined> {
   return postSignIn(env, SIGN_IN_PASSWORD_PATH, { password, name: deviceName(env.userAgent) })
 }
 
@@ -209,15 +224,22 @@ export async function askConfirm(env: Pick<SignInEnv, 'fetch' | 'userAgent'>): P
 }
 
 /**
- * Where this browser's request stands. `allowed` means the answer carried the device cookie (the
- * page then loads again, signed in); `error` is a failed poll, which the page retries.
+ * Where this browser's request stands. `allowed` means the answer carried the device cookie and the
+ * origin key, which is kept (the page then loads again, signed in); `error` is a failed poll, which
+ * the page retries.
  */
-export async function pollConfirm(env: Pick<SignInEnv, 'fetch'>, ticket: string): Promise<WebConfirmPoll | { state: 'error'; error: string }> {
+export async function pollConfirm(env: Pick<SignInEnv, 'fetch' | 'storeKey'>, ticket: string): Promise<WebConfirmPoll | { state: 'error'; error: string }> {
   try {
     const res = await postJson(env, CONFIRM_POLL_PATH, { ticket })
     const body: unknown = await res.json().catch(() => undefined)
     if (!res.ok) return { state: 'error', error: errorOf(body) ?? `the host answered ${res.status}` }
-    return confirmPollOf(body) ?? { state: 'error', error: 'the host answered something else' }
+    const poll = confirmPollOf(body)
+    if (poll?.state === 'allowed') {
+      const key = deviceKeyOf(body)
+      if (key === undefined) return { state: 'error', error: 'the host answered no device key' }
+      env.storeKey(key)
+    }
+    return poll ?? { state: 'error', error: 'the host answered something else' }
   } catch {
     return { state: 'error', error: 'the host did not answer' }
   }

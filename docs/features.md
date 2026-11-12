@@ -311,13 +311,22 @@ a browser attached asks "Close for everyone" or "Keep running".
 **Sign-in modes:**
 - *Access link* (default): a long random link, `<address>/#t=<token>`; the page posts it once, gets a device cookie and
   clears the URL. Regenerate takes it back.
-- *Password*: set on the desktop (needs a working keychain); works with no one at the desktop. Wrong passwords are
-  slowed, never locked out.
+- *Password*: set on the desktop (needs a working keychain); works with no one at the desktop. At least 8 characters,
+  12 once others can reach the address (a network bind, an external address, server mode); a shorter one set before
+  keeps working, and the card and `ccc web status` say to change it. Wrong passwords are slowed, more so the longer
+  they keep coming, never locked out; 20 wrong tries in 10 minutes raise a notice.
 - *Desktop confirm*: the browser shows a code; type it into the request card on the desktop to allow it.
 - *None*: no sign-in, anyone who reaches the address is in. Only for a proxy that signs people in. Revoke means nothing.
 
 Whoever is signed in is the person at the keyboard: a shell and Claude on this computer, plugin accounts, files. The
 Host and Origin checks, the device cookie and the log (sign-ins and revokes, never terminal text) apply in every mode.
+
+A signed-in browser holds two things: the device cookie, and a device key the page keeps in its own storage for this
+exact address (port included) and sends with each request. A cookie alone signs nothing in, so another web server on
+the same computer that the browser visits (cookies ignore ports) cannot reuse it. **Devices signed in before this
+change have no key and must sign in again** once (they are listed as revoked in `web-access.log`). Clearing the
+browser's site data for the address signs it out the same way. A connection that sends nothing within 10 seconds is
+closed, and only so many not-yet-signed-in connections are kept at once; signed-in browsers are never affected.
 
 **Reaching it from another device:**
 - *Same network (LAN):* set "Listen on" to `0.0.0.0` (or one address of the computer). A network bind over plain http,
@@ -334,7 +343,8 @@ Host and Origin checks, the device cookie and the log (sign-ins and revokes, nev
 
 **What a browser does differently** (the table is design-web.md §6.1): a link opens as a notice you click, not in a new
 tab by itself; notifications and sounds stay on the host; "Reveal in the file manager" and "Open with the system" are
-refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop; URL overlays, and the
+refused; folder dialogs, plugin linking and OAuth sign-ins are done on the desktop, and Settings › Projects has no
+Open button (it would open a window on the desktop's screen; a server's browsers keep it); URL overlays, and the
 Browser panel of a project open on a desktop, show "available on the desktop" (in server mode the panel is streamed to the browser, see Server mode); window controls, full screen and the update notice are not shown. With no theme
 picked ("Follow the system"), each browser shows the light or dark built-in of its own system setting, not the
 computer's; a picked theme is the same everywhere. On a computer with no display (server mode) the approvals move to the browser: see Server mode below. A terminal has one
@@ -458,7 +468,10 @@ both as under Web access above. A LAN bind works with the same confirms.
 - Notices (`ctx.notify`, `ccc notify`) are in-page notices in the browsers of the project, with the tab title marked
   while one is unseen in a background tab. They do not reach a phone in a pocket: with no browser open a notice waits (up
   to its time-out) and a plugin that needs to reach you elsewhere has to do that itself. The app's own notices (a new
-  device, a revoked plugin, a newer release) are one stdout line each and are listed by `ccc web status`.
+  device, a revoked plugin, a newer release, many failed sign-ins, a `ccc web` change of who may get in) are one stdout
+  line each and are listed by `ccc web status`. The ones about access (a new device, failed sign-ins, `ccc web`
+  writes such as a new password, a new link, another mode or bind) are also an in-page notice in every browser with a
+  project open (one opened within 10 minutes still shows it; the project list shows none).
 - A new device is seen in the card of every open browser, in `web-access.log` and in `ccc web status`, not in a desktop
   notification.
 - Loopback is every local user. On a shared server anyone with a shell reaches 127.0.0.1, so mode None there (or the

@@ -2116,10 +2116,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settingsPage.disconnect': 'yes',
   'settingsPage.held': 'yes',
 
-  // Settings › Projects. Opening a known project only makes its window on the host (a remote view
-  // then picks it in the gateway's list); relink is a native folder dialog.
+  // Settings › Projects. Opening a known project makes its window on the host's screen: `adapted`, a
+  // browser view only in server mode, where that window is the hidden page (router.ts
+  // registerSettingsHandlers); relink is a native folder dialog.
   'settings.projects': 'yes',
-  'settings.projectOpen': 'yes',
+  'settings.projectOpen': 'adapted',
   'settings.projectRelink': 'no',
   'settings.projectRemove': 'yes',
 

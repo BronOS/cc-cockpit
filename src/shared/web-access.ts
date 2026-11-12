@@ -145,6 +145,13 @@ export interface WebAccessView {
   /** A password is set (the password mode can be picked only then). */
   passwordSet: boolean
   /**
+   * The shortest password a set or change takes now: 12 when others can reach the gateway (a network
+   * bind, an external origin, server mode), else 8 (main/web/password.ts).
+   */
+  passwordMinLength: number
+  /** The password set is known to be shorter than that (set before the rule): the card says to change it. */
+  passwordShort: boolean
+  /**
    * The access link's token and the password as stored (design-web.md §9.5): `other-mode` and
    * `replaced` are there but cannot be read by this run's store, so the link cannot be shown until
    * regenerated and the password must be set again. Never the values themselves.
@@ -233,14 +240,26 @@ export interface WebCliStatus {
   secrets: WebSecretsStatus
   accessLink: WebCredentialState
   password: WebCredentialState
+  /** The password is known to be shorter than a reachable gateway's minimum (12): status says to change it. */
+  passwordShort: boolean
   devices: WebDeviceView[]
   /** The core notices of this run (a new device, a revoked plugin, a newer release); server mode only, else empty. */
   notices: WebCliNotice[]
 }
 
+/**
+ * Shortest web access password when others can reach the gateway (main/web/password.ts, where the
+ * rule is explained); here so `ccc web status` can name it.
+ */
+export const MIN_NETWORK_PASSWORD_LENGTH = 12
+
 /** A core notice as `ccc web status` lists it (main/notifications/core-notices.ts): one plain line, no link or plugin text. */
 export interface WebCliNotice {
-  kind: 'new-device' | 'revoked' | 'update'
+  /**
+   * `sign-in-failures`: many failed sign-ins in a short time (main/web/auth.ts); `access-changed`: a
+   * `ccc web` write changed who may get in (link, add-device, password, mode, set).
+   */
+  kind: 'new-device' | 'revoked' | 'update' | 'sign-in-failures' | 'access-changed'
   text: string
   /** Epoch ms. */
   at: number

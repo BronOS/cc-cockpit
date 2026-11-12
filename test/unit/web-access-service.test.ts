@@ -573,6 +573,45 @@ describe('WebAccessService', () => {
       expect(v.form.mode).toBe('password')
     })
 
+    // Others can reach the gateway (a network bind, a proxy's external origin, server mode): 12
+    // characters. A shorter one set while on loopback keeps working, with a hint in the view.
+    it('asks 12 characters once others can reach the gateway, and hints at an older shorter password', async () => {
+      expect(service.view().passwordMinLength).toBe(8)
+      expect(await service.setPassword('eightchr')).toEqual({ ok: true })
+      expect(service.view().passwordShort).toBe(false)
+      await service.set({ enabled: true, bind: '0.0.0.0', confirm: ['plain-http'] })
+      expect(service.view().passwordMinLength).toBe(12)
+      expect(service.view().passwordShort).toBe(true)
+      expect(service.cliStatus({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }, []).passwordShort).toBe(true)
+      expect(await service.setPassword('elevenchars')).toEqual({ ok: false, reason: expect.stringMatching(/at least 12/) })
+      expect(await service.setPassword('twelve chars')).toEqual({ ok: true })
+      expect(service.view().passwordShort).toBe(false)
+      await service.set({ bind: '127.0.0.1', externalOrigin: 'https://box.example' })
+      expect(service.view().passwordMinLength).toBe(12)
+      await service.set({ externalOrigin: null })
+      expect(service.view().passwordMinLength).toBe(8)
+    })
+
+    it('asks 12 characters in server mode, on loopback too', async () => {
+      const server = new WebAccessService({
+        gateway,
+        auth,
+        read: () => stored,
+        write: () => undefined,
+        emit: () => undefined,
+        terminals: { start: () => undefined, drain: async () => undefined },
+        accessLog: log,
+        version: '9.8.7',
+        server: true
+      })
+      try {
+        expect(server.view().passwordMinLength).toBe(12)
+        expect(await server.setPassword('elevenchars')).toEqual({ ok: false, reason: expect.stringMatching(/at least 12/) })
+      } finally {
+        server.dispose()
+      }
+    })
+
     it('shows a browser waiting for a confirm in the indicator (never its code), and takes the answer', async () => {
       await service.set({ enabled: true, mode: 'confirm' })
       auth.setMode('confirm')

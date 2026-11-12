@@ -13,7 +13,9 @@ import {
   hashSecret,
   matchesHash,
   MAX_DEVICES,
-  TOUCH_INTERVAL_MS
+  MAX_OFFERED_KEYS,
+  TOUCH_INTERVAL_MS,
+  UNKEYED_REASON
 } from '../../src/main/web/devices'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -58,8 +60,8 @@ describe('add and check', () => {
     const text = readFileSync(file, 'utf8')
     expect(text).not.toContain(secret)
     expect(onDisk().devices[0]).toMatchObject({ id, name: 'Pixel', mode: 'link', secretHash: hashSecret(secret ?? '') })
-    expect(s.check(added.cookie)).toMatchObject({ id, name: 'Pixel', mode: 'link' })
-    expect(Object.keys(s.check(added.cookie) ?? {})).not.toContain('secretHash')
+    expect(s.check(added.cookie, [added.key])).toMatchObject({ id, name: 'Pixel', mode: 'link' })
+    expect(Object.keys(s.check(added.cookie, [added.key]) ?? {})).not.toContain('secretHash')
   })
 
   it('refuses a wrong secret, an unknown id and malformed values', () => {
@@ -70,6 +72,52 @@ describe('add and check', () => {
     for (const bad of [`${id}.${'A'.repeat(43)}`, `nobody.${added.cookie.split('.')[1]}`, id, `.${id}`, `${id}.`, `${id}.a b`, '', 'x'.repeat(500), undefined]) {
       expect(s.check(bad), String(bad)).toBeUndefined()
     }
+  })
+
+  it('binds the cookie to its origin key: the cookie alone, a wrong key or another device\'s key signs nothing in', () => {
+    const s = store()
+    const a = s.add('a', 'link')
+    const b = s.add('b', 'link')
+    if (!a || !b) throw new Error('not added')
+    expect(a.key).toHaveLength(43)
+    expect(a.key).not.toBe(a.cookie.split('.')[1])
+    // On disk only as a hash.
+    expect(readFileSync(file, 'utf8')).not.toContain(a.key)
+    expect(onDisk().devices[0]).toMatchObject({ id: a.device.id, keyHash: hashSecret(a.key) })
+    expect(s.check(a.cookie)).toBeUndefined()
+    expect(s.check(a.cookie, [])).toBeUndefined()
+    expect(s.check(a.cookie, [''])).toBeUndefined()
+    expect(s.check(a.cookie, ['A'.repeat(43)])).toBeUndefined()
+    expect(s.check(a.cookie, [b.key])).toBeUndefined()
+    // Any of the offered keys may be the one (a junk header next to a desktop's key cookie).
+    expect(s.check(a.cookie, ['junk', a.key])?.id).toBe(a.device.id)
+    // Only MAX_OFFERED_KEYS are tried.
+    expect(s.check(a.cookie, [...Array.from({ length: MAX_OFFERED_KEYS }, () => 'junk'), a.key])).toBeUndefined()
+  })
+
+  it('a cookie without its key does not count as use (a leaked cookie cannot keep a device alive)', () => {
+    const s = store()
+    const added = s.add('x', 'link')
+    if (!added) throw new Error('not added')
+    const created = clock
+    clock += TOUCH_INTERVAL_MS * 5
+    expect(s.check(added.cookie, ['wrong'])).toBeUndefined()
+    expect(s.list()[0]?.lastSeenAt).toBe(created)
+  })
+
+  it('a device from before the origin key is dropped when the file is read, with a revoke line', () => {
+    const s = store()
+    const kept = s.add('kept', 'link')
+    if (!kept) throw new Error('not added')
+    const data = onDisk()
+    data.devices.push({ id: 'oldone', name: 'Old phone', createdAt: clock, lastSeenAt: clock, secretHash: 'f'.repeat(64), mode: 'link' })
+    writeFileSync(file, JSON.stringify(data))
+    const again = store()
+    expect(again.list().map((d) => d.name)).toEqual(['kept'])
+    // Gone on disk at once, not at the next change.
+    expect(onDisk().devices.map((d) => d['id'])).toEqual([kept.device.id])
+    expect(log.recent().at(-1)).toMatchObject({ event: 'revoke', device: 'oldone', name: 'Old phone', detail: UNKEYED_REASON })
+    expect(again.check(kept.cookie, [kept.key])?.name).toBe('kept')
   })
 
   it('notifies the desktop and logs the sign-in, with the name as plain text', () => {
@@ -104,10 +152,10 @@ describe('sliding expiry, no rotation', () => {
     s.onRevoked((ids) => gone.push([...ids]))
     for (let i = 0; i < 3; i++) {
       clock += 29 * DAY
-      expect(s.check(added.cookie)?.lastSeenAt).toBe(clock)
+      expect(s.check(added.cookie, [added.key])?.lastSeenAt).toBe(clock)
     }
     clock += DEVICE_IDLE_MS + 1
-    expect(s.check(added.cookie)).toBeUndefined()
+    expect(s.check(added.cookie, [added.key])).toBeUndefined()
     expect(gone).toEqual([[added.device.id]])
     expect(onDisk().devices).toEqual([])
     expect(log.recent().at(-1)).toMatchObject({ event: 'expired', device: added.device.id })
@@ -119,9 +167,9 @@ describe('sliding expiry, no rotation', () => {
     if (!added) throw new Error('not added')
     const created = clock
     clock += TOUCH_INTERVAL_MS - 1
-    expect(s.check(added.cookie)?.lastSeenAt).toBe(created)
+    expect(s.check(added.cookie, [added.key])?.lastSeenAt).toBe(created)
     clock += 1
-    expect(s.check(added.cookie)?.lastSeenAt).toBe(clock)
+    expect(s.check(added.cookie, [added.key])?.lastSeenAt).toBe(clock)
   })
 
   it('list drops expired devices, newest first', () => {
@@ -146,7 +194,7 @@ describe('sliding expiry, no rotation', () => {
     // list/add (the desktop's indicator) see it connected, and mark it seen.
     expect(s.list()).toMatchObject([{ id: added.device.id, lastSeenAt: clock }])
     clock += DEVICE_IDLE_MS + DAY
-    expect(s.check(added.cookie)?.lastSeenAt).toBe(clock)
+    expect(s.check(added.cookie, [added.key])?.lastSeenAt).toBe(clock)
     // One of two sockets closing keeps it connected; the last one closing marks it seen then.
     clock += DEVICE_IDLE_MS + DAY
     s.socketClosed(added.device.id)
@@ -175,7 +223,7 @@ describe('sliding expiry, no rotation', () => {
     expect(onDisk().devices).toMatchObject([{ id: kept.device.id, lastSeenAt: clock }])
     // After a restart nothing is connected: the saved time is where the idle days start.
     clock += DEVICE_IDLE_MS - 1
-    expect(store().check(kept.cookie)?.name).toBe('kept')
+    expect(store().check(kept.cookie, [kept.key])?.name).toBe('kept')
   })
 })
 
@@ -190,10 +238,10 @@ describe('revoke', () => {
     s.onRevoked((ids) => heard.push([...ids]))
     expect(s.revoke(a?.device.id ?? '')).toBe(true)
     expect(s.revoke('nobody')).toBe(false)
-    expect(s.check(a?.cookie)).toBeUndefined()
+    expect(s.check(a?.cookie, [a?.key ?? ''])).toBeUndefined()
     expect(s.revokeSignedInWith('link', 'access link regenerated')).toBe(1)
-    expect(s.check(c?.cookie)).toBeUndefined()
-    expect(s.check(b?.cookie)).toBeDefined()
+    expect(s.check(c?.cookie, [c?.key ?? ''])).toBeUndefined()
+    expect(s.check(b?.cookie, [b?.key ?? ''])).toBeDefined()
     expect(store().list().map((x) => x.name).sort()).toEqual(['b', 'd'])
     expect(s.revokeAll()).toBe(2)
     expect(heard).toEqual([[a?.device.id], [c?.device.id], [b?.device.id, d?.device.id]])
@@ -225,13 +273,14 @@ describe('the file', () => {
     const good = s.add('good', 'link')
     s.setAccessToken({ hash: hashSecret('t'), stored: 'enc', createdAt: 1 })
     const data = onDisk()
-    data.devices.push({ id: 'bad id', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'f'.repeat(64), mode: 'link' })
-    data.devices.push({ id: 'abc', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'short', mode: 'link' })
-    data.devices.push({ id: 'abd', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'f'.repeat(64), mode: 'root' })
+    data.devices.push({ id: 'bad id', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'f'.repeat(64), keyHash: 'e'.repeat(64), mode: 'link' })
+    data.devices.push({ id: 'abc', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'short', keyHash: 'e'.repeat(64), mode: 'link' })
+    data.devices.push({ id: 'abd', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'f'.repeat(64), keyHash: 'e'.repeat(64), mode: 'root' })
+    data.devices.push({ id: 'abe', name: 'x', createdAt: 1, lastSeenAt: 1, secretHash: 'f'.repeat(64), keyHash: 'short', mode: 'link' })
     writeFileSync(file, JSON.stringify(data))
     const again = store()
     expect(again.list().map((d) => d.name)).toEqual(['good'])
-    expect(again.check(good?.cookie)?.name).toBe('good')
+    expect(again.check(good?.cookie, [good?.key ?? ''])?.name).toBe('good')
     expect(again.accessToken()).toEqual({ hash: hashSecret('t'), stored: 'enc', createdAt: 1 })
     writeFileSync(file, JSON.stringify({ ...data, accessToken: { hash: 'nothex', stored: 'enc', createdAt: 1 } }))
     expect(store().accessToken()).toBeUndefined()

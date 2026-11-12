@@ -38,7 +38,11 @@
 //
 // Failed attempts are slowed, never locked out (a lockout lets anyone who can reach the address
 // keep the person out) and never keyed by peer address (behind `tailscale serve` every peer is
-// 127.0.0.1): `AttemptLimiter`, one bucket for every caller and every mode. The known limit of one
+// 127.0.0.1): `AttemptLimiter`, one bucket for every caller and every mode. Sustained failures slow
+// it further (up to MAX_SLOWDOWN times, back to normal after a quiet LIMITER_QUIET_MS), and
+// FAILURE_ALARM_COUNT failures within FAILURE_ALARM_WINDOW_MS raise a core notice (`alarm`: the
+// desktop's notification, or server mode's stdout line and in-page notice), so a password being
+// guessed at is seen rather than only slowed. The known limit of one
 // global bucket: a sustained flood keeps its queue full, and while it lasts a new sign-in is
 // answered "busy" (429) too, as nothing tells the person's attempt from the flood's. Accepted:
 // devices already signed in are untouched (a cookie check never goes through the limiter), the
@@ -49,6 +53,15 @@
 // On loopback, cookies ignore ports, so SameSite does not keep other localhost pages out: the
 // Origin check does (checks.ts). The cookie is never rotated (devices.ts says why); its Max-Age is
 // the browser's cap, and the server's 30-day sliding expiry decides.
+//
+// The origin key (devices.ts header, design-web.md §4.1 "Origin-bound device"): cookies ignore ports
+// for sending too, so another server on the same host that the browser visits gets the device cookie
+// and could replay it, forging Host and Origin as any non-browser client can. So every sign-in also
+// answers a second secret in its JSON body and nowhere else (never a cookie, which would leak the same
+// way), which the page keeps in its origin's localStorage (scheme, host and port) and sends by script:
+// DEVICE_KEY_HEADER on every request behind sign-in, SESSION_PATH included, and a WebSocket
+// subprotocol on the upgrade (gateway.ts). `authorize` needs both. A client that is not the page (the
+// desktop app's own requests to a remote server) must send the key the same way.
 import { randomBytes, randomInt } from 'node:crypto'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import type { WebAccessMode } from '../../shared/types'
@@ -56,12 +69,26 @@ import type { WebActionReply, WebConfirmAsk, WebCredentialState } from '../../sh
 import type { WebConfirmPoll } from '../../shared/web-protocol'
 import { storedValueState, type SecretStore } from '../secrets/secret-store'
 import type { AccessLog } from './access-log'
-import { DeviceStore, deviceName as deviceNameOf, hashSecret, matchesHash, randomSecret, type DeviceSignIn, type WebDevice } from './devices'
-import { MAX_PASSWORD_BYTES, PasswordHasher, passwordProblem } from './password'
+import {
+  DeviceStore,
+  deviceName as deviceNameOf,
+  hashSecret,
+  matchesHash,
+  randomSecret,
+  type DeviceSignIn,
+  type WebDevice
+} from './devices'
+import { MAX_PASSWORD_BYTES, MIN_NETWORK_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, PasswordHasher, passwordLength, passwordProblem } from './password'
 import { isWildcardBind } from './settings'
 import { warnLog } from '../warn-log'
 
 export const DEVICE_COOKIE = 'ccc_device'
+/**
+ * Most values of one cookie name read from a header. Above Chrome's cap of 180 cookies per host: a
+ * page on another localhost port can set many same-named cookies with narrower paths (the browser
+ * sends those first), and every one is tried, so they cannot push the real one out of reach.
+ */
+export const MAX_COOKIE_VALUES = 200
 /** Chrome's cap on a cookie's lifetime; the device's own 30-day sliding expiry is what counts. */
 const COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60
 export const ADD_DEVICE_TTL_MS = 10 * 60 * 1000
@@ -86,9 +113,10 @@ export const CONFIRM_BUSY_ERROR =
 export const NONE_DEVICE: Readonly<WebDevice> = Object.freeze({ id: 'none', name: 'No sign-in', createdAt: 0, lastSeenAt: 0, mode: 'none' })
 
 /**
- * Every value of cookie `name` in a `Cookie` header, in order (at most 4). More than one: another
- * localhost page can set a same-named cookie with a narrower path, which the browser sends first;
- * trying each keeps that from signing the person out.
+ * Every value of cookie `name` in a `Cookie` header, in order (at most MAX_COOKIE_VALUES). More than
+ * one: another localhost page can set same-named cookies with narrower paths, which the browser sends
+ * first; trying each keeps those from signing the person out, and the cap is above what a browser
+ * keeps for one host, so they cannot outnumber the real one either.
  */
 export function cookieValues(header: string | undefined, name: string): string[] {
   if (typeof header !== 'string') return []
@@ -97,7 +125,7 @@ export function cookieValues(header: string | undefined, name: string): string[]
     const eq = part.indexOf('=')
     if (eq < 0 || part.slice(0, eq).trim() !== name) continue
     out.push(part.slice(eq + 1).trim())
-    if (out.length === 4) break
+    if (out.length === MAX_COOKIE_VALUES) break
   }
   return out
 }
@@ -109,6 +137,15 @@ export function deviceCookie(value: string, origin: string): string {
   // confirm, which must still sign in. Loopback http: no Secure (§4.1).
   const secure = origin.toLowerCase().startsWith('https:')
   return `${DEVICE_COOKIE}=${value}; Path=/; Max-Age=${COOKIE_MAX_AGE_S}; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`
+}
+
+/**
+ * The origin key a request offers in its DEVICE_KEY_HEADER: one value (a repeated header, which Node
+ * hands over as a list, is refused as a whole), a plausible token, else none.
+ */
+export function offeredKeys(header: string | string[] | undefined): string[] {
+  const value = typeof header === 'string' ? header.trim() : ''
+  return value.length > 0 && value.length <= MAX_TOKEN_LENGTH ? [value] : []
 }
 
 function firstLanAddress(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>): string | undefined {
@@ -144,25 +181,47 @@ export interface AttemptLimiterOptions {
   delayMs?: number
   /** Attempts waiting beyond this are answered "busy" at once instead of holding a request open. */
   maxWaiting?: number
+  /** Every this many failures in a row (no quiet `quietMs` between them), the delay and the refill double. */
+  growEvery?: number
+  /** The most the delay and the refill are slowed by (a factor). */
+  maxSlowdown?: number
+  /** This long with no failure and the slowdown is gone. */
+  quietMs?: number
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }
 
+/** Failures in a row after which the limiter's delay and refill double (AttemptLimiter `growEvery`). */
+export const LIMITER_GROW_EVERY = 20
+/** The most the limiter slows down under sustained failures: one check per 16 s, one token per 96 s. */
+export const MAX_SLOWDOWN = 16
+/** A quiet spell this long (no failed attempt) and the limiter is back to its normal pace. */
+export const LIMITER_QUIET_MS = 10 * 60 * 1000
+
 /**
- * Slows sign-in attempts globally (design-web.md §4.1): a token bucket, and a fixed delay once it is
+ * Slows sign-in attempts globally (design-web.md §4.1): a token bucket, and a delay once it is
  * empty. Every attempt takes a token; a successful one gives it back, so only failures drain it.
  * With the bucket empty, attempts queue and run one per `delayMs`, so a burst of guesses, however
- * parallel, gets at most one check a second. Nothing is ever locked: the person's own attempt
- * waits behind the queue at worst. The queue is capped (`busy`) so a flood cannot hold requests
- * without end. Not keyed by peer: behind a proxy every peer is 127.0.0.1.
+ * parallel, gets at most one check a second. Sustained failures slow it further: every `growEvery`
+ * failures in a row double both the delay and the refill time, up to `maxSlowdown` times (one check
+ * per 16 s and one token per 96 s by default), so guessing that goes on for hours gets ever fewer
+ * tries; a quiet `quietMs` with no failure brings the normal pace back. Nothing is ever locked: the
+ * person's own attempt waits behind the queue at worst. The queue is capped (`busy`) so a flood
+ * cannot hold requests without end. Not keyed by peer: behind a proxy every peer is 127.0.0.1.
  */
 export class AttemptLimiter {
   private readonly capacity: number
   private readonly refillMs: number
   private readonly delayMs: number
   private readonly maxWaiting: number
+  private readonly growEvery: number
+  private readonly maxSlowdown: number
+  private readonly quietMs: number
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
+  /** Failed attempts since the last quiet spell (`quietMs`), and when the last one was. */
+  private failures = 0
+  private lastFailureAt = -Infinity
   private tokens: number
   private refilledAt: number
   private waiting = 0
@@ -173,6 +232,9 @@ export class AttemptLimiter {
     this.refillMs = options.refillMs ?? 6000
     this.delayMs = options.delayMs ?? 1000
     this.maxWaiting = options.maxWaiting ?? 64
+    this.growEvery = Math.max(1, options.growEvery ?? LIMITER_GROW_EVERY)
+    this.maxSlowdown = Math.max(1, options.maxSlowdown ?? MAX_SLOWDOWN)
+    this.quietMs = options.quietMs ?? LIMITER_QUIET_MS
     this.now = options.now ?? Date.now
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
     this.tokens = this.capacity
@@ -191,6 +253,7 @@ export class AttemptLimiter {
     cancelled?: () => boolean,
     options: { refund?: boolean } = {}
   ): Promise<T | 'busy' | 'cancelled'> {
+    if (this.now() - this.lastFailureAt >= this.quietMs) this.failures = 0
     this.refill()
     if (cancelled?.()) return 'cancelled'
     const refund = options.refund !== false
@@ -199,11 +262,14 @@ export class AttemptLimiter {
       this.tokens -= 1
       const result = await attempt()
       if (result.ok && refund) this.tokens = Math.min(this.capacity, this.tokens + 1)
+      this.settled(result)
       return result
     }
     if (this.waiting >= this.maxWaiting) return 'busy'
     this.waiting++
-    const turn = this.chain.then(() => this.sleep(this.delayMs))
+    // The pace of the moment this attempt joins the queue: a slowdown that grows meanwhile applies to the ones after it.
+    const delay = this.delayMs * this.slowdown
+    const turn = this.chain.then(() => this.sleep(delay))
     this.chain = turn
     try {
       await turn
@@ -212,20 +278,46 @@ export class AttemptLimiter {
     }
     // The wait can be long (a queue of guesses ahead of it): the client may have hung up.
     if (cancelled?.()) return 'cancelled'
-    return attempt()
+    const result = await attempt()
+    this.settled(result)
+    return result
+  }
+
+  /** How many times slower than normal the limiter runs now (1 to `maxSlowdown`). */
+  get slowdown(): number {
+    return Math.min(this.maxSlowdown, 2 ** Math.floor(this.failures / this.growEvery))
+  }
+
+  /** A failure counts toward the slowdown; a success does not undo it (only a quiet spell does). */
+  private settled(result: { ok: boolean }): void {
+    if (result.ok) return
+    this.failures++
+    this.lastFailureAt = this.now()
   }
 
   private refill(): void {
     const now = this.now()
-    const back = Math.floor((now - this.refilledAt) / this.refillMs)
+    const every = this.refillMs * this.slowdown
+    const back = Math.floor((now - this.refilledAt) / every)
     if (back <= 0) return
     this.tokens = Math.min(this.capacity, this.tokens + back)
-    this.refilledAt = this.tokens === this.capacity ? now : this.refilledAt + back * this.refillMs
+    this.refilledAt = this.tokens === this.capacity ? now : this.refilledAt + back * every
   }
 }
 
+/** Failed sign-ins within FAILURE_ALARM_WINDOW_MS that raise the alarm (WebAuth `alarm`). */
+export const FAILURE_ALARM_COUNT = 20
+export const FAILURE_ALARM_WINDOW_MS = 10 * 60 * 1000
+/** At most one alarm this often: a flood that lasts all day is one notice an hour, not one per run. */
+export const FAILURE_ALARM_COOLDOWN_MS = 60 * 60 * 1000
+
+/** The alarm's text: main's own words and a count, nothing a requester sent. */
+export function failureAlarmText(count: number): string {
+  return `${count} failed web access sign-ins in the last ${FAILURE_ALARM_WINDOW_MS / 60_000} minutes. Someone may be guessing; sign-ins are being slowed down. Check who can reach this address, or turn web access off.`
+}
+
 export type SignInResult =
-  | { ok: true; device: WebDevice; cookie: string }
+  | { ok: true; device: WebDevice; cookie: string; key: string }
   | { ok: false; status: 400 | 401 | 409 | 429 | 499 | 503; error: string }
 
 export type LinkResult = { ok: true; link: string } | { ok: false; reason: string }
@@ -235,8 +327,8 @@ export type ConfirmAskResult =
   | { ok: true; code: string; ticket: string; expiresAt: number }
   | { ok: false; status: 400 | 409 | 429 | 499; error: string }
 
-/** A poll: where the ask stands, and on `allowed` the new device's cookie value. */
-export type ConfirmPollResult = { ok: true; poll: WebConfirmPoll; cookie?: string } | { ok: false; status: 400 | 503; error: string }
+/** A poll: where the ask stands, and on `allowed` the new device's cookie value and origin key. */
+export type ConfirmPollResult = { ok: true; poll: WebConfirmPoll; cookie?: string; key?: string } | { ok: false; status: 400 | 503; error: string }
 
 interface PendingAsk {
   id: string
@@ -260,6 +352,11 @@ export interface WebAuthOptions {
   hasher?: PasswordHasher
   /** A desktop notification (main: the notifier adapter): a browser asks for a desktop confirm. */
   notify?: (text: string) => void
+  /**
+   * FAILURE_ALARM_COUNT failed sign-ins within FAILURE_ALARM_WINDOW_MS (main: a core notice, which is
+   * the desktop's notification, or server mode's stdout line and in-page notice in every browser).
+   */
+  alarm?: (text: string) => void
   now?: () => number
   log?: (message: string) => void
 }
@@ -301,6 +398,10 @@ export class WebAuth {
   private ask: PendingAsk | undefined
   private askTimer: ReturnType<typeof setTimeout> | undefined
   private readonly changeListeners = new Set<() => void>()
+  private readonly alarm: (text: string) => void
+  /** When the recent failed sign-ins were (the alarm's window), oldest first, and the last alarm. */
+  private readonly failedAt: number[] = []
+  private alarmedAt = -Infinity
 
   constructor(options: WebAuthOptions) {
     this.devices = options.devices
@@ -309,6 +410,7 @@ export class WebAuth {
     this.limiter = options.limiter ?? new AttemptLimiter()
     this.hasher = options.hasher ?? new PasswordHasher()
     this.notify = options.notify ?? (() => undefined)
+    this.alarm = options.alarm ?? (() => undefined)
     this.now = options.now ?? Date.now
     this.log = options.log ?? warnLog
   }
@@ -348,13 +450,36 @@ export class WebAuth {
     this.dropAsk()
   }
 
-  /** The device a request's `Cookie` header signs in, the anonymous one in None mode, or undefined. */
-  authorize(cookieHeader: string | undefined): WebDevice | undefined {
+  /**
+   * The device a request signs in, the anonymous one in None mode, or undefined: its `Cookie` header's
+   * device cookie together with one of its origin keys (`keys`: the page's header, offeredKeys, or its
+   * subprotocols on the upgrade). A cookie without its key is no device (see the header); in None
+   * mode that is the anonymous caller, as with no cookie at all.
+   */
+  authorize(cookieHeader: string | undefined, keys: readonly string[] = []): WebDevice | undefined {
     for (const value of cookieValues(cookieHeader, DEVICE_COOKIE)) {
-      const device = this.devices.check(value)
+      const device = this.devices.check(value, keys)
       if (device) return device
     }
     return this.currentMode === 'none' ? { ...NONE_DEVICE } : undefined
+  }
+
+  /** A failed sign-in: logged (collapsed, access-log.ts), and counted toward the alarm. */
+  private failed(detail: string): void {
+    this.accessLog.write({ event: 'sign-in-failed', detail })
+    const now = this.now()
+    this.failedAt.push(now)
+    while (this.failedAt.length > 0 && now - (this.failedAt[0] ?? now) >= FAILURE_ALARM_WINDOW_MS) this.failedAt.shift()
+    // Only the newest FAILURE_ALARM_COUNT matter: the alarm asks whether that many fit in the window.
+    if (this.failedAt.length > FAILURE_ALARM_COUNT) this.failedAt.splice(0, this.failedAt.length - FAILURE_ALARM_COUNT)
+    if (this.failedAt.length < FAILURE_ALARM_COUNT || now - this.alarmedAt < FAILURE_ALARM_COOLDOWN_MS) return
+    this.alarmedAt = now
+    try {
+      this.alarm(failureAlarmText(this.failedAt.length))
+    } catch (err) {
+      // The notice failing must not fail the sign-in check that raised it.
+      this.log(`web access: the failed sign-in notice failed: ${errorText(err)}`)
+    }
   }
 
   /**
@@ -455,7 +580,7 @@ export class WebAuth {
     if (isOnce) mode = 'add'
     else if (isAccess && record) mode = 'link'
     else {
-      this.accessLog.write({ event: 'sign-in-failed', detail: 'link' })
+      this.failed('link')
       return { ok: false, status: 401, error: 'this link does not work any more' }
     }
     const added = this.devices.add(name, mode)
@@ -467,7 +592,7 @@ export class WebAuth {
       if (once?.start === true) this.accessLog.write({ event: 'start-link', device: added.device.id, name: added.device.name, detail: 'used' })
       this.once = undefined
     }
-    return { ok: true, device: added.device, cookie: added.cookie }
+    return { ok: true, device: added.device, cookie: added.cookie, key: added.key }
   }
 
   // --- password -----------------------------------------------------------------------------------
@@ -478,13 +603,22 @@ export class WebAuth {
   }
 
   /**
+   * Whether the password is known to be shorter than MIN_NETWORK_PASSWORD_LENGTH (set before that
+   * rule, or on a loopback-only desktop); false when it is long enough or not known yet.
+   */
+  passwordShort(): boolean {
+    return this.devices.password()?.long === false
+  }
+
+  /**
    * Sets or changes the password (the desktop). Hashed off the main thread, stored only as the
    * secret store's ciphertext; a change signs out every device that signed in with the old one.
+   * `minLength`: MIN_NETWORK_PASSWORD_LENGTH when others can reach the gateway (access-service.ts).
    * Never throws: a refusal is the reply's reason.
    */
-  setPassword(password: unknown): Promise<WebActionReply> {
+  setPassword(password: unknown, minLength = MIN_PASSWORD_LENGTH): Promise<WebActionReply> {
     return this.serial(async () => {
-      const problem = passwordProblem(password)
+      const problem = passwordProblem(password, minLength)
       if (problem !== undefined || typeof password !== 'string') return { ok: false, reason: problem ?? 'the password must be text' }
       let encoded: string
       let stored: string
@@ -496,7 +630,7 @@ export class WebAuth {
         return { ok: false, reason: `cannot store the password: ${errorText(err)}` }
       }
       const had = this.devices.password() !== undefined
-      this.devices.setPassword({ stored, createdAt: this.now() })
+      this.devices.setPassword({ stored, createdAt: this.now(), long: passwordLength(password) >= MIN_NETWORK_PASSWORD_LENGTH })
       this.passwordCache = { stored, encoded }
       this.passwordGeneration++
       this.accessLog.write({ event: 'password', detail: had ? 'changed' : 'set' })
@@ -528,16 +662,20 @@ export class WebAuth {
     // The hash took a while: the mode or the password may have changed, the client may be gone.
     if (this.currentMode !== 'password') return { ok: false, status: 409, error: 'sign-in with a password is off' }
     if (!matches || generation !== this.passwordGeneration) {
-      this.accessLog.write({ event: 'sign-in-failed', detail: 'password' })
+      this.failed('password')
       // The same answer with no password set or an unreadable one: a caller who is not signed in
       // must not learn whether a password exists (the time taken says nothing either, see above).
       // The cause is in the desktop's log (passwordHash).
       return { ok: false, status: 401, error: 'wrong password' }
     }
+    // A password set before the network length rule: its length is learned now (only whether it
+    // meets the rule is kept), so the settings can say when it is short.
+    const record = this.devices.password()
+    if (record !== undefined && record.long === undefined) this.devices.setPassword({ ...record, long: passwordLength(password) >= MIN_NETWORK_PASSWORD_LENGTH })
     if (cancelled?.()) return { ok: false, status: 499, error: 'the request is gone' }
     const added = this.devices.add(name, 'password')
     if (!added) return { ok: false, status: 503, error: 'too many devices; revoke some on the desktop' }
-    return { ok: true, device: added.device, cookie: added.cookie }
+    return { ok: true, device: added.device, cookie: added.cookie, key: added.key }
   }
 
   /** The stored hash, decrypted once per record; undefined with none set or an unreadable one (logged). */
@@ -626,7 +764,7 @@ export class WebAuth {
     // Store full: the allowed request stays, so a revoke on the desktop lets the next poll in.
     if (!added) return { ok: false, status: 503, error: 'too many devices; revoke some on the desktop' }
     this.dropAsk()
-    return { ok: true, poll: { state: 'allowed', device: { id: added.device.id, name: added.device.name } }, cookie: added.cookie }
+    return { ok: true, poll: { state: 'allowed', device: { id: added.device.id, name: added.device.name } }, cookie: added.cookie, key: added.key }
   }
 
   /**

@@ -1,7 +1,7 @@
 // What `ccc web` prints (design-web.md §9.4). The reply comes from whatever owns the socket, so every
 // field is checked for its type and text goes through the caller's `plain` (control characters out)
 // before it reaches a terminal: a device name is the browser's own text.
-import type { WebCliNotice, WebCliStatus, WebCredentialState, WebDeviceView, WebGatewayView } from '../shared/web-access'
+import { MIN_NETWORK_PASSWORD_LENGTH, type WebCliNotice, type WebCliStatus, type WebCredentialState, type WebDeviceView, type WebGatewayView } from '../shared/web-access'
 
 type Plain = (text: unknown) => string
 
@@ -66,7 +66,9 @@ function deviceLine(d: Partial<WebDeviceView>, plain: Plain): string {
 const NOTICE_KINDS: Record<string, string> = {
   'new-device': 'new device',
   revoked: 'plugin revoked',
-  update: 'update'
+  update: 'update',
+  'sign-in-failures': 'failed sign-ins',
+  'access-changed': 'access changed'
 }
 
 /** A core notice: when, what it is, its line; a new device also says whose sign-in `web-access.log` has. */
@@ -102,6 +104,7 @@ export function formatWebStatus(result: unknown, plain: Plain): string {
   }
   lines.push(`access link: ${credential(s.accessLink, 'made', 'not made yet', 'regenerate it')}`)
   lines.push(`password: ${credential(s.password, 'set', 'not set', 'set it again')}`)
+  if (s.passwordShort === true) lines.push(`  the password is shorter than ${MIN_NETWORK_PASSWORD_LENGTH} characters, too short for an address others reach: change it (ccc web password)`)
   const devices = Array.isArray(s.devices) ? (s.devices as Array<Partial<WebDeviceView>>) : []
   lines.push(devices.length === 0 ? 'devices: none signed in' : `devices: ${devices.length}`)
   for (const d of devices) lines.push(deviceLine(d, plain))

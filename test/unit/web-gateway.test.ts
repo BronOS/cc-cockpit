@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, sy
 import { Agent, request } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { checkServerIdentity, type PeerCertificate } from 'node:tls'
-import { createServer, type AddressInfo } from 'node:net'
+import { connect, createServer, type AddressInfo, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -19,10 +19,10 @@ import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
-import { MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type ServerProjects, type WsModule } from '../../src/main/web/gateway'
+import { CollapsedLog, MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type ServerProjects, type WsModule } from '../../src/main/web/gateway'
 import { openProjectFromWeb } from '../../src/main/web/open-project'
 import { webAccessOf } from '../../src/main/web/settings'
-import { CLOSE, SESSIONS_PATH, SIGN_IN_LINK_PATH } from '../../src/shared/web-protocol'
+import { CLOSE, DEVICE_KEY_HEADER, SESSIONS_PATH, SIGN_IN_LINK_PATH, WS_PROTOCOL } from '../../src/shared/web-protocol'
 import { countSessions } from '../../src/main/web/session-counts'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
@@ -804,6 +804,8 @@ describe('server mode: projects from the browser', () => {
     host: string
     origin: string
     cookie: string
+    /** The origin key the sign-in answered (auth.ts): sent as DEVICE_KEY_HEADER, as the page does. */
+    key: string
     logs: string[]
     opened: unknown[]
     auth: WebAuth
@@ -857,11 +859,12 @@ describe('server mode: projects from the browser', () => {
     })
     expect(res.status).toBe(200)
     const cookie = String(res.headers['set-cookie']).split(';')[0] ?? ''
-    return { port, host, origin, cookie, logs, opened, auth, devices }
+    const key = (JSON.parse(res.body) as { key: string }).key
+    return { port, host, origin, cookie, key, logs, opened, auth, devices }
   }
 
   const headers = (s: Signed, over: Record<string, string | undefined> = {}): Record<string, string> => {
-    const all: Record<string, string | undefined> = { Host: s.host, Origin: s.origin, Cookie: s.cookie, 'Content-Type': 'application/json', ...over }
+    const all: Record<string, string | undefined> = { Host: s.host, Origin: s.origin, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key, 'Content-Type': 'application/json', ...over }
     return Object.fromEntries(Object.entries(all).filter((e): e is [string, string] => e[1] !== undefined))
   }
 
@@ -871,7 +874,7 @@ describe('server mode: projects from the browser', () => {
       { id: 'r2', name: 'gone', path: '/work/gone', missing: true, secret: 'x' } as unknown as { id: string; name: string; path: string; missing: boolean }
     ]
     const s = await signedIn(true, () => recent)
-    const res = await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie } })
+    const res = await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(res.status).toBe(200)
     expect(JSON.parse(res.body)).toEqual({
       projects: [{ id: 'open1', name: 'open', path: '/work/open' }],
@@ -885,7 +888,7 @@ describe('server mode: projects from the browser', () => {
     await gateway?.stop()
 
     const desk = await signedIn(false)
-    expect(JSON.parse((await http(desk.port, { path: '/api/projects', headers: { Host: desk.host, Cookie: desk.cookie } })).body)).toEqual({
+    expect(JSON.parse((await http(desk.port, { path: '/api/projects', headers: { Host: desk.host, Cookie: desk.cookie, [DEVICE_KEY_HEADER]: desk.key } })).body)).toEqual({
       projects: [{ id: 'open1', name: 'open', path: '/work/open' }]
     })
   })
@@ -894,7 +897,7 @@ describe('server mode: projects from the browser', () => {
     const s = await signedIn(true, () => {
       throw new Error('registry gone')
     })
-    const res = await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie } })
+    const res = await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(res.status).toBe(200)
     expect(JSON.parse(res.body)).toMatchObject({ server: true, recent: [] })
     expect(res.body).not.toContain('registry gone')
@@ -949,8 +952,8 @@ describe('server mode: projects from the browser', () => {
     let checked!: () => void
     const firstCheck = new Promise<void>((resolve) => (checked = resolve))
     const authorize = s.auth.authorize.bind(s.auth)
-    vi.spyOn(s.auth, 'authorize').mockImplementation((cookie) => {
-      const device = authorize(cookie)
+    vi.spyOn(s.auth, 'authorize').mockImplementation((cookie, keys) => {
+      const device = authorize(cookie, keys)
       checked()
       return device
     })
@@ -1072,7 +1075,7 @@ describe('server mode: projects from the browser', () => {
         throw new Error('no passwd entry')
       }
     })
-    const body = JSON.parse((await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie } })).body) as Record<string, unknown>
+    const body = JSON.parse((await http(s.port, { path: '/api/projects', headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })).body) as Record<string, unknown>
     expect(body.recent).toEqual([
       { id: 'r1', name: 'one', path: '/work/one', missing: false, color: 'blue', lastOpenedAt: 5 },
       { id: 'r2', name: 'two', path: '/work/two', missing: false }
@@ -1135,7 +1138,7 @@ describe('server mode: projects from the browser', () => {
     expect((await post(s.port, { path: '/api/folders', headers: headers(s, { Cookie: undefined }), body })).status).toBe(401)
     expect((await post(s.port, { path: '/api/folders', headers: headers(s, { Cookie: 'ccc_device=forged' }), body })).status).toBe(401)
     // GET is not the route: it is a POST so the Origin check applies.
-    expect((await http(s.port, { path: '/api/folders', headers: { Host: s.host, Cookie: s.cookie } })).status).toBe(404)
+    expect((await http(s.port, { path: '/api/folders', headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })).status).toBe(404)
     for (const bad of [{ path: 'relative' }, { path: '/a\u0000b' }, { path: 3 }, { hidden: 'yes' }, [], null]) {
       const res = await post(s.port, { path: '/api/folders', headers: headers(s), body: JSON.stringify(bad) })
       expect(res.status, JSON.stringify(bad)).toBe(400)
@@ -1155,7 +1158,7 @@ describe('server mode: projects from the browser', () => {
 // A signed-in device as PROJECTS_PATH, GET only, 404 when main did not pass `sessionCounts` (a
 // desktop), and only three integers on the wire.
 describe('server mode: session counts', () => {
-  async function signedIn(sessionCounts?: GatewayDeps['sessionCounts']): Promise<{ port: number; host: string; origin: string; cookie: string; logs: string[] }> {
+  async function signedIn(sessionCounts?: GatewayDeps['sessionCounts']): Promise<{ port: number; host: string; origin: string; cookie: string; key: string; logs: string[] }> {
     const port = await freePort()
     const { gw, auth, logs } = make(sessionCounts ? { sessionCounts } : {})
     await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
@@ -1176,24 +1179,25 @@ describe('server mode: session counts', () => {
       req.end(JSON.stringify({ token: link.link.split('#t=')[1], name: 'Desktop' }))
     })
     expect(res.status).toBe(200)
-    return { port, host, origin, cookie: String(res.headers['set-cookie']).split(';')[0] ?? '', logs }
+    return { port, host, origin, cookie: String(res.headers['set-cookie']).split(';')[0] ?? '', key: (JSON.parse(res.body) as { key: string }).key, logs }
   }
 
   it('answers the counts to a signed-in device, no-store, and reads them afresh each time', async () => {
     let counts = { waiting: 2, working: 1, idle: 3 }
     const s = await signedIn(() => counts)
-    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(res.status).toBe(200)
     expect(res.headers['cache-control']).toBe('no-store')
     expect(JSON.parse(res.body)).toEqual({ waiting: 2, working: 1, idle: 3 })
     counts = { waiting: 0, working: 0, idle: 1 }
-    expect(JSON.parse((await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })).body)).toEqual(counts)
+    expect(JSON.parse((await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })).body)).toEqual(counts)
   })
 
   it('needs a device: no cookie or a forged one is 401 and the source is never read', async () => {
     const source = vi.fn(() => ({ waiting: 1, working: 0, idle: 0 }))
     const s = await signedIn(source)
-    const asks: Array<Record<string, string>> = [{ Host: s.host }, { Host: s.host, Cookie: 'ccc_device=forged' }]
+    // The cookie without its origin key too (it may have leaked to another port of this host).
+    const asks: Array<Record<string, string>> = [{ Host: s.host }, { Host: s.host, Cookie: 'ccc_device=forged' }, { Host: s.host, Cookie: s.cookie }]
     for (const headers of asks) {
       const res = await http(s.port, { path: SESSIONS_PATH, headers })
       expect(res.status).toBe(401)
@@ -1204,7 +1208,7 @@ describe('server mode: session counts', () => {
 
   it('is 404 off server mode (no sessionCounts), as an older server answers', async () => {
     const s = await signedIn()
-    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(res.status).toBe(404)
   })
 
@@ -1212,9 +1216,9 @@ describe('server mode: session counts', () => {
     const source = vi.fn(() => ({ waiting: 1, working: 0, idle: 0 }))
     const s = await signedIn(source)
     // A POST with the page's own Origin passes the Origin check and still finds no route.
-    const post = await http(s.port, { method: 'POST', path: SESSIONS_PATH, headers: { Host: s.host, Origin: s.origin, Cookie: s.cookie } })
+    const post = await http(s.port, { method: 'POST', path: SESSIONS_PATH, headers: { Host: s.host, Origin: s.origin, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(post.status).toBe(404)
-    const put = await http(s.port, { method: 'PUT', path: SESSIONS_PATH, headers: { Host: s.host, Origin: s.origin, Cookie: s.cookie } })
+    const put = await http(s.port, { method: 'PUT', path: SESSIONS_PATH, headers: { Host: s.host, Origin: s.origin, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(put.status).toBe(405)
     expect(source).not.toHaveBeenCalled()
   })
@@ -1225,10 +1229,10 @@ describe('server mode: session counts', () => {
       if (fail) throw new Error('registry gone /secret/path')
       return { waiting: -1, working: 1.5, idle: 'x', title: 'leak' } as unknown as { waiting: number; working: number; idle: number }
     })
-    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    const res = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(JSON.parse(res.body)).toEqual({ waiting: 0, working: 0, idle: 0 })
     fail = true
-    const failed = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie } })
+    const failed = await http(s.port, { path: SESSIONS_PATH, headers: { Host: s.host, Cookie: s.cookie, [DEVICE_KEY_HEADER]: s.key } })
     expect(failed.status).toBe(500)
     expect(failed.body).not.toContain('secret')
     expect(s.logs.some((l) => l.includes('registry gone'))).toBe(true)
@@ -1255,5 +1259,96 @@ describe('countSessions (the status mapping)', () => {
     registry.applyHook('t2', 'Stop', {})
     expect(countSessions(registry.list())).toEqual({ waiting: 1, working: 1, idle: 0 })
     registry.dispose()
+  })
+})
+
+// Review finding (connection-cap DoS): a connection must send its first request within
+// FIRST_REQUEST_MS, and connections that have not signed in have a budget of their own, so idle or
+// anonymous ones cannot take the places of signed-in views.
+describe('connection limits before sign-in', () => {
+  /** A raw TCP connection; resolves once the server has closed it, with whether that happened. */
+  function rawSocket(port: number): { socket: Socket; closed: Promise<void>; open: Promise<void> } {
+    const socket = connect(port, '127.0.0.1')
+    socket.on('error', () => undefined)
+    const closed = new Promise<void>((resolve) => socket.on('close', () => resolve()))
+    const open = new Promise<void>((resolve) => socket.on('connect', () => resolve()))
+    return { socket, closed, open }
+  }
+
+  it('drops a connection that sends no request in time; one that sends a request is served', async () => {
+    const { port, logs } = await listening({}, { firstRequestMs: 150 })
+    const silent = rawSocket(port)
+    await silent.open
+    const started = Date.now()
+    await silent.closed
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(logs.filter((l) => l.includes('no request within'))).toHaveLength(1)
+    expect((await http(port, { headers: { Host: `127.0.0.1:${port}` } })).status).toBe(200)
+  })
+
+  it('past the unauthenticated budget a new connection is closed at once; a signed-in socket still gets in', async () => {
+    const { gw, port, logs } = await listening({}, { maxUnauthenticated: 3, firstRequestMs: 60_000 })
+    gw.setSocketHandler(() => undefined)
+    const held = [rawSocket(port), rawSocket(port), rawSocket(port)]
+    await Promise.all(held.map((h) => h.open))
+    // Let the server count them.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const extra = rawSocket(port)
+    await extra.closed
+    const another = rawSocket(port)
+    await another.closed
+    // One line for the run, not one per connection.
+    expect(logs.filter((l) => l.includes('already waiting to sign in'))).toHaveLength(1)
+    // Freeing a place lets the next one in; an upgraded view (None here) leaves the budget at once.
+    held[0]?.socket.destroy()
+    await held[0]?.closed
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const host = `127.0.0.1:${port}`
+    const client = new wsModule.WebSocket(`ws://${host}/ws`, [WS_PROTOCOL], { origin: `http://${host}` })
+    await new Promise<void>((resolve, reject) => {
+      client.on('open', () => resolve())
+      client.on('error', reject)
+    })
+    expect(client.protocol).toBe(WS_PROTOCOL)
+    // The view's place was given back: another connection fits.
+    const next = rawSocket(port)
+    await next.open
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(next.socket.destroyed).toBe(false)
+    next.socket.destroy()
+    client.close()
+    for (const h of held) h.socket.destroy()
+  })
+})
+
+// Review finding: refused-Origin log lines were one per request, so a page hammering the gateway
+// filled the log. Collapsed like failed sign-ins (access-log.ts): one line, then one count line.
+describe('refused origins are logged collapsed', () => {
+  it('a run of refusals is the first line and one count, whatever origins they carry', async () => {
+    const { port, logs } = await listening({ mode: 'link' })
+    const host = `127.0.0.1:${port}`
+    for (let i = 0; i < 5; i++) {
+      expect((await http(port, { method: 'POST', path: '/auth/link', headers: { Host: host, Origin: `http://evil${i}.example` } })).status).toBe(403)
+    }
+    expect(await upgrade(port, { Host: host, Origin: 'http://evil.example' })).toBe(403)
+    expect(logs.filter((l) => l.includes('origin'))).toEqual(['web access: POST refused, origin "http://evil0.example"'])
+    await gateway?.stop()
+    expect(logs.filter((l) => l.includes('origin'))).toEqual([
+      'web access: POST refused, origin "http://evil0.example"',
+      'web access: 5 more requests refused for their origin in the 10 minutes after that'
+    ])
+  })
+
+  it('CollapsedLog writes the count when its window ends', async () => {
+    const lines: string[] = []
+    const log = new CollapsedLog((m) => lines.push(m), 30)
+    log.write('k', 'things', 'first')
+    log.write('k', 'things', 'second')
+    log.write('other', 'others', 'another kind')
+    expect(lines).toEqual(['first', 'another kind'])
+    await vi.waitFor(() => expect(lines).toEqual(['first', 'another kind', 'web access: 1 more things in the 0 minutes after that']))
+    log.write('k', 'things', 'a new run')
+    expect(lines.at(-1)).toBe('a new run')
+    log.flush()
   })
 })

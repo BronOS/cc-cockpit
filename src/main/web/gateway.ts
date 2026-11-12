@@ -18,7 +18,12 @@
 // Behind those, sign-in (auth.ts, plan Tasks 5 and 27): the web shell (`/` and `/assets/…`,
 // shell-files.ts, plan Task 8) and the sign-in routes (link, password, desktop confirm) are open,
 // everything else (the upgrade first, the project list) needs a device (`WebAuth.authorize`: the
-// device cookie, or None mode).
+// device cookie with its origin key, or None mode). The key comes as DEVICE_KEY_HEADER on a request,
+// or as an offered subprotocol on the upgrade (auth.ts), never in a cookie.
+// What anyone can hold before signing in is bounded: a connection must send its first request within
+// FIRST_REQUEST_MS, and connections not yet signed in have a budget of their own
+// (MAX_UNAUTHENTICATED), below the listener's MAX_CONNECTIONS, so a flood of idle or anonymous
+// connections cannot take the places of the signed-in views.
 // An upgrade that passes goes to the socket handler main installs (the wire protocol,
 // connection.ts); with none installed it is refused, so the gateway never hands out a socket
 // nobody speaks the protocol on.
@@ -32,7 +37,7 @@
 import { open, readFile, type FileHandle } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
-import type { AddressInfo } from 'node:net'
+import type { AddressInfo, Socket } from 'node:net'
 import { hostname, networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -42,12 +47,15 @@ import {
   CLOSE,
   CONFIRM_ASK_PATH,
   CONFIRM_POLL_PATH,
+  DEVICE_KEY_HEADER,
   FOLDERS_PATH,
   PROJECTS_PATH,
   SESSION_PATH,
   SESSIONS_PATH,
   SIGN_IN_LINK_PATH,
   SIGN_IN_PASSWORD_PATH,
+  WS_KEY_PROTOCOL_PREFIX,
+  WS_PROTOCOL,
   type WebConfirmTicket,
   type WebFoldersReply,
   type WebFoldersRequest,
@@ -57,14 +65,15 @@ import {
   type WebRecentProject,
   type WebServerHost,
   type WebSessionCounts,
-  type WebSessionReply
+  type WebSessionReply,
+  type WebSignInReply
 } from '../../shared/web-protocol'
 import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
-import type { AccessLog } from './access-log'
-import { deviceCookie, type SignInResult, type WebAuth } from './auth'
+import { FAILED_SIGN_IN_WINDOW_MS, type AccessLog } from './access-log'
+import { deviceCookie, offeredKeys, type SignInResult, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp, type HostRule, type OriginRule } from './checks'
-import type { WebDevice } from './devices'
+import { MAX_OFFERED_KEYS, type WebDevice } from './devices'
 import { parseFoldersBody } from './list-folders'
 import { parseOpenProjectBody, type OpenProjectOutcome } from './open-project'
 import { pageNotFound, PluginPages, type PageAnswer } from './plugin-pages'
@@ -92,6 +101,19 @@ const HEADERS_TIMEOUT_MS = 10_000
 const REQUEST_TIMEOUT_MS = 30_000
 const IDLE_SOCKET_MS = 60_000
 const MAX_CONNECTIONS = 256
+/**
+ * A new connection (after its TLS handshake, which has the same bound) must send a request this soon
+ * or it is dropped: Node's own `headersTimeout` is only checked every 30 s, and the idle timeout is a
+ * minute, so without this a silent connection held its place for up to a minute.
+ */
+export const FIRST_REQUEST_MS = 10_000
+/**
+ * Connections that have not signed in (no request of theirs carried a device yet) may hold at most
+ * this many places; past it a new one is closed at once. Well below MAX_CONNECTIONS, so the views of
+ * signed-in devices (sockets that stay open for hours) always find room. A browser opens about six
+ * connections to a host, so this is room for several signing in at once.
+ */
+export const MAX_UNAUTHENTICATED = 64
 
 // Largest frame a view may send (design-web.md §3, protocol.ts): `ws` closes the socket (1009) on
 // a bigger one before it is buffered whole.
@@ -153,6 +175,9 @@ export interface GatewayDeps {
   pages?: PluginPages
   /** The ping interval (HEARTBEAT_MS); tests shorten it. */
   heartbeatMs?: number
+  /** FIRST_REQUEST_MS and MAX_UNAUTHENTICATED; tests shorten them. */
+  firstRequestMs?: number
+  maxUnauthenticated?: number
 }
 
 /** What a browser may do with projects when there is no desktop (open-project.ts does the open). */
@@ -198,11 +223,12 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-/** What a sign-in route answers: a status, a JSON body, and the device cookie's value when one was made. */
+/** What a sign-in route answers: a status, a JSON body, and the device cookie's value and origin key when one was made. */
 interface SignInAnswer {
   status: number
   body: unknown
   cookie?: string
+  key?: string
 }
 
 /**
@@ -259,6 +285,64 @@ async function readPem(path: string, what: string): Promise<string> {
   }
 }
 
+/**
+ * A run of the same refusal is one line and a count (like access-log.ts's failed sign-ins): the
+ * first line of a run is written at once, the ones after it within `windowMs` only counted, and one
+ * line with the count is written when the window ends (a timer, or `flush` when the gateway stops).
+ * Per kind, not per value: a sender varying its Origin must not get a line each.
+ */
+export class CollapsedLog {
+  private readonly runs = new Map<string, { what: string; more: number; timer: ReturnType<typeof setTimeout> }>()
+
+  constructor(
+    private readonly log: (message: string) => void,
+    private readonly windowMs = FAILED_SIGN_IN_WINDOW_MS
+  ) {}
+
+  /** `kind` keys the run; `what` names its repeats in the count line ("requests refused for their origin"). */
+  write(kind: string, what: string, line: string): void {
+    const run = this.runs.get(kind)
+    if (run) {
+      run.more++
+      return
+    }
+    this.log(line)
+    const timer = setTimeout(() => this.end(kind), this.windowMs)
+    timer.unref?.()
+    this.runs.set(kind, { what, more: 0, timer })
+  }
+
+  /** Ends every run now (the gateway stops), writing their counts. */
+  flush(): void {
+    for (const kind of [...this.runs.keys()]) this.end(kind)
+  }
+
+  private end(kind: string): void {
+    const run = this.runs.get(kind)
+    if (!run) return
+    this.runs.delete(kind)
+    clearTimeout(run.timer)
+    if (run.more > 0) this.log(`web access: ${run.more} more ${run.what} in the ${Math.round(this.windowMs / 60_000)} minutes after that`)
+  }
+}
+
+/** The origin keys an upgrade offers as subprotocols (`cc-key.<key>`), at most MAX_OFFERED_KEYS. */
+function protocolKeys(header: string | undefined): string[] {
+  if (typeof header !== 'string' || header.length > 4096) return []
+  const out: string[] = []
+  for (const part of header.split(',')) {
+    const p = part.trim()
+    if (p.startsWith(WS_KEY_PROTOCOL_PREFIX) && p.length > WS_KEY_PROTOCOL_PREFIX.length) out.push(p.slice(WS_KEY_PROTOCOL_PREFIX.length))
+    if (out.length === MAX_OFFERED_KEYS) break
+  }
+  return out
+}
+
+/** A refused-origin log line's origin: quoted and cut, never the whole header. */
+function originText(origin: string | undefined): string {
+  return JSON.stringify((origin ?? 'none').slice(0, 100))
+}
+
 function refuseUpgrade(socket: Duplex, status: string): void {
   // The socket may already be gone (the client hung up); writing to it then must not throw.
   if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
@@ -282,8 +366,15 @@ export class WebGateway {
   private heartbeat: ReturnType<typeof setInterval> | undefined
   /** Told after a socket is handed out or closes (the desktop's connected-devices indicator). */
   private readonly connectionListeners = new Set<() => void>()
+  /**
+   * Connections that have not signed in yet (MAX_UNAUTHENTICATED), each with its first-request timer
+   * (cleared by its first request). A connection leaves when a request on it carries a device, or closes.
+   */
+  private readonly unauthenticated = new Map<Socket, ReturnType<typeof setTimeout> | undefined>()
+  private readonly refusals: CollapsedLog
 
   constructor(private readonly deps: GatewayDeps) {
+    this.refusals = new CollapsedLog((message) => deps.log(message))
     deps.auth.devices.onRevoked((ids) => {
       const gone = new Set(ids)
       // Its plugin paths die at once too (design-web.md §4.1): not only with its sockets' views.
@@ -441,9 +532,16 @@ export class WebGateway {
     // which fails the start the same way.
     const tls = plan.tls ? { cert: await readPem(plan.tls.certPath, 'certificate'), key: await readPem(plan.tls.keyPath, 'key') } : undefined
     this.use(plan)
-    this.wss = new ws.WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
+    this.wss = new ws.WebSocketServer({
+      noServer: true,
+      maxPayload: MAX_FRAME_BYTES,
+      // The page offers WS_PROTOCOL and its origin key (`cc-key.<key>`); only WS_PROTOCOL is answered
+      // (a browser fails a socket whose answer names none of what it offered), never the key.
+      handleProtocols: (protocols: Set<string>) => (protocols.has(WS_PROTOCOL) ? WS_PROTOCOL : false)
+    })
     const handle = (req: IncomingMessage, res: ServerResponse): void => this.request(req, res)
-    const server = tls ? createHttpsServer(tls, handle) : createServer(handle)
+    // A TLS handshake gets the first request's bound (Node's default is two minutes).
+    const server = tls ? createHttpsServer({ ...tls, handshakeTimeout: this.deps.firstRequestMs ?? FIRST_REQUEST_MS }, handle) : createServer(handle)
     // Bounds for what anyone past the Host check can hold before signing in (the shell, its assets
     // and plugin files stream from open file handles): a request must arrive in time, a stalled
     // download is dropped, and the listener takes a bounded number of sockets (upgraded views
@@ -452,6 +550,9 @@ export class WebGateway {
     server.requestTimeout = REQUEST_TIMEOUT_MS
     server.timeout = IDLE_SOCKET_MS
     server.maxConnections = MAX_CONNECTIONS
+    // The socket a request arrives on: the TLS socket for https (made after the handshake), the TCP
+    // one for http. Counted from there (the handshake has its own bound above).
+    server.on(tls ? 'secureConnection' : 'connection', (socket: Socket) => this.admit(socket))
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(req, socket, head))
     // A client error (a malformed request line) is answered by Node; never let it reach the app.
     server.on('clientError', (_err, socket: Duplex) => refuseUpgrade(socket, '400 Bad Request'))
@@ -486,6 +587,9 @@ export class WebGateway {
     this.wss = undefined
     this.plan = undefined
     this.hosts = new Set()
+    for (const timer of this.unauthenticated.values()) clearTimeout(timer)
+    this.unauthenticated.clear()
+    this.refusals.flush()
     // Every plugin path dies with the listener; views coming back get fresh ones in `ready`.
     this.deps.pages?.tokens.clear()
     if (wss) {
@@ -518,6 +622,51 @@ export class WebGateway {
     })
   }
 
+  /**
+   * A new connection: dropped at once past the unauthenticated budget, else given FIRST_REQUEST_MS to
+   * send its first request. The refusals are logged collapsed: a flood is one line and a count.
+   */
+  private admit(socket: Socket): void {
+    const budget = this.deps.maxUnauthenticated ?? MAX_UNAUTHENTICATED
+    const firstRequestMs = this.deps.firstRequestMs ?? FIRST_REQUEST_MS
+    if (this.unauthenticated.size >= budget) {
+      this.refusals.write('budget', 'connections dropped', `web access: a connection was dropped, ${budget} are already waiting to sign in`)
+      socket.destroy()
+      return
+    }
+    const timer = setTimeout(() => {
+      // Cleared by the first request; this is only the guard for a timer that fired on its way out.
+      if (this.unauthenticated.get(socket) !== timer) return
+      this.refusals.write('silent', 'silent connections dropped', `web access: a connection was dropped, no request within ${firstRequestMs / 1000} s`)
+      socket.destroy()
+    }, firstRequestMs)
+    timer.unref()
+    this.unauthenticated.set(socket, timer)
+    socket.once('close', () => {
+      clearTimeout(this.unauthenticated.get(socket))
+      this.unauthenticated.delete(socket)
+    })
+  }
+
+  /** A request arrived on `socket`: its first-request timer is done (the request has its own bounds). */
+  private requested(socket: Socket): void {
+    const timer = this.unauthenticated.get(socket)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.unauthenticated.set(socket, undefined)
+  }
+
+  /** A request on `socket` carried a device (or made one): it no longer counts against MAX_UNAUTHENTICATED. */
+  private trusted(socket: Socket): void {
+    clearTimeout(this.unauthenticated.get(socket))
+    this.unauthenticated.delete(socket)
+  }
+
+  /** The device a request signs in (auth.ts authorize): its cookie, with the origin key from its header. */
+  private deviceOf(req: IncomingMessage): WebDevice | undefined {
+    return this.deps.auth.authorize(req.headers.cookie, offeredKeys(req.headers[DEVICE_KEY_HEADER]))
+  }
+
   /** One heartbeat (HEARTBEAT_MS): drop a socket that did not answer the last ping, ping the rest. */
   private beat(): void {
     for (const ws of this.sockets.keys()) {
@@ -546,14 +695,14 @@ export class WebGateway {
     status: number,
     type: string,
     body: string | Buffer,
-    extra: Record<string, string> = {}
+    extra: Record<string, string | string[]> = {}
   ): void {
     this.writeHead(res, host, status, type, extra)
     res.end(body)
   }
 
   /** The headers every answer carries (see `send`); a streamed answer writes its body after. */
-  private writeHead(res: ServerResponse, host: string | undefined, status: number, type: string, extra: Record<string, string> = {}): void {
+  private writeHead(res: ServerResponse, host: string | undefined, status: number, type: string, extra: Record<string, string | string[]> = {}): void {
     res.writeHead(status, {
       // Only the hashed assets override it (`IMMUTABLE`); the page, its answers and errors never.
       'Cache-Control': 'no-store',
@@ -567,6 +716,7 @@ export class WebGateway {
   }
 
   private request(req: IncomingMessage, res: ServerResponse): void {
+    this.requested(req.socket)
     const host = checkHost(req.headers.host, this.hosts, this.hostRule())
     if (!host) return this.send(res, undefined, 403, 'text/plain; charset=utf-8', 'unknown host')
     const method = req.method ?? 'GET'
@@ -575,7 +725,7 @@ export class WebGateway {
     // Every state-changing request, before its route is even looked up: a foreign page must learn
     // nothing from which of its posts would have existed.
     if (!safe && !checkOrigin(req.headers.origin, host, this.originRule())) {
-      this.deps.log(`web access: ${method} refused, origin ${JSON.stringify((req.headers.origin ?? 'none').slice(0, 100))}`)
+      this.refusals.write('origin', 'requests refused for their origin', `web access: ${method} refused, origin ${originText(req.headers.origin)}`)
       return this.send(res, host, 403, 'text/plain; charset=utf-8', 'origin not allowed')
     }
     const path = (req.url ?? '/').split('?')[0] ?? '/'
@@ -603,9 +753,10 @@ export class WebGateway {
         if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { error: 'sign-in failed' })
       })
     }
-    // Everything else needs a device: a request without a valid cookie learns nothing more.
-    const device = this.deps.auth.authorize(req.headers.cookie)
+    // Everything else needs a device: a request without a valid cookie and its key learns nothing more.
+    const device = this.deviceOf(req)
     if (!device) return this.json(res, host, 401, { error: 'not signed in' })
+    this.trusted(req.socket)
     if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, this.projects())
     if (method === 'GET' && path === SESSIONS_PATH && this.deps.sessionCounts) return this.sessionCounts(res, host, this.deps.sessionCounts)
     const serverProjects = this.deps.serverProjects
@@ -681,6 +832,8 @@ export class WebGateway {
   private async page(path: string, method: string, res: ServerResponse, host: string): Promise<void> {
     const pages = this.deps.pages
     const answer = pages ? await pages.serve(path, method, this.frameOrigins(host)) : pageNotFound()
+    // A live path token is a credential (plugin-pages.ts): its connection is a signed-in device's.
+    if (answer.status === 200) this.trusted(res.req.socket)
     if (!res.destroyed) this.writePage(res, method, answer)
   }
 
@@ -752,7 +905,7 @@ export class WebGateway {
   private async listFolders(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects): Promise<void> {
     const read = await this.readJson(req, res, host)
     if (!read) return
-    if (!this.deps.auth.authorize(req.headers.cookie)) return this.json(res, host, 401, { error: 'not signed in' })
+    if (!this.deviceOf(req)) return this.json(res, host, 401, { error: 'not signed in' })
     const request = parseFoldersBody(read.body)
     if ('error' in request) return this.json(res, host, 400, request)
     if (res.destroyed) return
@@ -772,12 +925,12 @@ export class WebGateway {
   private async openProject(req: IncomingMessage, res: ServerResponse, host: string, projects: ServerProjects): Promise<void> {
     const read = await this.readJson(req, res, host)
     if (!read) return
-    const device = this.deps.auth.authorize(req.headers.cookie)
+    const device = this.deviceOf(req)
     if (!device) return this.json(res, host, 401, { error: 'not signed in' })
     const request = parseOpenProjectBody(read.body)
     if ('error' in request) return this.json(res, host, 400, request)
     if (res.destroyed) return
-    const reply = await projects.open(request, () => this.deps.auth.authorize(req.headers.cookie) !== undefined)
+    const reply = await projects.open(request, () => this.deviceOf(req) !== undefined)
     if ('unauthorized' in reply) return this.json(res, host, 401, { error: 'not signed in' })
     if ('error' in reply) return this.json(res, host, 400, { error: reply.error })
     // Which device did what to which project, for the server's log (no path: the id names it).
@@ -809,12 +962,14 @@ export class WebGateway {
     }
   }
 
-  private json(res: ServerResponse, host: string, status: number, value: unknown, extra: Record<string, string> = {}): void {
+  private json(res: ServerResponse, host: string, status: number, value: unknown, extra: Record<string, string | string[]> = {}): void {
     this.send(res, host, status, 'application/json; charset=utf-8', JSON.stringify(value), extra)
   }
 
+  /** Whether this browser is signed in: its cookie with its origin key (a cookie alone answers `device: null`). */
   private session(req: IncomingMessage, res: ServerResponse, host: string): void {
-    const device = this.deps.auth.authorize(req.headers.cookie)
+    const device = this.deviceOf(req)
+    if (device) this.trusted(req.socket)
     const reply: WebSessionReply = { mode: this.deps.auth.mode ?? 'link', device: device ? { id: device.id, name: device.name } : null }
     this.json(res, host, 200, reply)
   }
@@ -828,8 +983,11 @@ export class WebGateway {
    */
   private signInRoute(path: string): ((body: unknown, cancelled: () => boolean) => Promise<SignInAnswer>) | undefined {
     const auth = this.deps.auth
-    const device = (result: SignInResult): SignInAnswer =>
-      result.ok ? { status: 200, body: { device: { id: result.device.id, name: result.device.name } }, cookie: result.cookie } : { status: result.status, body: { error: result.error } }
+    const device = (result: SignInResult): SignInAnswer => {
+      if (!result.ok) return { status: result.status, body: { error: result.error } }
+      const body: WebSignInReply = { device: { id: result.device.id, name: result.device.name }, key: result.key }
+      return { status: 200, body, cookie: result.cookie, key: result.key }
+    }
     switch (path) {
       case SIGN_IN_LINK_PATH:
         return async (body, cancelled) => device(await auth.signInWithToken(body, cancelled))
@@ -846,7 +1004,9 @@ export class WebGateway {
         return async (body) => {
           const result = auth.pollConfirm(body)
           if (!result.ok) return { status: result.status, body: { error: result.error } }
-          return result.cookie === undefined ? { status: 200, body: result.poll } : { status: 200, body: result.poll, cookie: result.cookie }
+          if (result.cookie === undefined || result.key === undefined) return { status: 200, body: result.poll }
+          // Allowed: the poll's answer carries the origin key as a sign-in's does.
+          return { status: 200, body: { ...result.poll, key: result.key }, cookie: result.cookie, key: result.key }
         }
       default:
         return undefined
@@ -865,7 +1025,10 @@ export class WebGateway {
     if (!read) return
     const answer = await route(read.body, () => res.destroyed)
     if (res.destroyed) return
-    this.json(res, host, answer.status, answer.body, answer.cookie === undefined ? {} : { 'Set-Cookie': deviceCookie(answer.cookie, origin) })
+    if (answer.cookie === undefined || answer.key === undefined) return this.json(res, host, answer.status, answer.body)
+    this.trusted(req.socket)
+    // The origin key is in the body only (WebSignInReply): a cookie would reach other ports as the device cookie does.
+    this.json(res, host, answer.status, answer.body, { 'Set-Cookie': deviceCookie(answer.cookie, origin) })
   }
 
   /** Server mode also takes the loopback literals on any port (checks.ts checkHost, design-remote-desktop.md §5.3). */
@@ -880,15 +1043,18 @@ export class WebGateway {
 
   private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     socket.on('error', () => socket.destroy())
+    this.requested(req.socket)
     const host = checkHost(req.headers.host, this.hosts, this.hostRule())
     if (!host) return refuseUpgrade(socket, '403 Forbidden')
     if (!checkOrigin(req.headers.origin, host, this.originRule())) {
-      this.deps.log(`web access: upgrade refused, origin ${JSON.stringify((req.headers.origin ?? 'none').slice(0, 100))}`)
+      this.refusals.write('origin', 'requests refused for their origin', `web access: upgrade refused, origin ${originText(req.headers.origin)}`)
       return refuseUpgrade(socket, '403 Forbidden')
     }
     if ((req.url ?? '').split('?')[0] !== WS_PATH) return refuseUpgrade(socket, '404 Not Found')
-    const device = this.deps.auth.authorize(req.headers.cookie)
+    // The origin key, offered by the page as a subprotocol (a WebSocket takes no headers).
+    const device = this.deps.auth.authorize(req.headers.cookie, protocolKeys(req.headers['sec-websocket-protocol']))
     if (!device) return refuseUpgrade(socket, '401 Unauthorized')
+    this.trusted(req.socket)
     const handler = this.handler
     const wss = this.wss
     if (!handler || !wss) return refuseUpgrade(socket, '401 Unauthorized')

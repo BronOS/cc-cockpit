@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { SettingsProject } from '../../shared/ipc'
+import { isServerView, isWebShell } from '../shell-kind'
 import { FolderIcon } from './icons'
 import { Empty, PageHeader } from './ui'
 import { useAction } from './use-action'
@@ -67,13 +68,16 @@ export function ProjectsPage(): React.JSX.Element {
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
-                      disabled={busy !== null || p.missing}
-                      onClick={() => act('open', () => window.cockpit.invoke('settings.projectOpen', { id: p.id }))}
-                    >
-                      Open
-                    </button>
+                    {/* A desktop's browser view may not open windows on the host's screen (main refuses, `adapted`). */}
+                    {(!isWebShell() || isServerView()) && (
+                      <button
+                        type="button"
+                        disabled={busy !== null || p.missing}
+                        onClick={() => act('open', () => window.cockpit.invoke('settings.projectOpen', { id: p.id }))}
+                      >
+                        Open
+                      </button>
+                    )}
                     {p.missing && !p.open && (
                       <button
                         type="button"

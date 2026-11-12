@@ -20,6 +20,7 @@ import {
   DESKTOP_REFUSAL,
   registerWebHandlers,
   SHELL_REVOKE_REASON,
+  shellChangeNotice,
   STOP_AFTER_REPLY_MS,
   webHandlerDeps,
   webHandlers,
@@ -66,6 +67,7 @@ const STATUS: WebCliStatus = {
   secrets: { store: 'keyfile', unavailable: null, otherMode: 0, replaced: 0 },
   accessLink: 'set',
   password: 'unset',
+  passwordShort: false,
   devices: [],
   notices: []
 }
@@ -121,6 +123,8 @@ const VIEW = {
   devices: [],
   risks: [],
   passwordSet: false,
+  passwordMinLength: 8,
+  passwordShort: false,
   credentials: { accessLink: 'unset' as const, password: 'unset' as const }
 }
 
@@ -217,12 +221,14 @@ describe("webHandlerDeps (main's wiring)", () => {
     const secrets = { store: 'fake', unavailable: null, otherMode: 0, replaced: 0 } as const
     const notice = { at: 1, kind: 'update', text: 'x' } as const
     const lines: unknown[] = []
+    const raised: string[] = []
     const deps = webHandlerDeps({
       server: true,
       access,
       secrets: async () => secrets,
       notices: () => [notice],
       accessLog: { write: (entry) => void lines.push(entry) },
+      notice: (text) => void raised.push(text),
       quit: () => void quits++,
       setTimer: (fn, ms) => void timers.push({ fn, ms })
     })
@@ -240,6 +246,8 @@ describe("webHandlerDeps (main's wiring)", () => {
       ['regenerate']
     ])
     expect(lines).toEqual([{ event: 'shell', detail: 'ccc web mode link' }])
+    // Every change from the shell is a core notice too (server mode: a stdout line and every browser's in-page notice).
+    expect(raised).toEqual([shellChangeNotice('ccc web mode link')])
     deps.stop()
     expect(quits).toBe(0)
     expect(timers.map((t) => t.ms)).toEqual([STOP_AFTER_REPLY_MS])
@@ -411,6 +419,7 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
       secrets,
       accessLink: 'set',
       password: 'set',
+      passwordShort: false,
       devices: [expect.objectContaining({ id: signedIn.device.id, name: 'Phone', mode: 'link', connected: true })],
       notices: []
     })
@@ -597,6 +606,18 @@ describe('ccc web: the CLI', () => {
     await fakeApp(() => ({ ok: true, result: { ...STATUS, notices } }))
     expect(await runCommand({ kind: 'web-status', json: true }, { CC_COCKPIT_SOCK: sock }, CWD, io)).toBe(0)
     expect(JSON.parse(out)).toMatchObject({ notices })
+  })
+
+  it('names the failed sign-ins and shell-change notices, and hints at a password too short for a reachable address', () => {
+    const notices: WebCliStatus['notices'] = [
+      { kind: 'sign-in-failures', text: '20 failed sign-ins in 10 minutes', at: 0 },
+      { kind: 'access-changed', text: 'Web access was changed from the server shell: password set', at: 1000 }
+    ]
+    const text = formatWebStatus({ ...STATUS, notices }, String)
+    expect(text).toContain('\tfailed sign-ins\t20 failed sign-ins')
+    expect(text).toContain('\taccess changed\tWeb access was changed')
+    expect(formatWebStatus(STATUS, String)).not.toContain('shorter than')
+    expect(formatWebStatus({ ...STATUS, passwordShort: true }, String)).toMatch(/password is shorter than 12 characters.*ccc web password/)
   })
 
   it('prints the other-mode and replaced counts, and the credentials that cannot be read', () => {
@@ -825,8 +846,10 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
     const password = 'Tr0ub4dor&3-secret'
     expect(await refusal('web.mode', { mode: 'password' })).toBe('set a password first')
     const short = await refusal('web.password', { password: 'abc' })
-    expect(short).toMatch(/at least 8 characters/)
+    // Server mode: others reach it, so 12 (password.ts MIN_NETWORK_PASSWORD_LENGTH).
+    expect(short).toMatch(/at least 12 characters/)
     expect(short).not.toContain('abc')
+    expect(await refusal('web.password', { password: 'elevenchars' })).toMatch(/at least 12 characters/)
     const reply = await call('web.password', { password })
     expect(reply).toEqual({ set: true, mode: 'link' })
     expect(await call('web.mode', { mode: 'password' })).toEqual({ mode: 'password' })

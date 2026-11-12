@@ -93,7 +93,9 @@ describe('REMOTE_CLASS drift', () => {
     'notices.click',
     'notices.dismiss',
     // A plugin's OAuth sign-in settled by the pasted redirect (§9.9): a server's browsers only.
-    'oauth.paste'
+    'oauth.paste',
+    // Opening a known project makes a window on the host's screen: a server's browsers only.
+    'settings.projectOpen'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })

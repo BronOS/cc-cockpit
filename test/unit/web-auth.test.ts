@@ -20,8 +20,14 @@ import {
   cookieValues,
   DEVICE_COOKIE,
   deviceCookie,
+  FAILURE_ALARM_COOLDOWN_MS,
+  FAILURE_ALARM_COUNT,
+  FAILURE_ALARM_WINDOW_MS,
+  failureAlarmText,
   linkOrigin,
+  MAX_COOKIE_VALUES,
   NONE_DEVICE,
+  offeredKeys,
   WebAuth
 } from '../../src/main/web/auth'
 import { DeviceStore, MAX_DEVICES } from '../../src/main/web/devices'
@@ -29,6 +35,8 @@ import { nodeScrypt, parsePasswordHash, PasswordHasher, SCRYPT_DEFAULTS, type Sc
 import { WebGateway, type SocketHandler, type WsModule } from '../../src/main/web/gateway'
 import { webAccessOf } from '../../src/main/web/settings'
 import { writeFakeShellDir } from '../fakes/fake-shell-dir'
+import { DEVICE_KEY_HEADER, socketProtocols } from '../../src/shared/web-protocol'
+import { desktopAgentSuffix } from '../../src/shared/remote-agent'
 import { createElement, type FunctionComponent } from 'react'
 import type { WebConfirmAsk } from '../../src/shared/web-access'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -59,7 +67,14 @@ function cheapHasher(over: { scrypt?: ScryptFn; maxConcurrent?: number } = {}): 
 }
 
 function auth(
-  over: { secrets?: SecretStore; limiter?: AttemptLimiter; hasher?: PasswordHasher; notify?: (text: string) => void; log?: (m: string) => void } = {}
+  over: {
+    secrets?: SecretStore
+    limiter?: AttemptLimiter
+    hasher?: PasswordHasher
+    notify?: (text: string) => void
+    alarm?: (text: string) => void
+    log?: (m: string) => void
+  } = {}
 ): WebAuth {
   const a = new WebAuth({
     devices,
@@ -69,7 +84,8 @@ function auth(
     now: () => clock,
     log: over.log ?? (() => undefined),
     ...(over.limiter ? { limiter: over.limiter } : {}),
-    ...(over.notify ? { notify: over.notify } : {})
+    ...(over.notify ? { notify: over.notify } : {}),
+    ...(over.alarm ? { alarm: over.alarm } : {})
   })
   a.setMode('link')
   return a
@@ -102,6 +118,21 @@ describe('helpers', () => {
     expect(cookieValues(undefined, DEVICE_COOKIE)).toEqual([])
     expect(cookieValues('a=1; ccc_device=x.y; b=2;ccc_device=z.w', DEVICE_COOKIE)).toEqual(['x.y', 'z.w'])
     expect(cookieValues('xccc_device=1; ccc_devicex=2', DEVICE_COOKIE)).toEqual([])
+  })
+
+  it('reads every value up to MAX_COOKIE_VALUES, so planted same-name cookies cannot crowd out the real one', () => {
+    const planted = Array.from({ length: 50 }, (_, i) => `${DEVICE_COOKIE}=junk${i}.x`).join('; ')
+    expect(cookieValues(`${planted}; ${DEVICE_COOKIE}=real.one`, DEVICE_COOKIE).at(-1)).toBe('real.one')
+    const flood = Array.from({ length: MAX_COOKIE_VALUES + 5 }, () => `${DEVICE_COOKIE}=j.x`).join('; ')
+    expect(cookieValues(flood, DEVICE_COOKIE)).toHaveLength(MAX_COOKIE_VALUES)
+  })
+
+  it('offers the header\'s key; a repeated, empty or oversize header offers none', () => {
+    expect(offeredKeys(undefined)).toEqual([])
+    expect(offeredKeys(' k1 ')).toEqual(['k1'])
+    expect(offeredKeys(['a', 'b'])).toEqual([])
+    expect(offeredKeys('')).toEqual([])
+    expect(offeredKeys('x'.repeat(300))).toEqual([])
   })
 
   it('cookie flags per origin: HttpOnly, SameSite=Strict, Secure only on https', () => {
@@ -148,7 +179,7 @@ describe('access link', () => {
     const res = await a.signInWithToken({ token, name: 'Phone' })
     expect(res).toMatchObject({ ok: true, device: { name: 'Phone', mode: 'link' } })
     if (!res.ok) return
-    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)?.id).toBe(res.device.id)
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`, [res.key])?.id).toBe(res.device.id)
   })
 
   it('refuses a wrong token, a malformed body, and any link sign-in outside link mode', async () => {
@@ -174,8 +205,8 @@ describe('access link', () => {
     if (!res.ok || !viaLink.ok || !viaOnce.ok) throw new Error('setup')
     expect(tokenOf(res.link)).not.toBe(old)
     expect(await a.signInWithToken({ token: old })).toMatchObject({ ok: false, status: 401 })
-    expect(a.authorize(`${DEVICE_COOKIE}=${viaLink.cookie}`)).toBeUndefined()
-    expect(a.authorize(`${DEVICE_COOKIE}=${viaOnce.cookie}`)?.name).toBe('added device')
+    expect(a.authorize(`${DEVICE_COOKIE}=${viaLink.cookie}`, [viaLink.key])).toBeUndefined()
+    expect(a.authorize(`${DEVICE_COOKIE}=${viaOnce.cookie}`, [viaOnce.key])?.name).toBe('added device')
     expect(await a.signInWithToken({ token: tokenOf(res.link) })).toMatchObject({ ok: true })
   })
 
@@ -195,7 +226,7 @@ describe('access link', () => {
     expect(await a.accessLink(ORIGIN)).toMatchObject({ ok: false, reason: expect.stringContaining('cannot read') })
     expect(await a.regenerate(ORIGIN)).toEqual({ ok: false, reason: 'no keyring' })
     if (!viaLink.ok) throw new Error('setup')
-    expect(a.authorize(`${DEVICE_COOKIE}=${viaLink.cookie}`)).toBeUndefined()
+    expect(a.authorize(`${DEVICE_COOKIE}=${viaLink.cookie}`, [viaLink.key])).toBeUndefined()
     expect(await a.signInWithToken({ token: old })).toMatchObject({ ok: false, status: 401 })
     expect(await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link) })).toMatchObject({ ok: true })
   })
@@ -240,7 +271,7 @@ describe('credentials stored by the other mode (design-web.md §9.5)', () => {
     server.setMode('password')
     expect(server.credentialStates()).toEqual({ accessLink: 'other-mode', password: 'other-mode' })
     // The device is still in (a cookie is checked by hash), and so is a sign-in with the token.
-    expect(server.authorize(`${DEVICE_COOKIE}=${device.cookie}`)?.name).toBe('Phone')
+    expect(server.authorize(`${DEVICE_COOKIE}=${device.cookie}`, [device.key])?.name).toBe('Phone')
     server.setMode('link')
     expect(await server.signInWithToken({ token })).toMatchObject({ ok: true })
     // The link cannot be shown: the reason names the other store and the remedy.
@@ -362,20 +393,34 @@ describe('authorize', () => {
     expect(a.authorize(undefined)).toEqual(NONE_DEVICE)
     expect(a.authorize(`${DEVICE_COOKIE}=garbage`)).toEqual(NONE_DEVICE)
     if (!res.ok) throw new Error('setup')
-    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)?.name).toBe('Mac')
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`, [res.key])?.name).toBe('Mac')
   })
 
   it('an expired or revoked device is refused; a planted same-name cookie does not sign the person out', async () => {
     const a = auth()
     const res = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link) })
     if (!res.ok) throw new Error('setup')
-    expect(a.authorize(`${DEVICE_COOKIE}=planted.value; ${DEVICE_COOKIE}=${res.cookie}`)?.id).toBe(res.device.id)
+    expect(a.authorize(`${DEVICE_COOKIE}=planted.value; ${DEVICE_COOKIE}=${res.cookie}`, [res.key])?.id).toBe(res.device.id)
     clock += 31 * 24 * 60 * 60 * 1000
-    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)).toBeUndefined()
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`, [res.key])).toBeUndefined()
     const again = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link) })
     if (!again.ok) throw new Error('setup')
     devices.revoke(again.device.id)
-    expect(a.authorize(`${DEVICE_COOKIE}=${again.cookie}`)).toBeUndefined()
+    expect(a.authorize(`${DEVICE_COOKIE}=${again.cookie}`, [again.key])).toBeUndefined()
+  })
+
+  it('the device cookie alone is no device (it may have leaked to another port of this host); in None mode it is the anonymous caller', async () => {
+    const a = auth()
+    const res = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'Phone' })
+    if (!res.ok) throw new Error('setup')
+    expect(res.key).toHaveLength(43)
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)).toBeUndefined()
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`, ['wrong'])).toBeUndefined()
+    // A cookie with the key's name is no key: the key travels only by script, never as a cookie.
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}; ccc_device_key=${res.key}`)).toBeUndefined()
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`, [res.key])?.name).toBe('Phone')
+    a.setMode('none')
+    expect(a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)).toEqual(NONE_DEVICE)
   })
 
   it('logs a mode change, not the first mode', () => {
@@ -429,6 +474,36 @@ describe('AttemptLimiter', () => {
     await limiter.run(() => ({ ok: false }))
     await limiter.run(() => ({ ok: false }))
     expect(time.slept).toEqual([500])
+  })
+
+  it('sustained failures slow it down step by step to a cap; a success does not undo that, a quiet spell does', async () => {
+    const time = fakeTime()
+    const limiter = new AttemptLimiter({ capacity: 0, delayMs: 1000, growEvery: 3, maxSlowdown: 4, quietMs: 60_000, now: time.now, sleep: time.sleep })
+    for (let i = 0; i < 12; i++) await limiter.run(() => ({ ok: false }))
+    expect(time.slept).toEqual([1000, 1000, 1000, 2000, 2000, 2000, 4000, 4000, 4000, 4000, 4000, 4000])
+    expect(limiter.slowdown).toBe(4)
+    await limiter.run(() => ({ ok: true }))
+    expect(time.slept.at(-1)).toBe(4000)
+    expect(limiter.slowdown).toBe(4)
+    time.advance(60_000)
+    await limiter.run(() => ({ ok: false }))
+    expect(time.slept.at(-1)).toBe(1000)
+  })
+
+  it('the refill slows down with it: a sequential guesser gets no more tries from waiting', async () => {
+    const time = fakeTime()
+    const limiter = new AttemptLimiter({ capacity: 1, refillMs: 1000, delayMs: 10, growEvery: 1, maxSlowdown: 4, quietMs: 1e9, now: time.now, sleep: time.sleep })
+    await limiter.run(() => ({ ok: false }))
+    expect(limiter.slowdown).toBe(2)
+    // One refill period at normal pace is not enough any more: the next one waits its turn.
+    time.advance(1000)
+    await limiter.run(() => ({ ok: false }))
+    expect(time.slept).toEqual([20])
+    expect(limiter.slowdown).toBe(4)
+    // Four periods give the token back.
+    time.advance(4000)
+    await limiter.run(() => ({ ok: false }))
+    expect(time.slept).toEqual([20])
   })
 
   it('answers busy past the queue cap instead of holding requests', async () => {
@@ -532,6 +607,18 @@ function signInPost(port: number, host: string, origin: string, body: unknown, t
   })
 }
 
+/** The origin key a sign-in answered in its body (auth.ts). */
+function keyFrom(answer: Answer): string {
+  const key = (JSON.parse(answer.body) as { key?: unknown }).key
+  if (typeof key !== 'string') throw new Error('no key')
+  return key
+}
+
+/** The subprotocol header a page sends on the upgrade (web-protocol.ts socketProtocols). */
+function protocolsWith(key: string): string {
+  return socketProtocols(key).join(', ')
+}
+
 function cookieFrom(answer: Answer): string {
   const set = answer.headers['set-cookie']
   const first = Array.isArray(set) ? set[0] : set
@@ -551,13 +638,37 @@ describe('gateway: sign-in over HTTP', () => {
     expect(set).not.toContain('Secure')
     expect(res.headers['cache-control']).toBe('no-store')
     const cookie = cookieFrom(res)
-    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie } })
+    const key = keyFrom(res)
+    // The key is in the body only, never a cookie, for a plain browser.
+    expect(Array.isArray(res.headers['set-cookie']) ? res.headers['set-cookie'] : [res.headers['set-cookie']]).toHaveLength(1)
+    expect(set).not.toContain(key)
+    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie, [DEVICE_KEY_HEADER]: key } })
     expect(JSON.parse(session.body)).toMatchObject({ mode: 'link', device: { name: 'Phone' } })
     expect(JSON.parse((await http(port, { path: '/auth/session', headers: { Host: host } })).body)).toEqual({ mode: 'link', device: null })
+    // The cookie alone (another port of the same host got it) is signed out.
+    expect(JSON.parse((await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie } })).body)).toEqual({ mode: 'link', device: null })
     const handler = vi.fn<SocketHandler>((ws) => ws.close())
     gw.setSocketHandler(handler)
-    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie })).toBe(101)
+    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie })).toBe(401)
+    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie, 'Sec-WebSocket-Protocol': protocolsWith('A'.repeat(43)) })).toBe(401)
+    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie, 'Sec-WebSocket-Protocol': protocolsWith(key) })).toBe(101)
     expect(handler.mock.calls[0]?.[2]).toMatchObject({ name: 'Phone', mode: 'link' })
+  })
+
+  it('the key is answered in the body only, never as a cookie, the desktop app\'s remote window included', async () => {
+    const { a, port, host, origin } = await served()
+    for (const ua of [`Mozilla/5.0 ${desktopAgentSuffix('0.17.0', 'laptop')}`, 'Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0']) {
+      const res = await http(port, {
+        method: 'POST',
+        path: '/auth/link',
+        headers: { Host: host, Origin: origin, 'Content-Type': 'application/json', 'User-Agent': ua },
+        body: JSON.stringify({ token: tokenOf(a.addDeviceLink(ORIGIN).link) })
+      })
+      expect(res.status).toBe(200)
+      const set = res.headers['set-cookie'] as string[]
+      expect(set.map((c) => c.split('=')[0])).toEqual([DEVICE_COOKIE])
+      expect(set.join('\n')).not.toContain(keyFrom(res))
+    }
   })
 
   it('behind an https proxy the cookie is Secure', async () => {
@@ -644,8 +755,8 @@ describe('gateway: sign-in over HTTP', () => {
   })
 })
 
-async function openSocket(host: string, origin: string, cookie?: string): Promise<{ closed: Promise<void> }> {
-  const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin, ...(cookie ? { headers: { Cookie: cookie } } : {}) })
+async function openSocket(host: string, origin: string, cookie?: string, key?: string): Promise<{ closed: Promise<void> }> {
+  const client = new wsModule.WebSocket(`ws://${host}/ws`, socketProtocols(key), { origin, ...(cookie ? { headers: { Cookie: cookie } } : {}) })
   const closed = new Promise<void>((resolve) => client.on('close', () => resolve()))
   await new Promise<void>((resolve, reject) => {
     client.on('open', () => resolve())
@@ -661,8 +772,8 @@ describe('gateway: sockets by device', () => {
     const one = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'one' })
     const two = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'two' })
     if (!one.ok || !two.ok) throw new Error('setup')
-    const s1 = await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
-    const s2 = await openSocket(host, origin, `${DEVICE_COOKIE}=${two.cookie}`)
+    const s1 = await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`, one.key)
+    const s2 = await openSocket(host, origin, `${DEVICE_COOKIE}=${two.cookie}`, two.key)
     let twoClosed = false
     void s2.closed.then(() => (twoClosed = true))
     devices.revoke(one.device.id)
@@ -682,9 +793,9 @@ describe('gateway: sockets by device', () => {
     const one = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'one' })
     const two = await a.signInWithToken({ token: tokenOf(a.addDeviceLink(ORIGIN).link), name: 'two' })
     if (!one.ok || !two.ok) throw new Error('setup')
-    const s1 = await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
-    await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
-    await openSocket(host, origin, `${DEVICE_COOKIE}=${two.cookie}`)
+    const s1 = await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`, one.key)
+    await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`, one.key)
+    await openSocket(host, origin, `${DEVICE_COOKIE}=${two.cookie}`, two.key)
     expect(gw.connections()).toEqual(new Map([[one.device.id, 2], [two.device.id, 1]]))
     expect(gw.disconnectDevice('nobody')).toBe(0)
     expect(gw.disconnectDevice(one.device.id)).toBe(2)
@@ -692,7 +803,7 @@ describe('gateway: sockets by device', () => {
     await vi.waitFor(() => expect(gw.connections()).toEqual(new Map([[two.device.id, 1]])))
     // Still signed in: the cookie opens a socket again.
     expect(devices.list().map((d) => d.name).sort()).toEqual(['one', 'two'])
-    await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`)
+    await openSocket(host, origin, `${DEVICE_COOKIE}=${one.cookie}`, one.key)
     expect(gw.connections().size).toBe(2)
     expect(changes.length).toBeGreaterThanOrEqual(5)
     off()
@@ -705,6 +816,45 @@ describe('gateway: sockets by device', () => {
     await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
     await anon.closed
     expect(accessLog.recent().some((e) => e.event === 'mode' && e.detail === 'none -> link')).toBe(true)
+  })
+})
+
+describe('failed sign-in alarm', () => {
+  it('raises one core notice when failures pile up within the window, none again within the cooldown', async () => {
+    const alarms: string[] = []
+    const a = auth({ alarm: (t) => alarms.push(t), limiter: new AttemptLimiter({ capacity: 10_000 }) })
+    for (let i = 0; i < FAILURE_ALARM_COUNT - 1; i++) await a.signInWithToken({ token: 'nope' })
+    expect(alarms).toEqual([])
+    await a.signInWithToken({ token: 'nope' })
+    expect(alarms).toEqual([failureAlarmText(FAILURE_ALARM_COUNT)])
+    expect(alarms[0]).not.toContain('nope')
+    for (let i = 0; i < FAILURE_ALARM_COUNT * 2; i++) await a.signInWithToken({ token: 'nope' })
+    expect(alarms).toHaveLength(1)
+    clock += FAILURE_ALARM_COOLDOWN_MS
+    for (let i = 0; i < FAILURE_ALARM_COUNT; i++) await a.signInWithToken({ token: 'nope' })
+    expect(alarms).toHaveLength(2)
+  })
+
+  it('failures spread wider than the window raise none; a throwing notice does not fail the check', async () => {
+    const a = auth({
+      alarm: () => {
+        throw new Error('notice broke')
+      },
+      limiter: new AttemptLimiter({ capacity: 10_000 })
+    })
+    for (let i = 0; i < FAILURE_ALARM_COUNT * 2; i++) {
+      clock += FAILURE_ALARM_WINDOW_MS / (FAILURE_ALARM_COUNT / 2)
+      expect(await a.signInWithToken({ token: 'nope' })).toMatchObject({ ok: false, status: 401 })
+    }
+    const counting: string[] = []
+    const b = auth({ alarm: (t) => counting.push(t), limiter: new AttemptLimiter({ capacity: 10_000 }) })
+    for (let i = 0; i < FAILURE_ALARM_COUNT * 2; i++) {
+      clock += FAILURE_ALARM_WINDOW_MS / (FAILURE_ALARM_COUNT / 2)
+      await b.signInWithToken({ token: 'nope' })
+    }
+    expect(counting).toEqual([])
+    // Concentrated, the throwing one is still answered.
+    for (let i = 0; i < FAILURE_ALARM_COUNT; i++) expect(await a.signInWithToken({ token: 'nope' })).toMatchObject({ ok: false, status: 401 })
   })
 })
 
@@ -722,7 +872,9 @@ describe('the access log', () => {
     const once = tokenOf(a.addDeviceLink(ORIGIN).link)
     secretsSeen.push(once)
     await a.signInWithToken({ token: once })
-    const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin, headers: { Cookie: cookie } })
+    const key = keyFrom(res)
+    secretsSeen.push(key)
+    const client = new wsModule.WebSocket(`ws://${host}/ws`, socketProtocols(key), { origin, headers: { Cookie: cookie } })
     await new Promise<void>((resolve) => client.on('open', () => resolve()))
     client.send('rm -rf / # a terminal line')
     client.close()
@@ -893,7 +1045,7 @@ describe('password sign-in', () => {
     expect(file).not.toContain('scrypt$')
     const res = await a.signInWithPassword({ password: 'correct horse', name: 'Phone' })
     expect(res).toMatchObject({ ok: true, device: { name: 'Phone', mode: 'password' } })
-    expect(res.ok && a.authorize(`${DEVICE_COOKIE}=${res.cookie}`)?.name).toBe('Phone')
+    expect(res.ok && a.authorize(`${DEVICE_COOKIE}=${res.cookie}`, [res.key])?.name).toBe('Phone')
     expect(accessLog.recent().map((e) => [e.event, e.detail])).toContainEqual(['password', 'set'])
   })
 
@@ -925,6 +1077,28 @@ describe('password sign-in', () => {
     })
     expect(await broken.signInWithPassword({ password: 'correct horse' })).toEqual({ ok: false, status: 401, error: 'wrong password' })
     expect(logged.some((m) => m.includes('cannot read the password: keychain locked'))).toBe(true)
+  })
+
+  it('a reachable gateway asks 12 characters; whether it is that long is kept, and learned for an older password', async () => {
+    const a = passwordAuth()
+    expect(await a.setPassword('elevenchars', 12)).toEqual({ ok: false, reason: 'the password needs at least 12 characters' })
+    expect(a.hasPassword()).toBe(false)
+    expect(await a.setPassword('elevenchars')).toEqual({ ok: true })
+    expect(a.passwordShort()).toBe(true)
+    expect(devices.password()?.long).toBe(false)
+    expect(await a.setPassword('twelve chars', 12)).toEqual({ ok: true })
+    expect(a.passwordShort()).toBe(false)
+    // Only the bit is on disk, never the length.
+    expect(readFileSync(join(dir, 'web-access.json'), 'utf8')).not.toContain('"length"')
+    // A record from before the rule: unknown until the next good sign-in, which learns it.
+    const older = { ...(devices.password() ?? { stored: '', createdAt: 0 }) }
+    delete older.long
+    devices.setPassword(older)
+    expect(a.passwordShort()).toBe(false)
+    expect(await a.signInWithPassword({ password: 'wrong horse!' })).toMatchObject({ ok: false })
+    expect(devices.password()?.long).toBeUndefined()
+    expect(await a.signInWithPassword({ password: 'twelve chars' })).toMatchObject({ ok: true })
+    expect(devices.password()?.long).toBe(true)
   })
 
   it('refuses a short password, and without a keychain stores none', async () => {
@@ -1011,7 +1185,7 @@ describe('desktop confirm', () => {
     expect(a.pollConfirm({ ticket: 'x'.repeat(43) })).toEqual({ ok: true, poll: { state: 'gone' } })
     const collected = a.pollConfirm({ ticket: r.ticket })
     expect(collected).toMatchObject({ ok: true, poll: { state: 'allowed', device: { name: 'Pixel <b>9</b>' } } })
-    expect(collected.ok && collected.cookie && a.authorize(`${DEVICE_COOKIE}=${collected.cookie}`)?.mode).toBe('confirm')
+    expect(collected.ok && collected.cookie && a.authorize(`${DEVICE_COOKIE}=${collected.cookie}`, [collected.key ?? ''])?.mode).toBe('confirm')
     expect(a.pollConfirm({ ticket: r.ticket })).toEqual({ ok: true, poll: { state: 'gone' } })
     expect(changes).toBeGreaterThanOrEqual(2)
     // The log has the ask and the answer, never the code or the ticket.
@@ -1126,8 +1300,9 @@ describe('gateway: password and desktop-confirm routes', () => {
     const res = await post(port, host, origin, '/auth/password', { password: 'correct horse', name: 'Phone' })
     expect(res.status).toBe(200)
     const cookie = cookieFrom(res)
-    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie })).toBe(401) // no socket handler installed
-    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie } })
+    const key = keyFrom(res)
+    expect(await upgrade(port, { Host: host, Origin: origin, Cookie: cookie, 'Sec-WebSocket-Protocol': protocolsWith(key) })).toBe(401) // no socket handler installed
+    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie, [DEVICE_KEY_HEADER]: key } })
     expect(JSON.parse(session.body)).toMatchObject({ mode: 'password', device: { name: 'Phone' } })
   })
 
@@ -1146,7 +1321,7 @@ describe('gateway: password and desktop-confirm routes', () => {
     const allowed = await post(port, host, origin, '/auth/confirm/poll', { ticket })
     expect(JSON.parse(allowed.body)).toMatchObject({ state: 'allowed', device: { name: 'Phone' } })
     const cookie = cookieFrom(allowed)
-    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie } })
+    const session = await http(port, { path: '/auth/session', headers: { Host: host, Cookie: cookie, [DEVICE_KEY_HEADER]: keyFrom(allowed) } })
     expect(JSON.parse(session.body)).toMatchObject({ mode: 'confirm', device: { name: 'Phone' } })
   })
 
