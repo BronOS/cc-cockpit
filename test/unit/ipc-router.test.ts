@@ -18,6 +18,7 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
+  registerWebviewHandlers,
   webUrlOf,
   type ProjectSettingsHandlerDeps,
   type SettingsHandlerDeps,
@@ -38,6 +39,7 @@ import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
 import { REMOTE_SECRETS_UNAVAILABLE_TEXT, type WebAccessIndicator, type WebAccessView } from '../../src/shared/web-access'
 import type { ProjectView } from '../../src/shared/types'
 import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
+import { REMOTE_CLASS } from '../../src/shared/ipc'
 
 type Listener = (event: IpcEventLike, ...args: unknown[]) => unknown
 
@@ -2295,5 +2297,134 @@ describe('oauth.paste', () => {
     const { ipc, calls } = paste(true)
     await expect(ipc.invoke('oauth.paste', 13, [PASTE])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
+  })
+})
+
+// design-web-browser.md §3.2 (plan 20261111-streamed-webviews.md Task 4): a server's browser views
+// report their webview panels and ask "Fit to this screen". `adapted`: only from a remote view, only
+// in server mode, the panel resolved in the caller's own project, the window and view main's.
+describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
+  const A_CTX = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+  const B_CTX = { kind: 'project', windowId: 2, projectId: PROJECT_B } as const
+  const place = { panelKey: 'a.one/view', width: 800, height: 600, visible: true, hidden: false }
+
+  function webviewSetup(options: { server?: boolean; viewers?: boolean } = {}): {
+    ipc: FakeIpcMain
+    router: IpcRouter
+    calls: unknown[][]
+    open: Map<number, string>
+  } {
+    const { ipc, router, open } = setup()
+    const calls: unknown[][] = []
+    registerWebviewHandlers(router, {
+      // Project A has the webview panel a.one/view; project B has none.
+      panel: (projectId, panelKey) => (projectId === PROJECT_A && panelKey === 'a.one/view' ? { pluginId: 'a.one', panelId: 'view' } : undefined),
+      views: {
+        setPlacement: (...args) => void calls.push(['placement', ...args]),
+        back: () => {},
+        forward: () => {},
+        reload: () => {},
+        current: () => ({ url: '', title: '' })
+      },
+      server: options.server ?? true,
+      ...(options.viewers === false
+        ? {}
+        : {
+            viewers: {
+              report: (panel, viewId, report) => void calls.push(['report', panel, viewId, report]),
+              claimOwner: (panel, viewId) => void calls.push(['claim', panel, viewId]),
+              leave: (windowId, viewId, panelKey) => void calls.push(['leave', windowId, viewId, panelKey])
+            }
+          })
+    })
+    return { ipc, router, calls, open }
+  }
+
+  it('are adapted', () => {
+    expect(REMOTE_CLASS['webviews.place']).toBe('adapted')
+    expect(REMOTE_CLASS['webviews.fit']).toBe('adapted')
+    // The desktop's own placement stays the host's.
+    expect(REMOTE_CLASS['webviews.placement']).toBe('no')
+  })
+
+  it("passes a server browser's report on with main's window, panel and view, never the payload's", async () => {
+    const { router, calls } = webviewSetup()
+    const forged = { ...place, windowId: 2, viewId: 'web:99', pluginId: 'x', panelId: 'y', projectId: PROJECT_B }
+    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.place', forged)
+    // Sizes go on as sent: the viewers clamp them (webview-viewers.ts).
+    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.place', { ...place, width: 0, height: 1e9, hidden: true })
+    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.fit', { panelKey: 'a.one/view', viewId: 'web:4' })
+    const panel = { windowId: 1, pluginId: 'a.one', panelId: 'view' }
+    expect(calls).toEqual([
+      ['report', panel, 'web:3', { width: 800, height: 600, visible: true, hidden: false }],
+      ['report', panel, 'web:3', { width: 0, height: 1e9, visible: true, hidden: true }],
+      ['claim', panel, 'web:3']
+    ])
+  })
+
+  it('refuses the desktop page and the hidden page, and a browser outside server mode', async () => {
+    const server = webviewSetup()
+    // webContents 11 is window 1's own page: the desktop's, or in server mode the hidden page.
+    await expect(server.ipc.invoke('webviews.place', 11, [place])).rejects.toThrow(/only a browser view of a server/)
+    await expect(server.ipc.invoke('webviews.fit', 11, [{ panelKey: 'a.one/view' }])).rejects.toThrow(/only a browser view of a server/)
+    expect(server.calls).toEqual([])
+
+    const desktop = webviewSetup({ server: false })
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)).rejects.toThrow(/only a browser view of a server/)
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(
+      /only a browser view of a server/
+    )
+    await expect(desktop.ipc.invoke('webviews.place', 11, [place])).rejects.toThrow(/only a browser view of a server/)
+    expect(desktop.calls).toEqual([])
+
+    // Wired without viewers: refused too (fail closed).
+    const none = webviewSetup({ viewers: false })
+    await expect(none.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)).rejects.toThrow(/only a browser view of a server/)
+  })
+
+  it('checks the payload: finite numbers and booleans', async () => {
+    const { router, calls } = webviewSetup()
+    const caller = webCaller(A_CTX, 'web:1')
+    for (const bad of [
+      { ...place, width: Number.NaN },
+      { ...place, height: Infinity },
+      { ...place, width: -Infinity },
+      { ...place, width: '800' },
+      { ...place, height: undefined }
+    ]) {
+      await expect(router.dispatch(caller, 'webviews.place', bad)).rejects.toThrow(/finite numbers/)
+    }
+    await expect(router.dispatch(caller, 'webviews.place', { ...place, visible: 'yes' })).rejects.toThrow(/booleans/)
+    await expect(router.dispatch(caller, 'webviews.place', { ...place, hidden: 1 })).rejects.toThrow(/booleans/)
+    await expect(router.dispatch(caller, 'webviews.place', 'nope')).rejects.toThrow(/bad payload/)
+    await expect(router.dispatch(caller, 'webviews.fit', null)).rejects.toThrow(/bad payload/)
+    expect(calls).toEqual([])
+  })
+
+  it("a view of another window naming the key reaches only its own window: refused, and only its own entry may leave", async () => {
+    const { router, calls } = webviewSetup()
+    // Project B has no such panel: refused; the unmount path touches B's window and this view only.
+    await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.place', place)).rejects.toThrow(/not a webview panel of this project/)
+    await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(
+      /not a webview panel of this project/
+    )
+    // A key that is not a webview panel of the caller's own project (a core panel, a made-up one).
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', { ...place, panelKey: 'core/sessions' })).rejects.toThrow(
+      /not a webview panel/
+    )
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', { ...place, panelKey: 42 })).rejects.toThrow(/not a webview panel/)
+    expect(calls).toEqual([
+      ['leave', 2, 'web:5', 'a.one/view'],
+      ['leave', 1, 'web:1', 'core/sessions']
+    ])
+  })
+
+  it('refuses a browser whose window closed', async () => {
+    const { router, calls, open } = webviewSetup()
+    await router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)
+    open.delete(1)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)).rejects.toThrow(/refused/)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(/refused/)
+    expect(calls).toHaveLength(1)
   })
 })

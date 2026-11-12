@@ -1313,6 +1313,20 @@ export interface IpcInvokeMap {
   'webviews.step': { req: { panelKey: string; step: 'back' | 'forward' | 'reload' }; res: void }
   /** The page the view shows now, for a toolbar that just mounted (later: `webviews.navigated`). */
   'webviews.current': { req: { panelKey: string }; res: WebviewPageInfo }
+  /**
+   * Server mode, a browser view only (design-web-browser.md §3.2): the panel's placeholder size in
+   * CSS px (main clamps it to [64, 4096]), whether the panel is mounted and on screen in this view
+   * (`visible`; a shell layer over it does not count: the canvas is a page layer, not a native
+   * view) and whether the browser tab is in the background (`hidden`, `document.hidden`). Sent on
+   * mount, on every resize and visibility change, and `visible: false` on unmount. The view becomes
+   * a viewer of the panel (it gets frames) while visible, not hidden and with an area.
+   */
+  'webviews.place': {
+    req: { panelKey: string; width: number; height: number; visible: boolean; hidden: boolean }
+    res: void
+  }
+  /** Server mode, a browser view only: "Fit to this screen", the page takes this viewer's size. */
+  'webviews.fit': { req: { panelKey: string }; res: void }
 
   // Tabs. All are scoped to the sender's project: a tab id that belongs to another project is
   // treated as unknown.
@@ -1694,6 +1708,8 @@ export const INVOKE_CHANNELS = [
   'webviews.placement',
   'webviews.step',
   'webviews.current',
+  'webviews.place',
+  'webviews.fit',
   'tabs.list',
   'tabs.create',
   'tabs.commands',
@@ -1999,6 +2015,12 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'webviews.step': 'no',
   'webviews.current': 'no',
   'webviews.navigated': 'no',
+  // Server mode's streamed webviews (design-web-browser.md §3.2): a browser view's own placement and
+  // "Fit to this screen". Taken only when main runs as a server and the caller is a remote view
+  // (main's flag and the view main bound), the panel key resolved through the caller's own window's
+  // layout; the desktop page and the hidden page are refused (they place native views, or none).
+  'webviews.place': 'adapted',
+  'webviews.fit': 'adapted',
 
   // Tabs and terminals. Input from a remote view is the person typing (`typed` and the send gate
   // apply unchanged, Task 16); the flag is the person's, and a remote view is the person.

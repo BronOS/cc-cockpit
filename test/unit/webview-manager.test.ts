@@ -1131,19 +1131,28 @@ describe('server mode: off-screen views', () => {
     expect(server.has(WIN, 'a.one', 'home')).toBe(true)
   })
 
-  it('forgets deferred targets and viewers with the plugin and the window', async () => {
+  it('forgets deferred targets with the plugin and the window, viewers with the window only', async () => {
     await server.navigate(owner(), 'https://example.com/')
     server.destroyPlugin(WIN, 'a.one')
     expect(server.hasDeferred(WIN, 'a.one', 'view')).toBe(false)
     server.setViewed(WIN, 'a.one', 'view', true)
     expect(views).toEqual([])
-    // The viewer went with the plugin: a navigate after it is deferred again.
+    // Viewers are the browsers' (Task 4, webview-viewers.ts), not the plugin's: a browser still
+    // showing the panel says nothing new when the plugin reloads, so its next navigate loads now.
     server.setViewed(WIN, 'a.one', 'other', true)
     server.destroyPlugin(WIN, 'a.one')
     await server.navigate(owner('other'), 'https://example.com/')
-    expect(server.hasDeferred(WIN, 'a.one', 'other')).toBe(true)
-    server.closeWindow(WIN)
     expect(server.hasDeferred(WIN, 'a.one', 'other')).toBe(false)
+    expect(server.has(WIN, 'a.one', 'other')).toBe(true)
+    // With no viewer it is deferred; the window closing forgets it and the viewers.
+    await server.navigate(owner('third'), 'https://example.com/')
+    expect(server.hasDeferred(WIN, 'a.one', 'third')).toBe(true)
+    server.closeWindow(WIN)
+    expect(server.hasDeferred(WIN, 'a.one', 'third')).toBe(false)
+    expect(views.filter((v) => !v.destroyed)).toEqual([])
+    await server.navigate(owner('other'), 'https://example.com/')
+    expect(server.hasDeferred(WIN, 'a.one', 'other')).toBe(true)
+    views.length = 0
     // A window that is not open (closed, or never a project window) gets no viewer.
     openWindows.delete(WIN)
     server.setViewed(WIN, 'a.one', 'other', true)

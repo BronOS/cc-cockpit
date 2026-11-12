@@ -76,6 +76,7 @@ import { ElectronWebviewFactory } from './webview/electron-webview'
 import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-offscreen-webview'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
 import { webviewChord, WebviewManager, type WebviewViewFactory } from './webview/webview-manager'
+import { WebviewViewers } from './webview/webview-viewers'
 import {
   chordOfInput,
   OverlayManager,
@@ -720,6 +721,7 @@ function start(server: boolean): void {
       overlays.closeWindow(windowId)
       // Its webview panels' views close too, and their preview tokens stop serving.
       webviews.closeWindow(windowId)
+      webviewViewers.closeWindow(windowId)
       // A plugin's close waiting on this window's dialog is answered: not closed by it.
       closeAsks.windowClosed(windowId)
       linkAsks.windowClosed(windowId)
@@ -1078,6 +1080,16 @@ function start(server: boolean): void {
       sendToWindow(owner.windowId, 'webviews.navigated', { panelKey: `${owner.pluginId}/${owner.panelId}`, ...page }),
     isWindowOpen: (windowId) => windows.projectWindows().some((w) => w.windowId === windowId),
     homeDir: () => homedir(),
+    log: warnLog
+  })
+  // Server mode: which browser views show each webview panel and whose size its page has
+  // (webview-viewers.ts, design-web-browser.md §3.2), from the browsers' `webviews.place` reports
+  // (router.ts). It drives the manager: a first viewer shows the view (a deferred load runs), the
+  // last one leaving hides it, the size owner sizes it. Fed only in server mode; a view leaves with
+  // its socket (webConnections viewGone) and a panel with its window (onWindowClosed).
+  const webviewViewers = new WebviewViewers({
+    setViewed: (windowId, pluginId, panelId, viewed) => webviews.setViewed(windowId, pluginId, panelId, viewed),
+    setSize: (windowId, pluginId, panelId, size) => webviews.setViewSize(windowId, pluginId, panelId, size),
     log: warnLog
   })
   // Keys typed into a window's own page can come from an html overlay's iframe, which the shell
@@ -2478,7 +2490,10 @@ function start(server: boolean): void {
   // webview panel a plugin of the sender's project declares), the view is the sender window's.
   registerWebviewHandlers(router, {
     panel: (projectId, panelKey) => layouts.webviewPanel(projectId, panelKey),
-    views: webviews
+    views: webviews,
+    // A server's browser views report their webview panels (`webviews.place`, `webviews.fit`).
+    server,
+    viewers: webviewViewers
   })
 
   registerTabHandlers(router, {
@@ -2628,6 +2643,9 @@ function start(server: boolean): void {
       // The html overlay pages it held go back to the desktop view (overlay-manager.ts).
       overlays.viewGone(viewId)
       selections.viewGone(viewId)
+      // It is no viewer of any webview panel any more: the size goes to another viewer, or the
+      // page stops painting (webview-viewers.ts).
+      webviewViewers.viewGone(viewId)
       // A plugin close every remaining view declined ends now (close-asks.ts).
       closeAsks.viewGone()
     },

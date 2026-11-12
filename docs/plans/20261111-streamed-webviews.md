@@ -79,7 +79,7 @@ External review: sol / high
   then JPEG bytes. Sent only through `ViewSink.sendFrame`, which only browser view sinks implement. The gateway keeps
   closing a client that sends binary. A frame larger than the per-frame cap is not sent (the next paint is smaller or
   the view gets a lower quality).
-- **Placement** (`webviews.place`, browser → main, `adapted`): `{ key, width, height, visible, hidden }`; CSS px
+- **Placement** (`webviews.place`, browser → main, `adapted`): `{ panelKey, width, height, visible, hidden }`; CSS px
   clamped to [64, 4096]; `hidden` = `document.hidden`. Accepted only from remote views in server mode; the key is
   resolved through the caller's window layout.
 - **Input** (`webviews.input`, `adapted`): `{ key, events: [...] }`, ≤ 64 events per call; pointer
@@ -233,18 +233,46 @@ External review: sol / high
 - Modify: `src/main/ipc/router.ts`
 - Create: `src/main/webview/webview-viewers.ts`
 - Modify: `src/main/webview/webview-manager.ts`
+- Modify: `src/main/index.ts`
 - Create: `test/unit/webview-viewers.test.ts`
 - Modify: `test/unit/ipc-router.test.ts`
+- Modify: `test/unit/ipc-remote-class.test.ts`
+- Modify: `test/unit/webview-manager.test.ts`
 
-- [ ] add `webviews.place` (`adapted`, Technical Details), accepted only from remote views in server mode, the key
+- [x] add `webviews.place` (`adapted`, Technical Details), accepted only from remote views in server mode, the key
       resolved through the caller's window layout
-- [ ] viewers per webview: browser views of its window that report it visible and not hidden; a view gone or a window
+- [x] viewers per webview: browser views of its window that report it visible and not hidden; a view gone or a window
       closed removes it; no viewer → `setVisible(false)` (and the deferred load of Task 2 waits for the first viewer)
-- [ ] size owner: changed by a button press, a key or text (Task 7 calls it) or "Fit to this screen", else the first
+- [x] size owner: changed by a button press, a key or text (Task 7 calls it) or "Fit to this screen", else the first
       reporter; owner gone → next viewer; resize throttled to one per 100 ms; sizes clamped
-- [ ] write tests: viewer set, owner rules, throttle, clamping, desktop or hidden-page reports ignored
-- [ ] write tests for edge cases: zero/NaN/huge sizes, a view of another window naming the key, view gone
-- [ ] run tests - must pass before next task
+- [x] write tests: viewer set, owner rules, throttle, clamping, desktop or hidden-page reports ignored
+- [x] write tests for edge cases: zero/NaN/huge sizes, a view of another window naming the key, view gone
+- [x] run tests - must pass before next task
+- ➕ wire: `webviews.place` `{ panelKey, width, height, visible, hidden }` (`panelKey`, not `key`, as
+      `webviews.step/current`) and a separate `webviews.fit` `{ panelKey }` ("Fit to this screen"), both `adapted`:
+      refused unless `server && view.remote` (the desktop page, the hidden page and a browser outside server mode
+      throw), the key resolved by `layouts.webviewPanel(ctx.projectId, …)`, the window and view the router's. Width and
+      height must be finite numbers (else refused); clamping to [64, 4096] is `webview-viewers.ts` (`clampSide`). A
+      viewer is visible, not hidden and with an area (a raw side < 1 is not, like the desktop's zero bounds). **For Task
+      6**: report on mount, on every ResizeObserver change and `visibilitychange`, and `visible: false` on unmount;
+      `visible` means mounted and on screen, not "no shell layer over it" (an overlay in a browser is a page layer
+      over the canvas, so the manager has no cover rule in server mode). A report whose key no longer resolves (the
+      plugin was just turned off) is refused but still takes that view's own entry in its own window off the panel
+      (`WebviewViewers.leave`), so the unmount report works.
+- ➕ API (`src/main/webview/webview-viewers.ts`, one `WebviewViewers` in index.ts as `webviewViewers`, fed only in server
+      mode): `report`, `claimOwner(panel, viewId)` (**Task 7** calls it on a press, a key or text; ignored from a
+      non-viewer; `webviews.fit` uses it too), `leave`, `viewGone` (wired in webConnections' `viewGone`),
+      `closeWindow` (wired in `onWindowClosed`, no `setViewed`: the manager drops the views); reads for **Task 5**:
+      `viewers(panel)` (join order), `isViewer`, `ownerOf`, `sizeOf` (the applied size), `onChange(listener)` → unsubscribe,
+      with `{ kind: 'added' | 'removed', panel, viewId }`, `{ kind: 'size', panel, size }` (after the throttle) and
+      `{ kind: 'owner', panel, viewId | undefined }`. `panel` is `{ windowId, pluginId, panelId }`. A panel losing its
+      last viewer forgets its state (the next first viewer is owner and sized at once). Owner gone → the viewer active
+      last (a report or a claim), the terminal rule. Task 7 must only call `claimOwner` for a view that `isViewer`.
+- ➕ manager (server mode): `setViewed` now drives the view's visibility (`true` → `setVisible(true)`, so painting;
+      `false` → hidden) and is ignored on the desktop; new `setViewSize` (clamped again, kept without a view, so a view
+      made for a deferred load starts at the owner's size); `setWindowCovered` and `resetWindow` change nothing in
+      server mode; `destroyPlugin` keeps the viewers and their placements (they are the browsers', a reloaded plugin's
+      `home` loads at once for a browser that still shows the panel) — Task 2's test changed to that.
 
 ### Task 5: Frame stream: encode budget, one frame in flight [model: opus]
 

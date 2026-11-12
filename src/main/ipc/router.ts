@@ -55,6 +55,7 @@ import type {
 import { remoteIndicator, REMOTE_SECRETS_UNAVAILABLE_TEXT } from '../../shared/web-access'
 import type { AccessActor } from '../web/access-log'
 import type { WebviewManager, WebviewOwner } from '../webview/webview-manager'
+import type { WebviewViewers } from '../webview/webview-viewers'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
 import type { SenderContext } from '../windows/window-manager'
@@ -1610,6 +1611,13 @@ export interface WebviewHandlerDeps {
   /** The panel `panelKey` names when it is a webview panel of `projectId` now, else undefined. */
   panel(projectId: string, panelKey: unknown): WebviewPanelRef | undefined
   views: Pick<WebviewManager, 'setPlacement' | 'back' | 'forward' | 'reload' | 'current'>
+  /**
+   * Main's server flag: the only thing that opens `webviews.place` and `webviews.fit` (to a remote
+   * view; the desktop page and the hidden page never send them).
+   */
+  server?: boolean
+  /** Server mode's viewers and size owner (webview-viewers.ts); absent: the two channels refuse. */
+  viewers?: Pick<WebviewViewers, 'report' | 'claimOwner' | 'leave'>
 }
 
 /**
@@ -1644,6 +1652,43 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     deps.views[step](owner)
   })
   router.handleProject('webviews.current', (ctx, payload) => deps.views.current(panelOf('webviews.current', ctx, payload)))
+
+  // `adapted` (design-web-browser.md §3.2): a server's browser view reports where it shows a
+  // webview panel, and asks "Fit to this screen". Main's flag and the view main bound decide,
+  // never the payload: the desktop page (and in server mode the hidden page, which has the panels
+  // open in the shared layout but is on no screen) is refused, as is a browser outside server mode
+  // (its panel is the desktop's placeholder). The panel is the caller's window's, by main's layout.
+  const viewersFor = (channel: string, view: CallView): Pick<WebviewViewers, 'report' | 'claimOwner' | 'leave'> => {
+    if (deps.server !== true || !view.remote || !deps.viewers) {
+      throw new Error(`${channel}: only a browser view of a server shows a streamed webview`)
+    }
+    return deps.viewers
+  }
+  router.handleProject('webviews.place', (ctx, payload, view) => {
+    const viewers = viewersFor('webviews.place', view)
+    const { panelKey, width, height, visible, hidden } = fields('webviews.place', payload)
+    if (typeof width !== 'number' || typeof height !== 'number' || !Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error('webviews.place: width and height must be finite numbers')
+    }
+    if (typeof visible !== 'boolean' || typeof hidden !== 'boolean') throw new Error('webviews.place: visible and hidden must be booleans')
+    const ref = deps.panel(ctx.projectId, panelKey)
+    if (!ref) {
+      // The key names no webview panel of this project (now): its plugin may have just been turned
+      // off, and the view's unmount report must still take the view off the panel, or it would stay
+      // a viewer of a panel it no longer shows. `leave` only touches this view's own entry in this
+      // window, so a made-up key reaches nothing; the report is still refused.
+      if (typeof panelKey === 'string') viewers.leave(ctx.windowId, view.viewId, panelKey)
+      throw new Error('webviews.place: not a webview panel of this project')
+    }
+    // The viewers clamp the sizes ([64, 4096] CSS px) and decide viewer and owner.
+    viewers.report({ windowId: ctx.windowId, pluginId: ref.pluginId, panelId: ref.panelId }, view.viewId, { width, height, visible, hidden })
+  })
+  router.handleProject('webviews.fit', (ctx, payload, view) => {
+    const viewers = viewersFor('webviews.fit', view)
+    const owner = panelOf('webviews.fit', ctx, payload)
+    // Ignored from a view that is not a viewer of the panel now (webview-viewers.ts).
+    viewers.claimOwner({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId)
+  })
 }
 
 /** The caller's view when it is a remote one (main bound it), else undefined: the desktop acts as before. */

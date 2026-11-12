@@ -53,8 +53,13 @@
 //                     plugin runs, `ccc browser open` above all) loads at once, viewer or not.
 //   placements        the window's own page is the hidden page, which has the panels the browsers
 //                     open in the shared layout and reports them like a desktop page: its reports
-//                     mean nothing for a page on no screen and are ignored (the browsers' size and
-//                     visibility reports are Task 4's, plan 20261111-streamed-webviews.md)
+//                     mean nothing for a page on no screen and are ignored. The browsers' reports
+//                     drive the view instead, through webview-viewers.ts: setViewed (a panel's
+//                     first viewer shows the view, so it paints; its last one leaving hides it) and
+//                     setViewSize (the size owner's size). They are the browsers' state, not the
+//                     plugin's: a plugin reload keeps them, so its next `home` loads for the browser
+//                     that still shows the panel. An overlay does not hide the views: in a browser
+//                     it is a page layer over the panel's canvas, not a native view under it.
 //   keyboard          never handed back: the hidden page is never focused (WindowManager {server})
 import { randomBytes } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
@@ -229,6 +234,9 @@ export interface WebviewManagerDeps {
   server?: boolean
 }
 
+/** Largest side, CSS px, setViewSize gives a view (design-web-browser.md §5; webview-viewers.ts clamps there first). */
+const MAX_VIEW_SIDE = 4096
+
 /** Off-screen views at once in one project window, in server mode (design-web-browser.md §5). */
 export const MAX_SERVER_VIEWS_PER_WINDOW = 4
 /** Off-screen views at once in the whole app, in server mode (design-web-browser.md §5). */
@@ -322,7 +330,7 @@ export class WebviewManager {
    * plugin's `home`); loaded by setViewed. Newest wins (navSeq/navLoaded order them as loads).
    */
   private readonly deferred = new Map<string, DeferredLoad>()
-  /** Server mode: the panels at least one browser view shows now (setViewed, driven by Task 4). */
+  /** Server mode: the panels at least one browser view shows now (setViewed, from webview-viewers.ts). */
   private readonly viewed = new Set<string>()
   private readonly log: (message: string) => void
 
@@ -417,20 +425,23 @@ export class WebviewManager {
   }
 
   /**
-   * Server mode: whether any browser view shows the panel now. The hook Task 4's viewer tracking
-   * drives (plan 20261111-streamed-webviews.md); until it does, nobody shows any panel, so a
-   * deferred navigate waits and only `now` navigates load. The first viewer of a panel that has a
+   * Server mode: whether any browser view shows the panel now (webview-viewers.ts drives it from
+   * the browsers' `webviews.place` reports). A viewed panel's view shows, so the off-screen page
+   * paints; one nobody views is hidden and stops painting. The first viewer of a panel that has a
    * deferred navigate loads it (its outcome goes to current(), onNavigate and the toolbar: nobody
-   * awaits it). Losing the last viewer changes nothing here yet; hiding is Task 4's.
+   * awaits it). Ignored on the desktop, where the window's page places its views.
    */
   setViewed(windowId: number, pluginId: string, panelId: string, viewed: boolean): void {
+    if (this.deps.server !== true) return
     const key = keyOf(windowId, pluginId, panelId)
     if (!viewed) {
       this.viewed.delete(key)
+      this.placeServerView(key, { visible: false })
       return
     }
     if (this.viewed.has(key) || !this.deps.isWindowOpen(windowId)) return
     this.viewed.add(key)
+    this.placeServerView(key, { visible: true })
     const pending = this.deferred.get(key)
     if (!pending) return
     this.deferred.delete(key)
@@ -455,6 +466,21 @@ export class WebviewManager {
     }
     // A failure is recorded by loadFailed (current(), the toolbar); nothing waits on the promise.
     rec.view.load(url).catch(() => undefined)
+  }
+
+  /**
+   * Server mode: the size the panel's page is to have, CSS px (the size owner's report, clamped and
+   * throttled by webview-viewers.ts; clamped here again, as main's last line before Electron). Kept
+   * without a view too: a view made later starts at it. Ignored on the desktop.
+   */
+  setViewSize(windowId: number, pluginId: string, panelId: string, size: { width: number; height: number }): void {
+    if (this.deps.server !== true) return
+    const side = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) && v >= 1 ? Math.min(MAX_VIEW_SIDE, Math.round(v)) : 0
+    const width = side(size?.width)
+    const height = side(size?.height)
+    if (width === 0 || height === 0) return
+    this.placeServerView(keyOf(windowId, pluginId, panelId), { bounds: { x: 0, y: 0, width, height } })
   }
 
   /** Whether a navigate is waiting for the panel's first viewer (server mode; tests). */
@@ -498,6 +524,9 @@ export class WebviewManager {
    * hide until the new page reports again (else they would float over a page that is not there).
    */
   resetWindow(windowId: number): void {
+    // Server mode: the window's page is the hidden page, and the placements are the browsers'
+    // (index.ts does not call this then; a call must still not hide what browsers show).
+    if (this.deps.server === true) return
     const prefix = `${windowId}\0`
     for (const [key, p] of [...this.placements]) {
       if (key.startsWith(prefix)) this.placements.set(key, { ...p, visible: false })
@@ -517,12 +546,16 @@ export class WebviewManager {
     for (const [key, rec] of [...this.records]) {
       if (rec.owner.windowId === windowId && rec.owner.pluginId === pluginId) this.drop(key, rec)
     }
+    const prefix = `${windowId}\0${pluginId}\0`
+    for (const map of [this.navSeq, this.navLoaded, this.deferred]) for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key)
+    // Server mode: the viewers and their placements are the browsers' (webview-viewers.ts), not the
+    // plugin's: a browser that still shows the panel reports nothing new when the plugin reloads,
+    // so forgetting them here would defer the reloaded plugin's `home` for good. A browser whose
+    // panel left with the plugin still leaves (its unmount report is taken for that, router.ts).
+    if (this.deps.server === true) return
     // The placements too: the panel's unmount report (visible:false) is refused once the panel left
     // the layout, so a stale visible:true would show the next view at the old bounds, panel closed.
-    const prefix = `${windowId}\0${pluginId}\0`
     for (const key of [...this.placements.keys()]) if (key.startsWith(prefix)) this.placements.delete(key)
-    for (const map of [this.navSeq, this.navLoaded, this.deferred]) for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key)
-    for (const key of [...this.viewed]) if (key.startsWith(prefix)) this.viewed.delete(key)
   }
 
   /** The window closed: every view in it goes, with its tokens and placements. */
@@ -641,10 +674,22 @@ export class WebviewManager {
     return this.placements.get(keyOf(windowId, pluginId, panelId)) ?? { bounds: { x: 0, y: 0, width: 0, height: 0 }, visible: false }
   }
 
-  /** The cover/hide rule: the renderer says it may show, no overlay is open, it has an area. */
+  /**
+   * The cover/hide rule: the renderer says it may show, no overlay is open, it has an area. Server
+   * mode has no cover rule (see the top of the file): a browser's overlay is a layer over the canvas.
+   */
   private shown(rec: ViewRecord): boolean {
     const p = this.placementOf(rec)
-    return p.visible && !this.covered.has(rec.owner.windowId) && p.bounds.width > 0 && p.bounds.height > 0
+    const covered = this.deps.server !== true && this.covered.has(rec.owner.windowId)
+    return p.visible && !covered && p.bounds.width > 0 && p.bounds.height > 0
+  }
+
+  /** Server mode: merge what webview-viewers.ts decided into the panel's placement, applied now when it has a view. */
+  private placeServerView(key: string, patch: Partial<WebviewPlacement>): void {
+    const prev = this.placements.get(key) ?? { bounds: { x: 0, y: 0, width: 0, height: 0 }, visible: false }
+    this.placements.set(key, { ...prev, ...patch })
+    const rec = this.records.get(key)
+    if (rec) this.apply(rec)
   }
 
   private apply(rec: ViewRecord): void {

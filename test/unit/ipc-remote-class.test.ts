@@ -65,6 +65,9 @@ describe('REMOTE_CLASS drift', () => {
     'tabs.data',
     'links.answer',
     'projects.close',
+    // A server's streamed webviews (design-web-browser.md §3.2): a browser view's own placement.
+    'webviews.place',
+    'webviews.fit',
     // The web access card's read side and the narrowing calls: a server's browsers only (§9.4, §9.6).
     'settings.webAccess',
     'webAccess.state',
