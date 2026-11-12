@@ -222,6 +222,15 @@ over the canvas; the choice comes back and the isolated world sets the value and
 channel from the page to main is needed, so there is nothing to forge. Should hit-testing prove unreliable, v1 ships
 keyboard-only selects (focus, arrows, Enter) with a note in the docs.
 
+Implemented (Task 9, `main/webview/select-hit.ts`): hit-testing held up in the e2e, so no keyboard-only fallback. The
+left press and everything after it (keys and inserted text included) wait for the answer, in order, at most 50 ms;
+a slow or failed hit-test lets the press go as a plain click. A popup is `webviews.select` to the clicking view, with
+an id main keeps (one per view and panel, taken once); the answer is `webviews.selectChoose`; the element is found
+again through a `WeakRef` kept under that id in the isolated world's globals. The page sees the select take the
+focus and an untrusted `input` and `change`, not the mouse events. Keyboard-only still: a select inside an iframe
+(`elementFromPoint` stops at the frame element; a cross-origin frame's document is not ours to walk) or a closed
+shadow root, and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on itself.
+
 ## 5. Limits
 
 - Off-screen views: at most 4 per project window and 12 per app at once; a navigate past that is refused with a

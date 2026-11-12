@@ -1120,7 +1120,9 @@ function start(server: boolean): void {
     isViewer: (panel, viewId) => webviewViewers.isViewer(panel, viewId),
     claimOwner: (panel, viewId) => webviewViewers.claimOwner(panel, viewId),
     target: (panel) => webviews.inputTarget(panel.windowId, panel.pluginId, panel.panelId),
-    pushSelection: (viewId, event) => views.toView(viewId, 'webviews.selection', event)
+    pushSelection: (viewId, event) => views.toView(viewId, 'webviews.selection', event),
+    // A press on a <select> (whose popup the page does not paint): the popup to that view only.
+    pushSelect: (viewId, event) => views.toView(viewId, 'webviews.select', event)
   })
   // The page's cursor, to the panel's viewers only (browser views of its own window that show it):
   // never toWindow, whose desktop page is the hidden page in server mode.

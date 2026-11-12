@@ -328,3 +328,100 @@ test('server mode: typed and pasted text reach the streamed page; its selection 
     await browser.close()
   }
 })
+
+// Task 9 (design-web-browser.md §4.4): the off-screen page paints no <select> popup, so a press on
+// one opens the browser's own dropdown; a choice sets the page's value and fires its change
+// handler (the title says so); Escape closes it with no change; a press elsewhere still reaches
+// the page.
+const SELECT_PAGE = `<!doctype html><meta charset="utf-8"><title>none</title><body style="margin:0">
+<select id="s" style="position:fixed;left:20px;top:20px;width:200px;height:30px;font-size:16px">
+<option value="apple">Apple</option><option value="banana">Banana</option>
+<option value="cherry" disabled>Cherry</option>
+<optgroup label="Dry"><option value="dates">Dates</option></optgroup></select>
+<script>const s=document.getElementById('s');let n=0;s.addEventListener('change',()=>{n++;document.title='chose '+s.value+' '+n});
+document.addEventListener('mousedown',(e)=>{if(e.target!==s)document.title='pressed page'})</script>`
+
+test('server mode: a select opens the browser dropdown; a choice changes the page, Escape does not', async () => {
+  test.setTimeout(150_000)
+  server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  const { cockpit } = server
+  writeFileSync(join(cockpit.projectDir, 'select.html'), SELECT_PAGE)
+  await expect
+    .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
+      timeout: 20_000
+    })
+    .toBe('active')
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const section = page.locator('section.panel[aria-label="Browser"]')
+    if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    const layer = section.locator('.webview-input')
+    const pageTitle = section.locator('.webview-url')
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await browser.waitForTerminalText('FAKE-CLAUDE banner')
+    await runInClaude(browser, '/ccc browser open select.html')
+    await expect(pageTitle).toHaveAttribute('title', /^none\n/, { timeout: 15_000 })
+    await expect(section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    const b = await layer.boundingBox()
+    if (!b) throw new Error('no input layer')
+    const menu = section.getByRole('listbox', { name: 'Choose an option' })
+
+    // The press on the select: the browser's dropdown, over the select (the only viewer: 1:1), with
+    // the page's options; the press itself never reached the page.
+    await page.mouse.click(b.x + 100, b.y + 35)
+    await expect(menu).toBeVisible({ timeout: 10_000 })
+    await expect(menu).toBeFocused()
+    await expect(menu.getByRole('option')).toHaveText(['Apple', 'Banana', 'Cherry', 'Dates'])
+    await expect(menu.getByRole('option', { name: 'Apple' })).toHaveAttribute('aria-selected', 'true')
+    await expect(menu.getByRole('option', { name: 'Cherry' })).toHaveAttribute('aria-disabled', 'true')
+    await expect(menu.getByRole('group', { name: 'Dry' })).toBeVisible()
+    const m = await menu.boundingBox()
+    expect(m && Math.abs(m.x - (b.x + 20)) <= 2 && Math.abs(m.y - (b.y + 50)) <= 2).toBe(true)
+    expect(await pageTitle.getAttribute('title')).toMatch(/^none\n/)
+
+    // A click on an option: the page's value and its change handler.
+    await menu.getByRole('option', { name: 'Banana' }).click()
+    await expect(menu).toHaveCount(0)
+    await expect(pageTitle).toHaveAttribute('title', /^chose banana 1\n/, { timeout: 10_000 })
+    await expect(section.locator('textarea.webview-text')).toBeFocused()
+
+    // Escape: closed, nothing changed. A click on a disabled option chooses nothing either.
+    await page.mouse.click(b.x + 100, b.y + 35)
+    await expect(menu).toBeVisible({ timeout: 10_000 })
+    await expect(menu.getByRole('option', { name: 'Banana' })).toHaveAttribute('aria-selected', 'true')
+    await menu.getByRole('option', { name: 'Cherry' }).click({ force: true })
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toHaveCount(0)
+    // (No change event: the count in the title goes on from 1 below.)
+    await expect(section.locator('textarea.webview-text')).toBeFocused()
+    expect(await pageTitle.getAttribute('title')).toMatch(/^chose banana 1\n/)
+
+    // The keyboard: Down skips the disabled option, Enter chooses; type-ahead.
+    await page.mouse.click(b.x + 100, b.y + 35)
+    await expect(menu).toBeVisible({ timeout: 10_000 })
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await expect(pageTitle).toHaveAttribute('title', /^chose dates 2\n/, { timeout: 10_000 })
+    await page.mouse.click(b.x + 100, b.y + 35)
+    await expect(menu).toBeVisible({ timeout: 10_000 })
+    await page.keyboard.press('a')
+    await page.keyboard.press('Enter')
+    await expect(pageTitle).toHaveAttribute('title', /^chose apple 3\n/, { timeout: 10_000 })
+
+    // A press elsewhere still reaches the page; with a menu open it closes the menu too.
+    await page.mouse.click(b.x + 100, b.y + 35)
+    await expect(menu).toBeVisible({ timeout: 10_000 })
+    await page.mouse.click(b.x + b.width / 2, b.y + b.height - 40)
+    await expect(menu).toHaveCount(0)
+    await expect(pageTitle).toHaveAttribute('title', /^pressed page\n/, { timeout: 10_000 })
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})

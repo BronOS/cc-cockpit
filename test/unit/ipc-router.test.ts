@@ -2493,6 +2493,10 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
                 acceptText: (panel, viewId, raw) => {
                   accepted.push(['text', panel, viewId, raw])
                   return true
+                },
+                acceptChoice: (panel, viewId, id, index) => {
+                  accepted.push(['choose', panel, viewId, id, index])
+                  return true
                 }
               }
             })
@@ -2555,6 +2559,22 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
         /not a webview panel of this project/
       )
       expect([...accepted, ...desktop.accepted, ...none.accepted]).toEqual([])
+    })
+
+    // Task 9 (§4.4): a select popup's answer, by the same gate; the id and index go to the gate raw.
+    it('webviews.selectChoose: adapted, the same gate, main\'s window, panel and view', async () => {
+      expect(REMOTE_CLASS['webviews.selectChoose']).toBe('adapted')
+      expect(REMOTE_CLASS['webviews.select']).toBe('adapted')
+      const { router, ipc, accepted } = inputSetup()
+      await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.selectChoose', { panelKey: 'a.one/view', id: 'x', index: 2, viewId: 'web:9' })
+      expect(accepted).toEqual([['choose', { windowId: 1, pluginId: 'a.one', panelId: 'view' }, 'web:3', 'x', 2]])
+      accepted.length = 0
+      const choose = { panelKey: 'a.one/view', id: 'x', index: null }
+      await expect(ipc.invoke('webviews.selectChoose', 11, [choose])).rejects.toThrow(/only a browser view of a server/)
+      const desktop = inputSetup({ server: false })
+      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.selectChoose', choose)).rejects.toThrow(/only a browser view of a server/)
+      await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.selectChoose', choose)).rejects.toThrow(/not a webview panel of this project/)
+      expect([...accepted, ...desktop.accepted]).toEqual([])
     })
   })
 })

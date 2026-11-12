@@ -510,6 +510,22 @@ describe('OffscreenWebviewFactory', () => {
     expect(wc.calls).toEqual([])
   })
 
+  // Task 9: a select's hit-test and the browser's answer run in the same isolated world.
+  it('hit-tests and answers selects in its own isolated world, and neither once the page is gone', async () => {
+    const { view, wc } = make()
+    const id = 'c'.repeat(32)
+    wc.calls.length = 0
+    wc.selection = null
+    await expect(view.hitSelect?.(3, 4, id)).resolves.toBeNull()
+    await view.chooseSelect?.(id, 1)
+    expect(wc.calls).toEqual([`world ${WEBVIEW_WORLD_ID} 1`, `world ${WEBVIEW_WORLD_ID} 1`])
+    view.destroy()
+    wc.calls.length = 0
+    await expect(view.hitSelect?.(3, 4, id)).resolves.toBeUndefined()
+    await expect(view.chooseSelect?.(id, 1)).resolves.toBe(false)
+    expect(wc.calls).toEqual([])
+  })
+
   it('reports a main-frame load failure and rejects load with it; a superseded load resolves', async () => {
     const { view, wc, ev } = make()
     wc.emit('did-fail-load', {}, -102, 'ERR_CONNECTION_REFUSED', 'http://127.0.0.1:5173/', true)

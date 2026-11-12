@@ -31,6 +31,7 @@ import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
 import { SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
+import { chooseScript, hitScript } from './select-hit'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
 /** The page's size before any browser reported one (CSS px; a common laptop browser area). */
@@ -209,6 +210,12 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // the page's scripts cannot see the read nor stand in for what it calls.
       readSelection: () =>
         wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: SELECTION_SCRIPT }]),
+      // A select popup the page does not paint (select-hit.ts): what is under a press, and the
+      // browser's answer, in the same isolated world (the element is kept there between the two).
+      hitSelect: (x, y, id) =>
+        wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }]),
+      chooseSelect: (id, index) =>
+        wc.isDestroyed() ? Promise.resolve(false) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: chooseScript(id, index) }]),
       invalidate: () => {
         if (!wc.isDestroyed()) wc.invalidate()
       }

@@ -25,9 +25,14 @@
 // one, and `cut` does that and sends a Delete key. With nothing selected the browser's own copy
 // runs (on an empty textarea: nothing), so the person's clipboard is left alone.
 //
-// The math, the key split and the outbox are DOM-free in webview-stream.ts (unit tested).
+// Selects (Task 9, §4.4): the page does not paint a `<select>`'s popup, so main does not pass a press
+// on one to the page and sends its options instead (`webviews.select`); this draws a dropdown over
+// the select's place on the canvas (webview-select-menu.tsx) and answers `webviews.selectChoose`.
+//
+// The math, the key split and the outbox are DOM-free in webview-stream.ts and webview-select.ts
+// (unit tested).
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PanelInfo } from '../../shared/ipc'
 import { WEBVIEW_CURSORS } from '../../shared/webview-keys'
 import { commandForEvent } from '../commands/keybindings'
@@ -49,6 +54,12 @@ import {
   wheelPixels,
   type DecodedFrame
 } from './webview-stream'
+import { pageRectToArea, placeMenu, type MenuPlace } from './webview-select'
+import { WebviewSelectMenu, type SelectPopup } from './webview-select-menu'
+
+/** A menu row's height and the rows a menu shows before it scrolls (its wanted height). */
+const MENU_ROW_PX = 28
+const MENU_ROWS = 12
 
 export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Element {
   const { panelKey, title, error } = props.info
@@ -64,6 +75,20 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
   const textbox = useRef<HTMLTextAreaElement>(null)
   // The frame on the canvas now (its header): input maps against the frame the person sees.
   const shown = useRef<DecodedFrame<ImageBitmap>['frame'] | undefined>(undefined)
+  // The open select popup (at most one per panel: a new one replaces it, main closed the old id).
+  const [menu, setMenu] = useState<{ popup: SelectPopup; place: MenuPlace }>()
+  const menuId = useRef<string | undefined>(undefined)
+  const answerMenu = useCallback(
+    (id: string, index: number | null): void => {
+      if (menuId.current !== id) return
+      menuId.current = undefined
+      setMenu(undefined)
+      window.cockpit.invoke('webviews.selectChoose', { panelKey, id, index }).catch(() => {})
+      // The keyboard goes back to the page.
+      textbox.current?.focus({ preventScroll: true })
+    },
+    [panelKey]
+  )
 
   // Derived during render (React's pattern for state that follows a prop), not in an effect.
   if (hasPage && !hadPage) setHadPage(true)
@@ -354,6 +379,33 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     }
   }, [panelKey])
 
+  // Select popups from main, placed over the select as the person sees it on the canvas now.
+  useEffect(() => {
+    const off = window.cockpit.on('webviews.select', (p) => {
+      if (p.panelKey !== panelKey || typeof p.id !== 'string' || !Array.isArray(p.options)) return
+      const frame = shown.current
+      const box = area.current?.getBoundingClientRect()
+      const anchor = frame && box ? pageRectToArea(letterbox(box.width, box.height, frame), frame, p.rect) : undefined
+      if (!box || !anchor) {
+        // Nothing drawn to put it over: answered with no choice (main closes it).
+        window.cockpit.invoke('webviews.selectChoose', { panelKey, id: p.id, index: null }).catch(() => {})
+        return
+      }
+      menuId.current = p.id
+      setMenu({ popup: p, place: placeMenu(anchor, box, Math.min(Math.max(1, p.options.length), MENU_ROWS) * MENU_ROW_PX + 12) })
+    })
+    return () => {
+      off()
+      menuId.current = undefined
+      setMenu(undefined)
+    }
+  }, [panelKey])
+  // The page navigated or went: its select is gone with it.
+  useEffect(() => {
+    const id = menuId.current
+    if (id !== undefined) answerMenu(id, null)
+  }, [page.url, hasPage, answerMenu])
+
   const fitButton = fit && hasPage && (
     <button
       type="button"
@@ -399,6 +451,9 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
             rows={1}
           />
         </div>
+        {menu && hasPage && (
+          <WebviewSelectMenu key={menu.popup.id} popup={menu.popup} place={menu.place} onDone={(index) => answerMenu(menu.popup.id, index)} />
+        )}
         {!hasPage && (
           <p className="panel-placeholder webview-canvas-note" role="status">
             {hadPage ? `${title}: the page is gone` : `${title} shows nothing yet`}

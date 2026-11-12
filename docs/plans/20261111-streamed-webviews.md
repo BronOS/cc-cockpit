@@ -481,16 +481,60 @@ External review: sol / high
 - Modify: `src/renderer/web/webview-canvas.tsx`
 - Create: `test/unit/select-hit.test.ts`
 - Modify: `test/e2e/server-webview.spec.ts`
+- ➕ Create: `src/renderer/web/webview-select.ts`, `src/renderer/web/webview-select-menu.tsx`
+- ➕ Modify: `src/shared/ipc.ts`, `src/main/ipc/router.ts`, `src/main/index.ts`, `src/main/web/connection.ts`,
+  `src/main/webview/webview-manager.ts`, `src/main/webview/electron-offscreen-webview.ts`, `src/renderer/web/web.css`,
+  `docs/design-web-browser.md`, `test/unit/ipc-router.test.ts`, `test/unit/web-protocol.test.ts`,
+  `test/unit/electron-offscreen-webview.test.ts`
 
-- [ ] before forwarding a `mouseDown`, main hit-tests the point in an isolated world; on a `<select>` it does not
+- [x] before forwarding a `mouseDown`, main hit-tests the point in an isolated world; on a `<select>` it does not
       forward the click, reads options (≤ 500, labels capped) and rect from that result, and sends `webviews.select` to
       the clicking view; the browser draws a dropdown over the canvas; the choice sets the value and fires
       `input`/`change` in the isolated world
-- [ ] if hit-testing proves unreliable: keyboard-only selects, documented in `design-web-browser.md` §4.4 and
+- [x] (not needed: hit-testing held up, 4/4 repeated e2e runs) if hit-testing proves unreliable: keyboard-only selects, documented in `design-web-browser.md` §4.4 and
       features.md, with a keyboard test
-- [ ] write unit tests: result parsing and caps, non-select clicks forwarded unchanged, a stale choice ignored
-- [ ] e2e: a select's value changes through the browser
-- [ ] run tests - must pass before next task
+- [x] write unit tests: result parsing and caps, non-select clicks forwarded unchanged, a stale choice ignored
+- [x] e2e: a select's value changes through the browser
+- [x] run tests - must pass before next task
+- ➕ done: `src/main/webview/select-hit.ts` (`hitScript`, `chooseScript`, `parseHitResult`, `SelectPopups`,
+      `newSelectId`; `MAX_SELECT_OPTIONS` 500, `MAX_OPTION_LABEL` 200, `HIT_TIMEOUT_MS` 50, `MAX_HELD_EVENTS` 256), run in
+      `WEBVIEW_WORLD_ID` through the new optional `WebviewView.hitSelect` / `chooseSelect` (the off-screen adapter's
+      `executeJavaScriptInIsolatedWorld`, passed by `WebviewManager.inputTarget` only while the record is live). The hit
+      script walks open shadow roots, takes `closest('select')`, refuses `multiple`, `size` > 1 and `:disabled` (a
+      disabled fieldset counts), skips `hidden` options (so each option carries its index in `select.options`), cuts
+      labels in the page, keeps a `WeakRef` under the popup id in `globalThis.__ccCockpitSelects` (16 at most, oldest
+      first) and focuses the select, as a click would. The choose script takes the ref once, re-checks enabled, single,
+      connected, the option and its optgroup not disabled, and fires `input` (bubbles, composed) and `change` (bubbles)
+      only when the index changes (as a native select). Main (`webview-input.ts`): a left `mouseDown` with a target that
+      can hit-test and a `pushSelect` dep starts a hit-test and holds the press and everything after it for that view and
+      panel (`PressLane`; later `webviews.input` calls **and `webviews.insertText`** queue behind it in order: without the
+      text, Task 8's e2e lost an 'é' typed right after a click, inserted before the click focused the field). First of
+      answer, rejection or the 50 ms timer wins; a late answer is ignored. A select hit: the press is dropped, its release
+      (the next left `mouseUp`, in this call or a later one) too, moves meanwhile lose `leftbuttondown`, and
+      `webviews.select` `{ panelKey, id, options, selected, rect }` goes to the clicking view only if it is still a viewer
+      (else the press goes as it came). `webviews.selectChoose` `{ panelKey, id, index | null }` (`adapted`, the router's
+      `inputFor` gate, `acceptChoice`): a viewer, an integer index in [0, 500) or null (else it throws); only the view's
+      current id for the panel, taken once (stale, forged, another view's: ignored, returns false); an index the popup did
+      not list as enabled, null, or no token left: the page only forgets the element. `webviews.select` is in
+      `remoteEvent`'s server-only list. Right and middle presses are never held.
+- ➕ browser: `src/renderer/web/webview-select.ts` (pure: `pageRectToArea` = page px × drawn width / page width + the
+      letterbox offset, `placeMenu` below the select or flipped to the larger side, at least 140 px wide, inside the
+      area; `initialActive`, `moveActive` (arrows, Home/End, PageUp/PageDown skip disabled), `typeAhead` (prefix,
+      case-insensitive, one repeated letter cycles, 700 ms), `groupRuns`) and `webview-select-menu.tsx`
+      (`WebviewSelectMenu`: `role="listbox"` with `aria-activedescendant`, options with `aria-selected`/`aria-disabled`,
+      optgroups as `role="group"`; Enter or Space (outside type-ahead) choose, Escape or Tab close with none, a click on
+      an enabled option chooses, a press outside (document capture listener) or a blur closes with none and the press
+      goes on to the page; theme vars in web.css `.webview-select-*`). The canvas places it from the frame shown when the
+      event lands (no frame: answers null), keys it by the popup id (a new popup replaces the old), closes it when the
+      page's URL changes or the page goes, and refocuses the hidden textarea after an answer. Unit tests in
+      `test/unit/select-hit.test.ts` (scripts in a vm context with a fake DOM, parsing and caps, held order, timeout and
+      failure fallbacks, text behind a press, nonce rules, the manager target), plus the adapter
+      (`electron-offscreen-webview.test.ts`), the router (`ipc-router.test.ts`) and `remoteEvent` (`web-protocol.test.ts`).
+- ➕ **for Task 10**: design-web-browser.md §4.4 already has an "Implemented" paragraph (keyboard-only: selects in
+      iframes or closed shadow roots, listboxes); features.md should say a select opens the browser's own dropdown and
+      that the page sees focus, `input` and `change` but not the mouse events of that click. Not tested: a real phone
+      (touch on the dropdown), a select whose options change while the popup is open (the answer then sets the index
+      the person saw, if still enabled), a page zoomed by the page itself (CSS `zoom`).
 
 ### Task 10: Docs, guide and skill [model: sonnet]
 

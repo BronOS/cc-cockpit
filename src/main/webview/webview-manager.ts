@@ -179,6 +179,10 @@ export interface WebviewView {
   insertText?(text: string): void
   /** Server mode's off-screen view only: the page's selection (webview-input.ts SELECTION_SCRIPT, isolated world). */
   readSelection?(): Promise<unknown>
+  /** Server mode's off-screen view only: what select is under a press (select-hit.ts hitScript, isolated world). */
+  hitSelect?(x: number, y: number, id: string): Promise<unknown>
+  /** Server mode's off-screen view only: a browser's answer to a select popup (select-hit.ts chooseScript). */
+  chooseSelect?(id: string, index: number | null): Promise<unknown>
 }
 
 export interface WebviewViewFactory {
@@ -508,6 +512,8 @@ export class WebviewManager {
     if (!size || !sendInput) return undefined
     const insertText = view.insertText
     const readSelection = view.readSelection
+    const hitSelect = view.hitSelect
+    const chooseSelect = view.chooseSelect
     return {
       size: () => size(),
       // Looked up again per call: the record may have gone in between (a crash, the plugin off).
@@ -523,6 +529,13 @@ export class WebviewManager {
         : {}),
       ...(readSelection
         ? { readSelection: () => (this.isLive(rec) ? readSelection() : Promise.resolve(undefined)) }
+        : {}),
+      // A gone page answers "nothing there", so a held press is let go (and then dropped by send).
+      ...(hitSelect
+        ? { hitSelect: (x: number, y: number, id: string) => (this.isLive(rec) ? hitSelect(x, y, id) : Promise.resolve(undefined)) }
+        : {}),
+      ...(chooseSelect
+        ? { chooseSelect: (id: string, index: number | null) => (this.isLive(rec) ? chooseSelect(id, index) : Promise.resolve(false)) }
         : {})
     }
   }

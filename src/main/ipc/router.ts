@@ -1619,8 +1619,8 @@ export interface WebviewHandlerDeps {
   server?: boolean
   /** Server mode's viewers and size owner (webview-viewers.ts); absent: the two channels refuse. */
   viewers?: Pick<WebviewViewers, 'report' | 'claimOwner' | 'leave'>
-  /** Server mode's input gate (webview-input.ts); absent: `webviews.input` and `webviews.insertText` refuse. */
-  input?: Pick<WebviewInput, 'accept' | 'acceptText'>
+  /** Server mode's input gate (webview-input.ts); absent: `webviews.input`, `.insertText` and `.selectChoose` refuse. */
+  input?: Pick<WebviewInput, 'accept' | 'acceptText' | 'acceptChoice'>
 }
 
 /**
@@ -1707,7 +1707,7 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
   // input once sent. The same gate as place/fit (main's flag, the view main bound), the panel by the
   // caller's own window's layout; the input gate checks the view is a viewer of it now, every
   // field, the page bounds and the rate (webview-input.ts).
-  const inputFor = (channel: string, view: CallView): Pick<WebviewInput, 'accept' | 'acceptText'> => {
+  const inputFor = (channel: string, view: CallView): Pick<WebviewInput, 'accept' | 'acceptText' | 'acceptChoice'> => {
     if (deps.server !== true || !view.remote || !deps.input) {
       throw new Error(`${channel}: only a browser view of a server shows a streamed webview`)
     }
@@ -1724,6 +1724,15 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     const input = inputFor('webviews.insertText', view)
     const owner = panelOf('webviews.insertText', ctx, payload)
     input.acceptText({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId, fields('webviews.insertText', payload).text)
+  })
+  // `adapted` (§4.4): the answer to a select popup main sent this view, by the same gate; the input
+  // gate takes only this view's current popup id for the panel, and an index that popup listed as
+  // choosable (webview-input.ts acceptChoice).
+  router.handleProject('webviews.selectChoose', (ctx, payload, view) => {
+    const input = inputFor('webviews.selectChoose', view)
+    const owner = panelOf('webviews.selectChoose', ctx, payload)
+    const { id, index } = fields('webviews.selectChoose', payload)
+    input.acceptChoice({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId, id, index)
   })
 }
 

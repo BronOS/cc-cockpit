@@ -526,6 +526,58 @@ html[data-shell='web']:has(.tabs-pane) body {
 .webview-fit:hover {
   background: var(--cc-accent-soft);
 }
+/* A streamed page's <select> popup (webview-select-menu.tsx, design-web-browser.md §4.4): the page
+   does not paint its own, so the shell draws this over the select's place on the canvas, in the
+   shell's menu look (as the settings font picker). Placed and sized by webview-select.ts. */
+.webview-select-menu {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-menu);
+  box-shadow: 0 10px 30px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  color: var(--cc-fg);
+  font-size: var(--cc-text-sm);
+  outline: none;
+}
+.webview-select-menu:focus-visible {
+  box-shadow: 0 0 0 2px var(--cc-accent), 0 10px 30px var(--cc-shadow);
+}
+.webview-select-option,
+.webview-select-note {
+  min-height: 28px;
+  box-sizing: border-box;
+  padding: 5px 9px;
+  border-radius: var(--cc-radius-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.webview-select-option.active {
+  background: var(--cc-accent-soft);
+}
+/* The page's current choice: in the accent (the highlight alone moves with the keys). */
+.webview-select-option[aria-selected='true'] {
+  color: var(--cc-accent);
+  font-weight: 600;
+}
+.webview-select-option[aria-disabled='true'],
+.webview-select-note {
+  color: var(--cc-fg-muted);
+}
+.webview-select-group .webview-select-option {
+  padding-left: 18px;
+}
+.webview-select-heading {
+  padding: 5px 9px 3px;
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
+  color: var(--cc-fg-subtle);
+}
 /* A phone: the label would push the URL out of the toolbar. */
 @media (max-width: 480px) {
   .webview-fit {

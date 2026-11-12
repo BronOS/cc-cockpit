@@ -337,6 +337,26 @@ export type WebviewInputEventWire =
   | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers?: WebviewInputModifier[] }
   | { kind: 'key'; type: 'down' | 'up'; key: string; modifiers?: WebviewInputModifier[] }
 
+/** One option of a streamed page's `<select>` popup (main/webview/select-hit.ts). */
+export interface WebviewSelectOption {
+  /** Its index in the select's `options` (what `webviews.selectChoose` answers with). */
+  index: number
+  /** Its label, trimmed, at most 200 units, no control characters. */
+  label: string
+  /** Disabled, or in a disabled group: shown, never chosen. */
+  disabled: boolean
+  /** The label of its `<optgroup>`, when it is in one. */
+  group?: string
+}
+
+/** A select's rectangle in the page's viewport CSS px. */
+export interface WebviewSelectRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 /**
  * `PanelInfo.error` of every panel of a plugin whose host crashed too often and was given up on
  * (host-manager.ts): the panel then offers Restart (`plugins.restart`) instead of its page.
@@ -1355,6 +1375,13 @@ export interface IpcInvokeMap {
    * the size. Main inserts it as the page's committed text (`webContents.insertText`).
    */
   'webviews.insertText': { req: { panelKey: string; text: string }; res: void }
+  /**
+   * Server mode, a viewer of the panel only (design-web-browser.md §4.4): the answer to the
+   * `webviews.select` popup `id` main sent this view, the chosen option's index or null for none
+   * (Escape, a click elsewhere). Main takes only the view's current popup id for the panel, once;
+   * an index it did not list, or listed as disabled, is refused.
+   */
+  'webviews.selectChoose': { req: { panelKey: string; id: string; index: number | null }; res: void }
 
   // Tabs. All are scoped to the sender's project: a tab id that belongs to another project is
   // treated as unknown.
@@ -1604,6 +1631,13 @@ export interface IpcEventMap {
    */
   'webviews.selection': { panelKey: string; text: string }
   /**
+   * Server mode: a press of this view landed on a `<select>` of the streamed page, whose popup the
+   * page does not paint (design-web-browser.md §4.4); the press did not reach the page. The browser
+   * draws its own dropdown at `rect` (page CSS px) and answers `webviews.selectChoose` with `id`. At
+   * most 500 options, labels capped (main/webview/select-hit.ts); to the clicking view only.
+   */
+  'webviews.select': { panelKey: string; id: string; options: WebviewSelectOption[]; selected: number; rect: WebviewSelectRect }
+  /**
    * A chord typed into a native view the page cannot see (a webview panel) that main resolved to
    * this command: run it as if the key had been pressed here (same modal rules).
    */
@@ -1751,6 +1785,7 @@ export const INVOKE_CHANNELS = [
   'webviews.fit',
   'webviews.input',
   'webviews.insertText',
+  'webviews.selectChoose',
   'tabs.list',
   'tabs.create',
   'tabs.commands',
@@ -1808,6 +1843,7 @@ export const EVENT_CHANNELS = [
   'webviews.navigated',
   'webviews.cursor',
   'webviews.selection',
+  'webviews.select',
   'commands.trigger'
 ] as const satisfies readonly EventChannel[]
 
@@ -2077,6 +2113,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // view whose input changed it (ViewRegistry.toView) and to no remote view outside server mode.
   'webviews.insertText': 'adapted',
   'webviews.selection': 'adapted',
+  // `<select>` popups (§4.4): the popup goes only to the view whose press hit the select
+  // (ViewRegistry.toView) and to no remote view outside server mode; its answer takes the same gate as
+  // `webviews.input` and only the id main gave that view.
+  'webviews.select': 'adapted',
+  'webviews.selectChoose': 'adapted',
 
   // Tabs and terminals. Input from a remote view is the person typing (`typed` and the send gate
   // apply unchanged, Task 16); the flag is the person's, and a remote view is the person.

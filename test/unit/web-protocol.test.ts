@@ -1670,6 +1670,10 @@ describe('the web access card (server mode)', () => {
     expect(remoteEvent('webviews.cursor', { panelKey: 'a/b', cursor: 'pointer' }, true)).toEqual({ payload: { panelKey: 'a/b', cursor: 'pointer' } })
     expect(remoteEvent('webviews.selection', { panelKey: 'a/b', text: 'x' }, false)).toBeUndefined()
     expect(remoteEvent('webviews.selection', { panelKey: 'a/b', text: 'x' }, true)).toEqual({ payload: { panelKey: 'a/b', text: 'x' } })
+    // A select popup (§4.4, Task 9): the same.
+    const popup = { panelKey: 'a/b', id: 'f'.repeat(32), options: [], selected: -1, rect: { x: 0, y: 0, width: 1, height: 1 } }
+    expect(remoteEvent('webviews.select', popup, false)).toBeUndefined()
+    expect(remoteEvent('webviews.select', popup, true)).toEqual({ payload: popup })
   })
 
   // design-web.md §9.9: notifications and their sound stay on the host on the desktop (§6.1), so a

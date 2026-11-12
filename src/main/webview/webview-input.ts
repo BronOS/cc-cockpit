@@ -52,14 +52,23 @@
 // frame limit, and an oversize event closes the browser view, terminals included) and capped at
 // MAX_SELECTION_BYTES of the JSON-encoded string.
 //
-// Pure: no Electron (the view's sendInput, insertText and readSelection are injected), clock and
-// timers injected.
+// `<select>` popups (Task 9, design-web-browser.md §4.4, select-hit.ts): a left press is held while
+// main hit-tests its point in the same isolated world; the events after it in this call and later
+// calls, and inserted text, queue behind it (in order, at most MAX_HELD_EVENTS) until the answer or
+// HIT_TIMEOUT_MS, whichever is first (text typed right after a click into a field must not land
+// before the click focused it). A select: the press and its release never reach the page, the popup goes to
+// this view (`webviews.select`) and its answer (`acceptChoice`) sets the value. Anything else, a
+// failed hit-test or one too slow: the press goes, then what queued, as if nothing had waited.
+//
+// Pure: no Electron (the view's sendInput, insertText, readSelection, hitSelect and chooseSelect
+// are injected), clock, timers and popup ids injected.
 
 import { isPlainObject } from '../../shared/guards'
-import type { WebviewInputModifier } from '../../shared/ipc'
+import type { IpcEventMap, WebviewInputModifier } from '../../shared/ipc'
 import { MAX_KEY_NAME_LENGTH, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../shared/webview-keys'
 import type { ViewId } from '../../shared/views'
 import type { PlaceSize, WebviewPanelOf } from './webview-viewers'
+import { HIT_TIMEOUT_MS, MAX_HELD_EVENTS, MAX_SELECT_OPTIONS, newSelectId, parseHitResult, SelectPopups } from './select-hit'
 
 /** Most events one `webviews.input` call may carry. */
 export const MAX_INPUT_EVENTS = 64
@@ -304,6 +313,13 @@ export interface InputTarget {
   insertText?(text: string): void
   /** SELECTION_SCRIPT's result in WEBVIEW_WORLD_ID; rejects or never settles for a page that is gone or hung. */
   readSelection?(): Promise<unknown>
+  /**
+   * select-hit.ts hitScript at page CSS px (x, y) in WEBVIEW_WORLD_ID, keeping the select under
+   * `id` (absent: presses go to the page unasked). Rejects or never settles for a gone or hung page.
+   */
+  hitSelect?(x: number, y: number, id: string): Promise<unknown>
+  /** select-hit.ts chooseScript for popup `id` in WEBVIEW_WORLD_ID (null: forget it). */
+  chooseSelect?(id: string, index: number | null): Promise<unknown>
 }
 
 /** Timers for the selection debounce (tests drive them by hand). */
@@ -324,10 +340,34 @@ export interface WebviewInputDeps {
    * `webviews.selection`). Absent: no selection is read.
    */
   pushSelection?(viewId: ViewId, event: { panelKey: string; text: string }): void
+  /**
+   * Send a select popup to the one view whose press hit it (index.ts: ViewRegistry.toView with
+   * `webviews.select`). Absent: presses are never held, a select stays keyboard-only.
+   */
+  pushSelect?(viewId: ViewId, event: IpcEventMap['webviews.select']): void
+  /** A new popup id (default select-hit.ts newSelectId, 32 random hex digits). */
+  newSelectId?: () => string
   /** Clock in ms (default Date.now; tests pin it). */
   now?: () => number
-  /** The selection debounce's timers (default setTimeout). */
+  /** The selection debounce's and the hit-test's timers (default setTimeout). */
   timers?: SelectionTimers
+}
+
+type PressEvent = Extract<ElectronInputEvent, { type: 'mouseDown' | 'mouseUp' }>
+/** What waits behind a held press: input events and committed texts, in the order they came. */
+type QueuedInput = ElectronInputEvent | { type: 'insertText'; text: string }
+
+/** One view's press path for one panel (only while a hit-test runs or a release is to be dropped). */
+interface PressLane {
+  id: string
+  panel: WebviewPanelOf
+  viewId: ViewId
+  /** The hit-test in flight: its press (held), its timeout, its popup id. */
+  hit: { seq: number; press: PressEvent; timer: unknown; selectId: string } | undefined
+  /** Events and texts that came after the held press, in order. */
+  held: QueuedInput[]
+  /** The last left press went to a popup: its release (the next left mouseUp) does not go either. */
+  dropRelease: boolean
 }
 
 interface Bucket {
@@ -353,6 +393,11 @@ function panelKeyOf(panel: WebviewPanelOf): string {
   return `${panel.pluginId}/${panel.panelId}`
 }
 
+/** A panel within a view's maps: its window too (one view only ever has one window, but be exact). */
+function laneIdOf(panel: WebviewPanelOf): string {
+  return `${panel.windowId}/${panelKeyOf(panel)}`
+}
+
 const defaultTimers: SelectionTimers = {
   set: (fn, ms) => setTimeout(fn, ms),
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)
@@ -370,6 +415,10 @@ export class WebviewInput {
   private readonly buckets = new Map<ViewId, Bucket>()
   /** By view id, then panel key (`windowId/pluginId/panelId`): forgotten with the view. */
   private readonly selections = new Map<ViewId, Map<string, SelectionEntry>>()
+  /** By view id, then panel key (`windowId/pluginId/panelId`): forgotten with the view. */
+  private readonly lanes = new Map<ViewId, Map<string, PressLane>>()
+  private readonly popups = new SelectPopups()
+  private hitSeq = 0
   private readonly now: () => number
   private readonly timers: SelectionTimers
 
@@ -404,11 +453,32 @@ export class WebviewInput {
     // Claimed before the page gets them, so the size the press asks for is already on its way;
     // the events themselves are in the coordinates of the frame the person saw.
     if (claim) this.deps.claimOwner(panel, viewId)
-    if (out.length > 0) {
-      target.send(out)
-      if (out.some((e) => e.type === 'mouseUp' || e.type === 'keyDown')) this.selectionMayChange(panel, viewId)
-    }
+    if (out.length > 0) this.deliver(panel, viewId, target, out)
     return sent
+  }
+
+  /**
+   * One `webviews.selectChoose` call from `viewId` for `panel`: the same viewer check as `accept`.
+   * Taken only with the view's current popup id for the panel (once: the popup is closed by it);
+   * any other id, an index the popup did not list or listed disabled, and an over-rate call are
+   * ignored. Returns whether a choice went to the page (null: the popup closed with none).
+   */
+  acceptChoice(panel: WebviewPanelOf, viewId: ViewId, id: unknown, index: unknown): boolean {
+    if (!this.deps.isViewer(panel, viewId)) fail('not a viewer of this panel')
+    if (index !== null && (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= MAX_SELECT_OPTIONS)) {
+      fail('index must be an option index or null')
+    }
+    const open = this.popups.take(viewId, laneIdOf(panel), id)
+    if (!open) return false
+    const choose = this.deps.target(panel)?.chooseSelect
+    if (!choose) return false
+    if (index === null || !open.choosable.has(index) || this.take(viewId, 1) === 0) {
+      // Forget the element in the page's world either way (it is capped there too).
+      void choose(open.id, null).catch(() => {})
+      return false
+    }
+    void choose(open.id, index).catch(() => {})
+    return true
   }
 
   /**
@@ -428,18 +498,144 @@ export class WebviewInput {
     const target = this.deps.target(panel)
     if (!target?.insertText) return false
     this.deps.claimOwner(panel, viewId)
-    target.insertText(text)
-    this.selectionMayChange(panel, viewId)
+    // Behind a held press like any key: text typed right after a click must land where the click
+    // put the caret (the press goes first), never before it.
+    this.deliver(panel, viewId, target, [{ type: 'insertText', text }])
     return true
   }
 
-  /** The view's socket closed: its bucket and its selection reads go. */
+  /** The view's socket closed: its bucket, its held presses, its popups and its selection reads go. */
   viewGone(viewId: ViewId): void {
     this.buckets.delete(viewId)
+    this.popups.viewGone(viewId)
+    const lanes = this.lanes.get(viewId)
+    this.lanes.delete(viewId)
+    // A held press never went, so no release is owed to the page.
+    for (const lane of lanes?.values() ?? []) if (lane.hit) this.timers.clear(lane.hit.timer)
     const entries = this.selections.get(viewId)
     if (!entries) return
     this.selections.delete(viewId)
     for (const entry of entries.values()) if (entry.timer !== undefined) this.timers.clear(entry.timer)
+  }
+
+  /** Checked, mapped events for the page, behind a hit-test in flight if there is one. */
+  private deliver(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: QueuedInput[]): void {
+    const lane = this.lanes.get(viewId)?.get(laneIdOf(panel))
+    if (lane?.hit) {
+      // Over the cap the newest go: a browser of ours sends a few per animation frame.
+      const room = MAX_HELD_EVENTS - lane.held.length
+      if (room > 0) lane.held.push(...events.slice(0, room))
+      return
+    }
+    this.run(panel, viewId, target, events, lane)
+  }
+
+  /**
+   * Send `events` in order, up to a left press that needs a hit-test (the target can hit-test and
+   * a popup can be sent): it and the rest wait (startHit). A release owed to a popup is dropped.
+   */
+  private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly QueuedInput[], lane: PressLane | undefined): void {
+    let out: ElectronInputEvent[] = []
+    const canHit = target.hitSelect !== undefined && this.deps.pushSelect !== undefined
+    for (let i = 0; i < events.length; i++) {
+      const event = events[i] as QueuedInput
+      if (event.type === 'insertText') {
+        this.send(panel, viewId, target, out)
+        out = []
+        target.insertText?.(event.text)
+        this.selectionMayChange(panel, viewId)
+        continue
+      }
+      const left = (event.type === 'mouseDown' || event.type === 'mouseUp') && event.button === 'left'
+      if (left && event.type === 'mouseDown') {
+        // A new press: whatever release a popup was owed is moot (it never came, or came before).
+        if (lane) lane.dropRelease = false
+        if (canHit) {
+          this.send(panel, viewId, target, out)
+          this.startHit(panel, viewId, target, event, events.slice(i + 1))
+          return
+        }
+      } else if (left && lane?.dropRelease) {
+        lane.dropRelease = false
+        continue
+      } else if (lane?.dropRelease && event.type === 'mouseMove' && event.modifiers.includes('leftbuttondown')) {
+        // The page never saw that press: no drag of it either.
+        out.push({ ...event, modifiers: event.modifiers.filter((m) => m !== 'leftbuttondown') })
+        continue
+      }
+      out.push(event)
+    }
+    this.send(panel, viewId, target, out)
+  }
+
+  private send(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, out: readonly ElectronInputEvent[]): void {
+    if (out.length === 0) return
+    target.send(out)
+    if (out.some((e) => e.type === 'mouseUp' || e.type === 'keyDown')) this.selectionMayChange(panel, viewId)
+  }
+
+  private lane(panel: WebviewPanelOf, viewId: ViewId): PressLane {
+    let lanes = this.lanes.get(viewId)
+    if (!lanes) {
+      lanes = new Map()
+      this.lanes.set(viewId, lanes)
+    }
+    const id = laneIdOf(panel)
+    let lane = lanes.get(id)
+    if (!lane) {
+      lane = { id, panel, viewId, hit: undefined, held: [], dropRelease: false }
+      lanes.set(id, lane)
+    }
+    return lane
+  }
+
+  /** Hold `press` and `rest` while the page says what is under the press (or HIT_TIMEOUT_MS passes). */
+  private startHit(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, press: PressEvent, rest: QueuedInput[]): void {
+    const lane = this.lane(panel, viewId)
+    const seq = ++this.hitSeq
+    const selectId = (this.deps.newSelectId ?? newSelectId)()
+    lane.held = rest.slice(0, MAX_HELD_EVENTS)
+    lane.hit = { seq, press, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
+    let pending: Promise<unknown>
+    try {
+      pending = (target.hitSelect as NonNullable<InputTarget['hitSelect']>)(press.x, press.y, selectId)
+    } catch {
+      this.hitDone(lane, seq, undefined)
+      return
+    }
+    // A page that went or failed: the press goes on as a click (hitDone with nothing).
+    pending.then(
+      (raw) => this.hitDone(lane, seq, raw),
+      () => this.hitDone(lane, seq, undefined)
+    )
+  }
+
+  /**
+   * The hit-test `seq` answered (`raw`), failed or timed out (undefined). Only the first of these for
+   * the lane's current hit counts; a late answer finds the press already gone to the page.
+   */
+  private hitDone(lane: PressLane, seq: number, raw: unknown): void {
+    const hit = lane.hit
+    if (!hit || hit.seq !== seq || this.lanes.get(lane.viewId)?.get(lane.id) !== lane) return
+    this.timers.clear(hit.timer)
+    lane.hit = undefined
+    const held = lane.held
+    lane.held = []
+    const target = this.deps.target(lane.panel)
+    if (!target) return
+    const select = parseHitResult(raw)
+    // A view that stopped viewing the panel meanwhile gets no popup: the press goes as it came.
+    if (select && this.deps.pushSelect && this.deps.isViewer(lane.panel, lane.viewId)) {
+      this.popups.set(lane.viewId, lane.id, select, hit.selectId)
+      lane.dropRelease = true
+      this.deps.pushSelect(lane.viewId, { panelKey: panelKeyOf(lane.panel), id: hit.selectId, ...select })
+      this.run(lane.panel, lane.viewId, target, held, lane)
+      return
+    }
+    // Not a select: the press goes first, then what waited for it; a press among those is asked
+    // about in turn. Not through run for the press itself: it would be hit-tested again.
+    this.send(lane.panel, lane.viewId, target, [hit.press])
+    this.run(lane.panel, lane.viewId, target, held, lane)
   }
 
   /** Input from `viewId` may have changed `panel`'s selection: (re)start the debounce. */
