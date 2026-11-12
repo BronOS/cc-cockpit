@@ -21,6 +21,9 @@ on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/
 Streamed web views (server mode: the Browser and every webview panel rendered off-screen on the server and streamed to
 browsers over the view's WebSocket, one port) are implemented; design in `docs/design-web-browser.md`, plan in
 `docs/plans/completed/20261111-streamed-webviews.md`, user docs in `docs/features.md` ("Server mode" › "The Browser panel").
+Remote servers (the desktop picker connects to a server-mode cockpit over SSH or a Direct link and opens its projects
+in sandboxed desktop windows running the server's web client) are implemented; design in `docs/design-remote-desktop.md`,
+plan in `docs/plans/completed/20261112-remote-desktop.md`, user docs in `docs/features.md` ("Remote servers").
 
 ## Commands
 
@@ -184,6 +187,14 @@ browsers over the view's WebSocket, one port) are implemented; design in `docs/d
   only when `server && view.remote`, from a current viewer, the panel key resolved through the caller's layout, never trusted
   from the payload. Clipboard chords (Ctrl/Cmd+C, X, V, Shift+Insert) are never forwarded to the page; scripts run in the page
   use the isolated world `WEBVIEW_WORLD_ID` (1717), never the main world.
+- Remote servers (design-remote-desktop.md, `main/remote/`): a remote window is a browser tab, never a project window: no
+  preload, sandboxed, partition `persist:remote-<id>` (only `electron-remote-window.ts` makes one; grep test), the webview
+  hardening plus a loopback-request block, and `WindowManager` only counts it (`remoteWindowCount`). The device cookie lives
+  encrypted in the server's `app.json` record and is kept in the jar as a session cookie only (`remote-cookie.ts`), never
+  on disk. `ssh` is spawned only in `ssh-process.ts`, argv only, BatchMode with the ssh_config overrides of §5.1; the
+  remote command is `remoteCommand` (every word single-quoted, `'`, `\`, `!` and control characters refused); a tunnel is
+  ready only on ssh's own `Local forwarding listening on 127.0.0.1 port <L>.` line, never on a TCP connect alone (another
+  local process could hold the port and get the cookie). `remote.*` channels are `no` and answer the local picker only.
 - Plugin pages over HTTP are served by path token (`/p/<token>/`, one per device and plugin, killed on revoke; inline overlays
   under `/o/<token>/`): the token is the only credential, since a sandboxed page's requests carry no cookie. Responses carry the
   rewritten plugin CSP, no redirects, `no-store`. Pages must use relative URLs (the server rewrites only root-absolute `src` and

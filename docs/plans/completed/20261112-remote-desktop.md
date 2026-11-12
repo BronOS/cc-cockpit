@@ -274,17 +274,20 @@
 - [x] run tests - must pass before task 10
 
 ### Task 10: Verify acceptance criteria [model: sonnet]
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled (taken local port, server restart, revoked device, old server, https server)
-- [ ] run full test suite: `npm run typecheck && npm run lint && npm test && npm run test:plugins`
-- [ ] run e2e tests: `npm run test:e2e`
-- [ ] `node scripts/server-mode-smoke.mjs`
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases are handled (taken local port, server restart, revoked device, old server, https server)
+- [x] run full test suite: `npm run typecheck && npm run lint && npm test && npm run test:plugins`
+- [x] run e2e tests: `npm run test:e2e`
+- [x] `node scripts/server-mode-smoke.mjs`
+- ➕ result (2026-11-12): typecheck, lint, 5959 unit, 260 plugin tests and the smoke pass; e2e 259 passed, 7 failed:
+  the remote-desktop SSH test and files-menu passed on rerun (flaky in the full run); bundled-plugins:129 and
+  reviewer-annotate:282 fail the same on d702f72 (before this work), the other three are the known Hyprland ones.
 
 ### Task 11: [Final] Update documentation [model: sonnet]
-- [ ] update README.md if needed
-- [ ] update CLAUDE.md (State line; an Implementation patterns bullet for remote windows: sandboxed, no preload,
+- [x] update README.md if needed
+- [x] update CLAUDE.md (State line; an Implementation patterns bullet for remote windows: sandboxed, no preload,
       own partition with the cookie never on disk, counted by `WindowManager`, ssh BatchMode argv only)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
