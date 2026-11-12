@@ -1,12 +1,13 @@
 // The web shell's key table (design-web.md §5.2 "Keys", plan Task 16): chords a browser keeps for
 // itself move to their Alt alternative, per the browser's platform; nothing else changes.
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chordOf, commandForEvent, registerHandlers, resetKeybindings, setCommands } from '../../src/renderer/commands/keybindings'
 import { browserKeeps, webKeyTable, withAlt } from '../../src/renderer/commands/web-keys'
 import { holdsPage, isOwnView, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
 import type { CommandsView } from '../../src/shared/ipc'
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   resetShellKindForTest()
   resetKeybindings()
 })
@@ -93,6 +94,33 @@ describe('setCommands in the web shell', () => {
     expect(chordOf('tab.close')).toBe('ctrl+alt+w')
     expect(commandForEvent(ev)).toBeUndefined()
     expect(commandForEvent({ ...ev, altKey: true })).toBe('tab.close')
+  })
+})
+
+describe('setCommands in a remote desktop window', () => {
+  const ev = { key: 'w', code: 'KeyW', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }
+  const run = (userAgent: string): void => {
+    vi.stubGlobal('navigator', { userAgent, platform: 'Linux x86_64' })
+    registerHandlers({ 'tab.close': () => undefined })
+    markWebShell()
+    setCommands(view({ 'tab.close': 'ctrl+w' }))
+  }
+
+  it('the web shell with the desktop agent keeps the desktop table', () => {
+    run('Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0 cc-cockpit-desktop/0.17.0 (laptop)')
+    expect(chordOf('tab.close')).toBe('ctrl+w')
+    expect(commandForEvent(ev)).toBe('tab.close')
+  })
+
+  it('a web shell in an ordinary browser still moves the chords', () => {
+    run('Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0 Safari/537.36')
+    expect(chordOf('tab.close')).toBe('ctrl+alt+w')
+    expect(commandForEvent(ev)).toBeUndefined()
+  })
+
+  it('a malformed agent counts as a browser', () => {
+    run('Chrome/130.0 cc-cockpit-desktop/0.17.0')
+    expect(chordOf('tab.close')).toBe('ctrl+alt+w')
   })
 })
 

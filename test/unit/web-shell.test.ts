@@ -217,6 +217,14 @@ describe('the sign-in step', () => {
     expect(deviceName('curl/8')).toBe('Browser')
   })
 
+  it('names a cc-cockpit desktop window by its hostname, within the server cap of 60', () => {
+    expect(deviceName('Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0 Safari/537.36 cc-cockpit-desktop/0.17.0 (laptop)')).toBe('cc-cockpit desktop on laptop')
+    const long = deviceName(`Chrome/130.0 cc-cockpit-desktop/0.17.0 (${'h'.repeat(64)})`)
+    expect(long).toBe(`cc-cockpit desktop on ${'h'.repeat(38)}`)
+    expect(long).toHaveLength(60)
+    expect(deviceName('Chrome/130.0 Safari/537.36 cc-cockpit-desktop/0.17.0')).toBe('Chrome')
+  })
+
   it('says what to do when signed out, per mode', () => {
     expect(signedOutText('link')).toMatch(/access link/)
     expect(signedOutText('password')).toMatch(/password/)

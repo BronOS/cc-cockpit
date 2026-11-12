@@ -116,12 +116,12 @@
 - Modify: `src/renderer/commands/keybindings.ts`, `src/renderer/web/sign-in.ts`
 - Modify: their unit tests
 
-- [ ] `parseDesktopAgent`: version and hostname from the suffix, length-capped, plain text only; undefined otherwise
-- [ ] `setCommands`: skip `webKeyTable` when the UA parses as the desktop app (comment: the UA only picks the chords
+- [x] `parseDesktopAgent`: version and hostname from the suffix, length-capped, plain text only; undefined otherwise
+- [x] `setCommands`: skip `webKeyTable` when the UA parses as the desktop app (comment: the UA only picks the chords
       the page listens to; a forged one changes nothing on the server)
-- [ ] `deviceName`: "cc-cockpit desktop on <hostname>" for the desktop agent
-- [ ] tests: parse (good, missing, oversize, control characters), the key table both ways, the device name
-- [ ] run tests - must pass before task 3
+- [x] `deviceName`: "cc-cockpit desktop on <hostname>" for the desktop agent
+- [x] tests: parse (good, missing, oversize, control characters), the key table both ways, the device name
+- [x] run tests - must pass before task 3
 
 ### Task 3: Saved servers and the link parser [model: sonnet]
 

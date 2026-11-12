@@ -17,6 +17,7 @@
 // page, so a reload while waiting goes on with the same request (one waits at a time) instead of
 // asking again. Both end in the same device cookie and a fresh page load.
 // DOM-free (the location, history and fetch are passed in) so unit tests run it in plain Node.
+import { parseDesktopAgent } from '../../shared/remote-agent'
 import type { WebAccessMode } from '../../shared/types'
 import {
   CONFIRM_ASK_PATH,
@@ -66,12 +67,18 @@ export function linkTokenOf(hash: string): string | undefined {
   return token !== null && token.length > 0 && token.length <= MAX_TOKEN_LENGTH ? token : undefined
 }
 
+const DESKTOP_DEVICE_PREFIX = 'cc-cockpit desktop on '
+
 /**
  * A short name for this browser on the desktop's device list ("Firefox on Android"). The person
  * sees it next to Revoke, so it only has to tell their devices apart; main cleans and caps it.
  * Order matters: Edge and Opera say Chrome too, and Chrome says Safari.
  */
 export function deviceName(userAgent: string): string {
+  // A cc-cockpit desktop window names itself (design-remote-desktop.md §5.2). Main caps device names
+  // at 60 characters (MAX_DEVICE_NAME), so the hostname is cut to keep the whole name whole.
+  const desktop = parseDesktopAgent(userAgent)
+  if (desktop !== undefined) return `${DESKTOP_DEVICE_PREFIX}${desktop.hostname.slice(0, 60 - DESKTOP_DEVICE_PREFIX.length)}`
   const ua = userAgent
   const browser = ua.includes('Firefox/')
     ? 'Firefox'

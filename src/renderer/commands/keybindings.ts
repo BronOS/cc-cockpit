@@ -6,6 +6,7 @@
 // own Esc); claiming it for a command nobody handles would break both.
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { chordFromEvent, splitChord, type KeyEventLike } from '../../shared/keys'
+import { parseDesktopAgent } from '../../shared/remote-agent'
 import { parseTabCommandId } from '../../shared/tab-commands'
 import { isWebShell } from '../shell-kind'
 import { webKeyTable } from './web-keys'
@@ -37,10 +38,15 @@ export function captureKeys(): () => void {
 /**
  * Replace the table with main's resolved one (`commands.list`). In the web shell, chords the
  * browser keeps for itself (Ctrl/Cmd+W, T, N, Ctrl+Tab) move to their Alt alternative first
- * (web-keys.ts), so the menus and the palette show the chord that works in this browser.
+ * (web-keys.ts), so the menus and the palette show the chord that works in this browser. A remote
+ * desktop window (user agent carries `cc-cockpit-desktop/`) keeps the desktop table.
  */
 export function setCommands(view: CommandsView): void {
-  if (isWebShell()) view = webKeyTable(view, typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'))
+  // A cc-cockpit desktop window showing a remote server (design-remote-desktop.md §4) is a web shell
+  // too, but nothing there keeps those chords, so it uses the desktop table. The user agent only
+  // picks which chords this page listens to; a forged one changes nothing on the server.
+  const inDesktopWindow = typeof navigator !== 'undefined' && parseDesktopAgent(navigator.userAgent) !== undefined
+  if (isWebShell() && !inDesktopWindow) view = webKeyTable(view, typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'))
   commands = view.commands
   chords = new Map()
   for (const c of view.commands) if (c.key) chords.set(c.key, c.id)
