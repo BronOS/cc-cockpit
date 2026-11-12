@@ -258,8 +258,9 @@ export function selectSecretStore(
 }
 
 /**
- * Every stored value in the data dir: `secrets.json` (plugin secrets and secret settings fields)
- * and `web-access.json` (the access link's token and the password). Read tolerantly: a missing or
+ * Every stored value in the data dir: `secrets.json` (plugin secrets and secret settings fields),
+ * `web-access.json` (the access link's token and the password) and `app.json` › `remoteServers`
+ * (each saved remote server's encrypted device cookie). Read tolerantly: a missing or
  * damaged file has none. For the counts start logs and `ccc web status` shows, never for a read.
  */
 export function storedSecretValues(dataDir: string, read: (path: string) => string = (p) => readFileSync(p, 'utf8')): string[] {
@@ -283,6 +284,15 @@ export function storedSecretValues(dataDir: string, read: (path: string) => stri
   if (isPlainObject(web)) {
     for (const record of [web.accessToken, web.password]) {
       if (isPlainObject(record) && typeof record.stored === 'string') values.push(record.stored)
+    }
+  }
+  // The remote servers' device cookies (design-remote-desktop.md §2) sit in app.json itself, in each
+  // server's record. Read raw: only string `cookie` members of the entries, with no validation (the
+  // counts want every stored value, and a hand-damaged entry must not hide one).
+  const app = parse(paths.appJson)
+  if (isPlainObject(app) && Array.isArray(app.remoteServers)) {
+    for (const server of app.remoteServers) {
+      if (isPlainObject(server) && typeof server.cookie === 'string' && server.cookie !== '') values.push(server.cookie)
     }
   }
   return values

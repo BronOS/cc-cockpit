@@ -5,6 +5,7 @@
 // that do not match); see src/main/store/json-file.ts.
 import type { LayoutState } from './layout'
 import type { ProjectColor } from './project-color'
+import type { RemoteServer } from './remote-servers'
 import type { TerminalFont } from './terminal-font'
 import type { WindowBackground } from './window-background'
 
@@ -284,6 +285,12 @@ export interface AppSettings {
    * whose §4.3 risk was never confirmed is refused (nothing listens), never quietly moved to loopback.
    */
   webAccess?: Partial<WebAccessSettings>
+  /**
+   * Saved remote servers (design-remote-desktop.md §2). The file is user-writable, so every read goes
+   * through `validateRemoteServers` (shared/remote-servers.ts), which caps and repairs it; the device
+   * cookie of each is stored encrypted (`RemoteServerStore`, main/remote/remote-servers.ts).
+   */
+  remoteServers?: RemoteServer[]
 }
 
 /** How a browser signs in (design-web.md §4.2); every mode ends in the same device cookie. */

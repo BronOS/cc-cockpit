@@ -126,21 +126,21 @@
 ### Task 3: Saved servers and the link parser [model: sonnet]
 
 **Files:**
-- Create: `src/shared/remote-servers.ts` (types, `parseRemoteLink`, `checkSshHost`, `cccCommand`)
+- Create: `src/shared/remote-servers.ts` (types, `parseRemoteLink`, `checkSshHost`, `remoteCommand`)
 - Create: `src/main/remote/remote-servers.ts` (store over `app.json`, secret keys)
 - Create: `test/unit/remote-servers.test.ts`
 
-- [ ] `RemoteServer` type (with encrypted `cookie` and `localPort`) and validation of `app.json › remoteServers` on
+- [x] `RemoteServer` type (with encrypted `cookie` and `localPort`) and validation of `app.json › remoteServers` on
       read (cap 32 servers, 8 recents, string lengths, unknown `via` kinds dropped)
-- [ ] `parseRemoteLink(text)`: `URL` only, `http:`/`https:`, no userinfo, path `/`, optional `#t=<token>`; returns
+- [x] `parseRemoteLink(text)`: `URL` only, `http:`/`https:`, no userinfo, path `/`, optional `#t=<token>`; returns
       `{ origin, token? }` or a refusal text
-- [ ] `checkSshHost` (allowlist), `remoteScript(override?)` (the fixed `sh -c` script and its argv, `CCC=` quoting,
+- [x] `checkSshHost` (allowlist), `remoteCommand(args, override?)` (the fixed `sh -c` script and its argv, `CCC=` quoting,
       `'` refused)
-- [ ] store: add, rename, forget (drops the record and its cookie), set / clear the cookie through `SecretStore`
+- [x] store: add, rename, forget (drops the record and its cookie), set / clear the cookie through `SecretStore`
       (`encrypt`/`decrypt`; no store → not kept, flagged for the picker), record a recent project, save `localPort`;
       ids random; the cookie added to `storedSecretValues`
-- [ ] tests for each (success and refusals)
-- [ ] run tests - must pass before task 4
+- [x] tests for each (success and refusals)
+- [x] run tests - must pass before task 4
 
 ### Task 4: SSH commands and the tunnel [model: opus]
 
