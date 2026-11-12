@@ -149,19 +149,19 @@
   typecheck green
 - Modify: `test/unit/remote-servers*.test.ts`
 
-- [ ] `RemoteVia` per design §2 (`ssh` with user, port, optional `auth`, ccc; `tunnel` with localPort, remotePort,
+- [x] `RemoteVia` per design §2 (`ssh` with user, port, optional `auth`, ccc; `tunnel` with localPort, remotePort,
       sshHost; `direct`), validation and caps (host and user allowlists, ports 1-65535, key path absolute or `~/`,
       length caps); a record with no `auth` reads as `auto`
-- [ ] top-level `secrets` (`password`, `passphrase`) encrypted through `SecretStore`, stripped wherever the cookie is
+- [x] top-level `secrets` (`password`, `passphrase`) encrypted through `SecretStore`, stripped wherever the cookie is
       (`withoutCookie` and every `RemoteServerRecord`); `setSecret` / `getSecret`, an in-memory map for not-remembered
       secrets, `setHostKey` / `clearHostKey`; Forget clears secrets, memory and host key
-- [ ] `sameVia` / `add` dedupe by kind and host, user, port (SSH) or `localPort` (tunnel); a second tunnel on a used
+- [x] `sameVia` / `add` dedupe by kind and host, user, port (SSH) or `localPort` (tunnel); a second tunnel on a used
       `localPort` refused
-- [ ] `RemoteServerInfo` gets `via` (no secrets exist there by construction) and `remembered: { password?, passphrase? }`
+- [x] `RemoteServerInfo` gets `via` (no secrets exist there by construction) and `remembered: { password?, passphrase? }`
       flags; `storedSecretValues` counts the new secrets
-- [ ] tests: validation (each kind, bad values, old record → auto), secrets round trip, no keyring (memory used),
+- [x] tests: validation (each kind, bad values, old record → auto), secrets round trip, no keyring (memory used),
       Forget clears everything, `list` and records never carry a secret, dedupe and the `localPort` refusal
-- [ ] run tests and typecheck - must pass before next task
+- [x] run tests and typecheck - must pass before next task
 
 ### Task 3: `~/.ssh/config` and `known_hosts` readers, fingerprints [model: opus]
 
@@ -169,18 +169,18 @@
 - Create: `src/main/remote/ssh-config.ts`, `src/main/remote/known-hosts.ts`
 - Create: `test/unit/ssh-config.test.ts`, `test/unit/known-hosts.test.ts`
 
-- [ ] `resolveSshConfig(host, {home, read})`: `Host` patterns (`*`, `?`, `!`, several per line), first value wins,
+- [x] `resolveSshConfig(host, {home, read})`: `Host` patterns (`*`, `?`, `!`, several per line), first value wins,
       `Include` relative to `~/.ssh` with globs and depth 4, keywords `HostName`, `User`, `Port`, `IdentityFile` (`~`
       expanded, a value with a `%` token ignored), `IdentityAgent`, `ProxyJump` / `ProxyCommand` reported as `jump`;
       `Match` blocks skipped and reported; files capped at 256 KiB
-- [ ] `fingerprint(keyBlob)`: `SHA256:` + unpadded base64 as `ssh-keygen -l`; `knownHostKeys(hostName, port, text)` →
+- [x] `fingerprint(keyBlob)`: `SHA256:` + unpadded base64 as `ssh-keygen -l`; `knownHostKeys(hostName, port, text)` →
       keys by type from exact plain and hashed `|1|salt|hash` entries (`[host]:port` for ports other than 22, comma
       lists), `@revoked` keys apart; wildcard, negated and `@cert-authority` lines ignored; `checkKnownHost(...)` →
       `trusted | changed | revoked | unknown`
-- [ ] tests for config (patterns, negation, first wins, Include loop and depth, `%` value ignored, Match, missing file)
-- [ ] tests for known_hosts (plain, hashed, port form, changed key, revoked, other type unknown, wildcard ignored) and
+- [x] tests for config (patterns, negation, first wins, Include loop and depth, `%` value ignored, Match, missing file)
+- [x] tests for known_hosts (plain, hashed, port form, changed key, revoked, other type unknown, wildcard ignored) and
       the fingerprint against a fixed `ssh-keygen -l` output
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 4: `SshLink`: connection, sign-in, host key, commands, owned tunnel [model: opus]
 
