@@ -1,7 +1,7 @@
 {
   "id": "cockpit.usage",
   "name": "Usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "api": 1,
   "main": "dist/host.js",
   "description": "Claude Code spend (API-equivalent) and tokens from the transcripts, and the rate-limit windows.",
