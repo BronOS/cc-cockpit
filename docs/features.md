@@ -384,6 +384,10 @@ ExecStart=/usr/bin/cc-cockpit --server
 EnvironmentFile=-%h/.config/cc-cockpit-server.env
 Restart=on-failure
 RestartSec=5
+# New files (data dir, key file, sockets, and what tabs write) readable by this user only
+UMask=0077
+# No core dumps: one would put secrets, tokens and session keys from memory on disk
+LimitCORE=0
 
 [Install]
 WantedBy=default.target
@@ -495,7 +499,7 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   `prompt` are silenced (`alert` returns at once, `confirm` answers no, `prompt` throws in the page). A `<select>`
   inside an iframe, a `multiple` or `size` > 1 list is keyboard-only (focus it, arrows, Enter). A touch drag on a phone
   is a mouse drag. A link that opens a new window (`window.open`,
-  `target="_blank"`) becomes a link notice, as elsewhere.
+  `target="_blank"`) becomes a link notice to click; it never opens a tab by itself.
 - *Limits:* at most 4 pages per project and 12 per app (a `ccc browser open` past that is refused with the reason).
   The page never runs in your browser and gets nothing from it but input, pasted text and its size.
 - *Not tested:* a real IME and phone keyboards, a real phone, a real server with a desktop portal on the session bus

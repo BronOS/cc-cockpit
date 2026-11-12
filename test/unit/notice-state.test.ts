@@ -91,6 +91,16 @@ describe('linkNoticeAction', () => {
     expect(linkNoticeAction({ url }, { webShell: true, activationActive: true })).toEqual({ kind: 'open', url })
     expect(linkNoticeAction({ url }, { webShell: true, activationActive: false })).toEqual({ kind: 'notice', url })
   })
+  // Review finding: a streamed page's window.open (no click of the person's) opened a tab whenever
+  // the person had just typed in a terminal. A page's own open, marked by main, is only the notice.
+  it("never opens a page's own open at once, whatever the activation", () => {
+    for (const activationActive of [true, false]) {
+      expect(linkNoticeAction({ url, page: true }, { webShell: true, activationActive })).toEqual({ kind: 'notice', url })
+    }
+    // Only main's `true` counts; anything else is a plain link.
+    expect(linkNoticeAction({ url, page: 'yes' }, { webShell: true, activationActive: true })).toEqual({ kind: 'open', url })
+    expect(linkNoticeAction({ url: 'javascript:alert(1)', page: true }, { webShell: true, activationActive: true })).toEqual({ kind: 'none' })
+  })
   it('never opens on the desktop', () => {
     expect(linkNoticeAction({ url }, { webShell: false, activationActive: true })).toEqual({ kind: 'notice', url })
   })

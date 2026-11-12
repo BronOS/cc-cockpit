@@ -16,6 +16,8 @@
 //
 // A Map, never a plain object: the key name is untrusted text (`constructor`, `__proto__`).
 
+import type { KeyEventLike } from './keys'
+
 /** Named keys (DOM `key`) and Electron's keyCode for each. */
 const NAMED: ReadonlyMap<string, string> = new Map([
   ['Enter', 'Enter'],
@@ -66,6 +68,24 @@ export function webviewKeyChar(key: string, mods: { control: boolean; meta: bool
   if (isPrintableKey(key) || key === ' ') return key
   if (key === 'Enter') return '\r'
   return undefined
+}
+
+/**
+ * Whether a key event is a copy, cut or paste chord on any platform: Ctrl/Cmd+C, X, V (with Shift
+ * or Alt too), Ctrl+Insert, Shift+Insert and Shift+Delete. Both sides read it: the browser never
+ * forwards one (web/webview-stream.ts webviewKeyAction: its own copy and paste events carry the
+ * text, design-web-browser.md §4.2) and main drops one that comes anyway (main/webview/webview-input.ts),
+ * since the server's clipboard is shared by every page there and a forwarded Ctrl+V would paste
+ * whatever another page or session left in it. Main has no `code` (its events carry the key only);
+ * a non-Latin layout's letter is no key main takes at all (webviewKeyCode).
+ */
+export function isClipboardChord(e: KeyEventLike): boolean {
+  const key = e.key.toLowerCase()
+  // `code` too: a non-Latin layout's Ctrl+C has another `key` ('с' on a Russian one).
+  const letter = e.code === 'KeyC' || e.code === 'KeyX' || e.code === 'KeyV' || key === 'c' || key === 'x' || key === 'v'
+  if ((e.ctrlKey || e.metaKey) && letter) return true
+  if (key === 'insert' && (e.shiftKey || e.ctrlKey)) return true
+  return key === 'delete' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
 }
 
 /**

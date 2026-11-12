@@ -9,6 +9,8 @@
 //   bus): a notice to the asking browser view, or to every browser view of the window when no browser
 //   view asked (a timer, the hidden page, a sign-in a plugin started on its own), or of every window
 //   for a call tied to none. With no browser reached the link is refused with a log line.
+// - a web page's own open (OpenExtra `page`, the streamed webview's window.open above all) is marked
+//   in the notice, and the shell only shows such a notice, never opens it at once (OpenExtra).
 //
 // The target is always main's: the router's bound caller, the plugin host's own window and origin
 // view, the window a view or overlay belongs to. Never a window or view id read from a payload.
@@ -29,16 +31,24 @@ export type OpenTarget = { windowId: number; viewId?: ViewId } | 'app'
  * What a link may carry besides its address. `signIn`: the id of a plugin's pending OAuth sign-in
  * (oauth/plugin-oauth.ts), put in the notice in server mode only, where it gives the notice its box
  * for the failed redirect's address (design-web.md §9.9). The desktop's system browser never sees it.
+ * `page`: the open is a web page's own (a webview panel's or a url overlay's window.open or
+ * cross-site navigation, a mail frame's link), set by main at the call site, never read from a
+ * payload. Its notice says so (`page: true`) and the shell then only shows it to click, never opens
+ * it at once: the browser's transient activation is no proof the person asked, since typing in a
+ * terminal grants it too while a streamed page opens windows on its own (review finding). A
+ * person's own click in the shell (`app.openExternal`, `updates.openRelease`, a plugin's
+ * ctx.openExternal, an OAuth sign-in) carries no flag and may still open at once.
  */
 export interface OpenExtra {
   signIn?: string
+  page?: true
 }
 
 /** Opens `url` (already checked http(s)) for `target`; rejects when it was refused. */
 export type OpenExternal = (url: string, target: OpenTarget, extra?: OpenExtra) => Promise<void>
 
-/** `app.linkNotice`'s payload (shared/ipc.ts). */
-export type LinkNoticePayload = { url: string; signIn?: string }
+/** `app.linkNotice`'s payload (shared/ipc.ts); `page` as in OpenExtra. */
+export type LinkNoticePayload = { url: string; signIn?: string; page?: true }
 
 /** The ViewRegistry methods the adapter uses (a fake in unit tests). */
 export interface LinkViews {
@@ -79,7 +89,7 @@ export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
       // v1 (design-web.md §6.1): the host's browser is not a browser view's screen. A view that is gone
       // by now gets nothing, as before: its person left.
       if (asking !== undefined) {
-        options.views.toView(asking, 'app.linkNotice', { url })
+        options.views.toView(asking, 'app.linkNotice', extra?.page === true ? { url, page: true } : { url })
         return
       }
       await options.system(url)
@@ -88,7 +98,11 @@ export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
     // Server mode. Only the asking view when a browser asked: another device of the person may be on
     // the same window, and a link it did not ask for would open there at once (a click's activation).
     // Its view gone means its person left; the link is refused rather than sent to another screen.
-    const payload: LinkNoticePayload = extra?.signIn !== undefined ? { url, signIn: extra.signIn } : { url }
+    const payload: LinkNoticePayload = {
+      url,
+      ...(extra?.signIn !== undefined ? { signIn: extra.signIn } : {}),
+      ...(extra?.page === true ? { page: true as const } : {})
+    }
     let reached: number
     if (asking !== undefined) reached = options.views.toView(asking, 'app.linkNotice', payload) ? 1 : 0
     else reached = options.views.toBrowserViews(target === 'app' ? 'all' : target.windowId, 'app.linkNotice', payload)

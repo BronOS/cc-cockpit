@@ -422,7 +422,7 @@ defer to (§9.7, §9.9).
 | Feature | Desktop view | Remote view |
 |---|---|---|
 | `ctx.notify` | OS notification and sound | unchanged: stays on the host (Web Notifications need a secure context and do not wake a sleeping phone; later) |
-| `ctx.openExternal`, link clicks | the OS browser | a clickable notice in the view (a page cannot open a tab without a click): `app.linkNotice` to the asking view only, from `app.openExternal`, `updates.openRelease` and `ctx.openExternal`; the caller type is main's (`view.remote`, `originOf`), never the payload |
+| `ctx.openExternal`, link clicks | the OS browser | a clickable notice in the view (a page cannot open a tab without a click): `app.linkNotice` to the asking view only, from `app.openExternal`, `updates.openRelease` and `ctx.openExternal`; the caller type is main's (`view.remote`, `originOf`), never the payload. A web page's own open (a streamed webview's `window.open` or `target="_blank"`, a url overlay's or a mail frame's link: main's `page: true` in the notice, set at the call site) is only ever the notice to click: a browser's transient activation is no proof the person asked (typing in a terminal grants it), so only a notice without `page` may open at once |
 | Link-confirm dialog (`socket/handlers.ts:404`) | native dialog | an in-page dialog, shown while any browser view is attached on every view of the window (desktop included), first answer wins (`LinkAsks`, `links.ask` / `links.answer` / `links.settled`, pending ones in `ready.linkAsks`); with no browser attached the native dialog as before. A remote view may only Deny: main refuses its Allow (by `view.remote`, never the payload) and its dialog says "Approve on the desktop", so the ask waits for the desktop or runs out (5 min), as plugin linking stays off remote views (the row below) |
 | `ctx.files.reveal`, `openWithSystem` | file manager, default app | refused with a message; a plugin page reads `ccPanel.view.remote` (the shell's `cc-plugin.port` message, from `isWebShell`, never the page or host) to hide such items, a UI hint only (cockpit.files leaves them out of its menu) |
 | `ctx.files.trash` | host trash | unchanged |
@@ -613,6 +613,10 @@ hang, so it needs the same work.
   EnvironmentFile=-%h/.config/cc-cockpit-server.env
   Restart=on-failure
   RestartSec=5
+  # New files (data dir, key file, sockets, and what tabs write) readable by this user only
+  UMask=0077
+  # No core dumps: one would put secrets, tokens and session keys from memory on disk
+  LimitCORE=0
 
   [Install]
   WantedBy=default.target
@@ -891,7 +895,8 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   `app.openExternal`, the update notice, plugin OAuth (`index.ts:239`), the webview manager (`index.ts:831`) and the
   window-open handler (`windows/create-window.ts:75`). In server mode never on the server: a link notice (§6.1) to the
   asking view, or to every browser view of the window when no view asked; with no browser attached, refused with a log
-  line.
+  line. The webview manager's, url overlays' and the window-open handler's links are a page's own (`OpenExtra.page`,
+  `external/open-external.ts`): their notice carries `page: true` and the shell never opens it at once (§6.1).
 - **`ctx.files.reveal`, `openWithSystem`**: refused by `server` in main, whatever the origin. `desktopOnly`
   (`plugins/host-api.ts:1543`) refuses only a call with a remote origin view, a hint that lapses after 10 s, so a timer
   or a plugin command would reach `shell.showItemInFolder` or `shell.openPath` on the server.

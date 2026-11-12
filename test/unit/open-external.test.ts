@@ -111,6 +111,13 @@ describe('openExternal adapter on the desktop', () => {
     expect(w.web1.payloads).toEqual([{ url: URL_A }])
   })
 
+  it("a page's own open with no asking view still goes to the OS browser on the desktop (no browser view to mark it for)", async () => {
+    const open = adapter(false)
+    await open(URL_A, { windowId: 1 }, { page: true })
+    expect(system).toEqual([URL_A])
+    expect(notices()).toEqual({})
+  })
+
   it('passes the OS opener\'s failure on', async () => {
     const open = createOpenExternal({ server: false, system: () => Promise.reject(new Error('no handler')), views: w.views, log: () => {} })
     await expect(open(URL_A, 'app')).rejects.toThrow('no handler')
@@ -168,6 +175,17 @@ describe('openExternal adapter in server mode', () => {
       expect(line).not.toContain('code_challenge')
       expect(line).not.toContain('frag')
     }
+  })
+
+  // Review finding: a streamed page's window.open reached every browser view of the window, whose
+  // shell opened it at once whenever the person had just typed in a terminal (transient activation).
+  it("a page's own open is marked `page` in the notice; a call without it is not", async () => {
+    const open = adapter(true)
+    await open(URL_A, { windowId: 1 }, { page: true })
+    await open('https://example.com/b', { windowId: 1 })
+    expect(w.web1.payloads).toEqual([{ url: URL_A, page: true }, { url: 'https://example.com/b' }])
+    expect(w.web2.payloads).toEqual(w.web1.payloads)
+    expect(w.desk1.payloads).toEqual([])
   })
 
   it('urlForLog keeps scheme, host and path only', () => {

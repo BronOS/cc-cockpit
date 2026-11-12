@@ -70,6 +70,7 @@ A throwaway script (not in the repo) made an off-screen `BrowserWindow` (`webPre
   | `<input type=color>`, date, datetime-local, time, month | survives, nothing painted | same | none |
   | HTTP basic auth (page or sub-resource) | cancelled by Electron's default, 401 body shown | same | `login` → cancel, explicit (both adapters) |
   | Self-signed certificate | load fails, ERR_CERT_AUTHORITY_INVALID | same | `certificate-error` → reject, explicit (both adapters) |
+  | A server asking for a TLS client certificate | Electron's default: the first certificate in the person's store, no prompt | same | `select-client-certificate` → none, on the page (both adapters) and app-wide (`security/client-certificates.ts`) |
   | `mailto:` in a sub-frame (and the top frame) | `will-frame-navigate` refused; `openExternal` asked | same | existing: the manager's rule and the session lock-down |
   | Drag (element, text, image, onto a drop zone) | survives | same | none |
   | Right-click | `context-menu` fires, no menu | same | none |
@@ -252,7 +253,8 @@ the input layer has focus.
 - **Clipboard chords are never forwarded** (Ctrl/Cmd+C, X, V, Ctrl+Insert, Shift+Insert, Shift+Delete): the headless
   clipboard is presumably one per process (not verified), so a forwarded copy in project A's page could be pasted into
   project B's, and a forwarded paste would double the browser's own `paste`. They are not prevented either, so the
-  browser's own `copy`/`cut`/`paste` still fire on the textarea.
+  browser's own `copy`/`cut`/`paste` still fire on the textarea. Main drops one that comes anyway (`WebviewInput.accept`,
+  the same `isClipboardChord` in `shared/webview-keys.ts`): the browser's filter is a client's, not a check.
 
 ### 4.3 What the page cannot reach
 
@@ -261,7 +263,7 @@ nothing new (a signed-in device already has a terminal on the server). It has no
 runs in the person's browser and gets nothing from it but input events, pasted text and its own size. Its JS dialogs
 are disabled (`disableDialogs`, §2): `alert` is silent, `confirm` is false, `prompt` throws. `window.open` keeps the
 manager's rule and in server mode becomes a link notice in the browser (design-web.md §6.1, §9.9), as today for every
-link main opens. A file chooser opens nothing (§2); a later version may relay a file from the browser.
+link main opens; marked as the page's own (`page: true`), it is only shown to click, never opened at once. A file chooser opens nothing (§2); a later version may relay a file from the browser.
 
 ### 4.4 `<select>` popups
 

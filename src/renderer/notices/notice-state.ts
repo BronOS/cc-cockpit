@@ -27,12 +27,17 @@ export function linkNoticeUrl(payload: unknown): string | undefined {
  * the notice is shown instead of trying. `window.open` with `noopener` returns null even when it
  * opened, so activation is the only test there is before the call. Only the web shell ever opens: the
  * desktop never gets this event (main opens the system browser), and if it did it would show the notice.
+ * A web page's own open (`page: true`, set by main: a streamed webview's window.open, an overlay's or
+ * a mail frame's link) is always only the notice: activation says the person did something in this
+ * browser, typing in a terminal included, not that they asked for this link, and a page may open
+ * windows whenever it likes (review finding: a page's timer opened tabs while the person typed).
  */
 export type LinkNoticeAction = { kind: 'open'; url: string } | { kind: 'notice'; url: string } | { kind: 'none' }
 
 export function linkNoticeAction(payload: unknown, env: { webShell: boolean; activationActive: boolean }): LinkNoticeAction {
   const url = linkNoticeUrl(payload)
   if (url === undefined) return { kind: 'none' }
+  if ((payload as { page?: unknown }).page === true) return { kind: 'notice', url }
   return env.webShell && env.activationActive ? { kind: 'open', url } : { kind: 'notice', url }
 }
 

@@ -7,7 +7,7 @@
 import type { WebviewInputEventWire, WebviewInputModifier } from '../../shared/ipc'
 import type { KeyEventLike } from '../../shared/keys'
 import type { WebviewFrame } from '../../shared/web-protocol'
-import { webviewKeyCode } from '../../shared/webview-keys'
+import { isClipboardChord, webviewKeyCode } from '../../shared/webview-keys'
 
 /** The page's CSS size of a frame: the header's scale is encoded size over page size (Task 5). */
 export function framePageSize(frame: { width: number; height: number; scale: number }): { width: number; height: number } {
@@ -361,16 +361,6 @@ export function textChunks(text: string, units = TEXT_CHUNK_UNITS, maxChunks = M
     at = end
   }
   return out
-}
-
-/** Whether a key event is a copy, cut or paste chord on any platform (see webviewKeyAction). */
-export function isClipboardChord(e: KeyEventLike): boolean {
-  const key = e.key.toLowerCase()
-  // `code` too: a non-Latin layout's Ctrl+C has another `key` ('с' on a Russian one).
-  const letter = e.code === 'KeyC' || e.code === 'KeyX' || e.code === 'KeyV' || key === 'c' || key === 'x' || key === 'v'
-  if ((e.ctrlKey || e.metaKey) && letter) return true
-  if (key === 'insert' && (e.shiftKey || e.ctrlKey)) return true
-  return key === 'delete' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
 }
 
 export interface InputScheduler {

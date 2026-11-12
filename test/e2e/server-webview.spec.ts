@@ -612,3 +612,32 @@ test('server mode: a hidden browser tab is no viewer; visible again, painting re
     await browser.close()
   }
 })
+
+// Review finding: a streamed page's window.open went to the browsers as a link notice, and the shell
+// opened it at once whenever the person's last click or key still counted (transient activation;
+// typing in a terminal grants it too), so a page could open tabs in the person's browser on its own.
+// Main marks a page's own open (`page: true`) and the shell only shows it to click.
+const POPUP_PAGE = `<!doctype html><title>idle</title><body style="margin:0;height:100%;background:#fff">
+<script>document.addEventListener('mousedown',()=>{window.open('https://example.com/from-page','_blank');document.title='opened'})</script>`
+
+test("server mode: a page's window.open is a link notice to click, never a tab opened at once", async () => {
+  test.setTimeout(150_000)
+  server = await startServer({ 'popup.html': POPUP_PAGE })
+  const { browser, section } = await openPanel(server, { width: 1280, height: 800 })
+  try {
+    await openFromClaude(browser, 'popup.html')
+    await expect(section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    const layer = section.locator('.webview-input')
+    const b = await layer.boundingBox()
+    if (!b) throw new Error('no input layer')
+    // A real click in this browser: its activation holds while main's notice comes back.
+    await browser.page.mouse.click(b.x + b.width / 2, b.y + b.height / 2)
+    await expect(section.locator('.webview-url')).toHaveAttribute('title', /^opened\n/, { timeout: 10_000 })
+    const notice = browser.page.locator('.link-notice')
+    await expect(notice.getByRole('link', { name: 'https://example.com/from-page' })).toBeVisible({ timeout: 10_000 })
+    expect(await browser.opened()).toEqual([])
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})

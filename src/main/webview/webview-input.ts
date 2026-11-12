@@ -23,6 +23,11 @@
 //   the size   a button press, a key or a wheel makes the sender the page's size owner (claimOwner;
 //              §3.2, the terminal's rule); a pointer move does not (passing over a letterboxed
 //              view must not resize the page under the person typing in another).
+//   clipboard  a copy, cut or paste chord (Ctrl/Cmd+C, X, V, Ctrl/Shift+Insert, Shift+Delete;
+//              shared/webview-keys.ts isClipboardChord) is dropped, down and up: our browser never
+//              sends one (its own copy and paste events carry the text, Task 8), and the server's
+//              clipboard is every page's there, so a forwarded Ctrl+V from a client of its own
+//              would paste whatever another page or session left in it (review finding).
 //
 // Mapping (checked headless, Electron 45.1.0): mouseMove / mouseDown / mouseUp / mouseWheel /
 // keyDown / keyUp / char. A wheel's deltas are negated: Chromium's wheel delta is positive
@@ -79,7 +84,7 @@
 
 import { isPlainObject } from '../../shared/guards'
 import type { IpcEventMap, WebviewInputModifier } from '../../shared/ipc'
-import { MAX_KEY_NAME_LENGTH, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../shared/webview-keys'
+import { isClipboardChord, MAX_KEY_NAME_LENGTH, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../shared/webview-keys'
 import type { ViewId } from '../../shared/views'
 import type { PlaceSize, WebviewPanelOf } from './webview-viewers'
 import { HIT_TIMEOUT_MS, MAX_HELD_EVENTS, MAX_SELECT_OPTIONS, newSelectId, parseHitResult, SelectPopups } from './select-hit'
@@ -240,6 +245,19 @@ export function parseInputEvents(raw: unknown): WebviewInputEvent[] {
 export function inPage(event: WebviewInputEvent, size: PlaceSize): boolean {
   if (event.kind === 'key') return true
   return event.x <= size.width && event.y <= size.height
+}
+
+/** Whether a key event is a clipboard chord, which never reaches the page (see the top of the file). */
+export function isClipboardKeyEvent(event: WebviewInputEvent): boolean {
+  if (event.kind !== 'key') return false
+  const m = event.modifiers
+  return isClipboardChord({
+    key: event.key,
+    ctrlKey: m.includes('control'),
+    metaKey: m.includes('meta'),
+    shiftKey: m.includes('shift'),
+    altKey: m.includes('alt')
+  })
 }
 
 /** Whether the event makes its sender the size owner: a press, a key or a wheel, never a move or a release. */
@@ -474,7 +492,7 @@ export class WebviewInput {
     let claim = false
     let sent = 0
     for (const event of events.slice(0, allowed)) {
-      if (!inPage(event, size)) continue
+      if (!inPage(event, size) || isClipboardKeyEvent(event)) continue
       if (claimsOwner(event)) claim = true
       out.push(...toElectronEvents(event, size))
       sent++

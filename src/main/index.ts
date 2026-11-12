@@ -73,6 +73,7 @@ import { CoreNotices } from './notifications/core-notices'
 import { ChimeGate, chimeRinger, Notifier, NotifySounds, PageNoticeBackend, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
 import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
+import { refuseClientCertificates } from './security/client-certificates'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-offscreen-webview'
 import { ElectronRemoteWindowFactory, isRemoteWindow } from './remote/electron-remote-window'
@@ -336,6 +337,9 @@ function start(server: boolean): void {
   // plugin panel files (cc-plugin:) and webview panels' local files (cc-preview:), in the one call
   // Electron allows.
   registerAppSchemes()
+  // No TLS client certificate is ever presented, by any page or utility process: Electron's default
+  // picks the person's first one with no prompt (security/client-certificates.ts).
+  refuseClientCertificates(app)
   // Linux desktops Electron does not recognise (Hyprland, sway ...): safeStorage falls back to
   // `basic_text` and secrets are refused although a Secret Service keyring is running. Chromium reads
   // this switch at `ready`, so it goes before selectSecretStore and app.whenReady
@@ -718,7 +722,8 @@ function start(server: boolean): void {
       })()
   const windows = new WindowManager({
     // A link a window's page asks to open (the reviewer's mail frame) comes from its desktop page.
-    factory: new ElectronWindowFactory((url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) })),
+    // A mail's own link (`page`): in server mode only a notice to click, never opened at once.
+    factory: new ElectronWindowFactory((url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) }, { page: true })),
     registry,
     platform: process.platform,
     quit: () => app.quit(),
@@ -932,7 +937,8 @@ function start(server: boolean): void {
   // its webview panels are off-screen pages instead, counted apart. Counted at the factories, so no
   // path is missed.
   const nativeViewsMade = { urlOverlays: 0, webviews: 0, offscreenWebviews: 0 }
-  const urlViewFactory = new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId }))
+  // The overlay page's own window.open or cross-site navigation (`page`: a notice, never opened at once).
+  const urlViewFactory = new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId }, { page: true }))
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
     // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8),
@@ -1134,9 +1140,11 @@ function start(server: boolean): void {
     // manager's (webview-manager.ts, top of the file).
     server,
     partitionClosed: (partition) => previewBudgets.drop(partition),
-    // A page's window.open, for the view's window (no browser view asked: a page did).
+    // A page's window.open, for the view's window (no browser view asked: a page did). `page`: the
+    // browsers show it as a notice to click and never open it at once, as the page's open is no
+    // click of the person's (open-external.ts OpenExtra).
     openExternal: (url, windowId) => {
-      openExternal(url, { windowId }).catch((err: unknown) => console.warn('open external failed', err))
+      openExternal(url, { windowId }, { page: true }).catch((err: unknown) => console.warn('open external failed', err))
     },
     // Desktop only. Server mode gets neither a chord path nor a keyboard hand-back: shell chords
     // never reach an off-screen page (a browser's shell keeps them), and both would focus the

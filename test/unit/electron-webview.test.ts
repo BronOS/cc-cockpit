@@ -264,6 +264,12 @@ describe('ElectronWebviewFactory', () => {
     wc.emit('certificate-error', cert, 'https://self.signed/', 'net::ERR_CERT_AUTHORITY_INVALID', {}, (t: boolean) => trusted.push(t))
     expect(cert.defaultPrevented).toBe(true)
     expect(trusted).toEqual([false])
+    // A server asking for a TLS client certificate gets none (Electron's default: the first in the store).
+    const select = prevented()
+    const chosen: unknown[][] = []
+    wc.emit('select-client-certificate', select, 'https://mtls.example/', [{ subjectName: 'Me' }], (...args: unknown[]) => chosen.push(args))
+    expect(select.defaultPrevented).toBe(true)
+    expect(chosen).toEqual([[]])
   })
 
   // The off-screen cancels (file choosers, print) are server mode's: the desktop keeps uploads,

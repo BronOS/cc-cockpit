@@ -30,13 +30,12 @@ import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webv
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { REMOTE_CLASS, type WebviewInputEventWire } from '../../src/shared/ipc'
 import { MAX_FRAME_BYTES } from '../../src/shared/web-protocol'
-import { WEBVIEW_CURSORS, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../src/shared/webview-keys'
+import { isClipboardChord, WEBVIEW_CURSORS, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../src/shared/webview-keys'
 import {
   boxToPage,
   ClickCounter,
   inputModifiers,
   InputQueue,
-  isClipboardChord,
   letterbox,
   MAX_INPUT_BATCH,
   MULTI_CLICK_MS,
@@ -290,6 +289,28 @@ describe('WebviewInput.accept', () => {
     viewers.report(PANEL, 'web:1', shown)
     expect(input.accept(PANEL, 'web:1', [move(401, 10), move(10, 301), { ...down(400, 300), type: 'up' }])).toBe(1)
     expect(sent).toEqual([[{ type: 'mouseUp', x: 399, y: 299, button: 'left', clickCount: 1, modifiers: [] }]])
+  })
+
+  // Review finding: only the browser filtered clipboard chords; a client of its own could send
+  // Ctrl+V and paste the server's clipboard (every page's and session's there) into the page.
+  it('drops clipboard chords, down and up, on any platform, and keeps the rest of the call', () => {
+    const { viewers, input, sent, claims } = setup()
+    viewers.report(PANEL, 'web:1', shown)
+    const chords = [
+      key('v', 'down', ['control']),
+      key('v', 'up', ['control']),
+      key('C', 'down', ['meta', 'shift']),
+      key('x', 'down', ['control', 'alt']),
+      key('Insert', 'down', ['shift']),
+      key('Insert', 'down', ['control']),
+      key('Delete', 'down', ['shift'])
+    ]
+    expect(input.accept(PANEL, 'web:1', chords)).toBe(0)
+    expect(sent).toEqual([])
+    expect(claims).toEqual([])
+    // Not chords: plain letters, Ctrl+A, plain Insert and Delete, Ctrl+Shift+Delete.
+    expect(input.accept(PANEL, 'web:1', [key('v'), key('a', 'down', ['control']), key('Insert'), key('Delete'), key('Delete', 'down', ['control', 'shift'])])).toBe(5)
+    expect(sent.flat().filter((e) => e.type === 'keyDown').map((e) => (e as { keyCode: string }).keyCode)).toEqual(['v', 'a', 'Insert', 'Delete', 'Delete'])
   })
 
   it('takes nothing for a panel with no page yet', () => {

@@ -16,6 +16,7 @@
 // - a `beforeunload` handler never holds the view: Electron cancels the unload silently once the
 //   user has touched such a page (an editor, a form), so `ccc browser open <other>` and reload
 //   would do nothing while the CLI printed `ok` (review finding). The unload always goes ahead;
+// - a TLS client certificate is never presented (`select-client-certificate`, security/client-certificates.ts);
 // - HTTP auth (`login`) is cancelled and a bad certificate (`certificate-error`) refused, both
 //   explicitly: that is what Electron does with no listener (spike, 2026-11-11, Electron 45: the
 //   401 body shows, the load fails with ERR_CERT_AUTHORITY_INVALID), pinned here so neither an
@@ -38,6 +39,7 @@
 // pickers, context menus, drags, mailto: in a sub-frame (will-frame-navigate refuses it and the
 // session denies `openExternal`), HTTP auth and certificate errors all left main alive.
 import { session as electronSession, type Session, type WebContents, type WebPreferences } from 'electron'
+import { refuseClientCertificatesOf } from '../security/client-certificates'
 import { lockDownSession, NO_APP_PAGE } from '../windows/permissions'
 import { PREVIEW_SCHEME } from './preview-protocol'
 import type { WebviewEvents, WebviewPage, WebviewView } from './webview-manager'
@@ -135,6 +137,10 @@ export function hardenWebContents(wc: WebContents, events: WebviewEvents): void 
     event.preventDefault()
     callback(false)
   })
+  // A server asking for a TLS client certificate gets none: Electron's default hands it the first
+  // one in the person's store, unasked. The app-wide listener does the same (index.ts); this one
+  // keeps the page's hardening whole on its own (security/client-certificates.ts).
+  refuseClientCertificatesOf(wc)
   wc.on('did-navigate', () => events.navigated(true))
   wc.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
     if (isMainFrame) events.navigated(true)

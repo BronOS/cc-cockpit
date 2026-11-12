@@ -309,7 +309,7 @@ describe('OffscreenWebviewFactory', () => {
     expect(desktop).toContain('before-input-event')
     expect(offscreen).not.toContain('before-input-event')
     expect(offscreen.filter((n) => n !== 'paint' && n !== 'cursor-changed')).toEqual(desktop.filter((n) => n !== 'before-input-event'))
-    for (const hook of ['will-frame-navigate', 'will-redirect', 'will-prevent-unload', 'login', 'certificate-error', 'did-fail-load', 'render-process-gone', 'destroyed']) {
+    for (const hook of ['will-frame-navigate', 'will-redirect', 'will-prevent-unload', 'login', 'certificate-error', 'select-client-certificate', 'did-fail-load', 'render-process-gone', 'destroyed']) {
       expect(offscreen).toContain(hook)
     }
   })
