@@ -589,16 +589,19 @@ External review: sol / high
       (unit tested). The reload test's poll is back to 2 s (it was 8 s); if a slow join comes back it fails there.
 
 ### Task 12: Verify acceptance criteria [model: sonnet]
-- [ ] verify all requirements from Overview are implemented (Browser panel and a third-party webview panel)
-- [ ] verify edge cases: limits, deferred load, hidden tabs, reconnect, slow socket, the spiked crash cases
-- [ ] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`
-- [ ] run e2e tests: `npm run test:e2e`
-- [ ] run `node scripts/server-mode-smoke.mjs` and `node --expose-gc scripts/web-terminal-bench.mjs`
+- [x] verify all requirements from Overview are implemented (Browser panel and a third-party webview panel)
+      ➕ the Browser panel is covered end to end; a third-party webview panel uses the same unchanged `ctx.webview` path but has no e2e of its own
+- [x] verify edge cases: limits, deferred load, hidden tabs, reconnect, slow socket, the spiked crash cases
+- [x] run full test suite: `npm test`, `npm run typecheck`, `npm run lint`, `npm run test:plugins`
+- [x] run e2e tests: `npm run test:e2e`
+      ➕ 258 passed, 6 failed, 2 skipped: the 6 (window-bounds x2, tab-flags, tab-command-overlays, project-color, overlays focus) fail the same at e488c77, before this plan: the tiling Wayland compositor (Hyprland) on the dev machine, and one flaky test
+- [x] run `node scripts/server-mode-smoke.mjs` and `node --expose-gc scripts/web-terminal-bench.mjs`
+      ➕ smoke ok; bench flooded p99 2.0 ms alone, 6.2 ms with a 1280x800 stream, 9.7 ms with 1920x1080 (limit 20 ms)
 
 ### Task 13: [Final] Update documentation [model: sonnet]
-- [ ] update README.md if it mentions the server-mode browser limitation
-- [ ] update CLAUDE.md "State" with the streamed web views line
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update README.md if it mentions the server-mode browser limitation
+- [x] update CLAUDE.md "State" with the streamed web views line
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

@@ -888,7 +888,7 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   panel work: `WebviewManager` keeps every decision and `server` (decided once, never by a payload) swaps its view
   factory for an off-screen one, whose frames are streamed to the browsers that show the panel and whose input comes
   back. Design, wire and limits: `docs/design-web-browser.md` (implemented 2026-11-11, plan
-  `docs/plans/20261111-streamed-webviews.md`). Main never makes a `WebContentsView` for the hidden page's layout (the
+  `docs/plans/completed/20261111-streamed-webviews.md`). Main never makes a `WebContentsView` for the hidden page's layout (the
   layout is shared, §5.1): the off-screen views are the server's, shown by browsers only. **URL overlays stay
   refused** at `OverlayManager.start` ("not available in server mode", by `server`, never a payload; a later version
   could reuse the same machinery). A desktop project's browser view (web access on, a display) keeps the "available

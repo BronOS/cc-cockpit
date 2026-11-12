@@ -1,6 +1,6 @@
 # Web views in a browser: rendered on the server, streamed — design
 
-Status: implemented (2026-11-11), plan `docs/plans/20261111-streamed-webviews.md`; where the build differs from the first
+Status: implemented (2026-11-11), plan `docs/plans/completed/20261111-streamed-webviews.md`; where the build differs from the first
 draft the text below says what was built (wire names, input units, the key and text split, numbers). Extends
 `docs/design-web.md` (web access, §9 server mode); read that first.
 The owner's requirement: the Browser panel (and every `"kind": "webview"` panel) must work in server mode, from a

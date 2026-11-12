@@ -18,6 +18,9 @@ design in `docs/design-web.md`, plan in `docs/plans/completed/20261110-web-acces
 Server mode (Linux, no display, browsers only: `--server`, the key file, `ccc web`, approvals in the browser) is implemented
 on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/20261111-server-mode.md`, user docs in `docs/features.md`
 ("Server mode"). Only the unpacked build was run; the AppImage, the deb on a real server and the systemd unit were not.
+Streamed web views (server mode: the Browser and every webview panel rendered off-screen on the server and streamed to
+browsers over the view's WebSocket, one port) are implemented; design in `docs/design-web-browser.md`, plan in
+`docs/plans/completed/20261111-streamed-webviews.md`, user docs in `docs/features.md` ("Server mode" › "The Browser panel").
 
 ## Commands
 
