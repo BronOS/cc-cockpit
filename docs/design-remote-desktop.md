@@ -175,6 +175,12 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
   `/api/projects`: the project still open keeps the window as it is ("+"); not open any more (Close project) closes it;
   no answer keeps it (never closed on a guess). Done in main, so any server version's web client gets it. A window on
   the server's picker navigates as before (`remote-windows.ts › isPickerNavigation`).
+- **Recent projects.** A recent row may name a project the server has closed since, which the web client shows only as
+  "not open on the host". So before main loads a project page it asks `/api/projects` through the window's session and,
+  when the project is not open, POSTs `{ reopen: <id> }` there as the server's web picker does (`Origin` set to the
+  server's origin, which the gateway checks on every POST), then loads the id the server answered. Only once signed in
+  (a 401 or no answer loads the page as before; a sign-in that lands asks again) and, for My own tunnel, only after the
+  probe. The server's refusal (folder missing, an id it forgot) is main's error page with the server's text.
 - **Title and names.** The web shell's only title is the static `cc-cockpit` (`renderer/web/index.html`), so main does
   not read the page's title: after a navigation to `?project=<id>` it asks the server's `/api/projects` through the
   window's own session (`ses.fetch`, the device cookie applies) for that project's name. The window title is

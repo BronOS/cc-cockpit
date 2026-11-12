@@ -173,12 +173,15 @@ class FakeView implements RemoteWindowView {
 }
 
 type Fetcher = (url: string) => Promise<unknown>
+type Poster = (url: string, body: unknown, origin: string) => Promise<{ status: number; body: unknown }>
 
 class FakeFactory implements RemoteWindowFactory {
   readonly views: FakeView[] = []
-  readonly sessions = new Map<string, { hooks: RemoteSessionHooks; jar: FakeJar; fetches: string[] }>()
+  readonly sessions = new Map<string, { hooks: RemoteSessionHooks; jar: FakeJar; fetches: string[]; posts: Array<{ url: string; body: unknown; origin: string }> }>()
   readonly events: string[] = []
   fetcher: Fetcher = async () => ({ mode: 'link', device: { id: 'd1', name: 'x' } })
+  /** The reopen POST; by default an old gateway with no such route (the page loads as is). */
+  poster: Poster = async () => ({ status: 404, body: undefined })
 
   session(serverId: string, hooks: RemoteSessionHooks) {
     this.events.push(`session ${serverId}`)
@@ -188,13 +191,18 @@ class FakeFactory implements RemoteWindowFactory {
       this.events.push(`cookie ${details.value}`)
       await origSet(details)
     }
-    const entry = { hooks, jar, fetches: [] as string[] }
+    const entry = { hooks, jar, fetches: [] as string[], posts: [] as Array<{ url: string; body: unknown; origin: string }> }
     this.sessions.set(serverId, entry)
     return {
       jar,
       fetchJson: (url: string) => {
         entry.fetches.push(url)
         return this.fetcher(url)
+      },
+      postJson: (url: string, body: unknown, origin: string) => {
+        this.events.push(`post ${url} ${JSON.stringify(body)}`)
+        entry.posts.push({ url, body, origin })
+        return this.poster(url, body, origin)
       }
     }
   }
@@ -292,6 +300,7 @@ describe('RemoteWindows: windows', () => {
   it('restores the cookie before the first load, then loads the project page', async () => {
     t.store.saved = 'dev-1'
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    await flush()
     expect(t.factory.events).toEqual(['session s1', 'cookie dev-1', `load ${ORIGIN}/?project=p1`])
     expect(t.windows.count()).toBe(1)
     expect(t.changes()).toBe(1)
@@ -303,11 +312,12 @@ describe('RemoteWindows: windows', () => {
     await flush()
     expect(view.title).toBe('devbox — Api')
     expect(t.store.recent).toEqual([['s1', 'p1', 'Api']])
-    expect(t.factory.session1().fetches).toEqual([`${ORIGIN}/api/projects`])
+    // The title's lookup, and the open check before the load.
+    expect(t.factory.session1().fetches).toEqual([`${ORIGIN}/api/projects`, `${ORIGIN}/api/projects`])
     // An in-page change of the same project asks nothing again.
     view.hooks.navigated(`${ORIGIN}/?project=p1#x`)
     await flush()
-    expect(t.factory.session1().fetches).toEqual([`${ORIGIN}/api/projects`])
+    expect(t.factory.session1().fetches).toHaveLength(2)
   })
 
   it('finds a name among the recent projects too; an unknown one keeps the server name', async () => {
@@ -521,7 +531,95 @@ describe('RemoteWindows: back to the picker', () => {
     expect(view.hooks.allowNavigation('https://example.com/')).toBe(false)
     expect(t.pickers()).toBe(0)
     await flush()
-    expect(t.factory.session1().fetches.slice(fetches).filter((u) => u.endsWith('/api/projects')).length).toBe(1)
+    // The project window's title and its open check; nothing for the navigations.
+    expect(t.factory.session1().fetches.slice(fetches).filter((u) => u.endsWith('/api/projects')).length).toBe(2)
+  })
+})
+
+// A recent project the server closed (design §4): main asks the project list, reopens it with the
+// server's own POST, then loads the id the server answered.
+describe('RemoteWindows: a project the server closed', () => {
+  let t: ReturnType<typeof setup>
+  beforeEach(() => {
+    t = setup()
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    t.factory.poster = async () => ({ status: 200, body: { id: 'p2' } })
+  })
+
+  it('loads a project that is open with no POST', async () => {
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    await flush()
+    expect(t.factory.session1().posts).toEqual([])
+    expect(t.factory.views[0]?.loads).toEqual([`${ORIGIN}/?project=p1`])
+  })
+
+  it('reopens a closed one with the server origin, then loads the id it answered', async () => {
+    t.factory.poster = async () => ({ status: 200, body: { id: 'p2-new' } })
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
+    await flush()
+    expect(t.factory.session1().posts).toEqual([{ url: `${ORIGIN}/api/projects`, body: { reopen: 'p2' }, origin: ORIGIN }])
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([`${ORIGIN}/?project=p2-new`])
+    expect(t.factory.events.filter((e) => !e.startsWith('session'))).toEqual([`post ${ORIGIN}/api/projects {"reopen":"p2"}`, `load ${ORIGIN}/?project=p2-new`])
+    expect(view.errors).toEqual([])
+  })
+
+  it('shows the server refusal on the error page and loads nothing', async () => {
+    t.factory.poster = async () => ({ status: 400, body: { error: 'The folder /srv/web is missing.\u0007' } })
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([])
+    expect(view.errors).toEqual(['devbox could not reopen this project: The folder /srv/web is missing.'])
+  })
+
+  it('a project the server forgot entirely is its error too', async () => {
+    t.factory.poster = async () => ({ status: 400, body: { error: 'not a recent project' } })
+    await t.windows.open('d1', { origin: 'https://box.example', projectId: 'gone' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    expect(t.factory.session1('d1').posts[0]?.origin).toBe('https://box.example')
+    expect(view.loads).toEqual([])
+    expect(view.errors).toEqual(['box could not reopen this project: not a recent project'])
+  })
+
+  it('loads the page as before when the list or the POST does not answer, or the session is signed out', async () => {
+    t.factory.fetcher = async () => {
+      throw new Error('the server answered 401')
+    }
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
+    await flush()
+    expect(t.factory.session1().posts).toEqual([])
+    expect(t.factory.views[0]?.loads).toEqual([`${ORIGIN}/?project=p2`])
+    // The list answers, the POST does not (or says signed out, or the gateway has no such route).
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    const answers: Poster[] = [
+      async () => {
+        throw new Error('net::ERR_CONNECTION_RESET')
+      },
+      async () => ({ status: 401, body: { error: 'not signed in' } }),
+      async () => ({ status: 404, body: undefined })
+    ]
+    for (const [i, poster] of answers.entries()) {
+      t.factory.poster = poster
+      await t.windows.open('s1', { origin: ORIGIN, projectId: `x${i}` })
+      await flush()
+      const view = t.factory.views.at(-1) as FakeView
+      expect(view.loads).toEqual([`${ORIGIN}/?project=x${i}`])
+      expect(view.errors).toEqual([])
+    }
+  })
+
+  it('a window closed while the server is asked loads nothing', async () => {
+    let answer: (v: { status: number; body: unknown }) => void = () => undefined
+    t.factory.poster = () => new Promise((resolve) => (answer = resolve))
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    view.close()
+    answer({ status: 200, body: { id: 'p2' } })
+    await flush()
+    expect(view.loads).toEqual([])
   })
 })
 
@@ -680,6 +778,30 @@ describe('RemoteWindows: re-pair', () => {
     expect(t.store.saved).toBe('dev-new')
   })
 
+  it('a sign-in that lands on a project the server closed reopens it, then loads it', async () => {
+    t.factory.poster = async () => ({ status: 200, body: { id: 'p2' } })
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p2', token: 'given' })
+    const a = t.factory.views[0] as FakeView
+    expect(a.loads).toEqual([`${ORIGIN}/?project=p2#t=given`])
+    a.commit(`${ORIGIN}/?project=p2`)
+    pageSignsIn()
+    await t.windows.settled('s1')
+    await flush()
+    expect(t.factory.session1().posts.map((p) => p.body)).toEqual([{ reopen: 'p2' }])
+    expect(a.loads).toEqual([`${ORIGIN}/?project=p2#t=given`, `${ORIGIN}/?project=p2`])
+  })
+
+  it('a sign-in that lands on an open project loads nothing more', async () => {
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1', token: 'given' })
+    const a = t.factory.views[0] as FakeView
+    a.commit(`${ORIGIN}/?project=p1`)
+    pageSignsIn()
+    await t.windows.settled('s1')
+    await flush()
+    expect(t.factory.session1().posts).toEqual([])
+    expect(a.loads).toEqual([`${ORIGIN}/?project=p1#t=given`])
+  })
+
   it('a given token that never signs in re-pairs once the wait is over', async () => {
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1', token: 'stale' })
     const a = t.factory.views[0] as FakeView
@@ -790,11 +912,41 @@ describe('RemoteWindows: My own tunnel gate', () => {
     expect(t.retries()).toBe(0)
   })
 
+  it('probes, then reopens a closed project, then loads it', async () => {
+    const t = tunnelSetup([{ go: true }])
+    // Each request with the number of probes made before it.
+    const order: string[] = []
+    t.factory.fetcher = async (url) => {
+      order.push(`get after ${t.gated.length} probes`)
+      expect(url).toBe(`${TUNNEL}/api/projects`)
+      return projects
+    }
+    t.factory.poster = async (url, body) => {
+      order.push(`post ${JSON.stringify(body)} after ${t.gated.length} probes`)
+      return { status: 200, body: { id: 'p2' } }
+    }
+    await t.windows.open('t1', { origin: TUNNEL, projectId: 'p2' })
+    await flush()
+    // The title's name lookup goes at once (as before); the open check and the reopen only after the probe.
+    expect(order).toEqual(['get after 0 probes', 'get after 1 probes', 'post {"reopen":"p2"} after 1 probes'])
+    expect(t.factory.session1('t1').posts[0]?.origin).toBe(TUNNEL)
+    expect((t.factory.views[0] as FakeView).loads).toEqual([`${TUNNEL}/?project=p2`])
+  })
+
+  it('a closed project behind a tunnel that is down waits, and is not asked about', async () => {
+    const t = tunnelSetup([{ wait: 'waiting' }])
+    await t.windows.open('t1', { origin: TUNNEL, projectId: 'p2' })
+    await flush()
+    expect(t.factory.session1('t1').posts).toEqual([])
+    expect((t.factory.views[0] as FakeView).loads).toEqual([])
+  })
+
   it('other kinds load at once, never through the gate', async () => {
     const t = tunnelSetup([])
     t.factory.fetcher = async () => signedIn
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
     await t.windows.open('d1', { origin: 'https://box.example' })
+    await flush()
     expect(t.gated).toEqual([])
     expect((t.factory.views[0] as FakeView).loads).toEqual([`${ORIGIN}/?project=p1`])
   })

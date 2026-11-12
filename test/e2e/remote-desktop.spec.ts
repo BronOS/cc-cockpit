@@ -230,12 +230,30 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     await expect(backPicker.getByRole('list', { name: 'Recent projects on Test server' })).toBeVisible()
     expect(await titles(app2)).toEqual(['cc-cockpit'])
 
+    // (k) The same project from the desktop picker's recent row, closed on the server now: main reopens
+    // it there first (the server's own `{ reopen }` POST, with its Origin), so the window shows the
+    // project, not the web client's "not open on the host" page.
+    await backPicker.getByRole('list', { name: 'Recent projects on Test server' }).getByRole('button', { name: projectName }).click()
+    const remote4 = await remoteWindow(app2, server.origin)
+    await expect(remote4).toHaveURL(`${server.origin}/${href}`)
+    await remote4.locator('.tabs-pane').waitFor()
+    await expect(remote4.getByText('This project is not open on the host.')).toHaveCount(0)
+    await expect.poll(() => titles(app2)).toEqual([`Test server — ${projectName}`])
+    await expect.poll(() => backPicker.isClosed()).toBe(true)
+    // Closed again as in (j), so the server's picker below lists it among its recent projects.
+    await remote4.getByRole('button', { name: 'Close project' }).first().click()
+    const closeAgain = remote4.getByRole('alertdialog', { name: /^Close .+ for every device\?$/ }).getByRole('button', { name: 'Close project' })
+    await expect(closeAgain).toBeEnabled({ timeout: 5_000 })
+    await closeAgain.click({ noWaitAfter: true })
+    await expect.poll(() => remote4.isClosed(), { timeout: 15_000 }).toBe(true)
+    const pickerAgain = await pickerWindow(app2, server.origin)
+
     // The server's own picker in a window again (for Forget below); the desktop picker closes as for any open.
-    await backPicker.getByRole('button', { name: 'More for Test server' }).click()
-    await backPicker.getByRole('menuitem', { name: 'Open server’s picker' }).click()
+    await pickerAgain.getByRole('button', { name: 'More for Test server' }).click()
+    await pickerAgain.getByRole('menuitem', { name: 'Open server’s picker' }).click()
     const remote3 = await remoteWindow(app2, server.origin)
     await remote3.getByRole('list', { name: 'Recent projects' }).waitFor()
-    await expect.poll(() => backPicker.isClosed()).toBe(true)
+    await expect.poll(() => pickerAgain.isClosed()).toBe(true)
 
     // (h) Forget, from a picker opened over the remote window (File › Open Project): the server's
     // windows close and its entry goes, with its cookie.

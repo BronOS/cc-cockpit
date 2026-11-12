@@ -389,6 +389,24 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
     await expect(sessionView.fetchJson('http://127.0.0.1:4100/api/projects')).rejects.toThrow('401')
   })
 
+  it('posts JSON with the server Origin and answers any status with its body', async () => {
+    const { ses, sessionView } = make()
+    ses.answer = { ok: false, status: 400, body: { error: 'missing' } }
+    await expect(sessionView.postJson('http://127.0.0.1:4100/api/projects', { reopen: 'p1' }, 'http://127.0.0.1:4100')).resolves.toEqual({
+      status: 400,
+      body: { error: 'missing' }
+    })
+    expect(ses.fetches[0]?.init).toMatchObject({
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      redirect: 'error',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:4100' },
+      body: '{"reopen":"p1"}'
+    })
+    expect(ses.fetches[0]?.init.signal).toBeInstanceOf(AbortSignal)
+  })
+
   it('clears a forgotten server partition', async () => {
     const { ses, factory } = make()
     await factory.clearSession('s1')

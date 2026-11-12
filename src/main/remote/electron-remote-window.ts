@@ -41,7 +41,7 @@ export function remotePartition(serverId: string): string {
   return `persist:remote-${serverId}`
 }
 
-/** How long main's own request to the server (the session check, the project list) may take. */
+/** How long main's own request to the server (the session check, the project list, a reopen) may take. */
 export const REMOTE_FETCH_TIMEOUT_MS = 10_000
 
 /** The partitions this adapter prepared (isRemoteWindow). */
@@ -128,6 +128,21 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
         })
         if (!res.ok) throw new Error(`the server answered ${res.status}`)
         return (await res.json()) as unknown
+      },
+      postJson: async (url, body, origin) => {
+        // As fetchJson, plus what the gateway asks of every POST: the server's own Origin (set
+        // explicitly: a request with no page behind it has none to send) and a JSON content type.
+        const res = await ses.fetch(url, {
+          method: 'POST',
+          credentials: 'include',
+          cache: 'no-store',
+          redirect: 'error',
+          headers: { 'Content-Type': 'application/json', Origin: origin },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)
+        })
+        const parsed = (await res.json().catch(() => undefined)) as unknown
+        return { status: res.status, body: parsed }
       }
     }
     this.sessions.set(serverId, { ses, view, userAgent })

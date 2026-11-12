@@ -44,10 +44,21 @@
 // with the command that starts the tunnel and tries again every TUNNEL_RETRY_MS while the window is
 // open; anything but a cc-cockpit answer shows the error and loads nothing, so the device cookie is
 // never sent to it. The page's own reconnects are not covered (they are the page's, not main's).
+//
+// A project the server closed (design §4 "Recent projects"): the picker's recent rows name projects
+// the server may have closed since, and the web client only shows "not open on the host" for one.
+// So before main loads a project page it asks PROJECTS_PATH through the partition (the device
+// cookie applies) and, when the project is not among the open ones, POSTs `{ reopen }` there as the
+// server's own web picker does (`Origin` set to the server's origin: the gateway checks it on every
+// POST), then loads the id the server answered. Only once the session is valid: signed out (a 401)
+// or the server not answering loads the page as before, and the page's sign-in or a re-pair follows;
+// a sign-in that lands (loadToken) asks again. A gated load asks only after the gate let it (probe,
+// then reopen, then load). The server refusing (`{ error }`: the folder is gone, an id it forgot) is
+// main's error page with the server's text.
 
 import { errorText } from '../../shared/error-text'
 import { recentEntryOf, type RemoteServerRecord } from '../../shared/remote-servers'
-import { PROJECTS_PATH, SESSION_PATH } from '../../shared/web-protocol'
+import { PROJECTS_PATH, SESSION_PATH, type WebOpenProjectRequest } from '../../shared/web-protocol'
 import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
 import { warnLog } from '../warn-log'
@@ -62,6 +73,8 @@ export const PAIR_WAIT_MS = 20_000
 const MAX_PROJECT_ID = 200
 /** The longest window title part taken from the server. */
 const MAX_TITLE_NAME = 200
+/** The longest error text taken from the server for main's error page. */
+const MAX_SERVER_ERROR = 500
 
 // ---------------------------------------------------------------------------------------------
 // The rules (pure, unit-tested on their own)
@@ -172,16 +185,21 @@ export function remotePageUrl(origin: string, projectId?: string, token?: string
   return `${origin}/${query}${fragment}`
 }
 
-/** Window title text from the server: control characters out, capped. */
-function titlePart(text: string): string {
+/** Text from the server shown by main (a title, an error): control characters out, capped at `max`. */
+function serverText(text: string, max: number): string {
   let out = ''
   for (const ch of text) {
     const code = ch.codePointAt(0) ?? 0
     if (code < 0x20 || (code >= 0x7f && code < 0xa0) || code === 0x2028 || code === 0x2029) continue
     out += ch
-    if (out.length >= MAX_TITLE_NAME) break
+    if (out.length >= max) break
   }
   return out.trim()
+}
+
+/** Window title text from the server. */
+function titlePart(text: string): string {
+  return serverText(text, MAX_TITLE_NAME)
 }
 
 /** `<server> — <project>`, or the server's name alone on its picker. */
@@ -238,6 +256,12 @@ export interface RemoteSessionView {
   readonly jar: RemoteCookieJar
   /** GET `url` with the partition's cookies and parse the JSON body; rejects on a network error or a non-2xx answer. */
   fetchJson(url: string): Promise<unknown>
+  /**
+   * POST `body` as JSON to `url` with the partition's cookies and `Origin: <origin>` (the gateway
+   * refuses a POST whose Origin is not the server's own). Any status answers, with the JSON body
+   * (undefined when it is not JSON); rejects only on a network error.
+   */
+  postJson(url: string, body: unknown, origin: string): Promise<{ status: number; body: unknown }>
 }
 
 export interface RemoteWindowFactory {
@@ -324,6 +348,17 @@ interface WindowRecord {
 }
 
 export type SessionReply = { mode: string; device: { id: string } | null }
+
+/**
+ * Whether a main-made project page load asks the server first (see the header). `open`: a window
+ * opened on a project (from the picker, or reloaded after another window's sign-in): asks, then
+ * loads in any case. `signedIn`: a sign-in just landed with the page already on the project: loads
+ * only when the server reopened it, or when the window is not on the server's page.
+ */
+type ReopenMode = 'open' | 'signedIn'
+
+/** What the server said about a project before its page loads. */
+type ProjectCheck = { open: true } | { reopened: string } | { error: string } | { unknown: true }
 
 /** The SESSION_PATH answer, checked; undefined when it is not one (the gateway's own shape, web-protocol.ts). */
 export function sessionReplyOf(body: unknown): SessionReply | undefined {
@@ -431,7 +466,7 @@ export class RemoteWindows {
     this.options.onChanged?.()
     this.updateTitle(rec)
     if (request.token !== undefined) this.signInWith(rec, state, request.token)
-    else this.load(rec, remotePageUrl(state.origin, projectId))
+    else this.load(rec, remotePageUrl(state.origin, projectId), projectId === undefined ? undefined : 'open')
   }
 
   /**
@@ -704,7 +739,11 @@ export class RemoteWindows {
     const landed = this.waitSignedIn(state)
     this.load(rec, remotePageUrl(state.origin, rec.project, token))
     const ok = await landed
-    if (ok) for (const other of this.windowsOf(rec.serverId)) if (other !== rec) this.reload(other, state)
+    if (ok) {
+      for (const other of this.windowsOf(rec.serverId)) if (other !== rec) this.reload(other, state)
+      // The page signed in on its project: one the server closed shows "not open" until reopened.
+      if (rec.project !== undefined) this.load(rec, remotePageUrl(state.origin, rec.project), 'signedIn')
+    }
     return ok
   }
 
@@ -715,17 +754,17 @@ export class RemoteWindows {
   }
 
   /**
-   * A load main makes: at once, or for a gated server once the gate lets it. A newer load replaces
-   * one still waiting; a closed window loads nothing.
+   * A load main makes: at once, or for a gated server once the gate lets it; with `reopen`, after
+   * the project check (`loadChecked`). A newer load replaces one still waiting; a closed window
+   * loads nothing.
    */
-  private load(rec: WindowRecord, url: string): void {
+  private load(rec: WindowRecord, url: string, reopen?: ReopenMode): void {
     if (rec.closed) return
     rec.loads++
     this.clearRetry(rec)
     const server = this.gated(rec.serverId)
     if (server === undefined) {
-      rec.waiting = undefined
-      rec.view.load(url)
+      this.loadChecked(rec, url, rec.loads, reopen)
       return
     }
     const attempt = rec.loads
@@ -735,8 +774,7 @@ export class RemoteWindows {
       .then((result) => {
         if (rec.closed || rec.loads !== attempt) return
         if ('go' in result) {
-          rec.waiting = undefined
-          rec.view.load(url)
+          this.loadChecked(rec, url, attempt, reopen)
         } else if ('error' in result) {
           rec.waiting = undefined
           rec.view.showError(result.error)
@@ -746,15 +784,87 @@ export class RemoteWindows {
           rec.waiting = result.wait
           rec.retry = this.timers.setTimeout(() => {
             rec.retry = undefined
-            if (!rec.closed && rec.loads === attempt) this.load(rec, url)
+            if (!rec.closed && rec.loads === attempt) this.load(rec, url, reopen)
           }, TUNNEL_RETRY_MS)
         }
       })
   }
 
-  /** Another window's sign-in landed: this one shows its page again (through the gate when it has one). */
+  /**
+   * The gate let load `attempt` go (or there is none): the page loads, after the project check when
+   * `reopen` asks for one and `url` shows a project. An answer for an older load is dropped.
+   */
+  private loadChecked(rec: WindowRecord, url: string, attempt: number, reopen: ReopenMode | undefined): void {
+    const state = this.servers.get(rec.serverId)
+    const project = reopen === undefined ? undefined : projectOfUrl(url)
+    if (state === undefined || project === undefined) {
+      rec.waiting = undefined
+      rec.view.load(url)
+      return
+    }
+    const origin = state.origin
+    void this.checkProject(rec, state.session, origin, project).then((check) => {
+      if (rec.closed || rec.loads !== attempt) return
+      if ('error' in check) {
+        const server = this.options.store.get(rec.serverId)
+        rec.waiting = undefined
+        rec.view.showError(`${server?.name ?? 'The server'} could not reopen this project: ${check.error}`)
+      } else if ('reopened' in check) {
+        rec.waiting = undefined
+        rec.view.load(remotePageUrl(origin, check.reopened))
+      } else if (reopen === 'open' || !onOrigin(rec.view.url(), origin)) {
+        // Open already, or the server could not tell: the page as before (it shows its own state).
+        rec.waiting = undefined
+        rec.view.load(url)
+      }
+    })
+  }
+
+  /**
+   * Is `project` open on the server, and if not, reopen it (the server's web picker's own POST,
+   * picker-model.ts `openProject`). Never throws: a server that cannot tell (signed out, away, an
+   * old gateway with no such POST) is `unknown`.
+   */
+  private async checkProject(rec: WindowRecord, session: RemoteSessionView, origin: string, project: string): Promise<ProjectCheck> {
+    const url = `${origin}${PROJECTS_PATH}`
+    let open: Set<string> | undefined
+    try {
+      open = openProjectIdsOf(await session.fetchJson(url))
+    } catch (err) {
+      // Signed out (401): the page's sign-in, then a re-pair, and the check runs again once it lands.
+      this.log(`remote ${rec.serverId}: the project list did not answer; loading the project page as is: ${errorText(err)}`)
+      return { unknown: true }
+    }
+    if (open === undefined) return { unknown: true }
+    if (open.has(project)) return { open: true }
+    if (rec.closed) return { unknown: true }
+    const request: WebOpenProjectRequest = { reopen: project }
+    let answer: { status: number; body: unknown }
+    try {
+      answer = await session.postJson(url, request, origin)
+    } catch (err) {
+      this.log(`remote ${rec.serverId}: reopening the project did not answer: ${errorText(err)}`)
+      return { unknown: true }
+    }
+    const body = answer.body !== null && typeof answer.body === 'object' ? (answer.body as Record<string, unknown>) : {}
+    const { id, error } = body
+    if (answer.status === 200 && typeof id === 'string' && id !== '' && id.length <= MAX_PROJECT_ID) return { reopened: id }
+    // 401: signed out since the list answered; the page's sign-in shows, as for a list that did not.
+    if (answer.status !== 401 && typeof error === 'string') {
+      const text = serverText(error, MAX_SERVER_ERROR)
+      if (text !== '') return { error: text }
+    }
+    this.log(`remote ${rec.serverId}: reopening the project answered ${answer.status}; loading the project page as is`)
+    return { unknown: true }
+  }
+
+  /**
+   * Another window's sign-in landed: this one shows its page again (through the gate when it has one;
+   * a project page after the project check, since it may have shown "not open" while signed out).
+   */
   private reload(rec: WindowRecord, state: ServerState): void {
-    if (this.gated(rec.serverId) !== undefined) this.load(rec, remotePageUrl(state.origin, rec.project))
+    if (rec.project !== undefined) this.load(rec, remotePageUrl(state.origin, rec.project), 'open')
+    else if (this.gated(rec.serverId) !== undefined) this.load(rec, remotePageUrl(state.origin))
     else rec.view.reload()
   }
 
