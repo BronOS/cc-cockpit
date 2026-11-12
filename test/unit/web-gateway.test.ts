@@ -530,8 +530,10 @@ describe('Origin check (upgrade and state-changing requests)', () => {
     })
     client.on('error', () => undefined)
     client.send('x'.repeat(4 * 1024 * 1024 + 1))
-    // 1009 "message too big", sent by ws before it drops the socket; main logs it, nothing throws.
-    expect(await closed).toBe(1009)
+    // 1009 "message too big", sent by ws before it drops the socket; main logs it, nothing throws. On macOS
+    // the client is often still writing when the server drops the socket, so it sees the reset (1006) before
+    // the close frame: either way the server closed it, which serverClosed checks.
+    expect([1006, 1009]).toContain(await closed)
     await serverClosed
   })
 

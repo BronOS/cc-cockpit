@@ -85,6 +85,8 @@ describe('webKeyTable', () => {
 
 describe('setCommands in the web shell', () => {
   it('the desktop table is used as it is; the web shell answers the Alt chord and shows it', () => {
+    // A Linux browser: Node on a Mac has a navigator whose platform says Mac, which keeps Ctrl+W free.
+    vi.stubGlobal('navigator', { platform: 'Linux x86_64', userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' })
     registerHandlers({ 'tab.close': () => undefined })
     const ev = { key: 'w', code: 'KeyW', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }
     setCommands(view({ 'tab.close': 'ctrl+w' }))

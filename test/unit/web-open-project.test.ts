@@ -1,7 +1,7 @@
 // Server mode's open from the browser picker (main/web/open-project.ts, design-web.md §9.8): the
 // POST body's check and what main does with it. The gateway's HTTP side is in web-gateway.test.ts;
 // the real WindowManager behind openPath / openRecent in window-manager.test.ts.
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -172,7 +172,8 @@ describe('openProjectFromWeb: relink and forget', () => {
   let opened: string[]
   let deps: OpenProjectDeps
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'ccc-relink-'))
+    // realpath: on macOS the temp dir is under /var, a symlink to /private/var, and a relink stores the real path.
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-relink-')))
     dataDir = join(root, 'data')
     mkdirSync(dataDir)
     registry = new ProjectRegistry({ dataDir, log: () => {} })
