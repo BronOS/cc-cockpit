@@ -97,10 +97,10 @@
 - Modify: `plugins/sessions/slots/strip.js`, `strip.html`, `plugins/sessions/src` or `lib` as the plugin is laid out,
   its `test/`, and `dist/` if it is built
 
-- [ ] chips after the session chips: name, waiting / working marks as the strip draws them for a session, dimmed when
+- [x] chips after the session chips: name, waiting / working marks as the strip draws them for a session, dimmed when
       unreachable, tooltip with the counts; click → `focusMachine`; feature-checked (`typeof ctx.sessions.machines`)
-- [ ] plugin tests (`npm run test:plugins`); checked against `ccc guide style`
-- [ ] run tests - must pass before next task
+- [x] plugin tests (`npm run test:plugins`); checked against `ccc guide style`
+- [x] run tests - must pass before next task
 
 ### Task 4: Remote window: "This computer" chip [model: opus]
 
@@ -108,12 +108,12 @@
 - Modify: `src/renderer/web/main.tsx` (or the top bar component), `src/renderer/shell-kind.ts`,
   `src/main/remote/remote-windows.ts`, `src/main/index.ts` (focus last local window), `src/renderer` styles
 
-- [ ] web client: with the desktop UA, a "This computer" chip at the start of the strip area; click →
+- [x] web client: with the desktop UA, a "This computer" chip at the start of the strip area; click →
       `location.assign('/?cc-desktop=local')`
-- [ ] main: a remote window's navigation to `?cc-desktop=local` (any page) is cancelled and focuses the most recently
+- [x] main: a remote window's navigation to `?cc-desktop=local` (any page) is cancelled and focuses the most recently
       focused local project window, else shows the picker; nothing else is read from the URL
-- [ ] tests: interception (focus local / picker), other navigations untouched; web client helper
-- [ ] run tests - must pass before next task
+- [x] tests: interception (focus local / picker), other navigations untouched; web client helper
+- [x] run tests - must pass before next task
 
 ### Task 5: e2e and docs [model: sonnet]
 - [ ] extend `test/e2e/remote-desktop.spec.ts` (Direct, `CC_COCKPIT_NO_BUNDLED: ''` for the strip): server chip with
