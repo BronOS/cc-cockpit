@@ -1612,8 +1612,8 @@ export interface WebviewHandlerDeps {
   panel(projectId: string, panelKey: unknown): WebviewPanelRef | undefined
   views: Pick<WebviewManager, 'setPlacement' | 'back' | 'forward' | 'reload' | 'current'>
   /**
-   * Main's server flag: the only thing that opens `webviews.place` and `webviews.fit` (to a remote
-   * view; the desktop page and the hidden page never send them).
+   * Main's server flag: the only thing that opens `webviews.place`, `webviews.fit`, `webviews.step`
+   * and `webviews.current` to a remote view (the desktop page and the hidden page never send the first two).
    */
   server?: boolean
   /** Server mode's viewers and size owner (webview-viewers.ts); absent: the two channels refuse. */
@@ -1643,7 +1643,15 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     // The manager cleans the numbers (NaN, negatives, huge) before anything reaches Electron.
     deps.views.setPlacement(owner.windowId, owner.pluginId, owner.panelId, { bounds: { x, y, width, height }, visible })
   })
-  router.handleProject('webviews.step', (ctx, payload) => {
+  // `adapted` (design-web-browser.md §3.5): the toolbar. The desktop page acts as before; a remote
+  // view only when main runs as a server (its panel is a streamed page there, the desktop's
+  // placeholder otherwise), decided by main's flag and the view main bound. The panel is resolved
+  // through the caller's own window, so a browser of one window never steps another window's view.
+  const toolbarAllowed = (channel: string, view: CallView): void => {
+    if (view.remote && deps.server !== true) throw new Error(`${channel}: only a browser view of a server has a webview toolbar`)
+  }
+  router.handleProject('webviews.step', (ctx, payload, view) => {
+    toolbarAllowed('webviews.step', view)
     const owner = panelOf('webviews.step', ctx, payload)
     const step = fields('webviews.step', payload).step
     if (step !== 'back' && step !== 'forward' && step !== 'reload') {
@@ -1651,7 +1659,10 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     }
     deps.views[step](owner)
   })
-  router.handleProject('webviews.current', (ctx, payload) => deps.views.current(panelOf('webviews.current', ctx, payload)))
+  router.handleProject('webviews.current', (ctx, payload, view) => {
+    toolbarAllowed('webviews.current', view)
+    return deps.views.current(panelOf('webviews.current', ctx, payload))
+  })
 
   // `adapted` (design-web-browser.md §3.2): a server's browser view reports where it shows a
   // webview panel, and asks "Fit to this screen". Main's flag and the view main bound decide,

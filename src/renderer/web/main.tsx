@@ -41,6 +41,7 @@ import { linkTokenOf, signIn, signedOutText } from './sign-in'
 import '../assets/fonts/fonts.css'
 import '../styles.css'
 import './web.css'
+import { setWebviewFrameSource } from './webview-stream'
 
 document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'other'
 // Before anything renders: TabsPane, App and the zones read it when they mount.
@@ -214,6 +215,8 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     }
   })
   window.cockpit = bridge.api
+  // A server's streamed webview panels (webview-canvas.tsx) take their frames from this bridge.
+  setWebviewFrameSource((key, listener) => bridge.onWebviewFrame(key, listener))
   themeFromMain = true
   // ctx.notify's `sound` in server mode (main sends it to a server's browsers only, web/connection.ts
   // remoteEvent). A browser may hold the sound back until the person has touched the page.

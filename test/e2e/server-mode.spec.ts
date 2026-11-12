@@ -955,8 +955,8 @@ test('server mode: a new device and a newer release are stdout lines, listed in 
 // page at activation is only recorded (no browser shows the panel yet, so no Chromium page is made)
 // and the plugin is active; `ccc browser open <file>` from a Claude tab loads at once (the CLI waits
 // for the outcome), off-screen, never shown or focused and never taken for a project window; a page
-// calling alert() leaves main alive (dialogs disabled). Until the browsers draw the stream (Task 6)
-// the Browser panel is the placeholder; url overlays stay refused.
+// calling alert() leaves main alive (dialogs disabled). A browser showing the Browser panel is its
+// viewer (Task 6 draws the stream), which is what loads the home page; url overlays stay refused.
 test('server mode: a web view is an off-screen page; the home page waits for a viewer; alert() leaves main alive', async () => {
   test.setTimeout(120_000)
   server = await launchServer({
@@ -992,18 +992,21 @@ test('server mode: a web view is an off-screen page; the home page waits for a v
   try {
     const { page } = browser
     await openProjectInBrowser(browser, server.origin, server.projectId)
-    const section = page.locator('section.panel[aria-label="Browser"]')
-    if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
-    await expect(section).toBeVisible({ timeout: 15_000 })
-    // The placeholder until Task 6 draws the stream.
-    await expect(section.getByRole('status')).toHaveText('Browser: not available in server mode.')
-    // The layout is shared: the hidden page has the panel open too, and its reports change nothing.
-    await expect(cockpit.page.locator('section.panel[aria-label="Browser"]')).toBeVisible({ timeout: 15_000 })
-    // The home navigate at activation was recorded, not loaded: no page, nothing to warn about.
+    // Before any browser shows the Browser panel, the home navigate at activation is only recorded.
     expect(await cockpit.hook('nativeViewsMade')).toEqual(none)
     expect((await electronViews()).offscreen).toEqual([])
     const pluginLog = join(cockpit.dataDir, 'logs', 'cockpit.browser.log')
     expect(existsSync(pluginLog) ? readFileSync(pluginLog, 'utf8') : '').not.toContain('home page:')
+    const section = page.locator('section.panel[aria-label="Browser"]')
+    if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    // The layout is shared: the hidden page has the panel open too, and its reports change nothing.
+    await expect(cockpit.page.locator('section.panel[aria-label="Browser"]')).toBeVisible({ timeout: 15_000 })
+    // The browser shows the streamed panel (Task 6): it is the first viewer, so the deferred home
+    // page loads now (port 9, which Chromium refuses: the toolbar says so).
+    await expect(section.locator('canvas.webview-canvas')).toHaveCount(1)
+    await expect(section.locator('.webview-load-error')).toContainText('Could not load the page: ERR_', { timeout: 15_000 })
+    expect(await cockpit.hook('nativeViewsMade')).toEqual({ ...none, offscreenWebviews: 1 })
 
     await page.getByRole('button', { name: 'New tab' }).click()
     await page.getByRole('menuitem', { name: 'Claude' }).click()
@@ -1017,10 +1020,10 @@ test('server mode: a web view is an off-screen page; the home page waits for a v
       .poll(async () => (await electronViews()).offscreen)
       .toEqual([{ url: expect.stringMatching(/^cc-preview:\/\/t[0-9a-f]+\/page\.html$/), title: 'Server page', loading: false }])
     expect((await electronViews()).placed).toBe(0)
-    // Never shown or focused, not painting (no browser is a viewer before Task 4), and nothing main
-    // takes for a project window or a page that may send it IPC.
+    // Never focused, painting for its viewer (the browser), and nothing main takes for a project
+    // window or a page that may send it IPC.
     expect(await cockpit.hook('offscreenWebviews')).toEqual([
-      expect.objectContaining({ visible: false, focused: false, painting: false, projectWindow: false, sender: null })
+      expect.objectContaining({ focused: false, painting: true, projectWindow: false, sender: null })
     ])
     await page.keyboard.type('/ccc browser url')
     await page.keyboard.press('Enter')

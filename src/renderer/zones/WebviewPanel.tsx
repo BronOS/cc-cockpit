@@ -1,37 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { PanelInfo, WebviewPageInfo } from '../../shared/ipc'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import type { PanelInfo } from '../../shared/ipc'
 import { PlacementReporter } from './placement-reporter'
 import { layersUp, onLayersChange } from './shell-layers'
 import { isServerView, isWebShell } from '../shell-kind'
-import { BackGlyph, ExternalGlyph, ForwardGlyph, ReloadGlyph } from '../window-icons'
-
-const NO_PAGE: WebviewPageInfo = { url: '', title: '' }
-
-/** Only an http(s) page goes to the system browser (main checks again: `app.openExternal`). */
-function isWebUrl(url: string): boolean {
-  return /^https?:\/\//i.test(url)
-}
-
-/**
- * The URL with its scheme and its path dimmed, so the host (the part that says where the page is)
- * reads first. Text only, and its text content is the URL unchanged (the toolbar's specs read it).
- * Anything that is not `scheme://host…` is shown as it is.
- */
-function UrlParts(props: { url: string }): React.JSX.Element {
-  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)(.*)$/is.exec(props.url)
-  if (!m) return <>{props.url}</>
-  return (
-    <>
-      <span className="webview-url-dim">{m[1]}</span>
-      {m[2]}
-      <span className="webview-url-dim">{m[3]}</span>
-    </>
-  )
-}
-
-function step(panelKey: string, which: 'back' | 'forward' | 'reload'): void {
-  window.cockpit.invoke('webviews.step', { panelKey, step: which }).catch(() => {})
-}
+import { WebviewCanvasPanel } from '../web/webview-canvas'
+import { useWebviewPage, WebviewLoadError, WebviewToolbar } from './webview-toolbar'
 
 /**
  * A `"kind": "webview"` panel (plan B Task 8): a toolbar and a placeholder. The page itself is a
@@ -50,14 +23,17 @@ function step(panelKey: string, which: 'back' | 'forward' | 'reload'): void {
  * (a splitter drag ending is such a layer going, so the view comes back where the drag left it).
  */
 export function WebviewPanel(props: { info: PanelInfo }): React.JSX.Element {
-  // The page is a native view on the host's window: a browser view has nothing to show it with
-  // (design-web.md §6.1), and must not report a placement for it either. A server has no desktop to
-  // send the person to, and main makes no view there at all (§9.9): the text says so (a UI hint).
+  // A server's browser view draws the page main renders off-screen and streams to it
+  // (design-web-browser.md §3, web/webview-canvas.tsx). Main decides from its own flag; this is the
+  // `ready` hint, and a wrong one only gets refused calls.
+  if (isServerView()) return <WebviewCanvasPanel info={props.info} />
+  // On the desktop the page is a native view on the host's window: a browser view of it has nothing
+  // to show it with (design-web.md §6.1), and must not report a placement for it either.
   if (isWebShell()) {
     return (
       <div className="panel-body webview-panel" data-panel-body={props.info.panelKey}>
         <p className="desktop-only-note" role="status">
-          {props.info.title}: {isServerView() ? 'not available in server mode.' : 'available on the desktop.'}
+          {props.info.title}: available on the desktop.
         </p>
       </div>
     )
@@ -67,7 +43,7 @@ export function WebviewPanel(props: { info: PanelInfo }): React.JSX.Element {
 
 function NativeWebviewPanel(props: { info: PanelInfo }): React.JSX.Element {
   const { panelKey, title, error } = props.info
-  const [page, setPage] = useState<WebviewPageInfo>(NO_PAGE)
+  const page = useWebviewPage(panelKey)
   const el = useRef<HTMLDivElement>(null)
   // Made by the mount effect, not in state: StrictMode's mount / unmount / mount would otherwise
   // leave a reporter its first cleanup disposed.
@@ -115,28 +91,6 @@ function NativeWebviewPanel(props: { info: PanelInfo }): React.JSX.Element {
     }
   }, [panelKey, measure])
 
-  useEffect(() => {
-    let live = true
-    // Subscribe before asking, so a page committed between the two is not lost; the event is
-    // newer than the answer, so the answer is dropped once one arrived.
-    let sawEvent = false
-    const off = window.cockpit.on('webviews.navigated', (p) => {
-      if (p.panelKey !== panelKey) return
-      sawEvent = true
-      setPage({ url: p.url, title: p.title, ...(typeof p.error === 'string' && p.error !== '' ? { error: p.error } : {}) })
-    })
-    window.cockpit
-      .invoke('webviews.current', { panelKey })
-      .then((p) => {
-        if (live && !sawEvent) setPage(p)
-      })
-      .catch(() => {})
-    return () => {
-      live = false
-      off()
-    }
-  }, [panelKey])
-
   const hasPage = page.url !== ''
   return (
     <div className="panel-body webview-panel" data-panel-body={panelKey}>
@@ -145,40 +99,9 @@ function NativeWebviewPanel(props: { info: PanelInfo }): React.JSX.Element {
           ⚠ {error}
         </p>
       )}
-      <div className="webview-toolbar" role="toolbar" aria-label={`${title} navigation`}>
-        <button type="button" className="icon-button sm" aria-label="Back" title="Back" disabled={!hasPage} onClick={() => step(panelKey, 'back')}>
-          <BackGlyph size={15} />
-        </button>
-        <button type="button" className="icon-button sm" aria-label="Forward" title="Forward" disabled={!hasPage} onClick={() => step(panelKey, 'forward')}>
-          <ForwardGlyph size={15} />
-        </button>
-        <button type="button" className="icon-button sm" aria-label="Reload" title="Reload" disabled={!hasPage} onClick={() => step(panelKey, 'reload')}>
-          <ReloadGlyph size={15} />
-        </button>
-        <span className="webview-url" title={page.title ? `${page.title}\n${page.url}` : page.url} data-url={page.url}>
-          {hasPage ? <UrlParts url={page.url} /> : 'No page'}
-        </span>
-        <button
-          type="button"
-          aria-label="Open in system browser"
-          title="Open in system browser"
-          disabled={!isWebUrl(page.url)}
-          className="icon-button sm"
-          onClick={() => {
-            window.cockpit.invoke('app.openExternal', { url: page.url }).catch(() => {})
-          }}
-        >
-          <ExternalGlyph size={15} />
-        </button>
-      </div>
-      {/* A failed load leaves an empty page at its URL (Electron has no error page): say why here.
-          Reload (enabled: the URL is the page's) tries again. Above the placeholder, so the view
-          is laid out below it. */}
-      {page.error !== undefined && (
-        <p className="plugin-panel-error webview-load-error" role="status" title={page.error}>
-          Could not load the page: {page.error}
-        </p>
-      )}
+      <WebviewToolbar panelKey={panelKey} title={title} page={page} />
+      {/* Above the placeholder, so the view is laid out below it. */}
+      <WebviewLoadError page={page} />
       <div ref={el} className="webview-placeholder" data-webview={panelKey}>
         {!hasPage && <p className="panel-placeholder">{title} shows nothing yet</p>}
       </div>

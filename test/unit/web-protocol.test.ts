@@ -1641,6 +1641,11 @@ describe('the web access card (server mode)', () => {
   it('remoteEvent passes every other event as it is', () => {
     expect(remoteEvent('layout.updated', { a: 1 }, false)).toEqual({ payload: { a: 1 } })
     expect(remoteEvent('webAccess.changed', { connected: 0 }, false)).toBeUndefined()
+    // A webview toolbar's page (design-web-browser.md §3.5): a server's browsers only.
+    expect(remoteEvent('webviews.navigated', { panelKey: 'a/b', url: 'https://x/', title: '' }, false)).toBeUndefined()
+    expect(remoteEvent('webviews.navigated', { panelKey: 'a/b', url: 'https://x/', title: '' }, true)).toEqual({
+      payload: { panelKey: 'a/b', url: 'https://x/', title: '' }
+    })
   })
 
   // design-web.md §9.9: notifications and their sound stay on the host on the desktop (§6.1), so a

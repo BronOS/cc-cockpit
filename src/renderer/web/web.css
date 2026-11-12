@@ -448,3 +448,54 @@ html[data-shell='web']:has(.tabs-pane) body {
   font-size: var(--cc-text-xs);
   color: var(--cc-status-needs-permission);
 }
+
+/* A server's streamed webview panel (webview-canvas.tsx, design-web-browser.md §3): the frame on a
+   canvas filling the area under the toolbar; the letterbox shows the panel's own background. */
+.webview-canvas-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--cc-fg) 4%, var(--cc-bg));
+}
+.webview-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.webview-canvas[hidden] {
+  display: none;
+}
+.webview-canvas-note {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 12px;
+}
+/* "Fit to this screen": in the toolbar while the page has another view's size (as .terminal-fit). */
+.webview-fit {
+  flex: none;
+  margin-left: 4px;
+  padding: 3px 10px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-accent);
+  background: var(--cc-bg-banner);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.webview-fit:hover {
+  background: var(--cc-accent-soft);
+}
+/* A phone: the label would push the URL out of the toolbar. */
+@media (max-width: 480px) {
+  .webview-fit {
+    padding: 3px 6px;
+    max-width: 30%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

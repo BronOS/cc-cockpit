@@ -335,18 +335,34 @@ External review: sol / high
 - Create: `test/unit/webview-canvas.test.ts`
 - Create: `test/e2e/server-webview.spec.ts`
 
-- [ ] `webviews.step`, `webviews.current` and `webviews.navigated` become `adapted`: allowed when
+- [x] `webviews.step`, `webviews.current` and `webviews.navigated` become `adapted`: allowed when
       `server && view.remote`, resolved through the caller's own window; desktop rules unchanged
-- [ ] when the view is a server view (`isServerView()`), a webview panel renders `webview-canvas` instead of the
+- [x] when the view is a server view (`isServerView()`), a webview panel renders `webview-canvas` instead of the
       placeholder: frames (`createImageBitmap`) on a canvas, letterboxed when not the size owner, placement reports
       (ResizeObserver, `document.hidden`), "Fit to this screen", and the same toolbar as the desktop (back, forward,
       reload, URL and title, the load-error text, the "view gone" state)
-- [ ] the desktop's `WebviewPanel` path and a browser view of a desktop project (placeholder) are unchanged
-- [ ] write unit tests for letterbox math, placement reporting and the toolbar's channel classes
-- [ ] e2e: server mode, `ccc browser open` of a local HTML file from a Claude tab paints non-blank pixels of the
+- [x] the desktop's `WebviewPanel` path and a browser view of a desktop project (placeholder) are unchanged
+- [x] write unit tests for letterbox math, placement reporting and the toolbar's channel classes
+- [x] e2e: server mode, `ccc browser open` of a local HTML file from a Claude tab paints non-blank pixels of the
       expected colour in the browser's canvas; the toolbar shows the URL; a refused port shows the load error; closing
       the panel stops frames
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+- ➕ done: the toolbar moved to `src/renderer/zones/webview-toolbar.tsx` (`WebviewToolbar`, `useWebviewPage`,
+      `WebviewLoadError`), used by the desktop panel and the canvas. The pure halves are in
+      `src/renderer/web/webview-stream.ts` (`letterbox`, `boxToFrame`, `sizeDiffers`, `PlaceReporter` debounced 50 ms,
+      `FrameDecoder` latest-only, `setWebviewFrameSource` set by web/main.tsx from the bridge). The server view is
+      `isServerView()` (shell-kind.ts, `ready`'s `server`); a desktop project's browser keeps "available on the desktop".
+      `webviews.navigated` reaches remote views only in server mode (`remoteEvent`, web/connection.ts); step/current
+      refuse a remote view unless `server` (router.ts `toolbarAllowed`). The letterbox is "contain" for every view (the
+      owner's frame equals its box, so it lands 1:1); "Fit to this screen" shows in the toolbar while the frame's page
+      size differs from the area by more than 1 px (the browser is not told who owns the size). No page: the canvas is
+      hidden and the note says "shows nothing yet", or "the page is gone" after one was shown.
+- ➕ **for Task 7**: the input layer goes over `.webview-canvas-area` (`data-webview` = panel key); map a point with
+      `boxToFrame(letterbox(areaW, areaH, frame), frame, x, y)` (CSS px in the area → encoded frame px, undefined in
+      the letterbox). The canvas effect keeps the current `DecodedFrame` (`frame` header) in a local; lift it to a ref
+      for input. Port 9 is `ERR_UNSAFE_PORT` in Chromium (not refused by the OS): the e2e matches `Could not load the
+      page: ERR_`. server-mode.spec.ts's off-screen test now expects the home page to load when the browser shows the
+      panel (it is the first viewer) and `painting: true`.
 
 ### Task 7: Pointer, wheel and keys [model: opus]
 

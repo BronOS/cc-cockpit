@@ -2401,6 +2401,52 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
     expect(calls).toEqual([])
   })
 
+  // design-web-browser.md §3.5 (Task 6): the toolbar is `adapted` the same way, the desktop page unchanged.
+  it('the toolbar: step and current from a server browser, through its own window; refused from a desktop browser', async () => {
+    const { ipc, router } = setup()
+    const steps: unknown[][] = []
+    const deps = (server: boolean): Parameters<typeof registerWebviewHandlers>[1] => ({
+      panel: (projectId, panelKey) => (projectId === PROJECT_A && panelKey === 'a.one/view' ? { pluginId: 'a.one', panelId: 'view' } : undefined),
+      views: {
+        setPlacement: () => {},
+        back: (o) => void steps.push(['back', o]),
+        forward: (o) => void steps.push(['forward', o]),
+        reload: (o) => void steps.push(['reload', o]),
+        current: (o) => ({ url: `https://w${o.windowId}.test/`, title: '' })
+      },
+      server
+    })
+    registerWebviewHandlers(router, deps(true))
+    expect(REMOTE_CLASS['webviews.step']).toBe('adapted')
+    expect(REMOTE_CLASS['webviews.current']).toBe('adapted')
+    expect(REMOTE_CLASS['webviews.navigated']).toBe('adapted')
+    const forged = { panelKey: 'a.one/view', step: 'back', windowId: 2, projectId: PROJECT_B }
+    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.step', forged)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.current', { panelKey: 'a.one/view', windowId: 2 })).resolves.toEqual({
+      url: 'https://w1.test/',
+      title: ''
+    })
+    expect(steps).toEqual([['back', { windowId: 1, projectId: PROJECT_A, pluginId: 'a.one', panelId: 'view' }]])
+    // Another window's browser naming this project's key: not a panel of its project.
+    await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.step', { panelKey: 'a.one/view', step: 'reload' })).rejects.toThrow(
+      /not a webview panel/
+    )
+    // The desktop page (here the hidden page) keeps its toolbar.
+    await ipc.invoke('webviews.step', 11, [{ panelKey: 'a.one/view', step: 'forward' }])
+    expect(steps).toHaveLength(2)
+
+    const desktop = setup()
+    registerWebviewHandlers(desktop.router, deps(false))
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.step', { panelKey: 'a.one/view', step: 'reload' })).rejects.toThrow(
+      /only a browser view of a server/
+    )
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.current', { panelKey: 'a.one/view' })).rejects.toThrow(
+      /only a browser view of a server/
+    )
+    await desktop.ipc.invoke('webviews.step', 11, [{ panelKey: 'a.one/view', step: 'reload' }])
+    expect(steps).toHaveLength(3)
+  })
+
   it("a view of another window naming the key reaches only its own window: refused, and only its own entry may leave", async () => {
     const { router, calls } = webviewSetup()
     // Project B has no such panel: refused; the unmount path touches B's window and this view only.

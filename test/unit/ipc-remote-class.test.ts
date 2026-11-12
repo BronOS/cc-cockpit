@@ -35,9 +35,6 @@ describe('REMOTE_CLASS drift', () => {
     'window.reopen',
     'window.state',
     'webviews.placement',
-    'webviews.step',
-    'webviews.current',
-    'webviews.navigated',
     'overlays.bounds',
     // Web access: what adds or widens access, in both modes (design-web.md §9.6: minting stays on
     // the server shell); a browser must never read the link or widen its access.
@@ -68,6 +65,10 @@ describe('REMOTE_CLASS drift', () => {
     // A server's streamed webviews (design-web-browser.md §3.2): a browser view's own placement.
     'webviews.place',
     'webviews.fit',
+    // Its toolbar (§3.5): a server's browsers only (handler refusal, remoteEvent).
+    'webviews.step',
+    'webviews.current',
+    'webviews.navigated',
     // The web access card's read side and the narrowing calls: a server's browsers only (§9.4, §9.6).
     'settings.webAccess',
     'webAccess.state',

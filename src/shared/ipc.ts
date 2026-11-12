@@ -2012,9 +2012,12 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
 
   // Webview panels: a WebContentsView in the host's window ("available on the desktop", §6.1).
   'webviews.placement': 'no',
-  'webviews.step': 'no',
-  'webviews.current': 'no',
-  'webviews.navigated': 'no',
+  // The toolbar (design-web-browser.md §3.5): a server's browser views get it for the streamed page;
+  // a remote view outside server mode is refused by the handler (step, current) and gets no event
+  // (web/connection.ts remoteEvent), so on the desktop it stays the host's alone.
+  'webviews.step': 'adapted',
+  'webviews.current': 'adapted',
+  'webviews.navigated': 'adapted',
   // Server mode's streamed webviews (design-web-browser.md §3.2): a browser view's own placement and
   // "Fit to this screen". Taken only when main runs as a server and the caller is a remote view
   // (main's flag and the view main bound), the panel key resolved through the caller's own window's
