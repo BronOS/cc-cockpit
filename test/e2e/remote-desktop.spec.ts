@@ -11,21 +11,21 @@
 // `app.json`, so a relaunch on the same data dir reads the saved device cookie back as the keychain
 // would (the restore half of the spike check).
 //
-// SSH (plan Task 8): the desktop app's PATH starts with a bin dir holding an `ssh` that runs
-// test/fixtures/fake-ssh.mjs, which parses the argv like OpenSSH, runs the remote command locally
-// against the test server's own `ccc`, and relays `-N -L` to the server's port. The tunnel's local
-// port differs from the server's, which proves the gateway's Host rule (design §5.3).
+// Built-in SSH and My own tunnel (remote SSH rev 2 Task 7): see the section after the Direct test; the
+// SSH server is test/fixtures/ssh-server.mjs.
 //
 // Linux only: server mode starts nowhere else.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from 'node:net'
 import { hostname, tmpdir } from 'node:os'
-import { basename, delimiter, join, resolve } from 'node:path'
-import type { ElectronApplication, Page } from '@playwright/test'
+import { basename, join, resolve } from 'node:path'
+import type { ElectronApplication, Locator, Page } from '@playwright/test'
+import { utils } from 'ssh2'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
-
-const FAKE_SSH = resolve(__dirname, '../fixtures/fake-ssh.mjs')
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
 
@@ -90,6 +90,7 @@ interface SavedServer {
   id: string
   name: string
   cookie?: string
+  secrets?: { password?: string; passphrase?: string }
 }
 
 function savedServers(dataDir: string): SavedServer[] {
@@ -237,43 +238,89 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
   }
 })
 
-// ---------------------------------------------------------------------------------------------
-// SSH
 
-interface FakeSsh {
-  /** Env for the desktop app: the fake `ssh` first on PATH and what the fake reads. */
-  env: Record<string, string>
-  /** The fake's log lines (`command ...`, `tunnel L P pid=N`). */
-  log(): string[]
-  dispose(): void
+// ---------------------------------------------------------------------------------------------
+// Built-in SSH and My own tunnel (plan 20261112-remote-ssh-builtin Task 7)
+//
+// The app's own `ssh2` client dials test/fixtures/ssh-server.mjs, a small `ssh2` server on a loopback
+// port that runs the remote command locally against the test server's own `ccc` and connects
+// `direct-tcpip` channels to the gateway. The desktop's HOME is launchCockpit's temp home (so its
+// `~/.ssh` is empty: nothing of the real keys or known_hosts is read), SSH_AUTH_SOCK is removed from
+// its env, and its SHELL is the fixture's fake shell, so the login env cannot bring the real agent
+// back. The tunnel's local port differs from the gateway's, which proves the gateway's Host rule
+// (design §5.3).
+
+const SSH_SERVER = resolve(__dirname, '../fixtures/ssh-server.mjs')
+const SSH_USER = 'alice'
+const SSH_PASSWORD = 'correct horse'
+
+type Desktop = { cockpit: Cockpit; close(options?: { keepFiles?: boolean }): Promise<void> }
+
+interface HostKey {
+  file: string
+  /** `SHA256:...` as `ssh-keygen -lf` prints it. */
+  fingerprint: string
 }
 
-/** A temp bin dir with an `ssh` wrapper for fake-ssh.mjs, wired to `server`'s own `ccc`. */
-function fakeSsh(server: Server, badHosts: string[] = ['badhost']): FakeSsh {
-  const dir = mkdtempSync(join(tmpdir(), 'ccc-e2e-ssh-'))
-  const bin = join(dir, 'bin')
-  mkdirSync(bin)
-  const wrapper = join(bin, 'ssh')
-  writeFileSync(wrapper, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_SSH}' "$@"\n`)
-  chmodSync(wrapper, 0o755)
+function makeHostKey(dir: string, name: string): HostKey {
+  const pair = utils.generateKeyPairSync('ed25519')
+  const file = join(dir, name)
+  writeFileSync(file, pair.private, { mode: 0o600 })
+  const blob = Buffer.from(pair.public.split(' ')[1] ?? '', 'base64')
+  return { file, fingerprint: `SHA256:${createHash('sha256').update(blob).digest('base64').replace(/=+$/, '')}` }
+}
+
+interface SshFixture {
+  port: number
+  /** The fixture's log lines (`exec <command>`, `tcpip <port>`) of every run on this dir. */
+  log(): string[]
+  /** Ends the process (and its clients) and waits for it. */
+  stop(): Promise<void>
+}
+
+/** Starts the fixture; `port` to start again on the port of an earlier run (a restart of the "sshd"). */
+async function startSsh(dir: string, server: Server, hostKey: HostKey, port?: number): Promise<SshFixture> {
   const logFile = join(dir, 'ssh.log')
-  writeFileSync(logFile, '')
-  // launchCockpit's own PATH (fixture bin, node, inherited) goes behind the fake's dir.
-  const fixtureBin = resolve(__dirname, '../fixtures/bin')
+  const child = spawn(
+    process.execPath,
+    [
+      SSH_SERVER,
+      '--host-key', hostKey.file,
+      '--user', SSH_USER,
+      '--password', SSH_PASSWORD,
+      '--home', join(dir, 'remote-home'),
+      '--ccc', join(server.cockpit.dataDir, 'bin', 'ccc'),
+      '--log', logFile,
+      ...(port !== undefined ? ['--port', String(port)] : [])
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] }
+  )
+  const exited = new Promise<void>((done) => child.once('exit', () => done()))
+  const listening = await new Promise<number>((ok, fail) => {
+    let text = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      text += chunk.toString()
+      const line = text.split('\n')[0]
+      if (text.includes('\n') && line !== undefined) ok(Number(line))
+    })
+    child.once('exit', (code) => fail(new Error(`ssh-server.mjs exited with ${String(code)}`)))
+  })
   return {
-    env: {
-      PATH: [bin, fixtureBin, join(process.execPath, '..'), process.env.PATH ?? ''].join(delimiter),
-      FAKE_SSH_CCC: join(server.cockpit.dataDir, 'bin', 'ccc'),
-      FAKE_SSH_HOME: join(dir, 'remote-home'),
-      FAKE_SSH_BAD_HOSTS: badHosts.join(','),
-      FAKE_SSH_LOG: logFile
-    },
-    log: () => readFileSync(logFile, 'utf8').split('\n').filter((l) => l !== ''),
-    dispose: () => rmSync(dir, { recursive: true, force: true })
+    port: listening,
+    log: () => (existsSync(logFile) ? readFileSync(logFile, 'utf8').split('\n').filter((l) => l !== '') : []),
+    stop: async () => {
+      child.kill('SIGTERM')
+      await exited
+    }
   }
 }
 
-/** The desktop app's remote window on the tunnel: a loopback page that is not the server's own origin. */
+/** The desktop app, picker only, with no agent and (as every launch) a temp HOME with no `~/.ssh`. */
+function launchDesktop(root?: string): Promise<Desktop> {
+  return launchCockpit({ ...(root !== undefined ? { root } : {}), folderArg: false, ready: 'picker', env: { SSH_AUTH_SOCK: undefined } })
+}
+
+/** The desktop app's remote window on a tunnel: a loopback page that is not the server's own origin. */
 async function tunnelWindow(app: ElectronApplication, server: Server): Promise<Page> {
   let found: Page | undefined
   await expect
@@ -288,52 +335,89 @@ async function tunnelWindow(app: ElectronApplication, server: Server): Promise<P
   return found!
 }
 
-async function connectSsh(picker: Page, host: string, name?: string): Promise<ReturnType<Page['getByRole']>> {
+/** Fill and submit the SSH tab of the Connect form; resolves with the dialog. */
+async function connectSsh(picker: Page, port: number, name: string): Promise<Locator> {
   await picker.getByRole('button', { name: 'Connect to server…' }).click()
   const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
-  await dialog.getByRole('tab', { name: 'SSH' }).click()
-  await dialog.getByRole('textbox', { name: 'Host', exact: true }).fill(host)
-  if (name !== undefined) await dialog.getByRole('textbox', { name: 'Name (optional)' }).fill(name)
-  await dialog.getByRole('button', { name: 'Connect' }).click()
+  await dialog.getByTestId('connect-tab-ssh').click()
+  await dialog.getByTestId('connect-ssh-host').fill('127.0.0.1')
+  await dialog.getByTestId('connect-ssh-user').fill(SSH_USER)
+  await dialog.getByTestId('connect-ssh-port').fill(String(port))
+  await dialog.getByTestId('connect-ssh-auth-password').check()
+  await dialog.getByTestId('connect-name').fill(name)
+  await dialog.getByTestId('connect-submit').click()
   return dialog
 }
 
-// The app no longer spawns `ssh` (remote SSH rev 2 Task 5: the built-in `ssh2` client), so this fake-ssh
-// test cannot pass: replaced in Task 7 (an `ssh2` server fixture).
-test.skip('SSH: tunnel on another port, signed in by add-device, one re-pair after a revoke, tunnel restart, bad auth', async () => {
+/** The Trust prompt: shown with the fixture's fingerprint, then trusted. */
+async function trustHost(picker: Page, key: HostKey, port: number): Promise<void> {
+  const trust = picker.getByTestId('remote-hostkey-prompt')
+  await expect(trust).toBeVisible()
+  await expect(trust.getByTestId('remote-hostkey-fingerprint')).toHaveText(key.fingerprint)
+  await expect(trust.getByTestId('remote-hostkey-type')).toHaveText('ssh-ed25519')
+  await expect(trust.getByTestId('remote-hostkey-address')).toContainText(`127.0.0.1:${port}`)
+  // Armed after about a second (ApprovalArm); a click before is ignored, so the auto-wait covers it.
+  await trust.getByTestId('remote-hostkey-trust').click()
+}
+
+/** The Password prompt: typed, Remember set as asked. */
+async function typePassword(picker: Page, password: string, remember: boolean): Promise<void> {
+  const prompt = picker.getByTestId('remote-secret-prompt')
+  await expect(prompt).toBeVisible()
+  await prompt.getByTestId('remote-secret-input').fill(password)
+  await prompt.getByTestId('remote-secret-remember').setChecked(remember)
+  await prompt.getByTestId('remote-secret-ok').click()
+}
+
+const execs = (ssh: SshFixture, word: string): number => ssh.log().filter((l) => l.startsWith('exec ') && l.includes(`'${word}'`)).length
+
+/** Reload the window until the server's page shows (the tunnel may still be redialling). */
+async function reloadUntilSignedIn(page: Page): Promise<void> {
+  await expect(async () => {
+    await page.reload()
+    await page.locator('.tabs-pane, [aria-label="Open projects"]').first().waitFor({ timeout: 8_000 })
+  }).toPass({ timeout: 60_000 })
+}
+
+const homeOf = (root: string): string => join(root, 'home')
+
+test('Built-in SSH: Trust, password not remembered, a revoke re-pairs once, an sshd restart, a relaunch asks, Remember keeps it', async () => {
   test.setTimeout(300_000)
   const server = await launchServer({ mode: 'link' })
-  const ssh = fakeSsh(server)
-  let desktop: { cockpit: Cockpit; close(options?: { keepFiles?: boolean }): Promise<void> } | undefined
+  const dir = mkdtempSync(join(tmpdir(), 'ccc-e2e-sshd-'))
+  const key = makeHostKey(dir, 'host_key')
+  let ssh = await startSsh(dir, server, key)
+  let desktop: Desktop | undefined
+  let root: string | undefined
   try {
     const projectName = basename(server.cockpit.projectDir)
-    desktop = await launchCockpit({ folderArg: false, ready: 'picker', env: ssh.env })
+    desktop = await launchDesktop()
+    root = desktop.cockpit.root
+    expect(existsSync(join(homeOf(root), '.ssh', 'known_hosts'))).toBe(false)
     const { app } = desktop.cockpit
     const picker = desktop.cockpit.page
 
-    // (3) A host whose login fails: ssh's own refusal with the one command that fixes it, nothing saved.
-    const bad = await connectSsh(picker, 'badhost')
-    await expect(bad.getByRole('alert')).toContainText('Run `ssh badhost` once in a terminal')
-    await expect(bad.getByRole('alert')).toHaveText(/^Cannot connect: .*Run `ssh badhost` once in a terminal.*\.$/)
-    expect(savedServers(desktop.cockpit.dataDir)).toEqual([])
-    await bad.getByRole('textbox', { name: 'Host', exact: true }).fill('testhost')
-    await bad.getByRole('textbox', { name: 'Name (optional)' }).fill('Box')
-    await bad.getByRole('button', { name: 'Connect' }).click()
+    await connectSsh(picker, ssh.port, 'Box')
+    await trustHost(picker, key, ssh.port)
+    await typePassword(picker, SSH_PASSWORD, false)
 
-    // (1) The window is on the tunnel's port, not the server's, and signed in with no link pasted.
+    // The window is on the tunnel's loopback port, not the server's, and signed in with no link pasted.
     const remote = await tunnelWindow(app, server)
     const tunnelPort = Number(new URL(remote.url()).port)
     expect(tunnelPort).not.toBe(server.port)
+    expect(tunnelPort).not.toBe(ssh.port)
     await expect.poll(() => picker.isClosed()).toBe(true)
     await remote.getByRole('list', { name: 'Open projects' }).waitFor()
     expect(remote.url()).not.toContain('#t=')
-    expect(ssh.log().some((l) => l.startsWith('tunnel ') && l.includes(`${tunnelPort} ${server.port} `))).toBe(true)
-    const commands = (): string[] => ssh.log().filter((l) => l.startsWith('command '))
-    expect(commands().filter((l) => l.includes("'status'"))).toHaveLength(1)
-    expect(commands().filter((l) => l.includes("'add-device'"))).toHaveLength(1)
+    expect(execs(ssh, 'status')).toBeGreaterThanOrEqual(1)
+    expect(execs(ssh, 'add-device')).toBe(1)
     const first = (await status(server)).devices
     expect(first.map((d) => d.name)).toEqual([`cc-cockpit desktop on ${hostname()}`])
     expect(await titles(app)).toEqual(['Box'])
+
+    // Saved, host key and all, but the password was not remembered: no secrets in the record.
+    await expect.poll(() => savedServers(desktop!.cockpit.dataDir).map((s) => s.name)).toEqual(['Box'])
+    expect(savedServers(desktop.cockpit.dataDir)[0]!.secrets).toBeUndefined()
 
     // Into the project, so the window's page is a live project client through the tunnel.
     const href = `?project=${encodeURIComponent(server.projectId)}`
@@ -341,55 +425,218 @@ test.skip('SSH: tunnel on another port, signed in by add-device, one re-pair aft
     await remote.locator('.tabs-pane').waitFor()
     await expect.poll(() => titles(app)).toEqual([`Box — ${projectName}`])
 
-    // A second window of the same server (the server's picker, from the desktop's own picker).
-    await app.evaluate(({ Menu }) => {
-      const file = Menu.getApplicationMenu()?.items.find((i) => i.label === 'File')
-      file?.submenu?.items.find((i) => i.label === 'Open Project…')?.click()
-    })
-    const picker2 = await pickerWindow(app, `http://127.0.0.1:${tunnelPort}`)
-    await picker2.getByRole('button', { name: 'Box', exact: true }).first().click()
-    await expect.poll(async () => (await titles(app)).includes('Box')).toBe(true)
-    const second = await expect
-      .poll(() => app.windows().filter((p) => !p.isClosed() && p.url() === `http://127.0.0.1:${tunnelPort}/`).length)
-      .toBe(1)
-      .then(() => app.windows().find((p) => !p.isClosed() && p.url() === `http://127.0.0.1:${tunnelPort}/`)!)
-    await second.getByRole('list', { name: 'Open projects' }).waitFor()
-
-    // (2) Revoke the device on the server; both windows go to the sign-in screen when they reload,
-    // and exactly one add-device is minted for the pair of them (one new device, not two).
-    const addsBefore = commands().filter((l) => l.includes("'add-device'")).length
-    const res = await ccc(server, ['web', 'revoke', first[0]!.id])
+    // A revoke on the server: the window's next load finds the sign-in screen and re-pairs once.
+    const adds = execs(ssh, 'add-device')
+    const res = await ccc(server, ['web', 'revoke', '--', first[0]!.id])
     expect(res.code, res.stderr).toBe(0)
     expect((await status(server)).devices).toHaveLength(0)
-    await Promise.all([remote.reload(), second.reload()])
+    await remote.reload()
     await expect.poll(async () => (await status(server)).devices.length, { timeout: 60_000 }).toBe(1)
-    const now = (await status(server)).devices
-    expect(now[0]!.id).not.toBe(first[0]!.id)
+    expect((await status(server)).devices[0]!.id).not.toBe(first[0]!.id)
     await remote.locator('.tabs-pane').waitFor({ timeout: 30_000 })
-    await second.getByRole('list', { name: 'Open projects' }).waitFor({ timeout: 30_000 })
     await new Promise((r) => setTimeout(r, 1500))
     expect((await status(server)).devices).toHaveLength(1)
-    expect(commands().filter((l) => l.includes("'add-device'")).length).toBe(addsBefore + 1)
+    expect(execs(ssh, 'add-device')).toBe(adds + 1)
 
-    // (4) The tunnel's ssh dies: the app starts it again on the same port and the window works.
-    const pids = ssh
-      .log()
-      .filter((l) => l.startsWith('tunnel '))
-      .map((l) => Number(/pid=(\d+)/.exec(l)![1]))
-    expect(pids).toHaveLength(1)
-    process.kill(pids[0]!, 'SIGKILL')
-    await expect
-      .poll(() => ssh.log().filter((l) => l.startsWith('tunnel ')).length, { timeout: 30_000 })
-      .toBe(2)
-    expect(ssh.log().filter((l) => l.startsWith('tunnel '))[1]).toContain(`${tunnelPort} ${server.port} `)
-    await remote.reload()
+    // The "sshd" restarts on the same port with the same host key: the app redials with the password
+    // it holds in memory and the window works again, with no prompt anywhere.
+    await ssh.stop()
+    ssh = await startSsh(dir, server, key, ssh.port)
+    await reloadUntilSignedIn(remote)
     await remote.locator('.tabs-pane').waitFor({ timeout: 30_000 })
+    expect((await status(server)).devices).toHaveLength(1)
+    expect(app.windows().filter((p) => !p.isClosed() && p !== remote)).toEqual([])
+    expect(ssh.log().some((l) => l.startsWith('tcpip '))).toBe(true)
+
+    await desktop.close({ keepFiles: true })
+    desktop = undefined
+
+    // A relaunch: the password was not remembered, so the server row asks for it (the host key is
+    // known, so no Trust). Remember on this time.
+    desktop = await launchDesktop(root)
+    let picker2 = desktop.cockpit.page
+    await picker2.getByTitle("Open Box's picker").click()
+    await expect(picker2.getByTestId('remote-hostkey-prompt')).toHaveCount(0)
+    await typePassword(picker2, SSH_PASSWORD, true)
+    let window2 = await tunnelWindow(desktop.cockpit.app, server)
+    await window2.getByRole('list', { name: 'Open projects' }).waitFor()
+    await expect.poll(() => savedServers(desktop!.cockpit.dataDir)[0]!.secrets?.password).toMatch(/^FAKE-SECRET-STORE-NOT-ENCRYPTED:/)
+    expect((await status(server)).devices).toHaveLength(1)
+
+    await desktop.close({ keepFiles: true })
+    desktop = undefined
+
+    // Remembered: the next relaunch opens with no prompt at all.
+    desktop = await launchDesktop(root)
+    picker2 = desktop.cockpit.page
+    await picker2.getByTitle("Open Box's picker").click()
+    window2 = await tunnelWindow(desktop.cockpit.app, server)
+    await window2.getByRole('list', { name: 'Open projects' }).waitFor()
+    expect(desktop.cockpit.app.windows().some((p) => !p.isClosed() && p.url().startsWith('file:') && p !== picker2)).toBe(false)
     expect((await status(server)).devices).toHaveLength(1)
 
     await expectMainAlive(server)
   } finally {
     if (desktop !== undefined) await desktop.close()
-    ssh.dispose()
+    else if (root !== undefined) rmSync(root, { recursive: true, force: true })
+    await ssh.stop()
+    rmSync(dir, { recursive: true, force: true })
     await server.close()
   }
 })
+
+test('Built-in SSH: a wrong password asks again, a changed host key refuses with no way to click through', async () => {
+  test.setTimeout(240_000)
+  const server = await launchServer({ mode: 'link' })
+  const dir = mkdtempSync(join(tmpdir(), 'ccc-e2e-sshd-'))
+  const key = makeHostKey(dir, 'host_key')
+  const other = makeHostKey(dir, 'other_key')
+  expect(other.fingerprint).not.toBe(key.fingerprint)
+  let ssh = await startSsh(dir, server, key)
+  let desktop: Desktop | undefined
+  let root: string | undefined
+  try {
+    desktop = await launchDesktop()
+    root = desktop.cockpit.root
+    const picker = desktop.cockpit.page
+
+    // Cancel at the Trust prompt leaves nothing saved.
+    await connectSsh(picker, ssh.port, 'Box')
+    await expect(picker.getByTestId('remote-hostkey-prompt')).toBeVisible()
+    await picker.getByTestId('remote-hostkey-cancel').click()
+    await expect(picker.getByTestId('remote-hostkey-prompt')).toHaveCount(0)
+    expect(savedServers(desktop.cockpit.dataDir)).toEqual([])
+    await picker.getByTestId('connect-submit').click()
+    await trustHost(picker, key, ssh.port)
+    // A wrong password: asked once more, with the reason.
+    await typePassword(picker, 'not the password', true)
+    await expect(picker.getByTestId('remote-secret-wrong')).toHaveText('Wrong password. Try again.')
+    await typePassword(picker, SSH_PASSWORD, true)
+    const remote = await tunnelWindow(desktop.cockpit.app, server)
+    await remote.getByRole('list', { name: 'Open projects' }).waitFor()
+    await expect.poll(() => savedServers(desktop!.cockpit.dataDir).map((s) => s.name)).toEqual(['Box'])
+
+    await desktop.close({ keepFiles: true })
+    desktop = undefined
+
+    // The server answers again on the same port with another key: the app refuses, shows why, and
+    // offers no Trust (a changed key is never a question).
+    await ssh.stop()
+    ssh = await startSsh(dir, server, other, ssh.port)
+    const logBefore = ssh.log()
+    desktop = await launchDesktop(root)
+    const picker2 = desktop.cockpit.page
+    await picker2.getByTitle("Open Box's picker").click()
+    await expect(picker2.getByRole('alert')).toContainText('The host key of')
+    await expect(picker2.getByRole('alert')).toContainText('changed')
+    await expect(picker2.getByTestId('remote-hostkey-prompt')).toHaveCount(0)
+    await expect(picker2.getByTestId('remote-secret-prompt')).toHaveCount(0)
+    expect(desktop.cockpit.app.windows().filter((p) => !p.isClosed())).toHaveLength(1)
+    // Refused at the handshake: no command ran on the server for it.
+    expect(ssh.log()).toEqual(logBefore)
+
+    await expectMainAlive(server)
+  } finally {
+    if (desktop !== undefined) await desktop.close()
+    else if (root !== undefined) rmSync(root, { recursive: true, force: true })
+    await ssh.stop()
+    rmSync(dir, { recursive: true, force: true })
+    await server.close()
+  }
+})
+
+test('My own tunnel: the waiting page shows the command, a relay to the gateway loads the project with the pasted link', async () => {
+  test.setTimeout(240_000)
+  const server = await launchServer({ mode: 'link' })
+  let desktop: Desktop | undefined
+  let relay: NetServer | undefined
+  const sockets = new Set<Socket>()
+  try {
+    const link = await addDeviceLink(server)
+    const localPort = await freePort()
+    desktop = await launchDesktop()
+    const { app } = desktop.cockpit
+    const picker = desktop.cockpit.page
+
+    await picker.getByRole('button', { name: 'Connect to server…' }).click()
+    const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
+    await dialog.getByTestId('connect-tab-tunnel').click()
+    await dialog.getByTestId('connect-tunnel-ssh-host').fill('devbox')
+    await dialog.getByTestId('connect-tunnel-remote-port').fill(String(server.port))
+    await dialog.getByTestId('connect-tunnel-local-port').fill(String(localPort))
+    const forward = `127.0.0.1:${localPort}:127.0.0.1:${server.port}`
+    await expect(dialog.getByTestId('connect-tunnel-command')).toHaveText(`ssh -N -L ${forward} devbox`)
+    await expect(dialog.getByTestId('connect-add-device-command')).toContainText('ccc web add-device')
+    await dialog.getByTestId('connect-tunnel-link').fill(link)
+    await dialog.getByTestId('connect-name').fill('Tunnel box')
+    await dialog.getByTestId('connect-submit').click()
+
+    // Nothing listens on the local port: the window is main's waiting page, with the command.
+    await expect.poll(() => picker.isClosed()).toBe(true)
+    let waiting: Page | undefined
+    await expect
+      .poll(async () => {
+        for (const p of app.windows()) {
+          if (p.isClosed()) continue
+          const text = await p.locator('body').innerText().catch(() => '')
+          if (text.includes(`Nothing answers on 127.0.0.1:${localPort}`)) {
+            waiting = p
+            return text
+          }
+        }
+        return ''
+      })
+      .toContain(`ssh -N -L ${forward} devbox`)
+    expect(await waiting!.locator('body').innerText()).toContain('tries again every 3 seconds')
+    expect((await status(server)).devices).toHaveLength(0)
+
+    // The person starts the tunnel (here a Node relay to the gateway): the window's next retry loads
+    // the server's page, signed in by the pasted link's token.
+    relay = createNetServer((client) => {
+      const upstream = netConnect({ host: '127.0.0.1', port: server.port })
+      sockets.add(client)
+      sockets.add(upstream)
+      client.pipe(upstream).pipe(client)
+      const drop = (): void => {
+        client.destroy()
+        upstream.destroy()
+      }
+      client.on('error', drop)
+      upstream.on('error', drop)
+      client.on('close', drop)
+      upstream.on('close', drop)
+    })
+    await new Promise<void>((ok, fail) => {
+      relay!.once('error', fail)
+      relay!.listen(localPort, '127.0.0.1', ok)
+    })
+    const remote = await tunnelWindow(app, server)
+    expect(new URL(remote.url()).port).toBe(String(localPort))
+    await remote.getByRole('list', { name: 'Open projects' }).waitFor({ timeout: 30_000 })
+    const devices = (await status(server)).devices
+    expect(devices.map((d) => d.name)).toEqual([`cc-cockpit desktop on ${hostname()}`])
+    expect(await titles(app)).toEqual(['Tunnel box'])
+
+    const href = `?project=${encodeURIComponent(server.projectId)}`
+    await remote.getByRole('list', { name: 'Open projects' }).locator(`a[href="${href}"]`).click()
+    await remote.locator('.tabs-pane').waitFor()
+    await expectMainAlive(server)
+  } finally {
+    if (desktop !== undefined) await desktop.close()
+    for (const s of sockets) s.destroy()
+    await new Promise<void>((done) => (relay !== undefined ? relay.close(() => done()) : done()))
+    await server.close()
+  }
+})
+
+/** A loopback port nothing listens on now. */
+function freePort(): Promise<number> {
+  return new Promise((ok, fail) => {
+    const s = createNetServer()
+    s.once('error', fail)
+    s.listen(0, '127.0.0.1', () => {
+      const port = (s.address() as AddressInfo).port
+      s.close(() => ok(port))
+    })
+  })
+}

@@ -390,19 +390,27 @@
 - Delete: `test/fixtures/fake-ssh.mjs`
 - Modify: `test/e2e/remote-desktop.spec.ts`
 
-- [ ] `ssh-server.mjs`: an `ssh2` `Server` on a loopback port given or random (prints it), the host key from a file
+- [x] `ssh-server.mjs`: an `ssh2` `Server` on a loopback port given or random (prints it), the host key from a file
       made once per test (so a restart keeps it, and a second file gives the "changed" case), password and public-key
       auth from args, `exec` runs the command locally with `sh -c`, `direct-tcpip` connects locally; the desktop app's
       `HOME` is a temp dir with an empty `.ssh/known_hosts` and `.config/cc-cockpit/bin/ccc` symlinked to the
       server's wrapper (as `fake-ssh.mjs` did; `REMOTE_SCRIPT` sets `CCC` itself), `SSH_AUTH_SOCK` blank
-- [ ] built-in SSH: Trust dialog shows the fixture's fingerprint, password prompt with Remember off, the project opens
+- [x] built-in SSH: Trust dialog shows the fixture's fingerprint, password prompt with Remember off, the project opens
       on a loopback origin, the device is named "cc-cockpit desktop on …"; a revoke re-pairs once; the fixture
       restarted on the same port reconnects with no prompt; a relaunch asks the password again (not remembered), and
       with Remember on does not; a changed host key refuses
-- [ ] My own tunnel: the waiting page shows the command while nothing listens; starting a Node relay to the gateway
+- [x] My own tunnel: the waiting page shows the command while nothing listens; starting a Node relay to the gateway
       loads the project with the pasted add-device link
-- [ ] Direct test unchanged and passing
-- [ ] run `npm run test:e2e -- remote-desktop` - must pass before next task
+- [x] Direct test unchanged and passing
+- [x] run `npm run test:e2e -- remote-desktop` - must pass before next task
+- ➕ built as: `ssh-server.mjs` takes `--host-key --user --password --pubkey --home --ccc --port --log` (the fixture makes the
+      `ccc` symlink in its own remote HOME itself and logs `exec <command>` / `tcpip <port>`); the spec has three new tests
+      (SSH happy path with revoke, sshd restart, relaunch with and without Remember; wrong password then a changed host key;
+      My own tunnel with a Node relay). The desktop's HOME is launchCockpit's temp home (`os.homedir()` follows HOME), its
+      SHELL is the fake shell, and `SSH_AUTH_SOCK` is removed from its env, so the real agent and `~/.ssh` are never read
+- ➕ `ccc web revoke` needs `--` before a device id: ids are base64url and one in 64 starts with `-` (the Direct-era test
+      was flaky on it)
+- ⚠️ not covered in e2e: public-key auth (the fixture accepts `--pubkey`, no test uses it; unit tests cover it)
 
 ### Task 8: Docs [model: sonnet]
 
