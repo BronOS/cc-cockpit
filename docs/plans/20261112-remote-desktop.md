@@ -168,27 +168,32 @@
 - Create: `src/main/remote/electron-remote-window.ts` (adapter)
 - Create: `src/main/remote/remote-windows.ts` (logic: tracking, focus, pairing loop)
 - Create: `test/unit/remote-windows.test.ts`, `test/unit/no-remote-preload.test.ts` (grep test)
+- Also made: `src/main/remote/remote-cookie.ts` (the cookie keeper), `src/main/webview/open-budget.ts` (the webview
+  open budget, now shared), `test/unit/remote-cookie.test.ts`, `test/unit/electron-remote-window.test.ts`,
+  `test/fakes/fake-cookie-jar.ts`
 
-- [ ] window: no preload, `sandbox`, `contextIsolation`, no node, `devTools` off when packaged; partition
+- [x] window: no preload, `sandbox`, `contextIsolation`, no node, `devTools` off when packaged; partition
       `persist:remote-<id>`; user agent suffix `cc-cockpit-desktop/<version> (<hostname>)` (`remote-agent.ts`)
-- [ ] hardening as webviews: `setWindowOpenHandler` denies, `http(s)` to `createOpenExternal` under the webview open
+- [x] hardening as webviews: `setWindowOpenHandler` denies, `http(s)` to `createOpenExternal` under the webview open
       budget; `will-navigate` and redirects pinned to the server's origin; `will-download`, `login` cancelled;
       `will-prevent-unload` ignored; the WebRTC IP policy; `onBeforeRequest` cancels loopback hosts other than the
       server's origin; default certificate checks; permissions denied (check the existing non-default-session handler
       covers the partition)
-- [ ] cookie: set from the record as a session cookie (no expiry) before the first load; `cookies.on('changed')`
+- [x] cookie: set from the record as a session cookie (no expiry) before the first load; `cookies.on('changed')`
       saves a new `ccc_device` (encrypted) and re-sets it without expiry, loop-guarded; a removal clears it
 - [ ] spike check, kept as an e2e assertion in Task 7: after quit the partition's `Cookies` file holds no
       `ccc_device`; if it does, switch to an in-memory partition and note it (zone sizes then reset each launch)
-- [ ] tracking: (server, project) from `?project=` on navigation; focus an existing window; name from the server's
+      (moved to Task 7's e2e: nothing here writes the cookie with an expiry; remote-cookie.ts re-sets every
+      sign-in's cookie as a session cookie at once)
+- [x] tracking: (server, project) from `?project=` on navigation; focus an existing window; name from the server's
       `/api/projects` through `ses.fetch`; title `<server> — <project>`; record the recent project
-- [ ] re-pair: on `did-finish-load` or a completed `/auth/session` request, main fetches `/auth/session`; `device:
+- [x] re-pair: on `did-finish-load` or a completed `/auth/session` request, main fetches `/auth/session`; `device:
       null` in link mode over SSH mints one add-device link (serialised per server) and reloads with `#t=`, the
       server's other windows reload after; a second failure in a row shows the error instead of looping
-- [ ] grep test: no preload in the adapter, `persist:remote-` partitions used nowhere else
-- [ ] tests with fake window and session: hardening, cookie save/restore and loop guard, tracking and names, re-pair
+- [x] grep test: no preload in the adapter, `persist:remote-` partitions used nowhere else
+- [x] tests with fake window and session: hardening, cookie save/restore and loop guard, tracking and names, re-pair
       once and serialised
-- [ ] run tests - must pass before task 6
+- [x] run tests - must pass before task 6
 
 ### Task 6: Main wiring, IPC and window lifecycle [model: opus]
 

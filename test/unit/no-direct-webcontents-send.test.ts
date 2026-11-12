@@ -8,8 +8,8 @@ import { remoteViewId } from '../../src/shared/views'
 // event cannot skip remote views. A direct `webContents.send`, `webContents.postMessage` or
 // `getAllWindows()` broadcast reaches the desktop page only. Allowed in the registry and in the
 // Electron adapters that own a webContents (the window factory builds the desktop view's sink;
-// create-window, the url-overlay views and plugin webviews, desktop and off-screen, drive their
-// own pages).
+// create-window, the url-overlay views, plugin webviews, desktop and off-screen, and remote desktop
+// windows drive their own pages; a remote window's page is a server's, never a view).
 // "The browser views of a window, never the hidden page" is the registry's own `toBrowserViews`
 // (server mode, design-web.md §9), not a filter over `viewsOf` at each call site; the test below
 // checks it skips desktop views, and the link notice's one sender is guarded by
@@ -25,7 +25,8 @@ const ALLOWED = new Set(
     'src/main/windows/create-window.ts',
     'src/main/overlays/electron-url-view.ts',
     'src/main/webview/electron-webview.ts',
-    'src/main/webview/electron-offscreen-webview.ts'
+    'src/main/webview/electron-offscreen-webview.ts',
+    'src/main/remote/electron-remote-window.ts'
   ].map((p) => p.split('/').join(sep))
 )
 

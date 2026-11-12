@@ -69,6 +69,7 @@ import { PREVIEW_SCHEME, PREVIEW_TOKEN_PATTERN } from './preview-protocol'
 import { defaultTempRoots, resolveWebviewTarget, type WebviewTarget } from './webview-target'
 import type { ElectronInputEvent, InputTarget } from './webview-input'
 import { warnLog } from '../warn-log'
+import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from './open-budget'
 
 /**
  * Folders one view keeps a token for. A browser plugin showing file after file adds one per new
@@ -85,11 +86,11 @@ export const MAX_PAGE_TITLE_LENGTH = 1024
  */
 export const NAVIGATED_COALESCE_MS = 100
 /**
- * `window.open` budget per view (MAX_OPENS_PER_VIEW per OPEN_WINDOW_MS): a page calling it in a
- * loop must not flood the system browser with tabs. Calls past it are dropped and logged.
+ * `window.open` budget per view (MAX_OPENS_PER_VIEW per OPEN_WINDOW_MS, open-budget.ts, shared with
+ * remote desktop windows): a page calling it in a loop must not flood the system browser with tabs.
+ * Calls past it are dropped and logged.
  */
-export const MAX_OPENS_PER_VIEW = 3
-export const OPEN_WINDOW_MS = 10_000
+export { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS }
 /**
  * How long `navigate` waits for the load's outcome: a dev server that is down fails at once, so
  * `ccc browser open` can say so instead of `ok` (review finding). A page slower than this resolves
@@ -287,8 +288,8 @@ interface ViewRecord {
   navTimer?: ReturnType<typeof setTimeout>
   /** A change came in while the window was open: report it when it closes. */
   navPending: boolean
-  /** When the page's last window.open calls went through (MAX_OPENS_PER_VIEW). */
-  opens: number[]
+  /** The page's window.open budget (MAX_OPENS_PER_VIEW). */
+  opens: OpenBudget
   /** What the last apply() set, to notice a showing view being hidden (focusShell). */
   appliedVisible?: boolean
   /** The main frame's last load failed (see WebviewPage.error); cleared when a page commits. */
@@ -716,7 +717,7 @@ export class WebviewManager {
       }
     }
     const view = this.deps.views.create(owner.windowId, partition, events, { ...owner })
-    const rec: ViewRecord = { owner: { ...owner }, partition, view, tokens: new Map(), navPending: false, opens: [] }
+    const rec: ViewRecord = { owner: { ...owner }, partition, view, tokens: new Map(), navPending: false, opens: new OpenBudget() }
     holder.rec = rec
     this.records.set(key, rec)
     this.apply(rec)
@@ -809,12 +810,10 @@ export class WebviewManager {
       return
     }
     const now = this.deps.now?.() ?? Date.now()
-    rec.opens = rec.opens.filter((t) => now - t < OPEN_WINDOW_MS)
-    if (rec.opens.length >= MAX_OPENS_PER_VIEW) {
+    if (!rec.opens.take(now)) {
       this.log(`webview: dropped a window.open past ${MAX_OPENS_PER_VIEW} in ${OPEN_WINDOW_MS / 1000} s`)
       return
     }
-    rec.opens.push(now)
     try {
       this.deps.openExternal(href, rec.owner.windowId)
     } catch (err) {

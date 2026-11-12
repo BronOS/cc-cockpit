@@ -37,7 +37,7 @@ export interface RemoteRecent {
 }
 
 export interface RemoteServer {
-  /** Random, local only; names the window partition (`persist:remote-<id>`) and nothing a server sees. */
+  /** Random, local only; names the window partition (`remotePartition`, main/remote/electron-remote-window.ts) and nothing a server sees. */
   id: string
   /** Shown in the picker; default is the SSH host or the URL's host. */
   name: string
