@@ -566,9 +566,9 @@ External review: sol / high
 **Files:**
 - Modify: `test/e2e/server-webview.spec.ts`
 
-- [ ] e2e: a second browser on the same project sees the page letterboxed; a press from it makes it the size owner
-- [ ] e2e: a browser that reconnects gets a frame at once; a hidden browser tab stops being a viewer
-- [ ] run the e2e - must pass before next task
+- [x] e2e: a second browser on the same project sees the page letterboxed; a press from it makes it the size owner
+- [x] e2e: a browser that reconnects gets a frame at once; a hidden browser tab stops being a viewer
+- [x] run the e2e - must pass before next task
 
 ### Task 12: Verify acceptance criteria [model: sonnet]
 - [ ] verify all requirements from Overview are implemented (Browser panel and a third-party webview panel)

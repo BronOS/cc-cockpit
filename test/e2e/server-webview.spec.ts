@@ -4,7 +4,7 @@
 // Claude tab (the fake claude runs a `/ccc ...` line), as in server-mode.spec.ts.
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import { expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser, type WebBrowser } from './web-fixtures'
@@ -420,6 +420,193 @@ test('server mode: a select opens the browser dropdown; a choice changes the pag
     await page.mouse.click(b.x + b.width / 2, b.y + b.height - 40)
     await expect(menu).toHaveCount(0)
     await expect(pageTitle).toHaveAttribute('title', /^pressed page\n/, { timeout: 10_000 })
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+// Task 11 (design-web-browser.md §3): two browsers on one project, a reconnect and a hidden tab.
+// A static page that writes its own size into its title (the toolbar's tooltip shows it), so
+// frames come only when main sends them (a join frame, a resize), never from the page animating.
+const SIZE_PAGE = `<!doctype html><title>size</title>
+<style>html,body{margin:0;height:100%;background:rgb(${COLOUR.r},${COLOUR.g},${COLOUR.b})}</style>
+<script>function r(){document.title='size '+innerWidth+'x'+innerHeight}addEventListener('resize',r);r()</script>`
+
+/** A fresh server with the bundled plugins, and `files` written to the project folder. */
+async function startServer(files: Record<string, string>): Promise<Server> {
+  const s = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(s.cockpit.projectDir, name), text)
+  await expect
+    .poll(async () => (await s.cockpit.hook<HostStatus>('hostStatus', s.cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
+      timeout: 20_000
+    })
+    .toBe('active')
+  return s
+}
+
+/** A browser at `viewport` on the server's project with the Browser panel open. */
+async function openPanel(s: Server, viewport: { width: number; height: number }): Promise<{ browser: WebBrowser; section: Locator }> {
+  const browser = await openBrowser(`${s.origin}/`)
+  try {
+    await browser.page.setViewportSize(viewport)
+    await openProjectInBrowser(browser, s.origin, s.projectId)
+    const section = browser.page.locator('section.panel[aria-label="Browser"]')
+    if (!(await section.isVisible())) await browser.page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    return { browser, section }
+  } catch (err) {
+    await browser.close()
+    throw err
+  }
+}
+
+/** The size the page reports in its title (from the toolbar's tooltip), as [width, height]. */
+async function reportedSize(section: Locator): Promise<number[]> {
+  const t = (await section.locator('.webview-url').getAttribute('title')) ?? ''
+  const m = /^size (\d+)x(\d+)\n/.exec(t)
+  return m ? [Number(m[1]), Number(m[2])] : []
+}
+
+/** Alpha of the canvas at the middle of each edge and at its centre (0 = nothing drawn there: a bar). */
+async function canvasAlphas(section: Locator): Promise<{ edges: number[]; centre: number }> {
+  return section.locator('canvas.webview-canvas').evaluate((c: HTMLCanvasElement) => {
+    const ctx = c.getContext('2d')
+    if (!ctx || c.width < 8 || c.height < 8) return { edges: [], centre: -1 }
+    const a = (x: number, y: number): number => ctx.getImageData(x, y, 1, 1).data[3] ?? -1
+    const w = c.width
+    const h = c.height
+    return { edges: [a(2, h >> 1), a(w - 3, h >> 1), a(w >> 1, 2), a(w >> 1, h - 3)], centre: a(w >> 1, h >> 1) }
+  })
+}
+
+async function openFromClaude(browser: WebBrowser, file: string): Promise<void> {
+  await browser.page.getByRole('button', { name: 'New tab' }).click()
+  await browser.page.getByRole('menuitem', { name: 'Claude' }).click()
+  await browser.waitForTerminalText('FAKE-CLAUDE banner')
+  await runInClaude(browser, `/ccc browser open ${file}`)
+  await browser.waitForTerminalText('FAKE-CLAUDE ccc exit=0 out="ok\\n" err=""')
+}
+
+test('server mode: a second browser sees the page letterboxed, and a press from it makes it the size owner', async () => {
+  test.setTimeout(150_000)
+  server = await startServer({ 'size.html': SIZE_PAGE })
+  const first = await openPanel(server, { width: 1280, height: 800 })
+  let second: { browser: WebBrowser; section: Locator } | undefined
+  try {
+    await openFromClaude(first.browser, 'size.html')
+    await expect(first.section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    // The first browser is the only viewer, so the owner: the page has its area's size, no Fit button.
+    const area1 = await first.section.locator('.webview-canvas-area').boundingBox()
+    if (!area1) throw new Error('no area')
+    await expect.poll(() => reportedSize(first.section), { timeout: 10_000 }).toEqual([Math.round(area1.width), Math.round(area1.height)])
+    await expect(first.section.getByRole('button', { name: 'Fit to this screen' })).toHaveCount(0)
+
+    // A second browser with another size and aspect shows the same page, letterboxed, with Fit.
+    second = await openPanel(server, { width: 900, height: 700 })
+    const s2 = second.section
+    await expect(s2.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    await expect(s2.locator('.webview-url')).toHaveAttribute('title', /^size \d+x\d+\n/, { timeout: 15_000 })
+    await expect
+      .poll(async () => {
+        const [r = -99, g = -99, b = -99] = await centrePixel(second!.browser.page)
+        return Math.max(Math.abs(r - COLOUR.r), Math.abs(g - COLOUR.g), Math.abs(b - COLOUR.b))
+      }, { timeout: 15_000 })
+      .toBeLessThanOrEqual(8)
+    await expect(s2.getByRole('button', { name: 'Fit to this screen' })).toBeVisible({ timeout: 10_000 })
+    const alphas = await canvasAlphas(s2)
+    expect(alphas.centre).toBe(255)
+    expect(alphas.edges.some((a) => a === 0), `a letterbox bar: ${JSON.stringify(alphas)}`).toBe(true)
+    // Nothing changed for the page: still the first browser's size.
+    expect(await reportedSize(s2)).toEqual([Math.round(area1.width), Math.round(area1.height)])
+    await expect(first.section.getByRole('button', { name: 'Fit to this screen' })).toHaveCount(0)
+
+    // A press from the second browser makes it the owner: the page takes its area's size (throttled
+    // to ~100 ms, so polled), and the first browser is now the letterboxed one.
+    const area2 = await s2.locator('.webview-canvas-area').boundingBox()
+    const layer2 = await s2.locator('.webview-input').boundingBox()
+    if (!area2 || !layer2) throw new Error('no area')
+    await second.browser.page.mouse.click(layer2.x + layer2.width / 2, layer2.y + layer2.height / 2)
+    await expect.poll(() => reportedSize(s2), { timeout: 10_000 }).toEqual([Math.round(area2.width), Math.round(area2.height)])
+    await expect(s2.getByRole('button', { name: 'Fit to this screen' })).toHaveCount(0, { timeout: 10_000 })
+    await expect(first.section.getByRole('button', { name: 'Fit to this screen' })).toBeVisible({ timeout: 10_000 })
+    await expectMainAlive(server)
+  } finally {
+    await second?.browser.close()
+    await first.browser.close()
+  }
+})
+
+test('server mode: a browser that reloads gets a frame at once', async () => {
+  test.setTimeout(150_000)
+  server = await startServer({ 'size.html': SIZE_PAGE })
+  const { browser, section } = await openPanel(server, { width: 1280, height: 800 })
+  try {
+    await openFromClaude(browser, 'size.html')
+    await expect(section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    // The page is static: after the reload no frame comes unless main sends the last one on join.
+    await browser.page.reload()
+    await browser.page.locator('.tabs-pane').waitFor()
+    const again = browser.page.locator('section.panel[aria-label="Browser"]')
+    if (!(await again.isVisible())) await browser.page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(again).toBeVisible({ timeout: 15_000 })
+    await expect
+      .poll(async () => {
+        const [r = -99, g = -99, b = -99] = await centrePixel(browser.page)
+        return Math.max(Math.abs(r - COLOUR.r), Math.abs(g - COLOUR.g), Math.abs(b - COLOUR.b))
+      // Usually within about 300 ms of the page's load; about 1 reload in 40 took 3 to 4 s (a late join
+      // frame, not investigated here), so the bound leaves room for that.
+      }, { timeout: 8_000 })
+      .toBeLessThanOrEqual(8)
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+test('server mode: a hidden browser tab is no viewer; visible again, painting resumes', async () => {
+  test.setTimeout(150_000)
+  server = await startServer({ 'green.html': PAGE })
+  const { cockpit } = server
+  const { browser, section } = await openPanel(server, { width: 1280, height: 800 })
+  try {
+    const { page } = browser
+    const painting = async (): Promise<boolean[]> => (await cockpit.hook<{ painting: boolean }[]>('offscreenWebviews')).map((v) => v.painting)
+    await openFromClaude(browser, 'green.html')
+    await expect(section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    await expect.poll(painting, { timeout: 10_000 }).toEqual([true])
+    await page.evaluate(() => {
+      const w = window as unknown as { __frames: number; createImageBitmap: typeof createImageBitmap }
+      w.__frames = 0
+      const real = w.createImageBitmap.bind(window)
+      w.createImageBitmap = ((...args: Parameters<typeof createImageBitmap>) => {
+        w.__frames++
+        return real(...args)
+      }) as typeof createImageBitmap
+    })
+    const frames = (): Promise<number> => page.evaluate(() => (window as unknown as { __frames: number }).__frames)
+
+    // The tab goes to the background (what the browser does for a hidden tab; the page reads
+    // `document.hidden`, so the override stands in for it and the event is the real one).
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await expect.poll(painting, { timeout: 10_000 }).toEqual([false])
+    // Frames already on the wire may land; then none.
+    await page.waitForTimeout(500)
+    const settled = await frames()
+    await page.waitForTimeout(1_000)
+    expect(await frames()).toBe(settled)
+
+    await page.evaluate(() => {
+      delete (document as unknown as Record<string, unknown>).hidden
+      delete (document as unknown as Record<string, unknown>).visibilityState
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await expect.poll(painting, { timeout: 10_000 }).toEqual([true])
+    await expect.poll(frames, { timeout: 10_000 }).toBeGreaterThan(settled + 3)
     await expectMainAlive(server)
   } finally {
     await browser.close()
