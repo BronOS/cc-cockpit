@@ -710,6 +710,8 @@ function start(server: boolean): void {
           },
           // A remote project page going back to the server's picker: the desktop picker instead.
           showPicker: () => windows.showPicker(),
+          // The web client's "This computer" chip: the last focused local project window.
+          focusLocal: () => windows.focusLastLocal(),
           log: warnLog
         })
         return { service, windows: remoteWindows, machines: machineStatus }
@@ -3216,6 +3218,7 @@ function start(server: boolean): void {
     // project window it took the focus from must not keep its table), but holds no webview of ours.
     appMenu.refresh()
     if (isRemoteWindow(win)) return
+    windows.noteFocused(win.id)
     // A view hidden while the window was in the background hands the keyboard back now.
     webviews.windowFocused(win.id)
   })

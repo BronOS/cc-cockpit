@@ -1080,3 +1080,56 @@ describe('RemoteWindows: machine chips', () => {
     expect(t.factory.session1().fetches.at(-1)).toBe('http://127.0.0.1:4200/api/sessions')
   })
 })
+
+describe('RemoteWindows: the "This computer" chip', () => {
+  let t: ReturnType<typeof setup>
+  beforeEach(() => {
+    t = setup()
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? { projects: [] } : signedIn)
+  })
+
+  async function pageAt(path: string, focusLocal?: () => boolean): Promise<FakeView> {
+    if (focusLocal) t.windows = new RemoteWindows({ ...t.options, focusLocal })
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views.at(-1) as FakeView
+    view.commit(`${ORIGIN}${path}`)
+    await flush()
+    return view
+  }
+
+  it('is cancelled and focuses the last local window, from a project page and from the picker', async () => {
+    let focused = 0
+    const view = await pageAt('/?project=p1', () => (focused++, true))
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(focused).toBe(1)
+    view.commit(`${ORIGIN}/`)
+    expect(view.hooks.allowNavigation(`${ORIGIN}/cc/?project=p2&cc-desktop=local`)).toBe(false)
+    expect(focused).toBe(2)
+    expect(t.pickers()).toBe(0)
+    expect(view.closed).toBe(false)
+  })
+
+  it('shows the desktop picker when there is no local window (or no focusLocal)', async () => {
+    const view = await pageAt('/?project=p1', () => false)
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(t.pickers()).toBe(1)
+    const plain = setup()
+    plain.factory.fetcher = async () => signedIn
+    await plain.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const other = plain.factory.views.at(-1) as FakeView
+    other.commit(`${ORIGIN}/?project=p1`)
+    expect(other.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(plain.pickers()).toBe(1)
+  })
+
+  it('leaves other navigations alone', async () => {
+    let focused = 0
+    const view = await pageAt('/?project=p1', () => (focused++, true))
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?project=p1&cc-desktop=other`)).toBe(true)
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?project=p1&tab=t1`)).toBe(true)
+    // Another origin is refused by the pin, never read as the chip.
+    expect(view.hooks.allowNavigation('https://evil.example/?cc-desktop=local')).toBe(false)
+    expect(focused).toBe(0)
+    expect(t.pickers()).toBe(0)
+  })
+})

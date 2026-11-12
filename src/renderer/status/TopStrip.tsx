@@ -7,7 +7,7 @@ import { SlotFrame } from '../zones/SlotFrame'
 import { ProjectDot } from './ProjectDot'
 import { topStripClass } from './strip-order'
 import { WebAccessChip } from './WebAccessChip'
-import { isServerView } from '../shell-kind'
+import { isServerView, isWebShell, showsThisComputerChip, THIS_COMPUTER_URL } from '../shell-kind'
 import { CloseProjectButton } from '../web/CloseProject'
 
 /**
@@ -87,6 +87,16 @@ export function TopStrip(props: {
         </div>
       )}
       <nav className={slot ? 'strip-nav has-slot' : 'strip-nav'} aria-label="Claude sessions">
+        {showsThisComputerChip(isWebShell(), typeof navigator === 'undefined' ? '' : navigator.userAgent) && (
+          <button
+            type="button"
+            className="this-computer-chip"
+            title="Go to this computer's projects"
+            onClick={() => location.assign(THIS_COMPUTER_URL)}
+          >
+            This computer
+          </button>
+        )}
         {slot && <SlotFrame key={slot.id} frame={slot} collapseUntilConnected />}
         <div className="strip-list">
           <button

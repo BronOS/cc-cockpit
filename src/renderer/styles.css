@@ -297,6 +297,24 @@ iframe:focus-visible {
   gap: 2px;
   padding: 0 8px;
 }
+/* "This computer" (TopStrip, a remote window of the desktop app only): back to the local windows. */
+.this-computer-chip {
+  flex: none;
+  height: 24px;
+  margin-right: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--cc-fg-muted);
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  cursor: pointer;
+}
+.this-computer-chip:hover {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
 /* The web access chip (WebAccessChip.tsx): connected devices, or a warning while a risky choice is on. */
 .web-access-chip {
   flex: none;

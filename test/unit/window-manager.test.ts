@@ -562,6 +562,25 @@ describe('picker', () => {
     expect(wm.projectWindows()).toEqual([{ projectId: b.id, windowId: winB!.id }])
   })
 
+  it('focusLastLocal focuses the most recently focused project window, else the last opened, else false', () => {
+    const wm = manager('darwin')
+    expect(wm.focusLastLocal()).toBe(false)
+    wm.openPath(folder('a'))
+    wm.openPath(folder('b'))
+    const [a, b] = factory.open('project')
+    const before = { a: a!.focused, b: b!.focused }
+    expect(wm.focusLastLocal()).toBe(true)
+    expect(b!.focused).toBe(before.b + 1)
+    wm.noteFocused(a!.id)
+    // An id that is no project window (a remote window, the picker) changes nothing.
+    wm.noteFocused(9999)
+    expect(wm.focusLastLocal()).toBe(true)
+    expect(a!.focused).toBe(before.a + 1)
+    a!.userClose()
+    expect(wm.focusLastLocal()).toBe(true)
+    expect(b!.focused).toBe(before.b + 2)
+  })
+
   it('focusAny shows (or focuses) the picker when no project window is open', () => {
     const wm = manager('darwin')
     wm.focusAny()

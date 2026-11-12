@@ -160,6 +160,18 @@ export function allowRemoteNavigation(url: string, origin: string | undefined): 
   return onOrigin(url, origin)
 }
 
+/** The query parameter of the web client's "This computer" chip (renderer/web/desktop-chip.ts). */
+export const DESKTOP_LOCAL_PARAM = 'cc-desktop'
+
+/**
+ * Whether a navigation is the "This computer" chip's (`cc-desktop=local` on the server's origin, any
+ * path, from any page). Only that one parameter is read: the rest of the URL means nothing here.
+ */
+export function isDesktopLocalNavigation(url: string, origin: string | undefined): boolean {
+  if (!onOrigin(url, origin)) return false
+  return parsed(url)?.searchParams.get(DESKTOP_LOCAL_PARAM) === 'local'
+}
+
 /** The project a page URL on the server's origin shows (`?project=<id>`), or undefined for the picker. */
 export function projectOfUrl(url: string): string | undefined {
   const target = parsed(url)
@@ -350,6 +362,11 @@ export interface RemoteWindowsOptions {
    * `showPicker`; it focuses one already open). Absent: the navigation is only cancelled (tests).
    */
   showPicker?(): void
+  /**
+   * The web client's "This computer" chip (`?cc-desktop=local`): focus the most recently focused
+   * local project window; false when there is none (the picker shows then). Absent: the picker.
+   */
+  focusLocal?(): boolean
   now?(): number
   timers?: RemoteWindowsTimers
   log?(message: string): void
@@ -671,6 +688,12 @@ export class RemoteWindows {
   private allowNavigation(rec: WindowRecord, url: string): boolean {
     const origin = this.servers.get(rec.serverId)?.origin
     if (!allowRemoteNavigation(url, origin)) return false
+    // The "This computer" chip (design §4.1), before the picker and project rules: it is never a
+    // page load, so it is cancelled from any page and the local side comes forward.
+    if (isDesktopLocalNavigation(url, origin)) {
+      if (!this.options.focusLocal?.()) this.options.showPicker?.()
+      return false
+    }
     const from = rec.view.url()
     const project = projectOfUrl(from)
     if (rec.closed || project === undefined) return true

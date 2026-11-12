@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openProjectEntries } from '../../src/main/web/connection'
 import { shellFileOf } from '../../src/main/web/shell-files'
-import { armLoadTab, armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, takeLoadTab, takeLoadTake } from '../../src/renderer/shell-kind'
+import { armLoadTab, armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, showsThisComputerChip, takeLoadTab, takeLoadTake } from '../../src/renderer/shell-kind'
+import { desktopAgentSuffix } from '../../src/shared/remote-agent'
 import { topStripClass } from '../../src/renderer/status/strip-order'
 import {
   breadcrumbs,
@@ -607,5 +608,14 @@ describe('the take of the terminal size on load', () => {
   it('the desktop shell never takes', () => {
     armLoadTake(1)
     expect(takeLoadTake()).toBe(false)
+  })
+})
+
+describe('the "This computer" chip', () => {
+  const desktop = `Mozilla/5.0 Chrome/140 ${desktopAgentSuffix('1.2.3', 'mac')}`
+  it('shows only in the web shell of a desktop remote window', () => {
+    expect(showsThisComputerChip(true, desktop)).toBe(true)
+    expect(showsThisComputerChip(true, 'Mozilla/5.0 Chrome/140')).toBe(false)
+    expect(showsThisComputerChip(false, desktop)).toBe(false)
   })
 })

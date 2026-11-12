@@ -244,6 +244,8 @@ export class WindowManager {
    * (`activate`) shows the window; nothing a plugin or a remote view does shows it.
    */
   private readonly hidden = new Set<WindowHandle>()
+  /** The project window that last got the focus (noteFocused); checked against `projects` on use. */
+  private lastFocused: WindowHandle | undefined
   /** Windows whose close dialog is up: a second close while it is up waits for the same answer. */
   private readonly asking = new Set<WindowHandle>()
   /** Windows this manager is closing after "Close for everyone": their `close` is not asked again. */
@@ -663,6 +665,27 @@ export class WindowManager {
     this.hidden.add(handle)
     handle.hide()
     this.options.onWindowVisibility?.(handle.id, false)
+  }
+
+  /**
+   * A window got the focus (app `browser-window-focus`; remote windows are never passed): the
+   * remote window's "This computer" chip goes back to the most recently focused project window.
+   */
+  noteFocused(windowId: number): void {
+    for (const handle of this.projects.values()) if (handle.id === windowId) this.lastFocused = handle
+  }
+
+  /**
+   * Bring the most recently focused project window to front (else the most recently opened one, as
+   * focusAny picks it); false when no project window is open. Not in server mode (no screen).
+   */
+  focusLastLocal(): boolean {
+    if (this.options.server) return false
+    const focused = this.lastFocused && [...this.projects.values()].includes(this.lastFocused) ? this.lastFocused : undefined
+    const handle = focused ?? this.lastWindow()
+    if (!handle) return false
+    this.show(handle)
+    return true
   }
 
   /** Bring a window to front, showing it again when it was kept running hidden. */

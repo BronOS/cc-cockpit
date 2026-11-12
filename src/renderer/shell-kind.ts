@@ -9,6 +9,7 @@
 //  - the update notice (the host's app updates on the host, `updates.dismiss` is `no`-class).
 // DOM-free (the root element is passed in) so unit tests run it in plain Node.
 
+import { parseDesktopAgent } from '../shared/remote-agent'
 import { isRemoteViewId } from '../shared/views'
 
 let webShell = false
@@ -108,6 +109,18 @@ export function takeLoadTab(): string | undefined {
   loadTab = undefined
   return tab
 }
+
+/**
+ * Whether the top bar draws the "This computer" chip (design-remote-desktop.md §4.1): the web shell
+ * shown in a desktop app's remote window (its user agent carries the desktop marker). A plain
+ * browser has no local side to go back to. A UI hint only: main reads the chip's URL itself.
+ */
+export function showsThisComputerChip(web: boolean, userAgent: string): boolean {
+  return web && parseDesktopAgent(userAgent) !== undefined
+}
+
+/** Where the chip navigates: main cancels it and focuses the local side (remote-windows.ts). */
+export const THIS_COMPUTER_URL = '/?cc-desktop=local'
 
 /** Test hook: back to the Electron shell. */
 export function resetShellKindForTest(): void {
