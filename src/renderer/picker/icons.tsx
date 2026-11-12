@@ -81,6 +81,18 @@ export function FolderGlyph(): React.JSX.Element {
   )
 }
 
+/** A server (two stacked units), 16px, in the current text colour: a remote server and its projects. */
+export function ServerGlyph(): React.JSX.Element {
+  return (
+    <svg className="picker-glyph" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="2.5" y="2.5" width="11" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.25" />
+      <rect x="2.5" y="9" width="11" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.25" />
+      <circle cx="5" cy="4.75" r="0.8" fill="currentColor" />
+      <circle cx="5" cy="11.25" r="0.8" fill="currentColor" />
+    </svg>
+  )
+}
+
 /** A magnifier for the filter field, 14px, in the current text colour. */
 export function SearchGlyph(): React.JSX.Element {
   return (

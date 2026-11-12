@@ -3878,6 +3878,225 @@ ul.settings-alert {
   overflow-wrap: anywhere;
 }
 
+/* The picker's Servers section (servers-section.tsx): under the recent projects, as tall as its
+   rows up to about half the window, then it scrolls inside; the recent list keeps the rest. */
+.picker-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.picker-recent.picker-servers {
+  flex: 0 1 auto;
+  max-height: 46%;
+}
+.picker-servers .picker-panel {
+  flex: 0 1 auto;
+}
+.picker-servers .picker-empty {
+  padding: 12px 16px;
+}
+.picker-servers .picker-quiet:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.picker-server + .picker-server {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--cc-border);
+}
+.picker-server-projects {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 20px;
+}
+.picker-servers .picker-open:enabled:hover {
+  background: var(--cc-accent-soft);
+}
+/* A server's name on a remote project row, and a server's notes ("not encrypted"): badges that
+   never push the name out. */
+.picker-server-badge {
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picker-server-note {
+  white-space: nowrap;
+}
+.picker-server-state.busy {
+  color: var(--cc-fg-subtle);
+}
+.picker-server-state.error {
+  color: var(--cc-status-ended);
+}
+.picker-server-error {
+  display: block;
+  margin: 2px 10px 6px 38px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-status-ended);
+  overflow-wrap: anywhere;
+}
+.picker-server-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 8px 38px;
+}
+.picker-server-confirm .picker-confirm-text {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+.picker-menu-button {
+  width: 30px;
+  padding: 0;
+  font-size: var(--cc-text-md);
+  line-height: 1;
+}
+/* Fixed from the button's box: the panel's list scrolls and would clip an absolute menu. */
+.menu.picker-menu {
+  position: fixed;
+  z-index: 50;
+}
+.picker-rename {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0 6px 10px;
+}
+.picker-rename-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.picker-rename-field .picker-server-error {
+  margin: 0;
+}
+
+/* The Connect to server form (connect-form.tsx): a modal card over the picker. */
+.picker-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--cc-shadow) 70%, transparent);
+}
+.picker-dialog {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 18px 18px 14px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  box-shadow: 0 14px 40px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  outline: none;
+}
+.picker-dialog h2 {
+  margin: 0;
+  font-size: var(--cc-text-lg);
+  font-weight: 600;
+}
+.connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* SSH host | Link: a two-way segmented switch over real radio buttons (arrow keys move between them). */
+.connect-kind {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+}
+.connect-kind label {
+  position: relative;
+  padding: 3px 12px;
+  border-radius: var(--cc-radius-sm);
+  color: var(--cc-fg-muted);
+  cursor: pointer;
+}
+.connect-kind label.selected {
+  background: var(--cc-accent-soft);
+  color: var(--cc-fg);
+  font-weight: 500;
+}
+.connect-kind input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.connect-kind label:has(input:focus-visible) {
+  outline: 2px solid var(--cc-focus);
+  outline-offset: -2px;
+}
+.connect-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.connect-field > label {
+  font-weight: 500;
+}
+.connect-field small {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.connect-field input,
+.picker-rename input {
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  font: inherit;
+}
+.connect-field input::placeholder {
+  color: var(--cc-fg-subtle);
+}
+.connect-field input:focus,
+.picker-rename input:focus {
+  outline: none;
+  border-color: var(--cc-focus);
+}
+.connect-advanced summary {
+  color: var(--cc-fg-muted);
+  cursor: pointer;
+}
+.connect-advanced[open] summary {
+  margin-bottom: 8px;
+}
+.picker-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--cc-border);
+}
+.picker-dialog-foot .picker-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Read by screen readers, not drawn. */
 .visually-hidden {
   position: absolute;

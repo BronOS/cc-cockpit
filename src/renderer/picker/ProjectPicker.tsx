@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { PickerInfo, ProjectSummary } from '../../shared/ipc'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PickerInfo, ProjectSummary, RemoteServerInfo } from '../../shared/ipc'
 import { displayChord } from '../commands/keybindings'
 import { splitChord } from '../../shared/keys'
 import { ipcErrorMessage } from '../ipc-error'
 import { PickerEmpty, PickerError, PickerHeader, PickerSearch, PickerSection, ProjectRow } from './parts'
 import { filterProjects, firstOpenable, moveHighlight, tildePath } from './picker-model'
+import { ConnectForm } from './connect-form'
+import { ServersSection } from './servers-section'
 
 const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
 
@@ -19,6 +21,10 @@ const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
  * skipped, Enter could not open them), Enter opens it, Esc clears the filter. The Open Folder
  * chord is NOT handled here: the application menu's accelerator owns it while the picker is
  * focused (menu.ts resolves the '' key table for it), and a handler here would open two dialogs.
+ *
+ * Under the recent projects, the saved remote servers (servers-section.tsx, design-remote-desktop.md
+ * §3) and "Connect to server…" (connect-form.tsx); their list is read with the rest and again on
+ * every `remote.changed` (a window opened or closed, a tunnel's state, a cookie landing).
  */
 export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element {
   const [recent, setRecent] = useState<ProjectSummary[] | null>(null)
@@ -30,8 +36,23 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
   // means the first openable row, so Enter in a fresh picker opens the most recent project.
   const [highlightId, setHighlightId] = useState<string | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
+  const [servers, setServers] = useState<RemoteServerInfo[] | null>(null)
+  const [serversAt, setServersAt] = useState(0)
+  const [connecting, setConnecting] = useState(false)
 
-  const load = (): void => {
+  // Stable (setters only), so the effect below subscribes once.
+  const loadServers = useCallback((): void => {
+    window.cockpit
+      .invoke('remote.list')
+      .then((next) => {
+        setServersAt(Date.now())
+        setServers(next)
+      })
+      .catch((err: unknown) => setError(ipcErrorMessage(err)))
+  }, [])
+
+  const load = useCallback((): void => {
+    loadServers()
     window.cockpit
       .invoke('projects.recent')
       .then(setRecent)
@@ -43,18 +64,20 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
         if (next.kind === 'picker') setPicker(next)
       })
       .catch(() => {}) // keep the hint we have; the list's own error is the one worth showing
-  }
+  }, [loadServers])
   useEffect(() => {
     load()
     window.addEventListener('focus', load)
     // A project's colour set in another window while this one is open (it is modal over one
     // window only): main says so, and the rows' dots follow without waiting for the focus.
     const off = window.cockpit.on('projects.changed', load)
+    const offRemote = window.cockpit.on('remote.changed', loadServers)
     return () => {
       window.removeEventListener('focus', load)
       off()
+      offRemote()
     }
-  }, [])
+  }, [load, loadServers])
 
   const rows = useMemo(() => (recent ? filterProjects(recent, query, picker.home) : []), [recent, query, picker.home])
   const picked = rows.findIndex((p) => p.id === highlightId && !p.missing)
@@ -94,6 +117,7 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
   // React's root listener runs before this document one, so one Esc does one thing.
   const modal = picker.modal === true
   useEffect(() => {
+    // The Connect form's own Esc closes the form first (it preventDefaults).
     if (!modal) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape' && !e.defaultPrevented) {
@@ -193,6 +217,19 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
           </>
         )}
       </PickerSection>
+
+      <ServersSection servers={servers} loadedAt={serversAt} onConnect={() => setConnecting(true)} reload={loadServers} />
+
+      {connecting && (
+        <ConnectForm
+          onClose={() => setConnecting(false)}
+          onConnected={() => {
+            // Main closes the picker once the window is open; a picker it keeps shows the server.
+            setConnecting(false)
+            loadServers()
+          }}
+        />
+      )}
     </main>
   )
 }

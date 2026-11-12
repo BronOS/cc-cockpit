@@ -181,10 +181,12 @@
       covers the partition)
 - [x] cookie: set from the record as a session cookie (no expiry) before the first load; `cookies.on('changed')`
       saves a new `ccc_device` (encrypted) and re-sets it without expiry, loop-guarded; a removal clears it
-- [ ] spike check, kept as an e2e assertion in Task 7: after quit the partition's `Cookies` file holds no
+- [x] spike check, kept as an e2e assertion in Task 7: after quit the partition's `Cookies` file holds no
       `ccc_device`; if it does, switch to an in-memory partition and note it (zone sizes then reset each launch)
       (moved to Task 7's e2e: nothing here writes the cookie with an expiry; remote-cookie.ts re-sets every
       sign-in's cookie as a session cookie at once)
+      (2026-11-12, Task 7: passes; the `Cookies` database exists after quit and holds no `ccc_device`, so the
+      `persist:` partition stays)
 - [x] tracking: (server, project) from `?project=` on navigation; focus an existing window; name from the server's
       `/api/projects` through `ses.fetch`; title `<server> — <project>`; record the recent project
 - [x] re-pair: on `did-finish-load` or a completed `/auth/session` request, main fetches `/auth/session`; `device:
@@ -228,17 +230,21 @@
 - Create: `src/renderer/picker/connect-form.tsx`
 - Create: `test/e2e/remote-desktop.spec.ts`
 
-- [ ] Servers section: server rows with `via` label, recent remote projects with a server badge, menu (Rename, Forget
+- [x] Servers section: server rows with `via` label, recent remote projects with a server badge, menu (Rename, Forget
       with its note, Open server's picker), "not remembered: no keyring" when the store refuses; live from
       `remote.changed`
-- [ ] Connect to server form: SSH host / Link, name, Advanced `ccc` path; the error text in place; busy state while
+- [x] Connect to server form: SSH host / Link, name, Advanced `ccc` path; the error text in place; busy state while
       connecting
-- [ ] unit tests for the picker model (grouping, sorting, empty state)
-- [ ] e2e: desktop app + `launchServer` on loopback, Direct with `ccc web add-device`: a project window opens, a chord
+- [x] unit tests for the picker model (grouping, sorting, empty state)
+- [x] e2e: desktop app + `launchServer` on loopback, Direct with `ccc web add-device`: a project window opens, a chord
       reaches the remote shell with the desktop table (Ctrl+T opens a tab, not Alt+T), the device is named after
       this machine, a link reaches the recorded `openExternal`, closing the picker keeps the app running, relaunch
       reuses the stored cookie and the partition's `Cookies` file holds no `ccc_device`, Forget removes the server
-- [ ] run unit and e2e tests - must pass before task 8
+- [x] run unit and e2e tests - must pass before task 8
+- ➕ `src/renderer/picker/servers-section.tsx` (the section, its ⋯ menu, inline Rename and Forget confirm);
+      `ProjectRow` takes a `badge`, `PickerSection` an `action`; `connectRequest` lives in
+      `picker-model.ts` (unit-tested); a Direct `http:` origin off loopback shows "not encrypted" (design §6);
+      the e2e also covers a refused link in the form and Rename following into the window title
 
 ### Task 8: SSH e2e with a fake ssh [model: sonnet]
 

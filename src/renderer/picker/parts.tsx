@@ -31,11 +31,28 @@ export function PickerError(props: { children: ReactNode }): React.JSX.Element {
   )
 }
 
-/** A titled card of rows (the recent projects): the title above, the panel holding the search, list or empty text. */
-export function PickerSection(props: { id: string; title: string; children: ReactNode; className?: string }): React.JSX.Element {
+/**
+ * A titled card of rows (the recent projects): the title above, the panel holding the search, list
+ * or empty text. `action`: a button at the title's right (the Servers section's Connect to server…).
+ */
+export function PickerSection(props: {
+  id: string
+  title: string
+  children: ReactNode
+  className?: string
+  action?: ReactNode
+}): React.JSX.Element {
+  const heading = <h2 id={props.id}>{props.title}</h2>
   return (
     <section className={`picker-recent${props.className ? ` ${props.className}` : ''}`} aria-labelledby={props.id}>
-      <h2 id={props.id}>{props.title}</h2>
+      {props.action === undefined ? (
+        heading
+      ) : (
+        <div className="picker-section-head">
+          {heading}
+          {props.action}
+        </div>
+      )}
       <div className="picker-panel">{props.children}</div>
     </section>
   )
@@ -84,6 +101,8 @@ export interface ProjectRowProps {
   meta?: string
   /** Buttons after the row's control (Relink… and Forget for a missing folder), or an inline confirm. */
   actions?: ReactNode
+  /** A badge after the name (a remote project's server); plain text. */
+  badge?: string
 }
 
 /**
@@ -102,6 +121,11 @@ export function ProjectRow(props: ProjectRowProps): React.JSX.Element {
           <span className="picker-row-name" id={`${rowId}-name`}>
             {props.name}
           </span>
+          {props.badge !== undefined && (
+            <span className="picker-badge picker-server-badge" title={props.badge}>
+              {props.badge}
+            </span>
+          )}
           {missing && (
             <span className="picker-badge" aria-hidden="true">
               missing
