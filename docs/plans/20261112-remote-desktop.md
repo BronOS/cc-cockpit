@@ -252,13 +252,13 @@
 - Create: `test/fixtures/fake-ssh.mjs` (and its PATH wrapper)
 - Modify: `test/e2e/remote-desktop.spec.ts`
 
-- [ ] fake `ssh`: checks the common options and `--`, runs the remote command through `sh -c` locally with `HOME` (or
+- [x] fake `ssh`: checks the common options and `--`, runs the remote command through `sh -c` locally with `HOME` (or
       the `CCC` override) pointing at the test server's data dir, forwards `-L` with a Node TCP relay, exits like ssh
       on errors
-- [ ] e2e: connect by SSH host, project window opens through the tunnel (Host on another port accepted); revoke the
+- [x] e2e: connect by SSH host, project window opens through the tunnel (Host on another port accepted); revoke the
       device with `ccc web revoke` and see the window re-pair once (two windows of the server: one add-device); the
       fake failing auth shows the "run `ssh <host>` once" text
-- [ ] run e2e - must pass before task 9
+- [x] run e2e - must pass before task 9
 
 ### Task 9: Docs and guide [model: sonnet]
 

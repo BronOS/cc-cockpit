@@ -11,14 +11,21 @@
 // `app.json`, so a relaunch on the same data dir reads the saved device cookie back as the keychain
 // would (the restore half of the spike check).
 //
+// SSH (plan Task 8): the desktop app's PATH starts with a bin dir holding an `ssh` that runs
+// test/fixtures/fake-ssh.mjs, which parses the argv like OpenSSH, runs the remote command locally
+// against the test server's own `ccc`, and relays `-N -L` to the server's port. The tunnel's local
+// port differs from the server's, which proves the gateway's Host rule (design §5.3).
+//
 // Linux only: server mode starts nowhere else.
-import { existsSync, readFileSync, rmSync } from 'node:fs'
-import { hostname } from 'node:os'
-import { basename, join } from 'node:path'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir } from 'node:os'
+import { basename, delimiter, join, resolve } from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
+
+const FAKE_SSH = resolve(__dirname, '../fixtures/fake-ssh.mjs')
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
 
@@ -226,6 +233,161 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     // relaunch (a failure in between) leaves them to remove here.
     if (desktop !== undefined) await desktop.close()
     else if (root !== undefined) rmSync(root, { recursive: true, force: true })
+    await server.close()
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// SSH
+
+interface FakeSsh {
+  /** Env for the desktop app: the fake `ssh` first on PATH and what the fake reads. */
+  env: Record<string, string>
+  /** The fake's log lines (`command ...`, `tunnel L P pid=N`). */
+  log(): string[]
+  dispose(): void
+}
+
+/** A temp bin dir with an `ssh` wrapper for fake-ssh.mjs, wired to `server`'s own `ccc`. */
+function fakeSsh(server: Server, badHosts: string[] = ['badhost']): FakeSsh {
+  const dir = mkdtempSync(join(tmpdir(), 'ccc-e2e-ssh-'))
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  const wrapper = join(bin, 'ssh')
+  writeFileSync(wrapper, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_SSH}' "$@"\n`)
+  chmodSync(wrapper, 0o755)
+  const logFile = join(dir, 'ssh.log')
+  writeFileSync(logFile, '')
+  // launchCockpit's own PATH (fixture bin, node, inherited) goes behind the fake's dir.
+  const fixtureBin = resolve(__dirname, '../fixtures/bin')
+  return {
+    env: {
+      PATH: [bin, fixtureBin, join(process.execPath, '..'), process.env.PATH ?? ''].join(delimiter),
+      FAKE_SSH_CCC: join(server.cockpit.dataDir, 'bin', 'ccc'),
+      FAKE_SSH_HOME: join(dir, 'remote-home'),
+      FAKE_SSH_BAD_HOSTS: badHosts.join(','),
+      FAKE_SSH_LOG: logFile
+    },
+    log: () => readFileSync(logFile, 'utf8').split('\n').filter((l) => l !== ''),
+    dispose: () => rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** The desktop app's remote window on the tunnel: a loopback page that is not the server's own origin. */
+async function tunnelWindow(app: ElectronApplication, server: Server): Promise<Page> {
+  let found: Page | undefined
+  await expect
+    .poll(() => {
+      found = app.windows().find((p) => {
+        const u = p.isClosed() ? '' : p.url()
+        return u.startsWith('http://127.0.0.1:') && !u.startsWith(`${server.origin}/`)
+      })
+      return found !== undefined
+    })
+    .toBe(true)
+  return found!
+}
+
+async function connectSsh(picker: Page, host: string, name?: string): Promise<ReturnType<Page['getByRole']>> {
+  await picker.getByRole('button', { name: 'Connect to server…' }).click()
+  const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
+  await dialog.getByRole('radio', { name: 'SSH host' }).check()
+  await dialog.getByRole('textbox', { name: 'SSH host' }).fill(host)
+  if (name !== undefined) await dialog.getByRole('textbox', { name: 'Name (optional)' }).fill(name)
+  await dialog.getByRole('button', { name: 'Connect' }).click()
+  return dialog
+}
+
+test('SSH: tunnel on another port, signed in by add-device, one re-pair after a revoke, tunnel restart, bad auth', async () => {
+  test.setTimeout(300_000)
+  const server = await launchServer({ mode: 'link' })
+  const ssh = fakeSsh(server)
+  let desktop: { cockpit: Cockpit; close(options?: { keepFiles?: boolean }): Promise<void> } | undefined
+  try {
+    const projectName = basename(server.cockpit.projectDir)
+    desktop = await launchCockpit({ folderArg: false, ready: 'picker', env: ssh.env })
+    const { app } = desktop.cockpit
+    const picker = desktop.cockpit.page
+
+    // (3) A host whose login fails: ssh's own refusal with the one command that fixes it, nothing saved.
+    const bad = await connectSsh(picker, 'badhost')
+    await expect(bad.getByRole('alert')).toContainText('Run `ssh badhost` once in a terminal')
+    await expect(bad.getByRole('alert')).toHaveText(/^Cannot connect: .*Run `ssh badhost` once in a terminal.*\.$/)
+    expect(savedServers(desktop.cockpit.dataDir)).toEqual([])
+    await bad.getByRole('textbox', { name: 'SSH host' }).fill('testhost')
+    await bad.getByRole('textbox', { name: 'Name (optional)' }).fill('Box')
+    await bad.getByRole('button', { name: 'Connect' }).click()
+
+    // (1) The window is on the tunnel's port, not the server's, and signed in with no link pasted.
+    const remote = await tunnelWindow(app, server)
+    const tunnelPort = Number(new URL(remote.url()).port)
+    expect(tunnelPort).not.toBe(server.port)
+    await expect.poll(() => picker.isClosed()).toBe(true)
+    await remote.getByRole('list', { name: 'Open projects' }).waitFor()
+    expect(remote.url()).not.toContain('#t=')
+    expect(ssh.log().some((l) => l.startsWith('tunnel ') && l.includes(`${tunnelPort} ${server.port} `))).toBe(true)
+    const commands = (): string[] => ssh.log().filter((l) => l.startsWith('command '))
+    expect(commands().filter((l) => l.includes("'status'"))).toHaveLength(1)
+    expect(commands().filter((l) => l.includes("'add-device'"))).toHaveLength(1)
+    const first = (await status(server)).devices
+    expect(first.map((d) => d.name)).toEqual([`cc-cockpit desktop on ${hostname()}`])
+    expect(await titles(app)).toEqual(['Box'])
+
+    // Into the project, so the window's page is a live project client through the tunnel.
+    const href = `?project=${encodeURIComponent(server.projectId)}`
+    await remote.getByRole('list', { name: 'Open projects' }).locator(`a[href="${href}"]`).click()
+    await remote.locator('.tabs-pane').waitFor()
+    await expect.poll(() => titles(app)).toEqual([`Box — ${projectName}`])
+
+    // A second window of the same server (the server's picker, from the desktop's own picker).
+    await app.evaluate(({ Menu }) => {
+      const file = Menu.getApplicationMenu()?.items.find((i) => i.label === 'File')
+      file?.submenu?.items.find((i) => i.label === 'Open Project…')?.click()
+    })
+    const picker2 = await pickerWindow(app, `http://127.0.0.1:${tunnelPort}`)
+    await picker2.getByRole('button', { name: 'Box', exact: true }).first().click()
+    await expect.poll(async () => (await titles(app)).includes('Box')).toBe(true)
+    const second = await expect
+      .poll(() => app.windows().filter((p) => !p.isClosed() && p.url() === `http://127.0.0.1:${tunnelPort}/`).length)
+      .toBe(1)
+      .then(() => app.windows().find((p) => !p.isClosed() && p.url() === `http://127.0.0.1:${tunnelPort}/`)!)
+    await second.getByRole('list', { name: 'Open projects' }).waitFor()
+
+    // (2) Revoke the device on the server; both windows go to the sign-in screen when they reload,
+    // and exactly one add-device is minted for the pair of them (one new device, not two).
+    const addsBefore = commands().filter((l) => l.includes("'add-device'")).length
+    const res = await ccc(server, ['web', 'revoke', first[0]!.id])
+    expect(res.code, res.stderr).toBe(0)
+    expect((await status(server)).devices).toHaveLength(0)
+    await Promise.all([remote.reload(), second.reload()])
+    await expect.poll(async () => (await status(server)).devices.length, { timeout: 60_000 }).toBe(1)
+    const now = (await status(server)).devices
+    expect(now[0]!.id).not.toBe(first[0]!.id)
+    await remote.locator('.tabs-pane').waitFor({ timeout: 30_000 })
+    await second.getByRole('list', { name: 'Open projects' }).waitFor({ timeout: 30_000 })
+    await new Promise((r) => setTimeout(r, 1500))
+    expect((await status(server)).devices).toHaveLength(1)
+    expect(commands().filter((l) => l.includes("'add-device'")).length).toBe(addsBefore + 1)
+
+    // (4) The tunnel's ssh dies: the app starts it again on the same port and the window works.
+    const pids = ssh
+      .log()
+      .filter((l) => l.startsWith('tunnel '))
+      .map((l) => Number(/pid=(\d+)/.exec(l)![1]))
+    expect(pids).toHaveLength(1)
+    process.kill(pids[0]!, 'SIGKILL')
+    await expect
+      .poll(() => ssh.log().filter((l) => l.startsWith('tunnel ')).length, { timeout: 30_000 })
+      .toBe(2)
+    expect(ssh.log().filter((l) => l.startsWith('tunnel '))[1]).toContain(`${tunnelPort} ${server.port} `)
+    await remote.reload()
+    await remote.locator('.tabs-pane').waitFor({ timeout: 30_000 })
+    expect((await status(server)).devices).toHaveLength(1)
+
+    await expectMainAlive(server)
+  } finally {
+    if (desktop !== undefined) await desktop.close()
+    ssh.dispose()
     await server.close()
   }
 })
