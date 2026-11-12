@@ -380,7 +380,7 @@ export function ConnectForm(props: {
                   id={`${uid}-ccc`}
                   label="ccc path on the server"
                   testId="connect-ssh-ccc"
-                  hint="An absolute path, only when ccc is not found on the server by itself."
+                  hint="An absolute path, only needed when the server's ccc is not at ~/.config/cc-cockpit/bin/ccc: for example a machine running both the desktop app and a server with its own data dir (then <data dir>/bin/ccc)."
                 >
                   {(attrs) => (
                     <input {...attrs} placeholder="/opt/cc-cockpit/bin/ccc" value={fields.ccc} disabled={busy} onChange={(e) => set('ccc', e.target.value)} />

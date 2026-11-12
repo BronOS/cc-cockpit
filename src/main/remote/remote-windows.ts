@@ -46,6 +46,12 @@
 // with the command that starts the tunnel and tries again every TUNNEL_RETRY_MS while the window is
 // open; anything but a cc-cockpit answer shows the error and loads nothing, so the device cookie is
 // never sent to it. The page's own reconnects are not covered (they are the page's, not main's).
+// Main's own requests with the cookie (the title's name lookup, the project check and its reopen POST,
+// the session check, the machine poll) are held to the same rule (`cleared`): one goes only once the
+// window's current load passed the gate, or a fresh probe passes; otherwise it is skipped, never sent.
+// The title lookup used to go out at open, before the load's probe had answered: the cookie went to
+// whatever listened on the local port before main knew it was a gateway. It now waits for the load's
+// landing (a navigation, which asks again) and makes no probe of its own.
 //
 // A project the server closed (design §4 "Recent projects"): the picker's recent rows name projects
 // the server may have closed since, and the web client only shows "not open on the host" for one.
@@ -411,6 +417,8 @@ interface WindowRecord {
   closed: boolean
   /** Bumped by every main-made load: a gate answer for an older one is dropped. */
   loads: number
+  /** The load (a `loads` value) whose gate let it go, for a gated server; undefined before any did. */
+  passed: number | undefined
   /** When it last got the focus, as RemoteWindows' own counter (opening counts: a new window is shown focused). */
   focusedAt: number
   /** A gated load waiting for the tunnel: its retry timer, and the text the window shows. */
@@ -535,7 +543,7 @@ export class RemoteWindows {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false, loads: 0, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, budget: new OpenBudget(), closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
@@ -606,6 +614,9 @@ export class RemoteWindows {
     const state = this.servers.get(serverId)
     if (state === undefined) throw new Error('no such server')
     await state.restored
+    // No window to vouch for it: a tunnel server is probed before every poll.
+    const ok = this.cleared(serverId)
+    if (ok !== true && !(await ok)) throw new Error('the tunnel did not answer as a cc-cockpit server')
     return state.session.fetchJson(`${state.origin}${path}`)
   }
 
@@ -734,6 +745,19 @@ export class RemoteWindows {
     this.options.showPicker?.()
     const state = this.servers.get(rec.serverId)
     if (state === undefined) return
+    const ok = this.cleared(rec.serverId, rec)
+    if (ok !== true) {
+      void ok.then((go) => {
+        if (go) this.closeIfNotOpen(rec, state, project)
+        else this.log(`remote ${rec.serverId}: the tunnel did not answer as a cc-cockpit server; the window stays`)
+      })
+      return
+    }
+    this.closeIfNotOpen(rec, state, project)
+  }
+
+  /** backToPicker's question: the window closes when the server no longer has `project` open. */
+  private closeIfNotOpen(rec: WindowRecord, state: ServerState, project: string): void {
     void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`).then(
       (body) => {
         if (rec.closed) return
@@ -794,6 +818,12 @@ export class RemoteWindows {
     rec.titled = project
     rec.view.setTitle(remoteTitle(server.name))
     if (project === undefined) return
+    // My own tunnel (`cleared`): no lookup before the window's current load passed the probe. No
+    // probe of its own either: the load's landing on the page is a navigation, which asks again.
+    if (!this.passedNow(rec.serverId, rec)) {
+      rec.titled = null
+      return
+    }
     void state.session.fetchJson(`${state.origin}${PROJECTS_PATH}`).then(
       (body) => {
         if (rec.closed || rec.project !== project) return
@@ -890,6 +920,34 @@ export class RemoteWindows {
   }
 
   /**
+   * Whether a request main makes with the device cookie may go to server `serverId` now with no
+   * probe (see the header): an ungated server (SSH, Direct), or window `rec` on a load that passed
+   * the gate, with the server still at `origin` (default: its current one).
+   */
+  private passedNow(serverId: string, rec?: WindowRecord, origin?: string): boolean {
+    if (this.gated(serverId) === undefined) return true
+    const current = this.servers.get(serverId)?.origin
+    return rec !== undefined && !rec.closed && rec.passed === rec.loads && (origin ?? current) === current
+  }
+
+  /**
+   * May a request main makes with the device cookie go now? `true` at once when `passedNow` says so
+   * (so SSH and Direct take no extra turn); else a fresh probe decides, false when it found no
+   * gateway, the gate threw, the window closed or the server moved off `origin` meanwhile. False
+   * means: skip the request.
+   */
+  private cleared(serverId: string, rec?: WindowRecord, origin?: string): true | Promise<boolean> {
+    if (this.passedNow(serverId, rec, origin)) return true
+    const server = this.gated(serverId) as RemoteServerRecord
+    const at = origin ?? this.servers.get(serverId)?.origin
+    const gate = this.options.gate as (server: RemoteServerRecord) => Promise<LoadGate>
+    return gate(server).then(
+      (result) => 'go' in result && at !== undefined && this.servers.get(serverId)?.origin === at && rec?.closed !== true,
+      () => false
+    )
+  }
+
+  /**
    * A load main makes: at once, or for a gated server once the gate lets it; with `reopen`, after
    * the project check (`loadChecked`). A newer load replaces one still waiting; a closed window
    * loads nothing.
@@ -910,6 +968,7 @@ export class RemoteWindows {
       .then((result) => {
         if (rec.closed || rec.loads !== attempt) return
         if ('go' in result) {
+          rec.passed = attempt
           this.loadChecked(rec, url, attempt, reopen)
         } else if ('error' in result) {
           rec.waiting = undefined
@@ -963,6 +1022,9 @@ export class RemoteWindows {
    */
   private async checkProject(rec: WindowRecord, session: RemoteSessionView, origin: string, project: string): Promise<ProjectCheck> {
     const url = `${origin}${PROJECTS_PATH}`
+    // Called only once the load passed the gate, so this is true at once; kept as the rule's check.
+    const listOk = this.cleared(rec.serverId, rec, origin)
+    if (listOk !== true && !(await listOk)) return { unknown: true }
     let open: Set<string> | undefined
     try {
       open = openProjectIdsOf(await session.fetchJson(url))
@@ -974,6 +1036,9 @@ export class RemoteWindows {
     if (open === undefined) return { unknown: true }
     if (open.has(project)) return { open: true }
     if (rec.closed) return { unknown: true }
+    // A newer load may have started while the list answered: the POST waits for its probe.
+    const postOk = this.cleared(rec.serverId, rec, origin)
+    if (postOk !== true && !(await postOk)) return { unknown: true }
     const request: WebOpenProjectRequest = { reopen: project }
     let answer: { status: number; body: unknown }
     try {
@@ -1017,6 +1082,9 @@ export class RemoteWindows {
 
   private async pair(rec: WindowRecord, state: ServerState): Promise<void> {
     for (;;) {
+      // Never for a tunnel today (SSH only re-pairs); the rule holds here all the same.
+      const ok = this.cleared(rec.serverId, rec)
+      if (ok !== true && !(await ok)) return
       let reply: SessionReply | undefined
       try {
         reply = sessionReplyOf(await state.session.fetchJson(`${state.origin}${SESSION_PATH}`))

@@ -912,11 +912,15 @@ describe('RemoteWindows: My own tunnel gate', () => {
     const tasks = new Map<number, { fn: () => void; ms: number }>()
     let next = 1
     const gated: string[] = []
+    /** Probes answered so far, and how many of them found a gateway. */
+    const answered: LoadGate[] = []
     const windows = new RemoteWindows({
       ...t.options,
       gate: async (server) => {
         gated.push(server.id)
-        return results.shift() ?? { go: true }
+        const result = results.shift() ?? { go: true }
+        answered.push(result)
+        return result
       },
       timers: {
         setTimeout: (fn, ms) => {
@@ -936,7 +940,8 @@ describe('RemoteWindows: My own tunnel gate', () => {
       await flush()
     }
     const retries = (): number => [...tasks.values()].filter((x) => x.ms === TUNNEL_RETRY_MS).length
-    return { ...t, windows, gated, retry, retries }
+    const passes = (): number => answered.filter((r) => 'go' in r).length
+    return { ...t, windows, gated, retry, retries, results, answered, passes }
   }
 
   it('waits with the command while nothing answers, then loads the page with the token', async () => {
@@ -989,25 +994,120 @@ describe('RemoteWindows: My own tunnel gate', () => {
     expect(t.retries()).toBe(0)
   })
 
-  it('probes, then reopens a closed project, then loads it', async () => {
+  it('probes, then reopens a closed project, then loads it; the title lookup waits for the load to pass', async () => {
     const t = tunnelSetup([{ go: true }])
-    // Each request with the number of probes made before it.
+    // Each request with the number of probes answered before it.
     const order: string[] = []
     t.factory.fetcher = async (url) => {
-      order.push(`get after ${t.gated.length} probes`)
+      order.push(`get after ${t.answered.length} probes`)
       expect(url).toBe(`${TUNNEL}/api/projects`)
       return projects
     }
     t.factory.poster = async (url, body) => {
-      order.push(`post ${JSON.stringify(body)} after ${t.gated.length} probes`)
+      order.push(`post ${JSON.stringify(body)} after ${t.answered.length} probes`)
       return { status: 200, body: { id: 'p2' } }
     }
     await t.windows.open('t1', { origin: TUNNEL, projectId: 'p2' })
     await flush()
-    // The title's name lookup goes at once (as before); the open check and the reopen only after the probe.
-    expect(order).toEqual(['get after 0 probes', 'get after 1 probes', 'post {"reopen":"p2"} after 1 probes'])
+    // No title lookup at open (it used to go before the probe had answered): the open check and the
+    // reopen after the probe.
+    expect(order).toEqual(['get after 1 probes', 'post {"reopen":"p2"} after 1 probes'])
     expect(t.factory.session1('t1').posts[0]?.origin).toBe(TUNNEL)
-    expect((t.factory.views[0] as FakeView).loads).toEqual([`${TUNNEL}/?project=p2`])
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([`${TUNNEL}/?project=p2`])
+    expect(view.title).toBe('tun')
+    // The load lands: the title asks now, on the passed load, with no probe of its own.
+    view.commit(`${TUNNEL}/?project=p2`)
+    await flush()
+    expect(order).toEqual(['get after 1 probes', 'post {"reopen":"p2"} after 1 probes', 'get after 1 probes'])
+    expect(t.gated).toEqual(['t1'])
+    expect(view.title).toBe('tun — Web')
+  })
+
+  // The cookie-carrying requests main makes (fetchJson, postJson) never go before a probe that found a
+  // gateway: the probes answered `go` are counted when each request goes out.
+  it('sends no cookie-carrying request while the probe does not find a gateway (wait, error, a throwing gate)', async () => {
+    for (const miss of [{ wait: 'waiting' }, { error: 'Something else is listening' }] as LoadGate[]) {
+      const t = tunnelSetup([miss, miss, miss, miss])
+      t.factory.fetcher = async () => projects
+      await t.windows.open('t1', { origin: TUNNEL, projectId: 'p1' })
+      await flush()
+      const session = t.factory.session1('t1')
+      expect(session.fetches).toEqual([])
+      expect(session.posts).toEqual([])
+      const view = t.factory.views[0] as FakeView
+      // The title stays the server's.
+      expect(view.title).toBe('tun')
+      // The page navigating on its own (no main load passed the gate): still nothing.
+      view.commit(`${TUNNEL}/?project=p1`)
+      await flush()
+      expect(session.fetches).toEqual([])
+      expect(view.title).toBe('tun')
+    }
+    const t = tunnelSetup([])
+    const windows = new RemoteWindows({ ...t.options, gate: () => Promise.reject(new Error('boom')) })
+    await windows.open('t1', { origin: TUNNEL, projectId: 'p1' })
+    await flush()
+    expect(t.factory.session1('t1').fetches).toEqual([])
+  })
+
+  it('the title lookup goes once the load passed, with no new probe for a window on its passed load', async () => {
+    const t = tunnelSetup([{ wait: 'waiting' }])
+    const seen: number[] = []
+    t.factory.fetcher = async () => {
+      seen.push(t.passes())
+      return projects
+    }
+    await t.windows.open('t1', { origin: TUNNEL, projectId: 'p1' })
+    await flush()
+    expect(t.factory.session1('t1').fetches).toEqual([])
+    // The tunnel came up: the retry's probe passes, the load goes, and the page lands on its project.
+    await t.retry()
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([`${TUNNEL}/?project=p1`])
+    const probes = t.gated.length
+    view.commit(`${TUNNEL}/?project=p1`)
+    await flush()
+    expect(view.title).toBe('tun — Api')
+    // The open check and the title: each after a passing probe, and the title asked no new one.
+    expect(t.gated.length).toBe(probes)
+    expect(seen.every((n) => n > 0)).toBe(true)
+  })
+
+  it('back to the picker asks whether the project is open only after a passing probe', async () => {
+    const t = tunnelSetup([])
+    t.factory.fetcher = async () => ({ projects: [] })
+    await t.windows.open('t1', { origin: TUNNEL, projectId: 'p1' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    view.commit(`${TUNNEL}/?project=p1`)
+    await flush()
+    const session = t.factory.session1('t1')
+    const before = session.fetches.length
+    // A newer main load is waiting on its probe: the question re-probes, which misses; nothing goes.
+    t.results.push({ wait: 'waiting' }, { wait: 'waiting' })
+    await t.windows.setOrigin('t1', TUNNEL.replace('7331', '7332'))
+    await flush()
+    // The page as it stood (the waiting page aside): still on its project, on the new origin.
+    view.current = `${TUNNEL.replace('7331', '7332')}/?project=p1`
+    expect(view.hooks.allowNavigation(`${TUNNEL.replace('7331', '7332')}/`)).toBe(false)
+    await flush()
+    expect(session.fetches.length).toBe(before)
+    expect(view.closed).toBe(false)
+  })
+
+  it('the machine poll probes a tunnel server first and refuses without a gateway', async () => {
+    const t = tunnelSetup([])
+    t.factory.fetcher = async (url) => (url.endsWith('/api/sessions') ? { waiting: 0, working: 0, idle: 1 } : projects)
+    await t.windows.open('t1', { origin: TUNNEL })
+    await flush()
+    const probes = t.gated.length
+    await expect(t.windows.fetchFromServer('t1', '/api/sessions')).resolves.toEqual({ waiting: 0, working: 0, idle: 1 })
+    expect(t.gated.length).toBe(probes + 1)
+    t.results.push({ wait: 'waiting' })
+    const fetched = t.factory.session1('t1').fetches.length
+    await expect(t.windows.fetchFromServer('t1', '/api/sessions')).rejects.toThrow('did not answer as a cc-cockpit server')
+    expect(t.factory.session1('t1').fetches.length).toBe(fetched)
   })
 
   it('a closed project behind a tunnel that is down waits, and is not asked about', async () => {
@@ -1018,14 +1118,23 @@ describe('RemoteWindows: My own tunnel gate', () => {
     expect((t.factory.views[0] as FakeView).loads).toEqual([])
   })
 
-  it('other kinds load at once, never through the gate', async () => {
+  it('other kinds load at once, never through the gate (title, poll, re-pair check included)', async () => {
     const t = tunnelSetup([])
-    t.factory.fetcher = async () => signedIn
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
     await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
     await t.windows.open('d1', { origin: 'https://box.example' })
+    // SSH's title lookup and open check go at once, as before: in the same turn as the open.
+    expect(t.factory.session1('s1').fetches).toEqual([`${ORIGIN}/api/projects`, `${ORIGIN}/api/projects`])
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    view.commit(`${ORIGIN}/?project=p1`)
+    await t.windows.settled('s1')
+    await t.windows.fetchFromServer('s1', '/api/sessions')
+    await t.windows.fetchFromServer('d1', '/api/sessions')
     await flush()
     expect(t.gated).toEqual([])
-    expect((t.factory.views[0] as FakeView).loads).toEqual([`${ORIGIN}/?project=p1`])
+    expect(view.loads).toEqual([`${ORIGIN}/?project=p1`])
+    expect(t.factory.session1('s1').fetches).toContain(`${ORIGIN}/auth/session`)
   })
 })
 

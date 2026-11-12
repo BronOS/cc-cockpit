@@ -2,9 +2,11 @@
 // that records the command and answers with fixed output, so only the parsing and messages are tested.
 import { describe, expect, it } from 'vitest'
 import { REMOTE_CCC_MISSING, remoteCommand } from '../../src/shared/remote-servers'
+import { BUILD_VERSION } from '../../src/shared/app-version'
 import {
   addDeviceToken,
   answerLine,
+  isWrongCcc,
   runCcc,
   serverStatus,
   shownText,
@@ -64,6 +66,37 @@ describe('runCcc', () => {
     await expect(runCcc(answering('', null).exec, 'devbox', ['web'])).rejects.toThrow('ccc on devbox was stopped before it answered.')
   })
 
+  // A machine with a desktop cockpit and a server-mode one: the script found the desktop's ccc. Each
+  // text is the CLI's or main's own (cli/client.ts callerOf and warnOnVersionMismatch, socket-server.ts).
+  const wrong = `The ccc found on devbox belongs to a cockpit that is not a server (or is older than ${BUILD_VERSION}). Set the server's ccc under Advanced › ccc path on the server (for server mode: <data dir>/bin/ccc).`
+
+  it('names an older ccc with no web command (it took web for a plugin command)', async () => {
+    const stderr = 'ccc: web outside a cockpit tab needs --project <path> before it\n'
+    await expect(runCcc(answering('', 2, stderr).exec, 'devbox', ['web', 'status', '--json'])).rejects.toThrow(wrong)
+  })
+
+  it('names a ccc whose app does not know web (unknown command: web.status, unknown command: web)', async () => {
+    await expect(runCcc(answering('', 1, 'ccc: unknown command: web.status\n').exec, 'devbox', ['web'])).rejects.toThrow(wrong)
+    await expect(runCcc(answering('', 1, 'ccc: unknown command: web\n').exec, 'devbox', ['web'])).rejects.toThrow(wrong)
+    // Another command's name that only starts with "web" is not this case.
+    await expect(runCcc(answering('', 1, 'ccc: unknown command: webhooks\n').exec, 'devbox', ['web'])).rejects.toThrow(
+      'ccc on devbox failed: ccc: unknown command: webhooks'
+    )
+  })
+
+  it('names a version skew when the command failed, from any stderr line, not only the last', async () => {
+    const stderr = 'ccc: the app is running version 0.16.2, this ccc is version 0.17.0. Restart cc-cockpit.\nccc: something else\n'
+    await expect(runCcc(answering('', 1, stderr).exec, 'devbox', ['web'])).rejects.toThrow(wrong)
+    // A skew with a good answer is read as usual (the server's own ccc after an upgrade).
+    await expect(runCcc(answering('{"a":1}\n', 0, stderr).exec, 'devbox', ['web'])).resolves.toBe('{"a":1}')
+  })
+
+  it('isWrongCcc is false for other failures', () => {
+    expect(isWrongCcc('ccc: cc-cockpit is not running\n')).toBe(false)
+    expect(isWrongCcc('')).toBe(false)
+    expect(isWrongCcc('x\nccc: open outside a cockpit tab needs --project <path>\n')).toBe(false)
+  })
+
   it('a transport failure keeps its words', async () => {
     const exec: RemoteExec = () => Promise.reject(new Error('the command took longer than 20000 ms'))
     await expect(runCcc(exec, 'devbox', ['web'])).rejects.toThrow('running ccc on devbox failed: the command took longer than 20000 ms')
@@ -95,9 +128,9 @@ describe('serverStatus and addDeviceToken', () => {
     expect(commands).toEqual([remoteCommand(['web', 'status', '--json'])])
   })
 
-  it('refuses a desktop app (not server mode)', async () => {
+  it('refuses a desktop app (not server mode), pointing at the ccc path for a machine running both', async () => {
     await expect(serverStatus(answering(status({ server: false })).exec, 'devbox')).rejects.toThrow(
-      'devbox is not a cc-cockpit server in server mode'
+      'devbox is not a cc-cockpit server in server mode (a desktop cockpit answered). Direct works with the link a desktop app shows; if a server runs there too, set its ccc under Advanced › ccc path on the server (for server mode: <data dir>/bin/ccc).'
     )
   })
 

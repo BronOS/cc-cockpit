@@ -534,8 +534,10 @@ and its recent projects; **Connect to server…** opens a form with three tabs. 
 user, port and **Name**, and choose how to sign in: *Agent and my keys* (the SSH agent, then the config's
 `IdentityFile`s, else `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`), *Password*, or *Key file* (a path with a Browse button).
 The agent is the config's `IdentityAgent` (1Password, Secretive) or `SSH_AUTH_SOCK` from your login environment. The app
-needs no `ssh` on this machine. cc-cockpit must run in server mode on the server with its default data dir; if the `ccc`
-command is not on the server's PATH, set **ccc path on the server** under **Advanced**. Over the same SSH connection the
+needs no `ssh` on this machine. cc-cockpit must run in server mode on the server; the app runs the `ccc` at
+`~/.config/cc-cockpit/bin/ccc`, else the one on the server's PATH. When the server's is elsewhere (a machine running both
+the desktop app and a server with its own data dir: `<data dir>/bin/ccc`), set **ccc path on the server** under
+**Advanced**; a connect that reached the desktop's `ccc` says so. Over the same SSH connection the
 app runs `ccc web status --json` to find the server's port, version and scheme and `ccc web add-device` to pair this
 device, and it listens on a loopback port of its own for the windows, so nothing but SSH is exposed.
 

@@ -8,6 +8,7 @@
 // by field (a field of the wrong type refuses, never defaults), and any server text that reaches a
 // message is capped and stripped of control characters (`shownText`). The command itself is
 // `remoteCommand` (shared/remote-servers.ts): the fixed `sh -c` script with every word single-quoted.
+import { BUILD_VERSION } from '../../shared/app-version'
 import { errorText } from '../../shared/error-text'
 import { isPlainObject } from '../../shared/guards'
 import { REMOTE_CCC_MISSING, isLocalPort, parseRemoteLink, remoteCommand } from '../../shared/remote-servers'
@@ -58,6 +59,43 @@ export function lastLine(text: string): string {
   return ''
 }
 
+/** Where the person points the app at the right `ccc` (the connect form's field, under Advanced). */
+const CCC_PATH_HINT = 'under Advanced › ccc path on the server (for server mode: <data dir>/bin/ccc)'
+
+/**
+ * What `ccc` says when it is not the server's own (design-remote-desktop.md §5.6): a machine with
+ * both a desktop cockpit and a server-mode one, where the script found the desktop's
+ * `~/.config/cc-cockpit/bin/ccc` (the real case: 0.16.2's ccc, which has no `web` command and took it
+ * for a plugin command). Each is a fixed text of src/cli or main:
+ *  - an older ccc with no `web` command: `callerOf` in cli/client.ts, "web outside a cockpit tab
+ *    needs --project <path> before it";
+ *  - a ccc that knows `web` talking to an app that does not: socket-server.ts / handlers.ts
+ *    "unknown command: web.status" (or "unknown command: web");
+ *  - a ccc of another version than the app it reached: cli/client.ts `warnOnVersionMismatch`, "the
+ *    app is running version X, this ccc is version Y" (on stderr; only counted when the command failed:
+ *    a skew with a good answer is the server's own ccc after an upgrade, and its answer is read).
+ */
+const WRONG_CCC_MARKS: readonly string[] = ['web outside a cockpit tab needs --project', 'the app is running version ']
+
+/** Whether `line` says `unknown command: web` or `unknown command: web.<something>` (not `webfoo`). */
+function unknownWebCommand(line: string): boolean {
+  const mark = 'unknown command: web'
+  const at = line.indexOf(mark)
+  if (at < 0) return false
+  const next = line.charAt(at + mark.length)
+  return next === '' || next === '.' || next === ' '
+}
+
+/** Whether a failed run's stderr says the `ccc` that answered is not the server's (WRONG_CCC_MARKS). */
+export function isWrongCcc(stderr: string): boolean {
+  return stderr.split('\n').some((line) => unknownWebCommand(line) || WRONG_CCC_MARKS.some((mark) => line.includes(mark)))
+}
+
+/** The one line for a `ccc` that belongs to another cockpit than the server. */
+export function wrongCccText(host: string): string {
+  return `The ccc found on ${host} belongs to a cockpit that is not a server (or is older than ${BUILD_VERSION}). Set the server's ccc ${CCC_PATH_HINT}.`
+}
+
 /**
  * The answer line of a finished `ccc <args>` run on `host`, or the person's reason why there is
  * none: the remote has no `ccc` (the script's marker line, exit 127), the command failed (its last
@@ -70,6 +108,9 @@ export function answerLine(host: string, result: RemoteExecResult): string {
     throw new RemoteCommandError(`cc-cockpit's ccc was not found on ${host}. Set the path to ccc in the server's settings, or install cc-cockpit there.`)
   }
   if (result.code !== 0) {
+    // Before the last stderr line: that line reads as a usage slip ("needs --project") when the real
+    // cause is a ccc of another cockpit.
+    if (isWrongCcc(result.stderr)) throw new RemoteCommandError(wrongCccText(host))
     const said = lastLine(result.stderr)
     if (said !== '') throw new RemoteCommandError(`ccc on ${host} failed: ${shownText(said)}`)
     throw new RemoteCommandError(
@@ -121,7 +162,10 @@ export function parseServerStatus(host: string, line: string): RemoteStatus {
   }
   if (!isPlainObject(reply)) throw new RemoteCommandError(`${host} answered something that is not a cc-cockpit status.`)
   if (reply['server'] !== true) {
-    throw new RemoteCommandError(`${host} is not a cc-cockpit server in server mode. Direct works with the link a desktop app shows.`)
+    // A desktop cockpit answered: on a machine that also runs a server, its ccc was found first.
+    throw new RemoteCommandError(
+      `${host} is not a cc-cockpit server in server mode (a desktop cockpit answered). Direct works with the link a desktop app shows; if a server runs there too, set its ccc ${CCC_PATH_HINT}.`
+    )
   }
   const rawVersion = reply['version']
   const version = typeof rawVersion === 'string' && rawVersion !== '' ? shownText(rawVersion, MAX_VERSION) : undefined

@@ -207,6 +207,10 @@ opens its projects in sandboxed desktop windows running the server's web client)
   the docs say. Nothing from a connect's answers (host key, secret, new record) is saved before the window opens. A changed
   host key is never a question (refused, fixed only by Edit › Forget the trusted host key). Secrets (password, passphrase,
   cookie) sit beside the cookie in the record, never in `via`, and never in `remote.list`, a log or an event.
+  For a My own tunnel server, every request main makes with the device cookie (title lookup, open check and reopen, machine
+  poll) goes through `RemoteWindows.cleared`: only after the window's current load passed the probe, or a fresh probe passes.
+  The wrong `ccc` on a machine running both a desktop cockpit and a server is named by `isWrongCcc` (remote-status.ts),
+  matched on the CLI's and main's exact texts.
   `remote.*` channels are `no` and answer the local picker only. Machine chips in the sessions strip (design §4.1) carry
   counts only (`GET /api/sessions`, polled by `main/remote/machine-status.ts`) under opaque per-run ids minted by main, never
   the saved server id; "This computer" is a navigation (`?cc-desktop=local`) main cancels, reading nothing else from the URL.

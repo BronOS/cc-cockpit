@@ -351,7 +351,10 @@ The remote command is unchanged from the first version: `exec` still runs it thr
 server, so it is the one fixed POSIX `sh -c` script with every word single-quoted (`remoteCommand`, `shared/remote-servers.ts`:
 `'`, `\`, `!` and control characters refused), which parses the same in sh, bash, zsh, fish and csh. It runs `$CCC`
 when set (the record's `ccc`), else `$HOME/.config/cc-cockpit/bin/ccc`, else `ccc` on PATH, and exits 127 with a known
-line when none exists. Empty stdout is an error ("cc-cockpit is not installed there, or the server is not running");
+line when none exists. A machine running both a desktop cockpit and a server with its own data dir finds the desktop's
+`ccc` first: its words (an older ccc's "web outside a cockpit tab needs --project", an app's "unknown command: web…", a
+failed run with the version-skew warning) and a `server: false` status are named as such, with the fix (Advanced › ccc
+path on the server, `<data dir>/bin/ccc`). Empty stdout is an error ("cc-cockpit is not installed there, or the server is not running");
 only the last stdout line is parsed. Output is capped (64 KiB) and the command has a 20 s deadline.
 
 A re-pair is automatic in link mode. A revoked cookie gives no 401 on the page's first call: `/auth/session` answers
@@ -396,6 +399,10 @@ or turn TLS off: the SSH tunnel encrypts already"). Pinning the certificate's fi
   command, and main retries every 3 s while the window is open, loading the server's page when it answers. An answer
   that is not a cc-cockpit session reply: "something else is listening on 127.0.0.1:7331", no load (the cookie is not
   sent to it).
+- **Main's own requests with the cookie** (the title's project-name lookup, the open check and its reopen POST, the
+  machine poll, a session check) follow the same rule (`RemoteWindows.cleared`): one goes only once the window's current
+  load passed the probe, or after a fresh probe that passes; otherwise it is skipped (the title stays the server's name).
+  The title lookup waits for the load's landing and makes no probe of its own; the machine poll probes before each ask.
 - **Re-pair** is not automatic (the app cannot run commands there): a revoked cookie shows the server's sign-in page
   and the picker's Edit opens the form with the add-device command and the link field; Edit takes an optional link
   and signs in with its token.
