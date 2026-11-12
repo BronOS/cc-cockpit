@@ -114,7 +114,15 @@ class FakeWebContents extends FakeEmitter {
   isFocused(): boolean {
     return this.focused
   }
+  /** Set from the window's `webPreferences.offscreen`, as Electron does. */
+  offscreen = false
+  readonly id = ++nextId
+  isOffscreen(): boolean {
+    return this.offscreen
+  }
 }
+
+let nextId = 100
 
 const state = {
   refuse: false,
@@ -137,8 +145,16 @@ class FakeOffscreenWindow extends FakeEmitter {
   readonly sizes: Array<[number, number]> = []
   readonly forbidden: string[] = []
   destroyCount = 0
+  readonly id = ++nextId
   constructor(readonly options: { show?: boolean; webPreferences: Record<string, unknown> }) {
     super()
+    this.webContents.offscreen = options.webPreferences?.offscreen === true
+  }
+  isVisible(): boolean {
+    return false
+  }
+  isFocused(): boolean {
+    return false
   }
   setContentSize(w: number, h: number): void {
     this.sizes.push([w, h])
@@ -191,7 +207,9 @@ vi.mock('electron', () => ({
 
 // vi.mock is hoisted above the fakes it names; its factory runs at the first import of
 // 'electron' (below), when they exist.
-const { OffscreenWebviewFactory, OFFSCREEN_INITIAL_SIZE, OFFSCREEN_MAX_SIDE } = await import('../../src/main/webview/electron-offscreen-webview')
+const { isOffscreenWindow, OffscreenWebviewFactory, OFFSCREEN_INITIAL_SIZE, OFFSCREEN_MAX_SIDE } = await import(
+  '../../src/main/webview/electron-offscreen-webview'
+)
 const { ElectronWebviewFactory } = await import('../../src/main/webview/electron-webview')
 const { PRINT_DISABLED_SOURCE } = await import('../../src/main/webview/webview-hardening')
 
@@ -518,5 +536,68 @@ describe('OffscreenWebviewFactory', () => {
     const { wc, ev } = make()
     wc.emit('render-process-gone', {}, { reason: 'crashed' })
     expect(ev.log).toEqual(['gone'])
+  })
+
+  // main's app-wide window events see these windows too (plan Task 2): index.ts skips them by this.
+  it('tells its own windows from every other window, a destroyed one included', () => {
+    const { win } = make()
+    expect(isOffscreenWindow(win as never)).toBe(true)
+    // A project window, the picker or the hidden page: an ordinary BrowserWindow.
+    const ordinary = new FakeOffscreenWindow({ webPreferences: {} })
+    expect(isOffscreenWindow(ordinary as never)).toBe(false)
+    win.destroy()
+    expect(isOffscreenWindow(win as never)).toBe(false)
+  })
+
+  it('lists its live windows (never shown or focused) and forgets each one that goes', () => {
+    const factory = new OffscreenWebviewFactory(serve, () => {})
+    const a = factory.create(1, 'webview-P1-a.one', events())
+    const winA = state.windows.at(-1) as FakeOffscreenWindow
+    factory.create(1, 'webview-P1-a.two', events())
+    const winB = state.windows.at(-1) as FakeOffscreenWindow
+    a.setVisible(true)
+    expect(factory.describe()).toEqual([
+      {
+        windowId: winA.id,
+        webContentsId: winA.webContents.id,
+        ownerWindowId: 1,
+        visible: false,
+        focused: false,
+        painting: true,
+        ...OFFSCREEN_INITIAL_SIZE
+      },
+      {
+        windowId: winB.id,
+        webContentsId: winB.webContents.id,
+        ownerWindowId: 1,
+        visible: false,
+        focused: false,
+        painting: false,
+        ...OFFSCREEN_INITIAL_SIZE
+      }
+    ])
+    a.destroy()
+    expect(factory.describe().map((v) => v.windowId)).toEqual([winB.id])
+    winB.destroy()
+    expect(factory.describe()).toEqual([])
+  })
+
+  it('destroyAll (main\'s before-quit) destroys every live window, without a close, and each tells the manager', () => {
+    const factory = new OffscreenWebviewFactory(serve, () => {})
+    const evA = events()
+    const evB = events()
+    factory.create(1, 'webview-P1-a.one', evA)
+    const winA = state.windows.at(-1) as FakeOffscreenWindow
+    const b = factory.create(1, 'webview-P1-a.two', evB)
+    const winB = state.windows.at(-1) as FakeOffscreenWindow
+    factory.destroyAll()
+    expect([winA.destroyCount, winB.destroyCount]).toEqual([1, 1])
+    expect([evA.log, evB.log]).toEqual([['gone'], ['gone']])
+    expect(factory.describe()).toEqual([])
+    expect((state.owner as FakeOwner).listeners.get('closed')).toEqual([])
+    // The view's own destroy afterwards, and a second destroyAll, are no-ops.
+    b.destroy()
+    factory.destroyAll()
+    expect(winB.destroyCount).toBe(1)
   })
 })

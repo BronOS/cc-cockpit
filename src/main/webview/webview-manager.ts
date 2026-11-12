@@ -38,17 +38,30 @@
 // Who may drive a view is decided by the caller (host-api.ts): the panel must be one of the asking
 // host's plugin's declared webview panels, in the host's own window. Here the owner names the view.
 //
-// Server mode (design-web.md §9.9): no view at all, whoever asks. The refusal sits here, where a
-// view is made, not only at ctx.webview's open call: the hidden page's layout is the browsers'
-// layout (§5.1), so a webview panel open in a browser is "open" on the hidden page too, and the
-// bundled browser plugin navigates at activation. A view made there would be a whole Chromium page
-// on the server nobody can see; the browsers draw the panel's placeholder instead.
+// Server mode (design-web-browser.md §3.1, §5): main picks the off-screen factory by the same
+// `server` flag (index.ts, decided once at start), and every decision above stays here unchanged;
+// what differs is decided here too, by `deps.server`, never by a payload:
+//   limits            at most MAX_SERVER_VIEWS_PER_WINDOW views per project window and
+//                     MAX_SERVER_VIEWS in the app: each is a whole Chromium page on the server; a
+//                     navigate that would make one more is refused with the reason (not a load
+//                     error, so host-api.ts refunds its navigate charge)
+//   deferred loads    a navigate for a panel that has no view yet and that no browser shows (the
+//                     browser plugin's `home` at activation, in every open project) only records
+//                     the target: it is loaded when a browser first shows the panel (setViewed), so
+//                     an idle project holds no page and cannot use up the app's views. A navigate
+//                     the caller needs the outcome of (`now`: one made while a `ccc` command of the
+//                     plugin runs, `ccc browser open` above all) loads at once, viewer or not.
+//   placements        the window's own page is the hidden page, which has the panels the browsers
+//                     open in the shared layout and reports them like a desktop page: its reports
+//                     mean nothing for a page on no screen and are ignored (the browsers' size and
+//                     visibility reports are Task 4's, plan 20261111-streamed-webviews.md)
+//   keyboard          never handed back: the hidden page is never focused (WindowManager {server})
 import { randomBytes } from 'node:crypto'
 import { errorText } from '../../shared/error-text'
 import { splitChord } from '../../shared/keys'
 import { MAX_URL_LENGTH, overlayUrlOf, type ViewBounds } from '../overlays/overlay-manager'
 import { PREVIEW_SCHEME, PREVIEW_TOKEN_PATTERN } from './preview-protocol'
-import { defaultTempRoots, resolveWebviewTarget } from './webview-target'
+import { defaultTempRoots, resolveWebviewTarget, type WebviewTarget } from './webview-target'
 import { warnLog } from '../warn-log'
 
 /**
@@ -209,12 +222,31 @@ export interface WebviewManagerDeps {
   /** Clock of the window.open budget (tests pin it); default Date.now. */
   now?(): number
   log?: (message: string) => void
-  /** main's server flag (server-mode.ts): true refuses every navigate, so no view is ever made. */
+  /**
+   * main's server flag (server-mode.ts): the views are off-screen ones, so the limits, the deferred
+   * loads, the ignored page placements and the keyboard rule of the top of the file apply.
+   */
   server?: boolean
 }
 
-/** What a navigate gets in server mode (the browser plugin's `ccc browser open` passes it on). */
-export const WEBVIEW_SERVER_REFUSAL = 'webview.navigate: web views are not available in server mode'
+/** Off-screen views at once in one project window, in server mode (design-web-browser.md §5). */
+export const MAX_SERVER_VIEWS_PER_WINDOW = 4
+/** Off-screen views at once in the whole app, in server mode (design-web-browser.md §5). */
+export const MAX_SERVER_VIEWS = 12
+
+/** What a navigate past the server-mode limits gets (the browser plugin's `ccc browser open` prints it). */
+export const WEBVIEW_LIMIT_REFUSAL =
+  `webview.navigate: too many web views open (server mode allows ${MAX_SERVER_VIEWS_PER_WINDOW} per project window ` +
+  `and ${MAX_SERVER_VIEWS} in all); turn off a plugin that shows one, or close a project`
+
+/** How a navigate is to load (host-api.ts decides it from main's own state, never the plugin's payload). */
+export interface NavigateOptions {
+  /**
+   * The caller waits for the outcome (a `ccc` command of the plugin is running): load at once even
+   * in server mode with no browser showing the panel. Ignored on the desktop, which always does.
+   */
+  now?: boolean
+}
 
 /** The session partition of a plugin's webviews in a project: in memory, shared with nothing else. */
 export function webviewPartition(projectId: string, pluginId: string): string {
@@ -239,6 +271,13 @@ interface ViewRecord {
   appliedVisible?: boolean
   /** The main frame's last load failed (see WebviewPage.error); cleared when a page commits. */
   loadError?: { url: string; error: string }
+}
+
+/** A navigate recorded for a panel nobody shows yet (server mode, see the top of the file). */
+interface DeferredLoad {
+  owner: WebviewOwner
+  resolved: WebviewTarget
+  onNavigate?: (page: WebviewPage) => void
 }
 
 function keyOf(windowId: number, pluginId: string, panelId: string): string {
@@ -278,6 +317,13 @@ export class WebviewManager {
    * focused then: handed back on windowFocused, unless the user is in a showing view by then.
    */
   private readonly focusDue = new Set<number>()
+  /**
+   * Server mode: per panel with no view yet, the last navigate nobody could see load (the browser
+   * plugin's `home`); loaded by setViewed. Newest wins (navSeq/navLoaded order them as loads).
+   */
+  private readonly deferred = new Map<string, DeferredLoad>()
+  /** Server mode: the panels at least one browser view shows now (setViewed, driven by Task 4). */
+  private readonly viewed = new Set<string>()
   private readonly log: (message: string) => void
 
   constructor(private readonly deps: WebviewManagerDeps) {
@@ -289,10 +335,17 @@ export class WebviewManager {
    * superseded by a newer navigation, or LOAD_WAIT_MS went by (a slow page); rejects with a
    * WebviewLoadError when it failed to load first. A failed page is an empty one at its URL
    * (Electron has no error page): current() carries the error, the toolbar shows it.
+   *
+   * Server mode: past the view limits it rejects with WEBVIEW_LIMIT_REFUSAL; for a panel with no
+   * view that no browser shows it records the target and resolves (the load waits for setViewed),
+   * unless `options.now`. The target is resolved first either way, so a refused one says so now.
    */
-  async navigate(owner: WebviewOwner, target: unknown, onNavigate?: (page: WebviewPage) => void): Promise<void> {
-    // Before the target is resolved: nothing of the request is looked at, not even the file system.
-    if (this.deps.server === true) throw new Error(WEBVIEW_SERVER_REFUSAL)
+  async navigate(
+    owner: WebviewOwner,
+    target: unknown,
+    onNavigate?: (page: WebviewPage) => void,
+    options: NavigateOptions = {}
+  ): Promise<void> {
     const gen = this.generation(owner.windowId, owner.pluginId)
     const seqKey = keyOf(owner.windowId, owner.pluginId, owner.panelId)
     const seq = (this.navSeq.get(seqKey) ?? 0) + 1
@@ -305,10 +358,20 @@ export class WebviewManager {
     // started later but not loaded yet will load over this one if it resolves, or leave this one
     // in place if it is refused.
     if (seq < (this.navLoaded.get(seqKey) ?? 0)) return
-    this.navLoaded.set(seqKey, seq)
+    if (this.defers(seqKey, options)) {
+      // Nothing is made: the newest such navigate is what the first browser to show the panel
+      // loads. Ordered like a load, so an older navigate still resolving cannot replace it.
+      this.navLoaded.set(seqKey, seq)
+      this.deferred.set(seqKey, { owner: { ...owner }, resolved, ...(onNavigate ? { onNavigate } : {}) })
+      return
+    }
+    // Made (or refused by the limits) before the order is taken: a refused one cancels nothing.
     const rec = this.recordFor(owner)
+    this.navLoaded.set(seqKey, seq)
+    // A load now supersedes whatever an earlier navigate left for the first viewer.
+    this.deferred.delete(seqKey)
     if (onNavigate) rec.onNavigate = onNavigate
-    const url = resolved.kind === 'url' ? resolved.url : this.fileUrl(rec, resolved.folder, resolved.name)
+    const url = this.urlOf(rec, resolved)
     const error = await settled(rec.view.load(url), LOAD_WAIT_MS)
     if (error !== undefined) {
       const shown = resolved.kind === 'url' ? resolved.url : `${resolved.folder}/${resolved.name}`
@@ -353,6 +416,52 @@ export class WebviewManager {
     this.deps.focusShell?.(windowId)
   }
 
+  /**
+   * Server mode: whether any browser view shows the panel now. The hook Task 4's viewer tracking
+   * drives (plan 20261111-streamed-webviews.md); until it does, nobody shows any panel, so a
+   * deferred navigate waits and only `now` navigates load. The first viewer of a panel that has a
+   * deferred navigate loads it (its outcome goes to current(), onNavigate and the toolbar: nobody
+   * awaits it). Losing the last viewer changes nothing here yet; hiding is Task 4's.
+   */
+  setViewed(windowId: number, pluginId: string, panelId: string, viewed: boolean): void {
+    const key = keyOf(windowId, pluginId, panelId)
+    if (!viewed) {
+      this.viewed.delete(key)
+      return
+    }
+    if (this.viewed.has(key) || !this.deps.isWindowOpen(windowId)) return
+    this.viewed.add(key)
+    const pending = this.deferred.get(key)
+    if (!pending) return
+    this.deferred.delete(key)
+    let rec: ViewRecord
+    try {
+      rec = this.recordFor(pending.owner)
+    } catch (err) {
+      // Past the limits (or the window went under it): the toolbar says why, and the target stays
+      // for the next time a browser shows the panel, unless a newer navigate took its place.
+      this.log(`webview: a deferred load did not start: ${errorText(err)}`)
+      if (!this.deferred.has(key)) this.deferred.set(key, pending)
+      this.tellWindow(pending.owner, { url: '', title: '', error: cleanError(errorText(err)) })
+      return
+    }
+    if (pending.onNavigate) rec.onNavigate = pending.onNavigate
+    let url: string
+    try {
+      url = this.urlOf(rec, pending.resolved)
+    } catch (err) {
+      this.log(`webview: a deferred load did not start: ${errorText(err)}`)
+      return
+    }
+    // A failure is recorded by loadFailed (current(), the toolbar); nothing waits on the promise.
+    rec.view.load(url).catch(() => undefined)
+  }
+
+  /** Whether a navigate is waiting for the panel's first viewer (server mode; tests). */
+  hasDeferred(windowId: number, pluginId: string, panelId: string): boolean {
+    return this.deferred.has(keyOf(windowId, pluginId, panelId))
+  }
+
   /** Whether the panel has a view now (tests, Task 8's toolbar state). */
   has(windowId: number, pluginId: string, panelId: string): boolean {
     return this.records.has(keyOf(windowId, pluginId, panelId))
@@ -363,6 +472,9 @@ export class WebviewManager {
    * by the caller to come from `windowId`). Applied now when the view exists, kept for it otherwise.
    */
   setPlacement(windowId: number, pluginId: string, panelId: string, placement: WebviewPlacement): void {
+    // Server mode: the window's page is the hidden page (see the top of the file); an off-screen
+    // view would otherwise paint, at the hidden page's size, for nobody.
+    if (this.deps.server === true) return
     const key = keyOf(windowId, pluginId, panelId)
     const clean: WebviewPlacement = { bounds: cleanBounds(placement.bounds), visible: placement.visible === true }
     this.placements.set(key, clean)
@@ -409,7 +521,8 @@ export class WebviewManager {
     // the layout, so a stale visible:true would show the next view at the old bounds, panel closed.
     const prefix = `${windowId}\0${pluginId}\0`
     for (const key of [...this.placements.keys()]) if (key.startsWith(prefix)) this.placements.delete(key)
-    for (const map of [this.navSeq, this.navLoaded]) for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key)
+    for (const map of [this.navSeq, this.navLoaded, this.deferred]) for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key)
+    for (const key of [...this.viewed]) if (key.startsWith(prefix)) this.viewed.delete(key)
   }
 
   /** The window closed: every view in it goes, with its tokens and placements. */
@@ -423,7 +536,8 @@ export class WebviewManager {
     const prefix = `${windowId}\0`
     for (const key of [...this.placements.keys()]) if (key.startsWith(prefix)) this.placements.delete(key)
     for (const key of [...this.generations.keys()]) if (key.startsWith(prefix)) this.generations.delete(key)
-    for (const map of [this.navSeq, this.navLoaded]) for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key)
+    for (const map of [this.navSeq, this.navLoaded, this.deferred]) for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key)
+    for (const key of [...this.viewed]) if (key.startsWith(prefix)) this.viewed.delete(key)
     this.covered.delete(windowId)
     this.focusDue.delete(windowId)
   }
@@ -451,13 +565,31 @@ export class WebviewManager {
     return rec && rec.owner.projectId === owner.projectId ? rec : undefined
   }
 
+  /**
+   * Server mode: a navigate for `key` only records its target (see the top of the file): the
+   * panel has no view yet, no browser shows it, and the caller does not wait for the outcome.
+   */
+  private defers(key: string, options: NavigateOptions): boolean {
+    return this.deps.server === true && options.now !== true && !this.records.has(key) && !this.viewed.has(key)
+  }
+
+  private urlOf(rec: ViewRecord, resolved: WebviewTarget): string {
+    return resolved.kind === 'url' ? resolved.url : this.fileUrl(rec, resolved.folder, resolved.name)
+  }
+
   private recordFor(owner: WebviewOwner): ViewRecord {
-    // The one place a view is made: a later caller that skips navigate's check still makes none.
-    if (this.deps.server === true) throw new Error(WEBVIEW_SERVER_REFUSAL)
     const key = keyOf(owner.windowId, owner.pluginId, owner.panelId)
     const existing = this.records.get(key)
     if (existing && existing.owner.projectId === owner.projectId) return existing
     if (existing) this.drop(key, existing)
+    // The one place a view is made, so no path skips the limits. Counted from the records, which
+    // a view leaves however it goes (destroyPlugin, closeWindow, its page gone: the off-screen
+    // adapter also destroys its window when the project window closes, and `gone` drops it).
+    if (this.deps.server === true) {
+      let inWindow = 0
+      for (const r of this.records.values()) if (r.owner.windowId === owner.windowId) inWindow++
+      if (inWindow >= MAX_SERVER_VIEWS_PER_WINDOW || this.records.size >= MAX_SERVER_VIEWS) throw new Error(WEBVIEW_LIMIT_REFUSAL)
+    }
     const partition = webviewPartition(owner.projectId, owner.pluginId)
     // The events close over a holder filled once the view exists: an event during `create` (none
     // is expected) finds no record and is refused or ignored.
@@ -689,6 +821,9 @@ export class WebviewManager {
 
   /** focusShell now in a focused window, else once it is focused again (isWindowFocused). */
   private handBack(windowId: number): void {
+    // Server mode: the window's page is the hidden page, which nothing focuses (WindowManager
+    // {server}); an off-screen view never has the keyboard to give back anyway.
+    if (this.deps.server === true) return
     let focused: boolean
     try {
       focused = this.deps.isWindowFocused?.(windowId) ?? true

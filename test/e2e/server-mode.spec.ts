@@ -949,27 +949,44 @@ test('server mode: a new device and a newer release are stdout lines, listed in 
   }
 })
 
-// design-web.md §9.9: no WebContentsView in server mode, whoever asks. The bundled browser plugin's
-// home page navigate at activation is refused and the plugin stays active; the browser shows the
-// panel's placeholder while the hidden page has the same panel open in the shared layout; `ccc
-// browser open` and `ccc overlay --url` from a Claude tab say why. Main made no native view at all.
-test('server mode: no web view or url overlay is made; the Browser panel is a placeholder and the browser plugin is active', async () => {
+// design-web-browser.md §3.1, §5 (streamed web views, plan Task 2): in server mode a webview panel's
+// page is an off-screen BrowserWindow, never a view on any screen. The bundled browser plugin's home
+// page at activation is only recorded (no browser shows the panel yet, so no Chromium page is made)
+// and the plugin is active; `ccc browser open <file>` from a Claude tab loads at once (the CLI waits
+// for the outcome), off-screen, never shown or focused and never taken for a project window; a page
+// calling alert() leaves main alive (dialogs disabled). Until the browsers draw the stream (Task 6)
+// the Browser panel is the placeholder; url overlays stay refused.
+test('server mode: a web view is an off-screen page; the home page waits for a viewer; alert() leaves main alive', async () => {
   test.setTimeout(120_000)
   server = await launchServer({
     env: { CC_COCKPIT_NO_BUNDLED: '' },
     settings: { pluginSettings: { 'cockpit.browser': { home: 'http://127.0.0.1:9/' } } }
   })
   const { cockpit } = server
-  const none = { urlOverlays: 0, webviews: 0 }
+  writeFileSync(join(cockpit.projectDir, 'page.html'), '<!doctype html><title>Server page</title><p>served off-screen</p>')
+  writeFileSync(
+    join(cockpit.projectDir, 'alert.html'),
+    '<!doctype html><title>Alert page</title><script>alert("hi"); confirm("sure?"); document.title = "after alert"</script>'
+  )
+  const none = { urlOverlays: 0, webviews: 0, offscreenWebviews: 0 }
   await expect
     .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
       timeout: 20_000
     })
     .toBe('active')
-  // Its home page was asked for at activation and refused (ctx.log, the plugin's own file).
-  const pluginLog = join(cockpit.dataDir, 'logs', 'cockpit.browser.log')
-  await expect.poll(() => (existsSync(pluginLog) ? readFileSync(pluginLog, 'utf8') : ''), { timeout: 10_000 }).toContain('not available in server mode')
-  expect(await cockpit.hook('nativeViewsMade')).toEqual(none)
+  /** Every view main placed on a window (none in server mode) and every off-screen page, read from Electron. */
+  const electronViews = () =>
+    cockpit.app.evaluate(({ BrowserWindow, WebContentsView, webContents }) => ({
+      // A window's own page aside: a url overlay's or a desktop webview panel's view.
+      placed: BrowserWindow.getAllWindows().reduce(
+        (n, w) => n + w.contentView.children.filter((c) => c instanceof WebContentsView && c.webContents !== w.webContents).length,
+        0
+      ),
+      offscreen: webContents
+        .getAllWebContents()
+        .filter((w) => !w.isDestroyed() && w.isOffscreen())
+        .map((w) => ({ url: w.getURL(), title: w.getTitle(), loading: w.isLoading() }))
+    }))
   const browser = await openBrowser(`${server.origin}/`)
   try {
     const { page } = browser
@@ -977,24 +994,53 @@ test('server mode: no web view or url overlay is made; the Browser panel is a pl
     const section = page.locator('section.panel[aria-label="Browser"]')
     if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
     await expect(section).toBeVisible({ timeout: 15_000 })
+    // The placeholder until Task 6 draws the stream.
     await expect(section.getByRole('status')).toHaveText('Browser: not available in server mode.')
-    // The layout is shared: the hidden page has the panel open too, and reports its placement.
+    // The layout is shared: the hidden page has the panel open too, and its reports change nothing.
     await expect(cockpit.page.locator('section.panel[aria-label="Browser"]')).toBeVisible({ timeout: 15_000 })
+    // The home navigate at activation was recorded, not loaded: no page, nothing to warn about.
+    expect(await cockpit.hook('nativeViewsMade')).toEqual(none)
+    expect((await electronViews()).offscreen).toEqual([])
+    const pluginLog = join(cockpit.dataDir, 'logs', 'cockpit.browser.log')
+    expect(existsSync(pluginLog) ? readFileSync(pluginLog, 'utf8') : '').not.toContain('home page:')
 
     await page.getByRole('button', { name: 'New tab' }).click()
     await page.getByRole('menuitem', { name: 'Claude' }).click()
     await browser.waitForTerminalText('FAKE-CLAUDE banner')
     await page.locator('.terminal-view:not([hidden]) .xterm').click()
-    await page.keyboard.type('/ccc browser open http://127.0.0.1:9/')
+    await page.keyboard.type('/ccc browser open page.html')
     await page.keyboard.press('Enter')
-    await browser.waitForTerminalText('FAKE-CLAUDE ccc exit=1 out="" err="webview.navigate: web views are not available in server mode\\n"')
+    await browser.waitForTerminalText('FAKE-CLAUDE ccc exit=0 out="ok\\n" err=""')
+    expect(await cockpit.hook('nativeViewsMade')).toEqual({ ...none, offscreenWebviews: 1 })
+    await expect
+      .poll(async () => (await electronViews()).offscreen)
+      .toEqual([{ url: expect.stringMatching(/^cc-preview:\/\/t[0-9a-f]+\/page\.html$/), title: 'Server page', loading: false }])
+    expect((await electronViews()).placed).toBe(0)
+    // Never shown or focused, not painting (no browser is a viewer before Task 4), and nothing main
+    // takes for a project window or a page that may send it IPC.
+    expect(await cockpit.hook('offscreenWebviews')).toEqual([
+      expect.objectContaining({ visible: false, focused: false, painting: false, projectWindow: false, sender: null })
+    ])
+    await page.keyboard.type('/ccc browser url')
+    await page.keyboard.press('Enter')
+    await browser.waitForTerminalText(/FAKE-CLAUDE ccc exit=0 out="cc-preview:\/\/t[0-9a-f]+\/page\.html\\tServer page\\n"/)
+
+    // alert() and confirm() return at once in an off-screen page (disableDialogs): main lives, the
+    // page goes on to set its title, the same view is reused.
+    await page.keyboard.type('/ccc browser open alert.html')
+    await page.keyboard.press('Enter')
+    const oks = async (): Promise<number> => (await browser.terminalText()).replaceAll('\n', '').split('FAKE-CLAUDE ccc exit=0 out="ok\\n"').length - 1
+    await expect.poll(oks).toBe(2)
+    await expect.poll(async () => (await electronViews()).offscreen.map((v) => v.title)).toEqual(['after alert'])
+    expect(await cockpit.hook('nativeViewsMade')).toEqual({ ...none, offscreenWebviews: 1 })
+    await expectMainAlive(server)
+
     await page.keyboard.type('/ccc overlay --url https://example.com/')
     await page.keyboard.press('Enter')
     await browser.waitForTerminalText('FAKE-CLAUDE ccc exit=1 out="" err="ccc: overlay: url overlays are not available in server mode\\n"')
-
-    expect(await cockpit.hook('nativeViewsMade')).toEqual(none)
     expect(await cockpit.hook<unknown[]>('overlays', cockpit.projectDir)).toEqual([])
     expect((await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state).toBe('active')
+    expect((await electronViews()).placed).toBe(0)
     await expectMainAlive(server)
   } finally {
     await browser.close()

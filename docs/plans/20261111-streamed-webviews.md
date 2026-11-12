@@ -154,24 +154,55 @@ External review: sol / high
 
 **Files:**
 - Modify: `src/main/webview/webview-manager.ts`
+- Modify: `src/main/webview/electron-offscreen-webview.ts`
 - Modify: `src/main/index.ts`
+- Modify: `src/main/plugins/host-api.ts`
+- Modify: `src/main/plugins/host-manager.ts`
 - Modify: `scripts/server-mode-smoke.mjs`
 - Modify: `test/unit/webview-manager.test.ts`
 - Modify: `test/unit/browser-plugin.test.ts`
 - Modify: `test/e2e/server-mode.spec.ts`
+- Modify: `test/e2e/webview-panel.spec.ts`
+- Modify: `test/unit/electron-offscreen-webview.test.ts`
 
-- [ ] replace the server-mode refusal with the factory choice in `index.ts` by `server` (never a payload); no `chord`
+- [x] replace the server-mode refusal with the factory choice in `index.ts` by `server` (never a payload); no `chord`
       dependency in server mode; skip `webviews.resetWindow` on the hidden page's `did-navigate` under `server`
-- [ ] enforce 4 off-screen views per window and 12 per app (a navigate past it rejects with a clear reason); a navigate
+- [x] enforce 4 off-screen views per window and 12 per app (a navigate past it rejects with a clear reason); a navigate
       with no viewer records the target and loads it when a browser first shows the panel (the browser plugin's `home`
       at activation), except `ccc browser open`, which loads at once (the CLI needs the result)
-- [ ] keep `onNavigate`, tokens, navigation rules and `window.open` (→ link notice in server mode) unchanged
-- [ ] update the tests that encode today's refusal (`server-mode.spec.ts` ~955-995, `browser-plugin.test.ts` ~183) to
+- [x] keep `onNavigate`, tokens, navigation rules and `window.open` (→ link notice in server mode) unchanged
+- [x] update the tests that encode today's refusal (`server-mode.spec.ts` ~955-995, `browser-plugin.test.ts` ~183) to
       the new behaviour; the smoke script opens a webview off-screen plus a page calling `alert()` and the spiked
       crash cases, and checks main survives
-- [ ] write unit tests: off-screen factory chosen in server mode, desktop unchanged, limits, deferred load, hidden-page
+- [x] write unit tests: off-screen factory chosen in server mode, desktop unchanged, limits, deferred load, hidden-page
       reload keeps views, no chord path
-- [ ] run tests, the smoke script against `out/` and the server-mode e2e - must pass before next task
+- [x] run tests, the smoke script against `out/` and the server-mode e2e - must pass before next task
+- ➕ "a `ccc` command waits on it" (`now`, `NavigateOptions`): main's own count of the plugin's running `ccc` calls
+      (`HostScope.cliRunning`, from HostManager's `cliInFlight`), read by host-api.ts at the navigate; no SDK or host
+      change, nothing from the payload. A navigate made while one runs loads at once (`ccc browser open`); any other
+      navigate for a panel with no view and no viewer (`home` at activation) is recorded (`hasDeferred`) and resolves.
+      The deferral is a resource rule, not a boundary: a plugin keeping a command open only gets what the limits allow.
+- ➕ the viewer hook for Task 4: `WebviewManager.setViewed(windowId, pluginId, panelId, viewed)`. Nothing calls it yet,
+      so every panel counts as unseen and only `now` navigates (and navigates of a panel that already has a view) load.
+      The first `viewed: true` of a panel loads its deferred target (outcome to `current()`, `onNavigate`, the toolbar;
+      past the limits: logged, the toolbar told the reason, the target kept for the next viewer); `false` only forgets
+      the viewer (hiding, `setVisible(false)`, is Task 4's). Viewers and deferred targets go with destroyPlugin and
+      closeWindow. In server mode `setPlacement` is ignored (only the hidden page sends it) and `handBack` never runs,
+      so an off-screen view stays `setVisible(false)` (not painting) until Task 4 drives visibility itself.
+- ➕ limits are counted from the manager's records, which a view leaves however it goes (destroyPlugin, closeWindow, its
+      page `gone`, which the adapter's destroy on the project window's `closed` fires); refused with
+      `WEBVIEW_LIMIT_REFUSAL` (a plain error: host-api refunds the navigate charge). Desktop: no limits, no deferral.
+- ➕ off-screen windows in main's window code: `isOffscreenWindow(win)` (the adapter; `webContents.isOffscreen()`,
+      since `browser-window-created` fires inside the constructor) skips them in `browser-window-created` (no overlay
+      chord listener, no `did-navigate` reset) and `browser-window-focus`/`-blur`. Nothing else walks windows in main
+      (WindowManager, ViewRegistry and the quit path use their own tables; `getAllWindows` is banned outside adapters);
+      the `web-contents-created` lock-down still applies (as for desktop views). `before-quit` calls
+      `OffscreenWebviewFactory.destroyAll()` (a blocked page never answers the close Electron's quit asks). Test hooks:
+      `nativeViewsMade` gained `offscreenWebviews` (`webviews` = views placed on a screen, 0 in server mode) and
+      `offscreenWebviews()` lists the live pages with `visible`, `focused`, `painting`, `projectWindow`, `sender`.
+- ➕ the smoke script's trusted-input file chooser cases (a click on a file input, the pickers with a gesture) are run
+      without a gesture (the CLI has no input path); the e2e of Task 7 can drive them with input. The guide
+      (`cli.md`, `api.md`) and the browser skill still say "not available in server mode": Task 10.
 
 ### Task 3: Binary frames on the wire [model: sonnet]
 

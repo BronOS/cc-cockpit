@@ -1120,7 +1120,10 @@ export class HostManager {
               panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id)),
               themes: [...(runnable.find((p) => p.id === s.id)?.themes ?? [])],
               ...(s.sessionsAll === true ? { sessionsAll: true } : {})
-            }))
+            })),
+            // The record's own count (runCli), read at the navigate: in server mode a webview
+            // navigate made while one of the plugin's `ccc` commands runs loads at once.
+            cliRunning: (pluginId) => (rec.cliInFlight.get(pluginId) ?? 0) > 0
           },
           (event, params) => rpc.emit(event, params),
           // The toolbar's requests (type buttons, clicks): `rpc` exists by the time any is made.

@@ -84,6 +84,9 @@ test('a webview panel shows a local page with its css, hides under shell layers 
   await cockpit.waitForTerminalText('FAKE-CLAUDE ccc exit=0 out="ok\\n" err=""')
   await expect.poll(async () => (await viewState(cockpit))?.url).toMatch(/^cc-preview:\/\/t[0-9a-f]+\/index\.html$/)
   expect(await visible(cockpit)).toBe(false)
+  // The desktop's factory: a WebContentsView in the project window, never an off-screen page (server mode's).
+  expect(await cockpit.hook('nativeViewsMade')).toEqual({ urlOverlays: 0, webviews: 1, offscreenWebviews: 0 })
+  expect(await cockpit.hook('offscreenWebviews')).toEqual([])
   // The page rendered with the css next to it (served from the same token).
   expect(await inView<string>(cockpit, 'getComputedStyle(document.body).backgroundColor')).toBe('rgb(1, 2, 3)')
   expect(await inView<string>(cockpit, 'getComputedStyle(document.querySelector(".hello")).color')).toBe('rgb(200, 100, 50)')

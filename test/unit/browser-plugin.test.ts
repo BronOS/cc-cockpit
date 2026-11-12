@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { activate, resolveTarget } from '../../plugins/browser/src/host'
 import { BUNDLED_PLUGINS } from '../../src/main/plugins/bundled'
 import { loadManifest } from '../../src/main/plugins/validate'
+import { WEBVIEW_LIMIT_REFUSAL } from '../../src/main/webview/webview-manager'
 import type { CliHandler } from '../../src/sdk/types'
 
 const REPO = resolve(__dirname, '../..')
@@ -174,13 +175,15 @@ describe('browser host', () => {
     expect(await run('url')).toEqual({ stdout: 'http://localhost:5173/\tfailed to load: ERR_CONNECTION_REFUSED (-102)\n' })
   })
 
-  // design-web.md §9.9: in server mode main makes no view; the plugin must still activate, and its
-  // command passes main's text on so Claude does not send the person to an empty panel.
-  it('server mode: a refused home navigate does not fail activation; open exits 1 with the text and shows nothing', async () => {
+  // design-web-browser.md §5: in server mode main makes at most 4 off-screen views per window and 12
+  // in the app; past that a navigate rejects with the reason. The plugin must still activate when its
+  // home navigate is refused, and its command passes main's text on so Claude can tell the person.
+  // (A home navigate nobody sees is only recorded by main and resolves: the plugin cannot tell.)
+  it('server mode: a refused home navigate does not fail activation; open past the limits exits 1 with the reason and shows nothing', async () => {
     const calls: string[] = []
     const warnings: string[] = []
     let handler: CliHandler | undefined
-    const refusal = 'webview.navigate: web views are not available in server mode'
+    const refusal = WEBVIEW_LIMIT_REFUSAL
     const ctx = {
       settings: { project: {}, app: { home: 'https://example.com/' } },
       log: { info: () => {}, error: () => {}, warn: (...a: unknown[]) => void warnings.push(a.join(' ')) },
@@ -195,7 +198,7 @@ describe('browser host', () => {
     }
     expect(() => activate(ctx as never)).not.toThrow()
     expect(handler).toBeDefined()
-    await expect.poll(() => warnings.join()).toContain('not available in server mode')
+    await expect.poll(() => warnings.join()).toContain('too many web views')
     const run = async (...argv: string[]) => await handler!(argv, { cwd: '/w', stdin: '' } as never)
     expect(await run('open', 'http://localhost:5173/')).toEqual({ stderr: `${refusal}\n`, code: 1 })
     expect(await run('url')).toEqual({ stdout: 'blank\n' })

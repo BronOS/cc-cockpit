@@ -27,6 +27,14 @@
 // instead of SIGTERM, which must quit the same way (status 0, nothing left). The `--server` run (link
 // mode once start wrote it) also signs in through `ccc web add-device` (§9.4): the printed link's
 // `POST /auth/link` answers 200 once and 401 the second time, and a tab's token gets no link.
+// One `--server` run opens a project folder (on argv) and shows web views off-screen
+// (design-web-browser.md §3.1, §2): `ccc --project <dir> browser open` of a local page exits 0 with
+// `ok` (a navigate the CLI waits on loads at once, with no browser showing the panel), then pages
+// that call alert/confirm/prompt, print(), and click a file input and the File System Access
+// pickers (without a user gesture: the trusted-input cases need the browsers' input, a later task),
+// each followed by `ccc browser url` showing the title the page set after the call returned; a
+// refused port is a load error (exit 1). Main must answer `ccc web status` after each, and quit as
+// every run does (status 0, nothing left), off-screen pages and all.
 // Exits 1 on any failure.
 import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
@@ -208,6 +216,68 @@ async function signInWithLink(port, token) {
   return res.status
 }
 
+/** The pages of the web view step: each sets its title once the calls it makes have returned. */
+const WEBVIEW_PAGES = {
+  'page.html': ['<!doctype html><title>Smoke page</title><p>off-screen</p>', 'Smoke page'],
+  'dialogs.html': [
+    '<!doctype html><title>dialogs</title><script>alert("a"); confirm("c"); try { prompt("p") } catch {} document.title = "after dialogs"</script>',
+    'after dialogs'
+  ],
+  'print.html': ['<!doctype html><title>print</title><script>window.print(); document.title = "after print"</script>', 'after print'],
+  'pickers.html': [
+    '<!doctype html><title>pickers</title><input type="file" id="f"><script>' +
+      'document.getElementById("f").click();' +
+      'Promise.allSettled([window.showOpenFilePicker?.(), window.showSaveFilePicker?.(), window.showDirectoryPicker?.()])' +
+      '.then(() => { document.title = "after pickers" })</script>',
+    'after pickers'
+  ]
+}
+
+/**
+ * The web view step (see the top): every page through `ccc browser open`, its title through `ccc
+ * browser url`, a refused port, and `ccc web status` after each. The first open retries while the
+ * project window and the browser plugin come up.
+ */
+async function checkWebviews(dataDir, env, projectDir, failures) {
+  const browser = (args) => ccc(dataDir, env, ['--project', projectDir, 'browser', ...args])
+  const alive = async (after) => {
+    const status = await ccc(dataDir, env, ['web', 'status', '--json'])
+    if (status.code !== 0) failures.push(`ccc web status after ${after}: exit ${status.code}: ${status.stderr.trim()}`)
+  }
+  let first
+  const deadline = Date.now() + START_MS
+  for (;;) {
+    first = await browser(['open', join(projectDir, 'page.html')])
+    if (first.code === 0 || Date.now() > deadline) break
+    await sleep(500)
+  }
+  for (const [name, [, title]] of Object.entries(WEBVIEW_PAGES)) {
+    const open = name === 'page.html' ? first : await browser(['open', join(projectDir, name)])
+    if (open.code !== 0 || open.stdout !== 'ok\n') {
+      failures.push(`ccc browser open ${name}: exit ${open.code}: ${open.stdout}${open.stderr.trim()}`)
+      continue
+    }
+    // The title the page set after its calls returned (a load resolves before a slow script ends).
+    let url
+    for (let i = 0; i < 50; i++) {
+      url = await browser(['url'])
+      if (url.stdout.endsWith(`\t${title}\n`)) break
+      await sleep(100)
+    }
+    console.log(`   ccc browser open ${name}: ok, url ${JSON.stringify(url.stdout.trim())}`)
+    if (url.code !== 0 || !url.stdout.startsWith('cc-preview://') || !url.stdout.endsWith(`\t${title}\n`)) {
+      failures.push(`ccc browser url after ${name}: exit ${url.code}: ${url.stdout}${url.stderr.trim()}`)
+    }
+    await alive(name)
+  }
+  const refused = await browser(['open', 'http://127.0.0.1:9/'])
+  console.log(`   ccc browser open http://127.0.0.1:9/: exit ${refused.code}: ${refused.stderr.trim()}`)
+  if (refused.code !== 1 || !refused.stderr.includes('did not load')) {
+    failures.push(`ccc browser open of a refused port: exit ${refused.code}: ${refused.stdout}${refused.stderr.trim()}`)
+  }
+  await alive('a refused port')
+}
+
 /** A TCP listener on a random loopback port, so the app's gateway finds it taken. */
 async function takePort() {
   const blocker = createServer(() => {})
@@ -305,11 +375,17 @@ function newRunEnv(port, webAccess) {
   return { base, dataDir, runtime, bus, env }
 }
 
-async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false, addDevice = false }) {
+async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false, addDevice = false, webviews = false }) {
   const port = 20000 + Math.floor(Math.random() * 20000)
   const { base, dataDir, runtime, bus, env } = newRunEnv(port, webAccess)
   if (noExecve) env.CC_COCKPIT_NO_EXECVE = '1'
-  const args = [...command.args, ...(flag ? ['--server'] : [])]
+  // The web view step's project: a folder of its own under HOME (a file directly in HOME is refused).
+  const projectDir = join(env.HOME, 'proj')
+  if (webviews) {
+    mkdirSync(projectDir)
+    for (const [file, [html]] of Object.entries(WEBVIEW_PAGES)) writeFileSync(join(projectDir, file), html)
+  }
+  const args = [...command.args, ...(flag ? ['--server'] : []), ...(webviews ? [projectDir] : [])]
   console.log(`\n== ${name}: ${[command.exe, ...args].join(' ')}${underPty ? ' (under a pty)' : ''}`)
   console.log(`   DBUS_SESSION_BUS_ADDRESS=${bus} XDG_RUNTIME_DIR=${runtime}`)
 
@@ -358,6 +434,7 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
     }
     await checkWebStatus(dataDir, env, port, failures)
     if (addDevice) await checkAddDevice(dataDir, env, port, failures)
+    if (webviews) await checkWebviews(dataDir, env, projectDir, failures)
     const termAt = Date.now()
     const how = stopWithCcc ? 'ccc web stop' : 'SIGTERM'
     if (stopWithCcc) {
@@ -414,5 +491,6 @@ const results = [
 if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))
 results.push(await run('--server under a pty, link mode', { flag: true, underPty: true, webAccess: { enabled: true, mode: 'link' } }))
 results.push(await run('--server, stopped with ccc web stop', { flag: true, webAccess: none, stopWithCcc: true }))
+results.push(await run('--server with web views off-screen', { flag: true, webAccess: none, webviews: true }))
 results.push(await runPortTaken())
 process.exit(results.every(Boolean) ? 0 : 1)

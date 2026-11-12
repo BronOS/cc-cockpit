@@ -73,8 +73,9 @@ import { ChimeGate, chimeRinger, Notifier, NotifySounds, PageNoticeBackend, plug
 import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
+import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-offscreen-webview'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
-import { webviewChord, WebviewManager } from './webview/webview-manager'
+import { webviewChord, WebviewManager, type WebviewViewFactory } from './webview/webview-manager'
 import {
   chordOfInput,
   OverlayManager,
@@ -834,8 +835,10 @@ function start(server: boolean): void {
   // with the overlay's own window token (minted by the manager; never a session token: an
   // overlay's program is not a Claude tab) and the socket while main listens on it.
   // Native views main made (url overlays, webview panels), for the test hook `nativeViewsMade`: in
-  // server mode both stay 0 (design-web.md §9.9). Counted at the factories, so no path is missed.
-  const nativeViewsMade = { urlOverlays: 0, webviews: 0 }
+  // server mode `urlOverlays` and `webviews` (views placed on a screen) stay 0 (design-web.md §9.9);
+  // its webview panels are off-screen pages instead, counted apart. Counted at the factories, so no
+  // path is missed.
+  const nativeViewsMade = { urlOverlays: 0, webviews: 0, offscreenWebviews: 0 }
   const urlViewFactory = new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId }))
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
@@ -1008,53 +1011,68 @@ function start(server: boolean): void {
   // requests gets 503s, other projects' and plugins' pages are not affected. Per partition
   // (project x webview plugin), forgotten when the partition's last view goes (partitionClosed).
   const previewBudgets = new PreviewBudgets()
-  const webviewFactory = new ElectronWebviewFactory((partition, url, method) =>
+  const servePreview = (partition: string, url: string, method: string): Promise<Response> =>
     servePreviewRequest(url, method, {
       folderOf: (token) => webviews.previewFolder(partition, token),
       budget: previewBudgets.of(partition),
       log: warnLog
     })
-  )
+  // Server mode (design-web-browser.md §3.1): the same manager over off-screen pages, one hidden
+  // BrowserWindow each, whose frames go to the browsers; chosen by `server`, decided once at start.
+  // The desktop keeps its WebContentsView in the project window.
+  const offscreenWebviews = server ? new OffscreenWebviewFactory(servePreview, warnLog) : undefined
+  const webviewFactory: WebviewViewFactory = offscreenWebviews ?? new ElectronWebviewFactory(servePreview)
   const webviews: WebviewManager = new WebviewManager({
-    // Counted for the test hook `nativeViewsMade` (server mode must make none).
+    // Counted for the test hook `nativeViewsMade` (server mode must place none on a screen).
     views: {
       create: (windowId, partition, events) => {
-        nativeViewsMade.webviews++
-        return webviewFactory.create(windowId, partition, events)
+        const view = webviewFactory.create(windowId, partition, events)
+        if (offscreenWebviews) nativeViewsMade.offscreenWebviews++
+        else nativeViewsMade.webviews++
+        return view
       }
     },
-    // No view at all in server mode, whoever asks (design-web.md §9.9): the browsers show a placeholder.
+    // Off-screen views: their limits, deferred loads and the hidden page's ignored reports are the
+    // manager's (webview-manager.ts, top of the file).
     server,
     partitionClosed: (partition) => previewBudgets.drop(partition),
     // A page's window.open, for the view's window (no browser view asked: a page did).
     openExternal: (url, windowId) => {
       openExternal(url, { windowId }).catch((err: unknown) => console.warn('open external failed', err))
     },
-    chord: (windowId, chord) =>
-      webviewChord(
-        {
-          overlayChord: (w, c) => overlays.handleChord(w, c),
-          commandFor: (w, c) => commandForChord(w, c),
-          shell: (w) => {
-            const win = BrowserWindow.fromId(w)
-            if (!win || win.isDestroyed()) return undefined
-            return { focus: () => win.webContents.focus(), trigger: (id) => sendToWindow(w, 'commands.trigger', { id }) }
+    // Desktop only. Server mode gets neither a chord path nor a keyboard hand-back: shell chords
+    // never reach an off-screen page (a browser's shell keeps them), and both would focus the
+    // hidden page and run a command only it runs (design-web-browser.md §3.1; WindowManager
+    // {server} never focuses it).
+    ...(server
+      ? {}
+      : {
+          chord: (windowId: number, chord: string) =>
+            webviewChord(
+              {
+                overlayChord: (w, c) => overlays.handleChord(w, c),
+                commandFor: (w, c) => commandForChord(w, c),
+                shell: (w) => {
+                  const win = BrowserWindow.fromId(w)
+                  if (!win || win.isDestroyed()) return undefined
+                  return { focus: () => win.webContents.focus(), trigger: (id) => sendToWindow(w, 'commands.trigger', { id }) }
+                }
+              },
+              windowId,
+              chord
+            ),
+          // A hidden view must not keep the keyboard: the shell page takes it back. Only in the focused
+          // window (the manager asks isWindowFocused first): on macOS webContents.focus() also brings
+          // its window to the front, over the project the user is typing in (checked at runtime).
+          focusShell: (windowId: number) => {
+            const win = BrowserWindow.fromId(windowId)
+            if (win && !win.isDestroyed()) win.webContents.focus()
+          },
+          isWindowFocused: (windowId: number) => {
+            const win = BrowserWindow.fromId(windowId)
+            return win !== null && !win.isDestroyed() && win.isFocused()
           }
-        },
-        windowId,
-        chord
-      ),
-    // A hidden view must not keep the keyboard: the shell page takes it back. Only in the focused
-    // window (the manager asks isWindowFocused first): on macOS webContents.focus() also brings
-    // its window to the front, over the project the user is typing in (checked at runtime).
-    focusShell: (windowId) => {
-      const win = BrowserWindow.fromId(windowId)
-      if (win && !win.isDestroyed()) win.webContents.focus()
-    },
-    isWindowFocused: (windowId) => {
-      const win = BrowserWindow.fromId(windowId)
-      return win !== null && !win.isDestroyed() && win.isFocused()
-    },
+        }),
     // The panel's toolbar follows the page (coalesced in the manager like onNavigate).
     pageChanged: (owner, page) =>
       sendToWindow(owner.windowId, 'webviews.navigated', { panelKey: `${owner.pluginId}/${owner.panelId}`, ...page }),
@@ -1077,13 +1095,20 @@ function start(server: boolean): void {
     if (wc.session !== session.defaultSession) lockDownSession(wc.session, NO_APP_PAGE)
   })
   app.on('browser-window-created', (_event, win) => {
+    // A webview panel's off-screen page (server mode) is a BrowserWindow too, but never a project
+    // window, the picker or the hidden page: it has no overlays and no shell page (its own
+    // navigations are the manager's), so neither listener is for it.
+    if (isOffscreenWindow(win)) return
     const windowId = win.id
     win.webContents.on('before-input-event', (event, input) => {
       if (overlays.topKind(windowId) === undefined) return
       if (overlays.handleChord(windowId, chordOfInput(input))) event.preventDefault()
     })
     // The shell page (re)loaded: the placeholders its webview panels reported are gone with it.
-    win.webContents.on('did-navigate', () => webviews.resetWindow(windowId))
+    // Not in server mode: the page is the hidden page, reloaded after a crash or a failed load
+    // (WindowManager {server}), whose reports the manager ignores; a reset would hide every view
+    // and nothing re-reports it (the browsers' reports are separate, design-web-browser.md §3.1).
+    if (!server) win.webContents.on('did-navigate', () => webviews.resetWindow(windowId))
   })
 
   // Zone layout: the project's stored layout reconciled with the panels that exist (core ones now,
@@ -2684,8 +2709,17 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
-          // How many url overlay views and webview panel views main made this run (server mode: none).
+          // How many url overlay views and webview panel views main made this run (server mode: none
+          // on a screen, `offscreenWebviews` counts its off-screen pages).
           nativeViewsMade: () => ({ ...nativeViewsMade }),
+          // Server mode's live off-screen webview pages (none on the desktop), each with whether main
+          // treats it as anything else: a project window of the window manager, or a known sender.
+          offscreenWebviews: () =>
+            (offscreenWebviews?.describe() ?? []).map((v) => ({
+              ...v,
+              projectWindow: windows.projectWindows().some((w) => w.windowId === v.windowId),
+              sender: windows.resolveSender(v.webContentsId)?.kind ?? null
+            })),
           // Crash the renderer of the window showing `projectId` (the hidden page in server mode), as a
           // real crash would: the server-mode e2e checks it is reloaded and the window stays.
           crashPage: (projectId: string) => {
@@ -2924,6 +2958,9 @@ function start(server: boolean): void {
     // Before the windows close and kill the tabs: nothing from here on may overwrite the saved tabs.
     restorer.freeze()
     windows.beginQuit()
+    // Server mode: the off-screen pages go now, without the close Electron's quit would ask each
+    // for (a blocked page never answers one; electron-offscreen-webview.ts destroyAll).
+    offscreenWebviews?.destroyAll()
     // Every browser view is told the app quit (bridge.ts shows it and stops retrying), before the
     // windows close: each would otherwise close its views as "the window was closed". A server's
     // stop (SIGTERM from systemd, `ccc web stop`) is not final: the bridge retries it, so the open
@@ -2981,11 +3018,16 @@ function start(server: boolean): void {
   // leaving, so blur-then-focus and focus-then-blur both end on the right table, and a last
   // window closing (or the app going to the background) falls back to the core one.
   app.on('browser-window-focus', (_event, win) => {
+    // An off-screen webview page is never focused on purpose; should Chromium say so, it is no
+    // project window to refresh the menu for or hand a keyboard back in.
+    if (isOffscreenWindow(win)) return
     appMenu.refresh()
     // A view hidden while the window was in the background hands the keyboard back now.
     webviews.windowFocused(win.id)
   })
-  app.on('browser-window-blur', (_event, win) => appMenu.refresh(win))
+  app.on('browser-window-blur', (_event, win) => {
+    if (!isOffscreenWindow(win)) appMenu.refresh(win)
+  })
 
   app
     .whenReady()

@@ -17,7 +17,9 @@ import {
   OPEN_WINDOW_MS,
   webviewPartition,
   WebviewLoadError,
-  WEBVIEW_SERVER_REFUSAL,
+  MAX_SERVER_VIEWS,
+  MAX_SERVER_VIEWS_PER_WINDOW,
+  WEBVIEW_LIMIT_REFUSAL,
   WebviewManager,
   type WebviewEvents,
   type WebviewManagerDeps,
@@ -966,78 +968,290 @@ describe('HostApi webview requests', () => {
   })
 })
 
-// design-web.md §9.9: no WebContentsView in server mode, whoever asks. The refusal is the manager's,
-// where a view is made: ctx.webview's navigate (the browser plugin's at activation too), and the shell
-// page's channels (webviews.placement / step / current, registerWebviewHandlers passes them straight
-// to these methods), which the hidden page sends for a webview panel the shared layout has open.
-describe('server mode: no web view is made', () => {
+// design-web-browser.md §3.1, §5 (plan 20261111-streamed-webviews.md Task 2): in server mode main
+// gives the manager the off-screen factory (index.ts, by `server`) and the manager's own server rules
+// apply: a navigate nobody sees is recorded until a browser shows the panel (setViewed, the hook
+// Task 4 drives), one the CLI waits on (`now`) loads at once, at most 4 views per window and 12 in
+// the app, the hidden page's placement reports and reloads change nothing, and no keyboard or chord
+// path to the hidden page exists.
+describe('server mode: off-screen views', () => {
   let server: WebviewManager
+  let pages: Array<{ owner: WebviewOwner; page: WebviewPage }>
+  const logs: string[] = []
   beforeEach(() => {
-    server = new WebviewManager({ ...managerDeps, server: true })
+    pages = []
+    logs.length = 0
+    for (let id = 1; id <= 6; id++) openWindows.add(id)
+    // As index.ts wires it in server mode: no chord, no focusShell, no isWindowFocused.
+    const rest: WebviewManagerDeps = { ...managerDeps }
+    delete rest.chord
+    delete rest.focusShell
+    delete rest.isWindowFocused
+    server = new WebviewManager({
+      ...rest,
+      server: true,
+      pageChanged: (owner, page) => void pages.push({ owner, page }),
+      log: (m) => void logs.push(m)
+    })
   })
+  const now = { now: true }
 
-  it('refuses every navigate, a URL and a file alike, and makes no view', async () => {
-    await expect(server.navigate(owner(), 'https://example.com/')).rejects.toThrow(WEBVIEW_SERVER_REFUSAL)
-    await expect(server.navigate(owner(), join(proj, 'mock.html'))).rejects.toThrow(WEBVIEW_SERVER_REFUSAL)
-    // Not a load error: the host refunds the navigate budget for it (host-api.ts).
-    await expect(server.navigate(owner(), 'https://example.com/')).rejects.not.toBeInstanceOf(WebviewLoadError)
+  it('records a navigate no browser shows, makes no view, and loads it when the first browser shows the panel', async () => {
+    const seen: WebviewPage[] = []
+    await server.navigate(owner(), 'https://example.com/', (p) => seen.push(p))
     expect(views).toEqual([])
     expect(server.has(WIN, 'a.one', 'view')).toBe(false)
+    expect(server.hasDeferred(WIN, 'a.one', 'view')).toBe(true)
+    expect(server.current(owner())).toEqual({ url: '', title: '' })
+    // Another panel's viewer loads nothing of this one.
+    server.setViewed(WIN, 'a.one', 'other', true)
+    expect(views).toEqual([])
+    server.setViewed(WIN, 'a.one', 'view', true)
+    expect(views).toHaveLength(1)
+    const view = views[0] as FakeView
+    expect(view.windowId).toBe(WIN)
+    expect(view.loaded).toEqual(['https://example.com/'])
+    expect(server.hasDeferred(WIN, 'a.one', 'view')).toBe(false)
+    // The deferred navigate's listener hears the page.
+    view.page = { url: 'https://example.com/', title: 'Example' }
+    view.events.navigated(true)
+    expect(seen).toEqual([{ url: 'https://example.com/', title: 'Example' }])
+    // A second report of the same viewer, or a new one after it left, loads nothing again.
+    server.setViewed(WIN, 'a.one', 'view', true)
+    server.setViewed(WIN, 'a.one', 'view', false)
+    server.setViewed(WIN, 'a.one', 'view', true)
+    expect(view.loaded).toEqual(['https://example.com/'])
   })
 
-  it("the hidden page's channels for an open webview panel make no view and read an empty page", async () => {
+  it('keeps the newest deferred navigate, resolves a file target at once, and serves it once loaded', async () => {
+    await server.navigate(owner(), 'https://example.com/')
+    await server.navigate(owner(), join(proj, 'mock.html'))
+    // A refused target says so now, and leaves the recorded one in place.
+    await expect(server.navigate(owner(), join(proj, 'missing.html'))).rejects.toThrow()
+    expect(views).toEqual([])
+    server.setViewed(WIN, 'a.one', 'view', true)
+    const loaded = (views[0] as FakeView).loaded
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0]).toMatch(/^cc-preview:\/\/t0+1\/mock\.html$/)
+    expect(server.previewFolder(webviewPartition('P1', 'a.one'), tokenOf(loaded[0] as string))).toBe(proj)
+  })
+
+  it('a deferred load that fails is recorded for current() and the toolbar; nothing awaits it', async () => {
+    nextLoad = () => Promise.reject(new Error('ERR_CONNECTION_REFUSED (-102)'))
+    await server.navigate(owner(), 'http://127.0.0.1:9/')
+    server.setViewed(WIN, 'a.one', 'view', true)
+    const view = views[0] as FakeView
+    view.events.loadFailed('http://127.0.0.1:9/', 'ERR_CONNECTION_REFUSED (-102)')
+    expect(server.current(owner())).toEqual({ url: 'http://127.0.0.1:9/', title: '', error: 'ERR_CONNECTION_REFUSED (-102)' })
+    expect(pages.at(-1)?.page.error).toBe('ERR_CONNECTION_REFUSED (-102)')
+  })
+
+  it('loads at once, viewer or not, when the caller waits (`now`: `ccc browser open`), superseding a deferred one', async () => {
+    await server.navigate(owner(), 'https://home.example/')
+    await server.navigate(owner(), 'https://asked.example/', undefined, now)
+    expect(views).toHaveLength(1)
+    expect((views[0] as FakeView).loaded).toEqual(['https://asked.example/'])
+    expect(server.hasDeferred(WIN, 'a.one', 'view')).toBe(false)
+    // The first viewer later has nothing left to load: the home page does not replace it.
+    server.setViewed(WIN, 'a.one', 'view', true)
+    expect((views[0] as FakeView).loaded).toEqual(['https://asked.example/'])
+    // A failed `now` load still rejects with the error, as on the desktop.
+    nextLoad = () => Promise.reject(new Error('ERR_CONNECTION_REFUSED (-102)'))
+    await expect(server.navigate(owner('second'), 'http://127.0.0.1:9/', undefined, now)).rejects.toBeInstanceOf(WebviewLoadError)
+  })
+
+  it('a panel that has a view, or that a browser shows, loads every navigate at once', async () => {
+    await server.navigate(owner(), 'https://a.example/', undefined, now)
+    await server.navigate(owner(), 'https://b.example/')
+    expect((views[0] as FakeView).loaded).toEqual(['https://a.example/', 'https://b.example/'])
+    server.setViewed(WIN, 'a.one', 'second', true)
+    await server.navigate(owner('second'), 'https://c.example/')
+    expect((views[1] as FakeView).loaded).toEqual(['https://c.example/'])
+  })
+
+  it(`makes at most ${MAX_SERVER_VIEWS_PER_WINDOW} views per window, refused with the reason and not as a load error`, async () => {
+    for (let i = 0; i < MAX_SERVER_VIEWS_PER_WINDOW; i++) await server.navigate(owner(`p${i}`), 'https://example.com/', undefined, now)
+    const past = server.navigate(owner('extra'), 'https://example.com/', undefined, now)
+    await expect(past).rejects.toThrow(WEBVIEW_LIMIT_REFUSAL)
+    await expect(server.navigate(owner('extra'), 'https://example.com/', undefined, now)).rejects.not.toBeInstanceOf(WebviewLoadError)
+    expect(WEBVIEW_LIMIT_REFUSAL).toContain(`${MAX_SERVER_VIEWS_PER_WINDOW} per project window`)
+    expect(views).toHaveLength(MAX_SERVER_VIEWS_PER_WINDOW)
+    // A panel that has its view keeps navigating; another window has room of its own.
+    await server.navigate(owner('p0'), 'https://again.example/')
+    await server.navigate(owner('p0', 'a.one', 8), 'https://example.com/', undefined, now)
+    expect(views).toHaveLength(MAX_SERVER_VIEWS_PER_WINDOW + 1)
+  })
+
+  it(`makes at most ${MAX_SERVER_VIEWS} views in the app`, async () => {
+    const windowsUsed = Math.ceil(MAX_SERVER_VIEWS / MAX_SERVER_VIEWS_PER_WINDOW)
+    let made = 0
+    for (let w = 1; w <= windowsUsed; w++) {
+      for (let i = 0; i < MAX_SERVER_VIEWS_PER_WINDOW && made < MAX_SERVER_VIEWS; i++, made++) {
+        await server.navigate(owner(`p${i}`, 'a.one', w), 'https://example.com/', undefined, now)
+      }
+    }
+    expect(views).toHaveLength(MAX_SERVER_VIEWS)
+    // A window with none of its own is still refused: the app is full.
+    await expect(server.navigate(owner('p0', 'a.one', windowsUsed + 1), 'https://example.com/', undefined, now)).rejects.toThrow(
+      WEBVIEW_LIMIT_REFUSAL
+    )
+  })
+
+  it('frees a slot however a view goes: its page gone (the project window closing takes the off-screen window), its plugin, its window', async () => {
+    for (let i = 0; i < MAX_SERVER_VIEWS_PER_WINDOW; i++) await server.navigate(owner(`p${i}`), 'https://example.com/', undefined, now)
+    await expect(server.navigate(owner('extra'), 'https://example.com/', undefined, now)).rejects.toThrow(WEBVIEW_LIMIT_REFUSAL)
+    // The adapter destroys its window when the project window closes; the page's `destroyed` is `gone`.
+    ;(views[0] as FakeView).events.gone()
+    expect(server.has(WIN, 'a.one', 'p0')).toBe(false)
+    await server.navigate(owner('extra'), 'https://example.com/', undefined, now)
+    expect(server.has(WIN, 'a.one', 'extra')).toBe(true)
+    // gone after the manager's own drop (destroy fires it too) frees nothing twice.
+    ;(views[0] as FakeView).events.gone()
+    await expect(server.navigate(owner('more'), 'https://example.com/', undefined, now)).rejects.toThrow(WEBVIEW_LIMIT_REFUSAL)
+    server.destroyPlugin(WIN, 'a.one')
+    await server.navigate(owner('more'), 'https://example.com/', undefined, now)
+    server.closeWindow(WIN)
+    expect(views.filter((v) => !v.destroyed)).toEqual([])
+    for (let i = 0; i < MAX_SERVER_VIEWS_PER_WINDOW; i++) await server.navigate(owner(`q${i}`, 'a.one', 8), 'https://example.com/', undefined, now)
+  })
+
+  it('a deferred load past the limits makes no view, tells the toolbar why, and keeps the target for the next viewer', async () => {
+    await server.navigate(owner('home'), 'https://home.example/')
+    for (let i = 0; i < MAX_SERVER_VIEWS_PER_WINDOW; i++) await server.navigate(owner(`p${i}`), 'https://example.com/', undefined, now)
+    server.setViewed(WIN, 'a.one', 'home', true)
+    expect(server.has(WIN, 'a.one', 'home')).toBe(false)
+    expect(logs.join()).toContain('too many web views')
+    expect(pages.at(-1)).toEqual({ owner: owner('home'), page: { url: '', title: '', error: WEBVIEW_LIMIT_REFUSAL.slice(0, MAX_LOAD_ERROR_LENGTH) } })
+    expect(server.hasDeferred(WIN, 'a.one', 'home')).toBe(true)
+    // Room again: the next time a browser shows the panel, it loads.
+    server.destroyPlugin(WIN, 'a.one')
+    await server.navigate(owner('home'), 'https://home.example/')
+    server.setViewed(WIN, 'a.one', 'home', false)
+    server.setViewed(WIN, 'a.one', 'home', true)
+    expect(server.has(WIN, 'a.one', 'home')).toBe(true)
+  })
+
+  it('forgets deferred targets and viewers with the plugin and the window', async () => {
+    await server.navigate(owner(), 'https://example.com/')
+    server.destroyPlugin(WIN, 'a.one')
+    expect(server.hasDeferred(WIN, 'a.one', 'view')).toBe(false)
+    server.setViewed(WIN, 'a.one', 'view', true)
+    expect(views).toEqual([])
+    // The viewer went with the plugin: a navigate after it is deferred again.
+    server.setViewed(WIN, 'a.one', 'other', true)
+    server.destroyPlugin(WIN, 'a.one')
+    await server.navigate(owner('other'), 'https://example.com/')
+    expect(server.hasDeferred(WIN, 'a.one', 'other')).toBe(true)
+    server.closeWindow(WIN)
+    expect(server.hasDeferred(WIN, 'a.one', 'other')).toBe(false)
+    // A window that is not open (closed, or never a project window) gets no viewer.
+    openWindows.delete(WIN)
+    server.setViewed(WIN, 'a.one', 'other', true)
+    openWindows.add(WIN)
+    await server.navigate(owner('other'), 'https://example.com/')
+    expect(views).toEqual([])
+  })
+
+  it("ignores the hidden page's placement reports and reloads: views keep their page and never paint for it", async () => {
+    await server.navigate(owner(), 'https://example.com/', undefined, now)
+    const view = views[0] as FakeView
     server.setPlacement(WIN, 'a.one', 'view', { bounds: { x: 0, y: 0, width: 800, height: 600 }, visible: true })
-    server.back(owner())
-    server.forward(owner())
-    server.reload(owner())
-    expect(server.current(owner())).toEqual({ url: '', title: '' })
+    expect(server.isShown(WIN, 'a.one', 'view')).toBe(false)
+    expect(view.visible).toEqual([false])
+    // index.ts does not call resetWindow for the hidden page's did-navigate in server mode; even
+    // if it did, the view stays, with its page.
+    server.resetWindow(WIN)
     server.setWindowCovered(WIN, true)
     server.setWindowCovered(WIN, false)
-    server.resetWindow(WIN)
-    // A navigate after the placement report still makes none.
-    await expect(server.navigate(owner(), 'https://example.com/')).rejects.toThrow(WEBVIEW_SERVER_REFUSAL)
-    expect(views).toEqual([])
-    expect(server.isShown(WIN, 'a.one', 'view')).toBe(false)
+    expect(view.destroyed).toBe(false)
+    expect(view.visible.every((v) => !v)).toBe(true)
+    expect(server.current(owner())).toEqual({ url: 'https://example.com/', title: '' })
   })
 
-  it('the desktop (server false or absent) makes the view as before', async () => {
-    await new WebviewManager({ ...managerDeps, server: false }).navigate(owner(), 'https://example.com/')
-    await manager.navigate(owner('view', 'a.one', 8), 'https://example.com/')
-    expect(views.map((v) => v.windowId)).toEqual([WIN, 8])
+  it('has no chord path and never hands the keyboard to the hidden page', async () => {
+    await server.navigate(owner(), 'https://example.com/', undefined, now)
+    const view = views[0] as FakeView
+    expect(view.events.chord('Ctrl+T')).toBe(false)
+    expect(chords).toEqual([])
+    // Even with a focusShell dep (index.ts passes none in server mode), a view going is no hand-back.
+    const withFocus = new WebviewManager({ ...managerDeps, server: true })
+    await withFocus.navigate(owner(), 'https://example.com/', undefined, now)
+    ;(views[1] as FakeView).focused = true
+    withFocus.destroyPlugin(WIN, 'a.one')
+    withFocus.windowFocused(WIN)
+    expect(refocused).toEqual([])
   })
 
-  it('ctx.webview.navigate through HostApi is refused with the text, never rate limited, and makes no view', async () => {
-    const api = new HostApi(
-      {
-        listSessions: () => [],
-        session: () => undefined,
-        send: () => {
-          throw new Error('unused')
+  it('the desktop (server false or absent) defers nothing and has no view limits', async () => {
+    const desktop = new WebviewManager({ ...managerDeps, server: false })
+    for (let i = 0; i <= MAX_SERVER_VIEWS_PER_WINDOW; i++) await desktop.navigate(owner(`p${i}`), 'https://example.com/')
+    expect(views).toHaveLength(MAX_SERVER_VIEWS_PER_WINDOW + 1)
+    expect(desktop.hasDeferred(WIN, 'a.one', 'p0')).toBe(false)
+    // Its page's placement reports still place the view.
+    desktop.setPlacement(WIN, 'a.one', 'p0', { bounds: { x: 0, y: 0, width: 800, height: 600 }, visible: true })
+    expect(desktop.isShown(WIN, 'a.one', 'p0')).toBe(true)
+  })
+
+  describe('through HostApi', () => {
+    const hostApi = (cliRunning?: () => boolean): HostApi =>
+      new HostApi(
+        {
+          listSessions: () => [],
+          session: () => undefined,
+          send: () => {
+            throw new Error('unused')
+          },
+          onSessionsChange: () => () => {},
+          openTab: async () => {
+            throw new Error('unused')
+          },
+          setBadge: () => true,
+          openOverlay: async () => {
+            throw new Error('unused')
+          },
+          secrets: unusedSecrets,
+          oauth: unusedOAuth,
+          webview: server,
+          log: () => {}
         },
-        onSessionsChange: () => () => {},
-        openTab: async () => {
-          throw new Error('unused')
+        {
+          projectId: 'P1',
+          windowId: WIN,
+          projectDir: proj,
+          plugins: [{ id: 'a.one', dir: proj, panels: ['view', 'p1', 'p2', 'p3', 'p4'], webviewPanels: ['view', 'p1', 'p2', 'p3', 'p4'] }],
+          ...(cliRunning ? { cliRunning } : {})
         },
-        setBadge: () => true,
-        openOverlay: async () => {
-          throw new Error('unused')
-        },
-        secrets: unusedSecrets,
-        oauth: unusedOAuth,
-        webview: server,
-        log: () => {}
-      },
-      { projectId: 'P1', windowId: WIN, projectDir: proj, plugins: [{ id: 'a.one', dir: proj, panels: ['view'], webviewPanels: ['view'] }] },
-      () => {}
-    )
-    const params = { pluginId: 'a.one', panelId: 'view', target: 'https://example.com/' }
-    // Past the budget: each refusal is refunded, so a plugin retrying never sees the rate error.
-    for (let i = 0; i <= MAX_NAVIGATES_PER_WINDOW; i++) {
-      await expect(Promise.resolve().then(() => api.handlers['webview.navigate']!(params))).rejects.toThrow(/not available in server mode/)
-    }
-    expect(await api.handlers['webview.current']!({ pluginId: 'a.one', panelId: 'view' })).toEqual({ url: '', title: '' })
-    expect(views).toEqual([])
-    api.dispose()
+        () => {}
+      )
+    const params = (panelId = 'view') => ({ pluginId: 'a.one', panelId, target: 'https://example.com/' })
+
+    it("a navigate outside a `ccc` command (the browser plugin's home at activation) is deferred", async () => {
+      const api = hostApi(() => false)
+      await api.handlers['webview.navigate']!(params())
+      expect(views).toEqual([])
+      expect(server.hasDeferred(WIN, 'a.one', 'view')).toBe(true)
+      api.dispose()
+    })
+
+    it('a navigate while one of the plugin\'s `ccc` commands runs (`ccc browser open`) loads at once', async () => {
+      let running = true
+      const api = hostApi(() => running)
+      await api.handlers['webview.navigate']!(params())
+      expect((views[0] as FakeView).loaded).toEqual(['https://example.com/'])
+      running = false
+      await api.handlers['webview.navigate']!(params('p1'))
+      expect(views).toHaveLength(1)
+      api.dispose()
+    })
+
+    it('a navigate past the limits is refused with the reason and refunded, so retrying never hits the rate cap', async () => {
+      const api = hostApi(() => true)
+      for (const panel of ['view', 'p1', 'p2', 'p3']) await api.handlers['webview.navigate']!(params(panel))
+      for (let i = 0; i <= MAX_NAVIGATES_PER_WINDOW; i++) {
+        await expect(Promise.resolve().then(() => api.handlers['webview.navigate']!(params('p4')))).rejects.toThrow(WEBVIEW_LIMIT_REFUSAL)
+      }
+      api.dispose()
+    })
   })
 })
 

@@ -531,6 +531,13 @@ export interface HostScope {
   /** The project folder (absolute): the default cwd of a terminal overlay. */
   projectDir: string
   plugins: readonly HostApiPlugin[]
+  /**
+   * Whether a `ccc` command of the plugin is running in this host now (HostManager's count): a
+   * ctx.webview.navigate made meanwhile is one the CLI waits on (`ccc browser open`), so in server
+   * mode it loads at once rather than waiting for a browser to show the panel (webview-manager.ts).
+   * main's own count, never the plugin's word. Absent: none.
+   */
+  cliRunning?(pluginId: string): boolean
 }
 
 /**
@@ -2142,7 +2149,8 @@ export class HostApi {
     const { target } = (params ?? {}) as Record<string, unknown>
     this.webviewPlugins.add(plugin.id)
     try {
-      await this.webview('webview.navigate').navigate(owner, target, (page) => this.navigated(owner, page))
+      const now = this.scope.cliRunning?.(plugin.id) === true
+      await this.webview('webview.navigate').navigate(owner, target, (page) => this.navigated(owner, page), { now })
     } catch (err) {
       // A refused target loaded nothing: a plugin retrying a bad path must not lock itself out. A
       // page that failed to load did load (an empty page, the network asked): it keeps its charge,

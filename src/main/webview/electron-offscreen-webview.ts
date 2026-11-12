@@ -56,6 +56,32 @@ export interface OffscreenWebviewView extends WebviewView {
   invalidate(): void
 }
 
+/** One live off-screen view's window, as the test hook `offscreenWebviews` reports it. */
+export interface OffscreenWindowInfo {
+  /** The off-screen window's own id (never a project window's). */
+  windowId: number
+  /** Its page's WebContents id (main's sender table must not know it). */
+  webContentsId: number
+  /** The project window the view belongs to (in server mode the hidden page's). */
+  ownerWindowId: number
+  visible: boolean
+  focused: boolean
+  painting: boolean
+  width: number
+  height: number
+}
+
+/**
+ * Whether `win` is an off-screen webview window of this adapter. main's app-wide window events
+ * (`browser-window-created`, `browser-window-focus`) see these windows too, and must leave them
+ * alone: one is never a project window, the picker or the hidden page. Read from the page's own
+ * flag rather than a table, since `browser-window-created` fires inside the BrowserWindow
+ * constructor, before create() below can note the new window's id.
+ */
+export function isOffscreenWindow(win: BrowserWindow): boolean {
+  return !win.isDestroyed() && win.webContents.isOffscreen()
+}
+
 /** A side from setBounds: whole pixels, at most OFFSCREEN_MAX_SIDE; undefined for no usable size. */
 function sideOf(n: number): number | undefined {
   if (!Number.isFinite(n) || n < 1) return undefined
@@ -64,6 +90,8 @@ function sideOf(n: number): number | undefined {
 
 export class OffscreenWebviewFactory implements WebviewViewFactory {
   private readonly sessions: WebviewSessions
+  /** The live views' windows (describe, destroyAll); each removes itself on destroy. */
+  private readonly live = new Map<BrowserWindow, { info(): OffscreenWindowInfo; destroy(): void }>()
 
   constructor(
     /** Answer one cc-preview request from `partition`'s session (preview-protocol.ts + the manager's tokens). */
@@ -106,6 +134,7 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       if (destroyed) return
       destroyed = true
       sink = undefined
+      this.live.delete(win)
       if (!owner.isDestroyed()) owner.removeListener('closed', destroy)
       // destroy, not close: a page whose renderer is blocked (a print the portal still holds,
       // spike) never answers a close; destroy frees it at once. `destroyed` on its WebContents
@@ -115,6 +144,18 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
     // An off-screen window is not a child of the project window: if a view were left behind when it
     // closes it would live on unseen, holding a renderer and keeping the app's window count up.
     owner.once('closed', destroy)
+    this.live.set(win, {
+      info: () => ({
+        windowId: win.id,
+        webContentsId: wc.id,
+        ownerWindowId: windowId,
+        visible: win.isVisible(),
+        focused: win.isFocused(),
+        painting,
+        ...size
+      }),
+      destroy
+    })
 
     return {
       ...webviewNavigation(wc),
@@ -151,5 +192,23 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
         if (!wc.isDestroyed()) wc.invalidate()
       }
     }
+  }
+
+  /** The live views' windows, for the test hook `offscreenWebviews` (never shown, never focused). */
+  describe(): OffscreenWindowInfo[] {
+    const out: OffscreenWindowInfo[] = []
+    for (const [win, entry] of this.live) if (!win.isDestroyed()) out.push(entry.info())
+    return out
+  }
+
+  /**
+   * Destroy every live view's window (main's `before-quit`). Electron's own quit closes each window,
+   * and a close waits for the page: one whose renderer is blocked (a cross-site sub-frame's print
+   * held by a desktop portal, the one case the hardening does not cover, design-web-browser.md §2)
+   * would never answer and hold the quit up until systemd's SIGKILL. destroy does not wait. The
+   * manager hears each go (`gone`) as when the page crashed.
+   */
+  destroyAll(): void {
+    for (const entry of [...this.live.values()]) entry.destroy()
   }
 }
