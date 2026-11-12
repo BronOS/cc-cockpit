@@ -418,11 +418,11 @@
 - Modify: `docs/features.md` ("Remote servers"), `docs/design-web.md` (§9 bullets), `README.md`, `CLAUDE.md`
   (Implementation patterns bullet for remote servers)
 
-- [ ] features.md: the three ways in, sign-in options and Remember, the host-key dialog, the config fields read and
+- [x] features.md: the three ways in, sign-in options and Remember, the host-key dialog, the config fields read and
       what is not supported (ProxyJump, FIDO, certificates, 2FA → My own tunnel), the own-tunnel cookie caveat
-- [ ] CLAUDE.md bullet: `ssh2` only in `ssh-client.ts`, no `ssh` spawn, the app owns the listener, host key never a
+- [x] CLAUDE.md bullet: `ssh2` only in `ssh-client.ts`, no `ssh` spawn, the app owns the listener, host key never a
       click-through when changed, secrets never leave main
-- [ ] README bullet adjusted
+- [x] README bullet adjusted
 
 ### Task 9: Verify acceptance criteria [model: sonnet]
 - [ ] verify all requirements from Overview are implemented

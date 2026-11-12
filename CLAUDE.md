@@ -21,9 +21,10 @@ on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/
 Streamed web views (server mode: the Browser and every webview panel rendered off-screen on the server and streamed to
 browsers over the view's WebSocket, one port) are implemented; design in `docs/design-web-browser.md`, plan in
 `docs/plans/completed/20261111-streamed-webviews.md`, user docs in `docs/features.md` ("Server mode" › "The Browser panel").
-Remote servers (the desktop picker connects to a server-mode cockpit over SSH or a Direct link and opens its projects
-in sandboxed desktop windows running the server's web client) are implemented; design in `docs/design-remote-desktop.md`,
-plan in `docs/plans/completed/20261112-remote-desktop.md`, user docs in `docs/features.md` ("Remote servers").
+Remote servers (the desktop picker connects to a server-mode cockpit over built-in SSH, My own tunnel or a Direct link and
+opens its projects in sandboxed desktop windows running the server's web client) are implemented; design in
+`docs/design-remote-desktop.md` (revision 2), plans in `docs/plans/completed/20261112-remote-desktop.md` and
+`docs/plans/20261112-remote-ssh-builtin.md`, user docs in `docs/features.md` ("Remote servers").
 
 ## Commands
 
@@ -44,6 +45,11 @@ plan in `docs/plans/completed/20261112-remote-desktop.md`, user docs in `docs/fe
   `ccc web`, SIGTERM, nothing left; the fallback and a taken port too); with no argument it runs `out/` (build first), with
   a packaged executable it ignores the test env and needs no network. Run it after changing `main/server-mode.ts`,
   `server-start.ts` or the start in `main/index.ts`: the re-exec drops Playwright's inspector, so no e2e covers it.
+- `node scripts/ssh2-electron-check.mjs [executable]`: the built `out/main/ssh-client.js` (ssh2 bundled in, native parts
+  stubbed) under Electron's BoringSSL, which has no chacha20, so a vitest run under Node proves nothing about the ciphers:
+  a handshake, an exec and a `forwardOut` against an in-process ssh2 server; with no argument it runs `out/` as this repo's
+  Electron main (build first, headless on Linux), with a packaged executable it runs that as Node (`ELECTRON_RUN_AS_NODE`);
+  exits 1 on failure. Run it after changing `ssh-client.ts`, the ssh2 version or the bundling in `electron.vite.config.ts`.
 - `node --expose-gc scripts/web-terminal-bench.mjs [tabs] [seconds] [p99ms]`: the headless terminals' cost to main's event
   loop, plus a streamed animated off-screen page (1280x800, then 1920x1080) through the real `FrameStream`; it re-runs itself
   as Electron's main (headless on Linux, no `npm run build` needed) and exits 1 when a phase's p99 is over the limit (parsing
@@ -191,10 +197,15 @@ plan in `docs/plans/completed/20261112-remote-desktop.md`, user docs in `docs/fe
   preload, sandboxed, partition `persist:remote-<id>` (only `electron-remote-window.ts` makes one; grep test), the webview
   hardening plus a loopback-request block, and `WindowManager` only counts it (`remoteWindowCount`). The device cookie lives
   encrypted in the server's `app.json` record and is kept in the jar as a session cookie only (`remote-cookie.ts`), never
-  on disk. `ssh` is spawned only in `ssh-process.ts`, argv only, BatchMode with the ssh_config overrides of §5.1; the
-  remote command is `remoteCommand` (every word single-quoted, `'`, `\`, `!` and control characters refused); a tunnel is
-  ready only on ssh's own `Local forwarding listening on 127.0.0.1 port <L>.` line, never on a TCP connect alone (another
-  local process could hold the port and get the cookie). `remote.*` channels are `no` and answer the local picker only.
+  on disk. `ssh2` is imported only in `main/remote/ssh-client.ts` (grep test; a devDependency bundled into main, its native
+  parts stubbed, checked in Electron by `scripts/ssh2-electron-check.mjs`) and nothing in `main/remote` imports
+  `child_process` (grep test): the system `ssh` is never spawned. The remote command is `remoteCommand` (every word
+  single-quoted, `'`, `\`, `!` and control characters refused). The app owns the loopback listener of a built-in SSH tunnel
+  (no other local process can hold the port that gets the cookie); My own tunnel cannot verify what listens on its port, which
+  the docs say. Nothing from a connect's answers (host key, secret, new record) is saved before the window opens. A changed
+  host key is never a question (refused, fixed only by Edit › Forget the trusted host key). Secrets (password, passphrase,
+  cookie) sit beside the cookie in the record, never in `via`, and never in `remote.list`, a log or an event.
+  `remote.*` channels are `no` and answer the local picker only.
 - Plugin pages over HTTP are served by path token (`/p/<token>/`, one per device and plugin, killed on revoke; inline overlays
   under `/o/<token>/`): the token is the only credential, since a sandboxed page's requests carry no cookie. Responses carry the
   rewritten plugin CSP, no redirects, `no-store`. Pages must use relative URLs (the server rewrites only root-absolute `src` and

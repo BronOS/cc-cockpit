@@ -525,33 +525,64 @@ No install is called supported beyond what was run.
 
 Use a cc-cockpit that runs in server mode on another machine from this desktop app, in its own windows instead of a
 browser tab. The project picker has a **Servers** section: each saved server shows its name, how it connects, its state
-and its recent projects; **Connect to server…** opens the form. Design and reasons:
+and its recent projects; **Connect to server…** opens a form with three tabs. Design and reasons:
 [design-remote-desktop.md](design-remote-desktop.md).
 
-**Connect by SSH.** Choose **SSH host** and type `devbox` or `me@box.example.com`; **Name (optional)** labels it in the
-list. Prerequisites: `ssh <host>` works with no prompt (the key is in the agent, the host key is already accepted; the app
-never asks for a password or a passphrase) and cc-cockpit runs in server mode there with its default data dir. If the
-`ccc` command is not on the server's PATH, set **ccc path on the server** under **Advanced**. The app runs
-`ccc web status --json` over SSH to find the server's port, version and scheme, `ccc web add-device` to get a pairing link
-for this device, and `ssh -N -L` to a loopback port here, so nothing but SSH is exposed.
+**SSH (built in).** Type a **Host** (`devbox`, `me@box.example.com`, or an alias from `~/.ssh/config`), optionally a
+user, port and **Name**, and choose how to sign in: *Agent and my keys* (the SSH agent, then the config's
+`IdentityFile`s, else `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`), *Password*, or *Key file* (a path with a Browse button).
+The agent is the config's `IdentityAgent` (1Password, Secretive) or `SSH_AUTH_SOCK` from your login environment. The app
+needs no `ssh` on this machine. cc-cockpit must run in server mode on the server with its default data dir; if the `ccc`
+command is not on the server's PATH, set **ccc path on the server** under **Advanced**. Over the same SSH connection the
+app runs `ccc web status --json` to find the server's port, version and scheme and `ccc web add-device` to pair this
+device, and it listens on a loopback port of its own for the windows, so nothing but SSH is exposed.
 
-**Pairing.** In link mode it is automatic: the app asks the server for a link and uses it. In password mode the server's
-own page asks once, in the window. With None there is nothing to do. The device appears in the server's `ccc web status`.
+- **Secrets.** The password or a key's passphrase is asked in a dialog when it is needed, never typed into the form. A
+  wrong one is asked once more, then the connect fails. **Remember** (on by default) keeps it encrypted in the server's
+  record; off, or with no keyring, it is held in memory until the app quits and asked again at the next launch. A key
+  file is kept by path only. A key that needs a passphrase is skipped under *Agent and my keys* with a message to
+  choose *Key file*.
+- **Trust this host.** On a first connect the app shows the host's address, key type and SHA256 fingerprint and asks.
+  Compare it with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server, then Trust. The key is kept with the
+  server. If `~/.ssh/known_hosts` already lists the host (plain or hashed entries; the file is only read, never written),
+  the app trusts that key without asking. A key that **changed** is refused, never a question: if the server was
+  reinstalled, open **Edit**, tick **Forget the trusted host key**, and connect again.
+- **`~/.ssh/config`.** The app reads `HostName`, `User`, `Port`, `IdentityFile`, `IdentityAgent` and `Include`, with
+  `Host` patterns as `ssh` matches them; what you type in the form wins, and the file is read again on every connect.
+- **Not supported by the built-in client:** `ProxyJump` and `ProxyCommand` (a host that needs them is refused with a
+  hint), `Match` blocks, FIDO (`sk-`) keys, certificates, and second-factor or other keyboard-interactive prompts. A
+  host that needs any of these uses **My own tunnel**.
+
+**My own tunnel.** You run `ssh` yourself, with your whole config. Fill in **SSH host** (only for the commands), **Server
+port** (the server's web port, 7330 by default) and **Local port** (7331), then run the two commands the form shows:
+`ssh -N -L 127.0.0.1:7331:127.0.0.1:7330 devbox` keeps the tunnel up, and `ssh devbox ccc web add-device` prints a
+pairing link to paste into the form (on the server `ccc` may be at `~/.config/cc-cockpit/bin/ccc`). The app connects to
+`127.0.0.1:<local port>`. If nothing answers there yet, the window shows the tunnel command and keeps trying every few
+seconds; if something else answers, the app refuses to load it. The app cannot check that the process on that port is
+your tunnel: a local process that imitates a cc-cockpit would receive the device cookie. The built-in client does not
+have this exposure, because the app owns its port. When the device is revoked, Edit takes a fresh link.
+
+**Pairing.** With SSH it is automatic, also again after a device was revoked. In password mode the server's own page
+asks once, in the window. With None there is nothing to do. The device appears in the server's `ccc web status`.
 
 **Connect Direct.** Choose **Link** and paste the access link the server printed, or one from `ccc web add-device`
 (`https://server.example.com/#t=…`). A plain `http` link to a network address is marked as not encrypted.
 
+**Edit.** A server's menu has **Edit**: change the host, user, port, sign-in, `ccc` path, ports or name. A changed host
+or port drops the trusted host key, and a changed host, user, port or sign-in drops the remembered password and
+passphrase. Saving an SSH server dials nothing; the next open asks for what it needs.
+
 **Windows.** Opening a remote project gives one window per project, with the desktop's shortcuts. Links clicked in a
 remote session open in your own browser here, not on the server.
 
-**Forget vs revoke.** **Forget** removes the server from this app and drops its cookie here; the device stays listed on the
-server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
+**Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
+here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
 
 **Known limitations (remote servers)**
 - Files are the server's: no Reveal in folder, Open with the system, upload or download.
-- A server with TLS on is refused over SSH (the tunnel encrypts already); connect Direct with its address.
+- A server with TLS on is refused over SSH and My own tunnel (the tunnel encrypts already); connect Direct with its address.
 - No system notifications from remote sessions.
-- For the app's own SSH connections `ControlMaster`, `LocalForward` and `RemoteCommand` from `ssh_config` are overridden.
+- The server's sshd must allow TCP forwarding (`AllowTcpForwarding`); the app says so when it does not.
 - With no keyring the device cookie is not remembered: every launch pairs again, which adds a device on the server.
 - Windows is not supported.
 
