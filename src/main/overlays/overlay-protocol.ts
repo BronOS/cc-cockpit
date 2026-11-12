@@ -40,7 +40,7 @@ import { OVERLAY_SCHEME, overlayPageHeaders } from './overlay-manager'
  *   a page's relative css/img URLs resolve inside its folder), `secure` (a secure context like
  *   https, so a mock-up's modern APIs work) and `supportFetchAPI` (a page may fetch its own JSON;
  *   its CSP keeps that to its own token). No `corsEnabled`: no other origin may read it. Its
- *   handler is registered per webview session (electron-webview.ts), not with protocol.handle.
+ *   handler is registered per webview session (webview-hardening.ts), not with protocol.handle.
  */
 export function registerAppSchemes(): void {
   protocol.registerSchemesAsPrivileged([

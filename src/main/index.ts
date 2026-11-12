@@ -1000,7 +1000,7 @@ function start(server: boolean): void {
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
-  // webview partition's own session with that session's tokens only (electron-webview.ts).
+  // webview partition's own session with that session's tokens only (webview-hardening.ts).
   // Chords typed into a view never reach the shell page: main resolves them (webviewChord: the
   // overlay keys first, then an app command sent to the owning window's page only, which runs it
   // through its own modal rules, with the keyboard handed back to it).

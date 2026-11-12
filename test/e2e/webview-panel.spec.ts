@@ -87,7 +87,7 @@ test('a webview panel shows a local page with its css, hides under shell layers 
   // The page rendered with the css next to it (served from the same token).
   expect(await inView<string>(cockpit, 'getComputedStyle(document.body).backgroundColor')).toBe('rgb(1, 2, 3)')
   expect(await inView<string>(cockpit, 'getComputedStyle(document.querySelector(".hello")).color')).toBe('rgb(200, 100, 50)')
-  // WebRTC is kept off non-proxied UDP (electron-webview.ts): a local page cannot reach a STUN server.
+  // WebRTC is kept off non-proxied UDP (webview-hardening.ts): a local page cannot reach a STUN server.
   expect((await viewState(cockpit))?.webrtc).toBe('disable_non_proxied_udp')
 
   // ctx.panels.show opens the panel: toolbar with the page, the view over the placeholder.
@@ -215,7 +215,7 @@ test("after a dev reload the plugin's new view shows over the panel without a la
 
 // Review finding (ext round 9): once the user has touched a page with a beforeunload handler (an
 // editor, a form), Electron cancels its unload silently, so `ccc browser open <other>` and reload
-// did nothing while the CLI printed ok. The view ignores beforeunload (electron-webview.ts).
+// did nothing while the CLI printed ok. The view ignores beforeunload (webview-hardening.ts).
 test('a page with a beforeunload handler the user has touched does not hold the view', async ({ cockpit }) => {
   const mock = join(cockpit.projectDir, 'mock')
   mkdirSync(mock)

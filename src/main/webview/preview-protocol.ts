@@ -2,7 +2,7 @@
 // Web view panel). `ctx.webview.navigate(panelId, '/abs/file.html')` makes a token for the file's
 // folder (webview-manager.ts); the page and whatever it links next to it (css, images, scripts)
 // are served from that folder, read only. This file decides what a URL serves, with no Electron
-// import, so unit tests call it directly; electron-webview.ts registers it on each webview
+// import, so unit tests call it directly; webview-hardening.ts registers it on each webview
 // partition's own session (never the default one, where the shell page lives).
 //
 // Threat model: the page is a local file the caller chose, but it runs in a browser view and can
@@ -34,7 +34,7 @@
 //   back (a body it did not cancel) cannot 503 the next view of that project and plugin.
 // What the CSP cannot stop: a top-level navigation to an http(s) URL carrying data in its query
 // (the plan lets a webview follow http(s) links, it is a browser), dns-prefetch/preconnect hints
-// (data in a host name) and WebRTC (STUN/TURN ignore connect-src; electron-webview.ts keeps it off
+// (data in a host name) and WebRTC (STUN/TURN ignore connect-src; webview-hardening.ts keeps it off
 // non-proxied UDP, which does not stop a TURN server over TCP). The folder rules above are what keep
 // secrets out of reach in the first place.
 import { realpath } from 'node:fs/promises'

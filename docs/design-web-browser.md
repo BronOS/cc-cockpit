@@ -58,11 +58,25 @@ A throwaway script (not in the repo) made an off-screen `BrowserWindow` (`webPre
   `alert` returns at once, `confirm` returns false, `prompt` throws in the page, and main lives. A click on
   `<input type=file>` did nothing and main lived.
 - **External sites load** (`https://example.com/` painted with its title).
-- **Not yet spiked** (plan review, 2026-11-11): every other native UI a page can raise under the headless platform —
-  `window.print()`, `<input type=color>` and date pickers, `showOpenFilePicker()`, a *trusted* click (through
-  `sendInputEvent`) on a file input, HTTP basic auth (`login`), certificate errors, `mailto:` in a sub-frame, drag
-  start, context menus. One abort ends every project on the server, so the plan's first task spikes each and puts a
-  cancel for every one that needs it into the shared hardening, each kept as a "main survives" test.
+- **The rest of the crash surface** (plan Task 1, 2026-11-11, trusted input through `sendInputEvent`, one case per
+  run). Nothing else aborts main. Where each case lands, and what the shared hardening (`webview-hardening.ts`) does:
+
+  | Case | Plain server (no session bus) | With a desktop portal on the session bus | Handling |
+  |---|---|---|---|
+  | `window.print()` | returns at once | the portal's Print dialog on the host's desktop; the page's renderer blocked until answered (only destroy frees it) | off-screen: `print` locked to a no-op in every new document (DevTools protocol) |
+  | `<input type=file>` click, `showOpenFilePicker` / `showSaveFilePicker` / `showDirectoryPicker` | nothing / AbortError | the portal's file chooser on the host's desktop; the promise pending | off-screen: `Page.setInterceptFileChooserDialog {cancel}` (AbortError) |
+  | `<input type=color>`, date, datetime-local, time, month | survives, nothing painted | same | none |
+  | HTTP basic auth (page or sub-resource) | cancelled by Electron's default, 401 body shown | same | `login` → cancel, explicit (both adapters) |
+  | Self-signed certificate | load fails, ERR_CERT_AUTHORITY_INVALID | same | `certificate-error` → reject, explicit (both adapters) |
+  | `mailto:` in a sub-frame (and the top frame) | `will-frame-navigate` refused; `openExternal` asked | same | existing: the manager's rule and the session lock-down |
+  | Drag (element, text, image, onto a drop zone) | survives | same | none |
+  | Right-click | `context-menu` fires, no menu | same | none |
+  | `beforeunload`, then a navigate or reload | silently cancelled (ERR_ABORTED) without the handler | same | existing: `will-prevent-unload` → proceed |
+
+  The desktop keeps its file choosers, print and page dialogs; only the `login` and `certificate-error` pins are
+  shared, and they match what Electron did before. A cross-site sub-frame's `print()` runs in a process the
+  protocol session is not attached to and is not covered (the worst it does is that frame blocked and the portal
+  dialog). Killing a blocked renderer on `unresponsive` did not free it in the spike, so there is no watchdog.
 
 ## 3. Architecture
 
@@ -76,10 +90,11 @@ adapter (`electron-webview.ts`) only makes the hardened view. Server mode gets a
 
 - an off-screen `BrowserWindow` per view (`show: false`, `offscreen: true`), never shown, focused or positioned on any
   screen, sized only by `setContentSize` (the 1x1 start, §2);
-- the same hardening as `electron-webview.ts`, factored into one shared function both adapters call: no preload, no
+- the same hardening as `electron-webview.ts`, factored into `webview-hardening.ts`, which both adapters call: no preload, no
   Node, sandboxed, context-isolated, the in-memory partition per project and plugin, permissions denied, downloads
   cancelled, WebRTC off non-proxied UDP, `cc-preview://` on that session only, `beforeunload` never holding the view,
-  plus **`disableDialogs: true`** in server mode (§2; required, not optional: one `alert` would end the server);
+  plus **`disableDialogs: true`** in server mode (§2; required, not optional: one `alert` would end the server) and
+  the off-screen cancels of file choosers, pickers and `print()` (§2, the table);
 - `paint` events go to the frame stream (§3.3); `cursor-changed` to the browsers (§4.1).
 
 The server-mode refusal in `WebviewManager` (§9.9) is replaced by the factory choice: `server` picks the off-screen

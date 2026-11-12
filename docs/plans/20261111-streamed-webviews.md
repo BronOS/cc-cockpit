@@ -107,23 +107,48 @@ External review: sol / high
 - Create: `test/unit/electron-offscreen-webview.test.ts`
 - Modify: `test/unit/electron-webview.test.ts`
 
-- [ ] spike under `--ozone-platform=headless --disable-gpu` with an off-screen window and *trusted* input
+- [x] spike under `--ozone-platform=headless --disable-gpu` with an off-screen window and *trusted* input
       (`sendInputEvent`): `window.print()`, `<input type=color>`, date/time pickers, `showOpenFilePicker()`, a click on
       a file input, HTTP basic auth (`login`), a bad certificate (`certificate-error`), `mailto:` in a sub-frame, drag
       start, a context menu, `beforeunload`; record each result (survives / aborts / needs a handler) in this plan and
       in `design-web-browser.md` §2
-- [ ] move the session and webContents hardening of `electron-webview.ts` into `webview-hardening.ts`, adding a cancel
+- [x] move the session and webContents hardening of `electron-webview.ts` into `webview-hardening.ts`, adding a cancel
       for every case the spike shows can abort or hang (e.g. `login` → cancel, `certificate-error` → reject,
       `select-file`/pickers → cancel, print → refused); the desktop adapter calls it unchanged in behaviour
-- [ ] add `OffscreenWebviewFactory` (`create` returns a `WebviewView`): off-screen `BrowserWindow` (`show: false`,
+- [x] add `OffscreenWebviewFactory` (`create` returns a `WebviewView`): off-screen `BrowserWindow` (`show: false`,
       `offscreen: true`, `disableDialogs: true`), explicit `setContentSize` at creation, never shown or focused, **no
       `before-input-event` chord forwarding**; load/back/forward/reload/current/load errors as the desktop adapter;
       `setBounds` → content size; `setVisible` → `startPainting`/`stopPainting`; `paint` and `cursor-changed` exposed
       through an event sink for later tasks; `destroy` closes the window
-- [ ] write tests (Electron stubbed): hardening applied to both adapters, `disableDialogs` always set off-screen, the
+- [x] write tests (Electron stubbed): hardening applied to both adapters, `disableDialogs` always set off-screen, the
       new cancels registered, no chord handler off-screen, size at creation and on `setBounds`, painting by visibility
-- [ ] write tests for error cases: load failure text, aborted navigation, window gone, destroy idempotent
-- [ ] run tests - must pass before next task
+- [x] write tests for error cases: load failure text, aborted navigation, window gone, destroy idempotent
+- [x] run tests - must pass before next task
+- ➕ spike results (2026-11-11, Electron 45.1.0, `--ozone-platform=headless --disable-gpu --password-store=basic`,
+      off-screen window, `disableDialogs`, trusted input; one case per run, exit code checked). **Nothing aborts main**
+      except a JS dialog without `disableDialogs` (exit 133, the known case). With no session bus (a plain server):
+      `print()` returns at once; color, date, datetime-local, time, month pickers survive (nothing painted, Escape
+      closes); `showOpenFilePicker`/`showSaveFilePicker`/`showDirectoryPicker` reject with AbortError; a file input click
+      does nothing. **With a session bus and a desktop portal** (server mode started inside a desktop session):
+      `print()` opens xdg-desktop-portal's Print dialog on the host's desktop and blocks the page's renderer until it is
+      answered (`unresponsive` after ~16 s; same-site loads no longer go; killing the renderer on `unresponsive` did
+      not free it; only destroy does), and the pickers open the portal's file chooser there → cancelled off-screen
+      through the page's DevTools protocol (`Page.enable` + `Page.setInterceptFileChooserDialog {cancel}`: pickers
+      reject with AbortError, needs `Page.enable`; `print` locked to a no-op by `Page.addScriptToEvaluateOnNewDocument`;
+      both survive a cross-site navigation; a cross-site sub-frame's `print()` is not covered, unproven either way).
+      HTTP basic auth: Electron already cancels with no `login` listener (the 401 body shows); a bad certificate
+      already fails with ERR_CERT_AUTHORITY_INVALID with no `certificate-error` listener → both pinned explicitly in
+      the shared hardening (`login` → cancel, `certificate-error` → `callback(false)`), desktop included (same
+      behaviour). `mailto:` in a sub-frame: `will-frame-navigate` fires (the manager refuses it) and `openExternal` is
+      asked (the lock-down denies it) → no new handler. Drag (an element, a text selection, an image, a drop target),
+      the right-click context menu (`context-menu` fires, Electron shows no menu): survive, no handler. `beforeunload`
+      without the existing `will-prevent-unload` handler cancels the navigation silently (ERR_ABORTED) and the reload,
+      with or without `disableDialogs` → the existing handler fixes it (kept, shared).
+- ➕ for Task 2: `app.on('browser-window-created')` and `'web-contents-created'` in `index.ts` also see every
+      off-screen window (the overlay chord listener returns early, `did-navigate` → `webviews.resetWindow(<off-screen
+      id>)` is a no-op, the lock-down is harmless), and anything that walks `BrowserWindow.getAllWindows()` or counts
+      windows now finds them; the adapter destroys its window when the project window closes. The first `paint`
+      after `startPainting` can carry an empty (0x0) image: Task 5 skips empty images.
 
 ### Task 2: Server mode picks the off-screen factory; limits; hidden page [model: opus]
 

@@ -3,7 +3,9 @@
 // real thing). The adapter decides nothing itself; what is checked here is that every Electron
 // hook is wired to the manager's decision and that the hardening is in place: no preload, sandbox,
 // a session of its own that is locked down, WebRTC off non-proxied UDP, window.open denied,
-// downloads cancelled, cc-preview answered on that session only.
+// downloads cancelled, cc-preview answered on that session only, HTTP auth cancelled and a bad
+// certificate refused (webview-hardening.ts, shared with the off-screen adapter, whose own test
+// checks that both adapters wire the same hooks).
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebviewEvents } from '../../src/main/webview/webview-manager'
 
@@ -48,6 +50,8 @@ class FakeWebContents extends FakeEmitter {
     this.openHandler = fn
   }
   focused = false
+  /** The page's DevTools protocol: the desktop never attaches it (its pickers and print stay). */
+  readonly debugger = { attached: false, attach: () => void (this.debugger.attached = true) }
   /** What the next loadURL returns (Electron's promise: resolves on finish, rejects on a failure). */
   nextLoad: Promise<void> = Promise.resolve()
   loadURL(): Promise<void> {
@@ -243,6 +247,33 @@ describe('ElectronWebviewFactory', () => {
     const unload = prevented()
     wc.emit('will-prevent-unload', unload)
     expect(unload.defaultPrevented).toBe(true)
+  })
+
+  // Spike (2026-11-11): Electron already cancels both with no listener; the explicit cancel pins
+  // it against an upgrade or an app-level listener. Same behaviour on the desktop as before.
+  it('cancels HTTP auth and refuses a bad certificate, taking both from Electron\'s default', () => {
+    new ElectronWebviewFactory(async () => new Response('')).create(1, 'p', events())
+    const wc = state.views[0]?.webContents as FakeWebContents
+    const login = prevented()
+    const credentials: unknown[][] = []
+    wc.emit('login', login, { url: 'http://127.0.0.1:1/auth' }, { scheme: 'basic' }, (...args: unknown[]) => credentials.push(args))
+    expect(login.defaultPrevented).toBe(true)
+    expect(credentials).toEqual([[]])
+    const cert = prevented()
+    const trusted: unknown[] = []
+    wc.emit('certificate-error', cert, 'https://self.signed/', 'net::ERR_CERT_AUTHORITY_INVALID', {}, (t: boolean) => trusted.push(t))
+    expect(cert.defaultPrevented).toBe(true)
+    expect(trusted).toEqual([false])
+  })
+
+  // The off-screen cancels (file choosers, print) are server mode's: the desktop keeps uploads,
+  // printing and the page's own dialogs.
+  it('keeps the desktop page\'s pickers, print and dialogs: no protocol attached, dialogs not disabled', () => {
+    new ElectronWebviewFactory(async () => new Response('')).create(1, 'p', events())
+    const wc = state.views[0]?.webContents as FakeWebContents
+    expect(wc.debugger.attached).toBe(false)
+    expect(state.views[0]?.options.webPreferences).not.toHaveProperty('disableDialogs')
+    expect(state.views[0]?.options.webPreferences).not.toHaveProperty('offscreen')
   })
 
   it('reports whether the page has the keyboard', () => {
