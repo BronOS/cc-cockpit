@@ -167,7 +167,10 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
 - **One window per (server, project).** Main learns which project a window shows from its URL (`?project=<id>` on
   `did-navigate` / `did-navigate-in-page`, the web client's own routing, `renderer/web/main.tsx`). Opening a project
   that already has a window focuses it. When the server's web picker navigates a window to a project that another
-  window shows, that window is focused and this one goes back to the picker.
+  window shows, that window is focused and this one goes back to the picker. A project page navigating to another
+  project's page (a session chip of that project: the server sends the clicking view to `?project=<id>&tab=<id>`,
+  design-web.md §9.8) is cancelled and opens that project's own window with the `tab` param, or focuses the one that
+  shows it; the first window stays on its project (`remote-windows.ts › isProjectSwitch`).
 - **Back to the picker.** In this app the person's project list is the desktop picker (local projects, the other
   servers), not the server's web one. A main-frame navigation the page starts from a project page to the server's
   picker (the tab strip's "+" assigns `/`, Close project replaces the URL with the page's own path, the 'gone' page

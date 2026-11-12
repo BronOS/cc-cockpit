@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openProjectEntries } from '../../src/main/web/connection'
 import { shellFileOf } from '../../src/main/web/shell-files'
-import { armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, takeLoadTake } from '../../src/renderer/shell-kind'
+import { armLoadTab, armLoadTake, currentShellChrome, isWebShell, markWebShell, resetShellKindForTest, takeLoadTab, takeLoadTake } from '../../src/renderer/shell-kind'
 import { topStripClass } from '../../src/renderer/status/strip-order'
 import {
   breadcrumbs,
@@ -19,7 +19,8 @@ import {
   loadFolders,
   loadOpenProjects,
   openProject,
-  projectHref
+  projectHref,
+  takeTabParam
 } from '../../src/renderer/web/picker-model'
 import {
   askConfirm,
@@ -371,6 +372,21 @@ describe('the project picker', () => {
   it('links each project to the shell bound to it, on the page\'s own origin', () => {
     expect(projectHref('abc123')).toBe('?project=abc123')
     expect(projectHref('a&b=c')).toBe('?project=a%26b%3Dc')
+    // Server mode's `project.goto`: the tab to select there rides along.
+    expect(projectHref('abc123', 't-1')).toBe('?project=abc123&tab=t-1')
+    expect(projectHref('abc123', 'a&b')).toBe('?project=abc123&tab=a%26b')
+    expect(projectHref('abc123', '')).toBe('?project=abc123')
+  })
+
+  it("takes `?tab=` once: the tab, and the address without it (other params and the fragment kept)", () => {
+    expect(takeTabParam('https://h/x/?project=p1&tab=t1#t=tok')).toEqual({ tabId: 't1', url: 'https://h/x/?project=p1#t=tok' })
+    expect(takeTabParam('https://h/?tab=a%26b&project=p1')).toEqual({ tabId: 'a&b', url: 'https://h/?project=p1' })
+    // No param: nothing to replace.
+    expect(takeTabParam('https://h/?project=p1')).toBeUndefined()
+    // Empty or too long: no tab, but still dropped from the address.
+    expect(takeTabParam('https://h/?project=p1&tab=')).toEqual({ tabId: undefined, url: 'https://h/?project=p1' })
+    expect(takeTabParam(`https://h/?project=p1&tab=${'x'.repeat(201)}`)).toEqual({ tabId: undefined, url: 'https://h/?project=p1' })
+    expect(takeTabParam('not a url')).toBeUndefined()
   })
 
   it('main lists only projects with a window open, never the registry\'s others', () => {
@@ -571,6 +587,15 @@ describe('the take of the terminal size on load', () => {
     armLoadTake(1)
     expect(takeLoadTake()).toBe(true)
     expect(takeLoadTake()).toBe(false)
+  })
+
+  it("the web shell's `?tab=` is selected once; never in the Electron shell", () => {
+    armLoadTab('t1')
+    expect(takeLoadTab()).toBeUndefined()
+    markWebShell()
+    armLoadTab('t1')
+    expect(takeLoadTab()).toBe('t1')
+    expect(takeLoadTab()).toBeUndefined()
   })
 
   it('a reconnect ready does not take', () => {

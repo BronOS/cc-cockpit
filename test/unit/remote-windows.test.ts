@@ -13,9 +13,11 @@ import {
   allowRemoteRequest,
   isLoopbackHost,
   isPickerNavigation,
+  isProjectSwitch,
   projectOfUrl,
   remotePageUrl,
   remoteTitle,
+  tabOfUrl,
   type RemoteSessionHooks,
   type RemoteWindowFactory,
   type RemoteWindowHooks,
@@ -100,6 +102,19 @@ describe('the rules', () => {
     expect(isPickerNavigation(from, `${ORIGIN}/`, undefined)).toBe(false)
   })
 
+  it('tells a project page going to another project', () => {
+    const from = `${ORIGIN}/?project=p1`
+    expect(isProjectSwitch(from, `${ORIGIN}/?project=p2`, ORIGIN)).toBe(true)
+    expect(isProjectSwitch(from, `${ORIGIN}/?project=p2&tab=t1`, ORIGIN)).toBe(true)
+    // The same project (a tab param, an in-page change), the picker, from the picker, off the origin.
+    expect(isProjectSwitch(from, `${ORIGIN}/?project=p1&tab=t1`, ORIGIN)).toBe(false)
+    expect(isProjectSwitch(from, `${ORIGIN}/`, ORIGIN)).toBe(false)
+    expect(isProjectSwitch(`${ORIGIN}/`, `${ORIGIN}/?project=p2`, ORIGIN)).toBe(false)
+    expect(isProjectSwitch(from, 'http://127.0.0.1:4101/?project=p2', ORIGIN)).toBe(false)
+    expect(isProjectSwitch('data:text/plain,x', `${ORIGIN}/?project=p2`, ORIGIN)).toBe(false)
+    expect(isProjectSwitch(from, `${ORIGIN}/?project=p2`, undefined)).toBe(false)
+  })
+
   it('reads the project, builds page URLs and titles', () => {
     expect(projectOfUrl(`${ORIGIN}/?project=abc`)).toBe('abc')
     expect(projectOfUrl(`${ORIGIN}/`)).toBeUndefined()
@@ -107,6 +122,12 @@ describe('the rules', () => {
     expect(projectOfUrl(`${ORIGIN}/?project=${'x'.repeat(201)}`)).toBeUndefined()
     expect(remotePageUrl(ORIGIN)).toBe(`${ORIGIN}/`)
     expect(remotePageUrl(ORIGIN, 'a b', 't/1')).toBe(`${ORIGIN}/?project=a%20b#t=t%2F1`)
+    // The tab a project page selects once loaded (a session chip of another project); none on the picker.
+    expect(remotePageUrl(ORIGIN, 'p1', undefined, 'a&b')).toBe(`${ORIGIN}/?project=p1&tab=a%26b`)
+    expect(remotePageUrl(ORIGIN, undefined, undefined, 't1')).toBe(`${ORIGIN}/`)
+    expect(tabOfUrl(`${ORIGIN}/?project=p1&tab=a%26b`)).toBe('a&b')
+    expect(tabOfUrl(`${ORIGIN}/?project=p1&tab=`)).toBeUndefined()
+    expect(tabOfUrl(`${ORIGIN}/?project=p1&tab=${'x'.repeat(201)}`)).toBeUndefined()
     expect(remoteTitle('devbox')).toBe('devbox')
     expect(remoteTitle('devbox', 'api\u0007 ')).toBe('devbox — api')
     expect(remoteTitle('devbox', '\u0001')).toBe('devbox')
@@ -525,14 +546,70 @@ describe('RemoteWindows: back to the picker', () => {
     const fetches = t.factory.session1().fetches.length
     expect(picker.hooks.allowNavigation(`${ORIGIN}/`)).toBe(true)
     expect(picker.hooks.allowNavigation(`${ORIGIN}/?project=p1`)).toBe(true)
-    // Between projects, and off the origin, as before.
+    // Within the project, and off the origin, as before.
     const view = await projectWindow()
-    expect(view.hooks.allowNavigation(`${ORIGIN}/?project=p2`)).toBe(true)
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?project=p1&tab=t1`)).toBe(true)
     expect(view.hooks.allowNavigation('https://example.com/')).toBe(false)
     expect(t.pickers()).toBe(0)
     await flush()
     // The project window's title and its open check; nothing for the navigations.
     expect(t.factory.session1().fetches.slice(fetches).filter((u) => u.endsWith('/api/projects')).length).toBe(2)
+  })
+})
+
+// A session chip of another project clicked in a remote window: the server sends that view to the
+// other project's page (`project.goto`); here it gets its own window instead.
+describe('RemoteWindows: another project from a project page', () => {
+  let t: ReturnType<typeof setup>
+  beforeEach(() => {
+    t = setup()
+    const open = {
+      projects: [
+        { id: 'p1', name: 'Api', path: '/srv/api' },
+        { id: 'p2', name: 'Web', path: '/srv/web' }
+      ]
+    }
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? open : signedIn)
+  })
+
+  async function projectWindow(projectId: string): Promise<FakeView> {
+    await t.windows.open('s1', { origin: ORIGIN, projectId })
+    const view = t.factory.views.at(-1) as FakeView
+    view.commit(`${ORIGIN}/?project=${projectId}`)
+    await flush()
+    return view
+  }
+
+  it("opens the other project's own window with the tab, and this one stays on its project", async () => {
+    const first = await projectWindow('p1')
+    expect(first.hooks.allowNavigation(`${ORIGIN}/?project=p2&tab=t9`)).toBe(false)
+    await flush()
+    expect(t.factory.views).toHaveLength(2)
+    const second = t.factory.views[1] as FakeView
+    expect(second.loads).toEqual([`${ORIGIN}/?project=p2&tab=t9`])
+    expect(first.loads).toEqual([`${ORIGIN}/?project=p1`])
+    expect(first.closed).toBe(false)
+    expect(t.pickers()).toBe(0)
+    // One window per project: the page dropping `tab` from its address is still p2's window.
+    second.commit(`${ORIGIN}/?project=p2`)
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    expect(first.focuses).toBe(1)
+    expect(t.factory.views).toHaveLength(2)
+  })
+
+  it('focuses the window that shows the other project already, opening nothing', async () => {
+    const first = await projectWindow('p1')
+    const second = await projectWindow('p2')
+    expect(first.hooks.allowNavigation(`${ORIGIN}/?project=p2&tab=t9`)).toBe(false)
+    await flush()
+    expect(t.factory.views).toHaveLength(2)
+    expect(second.focuses).toBe(1)
+    expect(second.loads).toEqual([`${ORIGIN}/?project=p2`])
+    // No tab: the same.
+    expect(second.hooks.allowNavigation(`${ORIGIN}/?project=p1`)).toBe(false)
+    await flush()
+    expect(first.focuses).toBe(1)
+    expect(t.factory.views).toHaveLength(2)
   })
 })
 

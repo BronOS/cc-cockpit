@@ -411,7 +411,8 @@ completes it with Tab from the listings. A folder the server user cannot read sa
 the server user can read, no more than a terminal tab does; at most 1000 folders are listed at once (it says so; type
 the path to go further). A recent project whose folder is gone shows as missing with Relink… (the folder browser again:
 the project opens in the folder you pick, without its old tabs) and Forget (asks in the row; removes the project and its
-saved tabs). `ccc open <path>` from a server shell opens one too.
+saved tabs). `ccc open <path>` from a server shell opens one too. A click on a session of another project in the top
+bar's strip takes the browser tab to that project with that session's tab selected.
 
 **`ccc web`** is run from a shell on the server, outside cc-cockpit (a Claude, shell or command tab is refused): `status
 [--json]`, `revoke <id>|--all`, `link [--regenerate]`, `add-device`, `password` (from stdin, or asked twice with no
@@ -575,6 +576,8 @@ passphrase. Saving an SSH server dials nothing; the next open asks for what it n
 **Windows.** Opening a remote project gives one window per project, with the desktop's shortcuts. Links clicked in a
 remote session open in your own browser here, not on the server. In a remote project window the tab strip's **+** shows this app's own
 picker (local projects and your servers), and **Close project** closes the project on the server and its window here.
+A click on a session of another project in the top bar's strip opens that project in its own window (or brings its
+window forward) with that tab selected.
 
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.

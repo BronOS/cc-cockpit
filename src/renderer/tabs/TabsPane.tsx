@@ -20,7 +20,7 @@ import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
-import { currentShellChrome, isWebShell, takeLoadTake } from '../shell-kind'
+import { currentShellChrome, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
@@ -251,7 +251,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       dispatch({ type: 'moved', tabId, toIndex })
     })
     attachTabs()
-      .then((tabs) => dispatch({ type: 'loaded', tabs }))
+      .then((tabs) => {
+        dispatch({ type: 'loaded', tabs })
+        // The web shell opened with `?tab=` (a session chip of another project, server mode's
+        // `project.goto`): that tab, once the list holds it. Batched with 'loaded', so the first
+        // selection reported and the load take are already that tab's; an id not in the list
+        // changes nothing (the reducer ignores it).
+        const wanted = takeLoadTab()
+        if (wanted !== undefined) dispatch({ type: 'selected', tabId: wanted })
+      })
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
     return () => {
       offData()

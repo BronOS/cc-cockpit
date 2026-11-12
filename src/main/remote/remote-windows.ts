@@ -21,7 +21,9 @@
 // Windows per (server, project): the project comes from the page's own routing (`?project=<id>`,
 // renderer/web/main.tsx), read on every main-frame navigation. Opening a project that has a window
 // focuses it; the server's web picker navigating a second window to it focuses the first and sends
-// the second back to the picker. The title is `<server> — <project>` with the name from the
+// the second back to the picker. A project page navigating to another project's page (a session
+// chip of that project, design-web.md §9: the server sends the clicking view there) is cancelled and
+// opens that project's own window, or focuses the one that shows it (`isProjectSwitch`). The title is `<server> — <project>` with the name from the
 // server's PROJECTS_PATH, fetched through the window's own partition (its device cookie applies);
 // the page's own title is the static `cc-cockpit` and is never read.
 //
@@ -71,6 +73,8 @@ export const MAX_PAIR_ATTEMPTS = 2
 export const PAIR_WAIT_MS = 20_000
 /** The longest project id read from a page URL (shared/remote-servers.ts caps the record the same). */
 const MAX_PROJECT_ID = 200
+/** Longer than any tab id the server mints. */
+const MAX_TAB_ID = 200
 /** The longest window title part taken from the server. */
 const MAX_TITLE_NAME = 200
 /** The longest error text taken from the server for main's error page. */
@@ -178,9 +182,35 @@ export function isPickerNavigation(from: string, to: string, origin: string | un
   return target.pathname === '/' || target.pathname === source.pathname
 }
 
-/** The page for a server's project (or its picker), with an access token in the fragment when signing in. */
-export function remotePageUrl(origin: string, projectId?: string, token?: string): string {
-  const query = projectId === undefined ? '' : `?project=${encodeURIComponent(projectId)}`
+/**
+ * The tab a project page URL asks its page to select (`&tab=<id>`, the web client's projectHref for a
+ * session chip of another project), or undefined.
+ */
+export function tabOfUrl(url: string): string | undefined {
+  const tab = parsed(url)?.searchParams.get('tab') ?? ''
+  return tab === '' || tab.length > MAX_TAB_ID ? undefined : tab
+}
+
+/**
+ * Whether a main-frame navigation from `from` to `to` is a project page going to ANOTHER project's
+ * page (the server sends a browser view there for a session chip of that project, `project.goto`):
+ * both on `origin`, both showing a project, and not the same one. From the server's picker it is not
+ * (that is the picker opening a project, tracked by `navigated`).
+ */
+export function isProjectSwitch(from: string, to: string, origin: string | undefined): boolean {
+  if (!onOrigin(from, origin) || !onOrigin(to, origin)) return false
+  const source = projectOfUrl(from)
+  const target = projectOfUrl(to)
+  return source !== undefined && target !== undefined && source !== target
+}
+
+/**
+ * The page for a server's project (or its picker), with an access token in the fragment when signing
+ * in, and the tab its page selects once loaded (`tabId`, a project page only).
+ */
+export function remotePageUrl(origin: string, projectId?: string, token?: string, tabId?: string): string {
+  const tab = projectId === undefined || tabId === undefined ? '' : `&tab=${encodeURIComponent(tabId)}`
+  const query = projectId === undefined ? '' : `?project=${encodeURIComponent(projectId)}${tab}`
   const fragment = token === undefined ? '' : `#t=${encodeURIComponent(token)}`
   return `${origin}/${query}${fragment}`
 }
@@ -316,6 +346,11 @@ export interface RemoteOpenRequest {
   projectId?: string
   /** A one-time access token (a fresh pairing): the page signs in with `#t=`. */
   token?: string
+  /**
+   * The tab the project page selects once loaded (a session chip of another project, see
+   * `isProjectSwitch`). A new window only: a window that shows the project already is only focused.
+   */
+  tabId?: string
 }
 
 interface ServerState {
@@ -466,7 +501,7 @@ export class RemoteWindows {
     this.options.onChanged?.()
     this.updateTitle(rec)
     if (request.token !== undefined) this.signInWith(rec, state, request.token)
-    else this.load(rec, remotePageUrl(state.origin, projectId), projectId === undefined ? undefined : 'open')
+    else this.load(rec, remotePageUrl(state.origin, projectId, undefined, request.tabId), projectId === undefined ? undefined : 'open')
   }
 
   /**
@@ -582,9 +617,31 @@ export class RemoteWindows {
     if (!allowRemoteNavigation(url, origin)) return false
     const from = rec.view.url()
     const project = projectOfUrl(from)
-    if (rec.closed || project === undefined || !isPickerNavigation(from, url, origin)) return true
+    if (rec.closed || project === undefined) return true
+    if (isProjectSwitch(from, url, origin)) {
+      this.switchProject(rec, url)
+      return false
+    }
+    if (!isPickerNavigation(from, url, origin)) return true
     this.backToPicker(rec, project)
     return false
+  }
+
+  /**
+   * A project page going to another project's page (a session chip of that project: the server
+   * sends the clicking view there, `project.goto`): cancelled, and that project gets its own window
+   * on the same server, as the desktop picker would open it (a window that shows it already is
+   * focused). This window keeps its project: one window per (server, project), and the person
+   * clicked a chip, not "close this one".
+   */
+  private switchProject(rec: WindowRecord, url: string): void {
+    const state = this.servers.get(rec.serverId)
+    const projectId = projectOfUrl(url)
+    if (state === undefined || projectId === undefined) return
+    const tabId = tabOfUrl(url)
+    void this.open(rec.serverId, { origin: state.origin, projectId, ...(tabId === undefined ? {} : { tabId }) }).catch((err: unknown) =>
+      this.log(`remote ${rec.serverId}: opening the other project's window failed: ${errorText(err)}`)
+    )
   }
 
   /**

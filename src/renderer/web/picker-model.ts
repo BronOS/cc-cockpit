@@ -121,9 +121,36 @@ export async function openProject(fetchFn: Fetch, request: WebOpenProjectRequest
   }
 }
 
-/** The shell's address for a project: a relative link, so it stays on whatever origin the page has. */
-export function projectHref(id: string): string {
-  return `?project=${encodeURIComponent(id)}`
+/**
+ * The shell's address for a project: a relative link, so it stays on whatever origin the page has.
+ * `tabId`: the tab the page selects once its list is in (server mode's `project.goto`, a session chip
+ * of another project); the page takes it and drops it from the address (`takeTabParam`).
+ */
+export function projectHref(id: string, tabId?: string): string {
+  const tab = tabId === undefined || tabId === '' ? '' : `&tab=${encodeURIComponent(tabId)}`
+  return `?project=${encodeURIComponent(id)}${tab}`
+}
+
+/** Longer than any tab id main mints; a longer `tab` is not one (selected nowhere, still dropped). */
+const MAX_TAB_PARAM = 200
+
+/**
+ * The page's `?tab=` (projectHref) and its address without it, for `history.replaceState`: a
+ * reload or a copied link must not select that tab again over the person's own choice since. No
+ * `tab` param: nothing to do (undefined). The rest of the address (other params, the fragment that
+ * may carry an access token) is kept as it is.
+ */
+export function takeTabParam(href: string): { tabId: string | undefined; url: string } | undefined {
+  let url: URL
+  try {
+    url = new URL(href)
+  } catch {
+    return undefined
+  }
+  if (!url.searchParams.has('tab')) return undefined
+  const raw = url.searchParams.get('tab') ?? ''
+  url.searchParams.delete('tab')
+  return { tabId: raw === '' || raw.length > MAX_TAB_PARAM ? undefined : raw, url: url.href }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
-import type { EventChannel, LayoutView } from '../../src/shared/ipc'
+import { REMOTE_CLASS, type EventChannel, type LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, registerWebAccessHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { cleanSelection } from '../../src/main/webview/webview-input'
@@ -1674,6 +1674,11 @@ describe('the web access card (server mode)', () => {
     const popup = { panelKey: 'a/b', id: 'f'.repeat(32), options: [], selected: -1, rect: { x: 0, y: 0, width: 1, height: 1 } }
     expect(remoteEvent('webviews.select', popup, false)).toBeUndefined()
     expect(remoteEvent('webviews.select', popup, true)).toEqual({ payload: popup })
+    // Server mode's "go to that project" (focusTabInView): the same.
+    const goto = { projectId: 'b'.repeat(16), tabId: 't1' }
+    expect(REMOTE_CLASS['project.goto']).toBe('adapted')
+    expect(remoteEvent('project.goto', goto, false)).toBeUndefined()
+    expect(remoteEvent('project.goto', goto, true)).toEqual({ payload: goto })
   })
 
   // design-web.md §9.9: notifications and their sound stay on the host on the desktop (§6.1), so a

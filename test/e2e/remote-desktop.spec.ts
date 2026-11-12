@@ -17,7 +17,7 @@
 // Linux only: server mode starts nowhere else.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from 'node:net'
 import { hostname, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
@@ -293,6 +293,99 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
   }
 })
 
+// A session chip of another project in a remote window (design-remote-desktop.md §4): the server sends
+// the page to that project (`project.goto`, `?project=<id>&tab=<id>`); main cancels the move and opens
+// that project in its own remote window with the tab selected, and the first window stays on its project.
+test('Direct: a session chip of another project opens that project in its own remote window, that tab selected', async () => {
+  test.setTimeout(180_000)
+  // The bundled plugins on in the server (the harness turns them off): the strip is cockpit.sessions'.
+  const server = await launchServer({ mode: 'link', env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  let desktop: { cockpit: Cockpit; close(options?: { keepFiles?: boolean }): Promise<void> } | undefined
+  try {
+    const projectName = basename(server.cockpit.projectDir)
+    const other = join(realpathSync(server.cockpit.root), 'other')
+    mkdirSync(other)
+    await server.cockpit.hook('openProject', other)
+    // Two Claude tabs there; the second one's chip is clicked (a plain open would select the first).
+    let first: string | undefined
+    await expect.poll(async () => (first = await server.cockpit.hook<string | undefined>('openClaudeTab', other))).toBeTruthy()
+    const second = await server.cockpit.hook<string>('openClaudeTab', other)
+    expect(second).toBeTruthy()
+    expect(second).not.toBe(first)
+
+    const link = await addDeviceLink(server)
+    desktop = await launchCockpit({ folderArg: false, ready: 'picker' })
+    const { app } = desktop.cockpit
+    const picker = desktop.cockpit.page
+    await picker.getByRole('button', { name: 'Connect to server…' }).click()
+    const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
+    await dialog.getByRole('tab', { name: 'Link' }).click()
+    await dialog.getByRole('textbox', { name: 'Link' }).fill(link)
+    await dialog.getByRole('textbox', { name: 'Name (optional)' }).fill('Test server')
+    await dialog.getByRole('button', { name: 'Connect' }).click()
+    const remote = await remoteWindow(app, server.origin)
+    const href = `?project=${encodeURIComponent(server.projectId)}`
+    await remote.getByRole('list', { name: 'Open projects' }).locator(`a[href="${href}"]`).click()
+    await expect(remote).toHaveURL(`${server.origin}/${href}`)
+    await remote.locator('.tabs-pane').waitFor()
+
+    // noWaitAfter: the click starts a navigation main cancels, which Playwright would wait on forever.
+    const strip = remote.frameLocator('.top-strip iframe[title="sessions-strip slot"]')
+    await expect(strip.locator('.entry')).toHaveCount(2, { timeout: 15_000 })
+    await strip.locator(`.entry[data-tab-id="${second}"]`).click({ noWaitAfter: true })
+
+    // A second remote window, on the other project, with the clicked tab selected and `tab` dropped.
+    await expect.poll(() => titles(app), { timeout: 15_000 }).toEqual([`Test server — ${projectName}`, 'Test server — other'].sort())
+    let otherPage: Page | undefined
+    await expect
+      .poll(() => {
+        otherPage = app.windows().find((p) => p !== remote && !p.isClosed() && p.url().startsWith(`${server.origin}/?project=`))
+        return otherPage !== undefined
+      })
+      .toBe(true)
+    await otherPage!.locator('.tabs-pane').waitFor()
+    await expect(otherPage!.getByRole('tab')).toHaveCount(2)
+    await expect(otherPage!.getByRole('tab').nth(1)).toHaveAttribute('aria-selected', 'true')
+    await expect.poll(() => otherPage!.url()).not.toContain('tab=')
+
+    // The first window stays on its project. Read through main: Playwright keeps waiting on the
+    // navigation main cancelled, so its locators would too.
+    const shown = await app.evaluate(({ BrowserWindow }, origin) => {
+      return BrowserWindow.getAllWindows()
+        .map((w) => w.webContents.getURL())
+        .filter((u) => u.startsWith(`${origin}/`))
+        .sort()
+    }, server.origin)
+    expect(shown).toContain(`${server.origin}/${href}`)
+    expect(shown).toHaveLength(2)
+
+    // The chip again: the other project's window is focused, none is opened. Clicked through main's
+    // frame of the strip, for the same reason (Playwright still waits on the cancelled navigation).
+    // The first window has the focus before.
+    await app.evaluate(({ BrowserWindow }, title) => BrowserWindow.getAllWindows().find((w) => w.getTitle() === title)?.focus(), `Test server — ${projectName}`)
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.getTitle())).toBe(`Test server — ${projectName}`)
+    const clicked = await app.evaluate(
+      async ({ BrowserWindow }, { origin, project, tabId }) => {
+        const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === `${origin}/?project=${project}`)
+        for (const frame of win?.webContents.mainFrame.framesInSubtree ?? []) {
+          const hit = (await frame.executeJavaScript(
+            `(() => { const b = document.querySelector('.entry[data-tab-id="${tabId}"]'); if (b) b.click(); return b !== null })()`
+          )) as boolean
+          if (hit) return true
+        }
+        return false
+      },
+      { origin: server.origin, project: encodeURIComponent(server.projectId), tabId: second }
+    )
+    expect(clicked).toBe(true)
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.getTitle())).toBe('Test server — other')
+    expect((await titles(app)).length).toBe(2)
+    await expectMainAlive(server)
+  } finally {
+    if (desktop !== undefined) await desktop.close()
+    await server.close()
+  }
+})
 
 // ---------------------------------------------------------------------------------------------
 // Built-in SSH and My own tunnel (plan 20261112-remote-ssh-builtin Task 7)

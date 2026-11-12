@@ -91,10 +91,29 @@ export function takeLoadTake(): boolean {
   return armed
 }
 
+let loadTab: string | undefined
+
+/**
+ * The web shell's `?tab=` (web/main.tsx, server mode's `project.goto`): the tab its tabs pane selects
+ * once the first list is in. One-shot like the load take: a reconnect's fresh shell never selects it
+ * again over the person's own choice since.
+ */
+export function armLoadTab(tabId: string): void {
+  if (webShell) loadTab = tabId
+}
+
+/** The tab armLoadTab named, once; undefined after that, and always in the Electron shell. */
+export function takeLoadTab(): string | undefined {
+  const tab = loadTab
+  loadTab = undefined
+  return tab
+}
+
 /** Test hook: back to the Electron shell. */
 export function resetShellKindForTest(): void {
   webShell = false
   loadTake = false
+  loadTab = undefined
   ownView = undefined
   serverHint = false
 }

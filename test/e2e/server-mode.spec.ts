@@ -797,6 +797,48 @@ test('server mode: Close project in the browser closes it for every device; the 
   }
 })
 
+// A session chip of another project (the cockpit.sessions strip): its window is a hidden page nothing
+// can raise, so main sends the clicking browser view there (`project.goto`), and the page opens with
+// that tab selected and `tab` dropped from its address.
+test('server mode: a session chip of another project in the browser goes to that project with that tab selected', async () => {
+  test.setTimeout(120_000)
+  // The bundled plugins on (the harness turns them off): the strip is cockpit.sessions'.
+  server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  const { cockpit } = server
+  const other = join(realpathSync(cockpit.root), 'other')
+  mkdirSync(other)
+  const opened = await fetch(`${server.origin}/api/projects`, {
+    method: 'POST',
+    headers: { Origin: server.origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ open: other })
+  })
+  expect(opened.status).toBe(200)
+  const otherId = ((await opened.json()) as { id: string }).id
+  // Two Claude tabs in the other project; the chip of the second one is clicked, so a page that
+  // only opened the project (its first tab selected) would not pass.
+  const first = await cockpit.hook<string>('openClaudeTab', other)
+  const second = await cockpit.hook<string>('openClaudeTab', other)
+  expect(first).toBeTruthy()
+  expect(second).toBeTruthy()
+
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const strip = page.frameLocator('.top-strip iframe[title="sessions-strip slot"]').locator('.entry')
+    await expect(strip).toHaveCount(2, { timeout: 15_000 })
+    await page.frameLocator('.top-strip iframe[title="sessions-strip slot"]').locator(`.entry[data-tab-id="${second}"]`).click()
+
+    await expect(page).toHaveURL(`${server.origin}/?project=${encodeURIComponent(otherId)}`, { timeout: 15_000 })
+    await expect(page.getByRole('tab')).toHaveCount(2)
+    await expect(page.getByRole('tab').nth(1)).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { selected: true })).toHaveCount(1)
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
 // design-web.md §9.4, §9.6: with no desktop, a browser's Settings shows the web access card read-only
 // (never a link), lists the devices with Revoke and Disconnect behind the in-page approval, follows
 // `ccc web` changes live, and web-access.log names the device that revoked.

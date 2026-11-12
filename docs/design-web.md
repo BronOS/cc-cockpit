@@ -837,6 +837,11 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   Built: an icon button in the browser's top bar before the gear (`renderer/web/CloseProject.tsx`), drawn only in a
   server's view; the confirm is an `ApprovalDialog` (§9.6), and a view whose socket closes with the window-closed code
   goes to the picker with `location.replace('/')`.
+- **Another project's session.** A session chip of another project (the cockpit.sessions strip, `ctx.sessions.focus`)
+  would raise that project's window, which here is a hidden page: nothing moves. So in server mode main sends the
+  acting browser view `project.goto` (`adapted`: only to that remote view, only in server mode; `focusTabInView`), and
+  the web client goes to `?project=<id>&tab=<id>`, selects that tab once its list is in and drops `tab` from the
+  address. A desktop remote window opens that project in its own window instead (design-remote-desktop.md §4).
 - **No desktop picker, no quit.** In server mode `WindowManager` never makes the picker window (it would be invisible,
   and on Linux its close quits the app); with no project open the app keeps running with the gateway up until SIGTERM.
 - **The hidden page is a state of its own**, not Keep running's (§5.6), whose mark is undone by `remoteViewGone`,

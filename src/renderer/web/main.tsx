@@ -24,7 +24,7 @@ import type { WebAccessMode } from '../../shared/types'
 import { SESSION_PATH, WS_PATH } from '../../shared/web-protocol'
 import { App } from '../App'
 import { setPrefs, startPrefs } from '../prefs/prefs-store'
-import { armLoadTake, isServerView, markWebShell, setOwnView, setServerHint } from '../shell-kind'
+import { armLoadTab, armLoadTake, isServerView, markWebShell, setOwnView, setServerHint } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { validateTheme } from '../../shared/theme'
@@ -36,6 +36,7 @@ import { startChime } from '../notify/chime'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
+import { projectHref, takeTabParam } from './picker-model'
 import { ConfirmSignIn, PasswordSignIn } from './sign-in-forms'
 import { linkTokenOf, signIn, signedOutText } from './sign-in'
 import '../assets/fonts/fonts.css'
@@ -79,6 +80,15 @@ darkQuery?.addEventListener('change', (ev) => {
  * picker (picker.tsx), whose rows link here.
  */
 const project = new URLSearchParams(location.search).get('project') ?? ''
+
+// `?tab=` (projectHref): the tab the shell selects once its list is in (a session chip of another
+// project, `project.goto` below). Taken once and dropped from the address at once, so a reload or a
+// copied link does not select it again over the person's own choice since.
+const tabParam = takeTabParam(location.href)
+if (tabParam !== undefined) {
+  history.replaceState(history.state, '', tabParam.url)
+  if (project !== '' && tabParam.tabId !== undefined) armLoadTab(tabParam.tabId)
+}
 
 /** The browser's fetch, bound (an unbound `fetch` throws "Illegal invocation" in some browsers). */
 const browserFetch = (input: string, init?: RequestInit): Promise<Response> => fetch(input, init)
@@ -215,6 +225,15 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     }
   })
   window.cockpit = bridge.api
+  // Server mode (main/tabs/view-selections.ts focusTabInView): a session chip of another project
+  // clicked here, whose window is a hidden page nothing can raise. This page goes there instead,
+  // relative like the picker's links (a reverse-proxy prefix is kept); main sends it only to this
+  // view, and only from a server. A payload that is not two non-empty ids is ignored.
+  bridge.api.on('project.goto', (goto) => {
+    const { projectId, tabId } = (goto ?? {}) as { projectId?: unknown; tabId?: unknown }
+    if (typeof projectId !== 'string' || projectId === '' || typeof tabId !== 'string' || tabId === '') return
+    location.assign(projectHref(projectId, tabId))
+  })
   // A server's streamed webview panels (webview-canvas.tsx) take their frames from this bridge.
   setWebviewFrameSource((key, listener) => bridge.onWebviewFrame(key, listener))
   themeFromMain = true

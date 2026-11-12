@@ -2803,8 +2803,9 @@ function start(server: boolean): void {
   // ctx.sessions.focus may name a tab of any project; main finds its window
   // from its own registry entry and only moves focus there, then tells that window's renderer to
   // select it. False for an id that is no Claude tab (any more). Per view (tabs/view-selections.ts
-  // focusTabInView): in the view the plugin acted for when it is a view of the tab's window, else
-  // the tab's desktop window is raised and selects it.
+  // focusTabInView): in the view the plugin acted for when it is a view of the tab's window; in
+  // server mode a browser view of another window is sent to the tab's project page; else the tab's
+  // desktop window is raised and selects it.
   const focusClaudeTab = (tabId: string, view?: ViewId): boolean => {
     const entry = sessions.get(tabId)
     if (!entry) return false
@@ -2813,7 +2814,9 @@ function start(server: boolean): void {
         windowOfProject: (projectId) => windows.windowIdOf(projectId),
         windowOfView: (viewId) => views.windowOf(viewId),
         raise: (projectId) => windows.focusProject(projectId),
-        select: (viewId, id) => views.toView(viewId, 'tabs.select', { tabId: id })
+        select: (viewId, id) => views.toView(viewId, 'tabs.select', { tabId: id }),
+        server,
+        goto: (viewId, projectId, id) => views.toView(viewId, 'project.goto', { projectId, tabId: id })
       },
       entry.projectId,
       tabId,
@@ -2964,6 +2967,15 @@ function start(server: boolean): void {
             const windowId = project ? windows.windowIdOf(project.id) : undefined
             if (!project || windowId === undefined) return Promise.resolve(false)
             return closeTabForPlugin(windowId, project.id, tabId)
+          },
+          // A plugin's ctx.sessions.open in a project folder's window, not focused: the new tab's id
+          // (undefined for an unknown folder). Server-mode specs use it for Claude tabs in a project
+          // no browser shows.
+          openClaudeTab: async (path: string) => {
+            const project = projectAt(path)
+            const windowId = project ? windows.windowIdOf(project.id) : undefined
+            if (!project || windowId === undefined) return undefined
+            return (await openClaudeTab(project.id, {}, windowId, false)).id
           },
           // A plugin's ctx.sessions.openShell then, at once, ctx.sessions.close of the tab it got: the
           // ask reaches the page right behind the tab's `tabs.added`, before React committed it.

@@ -161,16 +161,24 @@ describe('activeTab follows the view that acted last', () => {
 })
 
 describe('focusTabInView (ctx.sessions.focus)', () => {
-  function focusSetup(): { deps: FocusTabDeps; selected: Array<[string, string]>; raised: string[] } {
+  function focusSetup(server = false): {
+    deps: FocusTabDeps
+    selected: Array<[string, string]>
+    raised: string[]
+    gone: Array<[string, string, string]>
+  } {
     const selected: Array<[string, string]> = []
     const raised: string[] = []
+    const gone: Array<[string, string, string]> = []
     const deps: FocusTabDeps = {
       windowOfProject: (projectId) => ({ [P]: 1, [Q]: 2 })[projectId],
-      windowOfView: (viewId) => ({ 'web:1': 1, 'web:2': 2 })[viewId],
+      windowOfView: (viewId) => ({ 'web:1': 1, 'web:2': 2, 'desktop:2': 2 })[viewId],
       raise: (projectId) => (raised.push(projectId), true),
-      select: (viewId, tabId) => (selected.push([viewId, tabId]), true)
+      select: (viewId, tabId) => (selected.push([viewId, tabId]), true),
+      server,
+      goto: (viewId, projectId, tabId) => (gone.push([viewId, projectId, tabId]), true)
     }
-    return { deps, selected, raised }
+    return { deps, selected, raised, gone }
   }
 
   it('a click in a remote view selects there only, without raising the desktop window', () => {
@@ -192,6 +200,40 @@ describe('focusTabInView (ctx.sessions.focus)', () => {
       ['desktop:1', 't1']
     ])
     expect(raised).toEqual([P, P, P])
+  })
+
+  // Server mode: a project window is a hidden page; raising it moves nothing on any screen.
+  it("server mode: a browser view of another window is sent to the tab's project, nothing raised", () => {
+    const { deps, selected, raised, gone } = focusSetup(true)
+    expect(focusTabInView(deps, P, 't1', 'web:2')).toBe(true)
+    expect(gone).toEqual([['web:2', P, 't1']])
+    expect(selected).toEqual([])
+    expect(raised).toEqual([])
+  })
+
+  it('server mode: the same window still selects in place; no view, a desktop view or a gone view raises as before', () => {
+    const { deps, selected, raised, gone } = focusSetup(true)
+    expect(focusTabInView(deps, P, 't1', 'web:1')).toBe(true)
+    expect(focusTabInView(deps, P, 't1')).toBe(true)
+    // The hidden page's own view (a desktop id) never gets `project.goto`.
+    expect(focusTabInView(deps, P, 't1', 'desktop:2')).toBe(true)
+    // A browser view that closed meanwhile: no view to send it to.
+    expect(focusTabInView(deps, P, 't1', 'web:99')).toBe(true)
+    expect(gone).toEqual([])
+    expect(selected).toEqual([
+      ['web:1', 't1'],
+      ['desktop:1', 't1'],
+      ['desktop:1', 't1'],
+      ['desktop:1', 't1']
+    ])
+    expect(raised).toEqual([P, P, P])
+  })
+
+  it('off server mode a browser view of another window never gets project.goto', () => {
+    const { deps, raised, gone } = focusSetup(false)
+    expect(focusTabInView(deps, P, 't1', 'web:2')).toBe(true)
+    expect(gone).toEqual([])
+    expect(raised).toEqual([P])
   })
 
   it('is false when the tab has no window or it cannot be raised', () => {

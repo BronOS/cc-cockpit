@@ -10,7 +10,7 @@
 //
 // With web access off a window has one view, and this is exactly the old rule: the active tab is
 // what the window last selected.
-import { desktopViewId, type ViewId } from '../../shared/views'
+import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 
 export interface ViewSelectionsDeps {
   /** Whether `tabId` is a tab of `projectId` now (a stale or foreign id changes nothing). */
@@ -82,6 +82,10 @@ export interface FocusTabDeps {
   raise(projectId: string): boolean
   /** Tell one view to select a tab (ViewRegistry.toView with `tabs.select`). */
   select(viewId: ViewId, tabId: string): boolean
+  /** Main runs as a server (main's own flag, never a payload): project windows are hidden pages. */
+  server: boolean
+  /** Tell one browser view to go to another project's page and select a tab there (`project.goto`). */
+  goto(viewId: ViewId, projectId: string, tabId: string): boolean
 }
 
 /**
@@ -90,11 +94,21 @@ export interface FocusTabDeps {
  * it and the desktop window is not raised (the click was on another device). Otherwise the tab's
  * window is raised and its desktop view selects it; the window's remote views keep their own
  * selection. The selecting view reports `tabs.selected` back, which makes it the last to act.
+ *
+ * Server mode: a project window is a hidden page that is never shown, so raising it moves nothing
+ * on any screen and a browser's click on another project's tab (the cockpit.sessions strip lists
+ * every open project) would do nothing. There the acting browser view itself is sent to the other
+ * project's page (`project.goto`, which the web client turns into `?project=<id>&tab=<id>`). Only a
+ * remote view main still has (a closed one falls through to the raise, which selects in the hidden
+ * page, as before); the desktop page and the hidden page never get the event.
  */
 export function focusTabInView(deps: FocusTabDeps, projectId: string, tabId: string, view?: ViewId): boolean {
   const windowId = deps.windowOfProject(projectId)
   if (windowId === undefined) return false
   if (view !== undefined && deps.windowOfView(view) === windowId) return deps.select(view, tabId)
+  if (deps.server && view !== undefined && isRemoteViewId(view) && deps.windowOfView(view) !== undefined) {
+    return deps.goto(view, projectId, tabId)
+  }
   if (!deps.raise(projectId)) return false
   deps.select(desktopViewId(windowId), tabId)
   return true

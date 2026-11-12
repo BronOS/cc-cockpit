@@ -1693,6 +1693,13 @@ export interface IpcEventMap {
    * or any other way): what `window.info` would now say about it. Project windows only.
    */
   'project.updated': ProjectSummary
+  /**
+   * Server mode, one browser view only (main/tabs/view-selections.ts focusTabInView): a plugin's
+   * ctx.sessions.focus from this view named a tab of another project open on the server, whose
+   * window is a hidden page nothing can raise. The web client goes to that project's page
+   * (`?project=<projectId>&tab=<tabId>`) and selects the tab there.
+   */
+  'project.goto': { projectId: string; tabId: string }
   /** Picker only: a listed project changed (its colour); read the recent list again. */
   'projects.changed': void
   /** Picker only: a saved remote server, its windows or its connection changed; ask `remote.list` again. */
@@ -1951,6 +1958,7 @@ export const EVENT_CHANNELS = [
   'oauth.signInEnded',
   'settingsPage.held',
   'project.updated',
+  'project.goto',
   'projects.changed',
   'remote.changed',
   'tabs.select',
@@ -2079,6 +2087,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'app.linkNotice': 'yes',
   'oauth.signInEnded': 'yes',
   'project.updated': 'yes',
+  // Server mode's "go to that project" (focusTabInView): main sends it only to the acting browser
+  // view, by main's server flag and a remote view id, never on a payload; outside server mode a
+  // remote view gets none of it (web/connection.ts remoteEvent), and the desktop and hidden pages
+  // are never sent it.
+  'project.goto': 'adapted',
 
   // Zones, commands, plugin panels, slots and settings pages: project work, per view from Task 17.
   'layout.get': 'yes',
