@@ -17,12 +17,12 @@
 //                                        says so with the port; false until then and on the desktop).
 //                                        A UI hint only: main refuses desktop-only calls by itself
 //
-// Built to out/sdk/panel.js by the main build (electron.vite.config.ts) and served by the
-// cc-plugin:// handler for every plugin (src/main/plugins/plugin-protocol.ts). It is a classic
-// script, not a module: no import or export may appear here (the main build emits CommonJS, and an
-// `exports` reference would throw in a page); the logic lives in panel-core.ts and is bundled in.
+// Built to out/sdk/panel.js by a build of its own, IIFE output (panelSdk in electron.vite.config.ts,
+// which fails the build if the file imports or requires anything), and served by the cc-plugin://
+// handler for every plugin (src/main/plugins/plugin-protocol.ts). It is a classic script, not a
+// module: no export may appear here; the logic lives in panel-core.ts and is bundled in.
 // A `?raw` import: Vite inlines the file's text as a string literal, so this stays one classic
-// script with no shared chunk (and no `require`) in out/sdk/panel.js.
+// script with no `require` in out/sdk/panel.js.
 import componentsCss from './components.css?raw'
 import { PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
 

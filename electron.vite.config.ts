@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
-import type { Plugin } from 'vite'
+import { build, type Plugin } from 'vite'
 
 // Build layout (the rest of the app, the ccc wrapper and the plugin host spawner rely on it):
 //   out/main/index.js      Electron main
@@ -15,21 +15,61 @@ import type { Plugin } from 'vite'
 //   out/cli/index.js       the `ccc` CLI (run as Node by the generated wrapper)
 //   out/host/index.js      plugin host (utilityProcess entry)
 //   out/sdk/panel.js       the panel SDK, a classic browser script served at
-//                          cc-plugin://<id>/__sdk/panel.js (src/sdk/panel.ts: no import/export
-//                          of its own, so the CommonJS output has no `require`/`exports` in it;
-//                          wrapped in a function by the banner/footer below)
+//                          cc-plugin://<id>/__sdk/panel.js; its own build (panelSdk below), not
+//                          an entry of the main build
 //   out/preload/index.js   renderer bridge
 //   out/renderer/          shell UI
 //   out/renderer/web/      the web shell (design-web.md §2): the same React shell with the socket
 //                          bridge (src/renderer/web/) instead of the preload, a second input of the
 //                          renderer build so both share one set of chunks under out/renderer/assets;
 //                          the web access gateway serves it to a browser
-// cli and host are extra Node entries of the main build: they share main's Node target and
+// cli, host and the main/ entries are Node entries of the main build: they share main's Node target and
 // externalisation rules, and their input keys carry the directory so one `outDir: out` yields
-// the three folders above.
+// the three folders above. The Node entries may share chunks under out/chunks (rolldown's runtime
+// helpers among them, since ssh2 is CommonJS): fine for Node, never for the panel SDK.
 // Compiled into the main bundles (src/shared/app-version.ts): `ccc` runs as plain Node, where
 // app.getVersion() does not exist, and compares this with the version the running app reports.
 const { version } = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }
+
+// The panel SDK (src/sdk/panel.ts) is a classic script in plugin pages: no module system, so no
+// `require`. It used to be one more entry of the main build, with nothing but care keeping it free of
+// shared chunks; bundling ssh2 (CommonJS) made rolldown move its runtime helpers into a shared
+// out/chunks/rolldown-runtime-*.js that every entry, panel.js included, loaded with `require`, and
+// every plugin panel stopped talking to its host. Rolldown has no option to inline the runtime per
+// entry, and folding ssh-client back into main only hides the trigger, so the SDK gets a build of its
+// own: one input, IIFE output (a function wrapper, so its top-level names stay out of the page's
+// global scope: a plugin script declaring its own `client` or `PanelClient` would collide), nothing
+// to share a chunk with. It runs when the main build closes (electron-vite builds main first and
+// main's emptyOutDir has run by then), so `electron-vite build` and `dev` both write it. The check
+// after it fails the build if the file ever imports or requires anything again.
+const PANEL_SDK_OUT = resolve(__dirname, 'out/sdk')
+const panelSdk: Plugin = {
+  name: 'cc-panel-sdk',
+  async closeBundle() {
+    const result = await build({
+      configFile: false,
+      root: __dirname,
+      publicDir: false,
+      logLevel: 'warn',
+      build: {
+        outDir: PANEL_SDK_OUT,
+        emptyOutDir: false,
+        minify: false,
+        reportCompressedSize: false,
+        rollupOptions: {
+          input: resolve(__dirname, 'src/sdk/panel.ts'),
+          output: { format: 'iife', entryFileNames: 'panel.js' }
+        }
+      }
+    })
+    const outputs = (Array.isArray(result) ? result : [result]).flatMap((r) => ('output' in r ? r.output : []))
+    const chunks = outputs.filter((o) => o.type === 'chunk')
+    const sdk = chunks.find((c) => c.fileName === 'panel.js')
+    if (!sdk || chunks.length !== 1 || sdk.imports.length || sdk.dynamicImports.length || sdk.code.includes('require(')) {
+      throw new Error('out/sdk/panel.js must be one classic script with no imports and no require(): see electron.vite.config.ts')
+    }
+  }
+}
 
 // ssh2 (design-remote-desktop.md §8 "The library") is a devDependency, so electron-vite bundles it
 // into main instead of leaving a `require('ssh2')` that would need it shipped in node_modules. Its two
@@ -57,7 +97,7 @@ const ssh2PureJs: Plugin = {
 export default defineConfig({
   main: {
     define: { __APP_VERSION__: JSON.stringify(version) },
-    plugins: [ssh2PureJs],
+    plugins: [ssh2PureJs, panelSdk],
     build: {
       outDir: 'out',
       // Empties the whole of out/, including out/preload and out/renderer. That is only safe
@@ -71,20 +111,12 @@ export default defineConfig({
           'main/mirror-worker': resolve(__dirname, 'src/main/terminals/mirror-worker.ts'),
           'main/ssh-client': resolve(__dirname, 'src/main/remote/ssh-client.ts'),
           'cli/index': resolve(__dirname, 'src/cli/index.ts'),
-          'host/index': resolve(__dirname, 'src/host/index.ts'),
-          'sdk/panel': resolve(__dirname, 'src/sdk/panel.ts')
+          'host/index': resolve(__dirname, 'src/host/index.ts')
         },
         // node-pty is a native module (rebuilt for the Electron ABI in postinstall); it cannot be
         // bundled and must be loaded from node_modules at run time.
         external: ['node-pty'],
-        output: {
-          entryFileNames: '[name].js',
-          // The panel SDK runs as a classic script in plugin pages: wrapped in a function, its
-          // top-level names stay out of the page's global scope (a plugin script declaring its own
-          // `client` or `PanelClient` would otherwise collide with them).
-          banner: (chunk) => (chunk.name === 'sdk/panel' ? '(() => {' : ''),
-          footer: (chunk) => (chunk.name === 'sdk/panel' ? '})();' : '')
-        }
+        output: { entryFileNames: '[name].js' }
       }
     }
   },

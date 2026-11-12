@@ -113,6 +113,8 @@ opens its projects in sandboxed desktop windows running the server's web client)
 - `src/sdk/panel.ts` is built as a classic script with no `require`: a module both it and main/host import becomes a shared
   chunk that `out/sdk/panel.js` loads with `require`, which throws in a page (`electron.vite.config.ts`). So a constant main
   or the host needs (`MAX_OVERLAY_MESSAGE_LENGTH`) lives in its own file (`src/shared/overlay-message.ts`), not in `panel-core.ts`.
+  It has its own IIFE build (`panelSdk`, run when the main build closes; bundling ssh2 put rolldown's runtime in a shared
+  chunk), and that build fails if `panel.js` has an import or a `require(`.
 - `serviceProviders` in the project record also holds the reserved key `@open-file` (plugin id or `@builtin`; a service name
   never starts with `@`): code that walks the picks as services must skip it (`OPEN_FILE_PICK`, `src/shared/services.ts`).
 - `SessionInfo.typed` (`session-registry.ts`) is set from the person's input only (the renderer's terminal `onData` through

@@ -63,7 +63,7 @@ describe('electron-builder.yml', () => {
     const vite = readFileSync(join(root, 'electron.vite.config.ts'), 'utf8')
     expect(vite).toContain("'main/ssh-client': resolve(__dirname, 'src/main/remote/ssh-client.ts')")
     expect(vite).toContain("source === 'cpu-features' || source.endsWith('.node') ? SSH2_NATIVE_STUB : null")
-    expect(vite).toContain('plugins: [ssh2PureJs]')
+    expect(vite).toContain('plugins: [ssh2PureJs, panelSdk]')
     // The lockfile marks ssh2 and everything it pulls in as dev-only, so `npm ci --omit=dev` (what
     // electron-builder collects) has none of them.
     const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')) as {
@@ -72,6 +72,16 @@ describe('electron-builder.yml', () => {
     for (const name of ['ssh2', 'cpu-features', 'asn1', 'bcrypt-pbkdf', 'nan', 'buildcheck']) {
       expect(lock.packages[`node_modules/${name}`]?.dev, name).toBe(true)
     }
+  })
+
+  it('builds the panel SDK on its own, as one classic script the build checks', () => {
+    // out/sdk/panel.js runs in plugin pages with no `require`: as an entry of the main build it
+    // shared rolldown's runtime chunk once ssh2 was bundled, and every plugin panel lost its host.
+    // Its own IIFE build has nothing to share, and the build fails if panel.js imports or requires.
+    const vite = readFileSync(join(root, 'electron.vite.config.ts'), 'utf8')
+    expect(vite).not.toContain("'sdk/panel':")
+    expect(vite).toContain("output: { format: 'iife', entryFileNames: 'panel.js' }")
+    expect(vite).toContain("sdk.code.includes('require(')")
   })
 
   it('ships the bundled plugins as plain files under resources/plugins', () => {
