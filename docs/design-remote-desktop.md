@@ -37,13 +37,14 @@ desktop app (client)                                   server (cc-cockpit --serv
 │ SshTunnel (main)      ─────┼── ssh -N -L L:127.0.0.1:P ──▶ gateway 127.0.0.1:P     │
 │ RemoteWindow (sandboxed    │                        │                              │
 │  BrowserWindow, partition  │── http://127.0.0.1:L/?project=<id> ──▶ web client     │
-│  remote:<serverId>)        │   one WebSocket per window, streamed webviews         │
+│  persist:remote-<id>)      │   one WebSocket per window, streamed webviews         │
 └────────────────────────────┘                        └──────────────────────────────┘
 ```
 
 - **`RemoteWindow`** is a `BrowserWindow` that loads the server's web client and is treated exactly as a browser tab:
   no preload, `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`, its own session partition. It is not
-  a project window: `WindowManager`, `ViewRegistry`, plugin hosts and the local socket know nothing of it. Nothing on
+  a project window: `ViewRegistry`, plugin hosts and the local socket know nothing of it, and `WindowManager` only
+  counts it (§4 "Lifecycle"). Nothing on
   the remote page can reach local IPC, local files, local Claude tabs or another server's session.
 - **`RemoteServers`** (main) keeps the saved servers, opens and tracks remote windows, and owns each server's tunnel and
   device cookie.
@@ -62,17 +63,28 @@ interface RemoteServer {
     | { kind: 'ssh'; host: string; ccc?: string }   // host as typed (an ssh_config alias works); ccc: path override
     | { kind: 'direct'; origin: string }             // scheme://host[:port] of the link, nothing else kept
   recent: { projectId: string; name: string; at: number }[]   // last 8 remote projects opened from this app
+  cookie?: string            // the device cookie, encrypted by the SecretStore (`encrypt`/`decrypt`), never plain
+  localPort?: number         // SSH: the tunnel's preferred local port, kept so the page's origin stays the same
 }
 ```
 
-- The **device cookie** is a credential: it is kept in the secret store (`remote:<id>:cookie`, the keychain on the
-  desktop), never in a persistent partition (Electron does not encrypt its cookie database here; the app has no
-  cookie-encryption fuse). Each server's partition is in-memory (`remote:<id>`, no `persist:`): at the first window
-  main sets the cookie from the store with `session.cookies.set`, and `session.cookies.on('changed')` saves a new or
-  removed `ccc_device` cookie back. Separate partitions also matter for correctness: cookies ignore ports, so two
-  servers tunnelled to `127.0.0.1:L1` and `:L2` would otherwise share one cookie jar.
+- The **device cookie** is a credential. `SecretStore` is `encrypt`/`decrypt` only (`secrets/secret-store.ts`), so
+  the cookie is kept encrypted in the server's own record (`cookie`), like the other stored values, and listed in
+  `storedSecretValues` so the secrets status counts it. It never sits in a cookie database: Electron does not encrypt
+  its own here (the app has no cookie-encryption fuse).
+- **Partition.** Each server gets `persist:remote-<id>`, so the web client's per-origin `localStorage` (zone sizes,
+  `renderer/zones/view-geometry.ts`) survives a relaunch; SSH keeps the origin stable by reusing `localPort` when it is
+  free. The cookie is kept out of the partition's database: main sets it from the record with `session.cookies.set`
+  **without an expiry** (a session cookie, which Chromium does not write to disk), and `session.cookies.on('changed')`
+  picks up a new `ccc_device` from a sign-in, saves it to the record and sets it again as a session cookie (a guard
+  stops the second `changed` from looping). Task 4 verifies on disk that the partition's `Cookies` file never holds
+  `ccc_device` after quit; if it does, the partition goes in-memory and zone sizes reset each launch (documented).
+- Separate partitions also matter for correctness: cookies ignore ports, so two servers tunnelled to `127.0.0.1:L1`
+  and `:L2` would otherwise share one cookie jar.
+- **No secret store** (Linux with no keyring: the store refuses): the cookie is not kept, every launch pairs again and
+  adds a device on the server (cap 64 there). The picker says so on the server row ("not remembered: no keyring").
 - An access link is never stored: Direct keeps only its origin; the token is used once to sign in and dropped.
-- `recent` holds names as the server's page reported them (the window title), shown as plain text.
+- `recent` names come from the server's `/api/projects` (§4), shown as plain text.
 
 ## 3. Picker
 
@@ -88,7 +100,10 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
 - Picker rows render through the shared picker parts (`src/renderer/picker/parts.tsx`), so a remote project looks like
   a local one with a server badge.
 - The picker asks main through new `remote.*` channels; all are `REMOTE_CLASS` `no` (they spawn processes and store
-  credentials on this machine: a browser view of this desktop must never drive them).
+  credentials on this machine: a browser view of this desktop must never drive them). They are routed in
+  `main/ipc/router.ts` beside the other picker-only calls (`ctx.kind === 'picker'`), through the generic `invoke`.
+- Connecting closes the picker as opening a local project does; the remote window then counts as an open window for
+  `WindowManager`'s rules (§4 "Lifecycle").
 
 ## 4. Remote windows
 
@@ -96,20 +111,35 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
   `did-navigate` / `did-navigate-in-page`, the web client's own routing, `renderer/web/main.tsx`). Opening a project
   that already has a window focuses it. When the server's web picker navigates a window to a project that another
   window shows, that window is focused and this one goes back to the picker.
-- Title: the page's `document.title`, prefixed by the server name (`devbox — api`), so two servers' projects with the
-  same name differ in the taskbar.
-- **Shortcuts.** The web client already maps every chord itself (`commandForEvent`); in a desktop window no browser
-  steals any. The app menu's accelerators (`main/menu.ts`: Open Folder, edit roles, quit) are resolved for a focused
-  remote window as for the picker (`''` key table): Open Folder opens the local picker's dialog, which is what the
-  person expects from the desktop app; edit roles stay so copy and paste work in the page.
-- **Links and new windows.** `setWindowOpenHandler` denies every page-opened window; an `http(s)` URL goes to
-  `openExternal` on this machine through the existing `createOpenExternal` (the person's own browser). Navigation away
-  from the server's origin is blocked (`will-navigate`), so a remote page cannot turn the window into a general browser.
+- **Title and names.** The web shell's only title is the static `cc-cockpit` (`renderer/web/index.html`), so main does
+  not read the page's title: after a navigation to `?project=<id>` it asks the server's `/api/projects` through the
+  window's own session (`ses.fetch`, the device cookie applies) for that project's name. The window title is
+  `<server> — <project>` and `recent` stores the name.
+- **Shortcuts.** In a browser the web client moves Cmd/Ctrl+W, T, N and Ctrl+Tab to their Alt variants
+  (`webKeyTable`, `renderer/commands/web-keys.ts`, applied in `keybindings.ts › setCommands` whenever `isWebShell()`),
+  because the browser keeps those. In a remote window nothing keeps them, so the web client skips `webKeyTable` when its
+  user agent carries `cc-cockpit-desktop/` (§5.2): the same table as the desktop app. A UA is page-visible and
+  forgeable, which is fine here: it only picks which chords the page itself listens to. The app menu needs no change: a
+  focused window that is not a project window already resolves to the `''` key table (`index.ts › focusedProjectId`).
+- **Lifecycle.** `WindowManager` quits on Linux when the picker closes with no project window (`pickerClosed`) and shows
+  the picker when the last project window closes. Remote windows count for both: `WindowManager` gets a
+  `remoteWindowCount()` hook, used by `pickerClosed`, the last-window rule, `focusAny` and `activate`, so the app
+  neither quits under a remote window nor leaves the person with no window when the last remote one closes.
+- **Hardening**, the webview precedent (`webview/webview-hardening.ts`, `webview-manager.ts`) applied to the window:
+  - `setWindowOpenHandler` denies every page-opened window; an `http(s)` URL goes to the person's own browser through
+    `createOpenExternal`, under the same open budget webviews use (a page cannot flood the desktop with tabs).
+  - `will-navigate` and redirects pinned to the server's origin; `will-download` cancelled; `login` cancelled;
+    `will-prevent-unload` ignored (closing always closes); the WebRTC IP policy as webviews; `devTools: false` when
+    packaged.
+  - In SSH mode the page's origin is loopback, and its requests carry cookies to any `127.0.0.1` port (cookies ignore
+    ports): `webRequest.onBeforeRequest` cancels requests to any loopback host other than the server's own origin.
+  - Remote windows are excluded from the app's `browser-window-created` and `focus` handlers (`index.ts`), as
+    `isOffscreenWindow` excludes off-screen webviews.
 - **Notifications.** The web client's in-page notices and chime work as in a browser. HTML5 `Notification` is not
-  granted (`setPermissionRequestHandler` denies everything: camera, mic, notifications, clipboard read), as a page of
-  untrusted origin; system notifications for remote sessions are a later item (§9).
-- **Permissions and certificates.** Default Chromium checks. A Direct server with a self-signed certificate fails with
-  the page's error; there is no "proceed anyway" (as with plugin webviews, `webview-hardening.ts`).
+  granted: non-default sessions are already denied every permission (`index.ts`, the permission handlers), which covers
+  camera, mic, notifications and clipboard read. System notifications for remote sessions are a later item (§9).
+- **Certificates.** Default Chromium checks. A Direct server with a self-signed certificate fails with the page's
+  error; there is no "proceed anyway" (as with plugin webviews).
 - **Connection loss.** The web client already reconnects with a backoff and shows its banner. Below it, the tunnel
   (§5) restarts on its own; the page needs nothing new. Closing the last window of a server stops its tunnel after
   30 s (a quick reopen reuses it).
@@ -121,24 +151,36 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
 All through the person's `ssh` (found on PATH, `ssh` on mac and Linux; Windows is not a target), argv only:
 
 ```
-ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> <ccc> web status --json
-ssh -o BatchMode=yes -o ConnectTimeout=10 -- <host> <ccc> web add-device
-ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+COMMON = -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=no -o ControlPath=none
+         -o RemoteCommand=none -o ClearAllForwardings=yes
+ssh COMMON -- <host> sh -c '<script>' sh web status --json
+ssh COMMON -- <host> sh -c '<script>' sh web add-device
+ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=no -o ControlPath=none -o RemoteCommand=none \
+    -o ClearAllForwardings=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
     -N -L 127.0.0.1:<L>:127.0.0.1:<P> -- <host>
 ```
 
-- `host` is refused when it starts with `-` or holds whitespace or control characters (an option, not a host); `--`
-  ends options anyway.
-- The remote command is a string the server's login shell parses. Its fixed words are constants; `<ccc>` is the
-  person's own path for their own server, still single-quoted with `'` refused, so a typo cannot run something else.
-  Default `<ccc>`: `~/.config/cc-cockpit/bin/ccc` (server mode's wrapper in the default data dir; `~` left unquoted so
-  the remote shell expands it), then plain `ccc` when that is missing (a deb that puts one on PATH).
+- The person's `ssh_config` is honoured (aliases, users, keys, ProxyJump) except what breaks a managed child:
+  `ControlMaster`/`ControlPersist` (the child would hand its forward to a master and exit, so restart and kill tracking
+  fail), a configured `RemoteCommand`/`RequestTTY` (conflicts with a command), and configured `LocalForward`s
+  (`ClearAllForwardings`: one of them failing would be misread as "port L taken").
+- `host` passes a character allowlist (letters, digits, `.`, `-`, `_`, `@`, `:` for an IPv6 literal, `[`/`]`), and
+  may not start with `-`: a `%h` in the person's ProxyCommand would otherwise carry shell metacharacters. `--` ends
+  options anyway.
+- The remote command is one fixed POSIX `sh -c` script (the login shell may be fish or csh, which would not parse a
+  fallback): it runs `$CCC` when set (the person's override, passed as a single-quoted assignment with `'` refused), else
+  `$HOME/.config/cc-cockpit/bin/ccc` (server mode's wrapper in the default data dir), else `ccc` on PATH (rare: `ccc`
+  lives in `~/.local/bin`, often off a non-interactive PATH, and the deb installs none); it exits 127 with a known line
+  when none exists. The wrapper exits 0 silently when its app is gone (`hooks/ccc-wrapper.ts`), so empty stdout is an
+  error ("cc-cockpit is not installed there, or the server is not running"). Only the last stdout line is parsed, so rc
+  file noise before it does no harm.
 - **BatchMode, no prompts.** The app never shows a password or passphrase prompt and never answers a host-key question:
   that stays between the person, their terminal and their agent. A failure shows ssh's last stderr line and the one
   command that fixes most of them: "Run `ssh devbox` once in a terminal (accept the host key; add your key to the
   agent)". This keeps SSH's trust decisions out of the app entirely.
-- `<P>` is the gateway port from `web status --json`; `<L>` is a free local port: main listens on `127.0.0.1:0`,
-  reads the port, closes, starts ssh; on `ExitOnForwardFailure` (taken in between) it retries twice with a new port.
+- `<P>` is the gateway port from `web status --json`; `<L>` is the server's saved `localPort` when it is free, else a
+  free one (main listens on `127.0.0.1:0`, reads the port, closes, starts ssh) which is then saved; on a forward
+  failure naming that port in stderr (taken in between) it retries twice with a new port.
 
 ### 5.2 Pairing
 
@@ -152,11 +194,18 @@ On Connect, and whenever the window's page lands on the sign-in screen (a revoke
 3. Mode **password**: the window shows the server's own password page; the person types it once.
 4. Mode **none**: nothing to do (loopback only, so only through the tunnel).
 
-A re-pair is automatic in link mode: when one of the window's requests gets the gateway's `401 not signed in` (the
-socket upgrade or an `/api` call, seen by main through the partition's `webRequest.onCompleted`), main
-mints a new add-device link over SSH once and reloads; a second failure in a row shows the error instead of looping.
-Each pairing is a new device on the server's list, named by the page from its user agent; the remote window sets its
-user agent suffix to `cc-cockpit-desktop/<version> (<this hostname>)` so the server's list says which machine it is.
+A re-pair is automatic in link mode. A revoked cookie gives no 401 on the page's first call: `/auth/session` answers
+200 with `device: null` and the page draws its sign-in screen (`gateway.ts › session`, `renderer/web/sign-in.ts`).
+So main treats `did-finish-load` and a completed request to the session path (`webRequest.onCompleted`) only as
+triggers, then asks `/auth/session` itself through the window's session (`ses.fetch`); `device === null` with mode
+`link` mints one add-device link over SSH and reloads the window with `#t=`. Re-pairing is serialised per server, not
+per window: the server holds one add-device token at a time (`auth.ts › addDeviceLink`), so two windows minting at
+once would void each other; the other windows of that server reload after the cookie lands. A second failure in a row
+shows the error instead of looping.
+
+Each pairing is a new device on the server's list. The remote window's user agent carries the suffix
+`cc-cockpit-desktop/<version> (<this hostname>)`, and the web client's `deviceName` (`sign-in.ts`) reads it, so the
+server's list shows "cc-cockpit desktop on <hostname>" instead of "Chrome on Linux".
 
 ### 5.3 The server change: loopback on any port
 
@@ -195,10 +244,10 @@ or turn TLS off: the SSH tunnel encrypts already"). Pinning the certificate's fi
 The rule of design-web.md §4 holds unchanged: a signed-in device is the person with a shell on the server. What is new
 is on the client:
 
-- **The remote page is a browser page.** Sandboxed, no preload, no IPC, its own in-memory partition, permissions denied,
+- **The remote page is a browser page.** Sandboxed, no preload, no IPC, its own partition (the cookie never on disk, §2), permissions denied,
   navigation pinned to its origin, page-opened windows denied, links to the person's own browser through
   `createOpenExternal`. A compromised server can do to this desktop what a website in a sandboxed tab can, no more.
-  A grep test keeps `RemoteWindow` without a preload and keeps `remote:` partitions off every other window.
+  A grep test keeps `RemoteWindow` without a preload and keeps `persist:remote-` partitions off every other window.
 - **Credentials.** The device cookie in the keychain; the SSH key never touched (ssh and its agent own it); access
   tokens used once and dropped; nothing written to logs but the server's name and what happened.
 - **Processes.** Only `ssh`, argv only, BatchMode; the host and `ccc` path checked as in §5.1. Spawned only from the
@@ -209,9 +258,11 @@ is on the client:
 
 ## 8. Versions
 
-`web status --json` carries the server's app version. A remote window needs a server with §5.3 (for SSH) and the
-current wire protocol (`PROTOCOL_VERSION`). An older server gets a plain message naming both versions, before any
-window opens. Direct needs no server change; an old server's web client works as it does in a browser.
+`web status --json` gains the server's app version and the gateway's `scheme`. No wire-protocol gate: the window runs
+the server's own web client, so this app's protocol constant is irrelevant. SSH needs a server with §5.3, recognised by
+`scheme` being present in the status; an older server gets "update cc-cockpit on <host> (it runs <version>)" before any
+window opens. Direct needs no server change; an old server's web client works as in a browser, with the browser key
+table (the UA check of §4 is in the server's client).
 
 ## 9. Later
 
