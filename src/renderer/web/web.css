@@ -95,6 +95,14 @@ body {
 .picker-web .picker-list {
   overflow: visible;
 }
+/* The folder browser sits inside .picker-web and its list is a .picker-list too, but it must keep
+   scrolling inside its fixed-height card (.folder-list-wrap clips): the two rules above let the
+   page's own list grow, and without this override they made the folder list unscrollable. */
+.picker-web .folder-browser .picker-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 /* A missing row's buttons (and Forget's confirm) wrap under the name on a phone instead of squeezing
    it: the row's control keeps a basis of its own. */
 .picker-web .picker-row {

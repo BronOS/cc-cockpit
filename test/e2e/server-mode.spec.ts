@@ -695,6 +695,33 @@ test('server mode: the browser picker opens folders through the folder browser, 
   }
 })
 
+// The folder list scrolls with the mouse wheel inside its card. Regression: the picker page's own
+// `.picker-web .picker-list { overflow: visible }` reached the folder list too (the dialog is drawn
+// inside the page), so a long folder was clipped by the card with no way to scroll it.
+test('server mode: a long folder list in the folder browser scrolls with the mouse wheel', async () => {
+  test.setTimeout(90_000)
+  server = await launchServer()
+  const many = join(realpathSync(server.cockpit.root), 'many')
+  for (let i = 0; i < 80; i++) mkdirSync(join(many, `folder-${String(i).padStart(2, '0')}`), { recursive: true })
+  const set = await ccc(server, ['web', 'set', '--start-folder', many])
+  expect(set.code, set.stderr).toBe(0)
+
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await page.getByRole('button', { name: 'Open folder…' }).click()
+    const folders = page.getByRole('dialog', { name: 'Open folder' }).getByRole('list', { name: 'Folders' })
+    await expect(folders.getByRole('button', { name: 'folder-00', exact: true })).toBeVisible()
+    // Taller content than the list shows, and the list itself is what scrolls.
+    expect(await folders.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true)
+    await folders.hover()
+    await page.mouse.wheel(0, 600)
+    await expect.poll(() => folders.evaluate((el) => el.scrollTop)).toBeGreaterThan(0)
+  } finally {
+    await browser.close()
+  }
+})
+
 // design-web.md §9.8: Close project in the browser shell asks in that view (the guarded in-page
 // approval), then `projects.close` closes the window main bound the view to, for every device: each
 // browser of that project goes back to the picker, the other project's window stays, and closing the
