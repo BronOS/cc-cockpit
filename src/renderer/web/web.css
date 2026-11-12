@@ -479,8 +479,30 @@ html[data-shell='web']:has(.tabs-pane) body {
 .webview-input[hidden] {
   display: none;
 }
-.webview-input:focus-visible {
+/* The page has the keyboard (its hidden textarea is focused). */
+.webview-input:focus-within {
   box-shadow: inset 0 0 0 1px var(--cc-accent);
+}
+/* The keyboard's focus (Task 8): invisible and out of the pointer's way, but a real text field, so
+   IMEs, dead keys and paste work; moved under the last press so an IME's window opens there. */
+.webview-text {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  opacity: 0;
+  color: transparent;
+  background: transparent;
+  caret-color: transparent;
+  pointer-events: none;
+  white-space: pre;
 }
 .webview-canvas-note {
   position: absolute;

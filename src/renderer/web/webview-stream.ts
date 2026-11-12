@@ -304,6 +304,8 @@ export function wheelPixels(deltaMode: number, deltaX: number, deltaY: number, p
 export interface InputKeyEventLike extends KeyEventLike {
   isComposing?: boolean
   defaultPrevented?: boolean
+  /** KeyboardEvent.getModifierState: AltGr, which Windows reports as Ctrl+Alt. */
+  getModifierState?(key: string): boolean
 }
 
 /**
@@ -317,14 +319,48 @@ export interface InputKeyEventLike extends KeyEventLike {
  *   prevented, so the browser's own copy and paste events still fire (Task 8).
  * - `forward`: a key of the allow-list (shared/webview-keys.ts), to the page; the browser's default
  *   (Tab moving focus, Space scrolling the shell, F5 reloading it) is prevented.
- * - `ignore`: anything else (a lone modifier, a dead key, an IME's composition, non-ASCII text that
- *   Task 8's textarea types): left alone.
+ * - `ignore`: anything else (a lone modifier, a dead key, an IME's composition, a non-ASCII
+ *   character, a character typed with AltGr): left alone, so the hidden textarea types it and its
+ *   text goes as `webviews.insertText` (Task 8). Not prevented, or the textarea would never see it.
+ *
+ * The split between keys and text (no character ever goes both ways): one printable ASCII key or
+ * Space with no Ctrl, Meta or Alt is `forward`ed and prevented here, and main sends it as key down +
+ * `char` (shared/webview-keys.ts webviewKeyChar: the page sees the events a real keyboard gives,
+ * and a page that prevents the key down gets no character, as with a real one); everything that is
+ * text but not that is the textarea's. Enter is a key too ('\r' as its char: a textarea's newline
+ * and a form's submit), as are Tab, Backspace, Delete, the arrows, Escape and the F-keys, and any
+ * key with Ctrl, Meta or Alt (Ctrl+A selects; it types nothing).
  */
 export function webviewKeyAction(e: InputKeyEventLike, isShellCommand: (e: KeyEventLike) => boolean): 'shell' | 'clipboard' | 'forward' | 'ignore' {
   if (e.isComposing || e.key === 'Process' || e.key === 'Dead') return 'ignore'
   if (e.defaultPrevented || isShellCommand(e)) return 'shell'
   if (isClipboardChord(e)) return 'clipboard'
+  // AltGr text ('@' on a German layout): on Windows it also reads as Ctrl+Alt, which would make it
+  // a shortcut with no char. A character is text, and the textarea types it.
+  if (e.key.length === 1 && e.getModifierState?.('AltGraph') === true) return 'ignore'
   return webviewKeyCode(e.key) === undefined ? 'ignore' : 'forward'
+}
+
+/** Most UTF-16 units per `webviews.insertText` call: at most 3 bytes each, under main's 64 KB. */
+export const TEXT_CHUNK_UNITS = 16 * 1024
+/** Most calls one paste makes (1 Mi units); the rest of a larger paste is dropped. */
+export const MAX_TEXT_CHUNKS = 64
+
+/**
+ * Text cut into `webviews.insertText` calls of at most TEXT_CHUNK_UNITS, never between the two
+ * halves of a surrogate pair (an emoji stays whole), at most MAX_TEXT_CHUNKS of them.
+ */
+export function textChunks(text: string, units = TEXT_CHUNK_UNITS, maxChunks = MAX_TEXT_CHUNKS): string[] {
+  const out: string[] = []
+  let at = 0
+  while (at < text.length && out.length < maxChunks) {
+    let end = Math.min(text.length, at + units)
+    const last = text.charCodeAt(end - 1)
+    if (end < text.length && end - at > 1 && last >= 0xd800 && last <= 0xdbff) end--
+    out.push(text.slice(at, end))
+    at = end
+  }
+  return out
 }
 
 /** Whether a key event is a copy, cut or paste chord on any platform (see webviewKeyAction). */

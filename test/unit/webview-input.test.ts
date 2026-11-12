@@ -4,10 +4,18 @@
 // input target; the shared key and cursor tables; the browser's side (web/webview-stream.ts): page
 // coordinates through the letterbox and the scale, the key split (shell chords, clipboard chords),
 // the outbox, click counts and wheel units. The router's gate is in ipc-router.test.ts.
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
   claimsOwner,
+  cleanSelection,
   cursorEvent,
+  encodedBytes,
+  MAX_SELECTION_BYTES,
+  MAX_SELECTION_CHARS,
+  MAX_TEXT_BYTES,
+  SELECTION_SCRIPT,
+  type InputModifier,
   INPUT_BURST,
   INPUT_RATE,
   MAX_INPUT_EVENTS,
@@ -21,6 +29,7 @@ import {
 import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webview-viewers'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { REMOTE_CLASS, type WebviewInputEventWire } from '../../src/shared/ipc'
+import { MAX_FRAME_BYTES } from '../../src/shared/web-protocol'
 import { WEBVIEW_CURSORS, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../src/shared/webview-keys'
 import {
   boxToPage,
@@ -31,7 +40,10 @@ import {
   letterbox,
   MAX_INPUT_BATCH,
   MULTI_CLICK_MS,
+  MAX_TEXT_CHUNKS,
   pointerButton,
+  TEXT_CHUNK_UNITS,
+  textChunks,
   webviewKeyAction,
   wheelPixels,
   WHEEL_LINE_PX,
@@ -338,6 +350,7 @@ describe('WebviewInput.accept', () => {
 describe('WebviewManager.inputTarget', () => {
   interface Fake extends WebviewView {
     input: ElectronInputEvent[][]
+    texts: string[]
   }
 
   function managerFor(server: boolean, withInput = true): { manager: WebviewManager; made: Fake[] } {
@@ -347,6 +360,7 @@ describe('WebviewManager.inputTarget', () => {
         create: () => {
           const v: Fake = {
             input: [],
+            texts: [],
             load: () => Promise.resolve(),
             back: () => {},
             forward: () => {},
@@ -356,7 +370,14 @@ describe('WebviewManager.inputTarget', () => {
             setBounds: () => {},
             setVisible: () => {},
             destroy: () => {},
-            ...(withInput ? { size: () => ({ width: 640, height: 480 }), sendInput: (events: readonly ElectronInputEvent[]) => void v.input.push([...events]) } : {})
+            ...(withInput
+              ? {
+                  size: () => ({ width: 640, height: 480 }),
+                  sendInput: (events: readonly ElectronInputEvent[]) => void v.input.push([...events]),
+                  insertText: (text: string) => void v.texts.push(text),
+                  readSelection: () => Promise.resolve('sel')
+                }
+              : {})
           }
           made.push(v)
           return v
@@ -382,12 +403,19 @@ describe('WebviewManager.inputTarget', () => {
     expect(target?.size()).toEqual({ width: 640, height: 480 })
     target?.send([ev])
     expect(made[0]?.input).toEqual([[ev]])
+    // Task 8: text and the selection go to the same live page.
+    target?.insertText?.('é')
+    expect(made[0]?.texts).toEqual(['é'])
+    await expect(target?.readSelection?.()).resolves.toBe('sel')
     // Another window's panel of the same key has no view: nothing.
     expect(manager.inputTarget(8, 'a.one', 'view')).toBeUndefined()
     // The view goes (the plugin stopped): a target handed out before sends nothing.
     manager.destroyPlugin(7, 'a.one')
     target?.send([ev])
+    target?.insertText?.('x')
     expect(made[0]?.input).toEqual([[ev]])
+    expect(made[0]?.texts).toEqual(['é'])
+    await expect(target?.readSelection?.()).resolves.toBeUndefined()
     expect(manager.inputTarget(7, 'a.one', 'view')).toBeUndefined()
   })
 
@@ -547,5 +575,401 @@ describe("the browser's side (web/webview-stream.ts)", () => {
   it('the channels are adapted', () => {
     expect(REMOTE_CLASS['webviews.input']).toBe('adapted')
     expect(REMOTE_CLASS['webviews.cursor']).toBe('adapted')
+  })
+})
+
+// Task 8 (design-web-browser.md §4.2): text, paste and the selection pushed for copy.
+describe('WebviewInput.acceptText', () => {
+  function textSetup(options: { page?: boolean } = {}) {
+    let t = 10_000
+    const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => t })
+    const texts: string[] = []
+    const sent: ElectronInputEvent[][] = []
+    const claims: string[] = []
+    const input = new WebviewInput({
+      isViewer: (panel, viewId) => viewers.isViewer(panel, viewId),
+      claimOwner: (panel, viewId) => {
+        claims.push(viewId)
+        viewers.claimOwner(panel, viewId)
+      },
+      target: () =>
+        options.page === false
+          ? undefined
+          : { size: () => ({ width: 800, height: 600 }), send: (events) => void sent.push([...events]), insertText: (text) => void texts.push(text) },
+      now: () => t
+    })
+    viewers.report(PANEL, 'web:1', shown)
+    return { viewers, input, texts, sent, claims, advance: (ms: number) => void (t += ms) }
+  }
+
+  it("inserts a viewer's text as the page's committed text and claims the size", () => {
+    const { viewers, input, texts, claims } = textSetup()
+    viewers.report(PANEL, 'web:2', { ...shown, width: 500 })
+    expect(input.acceptText(PANEL, 'web:2', 'héllo ü 👋')).toBe(true)
+    expect(texts).toEqual(['héllo ü 👋'])
+    expect(claims).toEqual(['web:2'])
+    expect(viewers.ownerOf(PANEL)).toBe('web:2')
+  })
+
+  it(`takes at most ${MAX_TEXT_BYTES} bytes of UTF-8 per call, counted in bytes, refusing more whole`, () => {
+    const { input, texts } = textSetup()
+    expect(input.acceptText(PANEL, 'web:1', 'a'.repeat(MAX_TEXT_BYTES))).toBe(true)
+    expect(() => input.acceptText(PANEL, 'web:1', 'a'.repeat(MAX_TEXT_BYTES + 1))).toThrow(/at most 65536 bytes/)
+    // Fewer units than the cap, more bytes: refused.
+    expect(() => input.acceptText(PANEL, 'web:1', 'é'.repeat(MAX_TEXT_BYTES / 2 + 1))).toThrow(/at most 65536 bytes/)
+    expect(() => input.acceptText(PANEL, 'web:1', 42)).toThrow(/must be a string/)
+    expect(() => input.acceptText(PANEL, 'web:1', ['a'])).toThrow(/must be a string/)
+    expect(texts).toHaveLength(1)
+  })
+
+  it('refuses a view that is not a viewer, and inserts nothing for a panel with no page or no text', () => {
+    const { input, texts, claims } = textSetup()
+    expect(() => input.acceptText(PANEL, 'web:9', 'x')).toThrow(/not a viewer/)
+    expect(() => input.acceptText(OTHER_WINDOW, 'web:1', 'x')).toThrow(/not a viewer/)
+    expect(input.acceptText(PANEL, 'web:1', '')).toBe(false)
+    // Nothing but control characters: nothing left to type, no claim.
+    expect(input.acceptText(PANEL, 'web:1', '\u0000\u001b\u007f')).toBe(false)
+    expect(texts).toEqual([])
+    expect(claims).toEqual([])
+    const none = textSetup({ page: false })
+    expect(none.input.acceptText(PANEL, 'web:1', 'x')).toBe(false)
+  })
+
+  it('strips control characters but \\n and \\t, and makes every line break \\n', () => {
+    const { input, texts } = textSetup()
+    input.acceptText(PANEL, 'web:1', 'a\r\nb\rc\nd\te\u0000f\u001b[31mg\u0085h\u007f')
+    expect(texts).toEqual(['a\nb\nc\nd\tef[31mgh'])
+  })
+
+  it('takes a token of the same rate bucket as the input, dropped silently when there is none', () => {
+    const { input, texts, advance } = textSetup()
+    const batch = Array(MAX_INPUT_EVENTS).fill(move(1, 1))
+    while (input.accept(PANEL, 'web:1', batch) > 0) {
+      // drain the bucket
+    }
+    expect(input.acceptText(PANEL, 'web:1', 'x')).toBe(false)
+    expect(texts).toEqual([])
+    advance(10)
+    expect(input.acceptText(PANEL, 'web:1', 'x')).toBe(true)
+    expect(texts).toEqual(['x'])
+  })
+})
+
+describe('the selection pushed for copy', () => {
+  /** Timers run by hand. */
+  function manualTimers() {
+    const pending = new Map<number, () => void>()
+    let next = 0
+    return {
+      timers: {
+        set: (fn: () => void) => {
+          pending.set(++next, fn)
+          return next
+        },
+        clear: (h: unknown) => void pending.delete(h as number)
+      },
+      size: () => pending.size,
+      run: () => {
+        const fns = [...pending.values()]
+        pending.clear()
+        for (const fn of fns) fn()
+      }
+    }
+  }
+
+  function selectionSetup() {
+    const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => 0 })
+    const clock = manualTimers()
+    const pushes: Array<[string, { panelKey: string; text: string }]> = []
+    const reads: Array<(v: unknown) => void> = []
+    let reading: () => Promise<unknown> = () =>
+      new Promise((resolve) => {
+        reads.push(resolve)
+      })
+    const input = new WebviewInput({
+      isViewer: (panel, viewId) => viewers.isViewer(panel, viewId),
+      claimOwner: (panel, viewId) => viewers.claimOwner(panel, viewId),
+      target: () => ({
+        size: () => ({ width: 800, height: 600 }),
+        send: () => {},
+        insertText: () => {},
+        readSelection: () => reading()
+      }),
+      pushSelection: (viewId, event) => void pushes.push([viewId, event]),
+      timers: clock.timers,
+      now: () => 0
+    })
+    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:2', shown)
+    const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+    return {
+      viewers,
+      input,
+      clock,
+      pushes,
+      reads,
+      flush,
+      setReading: (fn: () => Promise<unknown>) => {
+        reading = fn
+      }
+    }
+  }
+  const up = { kind: 'pointer', type: 'up', x: 5, y: 5, button: 'left', clickCount: 2 }
+
+  it('reads after a release, a key down or text, debounced, and pushes to the acting view only', async () => {
+    const { input, clock, pushes, reads, flush } = selectionSetup()
+    // A move, a press and a wheel select nothing (a drag ends in a release).
+    input.accept(PANEL, 'web:1', [move(1, 1), down(1, 1), { kind: 'wheel', x: 1, y: 1, deltaX: 0, deltaY: 5 }, key('a', 'up')])
+    expect(clock.size()).toBe(0)
+    // A double click's release, then Ctrl+A, then shift-arrows: one debounce, restarted each time.
+    input.accept(PANEL, 'web:1', [up])
+    input.accept(PANEL, 'web:1', [key('a', 'down', ['control'])])
+    input.accept(PANEL, 'web:1', [key('ArrowLeft', 'down', ['shift'])])
+    expect(clock.size()).toBe(1)
+    expect(reads).toHaveLength(0)
+    clock.run()
+    expect(reads).toHaveLength(1)
+    reads[0]?.('the word')
+    await flush()
+    expect(pushes).toEqual([['web:1', { panelKey: 'a.one/view', text: 'the word' }]])
+    // Text typed: the selection collapsed, so '' goes (a stale selection must not stay copyable).
+    input.acceptText(PANEL, 'web:1', 'x')
+    clock.run()
+    reads[1]?.('')
+    await flush()
+    expect(pushes[1]).toEqual(['web:1', { panelKey: 'a.one/view', text: '' }])
+    // web:2 is a viewer too, but did nothing: it never gets web:1's selection.
+    expect(pushes.every(([viewId]) => viewId === 'web:1')).toBe(true)
+  })
+
+  it('deduplicates against the last push to that view; the first empty selection is no news', async () => {
+    const { input, clock, pushes, reads, flush } = selectionSetup()
+    for (const text of ['', 'abc', 'abc', '', '']) {
+      input.accept(PANEL, 'web:1', [up])
+      clock.run()
+      reads[reads.length - 1]?.(text)
+      await flush()
+    }
+    expect(pushes.map(([, e]) => e.text)).toEqual(['abc', ''])
+    // Each view has its own last push: web:2 selecting the same text gets it.
+    input.accept(PANEL, 'web:2', [up])
+    clock.run()
+    reads[reads.length - 1]?.('abc')
+    await flush()
+    expect(pushes.at(-1)).toEqual(['web:2', { panelKey: 'a.one/view', text: 'abc' }])
+  })
+
+  it('keeps one read in flight: input during it makes its result stale, and the latest is read after', async () => {
+    const { input, clock, pushes, reads, flush } = selectionSetup()
+    input.accept(PANEL, 'web:1', [up])
+    clock.run()
+    expect(reads).toHaveLength(1)
+    // More input while the page is slow to answer: its debounce ends, but no second read starts.
+    input.accept(PANEL, 'web:1', [key('ArrowRight', 'down', ['shift'])])
+    clock.run()
+    expect(reads).toHaveLength(1)
+    reads[0]?.('stale')
+    await flush()
+    expect(pushes).toEqual([])
+    expect(reads).toHaveLength(2)
+    reads[1]?.('fresh')
+    await flush()
+    expect(pushes).toEqual([['web:1', { panelKey: 'a.one/view', text: 'fresh' }]])
+  })
+
+  it('a page that fails the read pushes no selection; a view that left or closed gets nothing', async () => {
+    const { input, viewers, clock, pushes, flush, setReading } = selectionSetup()
+    setReading(() => Promise.resolve('one'))
+    input.accept(PANEL, 'web:1', [up])
+    clock.run()
+    await flush()
+    setReading(() => Promise.reject(new Error('page gone')))
+    input.accept(PANEL, 'web:1', [up])
+    clock.run()
+    await flush()
+    expect(pushes.map(([, e]) => e.text)).toEqual(['one', ''])
+    setReading(() => Promise.resolve('two'))
+    input.accept(PANEL, 'web:1', [up])
+    viewers.report(PANEL, 'web:1', { ...shown, hidden: true })
+    clock.run()
+    await flush()
+    expect(pushes).toHaveLength(2)
+    // The socket closed: its debounce is cancelled.
+    viewers.report(PANEL, 'web:1', shown)
+    input.accept(PANEL, 'web:1', [up])
+    expect(clock.size()).toBe(1)
+    input.viewGone('web:1')
+    expect(clock.size()).toBe(0)
+  })
+
+  it('a hostile 10 MB selection of control characters and escapes is pushed small enough', async () => {
+    const { input, clock, pushes, flush, setReading } = selectionSetup()
+    setReading(() => Promise.resolve('\u0001"\\\u001f\ud800'.repeat(2 * 1024 * 1024)))
+    input.accept(PANEL, 'web:1', [up])
+    clock.run()
+    await flush()
+    const text = pushes[0]?.[1].text ?? ''
+    expect(text.length).toBeGreaterThan(0)
+    expect(encodedBytes(text)).toBeLessThanOrEqual(MAX_SELECTION_BYTES)
+    expect([...text].some((c) => c.charCodeAt(0) < 0x20 && c !== '\n' && c !== '\t')).toBe(false)
+  })
+})
+
+describe('cleanSelection', () => {
+  it('strips control characters but \\n and \\t', () => {
+    expect(cleanSelection('a\u0000b\u0007c\r\nd\te\u001bf\u0090g\u007f')).toBe('abc\nd\tefg')
+  })
+
+  it('is empty for anything but a string', () => {
+    expect(cleanSelection(undefined)).toBe('')
+    expect(cleanSelection(42)).toBe('')
+    expect(cleanSelection({ toString: () => 'x' })).toBe('')
+  })
+
+  it(`caps the JSON-encoded string at ${MAX_SELECTION_BYTES} bytes, quotes and escapes counted`, () => {
+    const ascii = cleanSelection('a'.repeat(MAX_SELECTION_BYTES * 2))
+    expect(encodedBytes(ascii)).toBeLessThanOrEqual(MAX_SELECTION_BYTES)
+    expect(encodedBytes(ascii)).toBeGreaterThan(MAX_SELECTION_BYTES - 16)
+    // Each '"' is two bytes encoded: half as many fit.
+    const quotes = cleanSelection('"'.repeat(MAX_SELECTION_BYTES))
+    expect(encodedBytes(quotes)).toBeLessThanOrEqual(MAX_SELECTION_BYTES)
+    expect(quotes.length).toBeLessThan(MAX_SELECTION_BYTES / 2)
+    // Three-byte characters, and an emoji never cut in half.
+    const cjk = cleanSelection('漢'.repeat(MAX_SELECTION_BYTES))
+    expect(encodedBytes(cjk)).toBeLessThanOrEqual(MAX_SELECTION_BYTES)
+    const emoji = cleanSelection('👋'.repeat(MAX_SELECTION_BYTES))
+    expect(encodedBytes(emoji)).toBeLessThanOrEqual(MAX_SELECTION_BYTES)
+    expect(emoji.length % 2).toBe(0)
+    expect(emoji).not.toContain('�')
+  })
+
+  it('turns a lone surrogate into U+FFFD (JSON would escape it as six bytes)', () => {
+    expect(cleanSelection('a\ud800b\udc00c👋')).toBe('a�b�c👋')
+  })
+
+  it('stays far under the socket frame limit, envelope included', () => {
+    const text = cleanSelection('\u0001"\\'.repeat(4 * 1024 * 1024))
+    const frame = JSON.stringify({ t: 'event', ch: 'webviews.selection', p: { panelKey: 'a'.repeat(200), text } })
+    expect(Buffer.byteLength(frame)).toBeLessThan(MAX_FRAME_BYTES / 8)
+  })
+})
+
+describe('SELECTION_SCRIPT (run in the isolated world)', () => {
+  /** Runs the script against a fake DOM, as the isolated world would. */
+  function run(activeElement: unknown, selection: string | null): unknown {
+    return runInNewContext(SELECTION_SCRIPT, {
+      document: { activeElement },
+      getSelection: () => (selection === null ? null : { toString: () => selection })
+    })
+  }
+  const field = (tag: string, type: string, value: string, start: number, end: number) => ({
+    tagName: tag,
+    type,
+    value,
+    selectionStart: start,
+    selectionEnd: end
+  })
+
+  it("reads a focused text field's selected slice, never a password field's", () => {
+    expect(run(field('INPUT', 'text', 'hello world', 6, 11), 'other')).toBe('world')
+    expect(run(field('TEXTAREA', 'textarea', 'line one\nline two', 0, 8), '')).toBe('line one')
+    expect(run(field('INPUT', 'text', 'hello', 2, 2), 'other')).toBe('')
+    expect(run(field('INPUT', 'password', 'hunter2', 0, 7), 'hunter2')).toBe('')
+    expect(run(field('INPUT', 'PassWord', 'hunter2', 0, 7), 'hunter2')).toBe('')
+  })
+
+  it('walks into open shadow roots, so a password field inside one is still skipped', () => {
+    const inner = field('INPUT', 'password', 'secret', 0, 6)
+    expect(run({ tagName: 'MY-LOGIN', shadowRoot: { activeElement: inner } }, 'secret')).toBe('')
+    const text = field('INPUT', 'text', 'shadow text', 0, 6)
+    expect(run({ tagName: 'MY-FIELD', shadowRoot: { activeElement: text } }, '')).toBe('shadow')
+  })
+
+  it("reads the document's selection otherwise, or for a field with no selection API", () => {
+    expect(run({ tagName: 'BODY' }, 'a paragraph')).toBe('a paragraph')
+    expect(run(null, 'x')).toBe('x')
+    expect(run(null, null)).toBe('')
+    const email = {
+      tagName: 'INPUT',
+      type: 'email',
+      value: 'a@b',
+      get selectionStart(): number {
+        throw new Error('no selection API')
+      },
+      selectionEnd: 0
+    }
+    expect(run(email, 'from the document')).toBe('from the document')
+  })
+
+  it(`cuts the text to ${MAX_SELECTION_CHARS} units before it leaves the page`, () => {
+    expect((run({ tagName: 'BODY' }, 'x'.repeat(MAX_SELECTION_CHARS + 50)) as string).length).toBe(MAX_SELECTION_CHARS)
+    const big = 'y'.repeat(MAX_SELECTION_CHARS * 2)
+    expect((run(field('TEXTAREA', 'textarea', big, 10, big.length), '') as string).length).toBe(MAX_SELECTION_CHARS)
+  })
+})
+
+describe('keys and text never both type (no double typing)', () => {
+  const ev = (k: string, extra: Partial<InputKeyEventLike> = {}): InputKeyEventLike => ({
+    key: k,
+    code: '',
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+    ...extra
+  })
+  const action = (e: InputKeyEventLike): string => webviewKeyAction(e, () => false)
+
+  it('a printable ASCII key is a key (prevented: the textarea never sees it) with exactly one char', () => {
+    for (const k of ['a', 'Z', '1', '/', ' ']) {
+      expect(action(ev(k))).toBe('forward')
+      const out = toElectronEvents({ kind: 'key', type: 'down', key: k, modifiers: [] }, { width: 1, height: 1 })
+      expect(out.filter((e) => e.type === 'char')).toHaveLength(1)
+    }
+  })
+
+  it("non-ASCII, dead keys, an IME's composition and AltGr text are the textarea's: not forwarded", () => {
+    expect(action(ev('é'))).toBe('ignore')
+    expect(action(ev('ü', { shiftKey: true }))).toBe('ignore')
+    expect(action(ev('Dead'))).toBe('ignore')
+    expect(action(ev('Process'))).toBe('ignore')
+    expect(action(ev('a', { isComposing: true }))).toBe('ignore')
+    expect(action(ev('Unidentified'))).toBe('ignore')
+    // AltGr on Windows reads as Ctrl+Alt; with AltGraph set it is text, not a shortcut.
+    const altGr = (k: string): InputKeyEventLike => ev(k, { ctrlKey: true, altKey: true, getModifierState: (m) => m === 'AltGraph' })
+    expect(action(altGr('@'))).toBe('ignore')
+    expect(action(altGr('€'))).toBe('ignore')
+    // A real Ctrl+Alt shortcut stays a key.
+    expect(action(ev('t', { ctrlKey: true, altKey: true, getModifierState: () => false }))).toBe('forward')
+  })
+
+  it('Enter, Tab, Backspace, Delete, arrows, Escape, F-keys and chords are keys; only Enter types (\\r)', () => {
+    for (const k of ['Enter', 'Tab', 'Backspace', 'Delete', 'ArrowLeft', 'Escape', 'F5']) expect(action(ev(k))).toBe('forward')
+    expect(action(ev('a', { ctrlKey: true }))).toBe('forward')
+    const chars = (k: string, modifiers: InputModifier[] = []) =>
+      toElectronEvents({ kind: 'key', type: 'down', key: k, modifiers }, { width: 1, height: 1 }).filter((e) => e.type === 'char')
+    expect(chars('Enter')).toEqual([{ type: 'char', keyCode: '\r', modifiers: [] }])
+    for (const k of ['Tab', 'Backspace', 'Delete', 'ArrowLeft', 'Escape', 'F5']) expect(chars(k)).toEqual([])
+    expect(chars('a', ['control'])).toEqual([])
+  })
+})
+
+describe('textChunks (a paste into insertText calls)', () => {
+  it('cuts long text into calls under main\'s byte cap, never inside a surrogate pair', () => {
+    expect(textChunks('')).toEqual([])
+    expect(textChunks('abc')).toEqual(['abc'])
+    expect(TEXT_CHUNK_UNITS * 3).toBeLessThanOrEqual(MAX_TEXT_BYTES)
+    const chunks = textChunks('a' + '👋'.repeat(TEXT_CHUNK_UNITS))
+    expect(chunks.join('')).toBe('a' + '👋'.repeat(TEXT_CHUNK_UNITS))
+    for (const c of chunks) {
+      expect(c.length).toBeLessThanOrEqual(TEXT_CHUNK_UNITS)
+      expect(c).not.toMatch(/^[\udc00-\udfff]|[\ud800-\udbff]$/)
+      expect(Buffer.byteLength(c)).toBeLessThanOrEqual(MAX_TEXT_BYTES)
+    }
+  })
+
+  it(`stops at ${MAX_TEXT_CHUNKS} calls`, () => {
+    expect(textChunks('x'.repeat(10), 2, 3)).toEqual(['xx', 'xx', 'xx'])
+    expect(textChunks('x'.repeat(TEXT_CHUNK_UNITS * (MAX_TEXT_CHUNKS + 5)))).toHaveLength(MAX_TEXT_CHUNKS)
   })
 })

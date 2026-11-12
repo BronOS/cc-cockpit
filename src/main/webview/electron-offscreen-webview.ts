@@ -30,7 +30,7 @@
 import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
-import type { ElectronInputEvent } from './webview-input'
+import { SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
 /** The page's size before any browser reported one (CSS px; a common laptop browser area). */
@@ -199,6 +199,16 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
         if (wc.isDestroyed()) return
         for (const event of events) wc.sendInputEvent(event)
       },
+      // A browser's committed text (an IME, a dead key, non-ASCII, a paste; webview-input.ts has
+      // checked and cleaned it): into the focused field as an IME commit, nothing when none is.
+      insertText: (text) => {
+        if (wc.isDestroyed()) return
+        wc.insertText(text).catch(() => {})
+      },
+      // The page's selection, read in main's own isolated world (webview-input.ts SELECTION_SCRIPT):
+      // the page's scripts cannot see the read nor stand in for what it calls.
+      readSelection: () =>
+        wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: SELECTION_SCRIPT }]),
       invalidate: () => {
         if (!wc.isDestroyed()) wc.invalidate()
       }

@@ -422,17 +422,56 @@ External review: sol / high
 - Modify: `test/unit/webview-input.test.ts`
 - Modify: `test/e2e/server-webview.spec.ts`
 
-- [ ] hidden `<textarea>` in the input layer: committed text (`input`, `compositionend`) → `webviews.insertText`
+- [x] hidden `<textarea>` in the input layer: committed text (`input`, `compositionend`) → `webviews.insertText`
       (≤ 64 KB) → `webContents.insertText`; the `paste` event's text → the same
-- [ ] after selecting input (mouse up, shift-arrows, select-all, double click), debounced and latest-wins, main reads
+- [x] after selecting input (mouse up, shift-arrows, select-all, double click), debounced and latest-wins, main reads
       the selection in an isolated world: `getSelection()`, or a focused text input/textarea's selected slice (never a
       password field), sliced in the script; main strips control characters, caps near 256 KB encoded, deduplicates,
       and pushes `webviews.selection` to the acting view; the browser sets it in its `copy` event; cut = copy + Delete
-- [ ] write unit tests: insertText caps, selection caps by encoded bytes, control characters stripped, password fields
+- [x] write unit tests: insertText caps, selection caps by encoded bytes, control characters stripped, password fields
       skipped, dedupe/debounce, push only to the acting view, a hostile selection never closes the view
-- [ ] e2e: typed and pasted text (including non-ASCII) reaches an input; a selection copied in the canvas lands in the
+- [x] e2e: typed and pasted text (including non-ASCII) reaches an input; a selection copied in the canvas lands in the
       browser's copy event data
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
+- ➕ done: main (`src/main/webview/webview-input.ts`): `WebviewInput.acceptText` (`webviews.insertText`, `adapted`, the
+      router's `inputFor` gate shared with `webviews.input`: server, remote, layout-resolved key; a viewer; a string of at
+      most `MAX_TEXT_BYTES` 64 KiB of UTF-8, refused whole above; one token of the same per-view bucket, dropped silently
+      when empty; `cleanText`: `\r\n`/`\r` → `\n`, C0/DEL/C1 controls but `\t` `\n` stripped; claims the size) →
+      `WebviewView.insertText` → `webContents.insertText`. Selection: a mouseUp or keyDown that went to the page, or
+      inserted text, (re)starts a `SELECTION_DEBOUNCE_MS` 100 ms debounce per view and panel; then
+      `WebviewView.readSelection` runs `SELECTION_SCRIPT` with `executeJavaScriptInIsolatedWorld` in
+      **`WEBVIEW_WORLD_ID` = 1717** (not 0, the main world, nor 999, Electron's contextIsolation world; Task 9's hit-test
+      should use the same constant); one read in flight per view and panel (input during it marks it stale and reads again
+      after: a hung page holds one promise); `cleanSelection` (string only, sliced to `MAX_SELECTION_CHARS`, controls
+      stripped, lone surrogates → U+FFFD, then cut until `JSON.stringify(text)` is ≤ `MAX_SELECTION_BYTES` 256 KiB),
+      deduplicated against the last push to that view (initially ''), and pushed (`webviews.selection`, `adapted`, in
+      `remoteEvent`'s server-only list) through `views.toView` to the acting view only, and only while it is still a
+      viewer. A read that rejects pushes ''. The script: `document.activeElement` (into open shadow roots); a password
+      `<input>` gives ''; a text input/textarea its `value.slice(selectionStart, min(selectionEnd, start + cap))`; a type
+      with no selection API (email, number) falls back to `getSelection()`, sliced to the cap.
+- ➕ the key/text split (decided here, deviates from "printable keys via insertText"): one printable ASCII key or Space
+      with no Ctrl/Meta/Alt stays key down + `char` (Task 7's path, unchanged in main) and is prevented in the browser,
+      so the textarea never sees it; the textarea's text is only what is not one such key: IME and dead-key
+      compositions, non-ASCII characters, AltGr text (`webviewKeyAction` returns `ignore` for a one-character key with
+      `getModifierState('AltGraph')`, which Windows also reports as Ctrl+Alt) and pastes. Why: a page then gets the events
+      a real keyboard gives (keydown, keypress, input, keyup), letter shortcuts and games keep working, and a page that
+      prevents a keydown (a `/` shortcut focusing a search box) still suppresses the character, which a separate
+      insertText could not. No character goes both ways (unit tested both sides). Enter stays a key with `'\r'` as its
+      char; Tab, Backspace, Delete, arrows, Escape, F-keys and chords are keys with no char.
+- ➕ browser (`src/renderer/web/webview-canvas.tsx`): the layer div is no longer focusable; a hidden `textarea.webview-text`
+      inside it takes the focus on pointerdown (moved under the pointer so an IME window opens there) and the key
+      listeners; `input` (insertText / insertReplacementText, not composing) and `compositionend` → `webviews.insertText`
+      (queued keys flushed first, so order holds), textarea emptied after each commit (after compositionend on the next
+      task); `paste` → its text/plain, prevented, cut by `textChunks` (16 Ki units, never inside a surrogate pair, at most
+      64 calls) under main's cap; `copy` sets the latest pushed selection and prevents, only when non-empty (else the
+      browser's own copy of an empty textarea: the person's clipboard is untouched); `cut` = copy + Delete down/up. Checked
+      in the e2e browser: Chromium fires `copy`/`cut` on Ctrl+C/X in an empty textarea (no `beforecopy` needed), and
+      Ctrl+V's `paste` too. The focus ring is `.webview-input:focus-within`. Task 7's e2e now holds back Ctrl+V's real
+      paste (it would paste this machine's clipboard); the Task 8 e2e uses synthetic ClipboardEvents with their own
+      DataTransfer for paste, copy and cut for the same reason.
+- ➕ not tested: a real IME (only Playwright's `insertText` for 'é' 'ü', which is an `input` insertText, not a
+      composition), dead keys, AltGr on Windows, phone keyboards (Android's `Unidentified` keys and compositions), and a
+      real Ctrl+C reaching the system clipboard. For Task 10: design-web-browser.md §4.2 should state the split above.
 
 ### Task 9: `<select>` popups by hit-testing [model: opus]
 

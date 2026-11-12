@@ -175,6 +175,10 @@ export interface WebviewView {
   size?(): { width: number; height: number }
   /** Server mode's off-screen view only: trusted input for the page (`sendInputEvent`), checked by webview-input.ts. */
   sendInput?(events: readonly ElectronInputEvent[]): void
+  /** Server mode's off-screen view only: committed text for the page (`webContents.insertText`). */
+  insertText?(text: string): void
+  /** Server mode's off-screen view only: the page's selection (webview-input.ts SELECTION_SCRIPT, isolated world). */
+  readSelection?(): Promise<unknown>
 }
 
 export interface WebviewViewFactory {
@@ -502,12 +506,24 @@ export class WebviewManager {
     const size = view.size
     const sendInput = view.sendInput
     if (!size || !sendInput) return undefined
+    const insertText = view.insertText
+    const readSelection = view.readSelection
     return {
       size: () => size(),
       // Looked up again per call: the record may have gone in between (a crash, the plugin off).
       send: (events) => {
         if (this.isLive(rec)) sendInput(events)
-      }
+      },
+      ...(insertText
+        ? {
+            insertText: (text: string) => {
+              if (this.isLive(rec)) insertText(text)
+            }
+          }
+        : {}),
+      ...(readSelection
+        ? { readSelection: () => (this.isLive(rec) ? readSelection() : Promise.resolve(undefined)) }
+        : {})
     }
   }
 

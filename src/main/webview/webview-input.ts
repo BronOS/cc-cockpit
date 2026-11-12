@@ -31,7 +31,29 @@
 // key down inserts nothing. Held buttons travel as the `leftbuttondown`-style modifiers on moves,
 // so a page's drag code sees `buttons` (selection by drag works without, `buttons` reads 0).
 //
-// Pure: no Electron (the view's sendInput is injected), clock injected.
+// Text, paste and copy (Task 8, design-web-browser.md §4.2): `webviews.insertText` carries what is
+// not one key: an IME's or a dead key's composition, a non-ASCII character, AltGr text and pasted
+// text (the browser's hidden textarea, web/webview-canvas.tsx), ≤ MAX_TEXT_BYTES per call, the same
+// gate as `webviews.input` (a viewer, one token of the bucket per call, it claims the size). One
+// printable ASCII key keeps its key down + `char` above: the page then sees exactly what a real
+// keyboard gives it (keydown, keypress, input, keyup; a page's preventDefault on the keydown, a
+// `/` shortcut that focuses a search box, still suppresses the char), and the browser prevents
+// that key's default, so its textarea never types it a second time.
+//
+// The page's selection lives on the server, and a browser's `copy` event wants text at once, so
+// main pushes it (`webviews.selection`) to the view whose input may have changed it: after a button
+// release (a drag, a double or triple click), any key down (shift-arrows, Ctrl+A; typing and
+// Backspace collapse a selection, which must not stay copyable) and inserted text, debounced by
+// SELECTION_DEBOUNCE_MS, one read in flight per view and panel (a hung page holds one promise,
+// not one per key), deduplicated against the last push. The read runs SELECTION_SCRIPT in
+// WEBVIEW_WORLD_ID, an isolated world: the page's scripts can neither see it nor replace the
+// `getSelection` it calls. What comes back is cleaned (cleanSelection): control characters but
+// \n and \t stripped (a selection of them, JSON-escaped at six bytes each, could pass the socket's
+// frame limit, and an oversize event closes the browser view, terminals included) and capped at
+// MAX_SELECTION_BYTES of the JSON-encoded string.
+//
+// Pure: no Electron (the view's sendInput, insertText and readSelection are injected), clock and
+// timers injected.
 
 import { isPlainObject } from '../../shared/guards'
 import type { WebviewInputModifier } from '../../shared/ipc'
@@ -49,6 +71,54 @@ export const INPUT_BURST = INPUT_RATE
 export const MAX_WHEEL_DELTA = 2000
 /** Largest coordinate that can be inside any page (webview-viewers.ts MAX_PLACE_SIDE). */
 const MAX_COORDINATE = 4096
+/** Most UTF-8 bytes one `webviews.insertText` call may carry (design-web-browser.md §5). */
+export const MAX_TEXT_BYTES = 64 * 1024
+/**
+ * Most bytes of a pushed selection, counted as the JSON-encoded string the event frame carries
+ * (escapes included), so the frame stays far under MAX_FRAME_BYTES (4 MiB, web-protocol.ts) whatever
+ * the page selected.
+ */
+export const MAX_SELECTION_BYTES = 256 * 1024
+/**
+ * Most UTF-16 units the selection script returns: the text is cut in the page's world before it
+ * crosses to main (a 50 MB selection is never copied whole); never fewer than MAX_SELECTION_BYTES
+ * can hold (a unit is at least one byte).
+ */
+export const MAX_SELECTION_CHARS = MAX_SELECTION_BYTES
+/** Quiet time after the last selection-changing input before main reads the selection. */
+export const SELECTION_DEBOUNCE_MS = 100
+/**
+ * The isolated world main reads a streamed page in (`executeJavaScriptInIsolatedWorld`; Task 9's
+ * select hit-test uses it too). Fixed and unlike Electron's own: 0 is the page's main world and 999
+ * the world of Electron's contextIsolation preloads (none in a webview, but never shared).
+ */
+export const WEBVIEW_WORLD_ID = 1717
+
+/**
+ * The selection script, run in WEBVIEW_WORLD_ID (fresh globals, the page's DOM): the selected slice
+ * of a focused text field (walking into open shadow roots), never anything of a password field, else
+ * the document's selection; cut to MAX_SELECTION_CHARS here, before it crosses. Fields whose type
+ * has no selection API (email, number) throw on `selectionStart` and fall back to the document's
+ * selection, which Chromium keeps empty for a password field anyway.
+ */
+export const SELECTION_SCRIPT = `(() => {
+  const cap = ${MAX_SELECTION_CHARS};
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  const tag = el && typeof el.tagName === 'string' ? el.tagName.toUpperCase() : '';
+  if (tag === 'INPUT' && String(el.type).toLowerCase() === 'password') return '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    try {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      if (typeof start === 'number' && typeof end === 'number') {
+        return end > start ? String(el.value).slice(start, Math.min(end, start + cap)) : '';
+      }
+    } catch (e) {}
+  }
+  const selection = getSelection();
+  return selection ? String(selection).slice(0, cap) : '';
+})()`
 
 /** The modifiers a browser may name (Electron's names). */
 export const MODIFIERS = [
@@ -181,6 +251,43 @@ export function toElectronEvents(event: WebviewInputEvent, size: PlaceSize): Ele
   return [{ type: event.type === 'down' ? 'mouseDown' : 'mouseUp', x, y, button: event.button, clickCount: event.clickCount, modifiers }]
 }
 
+// Control characters but \t (9) and \n (10): C0, DEL and C1. \r is turned into \n first.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+// A UTF-16 surrogate without its other half (JSON.stringify escapes it as six bytes).
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+
+/** Text as the page should get it: line breaks as \n, no other control character but \t. */
+export function cleanText(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(CONTROL, '')
+}
+
+/** Bytes of `text` as an event frame carries it: the JSON string, quotes and escapes included. */
+export function encodedBytes(text: string): number {
+  return Buffer.byteLength(JSON.stringify(text), 'utf8')
+}
+
+/**
+ * The selection script's result as main pushes it: a string (anything else is no selection), cut to
+ * MAX_SELECTION_CHARS again (the script's cap is main's own, but the result is still a page's
+ * text), control characters stripped, lone surrogates as U+FFFD, then cut until its JSON-encoded
+ * string is at most `maxBytes` (never inside a surrogate pair).
+ */
+export function cleanSelection(raw: unknown, maxBytes = MAX_SELECTION_BYTES): string {
+  if (typeof raw !== 'string') return ''
+  let text = cleanText(raw.slice(0, MAX_SELECTION_CHARS)).replace(LONE_SURROGATE, '\ufffd')
+  let bytes = encodedBytes(text)
+  while (bytes > maxBytes && text.length > 0) {
+    // Proportional, and at least one unit shorter each time, so it ends in a few steps.
+    let keep = Math.min(text.length - 1, Math.floor((text.length * maxBytes) / bytes))
+    const last = text.charCodeAt(keep - 1)
+    if (keep > 0 && last >= 0xd800 && last <= 0xdbff) keep--
+    text = text.slice(0, keep)
+    bytes = encodedBytes(text)
+  }
+  return text
+}
+
 /**
  * The `webviews.cursor` event for the page's `cursor-changed`: the panel's key as the browser names
  * it and a CSS cursor from the fixed table (shared/webview-keys.ts), never the page's own text.
@@ -189,10 +296,20 @@ export function cursorEvent(panel: WebviewPanelOf, type: unknown): { panelKey: s
   return { panelKey: `${panel.pluginId}/${panel.panelId}`, cursor: webviewCursor(type) }
 }
 
-/** Where a panel's input goes: its off-screen page's size and its sendInputEvent. */
+/** Where a panel's input goes: its off-screen page's size, its sendInputEvent, its text and selection. */
 export interface InputTarget {
   size(): PlaceSize
   send(events: readonly ElectronInputEvent[]): void
+  /** `webContents.insertText` (absent: the view takes no text). */
+  insertText?(text: string): void
+  /** SELECTION_SCRIPT's result in WEBVIEW_WORLD_ID; rejects or never settles for a page that is gone or hung. */
+  readSelection?(): Promise<unknown>
+}
+
+/** Timers for the selection debounce (tests drive them by hand). */
+export interface SelectionTimers {
+  set(fn: () => void, ms: number): unknown
+  clear(handle: unknown): void
 }
 
 export interface WebviewInputDeps {
@@ -202,13 +319,47 @@ export interface WebviewInputDeps {
   claimOwner(panel: WebviewPanelOf, viewId: ViewId): void
   /** The panel's live off-screen page, or undefined (no view yet, gone). */
   target(panel: WebviewPanelOf): InputTarget | undefined
+  /**
+   * Push a selection to the one view whose input changed it (index.ts: ViewRegistry.toView with
+   * `webviews.selection`). Absent: no selection is read.
+   */
+  pushSelection?(viewId: ViewId, event: { panelKey: string; text: string }): void
   /** Clock in ms (default Date.now; tests pin it). */
   now?: () => number
+  /** The selection debounce's timers (default setTimeout). */
+  timers?: SelectionTimers
 }
 
 interface Bucket {
   tokens: number
   at: number
+}
+
+/** One view's selection state for one panel. */
+interface SelectionEntry {
+  /** Its key in the view's map. */
+  id: string
+  panel: WebviewPanelOf
+  viewId: ViewId
+  timer: unknown
+  /** A read is in flight; `again`: input came meanwhile, so its result is stale and another follows. */
+  reading: boolean
+  again: boolean
+  /** The text last pushed to this view for this panel ('' before any: the browser starts with none). */
+  last: string
+}
+
+function panelKeyOf(panel: WebviewPanelOf): string {
+  return `${panel.pluginId}/${panel.panelId}`
+}
+
+const defaultTimers: SelectionTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)
+}
+
+function textFail(message: string): never {
+  throw new Error(`webviews.insertText: ${message}`)
 }
 
 /**
@@ -217,10 +368,14 @@ interface Bucket {
  */
 export class WebviewInput {
   private readonly buckets = new Map<ViewId, Bucket>()
+  /** By view id, then panel key (`windowId/pluginId/panelId`): forgotten with the view. */
+  private readonly selections = new Map<ViewId, Map<string, SelectionEntry>>()
   private readonly now: () => number
+  private readonly timers: SelectionTimers
 
   constructor(private readonly deps: WebviewInputDeps) {
     this.now = deps.now ?? Date.now
+    this.timers = deps.timers ?? defaultTimers
   }
 
   /**
@@ -249,13 +404,105 @@ export class WebviewInput {
     // Claimed before the page gets them, so the size the press asks for is already on its way;
     // the events themselves are in the coordinates of the frame the person saw.
     if (claim) this.deps.claimOwner(panel, viewId)
-    if (out.length > 0) target.send(out)
+    if (out.length > 0) {
+      target.send(out)
+      if (out.some((e) => e.type === 'mouseUp' || e.type === 'keyDown')) this.selectionMayChange(panel, viewId)
+    }
     return sent
   }
 
-  /** The view's socket closed: its bucket goes. */
+  /**
+   * One `webviews.insertText` call from `viewId` for `panel`: the same viewer check as `accept`, a
+   * string of at most MAX_TEXT_BYTES (anything else throws), one token of the view's bucket (none
+   * left: dropped silently), cleaned (cleanText) and inserted as the page's committed text. A
+   * non-empty text claims the size, as a key does. Returns whether text went to the page.
+   */
+  acceptText(panel: WebviewPanelOf, viewId: ViewId, raw: unknown): boolean {
+    if (!this.deps.isViewer(panel, viewId)) textFail('not a viewer of this panel')
+    if (typeof raw !== 'string') textFail('text must be a string')
+    // Units first (a unit is at least one byte): a huge string is not measured.
+    if (raw.length > MAX_TEXT_BYTES || Buffer.byteLength(raw, 'utf8') > MAX_TEXT_BYTES) textFail(`at most ${MAX_TEXT_BYTES} bytes per call`)
+    const text = cleanText(raw)
+    if (text.length === 0) return false
+    if (this.take(viewId, 1) === 0) return false
+    const target = this.deps.target(panel)
+    if (!target?.insertText) return false
+    this.deps.claimOwner(panel, viewId)
+    target.insertText(text)
+    this.selectionMayChange(panel, viewId)
+    return true
+  }
+
+  /** The view's socket closed: its bucket and its selection reads go. */
   viewGone(viewId: ViewId): void {
     this.buckets.delete(viewId)
+    const entries = this.selections.get(viewId)
+    if (!entries) return
+    this.selections.delete(viewId)
+    for (const entry of entries.values()) if (entry.timer !== undefined) this.timers.clear(entry.timer)
+  }
+
+  /** Input from `viewId` may have changed `panel`'s selection: (re)start the debounce. */
+  private selectionMayChange(panel: WebviewPanelOf, viewId: ViewId): void {
+    if (!this.deps.pushSelection) return
+    let entries = this.selections.get(viewId)
+    if (!entries) {
+      entries = new Map()
+      this.selections.set(viewId, entries)
+    }
+    const id = `${panel.windowId}/${panelKeyOf(panel)}`
+    let entry = entries.get(id)
+    if (!entry) {
+      entry = { id, panel, viewId, timer: undefined, reading: false, again: false, last: '' }
+      entries.set(id, entry)
+    }
+    if (entry.reading) entry.again = true
+    if (entry.timer !== undefined) this.timers.clear(entry.timer)
+    const e = entry
+    e.timer = this.timers.set(() => {
+      e.timer = undefined
+      this.readSelection(e)
+    }, SELECTION_DEBOUNCE_MS)
+  }
+
+  private readSelection(entry: SelectionEntry): void {
+    // One read in flight: the debounce that ends meanwhile waits for it (see `settle`).
+    if (entry.reading) return
+    const read = this.deps.target(entry.panel)?.readSelection
+    if (!read) return
+    entry.reading = true
+    entry.again = false
+    const settle = (raw: unknown): void => {
+      entry.reading = false
+      if (!this.isCurrent(entry)) return
+      if (entry.again) {
+        // Input came while it read: the result may be stale. Read again unless a debounce is
+        // still running (it reads when it ends).
+        entry.again = false
+        if (entry.timer === undefined) this.readSelection(entry)
+        return
+      }
+      // A view that stopped viewing the panel gets nothing more of it.
+      if (!this.deps.isViewer(entry.panel, entry.viewId)) return
+      const text = cleanSelection(raw)
+      if (text === entry.last) return
+      entry.last = text
+      this.deps.pushSelection?.(entry.viewId, { panelKey: panelKeyOf(entry.panel), text })
+    }
+    let pending: Promise<unknown>
+    try {
+      pending = read()
+    } catch {
+      entry.reading = false
+      return
+    }
+    // A page that navigated or went: no selection to report (and nothing to log, it is common).
+    pending.then(settle, () => settle(undefined))
+  }
+
+  /** Whether `entry` is still the view's entry (its socket did not close meanwhile). */
+  private isCurrent(entry: SelectionEntry): boolean {
+    return this.selections.get(entry.viewId)?.get(entry.id) === entry
   }
 
   /** Take up to `want` tokens from the view's bucket; how many it had. */

@@ -203,15 +203,27 @@ test('server mode: clicks, the wheel and keys reach the streamed page; its curso
     await open('input.html', 'empty')
     b = await box()
     await page.mouse.click(b.x + 100, b.y + 20)
-    await expect(layer).toBeFocused()
+    // The keyboard's focus is the layer's hidden textarea (Task 8).
+    await expect(section.locator('textarea.webview-text')).toBeFocused()
     await page.keyboard.type('abc')
     await expect(pageTitle).toHaveAttribute('title', /^value abc\n/, { timeout: 10_000 })
     await page.keyboard.press('Backspace')
     await expect(pageTitle).toHaveAttribute('title', /^value ab\n/, { timeout: 10_000 })
-    // Shift reaches the page (an upper-case letter), and a clipboard chord does not (Ctrl+V types nothing).
+    // Shift reaches the page (an upper-case letter), and a clipboard chord does not (Ctrl+V types
+    // nothing as a key). Its paste event is the textarea's (Task 8), which would paste this
+    // machine's real clipboard: held back here, the paste path has its own test below.
     await page.keyboard.press('Shift+D')
     await expect(pageTitle).toHaveAttribute('title', /^value abD\n/, { timeout: 10_000 })
+    await page.evaluate(() => {
+      const w = window as unknown as { __noPaste: (e: Event) => void }
+      w.__noPaste = (e) => {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+      }
+      window.addEventListener('paste', w.__noPaste, true)
+    })
     await page.keyboard.press('Control+v')
+    await page.evaluate(() => window.removeEventListener('paste', (window as unknown as { __noPaste: (e: Event) => void }).__noPaste, true))
     await page.keyboard.press('Enter')
     await expect(pageTitle).toHaveAttribute('title', /^sent abD\n/, { timeout: 10_000 })
     // The keys never reached the shell's terminal behind the panel.
@@ -223,6 +235,94 @@ test('server mode: clicks, the wheel and keys reach the streamed page; its curso
     b = await box()
     await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2)
     await expect(pageTitle).toHaveAttribute('title', /^after alert false\n/, { timeout: 10_000 })
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+// Task 8 (design-web-browser.md §4.2): text typed through the hidden textarea (non-ASCII as the
+// IME's committed text), a paste, and the page's selection in the browser's copy and cut events.
+// The paste, copy and cut are synthetic ClipboardEvents with their own DataTransfer: a real one
+// would read and write this machine's clipboard.
+const TEXT_PAGE = `<!doctype html><meta charset="utf-8"><title>empty</title><body style="margin:0">
+<input id="i" style="display:block;margin:0;width:400px;height:40px;font-size:20px" autocomplete="off">
+<span style="position:fixed;left:20px;top:100px;font:24px monospace">alpha</span>
+<span style="position:fixed;left:200px;top:100px;font:24px monospace">bravo</span>
+<script>const i=document.getElementById('i');i.addEventListener('input',()=>{document.title='value '+i.value})</script>`
+
+test('server mode: typed and pasted text reach the streamed page; its selection lands in the copy event', async () => {
+  test.setTimeout(150_000)
+  server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  const { cockpit } = server
+  writeFileSync(join(cockpit.projectDir, 'text.html'), TEXT_PAGE)
+  await expect
+    .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
+      timeout: 20_000
+    })
+    .toBe('active')
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const section = page.locator('section.panel[aria-label="Browser"]')
+    if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    const layer = section.locator('.webview-input')
+    const textbox = section.locator('textarea.webview-text')
+    const pageTitle = section.locator('.webview-url')
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await browser.waitForTerminalText('FAKE-CLAUDE banner')
+    await runInClaude(browser, '/ccc browser open text.html')
+    await expect(pageTitle).toHaveAttribute('title', /^empty\n/, { timeout: 15_000 })
+    await expect(section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+    const b = await layer.boundingBox()
+    if (!b) throw new Error('no input layer')
+
+    // Typed: ASCII as keys, 'é' and 'ü' as committed text (Playwright inserts what a US keyboard
+    // has no key for, as an IME does). Each character once, in order.
+    await page.mouse.click(b.x + 100, b.y + 20)
+    await expect(textbox).toBeFocused()
+    await page.keyboard.type('héllo ü')
+    await expect(pageTitle).toHaveAttribute('title', /^value héllo ü\n/, { timeout: 10_000 })
+    // The textarea keeps nothing of it.
+    expect(await textbox.inputValue()).toBe('')
+
+    // Pasted: the paste event's text, as one insert.
+    await textbox.evaluate((t: HTMLTextAreaElement) => {
+      const data = new DataTransfer()
+      data.setData('text/plain', ' pasted ✓')
+      t.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    })
+    await expect(pageTitle).toHaveAttribute('title', /^value héllo ü pasted ✓\n/, { timeout: 10_000 })
+
+    /** What the browser's copy (or cut) event puts on the clipboard now ('' when it leaves it alone). */
+    const clip = (type: 'copy' | 'cut' = 'copy'): Promise<string> =>
+      textbox.evaluate((t: HTMLTextAreaElement, kind) => {
+        const data = new DataTransfer()
+        t.dispatchEvent(new ClipboardEvent(kind, { clipboardData: data, bubbles: true, cancelable: true }))
+        return data.getData('text/plain')
+      }, type)
+
+    // Ctrl+A in the page's input selects its text; main pushes it; the copy event carries it.
+    await page.keyboard.press('Control+a')
+    await expect.poll(() => clip(), { timeout: 10_000 }).toBe('héllo ü pasted ✓')
+
+    // A double click on a word of the page.
+    await page.mouse.dblclick(b.x + 230, b.y + 112)
+    await expect.poll(() => clip(), { timeout: 10_000 }).toBe('bravo')
+
+    // Cut: the input's selection on the clipboard, and a Delete removes it from the page.
+    await page.mouse.click(b.x + 100, b.y + 20)
+    await page.keyboard.press('Control+a')
+    await expect.poll(() => clip(), { timeout: 10_000 }).toBe('héllo ü pasted ✓')
+    expect(await clip('cut')).toBe('héllo ü pasted ✓')
+    // (A title's trailing space is trimmed.)
+    await expect(pageTitle).toHaveAttribute('title', /^value\n/, { timeout: 10_000 })
+    // Nothing selected now: the copy event leaves the clipboard alone.
+    await expect.poll(() => clip(), { timeout: 10_000 }).toBe('')
     await expectMainAlive(server)
   } finally {
     await browser.close()

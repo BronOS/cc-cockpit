@@ -11,6 +11,7 @@ import * as wsModule from 'ws'
 import type { EventChannel, LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, registerWebAccessHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
+import { cleanSelection } from '../../src/main/webview/webview-input'
 import { LinkAsks } from '../../src/main/plugins/link-asks'
 import { TrashAsks } from '../../src/main/files/trash-asks'
 import { OverlayManager } from '../../src/main/overlays/overlay-manager'
@@ -837,6 +838,24 @@ describe('events and window lifetime', () => {
     expect(views.viewsOf(1)).toEqual(['desktop:1'])
   })
 
+  // design-web-browser.md §4.2 (streamed webviews Task 8): a page's selection is pushed as an event;
+  // raw, 10 MB of control characters JSON-escaped (six bytes each) is over the cap and would close
+  // the view, terminals included. Cleaned and capped by main (cleanSelection) it goes out.
+  it('a hostile selection, cleaned and capped, reaches the view without closing it', () => {
+    const { connect, views } = setup({ server: true })
+    const ws = connect('p1')
+    const hostile = '\u0001"\\\u001b'.repeat(2.5 * 1024 * 1024)
+    views.toView('web:1', 'webviews.selection', { panelKey: 'a/b', text: cleanSelection(hostile) })
+    expect(ws.closedWith).toBeUndefined()
+    const [event] = ws.frames('event') as Array<{ ch: string; p: { text: string } }>
+    expect(event?.ch).toBe('webviews.selection')
+    expect(event?.p.text.length).toBeGreaterThan(0)
+    // The same text sent raw would have closed it.
+    const other = connect('p1')
+    views.toView('web:2', 'webviews.selection', { panelKey: 'a/b', text: hostile })
+    expect(other.closedWith?.code).toBe(CLOSE.tooLarge)
+  })
+
   it('the window closing closes its remote views; the router refuses a frame that races it', async () => {
     const { connect, views, windows, router } = setup()
     const handler = vi.fn(() => LAYOUT)
@@ -1649,6 +1668,8 @@ describe('the web access card (server mode)', () => {
     // A streamed page's cursor (§4.1, Task 7): the same.
     expect(remoteEvent('webviews.cursor', { panelKey: 'a/b', cursor: 'pointer' }, false)).toBeUndefined()
     expect(remoteEvent('webviews.cursor', { panelKey: 'a/b', cursor: 'pointer' }, true)).toEqual({ payload: { panelKey: 'a/b', cursor: 'pointer' } })
+    expect(remoteEvent('webviews.selection', { panelKey: 'a/b', text: 'x' }, false)).toBeUndefined()
+    expect(remoteEvent('webviews.selection', { panelKey: 'a/b', text: 'x' }, true)).toEqual({ payload: { panelKey: 'a/b', text: 'x' } })
   })
 
   // design-web.md §9.9: notifications and their sound stay on the host on the desktop (§6.1), so a

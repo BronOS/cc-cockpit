@@ -1348,6 +1348,13 @@ export interface IpcInvokeMap {
    * wheel makes this view the page's size owner.
    */
   'webviews.input': { req: { panelKey: string; events: WebviewInputEventWire[] }; res: void }
+  /**
+   * Server mode, a viewer of the panel only (design-web-browser.md §4.2): committed text from the
+   * browser's hidden textarea (an IME or dead-key composition, non-ASCII, AltGr text, a paste), at
+   * most 64 KB of UTF-8 per call; the same gate and rate bucket as `webviews.input`, and it claims
+   * the size. Main inserts it as the page's committed text (`webContents.insertText`).
+   */
+  'webviews.insertText': { req: { panelKey: string; text: string }; res: void }
 
   // Tabs. All are scoped to the sender's project: a tab id that belongs to another project is
   // treated as unknown.
@@ -1591,6 +1598,12 @@ export interface IpcEventMap {
    */
   'webviews.cursor': { panelKey: string; cursor: string }
   /**
+   * Server mode: the streamed page's selection after this view's input changed it (debounced,
+   * deduplicated), to that view only, for its `copy` event. Control characters but \n and \t
+   * stripped, at most ~256 KB encoded (main/webview/webview-input.ts); '' when nothing is selected.
+   */
+  'webviews.selection': { panelKey: string; text: string }
+  /**
    * A chord typed into a native view the page cannot see (a webview panel) that main resolved to
    * this command: run it as if the key had been pressed here (same modal rules).
    */
@@ -1737,6 +1750,7 @@ export const INVOKE_CHANNELS = [
   'webviews.place',
   'webviews.fit',
   'webviews.input',
+  'webviews.insertText',
   'tabs.list',
   'tabs.create',
   'tabs.commands',
@@ -1793,6 +1807,7 @@ export const EVENT_CHANNELS = [
   'panels.reload',
   'webviews.navigated',
   'webviews.cursor',
+  'webviews.selection',
   'commands.trigger'
 ] as const satisfies readonly EventChannel[]
 
@@ -2058,6 +2073,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // mode (web/connection.ts remoteEvent).
   'webviews.input': 'adapted',
   'webviews.cursor': 'adapted',
+  // Text and the selection (§4.2): the same gate as `webviews.input`; the selection goes only to the
+  // view whose input changed it (ViewRegistry.toView) and to no remote view outside server mode.
+  'webviews.insertText': 'adapted',
+  'webviews.selection': 'adapted',
 
   // Tabs and terminals. Input from a remote view is the person typing (`typed` and the send gate
   // apply unchanged, Task 16); the flag is the person's, and a remote view is the person.

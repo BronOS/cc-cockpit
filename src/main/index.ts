@@ -1112,13 +1112,15 @@ function start(server: boolean): void {
         log: warnLog
       })
     : undefined
-  // Server mode: a browser viewer's pointer, wheel and keys into the panel's off-screen page
-  // (webviews.input, webview-input.ts, design-web-browser.md §4.1): from a current viewer only,
-  // checked, rate-capped per view, a press making it the size owner.
+  // Server mode: a browser viewer's pointer, wheel, keys and text into the panel's off-screen page
+  // (webviews.input / webviews.insertText, webview-input.ts, design-web-browser.md §4.1, §4.2): from
+  // a current viewer only, checked, rate-capped per view, a press making it the size owner. The
+  // page's selection after that input goes back to the acting view only (webviews.selection).
   const webviewInput = new WebviewInput({
     isViewer: (panel, viewId) => webviewViewers.isViewer(panel, viewId),
     claimOwner: (panel, viewId) => webviewViewers.claimOwner(panel, viewId),
-    target: (panel) => webviews.inputTarget(panel.windowId, panel.pluginId, panel.panelId)
+    target: (panel) => webviews.inputTarget(panel.windowId, panel.pluginId, panel.panelId),
+    pushSelection: (viewId, event) => views.toView(viewId, 'webviews.selection', event)
   })
   // The page's cursor, to the panel's viewers only (browser views of its own window that show it):
   // never toWindow, whose desktop page is the hidden page in server mode.

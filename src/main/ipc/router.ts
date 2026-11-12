@@ -1619,8 +1619,8 @@ export interface WebviewHandlerDeps {
   server?: boolean
   /** Server mode's viewers and size owner (webview-viewers.ts); absent: the two channels refuse. */
   viewers?: Pick<WebviewViewers, 'report' | 'claimOwner' | 'leave'>
-  /** Server mode's input gate (webview-input.ts); absent: `webviews.input` refuses. */
-  input?: Pick<WebviewInput, 'accept'>
+  /** Server mode's input gate (webview-input.ts); absent: `webviews.input` and `webviews.insertText` refuse. */
+  input?: Pick<WebviewInput, 'accept' | 'acceptText'>
 }
 
 /**
@@ -1707,12 +1707,23 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
   // input once sent. The same gate as place/fit (main's flag, the view main bound), the panel by the
   // caller's own window's layout; the input gate checks the view is a viewer of it now, every
   // field, the page bounds and the rate (webview-input.ts).
-  router.handleProject('webviews.input', (ctx, payload, view) => {
+  const inputFor = (channel: string, view: CallView): Pick<WebviewInput, 'accept' | 'acceptText'> => {
     if (deps.server !== true || !view.remote || !deps.input) {
-      throw new Error('webviews.input: only a browser view of a server shows a streamed webview')
+      throw new Error(`${channel}: only a browser view of a server shows a streamed webview`)
     }
+    return deps.input
+  }
+  router.handleProject('webviews.input', (ctx, payload, view) => {
+    const input = inputFor('webviews.input', view)
     const owner = panelOf('webviews.input', ctx, payload)
-    deps.input.accept({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId, fields('webviews.input', payload).events)
+    input.accept({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId, fields('webviews.input', payload).events)
+  })
+  // `adapted` (§4.2): committed text and pasted text, by the same gate; the input gate checks the
+  // viewer, the size (64 KB) and takes it from the same rate bucket (webview-input.ts acceptText).
+  router.handleProject('webviews.insertText', (ctx, payload, view) => {
+    const input = inputFor('webviews.insertText', view)
+    const owner = panelOf('webviews.insertText', ctx, payload)
+    input.acceptText({ windowId: owner.windowId, pluginId: owner.pluginId, panelId: owner.panelId }, view.viewId, fields('webviews.insertText', payload).text)
   })
 }
 

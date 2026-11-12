@@ -13,6 +13,18 @@
 // terminals use); clipboard chords are never forwarded. The page's cursor comes back as
 // `webviews.cursor` and is the layer's CSS cursor.
 //
+// Text (Task 8, §4.2): the keyboard focus is a hidden <textarea> in the layer, so the browser's
+// IME, dead keys and AltGr work as in any text field. What it commits (`input` with insertText or
+// insertReplacementText outside a composition, and `compositionend`) goes as
+// `webviews.insertText`, and the textarea is emptied again. One printable ASCII key is not its: the
+// key handler sends it as a key (main adds the char) and prevents it, so it is never typed twice
+// (webviewKeyAction says which is which). Enter is a key ('\r' as its char), never the textarea's
+// newline. A `paste` gives its text/plain, no clipboard permission needed (navigator.clipboard
+// needs a secure context, which a LAN server over http is not). Copy: main pushes the page's
+// selection after input that may change it (`webviews.selection`); the `copy` event sets the latest
+// one, and `cut` does that and sends a Delete key. With nothing selected the browser's own copy
+// runs (on an empty textarea: nothing), so the person's clipboard is left alone.
+//
 // The math, the key split and the outbox are DOM-free in webview-stream.ts (unit tested).
 
 import { useEffect, useRef, useState } from 'react'
@@ -22,6 +34,7 @@ import { commandForEvent } from '../commands/keybindings'
 import { useWebviewPage, WebviewLoadError, WebviewToolbar } from '../zones/webview-toolbar'
 import {
   boxToPage,
+  textChunks,
   ClickCounter,
   FrameDecoder,
   framePageSize,
@@ -48,6 +61,7 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
   const area = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const layer = useRef<HTMLDivElement>(null)
+  const textbox = useRef<HTMLTextAreaElement>(null)
   // The frame on the canvas now (its header): input maps against the frame the person sees.
   const shown = useRef<DecodedFrame<ImageBitmap>['frame'] | undefined>(undefined)
 
@@ -140,10 +154,11 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     }
   }, [panelKey])
 
-  // Input: pointer, wheel and keys over the frame to the page (see the top of the file).
+  // Input: pointer, wheel, keys and text over the frame to the page (see the top of the file).
   useEffect(() => {
     const node = layer.current
-    if (!node) return
+    const text = textbox.current
+    if (!node || !text) return
     const queue = new InputQueue(
       (events) => {
         window.cockpit.invoke('webviews.input', { panelKey, events }).catch(() => {})
@@ -166,8 +181,13 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     }
     const onPointerDown = (e: PointerEvent): void => {
       // Focus first (the keys follow the pointer, as in a page); prevented below, so no text of
-      // the shell is selected and no compatibility mouse event focuses anything else.
-      node.focus({ preventScroll: true })
+      // the shell is selected and no compatibility mouse event focuses anything else. The textarea
+      // moves under the pointer: an IME's candidate window opens at its caret, near where the
+      // person clicked (an input field of the page, most likely), not in the panel's corner.
+      const rect = node.getBoundingClientRect()
+      text.style.left = `${Math.max(0, Math.min(rect.width - 1, e.clientX - rect.left))}px`
+      text.style.top = `${Math.max(0, Math.min(rect.height - 1, e.clientY - rect.top))}px`
+      text.focus({ preventScroll: true })
       e.preventDefault()
       const button = pointerButton(e.button)
       const at = button && toPage(e, false)
@@ -234,14 +254,75 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
       queue.flush()
     }
     const noMenu = (e: Event): void => e.preventDefault()
+
+    // Text. Keys already queued go first, so the page gets them in the order they were typed.
+    const sendText = (value: string): void => {
+      if (value === '') return
+      queue.flush()
+      for (const chunk of textChunks(value)) {
+        window.cockpit.invoke('webviews.insertText', { panelKey, text: chunk }).catch(() => {})
+      }
+    }
+    let composing = false
+    // Emptied after each commit: the textarea holds only what is being composed. Not inside a
+    // composition (that would end it); after compositionend on the next task, as some IMEs start
+    // the next composition from within that event.
+    const clearText = (): void => {
+      if (!composing) text.value = ''
+    }
+    const onInput = (e: Event): void => {
+      const ie = e as InputEvent
+      if (composing || ie.isComposing) return
+      // insertText: typed (non-ASCII, AltGr); insertReplacementText: a spell checker's or a phone
+      // keyboard's replacement. The rest (a line break, a deletion) is never the page's text: Enter
+      // and Backspace go to the page as keys and are prevented here.
+      if (ie.inputType === 'insertText' || ie.inputType === 'insertReplacementText') sendText(ie.data ?? text.value)
+      clearText()
+    }
+    const onCompositionStart = (): void => {
+      composing = true
+    }
+    const onCompositionEnd = (e: CompositionEvent): void => {
+      composing = false
+      sendText(e.data)
+      setTimeout(clearText, 0)
+    }
+    const onPaste = (e: ClipboardEvent): void => {
+      e.preventDefault()
+      sendText(e.clipboardData?.getData('text/plain') ?? '')
+    }
+    // The page's selection as main last pushed it ('' for none).
+    let selection = ''
+    const offSelection = window.cockpit.on('webviews.selection', (p) => {
+      if (p.panelKey === panelKey && typeof p.text === 'string') selection = p.text
+    })
+    const onCopy = (e: ClipboardEvent): boolean => {
+      if (selection === '' || !e.clipboardData) return false
+      e.clipboardData.setData('text/plain', selection)
+      e.preventDefault()
+      return true
+    }
+    const onCut = (e: ClipboardEvent): void => {
+      if (!onCopy(e)) return
+      queue.push({ kind: 'key', type: 'down', key: 'Delete', modifiers: [] })
+      queue.push({ kind: 'key', type: 'up', key: 'Delete', modifiers: [] })
+      queue.flush()
+    }
+
     node.addEventListener('pointerdown', onPointerDown)
     node.addEventListener('pointermove', onPointerMove)
     node.addEventListener('pointerup', onPointerUp)
     node.addEventListener('pointercancel', onCancel)
     node.addEventListener('wheel', onWheel, { passive: false })
-    node.addEventListener('keydown', onKeyDown)
-    node.addEventListener('keyup', onKeyUp)
-    node.addEventListener('blur', onBlur)
+    text.addEventListener('keydown', onKeyDown)
+    text.addEventListener('keyup', onKeyUp)
+    text.addEventListener('blur', onBlur)
+    text.addEventListener('input', onInput)
+    text.addEventListener('compositionstart', onCompositionStart)
+    text.addEventListener('compositionend', onCompositionEnd)
+    text.addEventListener('paste', onPaste)
+    text.addEventListener('copy', onCopy)
+    text.addEventListener('cut', onCut)
     node.addEventListener('contextmenu', noMenu)
     // The page's cursor (main maps Chromium's names through a fixed table; only those are applied).
     node.style.cursor = ''
@@ -250,15 +331,23 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     })
     return () => {
       offCursor()
+      offSelection()
       node.removeEventListener('pointerdown', onPointerDown)
       node.removeEventListener('pointermove', onPointerMove)
       node.removeEventListener('pointerup', onPointerUp)
       node.removeEventListener('pointercancel', onCancel)
       node.removeEventListener('wheel', onWheel)
-      node.removeEventListener('keydown', onKeyDown)
-      node.removeEventListener('keyup', onKeyUp)
-      node.removeEventListener('blur', onBlur)
+      text.removeEventListener('keydown', onKeyDown)
+      text.removeEventListener('keyup', onKeyUp)
+      text.removeEventListener('blur', onBlur)
+      text.removeEventListener('input', onInput)
+      text.removeEventListener('compositionstart', onCompositionStart)
+      text.removeEventListener('compositionend', onCompositionEnd)
+      text.removeEventListener('paste', onPaste)
+      text.removeEventListener('copy', onCopy)
+      text.removeEventListener('cut', onCut)
       node.removeEventListener('contextmenu', noMenu)
+      text.value = ''
       releaseButtons()
       releaseKeys()
       queue.dispose()
@@ -296,8 +385,20 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
           data-drawn={drawn && hasPage ? 'true' : 'false'}
           aria-label={`${title} page`}
         />
-        {/* Over the canvas: the pointer, the wheel and (focused) the keys go to the page. */}
-        <div ref={layer} className="webview-input" tabIndex={0} hidden={!hasPage} aria-label={`${title} page input`} />
+        {/* Over the canvas: the pointer and the wheel go to the page; the keys and text through the
+            hidden textarea, which has the focus while the page has the keyboard. */}
+        <div ref={layer} className="webview-input" hidden={!hasPage}>
+          <textarea
+            ref={textbox}
+            className="webview-text"
+            aria-label={`${title} page input`}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            rows={1}
+          />
+        </div>
         {!hasPage && (
           <p className="panel-placeholder webview-canvas-note" role="status">
             {hadPage ? `${title}: the page is gone` : `${title} shows nothing yet`}

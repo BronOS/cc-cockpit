@@ -2489,6 +2489,10 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
                 accept: (panel, viewId, raw) => {
                   accepted.push([panel, viewId, raw])
                   return 0
+                },
+                acceptText: (panel, viewId, raw) => {
+                  accepted.push(['text', panel, viewId, raw])
+                  return true
                 }
               }
             })
@@ -2528,6 +2532,29 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
       )
       await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', null)).rejects.toThrow(/bad payload/)
       expect(accepted).toEqual([])
+    })
+
+    // Task 8 (§4.2): text into the streamed page, by the same gate.
+    it('webviews.insertText: adapted, the same gate, main\'s window, panel and view with the raw text', async () => {
+      expect(REMOTE_CLASS['webviews.insertText']).toBe('adapted')
+      expect(REMOTE_CLASS['webviews.selection']).toBe('adapted')
+      const { router, ipc, accepted } = inputSetup()
+      await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'héllo', windowId: 2, viewId: 'web:9' })
+      expect(accepted).toEqual([['text', { windowId: 1, pluginId: 'a.one', panelId: 'view' }, 'web:3', 'héllo']])
+      accepted.length = 0
+      await expect(ipc.invoke('webviews.insertText', 11, [{ panelKey: 'a.one/view', text: 'x' }])).rejects.toThrow(/only a browser view of a server/)
+      const desktop = inputSetup({ server: false })
+      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
+        /only a browser view of a server/
+      )
+      const none = inputSetup({ input: false })
+      await expect(none.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
+        /only a browser view of a server/
+      )
+      await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
+        /not a webview panel of this project/
+      )
+      expect([...accepted, ...desktop.accepted, ...none.accepted]).toEqual([])
     })
   })
 })

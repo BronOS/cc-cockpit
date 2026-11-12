@@ -306,7 +306,8 @@ export class WebConnections {
  * stay on the host (§6.1), whatever sent the event.
  */
 export function remoteEvent(channel: EventChannel, payload: unknown, server: boolean): { payload: unknown } | undefined {
-  // A webview toolbar's page (design-web-browser.md §3.5) and a streamed page's cursor (§4.1): in
+  // A webview toolbar's page (design-web-browser.md §3.5), a streamed page's cursor (§4.1) and its
+  // selection (§4.2): in
   // server mode only; a desktop project's browsers draw the placeholder and must not learn the
   // host's page URLs (main sends a cursor only to a server's viewers anyway).
   if (
@@ -314,7 +315,8 @@ export function remoteEvent(channel: EventChannel, payload: unknown, server: boo
     channel === 'notices.show' ||
     channel === 'notices.gone' ||
     channel === 'webviews.navigated' ||
-    channel === 'webviews.cursor'
+    channel === 'webviews.cursor' ||
+    channel === 'webviews.selection'
   ) {
     return server ? { payload } : undefined
   }

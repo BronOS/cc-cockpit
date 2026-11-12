@@ -8,6 +8,7 @@
 // a gone window, a closed project window, destroy twice) do what the manager expects.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebviewEvents } from '../../src/main/webview/webview-manager'
+import { WEBVIEW_WORLD_ID } from '../../src/main/webview/webview-input'
 
 type Listener = (...args: unknown[]) => unknown
 
@@ -97,6 +98,15 @@ class FakeWebContents extends FakeEmitter {
   }
   sendInputEvent(event: { type: string }): void {
     this.calls.push(`input ${event.type}`)
+  }
+  insertText(text: string): Promise<void> {
+    this.calls.push(`text ${text}`)
+    return Promise.resolve()
+  }
+  selection: unknown = 'picked'
+  executeJavaScriptInIsolatedWorld(world: number, scripts: Array<{ code: string }>): Promise<unknown> {
+    this.calls.push(`world ${world} ${scripts.length}`)
+    return Promise.resolve(this.selection)
   }
   reload(): void {
     this.calls.push('reload')
@@ -480,6 +490,23 @@ describe('OffscreenWebviewFactory', () => {
     view.destroy()
     wc.calls.length = 0
     view.sendInput([{ type: 'mouseMove', x: 1, y: 1, modifiers: [] }])
+    expect(wc.calls).toEqual([])
+  })
+
+  // Task 8: committed text goes in as an IME commit; the selection is read in main's isolated world.
+  it('inserts text and reads the selection in its own isolated world, and neither once the page is gone', async () => {
+    const { view, wc, win } = make()
+    wc.calls.length = 0
+    view.insertText?.('héllo')
+    await expect(view.readSelection?.()).resolves.toBe('picked')
+    expect(wc.calls).toEqual(['text héllo', `world ${WEBVIEW_WORLD_ID} 1`])
+    expect(WEBVIEW_WORLD_ID).not.toBe(0)
+    expect(WEBVIEW_WORLD_ID).not.toBe(999)
+    expect(win.forbidden).toEqual([])
+    view.destroy()
+    wc.calls.length = 0
+    view.insertText?.('x')
+    await expect(view.readSelection?.()).resolves.toBeUndefined()
     expect(wc.calls).toEqual([])
   })
 
