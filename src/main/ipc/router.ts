@@ -1236,7 +1236,9 @@ export function registerRemoteServerHandlers(router: IpcRouter, deps: RemoteServ
     const service = pickerOnly('remote.edit', ctx, view)
     const body = fields('remote.edit', payload)
     const serverId = remoteText('remote.edit', body, 'serverId')
-    return service.edit({ ...remoteSettings('remote.edit', body), serverId })
+    const forget = body.forgetHostKey
+    if (forget !== undefined && typeof forget !== 'boolean') throw new Error('remote.edit: forgetHostKey must be a boolean')
+    return service.edit({ ...remoteSettings('remote.edit', body), serverId, ...(forget === true ? { forgetHostKey: true } : {}) })
   })
   router.handleWindow('remote.pickKey', (ctx, _payload, view) => pickerOnly('remote.pickKey', ctx, view).pickKey(ctx.windowId))
   router.handleWindow('remote.rename', (ctx, payload, view) => {

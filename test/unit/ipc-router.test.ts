@@ -2636,6 +2636,7 @@ describe('remote server handlers', () => {
     await ipc.invoke('remote.connect', PICKER, [{ kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox', link: 'http://127.0.0.1:7330/#t=t' }])
     await ipc.invoke('remote.open', PICKER, [{ serverId: 's1', answers: { password: 'pw' } }])
     await expect(ipc.invoke('remote.edit', PICKER, [{ serverId: 's1', kind: 'ssh', host: 'devbox', auth: { kind: 'password' } }])).resolves.toEqual({ ok: true, serverId: 's1' })
+    await ipc.invoke('remote.edit', PICKER, [{ serverId: 's1', kind: 'ssh', host: 'devbox', forgetHostKey: true }])
     await expect(ipc.invoke('remote.pickKey', PICKER)).resolves.toBe('/home/me/.ssh/id_work')
     expect(calls).toEqual([
       ['list'],
@@ -2649,6 +2650,7 @@ describe('remote server handlers', () => {
       ['connect', { kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox', link: 'http://127.0.0.1:7330/#t=t' }],
       ['open', 's1', undefined, { password: 'pw' }],
       ['edit', { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, serverId: 's1' }],
+      ['edit', { kind: 'ssh', host: 'devbox', serverId: 's1', forgetHostKey: true }],
       // The dialog is a sheet on the window main resolved for the sender (13 is window 3), never one from the payload.
       ['pickKey', 3]
     ])
@@ -2686,6 +2688,7 @@ describe('remote server handlers', () => {
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'tunnel', localPort: 1.5, remotePort: 7330 }])).rejects.toThrow(/localPort must be a whole number/)
     await expect(ipc.invoke('remote.open', PICKER, [{ serverId: 's', answers: 'pw' }])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('remote.edit', PICKER, [{ kind: 'direct', link: 'https://box' }])).rejects.toThrow(/serverId must be a string/)
+    await expect(ipc.invoke('remote.edit', PICKER, [{ serverId: 's', kind: 'ssh', host: 'h', forgetHostKey: 'yes' }])).rejects.toThrow(/forgetHostKey must be a boolean/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 7 }])).rejects.toThrow(/host must be a string/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', ccc: 1 }])).rejects.toThrow(/ccc must be a string/)
     await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'x'.repeat(5000) }])).rejects.toThrow(/link must be a string/)

@@ -442,8 +442,12 @@ export type RemoteServerSettings =
  */
 export type RemoteConnectRequest = (Extract<RemoteServerSettings, { kind: 'ssh' }> & { answers?: RemoteAnswers }) | Exclude<RemoteServerSettings, { kind: 'ssh' }>
 
-/** Edit (`remote.edit`): a saved server's new settings, of the same kind. */
-export type RemoteEditRequest = RemoteServerSettings & { serverId: string }
+/**
+ * Edit (`remote.edit`): a saved server's new settings, of the same kind. `forgetHostKey` (SSH only):
+ * drop the trusted host key, so the next connect asks "Trust this host?" again (a reinstalled server,
+ * which the changed-key refusal names).
+ */
+export type RemoteEditRequest = RemoteServerSettings & { serverId: string; forgetHostKey?: boolean }
 
 /**
  * A connect, open or edit: the server it was for; the text to show in place (never thrown at the

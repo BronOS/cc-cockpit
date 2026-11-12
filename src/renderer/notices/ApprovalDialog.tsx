@@ -29,6 +29,14 @@ export interface ApprovalDialogProps {
   allowLabel?: string
   /** The other button's label; default Deny. */
   denyLabel?: string
+  /**
+   * Focus the Deny button when it shows: for a dialog the person asked for themselves (the picker's
+   * Trust this host?), where nothing is being typed elsewhere and the keyboard needs a way in. Never
+   * Allow: Enter and Space do nothing inside anyway, and Esc is Deny.
+   */
+  focusDeny?: boolean
+  /** `data-testid`s for e2e specs: the dialog box and its two buttons. */
+  testIds?: { dialog?: string; allow?: string; deny?: string }
   onAnswer(allow: boolean): void
 }
 
@@ -38,6 +46,11 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
   const textId = useId()
   const [armed, setArmed] = useState(false)
   const answered = useRef(false)
+  const deny = useRef<HTMLButtonElement>(null)
+  const focusDeny = props.focusDeny === true
+  useEffect(() => {
+    if (focusDeny) deny.current?.focus()
+  }, [focusDeny])
   // How the last press on Allow began: armed or not (undefined: no press seen).
   const pressArmed = useRef<boolean | undefined>(undefined)
   const answer = (allow: boolean): void => {
@@ -89,6 +102,7 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={textId}
+        data-testid={props.testIds?.dialog}
         // Recorded on the dialog, not on Allow: a disabled button may get no pointer events, and a
         // press begun while disarmed must never read as "no press seen".
         onPointerDownCapture={() => {
@@ -114,12 +128,13 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
         </h2>
         <div id={textId}>{props.children}</div>
         <div className="confirm-buttons">
-          <button type="button" onClick={() => answer(false)}>
+          <button type="button" ref={deny} data-testid={props.testIds?.deny} onClick={() => answer(false)}>
             {props.denyLabel ?? 'Deny'}
           </button>
           <button
             type="button"
             className="confirm-danger"
+            data-testid={props.testIds?.allow}
             disabled={!armed}
             onClick={() => {
               const counts = allowClickCounts(armed, pressArmed.current)

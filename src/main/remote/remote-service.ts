@@ -63,7 +63,7 @@ export interface RemoteServiceStore {
   get(id: string): RemoteServerRecord | undefined
   prepare(input: { name?: string; via: RemoteVia }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia }
   insert(record: RemoteServerRecord): RemoteServerRecord
-  edit(id: string, input: { name?: string; via: RemoteVia }): { viaChanged: boolean; renamed: boolean }
+  edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean }
   rename(id: string, name: string): void
   forget(id: string): boolean
   setLocalPort(id: string, port: number): void
@@ -326,7 +326,11 @@ export class RemoteService {
       if (this.options.store.get(serverId) === undefined) return fail('this server is not saved any more')
       let result: { viaChanged: boolean; renamed: boolean }
       try {
-        result = this.options.store.edit(serverId, { ...(parsed.name === undefined ? {} : { name: parsed.name }), via: parsed.via })
+        result = this.options.store.edit(serverId, {
+          ...(parsed.name === undefined ? {} : { name: parsed.name }),
+          via: parsed.via,
+          ...(request.kind === 'ssh' && request.forgetHostKey === true ? { forgetHostKey: true } : {})
+        })
       } catch (err) {
         return fail(errorText(err))
       }

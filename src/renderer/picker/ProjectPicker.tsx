@@ -23,7 +23,7 @@ const mac = (): boolean => navigator.platform.toLowerCase().includes('mac')
  * focused (menu.ts resolves the '' key table for it), and a handler here would open two dialogs.
  *
  * Under the recent projects, the saved remote servers (servers-section.tsx, design-remote-desktop.md
- * §3) and "Connect to server…" (connect-form.tsx); their list is read with the rest and again on
+ * §3) and "Connect to server…" (connect-form.tsx, also Edit); their list is read with the rest and again on
  * every `remote.changed` (a window opened or closed, a tunnel's state, a cookie landing).
  */
 export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element {
@@ -38,7 +38,8 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
   const listRef = useRef<HTMLUListElement>(null)
   const [servers, setServers] = useState<RemoteServerInfo[] | null>(null)
   const [serversAt, setServersAt] = useState(0)
-  const [connecting, setConnecting] = useState(false)
+  // The Connect to server form: closed, a new connect, or Edit of a saved server.
+  const [connectForm, setConnectForm] = useState<{ edit?: RemoteServerInfo } | null>(null)
 
   // Stable (setters only), so the effect below subscribes once.
   const loadServers = useCallback((): void => {
@@ -218,14 +219,22 @@ export function ProjectPicker({ info }: { info: PickerInfo }): React.JSX.Element
         )}
       </PickerSection>
 
-      <ServersSection servers={servers} loadedAt={serversAt} onConnect={() => setConnecting(true)} reload={loadServers} />
+      <ServersSection
+        servers={servers}
+        loadedAt={serversAt}
+        onConnect={() => setConnectForm({})}
+        onEdit={(server) => setConnectForm({ edit: server })}
+        reload={loadServers}
+      />
 
-      {connecting && (
+      {connectForm !== null && (
         <ConnectForm
-          onClose={() => setConnecting(false)}
-          onConnected={() => {
-            // Main closes the picker once the window is open; a picker it keeps shows the server.
-            setConnecting(false)
+          {...(connectForm.edit === undefined ? {} : { edit: connectForm.edit })}
+          onClose={() => setConnectForm(null)}
+          onDone={() => {
+            // Main closes the picker once a window is open; a picker it keeps (an SSH Edit opens
+            // nothing) shows the server as saved.
+            setConnectForm(null)
             loadServers()
           }}
         />

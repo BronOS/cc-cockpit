@@ -577,6 +577,17 @@ describe('RemoteService: Edit', () => {
     expect(await service.open('srv1')).toMatchObject({ ok: false, need: { need: 'hostKey' } })
   })
 
+  it('Forget the trusted host key: the key goes, the link ends, the next open asks Trust again', async () => {
+    const { service, store, world } = setup()
+    world.hostKey = HOST_KEY
+    await service.connect({ kind: 'ssh', host: 'devbox', answers: { hostKey: HOST_KEY.sha256 } })
+    expect(store.get('srv1')?.hostKey).toEqual(HOST_KEY)
+    expect(await service.edit({ serverId: 'srv1', kind: 'ssh', host: 'devbox', forgetHostKey: true })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(store.get('srv1')?.hostKey).toBeUndefined()
+    expect(world.links[0]!.disposed).toBe(true)
+    expect(await service.open('srv1')).toMatchObject({ ok: false, need: { need: 'hostKey' } })
+  })
+
   it('a name alone refreshes the titles and keeps the link', async () => {
     const { service, world, windows } = setup()
     await service.connect({ kind: 'ssh', host: 'devbox' })

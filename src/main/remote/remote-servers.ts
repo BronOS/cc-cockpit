@@ -186,7 +186,7 @@ export class RemoteServerStore {
    * or passphrase, stored and in memory (it was for that account or that key). A `via` another saved
    * server already has is refused, as `add` refuses a tunnel's used local port.
    */
-  edit(id: string, input: { name?: string; via: RemoteVia }): { viaChanged: boolean; renamed: boolean } {
+  edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean } {
     const servers = this.read()
     const server = servers.find((s) => s.id === id)
     if (server === undefined) throw new RemoteServerError('unknown server')
@@ -201,10 +201,16 @@ export class RemoteServerStore {
       name = clean
     }
     const before = server.via
-    const viaChanged = !sameSettings(before, via)
+    let viaChanged = !sameSettings(before, via)
     if (before.kind === 'ssh' && via.kind === 'ssh') {
       const address = before.host !== via.host || (before.port ?? 0) !== (via.port ?? 0)
       const account = address || (before.user ?? '') !== (via.user ?? '') || JSON.stringify(sshAuthOf(before)) !== JSON.stringify(sshAuthOf(via))
+      // Edit's "Forget the trusted host key" (the changed-key refusal points there: a reinstalled
+      // server). It counts as a changed connection, so the live link, made under the old key, ends.
+      if (input.forgetHostKey === true && server.hostKey !== undefined) {
+        delete server.hostKey
+        viaChanged = true
+      }
       if (address) delete server.hostKey
       if (account) {
         delete server.secrets

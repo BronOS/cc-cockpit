@@ -115,7 +115,7 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     await expect(picker.getByText('No servers yet.', { exact: false })).toBeVisible()
     await picker.getByRole('button', { name: 'Connect to server…' }).click()
     const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
-    await dialog.getByRole('radio', { name: 'Link' }).check()
+    await dialog.getByRole('tab', { name: 'Link' }).click()
     // A link that is no link: the error shows in place and nothing is saved.
     await dialog.getByRole('textbox', { name: 'Link' }).fill('ftp://nowhere')
     await dialog.getByRole('button', { name: 'Connect' }).click()
@@ -291,8 +291,8 @@ async function tunnelWindow(app: ElectronApplication, server: Server): Promise<P
 async function connectSsh(picker: Page, host: string, name?: string): Promise<ReturnType<Page['getByRole']>> {
   await picker.getByRole('button', { name: 'Connect to server…' }).click()
   const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
-  await dialog.getByRole('radio', { name: 'SSH host' }).check()
-  await dialog.getByRole('textbox', { name: 'SSH host' }).fill(host)
+  await dialog.getByRole('tab', { name: 'SSH' }).click()
+  await dialog.getByRole('textbox', { name: 'Host', exact: true }).fill(host)
   if (name !== undefined) await dialog.getByRole('textbox', { name: 'Name (optional)' }).fill(name)
   await dialog.getByRole('button', { name: 'Connect' }).click()
   return dialog
@@ -316,7 +316,7 @@ test.skip('SSH: tunnel on another port, signed in by add-device, one re-pair aft
     await expect(bad.getByRole('alert')).toContainText('Run `ssh badhost` once in a terminal')
     await expect(bad.getByRole('alert')).toHaveText(/^Cannot connect: .*Run `ssh badhost` once in a terminal.*\.$/)
     expect(savedServers(desktop.cockpit.dataDir)).toEqual([])
-    await bad.getByRole('textbox', { name: 'SSH host' }).fill('testhost')
+    await bad.getByRole('textbox', { name: 'Host', exact: true }).fill('testhost')
     await bad.getByRole('textbox', { name: 'Name (optional)' }).fill('Box')
     await bad.getByRole('button', { name: 'Connect' }).click()
 

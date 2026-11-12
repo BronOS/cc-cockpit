@@ -650,6 +650,17 @@ describe('RemoteServerStore', () => {
     expect(await store.getSecret(id, 'password')).toBe('pw')
     // Nothing but an empty name: nothing changed.
     expect(store.edit(id, { name: '', via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' } })).toEqual({ viaChanged: false, renamed: false })
+    // Forget the trusted host key (a reinstalled server): only the key goes, and it counts as a change.
+    expect(
+      store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' }, forgetHostKey: true })
+    ).toEqual({ viaChanged: true, renamed: false })
+    expect(store.get(id)?.hostKey).toBeUndefined()
+    expect(await store.getSecret(id, 'password')).toBe('pw')
+    // With no key to forget it is no change at all.
+    expect(
+      store.edit(id, { via: { kind: 'ssh', host: 'devbox', auth: { kind: 'password' }, ccc: '/opt/ccc' }, forgetHostKey: true })
+    ).toEqual({ viaChanged: false, renamed: false })
+    store.setHostKey(id, { type: 'ssh-ed25519', sha256: `SHA256:${'A'.repeat(43)}` })
     // The port: another machine may answer, so its key is asked again; the cookie stays.
     store.edit(id, { via: { kind: 'ssh', host: 'devbox', port: 2222, auth: { kind: 'password' } } })
     expect(store.get(id)?.hostKey).toBeUndefined()

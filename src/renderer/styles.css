@@ -4015,7 +4015,175 @@ ul.settings-alert {
   flex-direction: column;
   gap: 12px;
 }
-/* SSH host | Link: a two-way segmented switch over real radio buttons (arrow keys move between them). */
+/* SSH | My own tunnel | Link: tabs (role=tablist; ←/→ move), the selected one underlined in the accent. */
+.connect-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--cc-border);
+}
+.connect-tabs [role='tab'] {
+  margin-bottom: -1px;
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--cc-fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.connect-tabs [role='tab']:hover:enabled {
+  color: var(--cc-fg);
+}
+.connect-tabs [role='tab'][aria-selected='true'] {
+  border-bottom-color: var(--cc-accent);
+  color: var(--cc-fg);
+  font-weight: 500;
+}
+.connect-tabs [role='tab']:disabled {
+  cursor: default;
+}
+.connect-tabs [role='tab']:disabled:not([aria-selected='true']) {
+  opacity: 0.5;
+}
+.connect-tabs [role='tab']:focus-visible {
+  outline: 2px solid var(--cc-focus);
+  outline-offset: -2px;
+}
+.connect-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Two fields side by side (User and Port, the tunnel's two ports); stacked when the card is narrow. */
+.connect-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.connect-row > .connect-field {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.connect-row > .connect-narrow {
+  flex: 0 1 11rem;
+}
+.connect-label {
+  font-weight: 500;
+}
+/* Key file: the path field and its Browse button on one line. */
+.connect-with-button {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.connect-with-button input {
+  flex: 1;
+  min-width: 0;
+}
+.connect-with-button .picker-quiet {
+  height: 30px;
+}
+.connect-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+.connect-check > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.connect-check small,
+.connect-note {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.connect-note {
+  margin: 0;
+}
+.connect-note code,
+.remote-prompt-hint code {
+  font-family: var(--cc-font-mono);
+  font-size: 0.95em;
+}
+/* My own tunnel's commands: each a selectable monospace line with its Copy button. */
+.connect-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.connect-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-surface-2);
+}
+.connect-command code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.connect-command .picker-quiet {
+  flex: none;
+}
+
+/* The picker's prompts (remote-prompts.tsx): Trust this host? and Password / Passphrase. */
+.remote-hostkey {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 10px;
+}
+.remote-hostkey dt {
+  color: var(--cc-fg-muted);
+}
+.remote-hostkey dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.remote-hostkey code {
+  font-family: var(--cc-font-mono);
+  user-select: text;
+}
+.remote-prompt-hint {
+  margin: 0 0 16px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.remote-prompt-wrong {
+  margin: 0 0 8px;
+  color: var(--cc-status-ended);
+}
+.remote-secret .remote-secret-field {
+  box-sizing: border-box;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  font: inherit;
+}
+.remote-secret .remote-secret-field:focus {
+  outline: none;
+  border-color: var(--cc-focus);
+}
+.remote-secret-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Sign in with: a segmented switch over real radio buttons (arrow keys move between them). */
 .connect-kind {
   display: inline-flex;
   align-self: flex-start;

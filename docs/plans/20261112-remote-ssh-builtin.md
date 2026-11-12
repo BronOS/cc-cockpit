@@ -337,16 +337,51 @@
   `styles.css`
 - Create: `src/renderer/picker/remote-prompts.tsx`
 
-- [ ] form tabs SSH / My own tunnel / Link per design §3: SSH fields (host, user, port, sign in with, key path with
+- [x] form tabs SSH / My own tunnel / Link per design §3: SSH fields (host, user, port, sign in with, key path with
       Browse, passphrase, password, Remember, Advanced ccc); own tunnel fields with the two live commands (copy
       buttons) and the link field; Link tab as now
-- [ ] prompts: Trust this host (address, type, fingerprint, the `ssh-keygen -lf` hint, Trust and Cancel, no default
+- [x] prompts: Trust this host (address, type, fingerprint, the `ssh-keygen -lf` hint, Trust and Cancel, no default
       button, Enter blocked, armed after about a second like `ApprovalDialog`); Password / Passphrase (masked,
       Remember); the picker accumulates the connect's answers and resends them all
-- [ ] server row: label per kind (`ssh user@host`, `tunnel :7331`, origin), Edit in the menu, "not remembered: no
+- [x] server row: label per kind (`ssh user@host`, `tunnel :7331`, origin), Edit in the menu, "not remembered: no
       keyring" kept
-- [ ] test ids on the new controls; unit tests for pure helpers (command text, answer accumulation)
-- [ ] run tests - must pass before next task
+- [x] test ids on the new controls; unit tests for pure helpers (command text, answer accumulation)
+- [x] run tests - must pass before next task
+- ➕ the form has no password, passphrase or Remember fields (decided): secrets come only through the prompts on a
+      `need`, so a new, a forgotten, a not-remembered and a wrong secret take one path. The prompts carry Remember
+      (on by default; off and disabled on a server row whose `cookieKept` is false, "no keyring here: kept until the
+      app quits"). The tabs are a real `tablist` (←/→ move); Edit opens the same form on the server's tab with the
+      other two disabled, titled "Edit <name>", button Save; a Direct server's Link field starts with its origin
+- ➕ the prompt loop (`remote-prompts.tsx` `useRemotePrompts().run`, pure rules in `picker-model.ts` `promptStep` /
+      `withAnswer`): answers live in the run only; each retry resends all of them. A secret's first `again: true`
+      asks once more with "Wrong password. Try again." (`remote-secret-wrong`); the second ends the connect with
+      "Wrong password" / "Wrong passphrase" (form: "Cannot connect: Wrong password"). A `need` for a host key just
+      trusted, or for a secret answered and not called wrong, ends with an error instead of looping. Cancel (or Esc)
+      ends the run silently, the form stays open. A server row's open (`remote.open`) runs the same loop; Edit sends
+      `remote.edit` first and answers a `need` with `remote.open {serverId, answers}`
+- ➕ Trust this host is the shared `ApprovalDialog` (Allow = Trust, Deny = Cancel; Esc cancels, Enter and Space do
+      nothing, Trust armed after `APPROVAL_ARM_MS` of visibility and focus), which got two optional props:
+      `focusDeny` (Cancel focused, the keyboard's way in) and `testIds`
+- ➕ added beyond the IPC of Task 5: `RemoteEditRequest.forgetHostKey` (SSH Edit's "Forget the trusted host key"
+      checkbox), because the changed-key refusal says "Forget the trusted key in Edit" and nothing did that; the store
+      drops `hostKey` and counts it as a changed connection (the link ends); router type-checks it; tests in
+      `remote-servers.test.ts`, `remote-service.test.ts`, `ipc-router.test.ts`
+- ➕ `viaLabel` shows an SSH port when one is set (`ssh me@box:2222`, an IPv6 literal bracketed); `connectFailureText`
+      is gone. Copy buttons use a selected textarea and `execCommand('copy')`: the app page has no clipboard
+      permission (`permissions.ts`); checked in a throwaway e2e that read Electron's clipboard back
+- ➕ test ids for Task 7 (all `data-testid`): tabs `connect-tab-ssh|tunnel|link`; SSH `connect-ssh-host`,
+      `connect-ssh-user`, `connect-ssh-port`, `connect-ssh-auth-auto|password|key` (radios), `connect-ssh-key-path`,
+      `connect-ssh-key-browse`, `connect-ssh-ccc` (under Advanced, a closed `<details>`), `connect-forget-host-key`
+      (Edit only); tunnel `connect-tunnel-ssh-host`, `connect-tunnel-remote-port`, `connect-tunnel-local-port`,
+      `connect-tunnel-command` and `connect-tunnel-command-copy`, `connect-add-device-command` and
+      `connect-add-device-command-copy`, `connect-tunnel-link`; Link `connect-link`; all tabs `connect-name`,
+      `connect-submit`, `connect-cancel`, `connect-error`; the ⋯ menu's `server-menu-edit`; Trust
+      `remote-hostkey-prompt`, `remote-hostkey-address`, `remote-hostkey-type`, `remote-hostkey-fingerprint`,
+      `remote-hostkey-trust` (disabled for about a second), `remote-hostkey-cancel`; secret `remote-secret-prompt`,
+      `remote-secret-input`, `remote-secret-remember`, `remote-secret-ok`, `remote-secret-cancel`,
+      `remote-secret-wrong`. Labels too: the SSH tab's field is "Host", the tunnel's link "Add-device link", the Link
+      tab's "Link"; the Direct e2e now picks the tab with `getByRole('tab', { name: 'Link' })` (the skipped SSH test's
+      helper was moved to the new labels as well)
 
 ### Task 7: e2e: built-in SSH and My own tunnel [model: sonnet]
 

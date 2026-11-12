@@ -1,18 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
-  connectRequest,
+  canConnect,
+  connectSettings,
+  editFields,
+  emptyConnectFields,
   filterProjects,
   firstOpenable,
   groupServers,
   isLoopbackOrigin,
   moveHighlight,
+  newPromptFlow,
   openedAgo,
+  parsePort,
+  promptStep,
   remoteRecentRows,
   serverNotes,
   serverStateLabel,
   sortServers,
+  tabOf,
   tildePath,
-  viaLabel
+  tunnelCommands,
+  viaLabel,
+  withAnswer,
+  type PromptFlow
 } from '../../src/renderer/picker/picker-model'
 import type { ProjectSummary, RemoteServerInfo } from '../../src/shared/ipc'
 
@@ -106,7 +116,13 @@ const server = (over: Partial<RemoteServerInfo> & Pick<RemoteServerInfo, 'id'>):
 describe('viaLabel', () => {
   it('names the ssh host with its user, the tunnel\'s local port, or the Direct origin', () => {
     expect(viaLabel({ kind: 'ssh', host: 'devbox' })).toBe('ssh devbox')
-    expect(viaLabel({ kind: 'ssh', host: 'box', user: 'me', port: 2222, ccc: '/opt/ccc' })).toBe('ssh me@box')
+    expect(viaLabel({ kind: 'ssh', host: 'box', user: 'me', ccc: '/opt/ccc' })).toBe('ssh me@box')
+    expect(viaLabel({ kind: 'ssh', host: 'box', user: 'me', port: 2222 })).toBe('ssh me@box:2222')
+    expect(viaLabel({ kind: 'ssh', host: 'box', port: 22 })).toBe('ssh box:22')
+    // An IPv6 literal with a port reads as in a URL; one already in brackets stays as is.
+    expect(viaLabel({ kind: 'ssh', host: 'fd00::1', port: 2222 })).toBe('ssh [fd00::1]:2222')
+    expect(viaLabel({ kind: 'ssh', host: '[fd00::1]', user: 'me', port: 2222 })).toBe('ssh me@[fd00::1]:2222')
+    expect(viaLabel({ kind: 'ssh', host: 'fd00::1' })).toBe('ssh fd00::1')
     expect(viaLabel({ kind: 'tunnel', localPort: 7331, remotePort: 7330, sshHost: 'devbox' })).toBe('tunnel :7331')
     expect(viaLabel({ kind: 'direct', origin: 'https://box.ts.net' })).toBe('https://box.ts.net')
   })
@@ -215,15 +231,158 @@ describe('groupServers', () => {
   })
 })
 
-describe('connectRequest', () => {
-  const fields = { host: '  devbox ', link: ' http://127.0.0.1:1/#t=abc ', name: '  ', ccc: '' }
+describe('connectSettings', () => {
+  const fields = { ...emptyConnectFields(), host: '  devbox ', link: ' http://127.0.0.1:1/#t=abc ', name: '  ' }
   it('trims and leaves out empty optional fields', () => {
-    expect(connectRequest('ssh', fields)).toEqual({ kind: 'ssh', host: 'devbox' })
-    expect(connectRequest('link', fields)).toEqual({ kind: 'direct', link: 'http://127.0.0.1:1/#t=abc' })
+    expect(connectSettings('ssh', fields)).toEqual({ kind: 'ssh', host: 'devbox' })
+    expect(connectSettings('link', fields)).toEqual({ kind: 'direct', link: 'http://127.0.0.1:1/#t=abc' })
+    expect(connectSettings('tunnel', fields)).toEqual({ kind: 'tunnel', localPort: 7331, remotePort: 7330 })
   })
-  it('passes a name and, for ssh only, the ccc path', () => {
-    const full = { ...fields, name: ' Box ', ccc: ' /opt/ccc ' }
-    expect(connectRequest('ssh', full)).toEqual({ kind: 'ssh', host: 'devbox', ccc: '/opt/ccc', name: 'Box' })
-    expect(connectRequest('link', full)).toEqual({ kind: 'direct', link: 'http://127.0.0.1:1/#t=abc', name: 'Box' })
+  it('passes every SSH field and the sign-in', () => {
+    const full = { ...fields, user: ' me ', port: ' 2222 ', ccc: ' /opt/ccc ', name: ' Box ' }
+    expect(connectSettings('ssh', full)).toEqual({ kind: 'ssh', host: 'devbox', user: 'me', port: 2222, ccc: '/opt/ccc', name: 'Box' })
+    expect(connectSettings('ssh', { ...full, auth: 'password' })).toMatchObject({ auth: { kind: 'password' } })
+    expect(connectSettings('ssh', { ...full, auth: 'key', keyPath: ' ~/.ssh/work ' })).toMatchObject({ auth: { kind: 'key', path: '~/.ssh/work' } })
+    // Agent and my keys is no `auth` at all (main reads that as auto).
+    expect(connectSettings('ssh', { ...full, auth: 'auto', keyPath: '/k' })).not.toHaveProperty('auth')
+    expect(connectSettings('link', full)).toEqual({ kind: 'direct', link: 'http://127.0.0.1:1/#t=abc', name: 'Box' })
+  })
+  it('passes the tunnel fields, the link only when given', () => {
+    const tunnel = { ...fields, sshHost: ' devbox ', localPort: '7400', remotePort: ' 7330', tunnelLink: ' http://127.0.0.1:7330/#t=x ' }
+    expect(connectSettings('tunnel', tunnel)).toEqual({ kind: 'tunnel', localPort: 7400, remotePort: 7330, sshHost: 'devbox', link: 'http://127.0.0.1:7330/#t=x' })
+  })
+  it('refuses a port that is not a number and a key file with no path', () => {
+    expect(connectSettings('ssh', { ...fields, port: '22a' })).toEqual({ error: 'a port is a number from 1 to 65535' })
+    expect(connectSettings('tunnel', { ...fields, localPort: '0' })).toEqual({ error: 'a port is a number from 1 to 65535' })
+    expect(connectSettings('tunnel', { ...fields, remotePort: '' })).toEqual({ error: 'a port is a number from 1 to 65535' })
+    expect(connectSettings('ssh', { ...fields, auth: 'key', keyPath: ' ' })).toEqual({ error: 'choose the key file' })
+  })
+})
+
+describe('parsePort', () => {
+  it('reads a whole number from 1 to 65535 and nothing else', () => {
+    expect(parsePort('22')).toBe(22)
+    expect(parsePort(' 65535 ')).toBe(65535)
+    for (const bad of ['', '0', '65536', '-1', '+22', '2e3', '22.0', '0x16', '١٢', '123456']) expect(parsePort(bad)).toBeUndefined()
+  })
+})
+
+describe('canConnect', () => {
+  const f = emptyConnectFields()
+  it('needs the host, a key path for Key file, both ports, or the link', () => {
+    expect(canConnect('ssh', f)).toBe(false)
+    expect(canConnect('ssh', { ...f, host: 'devbox' })).toBe(true)
+    expect(canConnect('ssh', { ...f, host: 'devbox', auth: 'key' })).toBe(false)
+    expect(canConnect('ssh', { ...f, host: 'devbox', auth: 'key', keyPath: '/k' })).toBe(true)
+    expect(canConnect('tunnel', f)).toBe(true)
+    expect(canConnect('tunnel', { ...f, localPort: ' ' })).toBe(false)
+    expect(canConnect('link', f)).toBe(false)
+    expect(canConnect('link', { ...f, link: 'https://box' })).toBe(true)
+  })
+})
+
+describe('editFields and tabOf', () => {
+  it('prefills each kind and locks its tab', () => {
+    expect(editFields({ name: 'Dev', via: { kind: 'ssh', host: 'devbox', user: 'me', port: 2222, auth: { kind: 'key', path: '~/.ssh/k' }, ccc: '/opt/ccc' } })).toMatchObject({
+      name: 'Dev',
+      host: 'devbox',
+      user: 'me',
+      port: '2222',
+      auth: 'key',
+      keyPath: '~/.ssh/k',
+      ccc: '/opt/ccc'
+    })
+    expect(editFields({ name: 'Old', via: { kind: 'ssh', host: 'devbox' } })).toMatchObject({ auth: 'auto', user: '', port: '', keyPath: '' })
+    expect(editFields({ name: 'T', via: { kind: 'tunnel', localPort: 7400, remotePort: 7330, sshHost: 'devbox' } })).toMatchObject({
+      sshHost: 'devbox',
+      localPort: '7400',
+      remotePort: '7330',
+      tunnelLink: ''
+    })
+    expect(editFields({ name: 'D', via: { kind: 'direct', origin: 'https://box.ts.net' } })).toMatchObject({ link: 'https://box.ts.net' })
+    expect(tabOf({ kind: 'ssh', host: 'x' })).toBe('ssh')
+    expect(tabOf({ kind: 'tunnel', localPort: 1, remotePort: 2 })).toBe('tunnel')
+    expect(tabOf({ kind: 'direct', origin: 'https://x' })).toBe('link')
+  })
+  it('round-trips: the prefilled form sends the saved settings back', () => {
+    const via = { kind: 'ssh', host: 'devbox', user: 'me', port: 2222, auth: { kind: 'password' }, ccc: '/opt/ccc' } as const
+    expect(connectSettings('ssh', editFields({ name: 'Dev', via }))).toEqual({ ...via, name: 'Dev' })
+  })
+})
+
+describe('tunnelCommands', () => {
+  it('builds both commands from the fields, live', () => {
+    expect(tunnelCommands({ sshHost: ' devbox ', localPort: '7331', remotePort: '7330' })).toEqual({
+      tunnel: 'ssh -N -L 127.0.0.1:7331:127.0.0.1:7330 devbox',
+      addDevice: 'ssh devbox ccc web add-device'
+    })
+    expect(tunnelCommands({ sshHost: 'me@box', localPort: '9000', remotePort: '7777' })?.tunnel).toBe('ssh -N -L 127.0.0.1:9000:127.0.0.1:7777 me@box')
+  })
+  it('stands <host> in for an empty host or one main would refuse (never a shell metacharacter)', () => {
+    expect(tunnelCommands({ sshHost: '', localPort: '7331', remotePort: '7330' })).toEqual({
+      tunnel: 'ssh -N -L 127.0.0.1:7331:127.0.0.1:7330 <host>',
+      addDevice: 'ssh <host> ccc web add-device'
+    })
+    expect(tunnelCommands({ sshHost: 'box; rm -rf ~', localPort: '7331', remotePort: '7330' })?.addDevice).toBe('ssh <host> ccc web add-device')
+    expect(tunnelCommands({ sshHost: '-oProxyCommand=x', localPort: '7331', remotePort: '7330' })?.tunnel).toMatch(/ <host>$/)
+  })
+  it('shows nothing while a port is not a number', () => {
+    expect(tunnelCommands({ sshHost: 'devbox', localPort: '73x', remotePort: '7330' })).toBeUndefined()
+    expect(tunnelCommands({ sshHost: 'devbox', localPort: '7331', remotePort: '' })).toBeUndefined()
+  })
+})
+
+describe('prompt flow (answers of one connect)', () => {
+  const HOST = { need: 'hostKey', type: 'ssh-ed25519', sha256: `SHA256:${'A'.repeat(43)}`, address: 'devbox:22' } as const
+  const step = (flow: PromptFlow, need: Parameters<typeof promptStep>[1]): ReturnType<typeof promptStep> => promptStep(flow, need)
+
+  it('accumulates every answer and resends them all: host key, then password', () => {
+    let flow = newPromptFlow()
+    expect(step(flow, HOST).step).toEqual({ ask: HOST, retry: false })
+    flow = withAnswer(flow, { need: 'hostKey', sha256: HOST.sha256 })
+    expect(flow.answers).toEqual({ hostKey: HOST.sha256 })
+    expect(step(flow, { need: 'password' }).step).toEqual({ ask: { need: 'password' }, retry: false })
+    flow = withAnswer(flow, { need: 'password', secret: 'pw', remember: false })
+    // The retry carries both.
+    expect(flow.answers).toEqual({ hostKey: HOST.sha256, password: 'pw', remember: false })
+  })
+
+  it('a wrong password asks once more, saying so; a second wrong one is the error', () => {
+    let flow = withAnswer(newPromptFlow(), { need: 'password', secret: 'bad', remember: true })
+    let next = step(flow, { need: 'password', again: true })
+    expect(next.step).toEqual({ ask: { need: 'password', again: true }, retry: true })
+    flow = withAnswer(next.flow, { need: 'password', secret: 'bad2', remember: true })
+    // The new answer replaces the old one.
+    expect(flow.answers).toEqual({ password: 'bad2', remember: true })
+    next = step(flow, { need: 'password', again: true })
+    expect(next.step).toEqual({ error: 'Wrong password' })
+  })
+
+  it('counts a remembered secret that turned out wrong as the first wrong one', () => {
+    const first = step(newPromptFlow(), { need: 'passphrase', path: '~/.ssh/k', again: true })
+    expect(first.step).toEqual({ ask: { need: 'passphrase', path: '~/.ssh/k', again: true }, retry: true })
+    const flow = withAnswer(first.flow, { need: 'passphrase', secret: 'x', remember: false })
+    expect(step(flow, { need: 'passphrase', path: '~/.ssh/k', again: true }).step).toEqual({ error: 'Wrong passphrase' })
+  })
+
+  it('counts each secret on its own', () => {
+    let flow = step(newPromptFlow(), { need: 'password', again: true }).flow
+    expect(flow.wrong).toEqual({ password: 1, passphrase: 0 })
+    flow = step(flow, { need: 'passphrase', path: '/k', again: true }).flow
+    expect(flow.wrong).toEqual({ password: 1, passphrase: 1 })
+  })
+
+  it('a host key different from the one trusted asks again; the same one again is an error, not a loop', () => {
+    const flow = withAnswer(newPromptFlow(), { need: 'hostKey', sha256: HOST.sha256 })
+    const other = { ...HOST, sha256: `SHA256:${'B'.repeat(43)}` }
+    expect(step(flow, other).step).toEqual({ ask: other, retry: false })
+    expect(step(flow, HOST).step).toEqual({ error: 'the host key of devbox:22 could not be confirmed' })
+  })
+
+  it('a secret asked for again without `again` (main did not use it) is an error, not a loop', () => {
+    const flow = withAnswer(newPromptFlow(), { need: 'password', secret: 'pw', remember: true })
+    expect(step(flow, { need: 'password' }).step).toEqual({ error: 'the server did not take the password' })
+    const key = withAnswer(newPromptFlow(), { need: 'passphrase', secret: 'pp', remember: true })
+    expect(step(key, { need: 'passphrase', path: '/k' }).step).toEqual({ error: 'the passphrase did not open /k' })
   })
 })

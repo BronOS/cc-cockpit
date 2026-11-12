@@ -2,8 +2,8 @@
 // is shown, what the filter keeps, where the keyboard highlight goes, how old a row is. DOM-free so
 // the unit tests (plain Node) cover it. The desktop picker's Servers section (remote servers,
 // design-remote-desktop.md §3) takes its labels, order and grouping from here too.
-import type { ProjectSummary, RemoteConnectAnswer, RemoteConnectRequest, RemoteServerInfo } from '../../shared/ipc'
-import type { RemoteRecent, RemoteVia } from '../../shared/remote-servers'
+import type { ProjectSummary, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
+import { checkSshHost, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
 
 /**
  * `path` with the home folder written as `~` (`/Users/me/src/app` -> `~/src/app`). Only a whole
@@ -83,9 +83,18 @@ export function openedAgo(at: number, now: number): string {
 // ssh produced (a project name, an error) stays plain text: React renders it as text, and nothing
 // here builds markup.
 
-/** How a server is reached, as its row's small label: `ssh devbox`, `ssh me@devbox`, `tunnel :7331`, or the Direct origin. */
+/**
+ * How a server is reached, as its row's small label: `ssh devbox`, `ssh me@devbox:2222` (a port
+ * only when one is set; an IPv6 literal in brackets then, as in a URL), `tunnel :7331`, or the
+ * Direct origin.
+ */
 export function viaLabel(via: RemoteVia): string {
-  if (via.kind === 'ssh') return via.user === undefined ? `ssh ${via.host}` : `ssh ${via.user}@${via.host}`
+  if (via.kind === 'ssh') {
+    const target = via.user === undefined ? via.host : `${via.user}@${via.host}`
+    if (via.port === undefined) return `ssh ${target}`
+    const bare = via.host.includes(':') && !via.host.startsWith('[')
+    return `ssh ${via.user === undefined ? '' : `${via.user}@`}${bare ? `[${via.host}]` : via.host}:${via.port}`
+  }
   if (via.kind === 'tunnel') return `tunnel :${via.localPort}`
   return via.origin
 }
@@ -189,29 +198,206 @@ export function groupServers(servers: readonly RemoteServerInfo[]): ServerGroup[
   }))
 }
 
-/** The Connect to server form's two ways in (connect-form.tsx). */
-export type ConnectKind = 'ssh' | 'link'
+/** The Connect to server form's tabs (connect-form.tsx, design-remote-desktop.md §3). */
+export type ConnectTab = 'ssh' | 'tunnel' | 'link'
 
-/**
- * The request the Connect form's fields make: trimmed, with an empty name or `ccc` path left out
- * (the path is SSH's only). Main checks every field again.
- */
-export function connectRequest(kind: ConnectKind, fields: { host: string; link: string; name: string; ccc: string }): RemoteConnectRequest {
-  const name = fields.name.trim()
-  const named = name === '' ? {} : { name }
-  if (kind === 'link') return { kind: 'direct', link: fields.link.trim(), ...named }
-  const ccc = fields.ccc.trim()
-  return { kind: 'ssh', host: fields.host.trim(), ...(ccc === '' ? {} : { ccc }), ...named }
+/** The tab that edits a saved server: its own kind, locked (Edit cannot change how a server is reached). */
+export function tabOf(via: RemoteVia): ConnectTab {
+  return via.kind === 'direct' ? 'link' : via.kind
+}
+
+/** How the SSH tab signs in: the radio's value (`auto` is "Agent and my keys"). */
+export type ConnectAuth = 'auto' | 'password' | 'key'
+
+/** Every field of the form as typed (text, so a half-typed port is kept as is); one set for all tabs. */
+export interface ConnectFields {
+  host: string
+  user: string
+  port: string
+  auth: ConnectAuth
+  keyPath: string
+  ccc: string
+  sshHost: string
+  localPort: string
+  remotePort: string
+  /** My own tunnel's add-device link (the Link tab has its own, `link`). */
+  tunnelLink: string
+  link: string
+  name: string
+}
+
+/** My own tunnel's defaults (design §3): the server's gateway port, and the local port beside it. */
+export const DEFAULT_REMOTE_PORT = 7330
+export const DEFAULT_LOCAL_PORT = 7331
+
+export function emptyConnectFields(): ConnectFields {
+  return {
+    host: '',
+    user: '',
+    port: '',
+    auth: 'auto',
+    keyPath: '',
+    ccc: '',
+    sshHost: '',
+    localPort: String(DEFAULT_LOCAL_PORT),
+    remotePort: String(DEFAULT_REMOTE_PORT),
+    tunnelLink: '',
+    link: '',
+    name: ''
+  }
 }
 
 /**
- * A failed connect or open as the form's text. A `need` (design §5.4) reads as what is missing until
- * the picker's prompts answer it (remote SSH rev 2, Task 6).
+ * The form prefilled for Edit (design §3): the saved settings of that kind. A Direct server keeps
+ * only its origin (an access link is never stored), so its Link field starts with the origin; a
+ * new link with a token signs in again. The name is the current one.
  */
-export function connectFailureText(answer: Exclude<RemoteConnectAnswer, { ok: true }>): string {
-  if ('error' in answer) return answer.error
-  const need = answer.need
-  if (need.need === 'hostKey') return `the host key of ${need.address} (${need.type} ${need.sha256}) is not trusted yet`
-  if (need.need === 'password') return need.again ? 'the password was not accepted' : 'the server asks for a password'
-  return need.again ? `the passphrase does not open ${need.path}` : `the key ${need.path} needs its passphrase`
+export function editFields(server: Pick<RemoteServerInfo, 'via' | 'name'>): ConnectFields {
+  const f = { ...emptyConnectFields(), name: server.name }
+  const via = server.via
+  if (via.kind === 'ssh') {
+    const auth = via.auth ?? { kind: 'auto' }
+    return {
+      ...f,
+      host: via.host,
+      user: via.user ?? '',
+      port: via.port === undefined ? '' : String(via.port),
+      auth: auth.kind,
+      keyPath: auth.kind === 'key' ? auth.path : '',
+      ccc: via.ccc ?? ''
+    }
+  }
+  if (via.kind === 'tunnel') return { ...f, sshHost: via.sshHost ?? '', localPort: String(via.localPort), remotePort: String(via.remotePort) }
+  return { ...f, link: via.origin }
+}
+
+/** A port as typed: a whole number 1..65535 (digits only, no sign, no exponent), or undefined. */
+export function parsePort(text: string): number | undefined {
+  const t = text.trim()
+  if (t === '' || t.length > 5) return undefined
+  for (const c of t) if (c < '0' || c > '9') return undefined
+  const n = Number(t)
+  return n >= 1 && n <= 65535 ? n : undefined
+}
+
+const PORT_ERROR = 'a port is a number from 1 to 65535'
+
+/** Whether the tab has what Connect needs at all (main checks the rest and says what is wrong). */
+export function canConnect(tab: ConnectTab, f: ConnectFields): boolean {
+  if (tab === 'ssh') return f.host.trim() !== '' && (f.auth !== 'key' || f.keyPath.trim() !== '')
+  if (tab === 'tunnel') return f.localPort.trim() !== '' && f.remotePort.trim() !== ''
+  return f.link.trim() !== ''
+}
+
+/**
+ * The settings the tab's fields make (`remote.connect`, `remote.edit`): trimmed, empty optional
+ * fields left out, ports read as numbers. Only what the form itself can tell (a port that is not a
+ * number, a key file with no path) is refused here; main checks every field again.
+ */
+export function connectSettings(tab: ConnectTab, f: ConnectFields): RemoteServerSettings | { error: string } {
+  const name = f.name.trim()
+  const named = name === '' ? {} : { name }
+  if (tab === 'link') return { kind: 'direct', link: f.link.trim(), ...named }
+  if (tab === 'tunnel') {
+    const localPort = parsePort(f.localPort)
+    const remotePort = parsePort(f.remotePort)
+    if (localPort === undefined || remotePort === undefined) return { error: PORT_ERROR }
+    const sshHost = f.sshHost.trim()
+    const link = f.tunnelLink.trim()
+    return { kind: 'tunnel', localPort, remotePort, ...(sshHost === '' ? {} : { sshHost }), ...(link === '' ? {} : { link }), ...named }
+  }
+  const user = f.user.trim()
+  const ccc = f.ccc.trim()
+  let port: number | undefined
+  if (f.port.trim() !== '') {
+    port = parsePort(f.port)
+    if (port === undefined) return { error: PORT_ERROR }
+  }
+  let auth: SshAuth | undefined
+  if (f.auth === 'password') auth = { kind: 'password' }
+  else if (f.auth === 'key') {
+    const path = f.keyPath.trim()
+    if (path === '') return { error: 'choose the key file' }
+    auth = { kind: 'key', path }
+  }
+  return {
+    kind: 'ssh',
+    host: f.host.trim(),
+    ...(user === '' ? {} : { user }),
+    ...(port === undefined ? {} : { port }),
+    ...(auth === undefined ? {} : { auth }),
+    ...(ccc === '' ? {} : { ccc }),
+    ...named
+  }
+}
+
+/**
+ * My own tunnel's two commands (design §3), live from the fields: the tunnel (`tunnelCommand`, the
+ * line main's waiting page shows too) and the add-device one whose link goes in the form. An SSH
+ * host that is empty or would not pass main's allowlist stands as `<host>`, so a printed command
+ * never carries what the person could not save. Undefined while a port is not a number yet.
+ */
+export function tunnelCommands(f: Pick<ConnectFields, 'sshHost' | 'localPort' | 'remotePort'>): { tunnel: string; addDevice: string } | undefined {
+  const localPort = parsePort(f.localPort)
+  const remotePort = parsePort(f.remotePort)
+  if (localPort === undefined || remotePort === undefined) return undefined
+  const host = f.sshHost.trim()
+  const sshHost = host !== '' && checkSshHost(host) === undefined ? host : undefined
+  return {
+    tunnel: tunnelCommand({ localPort, remotePort, ...(sshHost === undefined ? {} : { sshHost }) }),
+    addDevice: `ssh ${sshHost ?? '<host>'} ccc web add-device`
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Asking the person (design §5.4). A connect, open or edit that needs a host key, a password or a
+// passphrase answers `{ ok: false, need }`; the picker shows the prompt and calls again with every
+// answer of that connect so far (main keeps nothing between calls). Main is stateless about wrong
+// tries too: every wrong secret comes back as `again: true`, so counting them is the picker's.
+
+/** One connect's (or open's) answers so far, and how many times each secret came back wrong. */
+export interface PromptFlow {
+  answers: RemoteAnswers
+  wrong: { password: number; passphrase: number }
+}
+
+export function newPromptFlow(): PromptFlow {
+  return { answers: {}, wrong: { password: 0, passphrase: 0 } }
+}
+
+/** What the person answered a prompt: the fingerprint they trusted, or a secret and Remember. */
+export type PromptAnswer = { need: 'hostKey'; sha256: string } | { need: 'password' | 'passphrase'; secret: string; remember: boolean }
+
+/** The prompt to show (`retry`: the last one was wrong, say so), or the error that ends the connect. */
+export type PromptStep = { ask: RemoteNeed; retry: boolean } | { error: string }
+
+/**
+ * What to do with a `need` (design §3: "a wrong one asks again once, then the error"): the first
+ * `again` for a secret asks once more, saying it was wrong; a second shows "Wrong password" /
+ * "Wrong passphrase" instead of a third prompt. A `need` for something already answered and not
+ * called wrong (main ignored it), or for the very host key just trusted, is an error too: asking
+ * again would loop.
+ */
+export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFlow; step: PromptStep } {
+  if (need.need === 'hostKey') {
+    if (flow.answers.hostKey === need.sha256) return { flow, step: { error: `the host key of ${need.address} could not be confirmed` } }
+    return { flow, step: { ask: need, retry: false } }
+  }
+  const name = need.need
+  if (need.again === true) {
+    const wrong = { ...flow.wrong, [name]: flow.wrong[name] + 1 }
+    const next = { ...flow, wrong }
+    if (wrong[name] >= 2) return { flow: next, step: { error: name === 'password' ? 'Wrong password' : 'Wrong passphrase' } }
+    return { flow: next, step: { ask: need, retry: true } }
+  }
+  if (flow.answers[name] !== undefined) {
+    return { flow, step: { error: name === 'password' ? 'the server did not take the password' : `the passphrase did not open ${need.path}` } }
+  }
+  return { flow, step: { ask: need, retry: false } }
+}
+
+/** The flow with one more answer: a new answer for the same thing replaces the old one, the others stay. */
+export function withAnswer(flow: PromptFlow, answer: PromptAnswer): PromptFlow {
+  if (answer.need === 'hostKey') return { ...flow, answers: { ...flow.answers, hostKey: answer.sha256 } }
+  return { ...flow, answers: { ...flow.answers, [answer.need]: answer.secret, remember: answer.remember } }
 }

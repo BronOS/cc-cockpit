@@ -1,7 +1,9 @@
 // The desktop picker's Servers section (design-remote-desktop.md §3): each saved remote server with
 // its `via` label, connection state and notes, its recent remote projects as picker rows with a
-// server badge, and a menu (Open server's picker, Rename, Forget). Everything goes to main through
-// the picker-only `remote.*` channels; main decides, and the picker closes when a window opens.
+// server badge, and a menu (Open server's picker, Rename, Edit, Forget). Everything goes to main
+// through the picker-only `remote.*` channels; main decides, and the picker closes when a window
+// opens. An open that needs a host key or a secret not remembered asks through the same prompts as
+// Connect (remote-prompts.tsx).
 //
 // Every string here that came from a server or its SSH connection (a project name, an error, the
 // server's name as the person typed it) is rendered as React text, never markup.
@@ -10,7 +12,8 @@ import type { RemoteServerInfo } from '../../shared/ipc'
 import { ipcErrorMessage } from '../ipc-error'
 import { ServerGlyph } from './icons'
 import { PickerEmpty, PickerSection, ProjectRow } from './parts'
-import { connectFailureText, groupServers, openedAgo, type ServerGroup } from './picker-model'
+import { groupServers, openedAgo, type ServerGroup } from './picker-model'
+import { useRemotePrompts } from './remote-prompts'
 
 export function ServersSection(props: {
   /** null until the first `remote.list` answer. */
@@ -18,6 +21,8 @@ export function ServersSection(props: {
   /** When the list was read: the rows' "3 days ago" are as of then. */
   loadedAt: number
   onConnect(): void
+  /** Edit a saved server: the Connect form, prefilled and locked to its kind. */
+  onEdit(server: RemoteServerInfo): void
   /** Something changed that `remote.changed` may not cover (a refused call): read the list again. */
   reload(): void
 }): React.JSX.Element {
@@ -38,7 +43,7 @@ export function ServersSection(props: {
       ) : (
         <ul className="picker-list" aria-label="Servers">
           {groups.map((g, i) => (
-            <ServerItem key={g.server.id} group={g} index={i} loadedAt={props.loadedAt} reload={props.reload} />
+            <ServerItem key={g.server.id} group={g} index={i} loadedAt={props.loadedAt} reload={props.reload} onEdit={props.onEdit} />
           ))}
         </ul>
       )}
@@ -48,7 +53,7 @@ export function ServersSection(props: {
 
 type Mode = 'idle' | 'rename' | 'forget'
 
-function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number; reload(): void }): React.JSX.Element {
+function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number; reload(): void; onEdit(server: RemoteServerInfo): void }): React.JSX.Element {
   const { server, via, state, notes, projects } = props.group
   const id = `picker-server-${props.index}`
   const [mode, setMode] = useState<Mode>('idle')
@@ -57,16 +62,21 @@ function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number
   // The ⋯ button, by id: the focus goes back to it after Rename or a cancelled Forget.
   const menuId = `${id}-menu`
   const focusMenu = (): void => document.getElementById(menuId)?.focus()
+  const { run, prompt } = useRemotePrompts()
 
-  /** remote.open: the server's own picker, or one of its projects. On success main closes this picker. */
+  /**
+   * remote.open: the server's own picker, or one of its projects. On success main closes this
+   * picker. A host key or a secret it needs is asked here and the open is sent again with every
+   * answer so far; Cancel there ends it with nothing to show.
+   */
   const open = (projectId?: string): void => {
     if (busy) return
     setBusy(true)
     setError(null)
-    window.cockpit
-      .invoke('remote.open', projectId === undefined ? { serverId: server.id } : { serverId: server.id, projectId })
+    const target = projectId === undefined ? { serverId: server.id } : { serverId: server.id, projectId }
+    run((answers) => window.cockpit.invoke('remote.open', answers === undefined ? target : { ...target, answers }), { canRemember: server.cookieKept })
       .then((answer) => {
-        if (!answer.ok) setError(connectFailureText(answer))
+        if (!answer.ok && 'error' in answer) setError(answer.error)
       })
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
       .finally(() => setBusy(false))
@@ -140,6 +150,10 @@ function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number
                 setError(null)
                 setMode('rename')
               }}
+              onEdit={() => {
+                setError(null)
+                props.onEdit(server)
+              }}
               onForget={() => {
                 setError(null)
                 setMode('forget')
@@ -164,6 +178,7 @@ function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number
           {error}
         </p>
       )}
+      {prompt}
       {projects.length > 0 && (
         <ul className="picker-server-projects" aria-label={`Recent projects on ${server.name}`}>
           {projects.map((p, i) => (
@@ -188,7 +203,7 @@ function ServerItem(props: { group: ServerGroup; index: number; loadedAt: number
 }
 
 /**
- * The server's ⋯ menu: Open server's picker, Rename…, Forget…. Drawn `position: fixed` from the
+ * The server's ⋯ menu: Open server's picker, Rename…, Edit…, Forget…. Drawn `position: fixed` from the
  * button's box (the panel scrolls and clips), above it when the window has no room below (the
  * Servers section sits at the bottom). Keyboard: opens with its first item focused, ↑/↓ move, Esc
  * closes back to the button (and is kept from the modal picker's own Esc), Tab or a click outside
@@ -200,6 +215,7 @@ function ServerMenu(props: {
   disabled: boolean
   onOpenPicker(): void
   onRename(): void
+  onEdit(): void
   onForget(): void
 }): React.JSX.Element {
   const [pos, setPos] = useState<React.CSSProperties | null>(null)
@@ -266,9 +282,9 @@ function ServerMenu(props: {
           }
           const rect = e.currentTarget.getBoundingClientRect()
           const right = window.innerWidth - rect.right
-          // About three items' height: below when it fits, else above the button.
+          // About four items' height: below when it fits, else above the button.
           setPos(
-            rect.bottom + 120 <= window.innerHeight ? { right, top: rect.bottom + 4 } : { right, bottom: window.innerHeight - rect.top + 4 }
+            rect.bottom + 150 <= window.innerHeight ? { right, top: rect.bottom + 4 } : { right, bottom: window.innerHeight - rect.top + 4 }
           )
         }}
       >
@@ -284,6 +300,11 @@ function ServerMenu(props: {
           <li role="none">
             <button type="button" role="menuitem" onClick={() => pick(props.onRename)}>
               Rename…
+            </button>
+          </li>
+          <li role="none">
+            <button type="button" role="menuitem" data-testid="server-menu-edit" onClick={() => pick(props.onEdit)}>
+              Edit…
             </button>
           </li>
           <li role="none">
