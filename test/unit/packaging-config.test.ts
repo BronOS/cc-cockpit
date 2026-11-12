@@ -47,6 +47,33 @@ describe('electron-builder.yml', () => {
     expect(yml).not.toMatch(/^ {2}- '?!.*(xterm|ws|mirror)/m)
   })
 
+  it('bundles ssh2 into main and ships none of its native parts', () => {
+    // design-remote-desktop.md §8 "The library": a devDependency, so electron-vite bundles it into
+    // out/main/ssh-client.js and electron-builder (production dependencies only) neither copies it
+    // nor rebuilds its optional natives; a production dependency would ship node_modules/ssh2 with
+    // whatever its install script built for plain Node. Pinned exactly.
+    expect(pkg.devDependencies.ssh2).toBe('1.17.0')
+    expect(pkg.dependencies.ssh2).toBeUndefined()
+    expect(pkg.dependencies['cpu-features']).toBeUndefined()
+    expect(pkg.dependencies.nan).toBeUndefined()
+    // Nothing lists them for shipping by hand either: no files entry, no unpacking.
+    expect(yml).not.toMatch(/ssh2|cpu-features|sshcrypto/)
+    // The build stubs both optional requires so ssh2 takes its pure-JS path everywhere, and gives the
+    // adapter its own entry (the in-Electron check loads it from out/ and from app.asar).
+    const vite = readFileSync(join(root, 'electron.vite.config.ts'), 'utf8')
+    expect(vite).toContain("'main/ssh-client': resolve(__dirname, 'src/main/remote/ssh-client.ts')")
+    expect(vite).toContain("source === 'cpu-features' || source.endsWith('.node') ? SSH2_NATIVE_STUB : null")
+    expect(vite).toContain('plugins: [ssh2PureJs]')
+    // The lockfile marks ssh2 and everything it pulls in as dev-only, so `npm ci --omit=dev` (what
+    // electron-builder collects) has none of them.
+    const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')) as {
+      packages: Record<string, { dev?: boolean; optional?: boolean }>
+    }
+    for (const name of ['ssh2', 'cpu-features', 'asn1', 'bcrypt-pbkdf', 'nan', 'buildcheck']) {
+      expect(lock.packages[`node_modules/${name}`]?.dev, name).toBe(true)
+    }
+  })
+
   it('ships the bundled plugins as plain files under resources/plugins', () => {
     // main reads them from process.resourcesPath/plugins (src/main/plugins/bundled.ts bundledRoot).
     expect(yml).toMatch(/^extraResources:$/m)

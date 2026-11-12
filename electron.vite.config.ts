@@ -2,12 +2,16 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
+import type { Plugin } from 'vite'
 
 // Build layout (the rest of the app, the ccc wrapper and the plugin host spawner rely on it):
 //   out/main/index.js      Electron main
 //   out/main/mirror-worker.js  web access's headless terminals, a worker_threads entry main starts
 //                          from its own folder (src/main/terminals/mirror-worker.ts); it requires
 //                          @xterm/headless and the addons from node_modules, never main code
+//   out/main/ssh-client.js the ssh2 adapter (src/main/remote/ssh-client.ts) with ssh2 bundled in, its
+//                          own entry so scripts/ssh2-electron-check.mjs can load exactly the bytes
+//                          that ship (in out/ and in a packaged app.asar); main imports it like any module
 //   out/cli/index.js       the `ccc` CLI (run as Node by the generated wrapper)
 //   out/host/index.js      plugin host (utilityProcess entry)
 //   out/sdk/panel.js       the panel SDK, a classic browser script served at
@@ -27,9 +31,33 @@ import { defineConfig } from 'electron-vite'
 // app.getVersion() does not exist, and compares this with the version the running app reports.
 const { version } = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }
 
+// ssh2 (design-remote-desktop.md §8 "The library") is a devDependency, so electron-vite bundles it
+// into main instead of leaving a `require('ssh2')` that would need it shipped in node_modules. Its two
+// optional native parts are never bundled and never loaded: `cpu-features` (only reorders the cipher
+// list) and lib/protocol/crypto/build/Release/sshcrypto.node (ssh2's install script builds it with
+// node-gyp for plain Node, so it would be the wrong ABI for Electron, and electron-builder neither
+// ships nor rebuilds a devDependency's native module). ssh2 requires both inside try/catch and falls
+// back to plain JS, so each is resolved to a stub that throws: the fallback is then taken in dev and
+// in the packaged app alike, where an `external` would leave a require that finds node_modules/
+// cpu-features in a dev checkout but nothing in the package. Only requires from inside ssh2 are
+// stubbed; any other `.node` import still fails the build.
+const SSH2_NATIVE_STUB = '\0ssh2-native-absent'
+const ssh2PureJs: Plugin = {
+  name: 'cc-ssh2-pure-js',
+  enforce: 'pre',
+  resolveId(source, importer) {
+    if (!importer || !importer.split('\\').join('/').includes('/node_modules/ssh2/')) return null
+    return source === 'cpu-features' || source.endsWith('.node') ? SSH2_NATIVE_STUB : null
+  },
+  load(id) {
+    return id === SSH2_NATIVE_STUB ? "throw new Error('ssh2 native part not bundled: pure-JS path')" : null
+  }
+}
+
 export default defineConfig({
   main: {
     define: { __APP_VERSION__: JSON.stringify(version) },
+    plugins: [ssh2PureJs],
     build: {
       outDir: 'out',
       // Empties the whole of out/, including out/preload and out/renderer. That is only safe
@@ -41,6 +69,7 @@ export default defineConfig({
         input: {
           'main/index': resolve(__dirname, 'src/main/index.ts'),
           'main/mirror-worker': resolve(__dirname, 'src/main/terminals/mirror-worker.ts'),
+          'main/ssh-client': resolve(__dirname, 'src/main/remote/ssh-client.ts'),
           'cli/index': resolve(__dirname, 'src/cli/index.ts'),
           'host/index': resolve(__dirname, 'src/host/index.ts'),
           'sdk/panel': resolve(__dirname, 'src/sdk/panel.ts')

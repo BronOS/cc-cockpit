@@ -99,24 +99,47 @@
 - Modify: `package.json`, `package-lock.json`, `electron.vite.config.ts`, `test/unit/packaging-config.test.ts`
 - Create: `src/main/remote/ssh-client.ts`
 - Create: `test/unit/ssh-client.test.ts`, `test/unit/no-direct-ssh2.test.ts`
+- ➕ Create: `scripts/ssh2-electron-check.mjs`
 
-- [ ] add `ssh2` pinned exact (`1.17.0`) as a **devDependency** (bundled into main, so neither its install-time
+- [x] add `ssh2` pinned exact (`1.17.0`) as a **devDependency** (bundled into main, so neither its install-time
       `sshcrypto.node` nor `cpu-features` ships or gets rebuilt) and `@types/ssh2`; rollup `external` for
       `cpu-features` and `*.node` so the optional requires stay unresolved and `ssh2` takes its pure-JS path; a comment
       in `electron.vite.config.ts` says why
-- [ ] `packaging-config.test.ts`: `ssh2` is not in `dependencies`, and neither `cpu-features` nor a `.node` file of
+- [x] `packaging-config.test.ts`: `ssh2` is not in `dependencies`, and neither `cpu-features` nor a `.node` file of
       `ssh2` can ship
-- [ ] `ssh-client.ts`: `dial(opts): Promise<SshConnection>` over `ssh2.Client` (host, port, username, `authHandler`,
+- [x] `ssh-client.ts`: `dial(opts): Promise<SshConnection>` over `ssh2.Client` (host, port, username, `authHandler`,
       `hostVerifier`, `agent`, `readyTimeout`, keepalive 15 s × 3, `algorithms` with `ssh-rsa` host keys removed and
       `serverHostKey` order from the caller, no `debug`), and the connection's `exec(command, {maxBytes, timeoutMs})`,
       `forwardOut(srcPort, dstPort) → Duplex`, `end()`, `onClose(cb)`; errors keep `ssh2`'s `level`; `parseKey(data,
       passphrase?)` exposed (encrypted / wrong passphrase / unsupported told apart)
-- [ ] grep test: `ssh2` imported only in `ssh-client.ts` under `src/`
-- [ ] unit test against `ssh2`'s `Server` (in-process, generated ed25519 host key): password dial, exec output and exit
+- [x] grep test: `ssh2` imported only in `ssh-client.ts` under `src/`
+- [x] unit test against `ssh2`'s `Server` (in-process, generated ed25519 host key): password dial, exec output and exit
       code, output cap, deadline, `forwardOut` to a local echo server, `ssh-rsa`-only host key refused, `parseKey` cases
-- [ ] in-Electron check (Electron has no chacha20): a script run as Electron's main (as `web-terminal-bench.mjs` does)
+- [x] in-Electron check (Electron has no chacha20): a script run as Electron's main (as `web-terminal-bench.mjs` does)
       does a handshake, an exec and a `forwardOut` against an in-process `ssh2` server from the built bundle; then the
       same from `npm run package:dir`'s app - must work before Task 2
+- ➕ the native parts are resolved to a stub module that throws (plugin `cc-ssh2-pure-js` in
+      `electron.vite.config.ts`, only for requires from inside `node_modules/ssh2/`) instead of rollup `external`: an
+      external `cpu-features` would still be found in a dev checkout's node_modules and not in the package; the stub
+      makes the pure-JS path the same in both, and no require of a path outside the bundle is left
+- ➕ the adapter is its own entry of the main build (`out/main/ssh-client.js`), so the check loads exactly the bytes
+      that ship (from `out/` and from a packaged `app.asar`); main imports it like any module in later tasks
+- ➕ `scripts/ssh2-electron-check.mjs [executable]`: no argument runs `out/` as this repo's Electron's main (headless
+      on Linux); with a packaged executable it runs that executable as Node (`ELECTRON_RUN_AS_NODE`, as `ccc` does: a
+      packaged app takes no script as main; same BoringSSL). Both passed (Electron 45.1.0, no chacha20 in `crypto`):
+      kex `curve25519-sha256@libssh.org`, host key `ssh-ed25519`, cipher `aes128-gcm@openssh.com`, exec and
+      `forwardOut` fine. The packaged run used a scratch output dir (`--config.directories.output`), and its
+      `app.asar` has no `ssh2`, `cpu-features` or `sshcrypto` file. Run it after changing `ssh-client.ts` or the
+      bundling (Task 10: list it in CLAUDE.md "Commands")
+- ➕ interface notes for Task 4: the agent socket goes in the `{ type: 'agent', agent }` auth method, not a dial option;
+      `authHandler` gets `null` first (return `none` to learn the server's methods); a keyboard-interactive round with
+      no prompts is answered by `ssh2` itself (`[]`) and never reaches `onRound`, which returns answers or
+      `{ fail: text }`; `preferredHostKeyTypes` takes known_hosts types (`ssh-rsa` stands for `rsa-sha2-512/256`); a
+      verifier refusal rejects with `level: 'handshake'` and `hostKeyRefused: true`; an unreachable agent does not end
+      the dial (`ssh2` moves on) and its text rides on the final error as `agentError`
+- ➕ `npm ci` runs `ssh2`'s install script (a node-gyp build of `sshcrypto.node` for plain Node, exit 0 even when it
+      fails) and builds the optional `cpu-features`: harmless, neither is bundled nor shipped, and electron-builder's
+      rebuild collects production dependencies only (`npm ls --omit dev` lists none of them)
 
 ### Task 2: Saved servers: new `via` kinds, secrets, host key [model: opus]
 
