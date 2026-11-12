@@ -39,6 +39,28 @@ export interface AppMenuOptions {
   install?(actions: MenuActions): void
 }
 
+/** The parts of a focused BrowserWindow `focusedProjectIdOf` reads. */
+export interface FocusedWindowLike {
+  isDestroyed(): boolean
+  readonly webContents: { readonly id: number }
+}
+
+/**
+ * AppMenu's `focusedProjectId` over main's own tables (index.ts): the focused window's project when
+ * its page is a project window main opened, else ''. A focused window main has no project sender
+ * for gets the core table '': the picker, and a remote desktop window (design-remote-desktop.md §4:
+ * it is no project window and is never registered as a sender, so the menu needs no case for it).
+ */
+export function focusedProjectIdOf(
+  focused: FocusedWindowLike | null | undefined,
+  leaving: unknown,
+  resolveSender: (senderId: number) => { kind: 'picker' } | { kind: 'project'; projectId: string } | undefined
+): string {
+  if (!focused || focused === leaving || focused.isDestroyed()) return ''
+  const sender = resolveSender(focused.webContents.id)
+  return sender?.kind === 'project' ? sender.projectId : ''
+}
+
 /**
  * The application menu, kept in step with the focused window's key table. The menu is global but
  * keys are per project: a user override can give Cmd+O to a plugin command of one project (an

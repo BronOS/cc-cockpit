@@ -3,7 +3,7 @@
 // only; the module is stubbed and AppMenu gets a fake install, so both load under Node.
 import { describe, expect, it, vi } from 'vitest'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
-import { AppMenu, chordToAccelerator, openFolderKey, type MenuActions } from '../../src/main/menu'
+import { AppMenu, chordToAccelerator, focusedProjectIdOf, openFolderKey, type MenuActions } from '../../src/main/menu'
 
 vi.mock('electron', () => ({ app: {}, Menu: {} }))
 
@@ -126,5 +126,32 @@ describe('AppMenu', () => {
     overrides['app.openFolder'] = ''
     menu.refresh()
     expect(last(installed)).toBeUndefined()
+  })
+})
+
+describe('focusedProjectIdOf', () => {
+  const senders = new Map<number, { kind: 'picker' } | { kind: 'project'; projectId: string }>([
+    [11, { kind: 'project', projectId: 'p1' }],
+    [13, { kind: 'picker' }]
+  ])
+  const resolve = (id: number) => senders.get(id)
+  const win = (id: number, destroyed = false) => ({ isDestroyed: () => destroyed, webContents: { id } })
+
+  it("gives a project window its project, and the picker and no window the core table ''", () => {
+    expect(focusedProjectIdOf(win(11), undefined, resolve)).toBe('p1')
+    expect(focusedProjectIdOf(win(13), undefined, resolve)).toBe('')
+    expect(focusedProjectIdOf(null, undefined, resolve)).toBe('')
+  })
+
+  it("resolves a focused remote desktop window to '' (main never registers it as a sender)", () => {
+    // design-remote-desktop.md §4: the server's page in it keeps the desktop key table itself; the
+    // menu gives it the core table, with no case of its own.
+    expect(focusedProjectIdOf(win(4242), undefined, resolve)).toBe('')
+  })
+
+  it("treats the window that is leaving, and a destroyed one, as unfocused", () => {
+    const w = win(11)
+    expect(focusedProjectIdOf(w, w, resolve)).toBe('')
+    expect(focusedProjectIdOf(win(11, true), undefined, resolve)).toBe('')
   })
 })

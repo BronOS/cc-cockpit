@@ -23,6 +23,7 @@ import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
 import type { OAuthPasteAnswer } from './oauth-paste'
+import type { RemoteRecent, RemoteVia } from './remote-servers'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
@@ -383,6 +384,49 @@ export interface PanelPortPayload {
 // Settings overlay. App-wide data (projects, plugins) shown from any project window; main
 // re-validates every change.
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * How a saved remote server's connection stands (design-remote-desktop.md §3), for its picker row.
+ * SSH only (the tunnel's state, main/remote/ssh-tunnel.ts); a Direct server has none.
+ * `retrying`: the tunnel dropped while windows were open and restarts by itself.
+ */
+export type RemoteConnectionState =
+  | { state: 'stopped' }
+  | { state: 'connecting' }
+  | { state: 'up' }
+  | { state: 'down'; error: string; retrying: boolean }
+
+/**
+ * A saved remote server as the picker shows it (`remote.list`). Never the device cookie, only
+ * whether one is saved and whether one can be kept; never the tunnel's local port.
+ */
+export interface RemoteServerInfo {
+  id: string
+  name: string
+  via: RemoteVia
+  /** Remote projects opened from this app, newest first (names from the server: plain text). */
+  recent: RemoteRecent[]
+  /** A device cookie is saved: opening needs no new pairing. */
+  cookieSaved: boolean
+  /** The secret store can keep a cookie now; false is the "not remembered: no keyring" row. */
+  cookieKept: boolean
+  /** Remote windows of this server open now. */
+  windows: number
+  /** SSH: the tunnel's state; absent for Direct. */
+  connection?: RemoteConnectionState
+}
+
+/**
+ * The picker's Connect to server form (`remote.connect`). `name` is optional (default: the host);
+ * `ccc` is the Advanced path override for the remote `ccc`. `link` is the access link or a one-time
+ * add-device link; main keeps its origin only and uses the token once.
+ */
+export type RemoteConnectRequest =
+  | { kind: 'ssh'; host: string; ccc?: string; name?: string }
+  | { kind: 'direct'; link: string; name?: string }
+
+/** A connect or open: the server it was for, or the text to show in place (never thrown at the form). */
+export type RemoteConnectAnswer = { ok: true; serverId: string } | { ok: false; error: string }
 
 /** A project in the settings list: the picker's summary plus whether a window shows it now. */
 export interface SettingsProject extends ProjectSummary {
@@ -920,6 +964,32 @@ export interface IpcInvokeMap {
   'projects.relink': { req: { id: string }; res: boolean }
   /** Picker: forget a recent project whose folder is gone (its record and saved tabs). */
   'projects.forget': { req: { id: string }; res: void }
+  /**
+   * Remote desktop (design-remote-desktop.md §3), all picker only: the desktop picker page, never a
+   * project window or a browser view (they spawn the person's ssh and keep credentials here).
+   * The saved servers, with their window counts and connection state; changes arrive as
+   * `remote.changed`.
+   */
+  'remote.list': { req: void; res: RemoteServerInfo[] }
+  /**
+   * Save a server (or find the one already saved for the same host or origin) and open its web
+   * picker: SSH runs `ccc web status` and, in link mode with no saved cookie, `ccc web add-device`
+   * over the person's ssh, then the tunnel; Direct signs in with the link's token. The picker closes
+   * once the window is open. A failure is `{ ok: false, error }`, text for the form.
+   */
+  'remote.connect': { req: RemoteConnectRequest; res: RemoteConnectAnswer }
+  /**
+   * Open (or focus) a saved server's project window, or its web picker when `projectId` is absent
+   * (Open server's picker). The picker closes once the window is open.
+   */
+  'remote.open': { req: { serverId: string; projectId?: string }; res: RemoteConnectAnswer }
+  /** Rename a saved server; its windows' titles follow. A refused name is `{ ok: false, error }`. */
+  'remote.rename': { req: { serverId: string; name: string }; res: { ok: true } | { ok: false; error: string } }
+  /**
+   * Forget a saved server: its windows close, its partition is emptied, its tunnel stops and the
+   * record goes with its cookie. The device stays in the server's list until revoked there.
+   */
+  'remote.forget': { req: { serverId: string }; res: void }
   /**
    * Open a web link (a terminal URL the user clicked) in the system browser. main accepts http
    * and https only; the renderer never calls `window.open` (the window open handler denies it).
@@ -1584,6 +1654,8 @@ export interface IpcEventMap {
   'project.updated': ProjectSummary
   /** Picker only: a listed project changed (its colour); read the recent list again. */
   'projects.changed': void
+  /** Picker only: a saved remote server, its windows or its connection changed; ask `remote.list` again. */
+  'remote.changed': void
   /**
    * Select this tab: the user clicked its entry in another window's top strip, or a plugin opened it
    * with `ctx.sessions.open({ focus: true })`.
@@ -1675,6 +1747,11 @@ export const INVOKE_CHANNELS = [
   'projects.close',
   'projects.relink',
   'projects.forget',
+  'remote.list',
+  'remote.connect',
+  'remote.open',
+  'remote.rename',
+  'remote.forget',
   'app.openExternal',
   'updates.state',
   'updates.setEnabled',
@@ -1832,6 +1909,7 @@ export const EVENT_CHANNELS = [
   'settingsPage.held',
   'project.updated',
   'projects.changed',
+  'remote.changed',
   'tabs.select',
   'tabs.added',
   'window.state',
@@ -1904,6 +1982,15 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'projects.relink': 'no',
   'projects.forget': 'no',
   'projects.changed': 'no',
+  // Remote desktop (design-remote-desktop.md §3): they run the person's ssh and keep device cookies
+  // on this machine, and open windows on its screen. A browser view of this desktop must never
+  // drive them; the handlers take the desktop picker page only.
+  'remote.list': 'no',
+  'remote.connect': 'no',
+  'remote.open': 'no',
+  'remote.rename': 'no',
+  'remote.forget': 'no',
+  'remote.changed': 'no',
   // The host's browser: a remote view gets a clickable notice instead (§6.1).
   'app.openExternal': 'adapted',
 

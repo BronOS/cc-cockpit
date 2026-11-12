@@ -204,17 +204,22 @@
   `src/main/windows/window-manager.ts`
 - Modify: tests of the IPC classes, the router and the window manager
 
-- [ ] handlers accept calls only from the desktop picker page (`ctx.kind === 'picker'`), never a browser view
-- [ ] `remote.connect`: SSH (status → add-device when link mode → tunnel → window) or Direct (parse → window with
+- [x] handlers accept calls only from the desktop picker page (`ctx.kind === 'picker'`), never a browser view
+- [x] `remote.connect`: SSH (status → add-device when link mode → tunnel → window) or Direct (parse → window with
       `#t=`); errors returned as text for the form
-- [ ] `WindowManager` gets `remoteWindowCount()`: `pickerClosed` does not quit and the last-window rule does not
+- [x] `WindowManager` gets `remoteWindowCount()`: `pickerClosed` does not quit and the last-window rule does not
       reopen the picker while a remote window is open; the last remote window closing shows the picker; `focusAny` /
       `activate` include remote windows; Connect closes the picker as opening a project does
-- [ ] remote windows excluded from the `browser-window-created` / `focus` handlers in `index.ts` (as
+- [x] remote windows excluded from the `browser-window-created` / `focus` handlers in `index.ts` (as
       `isOffscreenWindow`); the menu already resolves them to `''` (verify with a test, no change)
-- [ ] tunnels and remote windows closed on quit; a remote window is never restored or listed as a project window
-- [ ] tests: classes, the caller check, the lifecycle rules (Linux quit, mac stays, last remote window → picker)
-- [ ] run tests - must pass before task 7
+- [x] tunnels and remote windows closed on quit; a remote window is never restored or listed as a project window
+- [x] tests: classes, the caller check, the lifecycle rules (Linux quit, mac stays, last remote window → picker)
+- [x] run tests - must pass before task 7
+- ➕ coordinator `src/main/remote/remote-service.ts` (`RemoteService`: connect/open/rename/forget, tunnel hold and
+      release, one call per server at a time, a failed connect forgets a server it just saved);
+      `RemoteServerStore.hasCookie`; `focusedProjectIdOf` pulled out of `index.ts` into `menu.ts` for the test (same
+      logic); the `browser-window-focus` handler still refreshes the menu for a remote window (to the `''` table) and
+      skips only `webviews.windowFocused`
 
 ### Task 7: Picker Servers section and Direct e2e [model: opus]
 

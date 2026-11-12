@@ -55,6 +55,7 @@ import {
   registerSessionHandlers,
   registerCccCommandHandlers,
   registerWebAccessHandlers,
+  registerRemoteServerHandlers,
   registerProjectSettingsHandlers,
   registerNoticeHandlers,
   registerOAuthPasteHandlers,
@@ -66,7 +67,7 @@ import {
   summary
 } from './ipc/router'
 import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
-import { AppMenu, openFolderKey } from './menu'
+import { AppMenu, focusedProjectIdOf, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'
 import { CoreNotices } from './notifications/core-notices'
 import { ChimeGate, chimeRinger, Notifier, NotifySounds, PageNoticeBackend, pluginNoticeSpec, RecordingNoticeBackend } from './notifications/notifier'
@@ -74,6 +75,11 @@ import { SystemSounds, systemSoundRoots } from './notifications/system-sounds'
 import { ElectronUrlViewFactory } from './overlays/electron-url-view'
 import { ElectronWebviewFactory } from './webview/electron-webview'
 import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-offscreen-webview'
+import { ElectronRemoteWindowFactory, isRemoteWindow } from './remote/electron-remote-window'
+import { RemoteServerStore } from './remote/remote-servers'
+import { RemoteWindows } from './remote/remote-windows'
+import { notifyingStore, RemoteService, sshOver } from './remote/remote-service'
+import { createSshSpawn } from './remote/ssh-process'
 import { FrameStream, streamView } from './webview/frame-stream'
 import { cursorEvent, WebviewInput } from './webview/webview-input'
 import { PreviewBudgets, servePreviewRequest } from './webview/preview-protocol'
@@ -626,6 +632,55 @@ function start(server: boolean): void {
   // visible again (a hidden renderer is throttled and must never size a tab, terminal-sizes.ts);
   // only the window being shown again does.
   const hiddenDesktopViews = new Set<ViewId>()
+  // Remote desktop (design-remote-desktop.md): the picker's saved servers, each SSH server's tunnel
+  // and the sandboxed windows on a server's web client. Desktop only: a server has no screen to open
+  // them on, so in server mode none of it exists and the `remote.*` handlers refuse. A remote window
+  // is no project window: WindowManager only counts it (its lifecycle rules), it is never a sender,
+  // never restored and never in the open list. The lambdas reach `windows` and `sendToWindow`
+  // (defined below) only from window events and IPC calls, after start.
+  const remote = server
+    ? undefined
+    : (() => {
+        const store = new RemoteServerStore({ app: registry.app, secrets: secretStore })
+        const factory = new ElectronRemoteWindowFactory({ version: app.isPackaged ? app.getVersion() : BUILD_VERSION, log: warnLog })
+        // `remote.changed` goes to the open picker only, through the view registry like `projects.changed`.
+        const changed = (): void => {
+          const picker = windows.pickerWindowId
+          if (picker !== undefined) sendToWindow(picker, 'remote.changed', undefined)
+        }
+        const service: RemoteService = new RemoteService({
+          store,
+          windows: {
+            open: (serverId, request) => remoteWindows.open(serverId, request),
+            setOrigin: (serverId, origin) => remoteWindows.setOrigin(serverId, origin),
+            countOf: (serverId) => remoteWindows.countOf(serverId),
+            refreshTitles: (serverId) => remoteWindows.refreshTitles(serverId),
+            forget: (serverId) => remoteWindows.forget(serverId)
+          },
+          // The login env: the person's SSH_AUTH_SOCK and a PATH that finds their `ssh` (a GUI start
+          // has neither). Each ssh is tracked by the child registry, so quit kills it.
+          ssh: sshOver(createSshSpawn({ env: () => loginEnv })),
+          ready: () => loginEnvReady,
+          clearSession: (serverId) => factory.clearSession(serverId),
+          opened: () => windows.remoteWindowOpened(),
+          onChanged: changed,
+          log: warnLog
+        })
+        const remoteWindows: RemoteWindows = new RemoteWindows({
+          factory,
+          store: notifyingStore(store, changed),
+          // A link the server's page opens: the person's own browser, for no window of ours ('app').
+          openExternal: (url) => openExternal(url, 'app'),
+          mintToken: (record) => service.mintToken(record),
+          onAllClosed: (serverId) => service.allClosed(serverId),
+          onChanged: () => {
+            windows.remoteWindowsChanged()
+            changed()
+          },
+          log: warnLog
+        })
+        return { service, windows: remoteWindows }
+      })()
   const windows = new WindowManager({
     // A link a window's page asks to open (the reviewer's mail frame) comes from its desktop page.
     factory: new ElectronWindowFactory((url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) })),
@@ -653,6 +708,9 @@ function start(server: boolean): void {
           windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
           showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
         })),
+    // Remote desktop windows count for the picker and quit rules and for focusAny (design-remote-desktop.md §4).
+    remoteWindowCount: () => remote?.windows.count() ?? 0,
+    focusRemoteWindow: () => remote?.windows.focusAny() ?? false,
     onWindowVisibility: (windowId, visible) => {
       const viewId = desktopViewId(windowId)
       if (visible) hiddenDesktopViews.delete(viewId)
@@ -742,12 +800,8 @@ function start(server: boolean): void {
   // and going, and when a project closes. A menu accelerator wins over the renderer, so a stale
   // one would keep a rebound Cmd+O opening the dialog (and the command moved onto it never fire).
   const appMenu = new AppMenu({
-    focusedProjectId: (leaving) => {
-      const win = BrowserWindow.getFocusedWindow()
-      if (!win || win === leaving || win.isDestroyed()) return ''
-      const sender = windows.resolveSender(win.webContents.id)
-      return sender?.kind === 'project' ? sender.projectId : ''
-    },
+    // A remote desktop window has no sender here, so it gets the core table '' (focusedProjectIdOf).
+    focusedProjectId: (leaving) => focusedProjectIdOf(BrowserWindow.getFocusedWindow(), leaving, (id) => windows.resolveSender(id)),
     view: (projectId) => commands.view(projectId),
     openFolder: () => {
       openFolderDialog(BrowserWindow.getFocusedWindow() ?? undefined).catch((err: unknown) =>
@@ -1147,8 +1201,9 @@ function start(server: boolean): void {
   app.on('browser-window-created', (_event, win) => {
     // A webview panel's off-screen page (server mode) is a BrowserWindow too, but never a project
     // window, the picker or the hidden page: it has no overlays and no shell page (its own
-    // navigations are the manager's), so neither listener is for it.
-    if (isOffscreenWindow(win)) return
+    // navigations are the manager's), so neither listener is for it. Nor is a remote desktop window:
+    // the server's page in it has its own overlays and keys, and no shell page of ours.
+    if (isOffscreenWindow(win) || isRemoteWindow(win)) return
     const windowId = win.id
     win.webContents.on('before-input-event', (event, input) => {
       if (overlays.topKind(windowId) === undefined) return
@@ -2082,6 +2137,10 @@ function start(server: boolean): void {
       if (windows.closeForEveryone(windowId)) warnLog(`web access: view ${viewId} closed project window ${windowId} for every device`)
     }
   })
+
+  // The picker's remote servers (design-remote-desktop.md §3): the desktop picker page only; in server
+  // mode there is no service and every call is refused.
+  registerRemoteServerHandlers(router, remote?.service)
 
   // Settings overlay (design §6; settings-service.ts): projects and plugins. The data is
   // app-wide, so any project window may use it; the handlers resolve the sender's window first.
@@ -3020,6 +3079,9 @@ function start(server: boolean): void {
     // Before the windows close and kill the tabs: nothing from here on may overwrite the saved tabs.
     restorer.freeze()
     windows.beginQuit()
+    // Remote desktop windows go with the quit (after beginQuit, so their closing shows no picker);
+    // their tunnels are stopped in will-quit.
+    remote?.windows.closeAll()
     // Server mode: the off-screen pages go now, without the close Electron's quit would ask each
     // for (a blocked page never answers one; electron-offscreen-webview.ts destroyAll).
     offscreenWebviews?.destroyAll()
@@ -3049,6 +3111,9 @@ function start(server: boolean): void {
       return
     }
     updateChecker.stop()
+    // The remote servers' tunnels: SIGTERM to each ssh's process group now (a ProxyCommand's child
+    // with it), before the registry's SIGKILL below reaches the ssh itself.
+    remote?.service.dispose()
     // Main's own helper processes (the login-env shell, an install's clone, the diff probe):
     // their timeouts are timers that die with main. Synchronous SIGKILLs, never throws, and first
     // so a throw further down cannot skip it (child-registry.ts).
@@ -3085,7 +3150,10 @@ function start(server: boolean): void {
     // An off-screen webview page is never focused on purpose; should Chromium say so, it is no
     // project window to refresh the menu for or hand a keyboard back in.
     if (isOffscreenWindow(win)) return
+    // A remote desktop window still refreshes the menu (it resolves to the core table '', and the
+    // project window it took the focus from must not keep its table), but holds no webview of ours.
     appMenu.refresh()
+    if (isRemoteWindow(win)) return
     // A view hidden while the window was in the background hands the keyboard back now.
     webviews.windowFocused(win.id)
   })

@@ -10,6 +10,7 @@ import {
   registerSettingsPageHandlers,
   registerCccCommandHandlers,
   registerWebAccessHandlers,
+  registerRemoteServerHandlers,
   registerNoticeHandlers,
   registerOAuthPasteHandlers,
   registerUpdateHandlers,
@@ -27,6 +28,7 @@ import {
   type IpcMainLike,
   type TabHandlerDeps,
   type WebAccessHandlerOptions,
+  type RemoteServerHandlerDeps,
   webCaller
 } from '../../src/main/ipc/router'
 import type { SenderContext } from '../../src/main/windows/window-manager'
@@ -2576,5 +2578,100 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
       await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.selectChoose', choose)).rejects.toThrow(/not a webview panel of this project/)
       expect([...accepted, ...desktop.accepted]).toEqual([])
     })
+  })
+})
+
+// Remote desktop (design-remote-desktop.md §3): the picker's `remote.*` calls run the person's ssh and
+// keep device cookies, so only the desktop picker page reaches them; payloads are checked by hand.
+describe('remote server handlers', () => {
+  const PICKER = 13
+  function remoteSetup(withService = true): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    const deps: RemoteServerHandlerDeps = {
+      list: async () => {
+        calls.push(['list'])
+        return []
+      },
+      connect: async (request) => {
+        calls.push(['connect', request])
+        return { ok: true, serverId: 's1' }
+      },
+      open: async (serverId, projectId) => {
+        calls.push(['open', serverId, projectId])
+        return { ok: true, serverId }
+      },
+      rename: (serverId, name) => {
+        calls.push(['rename', serverId, name])
+        return { ok: true }
+      },
+      forget: async (serverId) => {
+        calls.push(['forget', serverId])
+      }
+    }
+    registerRemoteServerHandlers(router, withService ? deps : undefined)
+    return { ipc, router, calls }
+  }
+
+  it('answers the picker page', async () => {
+    const { ipc, calls } = remoteSetup()
+    await expect(ipc.invoke('remote.list', PICKER)).resolves.toEqual([])
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'devbox', ccc: '/opt/ccc', name: 'Dev' }])).resolves.toEqual({ ok: true, serverId: 's1' })
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box/#t=x' }])
+    await ipc.invoke('remote.open', PICKER, [{ serverId: 's1', projectId: 'p1' }])
+    await ipc.invoke('remote.open', PICKER, [{ serverId: 's1' }])
+    await ipc.invoke('remote.rename', PICKER, [{ serverId: 's1', name: 'Home' }])
+    await ipc.invoke('remote.forget', PICKER, [{ serverId: 's1' }])
+    expect(calls).toEqual([
+      ['list'],
+      ['connect', { kind: 'ssh', host: 'devbox', ccc: '/opt/ccc', name: 'Dev' }],
+      ['connect', { kind: 'direct', link: 'https://box/#t=x' }],
+      ['open', 's1', 'p1'],
+      ['open', 's1', undefined],
+      ['rename', 's1', 'Home'],
+      ['forget', 's1']
+    ])
+  })
+
+  it.each(['remote.list', 'remote.connect', 'remote.open', 'remote.rename', 'remote.forget'])(
+    '%s is refused to a project window and to a browser view, before the service runs',
+    async (channel) => {
+      const { ipc, router, calls } = remoteSetup()
+      const payload = { kind: 'ssh', host: 'devbox', serverId: 's1', name: 'x' }
+      await expect(ipc.invoke(channel, 11, [payload])).rejects.toThrow(/only the project picker/)
+      await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:1'), channel, payload)).rejects.toThrow(/refused/)
+      // A subframe of the picker page (the isolation already broke) is refused too.
+      await expect(ipc.invoke(channel, PICKER, [payload], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+      expect(calls).toEqual([])
+    }
+  )
+
+  it('refuses every call in server mode (no service), even from the picker', async () => {
+    const { ipc } = remoteSetup(false)
+    await expect(ipc.invoke('remote.list', PICKER)).rejects.toThrow(/not available in server mode/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'devbox' }])).rejects.toThrow(/not available in server mode/)
+  })
+
+  it('checks payload shapes by hand', async () => {
+    const { ipc, calls } = remoteSetup()
+    await expect(ipc.invoke('remote.connect', PICKER, [])).rejects.toThrow(/bad payload/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'telnet', host: 'x' }])).rejects.toThrow(/kind must be/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 7 }])).rejects.toThrow(/host must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', ccc: 1 }])).rejects.toThrow(/ccc must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'x'.repeat(5000) }])).rejects.toThrow(/link must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', name: null }])).rejects.toThrow(/name must be a string/)
+    await expect(ipc.invoke('remote.open', PICKER, [{ serverId: 1 }])).rejects.toThrow(/serverId must be a string/)
+    await expect(ipc.invoke('remote.open', PICKER, [{ serverId: 's', projectId: {} }])).rejects.toThrow(/projectId must be a string/)
+    await expect(ipc.invoke('remote.rename', PICKER, [{ serverId: 's' }])).rejects.toThrow(/name must be a string/)
+    await expect(ipc.invoke('remote.forget', PICKER, ['s1'])).rejects.toThrow(/bad payload/)
+    // Only the fields named are passed on: an extra field never reaches the service.
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', origin: 'http://evil' }])
+    expect(calls).toEqual([['connect', { kind: 'direct', link: 'https://box' }]])
+  })
+
+  it('every remote channel is no-class', () => {
+    for (const channel of ['remote.list', 'remote.connect', 'remote.open', 'remote.rename', 'remote.forget', 'remote.changed'] as const) {
+      expect(REMOTE_CLASS[channel]).toBe('no')
+    }
   })
 })

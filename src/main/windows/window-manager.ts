@@ -188,6 +188,15 @@ export interface WindowManagerOptions {
    * crashed or failed page is reloaded, never closed (a close would end the project's tabs).
    */
   server?: boolean
+  /**
+   * Open remote desktop windows (design-remote-desktop.md §4 "Lifecycle", RemoteWindows.count). A
+   * remote window is no project window (no sender, no project, never restored), but it is a window
+   * the person works in: while one is open, closing the picker does not quit (Linux) and the last
+   * project window closing does not bring the picker back. Absent: none (server mode, tests).
+   */
+  remoteWindowCount?: () => number
+  /** Focus the most recently opened remote window (RemoteWindows.focusAny); false when there is none. */
+  focusRemoteWindow?: () => boolean
   /** The pause before a reload (server mode); returns a cancel. Absent: setTimeout. Tests inject it. */
   setTimer?: (fn: () => void, ms: number) => () => void
   /** Milliseconds now, for the reload backoff. Absent: Date.now. */
@@ -323,7 +332,7 @@ export class WindowManager {
     if (this.options.server) return
     const last = this.lastWindow()
     if (last) this.show(last)
-    else this.showPicker()
+    else if (!this.options.focusRemoteWindow?.()) this.showPicker()
   }
 
   /**
@@ -353,6 +362,9 @@ export class WindowManager {
   activate(): void {
     if (this.picker || this.options.server) return
     if ([...this.projects.values()].some((h) => !this.hidden.has(h))) return
+    // A remote window is on screen: the dock click brings the app forward with it, as with a
+    // project window (a window kept running hidden is not shown over it).
+    if (this.remoteWindows() > 0) return
     const last = this.lastWindow()
     if (last) this.show(last)
     else this.showPicker()
@@ -373,6 +385,26 @@ export class WindowManager {
       if ((this.options.remoteDevices?.(windowId) ?? []).length === 0) this.show(h)
       return
     }
+  }
+
+  /**
+   * A remote window was opened or focused from the picker (design-remote-desktop.md §3): the pick is
+   * done, so the picker goes, as it does when a project opens. Called after the window exists, so
+   * the picker's `closed` counts it and does not quit on Linux.
+   */
+  remoteWindowOpened(): void {
+    if (this.quitting || this.options.server) return
+    this.closePicker()
+  }
+
+  /**
+   * A remote window opened or closed. When the last one closed with no project window and no picker
+   * left, the picker comes back, as when the last project window closes: the app is never left
+   * running with no window (on Linux there is no dock to click).
+   */
+  remoteWindowsChanged(): void {
+    if (this.quitting || this.options.server || this.picker) return
+    if (this.projects.size === 0 && this.remoteWindows() === 0) this.showPicker()
   }
 
   /** Whether this project window is kept running hidden for a browser (false for an unknown window). */
@@ -674,6 +706,10 @@ export class WindowManager {
     return visible ?? any
   }
 
+  private remoteWindows(): number {
+    return this.options.remoteWindowCount?.() ?? 0
+  }
+
   private logLine(message: string): void {
     const log = this.options.log ?? warnLog
     log(message)
@@ -732,8 +768,10 @@ export class WindowManager {
     }
     this.options.registry.markClosed(projectId)
     // Design: "a project picker when none is open". On every platform the last project window
-    // closing leaves the picker, so Cmd+O / a recent project is one click away.
-    if (this.projects.size === 0) this.showPicker()
+    // closing leaves the picker, so Cmd+O / a recent project is one click away. Not while a remote
+    // window is open: the person is working there (the last of those closing shows it instead,
+    // remoteWindowsChanged).
+    if (this.projects.size === 0 && this.remoteWindows() === 0) this.showPicker()
     orphan?.close()
   }
 
@@ -756,8 +794,8 @@ export class WindowManager {
     }
     if (parent && [...this.projects.values()].includes(parent)) parent.focus()
     // `picker` set: a replacement picker already exists (the orphan of a closed parent), so this
-    // `closed` is not the last window going away.
-    if (this.quitting || this.projects.size > 0 || this.picker) return
+    // `closed` is not the last window going away; nor is it with a remote window open.
+    if (this.quitting || this.projects.size > 0 || this.picker || this.remoteWindows() > 0) return
     if (this.options.platform !== 'darwin') this.options.quit()
   }
 }

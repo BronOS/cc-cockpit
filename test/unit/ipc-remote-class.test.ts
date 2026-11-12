@@ -47,7 +47,15 @@ describe('REMOTE_CLASS drift', () => {
     // The desktop page seeds web access's terminal copies from its own screen: a browser's answer
     // would be shown to the other views.
     'tabs.screen',
-    'tabs.screenAsk'
+    'tabs.screenAsk',
+    // Remote desktop (design-remote-desktop.md §3): they run the person's ssh and keep device cookies
+    // on this machine; a browser view of this desktop must never drive them.
+    'remote.list',
+    'remote.connect',
+    'remote.open',
+    'remote.rename',
+    'remote.forget',
+    'remote.changed'
   ])('%s is no', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('no')
   })

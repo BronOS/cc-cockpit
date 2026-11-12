@@ -156,6 +156,11 @@ export class RemoteServerStore {
     }, false)
   }
 
+  /** A device cookie is saved for this server (encrypted; whether it still decrypts is `getCookie`'s). */
+  hasCookie(id: string): boolean {
+    return this.read().find((s) => s.id === id)?.cookie !== undefined
+  }
+
   /** The decrypted device cookie, or undefined: none saved, or the store cannot read it (the caller pairs again). */
   async getCookie(id: string): Promise<string | undefined> {
     const stored = this.read().find((s) => s.id === id)?.cookie

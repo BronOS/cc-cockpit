@@ -1679,3 +1679,149 @@ describe('server mode: the hidden page (design-web.md §9.8)', () => {
     expect(s.wm.pickerOpen).toBe(true)
   })
 })
+
+// Remote desktop windows (design-remote-desktop.md §4 "Lifecycle"): WindowManager only counts them.
+// They are no project window and never a sender, but the app must neither quit under one nor leave
+// the person with no window when the last one closes.
+describe('remote desktop windows', () => {
+  function remoteManager(platform: NodeJS.Platform, options: { server?: boolean } = {}): {
+    wm: WindowManager
+    remote: { count: number; focused: number }
+  } {
+    const remote = { count: 0, focused: 0 }
+    const wm = new WindowManager({
+      factory,
+      registry,
+      platform,
+      quit: () => quits++,
+      remoteWindowCount: () => remote.count,
+      focusRemoteWindow: () => {
+        if (remote.count === 0) return false
+        remote.focused++
+        return true
+      },
+      ...(options.server ? { server: true } : {})
+    })
+    return { wm, remote }
+  }
+
+  it('connecting closes the picker, and on Linux that close does not quit while the remote window is open', () => {
+    const { wm, remote } = remoteManager('linux')
+    wm.showPicker()
+    const picker = factory.open('picker')[0]!
+    // The window exists first (RemoteService calls this after RemoteWindows.open resolved).
+    remote.count = 1
+    wm.remoteWindowOpened()
+    expect(picker.closed).toBe(true)
+    expect(wm.pickerOpen).toBe(false)
+    expect(quits).toBe(0)
+  })
+
+  it('the person closing the picker on Linux with a remote window open does not quit', () => {
+    const { wm, remote } = remoteManager('linux')
+    remote.count = 1
+    wm.showPicker()
+    factory.open('picker')[0]!.userClose()
+    expect(quits).toBe(0)
+    // With none open it still quits, as before.
+    remote.count = 0
+    wm.showPicker()
+    factory.open('picker')[0]!.userClose()
+    expect(quits).toBe(1)
+  })
+
+  it('on macOS closing the picker never quits, remote window or not', () => {
+    const { wm, remote } = remoteManager('darwin')
+    wm.showPicker()
+    factory.open('picker')[0]!.userClose()
+    remote.count = 1
+    wm.showPicker()
+    factory.open('picker')[0]!.userClose()
+    expect(quits).toBe(0)
+  })
+
+  for (const platform of ['darwin', 'linux'] as const) {
+    it(`the last project window closing shows no picker while a remote window is open (${platform})`, () => {
+      const { wm, remote } = remoteManager(platform)
+      wm.openPath(folder('a'))
+      remote.count = 1
+      factory.open('project')[0]!.userClose()
+      expect(factory.open('picker')).toHaveLength(0)
+      expect(quits).toBe(0)
+    })
+
+    it(`the last remote window closing with no project window shows the picker (${platform})`, () => {
+      const { wm, remote } = remoteManager(platform)
+      remote.count = 2
+      wm.remoteWindowsChanged()
+      expect(factory.open('picker')).toHaveLength(0)
+      remote.count = 0
+      wm.remoteWindowsChanged()
+      expect(factory.open('picker')).toHaveLength(1)
+      // Told again with the picker up: still one picker.
+      wm.remoteWindowsChanged()
+      expect(factory.open('picker')).toHaveLength(1)
+      expect(quits).toBe(0)
+    })
+  }
+
+  it('the last remote window closing with a project window open shows nothing', () => {
+    const { wm, remote } = remoteManager('linux')
+    wm.openPath(folder('a'))
+    remote.count = 0
+    wm.remoteWindowsChanged()
+    expect(factory.open('picker')).toHaveLength(0)
+  })
+
+  it('nothing during quit: closing remote windows then shows no picker', () => {
+    const { wm, remote } = remoteManager('linux')
+    remote.count = 1
+    wm.beginQuit()
+    remote.count = 0
+    wm.remoteWindowsChanged()
+    expect(factory.open('picker')).toHaveLength(0)
+  })
+
+  it('focusAny prefers a project window, then a remote window, then the picker', () => {
+    const { wm, remote } = remoteManager('linux')
+    wm.openPath(folder('a'))
+    remote.count = 1
+    wm.focusAny()
+    expect(factory.open('project')[0]!.focused).toBe(1)
+    expect(remote.focused).toBe(0)
+    factory.open('project')[0]!.userClose()
+    wm.focusAny()
+    expect(remote.focused).toBe(1)
+    expect(factory.open('picker')).toHaveLength(0)
+    remote.count = 0
+    wm.focusAny()
+    expect(factory.open('picker')).toHaveLength(1)
+  })
+
+  it('activate (macOS dock) shows no picker while a remote window is open', () => {
+    const { wm, remote } = remoteManager('darwin')
+    remote.count = 1
+    wm.activate()
+    expect(factory.open('picker')).toHaveLength(0)
+    remote.count = 0
+    wm.activate()
+    expect(factory.open('picker')).toHaveLength(1)
+  })
+
+  it('a remote window is never a sender: the menu resolves it to the core table', () => {
+    const { wm } = remoteManager('linux')
+    wm.openPath(folder('a'))
+    // A remote window's webContents id is one WindowManager never registered.
+    expect(wm.resolveSender(9999)).toBeUndefined()
+  })
+
+  it('server mode: no picker, no focus, whatever the remote count says', () => {
+    const { wm, remote } = remoteManager('linux', { server: true })
+    remote.count = 0
+    wm.remoteWindowsChanged()
+    wm.remoteWindowOpened()
+    wm.focusAny()
+    expect(factory.open('picker')).toHaveLength(0)
+    expect(remote.focused).toBe(0)
+  })
+})

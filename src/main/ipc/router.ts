@@ -22,6 +22,9 @@ import type {
   PluginSettingsSaveResult,
   PluginView,
   ProjectSettingsView,
+  RemoteConnectAnswer,
+  RemoteConnectRequest,
+  RemoteServerInfo,
   ProjectSummary,
   SessionsSnapshot,
   SettingsPageInfo,
@@ -1093,6 +1096,79 @@ export function registerWebAccessHandlers(router: IpcRouter, deps: WebAccessHand
     return view.remote ? remoteIndicator(deps.indicator()) : deps.indicator()
   })
   router.handleProject('webAccess.confirmAnswer', (_ctx, payload) => deps.answerConfirm(payload))
+}
+
+/**
+ * What the remote desktop handlers need (RemoteService, main/remote/remote-service.ts). Undefined in
+ * server mode: remote windows are a desktop feature (a server has no screen to open them on).
+ */
+export interface RemoteServerHandlerDeps {
+  list(): Promise<RemoteServerInfo[]>
+  connect(request: RemoteConnectRequest): Promise<RemoteConnectAnswer>
+  open(serverId: string, projectId?: string): Promise<RemoteConnectAnswer>
+  rename(serverId: string, name: string): { ok: true } | { ok: false; error: string }
+  forget(serverId: string): Promise<void>
+}
+
+/** A text field of a `remote.*` payload is cut off here (the store checks the exact limits and characters). */
+const REMOTE_TEXT_MAX = 4096
+
+/** A required string field of a `remote.*` payload, type and length checked (content is the store's). */
+function remoteText(channel: string, body: Record<string, unknown>, key: string): string {
+  const value = body[key]
+  if (typeof value !== 'string' || value.length > REMOTE_TEXT_MAX) throw new Error(`${channel}: ${key} must be a string`)
+  return value
+}
+
+/** An optional string field: absent or undefined reads as absent, anything but a string is refused. */
+function remoteOptionalText(channel: string, body: Record<string, unknown>, key: string): string | undefined {
+  return body[key] === undefined ? undefined : remoteText(channel, body, key)
+}
+
+/**
+ * The remote desktop's picker calls (design-remote-desktop.md §3). They run the person's `ssh`, keep
+ * device cookies on this machine and open windows on its screen, so they answer the desktop picker
+ * page only: a project window has no business with them, and a browser view never (they are
+ * `no`-class, refused before any handler for a remote caller; checked again here, by the context and
+ * the view main resolved, never by the payload). Every payload field is type-checked by hand; the
+ * service and the store check what the text may hold.
+ */
+export function registerRemoteServerHandlers(router: IpcRouter, deps: RemoteServerHandlerDeps | undefined): void {
+  const pickerOnly = (channel: InvokeChannel, ctx: SenderContext, view: CallView): RemoteServerHandlerDeps => {
+    if (ctx.kind !== 'picker' || view.remote) throw new Error(`${channel}: only the project picker may use remote servers`)
+    if (!deps) throw new Error(`${channel}: not available in server mode`)
+    return deps
+  }
+  router.handleWindow('remote.list', (ctx, _payload, view) => pickerOnly('remote.list', ctx, view).list())
+  router.handleWindow('remote.connect', (ctx, payload, view) => {
+    const service = pickerOnly('remote.connect', ctx, view)
+    const body = fields('remote.connect', payload)
+    const name = remoteOptionalText('remote.connect', body, 'name')
+    const named = name === undefined ? {} : { name }
+    if (body.kind === 'ssh') {
+      const host = remoteText('remote.connect', body, 'host')
+      const ccc = remoteOptionalText('remote.connect', body, 'ccc')
+      return service.connect({ kind: 'ssh', host, ...(ccc === undefined ? {} : { ccc }), ...named })
+    }
+    if (body.kind === 'direct') return service.connect({ kind: 'direct', link: remoteText('remote.connect', body, 'link'), ...named })
+    throw new Error('remote.connect: kind must be ssh or direct')
+  })
+  router.handleWindow('remote.open', (ctx, payload, view) => {
+    const service = pickerOnly('remote.open', ctx, view)
+    const body = fields('remote.open', payload)
+    const serverId = remoteText('remote.open', body, 'serverId')
+    const projectId = remoteOptionalText('remote.open', body, 'projectId')
+    return service.open(serverId, projectId === '' ? undefined : projectId)
+  })
+  router.handleWindow('remote.rename', (ctx, payload, view) => {
+    const service = pickerOnly('remote.rename', ctx, view)
+    const body = fields('remote.rename', payload)
+    return service.rename(remoteText('remote.rename', body, 'serverId'), remoteText('remote.rename', body, 'name'))
+  })
+  router.handleWindow('remote.forget', (ctx, payload, view) => {
+    const service = pickerOnly('remote.forget', ctx, view)
+    return service.forget(remoteText('remote.forget', fields('remote.forget', payload), 'serverId'))
+  })
 }
 
 /** What a renderer may see of a project (the title bar, the picker rows). Exported for main's pushes. */
