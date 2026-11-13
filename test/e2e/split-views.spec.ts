@@ -174,11 +174,10 @@ test('D3: a browser moves the desktop\'s pane out of its group; the desktop\'s k
     expect(((await invoke<{ ok: boolean }>(web, 'groups.remove', { tabId: a })).ok)).toBe(true)
     await expect.poll(async () => leaves((await groupsOf(page)).groups[0]!.root)).toEqual([b, c])
     expect((await tabsOf(page)).map((t) => t.id).sort()).toEqual([a, b, c, plain.id].sort())
-    // D18: the desktop keeps showing what is left of the group (B and C), with no focused pane.
-    await expect(visiblePanes(page)).toHaveCount(2)
-    await expect(paneOf(page, b)).toBeVisible()
-    await expect(paneOf(page, c)).toBeVisible()
-    await expect(paneOf(page, a)).toHaveCount(0)
+    // D18 (D24): the focused tab is now plain, so the desktop keeps showing that same tab (A), keys
+    // off; it does not follow it, nor jump to the group's other panes.
+    await expect(visiblePanes(page)).toHaveCount(1)
+    await expect(paneOf(page, a)).toBeVisible()
     await expect(focusedPanes(page)).toHaveCount(0)
 
     // Keys the desktop types without a click reach no tab at all: not A, B, C or the plain tab.
