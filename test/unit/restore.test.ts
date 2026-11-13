@@ -23,7 +23,12 @@ import { FakePtyBackend } from '../fakes/fake-pty-backend'
  * The plan without `savedId` (which only the split groups' remap reads, tested below with the real
  * functions): these tests are about which fields a record brings back.
  */
-const plain = (plan: RestoredTab[]): RestoredTab[] => plan.map(({ savedId: _savedId, ...tab }) => tab)
+const plain = (plan: RestoredTab[]): RestoredTab[] =>
+  plan.map((tab) => {
+    const out = { ...tab }
+    delete out.savedId
+    return out
+  })
 const buildRestorePlan = (...args: Parameters<typeof buildRestorePlanWithIds>): RestoredTab[] => plain(buildRestorePlanWithIds(...args))
 const planLaunch = (...args: Parameters<typeof planLaunchWithGroups>): { open: Array<{ project: ProjectView; tabs: RestoredTab[] }>; missing: ProjectView[] } => {
   const plan = planLaunchWithGroups(...args)
