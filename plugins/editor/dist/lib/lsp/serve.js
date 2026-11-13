@@ -90,7 +90,10 @@ function serveLsp(tab, manager, log) {
       holder.post(m)
     })
 
-  const fail = (p, e) => holder.post({ t: 'lsp-error', ...(typeof p === 'string' ? { path: p } : {}), message: files.messageOf(e) })
+  // Every error text to the page with the project's and the home folder's paths cut out (a browser
+  // view may show it): an EACCES from resolveInProject names the real path.
+  const pageText = (e) => files.redactPaths(files.messageOf(e), manager.root)
+  const fail = (p, e) => holder.post({ t: 'lsp-error', ...(typeof p === 'string' ? { path: p } : {}), message: pageText(e) })
 
   /**
    * Waits for `o`'s next part. One that never comes drops the text and is told, as a save that timed
@@ -162,7 +165,8 @@ function serveLsp(tab, manager, log) {
       try {
         manager.close(holder, rel)
       } catch {}
-      holder.post({ t: 'lsp-doc', path: rel, language: null, why: 'the file is too large for a language server' })
+      // `tooLarge`: the page opens it again once its text is back under the cap (client.mjs changed).
+      holder.post({ t: 'lsp-doc', path: rel, language: null, tooLarge: true, why: 'the file is too large for a language server' })
       // The page sends every part at once, so the rest are already coming: they are skipped quietly
       // up to the last. The incident: each one was answered "lsp-open parts out of order", a red
       // error bar on every editable file over 2M characters.
@@ -226,7 +230,7 @@ function serveLsp(tab, manager, log) {
       (e) => {
         if (asks.get(req) !== ctl) return
         asks.delete(req)
-        answer({ error: files.messageOf(e).slice(0, 1000) })
+        answer({ error: pageText(e).slice(0, 1000) })
       },
     )
   }

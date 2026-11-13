@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { offsetOf, positionOf, contentChanges, editsToChanges, snippetToTemplate, docBlocks, flattenSymbols, signatureParts, severityOf, completionType } from '../src/page/lsp/convert.mjs'
-import { createLspClient, COMPLETE_TIMEOUT_MS } from '../src/page/lsp/client.mjs'
+import { createLspClient, COMPLETE_TIMEOUT_MS, MAX_DOC_CHARS } from '../src/page/lsp/client.mjs'
 import { EditorState } from '@codemirror/state'
 import { createRequire } from 'node:module'
 
@@ -526,6 +526,47 @@ test('client with the host: a file over the host cap (2M chars) is a quiet "no s
   g.c.changed([{ text: g.ui.text }])
   assert.equal(g.c.state.language, null)
   assert.ok(!g.ui.statuses.some((s) => s && s.state === 'failed'), JSON.stringify(g.ui.statuses.filter(Boolean)))
+})
+
+test('client with the host: a text over the cap is opened again once an edit brings it back under, and only then', () => {
+  const { serveLsp } = createRequire(import.meta.url)('../dist/lib/lsp/serve.js')
+  const opened = []
+  const manager = { open: (_h, _rel, text) => (opened.push(text.length), { language: 'typescript', name: 'TypeScript', owner: true, state: 'ready' }), change: () => true, close() {}, closeHolder() {} }
+  const g = client('const a = 1\n')
+  let lengthAsked = 0
+  g.ui.textLength = () => (lengthAsked++, g.ui.text.length)
+  const h = serveLsp({ id: 't1', post: (m) => g.c.receive(m), onClose() {} }, manager)
+  g.ui.post = (m) => h(m)
+  g.c.connect()
+  g.c.open('src/a.ts', true)
+  assert.equal(g.c.state.language, 'typescript')
+  // A paste past the cap: no server, quietly.
+  g.ui.text = 'y'.repeat(MAX_DOC_CHARS + 10)
+  g.c.changed([{ text: g.ui.text }])
+  assert.equal(g.c.state.language, null)
+  assert.equal(g.c.state.opened, false)
+  // Still over: nothing sent, and the buffer's length read, not its text.
+  const before = opened.length
+  g.ui.text = 'y'.repeat(MAX_DOC_CHARS + 1)
+  g.c.changed([{ text: '' }])
+  assert.equal(opened.length, before)
+  assert.ok(lengthAsked > 0)
+  // Back under: the whole text again, and the server is back.
+  g.ui.text = 'y'.repeat(MAX_DOC_CHARS)
+  g.c.changed([{ text: '' }])
+  assert.equal(opened.length, before + 1)
+  assert.equal(opened.at(-1), MAX_DOC_CHARS)
+  assert.equal(g.c.state.language, 'typescript')
+  assert.equal(g.c.state.opened, true)
+  assert.equal(g.ui.statuses.at(-1).state, 'ready')
+  // A file with no server at all (not a size answer) is never opened again by an edit.
+  const k = client('# notes\n')
+  k.c.connect()
+  k.c.open('notes.md', true)
+  k.c.receive({ t: 'lsp-doc', path: 'notes.md', language: null })
+  const sent = k.posts.length
+  k.c.changed([{ text: 'x' }])
+  assert.equal(k.posts.length, sent)
 })
 
 test('client: an ask whose post throws is refused at once, leaving no entry or timer behind; close never throws', async () => {

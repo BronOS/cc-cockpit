@@ -681,14 +681,20 @@ class FolderWatcher {
     return () => this.folderListeners.delete(listener)
   }
 
-  /** Watches `real`; returns the function that stops this one watch (its `seen(hash)` records what it read or wrote). */
-  add(real, hash, notify) {
+  /**
+   * Watches `real`; returns the function that stops this one watch (its `seen(hash)` records what it
+   * read or wrote). `size`: the bytes the caller just read, so the first check already backs off
+   * (delayOf). Without it a 16 MiB log opened and then appended to was re-hashed 80 ms after its
+   * first event, the backoff only starting from the second check.
+   */
+  add(real, hash, notify, size) {
     let f = this.files.get(real)
     if (!f) {
       f = { subs: new Set(), timer: null, size: 0 }
       this.files.set(real, f)
       this.addFolder(path.dirname(real))
     }
+    if (typeof size === 'number' && Number.isFinite(size) && size >= 0) f.size = size
     const sub = { hash: hash === undefined ? null : hash, notify: notify || this.onChange }
     f.subs.add(sub)
     let done = false
@@ -859,6 +865,8 @@ class FolderWatcher {
       }
     } catch {
       hash = null
+      // Gone (or unreadable): nothing to hash, so a recreate is checked at the plain debounce.
+      f.size = 0
     }
     const ev = hash === null ? { change: 'deleted', hash: null } : { change: 'changed', hash }
     for (const sub of [...f.subs]) {
@@ -979,7 +987,7 @@ function serveFileTab(files, tab, log) {
     })
   }
 
-  function watch(rel, real, hash) {
+  function watch(rel, real, hash, size) {
     const w = watches.get(rel)
     if (w && w.real === real) {
       w.stop.seen(hash)
@@ -990,7 +998,7 @@ function serveFileTab(files, tab, log) {
     // This line's own subscription: its hash is its own, so another line's read or save never mutes it.
     watches.set(rel, {
       real,
-      stop: files.watcher.add(real, hash, (_r, ev) => post({ t: 'disk', path: rel, change: ev.change, hash: ev.hash })),
+      stop: files.watcher.add(real, hash, (_r, ev) => post({ t: 'disk', path: rel, change: ev.change, hash: ev.hash }), size),
     })
   }
 
@@ -1020,7 +1028,7 @@ function serveFileTab(files, tab, log) {
     if (isOpen || watches.has(r.rel)) {
       // A missing file is watched at the name it would have: a recreate shows as `changed`.
       const real = r.exists ? r.real : resolveInProject(files.root, r.rel).real
-      watch(r.rel, real, r.exists ? r.hash : null)
+      watch(r.rel, real, r.exists ? r.hash : null, r.exists ? r.size : 0)
     }
     if (!r.exists) return post({ t: 'file', req, path: r.rel, exists: false, part: 0, parts: 1 })
     // A head-only read (the page's re-check on window focus) answers the hash and flags without the

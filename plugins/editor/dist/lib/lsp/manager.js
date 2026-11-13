@@ -1091,7 +1091,9 @@ class LspManager {
 
   setState(slot, state, extra = {}) {
     slot.state = state
-    slot.message = extra.message
+    // Spawn failures and the server's stderr tail name absolute paths (a crash, a missing module):
+    // cut out the project's and the home folder's before any page sees the status.
+    slot.message = typeof extra.message === 'string' ? files.redactPaths(extra.message, this.root) : extra.message
     slot.install = extra.install
     this.postStatus(slot)
   }

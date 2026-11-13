@@ -72,7 +72,8 @@ state cannot wait on a box, and most of them happen to a page signed out or cut 
 Keyboard: a sandboxed frame's keys never reach the shell's window listener. Desktop: `before-input-event` on the frame
 maps app chords to `commands.trigger`, as webview panels do. Web shell: the panel SDK forwards chords to the parent,
 which runs one only from the shown frame with the keyboard and while `navigator.userActivation.isActive` (a real key
-press or click just now: a page's script alone cannot run app commands).
+press or click in the last few seconds: a page nobody is using cannot run app commands). This narrows, it does not prove:
+the activation is not tied to one key, so a page the person is typing in can post any listed chord they did not press.
 Precedence: the app table and `keyOverrides` win for chords they hold (Ctrl+Tab, Ctrl+W...); the editor's own chords
 (Ctrl+P, Ctrl+K, Ctrl+L, Ctrl+D, Ctrl+S) are declared in its manifest as page-tab keys and go to the page while it has
 focus; a conflict with the app table is shown in the keybinding editor (Settings > Keybindings lists the key two

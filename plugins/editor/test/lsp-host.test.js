@@ -611,6 +611,34 @@ test('a server that exits before answering initialize: a crash like any other, i
   await until(() => f.startCount() === 3, 5000, 'restarted')
 })
 
+test('a server status message reaches the page with the project and home paths cut out (stderr tail, spawn failure)', async (t) => {
+  const root = project()
+  const home = os.homedir()
+  const f = setup({ root, flags: ['--exit-before-init', '--stderr', `cannot find module '${root}/src/x.ts' (cache ${home}/.cache/fake)`], timing: { restartLimit: 0 } })
+  t.after(f.done)
+  const a = holder('a')
+  f.m.open(a, 'src/a.ts', 'x')
+  const failed = await until(() => (a.last('lsp-status')?.state === 'failed' ? a.last('lsp-status') : null), 5000, 'failed')
+  assert.match(failed.message, /cannot find module '<project>\/src\/x\.ts' \(cache ~\/\.cache\/fake\)$/)
+  for (const p of a.posts) assert.ok(!JSON.stringify(p).includes(root) && !JSON.stringify(p).includes(home), JSON.stringify(p))
+
+  // A spawn that throws with a path in its message (not "cannot run"): failed, the path cut out.
+  const b = holder('b')
+  const g = new LspManager({
+    root,
+    spawn: () => {
+      throw new Error(`EACCES: permission denied, spawn '${root}/node_modules/.bin/tsserver'`)
+    },
+    log: { info() {}, warn() {} },
+    servers: [{ language: 'typescript', argv: [process.execPath, FAKE] }],
+  })
+  t.after(() => g.dispose())
+  g.open(b, 'src/a.ts', 'x')
+  const st = b.last('lsp-status')
+  assert.equal(st.state, 'failed')
+  assert.equal(st.message, "EACCES: permission denied, spawn '<project>/node_modules/.bin/tsserver'")
+})
+
 test('idle stop: a minute (here 50 ms) after the last document closes, shutdown and exit; a reopen in between keeps it', async (t) => {
   const f = setup({ timing: { idleStopMs: 50 } })
   t.after(f.done)
@@ -739,6 +767,27 @@ function fakeTab(id = 't1', view) {
     last: (t) => [...posts].reverse().find((p) => p.t === t),
   }
 }
+
+test('serveLsp: an open refused and an ask that fails reach the page with the project and home paths cut out', async () => {
+  const root = '/srv/u/proj'
+  const home = os.homedir()
+  const manager = {
+    root,
+    open: () => {
+      throw Object.assign(new Error(`EACCES: permission denied, realpath '${root}/src/a.ts'`), { code: 'EACCES' })
+    },
+    ask: () => Promise.reject(new Error(`the server failed on ${home}/go/pkg/mod/x.go`)),
+    close() {},
+    closeHolder() {},
+  }
+  const tab = fakeTab()
+  const handle = serveLsp(tab, manager)
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 1, text: 'x', seq: 1 })
+  assert.deepEqual(tab.last('lsp-error'), { t: 'lsp-error', path: 'src/a.ts', message: "EACCES: permission denied, realpath '<project>/src/a.ts'" })
+  handle({ t: 'lsp-ask', req: 'r1', what: 'hover', path: 'src/a.ts', position: { line: 0, character: 0 } })
+  await until(() => tab.last('lsp-answer'), 5000, 'answer')
+  assert.deepEqual(tab.last('lsp-answer'), { t: 'lsp-answer', req: 'r1', error: 'the server failed on ~/go/pkg/mod/x.go' })
+})
 
 test('serveLsp: whole text in parts, asks answered by req, cancel, close releases the documents', async (t) => {
   const f = setup({ flags: ['--slow-hover'] })
@@ -1008,7 +1057,7 @@ test('serveLsp: a text over the cap is "no server" with no error, its later part
   // The page sends every part at once: the cap is passed at the second of four.
   const part = 'x'.repeat(1024 * 1024 + 1)
   for (let i = 0; i < 4; i++) handle({ t: 'lsp-open', path: 'src/a.ts', part: i, parts: 4, text: part, seq: 1 })
-  assert.deepEqual(tab.last('lsp-doc'), { t: 'lsp-doc', path: 'src/a.ts', language: null, why: 'the file is too large for a language server' })
+  assert.deepEqual(tab.last('lsp-doc'), { t: 'lsp-doc', path: 'src/a.ts', language: null, tooLarge: true, why: 'the file is too large for a language server' })
   assert.equal(tab.last('lsp-error'), undefined)
   assert.equal(f.m.docs.size, 0)
   // Parts that stop coming after the cap go quietly too.

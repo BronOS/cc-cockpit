@@ -34,9 +34,17 @@ export const MAX_CHANGE_CHARS = CHUNK_CHARS
 export const MAX_CHANGES = 1000
 
 /**
+ * The host's cap on a document's text (lib/lsp/manager.js MAX_DOC_CHARS, UTF-16 units): a text the
+ * host answered as too large is opened again once the buffer is back under it (changed). The host
+ * checks again, so a wrong number here costs one refused open, never a document over the cap.
+ */
+export const MAX_DOC_CHARS = 2 * 1024 * 1024
+
+/**
  * `ui`:
  *   post(message)           to the host (ccPanel.post)
  *   getText()               the buffer now
+ *   textLength()            optional: the buffer's length (UTF-16 units) without building its text
  *   applyEdits(edits)       apply the host's TextEdits to the buffer: true, or a string saying why not
  *   onStatus(status)        the server's state changed: { language, name, state, install?, message?, features? }
  *   onDiagnostics(list)     the server's diagnostics for this file (LSP's), replaced as a whole
@@ -60,6 +68,12 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
      * again (a new seq) rather than incremental changes on top of a text the host never had.
      */
     unsent: false,
+    /**
+     * The host answered this document "too large for a language server" (lsp-doc tooLarge): closed
+     * here, and opened again by the first change that brings the text back under the cap. The
+     * incident: deleting the text that made a file too large left it without a server until reload.
+     */
+    tooLarge: false,
     status: null,
   }
   let nextReq = 0
@@ -109,6 +123,8 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     }
   }
 
+  const textLength = () => (typeof ui.textLength === 'function' ? ui.textLength() : ui.getText().length)
+
   /** A path the host can give a server: project-relative (an outside file's tab has an absolute one). */
   const serverable = (p) => typeof p === 'string' && p !== '' && !p.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(p)
 
@@ -134,6 +150,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     connect() {
       s.connected = true
       s.opened = false
+      s.tooLarge = false
       s.language = undefined
       s.owner = false
       failAll('the connection to the editor host was renewed')
@@ -146,6 +163,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
       if (!s.connected || !hasText || !serverable(path)) return
       if (s.opened && s.path === path) return
       s.path = path
+      s.tooLarge = false
       // A new document (another path, or open again after a close): who syncs it is the host's
       // lsp-doc to say, never the previous document's answer.
       s.language = undefined
@@ -154,6 +172,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     },
     /** The page shows no text any more (binary now, a deleted file reloaded as nothing). */
     close() {
+      s.tooLarge = false
       if (!s.opened) return
       post({ t: 'lsp-close', path: s.path })
       s.opened = false
@@ -168,7 +187,17 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
      * owner's reach the server.
      */
     changed(changes) {
-      if (!s.opened) return
+      if (!s.opened) {
+        // Too large before: back under the cap now, so the host gets the text again and answers
+        // with its server (a new lsp-doc). The length only, so a big buffer costs no copy per key.
+        if (s.tooLarge && s.connected && textLength() <= MAX_DOC_CHARS) {
+          s.tooLarge = false
+          s.language = undefined
+          s.owner = false
+          sendText()
+        }
+        return
+      }
       if (changes === null) {
         if (s.owner && s.language) sendText()
         else s.unsent = true
@@ -231,8 +260,10 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
           if (m.path !== s.path) return true
           s.language = typeof m.language === 'string' ? m.language : null
           s.owner = m.owner === true
+          s.tooLarge = !s.language && m.tooLarge === true
           if (!s.language) {
-            // No server for this file (or it is too large): highlighting only, nothing held.
+            // No server for this file (or it is too large: opened again once it fits, `changed`):
+            // highlighting only, nothing held.
             s.opened = false
             failAll('no language server for this file')
           }

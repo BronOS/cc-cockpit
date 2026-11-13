@@ -108,11 +108,13 @@ export interface PageFramesOptions {
   /** A forwarded chord typed in the focused page tab: the shell runs its command (through its gate). */
   chord?(chord: string): void
   /**
-   * Whether the person gave real input just now (web shell: `navigator.userActivation.isActive`, set
-   * by a trusted key press or click in the frame or the shell, which a page's script cannot fake). A
-   * forwarded chord is taken only then: the SDK's forwarding runs in the page, so the message alone
-   * proves no key press, and a page could otherwise run the app's commands at will. Absent or false:
-   * no chord is taken (the desktop needs none: main reads the real input in before-input-event).
+   * Whether the person gave real input a moment ago (web shell: `navigator.userActivation.isActive`,
+   * transient activation: set by a trusted key press or click in the frame or the shell, which a
+   * page's script cannot set, and kept for a few seconds after it). A forwarded chord is taken only
+   * then. This narrows, it does not prove: the SDK's forwarding runs in the page, so while the person
+   * types in it the page could post any listed chord from its script with no matching key; what it
+   * stops is a page running the app's commands while nobody uses it. Absent or false: no chord is
+   * taken (the desktop needs none: main reads the real input in before-input-event).
    */
   userActive?(): boolean
   /** The shown, focused page tab asked for Ask Claude (`ccPanel.tab.discuss()`): the shell opens its box. */
@@ -380,9 +382,10 @@ export class PageFrames {
       return
     }
     // A chord only from the page that has the keyboard, only one the shell listed, and only while the
-    // browser says the person just gave real input (`userActive`): a page cannot run the app's
-    // commands from the background, nor any the person could not have typed here, nor any at all
-    // by posting the message from its script with no key pressed.
+    // browser says the person gave real input a moment ago (`userActive`): a page cannot run the
+    // app's commands from the background, nor any the person could not have typed here, nor any
+    // while nobody uses it. Transient activation lasts seconds and is not tied to one key, so a page
+    // the person is typing in can still post a listed chord they did not press (a known limit).
     if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && tabId === this.shown && el.hasFocus()) {
       if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord)
       return

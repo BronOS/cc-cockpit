@@ -563,6 +563,7 @@ const session = createSession({
 const lsp = createLspClient({
   post: (m) => ccPanel.post(m),
   getText: () => (view ? view.state.doc.toString() : ''),
+  textLength: () => (view ? view.state.doc.length : 0),
   applyEdits: (edits) => applyEditsTo(view, edits),
   onStatus: drawLsp,
   onDiagnostics: (list) => showDiagnostics(view, list),

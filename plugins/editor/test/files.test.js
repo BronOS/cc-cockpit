@@ -906,6 +906,45 @@ test('a big watched file appended to all the time is checked less often (each ch
   assert.equal(checks.n, 2)
 })
 
+test('a big file watched with the size its read had backs off from the first check; a deleted one goes back to the plain debounce', (t) => {
+  const root = project()
+  const f = fs.realpathSync(root) + '/big.log'
+  fs.writeFileSync(f, Buffer.alloc(4 * 1024 * 1024, 'a'))
+  const calls = []
+  const w = new files.FolderWatcher(() => {}, { watchImpl: (dir, opts, cb) => (calls.push({ dir, cb }), { close() {} }), debounceMs: 10 })
+  const stop = w.add(f, null, undefined, 4 * 1024 * 1024)
+  t.after(() => (stop(), w.close()))
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const checks = countChecks(w)
+  // 4 MiB known at the start: 10 ms + 4 x 50 ms before the first check.
+  calls[0].cb('change', 'big.log')
+  t.mock.timers.tick(10)
+  assert.equal(checks.n, 0)
+  t.mock.timers.tick(200)
+  assert.equal(checks.n, 1)
+  // Gone: nothing to hash, so the next check waits the debounce only.
+  fs.rmSync(f)
+  calls[0].cb('rename', 'big.log')
+  t.mock.timers.tick(210)
+  assert.equal(checks.n, 2)
+  calls[0].cb('rename', 'big.log')
+  t.mock.timers.tick(10)
+  assert.equal(checks.n, 3)
+})
+
+test('serveFileTab: a file opened in a tab is watched with its size, so its first disk event already backs off', (t) => {
+  const root = project()
+  fs.writeFileSync(path.join(root, 'big.log'), Buffer.alloc(2 * 1024 * 1024, 'a'))
+  const shared = files.makeFiles(root, { debounceMs: 10 })
+  const tab = fakeTab({ path: 'big.log' })
+  files.serveFileTab(shared, tab.tab)
+  t.after(() => (tab.close(), shared.watcher.close()))
+  tab.send({ t: 'open', req: 1 })
+  const f = shared.watcher.files.get(fs.realpathSync(path.join(root, 'big.log')))
+  assert.equal(f.size, 2 * 1024 * 1024)
+  assert.equal(shared.watcher.delayOf(f), 10 + 100)
+})
+
 test('folders watched are capped for the whole plugin; a folder left out gets the slot another one frees', () => {
   const calls = []
   const w = new files.FolderWatcher(null, { watchImpl: (dir) => (calls.push(dir), { close() {} }), maxFolders: 2, debounceMs: 5 })
