@@ -105,7 +105,7 @@ export async function newTaggedShell(cockpit: Cockpit, tag: string): Promise<Tab
 export async function groupOfShells<const T extends readonly string[]>(cockpit: Cockpit, tags: T): Promise<{ [K in keyof T]: string }> {
   // A roomy window: three or four panes in a row would otherwise fall under the auto-zoom size (D5)
   // on the default window, and this helper wants every pane drawn.
-  await cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1900, 1000))
+  await roomyDesktop(cockpit)
   const ids: string[] = []
   for (const tag of tags) ids.push((await newTaggedShell(cockpit, tag)).id)
   for (let i = 1; i < ids.length; i++) {
@@ -129,4 +129,23 @@ export async function recordGroupEvents(page: Page): Promise<() => Promise<numbe
     w.cockpit.on('groups.changed', (snap) => w.__groupSeqs!.push(snap.seq))
   })
   return () => page.evaluate(() => (window as unknown as { __groupSeqs?: number[] }).__groupSeqs ?? [])
+}
+
+/** Whether the page's DOM focus is inside a terminal (an xterm textarea): false once keys go off (D18). */
+export function domFocusInTerminal(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.activeElement?.closest('.xterm') != null)
+}
+
+/**
+ * The desktop window at 1900x1000 and not resizable: a tiling window manager (Hyprland) floats a
+ * fixed-size window and so leaves it alone when the browser window appears, instead of re-tiling it
+ * to half the screen (which would auto-zoom the split view there, D5/D25). Test code only.
+ */
+export async function roomyDesktop(cockpit: Cockpit): Promise<void> {
+  await cockpit.app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0]
+    w?.setSize(1900, 1000)
+    w?.setResizable(false)
+  })
+  await expect.poll(() => cockpit.page.evaluate(() => innerWidth)).toBeGreaterThan(1500)
 }

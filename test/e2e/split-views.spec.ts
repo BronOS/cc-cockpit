@@ -13,6 +13,7 @@ import { expect, test, type Cockpit } from './fixtures'
 import {
   MOD,
   createTab,
+  domFocusInTerminal,
   focusedPanes,
   groupFor,
   groupOfShells,
@@ -26,6 +27,7 @@ import {
   splitArea,
   place,
   recordGroupEvents,
+  roomyDesktop,
   tabsOf,
   typeInPane,
   visiblePanes,
@@ -42,6 +44,9 @@ async function joinBrowser(cockpit: Cockpit): Promise<{ browser: WebBrowser; web
   // under the auto-zoom size (D5) by themselves.
   await browser.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1900, 1000))
   await openProjectInBrowser(browser, on.origin, on.projectId)
+  // A tiling window manager may re-lay the desktop window out when another window appears: ask for
+  // the roomy size again and wait until the page has it.
+  await roomyDesktop(cockpit)
   return { browser, web: browser.page }
 }
 
@@ -63,11 +68,15 @@ test('a split made on the desktop shows in the browser, and one made in the brow
     await expect(segment.getByRole('tab')).toHaveCount(2)
     await expect(segment).toHaveAttribute('aria-label', /.+/)
 
-    // Browser -> desktop: a new pane made with `tabs.create` + `beside` in the browser (create and
-    // place in one step, D15: the desktop never sees the tab ungrouped).
-    const created = await createTab(web, { kind: 'shell', beside: { tabId: b, edge: 'down' } })
-    expect(created).not.toBeNull()
-    await expect.poll(async () => leaves((await groupsOf(page)).groups[0]!.root)).toEqual([a, b, created!.id])
+    // Browser -> desktop: a new pane made from the browser's own UI, "split down" (D10 chord, the New
+    // tab menu at the new pane, Shell): create and place in one step (D15), the desktop never sees the
+    // tab ungrouped. (Not `tabs.create` invoked in the page: a page adds its own tab from the reply, D25.)
+    await paneOf(web, b).locator('.xterm').click()
+    await web.keyboard.press(`${MOD}+Alt+Shift+D`)
+    await web.getByRole('menuitem', { name: 'Shell' }).click()
+    await expect.poll(async () => leaves((await groupsOf(page)).groups[0]!.root).length).toBe(3)
+    const members = leaves((await groupsOf(page)).groups[0]!.root)
+    expect(members.slice(0, 2)).toEqual([a, b])
     // The desktop shows three panes once its selection is in the group (it is: tab b's group).
     await expect(visiblePanes(page)).toHaveCount(3)
     await expect(visiblePanes(web)).toHaveCount(3)
@@ -136,8 +145,10 @@ test('D3: a pane the desktop types in is unsplit by the browser: the desktop foc
     await expect(visiblePanes(page)).toHaveCount(2)
     await expect(paneOf(page, a)).toHaveCount(0)
 
-    // D3: no terminal is focused on the desktop until the person clicks or uses a chord.
+    // D3: no terminal is focused on the desktop until the person clicks or uses a chord; the page
+    // dropped DOM focus too (D18), so a key has no xterm textarea to land in.
     await expect(focusedPanes(page)).toHaveCount(0)
+    await expect.poll(() => domFocusInTerminal(page)).toBe(false)
     // Keys typed now (the person is mid-sentence) go nowhere: not to B, not to C.
     await page.keyboard.type('echo leak-$((7+8))')
     await page.keyboard.press('Enter')
@@ -179,6 +190,7 @@ test('D3: a browser moves the desktop\'s pane out of its group; the desktop\'s k
     await expect(visiblePanes(page)).toHaveCount(1)
     await expect(paneOf(page, a)).toBeVisible()
     await expect(focusedPanes(page)).toHaveCount(0)
+    await expect.poll(() => domFocusInTerminal(page)).toBe(false)
 
     // Keys the desktop types without a click reach no tab at all: not A, B, C or the plain tab.
     await page.keyboard.type('echo leak-$((7+8))')
@@ -398,6 +410,7 @@ test('D18: when groups.remove from another view dissolves the group, this view s
     await expect(visiblePanes(page)).toHaveCount(1)
     await expect(paneOf(page, a)).toBeVisible()
     await expect(focusedPanes(page)).toHaveCount(0)
+    await expect.poll(() => domFocusInTerminal(page)).toBe(false)
     await page.keyboard.type('echo leak-$((7+8))')
     await page.keyboard.press('Enter')
     await page.waitForTimeout(700)
