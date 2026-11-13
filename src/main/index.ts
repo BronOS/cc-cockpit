@@ -184,6 +184,8 @@ import { revocationNotice, revocationNoticeLines } from './marketplace/marketpla
 import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
+import { electronAskUnsaved, QueuedUnsavedAsk, QuitGuard, type AskUnsaved } from './windows/unsaved-dialog'
+import { isPageTabFrame, pageTabChord } from './tabs/page-tab-keys'
 import { CLOSE, type WebFoldersRequest, type WebOpenProjectRequest } from '../shared/web-protocol'
 import type { WebSecretsStatus } from '../shared/web-access'
 import { blurSupport } from './windows/window-chrome'
@@ -598,7 +600,20 @@ function start(server: boolean): void {
     (projectId) => ({
       app: tabCommandsOf(registry.app.data.tabCommands),
       project: tabCommandsOf(registry.get(projectId)?.tabCommands)
-    })
+    }),
+    // Page tab keys of the project's plugins, for Settings › Keybindings' clashes only (the app's
+    // command wins there, page-tab-keys.ts). `enabledIds` and `plugins` exist by the time anyone asks.
+    (projectId) => {
+      if (projectId === '') return []
+      const out: Array<{ label: string; keys: readonly string[] }> = []
+      for (const id of enabledIds(projectId)) {
+        const manifest = plugins.get(id)?.manifest
+        for (const t of manifest?.contributes?.tabs ?? []) {
+          if (t.keys && t.keys.length > 0) out.push({ label: `${manifest?.name ?? id} ${t.type} tabs`, keys: t.keys })
+        }
+      }
+      return out
+    }
   )
   // Set on before-quit: from then on closing windows is not the user ending their tabs.
   let quitting = false
@@ -637,6 +652,23 @@ function start(server: boolean): void {
   // close for everyone, or keep it running hidden for them. In a test run the dialog is
   // QueuedCloseAsk, driven by the `answerWindowClose` and `windowCloseAsks` hooks.
   const testCloseAsk = testRun ? new QueuedCloseAsk() : undefined
+  // Unsaved page tab changes at a window close or a quit (windows/unsaved-dialog.ts, design-editor.md
+  // §1): a native box on the desktop, none in server mode (no close button; its quit is a stop
+  // signal; a browser's Close project asks in the page). A test run answers with QueuedUnsavedAsk,
+  // driven by the `answerUnsaved` and `unsavedAsks` hooks.
+  const testUnsavedAsk = testRun ? new QueuedUnsavedAsk() : undefined
+  const askUnsaved: AskUnsaved | undefined = server
+    ? undefined
+    : (testUnsavedAsk?.ask ??
+      electronAskUnsaved({
+        windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
+        showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
+      }))
+  /** The titles of a project window's page tabs with unsaved changes in any view. */
+  const unsavedOfWindow = (windowId: number): string[] => {
+    const projectId = windows.projectWindows().find((w) => w.windowId === windowId)?.projectId
+    return projectId === undefined ? [] : tabs.unsavedTitles(projectId)
+  }
   // Desktop views of windows kept running hidden: their own `tabs.visibility` cannot mark them
   // visible again (a hidden renderer is throttled and must never size a tab, terminal-sizes.ts);
   // only the window being shown again does.
@@ -753,6 +785,9 @@ function start(server: boolean): void {
           windowOf: (windowId) => BrowserWindow.fromId(windowId) ?? undefined,
           showMessageBox: (parent, options) => dialogs.showMessageBox(parent, options)
         })),
+    // Page tabs with unsaved changes ask before the window closes (design-editor.md §1).
+    unsavedTabs: unsavedOfWindow,
+    ...(askUnsaved ? { askUnsaved } : {}),
     // Remote desktop windows count for the picker and quit rules and for focusAny (design-remote-desktop.md §4).
     remoteWindowCount: () => remote?.windows.count() ?? 0,
     focusRemoteWindow: () => remote?.windows.focusAny() ?? false,
@@ -1254,14 +1289,34 @@ function start(server: boolean): void {
     if (isOffscreenWindow(win) || isRemoteWindow(win)) return
     const windowId = win.id
     win.webContents.on('before-input-event', (event, input) => {
-      if (overlays.topKind(windowId) === undefined) return
-      if (overlays.handleChord(windowId, chordOfInput(input))) event.preventDefault()
+      if (overlays.topKind(windowId) !== undefined && overlays.handleChord(windowId, chordOfInput(input))) {
+        event.preventDefault()
+        return
+      }
+      // A page tab's frame has the keyboard: the app's chords go to the shell (page-tab-keys.ts,
+      // design-editor.md §1 "Keyboard"). Not in server mode: the hidden page mounts no page tab.
+      if (server || !isPageTabFrame(win.webContents.focusedFrame)) return
+      const handled = pageTabChord(
+        {
+          commandFor: (w, c) => commandForChord(w, c),
+          trigger: (w, id) => views.toWindow(w, 'commands.trigger', { id })
+        },
+        windowId,
+        chordOfInput(input)
+      )
+      if (handled) event.preventDefault()
     })
     // The shell page (re)loaded: the placeholders its webview panels reported are gone with it.
     // Not in server mode: the page is the hidden page, reloaded after a crash or a failed load
     // (WindowManager {server}), whose reports the manager ignores; a reset would hide every view
     // and nothing re-reports it (the browsers' reports are separate, design-web-browser.md §3.1).
-    if (!server) win.webContents.on('did-navigate', () => webviews.resetWindow(windowId))
+    // Its page tab frames went too: what they said about unsaved changes is void (TabManager).
+    if (!server) {
+      win.webContents.on('did-navigate', () => {
+        webviews.resetWindow(windowId)
+        tabs.clearViewDirty(desktopViewId(windowId))
+      })
+    }
   })
 
   // Zone layout: the project's stored layout reconciled with the panels that exist (core ones now,
@@ -2682,7 +2737,13 @@ function start(server: boolean): void {
       return entry ? pluginFileUrl(page.plugin, entry.page) : undefined
     },
     connect: (projectId, viewId, tabId, nonce) => panelPorts.connectPageTab(projectId, viewId, tabId, nonce),
-    disconnect: (projectId, viewId, tabId) => panelPorts.disconnectPageTab(projectId, viewId, tabId),
+    disconnect: (projectId, viewId, tabId) => {
+      panelPorts.disconnectPageTab(projectId, viewId, tabId)
+      // The frame's page is gone, with whatever it had not saved: not dirty in this view any more.
+      tabs.setPageDirty(projectId, tabId, viewId, false)
+    },
+    dirty: (projectId, viewId, tabId, dirty) => tabs.setPageDirty(projectId, tabId, viewId, dirty),
+    unsaved: (projectId) => tabs.unsavedTitles(projectId),
     server
   })
   registerSlotHandlers(router, {
@@ -3132,6 +3193,12 @@ function start(server: boolean): void {
             testCloseAsk?.answer(...answers)
           },
           windowCloseAsks: () => testCloseAsk?.asks() ?? [],
+          // Unsaved page tab changes at a window close or quit: queued answers (true discards; none
+          // is Cancel for a window, Discard for a quit) and what was asked.
+          answerUnsaved: (...answers: boolean[]) => {
+            testUnsavedAsk?.answer(...answers)
+          },
+          unsavedAsks: () => testUnsavedAsk?.asks() ?? [],
           // ctx.files.trash's confirm, the same way: queued answers (none denies) and what it said.
           answerTrash: (...answers: boolean[]) => {
             testTrashConfirm?.answer(...answers)
@@ -3197,7 +3264,25 @@ function start(server: boolean): void {
   // macOS). Without a listener Electron quits by itself once the last project window closes,
   // racing the manager that replaces that window with the picker.
   app.on('window-all-closed', () => {})
-  app.on('before-quit', () => {
+  const quitGuard = askUnsaved
+    ? new QuitGuard({
+        unsaved: () => windows.projectWindows().flatMap((w) => tabs.unsavedTitles(w.projectId)),
+        windowId: () => {
+          const focused = BrowserWindow.getFocusedWindow()
+          return focused && windows.projectWindows().some((w) => w.windowId === focused.id) ? focused.id : undefined
+        },
+        ask: askUnsaved,
+        quit: () => app.quit(),
+        log: warnLog
+      })
+    : undefined
+  app.on('before-quit', (event) => {
+    // Unsaved page tab changes ask first (desktop only; windows/unsaved-dialog.ts). Stopped here, the
+    // quit has not begun: nothing below ran, and Discard quits again through this listener.
+    if (quitGuard?.beforeQuit()) {
+      event.preventDefault()
+      return
+    }
     quitting = true
     // Before the windows close and kill the tabs: nothing from here on may overwrite the saved tabs.
     restorer.freeze()

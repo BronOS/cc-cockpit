@@ -67,7 +67,9 @@ so a person chooses to install or link it.
 - `tabs` (needs `main`): page-tab types, tabs in the main tab bar whose content is your page (the
   editor's file tabs). Each entry is `type` (`^[a-z][a-z0-9-]{0,63}$`, unique), `page` (an `.html`
   page) and optional `keys` (up to 32 chords the page takes while it has focus; the app's own
-  chords and the person's overrides still win). At most 10 types. The app loads the page the
+  chords and the person's overrides still win: Cmd/Ctrl/Alt chords of the app's key table typed in
+  the page run the app's command and never reach the page, and a declared key the table also holds
+  is shown as a clash in Settings › Keybindings). At most 10 types. The app loads the page the
   manifest names for a type, never one the host names. A tab's title is cut to 80 characters, its
   params are plain JSON up to 4 KiB, at most 64 page tabs per plugin per project. Page tabs are
   saved and come back at the next start while the plugin is installed, on in the project and still

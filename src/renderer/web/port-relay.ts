@@ -342,6 +342,11 @@ export class FrameLoads {
 
   /** The theme changed: the served page gets it (a page the guard did not serve gets nothing). */
   themeChanged(message: object): void {
+    this.postServed(message)
+  }
+
+  /** Post `message` to the page this served (a page tab's new key list); a page the guard did not serve gets nothing. */
+  postServed(message: object): void {
     if (this.o.guard && !this.served) return
     this.o.target.post(message)
   }

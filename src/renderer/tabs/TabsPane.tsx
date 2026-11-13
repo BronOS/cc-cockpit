@@ -13,6 +13,7 @@ import {
   runCommand,
   runnableCommands,
   setCommands,
+  setForwardedRunner,
   tabCommandHandlers
 } from '../commands/keybindings'
 import { ipcErrorMessage } from '../ipc-error'
@@ -20,7 +21,7 @@ import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
-import { currentShellChrome, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
+import { currentShellChrome, isServerView, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
@@ -29,9 +30,9 @@ import { UpdateNotice } from '../updates/UpdateNotice'
 import { useLayout } from '../zones/use-layout'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
-import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
+import { closeAnswer, closeMayAsk, closeQuestion, type CloseQuestion } from './close-confirm'
 import { UnlistedCloseAsks } from './close-ask-wait'
-import { CloseTabDialog } from './CloseTabDialog'
+import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
 import { TabBar } from './TabBar'
 import { TabSwitcher } from './TabSwitcher'
@@ -463,7 +464,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       done?.(false, true)
       return
     }
-    if (!tab || !tabIsRunning(tab)) {
+    if (!tab || !closeMayAsk(tab)) {
       finish()
       return
     }
@@ -893,11 +894,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       swallow.current.clear()
     }
     window.addEventListener('blur', onBlur)
-    // A chord typed into a webview panel's page, resolved by main (auto-repeats never come).
+    // A chord typed into a webview panel's page or a page tab's frame, resolved by main (auto-repeats
+    // never come).
     const offTrigger = window.cockpit.on('commands.trigger', ({ id }) => {
       // Not fromKey: a switch chord from a web panel's page opens the switcher sticky, since the
       // modifier may be up before the chord got here.
       if (typeof id === 'string' && allowed(id)) runCommand(id)
+    })
+    // The web shell's page tabs forward the app's chords themselves (page-frames.ts): the same gate.
+    const offForwarded = setForwardedRunner((id) => {
+      if (allowed(id)) runCommand(id)
     })
     // Plugin commands run in this window's plugin host, through main; they come and go with the
     // plugins (registered after the host activates, gone when it stops): `commands.updated`. The
@@ -934,6 +940,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       updated = true
       off()
       offTrigger()
+      offForwarded()
       offUpdated()
       offPlugin()
       window.removeEventListener('keydown', onKey, true)
@@ -1022,7 +1029,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onCancel={() => endSwitcher(undefined)}
         />
       )}
-      {confirm && (
+      {confirm && confirm.unsaved && isServerView() && (
+        <CloseTabApproval key={confirm.tabId} question={confirm} onAnswer={(choice) => answerClose(confirm.tabId, choice, false)} />
+      )}
+      {confirm && !(confirm.unsaved && isServerView()) && (
         <CloseTabDialog
           key={confirm.tabId}
           question={confirm}

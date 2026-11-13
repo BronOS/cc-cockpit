@@ -16,6 +16,7 @@ import { fitBounds, sanitizeBounds, type Rect } from './window-bounds'
 import { OPAQUE_LOOK, type ProjectWindowLook } from './window-chrome'
 import type { DesktopViewSink, ViewRegistry } from '../views/view-registry'
 import type { AskClose, CloseChoice } from './close-dialog'
+import type { AskUnsaved } from './unsaved-dialog'
 import { warnLog } from '../warn-log'
 
 export type { Rect } from './window-bounds'
@@ -173,6 +174,17 @@ export interface WindowManagerOptions {
    * close goes ahead, as before web access.
    */
   askClose?: AskClose
+  /**
+   * The titles of the window's page tabs with unsaved changes in any view (TabManager.unsavedTitles),
+   * design-editor.md §1 "Dirty and close". Absent or empty: nothing unsaved to ask about.
+   */
+  unsavedTabs?: (windowId: number) => readonly string[]
+  /**
+   * Asks whether closing the window may discard those changes (unsaved-dialog.ts). Asked after the
+   * remote devices' question when that was answered "Close for everyone" (Keep running keeps the
+   * pages), or alone. Absent: no ask (server mode, tests that do not look at it).
+   */
+  askUnsaved?: AskUnsaved
   /**
    * A project window was hidden (kept running for a browser) or shown again. index.ts marks its
    * desktop view hidden for the terminal sizes: a hidden renderer is throttled, and a size nobody
@@ -626,7 +638,13 @@ export class WindowManager {
     if (this.options.server) return false
     const ask = this.options.askClose
     const devices = this.options.remoteDevices?.(handle.id) ?? []
-    if (!ask || devices.length === 0) return false
+    if (!ask || devices.length === 0) {
+      // No browser has it open: only unsaved page tabs ask (design-editor.md §1).
+      if (!this.unsavedWillAsk(handle)) return false
+      this.asking.add(handle)
+      this.askUnsavedThenClose(projectId, handle)
+      return true
+    }
     this.asking.add(handle)
     const answered = (choice: CloseChoice): void => this.closeAnswered(projectId, handle, choice)
     ask(handle.id, devices).then(answered, (err: unknown) => {
@@ -637,11 +655,43 @@ export class WindowManager {
     return true
   }
 
+  /** Closing `handle` now would discard unsaved page tab changes, and there is a box to ask with. */
+  private unsavedWillAsk(handle: WindowHandle): boolean {
+    return this.options.askUnsaved !== undefined && (this.options.unsavedTabs?.(handle.id) ?? []).length > 0
+  }
+
+  /**
+   * Ask about the window's unsaved page tabs, then close it on Discard; Cancel leaves it open. The
+   * window stays in `asking` until the answer, so a second click on the close button waits for it.
+   */
+  private askUnsavedThenClose(projectId: string, handle: WindowHandle): void {
+    const titles = this.options.unsavedTabs?.(handle.id) ?? []
+    const answered = (discard: boolean): void => {
+      this.asking.delete(handle)
+      // Closed meanwhile (a quit, a server close): the answer is about a window that is gone.
+      if (this.quitting || this.projects.get(projectId) !== handle) return
+      if (!discard) return
+      this.closing.add(handle)
+      handle.close()
+    }
+    this.options.askUnsaved!(handle.id, titles, 'window').then(answered, (err: unknown) => {
+      // As the devices' dialog: a box that cannot be shown must not leave a window nobody can close.
+      this.logLine(`unsaved changes dialog failed: ${errorText(err)}`)
+      answered(true)
+    })
+  }
+
   private closeAnswered(projectId: string, handle: WindowHandle, choice: CloseChoice): void {
     this.asking.delete(handle)
     // Closed meanwhile (a quit closes it without asking): the answer is about a window that is gone.
     if (this.quitting || this.projects.get(projectId) !== handle) return
     if (choice === 'everyone') {
+      // Closing for everyone ends the pages too: unsaved changes in any of them ask once more.
+      if (this.unsavedWillAsk(handle)) {
+        this.asking.add(handle)
+        this.askUnsavedThenClose(projectId, handle)
+        return
+      }
       this.closing.add(handle)
       handle.close()
     } else if (choice === 'keep') {

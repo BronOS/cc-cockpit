@@ -32,6 +32,7 @@ export function KeybindingsPage(): React.JSX.Element {
 
   const rows = data ? fuzzyFilter(data.keys, filter) : []
   const conflicts = data ? data.keys.filter((k) => k.conflictsWith.length > 0) : []
+  const pageClashes = data ? data.keys.filter((k) => (k.pageKeys?.length ?? 0) > 0) : []
 
   return (
     <section aria-label="Keybindings">
@@ -47,6 +48,12 @@ export function KeybindingsPage(): React.JSX.Element {
               {conflicts.length === 1 ? '1 command shares' : `${conflicts.length} commands share`} a key with another. A
               chord that your own override and a default both claim goes to your override; otherwise it fires
               neither.
+            </p>
+          )}
+          {pageClashes.length > 0 && (
+            <p className="settings-alert warn">
+              {pageClashes.length === 1 ? '1 command uses' : `${pageClashes.length} commands use`} a key that a plugin&apos;s
+              tabs want for themselves. The command wins, also inside those tabs; give it another key to let the tab have it.
             </p>
           )}
           <div className="settings-card">
@@ -135,6 +142,9 @@ function KeyRow(props: {
             Also bound to {row.conflictsWith.join(', ')}
             {row.inactive ? ': this one does not fire.' : '.'}
           </div>
+        )}
+        {row.pageKeys && row.pageKeys.length > 0 && (
+          <div className="settings-sub warn">Also a key of {row.pageKeys.join(', ')}: this command wins there.</div>
         )}
       </div>
       <div className="settings-item-actions">

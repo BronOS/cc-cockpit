@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { TabInfo } from '../../shared/ipc'
+import { PAGE_TAB_FRAME_NAME } from '../../shared/page-tabs'
+import { forwardedChords, onKeyTable, runForwardedChord } from '../commands/keybindings'
 import { requestPageTabPort } from '../plugins/panel-port-bus'
 import { portMessage, themeMessage } from '../plugins/frame-messages'
 import { isWebShell } from '../shell-kind'
@@ -43,9 +45,12 @@ function createFrame(title: string): PageFrameElement {
   const iframe = document.createElement('iframe')
   iframe.className = 'page-tab-frame'
   iframe.title = title
+  // How main tells a page tab's frame on the desktop (before-input-event, page-tab-keys.ts).
+  iframe.name = PAGE_TAB_FRAME_NAME
   iframe.setAttribute('sandbox', 'allow-scripts')
   iframe.hidden = true
   layerElement().appendChild(iframe)
+  const messageListeners: Array<(event: MessageEvent) => void> = []
   return {
     load: (url) => {
       iframe.src = url
@@ -61,8 +66,20 @@ function createFrame(title: string): PageFrameElement {
       return true
     },
     onLoad: (listener) => iframe.addEventListener('load', listener),
-    remove: () => iframe.remove(),
-    focus: () => iframe.focus()
+    remove: () => {
+      for (const l of messageListeners.splice(0)) window.removeEventListener('message', l)
+      iframe.remove()
+    },
+    focus: () => iframe.focus(),
+    // Only this frame's own window (a sandboxed page's origin is opaque: the source is the check).
+    onMessage: (listener) => {
+      const l = (event: MessageEvent): void => {
+        if (iframe.contentWindow !== null && event.source === iframe.contentWindow) listener(event.data)
+      }
+      messageListeners.push(l)
+      window.addEventListener('message', l)
+    },
+    hasFocus: () => document.activeElement === iframe && document.hasFocus()
   }
 }
 
@@ -94,6 +111,14 @@ export function pageFrames(): PageFrames {
     },
     guard: isWebShell(),
     portMessage: portMessage(),
+    reportDirty: (tabId, dirty) => {
+      window.cockpit.invoke('pageTabs.dirty', { tabId, dirty }).catch((err: unknown) => console.warn(`pageTabs.dirty ${tabId} failed`, err))
+    },
+    // The web shell's pages forward the app's chords (no before-input-event there); the desktop lists none.
+    keys: () => (isWebShell() ? forwardedChords() : undefined),
+    chord: (chord) => {
+      runForwardedChord(chord)
+    },
     theme: () => {
       const theme = currentTheme()
       return theme ? themeMessage(theme, isMac) : undefined
@@ -101,6 +126,7 @@ export function pageFrames(): PageFrames {
     log: (m) => console.warn(m)
   })
   onTheme((theme) => pool.themeChanged(themeMessage(theme, isMac)))
+  if (isWebShell()) onKeyTable(() => pool.keysChanged())
   frames = pool
   return pool
 }

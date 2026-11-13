@@ -72,6 +72,15 @@ export interface PluginCommandDef {
   key?: string
 }
 
+/**
+ * The keys page tabs of one type declare (manifest `contributes.tabs` `keys`), for the keybinding
+ * editor's conflicts (design-editor.md §1 "Keyboard"). `label` names them ("Editor file tabs").
+ */
+export interface PageTabKeys {
+  label: string
+  keys: readonly string[]
+}
+
 export class CommandRegistry {
   /** projectId -> full command id -> definition. */
   private readonly plugin = new Map<string, Map<string, CommandDef>>()
@@ -86,7 +95,13 @@ export class CommandRegistry {
      * with nothing to register. Must not throw: it is also asked for '' (the picker, no focused
      * window), and for a project whose record is gone; give the app-wide entries and no project ones.
      */
-    private readonly tabCommands: (projectId: string) => TabCommandEntries = () => ({ app: [], project: [] })
+    private readonly tabCommands: (projectId: string) => TabCommandEntries = () => ({ app: [], project: [] }),
+    /**
+     * The page tab keys of a project's plugins, read at every `bindings` like the rest. Never part of
+     * the table: the app's command wins a chord both hold, and a page's own keys reach it only while
+     * it has focus; this only shows the clash. Must not throw (asked for '' too).
+     */
+    private readonly pageTabKeys: (projectId: string) => readonly PageTabKeys[] = () => []
   ) {}
 
   /** Everything this project's table holds: core, the menu entries, the plugins' commands. */
@@ -173,6 +188,17 @@ export class CommandRegistry {
     const defs = this.defs(projectId)
     const resolved = resolveKeys(keyed(defs), overrides, this.platform)
     const titles = new Map(defs.map((d) => [d.id, d.title]))
+    // chord -> the page tab kinds that declare it (written for macOS like every manifest chord).
+    const pageKeys = new Map<string, string[]>()
+    for (const p of this.pageTabKeys(projectId)) {
+      for (const raw of p.keys) {
+        const chord = normalizeChord(raw, this.platform)
+        if (chord === null) continue
+        const list = pageKeys.get(chord) ?? []
+        if (!list.includes(p.label)) list.push(p.label)
+        pageKeys.set(chord, list)
+      }
+    }
     return defs.map((d) => {
       const key = resolved.keys.get(d.id)
       const defaultKey = d.key === undefined ? undefined : normalizeChord(d.key, this.platform)
@@ -188,6 +214,8 @@ export class CommandRegistry {
       }
       if (defaultKey) row.defaultKey = defaultKey
       if (key !== undefined) row.key = key
+      const pages = key === undefined ? undefined : pageKeys.get(key)
+      if (pages) row.pageKeys = [...pages]
       return row
     })
   }

@@ -13,7 +13,9 @@
 //                                        or an overlay (setWidth: the top bar's frame only)
 //   ccPanel.onConnect(fn)                fn runs on every new connection to the plugin; a page tab
 //                                        gets more than one (never reloaded for one): re-send there
-//   ccPanel.tab                          only when the page is drawn as a page tab (contributes.tabs): { type }
+//   ccPanel.tab                          only when the page is drawn as a page tab (contributes.tabs):
+//                                        { type, setDirty(bool) } (unsaved changes in this view: the
+//                                        dirty dot and core's close ask; a report, never a veto)
 //   ccPanel.ready()                      an html overlay's page has drawn: the app's loader goes
 //                                        (needed with `ready: 'manual'`; harmless elsewhere)
 //   ccPanel.view.remote                  the page is drawn in a web access browser view (the shell
@@ -59,5 +61,18 @@ window.addEventListener('message', (event: MessageEvent) => {
   if (event.source !== window.parent || window.parent === window) return
   client.receive(event.data, event.ports as readonly MessagePort[] as readonly PortLike[])
 })
+
+// A page tab in the web shell: the app's chords (Ctrl+Alt+W, Ctrl+Alt+Tab...) go to the shell, not the
+// page (design-editor.md §1 "Keyboard"). Capture phase on the window, added before any page script
+// runs, so the page's own handlers never see them. The desktop lists none: main takes them first.
+window.addEventListener(
+  'keydown',
+  (event: KeyboardEvent) => {
+    if (!client.keyDown(event)) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  },
+  true
+)
 
 Object.defineProperty(window, 'ccPanel', { value: client.api, enumerable: true })

@@ -19,6 +19,15 @@
 //   socket drained; FrameLoads reconnects on it (renderer/web/port-relay.ts).
 // - Server mode's hidden page: main answers `pageTabs.src` with null there, so nothing mounts.
 //
+// Dirty (design-editor.md §1 "Dirty and close", Task 3): a page says it holds unsaved changes with
+// `ccPanel.tab.setDirty` (`cc-plugin.tab-dirty` to its parent, read only from that frame's window);
+// the pool keeps it for this view, tells main (`pageTabs.dirty`, kept per view there), never lets the
+// LRU unmount such a frame, and says it again after a web reconnect (main dropped the old view's).
+//
+// Keys (§1 "Keyboard"): in the web shell the intro lists the app's chords (`keys`), the page's SDK
+// forwards them (`cc-plugin.tab-key`), and the pool hands a chord on only from the frame that has
+// the keyboard. On the desktop no list is sent: main takes the chords before the frame gets them.
+//
 // Each frame is an iframe sandboxed with `allow-scripts` only, as PluginFrame's, loaded and served
 // by FrameLoads (the web shell's navigation guard included): the theme on every served load, then
 // the `cc-plugin.tab` intro and the port. Moving an iframe in the document reloads it, which is why
@@ -28,7 +37,7 @@
 // fakes in plain Node.
 
 import type { TabInfo } from '../../shared/ipc'
-import { TAB_MESSAGE } from '../../sdk/panel-core'
+import { TAB_DIRTY_MESSAGE, TAB_KEY_MESSAGE, TAB_MESSAGE } from '../../sdk/panel-core'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
 
 /**
@@ -52,6 +61,10 @@ export interface PageFrameElement {
   remove(): void
   /** Give it the keyboard (the tab was selected, or a dialog over it went). */
   focus(): void
+  /** What its page posts to the shell (`event.source` is this frame's window; nothing else). */
+  onMessage(listener: (data: unknown) => void): void
+  /** It has the keyboard now (the document's active element). */
+  hasFocus(): boolean
 }
 
 /** A page tab as the pool needs it: main's id, its plugin (for a host restart), its manifest type and title. */
@@ -79,8 +92,17 @@ export interface PageFramesOptions {
   portMessage: object
   /** The theme message for a page now; undefined: no theme yet. */
   theme(): object | undefined
-  /** A frame the LRU must not unmount (a page with unsaved text, Task 3). */
+  /** A frame the LRU must not unmount, besides the dirty ones (which it never unmounts). */
   keep?(tabId: string): boolean
+  /** The tab's page in this view holds unsaved changes or not (`pageTabs.dirty`). */
+  reportDirty?(tabId: string, dirty: boolean): void
+  /**
+   * The app's chords a page forwards (web shell: the key table's), sent with each intro; undefined:
+   * none (the desktop, where main takes them in `before-input-event`).
+   */
+  keys?(): readonly string[] | undefined
+  /** A forwarded chord typed in the focused page tab: the shell runs its command (through its gate). */
+  chord?(chord: string): void
   maxLive?: number
   log?(message: string): void
 }
@@ -105,6 +127,8 @@ export class PageFrames {
   private readonly none = new Set<string>()
   private shown: string | null = null
   private readonly max: number
+  /** Tabs whose page here said it holds unsaved changes (and has not said otherwise since). */
+  private readonly dirty = new Set<string>()
 
   constructor(private readonly o: PageFramesOptions) {
     this.max = Math.max(1, o.maxLive ?? MAX_LIVE_PAGE_FRAMES)
@@ -154,6 +178,8 @@ export class PageFrames {
   reconnect(pluginIds?: readonly string[]): void {
     const of = (plugin: string): boolean => pluginIds === undefined || pluginIds.includes(plugin)
     for (const l of this.live) if (of(l.tab.plugin)) l.frame?.loads.reconnect()
+    // A web reconnect is a new view to main, which dropped what the old one said: say it again.
+    if (pluginIds === undefined) for (const id of this.dirty) this.report(id, true)
     let retry = false
     for (const id of [...this.none]) {
       const tab = this.tabs.get(id)
@@ -167,6 +193,16 @@ export class PageFrames {
   /** The tab's frame takes the keyboard, when it is mounted (TabsPane's focusActive). */
   focus(tabId: string): void {
     this.live.find((l) => l.tab.id === tabId)?.frame?.element.focus()
+  }
+
+  /** The app's key table changed: every served page gets the new list with its intro. */
+  keysChanged(): void {
+    for (const l of this.live) l.frame?.loads.postServed(this.intro(l.tab))
+  }
+
+  /** Whether this view's page of the tab said it holds unsaved changes. */
+  isDirty(tabId: string): boolean {
+    return this.dirty.has(tabId)
   }
 
   /** The theme changed: every served page gets it. */
@@ -215,8 +251,6 @@ export class PageFrames {
   /** Make the frame element and its loads, and start the load (as PluginFrame's commit does). */
   private start(entry: Live, url: string): void {
     const tabId = entry.tab.id
-    // Posted before every port: the page is a page tab of that type (`ccPanel.tab`).
-    const intro = Object.freeze({ type: TAB_MESSAGE, tab: Object.freeze({ type: entry.tab.type }) })
     let element = this.element(entry, 0)
     const target: FrameTarget = {
       load: (to) => element.load(to),
@@ -235,7 +269,8 @@ export class PageFrames {
       portMessage: this.o.portMessage,
       target,
       theme: () => this.o.theme(),
-      intro: () => intro,
+      // Posted before every port: the page is a page tab of that type (`ccPanel.tab`), with the keys now.
+      intro: () => this.intro(entry.tab),
       connect: (deliver) => this.o.connect(tabId, deliver),
       log: (m) => this.o.log?.(m)
     })
@@ -249,7 +284,46 @@ export class PageFrames {
     const el = this.o.createFrame(entry.tab.title)
     el.setHidden(entry.tab.id !== this.shown)
     el.onLoad(() => entry.frame?.loads.loaded(gen))
+    el.onMessage((data) => {
+      // Only from the element in the document now (a replaced one is leaving with its page).
+      if (entry.gone || entry.frame?.element !== el) return
+      this.fromPage(entry.tab.id, el, data)
+    })
     return el
+  }
+
+  /** The intro posted before every port and again when the key table changes. */
+  private intro(tab: PageTabEntry): object {
+    const keys = this.o.keys?.()
+    return { type: TAB_MESSAGE, tab: { type: tab.type }, ...(keys ? { keys: [...keys] } : {}) }
+  }
+
+  /** A message the tab's page posted to the shell. Anything not understood is ignored. */
+  private fromPage(tabId: string, el: PageFrameElement, data: unknown): void {
+    if (typeof data !== 'object' || data === null) return
+    const { type, dirty, chord } = data as { type?: unknown; dirty?: unknown; chord?: unknown }
+    if (type === TAB_DIRTY_MESSAGE && typeof dirty === 'boolean') {
+      if (dirty === this.dirty.has(tabId)) return
+      if (dirty) this.dirty.add(tabId)
+      else this.dirty.delete(tabId)
+      this.report(tabId, dirty)
+      // A clean page may be past the cap now.
+      if (!dirty) this.trim()
+      return
+    }
+    // A chord only from the page that has the keyboard, and only one the shell listed: a page cannot
+    // run the app's commands from the background, nor any the person could not have typed here.
+    if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && tabId === this.shown && el.hasFocus()) {
+      if (this.o.keys?.()?.includes(chord) === true) this.o.chord?.(chord)
+    }
+  }
+
+  private report(tabId: string, dirty: boolean): void {
+    try {
+      this.o.reportDirty?.(tabId, dirty)
+    } catch (err) {
+      this.o.log?.(`page tab ${tabId}: reporting unsaved changes failed: ${String(err)}`)
+    }
   }
 
   /** Unmount the least recent frames past the cap, never the shown one nor one `keep` holds. */
@@ -257,7 +331,7 @@ export class PageFrames {
     let count = this.live.length
     for (let i = this.live.length - 1; i >= 0 && count > this.max; i--) {
       const l = this.live[i]!
-      if (l.tab.id === this.shown || this.o.keep?.(l.tab.id) === true) continue
+      if (l.tab.id === this.shown || this.dirty.has(l.tab.id) || this.o.keep?.(l.tab.id) === true) continue
       this.unmount(l)
       count--
     }
@@ -265,6 +339,8 @@ export class PageFrames {
 
   private unmount(entry: Live): void {
     entry.gone = true
+    // Its page goes with whatever it had not saved; main clears this view's dirty at the disconnect.
+    this.dirty.delete(entry.tab.id)
     this.live = this.live.filter((l) => l !== entry)
     if (!entry.frame) return
     entry.frame.loads.dispose()

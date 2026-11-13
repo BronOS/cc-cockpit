@@ -376,6 +376,11 @@ interface Tab {
   page?: PageTabSpec
   /** The core unseen dot (TabInfo.unseen): opened while another tab was selected, not shown since. */
   unseen?: true
+  /**
+   * Kind 'page' only: the views whose page of this tab says it holds unsaved changes
+   * (design-editor.md §1 "Dirty and close"). TabInfo.dirty while not empty; never saved.
+   */
+  dirtyIn?: Set<ViewId>
 }
 
 export class TabManager {
@@ -591,6 +596,44 @@ export class TabManager {
     if (!tab?.unseen) return undefined
     delete tab.unseen
     return info(tab)
+  }
+
+  /**
+   * `viewId`'s page of a page tab says whether it holds unsaved changes (`pageTabs.dirty`, the view
+   * main bound the sender to). Dirty is per (tab, view): one browser's unsaved buffer is not the
+   * desktop's. When the tab's dirty-in-any-view changes, every view of the project is told the tab
+   * as it is now (`tabs.added`, merged by id and generation). Anything but a page tab of the project
+   * is ignored: a report is a page's word about itself, and it can never stop a close.
+   */
+  setPageDirty(projectId: string, tabId: string, viewId: ViewId, dirty: boolean): void {
+    const tab = this.find(projectId, tabId)
+    if (!tab || tab.kind !== 'page') return
+    const was = (tab.dirtyIn?.size ?? 0) > 0
+    if (dirty) (tab.dirtyIn ??= new Set()).add(viewId)
+    else tab.dirtyIn?.delete(viewId)
+    if (tab.dirtyIn?.size === 0) delete tab.dirtyIn
+    if (was !== (tab.dirtyIn !== undefined)) this.options.emit(projectId, 'tabs.added', info(tab))
+  }
+
+  /**
+   * Everything `viewId` said about unsaved changes is void: the view left (its pages went with it) or
+   * its page reloaded (the desktop shell: its frames went). Each tab that is clean now is told.
+   */
+  clearViewDirty(viewId: ViewId): void {
+    for (const tab of this.byId.values()) {
+      if (!tab.dirtyIn?.delete(viewId)) continue
+      if (tab.dirtyIn.size > 0) continue
+      delete tab.dirtyIn
+      this.options.emit(tab.projectId, 'tabs.added', info(tab))
+    }
+  }
+
+  /**
+   * The project's page tabs dirty in any view, as their titles in tab order: what closing the
+   * window or quitting asks about (design-editor.md §1, unsaved-dialog.ts).
+   */
+  unsavedTitles(projectId: string): string[] {
+    return (this.order.get(projectId) ?? []).flatMap((t) => (t.dirtyIn !== undefined && t.page ? [t.page.title] : []))
   }
 
   /**
@@ -906,6 +949,8 @@ export class TabManager {
   /** A view is gone (a browser's connection closed): its tabs' sizes fall back to a remaining view. */
   viewGone(viewId: ViewId): void {
     this.sizes.viewGone(viewId)
+    // Its page tab frames went with it: their unsaved changes are no longer anywhere to lose.
+    this.clearViewDirty(viewId)
     // A view that left is not "the last typist" (and a reconnecting browser gets a fresh id, so its
     // own old typing would read as another device's): clear it and tell the remaining views.
     for (const tab of this.byId.values()) {
@@ -1307,6 +1352,7 @@ function info(tab: Tab): TabInfo {
   if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }
   if (tab.page) out.page = pageCopy(tab.page)
   if (tab.unseen) out.unseen = true
+  if (tab.dirtyIn !== undefined) out.dirty = true
   if (tab.command) {
     out.label = tab.command.label
     if (isPluginCommand(tab.command)) {

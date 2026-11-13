@@ -29,10 +29,12 @@ export const CLOSE_ASK_MS = 5 * 60_000
 /**
  * Whether a plugin's close of this tab will put a dialog in front of the person: the renderer asks
  * for every tab whose process is alive (close-confirm.ts `closeQuestion`, an idle Claude included)
- * while the setting is on. Main raises the window only then, so a close that never asks does not
- * pull the window forward.
+ * while the setting is on, and for a page tab with unsaved changes in any view whatever the setting
+ * (a page tab has no process). Main raises the window only then, so a close that never asks does
+ * not pull the window forward.
  */
-export function closeWillAsk(tab: { exit?: unknown }, confirmTabClose: boolean): boolean {
+export function closeWillAsk(tab: { exit?: unknown; kind?: string; dirty?: boolean }, confirmTabClose: boolean): boolean {
+  if (tab.kind === 'page') return tab.dirty === true
   return tab.exit === undefined && confirmTabClose
 }
 

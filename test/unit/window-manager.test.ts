@@ -1863,3 +1863,121 @@ describe('remote desktop windows', () => {
     expect(remote.focused).toBe(0)
   })
 })
+
+describe('window close with unsaved page tabs (design-editor.md §1 "Dirty and close")', () => {
+  interface Unsaved {
+    wm: WindowManager
+    titles: Map<number, string[]>
+    devices: Map<number, string[]>
+    asks: Array<{ windowId: number | undefined; titles: readonly string[]; kind: string; answer(discard: boolean): void; fail(err: Error): void }>
+    deviceAsks: Array<{ answer(choice: CloseChoice): void }>
+    closed: string[]
+  }
+
+  function unsaved(server = false): Unsaved {
+    const u = { titles: new Map(), devices: new Map(), asks: [], deviceAsks: [], closed: [] } as unknown as Unsaved
+    u.wm = new WindowManager({
+      factory,
+      registry,
+      platform: 'linux',
+      quit: () => quits++,
+      server,
+      onProjectClosed: (projectId) => u.closed.push(projectId),
+      remoteDevices: (windowId) => u.devices.get(windowId) ?? [],
+      askClose: () =>
+        new Promise<CloseChoice>((resolve) => {
+          u.deviceAsks.push({ answer: resolve })
+        }),
+      unsavedTabs: (windowId) => u.titles.get(windowId) ?? [],
+      askUnsaved: (windowId, titles, kind) =>
+        new Promise<boolean>((resolve, reject) => {
+          u.asks.push({ windowId, titles, kind, answer: resolve, fail: reject })
+        }),
+      log: () => {}
+    })
+    return u
+  }
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('nothing unsaved: the close goes ahead with no ask', () => {
+    const u = unsaved()
+    const a = u.wm.openPath(folder('a'))
+    factory.open('project')[0]!.userClose()
+    expect(u.asks).toHaveLength(0)
+    expect(u.closed).toEqual([a.id])
+  })
+
+  it('unsaved tabs ask, naming them; Cancel keeps the window, Discard closes it', async () => {
+    const u = unsaved()
+    const a = u.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    u.titles.set(win.id, ['a.ts', 'b.go'])
+    win.userClose()
+    expect(u.asks.map((x) => [x.windowId, x.titles, x.kind])).toEqual([[win.id, ['a.ts', 'b.go'], 'window']])
+    expect(win.closed).toBe(false)
+    // A second click while the box is up waits for the same answer.
+    win.userClose()
+    expect(u.asks).toHaveLength(1)
+    u.asks[0]!.answer(false)
+    await settle()
+    expect(win.closed).toBe(false)
+    win.userClose()
+    expect(u.asks).toHaveLength(2)
+    u.asks[1]!.answer(true)
+    await settle()
+    expect(win.closed).toBe(true)
+    expect(u.closed).toEqual([a.id])
+  })
+
+  it('a box that fails to show closes the window, as the devices dialog does', async () => {
+    const u = unsaved()
+    u.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    u.titles.set(win.id, ['a.ts'])
+    win.userClose()
+    u.asks[0]!.fail(new Error('no box'))
+    await settle()
+    expect(win.closed).toBe(true)
+  })
+
+  it('with a browser attached: Close for everyone then asks about unsaved tabs; Keep running does not', async () => {
+    const u = unsaved()
+    u.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    u.devices.set(win.id, ['Pixel'])
+    u.titles.set(win.id, ['a.ts'])
+    win.userClose()
+    expect(u.deviceAsks).toHaveLength(1)
+    expect(u.asks).toHaveLength(0)
+    u.deviceAsks[0]!.answer('keep')
+    await settle()
+    expect(u.asks).toHaveLength(0)
+    expect(win.hidden).toBe(true)
+    win.userClose()
+    u.deviceAsks[1]!.answer('everyone')
+    await settle()
+    expect(u.asks.map((x) => x.titles)).toEqual([['a.ts']])
+    expect(win.closed).toBe(false)
+    u.asks[0]!.answer(true)
+    await settle()
+    expect(win.closed).toBe(true)
+  })
+
+  it('server mode never asks (no close button; a browser asks in the page), nor does a quit', () => {
+    const u = unsaved(true)
+    u.wm.openPath(folder('a'))
+    const win = factory.open('project')[0]!
+    u.titles.set(win.id, ['a.ts'])
+    win.userClose()
+    expect(u.asks).toHaveLength(0)
+    expect(win.closed).toBe(true)
+    const v = unsaved()
+    v.wm.openPath(folder('b'))
+    const win2 = factory.open('project').at(-1)!
+    v.titles.set(win2.id, ['b.ts'])
+    v.wm.beginQuit()
+    win2.userClose()
+    expect(v.asks).toHaveLength(0)
+    expect(win2.closed).toBe(true)
+  })
+})

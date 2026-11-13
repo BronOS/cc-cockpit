@@ -1237,10 +1237,38 @@ describe('registerPageTabHandlers', () => {
         return true
       },
       disconnect: (projectId, viewId, tabId) => void calls.push(['disconnect', projectId, viewId, tabId]),
+      dirty: (projectId, viewId, tabId, dirty) => void calls.push(['dirty', projectId, viewId, tabId, dirty]),
+      unsaved: (projectId) => {
+        calls.push(['unsaved', projectId])
+        return ['a.ts']
+      },
       server
     })
     return { ipc, router, calls }
   }
+
+  it('dirty: per sender view, a boolean only; unsaved: the sender project', async () => {
+    const { ipc, router, calls } = pageTabs(false)
+    await expect(ipc.invoke('pageTabs.dirty', 11, [{ tabId: TAB, dirty: true, viewId: 'web:9', projectId: PROJECT_B }])).resolves.toBeNull()
+    await expect(ipc.invoke('pageTabs.dirty', 11, [{ tabId: TAB, dirty: 'yes' }])).rejects.toThrow(/boolean/)
+    await expect(ipc.invoke('pageTabs.unsaved', 12, [])).resolves.toEqual(['a.ts'])
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'pageTabs.dirty', { tabId: TAB, dirty: false })
+    expect(calls).toEqual([
+      ['dirty', PROJECT_A, 'desktop:1', TAB, true],
+      ['unsaved', PROJECT_B],
+      ['dirty', PROJECT_A, 'web:4', TAB, false]
+    ])
+  })
+
+  it("server mode: the hidden page's dirty report is ignored, a browser's counts", async () => {
+    const { ipc, router, calls } = pageTabs(true)
+    await expect(ipc.invoke('pageTabs.dirty', 11, [{ tabId: TAB, dirty: true }])).resolves.toBeNull()
+    expect(calls).toEqual([])
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'pageTabs.dirty', { tabId: TAB, dirty: true })
+    expect(calls).toEqual([['dirty', PROJECT_A, 'web:4', TAB, true]])
+  })
 
   it("passes the sender's project and view on with the tab id, refusing junk first", async () => {
     const { ipc, router, calls } = pageTabs(false)

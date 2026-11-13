@@ -47,9 +47,10 @@ const FORBIDDEN = [
   // An IPC event's sender is a WebContents too, and `event.reply` sends through it.
   /\bsender\s*\??\.\s*(send|postMessage)\s*\(/,
   /\.\s*reply\s*\(/,
-  // A `.webContents` access may only read the id, focus the page or listen: anything else (a
-  // `send`, `?.send`, an alias `= win.webContents`, a member on the next line) is refused.
-  /\??\.\s*webContents\b(?!\s*\??\.\s*(id\b|focus\s*\(|on\s*\())/
+  // A `.webContents` access may only read the id or the focused frame (which frame has the keyboard,
+  // page-tab-keys.ts), focus the page or listen: anything else (a `send`, `?.send`, an alias
+  // `= win.webContents`, a member on the next line) is refused.
+  /\??\.\s*webContents\b(?!\s*\??\.\s*(id\b|focusedFrame\b|focus\s*\(|on\s*\())/
 ]
 
 function sources(dir: string): string[] {

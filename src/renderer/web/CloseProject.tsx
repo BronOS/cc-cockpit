@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { unsavedText } from './close-project-text'
 import { ipcErrorMessage } from '../ipc-error'
 import { ApprovalDialog } from '../notices/ApprovalDialog'
 import { CloseGlyph } from '../window-icons'
@@ -13,6 +14,9 @@ import { CloseGlyph } from '../window-icons'
  */
 export function CloseProjectButton({ name }: { name: string }): React.JSX.Element {
   const [asking, setAsking] = useState(false)
+  // The page tabs with unsaved changes in any view, read as the ask opens: they are lost with the
+  // project's pages (design-editor.md §1 "Dirty and close"). A failed read asks without them.
+  const [unsaved, setUnsaved] = useState<string[]>([])
   const [error, setError] = useState<string | undefined>(undefined)
   const onAnswer = (close: boolean): void => {
     setAsking(false)
@@ -33,7 +37,13 @@ export function CloseProjectButton({ name }: { name: string }): React.JSX.Elemen
         title="Close project"
         onClick={() => {
           setError(undefined)
-          setAsking(true)
+          window.cockpit
+            .invoke('pageTabs.unsaved')
+            .catch(() => [])
+            .then((titles) => {
+              setUnsaved(titles)
+              setAsking(true)
+            })
         }}
       >
         <CloseGlyph />
@@ -41,6 +51,7 @@ export function CloseProjectButton({ name }: { name: string }): React.JSX.Elemen
       {asking && (
         <ApprovalDialog title={<CloseProjectTitle name={name} />} allowLabel="Close project" denyLabel="Cancel" onAnswer={onAnswer}>
           <p>Its tabs end.</p>
+          {unsaved.length > 0 && <p>{unsavedText(unsaved)}</p>}
         </ApprovalDialog>
       )}
     </>

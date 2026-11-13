@@ -28,6 +28,15 @@ export interface PageTabContribution {
   keys?: string[]
 }
 
+/**
+ * The `name` of every page tab iframe the shell makes (PageTabArea.tsx). Main tells a page tab's frame
+ * from the shell page and the other plugin frames by it in `before-input-event` (design-editor.md §1
+ * "Keyboard"), to send the app's chords typed there to the shell. A page may rename its own window:
+ * that only stops the forwarding for itself, and a panel naming itself so only gets the chords the
+ * shell would have run anyway, through the shell's own command gate.
+ */
+export const PAGE_TAB_FRAME_NAME = 'cc-page-tab'
+
 /** At most this many `contributes.tabs` entries per plugin. */
 export const MAX_PAGE_TAB_TYPES = 10
 /** At most this many chords in one entry's `keys`. */

@@ -115,14 +115,14 @@ External review: sol / high
 - Modify: `src/main/index.ts` (frame `before-input-event`), `src/sdk/panel.ts` (chord forwarding), `src/renderer/commands/`
 - Create: `test/unit/page-tab-close.test.ts`, `test/unit/page-tab-keys.test.ts`
 
-- [ ] dirty per (tab, view) kept by main from page reports; cleared when a view goes away
-- [ ] closing a tab dirty in any view asks with core's dialog (`ApprovalDialog` in server mode), also on window close
+- [x] dirty per (tab, view) kept by main from page reports; cleared when a view goes away
+- [x] closing a tab dirty in any view asks with core's dialog (`ApprovalDialog` in server mode), also on window close
   and quit; the page cannot block a close
-- [ ] desktop: app chords from a page frame through `before-input-event` → `commands.trigger`; web: SDK forwards chords
-- [ ] precedence: the app table and `keyOverrides` win; a page's declared `keys` go to the page while it has focus;
+- [x] desktop: app chords from a page frame through `before-input-event` → `commands.trigger`; web: SDK forwards chords
+- [x] precedence: the app table and `keyOverrides` win; a page's declared `keys` go to the page while it has focus;
   conflicts shown in the keybinding editor
-- [ ] write tests for dirty per view, close and quit asks, routing and precedence
-- [ ] run tests - must pass before next task
+- [x] write tests for dirty per view, close and quit asks, routing and precedence
+- [x] run tests - must pass before next task
 
 ### Task 4: Plugin API `ctx.tabs` and Discuss for page tabs [model: opus]
 

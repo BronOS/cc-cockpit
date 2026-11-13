@@ -742,6 +742,12 @@ export interface KeyBindingRow {
   conflictsWith: string[]
   /** The chord does not fire this command: another claimant outranks it, or nobody wins. */
   inactive: boolean
+  /**
+   * Page tabs that declare this row's chord as one of their own keys (manifest `contributes.tabs`
+   * `keys`), as "<plugin name> <type> tabs". The app's command wins there (design-editor.md §1
+   * "Keyboard"); absent when none does.
+   */
+  pageKeys?: string[]
 }
 
 /**
@@ -1177,6 +1183,15 @@ export interface IpcInvokeMap {
   'pageTabs.connect': { req: { tabId: string; nonce: number }; res: boolean }
   /** The shell unmounted a page tab's frame (the tab closed, or its frame left the live set): the plugin hears the close. */
   'pageTabs.disconnect': { req: { tabId: string }; res: null }
+  /**
+   * A page tab's page in this view says whether it holds unsaved changes (`ccPanel.tab.setDirty`,
+   * design-editor.md §1 "Dirty and close"). Main keeps it per (tab, view), the view being the sender,
+   * and the tab is dirty (TabInfo.dirty, told as `tabs.added`) while any view says so. Cleared when the
+   * view goes or unmounts the frame. Only a report: nothing a page says can stop or delay a close.
+   */
+  'pageTabs.dirty': { req: { tabId: string; dirty: boolean }; res: null }
+  /** The titles of this project's page tabs with unsaved changes in any view (server mode's Close project asks with them). */
+  'pageTabs.unsaved': { req: void; res: string[] }
   /**
    * A plugin's html settings page (design-next §5.4) for this window's project: null when the plugin
    * declares no page for `scope`; `enabled: false` when it does not run in this project (the page
@@ -1868,6 +1883,8 @@ export const INVOKE_CHANNELS = [
   'pageTabs.src',
   'pageTabs.connect',
   'pageTabs.disconnect',
+  'pageTabs.dirty',
+  'pageTabs.unsaved',
   'settingsPage.info',
   'settingsPage.connect',
   'settingsPage.disconnect',
@@ -2158,6 +2175,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'pageTabs.src': 'yes',
   'pageTabs.connect': 'yes',
   'pageTabs.disconnect': 'yes',
+  // A view reports its own frame's state (main binds the view); the hidden page's report is ignored.
+  'pageTabs.dirty': 'yes',
+  // Read-only, the sender's project: what a browser's Close project names before it asks.
+  'pageTabs.unsaved': 'yes',
   'settingsPage.info': 'yes',
   'settingsPage.connect': 'yes',
   'settingsPage.disconnect': 'yes',

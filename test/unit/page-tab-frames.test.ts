@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { PanelPortHub, type PanelPortDeps, type PageTabRecord } from '../../src/main/plugins/panel-ports'
 import { PortRelay as MainPortRelay, RELAY_DRAIN_CHECK_MS, RELAY_HIGH_WATER, RELAY_LOW_WATER } from '../../src/main/web/port-relay'
 import { FrameLoads, PortRelay as BrowserPortRelay, type FrameTarget } from '../../src/renderer/web/port-relay'
-import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement, type PageFramesOptions, type PageTabEntry } from '../../src/renderer/tabs/page-frames'
+import { ReadyReconnects, layerBox, pageTabEntries } from '../../src/renderer/tabs/page-frames'
 import { pageTabMarks } from '../../src/renderer/tabs/tab-label'
 import type { TabInfo } from '../../src/shared/ipc'
 import { PanelClient, PORT_MESSAGE, TAB_MESSAGE, type PortLike, type ThemeRoot } from '../../src/sdk/panel-core'
@@ -16,89 +16,7 @@ import { isPageTabPortKey, pageTabPortKey } from '../../src/shared/page-tabs'
 import { PANEL_PORT_CHANNEL } from '../../src/shared/ipc'
 import { channel, FakePort } from '../fakes/fake-main-port'
 
-const TAB_A = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4a'
-const TAB_B = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4b'
-const TAB_C = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4c'
-const TAB_D = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4d'
-
-const settle = async (): Promise<void> => {
-  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
-}
-
-/** A frame element as the pool drives it: what it loaded, whether it is hidden, gone, focused, what was posted. */
-class FakeElement implements PageFrameElement {
-  readonly loads: string[] = []
-  readonly posts: Array<{ type: unknown; ports: number }> = []
-  hidden = true
-  removed = false
-  focused = 0
-  private listener: (() => void) | undefined
-  constructor(readonly title: string) {}
-  load(url: string): void {
-    this.loads.push(url)
-  }
-  setHidden(hidden: boolean): void {
-    this.hidden = hidden
-  }
-  post(message: unknown, transfer?: MessagePort[]): boolean {
-    this.posts.push({ type: (message as { type?: unknown }).type, ports: transfer?.length ?? 0 })
-    return true
-  }
-  onLoad(listener: () => void): void {
-    this.listener = listener
-  }
-  remove(): void {
-    this.removed = true
-  }
-  focus(): void {
-    this.focused++
-  }
-  /** The page in it finished loading. */
-  fire(): void {
-    this.listener?.()
-  }
-  types(): unknown[] {
-    return this.posts.map((p) => p.type)
-  }
-}
-
-const entry = (id: string, plugin = 'a.one'): PageTabEntry => ({ id, plugin, type: 'file', title: `t-${id.slice(-1)}` })
-
-function pool(over: Partial<PageFramesOptions> = {}) {
-  const elements: FakeElement[] = []
-  const srcAsked: string[] = []
-  const connects: Array<{ tabId: string; deliver: (port: MessagePort) => void; cancelled: boolean }> = []
-  const disconnects: string[] = []
-  const pages: Record<string, string | null> = {}
-  const frames = new PageFrames({
-    createFrame: (title) => {
-      const el = new FakeElement(title)
-      elements.push(el)
-      return el
-    },
-    src: (tabId) => {
-      srcAsked.push(tabId)
-      return Promise.resolve(tabId in pages ? pages[tabId]! : `cc-plugin://a.one/tab.html`)
-    },
-    pageUrl: (src) => src,
-    connect: (tabId, deliver) => {
-      const c = { tabId, deliver, cancelled: false }
-      connects.push(c)
-      return () => {
-        c.cancelled = true
-      }
-    },
-    disconnect: (tabId) => void disconnects.push(tabId),
-    guard: false,
-    portMessage: { type: PORT_MESSAGE, remote: false },
-    theme: () => ({ type: 'cc-plugin.theme' }),
-    ...over
-  })
-  /** The latest element made for the tab whose title ends like `id`. */
-  const el = (id: string): FakeElement => elements.filter((e) => e.title === `t-${id.slice(-1)}`).at(-1)!
-  const port = (): MessagePort => new MessageChannel().port1
-  return { frames, elements, srcAsked, connects, disconnects, pages, el, port }
-}
+import { entry, FakeElement, pool, settle, TAB_A, TAB_B, TAB_C, TAB_D } from '../fakes/fake-page-frames'
 
 describe('PageFrames: mount on first select', () => {
   it('mounts nothing at restore; the first select asks for the page, loads it, and hands theme, intro and port', async () => {
@@ -686,7 +604,7 @@ describe('panel SDK: ccPanel.tab and onConnect', () => {
     c.api.post({ hello: 1 })
     expect(c.api.tab).toBeUndefined()
     c.receive({ type: TAB_MESSAGE, tab: { type: 'file' } }, [])
-    expect(c.api.tab).toEqual({ type: 'file' })
+    expect(c.api.tab?.type).toBe('file')
     expect(Object.isFrozen(c.api.tab)).toBe(true)
     const first = new Port()
     c.receive({ type: PORT_MESSAGE }, [first])

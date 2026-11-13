@@ -23,6 +23,10 @@ let commands: CommandInfo[] = []
 // While > 0 no key fires a command: the keybinding editor is recording a chord, and the chord
 // being pressed may well be a bound one (that is the point of rebinding it).
 let captures = 0
+// Told whenever the table changes (setCommands): page tabs in the web shell get the new chord list.
+const tableListeners = new Set<() => void>()
+// Runs a command for a chord a page tab forwarded (TabsPane: through its modal gate).
+let forwardedRunner: ((id: string) => void) | undefined
 
 /** Stop keys from firing commands until the returned function is called (once; further calls do nothing). */
 export function captureKeys(): () => void {
@@ -50,6 +54,52 @@ export function setCommands(view: CommandsView): void {
   commands = view.commands
   chords = new Map()
   for (const c of view.commands) if (c.key) chords.set(c.key, c.id)
+  for (const fn of [...tableListeners]) fn()
+}
+
+/** Hear every new key table; returns the unsubscribe. */
+export function onKeyTable(fn: () => void): () => void {
+  tableListeners.add(fn)
+  return () => {
+    tableListeners.delete(fn)
+  }
+}
+
+/**
+ * The chords a page tab forwards to the shell (design-editor.md §1 "Keyboard", web shell): every
+ * chord the table holds that has Cmd, Ctrl or Alt (main's forwardedCommand rule for the desktop), so
+ * the app wins them whatever the page declared. Not the overlay keys (Escape is the page's) and not
+ * bare keys (the page's typing).
+ */
+export function forwardedChords(): string[] {
+  const out: string[] = []
+  for (const [chord, id] of chords) {
+    if (id === 'overlay.pop' || id === 'overlay.closeTop') continue
+    const mods = splitChord(chord)?.mods ?? []
+    if (mods.some((m) => m === 'meta' || m === 'ctrl' || m === 'alt')) out.push(chord)
+  }
+  return out
+}
+
+/** Set who runs a forwarded chord's command (TabsPane); returns the function that removes it. */
+export function setForwardedRunner(fn: (id: string) => void): () => void {
+  forwardedRunner = fn
+  return () => {
+    if (forwardedRunner === fn) forwardedRunner = undefined
+  }
+}
+
+/**
+ * A chord a page tab forwarded: its command runs through the runner TabsPane set (the same gate as a
+ * key typed in the shell). False when it is not bound, nothing here runs it, or keys are captured
+ * (the keybinding editor recording).
+ */
+export function runForwardedChord(chord: string): boolean {
+  if (captures > 0 || !forwardedRunner) return false
+  const id = chords.get(chord)
+  if (id === undefined || !handlers.has(id)) return false
+  forwardedRunner(id)
+  return true
 }
 
 /**
@@ -138,6 +188,8 @@ export function resetKeybindings(): void {
   chords = new Map()
   handlers = new Map()
   commands = []
+  tableListeners.clear()
+  forwardedRunner = undefined
   captures = 0
 }
 

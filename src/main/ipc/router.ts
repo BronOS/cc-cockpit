@@ -618,6 +618,13 @@ export interface PageTabHandlerDeps {
   connect(projectId: string, viewId: ViewId, tabId: string, nonce: unknown): boolean
   /** The calling view's shell unmounted the frame (PanelPortHub.disconnectPageTab): only that view's instance. */
   disconnect(projectId: string, viewId: ViewId, tabId: string): void
+  /**
+   * The calling view's page of `tabId` holds unsaved changes or not (TabManager.setPageDirty): per
+   * (tab, view), for a page tab of the project only.
+   */
+  dirty(projectId: string, viewId: ViewId, tabId: string, dirty: boolean): void
+  /** The titles of the project's page tabs dirty in any view. */
+  unsaved(projectId: string): string[]
   /** Server mode: the window's own page is the hidden page, which never mounts a page tab. */
   server: boolean
 }
@@ -650,6 +657,17 @@ export function registerPageTabHandlers(router: IpcRouter, deps: PageTabHandlerD
     deps.disconnect(ctx.projectId, view.viewId, tabIdShort('pageTabs.disconnect', payload))
     return null
   })
+  // Dirty per view (design-editor.md §1 "Dirty and close"): the view is the sender, never a payload
+  // field. The hidden page mounts no page tab, so whatever it says is nothing.
+  router.handleProject('pageTabs.dirty', (ctx, payload, view) => {
+    const tabId = tabIdShort('pageTabs.dirty', payload)
+    const { dirty } = fields('pageTabs.dirty', payload)
+    if (typeof dirty !== 'boolean') throw new Error('pageTabs.dirty: dirty must be a boolean')
+    if (hiddenPage(view)) return null
+    deps.dirty(ctx.projectId, view.viewId, tabId, dirty)
+    return null
+  })
+  router.handleProject('pageTabs.unsaved', (ctx) => deps.unsaved(ctx.projectId))
 }
 
 /** What the plugin settings page handlers need (index.ts, panel-ports.ts). */

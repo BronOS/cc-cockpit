@@ -14,16 +14,24 @@
 //                                                 `mac` is the shell's platform (no scrollbar rule there)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
 //                                                 the port); from then on `ccPanel.slot` exists
-//   { type: 'cc-plugin.tab', tab: { type } }       the page is a page tab of that type (sent before every
+//   { type: 'cc-plugin.tab', tab: { type }, keys? } the page is a page tab of that type (sent before every
 //                                                 port); from then on `ccPanel.tab` exists. A page tab's
 //                                                 frame is never reloaded to reconnect: a later port
-//                                                 (host restart, web reconnect) fires `onConnect`
+//                                                 (host restart, web reconnect) fires `onConnect`.
+//                                                 `keys` (web shell only, sent again when the app's key
+//                                                 table changes): the app's chords, which the page
+//                                                 forwards instead of handling (design-editor.md §1
+//                                                 "Keyboard"; on the desktop main takes them first)
 // and the other way, to the parent only:
 //   { type: 'cc-plugin.slot-height', height }      `ccPanel.slot.setHeight(px)`: the shell sizes the frame
 //   { type: 'cc-plugin.slot-width', width }        `ccPanel.slot.setWidth(px)`: the top bar's frame takes
 //                                                 that width (other positions ignore it)
 //   { type: 'cc-plugin.ready' }                    `ccPanel.ready()`: an html overlay's page has drawn, its
 //                                                 loader goes (spec `ready: 'manual'`); ignored elsewhere
+//   { type: 'cc-plugin.tab-dirty', dirty }         `ccPanel.tab.setDirty(bool)`: the page tab holds unsaved
+//                                                 changes in this view, or not (sent on a change only)
+//   { type: 'cc-plugin.tab-key', chord }           an app chord typed in a page tab (one of `keys`): the
+//                                                 page did not handle it, the shell runs its command
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
@@ -40,6 +48,11 @@ export const TAB_MESSAGE = 'cc-plugin.tab'
 export const SLOT_HEIGHT_MESSAGE = 'cc-plugin.slot-height'
 export const SLOT_WIDTH_MESSAGE = 'cc-plugin.slot-width'
 export const READY_MESSAGE = 'cc-plugin.ready'
+export const TAB_DIRTY_MESSAGE = 'cc-plugin.tab-dirty'
+export const TAB_KEY_MESSAGE = 'cc-plugin.tab-key'
+/** At most this many chords in a `cc-plugin.tab` `keys` list, each at most this long (a sane bound on shell data). */
+const MAX_FORWARDED_KEYS = 500
+const MAX_CHORD_LENGTH = 64
 
 // A copy of the bounds in src/shared/slots.ts, on purpose (see errorText below): the shell and
 // main clamp to the provider's min/max again, this only keeps a page's number sane.
@@ -125,6 +138,13 @@ export interface SlotPageApi {
  */
 export interface TabPageApi {
   readonly type: string
+  /**
+   * Say whether the page holds unsaved changes in this view (design-editor.md §1 "Dirty and close").
+   * Main keeps it per view: the tab shows the dirty dot while any view says so, and closing it, its
+   * window or the app asks the person first. Only a report: the page cannot stop or delay a close.
+   * Sent on a change only; the shell keeps it across reconnects.
+   */
+  setDirty(dirty: boolean): void
 }
 
 /**
@@ -172,6 +192,59 @@ export interface PanelApi {
   ready(): void
 }
 
+/** The fields of a DOM KeyboardEvent a chord is made of. */
+export interface KeyLike {
+  key: string
+  code?: string
+  ctrlKey: boolean
+  altKey: boolean
+  shiftKey: boolean
+  metaKey: boolean
+  repeat?: boolean
+}
+
+// A copy of chordFromEvent in src/shared/keys.ts (the canonical `ctrl+alt+shift+meta+key`), on
+// purpose, as errorText below: a module main imports too would land in a shared chunk panel.js
+// loads with `require`. The shell compares what this writes against its own table, so the two must
+// agree; panel-core's unit test checks them against each other.
+const UNSHIFTED: Readonly<Record<string, string>> = { '<': ',', '>': '.', '?': '/', ':': ';', '"': "'", '{': '[', '}': ']', '|': '\\', _: '-', '~': '`' }
+const KEY_ALIASES: Readonly<Record<string, string>> = {
+  esc: 'escape',
+  return: 'enter',
+  spacebar: 'space',
+  ' ': 'space',
+  plus: '+',
+  comma: ',',
+  del: 'delete',
+  arrowup: 'up',
+  arrowdown: 'down',
+  arrowleft: 'left',
+  arrowright: 'right'
+}
+const ownOf = (table: Readonly<Record<string, string>>, key: string): string | undefined =>
+  Object.hasOwn(table, key) ? table[key] : undefined
+
+/** The canonical chord of a key event (shared/keys.ts chordFromEvent), or null for a lone modifier. */
+export function chordOfKey(e: KeyLike): string | null {
+  if (typeof e.key !== 'string') return null
+  let key = e.key.toLowerCase()
+  if (key === 'control' || key === 'alt' || key === 'shift' || key === 'meta') return null
+  const m = e.code ? /^(?:Key([A-Z])|Digit(\d))$/.exec(e.code) : null
+  if (m) {
+    const digit = m[2] !== undefined
+    const asciiKey = /^[\x20-\x7e]$/.test(e.key)
+    if (e.altKey || !asciiKey || (digit && (e.shiftKey || e.ctrlKey || e.metaKey))) key = (m[1] ?? m[2] ?? key).toLowerCase()
+  }
+  if (e.shiftKey) key = ownOf(UNSHIFTED, key) ?? key
+  key = ownOf(KEY_ALIASES, key) ?? key
+  const mods: string[] = []
+  if (e.ctrlKey) mods.push('ctrl')
+  if (e.altKey) mods.push('alt')
+  if (e.shiftKey) mods.push('shift')
+  if (e.metaKey) mods.push('meta')
+  return [...mods, key].join('+')
+}
+
 const VAR_NAME = /^--[A-Za-z][A-Za-z0-9_-]*$/
 
 // A copy of src/shared/error-text.ts, on purpose: this file is bundled into out/sdk/panel.js, a
@@ -204,6 +277,10 @@ export class PanelClient {
   private slotType: string | undefined
   private slotApi: SlotPageApi | undefined
   private tabApi: TabPageApi | undefined
+  /** The last dirty state told to the shell (setDirty sends only a change). */
+  private dirty = false
+  /** The app's chords the page forwards (web shell; empty on the desktop, where main takes them). */
+  private forwarded = new Set<string>()
   private readonly connectListeners = new Set<() => void>()
   /** From the shell's port message only (receive); nothing the page can call sets it. */
   private remote = false
@@ -221,7 +298,7 @@ export class PanelClient {
     private readonly styles?: BaseStyles,
     componentsCss?: string,
     /** Where a slot page's size requests and `ready()` go: the parent window (the shell), in the browser. */
-    private readonly toParent?: (message: { type: string; height?: number; width?: number }) => void
+    private readonly toParent?: (message: { type: string; height?: number; width?: number; dirty?: boolean; chord?: string }) => void
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -271,7 +348,10 @@ export class PanelClient {
       this.connect(ports[0])
     }
     else if (type === SLOT_MESSAGE) this.becomeSlot((data as { slot?: { type?: unknown } }).slot?.type)
-    else if (type === TAB_MESSAGE) this.becomeTab((data as { tab?: { type?: unknown } }).tab?.type)
+    else if (type === TAB_MESSAGE) {
+      this.becomeTab((data as { tab?: { type?: unknown } }).tab?.type)
+      this.setForwarded((data as { keys?: unknown }).keys)
+    }
     else if (type === THEME_MESSAGE) {
       this.installBaseStyles((data as { mac?: unknown }).mac === true)
       this.applyTheme((data as { theme?: unknown }).theme)
@@ -302,7 +382,39 @@ export class PanelClient {
   /** The shell says this page is a page tab; the first message wins (a tab's type does not change). */
   private becomeTab(type: unknown): void {
     if (this.tabApi !== undefined || typeof type !== 'string' || !SLOT_TYPE.test(type)) return
-    this.tabApi = Object.freeze({ type })
+    this.tabApi = Object.freeze({
+      type,
+      setDirty: (dirty: boolean): void => {
+        if (typeof dirty !== 'boolean') throw new TypeError('tab.setDirty needs a boolean')
+        if (dirty === this.dirty) return
+        this.dirty = dirty
+        this.toParent?.({ type: TAB_DIRTY_MESSAGE, dirty })
+      }
+    })
+  }
+
+  /** The app's chords as the shell listed them with the page tab intro; anything else in the list is dropped. */
+  private setForwarded(raw: unknown): void {
+    if (this.tabApi === undefined || !Array.isArray(raw)) return
+    const next = new Set<string>()
+    for (const chord of raw.slice(0, MAX_FORWARDED_KEYS)) {
+      if (typeof chord === 'string' && chord.length > 0 && chord.length <= MAX_CHORD_LENGTH) next.add(chord)
+    }
+    this.forwarded = next
+  }
+
+  /**
+   * A key pressed in the page (panel.ts listens in the capture phase, before the page's own
+   * handlers). An app chord the shell listed is the app's: the page never handles it (`true`: the
+   * caller stops the event) and the shell runs its command. Auto-repeats are stopped but not sent,
+   * as the shell runs no command per repeat.
+   */
+  keyDown(e: KeyLike): boolean {
+    if (this.forwarded.size === 0) return false
+    const chord = chordOfKey(e)
+    if (chord === null || !this.forwarded.has(chord)) return false
+    if (!e.repeat) this.toParent?.({ type: TAB_KEY_MESSAGE, chord })
+    return true
   }
 
   private connect(port: PortLike): void {

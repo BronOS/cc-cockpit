@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
+import { ApprovalDialog } from '../notices/ApprovalDialog'
 import { closeQuestionText, type CloseQuestion } from './close-confirm'
 
 /**
- * "Close <tab>?" before a user's close of a tab that is still running (close-confirm.ts decides
- * when). A modal of the renderer's own, like the palette: TabsPane makes the strip and the zones
+ * "Close <tab>?" before a user's close of a tab that is still running, or of a page tab with unsaved
+ * changes in any view (close-confirm.ts decides when; server mode's browsers ask the latter with
+ * CloseTabApproval instead). A modal of the renderer's own, like the palette: TabsPane makes the strip and the zones
  * inert while it is shown and its key handler runs no command meanwhile, so no key typed here can
  * reach a terminal (where a stray Enter or y could answer a Claude permission prompt).
  *
@@ -51,19 +53,40 @@ export function CloseTabDialog(props: {
           Close “{props.question.title}”?
         </h2>
         <p id={textId}>{closeQuestionText(props.question)}</p>
-        <label className="confirm-check">
-          <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
-          {" Don't ask again"}
-        </label>
+        {/* The setting is about running processes; unsaved text always asks (close-confirm.ts). */}
+        {!props.question.unsaved && (
+          <label className="confirm-check">
+            <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
+            {" Don't ask again"}
+          </label>
+        )}
         <div className="confirm-buttons">
           <button type="button" ref={cancel} onClick={() => answer('cancel')}>
             Cancel
           </button>
           <button type="button" className="confirm-danger" onClick={() => answer('close')}>
-            Close
+            {props.question.unsaved ? 'Discard and Close' : 'Close'}
           </button>
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * The unsaved-changes ask in server mode's browsers (design-editor.md §1: an ApprovalDialog there):
+ * every signed-in device is the owner and may be typing to Claude when it shows, so the discard is
+ * never the default, is not reached by typing, and is live only after a second (ApprovalDialog).
+ */
+export function CloseTabApproval(props: { question: CloseQuestion; onAnswer: (choice: 'close' | 'cancel') => void }): React.JSX.Element {
+  return (
+    <ApprovalDialog
+      title={<>Close “{props.question.title}”?</>}
+      allowLabel="Discard and Close"
+      denyLabel="Cancel"
+      onAnswer={(allow) => props.onAnswer(allow ? 'close' : 'cancel')}
+    >
+      <p>{closeQuestionText(props.question)}</p>
+    </ApprovalDialog>
   )
 }
