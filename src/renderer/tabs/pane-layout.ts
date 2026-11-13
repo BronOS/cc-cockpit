@@ -65,9 +65,27 @@ export function holdsCells(
  * 40x10 cells (a phone, a narrow window) shows only the focused pane. Decided per view and never
  * saved; an area not measured yet (0x0) zooms nothing.
  */
-export function needsAutoZoom(root: PaneNode, area: Size, cell: Size, min = AUTO_ZOOM_CELLS): boolean {
+export function needsAutoZoom(root: PaneNode, area: Size, cell: Size, min: { cols: number; rows: number } = AUTO_ZOOM_CELLS): boolean {
   if (!(area.width > 0) || !(area.height > 0)) return false
   return rectsOf(root).panes.some((p) => !holdsCells(toPx(p, area), cell, min, true))
+}
+
+/** `root` with every split's children equal. */
+function evened(root: PaneNode): PaneNode {
+  if (isLeaf(root)) return root
+  return { ...root, children: root.children.map(evened), sizes: root.children.map(() => 1 / root.children.length) }
+}
+
+/**
+ * The view shows the group zoomed to its focused pane (D5), for either of two reasons:
+ * - the view is narrow for this arrangement: even with every split equal, some pane would get
+ *   under about 40x10 (a phone, a small window). Judged on equal shares, not the shared ones, so a
+ *   divider the person dragged on a large screen (down to the 20x5 minimum) does not zoom it there;
+ * - or a pane at the shared sizes falls under the 20x5 minimum here (sizes set on a wide screen,
+ *   seen on a narrow one), where its terminal would be unusable.
+ */
+export function autoZoomed(root: PaneNode, area: Size, cell: Size): boolean {
+  return needsAutoZoom(evened(root), area, cell) || needsAutoZoom(root, area, cell, PANE_MIN_CELLS)
 }
 
 /**

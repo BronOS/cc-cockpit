@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  autoZoomed,
   cellEstimate,
   dragMinShare,
   edgePreview,
@@ -52,6 +53,17 @@ describe('pane-layout', () => {
     expect(needsAutoZoom(tree, { width: 1400, height: 300 }, cell)).toBe(true)
     // Not measured yet: nothing zooms.
     expect(needsAutoZoom(tree, { width: 0, height: 0 }, cell)).toBe(false)
+  })
+
+  it('auto-zooms for a narrow view, not for a divider dragged on a wide one', () => {
+    // A pane dragged to 25% of 1400px (350px, ~41 cols) and B/C at 75%: fine at even shares.
+    const dragged = split('s1', 'row', [leaf('A'), split('s2', 'column', [leaf('B'), leaf('C')])], [0.2, 0.8])
+    expect(autoZoomed(dragged, { width: 1400, height: 800 }, cell)).toBe(false)
+    // The same shares on a 700px screen: A gets 140px, under the 20-column minimum.
+    expect(autoZoomed(dragged, { width: 700, height: 800 }, cell)).toBe(true)
+    // A phone: too narrow even at even shares.
+    expect(autoZoomed(tree, { width: 400, height: 800 }, cell)).toBe(true)
+    expect(autoZoomed(tree, { width: 1400, height: 800 }, cell)).toBe(false)
   })
 
   it('refuses a split whose halves fall under 20x5 (D5)', () => {

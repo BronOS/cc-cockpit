@@ -26,7 +26,7 @@ import { paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
 import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
-import { cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, needsAutoZoom, splitFits, type Size } from './pane-layout'
+import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
 import { paneAtPoint } from './SplitArea'
 import { paneCommandHandlers, refusalText } from './pane-commands'
 import { SplitArea, type PaneDrop } from './SplitArea'
@@ -119,7 +119,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [area, setArea] = useState<Size>({ width: 0, height: 0 })
   const { terminalFont } = usePrefs()
   const cell = useMemo(() => cellEstimate(terminalFont), [terminalFont])
-  const autoZoom = useCallback((g: TabGroup): boolean => needsAutoZoom(g.root, area, cell), [area, cell])
+  const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cell), [area, cell])
   const view = useMemo(() => paneView(state.groups, state.activeId, state.zoomed, autoZoom), [state.groups, state.activeId, state.zoomed, autoZoom])
   const viewRef = useRef<PaneView>(view)
   const autoZoomRef = useRef(autoZoom)
