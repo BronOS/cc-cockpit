@@ -379,10 +379,16 @@ export function lspFeatures(deps) {
     if (view.state.readOnly) return true
     const pos = view.state.selection.main.head
     const position = posOf(view.state, pos)
+    // The position is the symbol's in THIS text (CodeMirror's documents are immutable, so identity
+    // says whether it changed): typing, or Claude's change merged in while the prompt is up, would
+    // make the host ask the server about whatever sits at that position then.
+    const startDoc = view.state.doc
+    const moved = () => view.state.doc !== startDoc && (deps.message('Rename: the file changed since F2; press F2 again.', true), true)
     let value = view.state.wordAt(pos) ? view.state.sliceDoc(view.state.wordAt(pos).from, view.state.wordAt(pos).to) : ''
     if (feature('prepareRename')) {
       try {
         const r = await client.ask('prepareRename', { position })
+        if (moved()) return true
         const res = r && r.result
         if (r && !r.unsupported && !res) return deps.message('Nothing to rename here.'), true
         if (res && typeof res.placeholder === 'string') value = res.placeholder
@@ -398,6 +404,7 @@ export function lspFeatures(deps) {
       hint: `Enter renames ${value ? `“${value}”` : 'it'} in every file of the project; Escape cancels.`,
       onSubmit: async (newName) => {
         if (!newName || newName === value || /[\n\r]/.test(newName)) return
+        if (moved()) return
         try {
           told('Rename', await client.ask('rename', { position, newName }))
         } catch (e) {

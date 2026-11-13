@@ -73,6 +73,11 @@ test('editsToChanges: sorted CodeMirror changes; an overlap or a malformed edit 
   assert.equal(editsToChanges(d, [{ range: e(0, 0, 0, 0).range }]), 'a malformed edit')
   assert.equal(editsToChanges(d, [e(0, 5, 0, 1, '')]), 'an edit ends before it starts')
   assert.equal(editsToChanges(d, 'x'), 'not a list of edits')
+  // The host's order: an insert at P listed after a replace starting at P is not an overlap.
+  assert.deepEqual(editsToChanges(d, [e(0, 6, 0, 7, 'b'), e(0, 6, 0, 6, 'x')]), [
+    { from: 6, to: 6, insert: 'x' },
+    { from: 6, to: 7, insert: 'b' },
+  ])
 })
 
 test('snippetToTemplate: tab stops, placeholders (nested flattened), choices, variables, escapes and literal braces', () => {

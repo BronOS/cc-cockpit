@@ -47,7 +47,10 @@ export function editsToChanges(doc, edits) {
     if (before(e.range.end, e.range.start)) return 'an edit ends before it starts'
     list.push(e)
   }
-  const sorted = list.map((e, i) => ({ e, i })).sort((a, b) => (before(a.e.range.start, b.e.range.start) ? -1 : before(b.e.range.start, a.e.range.start) ? 1 : a.i - b.i))
+  // The host's order (lib/lsp/edits.js sortEdits): by start, then end, then as listed, so an insert
+  // at P listed after a replace starting at P sorts before it instead of reading as an overlap.
+  const cmp = (a, b) => (before(a, b) ? -1 : before(b, a) ? 1 : 0)
+  const sorted = list.map((e, i) => ({ e, i })).sort((a, b) => cmp(a.e.range.start, b.e.range.start) || cmp(a.e.range.end, b.e.range.end) || a.i - b.i)
   const out = []
   for (let k = 0; k < sorted.length; k++) {
     const e = sorted[k].e

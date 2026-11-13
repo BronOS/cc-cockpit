@@ -17,6 +17,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
+const os = require('node:os')
 
 /** Text over this many bytes opens read-only: a CodeMirror buffer that size is slow, and a 50 MB log is not edited. */
 const MAX_EDIT_BYTES = 5 * 1024 * 1024
@@ -245,6 +246,26 @@ function readFile(root, rel) {
   }
 }
 
+/** System trees no definition lives in (process memory and environment, devices, sockets). */
+const REFUSED_OUTSIDE_ROOTS = ['/proc', '/sys', '/dev', '/run']
+/** Folders and files of the home holding credentials or app data (this app's own data dir among them). */
+const REFUSED_OUTSIDE_HOME = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config', '.netrc', '.password-store', '.local/share/keyrings', 'Library/Keychains', 'Library/Application Support']
+
+/**
+ * Whether an outside path is one a read-only tab never shows, whoever named it. Defense in depth
+ * for the outside allow-list (lib/lsp/manager.js allowsOutside): a server returns what the document
+ * text it was told leads to, and a page decides that text, so a page could make a server "return"
+ * any path (tsserver's `/// <reference path>`); these never open.
+ */
+function outsideRefused(abs) {
+  if (typeof abs !== 'string' || !path.isAbsolute(abs)) return true
+  const p = path.resolve(abs)
+  const under = (dir) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)
+  if (REFUSED_OUTSIDE_ROOTS.some(under)) return true
+  const home = os.homedir()
+  return !!home && REFUSED_OUTSIDE_HOME.some((d) => under(path.join(home, d)))
+}
+
 /**
  * A file OUTSIDE the project for a read-only tab (design-editor.md §3: a definition in
  * `node_modules`, the module cache or vendor "opens read-only, and only for a location the server
@@ -256,6 +277,7 @@ function readFile(root, rel) {
  */
 function readOutside(abs) {
   if (typeof abs !== 'string' || !path.isAbsolute(abs) || abs.includes('\0')) throw new Error('not an absolute path')
+  if (outsideRefused(abs)) throw new Error('this file is not shown outside the project')
   let real
   try {
     real = fs.realpathSync(abs)
@@ -263,6 +285,8 @@ function readOutside(abs) {
     if (e.code === 'ENOENT') return { rel: abs, exists: false }
     throw e
   }
+  // A link in node_modules pointing at one of them is refused too.
+  if (outsideRefused(real)) throw new Error('this file is not shown outside the project')
   const { fd } = openRegular(real)
   try {
     const d = describeBytes(readFd(fd), undefined)
@@ -972,6 +996,7 @@ module.exports = {
   describeBytes,
   readFile,
   readOutside,
+  outsideRefused,
   saveFile,
   chunkText,
   FolderWatcher,

@@ -12,10 +12,17 @@
 //   recorded when it asked);
 // - a file no page holds is written by the compare-and-swap save (lib/files.js saveFile) against
 //   the bytes the edits were applied to, so a write that lands in between makes the edit fail
-//   rather than overwrite it. The servers hear about it as a watched-file change.
-// Everything is checked before anything is applied; then files are applied in order and the first
-// failure stops the rest (`failureHandling: 'abort'`, as declared), reported with its index.
+//   rather than overwrite it, and only when it was not written since the host asked (its mtime: a
+//   file Claude wrote while the server worked is not the text the server computed against). The
+//   servers hear about it as a watched-file change.
+// Files are named by realpath (two spellings of one file are one file) and looked up as documents
+// the same way. Everything is checked before anything is applied; then the open files are applied
+// first (a page refusing, the person typed, is the likely failure, and a page's edit can be undone)
+// and the disk files after them, and the first failure stops the rest (`failureHandling: 'abort'`,
+// as declared), reported with its index in the server's edit.
 
+const { pathToFileURL } = require('node:url')
+const fs = require('node:fs')
 const files = require('../files.js')
 
 /** Files one edit may touch, text edits per file, and the characters of one edit's new text. */
@@ -60,17 +67,29 @@ function sortEdits(edits) {
   return list.map((x) => x.e)
 }
 
-/** The UTF-16 offset of an LSP position in `text` (a character past a line's end is its end), or -1 past the last line. */
+/** Where the line starting at `at` ends: its first `\r` or `\n`, or the text's end. */
+function lineEnd(text, at) {
+  for (let i = at; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c === 10 || c === 13) return i
+  }
+  return text.length
+}
+
+/**
+ * The UTF-16 offset of an LSP position in `text`, or -1 past the last line. LSP counts `\n`, `\r\n`
+ * and a lone `\r` as line breaks (a disk file may hold any of them: decodeBytes keeps the CRLFs of a
+ * mixed file), and a character past a line's end is that end, before its break (never between the
+ * `\r` and the `\n` of a CRLF).
+ */
 function offsetAt(text, pos) {
   let at = 0
   for (let l = 0; l < pos.line; l++) {
-    const nl = text.indexOf('\n', at)
-    if (nl < 0) return -1
-    at = nl + 1
+    const br = lineEnd(text, at)
+    if (br >= text.length) return -1
+    at = br + (text.charCodeAt(br) === 13 && text.charCodeAt(br + 1) === 10 ? 2 : 1)
   }
-  let end = text.indexOf('\n', at)
-  if (end < 0) end = text.length
-  return Math.min(at + pos.character, end)
+  return Math.min(at + pos.character, lineEnd(text, at))
 }
 
 /** `text` with the (checked) text edits applied; throws on a range that is not in it. */
@@ -122,7 +141,7 @@ function planEdit(edit, pathOfUri) {
   if (entries.length > MAX_EDIT_FILES) throw new Error(`the edit touches more than ${MAX_EDIT_FILES} files`)
   const seen = new Set()
   const plan = []
-  for (const en of entries) {
+  for (const [index, en] of entries.entries()) {
     if (typeof en.uri !== 'string') throw new Error('a change names no file')
     const where = pathOfUri(en.uri)
     if (!where) throw new Error('the edit names something that is not a file')
@@ -132,83 +151,121 @@ function planEdit(edit, pathOfUri) {
     if (en.edits.length > MAX_FILE_EDITS) throw new Error(`the edit makes more than ${MAX_FILE_EDITS} changes to ${where.rel}`)
     const edits = en.edits.map(textEdit)
     sortEdits(edits) // the overlap check, before anything is applied
-    if (edits.length) plan.push({ uri: en.uri, rel: where.rel, version: en.version, edits })
+    if (edits.length) plan.push({ index, uri: en.uri, rel: where.rel, version: en.version, edits })
   }
   return plan
 }
 
 /**
  * Applies `edit` (a server's WorkspaceEdit) for the manager `mgr` (an LspManager: its root, its
- * documents and their owners). `versions` is the document versions the host recorded when it asked
- * the server (uri -> version): an open file whose document moved on since, or that was not open
- * then, is not edited (the server's positions are for a text the page no longer has). Resolves the
- * LSP ApplyWorkspaceEditResult plus counts: `{ applied, failureReason?, failedChange?, files, edits }`.
+ * documents and their owners). Options, all taken when the host asked the server:
+ * - `versions`: the document versions then (uri -> version; versions are unique across documents,
+ *   manager.js `nextVersion`, so a file closed and opened again never matches its old one). An open
+ *   file whose document moved on since, or that was not open then, is not edited; nor is one that
+ *   was open then and is closed now (the server's positions are for the page's buffer, not the disk).
+ * - `since`: the time (ms) then: a disk file written after it is not edited.
+ * - `signal`: an AbortSignal; aborted before anything is applied, nothing is.
+ * Resolves the LSP ApplyWorkspaceEditResult plus counts: `{ applied, failureReason?, failedChange?, files, edits }`.
  */
-async function applyWorkspaceEdit(mgr, edit, { versions } = {}) {
+async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
   let plan
   try {
     plan = planEdit(edit, (uri) => mgr.pathOfUri(uri))
   } catch (e) {
     return { applied: false, failureReason: e.message, files: 0, edits: 0 }
   }
+  const refuse = (p, why) => ({ applied: false, failureReason: `${p.rel} ${why}`, failedChange: p.index, files: 0, edits: 0 })
   // Each file: open (a page's document) or on disk only. Checked for all before any is applied.
-  const steps = []
+  const pages = []
+  const disk = []
+  const seen = new Set()
   for (const p of plan) {
-    const doc = mgr.docByUri(p.uri)
+    // By realpath: a server may name one file by two spellings (a symlinked folder of the project),
+    // and the documents are keyed by the realpath's URI.
+    let where
+    try {
+      where = files.resolveInProject(mgr.root, p.rel)
+    } catch (e) {
+      return { ...refuse(p, ''), failureReason: String(e.message).slice(0, 300) }
+    }
+    if (seen.has(where.real)) return refuse(p, 'is changed twice by the edit (under two names)')
+    seen.add(where.real)
+    const uri = pathToFileURL(where.real).href
+    const doc = mgr.docs.get(uri)
     if (doc) {
       const known = versions && versions.get(doc.uri)
-      if (p.version !== null ? p.version !== doc.version : versions ? known !== doc.version : false) {
-        return { applied: false, failureReason: `${p.rel} changed while the language server worked; try again`, failedChange: steps.length, files: 0, edits: 0 }
-      }
-      if (!doc.owner || typeof doc.owner.applyEdits !== 'function') {
-        return { applied: false, failureReason: `${p.rel} is open in a view that cannot take edits`, failedChange: steps.length, files: 0, edits: 0 }
-      }
-      steps.push({ ...p, doc })
+      if (p.version !== null ? p.version !== doc.version : versions ? known !== doc.version : false) return refuse(p, 'changed while the language server worked; try again')
+      if (!doc.owner || typeof doc.owner.applyEdits !== 'function') return refuse(p, 'is open in a view that cannot take edits')
+      // What the document must still be when its turn comes (earlier files wait on their pages).
+      pages.push({ ...p, uri, doc, owner: doc.owner, version: doc.version, seq: doc.seq })
     } else {
-      if (p.version !== null) {
-        // The server thinks the file is open with a version: it was closed since, and the disk may not be what it saw.
-        return { applied: false, failureReason: `${p.rel} was closed while the language server worked; try again`, failedChange: steps.length, files: 0, edits: 0 }
-      }
-      steps.push(p)
+      // The server thinks the file is open with a version, or the host saw it open when it asked:
+      // it was closed since, and the disk is not the buffer the server saw.
+      if (p.version !== null || (versions && versions.has(uri))) return refuse(p, 'was closed while the language server worked; try again')
+      if (since !== undefined && writtenSince(where.real, since)) return refuse(p, 'changed on disk while the language server worked; try again')
+      disk.push({ ...p, uri, real: where.real })
     }
   }
+  if (signal && signal.aborted) return { applied: false, failureReason: 'cancelled', files: 0, edits: 0 }
   let done = 0
   let count = 0
-  for (const st of steps) {
+  for (const st of [...pages, ...disk]) {
+    let r
     try {
-      if (st.doc) await applyToPage(mgr, st)
-      else applyToDisk(mgr, st)
+      r = st.doc ? await applyToPage(mgr, st) : applyToDisk(mgr, st, since)
     } catch (e) {
-      return { applied: false, failureReason: `${st.rel}: ${e.message}`, failedChange: done, files: done, edits: count }
+      return { applied: false, failureReason: `${st.rel}: ${e.message}`, failedChange: st.index, files: done, edits: count }
     }
     done++
     count += st.edits.length
+    if (r && r.lost) {
+      // The edit is on disk, but a write another program made into the old file during the swap is
+      // not: said as it is, and nothing more is changed.
+      return { applied: false, failureReason: `${st.rel}: the edit was written, but another program wrote the file during the save and its change was lost`, failedChange: st.index, files: done, edits: count }
+    }
   }
   return { applied: true, files: done, edits: count }
+}
+
+/** Whether the file at `real` was modified after `since` (ms); a file that is gone is not (its read says so). */
+function writtenSince(real, since) {
+  try {
+    return fs.statSync(real).mtimeMs > since
+  } catch {
+    return false
+  }
 }
 
 /** An open file: its document's syncing owner applies the edits to its buffer (lib/lsp/serve.js `lsp-edit`). */
 async function applyToPage(mgr, st) {
   const doc = st.doc
-  const owner = doc.owner
-  const rel = doc.holders.get(owner)
+  // Earlier files waited on their pages: this document may have moved on meanwhile (its page typed,
+  // a resync, another owner). The seq sent is the one checked, never the document's current one.
+  if (mgr.docs.get(st.uri) !== doc || doc.version !== st.version || doc.owner !== st.owner) throw new Error('changed while the edit was applied; try again')
+  const rel = doc.holders.get(st.owner)
   // The page's own text is checked against `seq` (the last change it sent); the text the host has
   // must also still be the one the edits fit, which the page cannot see.
   applyTextEdits(doc.text, st.edits)
-  const r = await owner.applyEdits(rel, st.edits, doc.seq, PAGE_EDIT_TIMEOUT_MS)
+  const r = await st.owner.applyEdits(rel, st.edits, st.seq, PAGE_EDIT_TIMEOUT_MS)
   if (!r || r.applied !== true) throw new Error((r && typeof r.reason === 'string' && r.reason.slice(0, 300)) || 'the page did not apply the edit')
+  return null
 }
 
-/** A file no page holds: read, edited, and written by compare-and-swap against what was read. */
-function applyToDisk(mgr, st) {
+/**
+ * A file no page holds: read, edited, and written by compare-and-swap against what was read.
+ * Returns `{ lost: true }` when the edit was written but another write into the old file was lost.
+ */
+function applyToDisk(mgr, st, since) {
+  if (since !== undefined && writtenSince(st.real, since)) throw new Error('the file changed on disk while the language server worked; try again')
   const now = files.readFile(mgr.root, st.rel)
   if (!now.exists) throw new Error('the file is gone')
   if (now.readOnly || typeof now.text !== 'string') throw new Error(`the file cannot be edited here (${now.why || 'read-only'})`)
   const text = applyTextEdits(now.text, st.edits)
   const r = files.saveFile(mgr.root, st.rel, text, now.hash)
-  if (r.result !== 'saved') throw new Error(r.written ? 'another write landed during the save' : 'the file changed on disk meanwhile; try again')
+  if (r.result !== 'saved' && !r.written) throw new Error('the file changed on disk meanwhile; try again')
   // The servers learn it like any project change (gopls and tsserver read unopened files from disk).
   mgr.noteChanged(now.real)
+  return r.written ? { lost: true } : null
 }
 
 module.exports = { applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit, PAGE_EDIT_TIMEOUT_MS }

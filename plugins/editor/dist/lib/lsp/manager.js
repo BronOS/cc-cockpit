@@ -356,12 +356,22 @@ class LspManager {
     this.known = new Map()
     /** holder -> the completion items answered to it (JSON), the only ones `resolveCompletion` takes. */
     this.given = new WeakMap()
-    /** holder -> the code actions last offered to it: { uri, srv, versions, kept: Map id -> action }. */
+    /** holder -> the code actions last offered to it: { uri, srv, versions, since, kept: Map id -> action }. */
     this.actions = new WeakMap()
     this.nextAction = 0
+    /**
+     * The last document version handed out. One clock for every document (LSP needs a version only
+     * to grow per document): a file closed and opened again gets a version no earlier snapshot
+     * holds, so an edit computed before the close never matches the new document (edits.js).
+     */
+    this.lastVersion = 0
     /** Outside-the-project files a server returned as a location (abs path -> true, oldest first). */
     this.outside = new Map()
     this.disposed = false
+  }
+
+  nextVersion() {
+    return ++this.lastVersion
   }
 
   /** The `servers` setting changed (or was read at start): servers whose argv changed restart. */
@@ -415,7 +425,7 @@ class LspManager {
     if (!doc) {
       if (this.docs.size >= MAX_DOCS) throw new Error('too many documents are open for the language servers')
       if (this.heldBy(holder).length >= MAX_HOLDER_DOCS) throw new Error('too many documents in one tab')
-      doc = { uri, rel: r.rel, real: r.real, language: lang.entry.language, languageId: lang.languageId, version: 1, text, holders: new Map([[holder, r.rel]]), owner: holder, diagnostics: null, seq: seqOf(seq) }
+      doc = { uri, rel: r.rel, real: r.real, language: lang.entry.language, languageId: lang.languageId, version: this.nextVersion(), text, holders: new Map([[holder, r.rel]]), owner: holder, diagnostics: null, seq: seqOf(seq) }
       this.docs.set(uri, doc)
       const slot = this.slotFor(doc.language)
       if (slot.idleTimer) {
@@ -464,7 +474,7 @@ class LspManager {
       return false
     }
     doc.text = text
-    doc.version++
+    doc.version = this.nextVersion()
     doc.seq = seqOf(seq)
     const slot = this.slots.get(doc.language)
     if (slot && slot.server && slot.opened.has(doc.uri)) {
@@ -477,7 +487,7 @@ class LspManager {
 
   replaceText(doc, text) {
     doc.text = text
-    doc.version++
+    doc.version = this.nextVersion()
     const slot = this.slots.get(doc.language)
     if (slot && slot.server && slot.opened.has(doc.uri)) {
       slot.server.notify('textDocument/didChange', { textDocument: { uri: doc.uri, version: doc.version }, contentChanges: [{ text }] })
@@ -501,6 +511,9 @@ class LspManager {
       if (doc.owner === holder) {
         // The next view syncs: its buffer may differ from the one that left, so it sends its text.
         doc.owner = doc.holders.keys().next().value
+        // The old owner's counter means nothing to the new one: until the new owner's text lands
+        // (its `lsp-open`), an edit names no seq and the page refuses it.
+        doc.seq = undefined
         this.postTo(doc.owner, { t: 'lsp-resync', path: doc.holders.get(doc.owner), owner: true })
       }
       return
@@ -571,7 +584,7 @@ class LspManager {
    * rejects with a message for the page. `signal` (an AbortController's) cancels it.
    */
   async ask(holder, what, rel, args, signal) {
-    if (what === 'runCodeAction') return this.runCodeAction(holder, rel, args)
+    if (what === 'runCodeAction') return this.runCodeAction(holder, rel, args, signal)
     if (!Object.prototype.hasOwnProperty.call(ASKS, what)) throw new Error(`${String(what).slice(0, 60)} is not something a page may ask`)
     const spec = ASKS[what]
     const doc = this.docOf(holder, rel)
@@ -587,18 +600,19 @@ class LspManager {
     if (signal && signal.aborted) throw new Error('cancelled')
     if (!hasCap(caps, spec.cap)) return { result: null, unsupported: true }
     // What every open document was when the server was asked: an edit it answers is applied only to
-    // documents that did not move on meanwhile (edits.js).
+    // documents that did not move on meanwhile, and to disk files not written since (edits.js).
     const versions = this.versions()
+    const since = Date.now()
     const result = await srv.request(spec.method, params, { timeoutMs: spec.timeoutMs || ASK_TIMEOUT_MS, signal })
     if (spec.post === 'textEdits') {
       if (!Array.isArray(result) || result.length === 0) return { result: { applied: true, files: 0, edits: 0 } }
-      return { result: await applyWorkspaceEdit(this, { changes: { [doc.uri]: result } }, { versions }) }
+      return { result: await applyWorkspaceEdit(this, { changes: { [doc.uri]: result } }, { versions, since, signal }) }
     }
     if (spec.post === 'workspaceEdit') {
       if (!result) return { result: { applied: false, failureReason: 'the language server found nothing to change here', files: 0, edits: 0 } }
-      return { result: await applyWorkspaceEdit(this, result, { versions }) }
+      return { result: await applyWorkspaceEdit(this, result, { versions, since, signal }) }
     }
-    if (spec.post === 'actions') return this.offerActions(holder, doc, srv, versions, result)
+    if (spec.post === 'actions') return this.offerActions(holder, doc, srv, versions, since, result)
     if (spec.post === 'locations') return this.locations(result, what === 'references')
     const fit = fitResult(result)
     if (what === 'complete') this.giveItems(holder, fit.value)
@@ -650,9 +664,9 @@ class LspManager {
    * outside it (node_modules, the module cache, vendor) its absolute path, which the host from then
    * on lets a read-only tab show (`allowsOutside`): only a location a server returned. Anything that
    * is not a file is dropped. References get their line's text (an open document's own, else the
-   * file's, for the first MAX_LINE_TEXT_FILES files).
+   * file's, for the first MAX_LINE_TEXT_FILES files, read without blocking the host's one thread).
    */
-  locations(result, withText) {
+  async locations(result, withText) {
     const list = result === null || result === undefined ? [] : Array.isArray(result) ? result : [result]
     const out = []
     const texts = new Map()
@@ -668,13 +682,15 @@ class LspManager {
       const where = this.pathOfUri(uri)
       if (!where) continue
       if (where.outside !== undefined) {
+        // A sensitive system or credentials path is dropped, not allowed (files.js outsideRefused).
+        if (files.outsideRefused(where.outside)) continue
         this.allowOutside(where.outside)
         out.push({ outside: where.outside, range: r })
         continue
       }
       const loc = { path: where.rel, range: r }
       if (withText) {
-        const t = this.lineText(texts, uri, where.rel, r.start.line)
+        const t = await this.lineText(texts, uri, where.rel, r.start.line)
         if (t !== undefined) loc.text = t
       }
       out.push(loc)
@@ -684,22 +700,13 @@ class LspManager {
   }
 
   /** Line `line` of project file `rel` (an open document's own text), or undefined. `texts` caches per answer. */
-  lineText(texts, uri, rel, line) {
+  async lineText(texts, uri, rel, line) {
     let text = texts.get(rel)
     if (text === undefined) {
       const doc = this.docByUri(uri)
       text = null
       if (doc) text = doc.text
-      else if (texts.size < MAX_LINE_TEXT_FILES) {
-        try {
-          // Read in the host's one thread for a list: a big file (a bundle, generated code) is left without text.
-          if (fs.statSync(path.join(this.root, rel)).size > MAX_LINE_TEXT_FILE_BYTES) throw new Error('large')
-          const f = files.readFile(this.root, rel)
-          if (f.exists && typeof f.text === 'string' && f.why !== 'binary') text = f.text
-        } catch {
-          // unreadable, or a link out of the project: no text
-        }
-      }
+      else if (texts.size < MAX_LINE_TEXT_FILES) text = await this.readForLines(rel)
       texts.set(rel, text)
     }
     if (typeof text !== 'string') return undefined
@@ -714,6 +721,30 @@ class LspManager {
     return text.slice(at, Math.min(end, at + MAX_LINE_TEXT_CHARS))
   }
 
+  /**
+   * A project file's text for a references list, or null (missing, not a regular file, a link out
+   * of the project, over MAX_LINE_TEXT_FILE_BYTES, binary). Read asynchronously: up to
+   * MAX_LINE_TEXT_FILES files per answer would otherwise stall every tab's traffic in this host.
+   */
+  async readForLines(rel) {
+    let fh = null
+    try {
+      const r = files.resolveInProject(this.root, rel)
+      if (!r.exists) return null
+      // O_NONBLOCK: a FIFO swapped in never hangs the open; only a regular file is read.
+      fh = await fs.promises.open(r.real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0))
+      const st = await fh.stat()
+      if (!st.isFile() || st.size > MAX_LINE_TEXT_FILE_BYTES) return null
+      const buf = await fh.readFile()
+      if (buf.length > MAX_LINE_TEXT_FILE_BYTES || buf.subarray(0, 8000).includes(0)) return null
+      return files.decodeBytes(buf).text
+    } catch {
+      return null
+    } finally {
+      if (fh) await fh.close().catch(() => {})
+    }
+  }
+
   allowOutside(abs) {
     this.outside.delete(abs)
     this.outside.set(abs, true)
@@ -722,7 +753,7 @@ class LspManager {
 
   /** Whether a server returned `abs` (an absolute path outside the project) as a location. */
   allowsOutside(abs) {
-    return typeof abs === 'string' && this.outside.has(abs)
+    return typeof abs === 'string' && this.outside.has(abs) && !files.outsideRefused(abs)
   }
 
   /**
@@ -730,7 +761,7 @@ class LspManager {
    * `[{ id, title, kind?, preferred?, disabled? }]`: the page never sees, so never hands back, an
    * edit or a command.
    */
-  offerActions(holder, doc, srv, versions, result) {
+  offerActions(holder, doc, srv, versions, since, result) {
     const kept = new Map()
     const out = []
     for (const a of Array.isArray(result) ? result.slice(0, MAX_ACTIONS) : []) {
@@ -743,7 +774,7 @@ class LspManager {
       if (a.disabled && typeof a.disabled === 'object') o.disabled = typeof a.disabled.reason === 'string' ? a.disabled.reason.slice(0, 200) : 'not available'
       out.push(o)
     }
-    this.actions.set(holder, { uri: doc.uri, srv, versions, kept })
+    this.actions.set(holder, { uri: doc.uri, srv, versions, since, kept })
     return { result: out }
   }
 
@@ -751,9 +782,13 @@ class LspManager {
    * Runs code action `args.id` of the list last offered to `holder` for this document: resolved
    * first when the server left its edit out, then its edit applied (edits.js) and its command run by
    * the host (`workspace/executeCommand`, only a command the server declared). One use: the list is
-   * gone after it.
+   * gone after it. `signal` (the page's cancel or deadline, serve.js) stops it between steps and
+   * cancels the request in flight: nothing is applied or run after the page gave up.
    */
-  async runCodeAction(holder, rel, args) {
+  async runCodeAction(holder, rel, args, signal) {
+    const stop = () => {
+      if (signal && signal.aborted) throw new Error('cancelled')
+    }
     const doc = this.docOf(holder, rel)
     if (!doc) throw new Error('the document is not open for its language server')
     const entry = this.actions.get(holder)
@@ -766,21 +801,26 @@ class LspManager {
     let action = entry.kept.get(id)
     if (action.disabled) throw new Error(`not available: ${String(action.disabled.reason || '').slice(0, 200)}`)
     // A bare Command (an older server's answer) runs as it is.
+    stop()
     if (typeof action.command === 'string') {
-      await this.executeCommand(slot, srv, action)
+      await this.executeCommand(slot, srv, action, signal)
       return { result: { applied: true, files: 0, edits: 0 } }
     }
     const caps = srv.capabilities || {}
     if (!action.edit && !action.command && caps.codeActionProvider && caps.codeActionProvider.resolveProvider) {
-      const resolved = await srv.request('codeAction/resolve', action, { timeoutMs: EDIT_TIMEOUT_MS })
+      const resolved = await srv.request('codeAction/resolve', action, { timeoutMs: EDIT_TIMEOUT_MS, signal })
       if (resolved && typeof resolved === 'object') action = resolved
     }
+    stop()
     let applied = { applied: true, files: 0, edits: 0 }
     if (action.edit) {
-      applied = await applyWorkspaceEdit(this, action.edit, { versions: entry.versions })
+      applied = await applyWorkspaceEdit(this, action.edit, { versions: entry.versions, since: entry.since, signal })
       if (!applied.applied) return { result: applied }
     }
-    if (action.command && typeof action.command === 'object') await this.executeCommand(slot, srv, action.command)
+    if (action.command && typeof action.command === 'object') {
+      stop()
+      await this.executeCommand(slot, srv, action.command, signal)
+    }
     return { result: applied }
   }
 
@@ -789,7 +829,7 @@ class LspManager {
    * `executeCommandProvider` lists. A `workspace/applyEdit` it makes while this runs is applied
    * (serverApplyEdit); any other time it is refused.
    */
-  async executeCommand(slot, srv, cmd) {
+  async executeCommand(slot, srv, cmd, signal) {
     const caps = srv.capabilities || {}
     const listed = caps.executeCommandProvider && Array.isArray(caps.executeCommandProvider.commands) ? caps.executeCommandProvider.commands : []
     if (typeof cmd.command !== 'string' || !listed.includes(cmd.command)) throw new Error('the language server did not declare the command of that action')
@@ -797,8 +837,9 @@ class LspManager {
     if (args !== undefined && (!Array.isArray(args) || jsonLength(args) > MAX_COMMAND_CHARS)) throw new Error("the action's command is too large")
     slot.commands = (slot.commands || 0) + 1
     slot.commandVersions = this.versions()
+    slot.commandSince = Date.now()
     try {
-      await srv.request('workspace/executeCommand', args === undefined ? { command: cmd.command } : { command: cmd.command, arguments: args }, { timeoutMs: EDIT_TIMEOUT_MS })
+      await srv.request('workspace/executeCommand', args === undefined ? { command: cmd.command } : { command: cmd.command, arguments: args }, { timeoutMs: EDIT_TIMEOUT_MS, signal })
     } finally {
       slot.commands--
     }
@@ -813,7 +854,7 @@ class LspManager {
     if (slot.server !== srv || !(slot.commands > 0)) {
       return { applied: false, failureReason: "this editor applies a server's edit only while a command it ran is working" }
     }
-    const r = await applyWorkspaceEdit(this, edit, { versions: slot.commandVersions })
+    const r = await applyWorkspaceEdit(this, edit, { versions: slot.commandVersions, since: slot.commandSince })
     const out = { applied: r.applied }
     if (r.failureReason) out.failureReason = r.failureReason
     if (Number.isInteger(r.failedChange)) out.failedChange = r.failedChange

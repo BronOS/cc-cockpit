@@ -78,7 +78,16 @@ function setup(flags = []) {
   const got = (method) => read().filter((e) => e.in && e.in.method === method)
   const answers = (method) => read().filter((e) => e.answer && e.answer.method === method).map((e) => e.answer)
   const disk = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
-  return { m, root, outside, got, answers, disk, done: () => m.dispose() }
+  const done = async () => {
+    await m.dispose()
+    cleanup(root, outside, log)
+  }
+  return { m, root, outside, got, answers, disk, done }
+}
+
+/** The temp project, the outside folder and the server's log go after each test. */
+function cleanup(root, outside, log) {
+  for (const p of [root, path.dirname(outside), log]) if (p) fs.rmSync(p, { recursive: true, force: true })
 }
 
 /**
@@ -280,6 +289,7 @@ test('an outside file tab: read-only (why outside), only the path in its params;
   assert.equal(posted.at(-1).t, 'error')
   assert.match(fs.readFileSync(outside, 'utf8'), /^declare/)
   shared.watcher.close()
+  cleanup(root, outside)
 })
 
 // ---- code actions ----
@@ -403,7 +413,12 @@ test('serveLsp: the page\'s seq reaches the document; lsp-edit carries it and ls
   assert.deepEqual(await p, { applied: true })
   // An answer for an id nobody waits for is ignored.
   handle({ t: 'lsp-edit-done', id: 12345, applied: true })
-  assert.deepEqual(await doc.owner.applyEdits('src/a.ts', edits, 2, 30), { applied: false, reason: 'the page did not apply the edit in time' })
+  const slow = await doc.owner.applyEdits('src/a.ts', edits, 2, 30)
+  assert.equal(slow.applied, false)
+  assert.match(slow.reason, /did not answer in time \(it may still apply its part/)
+  // Its late "applied" is told to the page: its buffer holds a part the rest of the edit lacks.
+  handle({ t: 'lsp-edit-done', id: tab.last('lsp-edit').id, applied: true })
+  assert.match(tab.last('lsp-error').message, /applied here after the editor stopped waiting/)
   const late = doc.owner.applyEdits('src/a.ts', edits, 2, 2000)
   const holder = doc.owner
   tab.close()
@@ -441,7 +456,10 @@ test('host: a definition outside the project opens a read-only tab; a path no se
     },
   }
   host.activate(ctx)
-  t.after(() => host.deactivate())
+  t.after(async () => {
+    await host.deactivate()
+    cleanup(root, outside, log)
+  })
   await provided.editor.open('src/a.ts')
   const posted = []
   const listeners = []
@@ -463,4 +481,162 @@ test('host: a definition outside the project opens a read-only tab; a path no se
   await until(() => open.length === 2, 2000, 'outside tab')
   assert.deepEqual(open[1].params, { outside, line: 3, col: 1 })
   assert.equal(open[1].title, 'lib.d.ts')
+})
+
+// ---- review round: edits against moving documents, disk and names ----
+
+const one = (l1 = 0, c1 = 6, l2 = 0, c2 = 7, newText = 'z') => [{ range: { start: { line: l1, character: c1 }, end: { line: l2, character: c2 } }, newText }]
+const uriOf = (f, rel) => pathToFileURL(path.join(f.root, rel)).href
+
+test('applyTextEdits: \\r, \\n and \\r\\n are all line breaks; a character past the end stops before the break', () => {
+  const text = 'a\rbb\r\nc\nd'
+  assert.equal(applyTextEdits(text, one(1, 9, 1, 9, '!')), 'a\rbb!\r\nc\nd')
+  assert.equal(applyTextEdits(text, one(2, 0, 2, 1, 'C')), 'a\rbb\r\nC\nd')
+  assert.equal(applyTextEdits(text, one(3, 0, 3, 1, 'D')), 'a\rbb\r\nc\nD')
+  assert.throws(() => applyTextEdits(text, one(4, 0, 4, 0, 'x')), /outside the file/)
+})
+
+test('a second open file whose page typed while the first page applied its part is refused, its stale seq never sent', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  const b = page(f.m, 'src/b.ts', 'const b = 2\n')
+  a.open()
+  b.open()
+  await ready(f)
+  const asked = f.m.versions()
+  const applyA = a.applyEdits
+  // While the host waits for a's page, b's page types (its change reaches the host).
+  a.applyEdits = async (...args) => {
+    b.text = 'const b = 20\n'
+    f.m.change(b, 'src/b.ts', [{ text: b.text }], ++b.seq)
+    return applyA(...args)
+  }
+  const r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/a.ts')]: one(), [uriOf(f, 'src/b.ts')]: one() } }, { versions: asked })
+  assert.equal(r.applied, false)
+  assert.match(r.failureReason, /src\/b\.ts: changed while the edit was applied/)
+  assert.deepEqual([r.failedChange, r.files], [1, 1])
+  assert.equal(b.edits.length, 0)
+  assert.equal(b.text, 'const b = 20\n')
+})
+
+test('a file open when the host asked and closed since is refused, not written from disk', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const b = page(f.m, 'src/b.ts', 'const bb = 2\n')
+  b.open()
+  await ready(f)
+  const asked = f.m.versions()
+  f.m.close(b, 'src/b.ts')
+  const r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/b.ts')]: one() } }, { versions: asked })
+  assert.match(r.failureReason, /src\/b\.ts was closed while the language server worked/)
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+})
+
+test('a file closed and opened again gets a new version: an edit computed before the close does not match it', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const asked = f.m.versions()
+  f.m.close(a, 'src/a.ts')
+  a.text = 'let other = 1\n'
+  a.open()
+  assert.notEqual([...f.m.docs.values()][0].version, asked.get(uriOf(f, 'src/a.ts')))
+  const r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/a.ts')]: one() } }, { versions: asked })
+  assert.match(r.failureReason, /changed while the language server worked/)
+  assert.equal(a.text, 'let other = 1\n')
+})
+
+test("an ownership handoff clears the seq: an edit before the new owner's text lands names none", async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  const b = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  b.open()
+  const doc = [...f.m.docs.values()][0]
+  assert.equal(doc.seq, 1)
+  f.m.close(a, 'src/a.ts')
+  assert.equal(doc.owner, b)
+  assert.equal(doc.seq, undefined)
+  b.open() // its lsp-open after the resync
+  assert.equal(doc.seq, 2)
+})
+
+test('a disk file written after the host asked is refused; a lost concurrent write is reported with the file counted', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const since = Date.now()
+  await sleep(30)
+  fs.writeFileSync(path.join(f.root, 'src/b.ts'), 'const bb = 2\n')
+  let r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/b.ts')]: one() } }, { since })
+  assert.match(r.failureReason, /changed on disk while the language server worked/)
+  assert.equal(f.disk('src/b.ts'), 'const bb = 2\n')
+  // saveFile's `written` answer: the edit IS on disk, another write into the old file is lost.
+  const save = files.saveFile
+  files.saveFile = (...args) => ({ ...save(...args), result: 'changed', written: true })
+  t.after(() => (files.saveFile = save))
+  r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/b.ts')]: one(), [uriOf(f, 'src/a.ts')]: one() } }, { since: Date.now() })
+  files.saveFile = save
+  assert.deepEqual([r.applied, r.files, r.edits, r.failedChange], [false, 1, 1, 0])
+  assert.match(r.failureReason, /the edit was written, but another program wrote the file/)
+  assert.equal(f.disk('src/b.ts'), 'const zb = 2\n')
+  assert.equal(f.disk('src/a.ts'), 'const a = 1\n')
+})
+
+test("open files are applied before disk files: a page refusing leaves the disk untouched, the index is the server's", async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  a.refuse = 'the file changed while the language server worked; try again'
+  const r = await applyWorkspaceEdit(f.m, { documentChanges: [{ textDocument: { uri: uriOf(f, 'src/b.ts'), version: null }, edits: one() }, { textDocument: { uri: uriOf(f, 'src/a.ts'), version: null }, edits: one() }] })
+  assert.deepEqual([r.applied, r.failedChange, r.files], [false, 1, 0])
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+})
+
+test("one file under two names (a symlinked folder) is one file: twice refused, and the open document takes the alias's edit", async (t) => {
+  const f = setup()
+  t.after(f.done)
+  fs.symlinkSync(path.join(f.root, 'src'), path.join(f.root, 'alias'))
+  let r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/b.ts')]: one(), [uriOf(f, 'alias/b.ts')]: one(0, 10, 0, 11, '3') } })
+  assert.match(r.failureReason, /changed twice/)
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'alias/a.ts')]: one() } })
+  assert.equal(r.applied, true)
+  assert.equal(a.text, 'const z = 1\n')
+  assert.equal(f.disk('src/a.ts'), 'const a = 1\n')
+})
+
+test('runCodeAction: a page that gave up (its signal aborted) gets nothing applied', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }
+  const list = (await f.m.ask(a, 'codeActions', 'src/a.ts', { range })).result
+  const ctl = new AbortController()
+  ctl.abort()
+  await assert.rejects(f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: list[0].id }, ctl.signal), /cancelled/)
+  assert.equal(a.text, 'const a = 1\n')
+  assert.equal(a.edits.length, 0)
+})
+
+test('outside paths: system trees and credential folders never open, whoever names them', () => {
+  for (const p of ['/proc/self/environ', '/sys/kernel', '/dev/null', path.join(os.homedir(), '.ssh/id_ed25519'), path.join(os.homedir(), '.config/cc-cockpit/app.json')]) {
+    assert.equal(files.outsideRefused(p), true, p)
+  }
+  assert.equal(files.outsideRefused('/usr/lib/node_modules/x/index.d.ts'), false)
+  assert.throws(() => files.readOutside('/proc/self/environ'), /not shown outside the project/)
+  const m = Object.create(LspManager.prototype)
+  m.outside = new Map()
+  m.allowOutside('/proc/self/environ')
+  assert.equal(m.allowsOutside('/proc/self/environ'), false)
 })

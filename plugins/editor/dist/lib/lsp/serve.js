@@ -62,12 +62,16 @@ function serveLsp(tab, manager, log) {
   const opens = new Map() // path -> { parts, got, length, timer, seq }
   const asks = new Map() // req -> AbortController
   const edits = new Map() // id -> { resolve, timer }: lsp-edit messages waiting for the page
+  const late = new Set() // ids the host stopped waiting for (the page may still apply them)
   let nextEdit = 0
 
   /**
    * Hands `list` (checked TextEdits for `rel`, lib/lsp/edits.js) to this page to apply to its buffer.
    * Resolves `{ applied, reason? }`: the page's answer, or a refusal when it is gone, too slow or the
-   * edits do not fit in one message.
+   * edits do not fit in one message. A page that is only slow (a browser view far away) still gets
+   * the message and may apply it after the host gave up: the message is already on its way, and the
+   * port keeps order, so no cancel could overtake it. The reason says so, and a late "applied" is
+   * told to the page (`lsp-error`), whose buffer then holds the part of the edit the rest lacks.
    */
   holder.applyEdits = (rel, list, seq, timeoutMs) =>
     new Promise((resolve) => {
@@ -76,7 +80,9 @@ function serveLsp(tab, manager, log) {
       if (JSON.stringify(m).length > ANSWER_BUDGET) return resolve({ applied: false, reason: 'the edit is too large to send to the page' })
       const timer = setTimeout(() => {
         edits.delete(m.id)
-        resolve({ applied: false, reason: 'the page did not apply the edit in time' })
+        late.add(m.id)
+        if (late.size > 100) late.delete(late.values().next().value)
+        resolve({ applied: false, reason: 'the page did not answer in time (it may still apply its part; undo it there if so)' })
       }, timeoutMs)
       if (typeof timer.unref === 'function') timer.unref()
       edits.set(m.id, { resolve, timer })
@@ -228,6 +234,8 @@ function serveLsp(tab, manager, log) {
             edits.delete(m.id)
             clearTimeout(e.timer)
             e.resolve({ applied: m.applied === true, ...(typeof m.reason === 'string' ? { reason: m.reason.slice(0, 300) } : {}) })
+          } else if (late.delete(m.id) && m.applied === true) {
+            fail(typeof m.path === 'string' ? m.path : undefined, new Error('a language server edit was applied here after the editor stopped waiting; the other files of it were not changed (undo it if it should go)'))
           }
           break
         }
