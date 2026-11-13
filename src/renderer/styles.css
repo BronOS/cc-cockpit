@@ -980,6 +980,9 @@ iframe:focus-visible {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* Its own stacking context: the split view's dividers (z-index 7) and drop preview stay inside
+     it, under every menu and popup drawn outside it (the New tab menu was under a divider). */
+  isolation: isolate;
 }
 .terminal-view {
   position: absolute;

@@ -5,7 +5,6 @@
 // bundled into the web shell, so no Node (`Buffer`) and no Electron.
 
 import type { IpcEventMap, LayoutView, OverlayInfo, TabInfo } from './ipc'
-import type { GroupsSnapshot } from './tab-groups'
 import type { ProjectColor } from './project-color'
 import type { WebAccessMode } from './types'
 import type { ViewId } from './views'
@@ -529,11 +528,6 @@ export interface WebSnapshot {
    * reads as false.
    */
   server?: boolean
-  /**
-   * The project's split groups and its tab order (main/tabs/tab-groups.ts), as `groups.changed`
-   * carries them; later snapshots have a higher `seq`. Absent (an older fixture) reads as no groups.
-   */
-  groups?: GroupsSnapshot
 }
 
 /**

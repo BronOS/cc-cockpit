@@ -121,6 +121,37 @@ describe('pane commands', () => {
     expect(h.sent.at(-1)).toEqual(['dissolve', 'g'])
   })
 
+  describe('D23 R1: keys off, commands on the focused pane do nothing', () => {
+    // c closed in another view: the view shows d (the pane that took c's space) with the keys off.
+    const off = () => {
+      const h = harness('c', [{ type: 'removed', tabId: 'c', gen: 1 }])
+      expect(h.state().keysOff).toBe(true)
+      return h
+    }
+    it.each([
+      ['split', ['pane.splitRight', 'pane.splitDown']],
+      ['show beside', ['pane.showBesideRight', 'pane.showBesideDown']],
+      ['move out', ['pane.moveOut']],
+      ['zoom', ['pane.zoom']],
+      ['resize', ['pane.resizeLeft', 'pane.resizeRight', 'pane.resizeUp', 'pane.resizeDown']],
+      ['move', ['pane.moveLeft', 'pane.moveRight', 'pane.moveUp', 'pane.moveDown']]
+    ])('%s', (_family, names) => {
+      const h = off()
+      const before = h.state()
+      for (const n of names) h.handlers[n]!()
+      expect(h.sent).toEqual([])
+      expect(h.intents).toEqual([])
+      expect(h.state()).toBe(before)
+    })
+    it('the same commands act once the keys are back on', () => {
+      const h = off()
+      h.handlers['pane.focusUp']!()
+      expect(h.state().keysOff).toBe(false)
+      h.handlers['pane.zoom']!()
+      expect(Object.keys(h.state().zoomed)).toEqual(['g'])
+    })
+  })
+
   it('tells the person what a refusal means', () => {
     expect(refusalText('full')).toMatch(/8 panes/)
     expect(refusalText('too-many-groups')).toMatch(/32/)

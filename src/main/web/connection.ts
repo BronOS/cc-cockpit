@@ -30,7 +30,6 @@
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
-import type { GroupsSnapshot } from '../../shared/tab-groups'
 import { remoteViewId, type ViewId } from '../../shared/views'
 import { MAX_VIEWS_PER_DEVICE_WINDOW, MAX_WEBVIEW_FRAME_BYTES, type WebPagePaths, type WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
@@ -161,8 +160,6 @@ export interface SnapshotSources {
   signIns?: { pendingFor(windowId: number): NonNullable<WebSnapshot['signIns']> }
   /** Main's server-mode flag, passed on as `WebSnapshot.server` (a UI hint). Absent: false. */
   server?: boolean
-  /** A plain read of the project's split groups and tab order (TabGroups.get). Absent: none. */
-  groups?: { get(projectId: string): GroupsSnapshot }
 }
 
 /** The window's state for `ready` (`WebConnectionDeps.snapshot`); throws when the project is gone. */
@@ -178,10 +175,7 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
     trashAsks: sources.trashAsks?.pendingFor(windowId) ?? [],
     notices: sources.notices?.pendingFor(windowId) ?? [],
     signIns: sources.signIns?.pendingFor(windowId) ?? [],
-    server: sources.server === true,
-    // Taken in the same tick as `tabs`, and before the view is registered: every `groups.changed`
-    // after it reaches the view, with a higher `seq`.
-    ...(sources.groups ? { groups: sources.groups.get(projectId) } : {})
+    server: sources.server === true
   }
 }
 

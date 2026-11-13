@@ -138,9 +138,68 @@ describe('ViewTerminals.selectGroup', () => {
     t.vt.selectGroup(['a', 'b', 'c'])
     t.tick()
     expect(t.joined()).toEqual(['a', 'b', 'c'])
-    // Another group selected while one is still queued: the old queue is dropped.
+    // Another group selected while c's snapshot is still out: c stays in flight (D23 R4), d joins at
+    // once, and the old queue is dropped.
     t.vt.selectGroup(['d', 'a'])
-    expect(t.vt.queued()).toEqual(['d', 'a'])
+    expect(t.vt.queued()).toEqual(['c', 'd', 'a'])
+  })
+
+  it('a reselect keeps the join in flight: the queue waits for its snapshot (D23 R4)', () => {
+    const t = setup()
+    t.vt.selectGroup(['a', 'b', 'c', 'd'])
+    t.snapshot('a')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b'])
+    // b's snapshot is still in the worker (not in bufferedAmount) when another view edits the group:
+    // groups.changed re-runs the selection. b must still hold the queue, or c joins beside it.
+    t.vt.selectGroup(['a', 'b', 'c', 'd'])
+    t.tick()
+    t.vt.selectGroup(['a', 'c', 'b', 'd'])
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b'])
+    expect(t.vt.queued()).toEqual(['b', 'c', 'b', 'd'])
+    t.snapshot('b')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b', 'c'])
+    t.snapshot('c')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('a reselect onto a new pane joins it at once, and the queue waits for both snapshots', () => {
+    const t = setup()
+    t.vt.selectGroup(['a', 'b', 'c'])
+    t.snapshot('a')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b'])
+    // The person selects d (its own group with c) while b is still in flight.
+    t.vt.selectGroup(['d', 'c'])
+    expect(t.joined()).toEqual(['a', 'b', 'd'])
+    expect(t.vt.queued()).toEqual(['b', 'd', 'c'])
+    t.snapshot('d')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b', 'd'])
+    t.snapshot('b')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b', 'd', 'c'])
+  })
+
+  it('an in-flight join that stops being followed no longer holds a reselect', () => {
+    const t = setup()
+    t.vt.selectGroup(['a', 'b', 'c'])
+    t.snapshot('a')
+    t.tick()
+    // b goes before its snapshot (the page left it): c may go; c is then still in flight.
+    t.vt.leave('b')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b', 'c'])
+    t.vt.selectGroup(['a', 'd'])
+    t.tick()
+    expect(t.vt.queued()).toEqual(['c', 'd'])
+    t.vt.leave('c')
+    t.tick()
+    expect(t.joined()).toEqual(['a', 'b', 'c', 'd'])
+    expect(t.vt.queued()).toEqual(['d'])
   })
 
   it('a disposed view joins nothing more', () => {

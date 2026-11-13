@@ -452,7 +452,8 @@ plain tab has no group, and a project without groups behaves as before.
   Show beside, move between groups), `groups.remove`, `groups.dissolve`, `groups.resize` (once, on
   drag release), `groups.rename`, `groups.get`; `tabs.create` with `beside` creates and places in one
   step (a refused placement leaves the tab plain); `tabs.reorder` with `block` moves a whole group,
-  and a member dropped outside its segment without it leaves the group. Every id is looked up in the
+  and a member dropped outside its segment without it leaves the group (any index within the
+  segment's span, ends included, is a no-op: D24 Q3). Every id is looked up in the
   sender's project (unknown and foreign are one refusal, with no event); all are REMOTE_CLASS `yes`
   (a browser may rearrange, D12). Each change, and each change of the tab order, publishes one whole
   snapshot `groups.changed { seq, order, groups }` through `ViewRegistry` to every view (the sender
@@ -465,10 +466,12 @@ plain tab has no group, and a project without groups behaves as before.
   did not come back, such as a dropped plugin command tab or a failed spawn, is pruned) before the
   desktop's `tabs.list` reply. A window reopen (`requeue`) saves and queues the live groups the same
   way.
-- *Browsers.* `WebSnapshot.groups` carries the snapshot at `ready`. A browser selecting a member
-  follows every pane of its group (`ViewTerminals.selectGroup`, the list from main's groups): the
-  selected one first, the others one at a time, each after the previous snapshot went out and the
-  socket drained below 1 MiB; a group gaining a member joins it for every view showing that group.
+- *Browsers.* A browser reads the groups with `groups.get` after its tab list, like the desktop (the
+  `ready` snapshot has no groups). A browser selecting a member follows every pane of its group
+  (`ViewTerminals.selectGroup`, the list from main's groups): the selected one first, the others one
+  at a time, each after the previous snapshot went out and the socket drained below 1 MiB; a group
+  gaining a member joins it for every view showing that group. A reselect (every `groups.changed`
+  re-runs it) replaces the queue but never forgets a join whose snapshot is still out (D23 R4).
 - *Plugins.* `ctx.sessions.open` / `openShell` / `openCommand` take `beside` (a tab of the host's own
   window, looked up in host-api before the open budget is spent; unknown and foreign are one error) and
   `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin`), and
@@ -477,18 +480,21 @@ plain tab has no group, and a project without groups behaves as before.
   remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups
   or names a `groups.*` channel (`no-plugin-group-edits.test.ts`). `SessionInfo` has no group (D11),
   and there is no `ccc` command.
-- *Focus (D3, D18, D22).* Nothing done elsewhere moves a view's keys: no group op, close, snapshot or
-  restore sends `tabs.select`, and only the person's own act (a click on a pane or in the strip, a
-  pane chord, their own close, Move out or Ungroup) chooses a focused pane. When the focused pane
-  leaves its group because of a change elsewhere (another view closed it, moved it out or ungrouped
-  the group), the page keeps showing the rest of the group with the pane that took its
-  space as the view's tab, but marks no pane focused, gives no terminal the keys and sends no
-  `tabs.selected` until the person acts (`keysOff` in `renderer/state/groups-state.ts`). Their own
-  close or move out moves the focus to the pane that took the space, keys on; their own placement or
-  Ungroup keeps it on the same terminal. A group that dissolves while the focused tab is still open
-  (an Ungroup, one of two panes moved out) keeps that terminal shown: keys on when this view's own
-  edit did it (the page knows the edits it sent), keys off when it came from elsewhere (D22). A
-  plain tab closed elsewhere keeps the strip's rule. A pane hidden by zoom never takes the keys or the size.
+- *Focus (D3, D18, D22, D23, D24).* Nothing done elsewhere moves a view's keys: no group op, close,
+  snapshot or restore sends `tabs.select`, and only the person's own act (a click on a pane or in
+  the strip, a pane chord, their own close, Move out or Ungroup) chooses a focused pane. After a
+  change elsewhere a view never follows its tab into an arrangement made elsewhere, and its keys go
+  off (no pane marked focused, no terminal with the keys, no `tabs.selected` until the person acts;
+  `keysOff` in `renderer/state/groups-state.ts`): a focused tab closed shows the pane that took its
+  space; one now plain (moved out, its group ungrouped or dissolved) stays shown; one moved into
+  another group shows what is left of its old group (or that group's remaining plain tab). The
+  person's own close or move out moves the focus to the pane that took the space, keys on; their own
+  placement or Ungroup, or moving the other of two panes out, keeps it on the same terminal, keys on
+  (the page knows the edits it sent). A plain tab closed elsewhere keeps the strip's rule. While the
+  keys are off, commands on the active tab (`tab.close`, the flag, `pane.*` split, show beside, move
+  out, zoom, resize, move) do nothing, and a `tabs.select` from main naming a pane the view shows is
+  ignored (main's view of the selection is stale then). A pane hidden by zoom never takes the keys
+  or the size.
 - *Strip.* A group is a bracketed segment of its members with a handle; every member keeps its own
   tab with its dot, tint, flag and label, zoomed or not, so a member that needs permission or waits
   for input always shows in the strip (the handle's description also names every asking member in

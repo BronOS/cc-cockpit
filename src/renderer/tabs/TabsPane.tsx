@@ -22,7 +22,7 @@ import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
 import { currentShellChrome, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
-import { paneView, type PaneView } from '../state/groups-state'
+import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
 import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
@@ -133,6 +133,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // A see-through window's tab terminals let its glass through; overlays keep their own registry,
   // opaque (OverlayStack).
   const [sessions] = useState(() => new SessionRegistry(tabIo, { seeThrough: isSeeThrough() }))
+  // The 20x5 minimum (a split, a divider's stop) counts the cells the pty will really get (qa run 1
+  // Q4): xterm's measured cell when a terminal has one at the set font, else the estimate.
+  const cellNow = useCallback((): Size => sessions.cellSize() ?? cell, [sessions, cell])
   const [error, setError] = useState<string | null>(null)
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
@@ -262,6 +265,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // A plugin focused this window's tab (ctx.sessions.focus, e.g. the cockpit.sessions strip of
     // any window): main already focused the window; only the selection is ours.
     const offSelect = window.cockpit.on('tabs.select', ({ tabId }) => {
+      if (ignoresMainSelect(stateRef.current.keysOff, viewRef.current.visible, tabId)) return
       dispatch({ type: 'selected', tabId })
     })
     // A tab main started on its own (a plugin's ctx.sessions.open). One that arrives before the
@@ -583,9 +587,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const splitBlocked = useCallback(
     (tabId: string, edge: PaneEdge): string | undefined => {
       if (area.width === 0) return undefined
-      return splitFits(paneSize(tabId), edge, cell) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
+      return splitFits(paneSize(tabId), edge, cellNow()) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
     },
-    [area, cell, paneSize]
+    [area, cellNow, paneSize]
   )
   // Split right / down: the New tab menu at the new pane's place (D13), with a preview of it.
   const [splitMenu, setSplitMenu] = useState<SplitMenu | null>(null)
@@ -1069,13 +1073,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       [SWITCH_PREV]: () => switchTabs(-1, !fromKey.current),
       'tab.newClaude': () => actions.current.create('claude'),
       'tab.newShell': () => actions.current.create('shell'),
+      // D23 R1: while the keys are off (D18) the active tab is one the person did not pick and the
+      // strip shows none selected; ⌘W or the flag chord must not act on it.
       'tab.close': () => {
         const id = stateRef.current.activeId
-        if (id) actions.current.close(id)
+        if (id && !stateRef.current.keysOff) actions.current.close(id)
       },
       [TOGGLE_FLAG_COMMAND]: () => {
         const id = stateRef.current.activeId
-        if (id) actions.current.toggleFlag(id)
+        if (id && !stateRef.current.keysOff) actions.current.toggleFlag(id)
       },
       'palette.open': () => {
         setPaletteCommands((open) => (open ? null : runnableCommands()))
@@ -1210,9 +1216,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   // The split view's commands (D10). They read the state through refs, like the handlers above, and
   // act through the same group channels as the strip's menus.
-  const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cell })
+  const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cellNow })
   useEffect(() => {
-    paneActions.current = { openSplit, groupEdit, ungroup, area, cell }
+    paneActions.current = { openSplit, groupEdit, ungroup, area, cellNow }
   })
   useEffect(
     () =>
@@ -1234,8 +1240,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             if (stateRef.current.activeId && stateRef.current.tabs.length > 1) setBesidePick({ edge })
           },
           minShare: (axis) => {
-            const { area: a, cell: c } = paneActions.current
-            return dragMinShare(axis === 'row' ? a.width : a.height, axis, c)
+            const { area: a, cellNow: c } = paneActions.current
+            return dragMinShare(axis === 'row' ? a.width : a.height, axis, c())
           },
           report: setError
         })
@@ -1306,7 +1312,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           keysOff={state.keysOff}
           sessions={sessions}
           details={own}
-          cell={cell}
+          cell={cellNow}
           onArea={setArea}
           onPanePress={(tabId) => dispatch({ type: 'selected', tabId })}
           onResize={(groupId, splitId, sizes) =>
@@ -1333,7 +1339,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           placeholder="Type a tab name"
           onRun={(tabId) => {
             const at = stateRef.current.activeId
-            if (at) placeTab(tabId, at, besidePick.edge, false)
+            if (at && !stateRef.current.keysOff) placeTab(tabId, at, besidePick.edge, false)
           }}
           onClose={() => {
             setBesidePick(null)
