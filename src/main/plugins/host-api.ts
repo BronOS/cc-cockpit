@@ -36,6 +36,14 @@
 //   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
 //                                                                declares (any kind), checked again here
 //                                                                (shared/panel-header.ts); null clears it
+//   tabs.openPage   { pluginId, type, params?, title, icon?, focus? } -> { tabId }  a page tab of one of
+//                                                                the plugin's own declared types in this
+//                                                                project's window (design-editor.md §1); the
+//                                                                spec checked again by the tab manager, the
+//                                                                page-tab open budget
+//   tabs.list       { pluginId, type }         -> PageTabInfo[]  the plugin's own page tabs of that type here
+//   tabs.setTitle   { pluginId, tabId, title, icon? } -> null    a page tab of THIS project that is the
+//                                                                plugin's own; the title budget
 //   slots.available { pluginId, type }                    -> boolean  whether a provider would draw a slot of
 //                                                                `type` here now (ctx.slots.available)
 //   panels.slots    { pluginId, panelId, placements } -> null    slot placements in the column of a panel the
@@ -184,12 +192,13 @@ import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler, RpcMeta } from '../../host/rpc'
 import type { ViewId } from '../../shared/views'
-import type { OAuthTokens, OverlayResult as PluginOverlayResult, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
+import type { OAuthTokens, OverlayResult as PluginOverlayResult, PageTabInfo, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
-import type { PanelBadge, PanelHeaderInfo } from '../../shared/ipc'
+import type { PanelBadge, PanelHeaderInfo, TabInfo } from '../../shared/ipc'
 import { isPanelHeaderIcon, parsePanelHeader, type CleanPanelHeader } from '../../shared/panel-header'
 import { isAppSlotType, parseSlotPlacements, SLOT_TYPE_PATTERN, type SlotPlacement } from '../../shared/slots'
+import { checkPageTabSpec, pageTabIconOf, pageTabTitleOf, type PageTabSpec } from '../../shared/page-tabs'
 import {
   MAX_OVERLAY_MESSAGE_LENGTH,
   OverlayOutbox,
@@ -245,6 +254,16 @@ export const MAX_SESSION_FILES_PER_WINDOW = 20
 /** ctx.sessions.rename per plugin: a label on the person's tab, a few per click at most. */
 export const RENAME_WINDOW_MS = 60_000
 export const MAX_RENAMES_PER_WINDOW = 30
+/**
+ * ctx.tabs.openPage per plugin (design-editor.md §1): each one is a tab in the person's bar, with no
+ * process (unlike sessions.open). The editor opens one per file click, `ccc edit` or go-to-definition;
+ * a loop must not fill the bar (the 64-per-plugin cap holds besides).
+ */
+export const PAGE_TAB_OPEN_WINDOW_MS = 10_000
+export const MAX_PAGE_TAB_OPENS_PER_WINDOW = 20
+/** A page tab's setTitle per plugin: a label change, a few per save or rename, not a ticker. */
+export const PAGE_TAB_TITLE_WINDOW_MS = 10_000
+export const MAX_PAGE_TAB_TITLES_PER_WINDOW = 60
 /** ctx.overlay.open per plugin: started per window, and open at the same time. */
 export const OVERLAY_WINDOW_MS = 60_000
 export const MAX_OVERLAYS_PER_WINDOW = 10
@@ -424,6 +443,21 @@ export interface HostApiDeps {
     windowId: number,
     focus?: boolean
   ): Promise<{ id: string }>
+  /**
+   * Open a page tab in the project (TabManager.createPage, which checks the spec again and holds the
+   * per-plugin cap) and tell its window, as `openShellTab` does. `spec.plugin` is the plugin HostApi
+   * resolved from the host's own list; its type one that plugin declares. Without it ctx.tabs.openPage
+   * is refused.
+   */
+  openPageTab?(projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<{ id: string }>
+  /** The project's tabs (TabManager.list), for ctx.tabs.list and the setTitle check. Without it both are refused. */
+  listTabs?(projectId: string): TabInfo[]
+  /**
+   * A page tab's title and icon (TabManager.setPageTitle: checked and clamped again there, told to
+   * every view). HostApi checked the tab is the plugin's own page tab of this project. Without it
+   * setTitle is refused.
+   */
+  setPageTabTitle?(projectId: string, tabId: string, title: string, icon: string | undefined): void
   /** LayoutService.setBadge: false for a panel the project does not have. */
   setBadge(projectId: string, panelKey: string, badge: PanelBadge | null): boolean
   /**
@@ -543,6 +577,8 @@ export interface HostApiPlugin {
   sessionsAll?: boolean
   /** The ids of its manifest `contributes.themes`: the only ones ctx.themes.set may replace. Absent is none. */
   themes?: readonly string[]
+  /** The types of its manifest `contributes.tabs`: the only page tabs ctx.tabs may open or list. Absent is none. */
+  pageTabs?: readonly string[]
 }
 
 /** Who is asking: fixed when main spawned the host process. */
@@ -734,6 +770,8 @@ export class HostApi {
   private readonly closes = new RateWindow(MAX_CLOSES_PER_WINDOW, CLOSE_WINDOW_MS)
   private readonly sessionFiles = new RateWindow(MAX_SESSION_FILES_PER_WINDOW, SESSION_FILE_WINDOW_MS)
   private readonly renames = new RateWindow(MAX_RENAMES_PER_WINDOW, RENAME_WINDOW_MS)
+  private readonly pageTabOpens = new RateWindow(MAX_PAGE_TAB_OPENS_PER_WINDOW, PAGE_TAB_OPEN_WINDOW_MS)
+  private readonly pageTabTitles = new RateWindow(MAX_PAGE_TAB_TITLES_PER_WINDOW, PAGE_TAB_TITLE_WINDOW_MS)
   /**
    * Plugins whose webviews this host drove, or whose earlier copy declared webview panels (a dev reload
    * may drop them from the scope before that copy's ctx ends): torn down when their ctx ends (contextDisposed) or the process goes.
@@ -820,6 +858,9 @@ export class HostApi {
       'panels.header': (params) => this.panelHeader(params),
       'panels.slots': (params) => this.panelSlots(params),
       'slots.available': (params) => this.slotAvailable(params),
+      'tabs.openPage': (params) => this.openPage(params),
+      'tabs.list': (params) => this.listPageTabs(params),
+      'tabs.setTitle': (params) => this.setPageTabTitle(params),
       'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
@@ -1386,6 +1427,93 @@ export class HostApi {
       focus === true
     )
     return { tabId: tab.id }
+  }
+
+  /**
+   * ctx.tabs.openPage (design-editor.md §1): a page tab of one of the plugin's OWN declared types, in
+   * the host's own project and window. The plugin is the host's (never one the request names
+   * unchecked), the type its manifest's; params, title and icon are checked here (checkPageTabSpec)
+   * before the budget is spent, and again by the tab manager. A refusal there (the per-plugin cap)
+   * gives the token back: it opened nothing.
+   */
+  private async openPage(params: unknown): Promise<{ tabId: string }> {
+    this.alive()
+    const { pluginId, type, params: tabParams, title, icon, focus } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'tabs.openPage')
+    const pageType = this.declaredPageTab(plugin, type, 'tabs.openPage')
+    if (focus !== undefined && typeof focus !== 'boolean') throw new Error('tabs.openPage: focus must be a boolean')
+    if (!this.deps.openPageTab) throw new Error('tabs.openPage: page tabs are not available')
+    let spec: PageTabSpec
+    try {
+      spec = checkPageTabSpec(
+        { plugin: plugin.id, type: pageType, title, ...(tabParams !== undefined ? { params: tabParams } : {}), ...(icon !== undefined ? { icon } : {}) },
+        (v) => v === plugin.id
+      )
+    } catch (err) {
+      throw withMethod('tabs.openPage', err)
+    }
+    if (!this.pageTabOpens.take(plugin.id)) {
+      throw new Error(`tabs.openPage: more than ${MAX_PAGE_TAB_OPENS_PER_WINDOW} tabs in ${PAGE_TAB_OPEN_WINDOW_MS / 1000} s`)
+    }
+    try {
+      // The host's own window, never one the plugin names; only that window is told to select it.
+      const tab = await this.deps.openPageTab(this.scope.projectId, spec, this.scope.windowId, focus === true)
+      return { tabId: tab.id }
+    } catch (err) {
+      this.pageTabOpens.refund(plugin.id)
+      throw withMethod('tabs.openPage', err)
+    }
+  }
+
+  /** ctx.tabs.list: the plugin's own page tabs of one of its declared types in this project, in tab order. */
+  private listPageTabs(params: unknown): PageTabInfo[] {
+    this.alive()
+    const { pluginId, type } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'tabs.list')
+    const pageType = this.declaredPageTab(plugin, type, 'tabs.list')
+    if (!this.deps.listTabs) throw new Error('tabs.list: page tabs are not available')
+    return this.deps.listTabs(this.scope.projectId).flatMap((t) => {
+      const page = t.kind === 'page' ? t.page : undefined
+      if (!page || page.plugin !== plugin.id || page.type !== pageType) return []
+      // Field by field: nothing else of the tab (flag, dirty, other views) goes to the plugin.
+      const out: { id: string; type: string; params: PageTabInfo['params']; title: string; icon?: string } = {
+        id: t.id,
+        type: page.type,
+        params: page.params === undefined ? undefined : structuredClone(page.params),
+        title: page.title
+      }
+      if (page.icon !== undefined) out.icon = page.icon
+      return [out]
+    })
+  }
+
+  /**
+   * A page tab's setTitle: only a page tab of THIS project that is the plugin's own (any type it
+   * declares). The id is the plugin's text, only looked up. Checked before the budget is spent.
+   */
+  private setPageTabTitle(params: unknown): null {
+    this.alive()
+    const { pluginId, tabId, title, icon } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'tabs.setTitle')
+    if (typeof tabId !== 'string') throw new Error('tabs.setTitle: tabId must be a string')
+    if (!this.deps.listTabs || !this.deps.setPageTabTitle) throw new Error('tabs.setTitle: page tabs are not available')
+    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
+    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.setTitle: no such page tab of this plugin')
+    if (pageTabTitleOf(title) === undefined) throw new Error('tabs.setTitle: title must be plain text')
+    if (icon !== undefined && pageTabIconOf(icon) === undefined) throw new Error('tabs.setTitle: icon must be a glyph name')
+    if (!this.pageTabTitles.take(plugin.id)) {
+      throw new Error(`tabs.setTitle: more than ${MAX_PAGE_TAB_TITLES_PER_WINDOW} in ${PAGE_TAB_TITLE_WINDOW_MS / 1000} s`)
+    }
+    this.deps.setPageTabTitle(this.scope.projectId, tabId, title as string, icon as string | undefined)
+    return null
+  }
+
+  /** `type` when it is one of the plugin's own `contributes.tabs` types, else a throw naming `what`. */
+  private declaredPageTab(plugin: HostApiPlugin, type: unknown, what: string): string {
+    if (typeof type !== 'string' || !(plugin.pageTabs ?? []).includes(type)) {
+      throw new Error(`${what}: not a page tab type of this plugin`)
+    }
+    return type
   }
 
   /**

@@ -147,6 +147,24 @@ with full Node access.
   provides it). A type is a name
   `^[a-z][a-z0-9-]{0,63}$`; any plugin defines one by using it. The user picks the provider per type under
   Settings > This Project > Services ("None" turns it off).
+- `ctx.tabs` (page tabs: tabs in the main tab bar whose content is your page, the types of your manifest
+  `contributes.tabs`, `ccc guide plugins`; every call throws for another type; an older app has none, so check
+  `typeof ctx.tabs === 'object'`): `openPage(type, params, { title, icon?, focus? })` opens one in this
+  project's window and resolves its id (`params` plain JSON of at most 4 KiB, `title` cut to 80 characters,
+  `icon` a glyph name such as `file`; `focus: true` selects it, else it opens with an unseen dot; at most 20
+  opens per 10 s and 64 page tabs per plugin per project, rejected past either). `list(type)` resolves your
+  open tabs of that type here, `[{ id, type, params, title, icon? }]`, in tab order. `onOpen(type, (tab) => …)`
+  hears a tab's frame connect in a view and returns a disposer; `tab` is `{ id, type, params, view, post(message),
+  onMessage(fn), onClose(fn), setTitle(title, icon?), onDiscuss(fn) }`. A tab shown in the desktop window and in
+  a browser has one instance per view (`view` is the browser's opaque id, `undefined` on the desktop); a host
+  restart, a browser reconnecting or a slow browser catching up gives the same page a new instance (the old one's
+  `onClose` runs first) and never reloads it, so keep per-file state by `tab.id` and let the page re-send what it
+  holds (`ccPanel.onConnect`). `post` / `onMessage` follow the panel message rules (JSON, 1 MiB).
+  `setTitle(title, icon?)` renames the tab (60 per 10 s). `onDiscuss(() => ({ text }) | null)` answers Ask
+  Claude: when the page calls `ccPanel.tab.discuss()` the app draws its question box over the tab, asks THIS
+  view's handlers for the context (5 s; the first `{ text }` wins, null passes on, a throw sends nothing) and
+  sends `About: <title>`, your text and the person's question to the Claude tab they pick, as their own text
+  through the send gate (so it reaches a tab they typed in, where `ctx.sessions.send` is refused).
 - `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):
   `onOpen((page) => …)` is the backend of your html settings page (manifest
   `contributes.settings.page`, `ccc guide settings-secrets`); it throws when the manifest declares

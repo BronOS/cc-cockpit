@@ -32,6 +32,8 @@
 //                                                 changes in this view, or not (sent on a change only)
 //   { type: 'cc-plugin.tab-key', chord }           an app chord typed in a page tab (one of `keys`): the
 //                                                 page did not handle it, the shell runs its command
+//   { type: 'cc-plugin.tab-discuss' }              `ccPanel.tab.discuss()`: Ask Claude from this page tab;
+//                                                 the shell draws its question box (design-editor.md §4)
 //
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
@@ -50,6 +52,7 @@ export const SLOT_WIDTH_MESSAGE = 'cc-plugin.slot-width'
 export const READY_MESSAGE = 'cc-plugin.ready'
 export const TAB_DIRTY_MESSAGE = 'cc-plugin.tab-dirty'
 export const TAB_KEY_MESSAGE = 'cc-plugin.tab-key'
+export const TAB_DISCUSS_MESSAGE = 'cc-plugin.tab-discuss'
 /** At most this many chords in a `cc-plugin.tab` `keys` list, each at most this long (a sane bound on shell data). */
 const MAX_FORWARDED_KEYS = 500
 const MAX_CHORD_LENGTH = 64
@@ -145,6 +148,13 @@ export interface TabPageApi {
    * Sent on a change only; the shell keeps it across reconnects.
    */
   setDirty(dirty: boolean): void
+  /**
+   * Ask Claude from this tab (design-editor.md §4; the editor's Ctrl+L or its context menu): the app
+   * draws its question box over the tab, then asks the plugin's `onDiscuss` (in the host) for the
+   * context of this view and sends it with the person's question to the Claude tab they pick. Shown
+   * only while this tab is the one on screen and its page has the keyboard.
+   */
+  discuss(): void
 }
 
 /**
@@ -389,7 +399,8 @@ export class PanelClient {
         if (dirty === this.dirty) return
         this.dirty = dirty
         this.toParent?.({ type: TAB_DIRTY_MESSAGE, dirty })
-      }
+      },
+      discuss: (): void => this.toParent?.({ type: TAB_DISCUSS_MESSAGE })
     })
   }
 

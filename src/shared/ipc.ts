@@ -1193,6 +1193,14 @@ export interface IpcInvokeMap {
   /** The titles of this project's page tabs with unsaved changes in any view (server mode's Close project asks with them). */
   'pageTabs.unsaved': { req: void; res: string[] }
   /**
+   * Ask Claude from a page tab (design-editor.md §4): the question box's Send. Main asks the tab's
+   * plugin for the context in the sender's view (its `onDiscuss`, 5 s), composes `About: <title>`, the
+   * context and the question, and sends it through the send gate as the person's text to `target` (a
+   * Claude tab of this window, checked before and after the ask) or a new session; then selects it.
+   * `{ error }` when nothing was sent (shown in the box). Refused for server mode's hidden page.
+   */
+  'pageTabs.discuss': { req: { tabId: string; question: string; target: DiscussTarget }; res: DiscussAnswer }
+  /**
    * A plugin's html settings page (design-next §5.4) for this window's project: null when the plugin
    * declares no page for `scope`; `enabled: false` when it does not run in this project (the page
    * shows "Enable … in this project"); else the page's `cc-plugin://` URL.
@@ -1885,6 +1893,7 @@ export const INVOKE_CHANNELS = [
   'pageTabs.disconnect',
   'pageTabs.dirty',
   'pageTabs.unsaved',
+  'pageTabs.discuss',
   'settingsPage.info',
   'settingsPage.connect',
   'settingsPage.disconnect',
@@ -2179,6 +2188,9 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'pageTabs.dirty': 'yes',
   // Read-only, the sender's project: what a browser's Close project names before it asks.
   'pageTabs.unsaved': 'yes',
+  // As overlays.discuss: the person in that view typed the question and pressed Send; main re-checks
+  // the tab and the target in the sender's own window and asks the sender's own view for the context.
+  'pageTabs.discuss': 'yes',
   'settingsPage.info': 'yes',
   'settingsPage.connect': 'yes',
   'settingsPage.disconnect': 'yes',

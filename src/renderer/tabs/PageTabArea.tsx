@@ -21,6 +21,20 @@ let frames: PageFrames | undefined
 /** Live frames take a new port at each web reconnect's `ready` (pool made or not: only live ones reconnect). */
 const readies = new ReadyReconnects(() => frames?.reconnect())
 
+/** Who opens Ask Claude's box for a page tab (TabsPane, which owns the modals); none: ignored. */
+let discussHandler: ((tabId: string) => void) | undefined
+
+/**
+ * TabsPane opens the question box when the shown page tab asks (`ccPanel.tab.discuss()`); returns the
+ * function that removes exactly this handler (a remount sets a new one first).
+ */
+export function setPageTabDiscussHandler(fn: (tabId: string) => void): () => void {
+  discussHandler = fn
+  return () => {
+    if (discussHandler === fn) discussHandler = undefined
+  }
+}
+
 /**
  * The web bridge's `ready` of generation `generation` (web/main.tsx, before the shell mounts): a
  * later one than the first is a web reconnect, and every live page tab frame takes a new port over
@@ -119,6 +133,7 @@ export function pageFrames(): PageFrames {
     chord: (chord) => {
       runForwardedChord(chord)
     },
+    discuss: (tabId) => discussHandler?.(tabId),
     theme: () => {
       const theme = currentTheme()
       return theme ? themeMessage(theme, isMac) : undefined

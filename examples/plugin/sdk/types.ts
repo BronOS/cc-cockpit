@@ -583,6 +583,51 @@ export interface SettingsPageInstance {
   onClose(listener: () => void): Disposer
 }
 
+/**
+ * One connected frame of a page tab of this plugin (`contributes.tabs`, `ctx.tabs.onOpen`): the tab's
+ * page in one view (the desktop window, or a web access browser). The same tab can be open in
+ * several views at once, each its own instance with its own line; a host restart, a browser
+ * reconnecting or a slow browser catching up gives the SAME page a new line (a new instance; the old
+ * one's `onClose` runs first), never a reload, so the page re-sends what it holds (`ccPanel.onConnect`).
+ */
+export interface PageTabInstance {
+  /** The app's tab id: the same in every view and across reconnects, for the tab's life. */
+  readonly id: string
+  readonly type: string
+  /** The params the tab was opened with (plain JSON, at most 4 KiB), as the app saved them. */
+  readonly params: JsonValue | undefined
+  /** The web access view this frame is in (opaque); `undefined`: the desktop window. */
+  readonly view: string | undefined
+  /** JSON only, at most 1 MiB, to the tab's page in this view (`ccPanel.onMessage`). Dropped once the line ended. */
+  post(message: JsonValue): void
+  /** What the tab's page in this view posts (`ccPanel.post`). */
+  onMessage(listener: (message: JsonValue) => void): Disposer
+  /** The line ended: the tab closed, its frame was dropped in this view, or a new line replaced it. */
+  onClose(listener: () => void): Disposer
+  /**
+   * The tab's title (cut to 80 characters) and optionally its icon name; the app checks the tab is
+   * still yours and open. Rejects when refused or over the budget.
+   */
+  setTitle(title: string, icon?: string): Promise<void>
+  /**
+   * Ask Claude from this tab (the page calls `ccPanel.tab.discuss()`): the app draws the question box
+   * and asks this view's handlers for the context, in the order added; the first `{ text }` wins
+   * (the editor's `src/x.ts:40-52` and the selection, fenced), null passes on. A throw or another
+   * shape sends nothing. The app sends `About: <title>`, your text and the person's question to the
+   * Claude tab they picked, as their own text.
+   */
+  onDiscuss(handler: () => { text: string } | null | Promise<{ text: string } | null>): Disposer
+}
+
+/** A page tab as `ctx.tabs.list` gives it. */
+export interface PageTabInfo {
+  readonly id: string
+  readonly type: string
+  readonly params: JsonValue | undefined
+  readonly title: string
+  readonly icon?: string
+}
+
 /** A theme's terminal palette (`ctx.themes.set`, the `xterm` object of a theme file). Colour strings. */
 export interface XtermTheme {
   foreground?: string
@@ -730,6 +775,27 @@ export interface PluginContext {
      * picked for this project and running. Asks the app, so it is a promise.
      */
     available(type: string): Promise<boolean>
+  }
+  /**
+   * Page tabs: tabs in the main tab bar whose content is this plugin's page (the types in the
+   * manifest's `contributes.tabs`; every call throws for another type). Older apps have no
+   * `ctx.tabs`: check `typeof ctx.tabs === 'object'` first.
+   */
+  readonly tabs: {
+    /**
+     * Open a page tab in this project's window and resolve its id. `params` plain JSON of at most 4
+     * KiB (what `onOpen` and the saved tab get back), `title` cut to 80 characters, `icon` a glyph
+     * name. `focus: true` selects it; otherwise it opens with the unseen dot. At most 64 page tabs
+     * per plugin per project, and a budget of opens per plugin; rejects when refused.
+     */
+    openPage(type: string, params: JsonValue | undefined, options: { title: string; icon?: string; focus?: boolean }): Promise<string>
+    /**
+     * A frame of a tab of `type` connected in a view (its page loaded, or got a new line): the
+     * listener gets that view's PageTabInstance. Listeners are dropped when the plugin stops.
+     */
+    onOpen(type: string, listener: (tab: PageTabInstance) => void): Disposer
+    /** This plugin's open page tabs of `type` in the project, in tab order. */
+    list(type: string): Promise<PageTabInfo[]>
   }
   /**
    * The backend of the plugin's html settings page (manifest `contributes.settings.page`), shown

@@ -132,13 +132,13 @@ External review: sol / high
 - Modify: `src/cli/guide/*.md`, `examples/plugin/sdk/types.ts`
 - Create: `test/unit/host-tabs.test.ts`, `test/unit/discuss-page-tabs.test.ts`
 
-- [ ] `ctx.tabs.openPage`, `onOpen`, `list`, the tab handle (`port`, `params`, `view`, `setTitle`); only the caller's
+- [x] `ctx.tabs.openPage`, `onOpen`, `list`, the tab handle (`port`, `params`, `view`, `setTitle`); only the caller's
   declared types, its own window, rate limit
-- [ ] Discuss from a page tab: core draws the question box, main asks the plugin's `onDiscuss` for context, sends
+- [x] Discuss from a page tab: core draws the question box, main asks the plugin's `onDiscuss` for context, sends
   person-origin through the send gate to the last used or picked Claude tab; text starts with `About:`
-- [ ] guide text and example types copy
-- [ ] write tests: foreign type refused, rate limit, Discuss target re-check, typed tab accepts person-origin text
-- [ ] run tests - must pass before next task
+- [x] guide text and example types copy
+- [x] write tests: foreign type refused, rate limit, Discuss target re-check, typed tab accepts person-origin text
+- [x] run tests - must pass before next task
 
 ### Task 5: Plugin API `ctx.processes` [model: opus]
 

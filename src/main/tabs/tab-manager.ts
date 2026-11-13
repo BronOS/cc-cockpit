@@ -14,7 +14,7 @@ import type { ScreenAnswer } from '../../shared/terminal-screen'
 import { checkSessionName } from '../../shared/session-name'
 import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
-import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, type PageTabSpec } from '../../shared/page-tabs'
+import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, pageTabIconOf, pageTabTitleOf, type PageTabSpec } from '../../shared/page-tabs'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
 import type { TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
@@ -596,6 +596,28 @@ export class TabManager {
     if (!tab?.unseen) return undefined
     delete tab.unseen
     return info(tab)
+  }
+
+  /**
+   * A page tab's title and icon from its plugin (ctx.tabs, a PageTabInstance's setTitle; HostApi
+   * checked the tab is that plugin's). Checked and clamped again here as at open (pageTabTitleOf,
+   * a bad icon refused rather than dropped: the caller asked for it by name). `icon` undefined keeps
+   * the current one. Saved with the tab and told to every view (`tabs.added`) when it changed.
+   */
+  setPageTitle(projectId: string, tabId: string, title: unknown, icon?: unknown): void {
+    const tab = this.require(projectId, tabId)
+    if (tab.kind !== 'page' || !tab.page) throw new Error('only a page tab has a title of its own')
+    const t = pageTabTitleOf(title)
+    if (t === undefined) throw new Error('a page tab needs a title of plain text')
+    const i = icon === undefined ? tab.page.icon : pageTabIconOf(icon)
+    if (icon !== undefined && i === undefined) throw new Error('a page tab icon must be a glyph name')
+    if (tab.page.title === t && tab.page.icon === i) return
+    const page: PageTabSpec = { ...tab.page, title: t }
+    if (i === undefined) delete page.icon
+    else page.icon = i
+    tab.page = page
+    this.options.emit(projectId, 'tabs.added', info(tab))
+    this.changed(projectId)
   }
 
   /**

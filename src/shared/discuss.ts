@@ -13,6 +13,12 @@ export const DISCUSS_ASK_MS = 5_000
 export const MAX_DISCUSS_NEW_SESSIONS = 5
 export const DISCUSS_NEW_WINDOW_MS = 60_000
 
+/**
+ * Ask Claude from a page tab (design-editor.md §4): the person's question typed in core's box, at most
+ * this many characters. Like the closing prompt it is never cut to fit; the plugin's context is.
+ */
+export const MAX_DISCUSS_QUESTION = 4000
+
 /** Where Discuss sends: an existing Claude tab of the overlay's window, or a new session. */
 export type DiscussTarget = { kind: 'tab'; tabId: string } | { kind: 'new' }
 

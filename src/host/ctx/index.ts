@@ -41,6 +41,7 @@ import { createSessionsApi, SessionsHub } from './sessions'
 import { createSlotsApi, SlotHub, type SlotOpenTag } from './slots'
 import { SettingsHolder } from './settings'
 import { createSettingsPageApi, SettingsPageHub, type SettingsPageOpenTag } from './settings-page'
+import { createTabsApi, PageTabHub, type PageTabOpenTag } from './tabs'
 import { createStorage, type StorageHandle } from './storage'
 import { createThemesApi } from './themes'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
@@ -148,6 +149,7 @@ export class HostContexts {
   private readonly webviews: WebviewHub
   private readonly slots: SlotHub
   private readonly settingsPages: SettingsPageHub
+  private readonly pageTabs: PageTabHub
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
@@ -158,6 +160,10 @@ export class HostContexts {
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.settingsPages = new SettingsPageHub((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.pageTabs = new PageTabHub(
+      (pluginId, m) => deps.log(pluginId, 'warn', m),
+      (method, params) => (deps.call ? deps.call(method, params) : Promise.reject(new Error('no connection to the app')))
+    )
   }
 
   /** Build the ctx for one plugin (the loader's `makeContext`). */
@@ -436,6 +442,7 @@ export class HostContexts {
       badge: ui.badge,
       overlay: ui.overlay,
       slots: createSlotsApi({ pluginId: spec.id, types: spec.slotTypes ?? [], call, alive, guardAsync, hub: this.slots }),
+      tabs: createTabsApi({ pluginId: spec.id, types: spec.pageTabTypes ?? [], call, alive, guardAsync, hub: this.pageTabs }),
       settingsPage: createSettingsPageApi({ pluginId: spec.id, declared: spec.settingsPage !== undefined, alive, hub: this.settingsPages }),
       webview: createWebviewApi({
         pluginId: spec.id,
@@ -553,6 +560,7 @@ export class HostContexts {
     this.webviews.removePlugin(pluginId)
     this.slots.removePlugin(pluginId)
     this.settingsPages.removePlugin(pluginId)
+    this.pageTabs.removePlugin(pluginId)
     for (const child of rt.children) killChild(child)
     rt.children.clear()
     // Before the host is killed (main waits at most 5 s for deactivate): the debounce window must
@@ -643,6 +651,31 @@ export class HostContexts {
     return true
   }
 
+  /**
+   * A page tab frame's MessagePort (host/index.ts calls this when main hands the host a port tagged
+   * `pageTabOpen`). Only for a plugin that runs here and declares the type in `contributes.tabs`;
+   * false (and the port closed) otherwise. The line ends with `pageTab.close` or its port.
+   */
+  attachPageTabPort(tag: PageTabOpenTag, port: PanelPort): boolean {
+    const rt = this.runtimes.get(tag.pluginId)
+    if (!rt || rt.disposed || !(rt.spec.pageTabTypes ?? []).includes(tag.type)) {
+      port.close()
+      return false
+    }
+    this.pageTabs.open(tag, port)
+    return true
+  }
+
+  /** The tab page's end of the port closed (frame removed): ends only that port's line. */
+  detachPageTabPort(pluginId: string, id: string, port: PanelPort, view?: ViewId): void {
+    this.pageTabs.close(pluginId, id, view, port)
+  }
+
+  /** main's `pageTab.discuss { pluginId, id, view? }`: that view's instance's onDiscuss answer (ctx/tabs.ts). */
+  pageTabDiscuss(params: unknown): Promise<unknown> {
+    return this.pageTabs.discuss(params)
+  }
+
   /** The settings page's end of the port closed (reload, unmount): ends only that port's page. */
   detachSettingsPagePort(pluginId: string, id: string, port: PanelPort): void {
     this.settingsPages.close(pluginId, id, port)
@@ -699,6 +732,14 @@ export class HostContexts {
       // that is not a view main mints is dropped, never read as the desktop's frame.
       if (view !== undefined && viewIdOf(view) === undefined) return
       if (typeof pluginId === 'string' && typeof id === 'string') this.slots.close(pluginId, id, viewIdOf(view))
+      return
+    }
+    if (event === 'pageTab.close') {
+      const { pluginId, id, view } = (params ?? {}) as Record<string, unknown>
+      // As for slot.close: a view main did not mint is dropped, never read as the desktop's line.
+      // An id never opened here (the first reconnect after a host restart) finds nothing.
+      if (view !== undefined && viewIdOf(view) === undefined) return
+      if (typeof pluginId === 'string' && typeof id === 'string') this.pageTabs.close(pluginId, id, viewIdOf(view))
       return
     }
     if (event === 'settingsPage.close') {

@@ -1242,10 +1242,26 @@ describe('registerPageTabHandlers', () => {
         calls.push(['unsaved', projectId])
         return ['a.ts']
       },
+      discuss: (caller, tabId, question, target) => {
+        calls.push(['discuss', caller, tabId, question, target])
+        return Promise.resolve({ ok: true as const, tabId: 'claude-1', queued: false })
+      },
       server
     })
     return { ipc, router, calls }
   }
+
+  it("discuss: the sender's window, project and view; the hidden page is refused", async () => {
+    const { ipc, router, calls } = pageTabs(true)
+    await expect(ipc.invoke('pageTabs.discuss', 11, [{ tabId: TAB, question: 'why?', target: { kind: 'new' } }])).resolves.toEqual({
+      ok: false,
+      error: 'Ask Claude is not available here'
+    })
+    expect(calls).toEqual([])
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'pageTabs.discuss', { tabId: TAB, question: 'why?', target: { kind: 'tab', tabId: 'c1' }, viewId: 'desktop:1' })
+    expect(calls).toEqual([['discuss', { windowId: 1, projectId: PROJECT_A, viewId: 'web:4' }, TAB, 'why?', { kind: 'tab', tabId: 'c1' }]])
+  })
 
   it('dirty: per sender view, a boolean only; unsaved: the sender project', async () => {
     const { ipc, router, calls } = pageTabs(false)

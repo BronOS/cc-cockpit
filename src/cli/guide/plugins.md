@@ -73,7 +73,8 @@ so a person chooses to install or link it.
   manifest names for a type, never one the host names. A tab's title is cut to 80 characters, its
   params are plain JSON up to 4 KiB, at most 64 page tabs per plugin per project. Page tabs are
   saved and come back at the next start while the plugin is installed, on in the project and still
-  declares the type. A page tab has no terminal: nothing is ever typed into it.
+  declares the type. A page tab has no terminal: nothing is ever typed into it. Open, list and serve
+  them with `ctx.tabs` (`ccc guide api`).
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
   `description: <one line, at most 1024 chars>`; any other key, a multi-line value, a `name`

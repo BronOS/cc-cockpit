@@ -72,7 +72,7 @@ load, the strip shows the title's first letter.
   `undefined` in a panel or an overlay. It appears once the app has said what the page is, so
   read it after load, not at script start.
 - `ccPanel.tab`: only when the page is drawn as a page tab (`contributes.tabs`, `ccc guide plugins`):
-  `{ type, setDirty(dirty) }`.
+  `{ type, setDirty(dirty), discuss() }`; its backend is `ctx.tabs.onOpen` (`ccc guide api`).
   `undefined` anywhere else; like `ccPanel.slot`, read it after load. A page tab's frame is mounted on the tab's
   first select, a few recently used ones are kept alive, and it is never reloaded to reconnect, so it keeps
   unsaved text: when your host restarts, a browser view reconnects or the link to a slow browser falls behind, the
@@ -82,6 +82,10 @@ load, the strip shows the title's first letter.
   The app keeps it per view (the desktop and each browser have their own page): the tab shows a dirty dot while
   any view says so, a dirty frame is never dropped from the kept set, and closing the tab, its window or the app
   asks the person first. It is only a report: the page cannot stop or delay a close.
+- `ccPanel.tab.discuss()`: Ask Claude from this tab (bind it to a key your manifest `keys` declare, such as
+  Ctrl+L, or a context menu item). The app draws its own question box over the tab, then asks your host's
+  `tab.onDiscuss` for the context of this view (`ccc guide api`, `ctx.tabs`) and sends it with the question to
+  the Claude tab the person picks. Taken only while the tab is on screen and its page has the keyboard.
 - `ccPanel.view.remote`: `true` when the page is drawn in a web access browser view (the person's
   phone or another browser), `false` on the desktop. The app's shell that mounts the page says so with
   the page's connection, so it is `false` until then: read it once the host's first message has come,

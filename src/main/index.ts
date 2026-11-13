@@ -12,7 +12,8 @@
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
 // Playwright e2e run exercises the real adapters.
-import { effectiveDiscussPrompt } from '../shared/discuss'
+import { DISCUSS_ASK_MS, effectiveDiscussPrompt } from '../shared/discuss'
+import type { PageTabSpec } from '../shared/page-tabs'
 import {
   app,
   BrowserWindow,
@@ -93,6 +94,7 @@ import { WebviewViewers, type WebviewPanelOf } from './webview/webview-viewers'
 import {
   chordOfInput,
   OverlayManager,
+  type DiscussSessions,
   type OverlayChannel,
   type OverlayResult,
   type OverlayTypeButtons
@@ -186,6 +188,7 @@ import { crashWindowPage, ElectronWindowFactory } from './windows/electron-windo
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
 import { electronAskUnsaved, QueuedUnsavedAsk, QuitGuard, type AskUnsaved } from './windows/unsaved-dialog'
 import { isPageTabFrame, pageTabChord } from './tabs/page-tab-keys'
+import { PageTabDiscuss } from './tabs/page-tab-discuss'
 import { CLOSE, type WebFoldersRequest, type WebOpenProjectRequest } from '../shared/web-protocol'
 import type { WebSecretsStatus } from '../shared/web-access'
 import { blurSupport } from './windows/window-chrome'
@@ -859,6 +862,7 @@ function start(server: boolean): void {
       // Every overlay of the window is dismissed (its opener gets that result), its programs
       // killed and its views closed.
       overlays.closeWindow(windowId)
+      pageTabDiscuss.forget(windowId)
       // Its webview panels' views close too, and their preview tokens stop serving.
       webviews.closeWindow(windowId)
       webviewViewers.closeWindow(windowId)
@@ -979,6 +983,35 @@ function start(server: boolean): void {
   const nativeViewsMade = { urlOverlays: 0, webviews: 0, offscreenWebviews: 0 }
   // The overlay page's own window.open or cross-site navigation (`page`: a notice, never opened at once).
   const urlViewFactory = new ElectronUrlViewFactory((url, windowId) => openExternal(url, { windowId }, { page: true }))
+  // Discuss with Claude (design-next §3.5) and Ask Claude from a page tab (design-editor.md §4): the
+  // window's own project's Claude tabs only, the send gate, and main's own new-tab path (`sessions`,
+  // `tabs` are defined below; these run on a click).
+  const discussSessions: DiscussSessions = {
+    isClaudeTab: (windowId, tabId) => {
+      const projectId = projectOfWindow(windowId)
+      const entry = sessions.get(tabId)
+      return projectId !== undefined && entry?.projectId === projectId && entry.status !== 'ended'
+    },
+    notReady: (tabId) => sessions.get(tabId)?.status === 'idle',
+    // Discuss names its origin (`core`, overlay-manager.ts, page-tab-discuss.ts): passed through, not chosen here.
+    send: (tabId, text, origin) => sessions.send(tabId, text, origin),
+    openSession: async (windowId, prompt) => {
+      const projectId = projectOfWindow(windowId)
+      if (projectId === undefined) throw new Error('the window is gone')
+      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &.
+      const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
+      return { tabId: tab.id }
+    },
+    selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId }),
+    // The window's own project's override, else the global one; read now, at send time.
+    prompt: (windowId) => {
+      const projectId = projectOfWindow(windowId)
+      return effectiveDiscussPrompt(
+        projectId === undefined ? undefined : registry.get(projectId)?.discussPrompt,
+        registry.app.data.discussPrompt
+      )
+    }
+  }
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
     // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8),
@@ -1021,34 +1054,26 @@ function start(server: boolean): void {
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
     typeButtons: (windowId): OverlayTypeButtons | undefined => hosts.overlayButtons(windowId),
     pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId,
-    // Discuss with Claude (design-next §3.5): the window's own project's Claude tabs only, the send
-    // gate, and main's own new-tab path (`sessions`, `tabs` are defined below; these run on a click).
-    discuss: {
-      isClaudeTab: (windowId, tabId) => {
-        const projectId = projectOfWindow(windowId)
-        const entry = sessions.get(tabId)
-        return projectId !== undefined && entry?.projectId === projectId && entry.status !== 'ended'
-      },
-      notReady: (tabId) => sessions.get(tabId)?.status === 'idle',
-      // Discuss names its origin (`core`, overlay-manager.ts): passed through, not chosen here.
-      send: (tabId, text, origin) => sessions.send(tabId, text, origin),
-      openSession: async (windowId, prompt) => {
-        const projectId = projectOfWindow(windowId)
-        if (projectId === undefined) throw new Error('the window is gone')
-        // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &.
-        const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
-        return { tabId: tab.id }
-      },
-      selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId }),
-      // The window's own project's override, else the global one; read now, at send time.
-      prompt: (windowId) => {
-        const projectId = projectOfWindow(windowId)
-        return effectiveDiscussPrompt(
-          projectId === undefined ? undefined : registry.get(projectId)?.discussPrompt,
-          registry.app.data.discussPrompt
-        )
+    discuss: discussSessions
+  })
+  // Ask Claude from a page tab (design-editor.md §4): the tab from main's own list, the context from
+  // its plugin's instance in the asking view (`hosts`, defined below; this runs on a click).
+  const pageTabDiscuss = new PageTabDiscuss({
+    pageTab: (projectId, tabId) => {
+      const tab = tabs.list(projectId).find((t) => t.id === tabId && t.kind === 'page')
+      if (!tab?.page) return undefined
+      return {
+        id: tab.id,
+        pluginId: tab.page.plugin,
+        type: tab.page.type,
+        title: tab.page.title,
+        ...(tab.page.params !== undefined ? { params: tab.page.params } : {})
       }
-    }
+    },
+    askContext: (projectId, tab, view) => hosts.pageTabDiscuss(projectId, tab, view, DISCUSS_ASK_MS),
+    sessions: discussSessions,
+    pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId,
+    log: (m) => console.warn(m)
   })
   /** The project a project window shows, from main's own table. */
   const projectOfWindow = (windowId: number): string | undefined =>
@@ -1123,6 +1148,19 @@ function start(server: boolean): void {
       openedBy: options.openedBy,
       ...(typeof name === 'string' ? { openedByName: name } : {})
     })
+    sendToProject(projectId, 'tabs.added', tab)
+    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    return tab
+  }
+  /**
+   * Open a page tab a plugin asked for (ctx.tabs.openPage) and tell its window, as openShellTab does:
+   * HostApi took the plugin from the host and checked the type and the spec; the tab manager checks
+   * the spec again and holds the per-plugin cap. Not unseen when focused: the window selects it now.
+   */
+  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<TabInfo> => {
+    await spawnReady
+    requireWindow(projectId, windowId)
+    const tab = tabs.createPage(projectId, spec)
     sendToProject(projectId, 'tabs.added', tab)
     if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
     return tab
@@ -1575,6 +1613,10 @@ function start(server: boolean): void {
       openShellTab: (projectId, options, windowId, focus) => openShellTab(projectId, options, windowId, focus === true),
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
       openCommandTab: (projectId, options, windowId, focus) => openCommandTab(projectId, options, windowId, focus === true),
+      // ctx.tabs (design-editor.md §1): HostApi checked the plugin, its declared type and the spec.
+      openPageTab: (projectId, spec, windowId, focus) => openPageTab(projectId, spec, windowId, focus),
+      listTabs: (projectId) => tabs.list(projectId),
+      setPageTabTitle: (projectId, tabId, title, icon) => tabs.setPageTitle(projectId, tabId, title, icon),
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
@@ -2745,6 +2787,7 @@ function start(server: boolean): void {
     },
     dirty: (projectId, viewId, tabId, dirty) => tabs.setPageDirty(projectId, tabId, viewId, dirty),
     unsaved: (projectId) => tabs.unsavedTitles(projectId),
+    discuss: (caller, tabId, question, target) => pageTabDiscuss.discuss(caller, tabId, question, target),
     server
   })
   registerSlotHandlers(router, {

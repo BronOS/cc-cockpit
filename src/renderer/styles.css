@@ -1307,6 +1307,42 @@ iframe:focus-visible {
 .confirm-buttons .confirm-danger {
   color: var(--cc-status-ended, #cd3131);
 }
+/* Ask Claude's question box over a page tab (PageTabDiscussDialog): the close dialog's frame, a
+   question field and the Send to picker stacked in it. */
+.page-tab-discuss {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(520px, 92vw);
+}
+.page-tab-discuss .confirm-title {
+  margin: 0;
+}
+.page-tab-discuss-question {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 72px;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-1, var(--cc-bg));
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+}
+.page-tab-discuss-target {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.page-tab-discuss-target select {
+  height: 28px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+}
 /* An approval's Allow before it is armed (ApprovalDialog: about a second after the dialog shows). */
 .confirm-buttons button:disabled {
   opacity: 0.5;

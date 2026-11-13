@@ -625,6 +625,11 @@ export interface PageTabHandlerDeps {
   dirty(projectId: string, viewId: ViewId, tabId: string, dirty: boolean): void
   /** The titles of the project's page tabs dirty in any view. */
   unsaved(projectId: string): string[]
+  /**
+   * Ask Claude from a page tab (PageTabDiscuss.discuss): the caller is the window, project and view
+   * main bound the sender to; the tab id, question and target are renderer input, checked there.
+   */
+  discuss(caller: { windowId: number; projectId: string; viewId: ViewId }, tabId: string, question: unknown, target: unknown): Promise<DiscussAnswer>
   /** Server mode: the window's own page is the hidden page, which never mounts a page tab. */
   server: boolean
 }
@@ -668,6 +673,13 @@ export function registerPageTabHandlers(router: IpcRouter, deps: PageTabHandlerD
     return null
   })
   router.handleProject('pageTabs.unsaved', (ctx) => deps.unsaved(ctx.projectId))
+  // Ask Claude (design-editor.md §4): the hidden page shows no page tab, so it has nothing to ask about.
+  router.handleProject('pageTabs.discuss', (ctx, payload, view) => {
+    const tabId = tabIdShort('pageTabs.discuss', payload)
+    if (hiddenPage(view)) return { ok: false, error: 'Ask Claude is not available here' }
+    const { question, target } = fields('pageTabs.discuss', payload)
+    return deps.discuss({ windowId: ctx.windowId, projectId: ctx.projectId, viewId: view.viewId }, tabId, question, target)
+  })
 }
 
 /** What the plugin settings page handlers need (index.ts, panel-ports.ts). */

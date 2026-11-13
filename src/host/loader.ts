@@ -58,6 +58,8 @@ export interface HostPluginSpec {
   cli?: string[]
   /** Slot types the manifest provides (`contributes.slots`); `ctx.slots.onOpen` accepts only these. Absent is none. */
   slotTypes?: string[]
+  /** Page-tab types the manifest declares (`contributes.tabs`); `ctx.tabs` accepts only these. Absent is none. */
+  pageTabTypes?: string[]
   /**
    * Panel id -> the slot types its manifest lists (`panels[].slots`): the only ones
    * `ctx.panels.slots` may place there (a fast error; main checks again). Absent is none.
@@ -97,7 +99,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
   const plugins = (params as { plugins?: unknown } | null)?.plugins
   if (!Array.isArray(plugins)) throw new Error('activate: plugins must be an array')
   return plugins.map((p: unknown, i) => {
-    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, panelSlots, services, openFile, settingsPage, sessionsAll, settings } = (p ?? {}) as Record<
+    const { id, dir, main, projectDir, dataDir, appDataDir, storageFile, commands, panels, webviewPanels, cli, slotTypes, pageTabTypes, panelSlots, services, openFile, settingsPage, sessionsAll, settings } = (p ?? {}) as Record<
       string,
       unknown
     >
@@ -123,6 +125,9 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
     }
     if (slotTypes !== undefined && (!Array.isArray(slotTypes) || slotTypes.some((c) => typeof c !== 'string'))) {
       throw new Error(`activate: plugin ${i} slotTypes must be an array of strings`)
+    }
+    if (pageTabTypes !== undefined && (!Array.isArray(pageTabTypes) || pageTabTypes.some((c) => typeof c !== 'string'))) {
+      throw new Error(`activate: plugin ${i} pageTabTypes must be an array of strings`)
     }
     if (
       panelSlots !== undefined &&
@@ -161,6 +166,7 @@ export function parsePluginSpecs(params: unknown): HostPluginSpec[] {
       webviewPanels: (webviewPanels as string[] | undefined) ?? [],
       cli: (cli as string[] | undefined) ?? [],
       ...(slotTypes !== undefined ? { slotTypes: slotTypes as string[] } : {}),
+      ...(pageTabTypes !== undefined ? { pageTabTypes: pageTabTypes as string[] } : {}),
       ...(panelSlots !== undefined ? { panelSlots: panelSlots as Record<string, string[]> } : {}),
       ...(parsed?.services !== undefined ? { services: parsed.services } : {}),
       ...(parsed?.invalid !== undefined ? { invalid: parsed.invalid } : {}),

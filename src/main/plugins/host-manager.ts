@@ -979,6 +979,25 @@ export class HostManager {
   }
 
   /**
+   * Ask Claude from a page tab (design-editor.md §4): the context of the tab's instance in `view`
+   * (absent: the desktop's), from the plugin's `onDiscuss` handlers, within `timeoutMs`. Only a
+   * plugin running in the host now and declaring the type; null (no context) when it does not run,
+   * so the person's question still goes. Rejects when a handler throws or answers another shape.
+   */
+  async pageTabDiscuss(
+    projectId: string,
+    tab: { pluginId: string; id: string; type: string },
+    view: ViewId | undefined,
+    timeoutMs: number
+  ): Promise<unknown> {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.rpc || rec.stopping || !rec.ran.has(tab.pluginId) || rec.reloading.has(tab.pluginId)) return null
+    const declared = rec.plugins.find((p) => p.id === tab.pluginId)?.pageTabs?.some((t) => t.type === tab.type) === true
+    if (!declared) return null
+    return rec.rpc.call('pageTab.discuss', { pluginId: tab.pluginId, id: tab.id, ...(view !== undefined ? { view } : {}) }, { timeoutMs })
+  }
+
+  /**
    * The scopes of the plugin's html settings page when it runs in the project's host now (activated
    * in the current process, not reloading), else undefined: a page without a backend gets no port.
    */
@@ -1153,6 +1172,7 @@ export class HostManager {
               webviewPanels: s.webviewPanels ?? [],
               panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id)),
               themes: [...(runnable.find((p) => p.id === s.id)?.themes ?? [])],
+              pageTabs: [...(s.pageTabTypes ?? [])],
               ...(s.sessionsAll === true ? { sessionsAll: true } : {})
             })),
             // The record's own count (runCli), read at the navigate: in server mode a webview
@@ -1267,6 +1287,7 @@ export class HostManager {
       cli: (p.cli ?? []).map((c) => c.name),
       // Only when there is something: a spec of a plugin without slots stays what it was.
       ...((p.slots ?? []).length > 0 ? { slotTypes: (p.slots ?? []).map((sl) => sl.type) } : {}),
+      ...((p.pageTabs ?? []).length > 0 ? { pageTabTypes: (p.pageTabs ?? []).map((t) => t.type) } : {}),
       ...(Object.keys(panelSlotsOf(p)).length > 0 ? { panelSlots: panelSlotsOf(p) } : {}),
       ...(p.services !== undefined ? { services: p.services } : {}),
       ...(p.openFile !== undefined ? { openFile: true } : {}),
@@ -1376,6 +1397,7 @@ export class HostManager {
       webviewPanels: spec.webviewPanels ?? [],
       panelSlots: panelSlotsOf(next),
       themes: [...(next.themes ?? [])],
+      pageTabs: [...(spec.pageTabTypes ?? [])],
       ...(spec.sessionsAll === true ? { sessionsAll: true } : {})
     })
     let state: unknown

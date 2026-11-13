@@ -6,14 +6,16 @@
 //
 //   <the opener's context text>
 //
-// then the person's own closing prompt (Settings, optional), at most MAX_DISCUSS_TEXT characters, the context cut
-// to fit (the head is short and capped, the prompt is never cut). It always starts
+// then the question asked from a page tab (Ask Claude, design-editor.md §4) and the person's own closing
+// prompt (Settings, optional), at most MAX_DISCUSS_TEXT characters, the context cut
+// to fit (the head is short and capped, the question and the prompt are never cut). It always starts
 // with `About:`, so the send gate's refusal of a leading `/`, `!`, `#` or `&` (a slash command or a
 // bash line typed into Claude) can never fire on it, whatever the title or context say.
 import {
   DISCUSS_NEW_WINDOW_MS,
   MAX_DISCUSS_NEW_SESSIONS,
   MAX_DISCUSS_PROMPT,
+  MAX_DISCUSS_QUESTION,
   MAX_DISCUSS_TEXT,
   MAX_DISCUSS_TYPE_LINE
 } from '../../shared/discuss'
@@ -26,6 +28,11 @@ export interface DiscussParts {
   type?: CleanOverlayType
   /** What the opener's onDiscuss answered (absent or empty: no extra context). */
   context?: string
+  /**
+   * The person's question (Ask Claude from a page tab, design-editor.md §4), after the context and
+   * before the closing prompt; never cut (the box caps it at MAX_DISCUSS_QUESTION). Blank: none.
+   */
+  question?: string
   /** The person's closing prompt (shared/discuss.ts effectiveDiscussPrompt); blank or absent: none. */
   prompt?: string
 }
@@ -84,16 +91,18 @@ export function composeDiscuss(parts: DiscussParts): string {
   // The head and the prompt are fixed; only the context gives way (never the person's own words).
   // Capped again here: the caller's value is a stored string, but this function must hold the limit alone.
   const prompt = parts.prompt?.trim() ? parts.prompt.trim().slice(0, MAX_DISCUSS_PROMPT) : undefined
+  const question = parts.question?.trim() ? parts.question.trim().slice(0, MAX_DISCUSS_QUESTION) : undefined
   if (context !== undefined) {
-    // What the head, the prompt and the blank lines around the context leave for it.
-    const fixed = headText.length + 2 + (prompt !== undefined ? prompt.length + 2 : 0)
+    // What the head, the question, the prompt and the blank lines around the context leave for it.
+    const fixed =
+      headText.length + 2 + (question !== undefined ? question.length + 2 : 0) + (prompt !== undefined ? prompt.length + 2 : 0)
     const room = MAX_DISCUSS_TEXT - fixed
     if (context.length > room) {
       const keep = room - CUT_MARK.length
       context = keep > 0 ? `${context.slice(0, keep).trimEnd()}${CUT_MARK}` : undefined
     }
   }
-  return [headText, context, prompt].filter((p): p is string => p !== undefined).join('\n\n')
+  return [headText, context, question, prompt].filter((p): p is string => p !== undefined).join('\n\n')
 }
 
 /**

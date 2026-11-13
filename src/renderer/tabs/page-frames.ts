@@ -28,6 +28,10 @@
 // forwards them (`cc-plugin.tab-key`), and the pool hands a chord on only from the frame that has
 // the keyboard. On the desktop no list is sent: main takes the chords before the frame gets them.
 //
+// Ask Claude (design-editor.md §4): `ccPanel.tab.discuss()` (`cc-plugin.tab-discuss`) opens the
+// shell's question box, taken like a chord only from the frame on screen that has the keyboard, so a
+// page in the background cannot put a box in front of the person.
+//
 // Each frame is an iframe sandboxed with `allow-scripts` only, as PluginFrame's, loaded and served
 // by FrameLoads (the web shell's navigation guard included): the theme on every served load, then
 // the `cc-plugin.tab` intro and the port. Moving an iframe in the document reloads it, which is why
@@ -37,7 +41,7 @@
 // fakes in plain Node.
 
 import type { TabInfo } from '../../shared/ipc'
-import { TAB_DIRTY_MESSAGE, TAB_KEY_MESSAGE, TAB_MESSAGE } from '../../sdk/panel-core'
+import { TAB_DIRTY_MESSAGE, TAB_DISCUSS_MESSAGE, TAB_KEY_MESSAGE, TAB_MESSAGE } from '../../sdk/panel-core'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
 
 /**
@@ -103,6 +107,8 @@ export interface PageFramesOptions {
   keys?(): readonly string[] | undefined
   /** A forwarded chord typed in the focused page tab: the shell runs its command (through its gate). */
   chord?(chord: string): void
+  /** The shown, focused page tab asked for Ask Claude (`ccPanel.tab.discuss()`): the shell opens its box. */
+  discuss?(tabId: string): void
   maxLive?: number
   log?(message: string): void
 }
@@ -321,7 +327,9 @@ export class PageFrames {
     // run the app's commands from the background, nor any the person could not have typed here.
     if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && tabId === this.shown && el.hasFocus()) {
       if (this.o.keys?.()?.includes(chord) === true) this.o.chord?.(chord)
+      return
     }
+    if (type === TAB_DISCUSS_MESSAGE && tabId === this.shown && el.hasFocus()) this.o.discuss?.(tabId)
   }
 
   private report(tabId: string, dirty: boolean): void {

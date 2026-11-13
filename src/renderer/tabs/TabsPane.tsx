@@ -34,6 +34,8 @@ import { closeAnswer, closeMayAsk, closeQuestion, type CloseQuestion } from './c
 import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
+import { PageTabDiscussDialog } from './PageTabDiscussDialog'
+import { setPageTabDiscussHandler } from './PageTabArea'
 import { TabBar } from './TabBar'
 import { TabSwitcher } from './TabSwitcher'
 import {
@@ -141,6 +143,23 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     offerShown.current = cccOffer !== null
   }, [cccOffer])
+  // Ask Claude's question box over a page tab (design-editor.md §4): the tab it asks about, null when
+  // no box is up. Modal like the ccc offer (the key handler and focusActive read the ref).
+  // `preferred`: the Claude tab this view showed last when the box opened (it sends there by default).
+  const [discussFor, setDiscussFor] = useState<{ tabId: string; preferred?: string } | null>(null)
+  // The tab the box asks about; it closing (here or in another view) takes the box down with it.
+  const discussTab = discussFor === null ? undefined : state.tabs.find((t) => t.id === discussFor.tabId)
+  const discussOpen = discussTab !== undefined
+  const discussShown = useRef(false)
+  useEffect(() => {
+    discussShown.current = discussOpen
+  }, [discussOpen])
+  // The Claude tab this view showed last: the box sends there unless the person picks another.
+  const lastClaude = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const active = state.tabs.find((t) => t.id === state.activeId)
+    if (active?.kind === 'claude') lastClaude.current = active.id
+  }, [state.activeId, state.tabs])
   useEffect(() => {
     let cancelled = false
     window.cockpit.invoke('ccc.offer').then(
@@ -606,7 +625,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    */
   const focusActive = useCallback((): void => {
     // The close dialog keeps the focus on its own buttons until it is answered.
-    if (paletteOpen.current || overlayOpen.current || confirmFor.current !== null || offerShown.current) return
+    if (paletteOpen.current || overlayOpen.current || confirmFor.current !== null || offerShown.current || discussShown.current) return
     if (settingsShown.current) {
       settingsRoot.current?.focus()
       return
@@ -669,8 +688,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // on the way, the ccc offer, the settings screen): the switcher goes, or its keys would answer
   // the modal's buttons and a release would switch tabs behind it.
   useEffect(() => {
-    if (confirm !== null || cccOffer !== null || settingsOpen) endSwitcher(undefined)
-  }, [confirm, cccOffer, settingsOpen, endSwitcher])
+    if (confirm !== null || cccOffer !== null || discussOpen || settingsOpen) endSwitcher(undefined)
+  }, [confirm, cccOffer, discussOpen, settingsOpen, endSwitcher])
   // A tab closed or added while the switcher is open: keep the list to the tabs that exist, the
   // highlight on the same tab where it can be, and give up when nothing is left to switch to.
   useEffect(() => {
@@ -766,6 +785,23 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (wasConfirming.current && confirm === null) requestAnimationFrame(focusActive)
     wasConfirming.current = confirm !== null
   }, [confirm, focusActive])
+  const wasDiscussing = useRef(false)
+  useEffect(() => {
+    if (wasDiscussing.current && !discussOpen) requestAnimationFrame(focusActive)
+    wasDiscussing.current = discussOpen
+  }, [discussOpen, focusActive])
+  // The shown page tab's page asked for Ask Claude (page-frames.ts takes it only from the frame on
+  // screen with the keyboard). Not over another modal, and only for the tab this view shows now.
+  useEffect(
+    () =>
+      setPageTabDiscussHandler((tabId) => {
+        if (paletteOpen.current || overlayOpen.current || settingsShown.current || confirmFor.current !== null || offerShown.current) return
+        if (switcherRef.current || stateRef.current.activeId !== tabId) return
+        discussShown.current = true
+        setDiscussFor(lastClaude.current === undefined ? { tabId } : { tabId, preferred: lastClaude.current })
+      }),
+    []
+  )
   const wasOffering = useRef(false)
   useEffect(() => {
     if (wasOffering.current && cccOffer === null) requestAnimationFrame(focusActive)
@@ -785,7 +821,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // paint over it: the views hide while any is up (shell-layers.ts). An overlay main also hides
   // them for on its own (it knows the stack first); the palette and the dialogs only this page sees.
   useShellLayer(
-    settingsOpen || covered || confirm !== null || cccOffer !== null || paletteCommands !== null || switcher?.shown === true
+    settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || paletteCommands !== null || switcher?.shown === true
   )
   // Cmd+Shift+W closes the top core overlay, and with only the settings screen open that is the
   // screen. An overlay opened over it claims the chord on top of this; the handler stack in
@@ -826,7 +862,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     })
     const allowed = (id: string): boolean =>
       commandAllowed(id, {
-        confirming: confirmFor.current !== null || offerShown.current,
+        confirming: confirmFor.current !== null || offerShown.current || discussShown.current,
         paletteOpen: paletteOpen.current,
         overlayOpen: overlayOpen.current,
         settingsShown: settingsShown.current
@@ -860,7 +896,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if (!id) return
       // Esc belongs to the palette while it is open (its field closes it); taking it here for
       // "pop the top overlay" would leave the palette stuck open. Likewise the close dialog's.
-      if ((paletteOpen.current || confirmFor.current !== null || offerShown.current) && id === 'overlay.pop') return
+      if ((paletteOpen.current || confirmFor.current !== null || offerShown.current || discussShown.current) && id === 'overlay.pop') return
       e.preventDefault()
       e.stopPropagation()
       // Holding Cmd+T must not open a tab per repeat. A held Ctrl+Tab steps through the tabs, as
@@ -966,9 +1002,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
         slots={layout.appSlots}
-        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
-      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />}
-      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
+        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />
+      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />}
+      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen}>
         <TabBar
           tabs={state.tabs}
           activeId={state.activeId}
@@ -1004,7 +1040,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
               />
             )
           )}
-          <PageTabArea tabs={state.tabs} listed={state.listed} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+          <PageTabArea tabs={state.tabs} listed={state.listed} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />
         </div>
       </Zones>
       {paletteCommands && (
@@ -1040,6 +1076,18 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         />
       )}
       {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}
+      {discussFor !== null && discussTab && (
+        <PageTabDiscussDialog
+          key={discussFor.tabId}
+          tab={discussTab}
+          claudeTabs={discussTabs}
+          {...(discussFor.preferred !== undefined ? { lastClaudeTabId: discussFor.preferred } : {})}
+          onClose={() => {
+            discussShown.current = false
+            setDiscussFor(null)
+          }}
+        />
+      )}
       {settingsOpen && <SettingsOverlay target={settingsTarget} rootRef={settingsRoot} onClose={closeSettings} inert={covered} />}
       <OverlayStack onChange={overlaysChanged} discussTabs={discussTabs} activeTabId={state.activeId} />
     </div>

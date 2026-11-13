@@ -22,6 +22,7 @@
 //   overlay.buttonClick { source, ..., view? } -> { close } | null  a toolbar click: the opener's onButton
 //                                                                  or a type button's run
 //   overlay.discuss { pluginId, handle }    -> { text } | null    Discuss with Claude: the handle's onDiscuss
+//   pageTab.discuss { pluginId, id, view? } -> { text } | null    Ask Claude from a page tab: that view's onDiscuss
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
@@ -34,6 +35,7 @@
 // on that screen. A malformed one is refused, never read as the desktop's.
 //   slot.close { pluginId, id, view? }        a slot frame this host provides ended (SlotInstance.onClose)
 //   settingsPage.close { pluginId, id }       the plugin's settings page ended (SettingsPageInstance.onClose)
+//   pageTab.close { pluginId, id, view? }     a page tab's line in one view ended (PageTabInstance.onClose)
 //   overlay.ended { key }                     a typed overlay went: its type buttons' runs go
 // Requests to main (checked there against this host's own project and plugins):
 //   commands.register / commands.unregister { pluginId, id }, notify { pluginId, text, options? } -> { clicked }
@@ -41,6 +43,8 @@
 //   sessions.openShell { pluginId, cwd?, focus? } -> { tabId } (a plain shell tab; main checks the cwd and budget),
 //   sessions.openCommand { pluginId, argv, cwd?, title?, focus? } -> { tabId } (argv with no shell, marked with the plugin),
 //   slots.available { pluginId, type } -> boolean (ctx.slots.available), panels.slots { pluginId, panelId, placements },
+//   tabs.openPage { pluginId, type, params?, title, icon?, focus? } -> { tabId }, tabs.list { pluginId, type } -> PageTabInfo[],
+//   tabs.setTitle { pluginId, tabId, title, icon? } -> null (ctx.tabs, a page tab's setTitle; main checks the type and the tab),
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
 //   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
 //   overlay.setButtons { pluginId, handle, buttons } (the opener's buttons, checked again in main),
@@ -56,11 +60,14 @@
 // plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params?, view? } }`
 // and ends with the `slot.close { pluginId, id, view? }` event or its port closing (host/ctx/slots.ts).
 // A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope, view? } }`, ended by
-// `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts).
+// `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts). A page tab's
+// frame: `{ "pageTabOpen": { pluginId, id, type, params?, view? } }`, ended by `pageTab.close` or its
+// port closing (host/ctx/tabs.ts).
 import { HostContexts, type LogLevel } from './ctx'
 import { carryView } from './ctx/origin-view'
 import { settingsPageOpenTag } from './ctx/settings-page'
 import { slotOpenTag } from './ctx/slots'
+import { pageTabOpenTag } from './ctx/tabs'
 import { fromMainPort, panelPortTag, type MainPortLike, type PanelPort } from './ctx/ui'
 import { parsePluginSpecs, parseServiceProviders, PluginLoader } from './loader'
 import { RpcEndpoint, type RpcCallOptions, type RpcPort } from './rpc'
@@ -95,6 +102,13 @@ function start(): void {
       // A slot frame (this plugin provides the page in it); the close of THIS port ends THIS frame.
       const slotPort: PanelPort = fromMainPort(raw, () => contexts.detachSlotPort(slotTag.pluginId, slotTag.id, slotPort, slotTag.view))
       contexts.attachSlotPort(slotTag, slotPort)
+      return
+    }
+    const tabTag = pageTabOpenTag(e.data)
+    if (tabTag) {
+      // A page tab's frame in one view; the close of THIS port ends THIS line, never a newer one.
+      const tabPort: PanelPort = fromMainPort(raw, () => contexts.detachPageTabPort(tabTag.pluginId, tabTag.id, tabPort, tabTag.view))
+      contexts.attachPageTabPort(tabTag, tabPort)
       return
     }
     const pageTag = settingsPageOpenTag(e.data)
@@ -170,6 +184,7 @@ function start(): void {
       'overlay.buttons': (params) => contexts.overlayButtons(params),
       'overlay.buttonClick': (params) => contexts.overlayButtonClick(params),
       'overlay.discuss': (params) => contexts.overlayDiscuss(params),
+      'pageTab.discuss': (params) => contexts.pageTabDiscuss(params),
       'plugin.reload': (params) => {
         const [spec] = parsePluginSpecs({ plugins: [(params as { plugin?: unknown } | null)?.plugin] })
         if (!spec) throw new Error('plugin.reload: no plugin')
