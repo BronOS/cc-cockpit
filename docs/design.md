@@ -473,9 +473,16 @@ plain tab has no group, and a project without groups behaves as before.
   window, looked up in host-api before the open budget is spent; unknown and foreign are one error) and
   `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin`), and
   it opens plain with `placed: false` when the anchor is gone, its group has 4 panes or the anchor's
-  halves would fall under 20x5 cells. `focus: true` selects the anchor in the origin view (else the
-  desktop page) unless that view shows the group already; the new pane never takes focus (D4). No
-  other plugin call touches groups, `SessionInfo` has no group (D11), and there is no `ccc` command.
+  halves would fall under 20x5 cells. No other plugin path reaches groups: host-api has no place,
+  remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups
+  or names a `groups.*` channel (`no-plugin-group-edits.test.ts`). `SessionInfo` has no group (D11),
+  and there is no `ccc` command.
+- *A plugin's pane is never focused (D4).* A tab a plugin placed beside another is never sent a
+  `tabs.select`, so a plugin cannot move the person's keystrokes into a pane they did not pick (a
+  Claude tab waiting for input, a command it chose). With `focus: true`, main selects the anchor
+  instead, in the origin view (else the desktop page), and does nothing when that view shows the
+  anchor's group already; the new pane is visible beside it and takes focus only from the person. A
+  plain open (no `beside`, or `placed: false`) keeps the usual rule: `focus: true` selects the new tab.
 
 ## 4. Window layout, zones, overlay
 
