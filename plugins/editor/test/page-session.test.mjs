@@ -426,6 +426,33 @@ test('read-only and binary files: no saves, never dirty', () => {
   assert.equal(bin.saveNow(), false)
 })
 
+test('an outside tab whose file is gone (restored after it was removed) stays read-only: shown missing, never a new file, never saved', () => {
+  const ui = fakeUi()
+  const s = createSession(ui, fakeTimers())
+  s.connect()
+  s.receive({ t: 'file', req: 1, path: '/home/me/lib/node_modules/x/index.d.ts', exists: false, part: 0, parts: 1 })
+  assert.deepEqual(ui.loads, [{ path: '/home/me/lib/node_modules/x/index.d.ts', readOnly: true, noText: false }])
+  assert.equal(ui.last.exists, false)
+  assert.equal(ui.last.readOnly, true)
+  assert.equal(ui.last.why, 'outside')
+  assert.equal(ui.last.missing, true)
+  ui.posted.length = 0
+  ui.text = 'typed anyway\n'
+  s.edited()
+  assert.equal(s.saveNow(), false)
+  s.blur()
+  assert.deepEqual(ui.posted.filter((m) => m.t === 'save'), [])
+  // A Windows path is outside too; a project file that is missing is still a new file.
+  const win = createSession(fakeUi(), fakeTimers())
+  win.connect()
+  win.receive({ t: 'file', req: 1, path: 'C:\\lib\\x.d.ts', exists: false, part: 0, parts: 1 })
+  assert.equal(win.view().readOnly, true)
+  const proj = createSession(fakeUi(), fakeTimers())
+  proj.connect()
+  proj.receive({ t: 'file', req: 1, path: 'src/new.ts', exists: false, part: 0, parts: 1 })
+  assert.deepEqual([proj.view().readOnly, proj.view().missing], [false, false])
+})
+
 test('a missing file opens as a new one: clean until typed in, created by its first save', () => {
   const ui = fakeUi()
   const s = createSession(ui, fakeTimers())

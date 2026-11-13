@@ -494,12 +494,19 @@ function render(v) {
   } else if (v.conflict && v.conflict.kind === 'deleted') {
     bar.classList.add('warn')
     text.textContent = 'This file was deleted on disk. Your text is still here.'
-    actions.append(button('Save', () => session.saveNow()), button('Close', () => session.closeTab(), 'cc-ghost'))
+    // A read-only tab (outside the project) is never saved: Close alone.
+    if (!v.readOnly) actions.append(button('Save', () => session.saveNow()))
+    actions.append(button('Close', () => session.closeTab(), 'cc-ghost'))
   } else if (v.stranded) {
     // It turned read-only with edits not yet saved: they stay (the tab stays dirty, a close asks).
     bar.classList.add('warn')
     text.textContent = `This file became read-only (${WHY[v.why] || v.why || 'read-only'}): your unsaved edits cannot be saved to it. Copy them elsewhere, or Reload to drop them.`
     actions.append(button('Reload', () => session.revert(), 'cc-ghost'))
+  } else if (v.missing) {
+    // A read-only tab whose file is gone (an outside one restored after it was removed). No Close
+    // here: the host takes that only from a view holding a conflict; the tab's own close is enough.
+    bar.classList.add('warn')
+    text.textContent = 'This file is not on disk. It opens read-only here, so there is nothing to save.'
   } else if (v.error) {
     bar.classList.add('error')
     text.textContent = v.error

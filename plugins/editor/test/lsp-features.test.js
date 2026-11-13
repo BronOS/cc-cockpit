@@ -901,7 +901,9 @@ test("commands: a second one on the server is refused while one runs; the first'
   // A second command would take a newer snapshot, and the server's applyEdit names no command: refused.
   await assert.rejects(c.run(['src/b.ts']), /another command of this language server is still running/)
   assert.equal(f.got('workspace/executeCommand').length, 1)
-  assert.deepEqual(await first, { files: 0, edits: 0 })
+  const firstDone = await first
+  assert.deepEqual([firstDone.files, firstDone.edits], [0, 0])
+  assert.match(firstDone.failureReason, /changed while the language server worked/)
   const ans = f.answers('workspace/applyEdit')
   assert.equal(ans.length, 1)
   assert.equal(ans[0].result.applied, false)
@@ -990,6 +992,32 @@ test('commands: an applyEdit written together with the command\'s answer (one st
   assert.equal(c.slot.command, null)
 })
 
+test("commands: a cancel while the first page applies an applyEdit that came with the command's answer still stops it before its next file", async (t) => {
+  const f = setup(['--apply-batched'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  fs.writeFileSync(path.join(f.root, 'src/c.ts'), 'const c = 3\n')
+  const c = commands(f)
+  // The answer is in before a's part is applied: the page gives up while a's page applies it.
+  const ctl = new AbortController()
+  const applyA = a.applyEdits
+  a.applyEdits = async (...args) => {
+    await sleep(50)
+    ctl.abort()
+    return applyA(...args)
+  }
+  const r = await c.run(['src/a.ts', 'src/b.ts', 'src/c.ts'], ctl.signal)
+  a.applyEdits = applyA
+  assert.deepEqual([r.files, r.edits], [1, 1])
+  assert.match(r.failureReason, /^cancelled part way: changed src\/a\.ts/)
+  assert.equal(a.text, '// applied\nconst a = 1\n')
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+  assert.equal(f.disk('src/c.ts'), 'const c = 3\n')
+  assert.equal(c.slot.command, null)
+})
+
 test('runCodeAction: an edit applied and then its command stopped is an answer counting the files (told to a page that gave up); a busy server refuses before the edit', async (t) => {
   const f = setup(['--apply-delay', '300', '--action-with-command'])
   t.after(f.done)
@@ -1036,7 +1064,9 @@ test("runCodeAction: a command-only action checks the server's edits against the
   b.seq++
   f.m.change(b, 'src/b.ts', [{ text: b.text }], b.seq)
   const r = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id })
-  assert.deepEqual([r.result.files, r.result.edits], [0, 0])
+  // The server said its command ran, but its edit was refused: not applied, said why.
+  assert.deepEqual([r.result.applied, r.result.files, r.result.edits], [false, 0, 0])
+  assert.match(r.result.failureReason, /^src\/b\.ts changed while the language server worked/)
   const ans = f.answers('workspace/applyEdit')
   assert.equal(ans.length, 1)
   assert.equal(ans[0].result.applied, false)
@@ -1073,7 +1103,9 @@ test("runCodeAction: an edit then a command: only the files the action's own edi
   a.applyEdits = apply
   // The action's edit is in; the command's (on a and b) is refused as a whole: b moved on since the
   // offer, and a snapshot taken after the edit would have let `// applied` land on the typed text.
-  assert.deepEqual([r.result.applied, r.result.files, r.result.edits], [true, 1, 1])
+  // Not `applied: true` because the command answered: the page hears what changed and what did not.
+  assert.deepEqual([r.result.applied, r.result.files, r.result.edits], [false, 1, 1])
+  assert.match(r.result.failureReason, /^the action changed 1 file \(1 change\), but an edit of its command was not applied: src\/b\.ts changed while the language server worked/)
   const ans = f.answers('workspace/applyEdit')
   assert.equal(ans.length, 1)
   assert.equal(ans[0].result.applied, false)

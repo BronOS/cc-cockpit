@@ -88,6 +88,14 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     ready() {
       return s.opened && typeof s.language === 'string' && !!s.status && s.status.state === 'ready'
     },
+    /**
+     * Whether the server holds THIS view's text: the syncing owner, with nothing typed the host
+     * never got. Another view of the file is answered against the owner's buffer, which may differ
+     * (its own unsaved edits), so positions from the server mean nothing in it.
+     */
+    synced() {
+      return s.opened && s.owner && typeof s.language === 'string' && !s.unsent
+    },
     /** What the ready server offers (lib/lsp/manager.js featuresOf), {} before. */
     features() {
       return (s.status && s.status.state === 'ready' && s.status.features) || {}

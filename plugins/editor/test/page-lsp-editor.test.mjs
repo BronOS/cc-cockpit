@@ -100,7 +100,7 @@ test('lspFeatures: a definition or a symbol in this file goes to its LSP positio
   const gone = []
   let list = null
   const ui = lspFeatures({
-    client: { ready: () => true, features: () => ({ definition: true, symbols: true }), ask: async (what) => answers[what] },
+    client: { ready: () => true, synced: () => true, features: () => ({ definition: true, symbols: true }), ask: async (what) => answers[what] },
     path: () => 'src/a.ts',
     goto: (line, col) => gone.push([line, col]),
     openLocation: (loc) => gone.push(['open', loc.line, loc.col]),
@@ -121,9 +121,9 @@ test('lspFeatures: a definition or a symbol in this file goes to its LSP positio
 
 // The completion source as CodeMirror runs it: from the language data the extensions add, with the
 // state at the ask; the option is then applied on the state of when the person accepts it.
-async function completeWith(doc, pos, result) {
+async function completeWith(doc, pos, result, { synced = true } = {}) {
   const ui = lspFeatures({
-    client: { ready: () => true, features: () => ({ complete: true }), ask: async () => ({ result }) },
+    client: { ready: () => true, synced: () => synced, features: () => ({ complete: true }), ask: async () => ({ result }) },
     path: () => 'a.ts',
     goto() {},
     openLocation() {},
@@ -159,4 +159,45 @@ test('completion: additional edits are carried over the typing since too', async
   v.dispatch({ changes: { from: 2, insert: 'c' } })
   answer.options[0].apply(v, answer.options[0], 0, 3)
   assert.equal(v.state.doc.toString(), 'abc; bar')
+})
+
+test("completion in a view that is not the syncing owner: the server answered on the owner's buffer, so no auto-import or range of its lands here; the item replaces the word only", async () => {
+  // The owner's buffer has no import line; this view's unsaved first line is `import { b } from 'b'`.
+  // The server's auto-import (computed on the owner's text) would overwrite it at line 0.
+  const doc = "import { b } from 'b'\nab"
+  const item = { label: 'abc', textEdit: { range: { start: at(1, 0), end: at(1, 2) }, newText: 'abc' }, additionalTextEdits: [edit(0, 0, 0, 21, "import { abc } from 'x'")] }
+  const { v, answer } = await completeWith(doc, doc.length, [item], { synced: false })
+  answer.options[0].apply(v, answer.options[0], doc.length - 2, doc.length)
+  assert.equal(v.state.doc.toString(), "import { b } from 'b'\nabc")
+  // The owner (synced): the same item lands with its auto-import.
+  const owner = await completeWith(doc, doc.length, [item])
+  owner.answer.options[0].apply(owner.v, owner.answer.options[0], doc.length - 2, doc.length)
+  assert.equal(owner.v.state.doc.toString(), "import { abc } from 'x'\nabc")
+})
+
+test('rename and code actions from a view that is not the syncing owner are refused with a message: its cursor names a place in its own buffer, the server reads the owner\'s', async () => {
+  const asked = []
+  const said = []
+  let synced = false
+  const ui = lspFeatures({
+    client: { ready: () => true, synced: () => synced, features: () => ({ rename: true, codeActions: true }), ask: async (what) => (asked.push(what), { result: [] }) },
+    path: () => 'a.ts',
+    goto() {},
+    openLocation() {},
+    showList() {},
+    prompt() {},
+    message: (text, error) => said.push([text, error === true]),
+  })
+  const view = fakeView('const a = 1\n')
+  await ui.renameSymbol(view)
+  await ui.codeActions(view)
+  assert.deepEqual(asked, [])
+  assert.deepEqual(said, [
+    ['Rename: another view of this file syncs it with the language server; use that view.', true],
+    ['Code actions: another view of this file syncs it with the language server; use that view.', true],
+  ])
+  // The owner asks.
+  synced = true
+  await ui.codeActions(view)
+  assert.deepEqual(asked, ['codeActions'])
 })

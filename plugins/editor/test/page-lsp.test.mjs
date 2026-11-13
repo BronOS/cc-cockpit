@@ -416,6 +416,21 @@ test('client: typing before the host confirms ownership is sent as the whole tex
   assert.deepEqual([k.last('lsp-open').text, k.last('lsp-open').seq], ['Xabcde', 4])
 })
 
+test("client: synced() only for the owner whose text the host has (editor.js applies server positions only then)", () => {
+  const k = client('abc')
+  k.c.connect()
+  k.c.open('src/a.ts', true)
+  assert.equal(k.c.synced(), false, 'before the host says')
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: false, state: 'ready' })
+  assert.equal(k.c.synced(), false, 'another view syncs it')
+  k.ui.text = 'Xabc'
+  k.c.changed([{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, text: 'X' }])
+  k.c.receive({ t: 'lsp-resync', path: 'src/a.ts', owner: true })
+  assert.equal(k.c.synced(), true, 'the owner, its whole text sent')
+  k.c.close()
+  assert.equal(k.c.synced(), false, 'closed')
+})
+
 test('client: a change no LSP range names (null, one inside a CRLF) sends the whole text with a new seq; not yet the owner, it waits', () => {
   const k = readyClient()
   const seq = k.last('lsp-open').seq

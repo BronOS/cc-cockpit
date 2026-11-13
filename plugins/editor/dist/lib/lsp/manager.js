@@ -352,6 +352,26 @@ function commandStopped(before, e) {
   }
 }
 
+/**
+ * A code action's answer once its command answered: `before` (what the action's own edit changed)
+ * plus the command's edits `c` (executeCommand). Applied only when every part was: a command whose
+ * edit was refused (stale, cancelled part way) is a failure with what did change counted, never
+ * `applied: true` because the server said the command ran.
+ */
+function commandResult(before, c) {
+  const fileCount = before.files + c.files
+  const edits = before.edits + c.edits
+  if (!c.failureReason) return { applied: true, files: fileCount, edits }
+  const why = String(c.failureReason).slice(0, 200)
+  if (fileCount === 0) return { applied: false, failureReason: why, files: 0, edits: 0 }
+  return {
+    applied: false,
+    failureReason: `the action changed ${fileCount} file${fileCount === 1 ? '' : 's'} (${edits} change${edits === 1 ? '' : 's'}), but an edit of its command was not applied: ${why}`,
+    files: fileCount,
+    edits,
+  }
+}
+
 class LspManager {
   /**
    * @param {object} o
@@ -844,7 +864,7 @@ class LspManager {
     if (typeof action.command === 'string') {
       try {
         const c = await this.executeCommand(slot, srv, action, signal, offered)
-        return { result: { applied: true, files: c.files, edits: c.edits } }
+        return { result: commandResult({ files: 0, edits: 0 }, c) }
       } catch (e) {
         return commandStopped({ files: 0, edits: 0 }, e)
       }
@@ -876,7 +896,7 @@ class LspManager {
         // page, and the command's edits there would pass against text they were not computed for.
         const snapshot = { versions: new Map([...entry.versions, ...produced.versions]), since: entry.since, written: produced.written }
         const c = await this.executeCommand(slot, srv, command, signal, snapshot)
-        applied = { applied: true, files: applied.files + c.files, edits: applied.edits + c.edits }
+        applied = commandResult(applied, c)
       } catch (e) {
         // The edit is in (and the command's own edits so far): said with the files counted, so a
         // page that gave up meanwhile is still told what changed (serve.js lateEdit).
@@ -910,8 +930,9 @@ class LspManager {
    * `executeCommandProvider` lists, and only when no other runs there (commandBusy). A
    * `workspace/applyEdit` it makes while this runs is applied (serverApplyEdit) against the documents
    * as they were when it started, and stops with it: the page's cancel or the command's failure
-   * stops its edits before their next file. Resolves `{ files, edits }` its edits changed; a failure
-   * throws with those counts as `changed`. `snapshot` ({ versions, since, written? }) is the
+   * stops its edits before their next file. Resolves `{ files, edits }` its edits changed, with
+   * `failureReason` when one of them was refused (the first one's); a failure throws with those
+   * counts as `changed`. `snapshot` ({ versions, since, written? }) is the
    * documents the command was built on (a code action's offer, advanced by its own edit: `written`
    * holds the disk files that edit saved, edits.js); omitted, they are taken now.
    */
@@ -928,7 +949,7 @@ class LspManager {
     const versions = new Map(snapshot && snapshot.versions instanceof Map ? snapshot.versions : this.versions())
     const since = snapshot && Number.isFinite(snapshot.since) ? snapshot.since : Date.now()
     const written = new Map(snapshot && snapshot.written instanceof Map ? snapshot.written : [])
-    const run = { srv, versions, since, written, stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false, held: false, heldTimer: null }
+    const run = { srv, versions, since, written, stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, failure: null, finished: false, held: false, heldTimer: null }
     slot.command = run
     const onDone = () => {
       run.finished = true
@@ -938,6 +959,10 @@ class LspManager {
       // The page was told the server is held: told again that it is not.
       if (run.held && slot.server === srv) this.postStatus(slot)
     }
+    // The page's cancel stops this command's edits until the last of them settles, not only until
+    // the command's answer: an applyEdit that came with the answer (one stdout chunk) is still on
+    // its way through the pages then, and a cancel while its first page applies must stop it before
+    // its next file (removed at the answer, it went on to write them all).
     const onAbort = () => run.stop.abort()
     if (signal) signal.addEventListener('abort', onAbort, { once: true })
     let failed = null
@@ -945,8 +970,6 @@ class LspManager {
       await srv.request('workspace/executeCommand', args === undefined ? { command: cmd.command } : { command: cmd.command, arguments: args }, { timeoutMs: EDIT_TIMEOUT_MS, signal, onDone })
     } catch (e) {
       failed = e instanceof Error ? e : new Error(String(e))
-    } finally {
-      if (signal) signal.removeEventListener('abort', onAbort)
     }
     // Failed, cancelled or timed out: the server's edits for it stop before their next file.
     if (failed) run.stop.abort()
@@ -961,9 +984,16 @@ class LspManager {
       if (typeof run.heldTimer.unref === 'function') run.heldTimer.unref()
     }
     // An edit the server sent before it answered finishes (or stops) first, so its files are counted.
-    while (run.inflight.size) await Promise.allSettled([...run.inflight])
+    try {
+      while (run.inflight.size) await Promise.allSettled([...run.inflight])
+    } finally {
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
     const changed = { files: run.files, edits: run.edits }
     if (failed) throw Object.assign(failed, { changed })
+    // The command answered, but an edit of it was refused (stale, cancelled part way): said, never
+    // folded into a success (serverApplyEdit keeps the first refusal's reason).
+    if (run.failure) changed.failureReason = run.failure
     return changed
   }
 
@@ -998,6 +1028,7 @@ class LspManager {
     }
     run.files += r.files || 0
     run.edits += r.edits || 0
+    if (!r.applied && !run.failure) run.failure = String(r.failureReason || 'an edit of the command was not applied').slice(0, 200)
     const out = { applied: r.applied }
     if (r.failureReason) out.failureReason = r.failureReason
     if (Number.isInteger(r.failedChange)) out.failedChange = r.failedChange

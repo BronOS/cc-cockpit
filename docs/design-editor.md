@@ -175,10 +175,16 @@ A code action's command runs on its server one at a time: a server's `workspace/
 taken only while exactly one command the host ran is working there, checked against that command's own snapshot (the
 documents when its code action was offered, the text the server built it on; after the action's own edit, only the files
 that edit changed advance, to the versions it produced, so typing in another file meanwhile still refuses the command's
-edits there) and stopped with it (the page's cancel, the command's failure or deadline). A second command
+edits there) and stopped with it (the page's cancel, the command's failure or deadline, until every edit it sent has
+settled, an edit that came with its answer too); a command one of whose edits was refused (stale, cancelled part way)
+is not applied, whatever the server answered, with what did change counted. A second command
 on a busy server is refused; a command the host stopped waiting for holds the server until the server answers it or
 exits, so its late edits are never taken as another command's. An action whose edit (or command edit) changed files
 before its command failed or was cancelled answers with the files counted, and a page that gave up is told.
+A view that is not the document's syncing owner (a second view of the tab, with its own unsaved buffer) is answered on
+the owner's text: it reads (hover, completion labels, diagnostics), but takes no server range into its buffer (a
+completion replaces the word only, with no auto-import) and refuses rename and code actions (their position would name
+a place in its buffer that the server reads in the owner's). An outside tab stays read-only when its file is missing.
 A page's typing before the host confirms it syncs the document (`lsp-doc`) is not lost: the page sends its whole text
 again once it does, so the host never holds a text that differs from the buffer while it takes changes.
 `didChange` follows the server's `textDocumentSync` (Incremental: the page's ranges; Full: the whole text; None or

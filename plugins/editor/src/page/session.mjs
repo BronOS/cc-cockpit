@@ -54,6 +54,8 @@ export const DEFAULT_IDLE_SECONDS = 3
 export const NOTICE_MS = 6000
 /** The notice of a clean merge (design-editor.md §2). */
 export const MERGED_NOTICE = "Merged Claude's changes."
+/** A tab path outside the project: absolute (the host names project files relative). */
+export const isOutsidePath = (p) => typeof p === 'string' && (p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p))
 /** A write lost from disk during our save that was not text: nothing to merge, only said. */
 export const LOST_NOT_TEXT = 'Another write to this file landed during the save and was replaced; it was not text, so it could not be merged.'
 
@@ -134,6 +136,9 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     notice: s.notice,
     // Unsaved edits in a buffer the file no longer lets us save (roChanged).
     stranded: s.readOnly && s.dirty && !s.conflict,
+    // A read-only tab whose file is not there (an outside one restored after it was removed): shown
+    // as missing, never as a new file to create.
+    missing: s.loaded && !s.exists && s.readOnly && !s.conflict,
   })
 
   /** The tab's conflict marker follows s.conflict: told to the host on a change (and on every connect). */
@@ -238,8 +243,12 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
   function adopt(head, text) {
     s.path = head.path
     s.exists = head.exists === true
-    s.readOnly = s.exists && head.readOnly === true
-    s.why = s.readOnly ? head.why : undefined
+    // A tab outside the project (a definition in node_modules) is read-only whether or not its file
+    // is there: the host never saves an absolute path, so a restored one whose file is gone must not
+    // turn into an editable "New file" whose every save is refused.
+    const outside = isOutsidePath(head.path)
+    s.readOnly = (s.exists && head.readOnly === true) || outside
+    s.why = s.readOnly ? head.why || (outside ? 'outside' : undefined) : undefined
     s.noText = s.exists && typeof text !== 'string'
     if (s.exists) {
       s.eol = head.eol === '\r\n' ? '\r\n' : '\n'

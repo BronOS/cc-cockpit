@@ -204,6 +204,10 @@ export function lspFeatures(deps) {
     if (!context.explicit && !word && !trigger) return null
     const ctl = new AbortController()
     context.addEventListener('abort', () => ctl.abort())
+    // Whether the server's text is this buffer at the ask: in another view of the file (not the
+    // syncing owner) the answer is computed on the owner's buffer, whose unsaved text may differ, so
+    // its ranges and auto-imports would land on the wrong text here (an import line overwritten).
+    const synced = client.synced()
     let r
     try {
       r = await client.ask('complete', { position: posOf(context.state, context.pos), ...(trigger && !word ? { triggerCharacter: trigger } : {}) }, { signal: ctl.signal })
@@ -215,7 +219,7 @@ export function lspFeatures(deps) {
     const incomplete = !!(res && !Array.isArray(res) && res.isIncomplete)
     // The text the ranges were given for: the state at the ask (the source runs with the view's state then).
     const log = context.state.field(editLog, false)
-    const req = { doc: context.state.doc, seq: log ? log.seq : -1 }
+    const req = { doc: context.state.doc, seq: log ? log.seq : -1, synced }
     const from = word ? word.from : context.pos
     const options = []
     for (const item of items) {
@@ -258,8 +262,9 @@ export function lspFeatures(deps) {
     }
     o.apply = (view, completion, from, to) => {
       // Every range was given for the text at the ask (req.doc): resolved there, then carried over
-      // what was typed since. With the log gone that far back, the word range alone and no extra edits.
-      const since = changesSince(view.state, req.seq, req.doc.length)
+      // what was typed since. With the log gone that far back, or in a view whose text the server
+      // never had (req.synced), the word range alone and no extra edits.
+      const since = req.synced ? changesSince(view.state, req.seq, req.doc.length) : null
       let rFrom = from
       let rTo = to
       if (te && since) {
@@ -425,9 +430,21 @@ export function lspFeatures(deps) {
     return true
   }
 
+  /**
+   * A position-based edit (rename, code actions) only from the view whose text the server holds:
+   * another view's cursor names a place in ITS buffer, while the server would read it in the owner's
+   * (which may differ) and edit that one, renaming whatever sits there. True when refused (said).
+   */
+  function notSynced(what) {
+    if (client.synced()) return false
+    deps.message(`${what}: another view of this file syncs it with the language server; use that view.`, true)
+    return true
+  }
+
   async function renameSymbol(view) {
     if (!feature('rename')) return deps.message('The language server cannot rename here.'), true
     if (view.state.readOnly) return true
+    if (notSynced('Rename')) return true
     const pos = view.state.selection.main.head
     const position = posOf(view.state, pos)
     // The position is the symbol's in THIS text (CodeMirror's documents are immutable, so identity
@@ -468,6 +485,7 @@ export function lspFeatures(deps) {
 
   async function codeActions(view) {
     if (!feature('codeActions')) return deps.message('The language server offers no code actions here.'), true
+    if (notSynced('Code actions')) return true
     const sel = view.state.selection.main
     const range = { start: posOf(view.state, sel.from), end: posOf(view.state, sel.to) }
     let r
