@@ -327,6 +327,25 @@ test('state re-send on a new line: the file is opened again, the buffer kept, a 
   assert.equal(resend.text, 'mine\n')
 })
 
+test('state re-send: a dirty buffer with no save in flight stays unsaved on a new line (autosave off is kept)', () => {
+  const { ui, s } = loaded()
+  s.receive({ t: 'settings', idleSeconds: 0, onBlur: false })
+  ui.text = 'mine\n'
+  s.edited()
+  assert.equal(ui.posted.length, 0)
+  // The connection drops and comes back: the file is opened again and read, nothing is saved.
+  s.connect()
+  const reopen = ui.posted.at(-1)
+  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  s.receive(head({ req: reopen.req, text: 'one\n' }))
+  assert.equal(ui.posted.filter((m) => m.t === 'save').length, 0)
+  assert.equal(ui.text, 'mine\n')
+  assert.equal(s.view().status, 'unsaved')
+  // The person's own save still goes.
+  s.saveNow()
+  assert.equal(ui.posted.at(-1).t, 'save')
+})
+
 test('state re-send: the lost save had landed (disk holds the buffer), so only the hash moves', () => {
   const { ui, s } = loaded()
   ui.text = 'mine\n'

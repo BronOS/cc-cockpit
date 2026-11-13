@@ -425,7 +425,9 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     if (sameHash && (!head.exists || (head.readOnly === true) === s.readOnly)) {
       // Disk is still our base. A save that was in flight when the line went never answered: send
       // it again (one that did land answers `changed` with our own text, which diskDiffers settles).
-      if (r.kind === 'reconnect' && s.dirty && !s.conflict) save()
+      // Only that one: a buffer nobody asked to save (autosave off, the idle timer still waiting)
+      // stays unsaved; a reconnect is not the person's Ctrl+S (found by the browser-view e2e).
+      if (r.kind === 'reconnect' && lost !== null && s.dirty && !s.conflict) save()
       return update()
     }
     if (sameHash) return roChanged(head)

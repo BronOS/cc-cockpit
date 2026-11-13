@@ -329,11 +329,11 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 **Files:**
 - Create: `test/e2e/editor.spec.ts`, `test/e2e/editor-web.spec.ts`
 
-- [ ] open from Files via Edit, type, autosave lands on disk; external write reloads, merges, conflicts
-- [ ] `ccc edit path:line`; diagnostics from the fake language server
-- [ ] a file tab in a browser view: edit, reconnect with a dirty buffer, save; the desktop sees the content
-- [ ] closing a dirty tab asks; quit with a dirty tab asks
-- [ ] run tests - must pass before next task
+- [x] open from Files via Edit, type, autosave lands on disk; external write reloads, merges, conflicts
+- [x] `ccc edit path:line`; diagnostics from the fake language server
+- [x] a file tab in a browser view: edit, reconnect with a dirty buffer, save; the desktop sees the content
+- [x] closing a dirty tab asks; quit with a dirty tab asks
+- [x] run tests - must pass before next task
 
 ### Task 19: Verify acceptance criteria [model: sonnet]
 - [ ] every point of `docs/design-editor.md` implemented or listed as not in v1
