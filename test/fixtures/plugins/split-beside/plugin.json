@@ -1,0 +1,14 @@
+{
+  "id": "test.splitbeside",
+  "name": "Split beside",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "open-command", "title": "Split beside: open a command tab beside the anchor" },
+      { "id": "open-shell-down", "title": "Split beside: open a shell below the anchor" },
+      { "id": "open-unknown", "title": "Split beside: open beside a tab id that does not exist" }
+    ]
+  }
+}
