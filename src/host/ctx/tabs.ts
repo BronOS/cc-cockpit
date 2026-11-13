@@ -186,7 +186,9 @@ export class PageTabHub {
     for (const handler of [...frame.discussHandlers]) {
       let answer: unknown
       try {
-        answer = await dispatchInView(frame.view, handler)
+        // The rejection is handled by this await; without an onReject origin-view rethrows it in its
+        // own `.then` too, which logs a second, unhandled one beside the real error.
+        answer = await dispatchInView(frame.view, handler, () => undefined)
       } catch (err) {
         this.log(pluginId, `a page tab onDiscuss handler threw: ${errorText(err)}`)
         throw err

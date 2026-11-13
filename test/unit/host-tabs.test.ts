@@ -11,7 +11,7 @@ import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ct
 import { pageTabOpenTag } from '../../src/host/ctx/tabs'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { parsePluginSpecs } from '../../src/host/loader'
-import { HostApi, MAX_PAGE_TAB_OPENS_PER_WINDOW, type HostApiDeps, type HostScope } from '../../src/main/plugins/host-api'
+import { HostApi, MAX_PAGE_TAB_OPENS_PER_WINDOW, MAX_PAGE_TAB_TITLES_PER_WINDOW, type HostApiDeps, type HostScope } from '../../src/main/plugins/host-api'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import type { PageTabInstance, PluginContext } from '../../src/sdk/types'
 import type { TabInfo } from '../../src/shared/ipc'
@@ -160,6 +160,24 @@ describe('HostApi tabs.* (main)', () => {
     expect(tabs.list(A).find((t) => t.id === mine.tabId)?.page?.title).toHaveLength(80)
   })
 
+  it('setTitle checks the tab and the text before its budget, which refuses the next title per plugin', async () => {
+    const call = host()
+    const mine = (await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'a.ts' })) as { tabId: string }
+    const theirs = (await call('tabs.openPage', { pluginId: 'p.other', type: 'note', title: 'n' })) as { tabId: string }
+    // Refused calls take nothing from the budget.
+    for (let i = 0; i < MAX_PAGE_TAB_TITLES_PER_WINDOW + 5; i++) {
+      await expect(call('tabs.setTitle', { pluginId: 'p.editor', tabId: mine.tabId, title: 'x', icon: '<svg>' })).rejects.toThrow(/glyph/)
+      await expect(call('tabs.setTitle', { pluginId: 'p.editor', tabId: theirs.tabId, title: 'x' })).rejects.toThrow(/no such page tab/)
+    }
+    for (let i = 0; i < MAX_PAGE_TAB_TITLES_PER_WINDOW; i++) {
+      await call('tabs.setTitle', { pluginId: 'p.editor', tabId: mine.tabId, title: `t${i}` })
+    }
+    await expect(call('tabs.setTitle', { pluginId: 'p.editor', tabId: mine.tabId, title: 'one more' })).rejects.toThrow(/more than 60 in 10 s/)
+    expect(tabs.list(A).find((t) => t.id === mine.tabId)?.page?.title).toBe(`t${MAX_PAGE_TAB_TITLES_PER_WINDOW - 1}`)
+    // Per plugin: another plugin of the host still sets its own.
+    await expect(call('tabs.setTitle', { pluginId: 'p.other', tabId: theirs.tabId, title: 'm' })).resolves.toBeNull()
+  })
+
   it('the per-plugin cap from the tab manager refuses and gives the open budget back', async () => {
     for (let i = 0; i < 64; i++) tabs.createPage(A, { plugin: 'p.editor', type: 'file', title: `t${i}` })
     const call = host()
@@ -303,6 +321,23 @@ describe('ctx.tabs (host)', () => {
     other.editor.tabs.onOpen('file', (t) => t.onDiscuss(() => 'just text' as unknown as { text: string }))
     openFrame(other.contexts, { pluginId: 'p.editor', id: TAB, type: 'file' })
     await expect(other.contexts.pageTabDiscuss({ pluginId: 'p.editor', id: TAB })).rejects.toThrow(/\{ text \} or null/)
+  })
+
+  it('an async onDiscuss that rejects fails the ask once, with no unhandled rejection beside it', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown): void => void unhandled.push(err)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const { contexts, editor } = setup()
+      editor.tabs.onOpen('file', (t) => t.onDiscuss(async () => Promise.reject(new Error('no selection model'))))
+      openFrame(contexts, { pluginId: 'p.editor', id: TAB, type: 'file', view: 'web:4' })
+      await expect(contexts.pageTabDiscuss({ pluginId: 'p.editor', id: TAB, view: 'web:4' })).rejects.toThrow(/no selection model/)
+      // An unhandled rejection is reported after the microtasks drain, on a later macrotask.
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('a stopping plugin ends its lines and drops its listeners', () => {

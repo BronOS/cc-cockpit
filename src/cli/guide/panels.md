@@ -85,7 +85,9 @@ load, the strip shows the title's first letter.
 - `ccPanel.tab.discuss()`: Ask Claude from this tab (bind it to a key your manifest `keys` declare, such as
   Ctrl+L, or a context menu item). The app draws its own question box over the tab, then asks your host's
   `tab.onDiscuss` for the context of this view (`ccc guide api`, `ctx.tabs`) and sends it with the question to
-  the Claude tab the person picks. Taken only while the tab is on screen and its page has the keyboard.
+  the Claude tab the person picks. Taken only while the tab is on screen and its page has the keyboard. The box
+  sends only on the person's deliberate act: Send and Ctrl/Cmd+Enter work after it has been up for about a
+  second, and a cancelled box does not reopen for the tab for two seconds.
 - `ccPanel.view.remote`: `true` when the page is drawn in a web access browser view (the person's
   phone or another browser), `false` on the desktop. The app's shell that mounts the page says so with
   the page's connection, so it is `false` until then: read it once the host's first message has come,

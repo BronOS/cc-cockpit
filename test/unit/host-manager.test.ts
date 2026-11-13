@@ -1912,6 +1912,43 @@ describe('HostManager', () => {
       slotted.closePageTab('p2', 'a.one', 't1')
     })
 
+    it("pageTabDiscuss asks only a running plugin that declares the type, not while it reloads; else null", async () => {
+      let finishReload: (() => void) | undefined
+      factory.handlers = () => ({
+        ...okHandlers(),
+        activate: (p) =>
+          (p as { plugins: { id: string }[] }).plugins.map((x) => ({ id: x.id, state: x.id === 'a.broken' ? 'errored' : 'active' })),
+        'pageTab.discuss': (p) => ({ text: `context of ${(p as { id: string }).id}` }),
+        'plugin.reload': (p) =>
+          new Promise((resolve) => {
+            finishReload = () => resolve({ id: (p as { plugin: { id: string } }).plugin.id, state: 'active' })
+          })
+      })
+      const file = [{ type: 'file', page: 'tab.html' }]
+      enabled.p1 = [plugin('a.one', { pageTabs: file }), plugin('a.broken', { pageTabs: file })]
+      const tab = { pluginId: 'a.one', id: 't1', type: 'file' }
+      // No host yet.
+      await expect(slotted.pageTabDiscuss('p1', tab, undefined, 1000)).resolves.toBeNull()
+      await slotted.open('p1', 1)
+      await expect(slotted.pageTabDiscuss('p1', tab, 'web:2', 1000)).resolves.toEqual({ text: 'context of t1' })
+      const asked = (): number => factory.last.calls.filter((c) => c === 'pageTab.discuss').length
+      expect(asked()).toBe(1)
+      // A type the plugin does not declare, a plugin that did not start, another project: no ask.
+      await expect(slotted.pageTabDiscuss('p1', { ...tab, type: 'note' }, undefined, 1000)).resolves.toBeNull()
+      await expect(slotted.pageTabDiscuss('p1', { ...tab, pluginId: 'a.broken' }, undefined, 1000)).resolves.toBeNull()
+      await expect(slotted.pageTabDiscuss('p2', tab, undefined, 1000)).resolves.toBeNull()
+      expect(asked()).toBe(1)
+      // While its new copy loads, the old instance is going: no ask.
+      const reloading = slotted.devReload('a.one')
+      await flush()
+      expect(finishReload).toBeDefined()
+      await expect(slotted.pageTabDiscuss('p1', tab, undefined, 1000)).resolves.toBeNull()
+      expect(asked()).toBe(1)
+      finishReload!()
+      await reloading
+      await expect(slotted.pageTabDiscuss('p1', tab, undefined, 1000)).resolves.toEqual({ text: 'context of t1' })
+    })
+
     it("settings pages (design-next §5.4): the scopes ride in the spec; the port goes to that running plugin only", async () => {
       const page = { entry: 'settings/index.html', scopes: ['app', 'project'] as ('app' | 'project')[] }
       enabled.p1 = [plugin('a.one', { settingsPage: page }), plugin('a.two')]

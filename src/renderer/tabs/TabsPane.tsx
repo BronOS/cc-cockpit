@@ -35,6 +35,7 @@ import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
 import { PageTabDiscussDialog } from './PageTabDiscussDialog'
+import { DiscussCooldown, discussMayOpen } from './page-tab-discuss-model'
 import { setPageTabDiscussHandler } from './PageTabArea'
 import { TabBar } from './TabBar'
 import { TabSwitcher } from './TabSwitcher'
@@ -791,12 +792,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     wasDiscussing.current = discussOpen
   }, [discussOpen, focusActive])
   // The shown page tab's page asked for Ask Claude (page-frames.ts takes it only from the frame on
-  // screen with the keyboard). Not over another modal, and only for the tab this view shows now.
+  // screen with the keyboard). Not over another modal, only for the tab this view shows now, and not
+  // right after the person cancelled that tab's box (a page asking on every focus would reopen it as
+  // the frame gets the keyboard back, and its backdrop would lock the window).
+  const discussCooldown = useRef(new DiscussCooldown())
   useEffect(
     () =>
       setPageTabDiscussHandler((tabId) => {
-        if (paletteOpen.current || overlayOpen.current || settingsShown.current || confirmFor.current !== null || offerShown.current) return
-        if (switcherRef.current || stateRef.current.activeId !== tabId) return
+        const modalUp =
+          paletteOpen.current || overlayOpen.current || settingsShown.current || confirmFor.current !== null || offerShown.current || discussShown.current
+        if (!discussMayOpen(tabId, { modalUp, switcherUp: switcherRef.current !== null, activeId: stateRef.current.activeId }, discussCooldown.current)) return
         discussShown.current = true
         setDiscussFor(lastClaude.current === undefined ? { tabId } : { tabId, preferred: lastClaude.current })
       }),
@@ -1082,7 +1087,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           tab={discussTab}
           claudeTabs={discussTabs}
           {...(discussFor.preferred !== undefined ? { lastClaudeTabId: discussFor.preferred } : {})}
-          onClose={() => {
+          onClose={(sent) => {
+            if (!sent) discussCooldown.current.cancelled(discussFor.tabId)
             discussShown.current = false
             setDiscussFor(null)
           }}
