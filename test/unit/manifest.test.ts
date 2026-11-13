@@ -346,7 +346,15 @@ describe('contributes.openFile', () => {
     if (r.ok) expect(r.manifest.contributes?.openFile).toMatchObject({ title: 'Review' })
   })
 
-  it.each([true, 'Review', [], {}, { title: '' }, { title: 5 }, { title: 'x'.repeat(101) }])('refuses %j', async (openFile) => {
+  it('accepts whenPicked: true or false (a candidate only when the project picked it)', async () => {
+    for (const whenPicked of [true, false]) {
+      const r = await validateManifest(withOpenFile({ title: 'Editor', whenPicked }), dir)
+      expect(r.ok).toBe(true)
+      if (r.ok) expect(r.manifest.contributes?.openFile).toEqual({ title: 'Editor', whenPicked })
+    }
+  })
+
+  it.each([true, 'Review', [], {}, { title: '' }, { title: 5 }, { title: 'x'.repeat(101) }, { title: 'E', whenPicked: 'yes' }, { title: 'E', whenPicked: 1 }])('refuses %j', async (openFile) => {
     expect((await errorsOf(withOpenFile(openFile))).join()).toMatch(/openFile/)
   })
 

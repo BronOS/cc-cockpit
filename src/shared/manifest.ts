@@ -186,9 +186,16 @@ export const MAX_SERVICES = 32
  * The plugin can take over a click on a changed file in the Sessions panel (cockpit.sessions' ctx.sessions.openFile; friction round 1,
  * Task 12): main sends it `{ path, tabId }` through `ctx.files.onOpen`. `title` labels the plugin in
  * Settings > Plugins when the project has to pick between several (and the built-in viewer).
+ *
+ * `whenPicked: true`: the plugin is listed in that choice but takes clicks only when the project
+ * picked it there (Oleg, 2026-11-13: the editor's plain click, "make it configurable"). With no pick
+ * it is not a candidate, so it never makes the choice ambiguous and never becomes the default: an
+ * opener that is a second way to open files (an editor beside a reviewer) adds itself without
+ * taking the clicks from the one the person had. Any plugin may set it.
  */
 export interface OpenFileContribution {
   title: string
+  whenPicked?: boolean
 }
 
 /** A JSON Schema as plugins write it; compiled and limited in `validate.ts`. */
@@ -399,7 +406,7 @@ export const MANIFEST_SCHEMA = {
         },
         // An object, not `true`: the title is what the person reads when picking the plugin that
         // opens files, and a later field (file kinds, say) has room here.
-        openFile: { type: 'object', required: ['title'], properties: { title } },
+        openFile: { type: 'object', required: ['title'], properties: { title, whenPicked: { type: 'boolean' } } },
         // Duplicate types, `min > max`, the `.html` entry and `main` are checked in validate.ts.
         slots: {
           type: 'array',

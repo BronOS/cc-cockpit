@@ -175,7 +175,7 @@ var MANIFEST_SCHEMA = {
         },
         // An object, not `true`: the title is what the person reads when picking the plugin that
         // opens files, and a later field (file kinds, say) has room here.
-        openFile: { type: "object", required: ["title"], properties: { title } },
+        openFile: { type: "object", required: ["title"], properties: { title, whenPicked: { type: "boolean" } } },
         // Duplicate types, `min > max`, the `.html` entry and `main` are checked in validate.ts.
         slots: {
           type: "array",

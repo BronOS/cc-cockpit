@@ -11,6 +11,15 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
 - A file tab (`contributes.tabs` type `file`): highlighting for TS/JS, Go, PHP, Python, JSON, YAML, Markdown, HTML, CSS
   and shell; search and replace (Ctrl+F, Ctrl+H; Cmd+Alt+F for replace on macOS), multi-cursor (Alt+click, Ctrl+D), folding, bracket matching, comment
   toggle (Ctrl+/), VS Code's line keys; the app's theme colours and the terminal font.
+- Quick open (Ctrl+P): the project's files from `rg --files` (ripgrep's ignore rules: `.gitignore` and the like),
+  filtered fuzzily as you type. Find in files (Ctrl+Shift+F): `rg --json`, plain text unless `.*` is on, any case
+  unless `Aa` is on, whole words with `ab`; results by file, a click (or Enter) opens the file's tab at the line. Both
+  are capped (50,000 files; 2,000 matches in 500 files) and need [ripgrep](https://github.com/BurntSushi/ripgrep) on
+  the login-shell PATH (`brew install ripgrep`, `sudo pacman -S ripgrep`, `sudo apt install ripgrep`; a missing `rg`
+  is reported with these).
+- A plain click on a file (the Sessions panel's changed files, the Files tree) opens the Reviewer's view unless the
+  project picks "Editor (a file tab)" in Settings > This Project, "Plugin used to open files" (the manifest's
+  `contributes.openFile` with `whenPicked: true`); then it opens the file's tab, and a binary file the built-in viewer.
 - `editor.open(path, { line?, col? })` opens the file's tab, or focuses the tab that already shows it and moves to the
   line. The path must resolve inside the project folder (symlinks followed); a binary file goes to the project's file
   opener (the reviewer, else the built-in viewer). A missing file opens as a new one, created by its first save.

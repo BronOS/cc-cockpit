@@ -23,6 +23,19 @@
       <span id="bar-actions" class="actions"></span>
     </div>
     <main id="editor"></main>
+    <!-- Quick open (Ctrl+P) and find in files (Ctrl+Shift+F): one palette over the editor. -->
+    <div id="palette" class="palette" role="dialog" aria-label="Go to file or find in files" hidden>
+      <div class="palette-input">
+        <input id="palette-query" type="text" spellcheck="false" autocomplete="off" />
+        <span id="palette-toggles" class="toggles" hidden>
+          <button type="button" id="t-case" class="toggle" title="Match case" aria-pressed="false">Aa</button>
+          <button type="button" id="t-word" class="toggle" title="Whole word" aria-pressed="false">ab</button>
+          <button type="button" id="t-regex" class="toggle" title="Regular expression" aria-pressed="false">.*</button>
+        </span>
+      </div>
+      <div id="palette-status" class="palette-status" role="status"></div>
+      <ul id="palette-list" class="palette-list" role="listbox"></ul>
+    </div>
     <script src="file.bundle.js"></script>
   </body>
 </html>

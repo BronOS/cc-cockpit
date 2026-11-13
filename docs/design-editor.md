@@ -78,8 +78,12 @@ servers stay with the code.
 ## 2. Files, saving, Claude writing the same file
 
 **Opening.** Through the Reviewer's Edit button (the file overlay), the `editor` service, `ccc edit` and the editor's
-own navigation (go-to-definition, quick open). The editor is not the project's open-file provider: a plain click on a
-file keeps opening the Reviewer's view (Oleg's decision at the checkpoint, 2026-11-13). Only files inside the project, checked by realpath; outside files go
+own navigation (go-to-definition, quick open). A plain click on a file keeps opening the Reviewer's view by default
+(Oleg's decision at the checkpoint, 2026-11-13), and is configurable ("make it configurable", the same day): the editor
+declares `contributes.openFile` with `whenPicked: true`, a general manifest flag meaning "a candidate only when the
+project picked it", so it is listed in Settings > This Project, "Plugin used to open files", and with no pick it is
+left out (the Reviewer stays the default, nothing becomes ambiguous). Picked, a click opens the file's tab; a binary
+file is refused by its listener and the built-in viewer shows it. Only files inside the project, checked by realpath; outside files go
 to the built-in viewer. Binary files, text over about 5 MB, and text that is not valid UTF-8 open read-only (saving
 would corrupt them). A file that already has a tab focuses it and moves to the line.
 

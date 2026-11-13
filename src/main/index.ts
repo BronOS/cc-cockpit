@@ -1410,7 +1410,15 @@ function start(server: boolean): void {
         })),
         cli: plugin.manifest.contributes?.cli ?? [],
         ...(plugin.manifest.services !== undefined ? { services: plugin.manifest.services } : {}),
-        ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
+        ...(plugin.manifest.contributes?.openFile !== undefined
+          ? {
+              openFile: {
+                title: plugin.manifest.contributes.openFile.title,
+                // Only a strict true: the open-file rule leaves such a plugin out until the project picks it.
+                ...(plugin.manifest.contributes.openFile.whenPicked === true ? { whenPicked: true } : {})
+              }
+            }
+          : {}),
         ...(plugin.manifest.contributes?.slots !== undefined ? { slots: plugin.manifest.contributes.slots } : {}),
         ...(plugin.manifest.contributes?.settings?.page !== undefined ? { settingsPage: plugin.manifest.contributes.settings.page } : {}),
         // Page-tab types: a frame's port goes only to a plugin the launch saw declare the type.

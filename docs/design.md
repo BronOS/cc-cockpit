@@ -761,8 +761,9 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
   (`^[a-z][a-z0-9-]{0,63}$`) and an `entry` ending in `.html`; `title` 1 to 100 characters; `minHeight` and `maxHeight`
   integers 24 to 600 (defaults 24 and 600, min not above max); at most 10 per plugin, a type once per plugin. A panel
   lists at most 4 distinct types and may not list an app slot type (`sessions-strip`, `usage-meter`).
-- `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars }`). The plugin may
-  take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
+- `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars, "whenPicked"?: boolean }`). The
+  plugin may take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
+  `whenPicked: true`: a candidate only when the project picked it (listed in the pick, never the default).
 - A panel's `icon` (an SVG or PNG in the plugin folder) is drawn as a mask in the strip's text colour,
   not as an image: only its shape and alpha count, so it follows the theme, hover and open states (a
   `stroke="currentColor"` SVG drawn by `<img>` came out black). `IconStrip.tsx` paints a CSS
@@ -878,7 +879,11 @@ walks `serviceProviders` as services skips every `@` key.
 `serviceProviders` under the reserved key `@open-file` (a service name never starts with `@`, and `@slot:<type>` keys are reserved the same way, Slots above); its value is
 a plugin id or `@builtin` for core's viewer, and changing it needs no host restart (main routes each click).
 With one candidate it gets the clicks; with several and no valid pick (a stale pick counts as none) or with
-`@builtin`, the built-in viewer opens. Main is the authority for what the plugin receives: the tab must
+`@builtin`, the built-in viewer opens. A plugin whose `openFile` says `whenPicked: true` is a candidate only while
+the pick names it (Oleg, 2026-11-13: the editor's plain click, "make it configurable"): it is listed in "Plugin used
+to open files", but with no pick it is left out, so it neither becomes the default nor makes the choice ambiguous
+(the bundled editor declares it beside the Reviewer, which keeps the clicks until the project picks the Editor).
+General, not a bundled-plugin case; the rule is `openFileCandidate` in `services.ts`. Main is the authority for what the plugin receives: the tab must
 belong to the asking window's project and the file must be one main recorded for that tab (the checks
 `openDiff` makes), the path is made relative to the project folder by main and a file outside the project
 is never sent (the built-in viewer shows it): the real path decides, so a symlink out of the project is
@@ -1114,7 +1119,8 @@ with a log line; the bundled copy wins and project enablement and settings keyed
 project record, and main refuses enabling it per project meanwhile. Third-party plugins are per project only.
 
 *Replacing*: no new mechanism. Another plugin providing `editor` / `reviewer` appears in the services provider pick, and
-another `openFile` plugin in "Plugin used to open files". A bundled plugin has no priority in `selectProvider`; turning it
+another `openFile` plugin in "Plugin used to open files" (the bundled editor is one too, with `whenPicked`, so it
+takes clicks only once picked). A bundled plugin has no priority in `selectProvider`; turning it
 off (project or app-wide) leaves the other as the only provider.
 The index entry (not the manifest) may set `enabledByDefault`; the project record keeps
 `disabledPlugins` so a default-on plugin can be switched off. The built-in browser

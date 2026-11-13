@@ -647,3 +647,58 @@ test('ccc edit help, and the micro fallback (no ctx.tabs) gets the parsed line',
   assert.deepEqual(f.started[0].argv.slice(-2), ['src/a.ts', '+7'])
   host.deactivate()
 })
+
+test('quick open and find in files: a page pick opens its file tab; a bad path is told, never opened', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('empty.txt')
+  const view = t.connect(t.open[0].id)
+  view.send({ t: 'openFile', path: 'src/a.ts', line: 3, col: 2 })
+  await new Promise((r) => setTimeout(r, 20))
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts', line: 3, col: 2 }, { title: 'a.ts', icon: 'file', focus: true }])
+  for (const bad of ['../x', '/etc/hosts', 'link.txt']) {
+    view.send({ t: 'openFile', path: bad })
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(view.posted.at(-1).t, 'search-error', bad)
+    assert.equal(view.posted.at(-1).kind, 'open')
+  }
+  assert.equal(t.open.length, 2)
+  // Search messages go to lib/search.js: no ctx.processes here (an older app), so it is said on the tab.
+  view.send({ t: 'files', req: 7 })
+  assert.deepEqual(view.posted.at(-1), { t: 'search-error', kind: 'files', req: 7, message: 'quick open needs a newer cockpit (ctx.processes)' })
+  host.deactivate()
+})
+
+test('plain click (ctx.files.onOpen, the project picked the editor): a text file opens its tab; a binary one is refused for the built-in viewer', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  const listeners = []
+  const viewed = []
+  f.ctx.files = { onOpen: (fn) => (listeners.push(fn), () => {}), open: async (p) => (viewed.push(p), { via: 'builtin' }) }
+  host.activate(f.ctx)
+  assert.equal(listeners.length, 1)
+  await listeners[0]({ path: 'src/a.ts', tabId: 'x' })
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts' }, { title: 'a.ts', icon: 'file', focus: true }])
+  // Again: the open tab is focused, no second one.
+  await listeners[0]({ path: 'src/a.ts' })
+  assert.deepEqual(t.calls.at(-1), ['focus', t.open[0].id])
+  // A binary file: the listener throws (main then opens its built-in viewer) and never calls
+  // ctx.files.open, which would route back to this same listener.
+  await assert.rejects(listeners[0]({ path: 'img.png' }), /binary/)
+  assert.deepEqual(viewed, [])
+  assert.equal(t.open.length, 1)
+  host.deactivate()
+  // The manifest: a general openFile declaration, offered only when picked.
+  assert.deepEqual(require('../plugin.json').contributes.openFile, { title: 'Editor (a file tab)', whenPicked: true })
+  // An app without page tabs registers no listener.
+  const g = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  const none = []
+  g.ctx.files = { onOpen: (fn) => none.push(fn) }
+  host.activate(g.ctx)
+  assert.equal(none.length, 0)
+})

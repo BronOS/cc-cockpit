@@ -513,7 +513,7 @@ describe('replacing a bundled plugin through the picks', () => {
   const EDITOR = 'cockpit.editor'
   const REVIEWER = 'cockpit.reviewer'
   const installed: (ServicePlugin & OpenFilePlugin & EnablementPlugin)[] = [
-    { id: EDITOR, enabledByDefault: true, source: { kind: 'bundled' }, services: { provides: { editor: 1 } } },
+    { id: EDITOR, enabledByDefault: true, source: { kind: 'bundled' }, openFile: { title: 'Editor', whenPicked: true }, services: { provides: { editor: 1 } } },
     { id: REVIEWER, enabledByDefault: true, source: { kind: 'bundled' }, openFile: { title: 'Reviewer' }, services: { provides: { reviewer: 1 }, uses: { editor: 1 } } },
     { id: 'acme.vim', source: { kind: 'linked' }, services: { provides: { editor: 1 } } },
     { id: 'acme.diff', source: { kind: 'linked' }, openFile: { title: 'Acme diff' } }
@@ -531,7 +531,7 @@ describe('replacing a bundled plugin through the picks', () => {
     expect(serviceStatus(plugins, {}).services.find((s) => s.service === 'editor')).toMatchObject({ candidates: [EDITOR, 'acme.vim'], selected: null })
     expect(selectProvider('editor', plugins, { editor: 'acme.vim' })).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
     expect(openFileStatus(plugins, {})).toEqual({
-      candidates: [{ id: REVIEWER, title: 'Reviewer' }, { id: 'acme.diff', title: 'Acme diff' }],
+      candidates: [{ id: EDITOR, title: 'Editor', whenPicked: true }, { id: REVIEWER, title: 'Reviewer' }, { id: 'acme.diff', title: 'Acme diff' }],
       selected: null
     })
     // No pick: the click opens the built-in viewer, not the bundled reviewer.

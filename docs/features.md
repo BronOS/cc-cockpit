@@ -265,7 +265,12 @@ behind it are in [design.md](design.md).
   above yours (Keep mine, Take Claude's, Keep both; ⚠ in the tab title, nothing saved until all are resolved). A file
   deleted on disk keeps its tab with Save (recreate) or Close. Binary, non-UTF-8 and
   files over 5 MB open read-only; a binary file goes to the reviewer instead. A tab with unsaved text shows a dot and
-  closing it asks. "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a
+  closing it asks. In a file tab, Ctrl+P (quick open: the project's files, fuzzy filtered, ripgrep's ignore rules)
+  and Ctrl+Shift+F (find in files: plain text, case, whole word or regex; results by file, a click opens the tab at the
+  line) need [ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`, `sudo pacman -S ripgrep`, `sudo
+  apt install ripgrep`); without it they say so. A plain click on a file (Sessions, Files) still opens the Reviewer;
+  pick "Editor (a file tab)" under "Plugin used to open files" in Settings > This Project to open its tab instead.
+  "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a
   colour scheme and a path-to-micro setting); `ccc edit <file>[:line[:col]]` opens the file's tab at that position (marked with the unseen dot, never selected, so it cannot take the screen from a terminal being typed in; an open tab moves its cursor and gets the dot again; a missing or binary file is refused), and the Editor's skill tells Claude to use it to point at code. micro is an optional
   dependency, not shipped: install it with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install
   micro` (Linux). Without it, Open in micro shows that command and the `microPath` setting instead of failing silently.

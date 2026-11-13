@@ -193,12 +193,16 @@ export const BUILTIN_VIEWER = '@builtin'
 /** What the rule needs from a plugin: its id and the manifest's `contributes.openFile`. */
 export interface OpenFilePlugin {
   id: string
-  openFile?: { title: string }
+  /** `whenPicked`: a candidate only when the project picked it (manifest.ts OpenFileContribution). */
+  openFile?: { title: string; whenPicked?: boolean }
 }
 
 export interface OpenFileStatus {
-  /** The plugins that declare `contributes.openFile`, in plugin order, with the title they gave. */
-  candidates: { id: string; title: string }[]
+  /**
+   * The plugins that declare `contributes.openFile`, in plugin order, with the title they gave; a
+   * `whenPicked` one is listed too (it is how the person picks it) and says so.
+   */
+  candidates: { id: string; title: string; whenPicked?: true }[]
   /**
    * Where a click goes: a candidate's id, BUILTIN_VIEWER (picked, or no candidate at all), or null
    * (several candidates and no valid pick; the click opens the built-in viewer until one is picked).
@@ -212,9 +216,23 @@ export interface PluginServicesView extends ServicesStatus {
   slots: SlotPickStatus[]
 }
 
+/**
+ * Whether `p` stands as a candidate under these picks: it declares `openFile`, and a `whenPicked`
+ * one only while the project's pick names it. So with no pick a `whenPicked` plugin is no
+ * candidate at all: alone it leaves the built-in viewer, beside another opener it neither takes
+ * the clicks nor makes the choice ambiguous (the bundled editor beside the reviewer).
+ */
+function openFileCandidate(p: OpenFilePlugin, choices: ServiceChoices): boolean {
+  if (p.openFile === undefined) return false
+  if (p.openFile.whenPicked !== true) return true
+  return Object.hasOwn(choices, OPEN_FILE_PICK) && choices[OPEN_FILE_PICK] === p.id
+}
+
 /** The open-file selection in selectProvider's terms (a candidate provides OPEN_FILE_PICK v1). */
-function openFileSelection(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): ProviderSelection {
-  const asProviders = plugins.map((p): ServicePlugin => (p.openFile !== undefined ? { id: p.id, services: { provides: { [OPEN_FILE_PICK]: 1 } } } : { id: p.id }))
+function openFileSelection(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): ProviderSelection | null {
+  const asProviders = plugins.map((p): ServicePlugin => (openFileCandidate(p, choices) ? { id: p.id, services: { provides: { [OPEN_FILE_PICK]: 1 } } } : { id: p.id }))
+  // No candidate under these picks (none declares it, or only whenPicked ones nobody picked).
+  if (!asProviders.some((p) => p.services !== undefined)) return null
   return selectProvider(OPEN_FILE_PICK, asProviders, choices)
 }
 
@@ -229,14 +247,18 @@ const pickedBuiltin = (choices: ServiceChoices): boolean =>
 export function selectOpenFile(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): string | null {
   if (pickedBuiltin(choices)) return null
   const sel = openFileSelection(plugins, choices)
-  return sel.ok ? sel.provider : null
+  return sel?.ok ? sel.provider : null
 }
 
 /** The candidates and the current selection, for the Plugins page (plain data, sent over IPC). */
 export function openFileStatus(plugins: readonly OpenFilePlugin[], choices: ServiceChoices): OpenFileStatus {
-  const candidates = plugins.flatMap((p) => (p.openFile !== undefined ? [{ id: p.id, title: p.openFile.title }] : []))
-  if (candidates.length === 0 || pickedBuiltin(choices)) return { candidates, selected: BUILTIN_VIEWER }
-  const sel = openFileSelection(plugins, choices)
+  const candidates = plugins.flatMap((p) =>
+    p.openFile !== undefined ? [{ id: p.id, title: p.openFile.title, ...(p.openFile.whenPicked === true ? { whenPicked: true as const } : {}) }] : []
+  )
+  const sel = pickedBuiltin(choices) ? null : openFileSelection(plugins, choices)
+  // Nothing stands (no plugin declares it, the project picked the viewer, or only unpicked
+  // whenPicked ones): the viewer opens, and that is a choice, not a missing pick.
+  if (sel === null) return { candidates, selected: BUILTIN_VIEWER }
   return { candidates, selected: sel.ok ? sel.provider : null }
 }
 

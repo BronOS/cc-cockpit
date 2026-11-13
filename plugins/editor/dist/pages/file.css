@@ -107,3 +107,126 @@ main .cm-line.cc-flash {
     background-color: color-mix(in srgb, var(--cc-accent) 15%, transparent);
   }
 }
+/* Quick open and find in files: a palette over the editor, under the header. */
+.palette {
+  position: fixed;
+  top: calc(var(--cc-control-h, 26px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(680px, calc(100vw - 24px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-m, 6px);
+  box-shadow: 0 8px 24px var(--cc-shadow);
+  z-index: 10;
+}
+.palette[hidden] {
+  display: none;
+}
+.palette-input {
+  display: flex;
+  gap: var(--cc-space-1, 4px);
+  padding: var(--cc-space-2, 8px);
+}
+.palette-input input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-1);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-s, 4px);
+  padding: 3px 6px;
+}
+.toggles {
+  display: flex;
+  gap: 2px;
+}
+.toggles[hidden] {
+  display: none;
+}
+.toggle {
+  font: inherit;
+  font-family: var(--cc-font-mono);
+  color: var(--cc-fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--cc-radius-s, 4px);
+  padding: 0 6px;
+  cursor: pointer;
+}
+.toggle[aria-pressed='true'] {
+  color: var(--cc-accent-fg);
+  background: var(--cc-accent);
+}
+.palette-status {
+  padding: 0 var(--cc-space-2, 8px) var(--cc-space-1, 4px);
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-s, 11px);
+  white-space: pre-wrap;
+}
+.palette-status:empty {
+  display: none;
+}
+.palette-status.error {
+  color: var(--cc-status-ended);
+}
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--cc-space-1, 4px);
+  overflow-y: auto;
+  min-height: 0;
+}
+.palette-list .row {
+  display: flex;
+  gap: var(--cc-space-2, 8px);
+  align-items: baseline;
+  padding: 2px var(--cc-space-2, 8px);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.palette-list .row[aria-selected='true'] {
+  background: var(--cc-accent-soft);
+}
+.palette-list .name {
+  flex: none;
+}
+.palette-list .dir {
+  color: var(--cc-fg-subtle);
+  font-size: var(--cc-text-s, 11px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-list .group {
+  padding: 4px var(--cc-space-2, 8px) 1px;
+  color: var(--cc-fg-muted);
+  font-weight: 600;
+  font-size: var(--cc-text-s, 11px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-list .match .num {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--cc-fg-subtle);
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-s, 11px);
+}
+.palette-list .match .text {
+  font-family: var(--cc-terminal-font-family, var(--cc-font-mono));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-list mark {
+  color: inherit;
+  background: color-mix(in srgb, var(--cc-status-needs-permission) 35%, transparent);
+  border-radius: 2px;
+}

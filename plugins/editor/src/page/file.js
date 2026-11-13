@@ -42,6 +42,7 @@ import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { languageOfText } from './languages.mjs'
 import { createSession } from './session.mjs'
 import { lineChanges, keepBothText } from './merge.mjs'
+import { createSearch, fuzzyFilter, highlightPieces } from './quick-open.mjs'
 
 /* global ccPanel */
 
@@ -498,10 +499,244 @@ const session = createSession({
   render,
 })
 
-ccPanel.onMessage((m) => session.receive(m))
+// ---- quick open (Ctrl+P) and find in files (Ctrl+Shift+F) ----
+// One palette over the editor in two modes. The host runs rg (dist/lib/search.js); quick-open.mjs
+// keeps the requests and filters. A pick in this tab's own file moves the cursor here; any other
+// file goes to the host (`openFile`), which opens or focuses its tab (checked inside the project).
+
+const palette = { mode: null, lastMode: 'files', rows: [], index: 0, files: null, grep: null, opts: { caseSensitive: false, word: false, regex: false } }
+
+const search = createSearch({
+  post: (m) => ccPanel.post(m),
+  now: () => Date.now(),
+  onFiles: (st) => {
+    palette.files = st
+    if (palette.mode === 'files') drawPalette()
+  },
+  onGrep: (st) => {
+    palette.grep = st
+    if (palette.mode === 'grep') drawPalette()
+  },
+  // An open the host refused (a file gone meanwhile, the tab cap): said where it was picked.
+  onOpenError: (message) => {
+    if (palette.mode === null) showPalette(palette.lastMode, false)
+    $('palette-status').textContent = message
+    $('palette-status').classList.add('error')
+  },
+})
+
+function showPalette(mode, fresh = true) {
+  palette.mode = mode
+  palette.lastMode = mode
+  palette.index = 0
+  $('palette').hidden = false
+  $('palette').dataset.mode = mode
+  $('palette-toggles').hidden = mode !== 'grep'
+  const input = $('palette-query')
+  input.placeholder = mode === 'files' ? 'Go to a file of this project' : 'Find in the project’s files'
+  if (fresh) {
+    if (mode === 'files') {
+      input.value = ''
+      search.loadFiles()
+    } else {
+      // The selection, when it is one short line, is the usual thing to look for.
+      const main = view ? view.state.selection.main : null
+      const sel = main && !main.empty ? view.state.sliceDoc(main.from, main.to) : ''
+      if (sel && !sel.includes('\n') && sel.length <= 200) input.value = sel
+      search.setGrep(input.value, palette.opts, true)
+    }
+  }
+  input.focus()
+  input.select()
+  drawPalette()
+}
+
+function hidePalette(focusEditor = true) {
+  if (palette.mode === 'grep') search.stopGrep()
+  palette.mode = null
+  $('palette').hidden = true
+  if (focusEditor && view) view.focus()
+}
+
+/** `text` into `parent`, the `ranges` as <mark> (textContent only: file names and lines are never markup). */
+function pieces(parent, text, ranges) {
+  for (const p of highlightPieces(text, ranges)) {
+    if (p.hit) {
+      const b = document.createElement('mark')
+      b.textContent = p.text
+      parent.append(b)
+    } else parent.append(document.createTextNode(p.text))
+  }
+}
+
+/** Matched positions (one character each) as ranges for highlightPieces. */
+const rangesOf = (positions) => positions.map((i) => [i, i + 1])
+
+function drawPalette() {
+  const list = $('palette-list')
+  const status = $('palette-status')
+  status.classList.remove('error')
+  list.replaceChildren()
+  palette.rows = []
+  const query = $('palette-query').value
+  if (palette.mode === 'files') {
+    const st = palette.files || { loading: true, paths: [] }
+    const hits = fuzzyFilter(query, st.paths)
+    for (const h of hits) {
+      const li = document.createElement('li')
+      li.className = 'row'
+      const cut = h.path.lastIndexOf('/') + 1
+      const file = document.createElement('span')
+      file.className = 'name'
+      pieces(file, h.path.slice(cut), rangesOf(h.positions.filter((i) => i >= cut).map((i) => i - cut)))
+      const dir = document.createElement('span')
+      dir.className = 'dir'
+      pieces(dir, h.path.slice(0, cut), rangesOf(h.positions.filter((i) => i < cut)))
+      li.append(file, dir)
+      addRow(li, { path: h.path })
+    }
+    if (st.error) {
+      status.textContent = st.error
+      status.classList.add('error')
+    } else if (st.loading && !st.paths.length) status.textContent = 'Listing files…'
+    else if (!hits.length) status.textContent = 'No file matches.'
+    else status.textContent = st.truncated ? `Only the first ${st.paths.length} files are listed.` : ''
+  } else if (palette.mode === 'grep') {
+    const st = palette.grep || { loading: false, groups: [], count: 0, files: 0 }
+    for (const g of st.groups) {
+      const head = document.createElement('li')
+      head.className = 'group'
+      head.textContent = g.path
+      list.append(head)
+      for (const m of g.matches) {
+        const li = document.createElement('li')
+        li.className = 'row match'
+        const num = document.createElement('span')
+        num.className = 'num'
+        num.textContent = String(m.line)
+        const text = document.createElement('span')
+        text.className = 'text'
+        if (m.cut) text.append(document.createTextNode('…'))
+        pieces(text, typeof m.text === 'string' ? m.text : '', Array.isArray(m.ranges) ? m.ranges : [])
+        li.append(num, text)
+        addRow(li, { path: m.path, line: m.line, col: m.col })
+      }
+    }
+    if (st.error) {
+      status.textContent = st.error
+      status.classList.add('error')
+    } else if (st.loading) status.textContent = 'Searching…'
+    else if (!query) status.textContent = 'Type to search: plain text unless .* is on, any case unless Aa is on.'
+    else if (!st.count) status.textContent = 'No results.'
+    else {
+      const n = `${st.count} ${st.count === 1 ? 'result' : 'results'} in ${st.files} ${st.files === 1 ? 'file' : 'files'}`
+      status.textContent = st.truncated ? `${n} (stopped there: narrow the search)` : n
+    }
+  }
+  palette.index = Math.min(palette.index, Math.max(0, palette.rows.length - 1))
+  markRow()
+}
+
+function addRow(li, target) {
+  const i = palette.rows.length
+  li.setAttribute('role', 'option')
+  // The input keeps the focus (and the keys) while a row is clicked.
+  li.addEventListener('mousedown', (e) => e.preventDefault())
+  li.addEventListener('click', () => pick(i))
+  palette.rows.push({ li, target })
+  $('palette-list').append(li)
+}
+
+function markRow() {
+  palette.rows.forEach((r, i) => r.li.setAttribute('aria-selected', i === palette.index ? 'true' : 'false'))
+  const r = palette.rows[palette.index]
+  if (r) r.li.scrollIntoView({ block: 'nearest' })
+}
+
+function pick(i) {
+  const r = palette.rows[i]
+  if (!r) return
+  const t = r.target
+  hidePalette(false)
+  if (t.path === session.view().path) {
+    if (t.line) gotoLine(t.line, t.col || 1)
+    else if (view) view.focus()
+    return
+  }
+  ccPanel.post({ t: 'openFile', path: t.path, ...(t.line ? { line: t.line } : {}), ...(t.col ? { col: t.col } : {}) })
+}
+
+$('palette-query').addEventListener('input', () => {
+  palette.index = 0
+  if (palette.mode === 'grep') search.setGrep($('palette-query').value, palette.opts)
+  else drawPalette()
+})
+$('palette-query').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    hidePalette()
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    if (!palette.rows.length) return
+    const d = e.key === 'ArrowDown' ? 1 : -1
+    palette.index = (palette.index + d + palette.rows.length) % palette.rows.length
+    markRow()
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    // Enter in find with no results yet: search now rather than after the pause.
+    if (palette.mode === 'grep' && !palette.rows.length) search.setGrep($('palette-query').value, palette.opts, true)
+    else pick(palette.index)
+  }
+})
+for (const [id, key] of [
+  ['t-case', 'caseSensitive'],
+  ['t-word', 'word'],
+  ['t-regex', 'regex'],
+]) {
+  const b = $(id)
+  b.addEventListener('mousedown', (e) => e.preventDefault())
+  b.addEventListener('click', () => {
+    palette.opts[key] = !palette.opts[key]
+    b.setAttribute('aria-pressed', String(palette.opts[key]))
+    search.setGrep($('palette-query').value, palette.opts, true)
+  })
+}
+// A click outside the palette closes it (the editor takes the click).
+document.addEventListener('mousedown', (e) => {
+  if (palette.mode !== null && !$('palette').contains(e.target)) hidePalette(false)
+})
+// The page's chords (declared as page-tab keys in plugin.json, so the app lets them through while
+// the page has focus): Ctrl/Cmd+P quick open, Ctrl/Cmd+Shift+F find in files. Caught before CodeMirror.
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+    const k = e.key.toLowerCase()
+    if (k === 'p' && !e.shiftKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      if (palette.mode === 'files') hidePalette()
+      else showPalette('files')
+    } else if (k === 'f' && e.shiftKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      showPalette('grep')
+    }
+  },
+  true
+)
+
+ccPanel.onMessage((m) => {
+  if (search.receive(m)) return
+  session.receive(m)
+})
 // Every new line: the first, a host restart, a browser view's reconnect, a relay resync. The page
-// is never reloaded for these, so the buffer survives and the session re-sends what it holds.
-ccPanel.onConnect(() => session.connect())
+// is never reloaded for these, so the buffer survives and the session re-sends what it holds (and
+// a search still waiting for its answer is asked again).
+ccPanel.onConnect(() => {
+  session.connect()
+  search.connect()
+})
 
 // micro opens what is on disk, so the buffer is saved first and micro opens once the host confirmed it
 // (render sees `saved`); a conflict or an error cancels it, nothing is opened over unsaved text.

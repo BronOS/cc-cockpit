@@ -1069,7 +1069,7 @@ export interface PluginContext {
      * Needs `contributes.openFile` in the manifest (throws otherwise). Opens come only when the
      * project uses this plugin to open
      * files: it is the only enabled one declaring `openFile`, or the one picked in Settings >
-     * Plugins. Every listener is called; the app's built-in viewer opens instead when none is
+     * Plugins (with `openFile.whenPicked`, only the pick counts). Every listener is called; the app's built-in viewer opens instead when none is
      * registered, or each one throws or rejects within 1 s (a promise still pending then counts
      * as handled). The app waits at most 2 s for this host.
      */

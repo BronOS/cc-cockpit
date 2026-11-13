@@ -5,6 +5,7 @@
   "api": 1,
   "main": "dist/host.js",
   "contributes": {
+    "openFile": { "title": "Editor (a file tab)", "whenPicked": true },
     "tabs": [
       {
         "type": "file",

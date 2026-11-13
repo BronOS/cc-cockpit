@@ -389,7 +389,8 @@ with full Node access.
   from the app. `tabId` is absent when the open did not come from a tab (a `ctx.files.open` call
   without one), so check it before use. Opens reach the plugin only when the project uses it to open files: it is the
   only enabled plugin declaring `openFile`, or the one picked in Settings > This Project ("Plugin used
-  to open files", where "Built-in viewer" is also a choice). The built-in viewer (a diff or the
+  to open files", where "Built-in viewer" is also a choice); with `whenPicked` only the pick
+  counts. The built-in viewer (a diff or the
   file in a pager) opens instead when the plugin is not active, has no listener, or every listener
   throws or rejects within 1 s; a listener still running after 1 s counts as handled, so one that
   awaits an overlay is fine. The app waits at most 2 s for the host. A file outside the project

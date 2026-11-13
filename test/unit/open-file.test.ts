@@ -1,7 +1,7 @@
 // The open-file hook (friction round 1, Task 12): which plugin a Sessions panel file click goes to
 // (the shared rule), main's routing with its checks and the built-in viewer as the fallback, the
 // pick on the Plugins page, and the host's `ctx.files.onOpen` with its ack.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -58,6 +58,61 @@ describe('selectOpenFile / openFileStatus (the shared rule)', () => {
     expect(openFileStatus(plugins, { [OPEN_FILE_PICK]: 'a.two' }).selected).toBe('a.two')
     expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'a.gone' })).toBeNull()
     expect(openFileStatus(plugins, { [OPEN_FILE_PICK]: 'a.gone' }).selected).toBeNull()
+  })
+
+  // whenPicked (Oleg, 2026-11-13, the editor's plain click): listed, but a candidate only when picked.
+  const editor = (id = 'a.ed'): OpenFilePlugin => ({ id, openFile: { title: 'Editor', whenPicked: true } })
+
+  it('whenPicked beside another opener: no pick keeps the other one, a pick takes the clicks, the list shows both', () => {
+    const plugins = [editor(), review('a.rev')]
+    expect(selectOpenFile(plugins, {})).toBe('a.rev')
+    expect(openFileStatus(plugins, {})).toEqual({
+      candidates: [
+        { id: 'a.ed', title: 'Editor', whenPicked: true },
+        { id: 'a.rev', title: 'Review' }
+      ],
+      selected: 'a.rev'
+    })
+    const picked = { [OPEN_FILE_PICK]: 'a.ed' }
+    expect(selectOpenFile(plugins, picked)).toBe('a.ed')
+    expect(openFileStatus(plugins, picked).selected).toBe('a.ed')
+    // The other one picked, or the built-in viewer: the whenPicked one stays out.
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'a.rev' })).toBe('a.rev')
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: BUILTIN_VIEWER })).toBeNull()
+  })
+
+  it('whenPicked alone with no pick: not chosen (the built-in viewer), yet listed so it can be picked', () => {
+    const plugins = [{ id: 'a.plain' }, editor()]
+    expect(selectOpenFile(plugins, {})).toBeNull()
+    // The viewer is what opens, and that is no missing pick (null would mean "pick one").
+    expect(openFileStatus(plugins, {})).toEqual({ candidates: [{ id: 'a.ed', title: 'Editor', whenPicked: true }], selected: BUILTIN_VIEWER })
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'a.ed' })).toBe('a.ed')
+    // A stale pick of another plugin does not wake it.
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'a.gone' })).toBeNull()
+  })
+
+  it('whenPicked never makes two openers less or more ambiguous', () => {
+    const plugins = [review('a.one'), review('a.two'), editor()]
+    expect(selectOpenFile(plugins, {})).toBeNull()
+    expect(openFileStatus(plugins, {}).selected).toBeNull()
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'a.ed' })).toBe('a.ed')
+    // Only a strict true counts: anything else is an ordinary candidate.
+    const loose = [review('a.rev'), { id: 'a.x', openFile: { title: 'X', whenPicked: 'yes' as unknown as boolean } }]
+    expect(selectOpenFile(loose, {})).toBeNull()
+  })
+
+  it('the bundled manifests: no pick keeps the Reviewer, picking the Editor sends the click to it', () => {
+    const read = (dir: string): OpenFilePlugin => {
+      const m = JSON.parse(readFileSync(join(__dirname, '../../plugins', dir, 'plugin.json'), 'utf8')) as {
+        id: string
+        contributes?: { openFile?: { title: string; whenPicked?: boolean } }
+      }
+      return { id: m.id, ...(m.contributes?.openFile ? { openFile: m.contributes.openFile } : {}) }
+    }
+    const plugins = ['editor', 'reviewer', 'files', 'sessions'].map(read)
+    expect(selectOpenFile(plugins, {})).toBe('cockpit.reviewer')
+    expect(openFileStatus(plugins, {}).candidates.map((c) => c.id)).toEqual(['cockpit.editor', 'cockpit.reviewer'])
+    expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: 'cockpit.editor' })).toBe('cockpit.editor')
   })
 
   it('the reserved key never meets a service pick, and a service pick never selects a handler', () => {
@@ -483,6 +538,29 @@ describe('ServiceChoices: the open-file pick', () => {
     await expect(choices.setProvider(P, OPEN_FILE_PICK, 'x.other')).rejects.toThrow('does not open files')
     await expect(choices.setProvider(P, OPEN_FILE_PICK, 5)).rejects.toThrow('string or null')
     expect(picks).toEqual({})
+  })
+
+  it('a whenPicked plugin is listed for the pick and can be picked; until then the other opener keeps the clicks', async () => {
+    const picks: Record<string, string> = {}
+    const choices = new ServiceChoices({
+      plugins: async () => [{ id: 'a.ed', openFile: { title: 'Editor', whenPicked: true } }, review('a.rev')],
+      choices: () => ({ ...picks }),
+      setChoice: (_p, key, pluginId) => {
+        if (pluginId === null) delete picks[key]
+        else picks[key] = pluginId
+        return true
+      },
+      restart: async () => {}
+    })
+    expect((await choices.status(P)).openFile).toEqual({
+      candidates: [
+        { id: 'a.ed', title: 'Editor', whenPicked: true },
+        { id: 'a.rev', title: 'Review' }
+      ],
+      selected: 'a.rev'
+    })
+    await choices.setProvider(P, OPEN_FILE_PICK, 'a.ed')
+    expect((await choices.status(P)).openFile.selected).toBe('a.ed')
   })
 })
 

@@ -231,10 +231,12 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Create: `plugins/editor/dist/lib/search.js`, `plugins/editor/src/page/quick-open.ts`
 - Create: `plugins/editor/test/search.test.js`
 
-- [ ] Ctrl+P: `rg --files` (rg's ignore rules), capped, fuzzy filtered in the page
-- [ ] Ctrl+Shift+F: `rg --json -e <query> -- .`; results list, click opens at line; missing `rg`: install hint
-- [ ] write tests: a query starting with `-` or `--pre=` stays a pattern, result parsing, caps
-- [ ] run tests - must pass before next task
+- [x] Ctrl+P: `rg --files` (rg's ignore rules), capped, fuzzy filtered in the page
+- [x] Ctrl+Shift+F: `rg --json -e <query> -- .`; results list, click opens at line; missing `rg`: install hint
+- [x] write tests: a query starting with `-` or `--pre=` stays a pattern, result parsing, caps
+- [x] ➕ configurable plain click (Oleg, 2026-11-13: "make it configurable"): the editor declares `contributes.openFile` too, marked with a new general manifest flag (e.g. `"whenPicked": true`) meaning "a candidate for the open-file pick only when the project picked it explicitly"; selection (`selectProvider`/the open-file selection in src/shared/services.ts, used by host and Plugins page alike) ignores such providers unless picked, so with no pick the Reviewer stays the default exactly as now and nothing becomes ambiguous; the existing per-project "Open files with" choice (OPEN_FILE_PICK, src/main/plugins/service-choices.ts, the project settings / Plugins page UI) lists the editor so the person can pick it; the editor's openFile handler opens a file tab (binary/outside → built-in viewer as today). The flag is general (any plugin may use it), never a bundled-plugin special case. Validated in the manifest, documented in the guide (drift tests) and design.md/design-editor.md §2 "Opening", example types copied.
+- [x] ➕ tests: no pick → Reviewer; pick Editor → file tab; a whenPicked-only plugin alone with no pick → not chosen (built-in viewer), the pick UI lists it; manifest validation.
+- [x] run tests - must pass before next task
 
 ### Task 12: LSP client in the host: servers and protocol [model: opus]
 

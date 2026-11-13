@@ -20,6 +20,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const files = require('./lib/files.js')
+const search = require('./lib/search.js')
 
 const INSTALL_HINT =
   'micro is not installed (or not on your login-shell PATH). Install it with `brew install micro` (macOS), ' +
@@ -348,8 +349,11 @@ exports.activate = (ctx) => {
     const mine = files.makeFiles(ctx.projectDir, { log: ctx.log })
     shared = mine
     const settingsMessage = () => ({ t: 'settings', ...autosaveOf(app()) })
+    // Quick open and find in files run rg through ctx.processes (lib/search.js); an older app has none.
+    const spawn = ctx.processes && typeof ctx.processes.spawn === 'function' ? (argv, o) => ctx.processes.spawn(argv, o) : undefined
     ctx.tabs.onOpen('file', (tab) => {
       files.serveFileTab(mine, tab, ctx.log)
+      const searching = search.serveSearch(tab, { spawn, root: ctx.projectDir, log: ctx.log })
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -357,6 +361,7 @@ exports.activate = (ctx) => {
       const params = tab.params && typeof tab.params === 'object' ? tab.params : {}
       tab.onMessage((m) => {
         if (!m || typeof m !== 'object') return
+        if (searching(m)) return
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {
@@ -366,6 +371,17 @@ exports.activate = (ctx) => {
           if (!at && !firstOpened.has(tab.id)) at = { line: position(params.line), col: position(params.col) }
           firstOpened.add(tab.id)
           if (at && at.line !== undefined) tab.post({ t: 'goto', line: at.line, ...(at.col ? { col: at.col } : {}) })
+        } else if (m.t === 'openFile') {
+          // Quick open's pick or a find-in-files result: a path the page names, so untrusted;
+          // openFileTab checks it by realpath inside the project like any other open.
+          let rel
+          try {
+            rel = relativePath(m.path)
+          } catch (e) {
+            tab.post({ t: 'search-error', kind: 'open', message: e.message })
+            return
+          }
+          openFileTab(rel, { line: m.line, col: m.col }).catch((e) => tab.post({ t: 'search-error', kind: 'open', message: `${rel}: ${e.message}` }))
         } else if (m.t === 'micro') {
           // Always the tab's own file (main's params), never a path the page names.
           openEditor(params.path).catch((e) => {
@@ -433,6 +449,21 @@ exports.activate = (ctx) => {
       }
     },
   })
+
+  // A plain click on a file (the Sessions panel's changed files, the Files tree): the editor declares
+  // `contributes.openFile` with `whenPicked`, so the clicks come here only when the project picked
+  // "Editor" in Settings > This Project ("Plugin used to open files"); with no pick the Reviewer
+  // (or whichever opener the project has) keeps them, as before. Main sends only a regular file
+  // inside the project. A binary one is refused here, never handed to ctx.files.open: that routes
+  // to the project's opener, which is this listener, so it would loop; refused, main opens its
+  // built-in viewer (ctx.files.onOpen: a listener that throws within 1 s).
+  if (hasTabs && ctx.files && typeof ctx.files.onOpen === 'function') {
+    ctx.files.onOpen(async ({ path: p }) => {
+      const r = files.resolveInProject(ctx.projectDir, relativePath(p))
+      if (r.exists && isBinaryFile(r.real)) throw new Error(`${r.rel} is a binary file: the built-in viewer shows it`)
+      await openFileTab(r.rel)
+    })
+  }
 
   // "Edit" on a `file` overlay (the reviewer's file review, among others): the file's tab, and the
   // overlay closes so the tab shows (micro on an older app, on top of the overlay). An older app has
