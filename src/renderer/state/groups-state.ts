@@ -89,20 +89,21 @@ export function pruneView(groups: readonly TabGroup[], zoomed: Record<string, st
 }
 
 /**
- * A new snapshot took the selected tab out of the group it was a pane of: which tab the view selects
- * now, and whether its keys go off (D3). Undefined when the selection stays.
+ * A new snapshot took the selected tab out of the group it was a pane of: which tab the view shows
+ * now, and whether its keys go off (D3, D18). Undefined when the selection stays.
  *
- * - Closed (not in main's `order` any more; the snapshot may beat the close event): the pane that
- *   took its space, or the one member left of a dissolved group.
- * - Moved out of a group that still stands (to the strip or another group): this view keeps showing
- *   the group, on the pane that took its space.
- * - Its group dissolved while it lives (Ungroup, or the other pane of two moved out): it stays
- *   selected. The same terminal keeps the keys, so nothing reaches a terminal the person did not
- *   choose, and the two cases cannot be told apart from the snapshot.
+ * - Closed (not in main's `order` any more; the snapshot may beat the close event), or moved out of
+ *   a group that still stands: this view keeps showing what is left of the group, on the pane that
+ *   took its space.
+ * - Moved out of a two-pane group, which dissolved: the remaining tab, now plain (D18). Another
+ *   view's Ungroup of two panes looks the same in a snapshot and gets the same (the safe side: keys
+ *   off). An Ungroup of more panes (no member left a standing group) keeps the selection: the same
+ *   terminal, nothing moved.
  *
  * `leave`: the person's own close or move out in this view; the keys stay on (they were looking at
- * it). `stay`: the person's own placement of this tab (Show beside, a drag); nothing moves.
- * Anything else came from elsewhere: keys off until a click or a chord.
+ * it). `stay`: the person's own placement or Ungroup of this tab; nothing moves. Anything else came
+ * from elsewhere: no pane has the keys until a click or a chord (keysOff; D18: no outline either,
+ * and no `tabs.selected` is sent meanwhile).
  */
 export function selectionAfterSnapshot(
   before: readonly TabGroup[],
@@ -116,8 +117,6 @@ export function selectionAfterSnapshot(
   if (!was) return undefined
   const now = after.find((g) => g.id === was.id)
   if (now && leavesOf(now.root).includes(activeId)) return undefined
-  const alive = order.includes(activeId)
-  if (!now && alive) return undefined
   const leftover = leavesOf(was.root).filter((t) => t !== activeId && order.includes(t))
   if (!now && leftover.length !== 1) return undefined
   const next = tookItsSpace(was.root, now?.root, activeId, leftover[0])

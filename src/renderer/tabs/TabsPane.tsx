@@ -315,7 +315,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // in activeId, so this one effect reports them all. A failure is only logged: the selection here
   // is unaffected, and a plugin then sees the previous tab as active until the next change.
   useEffect(() => {
-    if (state.activeId === null) return
+    // D18: while a change elsewhere left this view with no focused pane, it reports nothing; the
+    // person's click, strip click or chord turns the keys on, and the selection is reported then.
+    if (state.activeId === null || state.keysOff) return
     // Browser shell, first load only (armLoadTake): the active terminal takes the size once, as a
     // click would; a tab without a terminal yet is skipped, never taken later for another tab.
     if (takeLoadTake()) sessions.takeOnLoad(state.activeId)
@@ -326,7 +328,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     window.cockpit.invoke('tabs.selected', { tabId: state.activeId }).catch((err: unknown) => {
       console.warn('reporting the selected tab failed', err)
     })
-  }, [state.activeId, sessions])
+  }, [state.activeId, state.keysOff, sessions])
 
   // Whether this view is on screen (a minimized window, a background browser tab): main lets only
   // a visible view size a tab's pty (main/tabs/terminal-sizes.ts). Told on mount (a page loading
@@ -506,26 +508,37 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const target = last !== undefined && leaves.includes(last) ? last : leaves.find((t) => state.tabs.some((x) => x.id === t))
     if (target) pickTab(target)
   }
+  /** Ungroup, the person's own: the pane they are in stays selected, with its keys. */
+  const ungroup = (groupId: string): Promise<GroupsReply> => {
+    const active = stateRef.current.activeId
+    if (active !== null) intents.current.set(active, 'stay')
+    return groupEdit(window.cockpit.invoke('groups.dissolve', { groupId }), active ?? undefined)
+  }
   const equalizeGroup = (groupId: string): void => {
     const g = state.groups.find((x) => x.id === groupId)
     if (!g) return
     for (const { splitId, sizes } of equalizeSplits(g.root)) void groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes }))
   }
   /**
-   * The handle was dragged along the strip (D9): the block moves. Sent as a reorder of its first
-   * member, which main moves as the whole block (it keeps a group contiguous); `toIndex` counts the
-   * other tabs only, as a plain reorder counts the tabs without the dragged one.
+   * The handle was dragged along the strip (D9, D17): `block` moves the whole group; `toIndex` counts
+   * the other tabs only. The strip changes when main's snapshot comes (its order is the one order).
    */
   const moveGroup = (groupId: string, toIndex: number): void => {
     const g = state.groups.find((x) => x.id === groupId)
     const first = g ? state.tabs.find((t) => leavesOf(g.root).includes(t.id)) : undefined
-    if (first) run(window.cockpit.invoke('tabs.reorder', { tabId: first.id, toIndex }))
+    if (first) run(window.cockpit.invoke('tabs.reorder', { tabId: first.id, toIndex, block: true }))
   }
-  /** A member dragged out of its segment (D9): a plain tab, then put where it was dropped. */
+  /**
+   * A member dragged out of its segment (D9, D17): a plain reorder, which main turns into leaving the
+   * group there. Marked as the person's own move out, so this view's focus follows D3's own rule.
+   */
   const detach = (tabId: string, toIndex: number): void => {
-    void groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId).then((r) => {
-      if (r.ok) reorder(tabId, toIndex)
-    })
+    intents.current.set(tabId, 'leave')
+    run(
+      window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).finally(() => {
+        intents.current.delete(tabId)
+      })
+    )
   }
   /** Close all (the handle's menu): one question listing the running members, then each closes. */
   const closeGroup = (groupId: string): void => {
@@ -1197,9 +1210,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   // The split view's commands (D10). They read the state through refs, like the handlers above, and
   // act through the same group channels as the strip's menus.
-  const paneActions = useRef({ openSplit, groupEdit, area, cell })
+  const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cell })
   useEffect(() => {
-    paneActions.current = { openSplit, groupEdit, area, cell }
+    paneActions.current = { openSplit, groupEdit, ungroup, area, cell }
   })
   useEffect(
     () =>
@@ -1210,7 +1223,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           dispatch,
           place: (intent) => paneActions.current.groupEdit(window.cockpit.invoke('groups.place', intent), intent.tabId),
           remove: (tabId) => paneActions.current.groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId),
-          dissolve: (groupId) => paneActions.current.groupEdit(window.cockpit.invoke('groups.dissolve', { groupId })),
+          dissolve: (groupId) => paneActions.current.ungroup(groupId),
           resize: (groupId, splitId, sizes) => paneActions.current.groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes })),
           intend: (tabId, intent) => intents.current.set(tabId, intent),
           openSplit: (edge) => {
@@ -1251,7 +1264,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
         <TabBar
           tabs={state.tabs}
-          activeId={state.activeId}
+          // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
+          activeId={state.keysOff ? null : state.activeId}
           onSelect={pickTab}
           onClose={requestClose}
           onCreate={create}
@@ -1270,7 +1284,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onSelectGroup={selectGroup}
           onRenameGroup={(groupId, name) => void groupEdit(window.cockpit.invoke('groups.rename', { groupId, name }))}
           onEqualizeGroup={equalizeGroup}
-          onUngroup={(groupId) => void groupEdit(window.cockpit.invoke('groups.dissolve', { groupId }))}
+          onUngroup={ungroup}
           onCloseGroup={closeGroup}
           onMoveGroup={moveGroup}
           onDetach={detach}

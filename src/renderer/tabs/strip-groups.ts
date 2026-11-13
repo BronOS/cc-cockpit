@@ -35,16 +35,17 @@ export function groupTitle(group: TabGroup): string {
 const ASK: ReadonlySet<TabStatus> = new Set<TabStatus>(['waiting', 'needs-permission'])
 
 /**
- * The handle's visible text and its accessible label. Shown: the name, and "⤢ zoomed (n hidden)"
- * when this view zooms the group (own or automatic). Label: also the pane count and every member
- * waiting or needing permission, so a screen reader hears what the dots show.
+ * The handle's visible text, the segment's accessible label and its description. Shown: the name,
+ * and "⤢ zoomed (n hidden)" when this view zooms the group (own or automatic). Label (D19's exact
+ * form, the tests' hook): "Group <name or 'unnamed'>, <n> tabs[, zoomed]". Description: every member
+ * waiting or needing permission, in words, so a screen reader hears what the dots show.
  */
 export function handleWords(
   group: TabGroup,
   zoom: { zoomTab?: string; auto: boolean } | undefined,
   statusOf: (tabId: string) => TabStatus | undefined,
   labelOf: (tabId: string) => string
-): { text: string; zoomText?: string; label: string } {
+): { text: string; zoomText?: string; label: string; asks?: string } {
   const members = leavesOf(group.root)
   const hidden = zoom?.zoomTab !== undefined ? members.length - 1 : 0
   const zoomText = zoom?.zoomTab !== undefined ? `zoomed (${hidden} hidden)` : undefined
@@ -52,10 +53,13 @@ export function handleWords(
     const s = statusOf(t)
     return s && ASK.has(s) ? [`${labelOf(t)} ${statusLabel(s)}`] : []
   })
-  const parts = [`Split group ${groupTitle(group)}`, `${members.length} panes`]
-  if (zoomText) parts.push(zoom?.auto ? `${zoomText}, automatically` : zoomText)
-  parts.push(...asks)
-  return { text: groupTitle(group), ...(zoomText ? { zoomText } : {}), label: parts.join(', ') }
+  const label = `Group ${group.name ?? 'unnamed'}, ${members.length} tabs${zoomText ? ', zoomed' : ''}`
+  return {
+    text: groupTitle(group),
+    ...(zoomText ? { zoomText } : {}),
+    label,
+    ...(asks.length > 0 ? { asks: asks.join(', ') } : {})
+  }
 }
 
 /**

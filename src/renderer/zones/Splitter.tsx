@@ -28,6 +28,8 @@ export function Splitter(props: {
   onResize: (size: number) => void
   /** The drag (or key press) ended: persist. */
   onCommit: () => void
+  /** A split view divider's `<splitId>:<index>`, as `data-split-divider` (the tests' hook, D19). */
+  hook?: string
 }): React.JSX.Element {
   const { axis, value, measure, invert, onResize, onCommit } = props
   const current = (): number => measure?.() ?? value
@@ -56,6 +58,7 @@ export function Splitter(props: {
       role="separator"
       tabIndex={0}
       aria-label={props.label}
+      data-split-divider={props.hook}
       aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
       aria-valuenow={Math.round(value)}
       className={`splitter splitter-${axis}`}

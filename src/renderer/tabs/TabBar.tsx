@@ -179,7 +179,7 @@ export function TabBar(props: {
   onCancelQueued: (tabId: string, itemId: string) => void
   /** The project's split groups (main's snapshot): members are drawn as one bracketed segment. */
   groups: readonly TabGroup[]
-  /** This view's zoom of its shown group, for the handle's "zoomed (n hidden)". */
+  /** The group this view shows (its segment is marked) and its zoom, for the handle's "zoomed (n hidden)". */
   zoom: { groupId: string; zoomTab?: string; auto: boolean } | undefined
   /** The handle's click: show the group, at this view's last focused pane there. */
   onSelectGroup: (groupId: string) => void
@@ -558,7 +558,7 @@ export function TabBar(props: {
           if (!run.group) return renderTab(run.tabs[0]!)
           const g = run.group
           const words = handleWords(g, props.zoom?.groupId === g.id ? props.zoom : undefined, statusOf, labelOfId)
-          const shown = activeId !== null && leavesOf(g.root).includes(activeId)
+          const shown = props.zoom?.groupId === g.id
           const movingThis = drag?.groupId === g.id
           return (
             <div
@@ -566,6 +566,7 @@ export function TabBar(props: {
               className={`tab-group${shown ? ' shown' : ''}${movingThis ? ' dragged' : ''}`}
               role="group"
               aria-label={words.label}
+              aria-description={words.asks}
               data-group-id={g.id}
               data-zoomed={words.zoomText !== undefined || undefined}
               style={movingThis ? { transform: `translateX(${drag.dx}px)` } : undefined}
@@ -573,7 +574,9 @@ export function TabBar(props: {
               <button
                 type="button"
                 className="tab-group-handle"
+                data-group-handle={g.id}
                 aria-label={words.label}
+                aria-description={words.asks}
                 aria-haspopup="menu"
                 title={`${words.text}: click to show, drag to move, right-click for its menu`}
                 onClick={() => props.onSelectGroup(g.id)}

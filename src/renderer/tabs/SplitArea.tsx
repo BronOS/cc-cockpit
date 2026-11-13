@@ -170,7 +170,14 @@ export function SplitArea(props: {
   const dropRect = props.drop ? edgePreview(tiled ? rectOf(props.drop.at) : { x: 0, y: 0, w: 1, h: 1 }, props.drop.edge) : undefined
 
   return (
-    <div className={`terminals${many ? ' split' : ''}`} ref={areaRef} data-split-area="" data-split={many || undefined}>
+    <div
+      className={`terminals${many ? ' split' : ''}`}
+      ref={areaRef}
+      data-split-area=""
+      data-split={many || undefined}
+      // D19: whether the shown group is zoomed here, by the person (⌘⇧Enter) or by D5's narrow view.
+      data-zoom={view.zoomTab === undefined ? undefined : view.auto ? 'auto' : 'manual'}
+    >
       {tabs.length === 0 && <p className="tabs-empty">No tabs yet. Use + to start Claude or a shell.</p>}
       {tabs.map((tab) => {
         const shown = view.visible.includes(tab.id)
@@ -196,9 +203,9 @@ export function SplitArea(props: {
           <section
             key={tab.id}
             className="pane"
-            data-pane-tab={tab.id}
+            data-pane={tab.id}
             // The focused pane (this view's keys) while more than one pane shows; the tests' hook too.
-            data-focused-pane={many && focused ? 'true' : undefined}
+            data-focused-pane={many && focused ? tab.id : undefined}
             hidden={!shown}
             role="region"
             aria-label={`${label}${asking ? `, ${asking}` : ''}`}
@@ -252,6 +259,7 @@ export function SplitArea(props: {
                 axis={d.dir === 'row' ? 'x' : 'y'}
                 value={(sizes[d.index] ?? 0) * splitPx}
                 label="Resize panes"
+                hook={`${d.splitId}:${d.index}`}
                 onResize={(px) => {
                   if (!(splitPx > 0)) return
                   const cur = dragRef.current?.splitId === d.splitId && dragRef.current.live ? dragRef.current : startDrag(d.splitId)
@@ -291,7 +299,7 @@ function PaneHeader(props: {
   const { tab, detail } = props
   const by = tab.openedBy !== undefined ? (tab.openedByName ?? tab.openedBy) : undefined
   return (
-    <div className="pane-header" data-focused={props.focused || undefined}>
+    <div className="pane-header" data-pane-header="" data-focused={props.focused || undefined}>
       {detail && <StatusDot status={detail.status} {...(detail.tool ? { tool: detail.tool } : {})} />}
       {tab.kind === 'shell' && <ShellGlyph size={12} className="tab-kind" />}
       {tab.kind === 'command' && <CommandGlyph size={12} className="tab-kind" />}
@@ -308,11 +316,11 @@ function PaneHeader(props: {
 /** The visible pane under a viewport point, and its box (pane mode of a strip drag); none outside the area. */
 export function paneAtPoint(area: HTMLElement | null, x: number, y: number): { tabId: string; rect: PaneRect } | undefined {
   if (!area) return undefined
-  for (const el of area.querySelectorAll<HTMLElement>('[data-pane-tab]')) {
+  for (const el of area.querySelectorAll<HTMLElement>('[data-pane]')) {
     if (el.hidden) continue
     const b = el.getBoundingClientRect()
     if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) {
-      const tabId = el.dataset.paneTab
+      const tabId = el.dataset.pane
       if (tabId !== undefined) return { tabId, rect: { x: b.left, y: b.top, w: b.width, h: b.height } }
     }
   }

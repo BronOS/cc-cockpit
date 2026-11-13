@@ -163,6 +163,20 @@ describe('tabs store: groups', () => {
       expect(s.keysOff).toBe(true)
     })
 
+    it('D18: moved out of a two-pane group elsewhere: the remaining tab, unfocused; own Ungroup stays', () => {
+      const two = run([
+        { type: 'loaded', tabs: ['x', 'y'].map(tab) },
+        { type: 'groups', snapshot: snap(1, ['x', 'y'], [{ id: 'g', root: row('s', leaf('x'), leaf('y')) }]) },
+        { type: 'selected', tabId: 'x' }
+      ])
+      const elsewhere = run([{ type: 'groups', snapshot: snap(2, ['y', 'x'], []) }], two)
+      expect(elsewhere.activeId).toBe('y')
+      expect(elsewhere.keysOff).toBe(true)
+      const own = run([{ type: 'groups', snapshot: snap(2, ['x', 'y'], []), intent: { x: 'stay' } }], two)
+      expect(own.activeId).toBe('x')
+      expect(own.keysOff).toBe(false)
+    })
+
     it('Ungroup keeps the selection on the same terminal', () => {
       const s = run([{ type: 'selected', tabId: 'c' }, { type: 'groups', snapshot: snap(2, ['a', 'b', 'c', 'd'], []) }], base())
       expect(s.activeId).toBe('c')
