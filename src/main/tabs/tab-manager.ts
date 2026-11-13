@@ -911,9 +911,9 @@ export class TabManager {
 
   /** Text for the PTY as it is (the send gate's paste goes here). Unknown tabs are ignored. */
   input(projectId: string, tabId: string, data: string): void {
-    const tab = this.find(projectId, tabId)
     // A page tab has no pty: nothing (the send gate's paste included) is ever written for it.
-    if (tab && tab.kind !== 'page') this.pty.write(tab.id, data)
+    const tab = this.terminalTab(projectId, tabId)
+    if (tab) this.pty.write(tab.id, data)
   }
 
   /**
@@ -926,9 +926,9 @@ export class TabManager {
    * as it is: the desktop answers as before. Returns what reached the pty ('' for an unknown tab).
    */
   viewInput(projectId: string, tabId: string, data: string, viewId: ViewId = DESKTOP_VIEW): string {
-    const tab = this.find(projectId, tabId)
     // A page tab is never typed into as a terminal: no pty write, no size take, no `typedBy`.
-    if (!tab || tab.kind === 'page') return ''
+    const tab = this.terminalTab(projectId, tabId)
+    if (!tab) return ''
     let answers = false
     this.tap((t) => {
       answers = t.answers?.(tab.id) ?? false
@@ -964,10 +964,10 @@ export class TabManager {
    * when that view sizes the tab (terminal-sizes.ts): another view's resize does not redraw Claude.
    */
   resize(projectId: string, tabId: string, cols: number, rows: number, viewId: ViewId = DESKTOP_VIEW): void {
-    const tab = this.find(projectId, tabId)
     // Renderer-supplied: a junk size is not even remembered (PtyService would refuse it anyway).
     // A page tab has no terminal to size.
-    if (!tab || tab.kind === 'page' || !validSize(cols, rows)) return
+    const tab = this.terminalTab(projectId, tabId)
+    if (!tab || !validSize(cols, rows)) return
     this.sizes.report(tab.id, viewId, cols, rows)
   }
 
@@ -976,8 +976,8 @@ export class TabManager {
    * size for the tab (it has not shown it) or is hidden.
    */
   fit(projectId: string, tabId: string, viewId: ViewId = DESKTOP_VIEW): boolean {
-    const tab = this.find(projectId, tabId)
-    return tab && tab.kind !== 'page' ? this.sizes.take(tab.id, viewId) : false
+    const tab = this.terminalTab(projectId, tabId)
+    return tab ? this.sizes.take(tab.id, viewId) : false
   }
 
   /** A view was hidden or shown (a minimized window, a background browser tab): hidden ones never size. */
@@ -1079,16 +1079,16 @@ export class TabManager {
    * desktop views only). Only a tab of the sender's project reaches the tap, which checks the rest.
    */
   screen(projectId: string, tabId: string, answer: ScreenAnswer): void {
-    const tab = this.find(projectId, tabId)
     // A page tab has no terminal: nothing to answer with, and the ask would hang.
-    if (!tab || tab.kind === 'page') return
+    const tab = this.terminalTab(projectId, tabId)
+    if (!tab) return
     this.tap((t) => t.screen?.(tab.id, answer))
   }
 
   /** The desktop renderer's ack: the pty's flow, or the desktop's own while main consumes the pty. */
   ack(projectId: string, tabId: string, count: number): void {
-    const tab = this.find(projectId, tabId)
-    if (!tab || tab.kind === 'page') return
+    const tab = this.terminalTab(projectId, tabId)
+    if (!tab) return
     if (this.desktop.holds(tab.id)) this.desktop.ack(tab.id, count)
     else {
       this.pty.ack(tab.id, count)
@@ -1241,6 +1241,15 @@ export class TabManager {
   private find(projectId: string, tabId: string): Tab | undefined {
     const tab = this.byId.get(tabId)
     return tab && tab.projectId === projectId ? tab : undefined
+  }
+
+  /**
+   * The tab when it has a terminal (any kind but a page tab), else undefined: every pty-facing call
+   * (input, sizes, screen, ack) goes through this, so a new one cannot forget the page tab.
+   */
+  private terminalTab(projectId: string, tabId: string): Tab | undefined {
+    const tab = this.find(projectId, tabId)
+    return tab && tab.kind !== 'page' ? tab : undefined
   }
 
   private require(projectId: string, tabId: string): Tab {

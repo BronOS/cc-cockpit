@@ -351,4 +351,4 @@ class LspServer {
   }
 }
 
-module.exports = { LspServer, CLIENT_CAPABILITIES, METHOD_NOT_FOUND, REQUEST_CANCELLED }
+module.exports = { LspServer, CLIENT_CAPABILITIES }

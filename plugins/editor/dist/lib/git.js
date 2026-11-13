@@ -36,8 +36,8 @@ const { programPath } = require('./lsp/servers.js')
 const MAX_BASE_BYTES = 2 * 1024 * 1024
 /** git is killed after this long (a network filesystem, a huge repository's cold object store). */
 const GIT_TIMEOUT_MS = 10 * 1000
-/** A NUL in the first this-many bytes makes a blob binary (git's heuristic, as files.js). */
-const BINARY_SNIFF_BYTES = 8000
+/** A NUL in the first this-many bytes makes a blob binary (git's heuristic, files.js's rule). */
+const { BINARY_SNIFF_BYTES } = files
 /** At most this many git children of this plugin at once, every tab instance together. */
 const MAX_GIT_PROCESSES = 2
 
@@ -80,6 +80,8 @@ const pluginSlots = { used: 0, max: MAX_GIT_PROCESSES, queue: [] }
  */
 function readBase(spawn, cwd, rel, opts = {}) {
   const slots = opts.slots || pluginSlots
+  // A test's slots may come without a queue: given one here, so the code below never guesses the shape.
+  if (!slots.queue) slots.queue = []
   const none = { result: Promise.resolve({ text: null }), cancel() {} }
   let argv
   try {
@@ -130,7 +132,7 @@ function readBase(spawn, cwd, rel, opts = {}) {
     stopped = true
     if (!started) {
       // Still waiting for a slot: leave the line, nothing was spawned.
-      const i = slots.queue ? slots.queue.indexOf(start) : -1
+      const i = slots.queue.indexOf(start)
       if (i >= 0) slots.queue.splice(i, 1)
       finish({ text: null })
       return
@@ -152,7 +154,7 @@ function readBase(spawn, cwd, rel, opts = {}) {
   // not running (no marks until the page asks again).
   const runNext = () => {
     if (slots.used >= slots.max) return
-    const next = slots.queue && slots.queue.shift()
+    const next = slots.queue.shift()
     if (next) next()
   }
   function start() {
@@ -201,7 +203,6 @@ function readBase(spawn, cwd, rel, opts = {}) {
     }
   }
   if (slots.used >= slots.max) {
-    if (!slots.queue) slots.queue = []
     slots.queue.push(start)
   } else {
     start()
@@ -282,4 +283,4 @@ function serveGit(tab, { spawn, root, rel, review, log, bin, slots }) {
   }
 }
 
-module.exports = { MAX_BASE_BYTES, MAX_GIT_PROCESSES, blobArgv, readBase, serveGit }
+module.exports = { blobArgv, readBase, serveGit }

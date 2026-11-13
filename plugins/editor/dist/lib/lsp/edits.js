@@ -268,4 +268,4 @@ function applyToDisk(mgr, st, since) {
   return r.written ? { lost: true } : null
 }
 
-module.exports = { applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit, PAGE_EDIT_TIMEOUT_MS }
+module.exports = { applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit }

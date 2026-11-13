@@ -164,7 +164,7 @@ test('firstPrompt: the path, the selection and the lines around it fenced as dat
   assert.doesNotMatch(qc.firstPrompt({ file: 'a', sel: { startLine: 1, text: '' }, question: 'q' }), /Before|After/)
   assert.throws(() => qc.firstPrompt({ file: 'a', sel: { startLine: 1, text: 'x' }, question: '   ' }), /empty/)
   assert.throws(() => qc.firstPrompt({ file: 'a', sel: { startLine: 0, text: 'x' }, question: 'q' }), /no selection/)
-  assert.throws(() => qc.firstPrompt({ file: 'a', sel: { startLine: 1, text: 'x'.repeat(qc.MAX_SELECTION_CHARS + 1) }, question: 'q' }), /at most/)
+  assert.throws(() => qc.firstPrompt({ file: 'a', sel: { startLine: 1, text: 'x'.repeat(qc.MAX_TARGET_CHARS + 1) }, question: 'q' }), /at most/)
   assert.throws(() => qc.firstPrompt({ file: 'a', sel: { startLine: 1, text: 'x' }, question: 'q'.repeat(10001) }), /longer/)
 })
 
@@ -284,7 +284,7 @@ test('a bad selection or a file outside the project is refused before anything r
   await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-end'))
   assert.match(s.tab.posted.find((m) => m.t === 'chat-end').message, /files of the project/)
   const t = serve()
-  t.handle({ ...START, sel: { startLine: 1, text: 'x'.repeat(qc.MAX_SELECTION_CHARS + 1) } })
+  t.handle({ ...START, sel: { startLine: 1, text: 'x'.repeat(qc.MAX_TARGET_CHARS + 1) } })
   await waitFor(() => t.tab.posted.some((m) => m.t === 'chat-end'))
   assert.match(t.tab.posted.find((m) => m.t === 'chat-end').message, /at most 20,000/)
   assert.equal(s.calls.length + t.calls.length, 0)

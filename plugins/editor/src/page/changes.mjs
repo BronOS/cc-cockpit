@@ -19,9 +19,9 @@ import { diffLines, splitLines } from './merge.mjs'
 
 /** Focus asks again at most this often (a commit made while the tab was away is seen on return). */
 export const FOCUS_MIN_MS = 2000
-/** A hunk keeps at most this many old lines (and this many characters of each) for the hover. */
 /** While the page is visible the base is asked again this often. */
 export const POLL_MS = 15 * 1000
+/** A hunk keeps at most this many old lines (and this many characters of each) for the hover. */
 export const MAX_OLD_LINES = 30
 export const MAX_OLD_CHARS = 200
 

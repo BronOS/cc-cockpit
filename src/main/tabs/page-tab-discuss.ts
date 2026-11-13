@@ -23,7 +23,7 @@ import type { DiscussAnswer } from '../../shared/ipc'
 import type { JsonValue } from '../../sdk/types'
 import { within } from '../../shared/timeout'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
-import { composeDiscuss, DiscussSessionBudget } from '../overlays/discuss'
+import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget } from '../overlays/discuss'
 import type { DiscussSessions } from '../overlays/overlay-manager'
 
 /** A page tab as Discuss needs it, from main's own record. */
@@ -97,20 +97,13 @@ export class PageTabDiscuss {
     if (!tab) return { ok: false, error: 'That tab is gone' }
     const { sessions } = this.deps
     const { windowId } = caller
-    const targetProblem = (): string | undefined => {
-      if (target.kind !== 'tab') return undefined
-      if (!sessions.isClaudeTab(windowId, target.tabId)) return 'That Claude tab is gone; pick another'
-      if (sessions.notReady(target.tabId)) return 'That session is idle and would not take the text until you run a prompt in it; pick another'
-      return undefined
-    }
-    const early = targetProblem()
+    const early = discussTargetProblem(sessions, windowId, target)
     if (early) return { ok: false, error: early }
     const key = `${windowId}\n${caller.viewId}\n${tab.id}`
     if (this.sending.has(key)) return { ok: false, error: 'Already sending' }
     this.sending.add(key)
     try {
       const name = this.deps.pluginTitle?.(tab.pluginId) ?? tab.pluginId
-      let context: string | undefined
       let answer: unknown
       try {
         const view = isRemoteViewId(caller.viewId) ? caller.viewId : undefined
@@ -118,13 +111,9 @@ export class PageTabDiscuss {
       } catch (err) {
         return { ok: false, error: `${name} could not give its context: ${errorText(err)}` }
       }
-      if (answer !== null && answer !== undefined) {
-        const text = (answer as { text?: unknown }).text
-        if (typeof answer !== 'object' || typeof text !== 'string') {
-          return { ok: false, error: `${name} answered with something other than { text } or null` }
-        }
-        context = text
-      }
+      const parsed = discussContextOf(answer)
+      if (!parsed) return { ok: false, error: `${name} answered with something other than { text } or null` }
+      const context = parsed.context
       // The tab may have closed while its plugin was asked: its title is read again, and a gone tab sends nothing.
       const now = this.deps.pageTab(caller.projectId, tab.id)
       if (!now) return { ok: false, error: 'That tab closed' }
@@ -136,35 +125,17 @@ export class PageTabDiscuss {
         ...(question !== undefined ? { question } : {}),
         prompt: sessions.prompt?.(windowId)
       })
-      const late = targetProblem()
+      const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
-      let sentTo: string
-      let queued: boolean
-      if (target.kind === 'tab') {
-        try {
-          // `core`: the person typed the question and pressed Send; their own typing in the tab
-          // neither refuses it nor drops it from the queue (send-gate.ts takenOver).
-          queued = !sessions.send(target.tabId, text, 'core').delivered
-        } catch (err) {
-          return { ok: false, error: `Not sent: ${errorText(err)}` }
-        }
-        sentTo = target.tabId
-      } else {
-        if (!this.budget.take(windowId)) return { ok: false, error: 'Too many new sessions from Discuss in the last minute; try again shortly' }
-        try {
-          sentTo = (await sessions.openSession(windowId, text)).tabId
-        } catch (err) {
-          this.budget.refund(windowId)
-          return { ok: false, error: `No new session: ${errorText(err)}` }
-        }
-        queued = false
-      }
+      const sent = await deliverDiscuss(sessions, this.budget, windowId, target, text)
+      if (!sent.ok) return sent
+      const sentTo = sent.tabId
       try {
         sessions.selectTab(windowId, sentTo)
       } catch (err) {
         this.deps.log?.(`page tab ${tab.id}: selecting tab ${sentTo} failed: ${errorText(err)}`)
       }
-      return { ok: true, tabId: sentTo, queued }
+      return sent
     } finally {
       this.sending.delete(key)
     }

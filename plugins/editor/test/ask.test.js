@@ -29,21 +29,21 @@ test('contextText: a selection holding ``` gets a longer fence and cannot end th
 })
 
 test('contextText: the selection is cut to the cap and says so; a trailing newline is not part of it', () => {
-  const big = 'x'.repeat(ask.MAX_SELECTION_CHARS + 500)
+  const big = 'x'.repeat(ask.MAX_ASK_CHARS + 500)
   const text = ask.contextText('a.js', { startLine: 1, endLine: 9, text: big })
-  assert.ok(text.length < ask.MAX_SELECTION_CHARS + 200)
+  assert.ok(text.length < ask.MAX_ASK_CHARS + 200)
   // The header range follows the text that was kept (one line here), not the claimed end.
   assert.match(text, /^a\.js:1\n/)
-  assert.match(text, new RegExp(`\\(the selection was cut to its first ${ask.MAX_SELECTION_CHARS} characters\\)$`))
+  assert.match(text, new RegExp(`\\(the selection was cut to its first ${ask.MAX_ASK_CHARS} characters\\)$`))
   assert.equal(ask.contextText('a.js', { startLine: 1, endLine: 2, text: 'a\nb\n' }), 'a.js:1-2\n```\na\nb\n```')
   // A cut the page made is kept.
   assert.match(ask.contextText('a.js', { startLine: 1, endLine: 2, text: 'abc', cut: true }), /cut to its first 3 characters/)
 })
 
 test('contextText: never cuts between the halves of a surrogate pair', () => {
-  const text = ask.contextText('a.js', { startLine: 1, endLine: 1, text: 'x'.repeat(ask.MAX_SELECTION_CHARS - 1) + '😀' })
+  const text = ask.contextText('a.js', { startLine: 1, endLine: 1, text: 'x'.repeat(ask.MAX_ASK_CHARS - 1) + '😀' })
   assert.ok(!/\ud83d\n/.test(text))
-  assert.match(text, new RegExp(`first ${ask.MAX_SELECTION_CHARS - 1} characters`))
+  assert.match(text, new RegExp(`first ${ask.MAX_ASK_CHARS - 1} characters`))
 })
 
 test('contextText: bad lines or no answer are no context; a reversed range is one line; the name is one line', () => {

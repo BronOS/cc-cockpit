@@ -1,5 +1,7 @@
 // The text Discuss with Claude sends (design-next §3.5), pure: no clock but the one passed in, no
-// I/O. overlay-manager.ts asks the opener for its context, then builds the message here:
+// I/O; at the end, the target check and the send that overlay Discuss and a page tab's Ask Claude
+// share (they take main's DiscussSessions). overlay-manager.ts asks the opener for its context, then
+// builds the message here:
 //
 //   About: <title>
 //   <the type as one line: File: src/x.ts | Item: <source> <id> | name: key=value ...>
@@ -17,9 +19,13 @@ import {
   MAX_DISCUSS_PROMPT,
   MAX_DISCUSS_QUESTION,
   MAX_DISCUSS_TEXT,
-  MAX_DISCUSS_TYPE_LINE
+  MAX_DISCUSS_TYPE_LINE,
+  type DiscussTarget
 } from '../../shared/discuss'
+import { errorText } from '../../shared/error-text'
+import type { DiscussAnswer } from '../../shared/ipc'
 import type { CleanOverlayType } from '../../shared/overlay-buttons'
+import type { DiscussSessions } from './overlay-manager'
 
 export interface DiscussParts {
   /** The overlay's title (any text: it is made one line here). */
@@ -137,5 +143,58 @@ export class DiscussSessionBudget {
   /** The window closed. */
   forget(windowId: number): void {
     this.starts.delete(windowId)
+  }
+}
+
+/**
+ * Why `target` would not take a Discuss text now, or undefined. Checked when the request arrives and
+ * again just before the send: the context ask may take seconds, and the tab may close meanwhile.
+ * One rule for overlay Discuss and a page tab's Ask Claude (page-tab-discuss.ts).
+ */
+export function discussTargetProblem(sessions: DiscussSessions, windowId: number, target: DiscussTarget): string | undefined {
+  if (target.kind !== 'tab') return undefined
+  if (!sessions.isClaudeTab(windowId, target.tabId)) return 'That Claude tab is gone; pick another'
+  if (sessions.notReady(target.tabId)) return 'That session is idle and would not take the text until you run a prompt in it; pick another'
+  return undefined
+}
+
+/**
+ * The context in a plugin's Discuss answer: `{ text }` is the text, null or undefined is none
+ * (`{ context: undefined }`); any other shape is undefined, and the caller sends nothing.
+ */
+export function discussContextOf(answer: unknown): { context: string | undefined } | undefined {
+  if (answer === null || answer === undefined) return { context: undefined }
+  const text = (answer as { text?: unknown }).text
+  if (typeof answer !== 'object' || typeof text !== 'string') return undefined
+  return { context: text }
+}
+
+/**
+ * The send itself, shared by overlay Discuss and a page tab's Ask Claude: a tab target goes through
+ * the send gate as `core` origin (the person typed the question and pressed Send, so their own
+ * typing in the tab neither refuses it nor drops it from the queue, send-gate.ts takenOver); a new
+ * session is taken from `budget` (refunded when the open fails) and gets the text as its first argv,
+ * so it waits for Claude to start, never in the gate (`queued` false). The caller selects the tab.
+ */
+export async function deliverDiscuss(
+  sessions: DiscussSessions,
+  budget: DiscussSessionBudget,
+  windowId: number,
+  target: DiscussTarget,
+  text: string
+): Promise<DiscussAnswer> {
+  if (target.kind === 'tab') {
+    try {
+      return { ok: true, tabId: target.tabId, queued: !sessions.send(target.tabId, text, 'core').delivered }
+    } catch (err) {
+      return { ok: false, error: `Not sent: ${errorText(err)}` }
+    }
+  }
+  if (!budget.take(windowId)) return { ok: false, error: 'Too many new sessions from Discuss in the last minute; try again shortly' }
+  try {
+    return { ok: true, tabId: (await sessions.openSession(windowId, text)).tabId, queued: false }
+  } catch (err) {
+    budget.refund(windowId)
+    return { ok: false, error: `No new session: ${errorText(err)}` }
   }
 }

@@ -13,7 +13,7 @@
 // taken only when they fit the text: the host names the `seq` of the last change it got from this
 // page, and a page that sent more since (it typed while the server worked) refuses.
 
-import { chunkText } from '../session.mjs'
+import { chunkText } from '../parts.mjs'
 
 /** The asks' deadlines here: a little longer than the host's, so the host's own answer comes first. */
 export const ASK_TIMEOUT_MS = 12 * 1000

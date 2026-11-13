@@ -187,8 +187,8 @@ exports.activate = (ctx) => {
   }
   let noteSeq = 0
   /** openKey -> count of showReview calls that have not put their overlay in `open` yet (they read the draft first). */
-  const opening_ = new Map()
-  const isReviewing = (openKey) => open.has(openKey) || opening_.has(openKey)
+  const openingCount = new Map()
+  const isReviewing = (openKey) => open.has(openKey) || openingCount.has(openKey)
 
   /** A project-relative path for the notes calls: the same checks as a review's (inside the folder, by name and by symlink). */
   function notesPath(rel) {
@@ -601,14 +601,14 @@ exports.activate = (ctx) => {
     // From here until the overlay is in `open` the review is on its way: addNote refuses meanwhile (a note
     // written after the draft is read below would be written over by the page), and the notes already in
     // flight finish first, so the read sees them.
-    opening_.set(openKey, (opening_.get(openKey) || 0) + 1)
+    openingCount.set(openKey, (openingCount.get(openKey) || 0) + 1)
     try {
       await (noteQueue.get(draftKey) || Promise.resolve())
       return await showReviewNow(subject, { tabId })
     } finally {
-      const left = opening_.get(openKey) - 1
-      if (left > 0) opening_.set(openKey, left)
-      else opening_.delete(openKey)
+      const left = openingCount.get(openKey) - 1
+      if (left > 0) openingCount.set(openKey, left)
+      else openingCount.delete(openKey)
     }
   }
 
@@ -1016,8 +1016,8 @@ exports.activate = (ctx) => {
     async notes(rel) {
       try {
         const p = notesPath(rel)
-        const open_ = open.get(`file:${p}`)
-        const draft = open_ && open_.draft ? open_.draft() : await ctx.storage.get(review.draftKey(p))
+        const openEntry = open.get(`file:${p}`)
+        const draft = openEntry && openEntry.draft ? openEntry.draft() : await ctx.storage.get(review.draftKey(p))
         return review.fileNotes(draft)
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)

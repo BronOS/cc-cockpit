@@ -147,4 +147,4 @@ function serveNotes(tab, { rel, reviewer, log }) {
   }
 }
 
-module.exports = { MAX_SHOWN_CHARS, MAX_SHOWN_NOTES, noteOf, serveNotes, shownNotes }
+module.exports = { MAX_SHOWN_CHARS, MAX_SHOWN_NOTES, serveNotes, shownNotes }

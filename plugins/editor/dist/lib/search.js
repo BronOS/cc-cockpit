@@ -23,6 +23,7 @@
 // At most MAX_SEARCH_PROCESSES rg children for the whole plugin; past that a search is refused.
 
 const { programPath } = require('./lsp/servers.js')
+const { splitter } = require('./split.js')
 
 /** At most this many files for quick open: far more than a fuzzy list is useful for. */
 const MAX_FILES = 50000
@@ -88,47 +89,6 @@ function cleanPath(bytes) {
   }
   if (p.startsWith('./')) p = p.slice(2)
   return p === '' ? null : p
-}
-
-/**
- * Splits a byte stream on `sep` (0 or 10), across chunks. `onItem(bytes)` per complete item;
- * an item over `maxBytes` is dropped whole (its rest is skipped up to the next separator).
- */
-function splitter(sep, onItem, maxBytes = Infinity) {
-  let held = []
-  let heldBytes = 0
-  let skipping = false
-  return {
-    push(chunk) {
-      let start = 0
-      for (let i = chunk.indexOf(sep); i !== -1; i = chunk.indexOf(sep, start)) {
-        const piece = chunk.subarray(start, i)
-        if (!skipping) {
-          const item = held.length ? Buffer.concat([...held, piece]) : Buffer.from(piece)
-          if (item.length <= maxBytes) onItem(item)
-        }
-        held = []
-        heldBytes = 0
-        skipping = false
-        start = i + 1
-      }
-      if (start < chunk.length && !skipping) {
-        const rest = chunk.subarray(start)
-        heldBytes += rest.length
-        if (heldBytes > maxBytes) {
-          held = []
-          heldBytes = 0
-          skipping = true
-        } else held.push(Buffer.from(rest))
-      }
-    },
-    /** The last item, when the stream did not end with a separator. */
-    end() {
-      if (!skipping && held.length) onItem(Buffer.concat(held))
-      held = []
-      heldBytes = 0
-    },
-  }
 }
 
 /**
@@ -495,13 +455,9 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
 }
 
 module.exports = {
-  MAX_FILES,
-  MAX_MATCHES,
-  MAX_MATCH_FILES,
   MAX_LINE_CHARS,
   MAX_QUERY_CHARS,
   MAX_SEARCH_PROCESSES,
-  RG_HINT,
   filesArgv,
   grepArgv,
   parseMatch,

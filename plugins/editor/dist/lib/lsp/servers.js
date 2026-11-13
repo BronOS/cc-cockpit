@@ -213,4 +213,4 @@ function resolveServer(entry, { env = process.env, cwd } = {}) {
   return { missing: true, install: entry.install, tried: entry.candidates.map((c) => c[0]) }
 }
 
-module.exports = { BUILTIN, serverTable, languageOf, findOnPath, programPath, resolveServer, parseExtensions }
+module.exports = { serverTable, languageOf, findOnPath, programPath, resolveServer }

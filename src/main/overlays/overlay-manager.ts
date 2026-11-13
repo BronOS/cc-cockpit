@@ -73,7 +73,7 @@ import { isPanelHeaderIcon } from '../../shared/panel-header'
 import { within } from '../../shared/timeout'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
-import { composeDiscuss, DiscussSessionBudget } from './discuss'
+import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget } from './discuss'
 import { PtyService } from '../pty/pty-service'
 import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
@@ -1171,13 +1171,7 @@ export class OverlayManager {
     const sessions = this.options.discuss
     if (!sessions) return { ok: false, error: 'Discuss is not available' }
     // Checked again after the opener answered: the tab may have closed (or restarted) meanwhile.
-    const targetProblem = (): string | undefined => {
-      if (target.kind !== 'tab') return undefined
-      if (!sessions.isClaudeTab(windowId, target.tabId)) return 'That Claude tab is gone; pick another'
-      if (sessions.notReady(target.tabId)) return 'That session is idle and would not take the text until you run a prompt in it; pick another'
-      return undefined
-    }
-    const early = targetProblem()
+    const early = discussTargetProblem(sessions, windowId, target)
     if (early) return { ok: false, error: early }
     if (overlay.discussing) return { ok: false, error: 'Already sending' }
     overlay.discussing = true
@@ -1191,47 +1185,24 @@ export class OverlayManager {
         } catch (err) {
           return { ok: false, error: `${this.openerName(overlay)} could not give its context: ${toError(err).message}` }
         }
-        if (answer !== null && answer !== undefined) {
-          const text = (answer as { text?: unknown }).text
-          if (typeof answer !== 'object' || typeof text !== 'string') {
-            return { ok: false, error: `${this.openerName(overlay)} answered Discuss with something other than { text } or null` }
-          }
-          context = text
-        }
+        const parsed = discussContextOf(answer)
+        if (!parsed) return { ok: false, error: `${this.openerName(overlay)} answered Discuss with something other than { text } or null` }
+        context = parsed.context
       }
       // The overlay may have closed while the opener was asked: nothing to discuss any more.
       if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
       const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, prompt: sessions.prompt?.(windowId) })
-      const late = targetProblem()
+      const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
-      let tabId: string
-      let queued: boolean
-      if (target.kind === 'tab') {
-        try {
-          queued = !sessions.send(target.tabId, text, 'core').delivered
-        } catch (err) {
-          return { ok: false, error: `Not sent: ${toError(err).message}` }
-        }
-        tabId = target.tabId
-      } else {
-        if (!this.discussSessions.take(windowId)) {
-          return { ok: false, error: 'Too many new sessions from Discuss in the last minute; try again shortly' }
-        }
-        try {
-          tabId = (await sessions.openSession(windowId, text)).tabId
-        } catch (err) {
-          this.discussSessions.refund(windowId)
-          return { ok: false, error: `No new session: ${toError(err).message}` }
-        }
-        // The prompt is the tab's first argv: it waits for Claude to start, never in the gate.
-        queued = false
-        // The person may dismiss the overlay while the tab opens. The session already has the
-        // text and cannot be taken back, so it is still selected and the answer is still ok, but
-        // the opener has heard `dismissed` (finish below is a no-op): a reviewer-style opener keeps
-        // a draft it would have cleared on `discussed`. Logged so the mismatch is traceable.
-        if (this.byId.get(overlay.id) !== overlay) {
-          this.log(`overlay ${overlay.id}: closed while its Discuss session ${tabId} opened; the opener heard dismissed`)
-        }
+      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text)
+      if (!sent.ok) return sent
+      const { tabId, queued } = sent
+      // The person may dismiss the overlay while a new session opens. The session already has the
+      // text and cannot be taken back, so it is still selected and the answer is still ok, but the
+      // opener has heard `dismissed` (finish below is a no-op): a reviewer-style opener keeps a draft
+      // it would have cleared on `discussed`. Logged so the mismatch is traceable.
+      if (target.kind === 'new' && this.byId.get(overlay.id) !== overlay) {
+        this.log(`overlay ${overlay.id}: closed while its Discuss session ${tabId} opened; the opener heard dismissed`)
       }
       this.finish(overlay, { kind: 'discussed', tabId, queued })
       try {

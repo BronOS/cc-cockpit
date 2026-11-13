@@ -79,23 +79,13 @@ function parseTarget(argv) {
   return { file, line: nums[0], col: nums[1] }
 }
 
-/**
- * A project-relative path, or a thrown Error: no absolute path, no `..`, no NUL. A backslash is a
- * separator only where the OS says so (Windows): on macOS and Linux `a\b.js` is one valid file name,
- * and turning it into `a/b.js` opened a different file.
- */
-function relativePath(p) {
-  if (typeof p !== 'string' || !p.trim() || p.includes('\0')) throw new Error('path must be a non-empty string')
-  if (path.isAbsolute(p)) throw new Error(`path must be relative to the project folder: ${p}`)
-  const norm = path.posix.normalize(path.sep === '\\' ? p.replace(/\\/g, '/') : p)
-  if (norm === '..' || norm.startsWith('../') || norm === '.') throw new Error(`path leaves the project folder: ${p}`)
-  return norm.replace(/^\.\//, '')
-}
+// The project-relative path rule (no absolute path, no `..`, no NUL) is lib/files.js's.
+const { relativePath } = files
 
-// The Edit button's file check: what the button provider may read (it has 500 ms), and what counts
-// as a text file micro can open: a regular file, no NUL byte in its first BINARY_SNIFF_BYTES.
-const BINARY_SNIFF_BYTES = 8000
-const MAX_EDIT_BYTES = 64 * 1024 * 1024
+// The Edit button's file check: a file over this many bytes gets no Edit (the tab would show a big
+// one read-only, or not at all past lib/files.js MAX_VIEW_BYTES), and what counts as a text file is a
+// regular file with no NUL byte in its first bytes (lib/files.js sniffBinary).
+const MAX_EDIT_BUTTON_BYTES = 64 * 1024 * 1024
 
 /**
  * The project-relative path of a `file` overlay's data when it names a text file of the project
@@ -105,30 +95,14 @@ const MAX_EDIT_BYTES = 64 * 1024 * 1024
  */
 function editableFile(root, data) {
   if (!data || typeof data !== 'object' || typeof data.path !== 'string') return null
-  let rel
   try {
-    rel = relativePath(data.path)
+    const r = files.resolveInProject(root, data.path)
+    if (!r.exists) return null
+    if (fs.statSync(r.real).size > MAX_EDIT_BUTTON_BYTES || files.sniffBinary(r.real)) return null
+    return r.rel
   } catch {
-    return null
+    return null // malformed, outside, missing, unreadable, not a regular file: nothing to edit
   }
-  let fd
-  try {
-    const realRoot = fs.realpathSync(root)
-    const real = fs.realpathSync(path.join(realRoot, rel))
-    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null
-    const st = fs.statSync(real)
-    // A FIFO or a device would block the read (and the whole plugin host): regular files only.
-    if (!st.isFile() || st.size > MAX_EDIT_BYTES) return null
-    fd = fs.openSync(real, 'r')
-    const buf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, st.size))
-    const n = fs.readSync(fd, buf, 0, buf.length, 0)
-    if (buf.subarray(0, n).includes(0)) return null
-  } catch {
-    return null // missing, unreadable: nothing to edit
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd)
-  }
-  return rel
 }
 
 /** The manifest's default of autosaveIdleSeconds, said in its description (the schema has no `default`, see autosaveOf). */
@@ -186,26 +160,6 @@ async function earlyEnd(result) {
     return await Promise.race([result.then((r) => ({ result: r }), (error) => ({ error })), wait])
   } finally {
     clearTimeout(timer)
-  }
-}
-
-/**
- * Whether a project file opens in a file tab: a binary one (a NUL in its first BINARY_SNIFF_BYTES)
- * goes to the project's file opener instead (the reviewer shows images and PDFs, else the app's
- * built-in viewer). `real` is the realpath resolveInProject checked; only a regular file is read (a
- * FIFO would block the host). A missing file opens a tab (a new file, created by its first save).
- */
-function isBinaryFile(real) {
-  let fd
-  try {
-    const st = fs.statSync(real)
-    if (!st.isFile()) throw new Error('not a regular file')
-    fd = fs.openSync(real, 'r')
-    const buf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, st.size))
-    const n = fs.readSync(fd, buf, 0, buf.length, 0)
-    return buf.subarray(0, n).includes(0)
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd)
   }
 }
 
@@ -371,7 +325,7 @@ exports.activate = (ctx) => {
    */
   async function openFileTab(p, opts = {}) {
     const r = files.resolveInProject(ctx.projectDir, p)
-    if (r.exists && isBinaryFile(r.real)) {
+    if (r.exists && files.sniffBinary(r.real)) {
       if (!ctx.files || typeof ctx.files.open !== 'function') throw new Error(`${r.rel} is a binary file`)
       const res = await ctx.files.open(r.rel)
       return { via: res && res.via }
@@ -462,11 +416,13 @@ exports.activate = (ctx) => {
       files.serveFileTab(mine, tab, ctx.log)
       const searching = search.serveSearch(tab, { spawn, root: ctx.projectDir, log: ctx.log })
       const speaking = serveLsp(tab, lsp, ctx.log)
+      // main's params for the tab: `path` (a project file) or `outside` (a read-only file outside it).
+      const params = tab.params && typeof tab.params === 'object' ? tab.params : {}
+      const tabPath = typeof params.path === 'string' ? params.path : undefined
       // Claude's changes in the gutter: the tab's own file at git HEAD, and the Reviewer's diff on a click.
-      const tabPath = tab.params && typeof tab.params === 'object' && typeof tab.params.path === 'string' ? tab.params.path : undefined
       const gitting = git.serveGit(tab, { spawn, root: ctx.projectDir, rel: tabPath, review: openReview, log: ctx.log })
       // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection.
-      const tabFile = tabPath !== undefined ? tabPath : tab.params && typeof tab.params === 'object' && typeof tab.params.outside === 'string' ? tab.params.outside : undefined
+      const tabFile = tabPath !== undefined ? tabPath : typeof params.outside === 'string' ? params.outside : undefined
       const asking = ask.serveAsk(tab, { file: tabFile })
       // Quick chat (Ctrl+K): a read-only headless Claude in the project folder (lib/quick-chat.js), about
       // the tab's own file; the model is the app setting at the chat's start.
@@ -477,7 +433,6 @@ exports.activate = (ctx) => {
       set.add(tab)
       instances.set(tab.id, set)
       tab.post(settingsMessage())
-      const params = tab.params && typeof tab.params === 'object' ? tab.params : {}
       tab.onMessage((m) => {
         if (!m || typeof m !== 'object') return
         if (searching(m)) return
@@ -593,7 +548,7 @@ exports.activate = (ctx) => {
   if (hasTabs && ctx.files && typeof ctx.files.onOpen === 'function') {
     ctx.files.onOpen(async ({ path: p }) => {
       const r = files.resolveInProject(ctx.projectDir, relativePath(p))
-      if (r.exists && isBinaryFile(r.real)) throw new Error(`${r.rel} is a binary file: the built-in viewer shows it`)
+      if (r.exists && files.sniffBinary(r.real)) throw new Error(`${r.rel} is a binary file: the built-in viewer shows it`)
       await openFileTab(r.rel)
     })
   }
@@ -656,7 +611,7 @@ exports.activate = (ctx) => {
       // would go to the file opener, whose overlay takes the keyboard from the terminal that ran this.
       const r = files.resolveInProject(root, relativePath(rel))
       if (!r.exists) throw new Error(`no such file: ${r.rel} (the forms are <file>, <file>:<line>, <file>:<line>:<col>)`)
-      if (isBinaryFile(r.real)) throw new Error(`${r.rel} is not a text file (the editor opens text files only)`)
+      if (files.sniffBinary(r.real)) throw new Error(`${r.rel} is not a text file (the editor opens text files only)`)
       // Never focus: the person may be typing in the terminal that ran this. A new tab opens with
       // the unseen dot (main sets it); an open one gets the dot again and moves to the position
       // (design-editor.md §4).

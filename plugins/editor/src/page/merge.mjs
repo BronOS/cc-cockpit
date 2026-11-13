@@ -12,6 +12,11 @@
 // Lines keep their '\n' (the last one may have none), so joining lines gives back the exact text and
 // "a final newline added" is a change like any other. The page's text is LF already (the host turns
 // a CRLF file into LF and back on save), so '\n' is the only separator.
+//
+// The diff is its own, not @codemirror/merge's `diff` (the Reviewer's): that one is character-level,
+// so lines would have to be interned to characters and its changes mapped back, and when it gives up
+// (scanLimit, or an optional timeout) the caller is not told; diffLines' MAX_EDITS / MAX_WORK give-up
+// is reported as `gaveUp`, which the merge and its tests rely on.
 
 /**
  * A diff with more edits than this gives up and calls the whole differing middle one change: the

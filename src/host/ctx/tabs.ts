@@ -40,9 +40,9 @@ import {
 } from '../../shared/page-tabs'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { dispatchInView } from './origin-view'
-import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
+import { PortLine } from './port-line'
+import type { PanelPort } from './ui'
 
-type MessageListener = (message: JsonValue) => void
 type DiscussHandler = () => unknown
 
 /** main's tag: the params are at most 4 KiB as JSON, so the tag may be longer than a panel's. */
@@ -93,12 +93,8 @@ interface Frame {
   readonly pluginId: string
   readonly id: string
   readonly view: ViewId | undefined
-  readonly port: PanelPort
-  readonly unsubscribe: () => void
-  readonly messageListeners: Set<MessageListener>
-  readonly closeListeners: Set<() => void>
+  readonly line: PortLine
   readonly discussHandlers: Set<DiscussHandler>
-  ended: boolean
 }
 
 /** The connected page tab frames and `onOpen` listeners of every plugin of one host. */
@@ -136,18 +132,19 @@ export class PageTabHub {
   open(tag: PageTabOpenTag, port: PanelPort): void {
     const key = frameKey(tag.pluginId, tag.id, tag.view)
     const old = this.frames.get(key)
-    if (old) this.end(old)
-    const frame: Frame = {
-      pluginId: tag.pluginId,
-      id: tag.id,
-      view: tag.view,
+    if (old) old.line.end()
+    const discussHandlers = new Set<DiscussHandler>()
+    const line = new PortLine(
       port,
-      unsubscribe: port.onMessage((raw) => this.receive(frame, raw)),
-      messageListeners: new Set(),
-      closeListeners: new Set(),
-      discussHandlers: new Set(),
-      ended: false
-    }
+      tag.view,
+      { kind: 'page tab', who: `page tab ${tag.id}`, postTo: ` to ${tag.id}` },
+      (message) => this.log(tag.pluginId, message),
+      () => {
+        if (this.frames.get(key) === frame) this.frames.delete(key)
+        discussHandlers.clear()
+      }
+    )
+    const frame: Frame = { pluginId: tag.pluginId, id: tag.id, view: tag.view, line, discussHandlers }
     this.frames.set(key, frame)
     const tab = this.instanceOf(frame, tag)
     const listeners = [...(this.openers.get(`${tag.pluginId}/${tag.type}`) ?? [])]
@@ -173,7 +170,7 @@ export class PageTabHub {
    */
   close(pluginId: string, id: string, view?: ViewId, port?: PanelPort): void {
     const frame = this.frames.get(frameKey(pluginId, id, view))
-    if (frame && (port === undefined || frame.port === port)) this.end(frame)
+    if (frame && (port === undefined || frame.line.port === port)) frame.line.end()
   }
 
   /**
@@ -188,7 +185,7 @@ export class PageTabHub {
     const view = viewIdOf(rawView)
     if (rawView !== undefined && view === undefined) return null
     const frame = this.frames.get(frameKey(pluginId, id, view))
-    if (!frame || frame.ended) return null
+    if (!frame || frame.line.ended) return null
     for (const handler of [...frame.discussHandlers]) {
       let answer: unknown
       try {
@@ -212,7 +209,7 @@ export class PageTabHub {
 
   /** The plugin is gone: its frames end (onClose runs) and its listeners drop. */
   removePlugin(pluginId: string): void {
-    for (const frame of [...this.frames.values()]) if (frame.pluginId === pluginId) this.end(frame)
+    for (const frame of [...this.frames.values()]) if (frame.pluginId === pluginId) frame.line.end()
     const prefix = `${pluginId}/`
     for (const key of [...this.openers.keys()]) if (key.startsWith(prefix)) this.openers.delete(key)
   }
@@ -224,71 +221,10 @@ export class PageTabHub {
     return n
   }
 
-  private end(frame: Frame): void {
-    if (frame.ended) return
-    frame.ended = true
-    const key = frameKey(frame.pluginId, frame.id, frame.view)
-    if (this.frames.get(key) === frame) this.frames.delete(key)
-    frame.unsubscribe()
-    try {
-      frame.port.close()
-    } catch {
-      // Already closed on the other side.
-    }
-    const closers = [...frame.closeListeners]
-    frame.messageListeners.clear()
-    frame.closeListeners.clear()
-    frame.discussHandlers.clear()
-    for (const listener of closers) {
-      try {
-        listener()
-      } catch (err) {
-        this.log(frame.pluginId, `a page tab onClose listener threw: ${errorText(err)}`)
-      }
-    }
-  }
-
   private instanceOf(frame: Frame, tag: PageTabOpenTag): PageTabInstance {
-    const post = (message: JsonValue): void => {
-      const text = encodePortMessage(message, 'page tab post')
-      if (frame.ended) return
-      try {
-        frame.port.postMessage(text)
-      } catch (err) {
-        this.log(frame.pluginId, `page tab post to ${frame.id} failed: ${errorText(err)}`)
-      }
-    }
-    const onMessage = (listener: MessageListener): Disposer => {
-      if (typeof listener !== 'function') throw new TypeError('page tab onMessage needs a function')
-      if (frame.ended) return () => {}
-      const entry: MessageListener = (m) => listener(m)
-      frame.messageListeners.add(entry)
-      return () => {
-        frame.messageListeners.delete(entry)
-      }
-    }
-    const onClose = (listener: () => void): Disposer => {
-      if (typeof listener !== 'function') throw new TypeError('page tab onClose needs a function')
-      if (frame.ended) {
-        // Registered after the end: told at once, so a late listener still cleans up.
-        queueMicrotask(() => {
-          try {
-            listener()
-          } catch (err) {
-            this.log(frame.pluginId, `a page tab onClose listener threw: ${errorText(err)}`)
-          }
-        })
-        return () => {}
-      }
-      const entry = (): void => listener()
-      frame.closeListeners.add(entry)
-      return () => {
-        frame.closeListeners.delete(entry)
-      }
-    }
     const onDiscuss = (handler: DiscussHandler): Disposer => {
       if (typeof handler !== 'function') throw new TypeError('page tab onDiscuss needs a function')
-      if (frame.ended) return () => {}
+      if (frame.line.ended) return () => {}
       const entry: DiscussHandler = () => handler()
       frame.discussHandlers.add(entry)
       return () => {
@@ -297,9 +233,7 @@ export class PageTabHub {
     }
     const setTitle = async (title: string, icon?: string): Promise<void> => {
       checkTitle(title, 'setTitle')
-      if (icon !== undefined && (typeof icon !== 'string' || !PAGE_TAB_ICON_PATTERN.test(icon))) {
-        throw new TypeError(`page tab setTitle: icon must match ${PAGE_TAB_ICON_PATTERN.source}`)
-      }
+      checkIcon(icon, 'page tab setTitle')
       // The tab outlives this line (a reconnect makes a new instance): main checks the tab is still
       // this plugin's and open, not whether this instance is current.
       await this.call('tabs.setTitle', { pluginId: frame.pluginId, tabId: frame.id, title, ...(icon !== undefined ? { icon } : {}) })
@@ -309,32 +243,12 @@ export class PageTabHub {
       type: tag.type,
       params: tag.params === undefined ? undefined : structuredClone(tag.params),
       view: tag.view,
-      post,
-      onMessage,
-      onClose,
+      post: frame.line.post,
+      onMessage: frame.line.onMessage,
+      onClose: frame.line.onClose,
       onDiscuss,
       setTitle
     }) as PageTabInstance
-  }
-
-  /** A message from the tab's page: a JSON string within the cap, else dropped (logged). */
-  private receive(frame: Frame, raw: unknown): void {
-    const got = decodePortMessage(raw)
-    if (!got.ok) {
-      this.log(frame.pluginId, `dropped a message from page tab ${frame.id}: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
-      return
-    }
-    for (const listener of [...frame.messageListeners]) {
-      try {
-        dispatchInView(
-          frame.view,
-          () => listener(structuredClone(got.value)),
-          (err) => this.log(frame.pluginId, `a page tab onMessage listener failed: ${errorText(err)}`)
-        )
-      } catch (err) {
-        this.log(frame.pluginId, `a page tab onMessage listener threw: ${errorText(err)}`)
-      }
-    }
   }
 }
 
@@ -343,6 +257,18 @@ function checkTitle(title: unknown, what: string): void {
   if (typeof title !== 'string' || title.trim() === '') throw new TypeError(`tabs.${what}: title must be non-empty text`)
   // Main cuts at PAGE_TAB_TITLE_MAX; a title far past that is a mistake, not a long name.
   if (title.length > PAGE_TAB_TITLE_MAX * 16) throw new TypeError(`tabs.${what}: title is far longer than ${PAGE_TAB_TITLE_MAX} characters`)
+}
+
+/** A fast check of an optional icon (main checks it again): a glyph name. `what` leads the error. */
+function checkIcon(icon: unknown, what: string): void {
+  if (icon !== undefined && (typeof icon !== 'string' || !PAGE_TAB_ICON_PATTERN.test(icon))) {
+    throw new TypeError(`${what}: icon must match ${PAGE_TAB_ICON_PATTERN.source}`)
+  }
+}
+
+/** A tab id as main mints them; main looks it up and checks the tab is the plugin's own. */
+function checkTabId(tabId: unknown, what: string): void {
+  if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError(`tabs.${what}: tabId must be a page tab id`)
 }
 
 export interface TabsApiDeps {
@@ -370,9 +296,7 @@ export function createTabsApi(deps: TabsApiDeps): PluginContext['tabs'] {
         declared(type, 'openPage')
         const { title, icon, focus } = (options ?? {}) as Record<string, unknown>
         checkTitle(title, 'openPage')
-        if (icon !== undefined && (typeof icon !== 'string' || !PAGE_TAB_ICON_PATTERN.test(icon))) {
-          throw new TypeError(`tabs.openPage: icon must match ${PAGE_TAB_ICON_PATTERN.source}`)
-        }
+        checkIcon(icon, 'tabs.openPage')
         if (focus !== undefined && typeof focus !== 'boolean') throw new TypeError('tabs.openPage: focus must be a boolean')
         const res = (await call('tabs.openPage', {
           pluginId,
@@ -399,18 +323,18 @@ export function createTabsApi(deps: TabsApiDeps): PluginContext['tabs'] {
       }),
     focus: (tabId: string): Promise<void> =>
       guardAsync(async () => {
-        if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError('tabs.focus: tabId must be a page tab id')
+        checkTabId(tabId, 'focus')
         await call('tabs.focus', { pluginId, tabId })
       }),
     markUnseen: (tabId: string): Promise<{ marked: boolean }> =>
       guardAsync(async () => {
-        if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError('tabs.markUnseen: tabId must be a page tab id')
+        checkTabId(tabId, 'markUnseen')
         const res = (await call('tabs.markUnseen', { pluginId, tabId })) as { marked?: unknown } | null
         return { marked: res?.marked === true }
       }),
     close: (tabId: string): Promise<{ closed: boolean }> =>
       guardAsync(async () => {
-        if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError('tabs.close: tabId must be a page tab id')
+        checkTabId(tabId, 'close')
         const res = (await call('tabs.close', { pluginId, tabId })) as { closed?: unknown } | null
         return { closed: res?.closed === true }
       })

@@ -15,7 +15,7 @@
 // With no selection it is `path:line` for the cursor's line and nothing else. The fence is one backtick
 // longer than the longest run in the text (at least three), so a selection holding ``` cannot end the
 // block early and pass the rest off as the person's own words. The selection is file text, so data for
-// Claude to read, never instructions: it is cut to MAX_SELECTION_CHARS, with a note when it was.
+// Claude to read, never instructions: it is cut to MAX_ASK_CHARS, with a note when it was.
 //
 // Protocol (page <-> host, beside lib/files.js's):
 //   host -> page  { t: 'ask-context', req }                          onDiscuss wants the selection
@@ -24,8 +24,8 @@
 // does not answer within ANSWER_MS fails the ask, so the person sees an error rather than a question
 // sent with no context.
 
-/** The page's selection is cut to this many characters here, whatever it sent. */
-const MAX_SELECTION_CHARS = 8000
+/** The page's selection is cut to this many characters here, whatever it sent (src/page/ask.mjs cuts to the same first). */
+const MAX_ASK_CHARS = 8000
 /** The page must answer within this long: core waits 5 s for the whole onDiscuss. */
 const ANSWER_MS = 3000
 
@@ -52,6 +52,31 @@ function fenceFor(text) {
   return '`'.repeat(Math.max(3, longest + 1))
 }
 
+/** `text` in a fence one backtick longer than any run in it (it cannot end the block early); one trailing newline dropped. */
+function fenced(text) {
+  const fence = fenceFor(text)
+  return `${fence}\n${text.endsWith('\n') ? text.slice(0, -1) : text}\n${fence}`
+}
+
+/**
+ * `text` cut to at most `max` UTF-16 units, never between the two halves of a surrogate pair: the
+ * head is kept, or the tail (`keep: 'tail'`). A non-string is ''.
+ */
+function cutText(text, max, keep = 'head') {
+  if (typeof text !== 'string') return ''
+  if (text.length <= max) return text
+  if (keep === 'tail') {
+    let start = text.length - max
+    const code = text.charCodeAt(start)
+    if (code >= 0xdc00 && code <= 0xdfff) start += 1
+    return text.slice(start)
+  }
+  let end = max
+  const code = text.charCodeAt(end - 1)
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1
+  return text.slice(0, end)
+}
+
 /**
  * The text Discuss gets for `file` and the page's selection `sel` ({ startLine, endLine, text, cut }),
  * or null when the page sent nothing usable. Throws nothing: a malformed answer is "no context".
@@ -67,20 +92,15 @@ function contextText(file, sel) {
   let text = typeof sel.text === 'string' ? sel.text : ''
   if (text === '') return headerFor(endLine)
   let cut = sel.cut === true
-  if (text.length > MAX_SELECTION_CHARS) {
-    let keep = MAX_SELECTION_CHARS
-    const code = text.charCodeAt(keep - 1)
-    if (code >= 0xd800 && code <= 0xdbff) keep -= 1
-    text = text.slice(0, keep)
+  if (text.length > MAX_ASK_CHARS) {
+    text = cutText(text, MAX_ASK_CHARS)
     cut = true
     // The range follows the text actually sent, not the page's claim for the whole selection.
     let breaks = 0
     for (const ch of text) if (ch === '\n') breaks += 1
     endLine = Math.min(endLine, startLine + breaks)
   }
-  const header = headerFor(endLine)
-  const fence = fenceFor(text)
-  const lines = [header, fence, text.endsWith('\n') ? text.slice(0, -1) : text, fence]
+  const lines = [headerFor(endLine), fenced(text)]
   if (cut) lines.push(`(the selection was cut to its first ${text.length} characters)`)
   return lines.join('\n')
 }
@@ -133,4 +153,4 @@ function serveAsk(tab, { file, answerMs = ANSWER_MS }) {
   }
 }
 
-module.exports = { MAX_SELECTION_CHARS, contextText, fenceFor, oneLine, serveAsk }
+module.exports = { MAX_ASK_CHARS, contextText, cutText, fenced, fenceFor, oneLine, serveAsk }

@@ -53,7 +53,8 @@
 const os = require('node:os')
 const path = require('node:path')
 const { findOnPath } = require('./lsp/servers.js')
-const { fenceFor, oneLine } = require('./ask.js')
+const { cutText: cut, fenced, oneLine } = require('./ask.js')
+const { splitter } = require('./split.js')
 
 /** The models the setting offers: the same closed list core uses for ctx.sessions.open (src/shared/session-options.ts). */
 const CHAT_MODELS = ['haiku', 'sonnet', 'opus', 'fable']
@@ -76,8 +77,8 @@ const REQUIRED_FLAGS = [
 
 /** At most this many chats of this plugin at once, every tab together (they share ctx.processes' cap of 16). */
 const MAX_CHATS = 3
-/** The selection is refused over this many characters: a proposal replaces all of it, so it is never cut. */
-const MAX_SELECTION_CHARS = 20000
+/** The selection is refused over this many characters: a proposal replaces all of it, so it is never cut (src/page/chat.mjs refuses at the same MAX_TARGET_CHARS). */
+const MAX_TARGET_CHARS = 20000
 /** The lines before and after the selection are cut to this many characters each (the far side goes). */
 const MAX_CONTEXT_CHARS = 6000
 /** A question longer than this is refused. */
@@ -234,28 +235,6 @@ function checkClaude(spawn, bin, cwd, opts) {
   return p
 }
 
-/** The text cut to `max` characters from the start (`keep: 'head'`) or the end (`'tail'`), never between a surrogate pair. */
-function cut(text, max, keep = 'head') {
-  if (typeof text !== 'string') return ''
-  if (text.length <= max) return text
-  if (keep === 'tail') {
-    let start = text.length - max
-    const code = text.charCodeAt(start)
-    if (code >= 0xdc00 && code <= 0xdfff) start += 1
-    return text.slice(start)
-  }
-  let end = max
-  const code = text.charCodeAt(end - 1)
-  if (code >= 0xd800 && code <= 0xdbff) end -= 1
-  return text.slice(0, end)
-}
-
-/** `text` in a fence one backtick longer than any run in it (it cannot end the block early). */
-function fenced(text) {
-  const fence = fenceFor(text)
-  return `${fence}\n${text.endsWith('\n') ? text.slice(0, -1) : text}\n${fence}`
-}
-
 const lineCount = (text) => {
   let n = 1
   for (const ch of text) if (ch === '\n') n += 1
@@ -268,7 +247,7 @@ function checkSelection(sel) {
   const startLine = sel.startLine
   if (!Number.isSafeInteger(startLine) || startLine < 1) throw new Error('no selection')
   if (typeof sel.text !== 'string') throw new Error('no selection')
-  if (sel.text.length > MAX_SELECTION_CHARS) throw new Error(`select at most ${MAX_SELECTION_CHARS.toLocaleString('en-US')} characters for quick chat`)
+  if (sel.text.length > MAX_TARGET_CHARS) throw new Error(`select at most ${MAX_TARGET_CHARS.toLocaleString('en-US')} characters for quick chat`)
   // The range follows the text actually sent, not the page's claim.
   const endLine = startLine + lineCount(sel.text) - 1
   return { startLine, endLine, text: sel.text }
@@ -390,36 +369,13 @@ function fenceClose(line, mark) {
 }
 
 /**
- * Splits a byte stream into lines (`\n`), calling `onLine(string)` for each. A line over `maxBytes`
- * is skipped whole (the bytes are not kept). Returns `push(bytes)`.
+ * Splits a byte stream into lines (`\n`), calling `onLine(string)` for each (split.js splitter, the
+ * line decoded as UTF-8 once whole). A line over `maxBytes` is skipped whole (the bytes are not
+ * kept). Returns `push(bytes)`; a last line with no `\n` after it is never told (claude ends each).
  */
 function lineSplitter(onLine, maxBytes = MAX_LINE_BYTES) {
-  let parts = []
-  let size = 0
-  let skipping = false
-  return function push(bytes) {
-    const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    let start = 0
-    for (;;) {
-      const nl = buf.indexOf(10, start)
-      const end = nl === -1 ? buf.length : nl
-      if (!skipping) {
-        size += end - start
-        if (size > maxBytes) {
-          skipping = true
-          parts = []
-        } else if (end > start) parts.push(buf.subarray(start, end))
-      }
-      if (nl === -1) break
-      if (!skipping) onLine(Buffer.concat(parts).toString('utf8'))
-      parts = []
-      size = 0
-      skipping = false
-      start = nl + 1
-    }
-    // Keep a copy of the held tail (the chunk's buffer may be reused by the stream); earlier parts are already copies.
-    if (parts.length) parts[parts.length - 1] = Buffer.from(parts[parts.length - 1])
-  }
+  const lines = splitter(10, (bytes) => onLine(bytes.toString('utf8')), maxBytes)
+  return (bytes) => lines.push(bytes)
 }
 
 /** A tool call as the page shows it: the tool's name and its path or pattern, project-relative when inside. */
@@ -676,8 +632,7 @@ module.exports = {
   DEFAULT_MODEL,
   REQUIRED_FLAGS,
   MAX_CHATS,
-  MAX_SELECTION_CHARS,
-  MAX_ANSWER_CHARS,
+  MAX_TARGET_CHARS,
   modelOf,
   chatArgv,
   missingFlags,

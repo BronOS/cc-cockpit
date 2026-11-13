@@ -15,15 +15,13 @@
 //
 // The page has no settings API: the plugin keeps what it edits where it wants and never posts a
 // secret to it (a page is a web page; the guide says so).
-import type { Disposer, JsonValue, PluginContext, SettingsPageInstance } from '../../sdk/types'
+import type { Disposer, PluginContext, SettingsPageInstance } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import type { SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope, SETTINGS_PAGE_ID_PATTERN } from '../../shared/settings-page'
 import { viewIdOf, type ViewId } from '../../shared/views'
-import { dispatchInView } from './origin-view'
-import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
-
-type MessageListener = (message: JsonValue) => void
+import { PortLine } from './port-line'
+import type { PanelPort } from './ui'
 
 /** main's tag is a handful of short fields. */
 const MAX_TAG_LENGTH = 512
@@ -59,13 +57,8 @@ export function settingsPageOpenTag(data: unknown): SettingsPageOpenTag | undefi
 interface Page {
   readonly pluginId: string
   readonly id: string
-  /** The remote view the page is in; undefined for the desktop's. */
-  readonly view: ViewId | undefined
-  readonly port: PanelPort
-  readonly unsubscribe: () => void
-  readonly messageListeners: Set<MessageListener>
-  readonly closeListeners: Set<() => void>
-  ended: boolean
+  /** The line to the page, in the remote view it is in (undefined for the desktop's). */
+  readonly line: PortLine
 }
 
 /** The open settings pages and `onOpen` listeners of every plugin of one host. */
@@ -95,17 +88,17 @@ export class SettingsPageHub {
    */
   open(tag: SettingsPageOpenTag, port: PanelPort): void {
     const old = this.pages.get(tag.pluginId)
-    if (old) this.end(old)
-    const page: Page = {
-      pluginId: tag.pluginId,
-      id: tag.id,
-      view: tag.view,
+    if (old) old.line.end()
+    const line = new PortLine(
       port,
-      unsubscribe: port.onMessage((raw) => this.receive(page, raw)),
-      messageListeners: new Set(),
-      closeListeners: new Set(),
-      ended: false
-    }
+      tag.view,
+      { kind: 'settings page', who: 'the settings page', postTo: '' },
+      (message) => this.log(tag.pluginId, message),
+      () => {
+        if (this.pages.get(tag.pluginId) === page) this.pages.delete(tag.pluginId)
+      }
+    )
+    const page: Page = { pluginId: tag.pluginId, id: tag.id, line }
     this.pages.set(tag.pluginId, page)
     const instance = this.instanceOf(page, tag.scope)
     const listeners = [...(this.openers.get(tag.pluginId) ?? [])]
@@ -122,13 +115,12 @@ export class SettingsPageHub {
   /** main's `settingsPage.close { pluginId, id }`, or the page's port closing (`port`: only that page's own). */
   close(pluginId: string, id: string, port?: PanelPort): void {
     const page = this.pages.get(pluginId)
-    if (page && page.id === id && (port === undefined || page.port === port)) this.end(page)
+    if (page && page.id === id && (port === undefined || page.line.port === port)) page.line.end()
   }
 
   /** The plugin is gone: its page ends (onClose runs) and its listeners drop. */
   removePlugin(pluginId: string): void {
-    const page = this.pages.get(pluginId)
-    if (page) this.end(page)
+    this.pages.get(pluginId)?.line.end()
     this.openers.delete(pluginId)
   }
 
@@ -137,83 +129,11 @@ export class SettingsPageHub {
     return this.pages.has(pluginId)
   }
 
-  private end(page: Page): void {
-    if (page.ended) return
-    page.ended = true
-    if (this.pages.get(page.pluginId) === page) this.pages.delete(page.pluginId)
-    page.unsubscribe()
-    try {
-      page.port.close()
-    } catch {
-      // Already closed on the other side.
-    }
-    const closers = [...page.closeListeners]
-    page.messageListeners.clear()
-    page.closeListeners.clear()
-    for (const listener of closers) this.safely(page.pluginId, 'onClose', listener)
-  }
-
-  private safely(pluginId: string, what: string, fn: () => void): void {
-    try {
-      fn()
-    } catch (err) {
-      this.log(pluginId, `a settings page ${what} listener threw: ${errorText(err)}`)
-    }
-  }
-
   private instanceOf(page: Page, scope: SettingsPageScope): SettingsPageInstance {
-    const post = (message: JsonValue): void => {
-      const text = encodePortMessage(message, 'settings page post')
-      if (page.ended) return
-      try {
-        page.port.postMessage(text)
-      } catch (err) {
-        this.log(page.pluginId, `settings page post failed: ${errorText(err)}`)
-      }
-    }
-    const onMessage = (listener: MessageListener): Disposer => {
-      if (typeof listener !== 'function') throw new TypeError('settings page onMessage needs a function')
-      if (page.ended) return () => {}
-      const entry: MessageListener = (m) => listener(m)
-      page.messageListeners.add(entry)
-      return () => {
-        page.messageListeners.delete(entry)
-      }
-    }
-    const onClose = (listener: () => void): Disposer => {
-      if (typeof listener !== 'function') throw new TypeError('settings page onClose needs a function')
-      if (page.ended) {
-        // Registered after the end: told at once, so a late listener still cleans up.
-        queueMicrotask(() => this.safely(page.pluginId, 'onClose', listener))
-        return () => {}
-      }
-      const entry = (): void => listener()
-      page.closeListeners.add(entry)
-      return () => {
-        page.closeListeners.delete(entry)
-      }
-    }
+    const { post, onMessage, onClose } = page.line
     return Object.freeze({ scope, post, onMessage, onClose })
   }
 
-  /** A message from the page: a JSON string within the cap, else dropped (logged). */
-  private receive(page: Page, raw: unknown): void {
-    const got = decodePortMessage(raw)
-    if (!got.ok) {
-      this.log(page.pluginId, `dropped a message from the settings page: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
-      return
-    }
-    for (const listener of [...page.messageListeners]) {
-      // In the page's view (origin-view.ts), so the calls it makes act where the click came from.
-      this.safely(page.pluginId, 'onMessage', () =>
-        dispatchInView(
-          page.view,
-          () => listener(structuredClone(got.value)),
-          (err) => this.log(page.pluginId, `a settings page onMessage listener failed: ${errorText(err)}`)
-        )
-      )
-    }
-  }
 }
 
 export interface SettingsPageApiDeps {

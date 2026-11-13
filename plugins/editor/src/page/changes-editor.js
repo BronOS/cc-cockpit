@@ -8,9 +8,10 @@
 // always there with a fixed width (initialSpacer), so the text does not shift sideways when the first
 // bar appears.
 
-import { StateEffect, StateField, RangeSet } from '@codemirror/state'
-import { EditorView, gutter, GutterMarker } from '@codemirror/view'
+import { RangeSet } from '@codemirror/state'
+import { GutterMarker } from '@codemirror/view'
 import { hunksOf } from './changes.mjs'
+import { createMarkGutter } from './mark-gutter.js'
 
 /** The marks are recomputed this long after the last change to the buffer. */
 export const RECOMPUTE_MS = 150
@@ -39,17 +40,6 @@ class ChangeMarker extends GutterMarker {
   }
 }
 
-/** A blank element of the bar's width, so the gutter has its width before the first mark. */
-class Spacer extends GutterMarker {
-  toDOM() {
-    const d = document.createElement('div')
-    d.className = 'cc-change'
-    return d
-  }
-}
-
-const setMarks = StateEffect.define()
-
 /** The line marks of `hunks` in `doc`: a bar on each line of an added or modified hunk, a notch on the line after a removal. */
 export function marksOf(doc, hunks) {
   const out = []
@@ -68,25 +58,6 @@ export function marksOf(doc, hunks) {
   return RangeSet.of(out, true)
 }
 
-const marksField = StateField.define({
-  create: () => RangeSet.empty,
-  update(marks, tr) {
-    marks = marks.map(tr.changes)
-    for (const e of tr.effects) if (e.is(setMarks)) marks = e.value
-    return marks
-  },
-})
-
-/** The marker on `line` (a BlockInfo), or null. */
-function markerAt(state, line) {
-  let found = null
-  state.field(marksField).between(line.from, line.from, (_from, _to, m) => {
-    found = m
-    return false
-  })
-  return found
-}
-
 /**
  * `ui`:
  *   getBase()     the file's text at HEAD, or null
@@ -96,77 +67,36 @@ function markerAt(state, line) {
  */
 export function createChangesGutter(ui) {
   let timer = null
-  let pop = null
-
-  function hide() {
-    if (pop) pop.remove()
-    pop = null
-  }
-
-  function show(view, line, event) {
-    hide()
-    const m = markerAt(view.state, line)
-    if (!m) return
-    const h = m.hunk
-    pop = document.createElement('div')
-    pop.className = 'cc-change-pop'
-    pop.setAttribute('role', 'tooltip')
-    const head = document.createElement('div')
-    head.className = 'cc-change-pop-head'
-    head.textContent = KIND_LABEL[h.kind]
-    pop.append(head)
-    if (h.old.length) {
-      const pre = document.createElement('pre')
-      pre.className = 'cc-change-pop-old'
-      pre.textContent = h.old.join('\n')
-      pop.append(pre)
-      if (h.oldCount > h.old.length) {
-        const more = document.createElement('div')
-        more.className = 'cc-change-pop-more'
-        more.textContent = `…and ${h.oldCount - h.old.length} more old lines`
-        pop.append(more)
+  const marks = createMarkGutter({
+    gutterClass: 'cc-changes-gutter',
+    spacerClass: 'cc-change',
+    popClass: 'cc-change-pop',
+    fill(pop, m) {
+      const h = m.hunk
+      const head = document.createElement('div')
+      head.className = 'cc-change-pop-head'
+      head.textContent = KIND_LABEL[h.kind]
+      pop.append(head)
+      if (h.old.length) {
+        const pre = document.createElement('pre')
+        pre.className = 'cc-change-pop-old'
+        pre.textContent = h.old.join('\n')
+        pop.append(pre)
+        if (h.oldCount > h.old.length) {
+          const more = document.createElement('div')
+          more.className = 'cc-change-pop-more'
+          more.textContent = `…and ${h.oldCount - h.old.length} more old lines`
+          pop.append(more)
+        }
       }
-    }
-    const tip = document.createElement('div')
-    tip.className = 'cc-change-pop-tip'
-    tip.textContent = 'Click to open the diff'
-    pop.append(tip)
-    document.body.append(pop)
-    // Right of the gutter, at the pointer's height; kept inside the window.
-    const g = event.currentTarget instanceof Element ? event.currentTarget.getBoundingClientRect() : { right: event.clientX }
-    const r = pop.getBoundingClientRect()
-    pop.style.left = `${Math.max(4, Math.min(g.right + 4, window.innerWidth - r.width - 4))}px`
-    pop.style.top = `${Math.max(4, Math.min(event.clientY - 8, window.innerHeight - r.height - 4))}px`
-  }
-
-  const extension = [
-    marksField,
-    gutter({
-      class: 'cc-changes-gutter',
-      markers: (view) => view.state.field(marksField),
-      initialSpacer: () => new Spacer(),
-      domEventHandlers: {
-        mouseover: (view, line, event) => {
-          show(view, line, event)
-          return false
-        },
-        mouseleave: () => {
-          hide()
-          return false
-        },
-        mousedown: (view, line, event) => {
-          // A click on a bar opens the diff; the editor would only move the cursor to the line.
-          if (event.button !== 0 || !markerAt(view.state, line)) return false
-          event.preventDefault()
-          hide()
-          ui.review()
-          return true
-        },
-      },
-    }),
-    // Scrolling or typing leaves the popover behind, away from its line.
-    EditorView.domEventHandlers({ scroll: () => (hide(), false), keydown: () => (hide(), false) }),
-  ]
+      const tip = document.createElement('div')
+      tip.className = 'cc-change-pop-tip'
+      tip.textContent = 'Click to open the diff'
+      pop.append(tip)
+    },
+    // A click on a bar opens the diff; the editor would only move the cursor to the line.
+    click: () => ui.review(),
+  })
 
   function recompute(view) {
     if (timer !== null) {
@@ -175,16 +105,15 @@ export function createChangesGutter(ui) {
     }
     if (!view) return
     const base = ui.getBase()
-    let marks = RangeSet.empty
+    let set = RangeSet.empty
     if (base !== null && base.length <= MAX_DIFF_CHARS && view.state.doc.length <= MAX_DIFF_CHARS) {
-      marks = marksOf(view.state.doc, hunksOf(base, view.state.doc.toString()))
+      set = marksOf(view.state.doc, hunksOf(base, view.state.doc.toString()))
     }
-    hide()
-    view.dispatch({ effects: setMarks.of(marks) })
+    marks.set(view, set)
   }
 
   return {
-    extension,
+    extension: marks.extension,
     recompute,
     schedule(view) {
       if (timer !== null) clearTimeout(timer)

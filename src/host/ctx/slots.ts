@@ -16,10 +16,9 @@ import type { Disposer, JsonValue, PluginContext, SlotInstance } from '../../sdk
 import { errorText } from '../../shared/error-text'
 import { MAX_SLOT_PARAMS_BYTES, SLOT_FRAME_ID_PATTERN, SLOT_TYPE_PATTERN, type SlotHost } from '../../shared/slots'
 import { viewIdOf, type ViewId } from '../../shared/views'
-import { decodePortMessage, encodePortMessage, type PanelPort } from './ui'
-import { dispatchInView } from './origin-view'
+import { PortLine } from './port-line'
+import type { PanelPort } from './ui'
 
-type MessageListener = (message: JsonValue) => void
 
 /**
  * What main sends with a slot frame's port. The params are the placement's (at most 4 KiB as
@@ -86,12 +85,7 @@ export function slotOpenTag(data: unknown): SlotOpenTag | undefined {
 interface Frame {
   readonly pluginId: string
   readonly id: string
-  readonly view: ViewId | undefined
-  readonly port: PanelPort
-  readonly unsubscribe: () => void
-  readonly messageListeners: Set<MessageListener>
-  readonly closeListeners: Set<() => void>
-  ended: boolean
+  readonly line: PortLine
 }
 
 /** The open slot frames and `onOpen` listeners of every plugin of one host. */
@@ -126,19 +120,17 @@ export class SlotHub {
   open(tag: SlotOpenTag, port: PanelPort): void {
     const key = frameKey(tag.pluginId, tag.id, tag.view)
     const old = this.frames.get(key)
-    if (old) this.end(old)
-    const messageListeners = new Set<MessageListener>()
-    const closeListeners = new Set<() => void>()
-    const frame: Frame = {
-      pluginId: tag.pluginId,
-      id: tag.id,
-      view: tag.view,
+    if (old) old.line.end()
+    const line = new PortLine(
       port,
-      unsubscribe: port.onMessage((raw) => this.receive(frame, raw)),
-      messageListeners,
-      closeListeners,
-      ended: false
-    }
+      tag.view,
+      { kind: 'slot', who: `slot ${tag.id}`, postTo: ` to ${tag.id}` },
+      (message) => this.log(tag.pluginId, message),
+      () => {
+        if (this.frames.get(key) === frame) this.frames.delete(key)
+      }
+    )
+    const frame: Frame = { pluginId: tag.pluginId, id: tag.id, line }
     this.frames.set(key, frame)
     const slot = this.instanceOf(frame, tag)
     const listeners = [...(this.openers.get(`${tag.pluginId}/${tag.type}`) ?? [])]
@@ -160,12 +152,12 @@ export class SlotHub {
    */
   close(pluginId: string, id: string, view?: ViewId, port?: PanelPort): void {
     const frame = this.frames.get(frameKey(pluginId, id, view))
-    if (frame && (port === undefined || frame.port === port)) this.end(frame)
+    if (frame && (port === undefined || frame.line.port === port)) frame.line.end()
   }
 
   /** The plugin is gone: its frames end (onClose runs) and its listeners drop. */
   removePlugin(pluginId: string): void {
-    for (const frame of [...this.frames.values()]) if (frame.pluginId === pluginId) this.end(frame)
+    for (const frame of [...this.frames.values()]) if (frame.pluginId === pluginId) frame.line.end()
     const prefix = `${pluginId}/`
     for (const key of [...this.openers.keys()]) if (key.startsWith(prefix)) this.openers.delete(key)
   }
@@ -177,97 +169,18 @@ export class SlotHub {
     return n
   }
 
-  private end(frame: Frame): void {
-    if (frame.ended) return
-    frame.ended = true
-    const key = frameKey(frame.pluginId, frame.id, frame.view)
-    if (this.frames.get(key) === frame) this.frames.delete(key)
-    frame.unsubscribe()
-    try {
-      frame.port.close()
-    } catch {
-      // Already closed on the other side.
-    }
-    const closers = [...frame.closeListeners]
-    frame.messageListeners.clear()
-    frame.closeListeners.clear()
-    for (const listener of closers) {
-      try {
-        listener()
-      } catch (err) {
-        this.log(frame.pluginId, `a slot onClose listener threw: ${errorText(err)}`)
-      }
-    }
-  }
-
   private instanceOf(frame: Frame, tag: SlotOpenTag): SlotInstance {
-    const post = (message: JsonValue): void => {
-      const text = encodePortMessage(message, 'slot post')
-      if (frame.ended) return
-      try {
-        frame.port.postMessage(text)
-      } catch (err) {
-        this.log(frame.pluginId, `slot post to ${frame.id} failed: ${errorText(err)}`)
-      }
-    }
-    const onMessage = (listener: MessageListener): Disposer => {
-      if (typeof listener !== 'function') throw new TypeError('slot onMessage needs a function')
-      if (frame.ended) return () => {}
-      const entry: MessageListener = (m) => listener(m)
-      frame.messageListeners.add(entry)
-      return () => {
-        frame.messageListeners.delete(entry)
-      }
-    }
-    const onClose = (listener: () => void): Disposer => {
-      if (typeof listener !== 'function') throw new TypeError('slot onClose needs a function')
-      if (frame.ended) {
-        // Registered after the end: told at once, so a late listener still cleans up.
-        queueMicrotask(() => {
-          try {
-            listener()
-          } catch (err) {
-            this.log(frame.pluginId, `a slot onClose listener threw: ${errorText(err)}`)
-          }
-        })
-        return () => {}
-      }
-      const entry = (): void => listener()
-      frame.closeListeners.add(entry)
-      return () => {
-        frame.closeListeners.delete(entry)
-      }
-    }
     return Object.freeze({
       id: tag.id,
       type: tag.type,
       host: Object.freeze(structuredClone(tag.host)),
       params: tag.params === undefined ? undefined : structuredClone(tag.params),
-      post,
-      onMessage,
-      onClose
+      post: frame.line.post,
+      onMessage: frame.line.onMessage,
+      onClose: frame.line.onClose
     }) as SlotInstance
   }
 
-  /** A message from the slot's page: a JSON string within the cap, else dropped (logged). */
-  private receive(frame: Frame, raw: unknown): void {
-    const got = decodePortMessage(raw)
-    if (!got.ok) {
-      this.log(frame.pluginId, `dropped a message from slot ${frame.id}: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
-      return
-    }
-    for (const listener of [...frame.messageListeners]) {
-      try {
-        dispatchInView(
-          frame.view,
-          () => listener(structuredClone(got.value)),
-          (err) => this.log(frame.pluginId, `a slot onMessage listener failed: ${errorText(err)}`)
-        )
-      } catch (err) {
-        this.log(frame.pluginId, `a slot onMessage listener threw: ${errorText(err)}`)
-      }
-    }
-  }
 }
 
 export interface SlotsApiDeps {

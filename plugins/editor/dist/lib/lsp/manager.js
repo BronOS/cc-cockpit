@@ -736,7 +736,7 @@ class LspManager {
       const st = await fh.stat()
       if (!st.isFile() || st.size > MAX_LINE_TEXT_FILE_BYTES) return null
       const buf = await fh.readFile()
-      if (buf.length > MAX_LINE_TEXT_FILE_BYTES || buf.subarray(0, 8000).includes(0)) return null
+      if (buf.length > MAX_LINE_TEXT_FILE_BYTES || buf.subarray(0, files.BINARY_SNIFF_BYTES).includes(0)) return null
       return files.decodeBytes(buf).text
     } catch {
       return null
@@ -1165,7 +1165,6 @@ module.exports = {
   ASKS,
   fitResult,
   applyChanges,
-  cleanDiagnostics,
   MAX_DOC_CHARS,
   ANSWER_BUDGET,
 }

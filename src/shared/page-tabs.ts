@@ -8,6 +8,7 @@
 // per type), and the title, icon and params a plugin asks for are checked and clamped here before
 // a tab holds them. A saved record is user-writable, so restore runs the same checks again.
 import type { JsonValue } from '../sdk/types'
+import { plainJsonOf } from './plain-json'
 
 /**
  * A page-tab type: a plain lower-case word, like a slot type (`file` for the editor). It names the
@@ -98,28 +99,8 @@ export function pageTabIconOf(value: unknown): string | undefined {
 }
 
 /**
- * `params` through JSON once, as slot params are (slots.ts slotParamsOf): what is kept is the parsed
- * copy, so a getter, a prototype or a function cannot ride along, and the byte count is that of the
- * text that is saved and handed back to the plugin. Throws naming the rule.
- */
-export function pageTabParamsOf(params: unknown): JsonValue {
-  let text: string | undefined
-  try {
-    text = JSON.stringify(params)
-  } catch {
-    // A cycle or a BigInt: the same answer as a function, without the engine's text.
-    text = undefined
-  }
-  if (text === undefined) throw new Error('page tab params must be plain JSON')
-  if (new TextEncoder().encode(text).length > MAX_PAGE_TAB_PARAMS_BYTES) {
-    throw new Error(`page tab params are larger than ${MAX_PAGE_TAB_PARAMS_BYTES} bytes as JSON`)
-  }
-  return JSON.parse(text) as JsonValue
-}
-
-/**
  * A whole spec checked: the plugin id by `isPluginId` (the caller's, so this file stays import-free),
- * the type by its pattern, params by pageTabParamsOf, the title clamped, a bad icon dropped (it is
+ * the type by its pattern, params through JSON once (plainJsonOf), the title clamped, a bad icon dropped (it is
  * cosmetic). Throws naming the first problem.
  */
 export function checkPageTabSpec(raw: unknown, isPluginId: (value: unknown) => boolean): PageTabSpec {
@@ -132,7 +113,7 @@ export function checkPageTabSpec(raw: unknown, isPluginId: (value: unknown) => b
   const t = pageTabTitleOf(title)
   if (t === undefined) throw new Error('a page tab needs a title of plain text')
   const spec: PageTabSpec = { plugin: plugin as string, type, title: t }
-  if (params !== undefined) spec.params = pageTabParamsOf(params)
+  if (params !== undefined) spec.params = plainJsonOf(params, MAX_PAGE_TAB_PARAMS_BYTES, 'page tab params')
   const i = pageTabIconOf(icon)
   if (i !== undefined) spec.icon = i
   return spec

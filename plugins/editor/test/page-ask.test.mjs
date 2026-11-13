@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EditorState } from '@codemirror/state'
-import { selectionContext, MAX_SELECTION_CHARS } from '../src/page/ask.mjs'
+import { selectionContext, MAX_ASK_CHARS } from '../src/page/ask.mjs'
 
 const state = (doc, anchor, head = anchor) => EditorState.create({ doc, selection: { anchor, head } })
 
@@ -37,5 +37,5 @@ test('selectionContext: over the cap it is cut, and the range ends where the tex
   assert.equal(got.cut, true)
   assert.equal(got.startLine, 1)
   assert.equal(got.endLine, 3)
-  assert.ok(MAX_SELECTION_CHARS >= 1000)
+  assert.ok(MAX_ASK_CHARS >= 1000)
 })

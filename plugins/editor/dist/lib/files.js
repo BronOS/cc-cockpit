@@ -57,8 +57,9 @@ function hashBytes(buf) {
 
 /**
  * A project-relative path, or a thrown Error: no absolute path, no `..`, no NUL. A backslash is a
- * separator only where the OS says so (Windows): on macOS and Linux `a\b.js` is one valid file name.
- * (The same rule as host.js's relativePath, kept here so this file has no dependency on the host.)
+ * separator only where the OS says so (Windows): on macOS and Linux `a\b.js` is one valid file name,
+ * and turning it into `a/b.js` opened a different file. The host's `editor.open`, `ccc edit` and the
+ * page's picks all go through this one.
  */
 function relativePath(p) {
   if (typeof p !== 'string' || !p.trim() || p.includes('\0')) throw new Error('path must be a non-empty string')
@@ -102,6 +103,25 @@ function resolveInProject(root, rel) {
   }
   if (!inside(realRoot, real) || real === realRoot) throw new Error(`${clean} is outside the project folder`)
   return { rel: clean, real, exists }
+}
+
+/**
+ * Whether the file at `real` (a realpath resolveInProject checked) is binary: a NUL in its first
+ * BINARY_SNIFF_BYTES. Only a regular file is read (a FIFO or a device would block the read, and with
+ * it the whole plugin host): anything else throws.
+ */
+function sniffBinary(real) {
+  let fd
+  try {
+    const st = fs.statSync(real)
+    if (!st.isFile()) throw new Error('not a regular file')
+    fd = fs.openSync(real, 'r')
+    const buf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, st.size))
+    const n = fs.readSync(fd, buf, 0, buf.length, 0)
+    return buf.subarray(0, n).includes(0)
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
 }
 
 /** The line ending a file uses: CRLF only when every LF has a CR before it (a mixed file is left as it is). */
@@ -1012,15 +1032,14 @@ function makeFiles(root, opts = {}) {
 module.exports = {
   MAX_EDIT_BYTES,
   MAX_VIEW_BYTES,
+  BINARY_SNIFF_BYTES,
   CHUNK_CHARS,
-  hashBytes,
-  sweepTemps,
   safeMessage,
   relativePath,
   resolveInProject,
+  sniffBinary,
   decodeBytes,
   encodeText,
-  describeBytes,
   readFile,
   readOutside,
   outsideRefused,

@@ -4,6 +4,7 @@
 // check, the Plugins page, main's placement checks and the plugin host all read these, and a copy
 // would drift.
 import type { JsonValue } from '../sdk/types'
+import { plainJsonOf } from './plain-json'
 
 /**
  * A slot type: a plain lower-case word, like a service name. It is part of a pick key
@@ -126,7 +127,7 @@ export function parseSlotPlacements(raw: unknown): SlotPlacement[] | null {
     if (position !== 'top' && position !== 'bottom') throw new Error(`panels.slots: placement ${i}: position must be "top" or "bottom"`)
     if (typeof height !== 'number' || !Number.isFinite(height)) throw new Error(`panels.slots: placement ${i}: height must be a number`)
     const out: SlotPlacement = { type, position, height: clampSlotHeight(height, SLOT_HEIGHT_MIN, SLOT_HEIGHT_MAX) }
-    if (params !== undefined) out.params = slotParamsOf(params, i)
+    if (params !== undefined) out.params = plainJsonOf(params, MAX_SLOT_PARAMS_BYTES, `panels.slots: placement ${i}: params`)
     return out
   })
 }
@@ -134,21 +135,6 @@ export function parseSlotPlacements(raw: unknown): SlotPlacement[] | null {
 /** `height` rounded and kept within [min, max]. */
 export function clampSlotHeight(height: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(height)))
-}
-
-function slotParamsOf(params: unknown, i: number): JsonValue {
-  let text: string | undefined
-  try {
-    text = JSON.stringify(params)
-  } catch {
-    // A cycle or a BigInt: the same answer as a function, without the engine's text.
-    text = undefined
-  }
-  if (text === undefined) throw new Error(`panels.slots: placement ${i}: params must be plain JSON`)
-  if (new TextEncoder().encode(text).length > MAX_SLOT_PARAMS_BYTES) {
-    throw new Error(`panels.slots: placement ${i}: params are larger than ${MAX_SLOT_PARAMS_BYTES} bytes as JSON`)
-  }
-  return JSON.parse(text) as JsonValue
 }
 
 /**

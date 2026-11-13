@@ -8,7 +8,7 @@
  * message is capped at 20,000 and core cuts the plugin's context, which would take the closing fence
  * with it, so the selection stays well inside.
  */
-export const MAX_SELECTION_CHARS = 8000
+export const MAX_ASK_CHARS = 8000
 
 /**
  * The main selection as `{ startLine, endLine, text, cut }`, lines 1-based and inclusive, or with
@@ -17,7 +17,7 @@ export const MAX_SELECTION_CHARS = 8000
  * not counted in the range, and its last newline is not in the text. `cut` says the text was shortened
  * to `max` characters; the range then ends where the text does.
  */
-export function selectionContext(state, max = MAX_SELECTION_CHARS) {
+export function selectionContext(state, max = MAX_ASK_CHARS) {
   const { from, to } = state.selection.main
   const first = state.doc.lineAt(from)
   if (from === to) return { startLine: first.number, endLine: first.number, text: '', cut: false }

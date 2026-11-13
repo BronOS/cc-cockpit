@@ -38,9 +38,10 @@
 // plain conflict, with Reload alone.
 
 import { merge3, mergedText, conflictLayout } from './merge.mjs'
+import { chunkText, partsCollector } from './parts.mjs'
 
-/** Text per save message, in UTF-16 units: the host's own chunk size (files.js CHUNK_CHARS), under the 1 MiB cap. */
-export const CHUNK_CHARS = 128 * 1024
+export { chunkText, CHUNK_CHARS } from './parts.mjs'
+
 /** A dirty check after typing waits this long (a full compare of a big buffer on every key would lag). */
 export const DIRTY_CHECK_MS = 120
 /** The autosave default until the host's settings come (the manifest's). */
@@ -51,47 +52,6 @@ export const NOTICE_MS = 6000
 export const MERGED_NOTICE = "Merged Claude's changes."
 /** A write lost from disk during our save that was not text: nothing to merge, only said. */
 export const LOST_NOT_TEXT = 'Another write to this file landed during the save and was replaced; it was not text, so it could not be merged.'
-
-/** `text` in parts of at most `size` units, never splitting a surrogate pair. At least one part. */
-export function chunkText(text, size = CHUNK_CHARS) {
-  const parts = []
-  let i = 0
-  while (i < text.length) {
-    let end = Math.min(i + size, text.length)
-    // A high surrogate at the cut would leave half a character in each part: harmless once the host
-    // joins them, but no part should be broken UTF-16 on its own.
-    if (end < text.length) {
-      const c = text.charCodeAt(end - 1)
-      if (c >= 0xd800 && c <= 0xdbff) end--
-    }
-    parts.push(text.slice(i, end))
-    i = end
-  }
-  return parts.length ? parts : ['']
-}
-
-/**
- * Collects a message sent in parts ({ part, parts, text? }) under one req. `add` answers the head
- * (part 0's message) and the joined text (undefined when the parts carry none, a binary file) once
- * every part came, else null.
- */
-function partsCollector() {
-  let head = null
-  const texts = []
-  let got = 0
-  return {
-    add(m) {
-      const i = Number.isInteger(m.part) && m.part >= 0 ? m.part : 0
-      if (i === 0 || head === null) head = m
-      if (!(i in texts)) got++
-      texts[i] = typeof m.text === 'string' ? m.text : undefined
-      const parts = Number.isInteger(m.parts) && m.parts >= 1 ? m.parts : 1
-      if (got < parts) return null
-      const all = texts.length === parts && texts.every((t) => typeof t === 'string')
-      return { head, text: all ? texts.join('') : undefined }
-    },
-  }
-}
 
 /**
  * The session of one file tab. `ui`:

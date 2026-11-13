@@ -1,6 +1,9 @@
 // Which language a file tab highlights, by its name (design-editor.md §1: TS/JS, Go, PHP, Python,
 // JSON, YAML, Markdown, HTML, CSS and shell in v1). A key, not a CodeMirror extension, so this file
 // has no dependency and the node:test suite reads it as is; file.js turns the key into the language.
+// The Reviewer's overlay has its own table (plugins/reviewer/src/page/review.js languageFor), on
+// purpose: plugins cannot import each other, and each list is what its own bundle ships. A language
+// added to one is worth adding to the other.
 
 const BY_EXTENSION = {
   js: 'js', mjs: 'js', cjs: 'js',

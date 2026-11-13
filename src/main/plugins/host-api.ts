@@ -1512,13 +1512,9 @@ export class HostApi {
    * declares). The id is the plugin's text, only looked up. Checked before the budget is spent.
    */
   private setPageTabTitle(params: unknown): null {
-    this.alive()
-    const { pluginId, tabId, title, icon } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'tabs.setTitle')
-    if (typeof tabId !== 'string') throw new Error('tabs.setTitle: tabId must be a string')
-    if (!this.deps.listTabs || !this.deps.setPageTabTitle) throw new Error('tabs.setTitle: page tabs are not available')
-    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
-    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.setTitle: no such page tab of this plugin')
+    const { title, icon } = (params ?? {}) as Record<string, unknown>
+    const { plugin, tabId } = this.ownPageTab(params, 'tabs.setTitle')
+    if (!this.deps.setPageTabTitle) throw new Error('tabs.setTitle: page tabs are not available')
     if (pageTabTitleOf(title) === undefined) throw new Error('tabs.setTitle: title must be plain text')
     if (icon !== undefined && pageTabIconOf(icon) === undefined) throw new Error('tabs.setTitle: icon must be a glyph name')
     if (!this.pageTabTitles.take(plugin.id)) {
@@ -1535,13 +1531,8 @@ export class HostApi {
    * yanking the tab bar); checked before the budget is spent.
    */
   private focusPageTab(params: unknown): null {
-    this.alive()
-    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'tabs.focus')
-    if (typeof tabId !== 'string') throw new Error('tabs.focus: tabId must be a string')
-    if (!this.deps.listTabs || !this.deps.focusPageTab) throw new Error('tabs.focus: page tabs are not available')
-    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
-    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.focus: no such page tab of this plugin')
+    const { plugin, tabId } = this.ownPageTab(params, 'tabs.focus')
+    if (!this.deps.focusPageTab) throw new Error('tabs.focus: page tabs are not available')
     if (!this.pageTabOpens.take(plugin.id)) {
       throw new Error(`tabs.focus: more than ${MAX_PAGE_TAB_OPENS_PER_WINDOW} opens in ${PAGE_TAB_OPEN_WINDOW_MS / 1000} s`)
     }
@@ -1558,13 +1549,8 @@ export class HostApi {
    * when the project shows the tab now or it has the dot already.
    */
   private markPageTabUnseen(params: unknown): { marked: boolean } {
-    this.alive()
-    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'tabs.markUnseen')
-    if (typeof tabId !== 'string') throw new Error('tabs.markUnseen: tabId must be a string')
-    if (!this.deps.listTabs || !this.deps.markPageTabUnseen) throw new Error('tabs.markUnseen: page tabs are not available')
-    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
-    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.markUnseen: no such page tab of this plugin')
+    const { plugin, tabId } = this.ownPageTab(params, 'tabs.markUnseen')
+    if (!this.deps.markPageTabUnseen) throw new Error('tabs.markUnseen: page tabs are not available')
     if (!this.pageTabOpens.take(plugin.id)) {
       throw new Error(`tabs.markUnseen: more than ${MAX_PAGE_TAB_OPENS_PER_WINDOW} opens in ${PAGE_TAB_OPEN_WINDOW_MS / 1000} s`)
     }
@@ -1579,13 +1565,8 @@ export class HostApi {
    * buffer in another view is not the plugin's to drop. The same budget as ctx.sessions.close.
    */
   private async closePageTab(params: unknown): Promise<{ closed: boolean }> {
-    this.alive()
-    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'tabs.close')
-    if (typeof tabId !== 'string') throw new Error('tabs.close: tabId must be a string')
-    if (!this.deps.listTabs || !this.deps.closeTab) throw new Error('tabs.close: page tabs are not available')
-    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
-    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.close: no such page tab of this plugin')
+    const { plugin, tabId } = this.ownPageTab(params, 'tabs.close')
+    if (!this.deps.closeTab) throw new Error('tabs.close: page tabs are not available')
     if (!this.closes.take(plugin.id)) {
       throw new Error(`tabs.close: more than ${MAX_CLOSES_PER_WINDOW} closes in ${CLOSE_WINDOW_MS / 1000} s`)
     }
@@ -1596,6 +1577,22 @@ export class HostApi {
       throw withMethod('tabs.close', err)
     }
     return { closed }
+  }
+
+  /**
+   * The checks every call on one existing page tab starts with: the host is alive, the plugin is the
+   * host's own, `tabId` is a string naming a page tab of THIS project that is the plugin's own (the id
+   * is the plugin's text, only looked up). Throws naming `what`; nothing is spent before it returns.
+   */
+  private ownPageTab(params: unknown, what: string): { plugin: HostApiPlugin; tabId: string } {
+    this.alive()
+    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, what)
+    if (typeof tabId !== 'string') throw new Error(`${what}: tabId must be a string`)
+    if (!this.deps.listTabs) throw new Error(`${what}: page tabs are not available`)
+    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
+    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error(`${what}: no such page tab of this plugin`)
+    return { plugin, tabId }
   }
 
   /** `type` when it is one of the plugin's own `contributes.tabs` types, else a throw naming `what`. */

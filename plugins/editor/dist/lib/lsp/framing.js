@@ -135,4 +135,4 @@ class Decoder {
   }
 }
 
-module.exports = { encode, Decoder, MAX_HEADER_BYTES, MAX_BODY_BYTES }
+module.exports = { encode, Decoder }
