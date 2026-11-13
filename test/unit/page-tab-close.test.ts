@@ -12,7 +12,7 @@ import type { PageTabSpec } from '../../src/shared/page-tabs'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import { closeWillAsk } from '../../src/main/sessions/close-asks'
 import { electronAskUnsaved, QueuedUnsavedAsk, QuitGuard, unsavedDialogOptions, unsavedList } from '../../src/main/windows/unsaved-dialog'
-import { closeAnswer, closeMayAsk, closeQuestion, closeQuestionText } from '../../src/renderer/tabs/close-confirm'
+import { closeAnswer, closeMayAsk, closeQuestion, closeQuestionText, unsavedQuestion } from '../../src/renderer/tabs/close-confirm'
 import { unsavedText } from '../../src/renderer/web/close-project-text'
 import { PanelClient, TAB_DIRTY_MESSAGE, TAB_MESSAGE, type ThemeRoot } from '../../src/sdk/panel-core'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
@@ -118,6 +118,20 @@ describe('TabManager: dirty per (tab, view)', () => {
     tabs.close(A, t.id)
     expect(tabs.unsavedTitles(A)).toEqual([])
   })
+
+  it('pageUnsaved: a page tab of that project dirty in some view (what tabs.close refuses without discard)', () => {
+    const tabs = manager()
+    const t = tabs.createPage(A, file('a.ts'))
+    const shell = tabs.create(A, { kind: 'shell' })
+    expect(tabs.pageUnsaved(A, t.id)).toBe(false)
+    tabs.setPageDirty(A, t.id, 'web:3', true)
+    expect(tabs.pageUnsaved(A, t.id)).toBe(true)
+    expect(tabs.pageUnsaved(B, t.id)).toBe(false)
+    expect(tabs.pageUnsaved(A, shell.id)).toBe(false)
+    expect(tabs.pageUnsaved(A, 'no-such-tab')).toBe(false)
+    tabs.setPageDirty(A, t.id, 'web:3', false)
+    expect(tabs.pageUnsaved(A, t.id)).toBe(false)
+  })
 })
 
 describe('the close ask for a page tab', () => {
@@ -139,6 +153,16 @@ describe('the close ask for a page tab', () => {
     expect(closeQuestionText(q!)).toMatch(/unsaved changes/)
     // Close discards; the setting is not touched by this ask (the dialog has no "Don't ask again").
     expect(closeAnswer('close', false)).toEqual({ close: true, stopAsking: false })
+  })
+
+  it("asks when this view's own page is dirty though main's TabInfo.dirty has not come back yet", () => {
+    expect(closeMayAsk(page(false), true)).toBe(true)
+    expect(closeQuestion(page(false), undefined, false, true)).toEqual({ tabId: 't1', title: 'a.ts', unsaved: true })
+    expect(unsavedQuestion(page(false))).toEqual({ tabId: 't1', title: 'a.ts', unsaved: true })
+    // Only a page tab's: a terminal's local word means nothing.
+    const shell: TabInfo = { id: 's', kind: 'shell', cwd: '/p', gen: 1, exit: { code: 0, signal: null } }
+    expect(closeMayAsk(shell, true)).toBe(false)
+    expect(closeQuestion(shell, undefined, true, true)).toBeNull()
   })
 
   it("a running tab still asks only with the setting on", () => {

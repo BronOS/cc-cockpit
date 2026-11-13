@@ -30,7 +30,7 @@ import { UpdateNotice } from '../updates/UpdateNotice'
 import { useLayout } from '../zones/use-layout'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
-import { closeAnswer, closeMayAsk, closeQuestion, type CloseQuestion } from './close-confirm'
+import { closeAnswer, closeMayAsk, closeQuestion, unsavedQuestion, type CloseQuestion } from './close-confirm'
 import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
@@ -381,10 +381,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // plugin's close waiting for the outcome.
   // A plugin's close that fails is told so (declined: with several views of the window, another
   // view closing the tab first is the usual reason) and shows the error too, as the confirm path does.
-  const close = (tabId: string, done?: CloseDone): void =>
+  // `discard`: the person was asked and chose Close. Without it main leaves a page tab that some
+  // view reported dirty open (`{ unsaved: true }`: this view's copy of the dirty lagged), and the
+  // question is asked now.
+  const close = (tabId: string, done?: CloseDone, discard = false): void =>
     run(
-      window.cockpit.invoke('tabs.close', { tabId }).then(
-        () => {
+      window.cockpit.invoke('tabs.close', discard ? { tabId, discard: true } : { tabId }).then(
+        (res) => {
+          if (res && res.unsaved === true) {
+            askUnsaved(tabId, done)
+            return
+          }
           sessions.dispose(tabId)
           dispatch({ type: 'closed', tabId })
           done?.(true)
@@ -454,6 +461,20 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     reorder(tabId, Math.max(0, Math.min(state.tabs.length - 1, from + delta)))
   }
 
+  // main refused a close for unsaved changes this view did not know of yet: the page tab's question,
+  // unless something else is up over the window (then dropped, as requestClose drops it).
+  const askUnsaved = (tabId: string, done?: CloseDone): void => {
+    const tab = stateRef.current.tabs.find((t) => t.id === tabId)
+    if (!tab || confirmFor.current !== null || settingsShown.current || overlayOpen.current) {
+      done?.(false, true)
+      return
+    }
+    confirmFor.current = tabId
+    confirmDone.current = done ?? null
+    confirmAsk.current = null
+    setConfirm(unsavedQuestion(tab))
+  }
+
   // Every close the USER starts (×, the tab menu, Close Tab by key or palette, the exited banner)
   // comes here; main's own closes (a clean exit, a plugin) never do. A tab with nothing running
   // closes at once; for a running one the setting is read from main at each close (a change made in
@@ -484,7 +505,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       done?.(false, true)
       return
     }
-    if (!tab || !closeMayAsk(tab)) {
+    // This view's own page said it is dirty (page-frames.ts): main's TabInfo.dirty for it may not be
+    // back yet (typed, then closed at once), and a close that did not ask would drop the text.
+    const dirtyHere = (id: string): boolean => pageFrames().isDirty(id)
+    if (!tab || !closeMayAsk(tab, tab.kind === 'page' && dirtyHere(tabId))) {
       finish()
       return
     }
@@ -507,7 +531,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           done?.(false, true)
           return
         }
-        const question = closeQuestion(now, ownRef.current.get(tabId)?.status, enabled)
+        const question = closeQuestion(now, ownRef.current.get(tabId)?.status, enabled, now.kind === 'page' && dirtyHere(tabId))
         if (!question) {
           finish()
           return
@@ -774,7 +798,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       else if (doClose) {
         const done = confirmDone.current ?? undefined
         confirmDone.current = null
-        actions.current.closeNow(tabId, done)
+        // Asked and answered Close: main closes it even with unsaved changes (`discard`).
+        actions.current.closeNow(tabId, done, true)
       } else settleClose(confirmDone, false)
     },
     []

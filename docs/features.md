@@ -808,13 +808,15 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   undo, debugging (DAP), semantic tokens, call hierarchy or workspace symbol search; file create, rename and delete from
   a rename or code action are refused. One code action command runs per language server at a time: a second is
   refused until the first finishes, and one cancelled while the server still works on it holds the server until the
-  server answers (or Restart). The `servers` setting names a command only, so a server runs with its own
+  server answers; after a few seconds the tab's bar says so and offers Restart. The `servers` setting names a command only, so a server runs with its own
   defaults: a Python virtualenv is found only through `pyrightconfig.json` or `[tool.pyright]`, and intelephense runs in
   its free tier. The four built-in servers were tested against fakes, not run for real. Quick open and find in files
   need ripgrep. A file of over 2 million characters gets no language server, and at most 256 files (16 per tab) are
   open in the servers at once. A definition outside the project never opens from system folders (`/proc`, `/sys`,
-  `/dev`, `/run`) or from credential and history files in your home (`.ssh`, `.gnupg`, `.aws`, `.config`, `.npmrc`,
-  shell histories and the like).
+  `/dev`, `/run`) or from any hidden (dot) folder or file in your home (`.ssh`, `.config`, `.claude`, `.codex`, a
+  project's `.env`...), except inside `node_modules` and the toolchain folders the servers use (`.nvm`, `.pyenv`,
+  `.local/lib/python*`, `.local/share/uv`, `.cache/typescript`, `.composer/vendor`, `.cargo/registry` and the like:
+  the full list is in docs/design-editor.md). A definition in another dot folder does not open.
 - The reviewer and editor handle files inside the project only. A file a session edits outside its project keeps
   opening in the built-in viewer, because plugins only receive project-relative paths.
 - The web view (browser plugin) cannot stop a hostile page from navigating its top level to an

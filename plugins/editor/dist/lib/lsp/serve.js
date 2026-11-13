@@ -22,9 +22,10 @@
 //
 //   host -> page
 //   { t: 'lsp-doc', path, language, name?, owner, state? }   language null: no server for this file
-//   { t: 'lsp-status', language, name, state, install?, message? }
+//   { t: 'lsp-status', language, name, state, install?, message?, held? }
 //                                                 state: starting, ready, missing (install: the
-//                                                 command), restarting, failed (Restart), stopped
+//                                                 command), restarting, failed (Restart), stopped;
+//                                                 held (ready, a stopped command unanswered: Restart)
 //   { t: 'lsp-diagnostics', path, version?, diagnostics }
 //   { t: 'lsp-resync', path, owner?, why? }       send `lsp-open` with the whole text again
 //   { t: 'lsp-answer', req, result, truncated?, unsupported?, unavailable? } | { t: 'lsp-answer', req, error }

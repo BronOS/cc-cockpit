@@ -2843,6 +2843,7 @@ function start(server: boolean): void {
       return tabs.attach(projectId)
     },
     close: (projectId, tabId) => tabs.close(projectId, tabId),
+    pageUnsaved: (projectId, tabId) => tabs.pageUnsaved(projectId, tabId),
     reorder: (projectId, tabId, toIndex) => tabs.reorder(projectId, tabId, toIndex),
     rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
     // The person's flag. Wired here and nowhere else: host-api (plugins) has no flag dependency.

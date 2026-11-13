@@ -186,6 +186,34 @@ test('servers: the built-in table, fallbacks in order, the setting adds and over
   assert.ok(s.problems.some((p) => p.includes('needs extensions')))
 })
 
+test('servers: an explicit entry beats every built-in for the extensions it lists, in setting order', () => {
+  // typescript is a built-in listed before python: Map.set keeps its first position, so without
+  // the setting order python (later in the table) would win py back.
+  const s = servers.serverTable([{ language: 'typescript', extensions: 'ts py', argv: ['my-ts'] }])
+  assert.equal(servers.languageOf('a.py', s).entry.language, 'typescript')
+  assert.equal(servers.languageOf('a.py', s).languageId, 'typescript')
+  assert.equal(servers.languageOf('a.ts', s).entry.language, 'typescript')
+  assert.equal(s.table.get('python').languageIds.py, undefined)
+  // Two settings rows claiming one extension: the later row, whatever the built-in order.
+  const t = servers.serverTable([
+    { language: 'python', extensions: 'x', argv: ['p'] },
+    { language: 'typescript', extensions: 'x', argv: ['t'] },
+  ])
+  assert.equal(servers.languageOf('a.x', t).entry.language, 'typescript')
+  const u = servers.serverTable([
+    { language: 'typescript', extensions: 'x', argv: ['t'] },
+    { language: 'python', extensions: 'x', argv: ['p'] },
+  ])
+  assert.equal(servers.languageOf('a.x', u).entry.language, 'python')
+  // A language listed again moves to its last row.
+  const v = servers.serverTable([
+    { language: 'go', extensions: 'x', argv: ['g'] },
+    { language: 'python', extensions: 'x', argv: ['p'] },
+    { language: 'go', extensions: 'x', argv: ['g2'] },
+  ])
+  assert.equal(servers.languageOf('a.x', v).entry.language, 'go')
+})
+
 test('servers: looked up on PATH (the host env: the login-shell PATH); the first candidate found wins; missing names the install command', () => {
   const dir = tempDir('edlsp-path-')
   const bin = path.join(dir, 'phpactor')

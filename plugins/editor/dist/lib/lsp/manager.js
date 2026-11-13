@@ -65,6 +65,13 @@ const MAX_OUTSIDE = 1000
 const MAX_ACTIONS = 100
 /** A command's arguments (the server's own, handed back to it) are no bigger than this. */
 const MAX_COMMAND_CHARS = 64 * 1024
+/**
+ * A command the host stopped (a cancel, its deadline) that the server has still not answered after
+ * this long is told to the page (status `held`, with Restart): the server stays held until it answers
+ * or exits (commandBusy), and one that never answers would otherwise block every later command with
+ * nothing on screen to free it. Not at once: a server answers an ordinary cancel within moments.
+ */
+const HELD_NOTICE_MS = 3 * 1000
 
 // FileChangeType of workspace/didChangeWatchedFiles.
 const CREATED = 1
@@ -361,7 +368,7 @@ class LspManager {
    * @param {object} [o.log]
    * @param {object} [o.env] whose PATH finds the servers (default process.env: the login-shell env)
    * @param {unknown} [o.servers] the `servers` app setting
-   * @param {object} [o.timing] tests shorten the timers: { idleStopMs, restartDelaysMs, restartLimit, restartWindowMs, watchFlushMs, initializeTimeoutMs }
+   * @param {object} [o.timing] tests shorten the timers: { idleStopMs, restartDelaysMs, restartLimit, restartWindowMs, watchFlushMs, initializeTimeoutMs, heldNoticeMs }
    */
   constructor(o) {
     this.root = fs.realpathSync(o.root)
@@ -374,6 +381,7 @@ class LspManager {
       restartLimit: RESTART_LIMIT,
       restartWindowMs: RESTART_WINDOW_MS,
       watchFlushMs: WATCH_FLUSH_MS,
+      heldNoticeMs: HELD_NOTICE_MS,
       ...(o.timing || {}),
     }
     this.setServers(o.servers)
@@ -839,11 +847,15 @@ class LspManager {
     if (!srv || srv !== entry.srv) throw new Error('the language server restarted; ask again')
     let action = entry.kept.get(id)
     if (action.disabled) throw new Error(`not available: ${String(action.disabled.reason || '').slice(0, 200)}`)
+    // The documents as they were when the list was offered: the server built the action (its
+    // command's arguments, ranges among them) on that text, so a command with no edit of its own
+    // checks the server's edits against it, never against a snapshot taken after the person typed.
+    const offered = { versions: entry.versions, since: entry.since }
     // A bare Command (an older server's answer) runs as it is.
     stop()
     if (typeof action.command === 'string') {
       try {
-        const c = await this.executeCommand(slot, srv, action, signal)
+        const c = await this.executeCommand(slot, srv, action, signal, offered)
         return { result: { applied: true, files: c.files, edits: c.edits } }
       } catch (e) {
         return commandStopped({ files: 0, edits: 0 }, e)
@@ -867,7 +879,9 @@ class LspManager {
     if (command) {
       try {
         stop()
-        const c = await this.executeCommand(slot, srv, command, signal)
+        // After the action's own edit (checked against the offer above) the documents moved on by
+        // that edit, so the snapshot is taken now, at once after it; with no edit, the offer's.
+        const c = await this.executeCommand(slot, srv, command, signal, action.edit ? undefined : offered)
         applied = { applied: true, files: applied.files + c.files, edits: applied.edits + c.edits }
       } catch (e) {
         // The edit is in (and the command's own edits so far): said with the files counted, so a
@@ -891,15 +905,22 @@ class LspManager {
     return 'another command of this language server is still running; try again when it finishes'
   }
 
+  /** The slot's running server is held by a command the host stopped and the server has not answered. */
+  commandHeld(slot) {
+    const run = slot.command
+    return !!(run && slot.server && run.srv === slot.server && !run.finished && run.stop.signal.aborted)
+  }
+
   /**
    * Runs a server's own command (from its code action) on that server: only a command its
    * `executeCommandProvider` lists, and only when no other runs there (commandBusy). A
    * `workspace/applyEdit` it makes while this runs is applied (serverApplyEdit) against the documents
    * as they were when it started, and stops with it: the page's cancel or the command's failure
    * stops its edits before their next file. Resolves `{ files, edits }` its edits changed; a failure
-   * throws with those counts as `changed`.
+   * throws with those counts as `changed`. `snapshot` ({ versions, since }) is the documents the
+   * command was built on (a code action's offer); omitted, they are taken now.
    */
-  async executeCommand(slot, srv, cmd, signal) {
+  async executeCommand(slot, srv, cmd, signal, snapshot) {
     const caps = srv.capabilities || {}
     const listed = caps.executeCommandProvider && Array.isArray(caps.executeCommandProvider.commands) ? caps.executeCommandProvider.commands : []
     if (typeof cmd.command !== 'string' || !listed.includes(cmd.command)) throw new Error('the language server did not declare the command of that action')
@@ -908,11 +929,17 @@ class LspManager {
     const busy = this.commandBusy(slot, srv)
     if (busy) throw new Error(busy)
     // This command's own snapshot and stop, never shared with another command.
-    const run = { srv, versions: this.versions(), since: Date.now(), stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false }
+    const versions = snapshot && snapshot.versions instanceof Map ? snapshot.versions : this.versions()
+    const since = snapshot && Number.isFinite(snapshot.since) ? snapshot.since : Date.now()
+    const run = { srv, versions, since, stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false, held: false, heldTimer: null }
     slot.command = run
     const onDone = () => {
       run.finished = true
+      if (run.heldTimer) clearTimeout(run.heldTimer)
+      run.heldTimer = null
       if (slot.command === run) slot.command = null
+      // The page was told the server is held: told again that it is not.
+      if (run.held && slot.server === srv) this.postStatus(slot)
     }
     const onAbort = () => run.stop.abort()
     if (signal) signal.addEventListener('abort', onAbort, { once: true })
@@ -926,6 +953,16 @@ class LspManager {
     }
     // Failed, cancelled or timed out: the server's edits for it stop before their next file.
     if (failed) run.stop.abort()
+    // Stopped but not answered (server.js keeps its onDone): the page hears of it if it lasts.
+    if (failed && !run.finished) {
+      run.heldTimer = setTimeout(() => {
+        run.heldTimer = null
+        if (run.finished || slot.command !== run || slot.server !== srv) return
+        run.held = true
+        this.postStatus(slot)
+      }, this.timing.heldNoticeMs)
+      if (typeof run.heldTimer.unref === 'function') run.heldTimer.unref()
+    }
     // An edit the server sent before it answered finishes (or stops) first, so its files are counted.
     while (run.inflight.size) await Promise.allSettled([...run.inflight])
     const changed = { files: run.files, edits: run.edits }
@@ -976,6 +1013,8 @@ class LspManager {
     if (slot.install) m.install = slot.install
     if (slot.message) m.message = slot.message
     if (slot.state === 'ready' && slot.server && slot.server.capabilities) m.features = featuresOf(slot.server.capabilities)
+    // Ready, but held by a stopped command it never answered: the page shows a bar with Restart.
+    if (slot.state === 'ready' && this.commandHeld(slot) && slot.command.held) m.held = 'it has not answered a command it was asked to stop, so it runs no other command'
     return m
   }
 
@@ -1106,13 +1145,27 @@ class LspManager {
 
   /**
    * The bar's Restart (or Retry after installing a missing server): only for a language a document
-   * of `holder` uses, and only when its server is not running (a page cannot churn a live server).
+   * of `holder` uses, and only when its server is not running (a page cannot churn a live server),
+   * or is held by a command the host stopped and the server never answered (commandHeld: it would
+   * refuse every later command until the plugin reloaded). Its documents go to the new server.
    */
   restart(holder, language) {
     const slot = this.slots.get(language)
     if (!slot || !this.heldBy(holder).some((d) => d.language === language)) return false
-    if (slot.server || slot.restartTimer) return false
+    if (slot.restartTimer) return false
     slot.crashes = []
+    if (slot.server) {
+      if (!this.commandHeld(slot)) return false
+      this.log.warn(`the ${slot.entry.name} language server is restarted: it did not answer a command it was asked to stop`)
+      // Its exit settles the abandoned command (server.js onDone), which then no longer holds
+      // anything; the new one starts once the old one is gone (as a settings change does), never two at once.
+      this.stopSlot(slot, 'restarting').then(() => {
+        if (this.disposed || slot.server) return
+        if (this.docsOf(slot.language).length > 0) this.startSlot(slot)
+        else this.setState(slot, 'stopped')
+      })
+      return true
+    }
     this.startSlot(slot)
     return true
   }

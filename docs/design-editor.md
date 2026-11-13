@@ -52,7 +52,10 @@ Frame lifetime (a page holds unsaved text, so its frame must outlive what reload
   whole file's answer in one burst) and past it the port is paused and resynced (the page owns its buffer, so dropping
   messages is safe once it resends; the editor's reconnect asks for the file's head only, the text only when it changed).
 
-Dirty and close: dirty is per (tab, view), kept by main from each page's report. Closing a tab that is dirty in any
+Dirty and close: dirty is per (tab, view), kept by main from each page's report. A view's copy of a tab's dirty comes
+back from main (`tabs.added`) and can lag the report (typed, then closed at once; another view's page), so the closing
+view also reads its own frame's dirty, and main leaves a page tab some view reported dirty open unless the close says the
+person was asked (`tabs.close { discard }`; else `{ unsaved: true }` and the view asks then). Closing a tab that is dirty in any
 view asks with core's dialog (the `CloseTabDialog` pattern, an `ApprovalDialog` in server mode), also on window close,
 on a window reopen (Settings › Window's "Reopen window": the new window restores the tabs, never their buffers; Cancel or
 a box that fails to show keeps the window) and on quit; the page cannot block or delay a close itself. A browser view's
@@ -139,30 +142,48 @@ itself (`workspace/configuration`, `applyEdit`, progress), and trims results to 
 **Servers.** Built-in table: TS/JS `typescript-language-server --stdio`; Go `gopls`; PHP `intelephense --stdio`, else
 `phpactor language-server`; Python `basedpyright-langserver --stdio`, else `pyright-langserver --stdio`. Looked up on
 the login-shell PATH. A missing server is not an error: highlighting only and a bar with the install command. App
-setting `servers` (`{ language, extensions, argv }[]`) adds or overrides.
+setting `servers` (`{ language, extensions, argv }[]`) adds or overrides. An extension listed by a `servers` row is
+that row's language, whatever the built-in order; two rows listing one extension: the later row.
 
 **Lifecycle.** One server per language per project, rooted at the project folder. Started on the first file of that
 language, stopped a minute after its last tab closes. A crash restarts with backoff (3 in 5 minutes), then a bar with
-Restart. The host sends `workspace/didChangeWatchedFiles` for project changes it sees (Claude edits files that are not
+Restart. A live server is restarted from the page only when a command the host stopped never got its answer: after a few
+seconds the status says so (`held`) and the bar offers Restart, since the server runs no other command until it answers. The host sends `workspace/didChangeWatchedFiles` for project changes it sees (Claude edits files that are not
 open; gopls and tsserver go stale otherwise).
 
 **v1 features:** diagnostics, hover, completion with snippets, signature help, go-to-definition, find references,
 rename, format, code actions, document symbols. A definition in another project file opens or focuses its tab; a
 location outside the project (`node_modules`, module cache, vendor) opens read-only, and only for a location the server
-returned. Rename and code actions: the host declares no resource operations (no file create, rename, delete) and
+returned. A page's text decides what a server returns (tsserver's `/// <reference path>`), so some outside paths never
+open, whoever names them (`files.js` outsideRefused, by the named path and by its realpath): `/proc`, `/sys`, `/dev`,
+`/run`; macOS's `~/Library/Keychains`, `Application Support` and `Cookies`; and, as a rule rather than a list of known
+secrets, every hidden (dot) folder or file under the home (credentials, tokens, histories, app data all live there:
+`~/.ssh`, `~/.claude/.credentials.json`, `~/.codex/auth.json`, a sibling project's `.env`), except what follows a
+`node_modules` folder that is not itself behind another dot folder, and the toolchain and library folders the supported
+servers return definitions in: Node (`.nvm/versions`, `.volta/tools`, `.fnm/node-versions`,
+`.local/share/fnm/node-versions`, `.bun/install`, `.npm-global`, `.local/share/pnpm`, `.config/yarn/global`, tsserver's
+type cache `.cache/typescript`, `.local/share/nvim/mason/packages`), any language (`.local/share/mise/installs`,
+`.asdf/installs`), Go (`.go/pkg/mod`, `.goenv/versions`, `.gvm/gos`, `.gvm/pkgsets`; the default `~/go/pkg/mod` has no
+dot), PHP (`.composer/vendor`, `.config/composer/vendor`: not `auth.json` beside it), Python (`.local/lib/python*`,
+`.pyenv/versions`, `.local/share/uv`, `.virtualenvs`, `.local/share/virtualenvs`, `.conda/envs`,
+`.cache/pypoetry/virtualenvs`, `.local/pipx/venvs`, `.local/share/pipx/venvs`) and Rust for a `servers` row
+(`.cargo/registry`, `.cargo/git`, `.rustup/toolchains`). A definition anywhere else in a dot folder is not shown. Rename and code actions: the host declares no resource operations (no file create, rename, delete) and
 applies a `WorkspaceEdit` to open files through their pages and to unopened files through the compare-and-swap write.
 Everything is checked before the first file is touched; a cancel (the page gave up) is checked again before each file,
 so one that lands while a page applies its part stops before the next file, and the page is told which files changed.
 A code action's command runs on its server one at a time: a server's `workspace/applyEdit` names no command, so it is
 taken only while exactly one command the host ran is working there, checked against that command's own snapshot (the
-documents when it started) and stopped with it (the page's cancel, the command's failure or deadline). A second command
+documents when its code action was offered, the text the server built it on; after the action's own edit, the documents
+right after that edit) and stopped with it (the page's cancel, the command's failure or deadline). A second command
 on a busy server is refused; a command the host stopped waiting for holds the server until the server answers it or
 exits, so its late edits are never taken as another command's. An action whose edit (or command edit) changed files
 before its command failed or was cancelled answers with the files counted, and a page that gave up is told.
 A page's typing before the host confirms it syncs the document (`lsp-doc`) is not lost: the page sends its whole text
 again once it does, so the host never holds a text that differs from the buffer while it takes changes.
 `didChange` follows the server's `textDocumentSync` (Incremental: the page's ranges; Full: the whole text; None or
-omitted: none).
+omitted: none). Positions count `\r\n`, a lone `\r` and `\n` as line breaks, as LSP does, in the page as in the host,
+though the page's editor splits lines on `\n` only (a `\r` stays in the text); a change that starts or ends between the
+`\r` and `\n` of a CRLF has no LSP position, so the page sends its whole text instead.
 
 Language servers run project tooling, as in any IDE; the docs say so. The page never names a binary or a setting a
 server would use to start one.

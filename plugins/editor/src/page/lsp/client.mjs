@@ -124,9 +124,19 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
       ui.onDiagnostics([])
       failAll('the file is no longer open for its language server')
     },
-    /** The buffer changed: `changes` are LSP content changes (convert.mjs contentChanges). Only the owner's reach the server. */
+    /**
+     * The buffer changed: `changes` are LSP content changes (convert.mjs contentChanges), or null
+     * when no LSP range names the change (one inside a CRLF): the whole text goes instead. Only the
+     * owner's reach the server.
+     */
     changed(changes) {
-      if (!s.opened || !Array.isArray(changes) || changes.length === 0) return
+      if (!s.opened) return
+      if (changes === null) {
+        if (s.owner && s.language) sendText()
+        else s.unsent = true
+        return
+      }
+      if (!Array.isArray(changes) || changes.length === 0) return
       if (!s.owner || !s.language) {
         // Not sent (not the owner, or the host has not said yet): the host's copy is now behind.
         s.unsent = true
@@ -192,7 +202,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
         case 'lsp-status':
           // A late `lsp-status` for another language (a file renamed meanwhile) is not ours.
           if (s.language && m.language !== s.language) return true
-          s.status = { language: m.language, name: m.name, state: m.state, install: m.install, message: m.message, features: m.features }
+          s.status = { language: m.language, name: m.name, state: m.state, install: m.install, message: m.message, features: m.features, held: typeof m.held === 'string' ? m.held : undefined }
           ui.onStatus(s.status)
           return true
         case 'lsp-diagnostics':

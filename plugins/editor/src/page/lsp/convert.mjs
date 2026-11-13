@@ -3,33 +3,98 @@
 // with CodeMirror Text's `lines`, `length`, `line(n)` and `lineAt(pos)` (1-based lines, `from`/`to`
 // offsets); positions are LSP's `{ line, character }` in UTF-16 units, as JS strings count them.
 
-/** The offset of an LSP position in `doc`: a character past its line's end is the end, a line past the last is the document's end. */
+// Line breaks. The file tab splits its document on `\n` alone (line-breaks.mjs: a `\r` stays in the
+// text so a mixed or CR file is kept exactly), but LSP, and the host's edits.js offsetAt with it,
+// count `\r\n`, a lone `\r` and `\n` as breaks. So a CodeMirror line may hold several LSP lines
+// (split at each lone `\r`), and a CodeMirror line ending in the `\r` of a CRLF ends, for LSP, before
+// that `\r`. Counting only CodeMirror's lines put every position after a lone `\r` on the wrong LSP
+// line: an edit meant for `bb` in `a\rbb\ncc` replaced `cc`.
+
+/** doc -> the sorted offsets of its lone `\r` breaks (a `\r` not followed by `\n`). CodeMirror Text is immutable, so a doc's list never changes. */
+const loneCrCache = new WeakMap()
+
+function loneCrs(doc) {
+  let list = loneCrCache.get(doc)
+  if (list) return list
+  list = []
+  const text = doc.toString()
+  for (let i = text.indexOf('\r'); i !== -1; i = text.indexOf('\r', i + 1)) if (text.charCodeAt(i + 1) !== 10) list.push(i)
+  loneCrCache.set(doc, list)
+  return list
+}
+
+/** How many of the sorted `list` are below `at`. */
+function countBelow(list, at) {
+  let lo = 0
+  let hi = list.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (list[mid] < at) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+/** The LSP line CodeMirror line `n` (1-based) starts. */
+const lspLineOfCm = (doc, crs, n) => n - 1 + countBelow(crs, doc.line(n).from)
+
+/** The offset of an LSP position in `doc`: a character past its line's end is the end (before its break), a line past the last is the document's end. */
 export function offsetOf(doc, pos) {
   if (!pos || !Number.isInteger(pos.line) || pos.line < 0) return 0
-  if (pos.line + 1 > doc.lines) return doc.length
-  const l = doc.line(pos.line + 1)
+  const crs = loneCrs(doc)
+  // The last CodeMirror line that starts at or before LSP line pos.line (line 1 starts LSP line 0).
+  let lo = 1
+  let hi = doc.lines
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (lspLineOfCm(doc, crs, mid) <= pos.line) lo = mid
+    else hi = mid - 1
+  }
+  const l = doc.line(lo)
+  const first = countBelow(crs, l.from)
+  const inLine = countBelow(crs, l.to) - first // the lone `\r`s inside this line
+  const k = pos.line - (lo - 1 + first) // the LSP line's index within this CodeMirror line
+  if (k > inLine) return doc.length
+  const from = k === 0 ? l.from : crs[first + k - 1] + 1
+  // Its end: the next lone `\r`, else the line's end, before a CRLF's `\r` (never between it and the `\n`).
+  let end = k < inLine ? crs[first + k] : l.to
+  if (k === inLine && lo < doc.lines && end > from && doc.sliceString(end - 1, end) === '\r') end--
   const ch = Number.isInteger(pos.character) && pos.character > 0 ? pos.character : 0
-  return Math.min(l.from + ch, l.to)
+  return Math.min(from + ch, end)
 }
 
 /** The LSP position of offset `at` in `doc`. */
 export function positionOf(doc, at) {
-  const l = doc.lineAt(Math.max(0, Math.min(at, doc.length)))
-  return { line: l.number - 1, character: at - l.from }
+  at = Math.max(0, Math.min(at, doc.length))
+  const crs = loneCrs(doc)
+  const l = doc.lineAt(at)
+  const below = countBelow(crs, at) // the lone `\r`s before `at`: each one a break
+  const start = below > 0 && crs[below - 1] >= l.from ? crs[below - 1] + 1 : l.from
+  return { line: l.number - 1 + below, character: at - start }
+}
+
+/** Whether offset `at` falls between the `\r` and the `\n` of a CRLF in `doc`: no LSP position names it. */
+function insideCrlf(doc, at) {
+  if (at <= 0 || at >= doc.length) return false
+  return doc.sliceString(at - 1, at + 1) === '\r\n'
 }
 
 /**
  * A transaction's changes (CodeMirror ChangeSet: `iterChanges((fromA, toA, fromB, toB, inserted))`,
  * `inserted` a Text) as LSP incremental content changes against `startDoc`. They are listed from
  * the end of the document backwards, so each range is still right after the ones before it are
- * applied (LSP applies them in order).
+ * applied (LSP applies them in order). Null when a change starts or ends between a CRLF's `\r` and
+ * `\n` (the page shows the `\r`, so a cursor can sit there): LSP has no position for that point, so
+ * the client sends the whole text again instead (client.mjs `changed`).
  */
 export function contentChanges(startDoc, changes) {
   const out = []
+  let unnamed = false
   changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    if (insideCrlf(startDoc, fromA) || insideCrlf(startDoc, toA)) unnamed = true
     out.push({ range: { start: positionOf(startDoc, fromA), end: positionOf(startDoc, toA) }, text: inserted.toString() })
   })
-  return out.reverse()
+  return unnamed ? null : out.reverse()
 }
 
 const before = (a, b) => a.line < b.line || (a.line === b.line && a.character < b.character)

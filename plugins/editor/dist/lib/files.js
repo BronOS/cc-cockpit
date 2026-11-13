@@ -272,24 +272,53 @@ function readFile(root, rel) {
 
 /** System trees no definition lives in (process memory and environment, devices, sockets). */
 const REFUSED_OUTSIDE_ROOTS = ['/proc', '/sys', '/dev', '/run']
+/** Folders of the home with no dot in their name that hold credentials or app data (macOS). */
+const REFUSED_OUTSIDE_HOME = ['Library/Keychains', 'Library/Application Support', 'Library/Cookies']
 /**
- * Folders and files of the home holding credentials, shell history or app data (this app's own data
- * dir among them): package registry tokens, git's stored credentials, database passwords, histories
- * with secrets typed on a command line.
+ * The hidden folders of the home that hold toolchains and libraries the supported language servers
+ * (TS/JS, Go, PHP, Python; Rust for a `servers` setting) return definitions in: Node version
+ * managers and global installs (the server's own TypeScript, pyright's typeshed stubs, intelephense's
+ * stubs), tsserver's type acquisition cache, Go's module cache and SDK managers, Composer's global
+ * vendor, Python interpreters, virtualenvs and tool installs, Cargo's sources and rustup's toolchains.
+ * Every other dot folder and dot file of the home is refused (outsideRefused). A segment ending in
+ * `*` matches by its prefix (`python*`). Credential files that sit beside these are left out on
+ * purpose: `.config/composer` holds auth.json, so only its `vendor` is here.
  */
-const REFUSED_OUTSIDE_HOME = [
-  '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config', '.netrc', '.password-store', '.local/share/keyrings',
-  'Library/Keychains', 'Library/Application Support',
-  '.npmrc', '.yarnrc', '.yarnrc.yml', '.git-credentials', '.pypirc', '.cargo/credentials', '.cargo/credentials.toml',
-  '.gem/credentials', '.pgpass', '.my.cnf', '.vault-token', '.terraform.d', '.local/share/fish',
-  '.bash_history', '.zsh_history', '.history', '.sh_history', '.python_history', '.node_repl_history', '.psql_history', '.mysql_history', '.lesshst',
-]
+const ALLOWED_HIDDEN_HOME = [
+  // Node: version managers, global prefixes, tsserver's acquired @types.
+  '.nvm/versions', '.volta/tools', '.fnm/node-versions', '.local/share/fnm/node-versions', '.bun/install', '.npm-global',
+  '.local/share/pnpm', '.config/yarn/global', '.cache/typescript', '.local/share/nvim/mason/packages',
+  // Version managers for every language.
+  '.local/share/mise/installs', '.asdf/installs',
+  // Go: GOPATH=~/.go, SDK managers.
+  '.go/pkg/mod', '.goenv/versions', '.gvm/gos', '.gvm/pkgsets',
+  // PHP: Composer's global packages (COMPOSER_HOME ~/.composer or ~/.config/composer).
+  '.composer/vendor', '.config/composer/vendor',
+  // Python: user site-packages, interpreters, virtualenvs, tool installs.
+  '.local/lib/python*', '.pyenv/versions', '.local/share/uv', '.virtualenvs', '.local/share/virtualenvs', '.conda/envs',
+  '.cache/pypoetry/virtualenvs', '.local/pipx/venvs', '.local/share/pipx/venvs',
+  // Rust (a `servers` setting): crate sources, toolchains.
+  '.cargo/registry', '.cargo/git', '.rustup/toolchains',
+].map((d) => d.split('/'))
+
+/** Whether the home-relative `segs` start with the allowed `prefix` (a `*`-ended segment by its prefix). */
+function startsWithSegments(segs, prefix) {
+  if (segs.length < prefix.length) return false
+  return prefix.every((p, i) => (p.endsWith('*') ? segs[i].startsWith(p.slice(0, -1)) : segs[i] === p))
+}
 
 /**
  * Whether an outside path is one a read-only tab never shows, whoever named it. Defense in depth
  * for the outside allow-list (lib/lsp/manager.js allowsOutside): a server returns what the document
  * text it was told leads to, and a page decides that text, so a page could make a server "return"
  * any path (tsserver's `/// <reference path>`); these never open.
+ *
+ * A structural rule, not a list of known secrets (a list kept missing some: `~/.claude/.credentials.json`,
+ * `~/.codex/auth.json`): under the home, a path with a hidden (dot) folder or file in it is refused,
+ * unless that part lies in a toolchain or library folder (ALLOWED_HIDDEN_HOME), or comes after a
+ * `node_modules` folder that is itself not hidden behind another dot folder (a package's own
+ * `.pnpm`, `.bin`, `.cache`). Credentials, tokens, shell histories and app data all live in dot
+ * folders and files of the home (the app's own data dir under `.config` among them).
  */
 function outsideRefused(abs) {
   if (typeof abs !== 'string' || !path.isAbsolute(abs)) return true
@@ -297,7 +326,17 @@ function outsideRefused(abs) {
   const under = (dir) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)
   if (REFUSED_OUTSIDE_ROOTS.some(under)) return true
   const home = os.homedir()
-  return !!home && REFUSED_OUTSIDE_HOME.some((d) => under(path.join(home, d)))
+  if (!home || !path.isAbsolute(home)) return false
+  const h = path.resolve(home)
+  if (!under(h) || p === h) return false
+  if (REFUSED_OUTSIDE_HOME.some((d) => under(path.join(h, d)))) return true
+  const segs = p.slice(h.length).split(path.sep).filter(Boolean)
+  if (ALLOWED_HIDDEN_HOME.some((prefix) => startsWithSegments(segs, prefix))) return false
+  for (const seg of segs) {
+    if (seg === 'node_modules') return false
+    if (seg.startsWith('.')) return true
+  }
+  return false
 }
 
 /**

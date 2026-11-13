@@ -625,6 +625,12 @@ function drawLspBar() {
     text.textContent = st.message || `The ${st.name || st.language} language server stopped.`
     if (st.language) actions.append(button('Restart', () => lsp.restart()))
     actions.append(button('Dismiss', () => ((lspBar.dismissed = key), drawLspBar()), 'cc-ghost'))
+  } else if (st && st.state === 'ready' && st.held && st.language) {
+    // Running, but a command it was asked to stop never answered (lib/lsp/manager.js commandHeld):
+    // no other command runs until it does, so Restart is offered on a live server here only.
+    bar.classList.add('warn')
+    text.textContent = `The ${st.name || st.language} language server ${st.held}.`
+    actions.append(button('Restart', () => lsp.restart()))
   } else if (st && st.state === 'restarting' && st.message) {
     bar.classList.add('warn')
     text.textContent = `${st.message}; restarting…`

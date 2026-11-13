@@ -22,6 +22,7 @@
 //   --apply-delay <ms>    fake.apply waits this long before it asks workspace/applyEdit (a command
 //                         still running: the concurrency and cancel tests)
 //   --action-with-command code actions also offer one with an edit to the file and a fake.apply command
+//   --hang-command        never answers fake.other, a cancel of it neither (a wedged command: Restart)
 // The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
 // sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
 // open), code actions with an edit, a declared command (`fake.apply`, which asks
@@ -124,6 +125,7 @@ function handle(m) {
     case 'codeAction/resolve':
       return send({ id: m.id, result: { ...m.params, edit: { changes: { [bUri()]: [{ range: range(0, 0, 0, 0), newText: '// resolved\n' }] } } } })
     case 'workspace/executeCommand': {
+      if (m.params.command === 'fake.other' && flag('--hang-command')) return
       if (m.params.command !== 'fake.apply') return send({ id: m.id, error: { code: -32601, message: 'no such command' } })
       const changes = {}
       for (const target of m.params.arguments.filter((x) => typeof x === 'string')) changes[target] = [{ range: range(0, 0, 0, 0), newText: '// applied\n' }]

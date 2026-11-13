@@ -35,10 +35,11 @@ export function tabIsRunning(tab: TabInfo): boolean {
 
 /**
  * Whether a close of `tab` may ask at all (then the setting is read): a process runs in it, or it is
- * a page tab with unsaved changes.
+ * a page tab with unsaved changes. `localDirty`: this view's own page of the tab said it is dirty
+ * (PageFrames.isDirty), which `tab.dirty` (main's round trip) may not show yet.
  */
-export function closeMayAsk(tab: TabInfo): boolean {
-  return tabIsRunning(tab) || (tab.kind === 'page' && tab.dirty === true)
+export function closeMayAsk(tab: TabInfo, localDirty = false): boolean {
+  return tabIsRunning(tab) || (tab.kind === 'page' && (tab.dirty === true || localDirty))
 }
 
 /**
@@ -50,15 +51,21 @@ export function closeMayAsk(tab: TabInfo): boolean {
 export function closeQuestion(
   tab: TabInfo | undefined,
   status: TabStatus | undefined,
-  enabled: boolean
+  enabled: boolean,
+  localDirty = false
 ): CloseQuestion | null {
-  if (tab?.kind === 'page') return tab.dirty === true ? { tabId: tab.id, title: tabLabel(tab), unsaved: true } : null
+  if (tab?.kind === 'page') return tab.dirty === true || localDirty ? unsavedQuestion(tab) : null
   if (!enabled || !tab || !tabIsRunning(tab)) return null
   return {
     tabId: tab.id,
     title: tabLabel(tab),
     ...(tab.kind === 'claude' && status ? { status: statusLabel(status) } : {})
   }
+}
+
+/** The ask for a page tab with unsaved changes (also when main refused a close for them: `tabs.close`). */
+export function unsavedQuestion(tab: TabInfo): CloseQuestion {
+  return { tabId: tab.id, title: tabLabel(tab), unsaved: true }
 }
 
 /** The sentence under the dialog's title. */

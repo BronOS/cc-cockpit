@@ -947,6 +947,7 @@ describe('registerTabHandlers', () => {
       ['tabs.create', [{ kind: 'shell', cwd: 5 }]],
       ['tabs.close', [{ tabId: 7 }]],
       ['tabs.close', [null]],
+      ['tabs.close', [{ tabId: 't1', discard: 'yes' }]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 'first' }]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 1.5 }]],
       ['tabs.rename', [{ tabId: 't1', name: 5 }]],
@@ -968,6 +969,48 @@ describe('registerTabHandlers', () => {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()
     }
     expect(calls).toEqual([])
+  })
+
+  it("leaves a page tab some view reported dirty open unless the close says the person chose to discard", async () => {
+    // tabsSetup has no pageUnsaved (as other handlers' tests): a router of its own here.
+    const { ipc, calls } = tabsSetup()
+    const fresh = setup()
+    const closes: string[] = []
+    const unsaved = new Set(['dirty'])
+    registerTabHandlers(fresh.router, {
+      attach: () => [],
+      list: () => [],
+      create: () => null,
+      commands: () => ({ app: [], project: [] }),
+      close: (_projectId, tabId) => {
+        closes.push(tabId)
+      },
+      pageUnsaved: (_projectId, tabId) => unsaved.has(tabId),
+      reorder: () => {},
+      rename: () => {},
+      flag: () => null,
+      toggleFlag: () => null,
+      restart: () => ({ id: 't1', kind: 'shell', cwd: '/work/a', gen: 1 }),
+      input: () => {},
+      resize: () => {},
+      fit: () => true,
+      visible: () => {},
+      ack: () => {},
+      select: () => {},
+      viewAck: () => {},
+      viewSelect: () => {}
+    })
+    // The view's copy of the tab was still clean (its report not back yet): main answers unsaved.
+    await expect(fresh.ipc.invoke('tabs.close', 11, [{ tabId: 'dirty' }])).resolves.toEqual({ unsaved: true })
+    await expect(fresh.ipc.invoke('tabs.close', 11, [{ tabId: 'dirty', discard: false }])).resolves.toEqual({ unsaved: true })
+    expect(closes).toEqual([])
+    // Asked, and the person chose Close.
+    await expect(fresh.ipc.invoke('tabs.close', 11, [{ tabId: 'dirty', discard: true }])).resolves.toBeUndefined()
+    await fresh.ipc.invoke('tabs.close', 11, [{ tabId: 'clean' }])
+    expect(closes).toEqual(['dirty', 'clean'])
+    // Without the dependency (other handlers' tests) a close is as before.
+    await ipc.invoke('tabs.close', 11, [{ tabId: 't1' }])
+    expect(calls.filter((c) => c[0] === 'close')).toEqual([['close', PROJECT_A, 't1']])
   })
 })
 

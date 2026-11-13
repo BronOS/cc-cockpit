@@ -1570,7 +1570,13 @@ export interface IpcInvokeMap {
   'tabs.create': { req: TabCreateRequest; res: TabInfo | null }
   /** The user entries of the sender's [+] menu (read each time the menu opens). */
   'tabs.commands': { req: void; res: TabCommandMenu }
-  'tabs.close': { req: { tabId: string }; res: void }
+  /**
+   * Close one of the sender's tabs. A page tab with unsaved changes in some view (TabManager
+   * pageUnsaved) is not closed unless `discard` says the person was asked and chose Close: the
+   * answer is then `{ unsaved: true }` and the view asks (a view's copy of `TabInfo.dirty` can lag
+   * behind a page's report, its own or another view's).
+   */
+  'tabs.close': { req: { tabId: string; discard?: boolean }; res: { unsaved: true } | void }
   /** Move a tab to a position in the project's tab order (clamped to the ends). */
   'tabs.reorder': { req: { tabId: string; toIndex: number }; res: void }
   /** Give a Claude tab a name (1-60 characters, shared/session-name.ts), or `null` for Claude's own title. */

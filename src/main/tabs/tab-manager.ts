@@ -654,6 +654,12 @@ export class TabManager {
     if (was !== (tab.dirtyIn !== undefined)) this.options.emit(projectId, 'tabs.added', info(tab))
   }
 
+  /** Whether a page tab of `projectId` holds unsaved changes in some view (`tabs.close` asks first then). */
+  pageUnsaved(projectId: string, tabId: string): boolean {
+    const tab = this.find(projectId, tabId)
+    return tab?.kind === 'page' && tab.dirtyIn !== undefined
+  }
+
   /**
    * Everything `viewId` said about unsaved changes is void: the view left (its pages went with it) or
    * its page reloaded (the desktop shell: its frames went). Each tab that is clean now is told.

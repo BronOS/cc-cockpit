@@ -6,6 +6,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { offsetOf, positionOf, contentChanges, editsToChanges, snippetToTemplate, docBlocks, flattenSymbols, signatureParts, severityOf, completionType } from '../src/page/lsp/convert.mjs'
 import { createLspClient, COMPLETE_TIMEOUT_MS } from '../src/page/lsp/client.mjs'
+import { EditorState } from '@codemirror/state'
+import { createRequire } from 'node:module'
+
+const { applyTextEdits } = createRequire(import.meta.url)('../dist/lib/lsp/edits.js')
 
 /** A document of CodeMirror Text's shape (1-based lines, from/to offsets) over a string. */
 function doc(text) {
@@ -26,6 +30,19 @@ function doc(text) {
       return line(n)
     },
     toString: () => text,
+    sliceString: (from, to) => text.slice(from, to),
+  }
+}
+
+/** A real CodeMirror document split as the file tab splits it: on `\n` alone (line-breaks.mjs). */
+const cmDoc = (text) => EditorState.create({ doc: text, extensions: EditorState.lineSeparator.of('\n') }).doc
+
+/** The host's offset of an LSP position (edits.js offsetAt, through applyTextEdits), or -1 past the last line. */
+function hostOffset(text, pos) {
+  try {
+    return applyTextEdits(text, [{ range: { start: pos, end: pos }, newText: '\0' }]).indexOf('\0')
+  } catch {
+    return -1
   }
 }
 
@@ -60,6 +77,57 @@ test('contentChanges: a multi-range edit as LSP changes from the end backwards, 
   const changes = contentChanges(d, changeSet([[1, 1, 'X'], [8, 11, 'Y']]))
   assert.deepEqual(changes[0].range, { start: { line: 2, character: 0 }, end: { line: 2, character: 3 } })
   assert.equal(applyLsp(before, changes), 'oXne\ntwo\nYee\n')
+})
+
+test('offsetOf / positionOf: a lone \r and a CRLF break LSP lines as the host counts them, though the page splits on \n only', () => {
+  const text = 'a\rbb\ncc'
+  const d = cmDoc(text)
+  assert.equal(d.lines, 2, 'the page keeps the \r inside its first line')
+  assert.deepEqual(positionOf(d, 2), { line: 1, character: 0 })
+  assert.deepEqual(positionOf(d, 4), { line: 1, character: 2 })
+  assert.deepEqual(positionOf(d, 5), { line: 2, character: 0 })
+  assert.equal(offsetOf(d, { line: 1, character: 0 }), 2)
+  assert.equal(offsetOf(d, { line: 2, character: 1 }), 6)
+  assert.equal(offsetOf(d, { line: 0, character: 9 }), 1, 'a line ends before its lone \r')
+  assert.equal(offsetOf(d, { line: 3, character: 0 }), d.length)
+  // The reported case: an edit meant for "bb" replaces "bb", not "cc".
+  const e = { range: { start: { line: 1, character: 0 }, end: { line: 1, character: 2 } }, newText: 'BB' }
+  assert.deepEqual(editsToChanges(d, [e]), [{ from: 2, to: 4, insert: 'BB' }])
+  assert.equal(applyTextEdits(text, [e]), 'a\rBB\ncc')
+})
+
+test('offsetOf / positionOf agree with the host offsetAt at every position of mixed line breaks', () => {
+  for (const text of ['a\rbb\ncc', 'x\r\ny\rz\n\r\r\nw\r', '\r\r', 'one\r\ntwo\r\n', '\n\r\n\r', 'plain\ntext\n']) {
+    const d = cmDoc(text)
+    for (let line = 0; line < 8; line++) {
+      for (let character = 0; character < 6; character++) {
+        const host = hostOffset(text, { line, character })
+        const page = offsetOf(d, { line, character })
+        assert.equal(page, host === -1 ? d.length : host, `${JSON.stringify(text)} ${line}:${character}`)
+        // And back: the position of that offset names it again (a CRLF's inside is never produced).
+        if (host !== -1) assert.equal(hostOffset(text, positionOf(d, page)), page, `${JSON.stringify(text)} back from ${page}`)
+      }
+    }
+  }
+})
+
+test('contentChanges: across lone \r breaks the host applies them to the same text; a change inside a CRLF is not nameable (null)', () => {
+  const before = 'a\rbb\ncc\r\ndd'
+  const d = cmDoc(before)
+  const tr = EditorState.create({ doc: before, extensions: EditorState.lineSeparator.of('\n') }).update({
+    changes: [{ from: 3, to: 4, insert: 'X' }, { from: 6, to: 7, insert: 'Y' }, { from: 10, insert: 'Z' }],
+  })
+  const changes = contentChanges(d, tr.changes)
+  const viaHost = changes.reduce((t, c) => applyTextEdits(t, [{ range: c.range, newText: c.text }]), before)
+  assert.equal(viaHost, tr.state.doc.toString())
+  // Typed between the \r and the \n of a CRLF (offset 8 in "cc\r|\n"): LSP has no position there.
+  const inside = EditorState.create({ doc: before, extensions: EditorState.lineSeparator.of('\n') }).update({ changes: { from: 8, insert: 'Q' } })
+  assert.equal(contentChanges(d, inside.changes), null)
+  const deleting = EditorState.create({ doc: before, extensions: EditorState.lineSeparator.of('\n') }).update({ changes: { from: 7, to: 8 } })
+  assert.equal(contentChanges(d, deleting.changes), null, 'a range ending inside a CRLF')
+  // Removing the whole CRLF is nameable.
+  const whole = EditorState.create({ doc: before, extensions: EditorState.lineSeparator.of('\n') }).update({ changes: { from: 7, to: 9 } })
+  assert.deepEqual(contentChanges(d, whole.changes), [{ range: { start: { line: 2, character: 2 }, end: { line: 3, character: 0 } }, text: '' }])
 })
 
 test('editsToChanges: sorted CodeMirror changes; an overlap or a malformed edit is refused with a reason', () => {
@@ -275,6 +343,12 @@ test('client: status and features; diagnostics for this file only; Restart names
   assert.equal(k.ui.diagnostics, null)
   k.c.receive({ t: 'lsp-diagnostics', path: 'src/a.ts', diagnostics: [{ message: 'mine' }] })
   assert.deepEqual(k.ui.diagnostics, [{ message: 'mine' }])
+  // Ready but held by a stopped command (the bar offers Restart): still ready for asks; a non-string is dropped.
+  k.c.receive({ t: 'lsp-status', language: 'typescript', name: 'TypeScript', state: 'ready', held: 'it has not answered', features: { hover: true } })
+  assert.equal(k.ui.statuses.at(-1).held, 'it has not answered')
+  assert.equal(k.c.ready(), true)
+  k.c.receive({ t: 'lsp-status', language: 'typescript', name: 'TypeScript', state: 'ready', held: 5 })
+  assert.equal(k.ui.statuses.at(-1).held, undefined)
   k.c.receive({ t: 'lsp-status', language: 'typescript', name: 'TypeScript', state: 'failed', message: 'crashed' })
   assert.equal(k.c.ready(), false)
   assert.deepEqual(k.c.features(), {})
@@ -340,6 +414,22 @@ test('client: typing before the host confirms ownership is sent as the whole tex
   assert.equal(k.last('lsp-change').seq, 3)
   k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: true, state: 'ready' })
   assert.deepEqual([k.last('lsp-open').text, k.last('lsp-open').seq], ['Xabcde', 4])
+})
+
+test('client: a change no LSP range names (null, one inside a CRLF) sends the whole text with a new seq; not yet the owner, it waits', () => {
+  const k = readyClient()
+  const seq = k.last('lsp-open').seq
+  k.ui.text = 'a\rQ\nb'
+  k.c.changed(null)
+  assert.deepEqual(k.last('lsp-open'), { t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 1, text: 'a\rQ\nb', seq: seq + 1 })
+  assert.equal(k.last('lsp-change'), undefined)
+  // Not the owner: marked unsent, sent whole once ownership comes.
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: false, state: 'ready' })
+  const opens = k.posts.filter((p) => p.t === 'lsp-open').length
+  k.c.changed(null)
+  assert.equal(k.posts.filter((p) => p.t === 'lsp-open').length, opens)
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: true, state: 'ready' })
+  assert.equal(k.last('lsp-open').seq, seq + 2)
 })
 
 test('client: close tells the host, clears the diagnostics and fails what waited', async () => {

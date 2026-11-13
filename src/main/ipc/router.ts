@@ -1361,6 +1361,11 @@ export interface TabHandlerDeps {
   /** The user entries of the project's [+] menu (TabCommandsService.menu). */
   commands(projectId: string): TabCommandMenu
   close(projectId: string, tabId: string): void
+  /**
+   * A page tab of the project that some view's page said holds unsaved changes (TabManager.pageUnsaved):
+   * `tabs.close` without `discard` leaves it open. Absent (unit tests of other handlers): never.
+   */
+  pageUnsaved?(projectId: string, tabId: string): boolean
   reorder(projectId: string, tabId: string, toIndex: number): void
   rename(projectId: string, tabId: string, name: string | null): void
   /** The person's flag (TabManager.setFlag checks the patch); answers the flag as stored. */
@@ -1472,6 +1477,13 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
 
   router.handleProject('tabs.close', (ctx, payload, view) => {
     const tabId = tabIdOf('tabs.close', payload)
+    const discard = fields('tabs.close', payload).discard
+    if (discard !== undefined && typeof discard !== 'boolean') throw new Error('tabs.close: discard must be a boolean')
+    // A view decides whether to ask from its copy of the tab's dirty, which lags a page's report
+    // (one typed and closed before `tabs.added` came back, or another view's page): main has the
+    // reports, so a close that did not ask is refused here and the view asks now. Not a boundary
+    // (the same view can send `discard`); it keeps a race from dropping the person's text unasked.
+    if (discard !== true && tabs.pageUnsaved?.(ctx.projectId, tabId) === true) return { unsaved: true as const }
     // Its generation before it goes: the other views drop only the process they hold or an older one.
     const gen = tabs.list(ctx.projectId).find((t) => t.id === tabId)?.gen
     tabs.close(ctx.projectId, tabId)

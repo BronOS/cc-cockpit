@@ -109,6 +109,10 @@ function serverTable(setting) {
     table.set(b.language, { ...b, languageIds: { ...b.languageIds }, candidates: b.candidates.map((c) => [...c]), custom: false })
   }
   const problems = []
+  // The languages the setting applied, in the order their last entry came. Map.set on an existing
+  // key keeps its first position, so the table's own order would let a built-in listed after the
+  // one a setting overrides (python after typescript) win back an extension the setting claimed.
+  const applied = []
   const list = Array.isArray(setting) ? setting.slice(0, MAX_ENTRIES) : []
   list.forEach((e, i) => {
     if (!e || typeof e !== 'object') return problems.push(`servers[${i}]: not an object`)
@@ -131,10 +135,15 @@ function serverTable(setting) {
       install: `${argv[0]} was not found on your login-shell PATH (Settings > Plugins > Editor, "Language servers")`,
       custom: true,
     })
+    const at = applied.indexOf(language)
+    if (at !== -1) applied.splice(at, 1)
+    applied.push(language)
   })
-  // Extension -> language, the later entries winning (Map order: built-ins first, then settings).
+  // Extension -> language, the later entries winning: the untouched built-ins first, then the
+  // setting's languages in setting order, so an explicit entry always beats a built-in.
   const byExtension = new Map()
-  for (const entry of table.values()) for (const x of Object.keys(entry.languageIds)) byExtension.set(x, entry.language)
+  const ordered = [...[...table.values()].filter((e) => !e.custom), ...applied.map((l) => table.get(l))]
+  for (const entry of ordered) for (const x of Object.keys(entry.languageIds)) byExtension.set(x, entry.language)
   // An extension taken over by a later language is no longer the earlier one's.
   for (const entry of table.values()) {
     for (const x of Object.keys(entry.languageIds)) if (byExtension.get(x) !== entry.language) delete entry.languageIds[x]

@@ -62,11 +62,11 @@ function project() {
 
 const serverRow = (log, flags) => [{ language: 'typescript', argv: [process.execPath, FAKE, '--log', log, ...flags] }]
 
-function setup(flags = []) {
+function setup(flags = [], timing = {}) {
   const { root, outside } = project()
   const log = path.join(root, '..', `${path.basename(root)}.log`)
   const all = [...flags.map((f) => (f === '--outside' ? ['--outside', outside] : [f])).flat()]
-  const m = new LspManager({ root, spawn, servers: serverRow(log, all), timing: { watchFlushMs: 20 } })
+  const m = new LspManager({ root, spawn, servers: serverRow(log, all), timing: { watchFlushMs: 20, ...timing } })
   const parse = (l) => {
     try {
       return JSON.parse(l)
@@ -989,16 +989,92 @@ test('runCodeAction: an edit applied and then its command stopped is an answer c
   assert.equal(tab.last('lsp-error').message, 'runCodeAction: the action changed 1 file (1 change), but its command did not finish: cancelled')
 })
 
+test("runCodeAction: a command-only action checks the server's edits against the text it was offered on, not the text at its run", async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  const b = page(f.m, 'src/b.ts', 'const b = 2\n')
+  b.open()
+  await ready(f)
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }
+  // Offered on "const b = 2"; the person types in b before running it (fake.apply edits b).
+  const id = (await f.m.ask(a, 'codeActions', 'src/a.ts', { range })).result.find((x) => x.title === 'Run fake.apply').id
+  b.text = 'X' + b.text
+  b.seq++
+  f.m.change(b, 'src/b.ts', [{ text: b.text }], b.seq)
+  const r = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id })
+  assert.deepEqual([r.result.files, r.result.edits], [0, 0])
+  const ans = f.answers('workspace/applyEdit')
+  assert.equal(ans.length, 1)
+  assert.equal(ans[0].result.applied, false)
+  assert.match(ans[0].result.failureReason, /changed while the language server worked/)
+  assert.equal(b.text, 'Xconst b = 2\n')
+  assert.equal(b.edits.length, 0)
+  // Offered again on the text as it is now: it applies.
+  const again = (await f.m.ask(a, 'codeActions', 'src/a.ts', { range })).result.find((x) => x.title === 'Run fake.apply').id
+  const ok = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: again })
+  assert.deepEqual([ok.result.applied, ok.result.files], [true, 1])
+  assert.equal(b.text, '// applied\nXconst b = 2\n')
+})
+
+test('commands: a stopped command the server never answers is told to the page (held) and Restart frees the server', async (t) => {
+  const f = setup(['--hang-command'], { heldNoticeMs: 50 })
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const slot = f.m.slots.get('typescript')
+  const first = slot.server
+  // A live server with no stuck command: Restart refused (a page cannot churn a working server).
+  assert.equal(f.m.restart(a, 'typescript'), false)
+  const ctl = new AbortController()
+  const hung = f.m.executeCommand(slot, first, { command: 'fake.other' }, ctl.signal)
+  await until(() => f.got('workspace/executeCommand').length === 1, 5000, 'command sent')
+  ctl.abort()
+  await assert.rejects(hung, /cancelled/)
+  await assert.rejects(f.m.executeCommand(slot, first, { command: 'fake.apply', arguments: [] }), /has not finished a command it was asked to stop/)
+  await until(() => a.posts.some((p) => p.t === 'lsp-status' && p.held), 5000, 'held status')
+  const held = a.last('lsp-status')
+  assert.equal(held.state, 'ready')
+  assert.match(held.held, /has not answered a command it was asked to stop/)
+  // Restart: the held server stops and a new one starts with the document; commands run again.
+  assert.equal(f.m.restart(a, 'typescript'), true)
+  await until(() => slot.server && slot.server !== first && slot.state === 'ready', 5000, 'restarted')
+  assert.equal(slot.command, null)
+  assert.equal(a.last('lsp-status').held, undefined)
+  assert.equal(f.m.restart(a, 'typescript'), false)
+  assert.deepEqual(await f.m.executeCommand(slot, slot.server, { command: 'fake.apply', arguments: [uriOf(f, 'src/a.ts')] }), { files: 1, edits: 1 })
+  assert.equal(a.text, '// applied\nconst a = 1\n')
+})
+
 test('outside paths: system trees and credential folders never open, whoever names them', () => {
   const home = (rel) => path.join(os.homedir(), rel)
   for (const p of [
     '/proc/self/environ', '/sys/kernel', '/dev/null', home('.ssh/id_ed25519'), home('.config/cc-cockpit/app.json'),
     home('.npmrc'), home('.git-credentials'), home('.pypirc'), home('.cargo/credentials.toml'), home('.cargo/credentials'),
     home('.bash_history'), home('.zsh_history'), home('.pgpass'),
+    // No list names these: every hidden folder and file of the home is refused unless a toolchain's.
+    home('.claude/.credentials.json'), home('.codex/auth.json'), home('.config/composer/auth.json'), home('.config/gh/hosts.yml'),
+    home('.some-new-tool/token'), home('Projects/other/.env'), home('.local/share/keyrings/login.keyring'),
+    home('.config/x/node_modules/pkg/index.d.ts'), home('.local/libfoo/x.py'), home('Library/Application Support/x/y.json'),
   ]) {
     assert.equal(files.outsideRefused(p), true, p)
   }
-  assert.equal(files.outsideRefused('/usr/lib/node_modules/x/index.d.ts'), false)
+  // Where the supported servers return definitions: library and toolchain folders, node_modules anywhere
+  // not behind another dot folder (a package's own .pnpm or .bin included), plain folders of the home.
+  for (const p of [
+    '/usr/lib/node_modules/x/index.d.ts', '/usr/lib/go/src/fmt/print.go', '/usr/lib/python3.12/os.py',
+    home('.nvm/versions/node/v22.1.0/lib/node_modules/typescript/lib/lib.es5.d.ts'), home('.cache/typescript/5.6/node_modules/@types/node/fs.d.ts'),
+    home('go/pkg/mod/github.com/x/y@v1.2.3/y.go'), home('.go/pkg/mod/golang.org/x/net@v0.1.0/a.go'), home('sdk/go1.23/src/fmt/print.go'),
+    home('.composer/vendor/x/y/src/A.php'), home('.config/composer/vendor/jetbrains/phpstorm-stubs/standard/standard_0.php'),
+    home('.local/lib/python3.12/site-packages/requests/api.py'), home('.pyenv/versions/3.12.1/lib/python3.12/os.py'),
+    home('.local/share/uv/python/cpython-3.12/lib/python3.12/os.py'), home('.virtualenvs/app/lib/python3.12/site-packages/x.py'),
+    home('.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.0/src/lib.rs'), home('.rustup/toolchains/stable/lib/rustlib/src/rust/library/std/src/lib.rs'),
+    home('Projects/other/node_modules/.pnpm/x@1.0.0/node_modules/x/index.d.ts'), home('Projects/other/src/shared.ts'),
+  ]) {
+    assert.equal(files.outsideRefused(p), false, p)
+  }
   assert.throws(() => files.readOutside('/proc/self/environ'), /not shown outside the project/)
   const m = Object.create(LspManager.prototype)
   m.outside = new Map()
