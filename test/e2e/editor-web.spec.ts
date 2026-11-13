@@ -110,10 +110,20 @@ test('a file tab in a browser view: edit, the socket drops with a dirty buffer, 
       .toBeGreaterThan(before)
     await expect(webFrame.locator('.cm-content')).toContainText('from the browser alpha')
     await expect(stateOf(web1)).toHaveText('Unsaved')
-    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+    // A reconnect is not a save (autosave is off). The wrong save the old session.mjs made came only
+    // after the page's reopen round trip was answered, which the open socket alone does not prove, and
+    // nothing on the page marks that answer. So the disk is watched for a while (the round trip is
+    // loopback, milliseconds) instead of read once, and read again just before Ctrl+S.
+    const settleUntil = Date.now() + 2_000
+    while (Date.now() < settleUntil) {
+      expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+      await web1.waitForTimeout(100)
+    }
+    await expect(stateOf(web1)).toHaveText('Unsaved')
 
     // Save over the new connection: on disk, and the desktop's page (no edits of its own) shows it.
     await webFrame.locator('.cm-content').click()
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
     await web1.keyboard.press(`${MOD}+s`)
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 20_000 }).toBe('from the browser alpha\nbeta\ngamma\n')
     await expect(stateOf(web1)).toHaveText('Saved', { timeout: 20_000 })

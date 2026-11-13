@@ -346,6 +346,54 @@ test('state re-send: a dirty buffer with no save in flight stays unsaved on a ne
   assert.equal(ui.posted.at(-1).t, 'save')
 })
 
+test('state re-send: with autosave on, the idle timer armed before the drop still saves once after the reopen', () => {
+  const { ui, s, timers } = loaded()
+  s.receive({ t: 'settings', idleSeconds: 3, onBlur: false })
+  ui.text = 'mine\n'
+  s.edited()
+  assert.ok(timers.delays().includes(3000))
+  // The line drops before the timer fires: the reconnect itself saves nothing (no save was in flight).
+  s.connect()
+  const reopen = ui.posted.at(-1)
+  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  s.receive(head({ req: reopen.req, text: 'one\n' }))
+  assert.equal(ui.posted.filter((m) => m.t === 'save').length, 0)
+  // The idle timer was kept across connect(): it fires on the new line and saves the buffer once.
+  timers.run()
+  const saves = ui.posted.filter((m) => m.t === 'save')
+  assert.equal(saves.length, 1)
+  assert.equal(saves[0].text, 'mine\n')
+  assert.equal(saves[0].baseHash, 'h1')
+})
+
+test('state re-send: a save in flight with a queued save-again is sent once, with the newest buffer', () => {
+  const { ui, s } = loaded()
+  s.receive({ t: 'settings', idleSeconds: 0, onBlur: false })
+  ui.text = 'mine\n'
+  s.edited()
+  assert.equal(s.saveNow(), true)
+  // More typing and a second Ctrl+S while the first is in flight: queued, not sent.
+  ui.text = 'mine and more\n'
+  s.edited()
+  assert.equal(s.saveNow(), false)
+  assert.equal(s._state.saveAgain, true)
+  assert.equal(ui.posted.filter((m) => m.t === 'save').length, 1)
+  ui.posted.length = 0
+  s.connect()
+  const reopen = ui.posted.at(-1)
+  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  // Disk still holds the base (the lost save never landed): one save, with what the buffer holds now.
+  s.receive(head({ req: reopen.req, text: 'one\n' }))
+  const saves = ui.posted.filter((m) => m.t === 'save')
+  assert.equal(saves.length, 1)
+  assert.equal(saves[0].text, 'mine and more\n')
+  assert.equal(saves[0].baseHash, 'h1')
+  // Its answer settles everything: no second save follows.
+  s.receive({ t: 'saved', req: saves[0].req, hash: 'h2' })
+  assert.equal(ui.posted.filter((m) => m.t === 'save').length, 1)
+  assert.equal(s.view().status, 'saved')
+})
+
 test('state re-send: the lost save had landed (disk holds the buffer), so only the hash moves', () => {
   const { ui, s } = loaded()
   ui.text = 'mine\n'

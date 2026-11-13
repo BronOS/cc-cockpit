@@ -2488,8 +2488,18 @@ iframe:focus-visible {
 }
 .settings-item-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+/* A narrow window (the settings layer in a 722px window): the actions (flex: none) and a plugin's
+   preview took the whole row and squeezed the text column (min-width: 0) to nothing, hiding its
+   notes. The text keeps a basis, so the actions wrap under it instead, still on the right. */
+.settings-item-head > .settings-item-main {
+  flex: 1 1 200px;
+}
+.settings-item-head > .settings-item-actions {
+  margin-left: auto;
 }
 .settings-item-glyph {
   flex: none;

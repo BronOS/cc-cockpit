@@ -7,7 +7,7 @@
 //
 // The editor page is a plugin page tab: a sandboxed iframe in the page's layer (`iframe.page-tab-frame`,
 // hidden while its tab is not the shown one), so the selectors go through `frameLocator`.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import type { Page } from '@playwright/test'
@@ -59,7 +59,22 @@ async function toStart(c: Cockpit): Promise<void> {
 
 const stateOf = (c: Cockpit) => editorFrame(c.page).locator('#state')
 
+/**
+ * Folders a test needs before the app starts (outside the cockpit's root, which only exists once
+ * launchCockpit made it), removed after each test so a run leaves nothing in the temp dir.
+ */
+const ownTemp: string[] = []
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  ownTemp.push(dir)
+  return dir
+}
+
 test.describe('editor, desktop', () => {
+  test.afterEach(() => {
+    for (const dir of ownTemp.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
   test('Files > Edit opens a file tab; typing autosaves to disk; a change on disk reloads a clean tab', async () => {
     const { cockpit: c, close } = await launchCockpit({
       env: { CC_COCKPIT_NO_BUNDLED: '' },
@@ -154,7 +169,7 @@ test.describe('editor, desktop', () => {
   })
 
   test('`ccc edit path:line:col` opens the tab marked, not selected, at the line; the fake language server reports diagnostics', async () => {
-    const lspLog = join(mkdtempSync(join(tmpdir(), 'ccc-e2e-lsp-')), 'lsp.log')
+    const lspLog = join(tempDir('ccc-e2e-lsp-'), 'lsp.log')
     const { cockpit: c, close } = await launchCockpit({
       env: { CC_COCKPIT_NO_BUNDLED: '' },
       settings: editorSettings({
@@ -266,7 +281,7 @@ test.describe('editor, desktop', () => {
 
   test('quick chat: Ctrl+K asks Claude about the line, a proposal is accepted into the buffer only', async () => {
     // The fake `claude` of the editor's own tests, found first on the login-shell PATH as `claude`.
-    const bin = mkdtempSync(join(tmpdir(), 'ccc-e2e-claude-bin-'))
+    const bin = tempDir('ccc-e2e-claude-bin-')
     const shim = join(bin, 'claude')
     writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_CLAUDE}" "$@"\n`)
     chmodSync(shim, 0o755)
