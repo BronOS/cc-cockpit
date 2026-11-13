@@ -219,11 +219,11 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Modify: `plugins/editor/dist/host.js`, `src/cli/guide/*.md`, the editor skill
 - Modify: `plugins/editor/test/host.test.js`
 
-- [ ] parse `path[:line[:col]]`, check the path, open or focus the tab at that position with the unseen dot; never take
+- [x] parse `path[:line[:col]]`, check the path, open or focus the tab at that position with the unseen dot; never take
   focus from a terminal being typed in
-- [ ] guide and skill tell Claude to use it to point at code
-- [ ] write tests for parsing, path refusal, reuse of an open tab
-- [ ] run tests - must pass before next task
+- [x] guide and skill tell Claude to use it to point at code
+- [x] write tests for parsing, path refusal, reuse of an open tab
+- [x] run tests - must pass before next task
 
 ### Task 11: Quick open and find in files [model: sonnet]
 

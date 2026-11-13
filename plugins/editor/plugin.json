@@ -50,10 +50,11 @@
     "cli": [
       {
         "name": "edit",
-        "summary": "Edit a file of this project in micro, in an overlay",
-        "usage": "edit <file> [line]"
+        "summary": "Open a file of this project in the editor at a line (the tab is marked, never selected)",
+        "usage": "edit <file>[:line[:col]]"
       }
-    ]
+    ],
+    "skills": [{ "id": "editor", "dir": "skills/editor" }]
   },
   "services": { "provides": { "editor": 1 } }
 }

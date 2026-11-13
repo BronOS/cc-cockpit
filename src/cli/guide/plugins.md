@@ -225,6 +225,10 @@ project or everywhere) and yours is the only provider, used without a pick. For 
 `sessions-strip` provider appears in that slot's pick, and your own Sessions panel replaces the built-in
 one once `cockpit.sessions` is off. The same for `usage-meter` and `cockpit.usage`.
 
+`ccc edit <file>[:line[:col]]` (the Editor's command, `<file>` inside the project) opens the file's tab at that
+position and never selects it: a new tab opens with the unseen dot, an open one only moves its cursor, so it cannot
+take the screen from a terminal being typed in. The Editor's skill tells Claude to use it to point at code.
+
 ### The reviewer service
 
 The built-in `reviewer` service (v1): `"uses": { "reviewer": 1 }`, then `ctx.services.use('reviewer')`. Both methods

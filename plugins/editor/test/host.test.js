@@ -527,3 +527,44 @@ test("the deleted bar's Close closes this tab through ctx.tabs.close; a refusal 
   assert.equal(view.posted.at(-1).message, 'Close: tabs.close: more than 10 closes in 60 s')
   host.deactivate()
 })
+
+test('parseTarget: path[:line[:col]], the old `path line` form, colons in names, bad positions', () => {
+  const { parseTarget } = require('../dist/host.js')
+  assert.deepEqual(parseTarget(['a.ts']), { file: 'a.ts', line: undefined, col: undefined })
+  assert.deepEqual(parseTarget(['a.ts:12']), { file: 'a.ts', line: 12, col: undefined })
+  assert.deepEqual(parseTarget(['src/a.ts:12:5']), { file: 'src/a.ts', line: 12, col: 5 })
+  assert.deepEqual(parseTarget(['a.ts', '7']), { file: 'a.ts', line: 7, col: undefined })
+  // Only digit tails are a position; at most two of them.
+  assert.deepEqual(parseTarget(['a:b.txt:3']), { file: 'a:b.txt', line: 3, col: undefined })
+  assert.deepEqual(parseTarget(['a:b.txt']), { file: 'a:b.txt', line: undefined, col: undefined })
+  assert.deepEqual(parseTarget(['a:1:2:3']), { file: 'a:1', line: 2, col: 3 })
+  assert.deepEqual(parseTarget(['./a:12']), { file: './a', line: 12, col: undefined })
+  for (const bad of [['a.ts:0'], ['a.ts:3:0'], ['a.ts', 'x'], ['a.ts:3', '4'], [], ['a', '1', '2']]) assert.throws(() => parseTarget(bad), bad.join(' '))
+})
+
+test('ccc edit on file tabs: opens unfocused at the position, reuses an open tab without focusing, refuses outside paths', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  const r = await f.cli.edit(['src/a.ts:4:2'], { cwd: f.ctx.projectDir })
+  assert.equal(r.code, undefined)
+  assert.match(r.stdout, /src\/a\.ts:4:2 is open in the editor/)
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts', line: 4, col: 2 }, { title: 'a.ts', icon: 'file', focus: false }])
+  const view = t.connect(t.open[0].id)
+  // A relative path resolves against the caller's cwd.
+  await f.cli.edit(['a.ts:9'], { cwd: `${f.ctx.projectDir}/src` })
+  assert.equal(t.open.length, 1)
+  assert.equal(t.calls.some((c) => c[0] === 'focus'), false)
+  assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 9 })
+  // Outside the project, a bad position: refused, nothing opened.
+  for (const bad of [['../x:1'], ['/etc/hosts:1'], ['link.txt'], ['a.ts:0']]) {
+    const e = await f.cli.edit(bad, { cwd: f.ctx.projectDir })
+    assert.equal(e.code, 1, bad.join())
+    assert.match(e.stderr, /^edit: /)
+  }
+  assert.equal(t.open.length, 1)
+  assert.equal(f.started.length, 0)
+  host.deactivate()
+})

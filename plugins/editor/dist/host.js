@@ -11,8 +11,8 @@
 //   await editor.open(path, { line?, col? })   // path relative to the project folder: its file tab
 //
 // Files' Edit uses it. Any plugin that provides "editor" v1 can replace this one (Settings > This
-// Project, "Plugin used for editor"). `ccc edit <file> [line]` still opens micro (plan Task 10
-// moves it to file tabs).
+// Project, "Plugin used for editor"). `ccc edit <file>[:line[:col]]` opens the file's tab at
+// that position without selecting it (the unseen dot); micro on an app without page tabs.
 //
 // It also adds "Edit" to every overlay of the well-known type `file` { path } (a review, a file
 // shown by another plugin) for a text file of the project: the file's tab, and the overlay closes.
@@ -37,6 +37,34 @@ function overlayTitle(prefix, p) {
   const full = prefix + p
   if (full.length <= MAX_TITLE_CHARS) return full
   return prefix + '…' + p.slice(p.length - (MAX_TITLE_CHARS - prefix.length - 1))
+}
+
+const EDIT_USAGE = 'usage: ccc edit <file>[:line[:col]]   open a file of this project in the editor at a position (the tab is marked, never selected)'
+
+/**
+ * `path[:line[:col]]` (also the old `path line` form). Trailing all-digit segments are the
+ * position, at most two, 1-based; a path with colons of its own still works because only digit-only
+ * tails count (`a:b.txt:3` is file `a:b.txt`, line 3; a file named `a:12` is reached as `./a:12`).
+ * Throws a usage line or a message on a bad position. Exported for tests.
+ */
+function parseTarget(argv) {
+  if (!Array.isArray(argv) || argv.length < 1 || argv.length > 2 || typeof argv[0] !== 'string') throw new Error(EDIT_USAGE)
+  let file = argv[0]
+  const nums = []
+  while (nums.length < 2) {
+    const i = file.lastIndexOf(':')
+    const tail = i > 0 ? file.slice(i + 1) : ''
+    if (tail.length === 0 || tail.length > 9 || [...tail].some((c) => c < '0' || c > '9')) break
+    nums.unshift(Number(tail))
+    file = file.slice(0, i)
+  }
+  if (argv.length === 2) {
+    const n = argv[1]
+    if (nums.length || typeof n !== 'string' || n.length === 0 || n.length > 9 || [...n].some((c) => c < '0' || c > '9')) throw new Error(EDIT_USAGE)
+    nums.push(Number(n))
+  }
+  if (nums.some((n) => n < 1)) throw new Error('line and column count from 1')
+  return { file, line: nums[0], col: nums[1] }
 }
 
 /**
@@ -179,6 +207,7 @@ exports.autosaveOf = autosaveOf
 exports.microArgv = microArgv
 exports.relativePath = relativePath
 exports.editableFile = editableFile
+exports.parseTarget = parseTarget
 exports.overlayTitle = overlayTitle
 exports.INSTALL_HINT = INSTALL_HINT
 
@@ -427,14 +456,23 @@ exports.activate = (ctx) => {
 
   ctx.cli.register('edit', async (argv, { cwd }) => {
     if (!argv.length || argv[0] === 'help' || argv.includes('--help')) {
-      return { stdout: 'usage: ccc edit <file> [line]   edit a file of this project in micro\n' }
+      return { stdout: `${EDIT_USAGE}\n` }
     }
     try {
+      const t = parseTarget(argv)
       // Resolve against the caller's cwd, then make it project-relative.
       const root = ctx.projectDir
-      const rel = path.relative(root, path.resolve(cwd || root, argv[0]))
-      const shown = await openEditor(rel, argv[1])
-      return { stdout: `editing ${shown}\n` }
+      const rel = path.relative(root, path.resolve(cwd || root, t.file))
+      if (!hasTabs) {
+        const shown = await openEditor(rel, t.line)
+        return { stdout: `editing ${shown}\n` }
+      }
+      // Never focus: the person may be typing in the terminal that ran this. A new tab opens with
+      // the unseen dot (main sets it); an open one only moves to the position (design-editor.md §4).
+      const r = await openFileTab(relativePath(rel), { line: t.line, col: t.col, focus: false })
+      if (r.via) return { stdout: `opened ${rel} (not a text file)\n` }
+      const at = t.line ? `:${t.line}${t.col ? `:${t.col}` : ''}` : ''
+      return { stdout: `${rel}${at} is open in the editor (the tab is marked, not selected)\n` }
     } catch (e) {
       return { stderr: `edit: ${e.message}\n`, code: 1 }
     }
