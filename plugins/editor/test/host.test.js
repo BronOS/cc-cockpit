@@ -258,13 +258,14 @@ function fakeTabs(f) {
     const posted = []
     const listeners = []
     const closers = []
+    const discussers = []
     const setTitle = async (title, icon) => {
       calls.push(['setTitle', id, title, icon])
       t.title = title
     }
-    const tab = { id, type: 'file', params: t.params, view, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), setTitle }
+    const tab = { id, type: 'file', params: t.params, view, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), onDiscuss: (fn) => discussers.push(fn), setTitle }
     for (const o of openers) o.fn(tab)
-    return { posted, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()) }
+    return { posted, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()), discuss: () => discussers[0]() }
   }
   return { calls, open, connect }
 }
@@ -745,5 +746,21 @@ test("Claude's changes: a file tab answers git-base from its own path and git-re
   assert.deepEqual(used, [['reviewer', 'a.txt']])
   // The manifest declares the reviewer service this click needs.
   assert.deepEqual(require('../plugin.json').services.uses, { reviewer: 1 })
+  await host.deactivate()
+})
+
+test('Ask Claude: a file tab answers core\'s Discuss with its own path, the page\'s lines and the fenced selection', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('a.txt')
+  const view = t.connect(t.open[0].id)
+  const answer = view.discuss()
+  assert.deepEqual(view.posted.filter((m) => m.t === 'ask-context'), [{ t: 'ask-context', req: 1 }])
+  // A path in the page's message is ignored: the header is the tab's own.
+  view.send({ t: 'ask-context', req: 1, path: 'other.txt', startLine: 2, endLine: 3, text: 'a\n```\nb' })
+  assert.deepEqual(await answer, { text: 'a.txt:2-3\n````\na\n```\nb\n````' })
   await host.deactivate()
 })

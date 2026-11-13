@@ -339,3 +339,41 @@ main .cm-line.cc-flash {
   padding: 0;
   max-height: 20vh;
 }
+/* The editor's context menu (Ask Claude). */
+.ctxmenu {
+  position: fixed;
+  z-index: 30;
+  min-width: 200px;
+  padding: var(--cc-space-1, 4px);
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-m, 6px);
+  box-shadow: 0 8px 24px var(--cc-shadow);
+}
+.ctxmenu[hidden] {
+  display: none;
+}
+.ctxmenu button {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--cc-space-3, 12px);
+  width: 100%;
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-s, 4px);
+  cursor: pointer;
+  text-align: left;
+}
+.ctxmenu button:hover,
+.ctxmenu button:focus-visible {
+  background: var(--cc-accent-soft);
+  outline: none;
+}
+.ctxmenu kbd {
+  font: inherit;
+  color: var(--cc-fg-muted);
+}

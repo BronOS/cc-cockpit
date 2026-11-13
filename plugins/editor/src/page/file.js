@@ -5,6 +5,7 @@
 //
 // CodeMirror 6 draws the buffer; session.mjs keeps the file's state (the base, saves, what to re-send
 // on a new line to the host) and this file wires the two to the DOM and the panel SDK:
+// - Ask Claude (Ctrl+L, the context menu): ask.mjs reads the selection, lib/ask.js (host) turns it into Discuss's context;
 // - languages by file name (languages.mjs); search and replace (Ctrl+F, Ctrl+H), multi-cursor
 //   (Alt+click, Ctrl+D, Ctrl+Shift+L), folding, bracket matching and auto-close, comment toggle
 //   (Ctrl+/), VS Code's line moves and copies (Alt+Up/Down, Shift+Alt+Up/Down), Tab indents;
@@ -56,6 +57,7 @@ import { createLspClient } from './lsp/client.mjs'
 import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
 import { createChanges } from './changes.mjs'
 import { createChangesGutter } from './changes-editor.js'
+import { selectionContext } from './ask.mjs'
 
 /* global ccPanel */
 
@@ -897,6 +899,59 @@ for (const [id, key] of [
     search.setGrep($('palette-query').value, palette.opts, true)
   })
 }
+// ---- Ask Claude (design-editor.md §4) ----
+// Ctrl+L (Cmd+L on macOS) and the context menu ask core's Discuss for this tab: the app draws the
+// question box, then the host asks this page for the selection (`ask-context`) and sends it with the
+// question to the Claude tab the person picks.
+
+const ASK_LABEL = 'Ask Claude about this'
+const IS_MAC_ASK = /Mac|iPhone|iPad/.test(navigator.platform)
+$('ctx-ask-key').textContent = IS_MAC_ASK ? '⌘L' : 'Ctrl+L'
+
+function askClaude() {
+  hideContextMenu()
+  if (!view) return
+  if (!ccPanel.tab || typeof ccPanel.tab.discuss !== 'function') {
+    lspMessage('Ask Claude needs a newer cc-cockpit', true)
+    return
+  }
+  ccPanel.tab.discuss()
+}
+
+function hideContextMenu() {
+  $('ctxmenu').hidden = true
+}
+
+$('editor').addEventListener('contextmenu', (e) => {
+  if (!view) return
+  e.preventDefault()
+  const menu = $('ctxmenu')
+  menu.hidden = false
+  // Kept inside the frame: the menu opens up and left when the pointer is near the edge.
+  const x = Math.max(0, Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4))
+  const y = Math.max(0, Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 4))
+  menu.style.left = `${x}px`
+  menu.style.top = `${y}px`
+  $('ctx-ask').focus()
+})
+$('ctx-ask').addEventListener('click', askClaude)
+$('ctx-ask').title = ASK_LABEL
+document.addEventListener('mousedown', (e) => {
+  if (!$('ctxmenu').hidden && !$('ctxmenu').contains(e.target)) hideContextMenu()
+})
+window.addEventListener('blur', hideContextMenu)
+$('ctxmenu').addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  e.preventDefault()
+  hideContextMenu()
+  if (view) view.focus()
+})
+
+/** The host asked for the selection (onDiscuss): the main selection's lines and text, or nothing without an editor. */
+function answerAskContext(req) {
+  ccPanel.post({ t: 'ask-context', req, ...(view ? selectionContext(view.state) : {}) })
+}
+
 // A click outside the palette closes it (the editor takes the click).
 document.addEventListener('mousedown', (e) => {
   if (palette.mode !== null && !$('palette').contains(e.target)) hidePalette(false)
@@ -921,12 +976,17 @@ window.addEventListener(
       e.preventDefault()
       e.stopPropagation()
       showPalette('grep')
+    } else if (k === 'l' && !e.shiftKey) {
+      e.preventDefault()
+      e.stopPropagation()
+      askClaude()
     }
   },
   true
 )
 
 ccPanel.onMessage((m) => {
+  if (m && m.t === 'ask-context') return answerAskContext(m.req)
   if (search.receive(m)) return
   if (lsp.receive(m)) return
   if (changes.receive(m)) return

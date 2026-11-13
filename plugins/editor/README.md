@@ -29,6 +29,10 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   notch where lines were removed); hover shows the old lines, a click opens the Reviewer's diff (the `reviewer` service,
   so the plugin uses it). The host reads `git cat-file blob HEAD:./<file>` (no shell, one argument); not a repository,
   untracked, binary, a link or git missing: no marks.
+- Ask Claude (Ctrl+L, Cmd+L on macOS, or the editor's right-click menu): core's Discuss for the tab. Core draws the
+  question box; the host answers with `path:start-end` (1-based) and the selected text in a code fence one backtick
+  longer than any run in it (cut to 8,000 characters, with a note), or just `path:line` with no selection. The text goes to
+  the Claude tab you pick as your own text, delivered when it waits for input. Needs an app with page tabs' Discuss.
 - A plain click on a file (the Sessions panel's changed files, the Files tree) opens the Reviewer's view unless the
   project picks "Editor (a file tab)" in Settings > This Project, "Plugin used to open files" (the manifest's
   `contributes.openFile` with `whenPicked: true`); then it opens the file's tab, and a binary file the built-in viewer.

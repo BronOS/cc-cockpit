@@ -288,10 +288,10 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Modify: `plugins/editor/dist/host.js`, `plugins/editor/src/page/ask.ts`
 - Modify: `plugins/editor/test/host.test.js`
 
-- [ ] Ctrl+L and the context menu trigger core's Discuss for the tab (Task 4); `onDiscuss` returns
+- [x] Ctrl+L and the context menu trigger core's Discuss for the tab (Task 4); `onDiscuss` returns
   `About: path:start-end` and the fenced selection
-- [ ] write tests for the context text and line ranges
-- [ ] run tests - must pass before next task
+- [x] write tests for the context text and line ranges
+- [x] run tests - must pass before next task
 
 ### Task 16: Quick chat with proposed edits [model: opus]
 

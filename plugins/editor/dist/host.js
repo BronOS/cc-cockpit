@@ -22,6 +22,7 @@ const path = require('node:path')
 const files = require('./lib/files.js')
 const search = require('./lib/search.js')
 const git = require('./lib/git.js')
+const ask = require('./lib/ask.js')
 const { LspManager } = require('./lib/lsp/manager.js')
 const { serveLsp } = require('./lib/lsp/serve.js')
 
@@ -420,6 +421,9 @@ exports.activate = (ctx) => {
       // Claude's changes in the gutter: the tab's own file at git HEAD, and the Reviewer's diff on a click.
       const tabPath = tab.params && typeof tab.params === 'object' && typeof tab.params.path === 'string' ? tab.params.path : undefined
       const gitting = git.serveGit(tab, { spawn, root: ctx.projectDir, rel: tabPath, review: openReview, log: ctx.log })
+      // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection.
+      const tabFile = tabPath !== undefined ? tabPath : tab.params && typeof tab.params === 'object' && typeof tab.params.outside === 'string' ? tab.params.outside : undefined
+      const asking = ask.serveAsk(tab, { file: tabFile })
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -430,6 +434,7 @@ exports.activate = (ctx) => {
         if (searching(m)) return
         if (speaking(m)) return
         if (gitting(m)) return
+        if (asking(m)) return
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {
