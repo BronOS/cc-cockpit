@@ -266,7 +266,7 @@ behind it are in [design.md](design.md).
   deleted on disk keeps its tab with Save (recreate) or Close. Binary, non-UTF-8 and
   files over 5 MB open read-only; a binary file goes to the reviewer instead. A tab with unsaved text shows a dot and
   closing it asks. "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a
-  colour scheme and a path-to-micro setting); `ccc edit <file>[:line[:col]]` opens the file's tab at that position (marked with the unseen dot, never selected, so it cannot take the screen from a terminal being typed in; an open tab only moves its cursor), and the Editor's skill tells Claude to use it to point at code. micro is an optional
+  colour scheme and a path-to-micro setting); `ccc edit <file>[:line[:col]]` opens the file's tab at that position (marked with the unseen dot, never selected, so it cannot take the screen from a terminal being typed in; an open tab moves its cursor and gets the dot again; a missing or binary file is refused), and the Editor's skill tells Claude to use it to point at code. micro is an optional
   dependency, not shipped: install it with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install
   micro` (Linux). Without it, Open in micro shows that command and the `microPath` setting instead of failing silently.
 - A built-in file tree (`cockpit.files`, on by default, ships with the app): a Files panel (left zone) with the

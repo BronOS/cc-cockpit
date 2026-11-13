@@ -84,6 +84,7 @@ extraResources:
       - preview.png
       - README.md
       - dist/**
+      - skills/**
       - '!**/*.map'
   - from: plugins/files
     to: plugins/files

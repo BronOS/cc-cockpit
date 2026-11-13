@@ -11,6 +11,8 @@
 //   ctx.tabs.list(type)                this plugin's open page tabs of `type` in the project
 //   ctx.tabs.focus(id)                 select one of them (a file that already has a tab); main
 //                                      checks the tab is the plugin's own, openPage's budget
+//   ctx.tabs.markUnseen(id)            the unseen dot again on one of them (pointed at, not selected);
+//                                      -> { marked }; main skips the tab the project shows; openPage's budget
 //   ctx.tabs.close(id)                 close one the person's way (core's ask for unsaved text);
 //                                      ctx.sessions.close's budget
 //
@@ -399,6 +401,12 @@ export function createTabsApi(deps: TabsApiDeps): PluginContext['tabs'] {
       guardAsync(async () => {
         if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError('tabs.focus: tabId must be a page tab id')
         await call('tabs.focus', { pluginId, tabId })
+      }),
+    markUnseen: (tabId: string): Promise<{ marked: boolean }> =>
+      guardAsync(async () => {
+        if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError('tabs.markUnseen: tabId must be a page tab id')
+        const res = (await call('tabs.markUnseen', { pluginId, tabId })) as { marked?: unknown } | null
+        return { marked: res?.marked === true }
       }),
     close: (tabId: string): Promise<{ closed: boolean }> =>
       guardAsync(async () => {

@@ -47,6 +47,9 @@
 //   tabs.focus      { pluginId, tabId }        -> null           select a page tab of THIS project that is
 //                                                                the plugin's own, in the host's window;
 //                                                                the page-tab open budget
+//   tabs.markUnseen { pluginId, tabId }        -> { marked }     give a page tab of THIS project that is the
+//                                                                plugin's own the unseen dot again (not when
+//                                                                the project shows it); the page-tab open budget
 //   tabs.close      { pluginId, tabId }        -> { closed }     close a page tab of THIS project that is
 //                                                                the plugin's own, the person's way (a tab
 //                                                                dirty in a view asks there); the close budget
@@ -466,6 +469,12 @@ export interface HostApiDeps {
   setPageTabTitle?(projectId: string, tabId: string, title: string, icon: string | undefined): void
   /** Select a page tab in the project's window (ctx.tabs.focus; HostApi checked it is the plugin's own). Without it focus is refused. */
   focusPageTab?(projectId: string, tabId: string, windowId: number): void
+  /**
+   * Give a page tab the unseen dot again (ctx.tabs.markUnseen, TabManager.markUnseen: not when the
+   * project shows it) and tell every view; true when it changed. HostApi checked it is the plugin's
+   * own. Without it markUnseen is refused.
+   */
+  markPageTabUnseen?(projectId: string, tabId: string): boolean
   /** LayoutService.setBadge: false for a panel the project does not have. */
   setBadge(projectId: string, panelKey: string, badge: PanelBadge | null): boolean
   /**
@@ -870,6 +879,7 @@ export class HostApi {
       'tabs.list': (params) => this.listPageTabs(params),
       'tabs.setTitle': (params) => this.setPageTabTitle(params),
       'tabs.focus': (params) => this.focusPageTab(params),
+      'tabs.markUnseen': (params) => this.markPageTabUnseen(params),
       'tabs.close': (params) => this.closePageTab(params),
       'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
@@ -1538,6 +1548,27 @@ export class HostApi {
     // The host's own window, never one the plugin names.
     this.deps.focusPageTab(this.scope.projectId, tabId, this.scope.windowId)
     return null
+  }
+
+  /**
+   * ctx.tabs.markUnseen: the unseen dot again on a page tab of THIS project that is the plugin's own
+   * (the editor's `ccc edit` on a file that already has a tab: pointed at, never selected, so the
+   * person sees something changed without losing the terminal they type in). A dot draws the eye as
+   * an open does, so it spends openPage's budget; checked before the budget is spent. `marked: false`
+   * when the project shows the tab now or it has the dot already.
+   */
+  private markPageTabUnseen(params: unknown): { marked: boolean } {
+    this.alive()
+    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'tabs.markUnseen')
+    if (typeof tabId !== 'string') throw new Error('tabs.markUnseen: tabId must be a string')
+    if (!this.deps.listTabs || !this.deps.markPageTabUnseen) throw new Error('tabs.markUnseen: page tabs are not available')
+    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
+    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.markUnseen: no such page tab of this plugin')
+    if (!this.pageTabOpens.take(plugin.id)) {
+      throw new Error(`tabs.markUnseen: more than ${MAX_PAGE_TAB_OPENS_PER_WINDOW} opens in ${PAGE_TAB_OPEN_WINDOW_MS / 1000} s`)
+    }
+    return { marked: this.deps.markPageTabUnseen(this.scope.projectId, tabId) }
   }
 
   /**

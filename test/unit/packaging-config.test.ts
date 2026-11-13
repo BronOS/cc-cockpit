@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { BUNDLED_PLUGINS } from '../../src/main/plugins/bundled'
 
 const root = join(__dirname, '..', '..')
 const yml = readFileSync(join(root, 'electron-builder.yml'), 'utf8')
@@ -116,6 +117,26 @@ describe('electron-builder.yml', () => {
       const block = yml.slice(yml.indexOf(`- from: plugins/${name}`), end === -1 ? undefined : end)
       expect(block, name).toMatch(/^ {6}- preview\.png$/m)
       expect(existsSync(join(root, 'plugins', name, 'preview.png')), name).toBe(true)
+    }
+  })
+
+  it('ships the skill folders every bundled plugin declares', () => {
+    // A declared skill folder that is missing refuses the whole manifest (validate.ts reads SKILL.md
+    // at load), and dev runs read the source tree: the editor's skills/ once shipped in no filter, so
+    // the packaged cockpit.editor would not have loaded at all. Every bundled plugin, from the list main loads.
+    for (const { dir } of BUNDLED_PLUGINS) {
+      const manifest = JSON.parse(readFileSync(join(root, 'plugins', dir, 'plugin.json'), 'utf8')) as {
+        contributes?: { skills?: { dir: string }[] }
+      }
+      const start = yml.indexOf(`- from: plugins/${dir}\n`)
+      expect(start, dir).toBeGreaterThan(-1)
+      const end = yml.indexOf('\n  - from:', start + 1)
+      const block = yml.slice(start, end === -1 ? undefined : end)
+      for (const skill of manifest.contributes?.skills ?? []) {
+        const top = skill.dir.split('/')[0]
+        expect(block, `${dir}: ${skill.dir}`).toMatch(new RegExp(`^ {6}- ${top}/\\*\\*$`, 'm'))
+        expect(existsSync(join(root, 'plugins', dir, skill.dir, 'SKILL.md')), `${dir}: ${skill.dir}`).toBe(true)
+      }
     }
   })
 

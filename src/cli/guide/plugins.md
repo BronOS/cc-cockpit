@@ -226,8 +226,8 @@ project or everywhere) and yours is the only provider, used without a pick. For 
 one once `cockpit.sessions` is off. The same for `usage-meter` and `cockpit.usage`.
 
 `ccc edit <file>[:line[:col]]` (the Editor's command, `<file>` inside the project) opens the file's tab at that
-position and never selects it: a new tab opens with the unseen dot, an open one only moves its cursor, so it cannot
-take the screen from a terminal being typed in. The Editor's skill tells Claude to use it to point at code.
+position and never selects it: a new tab opens with the unseen dot, an open one moves its cursor and gets the dot
+again, so it cannot take the screen from a terminal being typed in. A missing or binary file is refused (exit 1). The Editor's skill tells Claude to use it to point at code.
 
 ### The reviewer service
 

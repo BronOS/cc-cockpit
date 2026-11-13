@@ -271,6 +271,27 @@ describe('TabManager page tabs', () => {
       tabs.createPage(A, file('a'))
       expect(tabRecordsOf(tabs.list(A))[0]).not.toHaveProperty('unseen')
     })
+
+    it('comes back on markUnseen unless the project shows the tab or it has the dot', () => {
+      const tabs = manager()
+      const shell = tabs.create(A, { kind: 'shell' })
+      const page = tabs.createPage(A, file('a'))
+      // Shown: nothing to mark (the person sees the tab already).
+      selected[A] = page.id
+      expect(tabs.markUnseen(A, page.id)).toBeUndefined()
+      expect(tabs.list(A).find((t) => t.id === page.id)?.unseen).toBeUndefined()
+      // Another tab shown: the dot again, once.
+      selected[A] = shell.id
+      expect(tabs.markUnseen(A, page.id)).toMatchObject({ id: page.id, unseen: true })
+      expect(tabs.markUnseen(A, page.id)).toBeUndefined()
+      expect(tabs.markSeen(A, page.id)).toMatchObject({ id: page.id })
+      // Only a page tab, only of its own project, and never with nothing selected.
+      expect(tabs.markUnseen(A, shell.id)).toBeUndefined()
+      expect(tabs.markUnseen(B, page.id)).toBeUndefined()
+      delete selected[A]
+      expect(tabs.markUnseen(A, page.id)).toBeUndefined()
+      expect(tabs.list(A).find((t) => t.id === page.id)?.unseen).toBeUndefined()
+    })
   })
 })
 

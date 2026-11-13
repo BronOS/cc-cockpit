@@ -58,7 +58,7 @@ function fakeUi() {
       ui.merges.push(layout)
     },
     getText: () => ui.text,
-    goto: (l, c) => ui.gotos.push([l, c]),
+    goto: (l, c, focus) => ui.gotos.push(focus === false ? [l, c, 'no focus'] : [l, c]),
     setDirty: (d) => ui.dirty.push(d),
     render: (v) => (ui.last = v),
   }
@@ -92,6 +92,17 @@ test('first connect opens the file; parts are joined; a goto before the text wai
   // A stale answer (another req) is ignored.
   s.receive(head({ req: 99, text: 'other' }))
   assert.equal(ui.text, 'one\ntwo\n')
+})
+
+test("a goto with focus: false (ccc edit) moves the cursor without taking the keyboard, before and after the text", () => {
+  const ui = fakeUi()
+  const s = createSession(ui, fakeTimers())
+  s.connect()
+  s.receive({ t: 'goto', line: 3, focus: false })
+  s.receive(head({ req: 1, text: 'one\ntwo\nthree\n' }))
+  s.receive({ t: 'goto', line: 1, col: 2, focus: false })
+  s.receive({ t: 'goto', line: 2 })
+  assert.deepEqual(ui.gotos, [[3, 1, 'no focus'], [1, 2, 'no focus'], [2, 1]])
 })
 
 test('typing makes the tab dirty at once; the idle timer saves with the base hash; saved moves the base', () => {

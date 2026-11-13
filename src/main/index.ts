@@ -1622,6 +1622,12 @@ function start(server: boolean): void {
         requireWindow(projectId, windowId)
         sendToProject(projectId, 'tabs.select', { tabId })
       },
+      // The unseen dot again (ctx.tabs.markUnseen), told to every view as markSeen's clearing is.
+      markPageTabUnseen: (projectId, tabId) => {
+        const marked = tabs.markUnseen(projectId, tabId)
+        if (marked) sendToProject(projectId, 'tabs.added', marked)
+        return marked !== undefined
+      },
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),

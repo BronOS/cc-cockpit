@@ -44,8 +44,10 @@ const EDIT_USAGE = 'usage: ccc edit <file>[:line[:col]]   open a file of this pr
 /**
  * `path[:line[:col]]` (also the old `path line` form). Trailing all-digit segments are the
  * position, at most two, 1-based; a path with colons of its own still works because only digit-only
- * tails count (`a:b.txt:3` is file `a:b.txt`, line 3; a file named `a:12` is reached as `./a:12`).
- * Throws a usage line or a message on a bad position. Exported for tests.
+ * tails count (`a:b.txt:3` is file `a:b.txt`, line 3). A name that itself ends in `:<digits>` is
+ * reached only with a full position after it (`a:12:1:1` is file `a:12`, line 1, column 1): at most
+ * two tails are taken. No ranges or `#L` forms: `a.ts:12-20` is a file of that name (and refused by
+ * `ccc edit` when it does not exist). Throws a usage line or a message on a bad position. Exported for tests.
  */
 function parseTarget(argv) {
   if (!Array.isArray(argv) || argv.length < 1 || argv.length > 2 || typeof argv[0] !== 'string') throw new Error(EDIT_USAGE)
@@ -307,6 +309,10 @@ exports.activate = (ctx) => {
    * binary file goes to the project's file opener (`ctx.files.open`: the reviewer's preview, else
    * the app's built-in viewer), never into a tab that cannot show it. Resolves `{ tabId }` or
    * `{ via }` (the opener's answer).
+   *
+   * `focus: false` (`ccc edit`) points without selecting: a new tab opens with the unseen dot, an
+   * open one gets the dot again (ctx.tabs.markUnseen; main skips the tab the window shows) and its
+   * cursor moves without the page taking the keyboard (`goto` with `focus: false`).
    */
   async function openFileTab(p, opts = {}) {
     const r = files.resolveInProject(ctx.projectDir, p)
@@ -319,10 +325,14 @@ exports.activate = (ctx) => {
     const col = line === undefined ? undefined : position(opts.col)
     const open = (await ctx.tabs.list('file')).find((t) => t.params && typeof t.params === 'object' && t.params.path === r.rel)
     if (open) {
-      if (opts.focus !== false && typeof ctx.tabs.focus === 'function') await ctx.tabs.focus(open.id)
+      const point = opts.focus === false
+      if (!point && typeof ctx.tabs.focus === 'function') await ctx.tabs.focus(open.id)
+      // An older app has no markUnseen: the cursor still moves, the tab just gets no dot.
+      if (point && typeof ctx.tabs.markUnseen === 'function') await ctx.tabs.markUnseen(open.id)
       if (line !== undefined) {
         const live = instances.get(open.id)
-        if (live && live.size > 0) for (const tab of live) tab.post({ t: 'goto', line, ...(col ? { col } : {}) })
+        const goto = { t: 'goto', line, ...(col ? { col } : {}), ...(point ? { focus: false } : {}) }
+        if (live && live.size > 0) for (const tab of live) tab.post(goto)
         else pendingGoto.set(open.id, { line, col })
       }
       return { tabId: open.id }
@@ -460,19 +470,35 @@ exports.activate = (ctx) => {
     }
     try {
       const t = parseTarget(argv)
-      // Resolve against the caller's cwd, then make it project-relative.
+      // Resolve against the caller's cwd, then make it project-relative. The cwd a shell reports is
+      // a realpath (getcwd), so a project opened through a symlinked folder is compared by its
+      // realpath too; resolveInProject checks the result by realpath again either way.
       const root = ctx.projectDir
-      const rel = path.relative(root, path.resolve(cwd || root, t.file))
+      const abs = path.resolve(cwd || root, t.file)
+      let rel = path.relative(root, abs)
+      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+        try {
+          rel = path.relative(fs.realpathSync(root), abs)
+        } catch {
+          // The project folder is gone: relativePath below refuses the `..` path as it stands.
+        }
+      }
       if (!hasTabs) {
         const shown = await openEditor(rel, t.line)
         return { stdout: `editing ${shown}\n` }
       }
+      // Only a text file that exists: a missing one would open a "deleted on disk" tab and say it
+      // is open (a typo, or a form parseTarget does not read such as `a.ts:12-20`), and a binary one
+      // would go to the file opener, whose overlay takes the keyboard from the terminal that ran this.
+      const r = files.resolveInProject(root, relativePath(rel))
+      if (!r.exists) throw new Error(`no such file: ${r.rel} (the forms are <file>, <file>:<line>, <file>:<line>:<col>)`)
+      if (isBinaryFile(r.real)) throw new Error(`${r.rel} is not a text file (the editor opens text files only)`)
       // Never focus: the person may be typing in the terminal that ran this. A new tab opens with
-      // the unseen dot (main sets it); an open one only moves to the position (design-editor.md §4).
-      const r = await openFileTab(relativePath(rel), { line: t.line, col: t.col, focus: false })
-      if (r.via) return { stdout: `opened ${rel} (not a text file)\n` }
+      // the unseen dot (main sets it); an open one gets the dot again and moves to the position
+      // (design-editor.md §4).
+      await openFileTab(r.rel, { line: t.line, col: t.col, focus: false })
       const at = t.line ? `:${t.line}${t.col ? `:${t.col}` : ''}` : ''
-      return { stdout: `${rel}${at} is open in the editor (the tab is marked, not selected)\n` }
+      return { stdout: `${r.rel}${at} is open in the editor (the tab is marked, not selected)\n` }
     } catch (e) {
       return { stderr: `edit: ${e.message}\n`, code: 1 }
     }

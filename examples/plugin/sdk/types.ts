@@ -849,6 +849,13 @@ export interface PluginContext {
      */
     focus(tabId: string): Promise<void>
     /**
+     * Give one of this plugin's own page tabs of this project the unseen dot again without selecting it
+     * (an editor pointing at a file that already has a tab). `marked: false` when the window shows that
+     * tab now or it has the dot already. Shares `openPage`'s budget; rejects for another plugin's tab or
+     * an unknown id. Newer than `ctx.tabs` itself: check `typeof ctx.tabs.markUnseen === 'function'`.
+     */
+    markUnseen(tabId: string): Promise<{ marked: boolean }>
+    /**
      * Close one of this plugin's own page tabs of this project the way the person would: a tab with
      * unsaved changes in a view asks there first (the app's close dialog), so `closed: false` when
      * they keep it or the ask could not be shown. Shares `ctx.sessions.close`'s limit (10 a minute).

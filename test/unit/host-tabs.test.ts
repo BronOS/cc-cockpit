@@ -36,11 +36,13 @@ describe('HostApi tabs.* (main)', () => {
   let emitted: Array<{ projectId: string; channel: string; payload: unknown }>
   let apis: HostApi[]
   let focused: Array<{ projectId: string; tabId: string; windowId: number }>
+  let marked: Array<{ projectId: string; tabId: string }>
   let closing: Array<{ windowId: number; projectId: string; tabId: string }>
   let closeAnswer: boolean
 
   beforeEach(() => {
     focused = []
+    marked = []
     closing = []
     closeAnswer = true
     root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-host-tabs-')))
@@ -85,6 +87,7 @@ describe('HostApi tabs.* (main)', () => {
       listTabs: (pid: string) => tabs.list(pid),
       setPageTabTitle: (pid: string, tabId: string, title: string, icon: string | undefined) => tabs.setPageTitle(pid, tabId, title, icon),
       focusPageTab: (pid: string, tabId: string, windowId: number) => focused.push({ projectId: pid, tabId, windowId }),
+      markPageTabUnseen: (pid: string, tabId: string) => (marked.push({ projectId: pid, tabId }), marked.length === 1),
       // The person's close path (close-asks.ts): a dirty tab asks in its views, the answer comes back.
       closeTab: async (windowId: number, pid: string, tabId: string) => (closing.push({ windowId, projectId: pid, tabId }), closeAnswer),
       log: () => {}
@@ -186,6 +189,30 @@ describe('HostApi tabs.* (main)', () => {
     await expect(call('tabs.focus', { pluginId: 'p.editor', tabId: mine.tabId })).rejects.toThrow(/more than 20 opens in 10 s/)
     await expect(call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'x' })).rejects.toThrow(/more than 20 tabs/)
     expect(focused).toHaveLength(MAX_PAGE_TAB_OPENS_PER_WINDOW - 1)
+  })
+
+  it("markUnseen: only the plugin's own page tab of this project; main's answer; openPage's budget", async () => {
+    const call = host()
+    const mine = (await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'a.ts' })) as { tabId: string }
+    const theirs = (await call('tabs.openPage', { pluginId: 'p.other', type: 'note', title: 'n' })) as { tabId: string }
+    const otherProject = tabs.createPage(B, { plugin: 'p.editor', type: 'file', title: 'b' })
+    const shell = tabs.create(A, { kind: 'shell' })
+    // The fake marks the first time only (TabManager.markUnseen skips a tab with the dot).
+    await expect(call('tabs.markUnseen', { pluginId: 'p.editor', tabId: mine.tabId })).resolves.toEqual({ marked: true })
+    await expect(call('tabs.markUnseen', { pluginId: 'p.editor', tabId: mine.tabId })).resolves.toEqual({ marked: false })
+    expect(marked).toEqual([
+      { projectId: A, tabId: mine.tabId },
+      { projectId: A, tabId: mine.tabId }
+    ])
+    for (const tabId of [theirs.tabId, otherProject.id, shell.id, 'nope']) {
+      await expect(call('tabs.markUnseen', { pluginId: 'p.editor', tabId })).rejects.toThrow(/no such page tab/)
+    }
+    await expect(call('tabs.markUnseen', { pluginId: 'p.editor', tabId: 5 })).rejects.toThrow(/tabId must be a string/)
+    // One open and two marks spent: the rest of the shared budget, then a refusal of both.
+    for (let i = 0; i < MAX_PAGE_TAB_OPENS_PER_WINDOW - 3; i++) await call('tabs.markUnseen', { pluginId: 'p.editor', tabId: mine.tabId })
+    await expect(call('tabs.markUnseen', { pluginId: 'p.editor', tabId: mine.tabId })).rejects.toThrow(/more than 20 opens in 10 s/)
+    await expect(call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'x' })).rejects.toThrow(/more than 20 tabs/)
+    expect(marked).toHaveLength(MAX_PAGE_TAB_OPENS_PER_WINDOW - 1)
   })
 
   it("close: only the plugin's own page tab of this project, the person's close path; the close budget", async () => {
@@ -300,11 +327,15 @@ describe('ctx.tabs (host)', () => {
     expect(calls.at(-1)).toEqual({ method: 'tabs.list', params: { pluginId: 'p.editor', type: 'file' } })
     await editor.tabs.focus(TAB)
     expect(calls.at(-1)).toEqual({ method: 'tabs.focus', params: { pluginId: 'p.editor', tabId: TAB } })
+    // Anything but main's `{ marked: true }` reads as not marked.
+    await expect(editor.tabs.markUnseen(TAB)).resolves.toEqual({ marked: false })
+    expect(calls.at(-1)).toEqual({ method: 'tabs.markUnseen', params: { pluginId: 'p.editor', tabId: TAB } })
     // Anything but main's `{ closed: true }` reads as not closed.
     await expect(editor.tabs.close(TAB)).resolves.toEqual({ closed: false })
     expect(calls.at(-1)).toEqual({ method: 'tabs.close', params: { pluginId: 'p.editor', tabId: TAB } })
     const before = calls.length
     await expect(editor.tabs.focus('not an id')).rejects.toThrow(/page tab id/)
+    await expect(editor.tabs.markUnseen('not an id')).rejects.toThrow(/page tab id/)
     await expect(editor.tabs.close('not an id')).rejects.toThrow(/page tab id/)
     expect(calls).toHaveLength(before)
   })

@@ -249,6 +249,7 @@ function fakeTabs(f) {
       return id
     },
     focus: async (id) => void calls.push(['focus', id]),
+    markUnseen: async (id) => (calls.push(['markUnseen', id]), { marked: true }),
     close: async (id) => (calls.push(['close', id]), { closed: true }),
   }
   // A frame of tab `id` connecting in `view` (undefined: the desktop): the instance the host serves.
@@ -539,6 +540,9 @@ test('parseTarget: path[:line[:col]], the old `path line` form, colons in names,
   assert.deepEqual(parseTarget(['a:b.txt']), { file: 'a:b.txt', line: undefined, col: undefined })
   assert.deepEqual(parseTarget(['a:1:2:3']), { file: 'a:1', line: 2, col: 3 })
   assert.deepEqual(parseTarget(['./a:12']), { file: './a', line: 12, col: undefined })
+  // A name ending in `:<digits>` needs a full position after it; a range is no position at all.
+  assert.deepEqual(parseTarget(['a:12:1:1']), { file: 'a:12', line: 1, col: 1 })
+  assert.deepEqual(parseTarget(['a.ts:12-20']), { file: 'a.ts:12-20', line: undefined, col: undefined })
   for (const bad of [['a.ts:0'], ['a.ts:3:0'], ['a.ts', 'x'], ['a.ts:3', '4'], [], ['a', '1', '2']]) assert.throws(() => parseTarget(bad), bad.join(' '))
 })
 
@@ -553,11 +557,18 @@ test('ccc edit on file tabs: opens unfocused at the position, reuses an open tab
   assert.match(r.stdout, /src\/a\.ts:4:2 is open in the editor/)
   assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts', line: 4, col: 2 }, { title: 'a.ts', icon: 'file', focus: false }])
   const view = t.connect(t.open[0].id)
-  // A relative path resolves against the caller's cwd.
+  // A relative path resolves against the caller's cwd. The open tab is pointed at, never selected:
+  // the unseen dot again (main skips a shown tab) and a goto that leaves the keyboard alone.
   await f.cli.edit(['a.ts:9'], { cwd: `${f.ctx.projectDir}/src` })
   assert.equal(t.open.length, 1)
   assert.equal(t.calls.some((c) => c[0] === 'focus'), false)
-  assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 9 })
+  assert.deepEqual(t.calls.at(-1), ['markUnseen', t.open[0].id])
+  assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 9, focus: false })
+  // An absolute path inside the project is the same file.
+  const abs = await f.cli.edit([`${f.ctx.projectDir}/src/a.ts:3:1`], { cwd: '/' })
+  assert.equal(abs.code, undefined)
+  assert.equal(t.open.length, 1)
+  assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 3, col: 1, focus: false })
   // Outside the project, a bad position: refused, nothing opened.
   for (const bad of [['../x:1'], ['/etc/hosts:1'], ['link.txt'], ['a.ts:0']]) {
     const e = await f.cli.edit(bad, { cwd: f.ctx.projectDir })
@@ -566,5 +577,73 @@ test('ccc edit on file tabs: opens unfocused at the position, reuses an open tab
   }
   assert.equal(t.open.length, 1)
   assert.equal(f.started.length, 0)
+  host.deactivate()
+})
+
+test('ccc edit refuses a missing or binary file and opens nothing, no overlay, no file opener', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const opened = []
+  f.ctx.files = { open: async (p) => (opened.push(p), { via: 'viewer' }) }
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  const missing = await f.cli.edit(['src/nope.ts:3'], { cwd: f.ctx.projectDir })
+  assert.equal(missing.code, 1)
+  assert.match(missing.stderr, /^edit: no such file: src\/nope\.ts/)
+  // A range is not a position: a file of that name, which does not exist.
+  const range = await f.cli.edit(['src/a.ts:12-20'], { cwd: f.ctx.projectDir })
+  assert.equal(range.code, 1)
+  assert.match(range.stderr, /no such file: src\/a\.ts:12-20 \(the forms are/)
+  const binary = await f.cli.edit(['img.png'], { cwd: f.ctx.projectDir })
+  assert.equal(binary.code, 1)
+  assert.match(binary.stderr, /^edit: img\.png is not a text file/)
+  const dir = await f.cli.edit(['src'], { cwd: f.ctx.projectDir })
+  assert.equal(dir.code, 1)
+  assert.deepEqual(t.open, [])
+  assert.deepEqual(opened, [])
+  assert.deepEqual(f.started, [])
+  host.deactivate()
+})
+
+test('ccc edit from a realpath cwd reaches a project opened through a symlinked folder; a cwd outside is refused', async () => {
+  const fs = require('node:fs')
+  const os = require('node:os')
+  const path = require('node:path')
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  const real = project()
+  const alias = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edalias-'))), 'proj')
+  fs.symlinkSync(real, alias)
+  f.ctx.projectDir = alias
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  // A shell's cwd is a realpath (getcwd), never the alias.
+  const r = await f.cli.edit(['a.ts:2'], { cwd: path.join(real, 'src') })
+  assert.equal(r.code, undefined, r.stderr)
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts', line: 2 }, { title: 'a.ts', icon: 'file', focus: false }])
+  // The link target's folder is outside: a relative path from there is refused.
+  const outside = path.dirname(fs.realpathSync(path.join(real, 'link.txt')))
+  const e = await f.cli.edit(['secret.txt'], { cwd: outside })
+  assert.equal(e.code, 1)
+  assert.match(e.stderr, /^edit: /)
+  assert.equal(t.open.length, 1)
+  host.deactivate()
+})
+
+test('ccc edit help, and the micro fallback (no ctx.tabs) gets the parsed line', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  host.activate(f.ctx)
+  for (const argv of [[], ['help'], ['--help'], ['a.ts', '--help']]) {
+    const h = await f.cli.edit(argv, { cwd: f.ctx.projectDir })
+    assert.match(h.stdout, /^usage: ccc edit <file>\[:line\[:col\]\]/, argv.join(' '))
+    assert.equal(h.code, undefined)
+  }
+  assert.equal(f.started.length, 0)
+  const r = await f.cli.edit(['src/a.ts:7:3'], { cwd: f.ctx.projectDir })
+  assert.equal(r.stdout, 'editing src/a.ts\n')
+  assert.deepEqual(f.started[0].argv.slice(-2), ['src/a.ts', '+7'])
   host.deactivate()
 })

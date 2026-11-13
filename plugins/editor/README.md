@@ -23,7 +23,7 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   saved until each is resolved (the tab's title shows ⚠ meanwhile). A file deleted on disk keeps its tab and text, with
   Save (recreate it) or Close. Binary, non-UTF-8 and files over 5 MB open read-only.
 - "Open in micro" on a file tab: [micro](https://micro-editor.github.io) on the same file in a terminal overlay (settings
-  `microPath`, `colorscheme`). `ccc edit <file>[:line[:col]]` opens the file's tab at that position, marked and not selected (micro on an app without page tabs). Needs micro on the login-shell PATH
+  `microPath`, `colorscheme`). `ccc edit <file>[:line[:col]]` opens the file's tab at that position, marked and not selected (an open tab gets the mark again; a missing or binary file is refused; micro on an app without page tabs). Needs micro on the login-shell PATH
   (`brew install micro`, `sudo pacman -S micro`, `sudo apt install micro`; a missing micro is reported with these
   commands and the `microPath` setting). On Wayland, copy and paste in micro need `wl-clipboard`.
 - "Edit" on every overlay of the well-known type `file` (`ctx.overlay.buttons('file', …)`): a review of a file, or any

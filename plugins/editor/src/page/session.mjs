@@ -23,7 +23,8 @@
 //                 { t: 'disk', path, change: 'changed' | 'deleted', hash }
 //                 { t: 'error', req?, path?, message }
 //                 { t: 'settings', idleSeconds, onBlur }   autosave (the plugin's settings)
-//                 { t: 'goto', line, col? }        move the cursor (a file opened again at a line)
+//                 { t: 'goto', line, col?, focus? } move the cursor (a file opened again at a line);
+//                                                  `focus: false` (ccc edit) leaves the keyboard where it is
 //
 // A change on disk reaches a clean buffer as a reload (file.js applies it as line edits, so the
 // cursor, selections and scroll map through it, and flashes the lines). A change that meets a dirty
@@ -101,7 +102,7 @@ function partsCollector() {
  *   merge(layout)            show a merge with conflicts: merge.mjs conflictLayout's { text, conflicts };
  *                            the page tells how many are left with conflictsLeft(n)
  *   getText()                the buffer now
- *   goto(line, col)          move the cursor
+ *   goto(line, col, focus)   move the cursor; `focus` false keeps the keyboard where it is
  *   setDirty(dirty)          ccPanel.tab.setDirty
  *   render(view)             draw the header and the bar from view() (called on every change)
  * `timers` { set(fn, ms) -> handle, clear(handle) } (tests pass fakes).
@@ -141,7 +142,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
   let idleTimer = null
   let dirtyTimer = null
   let lastStatus = null
-  /** A `goto` that came before the text: { line, col }. */
+  /** A `goto` that came before the text: { line, col, focus }. */
   let pendingGoto = null
   let noticeTimer = null
   /** The conflict marker last told to the host (`conflict` message), null before the first. */
@@ -390,7 +391,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       adopt(head, text)
       s.loaded = true
       ui.load(s.base.text, { path: s.path, readOnly: s.readOnly, noText: s.noText })
-      if (pendingGoto && !s.noText) ui.goto(pendingGoto.line, pendingGoto.col)
+      if (pendingGoto && !s.noText) ui.goto(pendingGoto.line, pendingGoto.col, pendingGoto.focus)
       pendingGoto = null
       checkDirty()
       return update()
@@ -557,9 +558,12 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
         case 'goto': {
           if (!Number.isInteger(m.line) || m.line < 1) return
           const col = Number.isInteger(m.col) && m.col >= 1 ? m.col : 1
+          // `ccc edit` on a shown tab: the person may be typing elsewhere in the window (a terminal
+          // overlay, a panel input), so the cursor moves without pulling the keyboard into the frame.
+          const focus = m.focus !== false
           // Before the text is in (its parts still coming): moved once it is.
-          if (!s.loaded) pendingGoto = { line: m.line, col }
-          else ui.goto(m.line, col)
+          if (!s.loaded) pendingGoto = { line: m.line, col, focus }
+          else ui.goto(m.line, col, focus)
           return
         }
         default:

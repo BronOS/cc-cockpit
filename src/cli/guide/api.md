@@ -165,7 +165,9 @@ with full Node access.
   `icon` a glyph name such as `file`; `focus: true` selects it, else it opens with an unseen dot; at most 20
   opens per 10 s and 64 page tabs per plugin per project, rejected past either). `list(type)` resolves your
   open tabs of that type here, `[{ id, type, params, title, icon? }]`, in tab order. `focus(id)` selects one of
-  your own page tabs of this project (a file that already has a tab; it shares `openPage`'s budget). `close(id)`
+  your own page tabs of this project (a file that already has a tab; it shares `openPage`'s budget). `markUnseen(id)`
+  gives one of them the unseen dot again without selecting it and resolves `{ marked }` (`false` when the window
+  shows that tab now or it has the dot already; `openPage`'s budget; newer, so check it is a function). `close(id)`
   closes one the person's way and resolves `{ closed }`: a tab with unsaved changes in a view asks there first,
   so `closed: false` when they keep it (shares `ctx.sessions.close`'s 10 a minute). `onOpen(type, (tab) => …)`
   hears a tab's frame connect in a view and returns a disposer; `tab` is `{ id, type, params, view, post(message),

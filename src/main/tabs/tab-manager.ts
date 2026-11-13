@@ -599,6 +599,22 @@ export class TabManager {
   }
 
   /**
+   * A page tab's plugin points at it again (ctx.tabs.markUnseen, the editor's `ccc edit` on a file
+   * that already has a tab): it gets the unseen dot back unless the project shows it now (the
+   * selection of the view that acted last, as at open) or it has the dot already. Only a page tab;
+   * the caller checked it is that plugin's own. The tab as it is now when that changed something
+   * (the caller tells every view), else undefined.
+   */
+  markUnseen(projectId: string, tabId: string): TabInfo | undefined {
+    const tab = this.find(projectId, tabId)
+    if (tab?.kind !== 'page' || tab.unseen) return undefined
+    const shown = this.selectedOf(projectId)
+    if (shown === undefined || shown === tabId) return undefined
+    tab.unseen = true
+    return info(tab)
+  }
+
+  /**
    * A page tab's title and icon from its plugin (ctx.tabs, a PageTabInstance's setTitle; HostApi
    * checked the tab is that plugin's). Checked and clamped again here as at open (pageTabTitleOf,
    * a bad icon refused rather than dropped: the caller asked for it by name). `icon` undefined keeps

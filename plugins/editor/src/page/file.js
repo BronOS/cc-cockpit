@@ -406,13 +406,14 @@ function merge(layout) {
   if (conflicts.length) view.dispatch({ effects: EditorView.scrollIntoView(conflicts[0].from, { y: 'center' }) })
 }
 
-function gotoLine(line, col) {
+function gotoLine(line, col, focus = true) {
   if (!view) return
   const doc = view.state.doc
   const l = doc.line(Math.min(Math.max(1, line), doc.lines))
   const pos = Math.min(l.from + Math.max(0, col - 1), l.to)
   view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'center' }) })
-  view.focus()
+  // `ccc edit` says focus: false (session.mjs): it must not take the keyboard from a terminal.
+  if (focus !== false) view.focus()
 }
 
 // ---- header and bar ----
