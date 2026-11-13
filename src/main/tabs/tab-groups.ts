@@ -200,12 +200,14 @@ export class TabGroups {
       const without = order.filter((t) => t !== tabId)
       const at = clamp(toIndex, without.length)
       if (group) {
-        if (at === from) return
-        const others = new Set(leavesOf(group.root).filter((t) => t !== tabId))
-        const first = without.findIndex((t) => others.has(t))
-        const last = without.length - 1 - [...without].reverse().findIndex((t) => others.has(t))
-        // Between two of its own members: inside the segment, nothing to do (D9).
-        if (first >= 0 && at > first && at <= last) return
+        // Anywhere within its own segment's span, ends included, is a no-op (D17, D24 Q3): the
+        // segment is contiguous, so its span is first..last member in the current order. Comparing
+        // inside `without` instead missed the segment's first slot: [c,d,a,b] with b to 2 (before a)
+        // broke the group and gave [c,d,b,a] (QA run 1).
+        const members = new Set(leavesOf(group.root))
+        const first = order.findIndex((t) => members.has(t))
+        const last = order.length - 1 - [...order].reverse().findIndex((t) => members.has(t))
+        if (at >= first && at <= last) return
         const removed = removeLeaf(groups, order, tabId)
         if (removed.ok) groups = removed.groups
       }

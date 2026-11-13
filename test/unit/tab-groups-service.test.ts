@@ -277,6 +277,32 @@ describe('TabGroups.reorder (D9)', () => {
     expect(members(t.groups.groupsOf('p')[0])).toEqual(['b', 'c', 'd'])
   })
 
+  it('a member dropped anywhere in its segment’s span, ends included, changes nothing (D24 Q3)', () => {
+    // QA run 1: [c,d,a,b] with group {a,b}, b to 2 (the segment's first slot) gave [c,d,b,a].
+    const q = setup({ p: ['c', 'd', 'a', 'b'] })
+    q.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
+    q.published.length = 0
+    q.saves.length = 0
+    for (const tab of ['a', 'b']) for (const at of [2, 3, 99]) q.groups.reorder('p', tab, at)
+    expect(q.orders.get('p')).toEqual(['c', 'd', 'a', 'b'])
+    expect(q.published).toEqual([])
+    expect(q.saves).toEqual([])
+    expect(members(q.groups.groupsOf('p')[0])).toEqual(['a', 'b'])
+
+    // a [b c d] e: the span is 1..3 for every member, first and last slots included.
+    const t = grouped()
+    for (const tab of ['b', 'c', 'd']) for (const at of [1, 2, 3]) t.groups.reorder('p', tab, at)
+    expect(t.orders.get('p')).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(t.published).toEqual([])
+    expect(members(t.groups.groupsOf('p')[0])).toEqual(['b', 'c', 'd'])
+    // Just outside the span, either side, detaches.
+    t.groups.reorder('p', 'b', 0)
+    expect(t.orders.get('p')).toEqual(['b', 'a', 'c', 'd', 'e'])
+    t.groups.reorder('p', 'd', 4)
+    expect(t.orders.get('p')).toEqual(['b', 'a', 'c', 'e', 'd'])
+    expect(t.groups.groupsOf('p')).toEqual([])
+  })
+
   it('a member dropped outside its segment detaches as a plain tab there', () => {
     const t = grouped()
     t.groups.reorder('p', 'c', 0)
