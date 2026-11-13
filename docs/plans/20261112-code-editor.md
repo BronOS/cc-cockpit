@@ -341,6 +341,13 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`
 - [x] `npm run test:e2e`
 
+Notes: the acceptance criteria rest on fakes (fake language server, fake `claude`); none of the four real language
+servers was run (Post-Completion "Manual verification"). The edge cases are covered by tests from earlier tasks: path
+escapes in `plugins/editor/test/files.test.js` and `lsp-host.test.js` (URIs), a missing server in `lsp-host.test.js`,
+host restart with a dirty buffer in `page-session.test.mjs` and `test/unit/page-tab-frames.test.ts`, page tab restore in
+`test/unit/page-tabs.test.ts` and the relaunch e2e, two views in `page-session.test.mjs` and `editor-web.spec.ts`.
+Alt+click cursors and Alt+drag columns are checked in `editor.spec.ts`; the indent unit comes from the file.
+
 ### Task 20: [Final] Update documentation [model: sonnet]
 - [ ] `docs/features.md` (editor, page tabs, processes, known limits), `docs/design.md` (tab kinds, `contributes.tabs`,
   `ctx.tabs`, `ctx.processes`, Discuss for page tabs), README if needed

@@ -172,6 +172,10 @@ to the same store. The `reviewer` service gains `notes(path)`, `addNote`, `onNot
 
 **Editing.** Search and replace (regex, case, word), multi-cursor, bracket matching, auto-close, folding, indent
 guides, comment toggle; VS Code-like keys; colours from the cockpit theme, font from the terminal font settings.
+Multi-cursor: Alt+click or Mod+click (Cmd on macOS, Ctrl elsewhere) adds a cursor; Alt+drag selects a column and adds
+it to the cursors already there (CodeMirror's rectangular selection, which owns every Alt+press, honours the same "add"
+flag; VS Code's Shift+Alt+drag is not separate). The indent unit (what Tab inserts, the indent guides' step) comes from
+the file: tabs when most indented lines start with one, else the most common space step, else CodeMirror's 2 spaces.
 Quick open (Ctrl+P): `rg --files` (ignore rules from rg itself), fuzzy filtered in the page. Find in files
 (Ctrl+Shift+F): `rg --json -e <query> -- .`. At most four rg run for the plugin at once, every tab together (they share
 ctx.processes' per-plugin cap with the language servers); past that a search is refused with a "try again".
@@ -204,7 +208,11 @@ What the design names and v1 does not do (verified against the code at Task 19; 
 - **Language servers:** debugging (DAP), semantic tokens, call hierarchy, workspace symbol search; per-server settings
   (`initializationOptions`, `workspace/configuration` values): the `servers` setting only names a command, so a server
   runs with its own defaults and every configuration section is answered `null`; the host has the hook for them
-  (`slot.entry.initializationOptions` / `settings`) but no settings field feeds it yet. File create, rename and delete
+  (`slot.entry.initializationOptions` / `settings`) but no settings field feeds it yet. The case people will hit: a
+  Python project's virtualenv (`python.pythonPath` / `python.venvPath`) cannot be named, so pyright and basedpyright
+  look for imports with the interpreter they find and may report a venv's packages unresolved unless the project has a
+  `pyrightconfig.json` (or `[tool.pyright]` in `pyproject.toml`) that names it; intelephense runs in its free tier
+  (no licence key) with its storage in its own default folder. File create, rename and delete
   from a rename or code action are refused (the host declares no resource operations).
 - **Not run for real:** the language servers (`typescript-language-server`, `gopls`, `intelephense`, `basedpyright`) are
   exercised against a fake server in tests and e2e; quick chat's argv was checked once against the installed `claude`

@@ -50,12 +50,15 @@ test('ccc browser open shows a local page in the built-in panel; turning it off 
 
   const core = join(cockpit.dataDir, 'claude-plugins', 'core')
   const skill = join(cockpit.dataDir, 'claude-plugins', ID)
-  // The editor ships a skill too (`ccc edit`), so its plugin dir comes after the browser's.
-  const editorSkill = join(cockpit.dataDir, 'claude-plugins', 'cockpit.editor')
   const hooks = join(cockpit.dataDir, 'hooks.json')
   await cockpit.newTab('claude')
   await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
-  await expect.poll(() => cockpit.claudeRuns()).toEqual([['--settings', hooks, '--plugin-dir', core, '--plugin-dir', skill, '--plugin-dir', editorSkill]])
+  await expect.poll(() => cockpit.claudeRuns().length).toBe(1)
+  // Other bundled plugins ship skills too (the editor's `ccc edit`): their dirs may follow, in any
+  // order. What this test owns is the browser's dir being there now and gone after it is turned off.
+  const firstRun = cockpit.claudeRuns()[0] ?? []
+  expect(firstRun.slice(0, 4)).toEqual(['--settings', hooks, '--plugin-dir', core])
+  expect(pluginDirs(firstRun)).toContain(skill)
 
   // Nothing shown yet.
   await cockpit.typeLine('/ccc browser url')
@@ -85,8 +88,16 @@ test('ccc browser open shows a local page in the built-in panel; turning it off 
   await expect(page.locator('section.panel[aria-label="Browser"]')).toHaveCount(0)
   await cockpit.newTab('claude')
   await expect.poll(() => cockpit.claudeRuns().length).toBe(2)
-  expect(cockpit.claudeRuns()[1]).toEqual(['--settings', hooks, '--plugin-dir', core, '--plugin-dir', editorSkill])
+  const secondRun = cockpit.claudeRuns()[1] ?? []
+  expect(secondRun.slice(0, 4)).toEqual(['--settings', hooks, '--plugin-dir', core])
+  // The browser's dir and nothing else dropped.
+  expect(pluginDirs(secondRun)).toEqual(pluginDirs(firstRun).filter((dir) => dir !== skill))
 })
+
+/** The `--plugin-dir` values of a claude argv, in order. */
+function pluginDirs(argv: string[]): string[] {
+  return argv.flatMap((arg, i) => (arg === '--plugin-dir' && i + 1 < argv.length ? [argv[i + 1] as string] : []))
+}
 
 /** A localhost port nothing listens on: bound by the OS, then closed again. */
 function closedPort(): Promise<number> {

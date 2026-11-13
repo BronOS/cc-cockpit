@@ -262,6 +262,52 @@ test.describe('editor, desktop', () => {
     }
   })
 
+  // Review finding (Task 19): basicSetup's rectangularSelection takes every Alt+left press, so whether
+  // Alt+click still adds a cursor rests on its style honouring clickAddsSelectionRange. Both, for real.
+  test('Alt+click adds a cursor; Alt+drag still selects a column, beside the cursors already there', async () => {
+    const { cockpit: c, close } = await launchCockpit({
+      env: { CC_COCKPIT_NO_BUNDLED: '' },
+      settings: editorSettings({ autosaveIdleSeconds: 0, autosaveOnBlur: false })
+    })
+    try {
+      const { page, projectDir } = c
+      const file = join(projectDir, 'cursors.txt')
+      writeFileSync(file, 'abcd\nefgh\nijkl\n')
+      await waitForEditor(c)
+      await editFromFiles(c, 'cursors.txt')
+      const frame = editorFrame(page)
+      await expect(frame.locator('.cm-content')).toContainText('ijkl')
+      const line = (text: string) => frame.locator('.cm-line', { hasText: text })
+
+      // A cursor at the start of line 1, then Alt+click the start of lines 2 and 3 (x 0 is the line's
+      // left padding: its first position). One typed letter lands at all three.
+      await toStart(c)
+      await line('efgh').click({ modifiers: ['Alt'], position: { x: 0, y: 4 } })
+      await line('ijkl').click({ modifiers: ['Alt'], position: { x: 0, y: 4 } })
+      await page.keyboard.type('X')
+      await expect(frame.locator('.cm-content')).toContainText('XabcdXefghXijkl')
+
+      // Back to one cursor at the end of the file (its empty last line), then Alt+drag down the left
+      // edge of lines 1 to 3: a zero-width column, a cursor on each, added to the one at the end.
+      await page.keyboard.press('Escape')
+      await page.keyboard.press(`${MOD}+End`)
+      const top = await line('Xabcd').boundingBox()
+      const bottom = await line('Xijkl').boundingBox()
+      if (!top || !bottom) throw new Error('no line boxes')
+      await page.keyboard.down('Alt')
+      await page.mouse.move(top.x + 1, top.y + top.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(bottom.x + 1, bottom.y + bottom.height / 2, { steps: 5 })
+      await page.mouse.up()
+      await page.keyboard.up('Alt')
+      await page.keyboard.type('Y')
+      await page.keyboard.press(`${MOD}+s`)
+      await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 10_000 }).toBe('YXabcd\nYXefgh\nYXijkl\nY')
+    } finally {
+      await close()
+    }
+  })
+
   test('closing a tab with unsaved text asks; Cancel keeps it, Discard drops it and the file is untouched; quit asks too', async () => {
     const { cockpit: c, close } = await launchCockpit({
       env: { CC_COCKPIT_NO_BUNDLED: '' },

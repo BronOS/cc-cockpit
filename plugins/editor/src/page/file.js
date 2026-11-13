@@ -40,7 +40,7 @@ import { basicSetup } from 'codemirror'
 import { EditorState, Compartment, StateEffect, StateField, Transaction } from '@codemirror/state'
 import { EditorView, keymap, Decoration, WidgetType } from '@codemirror/view'
 import { indentWithTab } from '@codemirror/commands'
-import { syntaxHighlighting, defaultHighlightStyle, StreamLanguage } from '@codemirror/language'
+import { syntaxHighlighting, defaultHighlightStyle, StreamLanguage, indentUnit } from '@codemirror/language'
 import { openSearchPanel } from '@codemirror/search'
 import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark'
 import { javascript } from '@codemirror/lang-javascript'
@@ -57,7 +57,7 @@ import { languageOfText } from './languages.mjs'
 import { createSession } from './session.mjs'
 import { lineChanges, keepBothText } from './merge.mjs'
 import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces } from './quick-open.mjs'
-import { indentGuides } from './indent-guides.mjs'
+import { indentGuides, detectIndentUnit } from './indent-guides.mjs'
 import { createLspClient } from './lsp/client.mjs'
 import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
 import { createChanges } from './changes.mjs'
@@ -340,6 +340,8 @@ function conflictButton(label, run) {
 
 // ---- the editor ----
 
+/** CodeMirror's Mod: Cmd on macOS, Ctrl elsewhere (the page's chords and the click that adds a cursor). */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
 const themeCompartment = new Compartment()
 const languageCompartment = new Compartment()
 const readOnlyCompartment = new Compartment()
@@ -350,10 +352,18 @@ let replacing = false
 function extensions(info, text) {
   const firstLine = text.slice(0, Math.min(text.length, 200)).split('\n', 1)[0]
   return [
+    // First, so a language's own indent unit does not win: the file's indentation decides what Tab
+    // inserts and where the indent guides fall (a Go file indents with tabs, a Python one with 4 spaces).
+    ...indentUnitFor(text),
     basicSetup,
     indentGuides,
-    // VS Code's Alt+click for another cursor, besides CodeMirror's own Ctrl (Cmd on macOS) click.
-    EditorView.clickAddsSelectionRange.of((e) => e.altKey || e.metaKey || e.ctrlKey),
+    // VS Code's Alt+click for another cursor, besides CodeMirror's own Mod+click (Cmd on macOS, Ctrl
+    // elsewhere; never both: Super+click is the window manager's on Linux, Ctrl+click the context menu
+    // on macOS). basicSetup's rectangularSelection takes every Alt+left press (its mouse style wins over
+    // the plain one), but its style honours this flag: an Alt+click puts a one-point rectangle, a cursor,
+    // beside the ranges already there, and an Alt+drag adds the dragged rectangle to them (click first
+    // to start from one cursor). Checked in the editor e2e.
+    EditorView.clickAddsSelectionRange.of((e) => e.altKey || (IS_MAC ? e.metaKey : e.ctrlKey)),
     // After the line numbers and the fold marks: the bar sits between them and the text.
     changesUi.extension,
     notesUi.extension,
@@ -381,6 +391,12 @@ function extensions(info, text) {
       if (left !== conflictsOf(u.startState).length) session.conflictsLeft(left)
     }),
   ]
+}
+
+/** The indent unit the file itself uses, or nothing (CodeMirror's default) when it does not say. */
+function indentUnitFor(text) {
+  const unit = detectIndentUnit(text)
+  return unit === null ? [] : [indentUnit.of(unit)]
 }
 
 function load(text, info) {
@@ -1067,7 +1083,6 @@ document.addEventListener('mousedown', (e) => {
 // the page has focus): Mod+P quick open, Mod+Shift+F find in files, Mod+K quick chat, Mod+L Ask Claude, Mod being CodeMirror's (Cmd on
 // macOS, Ctrl elsewhere). Caught before CodeMirror, so only the platform's own Mod: on macOS Ctrl+P is
 // the standard keymap's cursorLineUp and must stay with the editor.
-const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
 window.addEventListener(
   'keydown',
   (e) => {
