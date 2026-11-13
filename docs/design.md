@@ -452,8 +452,9 @@ plain tab has no group, and a project without groups behaves as before.
   Show beside, move between groups), `groups.remove`, `groups.dissolve`, `groups.resize` (once, on
   drag release), `groups.rename`, `groups.get`; `tabs.create` with `beside` creates and places in one
   step (a refused placement leaves the tab plain); `tabs.reorder` with `block` moves a whole group,
-  and a member dropped outside its segment without it leaves the group (any index within the
-  segment's span, ends included, is a no-op: D24 Q3). Every id is looked up in the
+  and a member's plain reorder is a no-op only at its own position or strictly between two of its
+  group mates (in the order without it); anywhere else, just past its bracket included, it leaves the
+  group there (D26 N2). Every id is looked up in the
   sender's project (unknown and foreign are one refusal, with no event); all are REMOTE_CLASS `yes`
   (a browser may rearrange, D12). Each change, and each change of the tab order, publishes one whole
   snapshot `groups.changed { seq, order, groups }` through `ViewRegistry` to every view (the sender
