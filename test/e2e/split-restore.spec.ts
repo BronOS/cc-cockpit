@@ -79,10 +79,10 @@ test('two groups come back after a quit and relaunch, with their sizes and the t
   }
 })
 
-test('a command tab dropped by restore (its plugin is gone) is pruned from the group; the rest stays grouped', async () => {
+test('a command tab dropped by restore (its plugin is uninstalled) is pruned from the group; the rest stays grouped', async () => {
   test.setTimeout(120_000)
   const first = await launchCockpit()
-  const { root } = first.cockpit
+  const { root, projectDir } = first.cockpit
   // A copy of the fixture plugin that the test deletes before the relaunch: "revoked / gone".
   const copy = join(root, 'plugin-copy')
   cpSync(join(__dirname, '..', 'fixtures', 'plugins', 'split-beside'), copy, { recursive: true })
@@ -93,18 +93,31 @@ test('a command tab dropped by restore (its plugin is gone) is pruned from the g
     await expect
       .poll(async () => (await c.hook<HostStatus>('hostStatus', c.projectDir)).plugins.map((p) => `${p.id}:${p.state}`), { timeout: 15_000 })
       .toEqual(['test.splitbeside:active'])
+    // Both shells first: with a group on screen the New tab menu opens under a divider (see run-1.md).
     const a = await newTaggedShell(c, 'pa')
+    const b = await newTaggedShell(c, 'pb')
     writeFileSync(join(c.root, 'home', 'anchor.txt'), a.id)
     await c.hook('runPluginCommand', c.projectDir, 'test.splitbeside/open-command') // beside a: a, plug
-    await expect.poll(async () => (await tabsOf(c.page)).length).toBe(2)
+    await expect.poll(async () => (await tabsOf(c.page)).length).toBe(3)
     const plug = (await tabsOf(c.page)).find((t) => t.kind === 'command')!
-    // A third pane, a shell, to the right of the command tab.
-    const b = await newTaggedShell(c, 'pb')
+    // The second shell goes to the right of the command tab.
     await invoke(c.page, 'groups.place', { tabId: b.id, at: plug.id, edge: 'right' })
     await expect.poll(async () => leaves((await groupsOf(c.page)).groups[0]!.root).length).toBe(3)
     await expect.poll(() => savedGroups(c).length).toBe(1)
   } finally {
     await first.close({ keepFiles: true })
+  }
+  // The plugin is "gone": a linked plugin whose folder is deleted still counts as installed (not
+  // revoked), so the saved record is edited to name a plugin that was never installed (restore.ts
+  // `pluginAvailable`), as it would be after an uninstall.
+  const dir = join(root, 'data', 'projects')
+  for (const name of readdirSync(dir)) {
+    if (!/^[0-9a-f]{16}\.json$/.test(name)) continue
+    const file = join(dir, name)
+    const record = JSON.parse(readFileSync(file, 'utf8')) as SavedRecord & { tabs: Array<{ openedBy?: string }> }
+    if (record.path !== projectDir) continue
+    for (const t of record.tabs) if (t.openedBy !== undefined) t.openedBy = 'test.uninstalled'
+    writeFileSync(file, JSON.stringify(record))
   }
   rmSync(copy, { recursive: true, force: true })
 

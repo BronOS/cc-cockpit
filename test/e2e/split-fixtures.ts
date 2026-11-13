@@ -52,7 +52,7 @@ export const paneOf = (page: Page, tabId: string): Locator => page.locator(`[dat
 /** Dividers (D19: `role=separator` with `data-split-divider="<splitId>:<index>"`). */
 export const dividers = (page: Page): Locator => page.locator('[role="separator"][data-split-divider]')
 /** The split area's zoom state (D19: `data-zoom="manual"` or `"auto"`). */
-export const zoomMark = (page: Page): Locator => page.locator('[data-zoom]')
+export const splitArea = (page: Page): Locator => page.locator('[data-split-area]')
 /** The visible pane whose screen shows `text`. */
 export const paneShowing = (page: Page, text: string): Locator => visiblePanes(page).filter({ hasText: text })
 /** What the pane has focused: the `data-focused-pane` mark (an unfocused pane has none, or "false"). */
@@ -103,6 +103,9 @@ export async function newTaggedShell(cockpit: Cockpit, tag: string): Promise<Tab
  * in `tags` order.
  */
 export async function groupOfShells<const T extends readonly string[]>(cockpit: Cockpit, tags: T): Promise<{ [K in keyof T]: string }> {
+  // A roomy window: three or four panes in a row would otherwise fall under the auto-zoom size (D5)
+  // on the default window, and this helper wants every pane drawn.
+  await cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1900, 1000))
   const ids: string[] = []
   for (const tag of tags) ids.push((await newTaggedShell(cockpit, tag)).id)
   for (let i = 1; i < ids.length; i++) {

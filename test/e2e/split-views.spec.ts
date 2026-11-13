@@ -23,7 +23,7 @@ import {
   paneOf,
   paneShowing,
   paneText,
-  zoomMark,
+  splitArea,
   place,
   recordGroupEvents,
   tabsOf,
@@ -37,6 +37,10 @@ import { enableWebAccess, openBrowser, openProjectInBrowser, type WebBrowser } f
 async function joinBrowser(cockpit: Cockpit): Promise<{ browser: WebBrowser; web: Page }> {
   const on = await enableWebAccess(cockpit)
   const browser = await openBrowser(on.link)
+  // A roomy window, set before the project opens (the browser takes the pty size when it loads, and a
+  // narrow take would auto-zoom the desktop too, see run-1.md): four panes in a row must not fall
+  // under the auto-zoom size (D5) by themselves.
+  await browser.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1900, 1000))
   await openProjectInBrowser(browser, on.origin, on.projectId)
   return { browser, web: browser.page }
 }
@@ -196,8 +200,8 @@ test('a browser joining mid-run draws every pane of the group, each with its scr
   test.setTimeout(120_000)
   const ids = await groupOfShells(cockpit, ['pa', 'pb', 'pc', 'pd'])
   // Output after the group was made and before any browser exists: only the desktop has seen it.
-  await cockpit.typeLine('echo late-$((50+5))')
-  await cockpit.waitForTerminalText('late-55')
+  await typeInPane(cockpit.page, paneOf(cockpit.page, ids[3]), 'echo late-$((50+5))')
+  await waitPaneText(paneOf(cockpit.page, ids[3]), 'late-55')
 
   const { browser, web } = await joinBrowser(cockpit)
   try {
@@ -236,20 +240,20 @@ test('a member of an unselected group asking for permission shows in the strip, 
     await page.getByRole('tab').last().click() // ... then leave the group
     await expect(visiblePanes(page)).toHaveCount(1)
 
-    const dot = page.locator('.tab .status-dot[title*="needs you"]')
+    const dot = page.locator('.tab .status-dot[title*="needs permission"]')
     await expect(dot).toHaveCount(1, { timeout: 10_000 })
     // It sits in the group's segment, not on the plain tab, while that group is not shown.
     await expect(page.getByRole('group').filter({ has: dot })).toHaveCount(1)
     // The browser (selected on the plain shell too) sees it the same way.
     await web.getByRole('tab').last().click()
-    await expect(web.locator('.tab .status-dot[title*="needs you"]')).toHaveCount(1)
-    await expect(web.getByRole('group').filter({ has: web.locator('.tab .status-dot[title*="needs you"]') })).toHaveCount(1)
+    await expect(web.locator('.tab .status-dot[title*="needs permission"]')).toHaveCount(1)
+    await expect(web.getByRole('group').filter({ has: web.locator('.tab .status-dot[title*="needs permission"]') })).toHaveCount(1)
   } finally {
     await browser.close()
   }
 })
 
-test('zoom is per view: the desktop zooms one pane, the browser still shows both, hidden members keep their dots', async ({ cockpit }) => {
+test('zoom is per view: the desktop zooms one pane, the browser still shows both, the hidden member keeps its tab in the segment', async ({ cockpit }) => {
   test.setTimeout(120_000)
   const { page } = cockpit
   await groupOfShells(cockpit, ['pa', 'pb'])
@@ -266,7 +270,6 @@ test('zoom is per view: the desktop zooms one pane, the browser still shows both
     await expect(paneShowing(page, 'pb-2')).toBeVisible()
     const segment = page.getByRole('group').filter({ has: page.getByRole('tab') })
     await expect(segment.getByRole('tab')).toHaveCount(2)
-    await expect(segment.locator('.status-dot')).toHaveCount(2)
     // Zoom sends nothing to other views and the shared model is untouched.
     await expect(visiblePanes(web)).toHaveCount(2)
     expect((await groupsOf(page)).groups).toHaveLength(1)
@@ -303,9 +306,12 @@ test('D5, D6: a split past the caps is refused and changes nothing', async ({ co
   const { page } = cockpit
   const ids = await groupOfShells(cockpit, ['pa', 'pb'])
   // Eight panes is the cap: fill the group (the 2 existing + 6 more), no pane is ever refused before.
+  // Placed by `groups.place` (main's rules: caps), not by `beside` on create: the page may refuse a
+  // split that would leave a pane under 20 columns in this window (D5), which is not what this checks.
   for (let i = 0; i < 6; i++) {
-    const t = await createTab(page, { kind: 'shell', beside: { tabId: ids[0]!, edge: i % 2 ? 'down' : 'right' } })
+    const t = await createTab(page, { kind: 'shell' })
     expect(t, `pane ${i + 3}`).not.toBeNull()
+    expect((await place(page, t!.id, ids[0]!, 'right')).ok, `pane ${i + 3}`).toBe(true)
   }
   await expect.poll(async () => leaves((await groupsOf(page)).groups[0]!.root).length).toBe(8)
   const full = await groupsOf(page)
@@ -388,19 +394,21 @@ test('D18: when groups.remove from another view dissolves the group, this view s
     await expect(focusedPanes(page)).toHaveCount(1)
     expect((await invoke<{ ok: boolean }>(web, 'groups.remove', { tabId: a })).ok).toBe(true)
     await expect.poll(async () => (await groupsOf(page)).groups).toEqual([])
-    // What is left of the group is B, shown alone; nothing has the keys.
+    // D22: the dissolve keeps the same terminal on screen (the desktop was on A, which is now a plain
+    // tab), shown alone with the keys off: nothing typed lands in A or B.
     await expect(visiblePanes(page)).toHaveCount(1)
-    await expect(paneOf(page, b)).toBeVisible()
+    await expect(paneOf(page, a)).toBeVisible()
     await expect(focusedPanes(page)).toHaveCount(0)
     await page.keyboard.type('echo leak-$((7+8))')
     await page.keyboard.press('Enter')
     await page.waitForTimeout(700)
+    expect(await paneText(paneOf(page, a))).not.toContain('leak-15')
     expect(await paneText(paneOf(page, b))).not.toContain('leak-15')
     // A click on the pane is what gives the keys back.
-    await paneOf(page, b).locator('.xterm').click()
+    await paneOf(page, a).locator('.xterm').click()
     await page.keyboard.type('echo back-$((2+2))')
     await page.keyboard.press('Enter')
-    await waitPaneText(paneOf(page, b), 'back-4')
+    await waitPaneText(paneOf(page, a), 'back-4')
   } finally {
     await browser.close()
   }
@@ -414,12 +422,12 @@ test('D5: a browser view too narrow for its panes shows the group zoomed on the 
   try {
     await web.getByRole('tab').first().click()
     await expect(visiblePanes(web)).toHaveCount(2)
-    await expect(zoomMark(web)).not.toHaveAttribute('data-zoom', 'auto')
+    await expect(splitArea(web)).not.toHaveAttribute('data-zoom', 'auto')
     await paneOf(web, b).locator('.xterm').click()
 
     // A phone-sized viewport: panes would fall under about 40x10 cells.
     await web.setViewportSize({ width: 420, height: 700 })
-    await expect(zoomMark(web)).toHaveAttribute('data-zoom', 'auto')
+    await expect(splitArea(web)).toHaveAttribute('data-zoom', 'auto')
     await expect(visiblePanes(web)).toHaveCount(1)
     await expect(paneOf(web, b)).toBeVisible() // the focused pane stays
     await expect(web.getByText(/zoomed \(1 hidden\)/)).toBeVisible()
@@ -427,14 +435,14 @@ test('D5: a browser view too narrow for its panes shows the group zoomed on the 
     await expect(web.getByRole('group').filter({ has: web.getByRole('tab') }).getByRole('tab')).toHaveCount(2)
     // Per view: the desktop still shows both panes and is not auto-zoomed.
     await expect(visiblePanes(page)).toHaveCount(2)
-    await expect(zoomMark(page)).not.toHaveAttribute('data-zoom', 'auto')
+    await expect(splitArea(page)).not.toHaveAttribute('data-zoom', 'auto')
     expect((await groupsOf(page)).groups).toHaveLength(1)
     expect(leaves((await groupsOf(page)).groups[0]!.root)).toEqual([a, b])
 
     // Wide again: both panes come back by themselves.
     await web.setViewportSize({ width: 1280, height: 800 })
     await expect(visiblePanes(web)).toHaveCount(2)
-    await expect(zoomMark(web)).not.toHaveAttribute('data-zoom', 'auto')
+    await expect(splitArea(web)).not.toHaveAttribute('data-zoom', 'auto')
   } finally {
     await browser.close()
   }
@@ -501,7 +509,7 @@ test('a group name is plain text and never stands in for a member\'s status or l
       const segment = view.getByRole('group').filter({ has: view.getByRole('tab') })
       await expect(segment).toHaveAttribute('aria-label', new RegExp(`Group ${name}, 2 tabs`))
       // Not a status: no member has a "needs you" dot, and the tab labels are unchanged.
-      await expect(view.locator('.tab .status-dot[title*="needs you"]')).toHaveCount(0)
+      await expect(view.locator('.tab .status-dot[title*="needs permission"]')).toHaveCount(0)
     }
     expect(await page.getByRole('tab').allInnerTexts()).toEqual(before)
     // Names follow the tab name rule: control and bidi characters are refused, nothing changes.
