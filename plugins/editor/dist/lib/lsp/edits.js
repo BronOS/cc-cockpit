@@ -36,8 +36,9 @@ const MAX_LINE = 10_000_000
 const MAX_CHARACTER = 1_000_000
 const isIndex = (v, max) => Number.isInteger(v) && v >= 0 && v <= max
 
-function position(v) {
-  if (!v || typeof v !== 'object' || !isIndex(v.line, MAX_LINE) || !isIndex(v.character, MAX_CHARACTER)) throw new Error('an edit has a bad position')
+/** A `{ line, character }` checked and rebuilt, or a thrown Error with `message` (the manager's page-facing text differs). */
+function position(v, message = 'an edit has a bad position') {
+  if (!v || typeof v !== 'object' || !isIndex(v.line, MAX_LINE) || !isIndex(v.character, MAX_CHARACTER)) throw new Error(message)
   return { line: v.line, character: v.character }
 }
 
@@ -47,7 +48,7 @@ function textEdit(e) {
   if (e.newText.length > MAX_NEW_TEXT) throw new Error('an edit inserts too much text')
   const start = position(e.range.start)
   const end = position(e.range.end)
-  if (end.line < start.line || (end.line === start.line && end.character < start.character)) throw new Error('an edit ends before it starts')
+  if (before(end, start)) throw new Error('an edit ends before it starts')
   return { range: { start, end }, newText: e.newText }
 }
 
@@ -268,4 +269,4 @@ function applyToDisk(mgr, st, since) {
   return r.written ? { lost: true } : null
 }
 
-module.exports = { applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit }
+module.exports = { before, position, applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit }

@@ -89,7 +89,7 @@ function serveLsp(tab, manager, log) {
       holder.post(m)
     })
 
-  const fail = (p, e) => holder.post({ t: 'lsp-error', ...(typeof p === 'string' ? { path: p } : {}), message: String((e && e.message) || e) })
+  const fail = (p, e) => holder.post({ t: 'lsp-error', ...(typeof p === 'string' ? { path: p } : {}), message: files.messageOf(e) })
 
   function dropOpen(p) {
     const o = opens.get(p)
@@ -177,7 +177,7 @@ function serveLsp(tab, manager, log) {
       (e) => {
         if (asks.get(req) !== ctl) return
         asks.delete(req)
-        answer({ error: String((e && e.message) || e).slice(0, 1000) })
+        answer({ error: files.messageOf(e).slice(0, 1000) })
       },
     )
   }

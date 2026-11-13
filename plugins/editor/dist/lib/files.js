@@ -31,6 +31,10 @@ const BINARY_SNIFF_BYTES = 8000
  * of UTF-8, so 128 Ki units are at most 768 KiB, leaving room for the envelope (path, hash, flags).
  */
 const CHUNK_CHARS = 128 * 1024
+/** The page's save parts are assumed at least this many units each, which caps how many parts a save may announce. */
+const MIN_SAVE_PART_CHARS = 1024
+/** Bytes one readFd read takes (the file is hashed and kept in pieces of this size). */
+const READ_BUFFER_BYTES = 1024 * 1024
 /** A save's text, assembled from its parts, may be at most this long (UTF-16 units): what can be edited at all. */
 const MAX_SAVE_CHARS = MAX_EDIT_BYTES
 /** At most this many saves assembling at once per page line: a page that never sends the last part cannot pile them up. */
@@ -172,7 +176,7 @@ function readFd(fd) {
   const h = crypto.createHash('sha256')
   const chunks = []
   let size = 0
-  const buf = Buffer.allocUnsafe(1024 * 1024)
+  const buf = Buffer.allocUnsafe(READ_BUFFER_BYTES)
   while (size <= MAX_VIEW_BYTES) {
     const n = fs.readSync(fd, buf, 0, Math.min(buf.length, MAX_VIEW_BYTES + 1 - size), size)
     if (n === 0) break
@@ -402,75 +406,48 @@ function describeNoReal(r) {
   return out
 }
 
-/**
- * Saves `text` over the file a page loaded as `baseHash`, by compare-and-swap on the inode
- * (design-editor.md §2 "Saving"). Answers one of:
- * - `{ result: 'saved', hash }`: written; `hash` is the page's new base.
- * - `{ result: 'changed', hash, text?, readOnly, why?, ... }` or `{ result: 'changed', deleted: true }`:
- *   the file is not the page's base (Claude wrote it), nothing was written; the page merges `text`
- *   (theirs) and saves again with `hash`.
- * - `{ result: 'changed', written: true, hash, text, ... }`: written, but a write into the OLD file
- *   landed between our check and the rename (it is lost from disk); `text` is that write, so the page
- *   merges it into what it just wrote and saves again with `hash` (what is on disk now: its own text).
- * `baseHash: null` saves a file the page knows as deleted: it is created only when it is still
- * absent (a hard link of the temp file, which fails when the name exists; an exclusive create where
- * the filesystem has no hard links), else `changed`. `opts` `{ eol, bom }` is the page's last line
- * ending and BOM of that file, which the deleted file can no longer tell.
- *
- * Steps for an existing file: open and hold a descriptor on the current inode, hash it against
- * `baseHash`, write a temp file in the same folder (same filesystem, so the rename is atomic) with
- * the file's mode, re-check just before the rename that the held inode still hashes to `baseHash`
- * and then that the name still points at it (stat last: the window to the rename is two syscalls),
- * rename, then re-hash the held descriptor: the old inode, which only a writer that opened it before
- * the rename can still change. Two windows remain and cannot be closed without a lock: a
- * rename-replace by another writer between that stat and our rename is overwritten, and a write
- * into the old inode after the final re-hash is lost, both unnoticed.
- */
-function saveFile(root, rel, text, baseHash, opts = {}) {
-  if (typeof text !== 'string') throw new Error('text must be a string')
-  if (text.length > MAX_SAVE_CHARS) throw new Error('the text is too large to save')
-  const r = resolveInProject(root, rel)
-
-  if (baseHash === null) {
-    if (r.exists) return changedAnswer(root, r.rel)
-    const bytes = encodeText(text, { eol: opts.eol === '\r\n' ? '\r\n' : '\n', bom: opts.bom === true })
-    if (bytes.length > MAX_EDIT_BYTES) throw new Error('the text is too large to save')
-    // 0666 minus the umask, as any editor creating a file: the mode of the deleted file is gone with it.
-    const mode = 0o666 & ~process.umask()
-    const tmp = writeTemp(r.real, bytes, mode)
-    let linked = false
+/** The create half of saveFile: `r` is a resolved path whose file the page knew as deleted. */
+function createFile(root, r, text, opts) {
+  if (r.exists) return changedAnswer(root, r.rel)
+  const bytes = encodeText(text, { eol: opts.eol === '\r\n' ? '\r\n' : '\n', bom: opts.bom === true })
+  if (bytes.length > MAX_EDIT_BYTES) throw new Error('the text is too large to save')
+  // 0666 minus the umask, as any editor creating a file: the mode of the deleted file is gone with it.
+  const mode = 0o666 & ~process.umask()
+  const tmp = writeTemp(r.real, bytes, mode)
+  let linked = false
+  try {
+    fs.linkSync(tmp, r.real)
+    linked = true
+  } catch (e) {
+    if (e.code === 'EEXIST') return changedAnswer(root, r.rel)
+    // No hard links here (FAT/exFAT, some network mounts): create it exclusively and write in place.
+    if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK'].includes(e.code)) throw e
+  } finally {
+    rmQuiet(tmp)
+  }
+  if (!linked) {
+    let fd
     try {
-      fs.linkSync(tmp, r.real)
-      linked = true
+      fd = fs.openSync(r.real, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), mode)
     } catch (e) {
       if (e.code === 'EEXIST') return changedAnswer(root, r.rel)
-      // No hard links here (FAT/exFAT, some network mounts): create it exclusively and write in place.
-      if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK'].includes(e.code)) throw e
+      throw e
+    }
+    let ok = false
+    try {
+      writeAll(fd, bytes)
+      fs.fsyncSync(fd)
+      ok = true
     } finally {
-      rmQuiet(tmp)
+      fs.closeSync(fd)
+      if (!ok) rmQuiet(r.real)
     }
-    if (!linked) {
-      let fd
-      try {
-        fd = fs.openSync(r.real, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), mode)
-      } catch (e) {
-        if (e.code === 'EEXIST') return changedAnswer(root, r.rel)
-        throw e
-      }
-      let ok = false
-      try {
-        writeAll(fd, bytes)
-        fs.fsyncSync(fd)
-        ok = true
-      } finally {
-        fs.closeSync(fd)
-        if (!ok) rmQuiet(r.real)
-      }
-    }
-    return { result: 'saved', hash: hashBytes(bytes) }
   }
+  return { result: 'saved', hash: hashBytes(bytes) }
+}
 
-  if (typeof baseHash !== 'string') throw new Error('baseHash must be a string or null')
+/** The compare-and-swap half of saveFile: replaces the existing file `r` only while it still hashes to `baseHash`. */
+function replaceFile(root, r, text, baseHash) {
   if (!r.exists) return { result: 'changed', deleted: true, hash: null }
 
   const { fd, st } = openRegular(r.real)
@@ -517,6 +494,60 @@ function saveFile(root, rel, text, baseHash, opts = {}) {
   } finally {
     fs.closeSync(fd)
   }
+}
+
+/**
+ * Saves `text` over the file a page loaded as `baseHash`, by compare-and-swap on the inode
+ * (design-editor.md §2 "Saving"). Answers one of:
+ * - `{ result: 'saved', hash }`: written; `hash` is the page's new base.
+ * - `{ result: 'changed', hash, text?, readOnly, why?, ... }` or `{ result: 'changed', deleted: true }`:
+ *   the file is not the page's base (Claude wrote it), nothing was written; the page merges `text`
+ *   (theirs) and saves again with `hash`.
+ * - `{ result: 'changed', written: true, hash, text, ... }`: written, but a write into the OLD file
+ *   landed between our check and the rename (it is lost from disk); `text` is that write, so the page
+ *   merges it into what it just wrote and saves again with `hash` (what is on disk now: its own text).
+ * `baseHash: null` saves a file the page knows as deleted: it is created only when it is still
+ * absent (a hard link of the temp file, which fails when the name exists; an exclusive create where
+ * the filesystem has no hard links), else `changed`. `opts` `{ eol, bom }` is the page's last line
+ * ending and BOM of that file, which the deleted file can no longer tell.
+ *
+ * Steps for an existing file: open and hold a descriptor on the current inode, hash it against
+ * `baseHash`, write a temp file in the same folder (same filesystem, so the rename is atomic) with
+ * the file's mode, re-check just before the rename that the held inode still hashes to `baseHash`
+ * and then that the name still points at it (stat last: the window to the rename is two syscalls),
+ * rename, then re-hash the held descriptor: the old inode, which only a writer that opened it before
+ * the rename can still change. Two windows remain and cannot be closed without a lock: a
+ * rename-replace by another writer between that stat and our rename is overwritten, and a write
+ * into the old inode after the final re-hash is lost, both unnoticed.
+ */
+function saveFile(root, rel, text, baseHash, opts = {}) {
+  if (typeof text !== 'string') throw new Error('text must be a string')
+  if (text.length > MAX_SAVE_CHARS) throw new Error('the text is too large to save')
+  const r = resolveInProject(root, rel)
+
+  if (baseHash === null) return createFile(root, r, text, opts)
+  if (typeof baseHash !== 'string') throw new Error('baseHash must be a string or null')
+  return replaceFile(root, r, text, baseHash)
+}
+
+/** A copy of `o` without the listed keys. */
+function omit(o, ...keys) {
+  const out = { ...o }
+  for (const k of keys) delete out[k]
+  return out
+}
+
+/** The params main gave a page tab (`path`, `outside`), or {} when it gave none. */
+function paramsOf(tab) {
+  return tab.params && typeof tab.params === 'object' ? tab.params : {}
+}
+
+/**
+ * An error as text a page may see: its message, else the value itself. (Paths are cut out by safeMessage;
+ * this is for errors whose text is the host's own or a server's.)
+ */
+function messageOf(e) {
+  return e && e.message ? String(e.message) : String(e)
 }
 
 /**
@@ -796,7 +827,7 @@ const FS_ERROR_TEXT = {
 function safeMessage(e, root, rel) {
   const where = typeof rel === 'string' && rel ? `: ${rel}` : ''
   if (e && typeof e.code === 'string' && e.code.startsWith('E')) return `${FS_ERROR_TEXT[e.code] || e.code}${where}`
-  let msg = e && e.message ? String(e.message) : String(e)
+  let msg = messageOf(e)
   const roots = [root]
   try {
     roots.push(fs.realpathSync(root))
@@ -876,7 +907,7 @@ function serveFileTab(files, tab, log) {
 
   // A read-only tab of a file outside the project (readOutside): only the path the host put in the
   // tab's params, never one the page names.
-  const tabParams = tab.params && typeof tab.params === 'object' ? tab.params : {}
+  const tabParams = paramsOf(tab)
   const outsidePath = typeof tabParams.outside === 'string' ? tabParams.outside : null
 
   function read(req, p, isOpen, headOnly) {
@@ -888,9 +919,7 @@ function serveFileTab(files, tab, log) {
         return fail(req, p, e)
       }
       if (!o.exists) return post({ t: 'file', req, path: p, exists: false, part: 0, parts: 1 })
-      const head = describeNoReal(o)
-      delete head.text
-      return postParts({ t: 'file', req, path: p, exists: true, ...head }, headOnly ? undefined : o.text)
+      return postParts({ t: 'file', req, path: p, exists: true, ...omit(describeNoReal(o), 'text') }, headOnly ? undefined : o.text)
     }
     let r
     try {
@@ -905,11 +934,9 @@ function serveFileTab(files, tab, log) {
       watch(r.rel, real, r.exists ? r.hash : null)
     }
     if (!r.exists) return post({ t: 'file', req, path: r.rel, exists: false, part: 0, parts: 1 })
-    const head = describeNoReal(r)
-    delete head.text
     // A head-only read (the page's re-check on window focus) answers the hash and flags without the
     // text: a 5 MB file would otherwise cross the port on every click back into the tab.
-    postParts({ t: 'file', req, path: r.rel, exists: true, ...head }, headOnly ? undefined : r.text)
+    postParts({ t: 'file', req, path: r.rel, exists: true, ...omit(describeNoReal(r), 'text') }, headOnly ? undefined : r.text)
   }
 
   function save(m) {
@@ -920,7 +947,7 @@ function serveFileTab(files, tab, log) {
       if (saves.size >= MAX_PENDING_SAVES) return fail(req, m.path, new Error('too many saves at once'))
       const parts = Number.isInteger(m.parts) && m.parts >= 1 ? m.parts : 1
       // At most this many parts: a page that announces a million parts cannot hold memory forever.
-      if (parts > Math.ceil(MAX_SAVE_CHARS / 1024) + 1) return fail(req, m.path, new Error('too many save parts'))
+      if (parts > Math.ceil(MAX_SAVE_CHARS / MIN_SAVE_PART_CHARS) + 1) return fail(req, m.path, new Error('too many save parts'))
       s = { path: m.path, baseHash: m.baseHash, eol: m.eol, bom: m.bom, parts, got: [], length: 0, timer: null }
       saves.set(req, s)
     } else if (m.part !== s.got.length || m.path !== s.path) {
@@ -956,7 +983,7 @@ function serveFileTab(files, tab, log) {
     try {
       const r = resolveInProject(files.root, s.path)
       rel = r.rel
-      answer = saveFile(files.root, rel, s.got.join(''), s.baseHash === null ? null : s.baseHash, { eol: s.eol, bom: s.bom })
+      answer = saveFile(files.root, rel, s.got.join(''), s.baseHash, { eol: s.eol, bom: s.bom })
     } catch (e) {
       return fail(req, s.path, e)
     }
@@ -975,10 +1002,7 @@ function serveFileTab(files, tab, log) {
       const w = watches.get(rel)
       if (w) w.stop.seen(answer.hash)
     }
-    const head = { ...answer }
-    delete head.result
-    delete head.text
-    postParts({ t: 'changed', req, path: rel, ...head }, answer.text)
+    postParts({ t: 'changed', req, path: rel, ...omit(answer, 'result', 'text') }, answer.text)
   }
 
   tab.onMessage((m) => {
@@ -1037,6 +1061,7 @@ module.exports = {
   BINARY_SNIFF_BYTES,
   CHUNK_CHARS,
   safeMessage,
+  messageOf,
   relativePath,
   resolveInProject,
   sniffBinary,
@@ -1047,6 +1072,7 @@ module.exports = {
   outsideRefused,
   saveFile,
   chunkText,
+  paramsOf,
   FolderWatcher,
   serveFileTab,
   makeFiles,

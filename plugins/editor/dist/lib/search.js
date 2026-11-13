@@ -24,6 +24,7 @@
 
 const { programPath } = require('./lsp/servers.js')
 const { splitter } = require('./split.js')
+const { messageOf } = require('./files.js')
 
 /** At most this many files for quick open: far more than a fuzzy list is useful for. */
 const MAX_FILES = 50000
@@ -338,7 +339,7 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
     if (!closed) tab.post(m)
   }
   const fail = (kind, req, e) =>
-    post({ t: 'search-error', kind, req, message: e && e.message ? e.message : String(e), ...(e && e.missing ? { missing: true } : {}) })
+    post({ t: 'search-error', kind, req, message: messageOf(e), ...(e && e.missing ? { missing: true } : {}) })
   /**
    * rg by its absolute path from the absolute PATH entries (lsp/servers.js programPath), looked up per
    * search (an install while the app runs counts): the bare name would let the spawn's PATH search
@@ -393,57 +394,42 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
     cancel('grep')
   })
 
+  /**
+   * The shape of a files / grep request: a refusal without ctx.processes, the job from `make` (which
+   * may throw: rg missing, a bad query), then `start`. `logLabel` names a failure worth a log line
+   * (quick open logs the ones that are not "rg is missing"; a grep failure is the person's query, not logged).
+   */
+  function launch(kind, req, noSpawnText, make, onDone, logLabel) {
+    if (typeof spawn !== 'function') return fail(kind, req, new Error(noSpawnText))
+    let job
+    try {
+      job = make()
+    } catch (e) {
+      return fail(kind, req, e)
+    }
+    start(kind, job, onDone, (e) => {
+      if (logLabel && log && !e.missing) log.warn(`${logLabel}: ${e.message}`)
+      fail(kind, req, e)
+    })
+  }
+
   return function handle(m) {
     if (!m || typeof m !== 'object') return false
     if (m.t === 'files') {
-      const req = m.req
-      if (typeof spawn !== 'function') {
-        fail('files', req, new Error('quick open needs a newer cockpit (ctx.processes)'))
-        return true
-      }
-      let job
-      try {
-        job = listFiles(spawn, root, { bin: rg(), slots })
-      } catch (e) {
-        fail('files', req, e)
-        return true
-      }
-      start(
-        'files',
-        job,
-        ({ paths, truncated }) => {
-          const parts = partsOf(paths, jsonSize)
-          parts.forEach((list, i) => post({ t: 'files', req, paths: list, part: i, parts: parts.length, truncated }))
-        },
-        (e) => {
-          if (log && !e.missing) log.warn(`quick open: ${e.message}`)
-          fail('files', req, e)
-        }
-      )
+      const { req } = m
+      launch('files', req, 'quick open needs a newer cockpit (ctx.processes)', () => listFiles(spawn, root, { bin: rg(), slots }), ({ paths, truncated }) => {
+        const parts = partsOf(paths, jsonSize)
+        parts.forEach((list, i) => post({ t: 'files', req, paths: list, part: i, parts: parts.length, truncated }))
+      }, 'quick open')
       return true
     }
     if (m.t === 'grep') {
-      const req = m.req
-      if (typeof spawn !== 'function') {
-        fail('grep', req, new Error('find in files needs a newer cockpit (ctx.processes)'))
-        return true
-      }
-      let job
-      try {
-        job = grep(spawn, root, m.query, { regex: m.regex === true, caseSensitive: m.caseSensitive === true, word: m.word === true, bin: rg(), slots })
-      } catch (e) {
-        fail('grep', req, e)
-        return true
-      }
-      start(
-        'grep',
-        job,
-        ({ matches, files, truncated }) => {
-          const parts = partsOf(matches, jsonSize)
-          parts.forEach((list, i) => post({ t: 'grep', req, matches: list, part: i, parts: parts.length, truncated, files }))
-        },
-        (e) => fail('grep', req, e)
-      )
+      const { req } = m
+      const make = () => grep(spawn, root, m.query, { regex: m.regex === true, caseSensitive: m.caseSensitive === true, word: m.word === true, bin: rg(), slots })
+      launch('grep', req, 'find in files needs a newer cockpit (ctx.processes)', make, ({ matches, files, truncated }) => {
+        const parts = partsOf(matches, jsonSize)
+        parts.forEach((list, i) => post({ t: 'grep', req, matches: list, part: i, parts: parts.length, truncated, files }))
+      })
       return true
     }
     if (m.t === 'grep-cancel') {

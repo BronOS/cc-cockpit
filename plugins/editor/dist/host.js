@@ -116,6 +116,8 @@ const idleOk = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_IDLE_SECONDS
 const CONFLICT_MARK = '⚠ '
 /** How long a closed line's conflict report outlives it (a reconnect's new line reports within it). */
 const MARKER_GRACE_MS = 3000
+/** How long `micro -version` may take before micro counts as missing. */
+const MICRO_VERSION_TIMEOUT_MS = 10000
 /** The grace timers, cleared when the plugin stops. */
 const markerTimers = new Set()
 
@@ -186,7 +188,7 @@ exports.activate = (ctx) => {
     if (checked.has(bin)) return
     let ok = false
     try {
-      const r = await ctx.exec([bin, '-version'], { timeoutMs: 10000 })
+      const r = await ctx.exec([bin, '-version'], { timeoutMs: MICRO_VERSION_TIMEOUT_MS })
       ok = r.code === 0 && /version/i.test(r.stdout)
     } catch {
       ok = false // not found: exec rejects when the program cannot be started
@@ -282,17 +284,24 @@ exports.activate = (ctx) => {
     for (const map of [pendingGoto, marked, conflictViews]) for (const id of map.keys()) if (!open.has(id)) map.delete(id)
     for (const id of firstOpened) if (!open.has(id)) firstOpened.delete(id)
   }
-  /** After the last instance of tab `id` closed: prune once main's list no longer has it (a close, not an unmount). */
-  function pruneLater(id) {
+  /** Runs `fn` after MARKER_GRACE_MS; the timer is tracked in markerTimers (cleared at deactivate) and never keeps the host alive. */
+  function graceTimer(fn) {
     const timer = setTimeout(() => {
       markerTimers.delete(timer)
+      fn()
+    }, MARKER_GRACE_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    markerTimers.add(timer)
+  }
+
+  /** After the last instance of tab `id` closed: prune once main's list no longer has it (a close, not an unmount). */
+  function pruneLater(id) {
+    graceTimer(() => {
       if (instances.has(id)) return
       ctx.tabs.list('file').then((list) => {
         if (!instances.has(id) && !list.some((t) => t.id === id)) prune(list)
       }, () => {})
-    }, MARKER_GRACE_MS)
-    if (typeof timer.unref === 'function') timer.unref()
-    markerTimers.add(timer)
+    })
   }
 
   /** Puts the marker in or takes it out of tab `id`'s title, through `tab` (an instance of it). */
@@ -417,7 +426,7 @@ exports.activate = (ctx) => {
       const searching = search.serveSearch(tab, { spawn, root: ctx.projectDir, log: ctx.log })
       const speaking = serveLsp(tab, lsp, ctx.log)
       // main's params for the tab: `path` (a project file) or `outside` (a read-only file outside it).
-      const params = tab.params && typeof tab.params === 'object' ? tab.params : {}
+      const params = files.paramsOf(tab)
       const tabPath = typeof params.path === 'string' ? params.path : undefined
       // Claude's changes in the gutter: the tab's own file at git HEAD, and the Reviewer's diff on a click.
       const gitting = git.serveGit(tab, { spawn, root: ctx.projectDir, rel: tabPath, review: openReview, log: ctx.log })
@@ -454,18 +463,19 @@ exports.activate = (ctx) => {
           // Quick open's pick or a find-in-files result: a path the page names, so untrusted;
           // openFileTab checks it by realpath inside the project like any other open. A definition
           // or reference outside the project names `outside`: only one a server returned opens.
+          const openFailed = (message) => tab.post({ t: 'search-error', kind: 'open', message })
           if (typeof m.outside === 'string') {
-            openOutsideTab(m.outside, { line: m.line, col: m.col }).catch((e) => tab.post({ t: 'search-error', kind: 'open', message: e.message }))
+            openOutsideTab(m.outside, { line: m.line, col: m.col }).catch((e) => openFailed(e.message))
             return
           }
           let rel
           try {
             rel = relativePath(m.path)
           } catch (e) {
-            tab.post({ t: 'search-error', kind: 'open', message: e.message })
+            openFailed(e.message)
             return
           }
-          openFileTab(rel, { line: m.line, col: m.col }).catch((e) => tab.post({ t: 'search-error', kind: 'open', message: `${rel}: ${e.message}` }))
+          openFileTab(rel, { line: m.line, col: m.col }).catch((e) => openFailed(`${rel}: ${e.message}`))
         } else if (m.t === 'micro') {
           // Always the tab's own file (main's params), never a path the page names.
           openEditor(params.path).catch((e) => {
@@ -503,13 +513,10 @@ exports.activate = (ctx) => {
         // first and its page reports again on the new one, so the drop waits a moment: the new line's
         // report replaces this one and the title does not blink.
         if (conflictViews.get(tab.id)?.get(viewKey(tab)) !== tab) return
-        const timer = setTimeout(() => {
-          markerTimers.delete(timer)
+        graceTimer(() => {
           // The tab itself may be gone (closed): then main refuses the title, which is fine.
           if (dropReport(tab) && typeof params.path === 'string') updateMarker(tab, params.path).catch(() => {})
-        }, MARKER_GRACE_MS)
-        if (typeof timer.unref === 'function') timer.unref()
-        markerTimers.add(timer)
+        })
       })
     })
     if (typeof ctx.onSettingsChange === 'function') {

@@ -24,7 +24,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url')
 const files = require('../files.js')
 const servers = require('./servers.js')
 const { LspServer } = require('./server.js')
-const { applyWorkspaceEdit } = require('./edits.js')
+const { applyWorkspaceEdit, before, position: editPosition } = require('./edits.js')
 
 /** A document over this many UTF-16 units gets no language server (highlighting only). */
 const MAX_DOC_CHARS = 2 * 1024 * 1024
@@ -71,30 +71,22 @@ const CREATED = 1
 const CHANGED = 2
 const DELETED = 3
 
-const MAX_LINE = 10_000_000
-const MAX_CHARACTER = 1_000_000
-const isIndex = (v, max) => Number.isInteger(v) && v >= 0 && v <= max
 /** A page's change counter (`seq`), or undefined. */
 const seqOf = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : undefined)
 
 /** A `{ line, character }` from a page, or a thrown Error. */
-function position(v) {
-  if (!v || typeof v !== 'object' || !isIndex(v.line, MAX_LINE) || !isIndex(v.character, MAX_CHARACTER)) {
-    throw new Error('a position is { line, character }, both whole numbers from 0')
-  }
-  return { line: v.line, character: v.character }
-}
+const position = (v) => editPosition(v, 'a position is { line, character }, both whole numbers from 0')
 
 /** A `{ start, end }` range from a page, or a thrown Error. */
 function range(v) {
   if (!v || typeof v !== 'object') throw new Error('a range is { start, end }')
   const start = position(v.start)
   const end = position(v.end)
-  if (end.line < start.line || (end.line === start.line && end.character < start.character)) throw new Error('a range ends before it starts')
+  if (before(end, start)) throw new Error('a range ends before it starts')
   return { start, end }
 }
 
-/** The UTF-16 offset of `pos` in `text`, or -1 when it is past the end (a character past a line's end is its end, as LSP says). */
+/** The UTF-16 offset of `pos` in `text`, or -1 when it is past the end. LF-only on purpose: the manager's mirror holds the page's own text, not a disk file's (edits.js offsetAt handles a disk file's CRLF and CR). (A character past a line's end is its end, as LSP says). */
 function offsetAt(text, pos) {
   let at = 0
   for (let l = 0; l < pos.line; l++) {
@@ -193,7 +185,7 @@ function cleanDiagnostics(list) {
 }
 
 /** A one-line string from a page, at most `max` characters, or a thrown Error. */
-function oneLine(v, max, what) {
+function checkedLine(v, max, what) {
   if (typeof v !== 'string' || v === '' || v.length > max || /[\n\r\0]/.test(v)) throw new Error(`${what} must be one line of at most ${max} characters`)
   return v
 }
@@ -266,7 +258,7 @@ const ASKS = {
   rename: {
     method: 'textDocument/rename',
     cap: 'renameProvider',
-    params: (doc, a) => ({ ...at(doc, a), newName: oneLine(a.newName, 200, 'newName') }),
+    params: (doc, a) => ({ ...at(doc, a), newName: checkedLine(a.newName, 200, 'newName') }),
     timeoutMs: EDIT_TIMEOUT_MS,
     post: 'workspaceEdit',
   },
@@ -942,7 +934,7 @@ class LspManager {
       srv.start()
     } catch (e) {
       slot.server = null
-      const msg = String((e && e.message) || e)
+      const msg = files.messageOf(e)
       // "cannot run" is ctx.processes' word for a program that is not there (or not executable).
       if (msg.includes('cannot run')) return this.setState(slot, 'missing', { install: slot.entry.install })
       return this.setState(slot, 'failed', { message: msg })

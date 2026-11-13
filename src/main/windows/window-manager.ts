@@ -480,7 +480,8 @@ export class WindowManager {
     if (!handle) throw new Error('the project has no open window')
     if (this.quitting || this.reopening.has(handle) || this.closing.has(handle) || this.asking.has(handle)) return
     if (!this.paths.has(handle)) throw new Error('the project has no open window')
-    if (!this.unsavedWillAsk(handle)) {
+    const unsaved = this.unsavedToAsk(handle)
+    if (!unsaved) {
       this.reopenNow(handle)
       return
     }
@@ -492,8 +493,7 @@ export class WindowManager {
       if (this.reopening.has(handle) || this.closing.has(handle)) return
       this.reopenNow(handle)
     }
-    const titles = this.options.unsavedTabs?.(handle.id) ?? []
-    this.options.askUnsaved!(handle.id, titles, 'reopen').then(answered, (err: unknown) => {
+    unsaved.ask(handle.id, unsaved.titles, 'reopen').then(answered, (err: unknown) => {
       this.logLine(`unsaved changes dialog failed, not reopening: ${errorText(err)}`)
       answered(false)
     })
@@ -669,9 +669,10 @@ export class WindowManager {
     const devices = this.options.remoteDevices?.(handle.id) ?? []
     if (!ask || devices.length === 0) {
       // No browser has it open: only unsaved page tabs ask (design-editor.md §1).
-      if (!this.unsavedWillAsk(handle)) return false
+      const unsaved = this.unsavedToAsk(handle)
+      if (!unsaved) return false
       this.asking.add(handle)
-      this.askUnsavedThenClose(projectId, handle)
+      this.askUnsavedThenClose(projectId, handle, unsaved)
       return true
     }
     this.asking.add(handle)
@@ -684,17 +685,18 @@ export class WindowManager {
     return true
   }
 
-  /** Closing `handle` now would discard unsaved page tab changes, and there is a box to ask with. */
-  private unsavedWillAsk(handle: WindowHandle): boolean {
-    return this.options.askUnsaved !== undefined && (this.options.unsavedTabs?.(handle.id) ?? []).length > 0
+  /** Closing `handle` now would discard unsaved page tab changes and there is a box to ask with: that box and the tab titles, else undefined. */
+  private unsavedToAsk(handle: WindowHandle): { ask: AskUnsaved; titles: readonly string[] } | undefined {
+    const ask = this.options.askUnsaved
+    const titles = this.options.unsavedTabs?.(handle.id) ?? []
+    return ask !== undefined && titles.length > 0 ? { ask, titles } : undefined
   }
 
   /**
    * Ask about the window's unsaved page tabs, then close it on Discard; Cancel leaves it open. The
    * window stays in `asking` until the answer, so a second click on the close button waits for it.
    */
-  private askUnsavedThenClose(projectId: string, handle: WindowHandle): void {
-    const titles = this.options.unsavedTabs?.(handle.id) ?? []
+  private askUnsavedThenClose(projectId: string, handle: WindowHandle, unsaved: { ask: AskUnsaved; titles: readonly string[] }): void {
     const answered = (discard: boolean): void => {
       this.asking.delete(handle)
       // Closed meanwhile (a quit, a server close): the answer is about a window that is gone.
@@ -703,7 +705,7 @@ export class WindowManager {
       this.closing.add(handle)
       handle.close()
     }
-    this.options.askUnsaved!(handle.id, titles, 'window').then(answered, (err: unknown) => {
+    unsaved.ask(handle.id, unsaved.titles, 'window').then(answered, (err: unknown) => {
       // As the devices' dialog: a box that cannot be shown must not leave a window nobody can close.
       this.logLine(`unsaved changes dialog failed: ${errorText(err)}`)
       answered(true)
@@ -716,9 +718,10 @@ export class WindowManager {
     if (this.quitting || this.projects.get(projectId) !== handle) return
     if (choice === 'everyone') {
       // Closing for everyone ends the pages too: unsaved changes in any of them ask once more.
-      if (this.unsavedWillAsk(handle)) {
+      const unsaved = this.unsavedToAsk(handle)
+      if (unsaved) {
         this.asking.add(handle)
-        this.askUnsavedThenClose(projectId, handle)
+        this.askUnsavedThenClose(projectId, handle, unsaved)
         return
       }
       this.closing.add(handle)

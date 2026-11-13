@@ -627,6 +627,13 @@ function drawLspBar() {
   bar.hidden = text.textContent === ''
 }
 
+/** How long a language-server status message (an error: longer) stays in the status bar. */
+const LSP_MESSAGE_MS = 4000
+const LSP_ERROR_MESSAGE_MS = 8000
+/** Rows one list-mode palette shows (a language server may answer thousands of symbols). */
+const MAX_PALETTE_ROWS = 500
+/** How often the change bars and notes re-read the host while the tab is visible. */
+const POLL_MS = 5000
 function lspMessage(message, error = false) {
   lspBar.message = message
   lspBar.error = error
@@ -635,7 +642,7 @@ function lspMessage(message, error = false) {
     lspBar.timer = null
     lspBar.message = null
     drawLspBar()
-  }, error ? 8000 : 4000)
+  }, error ? LSP_ERROR_MESSAGE_MS : LSP_MESSAGE_MS)
   drawLspBar()
 }
 
@@ -797,7 +804,7 @@ function drawPalette() {
     const q = query.trim()
     let group
     for (const it of spec.items) {
-      if (palette.rows.length >= 500) break
+      if (palette.rows.length >= MAX_PALETTE_ROWS) break
       let positions = []
       if (q) {
         const m = fuzzyMatch(q, it.filter || it.label)
@@ -925,8 +932,7 @@ for (const [id, key] of [
 // question to the Claude tab the person picks.
 
 const ASK_LABEL = 'Ask Claude about this'
-const IS_MAC_ASK = /Mac|iPhone|iPad/.test(navigator.platform)
-$('ctx-ask-key').textContent = IS_MAC_ASK ? '⌘L' : 'Ctrl+L'
+$('ctx-ask-key').textContent = IS_MAC ? '⌘L' : 'Ctrl+L'
 
 function askClaude() {
   hideContextMenu()
@@ -964,7 +970,7 @@ $('ctx-grep').addEventListener('click', () => {
 })
 $('ctx-ask').title = ASK_LABEL
 // Mod+Shift+H: Mod+Shift+F is core's Toggle Tab Flag by default, and the app's table wins a chord it holds.
-$('ctx-grep-key').textContent = IS_MAC_ASK ? '⇧⌘H' : 'Ctrl+Shift+H'
+$('ctx-grep-key').textContent = IS_MAC ? '⇧⌘H' : 'Ctrl+Shift+H'
 document.addEventListener('mousedown', (e) => {
   if (!$('ctxmenu').hidden && !$('ctxmenu').contains(e.target)) hideContextMenu()
 })
@@ -982,6 +988,7 @@ $('ctxmenu').addEventListener('keydown', (e) => {
 // unsaved buffer is saved first (as a click on a change bar does) and the note is sent once the host
 // confirmed the save.
 
+// The Reviewer's own caps (plugins/editor/dist/lib/notes.js MAX_NOTE_TEXT and MAX_QUOTE, checked again by the host): keep in step.
 const NOTE_MAX_CHARS = 4000
 const NOTE_QUOTE_CHARS = 500
 /** The lines and quote the open box is about, and the note waiting for the save: { from, to, quote, text, waiting }. */
@@ -1174,7 +1181,7 @@ setInterval(() => {
   if (document.visibilityState === 'hidden') return
   changes.poll()
   notes.poll()
-}, 5000)
+}, POLL_MS)
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') session.blur()
   else {

@@ -14,6 +14,7 @@
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { encode, Decoder } = require('./framing.js')
+const { messageOf } = require('../files.js')
 
 /** `initialize` may take a while (gopls loads the module graph), but not forever. */
 const INITIALIZE_TIMEOUT_MS = 60 * 1000
@@ -291,7 +292,7 @@ class LspServer {
           .then(() => this.o.onApplyEdit(params.edit, params.label))
           .then(
             (r) => reply(r && typeof r === 'object' ? r : { applied: false }),
-            (e) => reply({ applied: false, failureReason: String((e && e.message) || e).slice(0, 500) }),
+            (e) => reply({ applied: false, failureReason: messageOf(e).slice(0, 500) }),
           )
         return undefined
       }

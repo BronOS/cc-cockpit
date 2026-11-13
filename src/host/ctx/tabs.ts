@@ -45,6 +45,9 @@ import type { PanelPort } from './ui'
 
 type DiscussHandler = () => unknown
 
+/** Main cuts a title at PAGE_TAB_TITLE_MAX; one this many times longer is a mistake, not a long name. */
+const MAX_PAGE_TAB_TITLE_LENGTH = PAGE_TAB_TITLE_MAX * 16
+
 /** main's tag: the params are at most 4 KiB as JSON, so the tag may be longer than a panel's. */
 const MAX_PAGE_TAB_TAG_LENGTH = MAX_PAGE_TAB_PARAMS_BYTES * 4 + 1024
 
@@ -233,7 +236,7 @@ export class PageTabHub {
     }
     const setTitle = async (title: string, icon?: string): Promise<void> => {
       checkTitle(title, 'setTitle')
-      checkIcon(icon, 'page tab setTitle')
+      checkIcon(icon, 'setTitle')
       // The tab outlives this line (a reconnect makes a new instance): main checks the tab is still
       // this plugin's and open, not whether this instance is current.
       await this.call('tabs.setTitle', { pluginId: frame.pluginId, tabId: frame.id, title, ...(icon !== undefined ? { icon } : {}) })
@@ -255,14 +258,13 @@ export class PageTabHub {
 /** A fast check of a title (main clamps and checks it again): text with something to show. */
 function checkTitle(title: unknown, what: string): void {
   if (typeof title !== 'string' || title.trim() === '') throw new TypeError(`tabs.${what}: title must be non-empty text`)
-  // Main cuts at PAGE_TAB_TITLE_MAX; a title far past that is a mistake, not a long name.
-  if (title.length > PAGE_TAB_TITLE_MAX * 16) throw new TypeError(`tabs.${what}: title is far longer than ${PAGE_TAB_TITLE_MAX} characters`)
+  if (title.length > MAX_PAGE_TAB_TITLE_LENGTH) throw new TypeError(`tabs.${what}: title is far longer than ${PAGE_TAB_TITLE_MAX} characters`)
 }
 
-/** A fast check of an optional icon (main checks it again): a glyph name. `what` leads the error. */
+/** A fast check of an optional icon (main checks it again): a glyph name. `what` is the method name. */
 function checkIcon(icon: unknown, what: string): void {
   if (icon !== undefined && (typeof icon !== 'string' || !PAGE_TAB_ICON_PATTERN.test(icon))) {
-    throw new TypeError(`${what}: icon must match ${PAGE_TAB_ICON_PATTERN.source}`)
+    throw new TypeError(`tabs.${what}: icon must match ${PAGE_TAB_ICON_PATTERN.source}`)
   }
 }
 
@@ -296,7 +298,7 @@ export function createTabsApi(deps: TabsApiDeps): PluginContext['tabs'] {
         declared(type, 'openPage')
         const { title, icon, focus } = (options ?? {}) as Record<string, unknown>
         checkTitle(title, 'openPage')
-        checkIcon(icon, 'tabs.openPage')
+        checkIcon(icon, 'openPage')
         if (focus !== undefined && typeof focus !== 'boolean') throw new TypeError('tabs.openPage: focus must be a boolean')
         const res = (await call('tabs.openPage', {
           pluginId,
