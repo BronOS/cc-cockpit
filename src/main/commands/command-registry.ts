@@ -27,7 +27,40 @@ export interface TabCommandEntries {
 
 const core = (id: string, title: string, key: string): CommandDef => ({ id, title, key, source: 'core' })
 
-const tabSelect: CommandDef[] = Array.from({ length: 9 }, (_, i) => core(`tab.select.${i + 1}`, `Select Tab ${i + 1}`, `Cmd+${i + 1}`))
+/** A command for the palette and Settings › Keys only: the person may bind it, nothing is taken for it. */
+const unbound = (id: string, title: string): CommandDef => ({ id, title, source: 'core' })
+
+const ARROWS = [
+  ['Left', 'left'],
+  ['Right', 'right'],
+  ['Up', 'up'],
+  ['Down', 'down']
+] as const
+
+/**
+ * The split view's commands (team run 001, decision D10; renderer/tabs/pane-commands.ts runs them).
+ * Every chord carries Cmd (Ctrl on Linux) with Shift or Alt: a terminal program never gets Ctrl and
+ * Alt together on an arrow from a shell's own bindings (readline and vim use one or the other), and
+ * Ctrl+Shift+letter reaches no terminal program as anything but Ctrl+letter. Ctrl+Alt+Arrow is free
+ * on Omarchy's Hyprland (its workspace and window keys all carry Super); older GNOME and KDE bind it
+ * to workspaces, which the person can rebind here. A browser on a Mac keeps ⌥⌘←/→ (Chrome's tab
+ * switch): web-keys.ts moves those there.
+ */
+const PANE_COMMANDS: readonly CommandDef[] = [
+  core('pane.splitRight', 'Split Right', 'Cmd+Shift+D'),
+  core('pane.splitDown', 'Split Down', 'Cmd+Alt+Shift+D'),
+  core('pane.moveOut', 'Move Pane Out of Group', 'Cmd+Shift+X'),
+  core('pane.zoom', 'Zoom Pane', 'Cmd+Shift+Enter'),
+  ...ARROWS.map(([name, key]) => core(`pane.focus${name}`, `Focus Pane ${name === 'Up' ? 'Above' : name === 'Down' ? 'Below' : name}`, `Cmd+Alt+${key}`)),
+  ...ARROWS.map(([name, key]) => core(`pane.resize${name}`, `Resize Pane ${name}`, `Cmd+Alt+Shift+${key}`)),
+  ...ARROWS.map(([name]) => unbound(`pane.move${name}`, `Move Pane ${name}`)),
+  unbound('pane.showBesideRight', 'Show Tab Beside (Right)…'),
+  unbound('pane.showBesideDown', 'Show Tab Beside (Below)…'),
+  unbound('pane.equalize', 'Equalize Panes'),
+  unbound('pane.ungroup', 'Ungroup Panes')
+]
+
+const tabSelect: CommandDef[] =Array.from({ length: 9 }, (_, i) => core(`tab.select.${i + 1}`, `Select Tab ${i + 1}`, `Cmd+${i + 1}`))
 
 /** The default keybinding table (plan Technical Details). */
 export const CORE_COMMANDS: readonly CommandDef[] = [
@@ -51,7 +84,8 @@ export const CORE_COMMANDS: readonly CommandDef[] = [
   core('palette.open', 'Command Palette', 'Cmd+Shift+P'),
   core('app.openFolder', 'Open Folder…', 'Cmd+O'),
   core('overlay.pop', 'Pop Top Overlay', 'Escape'),
-  core('overlay.closeTop', 'Close Top Overlay', 'Cmd+Shift+W')
+  core('overlay.closeTop', 'Close Top Overlay', 'Cmd+Shift+W'),
+  ...PANE_COMMANDS
 ]
 
 /**

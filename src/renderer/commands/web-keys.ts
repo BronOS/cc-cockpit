@@ -26,11 +26,13 @@ const ORDER = ['ctrl', 'alt', 'shift', 'meta']
 /**
  * Whether a browser on this platform keeps `chord` (canonical) for itself: the primary modifier
  * (Cmd on a Mac, Ctrl elsewhere) with W, T or N, optionally with Shift; Ctrl+Tab and Ctrl+Shift+Tab
- * on every platform.
+ * on every platform; and on a Mac ⌥⌘← / ⌥⌘→ (Chrome's previous / next tab), which the split view's
+ * Focus Pane Left / Right use (D10).
  */
 export function browserKeeps(chord: string, mac: boolean): boolean {
   const parts = splitChord(chord)
   if (!parts) return false
+  if (mac && (parts.key === 'left' || parts.key === 'right') && parts.mods.join('+') === 'alt+meta') return true
   const mods = parts.mods.filter((m) => m !== 'shift')
   if (mods.length !== 1) return false
   if (parts.key === 'tab') return mods[0] === 'ctrl'
@@ -39,10 +41,23 @@ export function browserKeeps(chord: string, mac: boolean): boolean {
 
 /** `chord` with Alt added, in canonical order (`ctrl+shift+w` -> `ctrl+alt+shift+w`). */
 export function withAlt(chord: string): string {
+  return withMod(chord, 'alt')
+}
+
+function withMod(chord: string, mod: string): string {
   const parts = splitChord(chord)
-  if (!parts || parts.mods.includes('alt')) return chord
-  const mods = [...parts.mods, 'alt'].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b))
+  if (!parts || parts.mods.includes(mod)) return chord
+  const mods = [...parts.mods, mod].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b))
   return [...mods, parts.key].join('+')
+}
+
+/**
+ * The browser's stand-in for a kept chord: Alt added, or Ctrl when it has Alt already (⌥⌘← becomes
+ * ⌃⌥⌘←, which Chrome on a Mac leaves to the page).
+ */
+export function alternativeOf(chord: string): string {
+  const parts = splitChord(chord)
+  return parts?.mods.includes('alt') ? withMod(chord, 'ctrl') : withAlt(chord)
 }
 
 /**
@@ -54,7 +69,7 @@ export function webKeyTable(view: CommandsView, mac: boolean): CommandsView {
   for (const c of view.commands) if (c.key && !browserKeeps(c.key, mac)) taken.add(c.key)
   const commands = view.commands.map((c) => {
     if (!c.key || !browserKeeps(c.key, mac)) return c
-    const alt = withAlt(c.key)
+    const alt = alternativeOf(c.key)
     const out = { ...c }
     if (taken.has(alt)) delete out.key
     else {
