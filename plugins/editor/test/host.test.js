@@ -179,3 +179,13 @@ test('"Edit" run that fails tells the person; an app without overlay.buttons reg
   host.activate(g.ctx)
   assert.equal(typeof g.provided.editor.open, 'function')
 })
+
+test('file tabs: activate serves type `file` through ctx.tabs, and deactivate closes the watches', () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  const opened = []
+  f.ctx.tabs = { onOpen: (type, fn) => (opened.push({ type, fn }), () => {}) }
+  host.activate(f.ctx)
+  assert.deepEqual(opened.map((o) => o.type), ['file'])
+  host.deactivate()
+})

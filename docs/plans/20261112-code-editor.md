@@ -161,15 +161,15 @@ External review: sol / high
 - Modify: `plugins/editor/dist/host.js`, `plugins/editor/plugin.json` (`contributes.tabs`, autosave settings)
 - Create: `plugins/editor/test/files.test.js`
 
-- [ ] every path from the page checked by realpath against the project root; writes go to the realpath
-- [ ] read: binary, over ~5 MB or not valid UTF-8 → read-only; content in chunks under the message cap
-- [ ] save `{text, baseHash}`: hold the old descriptor, check hash, temp file in the same dir, re-check inode and hash
+- [x] every path from the page checked by realpath against the project root; writes go to the realpath
+- [x] read: binary, over ~5 MB or not valid UTF-8 → read-only; content in chunks under the message cap
+- [x] save `{text, baseHash}`: hold the old descriptor, check hash, temp file in the same dir, re-check inode and hash
   before rename, rename, re-hash the held descriptor; any difference answers `changed {theirs, hash}`; keep EOL, final
   newline, BOM, mode
-- [ ] directory watch per open file's directory (survives rename-replace); `disk {changed|deleted}` to pages
-- [ ] write tests: CAS success, mismatch, write-between race, symlink target written, non-UTF-8 read-only, EOL/BOM/mode,
+- [x] directory watch per open file's directory (survives rename-replace); `disk {changed|deleted}` to pages
+- [x] write tests: CAS success, mismatch, write-between race, symlink target written, non-UTF-8 read-only, EOL/BOM/mode,
   rename-replace seen
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 7: Editor page: CodeMirror 6 file tab and migration [model: opus]
 

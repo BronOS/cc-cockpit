@@ -5,10 +5,31 @@
   "api": 1,
   "main": "dist/host.js",
   "contributes": {
+    "tabs": [
+      {
+        "type": "file",
+        "page": "dist/pages/file.html",
+        "keys": ["Cmd+S", "Cmd+P", "Cmd+K", "Cmd+L", "Cmd+D", "Cmd+Shift+F"]
+      }
+    ],
     "settings": {
       "app": {
         "type": "object",
         "properties": {
+          "autosaveIdleSeconds": {
+            "type": "integer",
+            "title": "Autosave after idle (seconds)",
+            "description": "A file tab saves this long after you stop typing. 0 turns idle autosave off (Ctrl+S still saves). When Claude changed the file meanwhile, the editor merges first.",
+            "minimum": 0,
+            "maximum": 3600,
+            "default": 3
+          },
+          "autosaveOnBlur": {
+            "type": "boolean",
+            "title": "Autosave on focus loss",
+            "description": "A file tab saves when you leave it (another tab, another window).",
+            "default": true
+          },
           "autosaveSeconds": {
             "type": "integer",
             "title": "Autosave (seconds)",

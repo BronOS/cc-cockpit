@@ -14,6 +14,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const files = require('./lib/files.js')
 
 const INSTALL_HINT =
   'micro is not installed (or not on your login-shell PATH). Install it with `brew install micro` (macOS), ' +
@@ -209,8 +210,22 @@ exports.activate = (ctx) => {
     }
   })
 
+  // File tabs (`contributes.tabs` type `file`): the host reads, saves by compare-and-swap and
+  // watches; the page (dist/pages/file.html) keeps its base and merges (design-editor.md §2). An
+  // older app has no ctx.tabs: the editor then serves only micro.
+  if (typeof ctx.tabs === 'object' && ctx.tabs) {
+    const mine = files.makeFiles(ctx.projectDir, { log: ctx.log })
+    shared = mine
+    ctx.tabs.onOpen('file', (tab) => files.serveFileTab(mine, tab, ctx.log))
+  }
+
   ctx.log.info('activated')
 }
 
-// No deactivate: the editor registers nothing that outlives its ctx (the service, the CLI command
-// and its overlays all end with it), and the loader treats deactivate as optional.
+// The file tabs' folder watches are the one thing that outlives ctx (the service, the CLI command,
+// the overlays and the tab listeners all end with it): a plugin reload closes them here.
+let shared = null
+exports.deactivate = () => {
+  if (shared) shared.watcher.close()
+  shared = null
+}
