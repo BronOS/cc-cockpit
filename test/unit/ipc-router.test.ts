@@ -7,6 +7,7 @@ import {
   registerOverlayHandlers,
   registerPanelHandlers,
   registerSlotHandlers,
+  registerPageTabHandlers,
   registerSettingsPageHandlers,
   registerCccCommandHandlers,
   registerWebAccessHandlers,
@@ -1218,6 +1219,59 @@ describe('registerSlotHandlers', () => {
       ['connect', PROJECT_A, 'web:4', 's1', 5],
       ['disconnect', PROJECT_A, 'web:4', 's1']
     ])
+  })
+})
+
+describe('registerPageTabHandlers', () => {
+  const TAB = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4d'
+  function pageTabs(server: boolean) {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerPageTabHandlers(router, {
+      src: (projectId, tabId) => {
+        calls.push(['src', projectId, tabId])
+        return tabId === TAB ? 'cc-plugin://a.one/tab.html' : undefined
+      },
+      connect: (projectId, viewId, tabId, nonce) => {
+        calls.push(['connect', projectId, viewId, tabId, nonce])
+        return true
+      },
+      disconnect: (projectId, viewId, tabId) => void calls.push(['disconnect', projectId, viewId, tabId]),
+      server
+    })
+    return { ipc, router, calls }
+  }
+
+  it("passes the sender's project and view on with the tab id, refusing junk first", async () => {
+    const { ipc, router, calls } = pageTabs(false)
+    await expect(ipc.invoke('pageTabs.src', 11, [{ tabId: TAB }])).resolves.toBe('cc-plugin://a.one/tab.html')
+    await expect(ipc.invoke('pageTabs.src', 11, [{ tabId: 'other' }])).resolves.toBeNull()
+    await expect(ipc.invoke('pageTabs.connect', 12, [{ tabId: TAB, nonce: 3, projectId: PROJECT_A }])).resolves.toBe(true)
+    await expect(ipc.invoke('pageTabs.disconnect', 11, [{ tabId: TAB }])).resolves.toBeNull()
+    expect(calls).toEqual([
+      ['src', PROJECT_A, TAB],
+      ['src', PROJECT_A, 'other'],
+      ['connect', PROJECT_B, 'desktop:2', TAB, 3],
+      ['disconnect', PROJECT_A, 'desktop:1', TAB]
+    ])
+    await expect(ipc.invoke('pageTabs.connect', 11, [{ tabId: 'x'.repeat(65), nonce: 1 }])).rejects.toThrow(/short string/)
+    await expect(ipc.invoke('pageTabs.src', 11, [{ tabId: 7 }])).rejects.toThrow(/must be a string/)
+    await expect(ipc.invoke('pageTabs.connect', 13, [{ tabId: TAB, nonce: 1 }])).rejects.toThrow(/not a project window/)
+    expect(calls).toHaveLength(4)
+    // A remote view's frame is its own instance: main's view id from the caller.
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'pageTabs.connect', { tabId: TAB, nonce: 5, viewId: 'desktop:1' })
+    expect(calls.at(-1)).toEqual(['connect', PROJECT_A, 'web:4', TAB, 5])
+  })
+
+  it("server mode: the hidden page (the desktop view) gets no page and no port; a browser view does", async () => {
+    const { ipc, router, calls } = pageTabs(true)
+    await expect(ipc.invoke('pageTabs.src', 11, [{ tabId: TAB }])).resolves.toBeNull()
+    await expect(ipc.invoke('pageTabs.connect', 11, [{ tabId: TAB, nonce: 1 }])).resolves.toBe(false)
+    expect(calls).toEqual([])
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await expect(router.dispatch(web, 'pageTabs.src', { tabId: TAB })).resolves.toBe('cc-plugin://a.one/tab.html')
+    await expect(router.dispatch(web, 'pageTabs.connect', { tabId: TAB, nonce: 2 })).resolves.toBe(true)
   })
 })
 

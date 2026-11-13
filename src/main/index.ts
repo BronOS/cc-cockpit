@@ -51,6 +51,7 @@ import {
   registerLayoutHandlers,
   registerOverlayHandlers,
   registerPanelHandlers,
+  registerPageTabHandlers,
   registerSlotHandlers,
   registerSettingsPageHandlers,
   registerSessionHandlers,
@@ -1318,6 +1319,8 @@ function start(server: boolean): void {
         ...(plugin.manifest.contributes?.openFile !== undefined ? { openFile: { title: plugin.manifest.contributes.openFile.title } } : {}),
         ...(plugin.manifest.contributes?.slots !== undefined ? { slots: plugin.manifest.contributes.slots } : {}),
         ...(plugin.manifest.contributes?.settings?.page !== undefined ? { settingsPage: plugin.manifest.contributes.settings.page } : {}),
+        // Page-tab types: a frame's port goes only to a plugin the launch saw declare the type.
+        ...(plugin.manifest.contributes?.tabs !== undefined ? { pageTabs: plugin.manifest.contributes.tabs } : {}),
         ...(plugin.manifest.access !== undefined ? { access: plugin.manifest.access } : {}),
         // ctx.themes.set may replace only these (HostApi namespaces them by the plugin id).
         themes: (plugin.manifest.contributes?.themes ?? []).map((t) => t.id),
@@ -1596,6 +1599,13 @@ function start(server: boolean): void {
     settingsPageScopes: (projectId, pluginId) => hosts.runningSettingsPage(projectId, pluginId),
     settingsPageToHost: (projectId, open, port) => hosts.sendSettingsPagePort(projectId, open, port),
     settingsPageClosed: (projectId, pluginId, id) => hosts.closeSettingsPage(projectId, pluginId, id),
+    // Page tabs (design-editor.md §1): the tab's own plugin, from TabManager's record, never the renderer's word.
+    pageTab: (projectId, tabId) => {
+      const page = tabs.list(projectId).find((t) => t.id === tabId && t.kind === 'page')?.page
+      return page ? { id: tabId, pluginId: page.plugin, type: page.type, ...(page.params !== undefined ? { params: page.params } : {}) } : undefined
+    },
+    pageTabToHost: (projectId, open, port) => hosts.sendPageTabPort(projectId, open, port),
+    pageTabClosed: (projectId, pluginId, tabId, view) => hosts.closePageTab(projectId, pluginId, tabId, view),
     // Who holds a settings page now (design-web.md §5.4): every view of the project hears it, the
     // ones it is not theirs any more show "Open on <device> — Take over".
     settingsPageHeld: (projectId, pluginId, viewId) =>
@@ -2659,6 +2669,21 @@ function start(server: boolean): void {
     },
     connect: (projectId, viewId, pluginId, scope, nonce) => panelPorts.connectSettingsPage(projectId, viewId, pluginId, scope, nonce),
     disconnect: (projectId, viewId, pluginId) => panelPorts.disconnectSettingsPage(projectId, viewId, pluginId)
+  })
+  // Page tab frames (design-editor.md §1): the page is the one the tab's plugin's manifest names for
+  // its type, served by cc-plugin:// like a panel's, and only while the plugin is on in the project.
+  registerPageTabHandlers(router, {
+    src: (projectId, tabId) => {
+      const page = tabs.list(projectId).find((t) => t.id === tabId && t.kind === 'page')?.page
+      if (!page || !enabledIds(projectId).includes(page.plugin)) return undefined
+      const plugin = plugins.get(page.plugin)
+      if (!plugin?.manifest || !plugin.state.ok) return undefined
+      const entry = (plugin.manifest.contributes?.tabs ?? []).find((t) => t.type === page.type)
+      return entry ? pluginFileUrl(page.plugin, entry.page) : undefined
+    },
+    connect: (projectId, viewId, tabId, nonce) => panelPorts.connectPageTab(projectId, viewId, tabId, nonce),
+    disconnect: (projectId, viewId, tabId) => panelPorts.disconnectPageTab(projectId, viewId, tabId),
+    server
   })
   registerSlotHandlers(router, {
     connect: (projectId, viewId, frameId, nonce) => panelPorts.connectSlot(projectId, viewId, frameId, nonce),

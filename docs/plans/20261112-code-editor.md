@@ -99,14 +99,14 @@ External review: sol / high
 - Modify: `src/renderer/web/main.tsx`, `src/main/web/port-relay.ts`
 - Create: `test/unit/page-tab-frames.test.ts`
 
-- [ ] draw the page in the tab area in its own frame with its own port (slot pattern); mount on first select, LRU of
+- [x] draw the page in the tab area in its own frame with its own port (slot pattern); mount on first select, LRU of
   live frames, never in server mode's hidden page
-- [ ] host restart: keep page-tab frames and re-deliver a new port (no reload); the page re-sends its state
-- [ ] web reconnect: page-tab frames live outside the remounted tree and get a new port the same way
-- [ ] relay: a page-tab port is paused and resynced at the byte limit, not closed
-- [ ] tab label with title, icon, dirty dot (any view dirty) and the unseen dot
-- [ ] write tests: lazy mount, LRU, host restart keeps the frame, remount keeps it, relay pause
-- [ ] run tests - must pass before next task
+- [x] host restart: keep page-tab frames and re-deliver a new port (no reload); the page re-sends its state
+- [x] web reconnect: page-tab frames live outside the remounted tree and get a new port the same way
+- [x] relay: a page-tab port is paused and resynced at the byte limit, not closed
+- [x] tab label with title, icon, dirty dot (any view dirty) and the unseen dot
+- [x] write tests: lazy mount, LRU, host restart keeps the frame, remount keeps it, relay pause
+- [x] run tests - must pass before next task
 
 ### Task 3: Dirty per view, core close ask, keyboard routing [model: opus]
 

@@ -18,6 +18,7 @@
 //                   { t: 'port.open', key, nonce }    the port asked for with `nonce` (panels.connect, ...)
 //                   { t: 'port.msg', key, nonce, m } | { t: 'port.close', key, nonce }
 //                                                     a relayed panel port (port-relay.ts)
+//                   { t: 'port.resync', key, nonce } a paused page tab port: take a new one, no reload
 //                   binary: u8 kind=1, u8 keyLength, key, u32 seq, u16 w, u16 h, u16 scale x 100, JPEG
 //                                                     a streamed webview's frame (shared/web-protocol.ts;
 //                                                     only through ViewSink.sendFrame, never from a client)
@@ -51,6 +52,7 @@ export type {
   PortCloseFrame,
   PortMsgFrame,
   PortOpenFrame,
+  PortResyncFrame,
   ReadyFrame,
   ResultFrame,
   ServerFrame,

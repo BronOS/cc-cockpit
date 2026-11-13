@@ -48,6 +48,7 @@ import {
 } from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { TerminalView } from './TerminalView'
+import { PageTabArea, pageFrames } from './PageTabArea'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -610,7 +611,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       return
     }
     const id = stateRef.current.activeId
-    if (id) sessions.get(id).focus()
+    if (!id) return
+    // A page tab has no terminal (sessions.get would make one): its frame takes the focus.
+    if (stateRef.current.tabs.find((t) => t.id === id)?.kind === 'page') pageFrames().focus(id)
+    else sessions.get(id).focus()
   }, [sessions])
   // The tab menu and its editors took the keyboard; give it back once they are gone. In a frame,
   // like every other give-back here: an item's action (Close's dialog) may raise a modal first.
@@ -980,16 +984,20 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           {state.tabs.length === 0 && (
             <p className="tabs-empty">No tabs yet. Use + to start Claude or a shell.</p>
           )}
-          {state.tabs.map((tab) => (
-            <TerminalView
-              key={tab.id}
-              tab={tab}
-              active={tab.id === state.activeId}
-              sessions={sessions}
-              onRestart={() => restart(tab.id)}
-              onClose={() => requestClose(tab.id)}
-            />
-          ))}
+          {state.tabs.map((tab) =>
+            // A page tab has no terminal: its frame is drawn by PageTabArea, in a layer of its own.
+            tab.kind === 'page' ? null : (
+              <TerminalView
+                key={tab.id}
+                tab={tab}
+                active={tab.id === state.activeId}
+                sessions={sessions}
+                onRestart={() => restart(tab.id)}
+                onClose={() => requestClose(tab.id)}
+              />
+            )
+          )}
+          <PageTabArea tabs={state.tabs} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
         </div>
       </Zones>
       {paletteCommands && (

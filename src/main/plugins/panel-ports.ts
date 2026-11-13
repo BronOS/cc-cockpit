@@ -12,6 +12,9 @@
 //             reload those plugins' pages (`panels.reload`), and each connects to the new host.
 //             Reload rather than a swapped port: a page asks for what it shows when it connects,
 //             and against a fresh host it must ask again.
+//             Page tabs are the exception: the same `panels.reload` makes their frames connect
+//             again WITHOUT a reload (a page tab holds unsaved text), and the page re-sends what it
+//             holds over the new line (design-editor.md §1 "Host restart").
 //
 // Refused (false, both ends closed, nothing sent): a panel key that is not `<pluginId>/<panelId>`
 // of a plugin RUNNING in this project's host now, with that panel in its manifest. A panel of a
@@ -38,6 +41,19 @@
 //   slotFramesChanged  the layout's set of frames changed: every open frame that is no longer in it
 //                   (placement removed, provider changed, reloaded or stopped) is closed the same way.
 // Each frame is closed once; a close for a frame the provider's host never opened is harmless.
+//
+// Page tabs (design-editor.md §1 "Frame lifetime") get a port the same way, to the tab's OWN
+// plugin (main's TabManager record says whose it is, never the renderer):
+//
+//   connectPageTab     a page tab's frame wants a line (`pageTabs.connect` with main's tab id): on
+//                      its first load, and again with NO reload after a host restart (`panels.reload`),
+//                      a web reconnect or a relay resync. The host's end goes to the plugin with the
+//                      tab's type and params (`pageTabOpen`, HostManager.sendPageTabPort), the view's
+//                      end comes back under `@tab/<id>`. A frame that connects again in the same view
+//                      is closed first, so the plugin hears the close of the old line, then the new.
+//   disconnectPageTab  the shell unmounted the frame (the tab closed, or the frame left the view's
+//                      live set): the plugin hears `pageTab.close` for that view.
+// Keyed by view like slots: two views showing one page tab are two instances.
 //
 // A plugin's html settings page (design-next §5.4) gets a port the same way, to THAT plugin's
 // backend in the sender window's host (the project resolved from the sender, never a renderer id):
@@ -73,6 +89,7 @@
 
 import { errorText } from '../../shared/error-text'
 import { SLOT_FRAME_ID_PATTERN, slotPortKey, type SlotHost } from '../../shared/slots'
+import { PAGE_TAB_ID_PATTERN, pageTabPortKey } from '../../shared/page-tabs'
 import type { JsonValue } from '../../sdk/types'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope, settingsPagePortKey } from '../../shared/settings-page'
@@ -116,6 +133,12 @@ export interface PanelPortDeps<P> {
   ): boolean
   /** The frame is gone in a view (`view` set for a remote one): tell the provider's host (HostManager.closeSlot). */
   slotClosed?(projectId: string, pluginId: string, frameId: string, view?: ViewId): void
+  /** A page tab of the project now (TabManager.list): main's own record of whose it is and what it shows. Absent: no page tabs. */
+  pageTab?(projectId: string, tabId: string): PageTabRecord | undefined
+  /** Hand the tab's plugin its end with what its onOpen gets (HostManager.sendPageTabPort); false when it does not run. */
+  pageTabToHost?(projectId: string, open: { pluginId: string; id: string; type: string; params?: JsonValue; view?: ViewId }, port: P): boolean
+  /** The frame is gone in a view (`view` set for a remote one): tell the plugin's host (HostManager.closePageTab). */
+  pageTabClosed?(projectId: string, pluginId: string, tabId: string, view?: ViewId): void
   /** The scopes of the plugin's settings page when it runs in the project's host now (HostManager.runningSettingsPage). */
   settingsPageScopes?(projectId: string, pluginId: string): readonly SettingsPageScope[] | undefined
   /** Hand the plugin's host its end of a settings page (HostManager.sendSettingsPagePort); false when it does not run. */
@@ -130,6 +153,22 @@ export interface PanelPortDeps<P> {
   log?: (message: string) => void
   /** Clock for the connect cap (tests); Date.now by default. */
   now?: () => number
+}
+
+/** What the hub needs of a page tab: main's ids, the manifest type and the params its plugin's onOpen gets. */
+export interface PageTabRecord {
+  id: string
+  pluginId: string
+  type: string
+  params?: JsonValue
+}
+
+/** A page tab instance whose port went out to one view. */
+interface OpenPageTab {
+  projectId: string
+  pluginId: string
+  tabId: string
+  viewId: ViewId
 }
 
 /** A slot frame instance whose port went out to one view. */
@@ -167,6 +206,8 @@ export class PanelPortHub<P> {
   private readonly recent = new Map<string, { times: number[]; logged: boolean }>()
   /** `<projectId>\n<viewId>\n<frameId>` -> the provider of a slot frame whose port went out to that view and is not closed yet. */
   private readonly openSlots = new Map<string, OpenSlot>()
+  /** `<projectId>\n<viewId>\n<tabId>` -> a page tab whose port went out to that view and is not closed yet. */
+  private readonly openPageTabs = new Map<string, OpenPageTab>()
   /**
    * `<projectId>\n<pluginId>` -> the plugin's settings page whose port went out and is not closed
    * yet, and the view holding it (one page per plugin, whichever view connected last).
@@ -277,6 +318,72 @@ export class PanelPortHub<P> {
   }
 
   /**
+   * Connect one page tab's frame in the asking view (see the top of the file). `projectId` and
+   * `viewId` are what main resolved from the caller; `tabId` and `nonce` are renderer input and only
+   * looked up. False when refused: no such page tab now, its plugin not running, over the cap.
+   */
+  connectPageTab(projectId: string, viewId: ViewId, tabId: unknown, nonce: unknown): boolean {
+    if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
+    if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) return false
+    const tab = this.deps.pageTab?.(projectId, tabId)
+    if (!tab || !this.deps.pageTabToHost) return false
+    // From here on the ids are main's own strings (the record's), not the renderer's.
+    const id = tab.id
+    const pluginId = tab.pluginId
+    // A reconnect loop (a page tab has no reload, but its relay can resync) is bounded like a reload loop.
+    if (!this.withinCap(projectId, viewId, pluginId, pageTabPortKey(id))) return false
+    // A new line for this view's frame: the plugin's instance of the old line goes first. The same
+    // tab in another view is another instance and stays.
+    this.disconnectPageTab(projectId, viewId, id)
+
+    const channel = this.deps.createChannel()
+    let sent = false
+    try {
+      sent = this.deps.pageTabToHost(
+        projectId,
+        { pluginId, id, type: tab.type, ...(tab.params !== undefined ? { params: tab.params } : {}), ...remoteOnly(viewId) },
+        channel.host
+      )
+    } catch (err) {
+      this.log(`page tab ${tab.type} of ${pluginId}: handing the host its port failed: ${errorText(err)}`)
+    }
+    if (!sent) {
+      this.closeQuietly(channel.host)
+      this.closeQuietly(channel.renderer)
+      return false
+    }
+    this.openPageTabs.set(slotKey(projectId, viewId, id), { projectId, pluginId, tabId: id, viewId })
+    try {
+      this.deps.toRenderer(viewId, { panelKey: pageTabPortKey(id), nonce }, channel.renderer)
+    } catch (err) {
+      this.log(`page tab ${tab.type} of ${pluginId}: posting the view its port failed: ${errorText(err)}`)
+      this.closeQuietly(channel.renderer)
+      this.disconnectPageTab(projectId, viewId, id)
+      return false
+    }
+    return true
+  }
+
+  /** The shell of `viewId` unmounted a page tab's frame: its plugin hears that view's close (once). */
+  disconnectPageTab(projectId: string, viewId: ViewId, tabId: unknown): void {
+    if (typeof tabId !== 'string') return
+    const key = slotKey(projectId, viewId, tabId)
+    const open = this.openPageTabs.get(key)
+    if (!open) return
+    this.openPageTabs.delete(key)
+    this.tellPageTabClosed(open)
+  }
+
+  private tellPageTabClosed(open: OpenPageTab): void {
+    try {
+      const { view } = remoteOnly(open.viewId)
+      this.deps.pageTabClosed?.(open.projectId, open.pluginId, open.tabId, view)
+    } catch (err) {
+      this.log(`page tab ${open.tabId} of ${open.pluginId}: telling the host it closed failed: ${errorText(err)}`)
+    }
+  }
+
+  /**
    * Connect the plugin's settings page in the asking view (see the top of the file). `projectId`
    * and `viewId` are what main resolved from the caller; `pluginId`, `scope` and `nonce` are
    * renderer input and only looked up. False when refused.
@@ -374,8 +481,8 @@ export class PanelPortHub<P> {
   }
 
   /**
-   * A view is gone (a browser left, or its window closed): its slot instances end and the settings
-   * page it held ends, so the providers do not keep serving a page nobody shows. Its panel ports
+   * A view is gone (a browser left, or its window closed): its slot and page tab instances end and
+   * the settings page it held ends, so the providers do not keep serving a page nobody shows. Its panel ports
    * are not tracked here: a desktop page's ends die with its window and the host hears it on each
    * port; a remote view's page ends are held by its connection's relay (main/web/port-relay.ts),
    * which closes them all when the view leaves, so each host detaches that view's ports. The
@@ -387,6 +494,11 @@ export class PanelPortHub<P> {
       if (open.viewId !== viewId) continue
       this.openSlots.delete(key)
       this.tellClosed(open)
+    }
+    for (const [key, open] of [...this.openPageTabs]) {
+      if (open.viewId !== viewId) continue
+      this.openPageTabs.delete(key)
+      this.tellPageTabClosed(open)
     }
     for (const open of [...this.openPages.values()]) {
       if (open.viewId !== viewId) continue

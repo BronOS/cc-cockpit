@@ -14,6 +14,10 @@
 //                                                 `mac` is the shell's platform (no scrollbar rule there)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
 //                                                 the port); from then on `ccPanel.slot` exists
+//   { type: 'cc-plugin.tab', tab: { type } }       the page is a page tab of that type (sent before every
+//                                                 port); from then on `ccPanel.tab` exists. A page tab's
+//                                                 frame is never reloaded to reconnect: a later port
+//                                                 (host restart, web reconnect) fires `onConnect`
 // and the other way, to the parent only:
 //   { type: 'cc-plugin.slot-height', height }      `ccPanel.slot.setHeight(px)`: the shell sizes the frame
 //   { type: 'cc-plugin.slot-width', width }        `ccPanel.slot.setWidth(px)`: the top bar's frame takes
@@ -32,6 +36,7 @@ export const MAX_QUEUED_MESSAGES = 100
 export const PORT_MESSAGE = 'cc-plugin.port'
 export const THEME_MESSAGE = 'cc-plugin.theme'
 export const SLOT_MESSAGE = 'cc-plugin.slot'
+export const TAB_MESSAGE = 'cc-plugin.tab'
 export const SLOT_HEIGHT_MESSAGE = 'cc-plugin.slot-height'
 export const SLOT_WIDTH_MESSAGE = 'cc-plugin.slot-width'
 export const READY_MESSAGE = 'cc-plugin.ready'
@@ -42,6 +47,7 @@ const SLOT_HEIGHT_MIN = 24
 const SLOT_HEIGHT_MAX = 600
 const SLOT_WIDTH_MIN = 0
 const SLOT_WIDTH_MAX = 4096
+// A slot type and a page-tab type share one pattern (shared/slots.ts, shared/page-tabs.ts).
 const SLOT_TYPE = /^[a-z][a-z0-9-]{0,63}$/
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -112,6 +118,16 @@ export interface SlotPageApi {
 }
 
 /**
+ * `ccPanel.tab`: present when the page is drawn as a page tab (design-editor.md §1, the manifest's
+ * `contributes.tabs`). Its frame outlives a plugin host restart and a web reconnect: the shell hands
+ * it a new connection instead of loading it again (`ccPanel.onConnect`), and the page re-sends what
+ * it holds.
+ */
+export interface TabPageApi {
+  readonly type: string
+}
+
+/**
  * `ccPanel.view`: where the page is drawn. A UI hint only (hide what cannot work there): main refuses
  * a desktop-only call from a browser view whatever the page shows, so no check may rest on it.
  */
@@ -129,6 +145,15 @@ export interface PanelApi {
   post(message: JsonValue): void
   /** Hear what the plugin posts; returns the unsubscribe. */
   onMessage(listener: (message: JsonValue) => void): () => void
+  /**
+   * `listener` runs each time the page gets a new connection to its plugin after it was added: the
+   * first one when added at script start, and for a page tab every later one too (its host
+   * restarted, the browser reconnected, the link fell behind and was resynced: the frame is never
+   * reloaded for those). Messages sent over the old connection may be lost and the plugin's side
+   * starts over, so send it what the page holds there. Posts queued before the first connection go
+   * out before it runs. Returns the unsubscribe.
+   */
+  onConnect(listener: () => void): () => void
   readonly theme: {
     /** The app's current theme (`vars` are the CSS variables already set on `:root`). */
     readonly current: PanelTheme | undefined
@@ -136,6 +161,8 @@ export interface PanelApi {
   }
   /** Set (a frozen object) once the shell says the page is a slot; undefined for a panel or an overlay. */
   readonly slot: SlotPageApi | undefined
+  /** Set (a frozen object) once the shell says the page is a page tab; undefined anywhere else. */
+  readonly tab: TabPageApi | undefined
   /** Where the page is drawn (a frozen object; `remote` is read-only). */
   readonly view: PanelViewApi
   /**
@@ -176,6 +203,8 @@ export class PanelClient {
   private baseStyled = false
   private slotType: string | undefined
   private slotApi: SlotPageApi | undefined
+  private tabApi: TabPageApi | undefined
+  private readonly connectListeners = new Set<() => void>()
   /** From the shell's port message only (receive); nothing the page can call sets it. */
   private remote = false
   readonly api: PanelApi
@@ -222,12 +251,14 @@ export class PanelClient {
     const api = {
       post: (message: JsonValue) => this.post(message),
       onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),
+      onConnect: (listener: () => void) => this.onConnect(listener),
       theme: Object.freeze(theme) as PanelApi['theme'],
       view: Object.freeze(view) as PanelViewApi,
       ready: (): void => this.toParent?.({ type: READY_MESSAGE })
     }
     // A getter: the page learns it is a slot after load, and `slot` must then appear on the same object.
     Object.defineProperty(api, 'slot', { enumerable: true, get: (): SlotPageApi | undefined => this.slotApi })
+    Object.defineProperty(api, 'tab', { enumerable: true, get: (): TabPageApi | undefined => this.tabApi })
     this.api = Object.freeze(api) as PanelApi
   }
 
@@ -240,6 +271,7 @@ export class PanelClient {
       this.connect(ports[0])
     }
     else if (type === SLOT_MESSAGE) this.becomeSlot((data as { slot?: { type?: unknown } }).slot?.type)
+    else if (type === TAB_MESSAGE) this.becomeTab((data as { tab?: { type?: unknown } }).tab?.type)
     else if (type === THEME_MESSAGE) {
       this.installBaseStyles((data as { mac?: unknown }).mac === true)
       this.applyTheme((data as { theme?: unknown }).theme)
@@ -267,6 +299,12 @@ export class PanelClient {
     })
   }
 
+  /** The shell says this page is a page tab; the first message wins (a tab's type does not change). */
+  private becomeTab(type: unknown): void {
+    if (this.tabApi !== undefined || typeof type !== 'string' || !SLOT_TYPE.test(type)) return
+    this.tabApi = Object.freeze({ type })
+  }
+
   private connect(port: PortLike): void {
     if (this.port) {
       this.port.onmessage = null
@@ -280,6 +318,14 @@ export class PanelClient {
     // Assigning onmessage also starts the port (a MessagePort queues until then).
     port.onmessage = (event) => this.deliver(event.data)
     for (const text of this.queue.splice(0)) port.postMessage(text)
+    // Every new connection, so a page tab (whose frame is never reloaded to get one) can re-send.
+    for (const listener of [...this.connectListeners]) {
+      try {
+        listener()
+      } catch (err) {
+        this.warn(`an onConnect listener threw: ${errorText(err)}`)
+      }
+    }
   }
 
   private post(message: JsonValue): void {
@@ -302,6 +348,16 @@ export class PanelClient {
       return
     }
     this.queue.push(text)
+  }
+
+  private onConnect(listener: () => void): () => void {
+    if (typeof listener !== 'function') throw new TypeError('onConnect needs a function')
+    // Wrapped, as onMessage's: the same function added twice is two listeners.
+    const entry = (): void => listener()
+    this.connectListeners.add(entry)
+    return () => {
+      this.connectListeners.delete(entry)
+    }
   }
 
   private onMessage(listener: (message: JsonValue) => void): () => void {

@@ -39,9 +39,16 @@
 // first load event fires (its script runs before `load`). Both need the plugin's own page (or a
 // click within that round trip), and the plugin's own backend is all its port reaches.
 //
+// Page tabs (`@tab/<id>`, design-editor.md §1 "Frame lifetime"): their frames live outside the
+// remounted shell and must never lose the page (it holds unsaved text), so they never reload to
+// get a port. `reconnect` hands the page that is served now a new port with no load, on a host
+// restart (`panels.reload`), a web reconnect and main's `port.resync` (a port paused at the relay's
+// byte limit, main/web/port-relay.ts); a page tab's port that main ends is not followed by a reload.
+//
 // DOM-free (the frame, the timers and the channel factory are passed in) so unit tests run it in
 // plain Node, whose MessageChannel behaves as the browser's.
 
+import { isPageTabPortKey } from '../../shared/page-tabs'
 import { MAX_PORT_KEY_LENGTH, MAX_PORT_MESSAGE_LENGTH, type PortCloseFrame, type PortMsgFrame } from '../../shared/web-protocol'
 
 /** What the frame that took a relayed port1 holds on to. */
@@ -52,6 +59,8 @@ export interface RelayHandle {
   release(): void
   /** Called once if main ends the port (not after `release`, nor on a socket drop). */
   onClosed(fn: () => void): void
+  /** Called when main says `port.resync` for it (a paused page tab port): the frame takes a new port. */
+  onResync(fn: () => void): void
 }
 
 /** port1 objects the relay made -> their handle. Weak: a port1 the frame dropped goes with it. */
@@ -79,6 +88,7 @@ interface Entry {
   readonly nonce: number
   readonly port: MessagePort
   closed?: () => void
+  resync?: () => void
 }
 
 export class PortRelay {
@@ -109,6 +119,9 @@ export class PortRelay {
       release: () => this.end(key, nonce, true, false),
       onClosed: (fn) => {
         if (this.ports.get(key) === entry) entry.closed = fn
+      },
+      onResync: (fn) => {
+        if (this.ports.get(key) === entry) entry.resync = fn
       }
     }
     handles.set(ch.port1, handle)
@@ -131,6 +144,21 @@ export class PortRelay {
     const entry = this.ports.get(key)
     if (!entry || entry.nonce !== nonce) return
     entry.port.postMessage(m)
+  }
+
+  /**
+   * `port.resync` from main: that page tab port was paused (the view fell behind) and the socket has
+   * drained. The frame holding it takes a new port (FrameLoads.reconnect), which replaces this one.
+   */
+  resync(key: unknown, nonce: unknown): void {
+    if (typeof key !== 'string' || typeof nonce !== 'number') return
+    const entry = this.ports.get(key)
+    if (!entry || entry.nonce !== nonce) return
+    try {
+      entry.resync?.()
+    } catch (err) {
+      console.warn(`web bridge: the resync of ${key} failed`, err)
+    }
   }
 
   /** `port.close` from main: the host's end is gone (or main refused to keep it). */
@@ -242,7 +270,7 @@ export class FrameLoads {
   /** An early port that arrived before its load (early mode), posted in that load's event. */
   private held: MessagePort | undefined
   private handle: RelayHandle | undefined
-  private reconnect: unknown
+  private reconnectTimer: unknown
 
   constructor(private readonly o: FrameLoadsOptions) {}
 
@@ -308,6 +336,41 @@ export class FrameLoads {
     this.endPage()
   }
 
+  /**
+   * Hand the page served now a new port WITHOUT loading it again (page tabs: a host restart, a web
+   * reconnect, a relay resync; see the header). The old port is let go first (main hears it on the
+   * web) and a late port of the old request is dropped. A frame whose page is still loading asks
+   * again (early mode) or asks at its load anyway; a stopped frame gets nothing.
+   */
+  reconnect(): void {
+    if (this.stopped || this.url === undefined) return
+    if (!this.served) {
+      // Early: the request made when the load started may have been refused (the host was not up);
+      // ask again, for the same load. Otherwise the load event asks.
+      if (!this.early || !this.expect) return
+      this.dropPort()
+      this.ask()
+      return
+    }
+    this.dropPort()
+    this.ask()
+  }
+
+  /** End the current port and its request only; the page stays served. */
+  private dropPort(): void {
+    this.visit++
+    this.clearReconnect()
+    const cleanup = this.cleanup
+    const handle = this.handle
+    const held = this.held
+    this.cleanup = undefined
+    this.handle = undefined
+    this.held = undefined
+    cleanup?.()
+    handle?.release()
+    if (held) drop(held)
+  }
+
   /** Ask for a port for the current visit (at the load, or early when the shell starts one). */
   private ask(): void {
     const visit = this.visit
@@ -341,21 +404,13 @@ export class FrameLoads {
     // main ends those on purpose (the frame left the layout, another view took the page), and a
     // reload would take them straight back.
     if (isPanelKey(handle.key)) handle.onClosed(() => this.scheduleReconnect(visit))
+    // A page tab's port paused at main's relay: a new port for the same page, never a reload.
+    if (isPageTabPortKey(handle.key)) handle.onResync(() => this.reconnect())
   }
 
   private endPage(): void {
     this.served = false
-    this.visit++
-    this.clearReconnect()
-    const cleanup = this.cleanup
-    const handle = this.handle
-    const held = this.held
-    this.cleanup = undefined
-    this.handle = undefined
-    this.held = undefined
-    cleanup?.()
-    handle?.release()
-    if (held) drop(held)
+    this.dropPort()
   }
 
   /**
@@ -391,17 +446,17 @@ export class FrameLoads {
   private scheduleReconnect(visit: number): void {
     const set = this.o.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
     this.clearReconnect()
-    this.reconnect = set(() => {
-      this.reconnect = undefined
+    this.reconnectTimer = set(() => {
+      this.reconnectTimer = undefined
       if (visit !== this.visit || this.url === undefined) return
       this.remount()
     }, PANEL_RECONNECT_MS)
   }
 
   private clearReconnect(): void {
-    if (this.reconnect === undefined) return
+    if (this.reconnectTimer === undefined) return
     const clear = this.o.clearTimeout ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
-    clear(this.reconnect)
-    this.reconnect = undefined
+    clear(this.reconnectTimer)
+    this.reconnectTimer = undefined
   }
 }

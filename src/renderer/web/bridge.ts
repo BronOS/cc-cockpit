@@ -22,7 +22,7 @@
 //   shell does not ack it), so TerminalSession is the same in both shells. Size items go to the
 //   same listeners as `tabs.data` with `cols`/`rows` and an empty `data` (in stream order), and a
 //   snapshot carries its size: the page draws at the pty's size (per-view sizes, plan Task 15).
-// - Panel ports (design §5.3): main's `port.open` / `port.msg` / `port.close` go to this socket's
+// - Panel ports (design §5.3): main's `port.open` / `port.msg` / `port.close` (and a page tab's `port.resync`) go to this socket's
 //   PortRelay (port-relay.ts), which hands each port to the panel that asked (`onPort`, the panel
 //   port bus) and relays its messages; a drop closes every port of the old socket.
 // - Shared asks (design §5.1, main/sessions/close-asks.ts): plugin close asks pending when the view
@@ -633,6 +633,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     if (f.t === 'port.open') ports.open(f.key, f.nonce)
     else if (f.t === 'port.msg') ports.message(f.key, f.nonce, f.m)
     else if (f.t === 'port.close') ports.remoteClosed(f.key, f.nonce)
+    else if (f.t === 'port.resync') ports.resync(f.key, f.nonce)
   }
 
   /** A port frame on socket `s`; false when it did not go out (the socket is not this one or not open, or over the cap). */

@@ -92,6 +92,26 @@ export function CommandGlyph(props: GlyphProps): React.JSX.Element {
   )
 }
 
+/** A page tab with no icon of its own (design-editor.md §1): a plugin page, a window with a header. */
+export function PageGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <rect x="2.5" y="2.75" width="11" height="10.5" rx="1.5" />
+      <path d="M2.5 5.5h11M5 8.25h6M5 10.5h4" />
+    </Glyph>
+  )
+}
+
+/** A page tab whose plugin names the `file` icon (the editor's file tabs): a sheet with a folded corner. */
+export function FileGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <path d="M4 2.25h5.25L12.5 5.5v8.25H4z" />
+      <path d="M9.25 2.25V5.5h3.25" />
+    </Glyph>
+  )
+}
+
 export function BackGlyph(props: GlyphProps): React.JSX.Element {
   return (
     <Glyph {...props}>

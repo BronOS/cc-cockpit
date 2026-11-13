@@ -7,6 +7,7 @@
 import { PANEL_PORT_MESSAGE } from '../../shared/ipc'
 import type { SettingsPageScope } from '../../shared/manifest'
 import { settingsPagePortKey } from '../../shared/settings-page'
+import { pageTabPortKey } from '../../shared/page-tabs'
 import { slotPortKey } from '../../shared/slots'
 
 type Waiter = { nonce: number; take: (port: MessagePort) => void }
@@ -54,6 +55,16 @@ export function requestPanelPort(panelKey: string, take: (port: MessagePort) => 
  */
 export function requestSlotPort(frameId: string, take: (port: MessagePort) => void): () => void {
   return request(slotPortKey(frameId), take, (nonce) => window.cockpit.invoke('slots.connect', { frameId, nonce }))
+}
+
+/**
+ * The same for a page tab's frame (design-editor.md §1): main hands one end to the tab's own plugin
+ * and posts this one under `@tab/<tabId>` (pageTabPortKey). Asked on the frame's first load and again,
+ * with no reload, after a host restart, a web reconnect or a relay resync (page-frames.ts). Refused
+ * (false, no port) while the plugin does not run here, and always on server mode's hidden page.
+ */
+export function requestPageTabPort(tabId: string, take: (port: MessagePort) => void): () => void {
+  return request(pageTabPortKey(tabId), take, (nonce) => window.cockpit.invoke('pageTabs.connect', { tabId, nonce }))
 }
 
 /**

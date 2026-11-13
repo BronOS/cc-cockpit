@@ -1894,6 +1894,24 @@ describe('HostManager', () => {
       slotted.closeSlot('p2', 'a.one', 's1')
     })
 
+    it("page tabs (design-editor.md §1): the port goes to the tab's running plugin only, for a type it declares", async () => {
+      enabled.p1 = [plugin('a.one', { pageTabs: [{ type: 'file', page: 'tab.html' }] }), plugin('a.two')]
+      const open = { pluginId: 'a.one', id: 't1', type: 'file', params: { path: 'a.ts' } }
+      expect(slotted.sendPageTabPort('p1', open, {})).toBe(false)
+      await slotted.open('p1', 1)
+      const port = { the: 'port' }
+      expect(slotted.sendPageTabPort('p1', open, port)).toBe(true)
+      expect(factory.last.ports).toEqual([{ message: JSON.stringify({ pageTabOpen: open }), port }])
+      // A type the plugin does not declare, a plugin that declares none, another project.
+      expect(slotted.sendPageTabPort('p1', { ...open, type: 'other' }, {})).toBe(false)
+      expect(slotted.sendPageTabPort('p1', { ...open, pluginId: 'a.two' }, {})).toBe(false)
+      expect(slotted.sendPageTabPort('p2', open, {})).toBe(false)
+      slotted.closePageTab('p1', 'a.one', 't1', 'web:2')
+      await flush()
+      expect(hostEvents).toContainEqual({ event: 'pageTab.close', params: { pluginId: 'a.one', id: 't1', view: 'web:2' } })
+      slotted.closePageTab('p2', 'a.one', 't1')
+    })
+
     it("settings pages (design-next §5.4): the scopes ride in the spec; the port goes to that running plugin only", async () => {
       const page = { entry: 'settings/index.html', scopes: ['app', 'project'] as ('app' | 'project')[] }
       enabled.p1 = [plugin('a.one', { settingsPage: page }), plugin('a.two')]

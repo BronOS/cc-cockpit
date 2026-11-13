@@ -8,8 +8,8 @@ import { usePrefs } from '../prefs/prefs-store'
 import { QueuedChip } from '../status/QueuedChip'
 import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
-import { ChevronDownGlyph, CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
-import { commandTooltip, tabLabel } from './tab-label'
+import { ChevronDownGlyph, CloseGlyph, CommandGlyph, FileGlyph, PageGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
+import { commandTooltip, pageTabMarks, tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
 import { hiddenFlags, type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
 import { allTabsOrder, nextAttention, sameIds, statusesOf } from './tab-flags'
@@ -433,7 +433,12 @@ export function TabBar(props: {
               // The note is the tooltip's first line: the reminder is what the person flagged it for.
               title={flag?.note ? `${flag.note}\n${where}` : where}
               aria-description={
-                flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined
+                [
+                  flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined,
+                  ...pageTabMarks(tab)
+                ]
+                  .filter((d) => d !== undefined)
+                  .join(', ') || undefined
               }
               onClick={() => props.onSelect(tab.id)}
               onPointerDown={(e) => onPointerDown(e, tab.id)}
@@ -453,10 +458,17 @@ export function TabBar(props: {
               {status && <StatusDot status={status.status} {...(status.tool ? { tool: status.tool } : {})} />}
               {tab.kind === 'shell' && <ShellGlyph size={14} className="tab-kind" />}
               {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
+              {/* A page tab's icon is a NAME main checked (shared/page-tabs.ts), drawn as one of the
+                  shell's own glyphs, never anything the plugin sent. */}
+              {tab.kind === 'page' && (tab.page?.icon === 'file' ? <FileGlyph size={14} className="tab-kind" /> : <PageGlyph size={14} className="tab-kind" />)}
               <span className="tab-text">
                 {tabLabel(tab, status?.title, status?.name)}
                 {tab.notStarted ? ' (not started)' : tab.exit ? ' (exited)' : ''}
               </span>
+              {/* Core's marks (design-editor.md §1): unsaved text in some view, and opened while you
+                  were elsewhere. Neither is a flag, which is the person's alone. */}
+              {tab.dirty && <span className="tab-dirty" aria-hidden="true" />}
+              {tab.unseen && <span className="tab-unseen" aria-hidden="true" />}
             </button>
             {status && (
               <QueuedChip
@@ -517,6 +529,8 @@ export function TabBar(props: {
                   >
                     {status && <StatusDot status={status.status} {...(status.tool ? { tool: status.tool } : {})} />}
                     <span className="menu-label">{tabLabel(tab, status?.title, status?.name)}</span>
+                    {tab.dirty && <span className="tab-dirty" aria-hidden="true" />}
+                    {tab.unseen && <span className="tab-unseen" aria-hidden="true" />}
                     {tab.flag && (
                       <span className="menu-flag" aria-hidden="true">
                         {tab.flag.note && <span className="menu-flag-note">{tab.flag.note}</span>}

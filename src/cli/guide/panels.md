@@ -50,6 +50,12 @@ load, the strip shows the title's first letter.
   queued.
 - `ccPanel.onMessage(listener)`: hear what the host sends with `ctx.panels.post`. Returns an
   unsubscribe function.
+- `ccPanel.onConnect(listener)`: runs each time the page gets a new connection to your host after it was added
+  (add it at script start to hear the first one too). A panel, slot or overlay gets one per load; a page tab
+  (`ccPanel.tab`) gets another after a host restart, a browser view's reconnect or a resync of a slow browser's
+  link, without loading again. Messages on the old connection may be lost and your host starts over, so re-send
+  what the page holds there. Posts queued before the first connection go out before it runs. Returns an
+  unsubscribe function.
 - `ccPanel.theme.current`: the theme the page's screen shows `{ kind, vars }` (with no theme picked,
   a browser's own light or dark, not the desktop's); the CSS variables are
   already set on `:root` (and `color-scheme` is `kind`), so style with `var(--...)`.
@@ -65,6 +71,12 @@ load, the strip shows the title's first letter.
   its content (`width: max-content`), never on the page's body, which only echoes the frame.
   `undefined` in a panel or an overlay. It appears once the app has said what the page is, so
   read it after load, not at script start.
+- `ccPanel.tab`: only when the page is drawn as a page tab (`contributes.tabs`, `ccc guide plugins`): `{ type }`.
+  `undefined` anywhere else; like `ccPanel.slot`, read it after load. A page tab's frame is mounted on the tab's
+  first select, a few recently used ones are kept alive, and it is never reloaded to reconnect, so it keeps
+  unsaved text: when your host restarts, a browser view reconnects or the link to a slow browser falls behind, the
+  app hands the page a new connection instead (`ccPanel.onConnect`). A frame that left the kept set, or a tab not
+  selected since the start, loads afresh when it is selected.
 - `ccPanel.view.remote`: `true` when the page is drawn in a web access browser view (the person's
   phone or another browser), `false` on the desktop. The app's shell that mounts the page says so with
   the page's connection, so it is `false` until then: read it once the host's first message has come,

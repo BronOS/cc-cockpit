@@ -607,6 +607,51 @@ export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): 
   })
 }
 
+/** What the page tab frame handlers need (index.ts, panel-ports.ts). */
+export interface PageTabHandlerDeps {
+  /**
+   * The `cc-plugin://` URL of the page the tab's plugin's manifest names for its type, when `tabId`
+   * is a page tab of the project whose plugin is on there and still declares the type.
+   */
+  src(projectId: string, tabId: string): string | undefined
+  /** Connect a page tab's frame in the calling view (PanelPortHub.connectPageTab); false when refused. */
+  connect(projectId: string, viewId: ViewId, tabId: string, nonce: unknown): boolean
+  /** The calling view's shell unmounted the frame (PanelPortHub.disconnectPageTab): only that view's instance. */
+  disconnect(projectId: string, viewId: ViewId, tabId: string): void
+  /** Server mode: the window's own page is the hidden page, which never mounts a page tab. */
+  server: boolean
+}
+
+/**
+ * Page tab frames (design-editor.md §1 "Frame lifetime"): the page a tab shows, its port and its
+ * unmount. The project and view are the sender's; the tab id is renderer input, capped here and only
+ * looked up in that project's tabs by main. In server mode the desktop view is the hidden page, which
+ * nothing looks at: it gets no page and no port, so a page tab never runs its page there (§1 "never
+ * mounted in server mode's hidden page"); the browsers mount their own.
+ */
+export function registerPageTabHandlers(router: IpcRouter, deps: PageTabHandlerDeps): void {
+  const tabIdShort = (channel: string, payload: unknown): string => {
+    const tabId = tabIdOf(channel, payload)
+    if (tabId.length > 64) throw new Error(`${channel}: tabId must be a short string`)
+    return tabId
+  }
+  const hiddenPage = (view: CallView): boolean => deps.server && !view.remote
+  router.handleProject('pageTabs.src', (ctx, payload, view) => {
+    const tabId = tabIdShort('pageTabs.src', payload)
+    if (hiddenPage(view)) return null
+    return deps.src(ctx.projectId, tabId) ?? null
+  })
+  router.handleProject('pageTabs.connect', (ctx, payload, view) => {
+    const tabId = tabIdShort('pageTabs.connect', payload)
+    if (hiddenPage(view)) return false
+    return deps.connect(ctx.projectId, view.viewId, tabId, fields('pageTabs.connect', payload).nonce)
+  })
+  router.handleProject('pageTabs.disconnect', (ctx, payload, view) => {
+    deps.disconnect(ctx.projectId, view.viewId, tabIdShort('pageTabs.disconnect', payload))
+    return null
+  })
+}
+
 /** What the plugin settings page handlers need (index.ts, panel-ports.ts). */
 export interface SettingsPageHandlerDeps {
   /** The page's URL for the sender's project, or that the plugin does not run there; null when it has no such page. */

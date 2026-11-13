@@ -25,12 +25,22 @@
 // the whole view. A refused connect never reaches here: the hub answers the shell's
 // `panels.connect` with false and makes no channel, as on the desktop.
 //
+// Page tabs (`@tab/<id>`, design-editor.md §1 "Relay backlog") are not closed at the high water: a
+// page tab holds unsaved text, and closing its port would leave it cut off (its frame never reloads
+// to reconnect). Its port is PAUSED instead: every message the host sends it from then on is
+// dropped, nothing queued. Once the socket has drained below RELAY_LOW_WATER (checked every
+// RELAY_DRAIN_CHECK_MS while anything is paused) the browser is told `port.resync`, and the frame
+// asks for a new port without loading again; over it the page and the plugin each re-send what
+// they hold, so the dropped messages are never needed. A message the socket cannot carry at all (a
+// frame over the cap) pauses it the same way. The hub's connect cap bounds a resync loop.
+//
 // No Electron import: the port is whatever the hub made (MessagePortMain in the app), checked for
 // the four calls used; tests pass Node's own MessagePort.
 
 import { errorText } from '../../shared/error-text'
 import { PANEL_PORT_CHANNEL } from '../../shared/ipc'
-import { MAX_PORT_KEY_LENGTH, MAX_PORT_MESSAGE_LENGTH, type PortCloseFrame, type PortMsgFrame, type PortOpenFrame } from '../../shared/web-protocol'
+import { isPageTabPortKey } from '../../shared/page-tabs'
+import { MAX_PORT_KEY_LENGTH, MAX_PORT_MESSAGE_LENGTH, type PortCloseFrame, type PortMsgFrame, type PortOpenFrame, type PortResyncFrame } from '../../shared/web-protocol'
 
 /** The parts of a MessagePortMain the relay uses. */
 export interface RelayPort {
@@ -46,18 +56,27 @@ export interface RelayPort {
  * spike's value: a few seconds of a busy terminal on a slow link, far above a panel's state push).
  */
 export const RELAY_HIGH_WATER = 8 * 1024 * 1024
+/** A paused page tab port is resynced once the socket holds no more than this unsent (half the high water). */
+export const RELAY_LOW_WATER = RELAY_HIGH_WATER / 2
+/** How often a relay with a paused port looks whether its socket has drained. */
+export const RELAY_DRAIN_CHECK_MS = 250
 
 export interface PortRelayDeps {
   /** A frame to the browser; false when it did not go out (socket closing, or over the frame cap). */
-  send(frame: PortOpenFrame | PortMsgFrame | PortCloseFrame): boolean
+  send(frame: PortOpenFrame | PortMsgFrame | PortCloseFrame | PortResyncFrame): boolean
   /** Bytes the socket has not sent yet (`ws` bufferedAmount). */
   buffered(): number
   log(message: string): void
+  /** Timers for the drain check (tests); the global ones by default. */
+  setTimeout?(fn: () => void, ms: number): unknown
+  clearTimeout?(handle: unknown): void
 }
 
 interface Held {
   nonce: number
   port: RelayPort
+  /** A page tab port at the high water: host messages are dropped until the browser resyncs it. */
+  paused?: 'waiting' | 'told'
 }
 
 function isRelayPort(value: unknown): value is RelayPort {
@@ -78,6 +97,8 @@ export class PortRelay {
   /** key -> the port of the latest load of that key in this view. */
   private readonly ports = new Map<string, Held>()
   private closed = false
+  /** The pending drain check while a page tab port waits to be resynced. */
+  private drainTimer: unknown
 
   constructor(private readonly deps: PortRelayDeps) {}
 
@@ -105,12 +126,17 @@ export class PortRelay {
       if (this.ports.get(key) !== held) return
       // The host posts one JSON string per message (encodePortMessage); anything else is not ours.
       if (typeof e.data !== 'string' || e.data.length > MAX_PORT_MESSAGE_LENGTH) return
+      // Paused (a page tab behind): dropped until the browser takes a new port and both ends re-send.
+      if (held.paused !== undefined) return
       if (this.deps.buffered() > RELAY_HIGH_WATER) {
+        if (isPageTabPortKey(key)) return this.pause(key, held, `the view is ${RELAY_HIGH_WATER} bytes behind`)
         this.deps.log(`web access: panel ${key}: the view is ${RELAY_HIGH_WATER} bytes behind, its port closed`)
         this.drop(key, nonce, true)
         return
       }
-      if (!this.deps.send({ t: 'port.msg', key, nonce, m: e.data })) this.drop(key, nonce, true)
+      if (this.deps.send({ t: 'port.msg', key, nonce, m: e.data })) return
+      if (isPageTabPortKey(key)) this.pause(key, held, 'a message did not go out')
+      else this.drop(key, nonce, true)
     })
     port.on('close', () => {
       // The host's end went (or this end was closed here, already dropped): the browser lets go.
@@ -145,7 +171,57 @@ export class PortRelay {
    */
   closeAll(): void {
     this.closed = true
+    this.clearDrain()
     for (const key of [...this.ports.keys()]) this.drop(key, undefined, false)
+  }
+
+  /** Whether the port of `key` is paused now (tests). */
+  paused(key: string): boolean {
+    return this.ports.get(key)?.paused !== undefined
+  }
+
+  /** A page tab port fell behind: drop the host's messages from now on, and resync once the socket drained. */
+  private pause(key: string, held: Held, why: string): void {
+    held.paused = 'waiting'
+    this.deps.log(`web access: page tab ${key}: ${why}, its port paused until the view catches up`)
+    this.scheduleDrain()
+  }
+
+  private scheduleDrain(): void {
+    if (this.drainTimer !== undefined || this.closed) return
+    const set = this.deps.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+    this.drainTimer = set(() => {
+      this.drainTimer = undefined
+      this.drainCheck()
+    }, RELAY_DRAIN_CHECK_MS)
+  }
+
+  /**
+   * Drained enough: each paused port that has not been told is resynced (`port.resync`): the browser
+   * frame asks for a new port with no reload, and this one is replaced by it (`take`). Until then it
+   * stays paused: a message the host sends meanwhile would reach a page that is about to re-send.
+   */
+  private drainCheck(): void {
+    if (this.closed) return
+    let waiting = false
+    for (const [key, held] of this.ports) {
+      if (held.paused !== 'waiting') continue
+      if (this.deps.buffered() > RELAY_LOW_WATER) {
+        waiting = true
+        continue
+      }
+      // Not sent (the socket is closing): the view goes, and this relay with it.
+      if (this.deps.send({ t: 'port.resync', key, nonce: held.nonce })) held.paused = 'told'
+      else waiting = true
+    }
+    if (waiting) this.scheduleDrain()
+  }
+
+  private clearDrain(): void {
+    if (this.drainTimer === undefined) return
+    const clear = this.deps.clearTimeout ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
+    clear(this.drainTimer)
+    this.drainTimer = undefined
   }
 
   /** Ports held now (tests, and the view's own bound). */

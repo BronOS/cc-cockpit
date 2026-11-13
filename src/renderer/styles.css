@@ -603,6 +603,21 @@ iframe:focus-visible {
 .tab.active .tab-kind {
   color: var(--cc-fg-muted);
 }
+/* Core's page-tab marks (design-editor.md §1): unsaved text in some view (a solid dot in the text
+   colour, as editors draw it) and opened while you were elsewhere (an accent dot). Never a flag. */
+.tab-dirty,
+.tab-unseen {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.tab-dirty {
+  background: var(--cc-fg-muted);
+}
+.tab-unseen {
+  background: var(--cc-accent);
+}
 .tab-close {
   flex: none;
   display: inline-flex;
@@ -989,6 +1004,30 @@ iframe:focus-visible {
 }
 .terminal-view[hidden] {
   display: none;
+}
+/* Page tabs (design-editor.md §1, PageTabArea.tsx): the placeholder fills the tab area; the frames
+   are in a layer of their own outside the React root (so a web reconnect's remount keeps them), laid
+   over the placeholder at its measured box. z-index 1 keeps it under every floating thing of the
+   shell (menus 30, the palette, dialogs, the settings screen, overlays), which all have more. */
+.page-tab-area {
+  position: absolute;
+  inset: 0;
+}
+.page-tab-area[hidden],
+.page-tab-layer[hidden],
+.page-tab-frame[hidden] {
+  display: none;
+}
+.page-tab-layer {
+  position: fixed;
+  z-index: 1;
+}
+.page-tab-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--cc-bg);
 }
 /* The fit addon measures the host's content box, so this padding is room around the text, not
    cells lost off the edge. Less on the right: xterm's scrollbar sits there. */

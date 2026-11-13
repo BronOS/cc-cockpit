@@ -36,3 +36,15 @@ export function commandTooltip(tab: TabInfo): string | undefined {
   }
   return lines.join('\n')
 }
+
+/**
+ * What a page tab's core marks say to a screen reader (the dots are aria-hidden): unsaved changes in
+ * some view (`dirty`) and opened while another tab was selected (`unseen`, design-editor.md §1).
+ * Empty for a tab with neither; any tab kind may carry `unseen`, only page tabs `dirty`.
+ */
+export function pageTabMarks(tab: TabInfo): string[] {
+  const marks: string[] = []
+  if (tab.dirty) marks.push('unsaved changes')
+  if (tab.unseen) marks.push('not seen yet')
+  return marks
+}

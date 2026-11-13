@@ -11,6 +11,9 @@
 //   ccPanel.slot                         only when the page is drawn as a slot (contributes.slots):
 //                                        { type, setHeight(px), setWidth(px) }; undefined in a panel
 //                                        or an overlay (setWidth: the top bar's frame only)
+//   ccPanel.onConnect(fn)                fn runs on every new connection to the plugin; a page tab
+//                                        gets more than one (never reloaded for one): re-send there
+//   ccPanel.tab                          only when the page is drawn as a page tab (contributes.tabs): { type }
 //   ccPanel.ready()                      an html overlay's page has drawn: the app's loader goes
 //                                        (needed with `ready: 'manual'`; harmless elsewhere)
 //   ccPanel.view.remote                  the page is drawn in a web access browser view (the shell

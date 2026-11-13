@@ -184,6 +184,12 @@ export interface TabInfo {
    * `tabs.selected` of it from any view. Never a flag (the person's alone) and never saved.
    */
   unseen?: true
+  /**
+   * A page tab with unsaved changes in at least one view (design-editor.md §1 "Dirty and close"):
+   * the strip's dirty dot. Main keeps dirty per (tab, view) from each page's report and sets this
+   * when any view is dirty; never saved.
+   */
+  dirty?: true
 }
 
 /** One user entry of the new-tab menu as the menu shows it: no command text, main runs it by id. */
@@ -1152,6 +1158,25 @@ export interface IpcInvokeMap {
    * publishes it as `SlotFrameInfo.pageHeight`. False for a frame not drawn now or one in the top bar.
    */
   'slots.height': { req: { frameId: string; height: number }; res: boolean }
+  // Page tabs (design-editor.md §1 "Frame lifetime"). The project is the sender's; tab ids are main's.
+  /**
+   * The page a page tab of this window's project shows: the `cc-plugin://` URL of the page its
+   * plugin's manifest names for the tab's type (never one a host names). Null when the tab is not a
+   * page tab here, its plugin is not on in the project or no longer declares the type, and always
+   * for server mode's hidden page, which never mounts a page tab (only browsers show one).
+   */
+  'pageTabs.src': { req: { tabId: string }; res: string | null }
+  /**
+   * A page tab's frame wants a line to its plugin: on its first load, and again WITHOUT loading
+   * again after a host restart, a web reconnect or a relay resync. Main makes a MessageChannel,
+   * hands one end to the plugin's host with the tab's type and params, and posts the other to this
+   * view on PANEL_PORT_CHANNEL under `@tab/<tabId>` (pageTabPortKey) with the same `nonce`. False
+   * (no port follows) when the plugin is not running here now (`panels.reload` says when to try
+   * again) or the caller is the hidden page.
+   */
+  'pageTabs.connect': { req: { tabId: string; nonce: number }; res: boolean }
+  /** The shell unmounted a page tab's frame (the tab closed, or its frame left the live set): the plugin hears the close. */
+  'pageTabs.disconnect': { req: { tabId: string }; res: null }
   /**
    * A plugin's html settings page (design-next §5.4) for this window's project: null when the plugin
    * declares no page for `scope`; `enabled: false` when it does not run in this project (the page
@@ -1840,6 +1865,9 @@ export const INVOKE_CHANNELS = [
   'slots.connect',
   'slots.disconnect',
   'slots.height',
+  'pageTabs.src',
+  'pageTabs.connect',
+  'pageTabs.disconnect',
   'settingsPage.info',
   'settingsPage.connect',
   'settingsPage.disconnect',
@@ -2126,6 +2154,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'slots.connect': 'yes',
   'slots.disconnect': 'yes',
   'slots.height': 'yes',
+  // Like a slot frame's: each view mounts its own frame of a page tab (the hidden page refused in main).
+  'pageTabs.src': 'yes',
+  'pageTabs.connect': 'yes',
+  'pageTabs.disconnect': 'yes',
   'settingsPage.info': 'yes',
   'settingsPage.connect': 'yes',
   'settingsPage.disconnect': 'yes',

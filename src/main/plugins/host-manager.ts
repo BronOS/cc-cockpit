@@ -36,6 +36,9 @@
 // with the frame's port, to the PROVIDER's host only (sendSlotPort), and the event
 // `slot.close { pluginId, id }` when the frame goes (closeSlot). Who provides a type is
 // slotProvider: the project's pick among the plugins of the last launch, running now.
+// Page tabs (design-editor.md §1) too: `{ pageTabOpen: { pluginId, id, type, params?, view? } }` with
+// the frame's port, to the TAB'S OWN plugin only (sendPageTabPort: running now and declaring the type),
+// and `pageTab.close { pluginId, id, view? }` when the frame goes in a view (closePageTab).
 // A plugin's html settings page (design-next §5.4) too: `{ settingsPageOpen: { pluginId, id, scope } }`
 // with the page's port (sendSettingsPagePort), `settingsPage.close { pluginId, id }` when it goes.
 // Plugin CLI commands (`ccc <name>`, plan B Task 5): runCli hands a call to the host serving the
@@ -61,6 +64,7 @@ import { capText } from '../../shared/text'
 import { selectSlotProvider } from '../../shared/services'
 import { SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, type SlotHost } from '../../shared/slots'
 import type { JsonValue } from '../../sdk/types'
+import type { PageTabContribution } from '../../shared/page-tabs'
 import { MAX_NOTIFY_TEXT, parseNotifyOptions, type NotifyOutcome } from '../../shared/notify'
 import type { PluginNotice } from '../notifications/notifier'
 import type { PluginCommandDef } from '../commands/command-registry'
@@ -212,6 +216,8 @@ export interface HostPlugin {
   slots?: SlotContribution[]
   /** The manifest's `contributes.settings.page`: its html settings page (design-next §5.4). */
   settingsPage?: SettingsPageContribution
+  /** The manifest's `contributes.tabs`: the page-tab types it opens (design-editor.md §1). */
+  pageTabs?: PageTabContribution[]
   /** The manifest's `access` (validated): `sessions: 'all-windows'` opens ctx.sessions scope `all`. */
   access?: PluginManifest['access']
   /** The ids of the manifest's `contributes.themes`: the only themes ctx.themes.set may replace. */
@@ -942,6 +948,34 @@ export class HostManager {
     const rec = this.hosts.get(projectId)
     if (!rec?.rpc || rec.stopping) return
     rec.rpc.emit('slot.close', { pluginId, id, ...(view !== undefined ? { view } : {}) })
+  }
+
+  /**
+   * Hand the plugin's host one end of a page tab's frame channel with what its `ctx.tabs.onOpen`
+   * listener gets (the caller took it from main's own tab record). Only a plugin running in the host
+   * now, not reloading, that the last launch saw declare the type; false otherwise.
+   */
+  sendPageTabPort(
+    projectId: string,
+    open: { pluginId: string; id: string; type: string; params?: JsonValue; view?: ViewId },
+    port: unknown
+  ): boolean {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.proc || rec.stopping || !rec.ran.has(open.pluginId) || rec.reloading.has(open.pluginId)) return false
+    const declared = rec.plugins.find((p) => p.id === open.pluginId)?.pageTabs?.some((t) => t.type === open.type) === true
+    if (!declared) return false
+    rec.proc.transferPort(JSON.stringify({ pageTabOpen: open }), port)
+    return true
+  }
+
+  /**
+   * Tell the plugin's host a page tab's frame is gone (`pageTab.close`) in one view (`view` for a
+   * remote one, absent for the desktop page); nothing when there is no host.
+   */
+  closePageTab(projectId: string, pluginId: string, id: string, view?: ViewId): void {
+    const rec = this.hosts.get(projectId)
+    if (!rec?.rpc || rec.stopping) return
+    rec.rpc.emit('pageTab.close', { pluginId, id, ...(view !== undefined ? { view } : {}) })
   }
 
   /**

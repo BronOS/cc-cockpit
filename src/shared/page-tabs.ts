@@ -128,3 +128,30 @@ export function checkPageTabSpec(raw: unknown, isPluginId: (value: unknown) => b
   if (i !== undefined) spec.icon = i
   return spec
 }
+
+/**
+ * A tab's id as main makes it (randomUUID, TabManager): checked before any lookup of a page tab the
+ * renderer names (`pageTabs.connect`), so junk from a renderer is not carried any further.
+ */
+export const PAGE_TAB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** The prefix of a page tab's port key (pageTabPortKey). */
+const PAGE_TAB_PORT_PREFIX = '@tab/'
+
+/**
+ * A page tab's frame gets its MessagePort on the panels' channel (PANEL_PORT_CHANNEL, the preload
+ * and the renderer's port bus unchanged), under this key, as a slot frame does under `@slot/<id>`:
+ * `@` never starts a plugin id, so it cannot collide with a panel's key.
+ */
+export function pageTabPortKey(tabId: string): string {
+  return `${PAGE_TAB_PORT_PREFIX}${tabId}`
+}
+
+/**
+ * Whether a port key is a page tab's. The web relays treat those differently from a panel's
+ * (design-editor.md §1 "Relay backlog"): a page tab's port is paused and resynced at the byte
+ * limit, never closed, and its frame takes a new port without loading again.
+ */
+export function isPageTabPortKey(key: string): boolean {
+  return key.startsWith(PAGE_TAB_PORT_PREFIX)
+}

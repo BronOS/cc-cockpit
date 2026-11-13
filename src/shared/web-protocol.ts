@@ -551,6 +551,12 @@ export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
 export type PortOpenFrame = { t: 'port.open'; key: string; nonce: number }
 export type PortMsgFrame = { t: 'port.msg'; key: string; nonce: number; m: string }
 export type PortCloseFrame = { t: 'port.close'; key: string; nonce: number }
+/**
+ * Main to browser only: a page tab's port (`@tab/<id>`) fell behind and was paused (design-editor.md §1
+ * "Relay backlog"; main/web/port-relay.ts); the socket has drained now. The frame asks for a new port
+ * without loading again, and over it both ends re-send what they hold.
+ */
+export type PortResyncFrame = { t: 'port.resync'; key: string; nonce: number }
 
 export type ClientFrame = HelloFrame | InvokeFrame | PortMsgFrame | PortCloseFrame
 
@@ -599,3 +605,4 @@ export type ServerFrame =
   | PortOpenFrame
   | PortMsgFrame
   | PortCloseFrame
+  | PortResyncFrame
