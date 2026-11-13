@@ -384,6 +384,19 @@ export class TerminalSession {
     })
   }
 
+  /**
+   * The terminal's real cell in CSS pixels at its own font size, as the fit addon counts it (xterm's
+   * render dimensions: the same private API the addon reads). Undefined before xterm measured it and
+   * while the terminal is drawn at a scaled font (another view's pty size), which is not the size a
+   * pane of this view would get. The split view's limits use it over the font estimate.
+   */
+  cellSize(): { width: number; height: number } | undefined {
+    if (this.disposed || this.term.options.fontSize !== this.baseFontSize) return undefined
+    const core = (this.term as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } } })._core
+    const cell = core?._renderService?.dimensions?.css?.cell
+    return cell && cell.width > 0 && cell.height > 0 ? { width: cell.width, height: cell.height } : undefined
+  }
+
   /** Fit to the container and tell main the new size when it changed. */
   private refit(): void {
     const el = this.container
@@ -560,6 +573,15 @@ export class SessionRegistry {
 
   /** Closed tabs: late output for them must not resurrect a session that nobody disposes. */
   private readonly closed = new Set<string>()
+
+  /** One terminal cell as xterm measured it (TerminalSession.cellSize), from any open terminal. */
+  cellSize(): { width: number; height: number } | undefined {
+    for (const s of this.sessions.values()) {
+      const cell = s.cellSize()
+      if (cell) return cell
+    }
+    return undefined
+  }
 
   /**
    * Output for a tab (`reset`: a whole screen; `size`: the pty's size at this point; `local`: this view

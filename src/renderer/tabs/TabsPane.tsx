@@ -133,6 +133,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // A see-through window's tab terminals let its glass through; overlays keep their own registry,
   // opaque (OverlayStack).
   const [sessions] = useState(() => new SessionRegistry(tabIo, { seeThrough: isSeeThrough() }))
+  // The 20x5 minimum (a split, a divider's stop) counts the cells the pty will really get (qa run 1
+  // Q4): xterm's measured cell when a terminal has one at the set font, else the estimate.
+  const cellNow = useCallback((): Size => sessions.cellSize() ?? cell, [sessions, cell])
   const [error, setError] = useState<string | null>(null)
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
@@ -584,9 +587,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const splitBlocked = useCallback(
     (tabId: string, edge: PaneEdge): string | undefined => {
       if (area.width === 0) return undefined
-      return splitFits(paneSize(tabId), edge, cell) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
+      return splitFits(paneSize(tabId), edge, cellNow()) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
     },
-    [area, cell, paneSize]
+    [area, cellNow, paneSize]
   )
   // Split right / down: the New tab menu at the new pane's place (D13), with a preview of it.
   const [splitMenu, setSplitMenu] = useState<SplitMenu | null>(null)
@@ -1213,9 +1216,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   // The split view's commands (D10). They read the state through refs, like the handlers above, and
   // act through the same group channels as the strip's menus.
-  const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cell })
+  const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cellNow })
   useEffect(() => {
-    paneActions.current = { openSplit, groupEdit, ungroup, area, cell }
+    paneActions.current = { openSplit, groupEdit, ungroup, area, cellNow }
   })
   useEffect(
     () =>
@@ -1237,8 +1240,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             if (stateRef.current.activeId && stateRef.current.tabs.length > 1) setBesidePick({ edge })
           },
           minShare: (axis) => {
-            const { area: a, cell: c } = paneActions.current
-            return dragMinShare(axis === 'row' ? a.width : a.height, axis, c)
+            const { area: a, cellNow: c } = paneActions.current
+            return dragMinShare(axis === 'row' ? a.width : a.height, axis, c())
           },
           report: setError
         })
@@ -1309,7 +1312,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           keysOff={state.keysOff}
           sessions={sessions}
           details={own}
-          cell={cell}
+          cell={cellNow}
           onArea={setArea}
           onPanePress={(tabId) => dispatch({ type: 'selected', tabId })}
           onResize={(groupId, splitId, sizes) =>

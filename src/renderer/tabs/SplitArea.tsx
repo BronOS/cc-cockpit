@@ -79,8 +79,8 @@ export function SplitArea(props: {
   keysOff: boolean
   sessions: SessionRegistry
   details: ReadonlyMap<string, SessionDetail>
-  /** About one terminal cell, for the D5 limits of a divider drag. */
-  cell: Size
+  /** One terminal cell (measured when a terminal has one), for the D5 limits of a divider drag. */
+  cell: () => Size
   onArea: (size: Size) => void
   /** A press in a pane (any button): the person picks it. */
   onPanePress: (tabId: string) => void
@@ -278,7 +278,7 @@ export function SplitArea(props: {
                   if (!(splitPx > 0)) return
                   const cur = dragRef.current?.splitId === d.splitId && dragRef.current.live ? dragRef.current : startDrag(d.splitId)
                   if (!cur) return
-                  const min = dragMinShare(splitPx, d.dir, props.cell)
+                  const min = dragMinShare(splitPx, d.dir, props.cell())
                   const next = moveDivider(cur.base, d.index, px / splitPx - (cur.base[d.index] ?? 0), min)
                   setDragBoth({ ...cur, sizes: next })
                 }}

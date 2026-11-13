@@ -90,21 +90,21 @@ export function pruneView(groups: readonly TabGroup[], zoomed: Record<string, st
 
 /**
  * A new snapshot took the selected tab out of the group it was a pane of: which tab the view shows
- * now, and whether its keys go off (D3, D18, D22). Undefined when the selection stays as it is.
+ * now, and whether its keys go off (D3, D18 as clarified by D24, D22). Undefined when the selection
+ * stays as it is.
  *
- * - Closed (not in main's `order` any more; the snapshot may beat the close event), or moved out of
- *   a group that still stands: this view keeps showing what is left of the group, on the pane that
- *   took its space. A closed pane whose two-pane group dissolved: the one tab left.
- * - The group dissolved and the selected tab is still open and plain (an Ungroup, or one of two
- *   panes moved out): the same terminal stays shown (D22). Moved from a two-pane group into another
- *   group elsewhere: the tab left behind, keys off (D18, D23 R3). A snapshot does not say whether another view moved
- *   this tab out or the other one, or ungrouped, so all three get the same; from elsewhere its keys
- *   go off, from this view's own edit (`ownEdit`: an intent of this page names a member) they stay on.
+ * - Still open and plain now (moved out, its group ungrouped or dissolved): the same tab stays shown.
+ *   From elsewhere its keys go off; this view's own edit (`ownEdit`: an intent of this page names a
+ *   member, such as moving the other of two panes out) keeps them on.
+ * - Moved into another group elsewhere: the view does not follow it; it shows what is left of the
+ *   old group on the pane that took its space (or the old group's remaining plain tab), keys off.
+ * - Closed (not in main's `order` any more; the snapshot may beat the close event): the pane that
+ *   took its space, or the one tab left of a two-pane group.
  *
- * `leave`: the person's own close or move out of this tab in this view; the keys stay on (they were
- * looking at it). `stay`: the person's own placement or Ungroup of this tab; nothing moves. Anything
- * else came from elsewhere: no pane has the keys until a click or a chord (keysOff; D18: no outline
- * either, and no `tabs.selected` is sent meanwhile).
+ * `leave`: the person's own close or move out of this tab in this view: the pane that took its space,
+ * keys on (they were looking at it). `stay`: the person's own placement or Ungroup of this tab;
+ * nothing moves. Anything else came from elsewhere: no pane has the keys until a click or a chord
+ * (keysOff; D18: no outline either, and no `tabs.selected` is sent meanwhile).
  */
 export function selectionAfterSnapshot(
   before: readonly TabGroup[],
@@ -119,9 +119,10 @@ export function selectionAfterSnapshot(
   if (!was) return undefined
   const now = after.find((g) => g.id === was.id)
   if (now && leavesOf(now.root).includes(activeId)) return undefined
-  // Still open and in no group now: an Ungroup, or one of two panes moved out. Moved into another
-  // group instead (D23 R3): D18's "the remaining plain tab", below, not the arrangement made elsewhere.
-  if (!now && intent !== 'leave' && order.includes(activeId) && !groupOf(after, activeId)) {
+  // D24's D18: a view never follows its tab into an arrangement made elsewhere. Still open and plain
+  // now (moved out, an Ungroup, the other of two panes moved out): that same tab stays shown. Moved
+  // into another group: what is left of the old group, below.
+  if (intent !== 'leave' && order.includes(activeId) && !groupOf(after, activeId)) {
     return ownEdit ? undefined : { activeId, keysOff: true }
   }
   const leftover = leavesOf(was.root).filter((t) => t !== activeId && order.includes(t))

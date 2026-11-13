@@ -25,10 +25,12 @@ export interface Size {
 
 /**
  * Pixels a pane spends on things other than cells: the terminal host's padding (styles.css
- * `.terminal-host`, 18px across and 16px down) and, while more than one pane shows, the pane header
- * (D8). The minimum and the auto-zoom threshold count cells the terminal really gets, not the box.
+ * `.terminal-host`, 18px across and 16px down), the 14px xterm's fit addon keeps for the scrollbar
+ * (`DEFAULT_SCROLL_BAR_WIDTH`, taken off whenever there is scrollback) and, while more than one pane
+ * shows, the pane header (D8). The minimum and the auto-zoom threshold count the cells the pty
+ * really gets, not the box (qa run 1: without the scrollbar a dragged pane ended at 19 columns).
  */
-export const PANE_CHROME = Object.freeze({ width: 18, height: 16, header: 22 })
+export const PANE_CHROME = Object.freeze({ width: 18 + 14, height: 16, header: 22 })
 
 /**
  * About one cell of the terminal font, for the D5 thresholds only (never for sizing a pty: the
@@ -47,15 +49,23 @@ export function toPx(r: PaneRect, area: Size): PaneRect {
   return { x: r.x * area.width, y: r.y * area.height, w: r.w * area.width, h: r.h * area.height }
 }
 
-/** Whether a pane of `px` pixels holds `min` cells, its chrome taken off. */
+/**
+ * Pixels lost to rounding: a pane's box is a fraction of the area (187.92px), and the fit addon
+ * floors its parent's width before counting cells, so a pane computed to hold exactly 20 columns
+ * got 19 (qa run 1 Q4). Every check takes it off; a divider's stop adds one more pixel on top, so a
+ * pane dragged to the stop never reads as under the minimum (which would auto-zoom it, D5).
+ */
+const ROUNDING_PX = 1
+
+/** Whether a pane of `px` pixels holds `min` cells, its chrome and the rounding taken off. */
 export function holdsCells(
   px: { w: number; h: number },
   cell: Size,
   min: { cols: number; rows: number },
   header: boolean
 ): boolean {
-  const w = px.w - PANE_CHROME.width
-  const h = px.h - PANE_CHROME.height - (header ? PANE_CHROME.header : 0)
+  const w = px.w - PANE_CHROME.width - ROUNDING_PX
+  const h = px.h - PANE_CHROME.height - (header ? PANE_CHROME.header : 0) - ROUNDING_PX
   if (!(cell.width > 0) || !(cell.height > 0) || !Number.isFinite(w) || !Number.isFinite(h)) return false
   return Math.floor(w / cell.width) >= min.cols && Math.floor(h / cell.height) >= min.rows
 }
@@ -221,7 +231,10 @@ export function evenSizes(n: number): number[] {
  * minimum rather than send a size main or the terminal would refuse).
  */
 export function dragMinShare(splitPx: number, axis: 'row' | 'column', cell: Size): number {
-  const cells = axis === 'row' ? PANE_MIN_CELLS.cols * cell.width + PANE_CHROME.width : PANE_MIN_CELLS.rows * cell.height + PANE_CHROME.height + PANE_CHROME.header
+  const cells =
+    (axis === 'row' ? PANE_MIN_CELLS.cols * cell.width + PANE_CHROME.width : PANE_MIN_CELLS.rows * cell.height + PANE_CHROME.height + PANE_CHROME.header) +
+    ROUNDING_PX +
+    1
   if (!(splitPx > 0)) return GROUP_CAPS.minShare
   return Math.min(0.5, Math.max(GROUP_CAPS.minShare, cells / splitPx))
 }

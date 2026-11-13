@@ -103,11 +103,29 @@ describe('tabs store: groups', () => {
       expect(s.keysOff).toBe(false)
     })
 
-    it('moved out elsewhere: the view stays on the group, keys off', () => {
+    it('D24: moved out elsewhere: the same tab, now plain, keys off', () => {
       const s = run(
         [
           { type: 'selected', tabId: 'b' },
           { type: 'groups', snapshot: snap(2, ['a', 'c', 'd', 'b'], [{ id: 'g', root: col('s2', leaf('c'), leaf('d')) }]) }
+        ],
+        base()
+      )
+      expect(s.activeId).toBe('b')
+      expect(s.keysOff).toBe(true)
+    })
+
+    it('D24: moved into another group elsewhere: what is left of the old group, keys off', () => {
+      const s = run(
+        [
+          { type: 'selected', tabId: 'b' },
+          {
+            type: 'groups',
+            snapshot: snap(2, ['a', 'b', 'c', 'd'], [
+              { id: 'g', root: col('s2', leaf('c'), leaf('d')) },
+              { id: 'h', root: row('s4', leaf('a'), leaf('b')) }
+            ])
+          }
         ],
         base()
       )
@@ -193,7 +211,7 @@ describe('tabs store: groups', () => {
       expect(s.keysOff).toBe(true)
     })
 
-    it('D23 R3: moved from a two-pane group into another group elsewhere: the tab left behind, keys off', () => {
+    it('D24: moved from a two-pane group into another group elsewhere: the tab left behind, keys off', () => {
       const s = run(
         [
           { type: 'loaded', tabs: ['x', 'y', 'z', 'w'].map(tab) },
