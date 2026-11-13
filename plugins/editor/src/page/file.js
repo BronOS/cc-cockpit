@@ -541,7 +541,7 @@ const lsp = createLspClient({
 
 // ---- Claude's changes in the gutter ----
 
-const changesUi = createChangesGutter({ getBase: () => changes.base(), review: () => changes.review() })
+const changesUi = createChangesGutter({ getBase: () => changes.base(), review: () => reviewIfSaved(true) })
 const changes = createChanges({
   post: (m) => ccPanel.post(m),
   onBase: () => changesUi.recompute(view),
@@ -947,7 +947,23 @@ ccPanel.onConnect(() => {
 // micro opens what is on disk, so the buffer is saved first and micro opens once the host confirmed it
 // (render sees `saved`); a conflict or an error cancels it, nothing is opened over unsaved text.
 let microPending = false
+// A bar's click opens the Reviewer's diff of the file on disk, but the bars come from the buffer: an
+// unsaved change is saved first (as micro's click does) and the diff opens once the host confirmed it.
+let reviewPending = false
+function reviewIfSaved(click, v = session.view()) {
+  if (click) {
+    reviewPending = true
+    if (v.dirty) session.saveNow()
+  }
+  if (!reviewPending) return
+  if (v.conflict || v.error || v.readOnly) reviewPending = false
+  else if (v.status === 'saved' || (click && !v.dirty)) {
+    reviewPending = false
+    changes.review()
+  }
+}
 function microIfSaved(v) {
+  reviewIfSaved(false, v)
   if (!microPending) return
   if (v.conflict || v.error || v.readOnly) microPending = false
   else if (v.status === 'saved') {
@@ -967,6 +983,9 @@ window.addEventListener('focus', () => {
   session.focus()
   changes.focus()
 })
+setInterval(() => {
+  if (document.visibilityState !== 'hidden') changes.poll()
+}, 5000)
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') session.blur()
   else changes.focus()

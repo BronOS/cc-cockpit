@@ -3,7 +3,7 @@
 // clears the marks, focus asks at most once in a while, the click and its error.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { hunksOf, createChanges, FOCUS_MIN_MS, MAX_OLD_LINES, MAX_OLD_CHARS } from '../src/page/changes.mjs'
+import { hunksOf, createChanges, FOCUS_MIN_MS, POLL_MS, MAX_OLD_LINES, MAX_OLD_CHARS } from '../src/page/changes.mjs'
 
 test('hunksOf: added, modified and deleted lines with their old text', () => {
   const base = 'a\nb\nc\nd\ne\n'
@@ -106,4 +106,38 @@ test('a click posts git-review; the host\'s error is shown', () => {
   assert.deepEqual(posted, [{ t: 'git-review' }])
   assert.equal(c.receive({ t: 'git-review-error', message: 'Could not open the diff: x' }), true)
   assert.deepEqual(events, [['error', 'Could not open the diff: x']])
+})
+
+test('hunksOf: a diff that gave up (too many edits) draws no marks', () => {
+  const a = Array.from({ length: 3000 }, (_, i) => `a${i}`)
+  const b = Array.from({ length: 3000 }, (_, i) => `b${i}`)
+  assert.deepEqual(hunksOf(a.join('\n') + '\n', b.join('\n') + '\n'), [])
+})
+
+test('poll asks again only when the last ask is older than POLL_MS', () => {
+  let t = 0
+  const posted = []
+  const c = createChanges({ post: (m) => posted.push(m), onBase() {}, onError() {} }, { now: () => t })
+  c.connect()
+  t += POLL_MS - 1
+  c.poll()
+  assert.equal(posted.length, 1)
+  t += 1
+  c.poll()
+  assert.equal(posted.length, 2)
+})
+
+test('a busy or failed read sends nothing, so the base is kept; only has:false clears it', () => {
+  let redraws = 0
+  const posted = []
+  const c = createChanges({ post: (m) => posted.push(m), onBase: () => redraws++, onError() {} })
+  c.connect()
+  c.receive({ t: 'git-base', req: 1, has: true, text: 'x\n' })
+  assert.equal(c.base(), 'x\n')
+  c.refresh()
+  // No answer yet (the host queues the read): the base stays.
+  assert.equal(c.base(), 'x\n')
+  c.receive({ t: 'git-base', req: 2, has: false })
+  assert.equal(c.base(), null)
+  assert.equal(redraws, 2)
 })

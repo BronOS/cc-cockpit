@@ -9,7 +9,8 @@
 // that begins with `-` (or holds a `:`, a space, a newline) can never be an option or another
 // revision. Only the tab's own path (its params, put there by this plugin) is ever used; the page
 // asks "the base of my file" and names nothing. `cat-file blob` prints the stored bytes: no
-// textconv, no filter, no hook, no pager, and it never writes (no index refresh, no lock).
+// textconv, no filter, no hook, no pager, and it writes nothing of its own (no index refresh, no lock; only in a partial clone
+// git may fetch a blob it lacks from the promisor remote).
 //
 // Not a repository, no commit yet, git not installed, a file HEAD does not have (untracked, new in
 // the index, ignored) or one it has as a link, a binary or too large blob, bytes that are not UTF-8:
@@ -23,7 +24,7 @@
 //   page -> host  { t: 'git-review' }                     a click on a mark: the Reviewer's diff of this file
 //   host -> page  { t: 'git-review-error', message }      it could not be opened (no Reviewer, the overlay refused)
 // One read per tab instance: a new one kills the one before. At most MAX_GIT_PROCESSES git children
-// for the whole plugin (they share ctx.processes' per-plugin cap of 16 with the language servers and rg).
+// for the whole plugin; a read over that waits for a slot, so the answer is only late (they share ctx.processes' per-plugin cap of 16 with the language servers and rg).
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -47,12 +48,13 @@ function blobArgv(rel, bin = 'git') {
 }
 
 /** The git slots of this plugin: the module is loaded once per plugin host, so every tab shares them. */
-const pluginSlots = { used: 0, max: MAX_GIT_PROCESSES }
+const pluginSlots = { used: 0, max: MAX_GIT_PROCESSES, queue: [] }
 
 /**
  * Reads `rel`'s text at HEAD: `{ result: Promise<{ text: string | null }>, cancel }`. `text` is null
  * for every case that means "no marks" (see the top); the promise rejects only when nothing could be
- * asked at all (the per-plugin process cap, a cwd that is not a directory).
+ * asked at all (ctx.processes' own cap, a cwd that is not a directory). A read over the plugin's git
+ * cap waits for a slot.
  */
 function readBase(spawn, cwd, rel, opts = {}) {
   const slots = opts.slots || pluginSlots
@@ -63,6 +65,23 @@ function readBase(spawn, cwd, rel, opts = {}) {
   } catch {
     return none
   }
+  // git runs in the file's own directory (`HEAD:./<name>`), so a file in a submodule or in a nested
+  // repository under a project folder that is no repository itself finds its own repository. A directory
+  // that resolves outside the project (a symlink) never gets a git run in it; one that is gone (deleted
+  // under an open tab) or not a real path (a test) falls back to the project folder and `HEAD:./<rel>`.
+  let runIn = cwd
+  try {
+    const dir = path.dirname(path.join(cwd, rel))
+    const real = fs.realpathSync(dir)
+    const root = fs.realpathSync(cwd)
+    if (real !== root) {
+      if (!real.startsWith(root.endsWith(path.sep) ? root : root + path.sep)) return none
+      runIn = dir
+      argv[argv.length - 1] = `HEAD:./${path.basename(rel)}`
+    }
+  } catch {
+    // Fall back as above.
+  }
   // A tracked link: HEAD has the link's target path as text, the page shows the target's content.
   // A file gone from disk (deleted under an open tab) is not a link: its buffer is still compared with HEAD.
   try {
@@ -70,31 +89,54 @@ function readBase(spawn, cwd, rel, opts = {}) {
   } catch {
     // Not there (or unreadable): git says what HEAD has.
   }
-  if (slots.used >= slots.max) return { result: Promise.reject(new Error('git is busy; try again in a moment')), cancel() {} }
-  let child
-  try {
-    child = spawn(argv, { cwd })
-  } catch (e) {
-    // "cannot run" (ENOENT, EACCES: ctx.processes' own words) is git missing: no marks, not an error.
-    if (e && typeof e.message === 'string' && e.message.includes('cannot run')) return none
-    return { result: Promise.reject(e instanceof Error ? e : new Error(String(e))), cancel() {} }
-  }
-  slots.used++
-  const chunks = []
-  let bytes = 0
+
+  let child = null
   let stopped = false
   let over = false
   let timedOut = false
+  let started = false
+  let finish = () => {}
+  let fail = () => {}
+  const result = new Promise((resolve, reject) => {
+    finish = resolve
+    fail = reject
+  })
+  const chunks = []
+  let bytes = 0
   const stop = () => {
     if (stopped) return
     stopped = true
+    if (!started) {
+      // Still waiting for a slot: leave the line, nothing was spawned.
+      const i = slots.queue ? slots.queue.indexOf(start) : -1
+      if (i >= 0) slots.queue.splice(i, 1)
+      finish({ text: null })
+      return
+    }
     try {
       child.kill()
     } catch {
       // Already gone.
     }
   }
-  const result = new Promise((resolve) => {
+  // Gives the slot back and lets the next waiting read run: a busy plugin queues the ask, so the page
+  // never takes "busy" for "this file has no base" and drops the marks it had.
+  const release = () => {
+    slots.used--
+    const next = slots.queue && slots.queue.shift()
+    if (next) next()
+  }
+  function start() {
+    if (stopped) return
+    try {
+      child = spawn(argv, { cwd: runIn })
+    } catch (e) {
+      // "cannot run" (ENOENT, EACCES: ctx.processes' own words) is git missing: no marks, not an error.
+      if (e && typeof e.message === 'string' && e.message.includes('cannot run')) return finish({ text: null })
+      return fail(e instanceof Error ? e : new Error(String(e)))
+    }
+    started = true
+    slots.used++
     const timer = setTimeout(() => {
       timedOut = true
       stop()
@@ -117,16 +159,22 @@ function readBase(spawn, cwd, rel, opts = {}) {
       // Once, whatever the stream says: a slot given back twice would let a third git in.
       if (exited) return
       exited = true
-      slots.used--
       clearTimeout(timer)
-      if (code !== 0 || over || timedOut || stopped) return resolve({ text: null })
-      resolve({ text: textOf(Buffer.concat(chunks)) })
+      release()
+      if (code !== 0 || over || timedOut || stopped) return finish({ text: null })
+      finish({ text: textOf(Buffer.concat(chunks)) })
     })
-  })
-  try {
-    if (typeof child.end === 'function') child.end()
-  } catch {
-    // The child may already be gone.
+    try {
+      if (typeof child.end === 'function') child.end()
+    } catch {
+      // The child may already be gone.
+    }
+  }
+  if (slots.used >= slots.max) {
+    if (!slots.queue) slots.queue = []
+    slots.queue.push(start)
+  } else {
+    start()
   }
   return { result, cancel: stop }
 }
@@ -183,8 +231,8 @@ function serveGit(tab, { spawn, root, rel, review, log, bin, slots }) {
         (e) => {
           if (running !== job || job.cancelled) return
           running = null
+          // Nothing is sent: `has: false` would wipe the marks the page has, and a failed read says nothing about the file.
           if (log) log.warn(`git base: ${e.message}`)
-          post({ t: 'git-base', req, has: false })
         }
       )
       return true

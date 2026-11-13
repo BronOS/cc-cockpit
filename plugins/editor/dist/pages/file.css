@@ -110,10 +110,10 @@ main .cm-line.cc-flash {
 }
 /* Claude's changes in the gutter (changes-editor.js): a bar per line that differs from git HEAD, green
    added, blue changed, a red notch where lines were removed; the old lines in a popover on hover. */
-.cm-changes-gutter {
+.cc-changes-gutter {
   cursor: pointer;
 }
-.cm-changes-gutter .cm-gutterElement {
+.cc-changes-gutter .cm-gutterElement {
   padding: 0 2px;
 }
 .cc-change {

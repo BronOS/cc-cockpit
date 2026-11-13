@@ -174,22 +174,52 @@ test('the argv and cwd of a read; a blob over the cap is killed and has no base'
   assert.equal(slots.used, 0)
 })
 
-test('the plugin-wide cap: a third read is refused without spawning; a finished one gives its slot back', async () => {
+test('the plugin-wide cap: a third read waits for a slot, not refused; a finished one gives its slot back', async () => {
   const f = fakeSpawn()
-  const slots = { used: 0, max: 2 }
+  const slots = { used: 0, max: 2, queue: [] }
   const a = git.readBase(f.spawn, '/p', 'a', { slots })
   const b = git.readBase(f.spawn, '/p', 'b', { slots })
-  await assert.rejects(git.readBase(f.spawn, '/p', 'c', { slots }).result, /busy/)
+  const c = git.readBase(f.spawn, '/p', 'c', { slots })
   assert.equal(f.children.length, 2)
   f.children[0].emit('x\n')
   f.children[0].exit(0)
   assert.deepEqual(await a.result, { text: 'x\n' })
+  // The slot a read gave back runs the waiting one.
+  assert.equal(f.children.length, 3)
+  assert.deepEqual(f.children[2].argv.slice(-1), ['HEAD:./c'])
+  f.children[2].emit('c\n')
+  f.children[2].exit(0)
+  assert.deepEqual(await c.result, { text: 'c\n' })
   f.children[1].exit(128)
   assert.deepEqual(await b.result, { text: null })
   assert.equal(slots.used, 0)
   // Exit reported twice gives the slot back once.
   f.children[1].exit(128)
   assert.equal(slots.used, 0)
+})
+
+test('a read cancelled while it waits for a slot never spawns', async () => {
+  const f = fakeSpawn()
+  const slots = { used: 0, max: 1, queue: [] }
+  git.readBase(f.spawn, '/p', 'a', { slots })
+  const w = git.readBase(f.spawn, '/p', 'w', { slots })
+  w.cancel()
+  assert.deepEqual(await w.result, { text: null })
+  f.children[0].exit(0)
+  assert.equal(f.children.length, 1)
+  assert.equal(slots.used, 0)
+})
+
+test('a file in a nested repository is read from its own repository', async () => {
+  const outer = tmp()
+  const inner = path.join(outer, 'sub')
+  fs.mkdirSync(inner)
+  run(inner, 'init', '-q')
+  fs.writeFileSync(path.join(inner, 'a.txt'), 'inner\n')
+  run(inner, 'add', '-A')
+  run(inner, 'commit', '-q', '-m', 'one')
+  fs.writeFileSync(path.join(inner, 'a.txt'), 'changed\n')
+  assert.deepEqual(await read(outer, 'sub/a.txt'), { text: 'inner\n' })
 })
 
 test('a read that outlives its timeout is killed and has no base', async () => {
@@ -250,6 +280,19 @@ test('serveGit: a newer ask kills the older and only the newest answers; a close
   await tick()
   assert.equal(t.posted.length, 1)
   assert.equal(f.children[2].killed, true)
+})
+
+test('serveGit: a rejected read sends nothing, so the page keeps the marks it has', async () => {
+  const t = fakeTab()
+  const warns = []
+  const spawn = () => {
+    throw new Error('processes: too many processes')
+  }
+  const handle = git.serveGit(t.tab, { spawn, root: '/p', rel: 'a.txt', log: { warn: (m) => warns.push(m) }, slots: { used: 0, max: 2 } })
+  handle({ t: 'git-base', req: 1 })
+  await tick()
+  assert.deepEqual(t.posted, [])
+  assert.equal(warns.length, 1)
 })
 
 test('serveGit: git-review goes to the Reviewer with the tab path only; a failure is told to the page', async () => {

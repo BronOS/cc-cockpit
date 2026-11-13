@@ -62,7 +62,10 @@ export function diffLines(a, b) {
   let post = 0
   while (post < x.length - pre && post < y.length - pre && x[x.length - 1 - post] === y[y.length - 1 - post]) post++
   const hunks = myers(x.subarray(pre, x.length - post), y.subarray(pre, y.length - post))
-  return hunks.map((h) => ({ aS: h.aS + pre, aE: h.aE + pre, bS: h.bS + pre, bE: h.bE + pre }))
+  const out = hunks.map((h) => ({ aS: h.aS + pre, aE: h.aE + pre, bS: h.bS + pre, bE: h.bE + pre }))
+  // The one hunk over everything is no diff: callers that draw per-line marks (the gutter) skip it.
+  if (hunks.gaveUp) out.gaveUp = true
+  return out
 }
 
 /** Myers' O(ND) diff of two int arrays as hunks; past MAX_EDITS, one hunk over everything. */
@@ -94,7 +97,11 @@ function myers(a, b) {
       }
     }
   }
-  if (found < 0) return [{ aS: 0, aE: n, bS: 0, bE: m }]
+  if (found < 0) {
+    const whole = [{ aS: 0, aE: n, bS: 0, bE: m }]
+    whole.gaveUp = true
+    return whole
+  }
   // Walk back from the end: each step is one deleted line of `a` or one inserted line of `b`.
   const ops = []
   let xx = n

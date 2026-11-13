@@ -12,13 +12,16 @@
 //
 // The base is asked again on every new line (a host restart, a reconnect), on loading, on a disk change
 // (a checkout, a revert) and when the tab gets focus again (Claude may have committed meanwhile), at most
-// once per FOCUS_MIN_MS for the last.
+// once per FOCUS_MIN_MS for the last, and every POLL_MS while the page is visible (a commit made while the
+// editor keeps the keyboard, a checkout that leaves this file's bytes alone).
 
 import { diffLines, splitLines } from './merge.mjs'
 
 /** Focus asks again at most this often (a commit made while the tab was away is seen on return). */
 export const FOCUS_MIN_MS = 2000
 /** A hunk keeps at most this many old lines (and this many characters of each) for the hover. */
+/** While the page is visible the base is asked again this often. */
+export const POLL_MS = 15 * 1000
 export const MAX_OLD_LINES = 30
 export const MAX_OLD_CHARS = 200
 
@@ -29,13 +32,17 @@ const clip = (s) => (s.length > MAX_OLD_CHARS ? `${s.slice(0, MAX_OLD_CHARS)}…
  * `{ kind: 'added' | 'modified' | 'deleted', line, count, old, oldCount }`. `line` is the 1-based first
  * new line (an added or modified hunk covers `count` lines from it); a `deleted` hunk has `count` 0 and
  * `line` is the line the removed ones sat before (`line` past the last line means the end of the text).
- * `old` is the old lines (no newline, cut at MAX_OLD_LINES and MAX_OLD_CHARS), `oldCount` all of them.
+ * No hunks when the diff gave up (too many edits to tell). `old` is the old lines (no newline, cut at MAX_OLD_LINES and MAX_OLD_CHARS), `oldCount` all of them.
  */
 export function hunksOf(base, text) {
   if (base === text) return []
   const a = splitLines(base)
   const b = splitLines(text)
-  return diffLines(a, b).map((r) => {
+  const diff = diffLines(a, b)
+  // The diff gave up (past merge.mjs MAX_EDITS: a reformatted file): one hunk over everything would put a
+  // "modified" bar on every line with unrelated old lines in the hover, so no marks.
+  if (diff.gaveUp) return []
+  return diff.map((r) => {
     const removed = a.slice(r.aS, r.aE)
     const old = removed.slice(0, MAX_OLD_LINES).map((l) => clip(l.endsWith('\n') ? l.slice(0, -1) : l))
     const count = r.bE - r.bS
@@ -80,6 +87,10 @@ export function createChanges(ui, timers = { now: () => Date.now() }) {
     /** The tab got the keyboard or the window back: Claude may have committed. */
     focus() {
       if (timers.now() - lastAsk >= FOCUS_MIN_MS) ask()
+    },
+    /** A timer tick while the page is visible: asks again when the last ask is older than POLL_MS. */
+    poll() {
+      if (timers.now() - lastAsk >= POLL_MS) ask()
     },
     /** The mark was clicked. */
     review: () => ui.post({ t: 'git-review' }),
