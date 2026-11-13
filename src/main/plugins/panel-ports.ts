@@ -374,6 +374,13 @@ export class PanelPortHub<P> {
     this.tellPageTabClosed(open)
   }
 
+  /**
+   * `pageTab.close` is the plugin host's only word that a line ended: main never closes the host's
+   * end itself (it went to the host process), and an entry outlives a host restart, so the first
+   * reconnect after one tells the new host about an id it never opened. The host (ctx.tabs.onOpen,
+   * Task 4) must close its own port of that view on `pageTab.close` and ignore an unknown id, or a
+   * replaced desktop line stays open, and so does the web relay's end of it.
+   */
   private tellPageTabClosed(open: OpenPageTab): void {
     try {
       const { view } = remoteOnly(open.viewId)

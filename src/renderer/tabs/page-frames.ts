@@ -9,9 +9,12 @@
 // - Host restart (`panels.reload` for the tab's plugin): the frame stays and its page is handed a
 //   NEW port with no load (FrameLoads.reconnect); the page re-sends what it holds (`ccPanel.onConnect`).
 // - Web reconnect: the web shell remounts its whole React tree (`<App key>` in web/main.tsx), so the
-//   frames are not in it. They sit in a layer of their own outside the tree (`attachLayer`, a fixed
-//   box laid over the tab area's placeholder), owned by this module for the page's life; a remounted
-//   tabs pane finds them here and each live one takes a new port the same way.
+//   frames are not in it. They sit in a layer of their own outside the tree (a fixed box laid over
+//   the tab area's placeholder, PageTabArea.tsx), owned for the page's life; each live one takes a
+//   new port the same way at the bridge's new `ready` (ReadyReconnects), not when the tab area
+//   mounts again (a layout change or StrictMode remounts it too). The remounted tabs pane starts
+//   with an empty list until `tabs.list` answers: `sync(undefined)` until then, so no frame of a
+//   tab that is still open is unmounted for not being listed yet.
 // - Relay backlog: main pauses a page tab's port at the byte limit and says `port.resync` once the
 //   socket drained; FrameLoads reconnects on it (renderer/web/port-relay.ts).
 // - Server mode's hidden page: main answers `pageTabs.src` with null there, so nothing mounts.
@@ -24,6 +27,7 @@
 // DOM-light: the frame elements, the layer and the IPC are passed in, so unit tests drive it with
 // fakes in plain Node.
 
+import type { TabInfo } from '../../shared/ipc'
 import { TAB_MESSAGE } from '../../sdk/panel-core'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
 
@@ -109,8 +113,11 @@ export class PageFrames {
   /**
    * The page tabs in the window's list now. A frame of a tab no longer in it is unmounted (the tab
    * closed here or in another view); a changed title is kept for the next frame element.
+   * Undefined: the pane has no list yet (a web reconnect's fresh pane, before `tabs.list`
+   * answers); nothing changes, since an empty list would unmount every frame and lose its text.
    */
-  sync(tabs: readonly PageTabEntry[]): void {
+  sync(tabs: readonly PageTabEntry[] | undefined): void {
+    if (tabs === undefined) return
     const ids = new Set(tabs.map((t) => t.id))
     this.tabs.clear()
     for (const t of tabs) this.tabs.set(t.id, t)
@@ -269,4 +276,37 @@ export class PageFrames {
       this.o.log?.(`page tab ${entry.tab.id}: telling main it went failed: ${String(err)}`)
     }
   }
+}
+
+/** The page tabs of a tab list, as the pool takes them. */
+export function pageTabEntries(tabs: readonly TabInfo[]): PageTabEntry[] {
+  return tabs.flatMap((t) => (t.kind === 'page' && t.page ? [{ id: t.id, plugin: t.page.plugin, type: t.page.type, title: t.page.title }] : []))
+}
+
+/**
+ * The web reconnect signal: the bridge's `ready` generations (web/main.tsx). The first is the page
+ * load (nothing to reconnect); every later, newer one is a new socket and a new view, so the old
+ * one's ports are gone and every live frame takes a new one. Explicit rather than "the tab area
+ * mounted again": a layout change or StrictMode's double mount remount it too, and each extra
+ * reconnect is a close and an open for the plugin and counts toward the hub's connect cap.
+ */
+export class ReadyReconnects {
+  private seen = 0
+  constructor(private readonly reconnect: () => void) {}
+
+  ready(generation: number): void {
+    if (generation <= this.seen) return
+    const first = this.seen === 0
+    this.seen = generation
+    if (!first) this.reconnect()
+  }
+}
+
+/** Where the layer goes: over the placeholder's box, or hidden (a terminal tab shown, or no box yet). */
+export function layerBox(
+  showsPage: boolean,
+  rect: { left: number; top: number; width: number; height: number } | undefined
+): { left: number; top: number; width: number; height: number } | null {
+  if (!showsPage || !rect || rect.width === 0 || rect.height === 0) return null
+  return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
 }

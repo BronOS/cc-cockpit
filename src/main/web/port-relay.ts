@@ -32,7 +32,9 @@
 // RELAY_DRAIN_CHECK_MS while anything is paused) the browser is told `port.resync`, and the frame
 // asks for a new port without loading again; over it the page and the plugin each re-send what
 // they hold, so the dropped messages are never needed. A message the socket cannot carry at all (a
-// frame over the cap) pauses it the same way. The hub's connect cap bounds a resync loop.
+// frame over the cap: 1 Mi characters of quote-heavy JSON can pass 4 MiB once escaped) is dropped
+// alone and logged once per port, never a pause: the plugin would re-send the same message over the
+// resynced port, pause it again, and after the hub's connect cap the tab would have no port at all.
 //
 // No Electron import: the port is whatever the hub made (MessagePortMain in the app), checked for
 // the four calls used; tests pass Node's own MessagePort.
@@ -77,6 +79,8 @@ interface Held {
   port: RelayPort
   /** A page tab port at the high water: host messages are dropped until the browser resyncs it. */
   paused?: 'waiting' | 'told'
+  /** A page tab message too big to send was dropped and logged (once per port). */
+  oversizeLogged?: boolean
 }
 
 function isRelayPort(value: unknown): value is RelayPort {
@@ -135,8 +139,11 @@ export class PortRelay {
         return
       }
       if (this.deps.send({ t: 'port.msg', key, nonce, m: e.data })) return
-      if (isPageTabPortKey(key)) this.pause(key, held, 'a message did not go out')
-      else this.drop(key, nonce, true)
+      // Not behind, yet not sent: a frame over the cap (or the socket closing, and the view with it).
+      if (!isPageTabPortKey(key)) return this.drop(key, nonce, true)
+      if (held.oversizeLogged) return
+      held.oversizeLogged = true
+      this.deps.log(`web access: page tab ${key}: a message of ${e.data.length} characters did not go out (over the frame limit), dropped; later messages still flow`)
     })
     port.on('close', () => {
       // The host's end went (or this end was closed here, already dropped): the browser lets go.

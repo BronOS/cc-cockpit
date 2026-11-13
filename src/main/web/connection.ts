@@ -613,13 +613,14 @@ export class WebConnection {
 
   /**
    * A port frame: false when it did not go out (closing socket, or over MAX_FRAME_BYTES). Unlike an
-   * event, an oversize panel message costs only its port (port-relay.ts closes it), never the view.
+   * event, an oversize panel message costs only its port (port-relay.ts closes it; a page tab loses
+   * only that message), never the view.
    */
   private sendPort(frame: PortOpenFrame | PortMsgFrame | PortCloseFrame | PortResyncFrame): boolean {
     if (this.closed || this.ws.readyState !== OPEN) return false
     const text = encodeFrame(frame)
     if (frameBytes(text) > MAX_FRAME_BYTES) {
-      this.deps.log(`web access: view ${this.viewId}: panel ${frame.key} message over ${MAX_FRAME_BYTES} bytes, its port closed (a page tab's paused)`)
+      this.deps.log(`web access: view ${this.viewId}: panel ${frame.key} message over ${MAX_FRAME_BYTES} bytes, its port closed (a page tab's message only dropped)`)
       return false
     }
     this.ws.send(text)

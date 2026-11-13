@@ -34,6 +34,7 @@ import { loadTerminalFont } from '../tabs/terminal-font'
 import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { startChime } from '../notify/chime'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
+import { pageTabsReady } from '../tabs/PageTabArea'
 import { keyedFetch, pageSocketProtocols, storeDeviceKey } from './device-key'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
@@ -161,6 +162,9 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
     setServerHint(bridge.snapshot()?.server === true)
     // Before the shell mounts (its tabs pane consumes it): the first ready of this page load only.
     armLoadTake(status.generation)
+    // A later ready is a web reconnect: live page tab frames (outside the shell, kept across its
+    // remount) take a new port over the new socket now, before the shell mounts again.
+    pageTabsReady(status.generation)
     const generation = status.generation
     let live = true
     // The first ready subscribes and reads (startTheme/startPrefs); a later one only reads again.

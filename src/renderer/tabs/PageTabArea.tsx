@@ -5,7 +5,7 @@ import { portMessage, themeMessage } from '../plugins/frame-messages'
 import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
-import { PageFrames, type PageFrameElement, type PageTabEntry } from './page-frames'
+import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
@@ -16,8 +16,17 @@ const isMac = navigator.platform.toLowerCase().includes('mac')
  */
 let layer: HTMLDivElement | undefined
 let frames: PageFrames | undefined
-/** Tab areas mounted in this page's life: every one after the first is a web reconnect's remount. */
-let mounts = 0
+/** Live frames take a new port at each web reconnect's `ready` (pool made or not: only live ones reconnect). */
+const readies = new ReadyReconnects(() => frames?.reconnect())
+
+/**
+ * The web bridge's `ready` of generation `generation` (web/main.tsx, before the shell mounts): a
+ * later one than the first is a web reconnect, and every live page tab frame takes a new port over
+ * the new socket with no reload. The desktop shell never calls this.
+ */
+export function pageTabsReady(generation: number): void {
+  readies.ready(generation)
+}
 
 function layerElement(): HTMLDivElement {
   if (layer) return layer
@@ -57,6 +66,21 @@ function createFrame(title: string): PageFrameElement {
   }
 }
 
+/**
+ * Observe what can move the placeholder: the root (the window resizing), the placeholder, each
+ * ancestor below `<body>` and each ancestor's other children (never the layer itself, which the
+ * measure resizes). Taken again on every render, as the tree changes.
+ */
+function observeAround(obs: ResizeObserver, node: Element): void {
+  obs.disconnect()
+  obs.observe(document.documentElement)
+  for (let el: Element | null = node; el && el !== document.body; el = el.parentElement) {
+    obs.observe(el)
+    const parent: Element | null = el.parentElement
+    if (parent) for (const sibling of Array.from(parent.children)) if (sibling !== el && sibling !== layer) obs.observe(sibling)
+  }
+}
+
 /** The page's pool, made on first use with the DOM and IPC of this shell. */
 export function pageFrames(): PageFrames {
   if (frames) return frames
@@ -81,26 +105,22 @@ export function pageFrames(): PageFrames {
   return pool
 }
 
-/** The page tabs of a tab list, as the pool takes them. */
-export function pageTabEntries(tabs: readonly TabInfo[]): PageTabEntry[] {
-  return tabs.flatMap((t) => (t.kind === 'page' && t.page ? [{ id: t.id, plugin: t.page.plugin, type: t.page.type, title: t.page.title }] : []))
-}
-
 /**
  * The tab area's part for page tabs (in `.terminals`, beside the terminal views): a placeholder the
  * layer is laid over while a page tab is the selected one, and the pool told which tabs exist,
  * which one shows, and when to hand frames a new port. Unmounting (a web reconnect's remount) only
- * hides the layer: the frames stay for the next tab area.
+ * hides the layer: the frames stay for the next tab area. `listed`: the pane's first `tabs.list`
+ * answered; until then its empty list says nothing about which tabs exist (page-frames.ts `sync`).
  */
-export function PageTabArea(props: { tabs: readonly TabInfo[]; activeId: string | null; inert: boolean }): React.JSX.Element {
-  const { tabs, activeId, inert } = props
+export function PageTabArea(props: { tabs: readonly TabInfo[]; listed: boolean; activeId: string | null; inert: boolean }): React.JSX.Element {
+  const { tabs, listed, activeId, inert } = props
   const placeholder = useRef<HTMLDivElement>(null)
   const active = tabs.find((t) => t.id === activeId)
   const showsPage = active?.kind === 'page'
 
   useEffect(() => {
-    pageFrames().sync(pageTabEntries(tabs))
-  }, [tabs])
+    pageFrames().sync(listed ? pageTabEntries(tabs) : undefined)
+  }, [tabs, listed])
 
   useEffect(() => {
     pageFrames().show(showsPage && activeId !== null ? activeId : null)
@@ -117,11 +137,7 @@ export function PageTabArea(props: { tabs: readonly TabInfo[]; activeId: string 
   }, [activeId, showsPage])
 
   useEffect(() => {
-    // A web reconnect remounted the shell: the old socket's ports are gone, every live frame takes
-    // a new one with no reload (the desktop's tab area mounts once; React StrictMode's second dev
-    // mount finds no frames yet).
-    mounts += 1
-    if (mounts > 1 && isWebShell()) pageFrames().reconnect()
+    // (A web reconnect is not seen here but at the bridge's `ready`, pageTabsReady.)
     // A host restart or a plugin reload: frames of those plugins take a new port, never a reload.
     const off = window.cockpit.on('panels.reload', ({ pluginIds }) => pageFrames().reconnect(pluginIds))
     return () => {
@@ -139,34 +155,40 @@ export function PageTabArea(props: { tabs: readonly TabInfo[]; activeId: string 
   const measure = (): void => {
     const el = layerElement()
     const node = placeholder.current
-    const r = node?.getBoundingClientRect()
-    if (!showsPage || !r || r.width === 0 || r.height === 0) {
+    const box = layerBox(showsPage, node?.getBoundingClientRect())
+    if (!box) {
       el.hidden = true
       return
     }
-    el.style.left = `${r.left}px`
-    el.style.top = `${r.top}px`
-    el.style.width = `${r.width}px`
-    el.style.height = `${r.height}px`
+    el.style.left = `${box.left}px`
+    el.style.top = `${box.top}px`
+    el.style.width = `${box.width}px`
+    el.style.height = `${box.height}px`
     el.hidden = false
   }
   const latest = useRef(measure)
+  const observer = useRef<ResizeObserver | null>(null)
 
-  // Every render, before paint: a zone resizing or a new strip height moves the area.
+  // Every render, before paint: a zone resizing or a new strip height moves the area. The observed
+  // set is taken again too: the placeholder, each ancestor and each ancestor's children. The area
+  // can move without resizing (a strip above it grows while a zone below shrinks by as much), and
+  // whatever moves it in a flow, flex or grid layout resizes one of those, which a render of
+  // another part of the tree does not tell this one.
   useLayoutEffect(() => {
     latest.current = measure
     measure()
+    if (observer.current && placeholder.current) observeAround(observer.current, placeholder.current)
   })
 
   useEffect(() => {
     const remeasure = (): void => latest.current()
-    const observer = new ResizeObserver(remeasure)
-    if (placeholder.current) observer.observe(placeholder.current)
-    // The window resizing can move the placeholder without resizing it.
-    observer.observe(document.documentElement)
+    const obs = new ResizeObserver(remeasure)
+    observer.current = obs
+    if (placeholder.current) observeAround(obs, placeholder.current)
     window.addEventListener('resize', remeasure)
     return () => {
-      observer.disconnect()
+      observer.current = null
+      obs.disconnect()
       window.removeEventListener('resize', remeasure)
     }
   }, [])

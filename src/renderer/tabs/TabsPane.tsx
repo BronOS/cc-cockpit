@@ -997,7 +997,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
               />
             )
           )}
-          <PageTabArea tabs={state.tabs} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
+          <PageTabArea tabs={state.tabs} listed={state.listed} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null} />
         </div>
       </Zones>
       {paletteCommands && (

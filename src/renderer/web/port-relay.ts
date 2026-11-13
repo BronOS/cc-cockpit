@@ -89,6 +89,11 @@ interface Entry {
   readonly port: MessagePort
   closed?: () => void
   resync?: () => void
+  /**
+   * `port.resync` came before the frame registered its handler: the frame still held the port for
+   * its load event (FrameLoads early mode), and main says it only once. Run at registration.
+   */
+  resyncPending?: boolean
 }
 
 export class PortRelay {
@@ -121,7 +126,11 @@ export class PortRelay {
         if (this.ports.get(key) === entry) entry.closed = fn
       },
       onResync: (fn) => {
-        if (this.ports.get(key) === entry) entry.resync = fn
+        if (this.ports.get(key) !== entry) return
+        entry.resync = fn
+        if (!entry.resyncPending) return
+        entry.resyncPending = false
+        this.runResync(key, entry)
       }
     }
     handles.set(ch.port1, handle)
@@ -154,6 +163,16 @@ export class PortRelay {
     if (typeof key !== 'string' || typeof nonce !== 'number') return
     const entry = this.ports.get(key)
     if (!entry || entry.nonce !== nonce) return
+    // Paused at main while the page was still loading (a slow link is behind exactly then): nobody
+    // has registered yet, and a dropped resync would leave the port paused for good.
+    if (!entry.resync) {
+      entry.resyncPending = true
+      return
+    }
+    this.runResync(key, entry)
+  }
+
+  private runResync(key: string, entry: Entry): void {
     try {
       entry.resync?.()
     } catch (err) {

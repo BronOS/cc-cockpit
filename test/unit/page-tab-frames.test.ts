@@ -8,7 +8,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { PanelPortHub, type PanelPortDeps, type PageTabRecord } from '../../src/main/plugins/panel-ports'
 import { PortRelay as MainPortRelay, RELAY_DRAIN_CHECK_MS, RELAY_HIGH_WATER, RELAY_LOW_WATER } from '../../src/main/web/port-relay'
 import { FrameLoads, PortRelay as BrowserPortRelay, type FrameTarget } from '../../src/renderer/web/port-relay'
-import { PageFrames, type PageFrameElement, type PageFramesOptions, type PageTabEntry } from '../../src/renderer/tabs/page-frames'
+import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement, type PageFramesOptions, type PageTabEntry } from '../../src/renderer/tabs/page-frames'
+import { pageTabMarks } from '../../src/renderer/tabs/tab-label'
+import type { TabInfo } from '../../src/shared/ipc'
 import { PanelClient, PORT_MESSAGE, TAB_MESSAGE, type PortLike, type ThemeRoot } from '../../src/sdk/panel-core'
 import { isPageTabPortKey, pageTabPortKey } from '../../src/shared/page-tabs'
 import { PANEL_PORT_CHANNEL } from '../../src/shared/ipc'
@@ -253,6 +255,87 @@ describe('PageFrames: a new port, never a reload', () => {
     expect(a.loads).toHaveLength(1)
     expect(a.types().filter((x) => x === PORT_MESSAGE)).toHaveLength(2)
   })
+
+  it("web reconnect as it really happens: the fresh pane's empty list before tabs.list unmounts nothing, the frame keeps its page and takes one new port", async () => {
+    const t = pool()
+    const readies = new ReadyReconnects(() => t.frames.reconnect())
+    readies.ready(1)
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    const a = await served(t, TAB_A)
+    const before = t.connects.length
+    // The bridge's new `ready` (before the shell mounts again): every live frame asks for a new port.
+    readies.ready(2)
+    expect(t.connects.slice(before).map((c) => c.tabId)).toEqual([TAB_A])
+    // The old shell went (its tab area hid the layer); the new pane mounts with no list yet.
+    t.frames.show(null)
+    t.frames.sync(undefined)
+    expect(t.frames.liveIds()).toEqual([TAB_A])
+    expect(a.removed).toBe(false)
+    expect(t.disconnects).toEqual([])
+    // tabs.list answers: the same tabs, the same selection.
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show(TAB_A)
+    t.connects.at(-1)!.deliver(t.port())
+    expect(t.elements).toHaveLength(1)
+    expect(a.loads).toHaveLength(1)
+    expect(a.hidden).toBe(false)
+    // One new port only: the show of a live frame asks nothing of its own.
+    expect(t.connects).toHaveLength(before + 1)
+    expect(a.types().filter((x) => x === PORT_MESSAGE)).toHaveLength(2)
+  })
+
+  it('an empty list once the pane has listed still unmounts (every tab closed)', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A)])
+    await served(t, TAB_A)
+    t.frames.sync([])
+    expect(t.frames.liveIds()).toEqual([])
+    expect(t.disconnects).toEqual([TAB_A])
+  })
+})
+
+describe('ReadyReconnects: the web reconnect signal', () => {
+  it('reconnects at every newer ready after the first, never at the first nor a repeated or older one (a remount that is no reconnect)', () => {
+    const calls: number[] = []
+    let n = 0
+    const r = new ReadyReconnects(() => calls.push(++n))
+    r.ready(1)
+    r.ready(1)
+    expect(calls).toEqual([])
+    r.ready(2)
+    r.ready(2)
+    r.ready(1)
+    expect(calls).toEqual([1])
+    r.ready(4)
+    expect(calls).toEqual([1, 2])
+  })
+})
+
+describe('page tab area helpers', () => {
+  it('lays the layer over the placeholder only while a page tab shows and the box has a size', () => {
+    const rect = { left: 10, top: 20, width: 300, height: 200 }
+    expect(layerBox(true, rect)).toEqual(rect)
+    expect(layerBox(false, rect)).toBeNull()
+    expect(layerBox(true, undefined)).toBeNull()
+    expect(layerBox(true, { ...rect, width: 0 })).toBeNull()
+    expect(layerBox(true, { ...rect, height: 0 })).toBeNull()
+  })
+
+  it('takes the page tabs of a list, with their plugin, type and title; terminal tabs and a page tab with no spec are skipped', () => {
+    const tabs = [
+      { id: 't1', kind: 'shell' },
+      { id: TAB_A, kind: 'page', page: { plugin: 'a.one', type: 'file', title: 'x.ts' } },
+      { id: TAB_B, kind: 'page' }
+    ] as unknown as TabInfo[]
+    expect(pageTabEntries(tabs)).toEqual([{ id: TAB_A, plugin: 'a.one', type: 'file', title: 'x.ts' }])
+  })
+
+  it("names a page tab's dirty and unseen marks for its tooltip", () => {
+    const tab = (over: Record<string, unknown>): TabInfo => ({ id: TAB_A, kind: 'page', ...over }) as unknown as TabInfo
+    expect(pageTabMarks(tab({}))).toEqual([])
+    expect(pageTabMarks(tab({ dirty: true }))).toEqual(['unsaved changes'])
+    expect(pageTabMarks(tab({ dirty: true, unseen: true }))).toEqual(['unsaved changes', 'not seen yet'])
+  })
 })
 
 /** A frame for FrameLoads alone: what loaded, remounted, posted. */
@@ -328,6 +411,43 @@ describe('FrameLoads.reconnect (web shell)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a resync that comes while the port is held for the load is kept, and the frame takes a new port at its load', () => {
+    const target = new FakeTarget()
+    const sent: Array<Record<string, unknown>> = []
+    let page: MessagePort | undefined
+    const relay = new BrowserPortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, p) => ((page = p), true) })
+    const delivers: Array<(port: MessagePort) => void> = []
+    const loads = new FrameLoads({
+      guard: true,
+      early: true,
+      portMessage: { type: PORT_MESSAGE },
+      target,
+      intro: () => ({ type: TAB_MESSAGE }),
+      connect: (deliver) => {
+        delivers.push(deliver)
+        return () => {}
+      }
+    })
+    const key = pageTabPortKey(TAB_A)
+    loads.started('/p/t/a.one/tab.html')
+    relay.open(key, 1)
+    delivers[0]!(page!)
+    // Main paused it (a slow link, the page still loading) and says resync once: nobody listens yet.
+    relay.resync(key, 1)
+    expect(delivers).toHaveLength(1)
+    // The load: the held port is handed, then let go at once for a new one (the kept resync).
+    loads.loaded(target.gen)
+    expect(sent).toEqual([{ t: 'port.close', key, nonce: 1 }])
+    expect(delivers).toHaveLength(2)
+    relay.open(key, 2)
+    delivers[1]!(page!)
+    expect(target.posts).toEqual([TAB_MESSAGE, PORT_MESSAGE, TAB_MESSAGE, PORT_MESSAGE])
+    expect(target.loads).toEqual([])
+    expect(target.remounts).toEqual([])
+    // The new port has no resync left over.
+    expect(delivers).toHaveLength(2)
   })
 
   it('a frame still loading asks again for the same load; a stopped or unstarted one asks nothing', () => {
@@ -424,16 +544,46 @@ describe('main relay: a page tab port is paused and resynced, not closed', () =>
     ])
   })
 
-  it('a message the socket cannot carry pauses a page tab port too; closeAll stops the drain check', async () => {
+  it('a message the socket cannot carry is dropped alone and logged once; the port is not paused and later messages flow', async () => {
     let ok = true
-    const timers: Array<() => void> = []
     const sent: Array<Record<string, unknown>> = []
+    const logs: string[] = []
     const r = new MainPortRelay({
       send: (f) => {
         if (ok || f.t !== 'port.msg') sent.push(f)
         return ok || f.t !== 'port.msg'
       },
       buffered: () => 0,
+      log: (m) => logs.push(m),
+      setTimeout: () => {
+        throw new Error('no drain check: nothing is paused')
+      },
+      clearTimeout: () => {}
+    })
+    const key = pageTabPortKey(TAB_A)
+    const ch = channel(1)
+    r.take(PANEL_PORT_CHANNEL, { panelKey: key, nonce: 1 }, ch.renderer)
+    ok = false
+    ch.host.postMessage('"big"')
+    ch.host.postMessage('"big again"')
+    await settle()
+    expect(r.paused(key)).toBe(false)
+    expect(ch.host.closed).toBe(false)
+    expect(logs.filter((m) => m.includes('did not go out'))).toHaveLength(1)
+    ok = true
+    ch.host.postMessage('"small"')
+    await settle()
+    expect(sent).toEqual([
+      { t: 'port.open', key, nonce: 1 },
+      { t: 'port.msg', key, nonce: 1, m: '"small"' }
+    ])
+  })
+
+  it('closeAll stops the drain check of a paused port', async () => {
+    const timers: Array<() => void> = []
+    const r = new MainPortRelay({
+      send: () => true,
+      buffered: () => RELAY_HIGH_WATER + 1,
       log: () => {},
       setTimeout: (fn) => (timers.push(fn), 1),
       clearTimeout: () => void timers.splice(0)
@@ -441,14 +591,12 @@ describe('main relay: a page tab port is paused and resynced, not closed', () =>
     const key = pageTabPortKey(TAB_A)
     const ch = channel(1)
     r.take(PANEL_PORT_CHANNEL, { panelKey: key, nonce: 1 }, ch.renderer)
-    ok = false
-    ch.host.postMessage('"big"')
+    ch.host.postMessage('"one"')
     await settle()
     expect(r.paused(key)).toBe(true)
-    expect(ch.host.closed).toBe(false)
+    expect(timers).toHaveLength(1)
     r.closeAll()
     expect(timers).toHaveLength(0)
-    expect(sent).toEqual([{ t: 'port.open', key, nonce: 1 }])
   })
 })
 
