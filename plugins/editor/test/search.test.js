@@ -406,6 +406,19 @@ test('serveSearch runs rg by its absolute path from absolute PATH entries only: 
   assert.equal(argvs[0][0], path.join(bin, 'rg'))
 })
 
+test('serveSearch: a refusal naming the project folder reaches the page with it cut out', async () => {
+  const root = '/srv/someone/proj'
+  const posted = []
+  const spawn = () => {
+    throw new RangeError(`processes: cwd ${root} is not an existing directory`)
+  }
+  const handle = search.serveSearch({ post: (m) => posted.push(m), onClose() {} }, { spawn, root, bin: '/usr/bin/rg' })
+  handle({ t: 'grep', req: 1, query: 'x' })
+  for (let i = 0; i < 50 && posted.length === 0; i++) await new Promise((r) => setTimeout(r, 5))
+  assert.equal(posted[0].t, 'search-error')
+  assert.equal(posted[0].message, 'processes: cwd <project> is not an existing directory')
+})
+
 test('real rg: a query that looks like an option stays a pattern; ignore rules hold', { skip: !hasRg && 'rg not installed' }, async () => {
   const root = project()
   for (const q of ['--pre=evil', '-f']) {

@@ -37,7 +37,8 @@ page. A plugin declares its page-tab types in the manifest (`contributes.tabs: [
 `ctx.tabs.openPage(type, params, { title, icon })`; the editor uses type `file` with params `{ path, line?, col? }`.
 The shell draws the page in the tab area in its own frame with its own `MessagePort` to the plugin's backend, as it
 draws slots. Ctrl+Tab, drag, flags, close, the All tabs menu and restore work as for any tab. A saved page tab keeps
-type and params; on restore its plugin is asked again; a gone or revoked plugin drops it. A page tab is never typed
+type and params; on restore its plugin is asked again; a gone or revoked plugin drops it, one that failed to load or is off in
+the project keeps it in the record for the next launch. A page tab is never typed
 into as a terminal: the send gate, `typed` and Claude status do not apply. Title and icon are set by main from the
 plugin's request, clamped.
 
@@ -69,7 +70,9 @@ re-pair or sign-in, the tunnel back on another port, Forget, a project the serve
 state cannot wait on a box, and most of them happen to a page signed out or cut off from its server. A known limit.
 
 Keyboard: a sandboxed frame's keys never reach the shell's window listener. Desktop: `before-input-event` on the frame
-maps app chords to `commands.trigger`, as webview panels do. Web shell: the panel SDK forwards chords to the parent.
+maps app chords to `commands.trigger`, as webview panels do. Web shell: the panel SDK forwards chords to the parent,
+which runs one only from the shown frame with the keyboard and while `navigator.userActivation.isActive` (a real key
+press or click just now: a page's script alone cannot run app commands).
 Precedence: the app table and `keyOverrides` win for chords they hold (Ctrl+Tab, Ctrl+W...); the editor's own chords
 (Ctrl+P, Ctrl+K, Ctrl+L, Ctrl+D, Ctrl+S) are declared in its manifest as page-tab keys and go to the page while it has
 focus; a conflict with the app table is shown in the keybinding editor (Settings > Keybindings lists the key two

@@ -51,6 +51,14 @@ export interface CloseAskHooks {
    */
   close(windowId: number, viewId: ViewId, tabId: string): boolean
   /**
+   * Whether the tab is a page tab some view's page holds unsaved (TabManager.pageUnsaved). A Close
+   * answer without `discard` (the view did not ask the person: its copy of the tab's dirty lagged a
+   * page's report, a `tabs.added` saying dirty in the same tick as the ask) does not close such a tab,
+   * as `tabs.close` refuses one (router.ts): the text is kept and the plugin hears `closed: false`.
+   * Absent: every Close closes.
+   */
+  unsaved?(windowId: number, tabId: string): boolean
+  /**
    * The window's live views now (ViewRegistry.viewsOf). Absent: a decline settles at once, as a
    * window with one view would.
    */
@@ -67,6 +75,8 @@ export interface CloseAskInfo {
 export interface CloseAskAnswer {
   closed: boolean
   declined?: boolean
+  /** The view asked the person, who chose Close. */
+  discard?: boolean
 }
 
 interface PendingAsk {
@@ -126,7 +136,7 @@ export class CloseAsks {
     }
     let closed: boolean
     try {
-      closed = this.hooks.close(ask.windowId, viewId, ask.tabId)
+      closed = answer.discard !== true && this.hooks.unsaved?.(ask.windowId, ask.tabId) === true ? false : this.hooks.close(ask.windowId, viewId, ask.tabId)
     } catch {
       closed = false
     }

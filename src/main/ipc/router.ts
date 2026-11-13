@@ -1615,7 +1615,7 @@ export interface SessionHandlerDeps {
    * window wins, a decline waits for the others; false for an ask its window was not sent. A winning
    * Close closes the tab in main and answers whether it did.
    */
-  closeAnswer(windowId: number, viewId: ViewId, requestId: string, answer: { closed: boolean; declined: boolean }): boolean
+  closeAnswer(windowId: number, viewId: ViewId, requestId: string, answer: { closed: boolean; declined: boolean; discard?: boolean }): boolean
   /**
    * A view's Allow or Deny of a `ccc plugin link` confirm (LinkAsks.answer): the first from any view of
    * the window wins, but a remote view's Allow is refused (only the desktop approves a plugin link).
@@ -1665,11 +1665,12 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
   // The window and the view are the sender's (ctx, view), never values in the payload: only a view
   // of the window an ask went to can settle it (shared ask: any of its views, first answer wins).
   router.handleProject('sessions.closeAnswer', (ctx, payload, view) => {
-    const { requestId, closed, declined } = fields('sessions.closeAnswer', payload)
+    const { requestId, closed, declined, discard } = fields('sessions.closeAnswer', payload)
     if (typeof requestId !== 'string') throw new Error('sessions.closeAnswer: requestId must be a string')
     if (typeof closed !== 'boolean') throw new Error('sessions.closeAnswer: closed must be a boolean')
     if (declined !== undefined && typeof declined !== 'boolean') throw new Error('sessions.closeAnswer: declined must be a boolean')
-    return deps.closeAnswer(ctx.windowId, view.viewId, requestId, { closed, declined: declined === true })
+    if (discard !== undefined && typeof discard !== 'boolean') throw new Error('sessions.closeAnswer: discard must be a boolean')
+    return deps.closeAnswer(ctx.windowId, view.viewId, requestId, { closed, declined: declined === true, discard: discard === true })
   })
 }
 

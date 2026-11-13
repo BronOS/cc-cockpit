@@ -87,13 +87,14 @@ const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta'])
  * (another dialog, a screen or an overlay over it, or its close failed), which main counts only once
  * every view of the window declined (close-asks.ts): a person's Cancel is not a decline.
  */
-type CloseDone = (closed: boolean, declined?: boolean) => void
+/** `discard`: the person was asked (the close dialog) and chose Close. */
+type CloseDone = (closed: boolean, declined?: boolean, discard?: boolean) => void
 
 /** The dialog went: answer the plugin close waiting on it (`confirmDone`), if one is, once. */
-function settleClose(confirmDone: { current: CloseDone | null }, closed: boolean, declined = false): void {
+function settleClose(confirmDone: { current: CloseDone | null }, closed: boolean, declined = false, discard = false): void {
   const done = confirmDone.current
   confirmDone.current = null
-  done?.(closed, declined)
+  done?.(closed, declined, discard)
 }
 
 /** The project window's terminal tabs: tab bar plus one mounted terminal per tab. */
@@ -586,10 +587,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       }
       actions.current.close(
         tabId,
-        (closed, declined) => {
+        (closed, declined, discard) => {
           // Settled meanwhile (another view answered): main would ignore this answer anyway.
           if (!live.delete(requestId)) return
-          const answer = declined === true ? { requestId, closed, declined: true } : { requestId, closed }
+          // Without `discard` (no dialog was shown here) main still refuses a page tab it holds unsaved.
+          const answer = declined === true ? { requestId, closed, declined: true } : discard === true ? { requestId, closed, discard: true } : { requestId, closed }
           window.cockpit.invoke('sessions.closeAnswer', answer).then(
             (accepted) => {
               // main closed the tab on this Close (it won the ask): drop it here too.
@@ -794,7 +796,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const ask = confirmAsk.current
       confirmAsk.current = null
       // A plugin's ask: Close is only this view's answer, main closes the tab if it wins (close-asks.ts).
-      if (doClose && ask !== null) settleClose(confirmDone, true)
+      // `discard`: asked and answered Close, so main closes it even with unsaved changes (as below).
+      if (doClose && ask !== null) settleClose(confirmDone, true, false, true)
       else if (doClose) {
         const done = confirmDone.current ?? undefined
         confirmDone.current = null

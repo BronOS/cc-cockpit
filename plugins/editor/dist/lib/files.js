@@ -51,6 +51,12 @@ const REARM_TRIES = 30
 const STALE_TEMP_MS = 60 * 1000
 /** Watch events within this window are one check: an editor's save is often a truncate, writes and a chmod. */
 const WATCH_DEBOUNCE_MS = 80
+/**
+ * A watched file's checks wait this much longer per MiB it had at its last check: each check reads
+ * and hashes all of it synchronously in the shared plugin host, and a big file appended to all the
+ * time (a log open in a tab) was re-hashed every debounce (16 MiB each 80 ms starved the host).
+ */
+const WATCH_BACKOFF_MS_PER_MIB = 50
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf])
 
@@ -71,6 +77,14 @@ function relativePath(p) {
   const norm = path.posix.normalize(path.sep === '\\' ? p.replace(/\\/g, '/') : p)
   if (norm === '..' || norm.startsWith('../') || norm === '.') throw new Error(`path leaves the project folder: ${p}`)
   return norm.replace(/^\.\//, '')
+}
+
+/**
+ * Whether `rel`, a path.relative() answer, leaves its base: `..` itself or a first segment of `..`.
+ * Not `startsWith('..')`, which took an in-project folder named `..foo` for outside.
+ */
+function leavesBase(rel) {
+  return rel === '..' || rel.startsWith(`..${path.sep}`)
 }
 
 function inside(realRoot, real) {
@@ -400,7 +414,21 @@ function writeTemp(real, bytes, mode) {
  * Removes the temp files an interrupted save (host killed between writeTemp and the rename) left
  * beside `real`. Only ones older than STALE_TEMP_MS: a save in progress in another window is not touched.
  */
-function sweepTemps(real) {
+/**
+ * When each file's folder was last swept, so an open sweeps at most once per SWEEP_EVERY_MS: the
+ * sweep reads the whole folder synchronously in the shared plugin host, and a file opened again and
+ * again (each view, each reconnect) in a folder of many thousand files paid that every time.
+ */
+const swept = new Map()
+const SWEEP_EVERY_MS = 10 * 60 * 1000
+const MAX_SWEPT = 1000
+
+function sweepTemps(real, now = Date.now()) {
+  const last = swept.get(real)
+  if (last !== undefined && now - last < SWEEP_EVERY_MS) return
+  swept.delete(real)
+  swept.set(real, now)
+  if (swept.size > MAX_SWEPT) swept.delete(swept.keys().next().value)
   const dir = path.dirname(real)
   const prefix = `.${path.basename(real)}.cc-editor-`
   try {
@@ -657,7 +685,7 @@ class FolderWatcher {
   add(real, hash, notify) {
     let f = this.files.get(real)
     if (!f) {
-      f = { subs: new Set(), timer: null }
+      f = { subs: new Set(), timer: null, size: 0 }
       this.files.set(real, f)
       this.addFolder(path.dirname(real))
     }
@@ -807,8 +835,13 @@ class FolderWatcher {
       f.timer = setTimeout(() => {
         f.timer = null
         this.check(real)
-      }, this.debounceMs)
+      }, this.delayOf(f))
     }
+  }
+
+  /** How long `f`'s next check waits: the debounce, plus WATCH_BACKOFF_MS_PER_MIB per MiB it had. */
+  delayOf(f) {
+    return this.debounceMs + Math.round((Math.min(f.size || 0, MAX_VIEW_BYTES) / (1024 * 1024)) * WATCH_BACKOFF_MS_PER_MIB)
   }
 
   check(real) {
@@ -818,7 +851,9 @@ class FolderWatcher {
     try {
       const { fd } = openRegular(real)
       try {
-        hash = readFd(fd).hash
+        const r = readFd(fd)
+        hash = r.hash
+        f.size = r.size
       } finally {
         fs.closeSync(fd)
       }
@@ -866,14 +901,29 @@ const FS_ERROR_TEXT = {
 function safeMessage(e, root, rel) {
   const where = typeof rel === 'string' && rel ? `: ${rel}` : ''
   if (e && typeof e.code === 'string' && e.code.startsWith('E')) return `${FS_ERROR_TEXT[e.code] || e.code}${where}`
-  let msg = messageOf(e)
+  return redactPaths(messageOf(e), root)
+}
+
+/**
+ * `text` (an error message, a program's stderr) with the project's own paths cut out (`<project>`),
+ * then the home folder's (`~`): what a page shows may reach a browser view, which must not learn
+ * where the project or the user's home is.
+ */
+function redactPaths(text, root) {
+  let msg = String(text)
   const roots = [root]
   try {
-    roots.push(fs.realpathSync(root))
+    if (root) roots.push(fs.realpathSync(root))
   } catch {
     // the root itself is gone
   }
-  for (const r of roots) if (r) msg = msg.split(r).join('<project>')
+  for (const r of roots) if (typeof r === 'string' && r.length > 1) msg = msg.split(r).join('<project>')
+  let home = ''
+  try {
+    home = os.homedir()
+  } catch {}
+  // A home of `/` (a service user) would cut every separator.
+  if (home && home.length > 1) msg = msg.split(home).join('~')
   return msg
 }
 
@@ -1029,11 +1079,13 @@ function serveFileTab(files, tab, log) {
     if (answer.result === 'saved') {
       // Our own write is not news for THIS line (its hash moves on); every other line watching the
       // file still has the old one and hears about it from the watcher.
-      const real = resolveInProject(files.root, rel).real
+      // The write is done whatever happens next: a path that moved away right after it (re-pointed
+      // to an outside link, removed) or a line over its watch cap still answers `saved` with the new
+      // hash, or the page's next save would conflict with its own text.
       try {
-        watch(rel, real, answer.hash)
+        watch(rel, resolveInProject(files.root, rel).real, answer.hash)
       } catch {
-        // over the line's watch cap: the save is done all the same
+        // not watched: the save is done all the same
       }
       return post({ t: 'saved', req, path: rel, hash: answer.hash })
     }
@@ -1100,8 +1152,10 @@ module.exports = {
   BINARY_SNIFF_BYTES,
   CHUNK_CHARS,
   safeMessage,
+  redactPaths,
   messageOf,
   relativePath,
+  leavesBase,
   resolveInProject,
   sniffBinary,
   decodeBytes,

@@ -60,7 +60,7 @@ function serveLsp(tab, manager, log) {
       if (!closed) tab.post(m)
     },
   }
-  const opens = new Map() // path -> { parts, got, length, timer, seq }
+  const opens = new Map() // path -> { parts, got, next, length, timer, seq, skip }
   const asks = new Map() // req -> AbortController
   const edits = new Map() // id -> { resolve, timer }: lsp-edit messages waiting for the page
   const late = new Set() // ids the host stopped waiting for (the page may still apply them)
@@ -92,6 +92,20 @@ function serveLsp(tab, manager, log) {
 
   const fail = (p, e) => holder.post({ t: 'lsp-error', ...(typeof p === 'string' ? { path: p } : {}), message: files.messageOf(e) })
 
+  /**
+   * Waits for `o`'s next part. One that never comes drops the text and is told, as a save that timed
+   * out is: the page would otherwise wait for a server that never gets the document (a first open
+   * shows "failed" with this; a resync shows the message). A skipped text (over the cap) goes quietly.
+   */
+  function waitPart(rel, o) {
+    o.timer = setTimeout(() => {
+      if (opens.get(rel) !== o) return
+      opens.delete(rel)
+      if (!o.skip) fail(rel, new Error('the text of the file did not all reach the language server'))
+    }, OPEN_PART_TIMEOUT_MS)
+    if (typeof o.timer.unref === 'function') o.timer.unref()
+  }
+
   function dropOpen(p) {
     const o = opens.get(p)
     if (o && o.timer) clearTimeout(o.timer)
@@ -106,43 +120,61 @@ function serveLsp(tab, manager, log) {
       return fail(undefined, e)
     }
     let o = opens.get(rel)
+    // A first part always starts the text again: the page resends all of it after a send that
+    // stopped part-way (lsp/client.mjs sendText), so a new text never lands on an old one's parts.
+    if (o && m.part === 0) {
+      dropOpen(rel)
+      o = undefined
+    }
     if (!o) {
       if (m.part !== 0) return fail(rel, new Error('lsp-open parts out of order'))
       if (opens.size >= MAX_PENDING_OPENS) return fail(rel, new Error('too many documents opening at once'))
       const parts = Number.isInteger(m.parts) && m.parts >= 1 ? m.parts : 1
       if (parts > Math.ceil(MAX_DOC_CHARS / 1024) + 1) return fail(rel, new Error('too many parts'))
-      o = { parts, got: [], length: 0, timer: null, seq: m.seq }
+      o = { parts, got: [], next: 0, length: 0, timer: null, seq: m.seq, skip: false }
       opens.set(rel, o)
-    } else if (m.part !== o.got.length) {
+    } else if (m.part !== o.next) {
       dropOpen(rel)
+      // The rest of a text already answered as too large: nothing to tell (the page shows "no
+      // server", and an error here would draw a red bar over that quiet state).
+      if (o.skip) return
       return fail(rel, new Error('lsp-open parts out of order'))
     }
     if (typeof m.text !== 'string') {
       dropOpen(rel)
+      if (o.skip) return
       return fail(rel, new Error('text must be a string'))
+    }
+    o.next++
+    if (o.timer) clearTimeout(o.timer)
+    o.timer = null
+    if (o.skip) {
+      // Counted, not kept: a part after the cap was passed.
+      if (o.next >= o.parts) opens.delete(rel)
+      else waitPart(rel, o)
+      return
     }
     o.got.push(m.text)
     o.length += m.text.length
-    if (o.timer) clearTimeout(o.timer)
-    o.timer = null
     if (o.length > MAX_DOC_CHARS) {
       // Too large for a server: highlighting only, said as "no server" (not an error bar).
-      dropOpen(rel)
       // A resync of a document that grew past the cap: the server's copy goes.
       try {
         manager.close(holder, rel)
       } catch {}
-      return holder.post({ t: 'lsp-doc', path: rel, language: null, why: 'the file is too large for a language server' })
+      holder.post({ t: 'lsp-doc', path: rel, language: null, why: 'the file is too large for a language server' })
+      // The page sends every part at once, so the rest are already coming: they are skipped quietly
+      // up to the last. The incident: each one was answered "lsp-open parts out of order", a red
+      // error bar on every editable file over 2M characters.
+      o.got = []
+      o.length = 0
+      o.skip = true
+      if (o.next >= o.parts) opens.delete(rel)
+      else waitPart(rel, o)
+      return
     }
-    if (o.got.length < o.parts) {
-      o.timer = setTimeout(() => {
-        if (opens.get(rel) !== o) return
-        opens.delete(rel)
-        // Told, as a save that timed out is: the page would otherwise wait for a server that never
-        // gets the document (a first open shows "failed" with this; a resync shows the message).
-        fail(rel, new Error('the text of the file did not all reach the language server'))
-      }, OPEN_PART_TIMEOUT_MS)
-      if (typeof o.timer.unref === 'function') o.timer.unref()
+    if (o.next < o.parts) {
+      waitPart(rel, o)
       return
     }
     opens.delete(rel)

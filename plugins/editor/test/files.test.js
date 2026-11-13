@@ -298,6 +298,31 @@ function fakeTab(params) {
   }
 }
 
+test('serveFileTab: a path that moves away right after a save still answers saved with the new hash', (t) => {
+  const root = project()
+  fs.writeFileSync(path.join(root, 'a.txt'), 'base\n')
+  const shared = files.makeFiles(root, { debounceMs: 20 })
+  const tab = fakeTab({ path: 'a.txt' })
+  files.serveFileTab(shared, tab.tab)
+  t.after(() => tab.close())
+  tab.send({ t: 'open', req: 1 })
+  tab.posted.length = 0
+  // The file is gone (or re-pointed outside) the moment the write lands: every later realpath fails.
+  let moved = false
+  const rename = fs.renameSync
+  const realpath = fs.realpathSync
+  t.mock.method(fs, 'renameSync', (...a) => {
+    rename(...a)
+    moved = true
+  })
+  t.mock.method(fs, 'realpathSync', (...a) => {
+    if (moved) throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' })
+    return realpath(...a)
+  })
+  tab.send({ t: 'save', req: 2, path: 'a.txt', baseHash: sha('base\n'), part: 0, parts: 1, text: 'mine\n' })
+  assert.deepEqual(tab.posted.shift(), { t: 'saved', req: 2, path: 'a.txt', hash: sha('mine\n') })
+})
+
 test('serveFileTab: open, a save in parts, a mismatch, a disk event and close', async () => {
   const root = project()
   const f = path.join(root, 'src.txt')
@@ -695,6 +720,26 @@ test('stale temp files of an interrupted save are swept on open, fresh ones are 
   assert.deepEqual(fs.readdirSync(root).sort(), ['.a.txt.cc-editor-112233445566.tmp', '.b.txt.cc-editor-aabbccddeeff.tmp', 'a.txt'])
 })
 
+test('the sweep reads a file\'s folder at most once in a while, not on every open', (t) => {
+  const root = project()
+  fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
+  const shared = files.makeFiles(root)
+  t.after(() => shared.watcher.close())
+  const readdir = fs.readdirSync
+  let reads = 0
+  t.mock.method(fs, 'readdirSync', (...a) => {
+    if (String(a[0]) === fs.realpathSync(root)) reads++
+    return readdir(...a)
+  })
+  for (let i = 0; i < 3; i++) {
+    const tab = fakeTab({ path: 'a.txt' })
+    files.serveFileTab(shared, tab.tab)
+    tab.send({ t: 'open', req: 1 })
+    tab.close()
+  }
+  assert.equal(reads, 1)
+})
+
 test('serveFileTab: save bounds, a part for another path, a deleted file and errors with no absolute path', () => {
   const root = project()
   fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
@@ -838,6 +883,29 @@ test('the folder watch is armed again after its folder is deleted and recreated,
   }
 })
 
+test('a big watched file appended to all the time is checked less often (each check hashes all of it)', (t) => {
+  const root = project()
+  const f = fs.realpathSync(root) + '/big.log'
+  fs.writeFileSync(f, Buffer.alloc(4 * 1024 * 1024, 'a'))
+  const calls = []
+  const w = new files.FolderWatcher(() => {}, { watchImpl: (dir, opts, cb) => (calls.push({ dir, cb }), { close() {} }), debounceMs: 10 })
+  const stop = w.add(f, null)
+  t.after(() => (stop(), w.close()))
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const checks = countChecks(w)
+  // Its size is not known yet: the first check waits the debounce only.
+  calls[0].cb('change', 'big.log')
+  t.mock.timers.tick(10)
+  assert.equal(checks.n, 1)
+  // 4 MiB now: 10 ms + 4 x 50 ms before the next one.
+  fs.appendFileSync(f, 'more\n')
+  calls[0].cb('change', 'big.log')
+  t.mock.timers.tick(10)
+  assert.equal(checks.n, 1)
+  t.mock.timers.tick(200)
+  assert.equal(checks.n, 2)
+})
+
 test('folders watched are capped for the whole plugin; a folder left out gets the slot another one frees', () => {
   const calls = []
   const w = new files.FolderWatcher(null, { watchImpl: (dir) => (calls.push(dir), { close() {} }), maxFolders: 2, debounceMs: 5 })
@@ -865,4 +933,10 @@ test('safeMessage: an fs error is its code and the relative path, a project path
   const e = Object.assign(new Error("EACCES: permission denied, open '/home/u/proj/a.txt'"), { code: 'EACCES' })
   assert.equal(files.safeMessage(e, '/home/u/proj', 'a.txt'), 'permission denied: a.txt')
   assert.equal(files.safeMessage(new Error('bad /home/u/proj/x'), '/home/u/proj', 'x'), 'bad <project>/x')
+})
+
+test('redactPaths: the project, then the home folder, cut out of a message or a stderr tail', () => {
+  const home = require('node:os').homedir()
+  assert.equal(files.redactPaths(`cwd ${home}/proj/sub is not an existing directory; see ${home}/.claude/x`, `${home}/proj`), 'cwd <project>/sub is not an existing directory; see ~/.claude/x')
+  assert.equal(files.redactPaths('plain', undefined), 'plain')
 })

@@ -211,6 +211,28 @@ describe('CloseAsks', () => {
     expect(throwing.size).toBe(0)
   })
 
+  it('a Close nobody was asked about keeps a page tab main holds unsaved; one the person confirmed (discard) closes it', async () => {
+    const closed: string[] = []
+    const unsavedTabs = new Set(['t1'])
+    const guarded = new CloseAsks({
+      send: () => true,
+      close: (_w, _v, tabId) => (closed.push(tabId), true),
+      unsaved: (_w, tabId) => unsavedTabs.has(tabId)
+    })
+    const p = guarded.ask(1, 't1')
+    expect(guarded.answer(1, 'desktop:1', 'close-1', { closed: true })).toBe(false)
+    await expect(p).resolves.toBe(false)
+    expect(closed).toEqual([])
+    const q = guarded.ask(1, 't1')
+    expect(guarded.answer(1, 'desktop:1', 'close-2', { closed: true, discard: true })).toBe(true)
+    await expect(q).resolves.toBe(true)
+    // A tab with nothing unsaved closes on a plain Close.
+    const r = guarded.ask(1, 't2')
+    expect(guarded.answer(1, 'desktop:1', 'close-3', { closed: true })).toBe(true)
+    await expect(r).resolves.toBe(true)
+    expect(closed).toEqual(['t1', 't2'])
+  })
+
   it('a settled hook that throws does not keep the plugin from its answer', async () => {
     const loud = new CloseAsks({
       send: () => true,

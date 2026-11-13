@@ -61,9 +61,12 @@ export type PluginAvailable = (pluginId: string) => boolean
  * Whether a saved page tab may come back in `projectId` right now: its plugin loaded, is on in the
  * project (a plugin switched off there, or off in all projects, has no host to answer the page) and
  * still declares `type` in `contributes.tabs` (an update may have dropped it; main never loads a page
- * the manifest does not name).
+ * the manifest does not name). `'later'`: the plugin is installed but cannot have it back right now
+ * (it failed to load, its manifest caught mid-update, switched off): the tab stays in the record for
+ * the next launch, as a tab that failed to start does. False: gone for good (not installed, or loaded
+ * and no longer declaring the type).
  */
-export type PageTabAvailable = (projectId: string, pluginId: string, type: string) => boolean
+export type PageTabAvailable = (projectId: string, pluginId: string, type: string) => boolean | 'later'
 
 /** The persisted shape of live tabs. Ids are saved for the record but a restored tab gets a new one. */
 export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
@@ -310,9 +313,20 @@ export class TabRestorer {
             this.log(`not restoring a command tab of project ${projectId}: plugin ${tab.command.openedBy} is gone or revoked`)
             continue
           }
-          if (tab.page !== undefined && !this.pageOk(projectId, tab.page)) {
-            this.log(`not restoring a page tab of project ${projectId}: plugin ${tab.page.plugin} is off or no longer has type "${tab.page.type}"`)
-            continue
+          if (tab.page !== undefined) {
+            const ok = this.pageOk(projectId, tab.page)
+            if (ok === 'later') {
+              // A passing state (a failed load, an update under way, the plugin off here for now)
+              // must not cost the person their open tabs: kept as a failed tab is, tried next launch.
+              this.log(`not restoring a page tab of project ${projectId} now: plugin ${tab.page.plugin} is off or did not load; it is kept for the next launch`)
+              const record = this.failedRecord(projectId, tab)
+              if (record) failed.push(record)
+              continue
+            }
+            if (!ok) {
+              this.log(`not restoring a page tab of project ${projectId}: plugin ${tab.page.plugin} is gone or no longer has type "${tab.page.type}"`)
+              continue
+            }
           }
           try {
             spawn(tab)
@@ -370,13 +384,15 @@ export class TabRestorer {
     return record
   }
 
-  private pageOk(projectId: string, page: PageTabSpec): boolean {
+  private pageOk(projectId: string, page: PageTabSpec): boolean | 'later' {
     const check = this.options.pageTabAvailable
     if (check === undefined) return true
     try {
-      return check(projectId, page.plugin, page.type)
+      const ok = check(projectId, page.plugin, page.type)
+      return ok === 'later' ? 'later' : ok === true
     } catch {
-      return false
+      // Unknown: kept, not dropped for good.
+      return 'later'
     }
   }
 

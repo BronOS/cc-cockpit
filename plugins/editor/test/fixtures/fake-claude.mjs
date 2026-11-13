@@ -70,7 +70,7 @@ rl.on('line', (line) => {
   if (process.env.FAKE_CLAUDE_LOG) appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify(text) + '\n')
   turn += 1
   if (text.includes('CRASH')) {
-    process.stderr.write('fake claude: boom\n')
+    process.stderr.write(`fake claude: boom in ${process.cwd()}\n`)
     process.exit(3)
   }
   if (text.includes('HANG')) return

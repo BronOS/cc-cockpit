@@ -1098,8 +1098,11 @@ export interface IpcInvokeMap {
    * view of the window declined, so a covered browser cannot cancel the dialog the desktop shows.
    * `closed: true` that wins makes main close the tab, and the reply is then whether it did (the
    * view drops the tab only on true; false: another view answered first or the tab was gone).
+   * `discard`: the person was asked and chose Close (as `tabs.close`'s): without it main does not
+   * close a page tab some view's page holds unsaved (the answering view's dirty may lag a report),
+   * and the plugin hears `closed: false`.
    */
-  'sessions.closeAnswer': { req: { requestId: string; closed: boolean; declined?: boolean }; res: boolean }
+  'sessions.closeAnswer': { req: { requestId: string; closed: boolean; declined?: boolean; discard?: boolean }; res: boolean }
   /**
    * The answer to a `links.ask` (the in-page confirm of `ccc plugin link`): Allow or Deny. Settles
    * only an ask main sent to the sender's own window; the first answer from any view wins (design-web.md

@@ -27,6 +27,37 @@ const MAX_QUOTE = 500
 const MAX_LINE = 10000000
 /** The Reviewer's answer is bounded by its draft cap (200 notes); more than this is never passed on. */
 const MAX_SHOWN_NOTES = 200
+/**
+ * How long a Reviewer call may take: a plain service call has no deadline of its own
+ * (src/host/services.ts), and a hung Reviewer must not leave the page waiting (no `has: false`) nor
+ * pile up one pending call per poll for the tab's life.
+ */
+const NOTES_TIMEOUT_MS = 5 * 1000
+const REVIEWER_CALL_TIMEOUT_MS = 10 * 1000
+
+/**
+ * `p` (a service call's promise) bounded by `ms`: rejects with `message` when it has not settled by
+ * then, calling `onLate()` first. The call itself cannot be taken back; it settles (or not) unseen.
+ */
+function within(p, ms, message, onLate) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (onLate) onLate()
+      reject(new Error(message))
+    }, ms)
+    if (typeof timer.unref === 'function') timer.unref()
+    Promise.resolve(p).then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(timer)
+        reject(e)
+      },
+    )
+  })
+}
 
 /** The notes as the page needs them: id, lines, text (cut), in a bounded list; malformed entries dropped. */
 function shownNotes(list) {
@@ -60,9 +91,11 @@ function noteOf(m) {
  * file outside the project: no notes). `reviewer()` returns the service handle now or null (called on every
  * use: the provider can come and go). Returns `handle(m)`: true when it took the message.
  */
-function serveNotes(tab, { rel, reviewer, log }) {
+function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, addTimeoutMs = REVIEWER_CALL_TIMEOUT_MS }) {
   let closed = false
   let unsubscribe = null
+  /** A `notes` call that outlived its deadline and has not settled: no new one is made while it hangs. */
+  let stuck = null
   const post = (m) => {
     if (!closed) tab.post(m)
   }
@@ -83,10 +116,20 @@ function serveNotes(tab, { rel, reviewer, log }) {
   /** The file's notes now: `{ has: false }` for every way of "there is no Reviewer to ask". */
   async function read() {
     if (typeof rel !== 'string') return { has: false }
+    // A hung Reviewer is asked again only once its last call settled: at most one call left behind.
+    if (stuck) return { has: false }
     const svc = reviewer()
     if (!svc) return { has: false }
     try {
-      return { has: true, notes: shownNotes(await svc.notes(rel)) }
+      const call = Promise.resolve(svc.notes(rel))
+      const unstick = () => {
+        if (stuck === call) stuck = null
+      }
+      const list = await within(call, timeoutMs, 'the Reviewer did not answer in time', () => {
+        stuck = call
+        call.then(unstick, unstick)
+      })
+      return { has: true, notes: shownNotes(list) }
     } catch (e) {
       // An older Reviewer ("has no method"), one that failed to activate, a path it refuses: no marks.
       // Logged at debug level only: this is asked every few seconds.
@@ -130,7 +173,13 @@ function serveNotes(tab, { rel, reviewer, log }) {
       }
       const svc = reviewer()
       if (!svc) return fail('no Reviewer plugin is available'), true
-      svc.addNote(rel, note).then(
+      let call
+      try {
+        call = svc.addNote(rel, note)
+      } catch (e) {
+        call = Promise.reject(e)
+      }
+      within(call, addTimeoutMs, 'the Reviewer did not answer in time (the note may still be added)').then(
         () => {
           post({ t: 'notes-added', req, ok: true })
           read().then((r) => post({ t: 'notes', req: 0, ...r }))
@@ -147,4 +196,4 @@ function serveNotes(tab, { rel, reviewer, log }) {
   }
 }
 
-module.exports = { MAX_SHOWN_CHARS, MAX_SHOWN_NOTES, serveNotes, shownNotes }
+module.exports = { MAX_SHOWN_CHARS, MAX_SHOWN_NOTES, REVIEWER_CALL_TIMEOUT_MS, serveNotes, shownNotes, within }

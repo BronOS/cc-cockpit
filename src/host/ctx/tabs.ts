@@ -106,12 +106,23 @@ export class PageTabHub {
   private readonly openers = new Map<string, Set<(tab: PageTabInstance) => void>>()
   /** frameKey(pluginId, tabId, view) -> frame. */
   private readonly frames = new Map<string, Frame>()
+  /**
+   * Each plugin's ctx guard (createTabsApi's `guardAsync`, of the activation that registered it): an
+   * instance's setTitle goes through the one of the copy that was live when its frame connected, so a
+   * stopped or reloaded plugin's kept instance is refused here like every other ctx.tabs member.
+   */
+  private readonly guards = new Map<string, <T>(body: () => Promise<T>) => Promise<T>>()
 
   constructor(
     private readonly log: (pluginId: string, message: string) => void,
     /** A request to main (`tabs.setTitle` from an instance). */
     private readonly call: (method: string, params: unknown) => Promise<unknown>
   ) {}
+
+  /** The plugin's ctx guard (createTabsApi), for the instances of frames that connect from now on. */
+  setGuard(pluginId: string, guard: <T>(body: () => Promise<T>) => Promise<T>): void {
+    this.guards.set(pluginId, guard)
+  }
 
   onOpen(pluginId: string, type: string, listener: (tab: PageTabInstance) => void): Disposer {
     const key = `${pluginId}/${type}`
@@ -213,6 +224,7 @@ export class PageTabHub {
   /** The plugin is gone: its frames end (onClose runs) and its listeners drop. */
   removePlugin(pluginId: string): void {
     for (const frame of [...this.frames.values()]) if (frame.pluginId === pluginId) frame.line.end()
+    this.guards.delete(pluginId)
     const prefix = `${pluginId}/`
     for (const key of [...this.openers.keys()]) if (key.startsWith(prefix)) this.openers.delete(key)
   }
@@ -234,13 +246,16 @@ export class PageTabHub {
         frame.discussHandlers.delete(entry)
       }
     }
-    const setTitle = async (title: string, icon?: string): Promise<void> => {
-      checkTitle(title, 'setTitle')
-      checkIcon(icon, 'setTitle')
-      // The tab outlives this line (a reconnect makes a new instance): main checks the tab is still
-      // this plugin's and open, not whether this instance is current.
-      await this.call('tabs.setTitle', { pluginId: frame.pluginId, tabId: frame.id, title, ...(icon !== undefined ? { icon } : {}) })
-    }
+    // No guard registered (no ctx.tabs made for the plugin): nothing of it is live to call for it.
+    const guard = this.guards.get(frame.pluginId) ?? (<T>(): Promise<T> => Promise.reject(new Error('the plugin is deactivated')))
+    const setTitle = (title: string, icon?: string): Promise<void> =>
+      guard(async () => {
+        checkTitle(title, 'setTitle')
+        checkIcon(icon, 'setTitle')
+        // The tab outlives this line (a reconnect makes a new instance): main checks the tab is still
+        // this plugin's and open, not whether this instance is current.
+        await this.call('tabs.setTitle', { pluginId: frame.pluginId, tabId: frame.id, title, ...(icon !== undefined ? { icon } : {}) })
+      })
     return Object.freeze({
       id: tag.id,
       type: tag.type,
@@ -286,6 +301,7 @@ export interface TabsApiDeps {
 
 export function createTabsApi(deps: TabsApiDeps): PluginContext['tabs'] {
   const { pluginId, types, call, guardAsync } = deps
+  deps.hub.setGuard(pluginId, guardAsync)
   const declared = (type: unknown, what: string): string => {
     if (typeof type !== 'string' || !types.includes(type)) {
       throw new Error(`tabs.${what}: "${String(type)}" is not declared in plugin.json contributes.tabs`)

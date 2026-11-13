@@ -1049,15 +1049,18 @@ describe('registerSessionHandlers', () => {
       ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: true, windowId: 1, viewId: 'web:9' }])
     ).resolves.toBe(true)
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-2', closed: false, declined: true }])).resolves.toBe(true)
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-3', closed: true, discard: true }])).resolves.toBe(true)
     expect(calls).toEqual([
-      ['closeAnswer', 2, 'desktop:2', 'close-1', { closed: true, declined: false }],
-      ['closeAnswer', 2, 'desktop:2', 'close-2', { closed: false, declined: true }]
+      ['closeAnswer', 2, 'desktop:2', 'close-1', { closed: true, declined: false, discard: false }],
+      ['closeAnswer', 2, 'desktop:2', 'close-2', { closed: false, declined: true, discard: false }],
+      ['closeAnswer', 2, 'desktop:2', 'close-3', { closed: true, declined: false, discard: true }]
     ])
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 5, closed: true }])).rejects.toThrow()
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: 'yes' }])).rejects.toThrow()
     await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: false, declined: 'yes' }])).rejects.toThrow()
+    await expect(ipc.invoke('sessions.closeAnswer', 12, [{ requestId: 'close-1', closed: true, discard: 'yes' }])).rejects.toThrow()
     await expect(ipc.invoke('sessions.closeAnswer', 13, [{ requestId: 'close-1', closed: false }])).rejects.toThrow()
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
   })
 
   it('links.answer passes the sender’s window, never one from the payload, and checks the shape', async () => {

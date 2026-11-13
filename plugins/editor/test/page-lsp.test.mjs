@@ -504,6 +504,40 @@ test('client: a post that throws never throws into the editor update; the next c
   assert.equal(k.last('lsp-change').seq, seq + 3)
 })
 
+test('client with the host: a file over the host cap (2M chars) is a quiet "no server", never a failed bar', () => {
+  const { serveLsp } = createRequire(import.meta.url)('../dist/lib/lsp/serve.js')
+  const manager = { open: () => ({ language: 'typescript', name: 'TypeScript', owner: true, state: 'starting' }), close() {}, closeHolder() {} }
+  const k = client('x'.repeat(3 * 1024 * 1024))
+  const handle = serveLsp({ id: 't1', post: (m) => k.c.receive(m), onClose() {} }, manager)
+  k.ui.post = (m) => handle(m)
+  k.c.connect()
+  k.c.open('src/a.ts', true)
+  assert.equal(k.c.state.language, null)
+  assert.equal(k.c.state.status, null)
+  assert.ok(!k.ui.statuses.some((s) => s && s.state === 'failed'), JSON.stringify(k.ui.statuses.filter(Boolean)))
+  // A text that grew past the cap while open (a resync): the same quiet state.
+  const g = client('const a = 1\n')
+  const h = serveLsp({ id: 't2', post: (m) => g.c.receive(m), onClose() {} }, manager)
+  g.ui.post = (m) => h(m)
+  g.c.connect()
+  g.c.open('src/a.ts', true)
+  assert.equal(g.c.state.language, 'typescript')
+  g.ui.text = 'y'.repeat(3 * 1024 * 1024)
+  g.c.changed([{ text: g.ui.text }])
+  assert.equal(g.c.state.language, null)
+  assert.ok(!g.ui.statuses.some((s) => s && s.state === 'failed'), JSON.stringify(g.ui.statuses.filter(Boolean)))
+})
+
+test('client: an ask whose post throws is refused at once, leaving no entry or timer behind; close never throws', async () => {
+  const k = readyClient()
+  k.ui.post = () => {
+    throw new Error('the port is closed')
+  }
+  await assert.rejects(k.c.ask('hover', { position: { line: 0, character: 0 } }), /could not be sent/)
+  assert.equal(k.timers.pending.size, 0)
+  assert.doesNotThrow(() => k.c.close())
+})
+
 test('file.js: the update listener marks the buffer edited before any language server work (a throw there must not leave it clean)', async () => {
   const { readFile } = await import('node:fs/promises')
   const src = await readFile(new URL('../src/page/file.js', import.meta.url), 'utf8')

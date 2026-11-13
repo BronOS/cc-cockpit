@@ -24,7 +24,7 @@
 
 const { programPath } = require('./lsp/servers.js')
 const { splitter } = require('./split.js')
-const { messageOf } = require('./files.js')
+const { messageOf, redactPaths } = require('./files.js')
 
 /** At most this many files for quick open: far more than a fuzzy list is useful for. */
 const MAX_FILES = 50000
@@ -339,7 +339,7 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
     if (!closed) tab.post(m)
   }
   const fail = (kind, req, e) =>
-    post({ t: 'search-error', kind, req, message: messageOf(e), ...(e && e.missing ? { missing: true } : {}) })
+    post({ t: 'search-error', kind, req, message: redactPaths(messageOf(e), root), ...(e && e.missing ? { missing: true } : {}) })
   /**
    * rg by its absolute path from the absolute PATH entries (lsp/servers.js programPath), looked up per
    * search (an install while the app runs counts): the bare name would let the spawn's PATH search

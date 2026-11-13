@@ -325,7 +325,8 @@ test('claude crashing ends the chat with its stderr', async () => {
   s.handle({ ...START, question: 'CRASH' })
   await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-end'))
   const end = s.tab.posted.find((m) => m.t === 'chat-end')
-  assert.match(end.message, /exited with code 3: fake claude: boom/)
+  // The project's location is cut out (the page may be a browser view).
+  assert.match(end.message, /exited with code 3: fake claude: boom in <project>$/)
   assert.equal(qc._pluginChats.running, 0)
   // A follow-up to an ended chat is told so.
   s.handle({ t: 'chat-say', id: 1, question: 'hello?' })

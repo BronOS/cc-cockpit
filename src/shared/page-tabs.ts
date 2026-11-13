@@ -70,19 +70,24 @@ export interface PageTabSpec {
   icon?: string
 }
 
-// C0 controls and DEL. A title is drawn on one line of the strip; a newline or an escape byte there
-// is either a damaged record or a plugin's mistake, so each is made a space rather than refused.
+// The characters session-name.ts's CONTROL refuses in a tab's name, cleaned here rather than
+// refused (a title comes from a repo's file names, which may hold any of them). C0 and C1 controls,
+// DEL and the line and paragraph separators (U+2028/2029) become a space: a title is drawn on one
+// line of the strip, the native unsaved-changes list and Ask Claude's `About:` line, where a second
+// line could pass for another entry. The bidi marks, embeddings, overrides and isolates and the
+// invisible format characters go: a U+202E in a file name would show the rest of it reversed.
 // eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u001f\u007f]/g
+const LINE_BREAKING = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g
+const INVISIBLE = /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g
 
 /**
- * The title as stored: control characters made spaces, trimmed, cut to PAGE_TAB_TITLE_MAX (UTF-16
- * code units, by code point so a surrogate pair is never split). Undefined when it is not text or
+ * The title as stored: control characters made spaces, bidi and invisible format characters removed,
+ * trimmed, cut to PAGE_TAB_TITLE_MAX (UTF-16 code units, by code point so a surrogate pair is never split). Undefined when it is not text or
  * nothing is left: the caller refuses an open, restore drops the tab.
  */
 export function pageTabTitleOf(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
-  const cleaned = value.replace(CONTROL, ' ').trim()
+  const cleaned = value.replace(LINE_BREAKING, ' ').replace(INVISIBLE, '').trim()
   if (cleaned.length === 0) return undefined
   if (cleaned.length <= PAGE_TAB_TITLE_MAX) return cleaned
   let out = ''

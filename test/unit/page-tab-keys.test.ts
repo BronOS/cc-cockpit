@@ -165,7 +165,7 @@ describe('web shell: the pool and the key table', () => {
 
   it('a forwarded chord counts only from the shown frame with the keyboard, and only a listed one', async () => {
     const chords: string[] = []
-    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => chords.push(c) })
+    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => chords.push(c), userActive: () => true })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
     t.frames.show(TAB_A)
     await settle()
@@ -181,6 +181,32 @@ describe('web shell: the pool and the key table', () => {
     b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+t' })
     b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
     expect(chords).toEqual(['ctrl+alt+w'])
+  })
+
+  it('a forwarded chord counts only while the browser says the person just gave real input (a script alone cannot run app commands)', async () => {
+    const chords: string[] = []
+    let active = false
+    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => chords.push(c), userActive: () => active })
+    t.frames.sync([entry(TAB_A)])
+    t.frames.show(TAB_A)
+    await settle()
+    const a = t.el(TAB_A)
+    a.focusedNow = true
+    // The page's script posts the chord with no key pressed: nothing runs, however often.
+    for (let i = 0; i < 5; i++) a.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
+    expect(chords).toEqual([])
+    active = true
+    a.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
+    expect(chords).toEqual(['ctrl+alt+w'])
+    // No way to tell (an option left out): none taken.
+    const none: string[] = []
+    const u = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => none.push(c) })
+    u.frames.sync([entry(TAB_A)])
+    u.frames.show(TAB_A)
+    await settle()
+    u.el(TAB_A).focusedNow = true
+    u.el(TAB_A).fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
+    expect(none).toEqual([])
   })
 
   it('the shell lists every app chord with Cmd, Ctrl or Alt, not the overlay keys, and runs one through its runner', () => {

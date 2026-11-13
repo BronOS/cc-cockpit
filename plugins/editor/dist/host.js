@@ -30,6 +30,7 @@ const quickChat = require('./lib/quick-chat.js')
 const notes = require('./lib/notes.js')
 const { LspManager } = require('./lib/lsp/manager.js')
 const { serveLsp } = require('./lib/lsp/serve.js')
+const { programPath } = require('./lib/lsp/servers.js')
 
 const INSTALL_HINT =
   'micro is not installed (or not on your login-shell PATH). Install it with `brew install micro` (macOS), ' +
@@ -151,6 +152,19 @@ function microArgv(app, rel, line) {
 }
 
 /**
+ * The micro to run: the `microPath` setting as the person gave it when it names a path (has a
+ * separator), else that name (default `micro`) looked up in the absolute PATH entries only, as git, rg
+ * and claude are (lsp/servers.js programPath). The bare name ran through the overlay's spawn PATH
+ * search with the project as cwd, so a `.` or `node_modules/.bin` entry could run a micro the project
+ * ships. Null: not installed there. Exported for tests.
+ */
+function microProgram(app, env = process.env) {
+  const p = typeof app.microPath === 'string' && app.microPath.trim() ? app.microPath : 'micro'
+  if (p.includes('/') || path.isAbsolute(p)) return p
+  return programPath(p, env)
+}
+
+/**
  * Races an overlay's `result` against OPEN_SETTLE_MS: null when it is still open after the wait,
  * else `{ error }` (refused) or `{ result }` (ended). Call it after all wiring is done, so the wait
  * delays nothing.
@@ -173,6 +187,7 @@ function position(v) {
 
 exports.autosaveOf = autosaveOf
 exports.microArgv = microArgv
+exports.microProgram = microProgram
 exports.relativePath = relativePath
 exports.editableFile = editableFile
 exports.parseTarget = parseTarget
@@ -200,9 +215,11 @@ exports.activate = (ctx) => {
   async function openEditor(p, line) {
     const rel = relativePath(p)
     const a = app()
-    await ensureMicro(a.microPath || 'micro')
+    const bin = microProgram(a)
+    if (!bin) throw new Error(INSTALL_HINT)
+    await ensureMicro(bin)
     // The terminal's cwd defaults to the project folder, so the relative path resolves there.
-    const handle = ctx.overlay.start({ kind: 'terminal', argv: microArgv(a, rel, line), title: overlayTitle('Edit: ', rel), size: 'large' })
+    const handle = ctx.overlay.start({ kind: 'terminal', argv: microArgv({ ...a, microPath: bin }, rel, line), title: overlayTitle('Edit: ', rel), size: 'large' })
     // start() gives no "shown" signal, but a refused overlay (3 open, 10 a minute, a failed spawn)
     // rejects `result` at once, and micro failing right after spawning (bad option, unreadable
     // terminal) resolves it with a nonzero exit; one that opened settles only when the person closes
@@ -223,7 +240,8 @@ exports.activate = (ctx) => {
   // Looked up at the click, not at activation: a click is rare, and the service resolves on every call.
   async function openReview(rel) {
     if (typeof ctx.services.use !== 'function') throw new Error('this app has no plugin services')
-    await ctx.services.use('reviewer').open(rel)
+    // Bounded: a service call has no deadline of its own, and a hung Reviewer must not keep this waiting.
+    await notes.within(ctx.services.use('reviewer').open(rel), notes.REVIEWER_CALL_TIMEOUT_MS, 'the Reviewer did not answer in time')
   }
 
   // The Reviewer's notes of a file (the gutter's marks, "Add review note"): the `reviewer` service looked
@@ -320,7 +338,14 @@ exports.activate = (ctx) => {
     const want = (conflictViews.get(tab.id)?.size ?? 0) > 0
     marked.set(tab.id, want)
     if (shown === want) return
-    await tab.setTitle(`${want ? CONFLICT_MARK : ''}${path.basename(rel)}`, 'file')
+    try {
+      await tab.setTitle(`${want ? CONFLICT_MARK : ''}${path.basename(rel)}`, 'file')
+    } catch (e) {
+      // Not set (a timeout, the tab closing): what the title shows is unknown again, so the next
+      // report reads it from the list rather than trusting a marker that never got there.
+      if (marked.get(tab.id) === want) marked.delete(tab.id)
+      throw e
+    }
   }
 
   /**
@@ -479,24 +504,29 @@ exports.activate = (ctx) => {
           // Quick open's pick or a find-in-files result: a path the page names, so untrusted;
           // openFileTab checks it by realpath inside the project like any other open. A definition
           // or reference outside the project names `outside`: only one a server returned opens.
+          // Never a raw fs message: resolveInProject rethrows EACCES and the like with the absolute
+          // path in it, and the page may be a browser view (files.safeMessage).
           const openFailed = (message) => tab.post({ t: 'search-error', kind: 'open', message })
           if (typeof m.outside === 'string') {
-            openOutsideTab(m.outside, { line: m.line, col: m.col }).catch((e) => openFailed(e.message))
+            openOutsideTab(m.outside, { line: m.line, col: m.col }).catch((e) => openFailed(files.safeMessage(e, ctx.projectDir)))
             return
           }
           let rel
           try {
             rel = relativePath(m.path)
           } catch (e) {
-            openFailed(e.message)
+            openFailed(files.safeMessage(e, ctx.projectDir))
             return
           }
-          openFileTab(rel, { line: m.line, col: m.col }).catch((e) => openFailed(`${rel}: ${e.message}`))
+          openFileTab(rel, { line: m.line, col: m.col }).catch((e) => {
+            const msg = files.safeMessage(e, ctx.projectDir, rel)
+            openFailed(msg.endsWith(`: ${rel}`) ? msg : `${rel}: ${msg}`)
+          })
         } else if (m.t === 'micro') {
           // Always the tab's own file (main's params), never a path the page names.
           openEditor(params.path).catch((e) => {
             ctx.log.warn(`Open in micro ${params.path}: ${e.message}`)
-            tab.post({ t: 'error', message: `Open in micro: ${e.message}` })
+            tab.post({ t: 'error', message: `Open in micro: ${files.safeMessage(e, ctx.projectDir)}` })
           })
         } else if (m.t === 'conflict' && typeof params.path === 'string') {
           if (m.on === true) {

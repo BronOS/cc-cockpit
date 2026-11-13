@@ -2,6 +2,8 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { microArgv, relativePath, autosaveOf } = require('../dist/host.js')
+const fs = require('node:fs')
+const path = require('node:path')
 
 /** Waits until `fn()` is truthy (polling), or fails after `ms`: no fixed sleep decides a test here. */
 async function until(fn, ms = 5000, what = 'condition') {
@@ -25,6 +27,26 @@ const drained = () => new Promise((r) => setImmediate(r))
 const made = []
 test.after(() => {
   for (const dir of made) require('node:fs').rmSync(dir, { recursive: true, force: true })
+})
+
+// micro is looked up in the absolute PATH entries (host.js microProgram): a stand-in there, so these
+// tests do not depend on the machine having micro (ctx.exec is faked; it never runs).
+const fakeMicroDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'edhost-micro-'))
+made.push(fakeMicroDir)
+fs.writeFileSync(path.join(fakeMicroDir, 'micro'), '#!/bin/sh\n', { mode: 0o755 })
+process.env.PATH = `${fakeMicroDir}${path.delimiter}${process.env.PATH || ''}`
+
+test('microProgram: a bare name from the absolute PATH entries only (never the project\'s own); a path as given', () => {
+  const { microProgram } = require('../dist/host.js')
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'edhost-rel-'))
+  made.push(root)
+  fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'micro'), '#!/bin/sh\n', { mode: 0o755 })
+  const rel = path.join('node_modules', '.bin')
+  assert.equal(microProgram({}, { PATH: `.${path.delimiter}${rel}` }), null)
+  assert.equal(microProgram({}, { PATH: `${rel}${path.delimiter}${fakeMicroDir}` }), path.join(fakeMicroDir, 'micro'))
+  assert.equal(microProgram({ microPath: '/opt/micro' }, { PATH: '' }), '/opt/micro')
+  assert.equal(microProgram({ microPath: 'micro' }, { PATH: fakeMicroDir }), path.join(fakeMicroDir, 'micro'))
 })
 
 test('microArgv: options, file, line', () => {
@@ -303,6 +325,7 @@ function fakeTabs(f) {
     const discussers = []
     const setTitle = async (title, icon) => {
       calls.push(['setTitle', id, title, icon])
+      if (t.failTitle) throw new Error('the request timed out')
       t.title = title
     }
     const tab = { id, type: 'file', params: t.params, view, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), onDiscuss: (fn) => discussers.push(fn), setTitle }
@@ -511,6 +534,16 @@ test('conflict marker: in the title while any view reports a conflict; a stale o
   web.send({ t: 'conflict', on: false })
   await tick()
   assert.deepEqual(titles(), ['⚠ a.ts', 'a.ts'])
+  // A setTitle that fails (a timeout): the next report of the same state sets the marker again,
+  // never taking the one that did not land for shown.
+  t.open[0].failTitle = true
+  desk.send({ t: 'conflict', on: true })
+  await tick()
+  assert.equal(t.open[0].title, 'a.ts')
+  t.open[0].failTitle = false
+  desk.send({ t: 'conflict', on: true })
+  await tick()
+  assert.equal(t.open[0].title, '⚠ a.ts')
   host.deactivate()
 
   // A new host (a restart) with a title saved marked: the first report clears it.
@@ -735,6 +768,20 @@ test('quick open and find in files: a page pick opens its file tab; a bad path i
     view.send({ t: 'openFile', path: bad })
     await until(() => told().length === n + 1, 5000, bad)
     assert.equal(told().at(-1).kind, 'open')
+  }
+  // An fs error (an unreadable folder: realpath's EACCES) never carries the absolute path to the page.
+  const locked = path.join(f.ctx.projectDir, 'locked')
+  fs.mkdirSync(locked)
+  fs.writeFileSync(path.join(locked, 'a.txt'), 'x')
+  fs.chmodSync(locked, 0o000)
+  try {
+    const n = told().length
+    view.send({ t: 'openFile', path: 'locked/a.txt' })
+    await until(() => told().length === n + 1, 5000, 'locked')
+    if (process.getuid && process.getuid() !== 0) assert.equal(told().at(-1).message, 'permission denied: locked/a.txt')
+    assert.ok(!told().at(-1).message.includes(f.ctx.projectDir), told().at(-1).message)
+  } finally {
+    fs.chmodSync(locked, 0o755)
   }
   await drained()
   assert.equal(t.open.length, 2)

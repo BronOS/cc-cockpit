@@ -155,7 +155,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     /** The page shows no text any more (binary now, a deleted file reloaded as nothing). */
     close() {
       if (!s.opened) return
-      ui.post({ t: 'lsp-close', path: s.path })
+      post({ t: 'lsp-close', path: s.path })
       s.opened = false
       s.language = undefined
       s.owner = false
@@ -205,20 +205,22 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
       return new Promise((resolve, reject) => {
         const a = { resolve, reject, timer: null, off: null }
         asks.set(req, a)
+        // Settled before the cancel is posted, and every post through the never-throwing post(): a
+        // throw here (a closed port) must not leave the entry and its timer behind.
         a.timer = timers.set(() => {
           a.timer = null
-          ui.post({ t: 'lsp-cancel', req })
           settle(req, new Error('the language server did not answer in time'))
+          post({ t: 'lsp-cancel', req })
         }, timeoutMs)
         if (opts.signal) {
           const onAbort = () => {
-            ui.post({ t: 'lsp-cancel', req })
             settle(req, new Error('cancelled'))
+            post({ t: 'lsp-cancel', req })
           }
           opts.signal.addEventListener('abort', onAbort)
           a.off = () => opts.signal.removeEventListener('abort', onAbort)
         }
-        ui.post({ ...fields, t: 'lsp-ask', req, what, path: s.path })
+        if (!post({ ...fields, t: 'lsp-ask', req, what, path: s.path })) settle(req, new Error('the ask could not be sent to the editor host'))
       })
     },
     /** A message from the host: true when it was a language server one (taken here). */
@@ -277,11 +279,14 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
               r = String((e && e.message) || e)
             }
           }
-          ui.post(r === true ? { t: 'lsp-edit-done', id: m.id, applied: true } : { t: 'lsp-edit-done', id: m.id, applied: false, reason: typeof r === 'string' ? r : 'not applied' })
+          post(r === true ? { t: 'lsp-edit-done', id: m.id, applied: true } : { t: 'lsp-edit-done', id: m.id, applied: false, reason: typeof r === 'string' ? r : 'not applied' })
           return true
         }
         case 'lsp-error': {
           if (m.path !== undefined && m.path !== s.path) return true
+          // No server for this file (the host said so, a text over its cap above all): an error that
+          // follows is about a text the host already let go, never a failed server to draw red.
+          if (s.language === null) return true
           const message = typeof m.message === 'string' ? m.message.slice(0, 300) : 'error'
           if (s.language === undefined && s.opened) {
             // The open itself was refused (too many documents, a path the host would not take): no
@@ -301,7 +306,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     },
     /** The bar's Restart (or Retry once installed). */
     restart() {
-      if (s.status && s.status.language) ui.post({ t: 'lsp-restart', language: s.status.language })
+      if (s.status && s.status.language) post({ t: 'lsp-restart', language: s.status.language })
     },
   }
 }

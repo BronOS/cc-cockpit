@@ -55,6 +55,7 @@ const path = require('node:path')
 const { findOnPath } = require('./lsp/servers.js')
 const { cutText: cut, fenced, oneLine } = require('./ask.js')
 const { splitter } = require('./split.js')
+const { leavesBase, redactPaths } = require('./files.js')
 
 /** The models the setting offers: the same closed list core uses for ctx.sessions.open (src/shared/session-options.ts). */
 const CHAT_MODELS = ['haiku', 'sonnet', 'opus', 'fable']
@@ -384,7 +385,7 @@ function toolDetail(root, name, input) {
   let d = typeof i.file_path === 'string' ? i.file_path : typeof i.pattern === 'string' ? i.pattern : typeof i.path === 'string' ? i.path : ''
   if (d && path.isAbsolute(d)) {
     const rel = path.relative(root, d)
-    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) d = rel
+    if (rel && !leavesBase(rel) && !path.isAbsolute(rel)) d = rel
   }
   return { name: oneLine(String(name || 'tool')).slice(0, 40), detail: oneLine(d).slice(0, 200) }
 }
@@ -572,7 +573,7 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
       if (c.ended) return
       c.proc = spawn(chatArgv(exe, c.model), { cwd: root })
     } catch (e) {
-      end(c, `Quick chat: ${e && e.message ? e.message : e}`)
+      end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
       return
     }
     const push = lineSplitter((line) => onEvent(c, line))
@@ -584,14 +585,14 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
     }
     c.proc.onExit(({ code, signal }) => {
       if (c.ended) return
-      const why = oneLine(c.stderr).slice(-500)
+      const why = redactPaths(oneLine(c.stderr).slice(-500), root)
       if (log) log.warn(`quick chat: claude exited (${signal || code})${why ? `: ${why}` : ''}`)
       end(c, `Claude exited${code !== null && code !== undefined ? ` with code ${code}` : ''}${why ? `: ${why}` : ''}`)
     })
     try {
       startTurn(c, prompt)
     } catch (e) {
-      end(c, `Quick chat: ${e && e.message ? e.message : e}`)
+      end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
     }
   }
 
@@ -618,7 +619,7 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
       try {
         startTurn(c, text)
       } catch (e) {
-        end(c, `Quick chat: ${e && e.message ? e.message : e}`)
+        end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
       }
     } else if (m.t === 'chat-close') {
       if (chat && chat.id === m.id) end(chat)

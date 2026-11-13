@@ -361,6 +361,12 @@ describe('ctx.tabs (host)', () => {
     await flush()
     await seen[0]!.setTitle('b.ts')
     expect(calls).toEqual([{ method: 'tabs.setTitle', params: { pluginId: 'p.editor', tabId: TAB, title: 'b.ts' } }])
+    // A bad title is a rejection, never a throw at the call.
+    await expect(seen[0]!.setTitle('')).rejects.toThrow(/title/)
+    // The plugin stopped: an instance it kept asks main nothing, as every other ctx.tabs member.
+    contexts.dispose('p.editor')
+    await expect(seen[1]!.setTitle('c.ts')).rejects.toThrow(/deactivated/)
+    expect(calls).toHaveLength(1)
   })
 
   it('a type the plugin does not declare is refused at attach (the port closed)', () => {

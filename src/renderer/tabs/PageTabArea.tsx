@@ -143,6 +143,10 @@ export function pageFrames(): PageFrames {
     chord: (chord) => {
       runForwardedChord(chord)
     },
+    // A trusted key press (or click) in the frame activates its ancestors too (the HTML spec's user
+    // activation), the shell included; a page's script cannot set it. A browser without the API
+    // takes no forwarded chord (the safe side: the chord is only lost inside page tabs).
+    userActive: () => (navigator.userActivation as UserActivation | undefined)?.isActive === true,
     discuss: (tabId) => discussHandler?.(tabId),
     // Page tabs also get the terminal font (an editor draws code in it): frame-messages.ts terminalFontVars.
     theme: () => {

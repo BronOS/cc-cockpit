@@ -188,3 +188,34 @@ test('other messages are not ours; a message after the tab closed posts nothing'
   await tick()
   assert.deepEqual(tab.posted, [])
 })
+
+test('a hung Reviewer: notes-get is `has: false` after the deadline, no new call while it hangs; an add is told it timed out', async () => {
+  let release = null
+  const rev = fakeReviewer({
+    methods: {
+      notes: (p) => (rev.calls.push(['notes', p]), new Promise((r) => (release = r))),
+      addNote: () => new Promise(() => {}),
+    },
+  })
+  const { tab, handle } = setup(rev, 'src/a.ts', { timeoutMs: 20, addTimeoutMs: 20 })
+  handle({ t: 'notes-get', req: 1 })
+  await new Promise((r) => setTimeout(r, 40))
+  assert.deepEqual(tab.posted, [{ t: 'notes', req: 1, has: false }])
+  // Polled again while it still hangs: answered at once, the Reviewer not asked again.
+  handle({ t: 'notes-get', req: 2 })
+  await tick()
+  assert.deepEqual(tab.posted.at(-1), { t: 'notes', req: 2, has: false })
+  assert.equal(rev.calls.filter((c) => c[0] === 'notes').length, 1)
+  // Once it settles, the next poll asks again.
+  release([])
+  await tick()
+  rev.handle.notes = async (p) => (rev.calls.push(['notes', p]), [])
+  handle({ t: 'notes-get', req: 3 })
+  await tick()
+  assert.deepEqual(tab.posted.at(-1), { t: 'notes', req: 3, has: true, notes: [] })
+  handle({ t: 'notes-add', req: 4, from: 1, text: 'x' })
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(tab.posted.at(-1).t, 'notes-added')
+  assert.equal(tab.posted.at(-1).ok, false)
+  assert.match(tab.posted.at(-1).message, /did not answer in time/)
+})

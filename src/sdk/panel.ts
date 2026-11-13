@@ -14,8 +14,10 @@
 //   ccPanel.onConnect(fn)                fn runs on every new connection to the plugin; a page tab
 //                                        gets more than one (never reloaded for one): re-send there
 //   ccPanel.tab                          only when the page is drawn as a page tab (contributes.tabs):
-//                                        { type, setDirty(bool) } (unsaved changes in this view: the
-//                                        dirty dot and core's close ask; a report, never a veto)
+//                                        { type, setDirty(bool), discuss() } (setDirty: unsaved changes
+//                                        in this view, the dirty dot and core's close ask, a report,
+//                                        never a veto; discuss: opens Ask Claude about this tab, taken
+//                                        only while the page is shown and has the keyboard)
 //   ccPanel.ready()                      an html overlay's page has drawn: the app's loader goes
 //                                        (needed with `ready: 'manual'`; harmless elsewhere)
 //   ccPanel.view.remote                  the page is drawn in a web access browser view (the shell

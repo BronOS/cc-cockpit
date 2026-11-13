@@ -853,6 +853,32 @@ test('setServers: a changed argv restarts the server with its documents; a remov
   assert.equal(f.m.docs.size, 2)
 })
 
+test('setServers: when the last document closes while the old server stops, the new argv is not started', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const log = path.join(f.root, '..', `${path.basename(f.root)}.log`)
+  const starts = path.join(f.root, '..', `${path.basename(f.root)}.starts`)
+  const a = holder('a')
+  f.m.open(a, 'src/a.ts', 'const a = 1\n')
+  await until(() => f.m.slots.get('typescript').state === 'ready', 5000, 'ready')
+  f.m.setServers([{ language: 'typescript', argv: [process.execPath, FAKE, '--log', log, '--starts', starts, '--no-hover'] }])
+  f.m.close(a, 'src/a.ts')
+  await until(() => f.got('exit').length === 1, 5000, 'old server gone')
+  await sleep(150)
+  assert.equal(f.startCount(), 1)
+  assert.equal(f.m.slots.get('typescript').server, null)
+})
+
+test('paths: an in-project folder named `..foo` is inside the project (not a `..` segment)', (t) => {
+  const f = setup()
+  t.after(f.done)
+  fs.mkdirSync(path.join(f.root, '..foo'))
+  assert.deepEqual(f.m.pathOfUri(pathToFileURL(path.join(f.root, '..foo', 'x.ts')).href), { rel: '..foo/x.ts' })
+  assert.equal(require('../dist/lib/files.js').leavesBase(`..${path.sep}x`), true)
+  assert.equal(require('../dist/lib/files.js').leavesBase('..'), true)
+  assert.equal(require('../dist/lib/files.js').leavesBase('..foo'), false)
+})
+
 test('dispose sends shutdown and exit to every server and resolves after they are gone', async () => {
   const f = setup()
   const a = holder('a')
@@ -917,6 +943,12 @@ test('resolveCompletion takes only an item the host answered to that page', asyn
   await assert.rejects(f.m.ask(a, 'resolveCompletion', 'src/a.ts', { item: { label: 'x', data: { file: '/etc/passwd' } } }), /this server gave/)
   await assert.rejects(f.m.ask(b, 'resolveCompletion', 'src/a.ts', { item }), /this server gave/)
   assert.equal(f.got('completionItem/resolve').length, 1)
+  // A restarted server never gave it: the old server's items are not handed to the new one.
+  const first = f.m.slots.get('typescript').server
+  f.s.children[0].kill('SIGKILL')
+  await until(() => f.m.slots.get('typescript').server && f.m.slots.get('typescript').server !== first && f.m.slots.get('typescript').state === 'ready', 5000, 'restarted')
+  await assert.rejects(f.m.ask(a, 'resolveCompletion', 'src/a.ts', { item }), /this server gave/)
+  assert.equal(f.got('completionItem/resolve').length, 1)
 })
 
 test('servers: a relative PATH entry is never searched (a cloned project could ship the program); absolute ones are', (t) => {
@@ -965,4 +997,40 @@ test('serveLsp: an open whose parts stop coming is dropped and told to the page'
   handle({ t: 'lsp-open', path: 'src/a.ts', part: 1, parts: 2, text: 'a' })
   assert.match(tab.last('lsp-error').message, /out of order/)
   assert.equal(f.m.docs.size, 0)
+})
+
+test('serveLsp: a text over the cap is "no server" with no error, its later parts skipped quietly', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = setup()
+  t.after(f.done)
+  const tab = fakeTab()
+  const handle = serveLsp(tab, f.m)
+  // The page sends every part at once: the cap is passed at the second of four.
+  const part = 'x'.repeat(1024 * 1024 + 1)
+  for (let i = 0; i < 4; i++) handle({ t: 'lsp-open', path: 'src/a.ts', part: i, parts: 4, text: part, seq: 1 })
+  assert.deepEqual(tab.last('lsp-doc'), { t: 'lsp-doc', path: 'src/a.ts', language: null, why: 'the file is too large for a language server' })
+  assert.equal(tab.last('lsp-error'), undefined)
+  assert.equal(f.m.docs.size, 0)
+  // Parts that stop coming after the cap go quietly too.
+  for (let i = 0; i < 3; i++) handle({ t: 'lsp-open', path: 'src/a.ts', part: i, parts: 4, text: part, seq: 2 })
+  t.mock.timers.tick(10 * 1000)
+  assert.equal(tab.last('lsp-error'), undefined)
+  // A smaller text afterwards opens as usual.
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 1, text: 'const a = 1\n', seq: 3 })
+  assert.equal(tab.last('lsp-doc').language, 'typescript')
+  assert.equal(tab.last('lsp-error'), undefined)
+})
+
+test('serveLsp: a first part while another text is assembling starts the text again', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const tab = fakeTab()
+  const handle = serveLsp(tab, f.m)
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 2, text: 'stale ', seq: 1 })
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 2, text: 'const ', seq: 2 })
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 1, parts: 2, text: 'a = 1\n', seq: 2 })
+  assert.equal(tab.last('lsp-error'), undefined)
+  assert.equal(tab.last('lsp-doc').language, 'typescript')
+  await until(() => f.got('textDocument/didOpen').length === 1, 5000, 'didOpen')
+  assert.equal(f.got('textDocument/didOpen')[0].in.params.textDocument.text, 'const a = 1\n')
 })

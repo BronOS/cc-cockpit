@@ -14,6 +14,7 @@ import {
   pageTabTitleOf,
   type PageTabSpec
 } from '../../src/shared/page-tabs'
+import { CONTROL as SESSION_NAME_CONTROL } from '../../src/shared/session-name'
 import { validateManifest } from '../../src/main/plugins/validate'
 import { buildRestorePlan, TabRestorer, tabRecordsOf, type RestoredTab } from '../../src/main/restore'
 import { isPluginId, TabManager, type TabLifecycle } from '../../src/main/tabs/tab-manager'
@@ -133,6 +134,18 @@ describe('page tab spec checks', () => {
     expect(pageTabTitleOf(emoji)).toBe('x'.repeat(PAGE_TAB_TITLE_MAX - 1))
     expect(pageTabTitleOf('   ')).toBeUndefined()
     expect(pageTabTitleOf(5)).toBeUndefined()
+    // Bidi and invisible format characters from a repo's file names go; line separators and C1 are spaces.
+    expect(pageTabTitleOf('invoice\u202etxt.exe')).toBe('invoicetxt.exe')
+    expect(pageTabTitleOf('a\u2028b\u2029c\u0085d')).toBe('a b c d')
+    expect(pageTabTitleOf('\u200bx\u2066y\u2069\ufeff\u061c\u200e')).toBe('xy')
+    expect(pageTabTitleOf('\u202e')).toBeUndefined()
+    // Every character a tab's name refuses (session-name.ts) is cleaned from a title.
+    for (let c = 0; c <= 0xffff; c++) {
+      const ch = String.fromCharCode(c)
+      if (SESSION_NAME_CONTROL.test(ch)) expect(pageTabTitleOf(`a${ch}b`), c.toString(16)).toMatch(/^a ?b$/)
+    }
+    // ZWJ (emoji sequences, Indic scripts) is kept.
+    expect(pageTabTitleOf('\u0915\u094d\u200d\u0937')).toBe('\u0915\u094d\u200d\u0937')
   })
 
   it('keeps a JSON copy of params under the cap and drops a bad icon', () => {
@@ -353,7 +366,7 @@ describe('page tab restore', () => {
     expect(plan.every((t) => t.page?.plugin === 'cockpit.editor')).toBe(true)
   })
 
-  it('asks before putting a page tab back: a plugin off in the project or without the type is dropped for good', async () => {
+  it('asks before putting a page tab back: a plugin gone or without the type is dropped for good', async () => {
     const tabs = manager()
     const saved: TabRecord[][] = []
     const logs: string[] = []
@@ -381,6 +394,29 @@ describe('page tab restore', () => {
     expect(back[0]?.unseen).toBeUndefined()
     expect(saved.at(-1)?.map((r) => r.type)).toEqual(['file'])
     expect(logs.join('\n')).toMatch(/not restoring a page tab/)
+  })
+
+  it('keeps a page tab whose plugin cannot have it back for now (failed to load, off here) in the record, for the next launch', async () => {
+    const tabs = manager()
+    const saved: TabRecord[][] = []
+    const logs: string[] = []
+    const restorer = new TabRestorer({
+      listTabs: (id) => tabs.list(id),
+      saveTabs: (_id, r) => saved.push(r),
+      projectPath: () => projA,
+      pageTabAvailable: (_p, pluginId) => (pluginId === 'example.later' ? 'later' : pluginId === 'cockpit.editor'),
+      log: (m) => logs.push(m)
+    })
+    restorer.queue(A, buildRestorePlan({ path: projA, tabs: [pageRec(1), pageRec(2, { plugin: 'example.later' }), pageRec(3, { plugin: 'example.gone' })] }))
+    await restorer.restore(A, Promise.resolve(), (tab) => {
+      tabs.restoreTab(A, tab)
+    })
+    expect(tabs.list(A)).toHaveLength(1)
+    // The passing state rides along in every save; the gone plugin's tab leaves the record.
+    expect(saved.at(-1)?.map((r) => r.plugin)).toEqual(['cockpit.editor', 'example.later'])
+    restorer.tabsChanged(A)
+    expect(saved.at(-1)?.map((r) => r.plugin)).toEqual(['cockpit.editor', 'example.later'])
+    expect(logs.join('\n')).toMatch(/kept for the next launch/)
   })
 
   it('keeps a page tab that failed to restore in the record, for the next launch', async () => {

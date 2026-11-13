@@ -107,6 +107,14 @@ export interface PageFramesOptions {
   keys?(): readonly string[] | undefined
   /** A forwarded chord typed in the focused page tab: the shell runs its command (through its gate). */
   chord?(chord: string): void
+  /**
+   * Whether the person gave real input just now (web shell: `navigator.userActivation.isActive`, set
+   * by a trusted key press or click in the frame or the shell, which a page's script cannot fake). A
+   * forwarded chord is taken only then: the SDK's forwarding runs in the page, so the message alone
+   * proves no key press, and a page could otherwise run the app's commands at will. Absent or false:
+   * no chord is taken (the desktop needs none: main reads the real input in before-input-event).
+   */
+  userActive?(): boolean
   /** The shown, focused page tab asked for Ask Claude (`ccPanel.tab.discuss()`): the shell opens its box. */
   discuss?(tabId: string): void
   maxLive?: number
@@ -123,6 +131,8 @@ interface Live {
   }
   /** Set when it was unmounted: a late `src` answer finds it gone. */
   gone?: boolean
+  /** Asked to take the keyboard before its frame existed (its first select): it does once loaded. */
+  wantFocus?: boolean
 }
 
 export class PageFrames {
@@ -172,7 +182,10 @@ export class PageFrames {
       if (!entry && !this.none.has(tab.id)) entry = this.mount(tab)
       if (entry) this.live = [entry, ...this.live.filter((l) => l !== entry)]
     }
-    for (const l of this.live) l.frame?.element.setHidden(l.tab.id !== this.shown)
+    for (const l of this.live) {
+      l.frame?.element.setHidden(l.tab.id !== this.shown)
+      if (l.tab.id !== this.shown) l.wantFocus = false
+    }
     this.trim()
   }
 
@@ -196,9 +209,17 @@ export class PageFrames {
     if (retry) this.show(this.shown)
   }
 
-  /** The tab's frame takes the keyboard, when it is mounted (TabsPane's focusActive). */
+  /**
+   * The tab's frame takes the keyboard (TabsPane's focusActive, a select). On a first select its page
+   * is still being looked up (`src`), so there is no frame yet: it takes the keyboard once its page
+   * loaded, if its tab is still the one shown, or the keyboard stayed wherever it was until the
+   * person clicked.
+   */
   focus(tabId: string): void {
-    this.live.find((l) => l.tab.id === tabId)?.frame?.element.focus()
+    const l = this.live.find((x) => x.tab.id === tabId)
+    if (!l) return
+    if (l.frame) l.frame.element.focus()
+    else l.wantFocus = true
   }
 
   /** The app's key table changed: every served page gets the new list with its intro. */
@@ -239,22 +260,36 @@ export class PageFrames {
 
   private mount(tab: PageTabEntry): Live {
     const entry: Live = { tab }
-    this.o
-      .src(tab.id)
-      .catch((err: unknown) => {
-        this.o.log?.(`page tab ${tab.id}: asking for its page failed: ${String(err)}`)
-        return null
-      })
-      .then((src) => {
-        if (entry.gone) return
-        const url = src === null ? undefined : this.o.pageUrl(src)
-        if (url === undefined) {
-          // No page here: drop it from the live set until it is selected again or its host restarts.
-          this.none.add(tab.id)
-          this.live = this.live.filter((l) => l !== entry)
-          return
+    // No page here, or none could be made: out of the live set (its frame, if one was made, goes)
+    // until it is selected again or its host restarts, so a later select tries again rather than
+    // leaving a blank placeholder for good.
+    const none = (): void => {
+      this.unmount(entry)
+      this.none.add(tab.id)
+    }
+    let asked: Promise<string | null>
+    try {
+      asked = this.o.src(tab.id)
+    } catch (err) {
+      asked = Promise.reject(err)
+    }
+    asked
+      .then(
+        (src) => {
+          if (entry.gone) return
+          const url = src === null ? undefined : this.o.pageUrl(src)
+          if (url === undefined) return none()
+          this.start(entry, url)
+        },
+        (err: unknown) => {
+          this.o.log?.(`page tab ${tab.id}: asking for its page failed: ${String(err)}`)
+          if (!entry.gone) none()
         }
-        this.start(entry, url)
+      )
+      // A throw from pageUrl or start (createFrame): logged, never an unhandled rejection.
+      .catch((err: unknown) => {
+        this.o.log?.(`page tab ${tab.id}: its frame could not be made: ${String(err)}`)
+        if (!entry.gone) none()
       })
     return entry
   }
@@ -280,17 +315,24 @@ export class PageFrames {
       },
       post: (message, transfer) => element.post(message, transfer)
     }
-    const loads = new FrameLoads({
-      guard: this.o.guard,
-      early: true,
-      portMessage: this.o.portMessage,
-      target,
-      theme: () => this.o.theme(),
-      // Posted before every port: the page is a page tab of that type (`ccPanel.tab`), with the keys now.
-      intro: () => this.intro(entry.tab),
-      connect: (deliver) => this.o.connect(tabId, deliver),
-      log: (m) => this.o.log?.(m)
-    })
+    let loads: FrameLoads
+    try {
+      loads = new FrameLoads({
+        guard: this.o.guard,
+        early: true,
+        portMessage: this.o.portMessage,
+        target,
+        theme: () => this.o.theme(),
+        // Posted before every port: the page is a page tab of that type (`ccPanel.tab`), with the keys now.
+        intro: () => this.intro(entry.tab),
+        connect: (deliver) => this.o.connect(tabId, deliver),
+        log: (m) => this.o.log?.(m)
+      })
+    } catch (err) {
+      // Made but never handed to the entry (unmount would not find it): out of the layer here.
+      element.remove()
+      throw err
+    }
     entry.frame = { element, loads }
     element.load(url)
     loads.started(url)
@@ -300,7 +342,16 @@ export class PageFrames {
   private element(entry: Live, gen: number): PageFrameElement {
     const el = this.o.createFrame(entry.tab.title)
     el.setHidden(entry.tab.id !== this.shown)
-    el.onLoad(() => entry.frame?.loads.loaded(gen))
+    el.onLoad(() => {
+      entry.frame?.loads.loaded(gen)
+      // Asked for the keyboard before it existed (a first select): taken once its page is there, if
+      // its tab is still the one shown (a frame focused before its document loads leaves the loaded
+      // page without the keyboard).
+      if (entry.wantFocus === true && entry.frame?.element === el && entry.tab.id === this.shown) {
+        entry.wantFocus = false
+        el.focus()
+      }
+    })
     el.onMessage((data) => {
       // Only from the element in the document now (a replaced one is leaving with its page).
       if (entry.gone || entry.frame?.element !== el) return
@@ -328,10 +379,12 @@ export class PageFrames {
       if (!dirty) this.trim()
       return
     }
-    // A chord only from the page that has the keyboard, and only one the shell listed: a page cannot
-    // run the app's commands from the background, nor any the person could not have typed here.
+    // A chord only from the page that has the keyboard, only one the shell listed, and only while the
+    // browser says the person just gave real input (`userActive`): a page cannot run the app's
+    // commands from the background, nor any the person could not have typed here, nor any at all
+    // by posting the message from its script with no key pressed.
     if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && tabId === this.shown && el.hasFocus()) {
-      if (this.o.keys?.()?.includes(chord) === true) this.o.chord?.(chord)
+      if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord)
       return
     }
     if (type === TAB_DISCUSS_MESSAGE && tabId === this.shown && el.hasFocus()) this.o.discuss?.(tabId)

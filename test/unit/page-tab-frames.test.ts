@@ -82,6 +82,58 @@ describe('PageFrames: mount on first select', () => {
     t.frames.focus(TAB_A)
     expect(t.el(TAB_A).focused).toBe(1)
   })
+
+  it('a first select asks for focus while the page is looked up: the frame takes it once loaded, unless another tab is shown by then', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show(TAB_A)
+    t.frames.focus(TAB_A)
+    await settle()
+    // Not before its page is there (a frame focused before its load leaves the page without the keyboard).
+    expect(t.el(TAB_A).focused).toBe(0)
+    t.el(TAB_A).fire()
+    expect(t.el(TAB_A).focused).toBe(1)
+    // Once: a later load (a reload of the page) takes nothing by itself.
+    t.el(TAB_A).fire()
+    expect(t.el(TAB_A).focused).toBe(1)
+    t.frames.show(TAB_B)
+    t.frames.focus(TAB_B)
+    t.frames.show(TAB_A)
+    await settle()
+    t.el(TAB_B).fire()
+    expect(t.el(TAB_B).focused).toBe(0)
+  })
+
+  it('a frame that cannot be made (pageUrl or createFrame throws) is no unhandled rejection; the tab is tried again on its next select', async () => {
+    const logs: string[] = []
+    let fail = true
+    const unhandled: unknown[] = []
+    const onUnhandled = (e: unknown): void => void unhandled.push(e)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const t = pool({
+        pageUrl: (src) => {
+          if (fail) throw new Error('bad url')
+          return src
+        },
+        log: (m) => logs.push(m)
+      })
+      t.frames.sync([entry(TAB_A)])
+      t.frames.show(TAB_A)
+      await settle()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(unhandled).toEqual([])
+      expect(logs.join('\n')).toMatch(/could not be made: Error: bad url/)
+      expect(t.frames.isLive(TAB_A)).toBe(false)
+      fail = false
+      t.frames.show(null)
+      t.frames.show(TAB_A)
+      await settle()
+      expect(t.elements).toHaveLength(1)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
 })
 
 describe('PageFrames: LRU of live frames', () => {

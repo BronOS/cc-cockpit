@@ -221,11 +221,15 @@ const ASKS = {
   resolveCompletion: {
     method: 'completionItem/resolve',
     cap: (c) => !!(c.completionProvider && c.completionProvider.resolveProvider),
-    params: (_doc, a, holder, mgr) => {
+    params: (doc, a, holder, mgr) => {
       // An item this server gave the page, handed back to the same server for its details: only an
-      // item the host itself sent to this holder (a page could else hand a server arbitrary `data`).
+      // item the host itself sent to this holder from this very server (not another language's, nor
+      // the one before a restart: a page could else hand a server arbitrary `data`). No server now:
+      // nothing is sent (ask answers `unavailable`).
       if (!a.item || typeof a.item !== 'object' || Array.isArray(a.item) || jsonLength(a.item) > MAX_ITEM_CHARS) throw new Error('item must be a completion item')
-      if (!mgr.gaveItem(holder, a.item)) throw new Error('item must be a completion item this server gave')
+      const slot = mgr.slots.get(doc.language)
+      const srv = slot && slot.server
+      if (srv && !mgr.gaveItem(holder, srv, a.item)) throw new Error('item must be a completion item this server gave')
       return a.item
     },
   },
@@ -449,7 +453,12 @@ class LspManager {
         this.stopSlot(slot, 'stopped')
         continue
       }
-      this.stopSlot(slot, 'stopped').then(() => this.startSlot(slot))
+      // The new argv starts once the old server is gone, and only when a document still wants it
+      // (the last one may close while the old one stops; restart() checks the same).
+      this.stopSlot(slot, 'stopped').then(() => {
+        if (this.disposed || slot.server) return
+        if (this.docsOf(slot.language).length > 0) this.startSlot(slot)
+      })
     }
   }
 
@@ -674,18 +683,22 @@ class LspManager {
     if (spec.post === 'actions') return this.offerActions(holder, doc, srv, versions, since, result)
     if (spec.post === 'locations') return this.locations(result, what === 'references')
     const fit = fitResult(result)
-    if (what === 'complete') this.giveItems(holder, fit.value)
+    if (what === 'complete') this.giveItems(holder, srv, fit.value)
     return { result: fit.value, truncated: fit.truncated }
   }
 
-  /** Remembers the completion items answered to `holder` (a list or a CompletionList), for resolve. */
-  giveItems(holder, result) {
+  /**
+   * Remembers the completion items `srv` answered to `holder` (a list or a CompletionList), for
+   * resolve. One server's per holder: items of another one (a restart, another language) are dropped.
+   */
+  giveItems(holder, srv, result) {
     const items = Array.isArray(result) ? result : result && Array.isArray(result.items) ? result.items : []
-    let set = this.given.get(holder)
-    if (!set) {
-      set = new Set()
-      this.given.set(holder, set)
+    let entry = this.given.get(holder)
+    if (!entry || entry.srv !== srv) {
+      entry = { srv, set: new Set() }
+      this.given.set(holder, entry)
     }
+    const set = entry.set
     for (const it of items) {
       if (!it || typeof it !== 'object') continue
       let j
@@ -701,12 +714,12 @@ class LspManager {
     }
   }
 
-  /** Whether `item` is, as sent, one the host answered to `holder`. */
-  gaveItem(holder, item) {
-    const set = this.given.get(holder)
-    if (!set) return false
+  /** Whether `item` is, as sent, one the host answered to `holder` from `srv`. */
+  gaveItem(holder, srv, item) {
+    const entry = this.given.get(holder)
+    if (!entry || entry.srv !== srv) return false
     try {
-      return set.has(JSON.stringify(item))
+      return entry.set.has(JSON.stringify(item))
     } catch {
       return false
     }
@@ -1241,7 +1254,7 @@ class LspManager {
   noteChanged(real) {
     if (this.disposed || typeof real !== 'string' || !path.isAbsolute(real)) return
     const rel = path.relative(this.root, real)
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return
+    if (!rel || files.leavesBase(rel) || path.isAbsolute(rel)) return
     if (rel.split(path.sep).includes('.git')) return
     if (/\.cc-editor-[0-9a-f]+\.tmp$/.test(rel)) return
     if (this.pendingWatch.size >= MAX_WATCH_BATCH * 4) return
@@ -1332,7 +1345,7 @@ class LspManager {
       return null
     }
     const rel = path.relative(this.root, abs)
-    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return { rel: rel.split(path.sep).join('/') }
+    if (rel && !files.leavesBase(rel) && !path.isAbsolute(rel)) return { rel: rel.split(path.sep).join('/') }
     return { outside: abs }
   }
 

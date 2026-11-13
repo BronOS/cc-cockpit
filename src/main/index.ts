@@ -947,6 +947,10 @@ function start(server: boolean): void {
       views.toOthers(windowId, viewId, 'tabs.removed', { tabId, gen })
       return true
     },
+    unsaved: (windowId, tabId) => {
+      const projectId = windows.projectWindows().find((w) => w.windowId === windowId)?.projectId
+      return projectId !== undefined && tabs.pageUnsaved(projectId, tabId)
+    },
     viewsOf: (windowId) => views.viewsOf(windowId)
   })
   // `ccc plugin link`'s confirm while a browser view is attached (link-asks.ts): an in-page dialog on
@@ -1862,10 +1866,14 @@ function start(server: boolean): void {
     pluginAvailable: (pluginId) => pluginAvailable(pluginId),
     // A page tab comes back only while its plugin loaded, is on in the project and still declares
     // the type: main loads the page the manifest names for it, and only an enabled plugin's host
-    // can answer it (design-editor.md §1). Asked after pluginsLoaded (the attach below waits).
+    // can answer it (design-editor.md §1). Asked after pluginsLoaded (the attach below waits). A
+    // plugin that is installed but failed to load (a manifest caught mid-update) or is off in the
+    // project now is `'later'`: its tabs stay in the record for the next launch, never dropped for
+    // a passing state. Only a plugin that is gone, or loaded and no longer declaring the type, drops them.
     pageTabAvailable: (projectId, pluginId, type) => {
       const plugin = plugins.get(pluginId)
-      if (!plugin?.manifest || !plugin.state.ok || !enabledIds(projectId).includes(pluginId)) return false
+      if (!plugin) return false
+      if (!plugin.manifest || !plugin.state.ok || !enabledIds(projectId).includes(pluginId)) return 'later'
       return (plugin.manifest.contributes?.tabs ?? []).some((t) => t.type === type)
     }
   })
