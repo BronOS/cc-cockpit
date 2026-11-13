@@ -98,6 +98,7 @@ function applyChanges(text, changes) {
     if (!c || typeof c !== 'object' || typeof c.text !== 'string') throw new Error('a change is { range?, text }')
     if (c.range === undefined) {
       out = c.text
+      if (out.length > MAX_DOC_CHARS) throw new Error('the document is too large for its language server')
       continue
     }
     const r = range(c.range)
@@ -187,6 +188,10 @@ function oneLine(v, max, what) {
  * from the page's checked fields. Nothing else a page sends reaches a server: not a method name, not
  * raw params, not `workspace/executeCommand` (a code action's command is the host's to run, Task 13).
  */
+/** A completion item (and the ones kept per page line for resolve) is no bigger than this. */
+const MAX_ITEM_CHARS = 64 * 1024
+const MAX_GIVEN_ITEMS = 1000
+
 const ASKS = {
   hover: { method: 'textDocument/hover', cap: 'hoverProvider', params: (doc, a) => ({ ...at(doc, a) }) },
   complete: {
@@ -207,9 +212,11 @@ const ASKS = {
   resolveCompletion: {
     method: 'completionItem/resolve',
     cap: (c) => !!(c.completionProvider && c.completionProvider.resolveProvider),
-    params: (_doc, a) => {
-      // An item this server gave the page, handed back to the same server for its details.
-      if (!a.item || typeof a.item !== 'object' || Array.isArray(a.item) || jsonLength(a.item) > 64 * 1024) throw new Error('item must be a completion item')
+    params: (_doc, a, holder, mgr) => {
+      // An item this server gave the page, handed back to the same server for its details: only an
+      // item the host itself sent to this holder (a page could else hand a server arbitrary `data`).
+      if (!a.item || typeof a.item !== 'object' || Array.isArray(a.item) || jsonLength(a.item) > MAX_ITEM_CHARS) throw new Error('item must be a completion item')
+      if (!mgr.gaveItem(holder, a.item)) throw new Error('item must be a completion item this server gave')
       return a.item
     },
   },
@@ -297,13 +304,15 @@ class LspManager {
     this.setServers(o.servers)
     /** language -> slot { language, entry, state, server, message, install, crashes, idleTimer, restartTimer, opened } */
     this.slots = new Map()
-    /** uri -> doc { uri, rel, real, language, languageId, version, text, holders: Set, owner, diagnostics } */
+    /** uri -> doc { uri, rel, real, language, languageId, version, text, holders: Map holder -> its own rel, owner, diagnostics } */
     this.docs = new Map()
     /** Watched-file changes waiting for the flush: real -> true. */
     this.pendingWatch = new Set()
     this.watchTimer = null
     /** real -> 'mtime:size' last told (Created vs Changed, and a repeat with nothing new skipped). */
     this.known = new Map()
+    /** holder -> the completion items answered to it (JSON), the only ones `resolveCompletion` takes. */
+    this.given = new WeakMap()
     this.disposed = false
   }
 
@@ -347,15 +356,19 @@ class LspManager {
     const r = files.resolveInProject(this.root, rel)
     const lang = servers.languageOf(r.rel, this.table)
     if (!lang) return { language: null }
-    if (text.length > MAX_DOC_CHARS) return { language: null, why: 'the file is too large for a language server' }
     const uri = pathToFileURL(r.real).href
+    if (text.length > MAX_DOC_CHARS) {
+      // A document that grew past the cap (its owner's resync): the server no longer has it.
+      const held = this.docOf(holder, r.rel)
+      if (held) this.release(holder, held)
+      return { language: null, why: 'the file is too large for a language server' }
+    }
     let doc = this.docs.get(uri)
     if (!doc) {
       if (this.docs.size >= MAX_DOCS) throw new Error('too many documents are open for the language servers')
       if (this.heldBy(holder).length >= MAX_HOLDER_DOCS) throw new Error('too many documents in one tab')
-      doc = { uri, rel: r.rel, real: r.real, language: lang.entry.language, languageId: lang.languageId, version: 1, text, holders: new Set(), owner: holder, diagnostics: null }
+      doc = { uri, rel: r.rel, real: r.real, language: lang.entry.language, languageId: lang.languageId, version: 1, text, holders: new Map([[holder, r.rel]]), owner: holder, diagnostics: null }
       this.docs.set(uri, doc)
-      doc.holders.add(holder)
       const slot = this.slotFor(doc.language)
       if (slot.idleTimer) {
         clearTimeout(slot.idleTimer)
@@ -368,7 +381,9 @@ class LspManager {
       this.replaceText(doc, text)
     } else {
       if (!doc.holders.has(holder) && this.heldBy(holder).length >= MAX_HOLDER_DOCS) throw new Error('too many documents in one tab')
-      doc.holders.add(holder)
+      // Each holder's own spelling of the path (a symlink alias may reach the same file): every
+      // message to it and every ask from it uses that one.
+      if (!doc.holders.has(holder)) doc.holders.set(holder, r.rel)
       if (!doc.owner) {
         doc.owner = holder
         this.replaceText(doc, text)
@@ -377,7 +392,7 @@ class LspManager {
     const slot = this.slotFor(doc.language)
     // A late joiner gets what the others already have: the server's state and the diagnostics.
     this.postTo(holder, this.statusMessage(slot))
-    if (doc.diagnostics) this.postTo(holder, { t: 'lsp-diagnostics', path: doc.rel, diagnostics: doc.diagnostics })
+    if (doc.diagnostics) this.postTo(holder, { t: 'lsp-diagnostics', path: doc.holders.get(holder), diagnostics: doc.diagnostics })
     return { language: doc.language, name: slot.entry.name, owner: doc.owner === holder, state: slot.state }
   }
 
@@ -391,7 +406,7 @@ class LspManager {
       text = applyChanges(doc.text, changes)
     } catch (e) {
       // The page and the host disagree about the text: the page sends all of it again.
-      this.postTo(holder, { t: 'lsp-resync', path: doc.rel, why: e.message })
+      this.postTo(holder, { t: 'lsp-resync', path: doc.holders.get(holder), why: e.message })
       return false
     }
     doc.text = text
@@ -430,8 +445,8 @@ class LspManager {
     if (doc.holders.size > 0) {
       if (doc.owner === holder) {
         // The next view syncs: its buffer may differ from the one that left, so it sends its text.
-        doc.owner = doc.holders.values().next().value
-        this.postTo(doc.owner, { t: 'lsp-resync', path: doc.rel, owner: true })
+        doc.owner = doc.holders.keys().next().value
+        this.postTo(doc.owner, { t: 'lsp-resync', path: doc.holders.get(doc.owner), owner: true })
       }
       return
     }
@@ -465,8 +480,24 @@ class LspManager {
     } catch {
       return null
     }
-    for (const doc of this.docs.values()) if (doc.rel === clean && doc.holders.has(holder)) return doc
+    for (const doc of this.docs.values()) if (doc.holders.get(holder) === clean) return doc
     return null
+  }
+
+  /**
+   * The document a server's URI names. Servers re-serialize the URI they were sent (vscode-uri
+   * percent-encodes `+`, `@`, `$`, `&`...: `src/routes/+page.ts`), so the exact string is tried first,
+   * then the URI normalized the way ours are made (decoded to a path and encoded again).
+   */
+  docByUri(uri) {
+    const direct = this.docs.get(uri)
+    if (direct) return direct
+    if (typeof uri !== 'string' || !uri.startsWith('file:')) return undefined
+    try {
+      return this.docs.get(pathToFileURL(fileURLToPath(uri)).href)
+    } catch {
+      return undefined
+    }
   }
 
   heldBy(holder) {
@@ -490,7 +521,7 @@ class LspManager {
     const doc = this.docOf(holder, rel)
     if (!doc) throw new Error('the document is not open for its language server')
     const a = args && typeof args === 'object' ? args : {}
-    const params = spec.params(doc, a)
+    const params = spec.params(doc, a, holder, this)
     const slot = this.slots.get(doc.language)
     if (!slot || !slot.server) return { result: null, unavailable: slot ? slot.state : 'stopped' }
     const srv = slot.server
@@ -499,7 +530,42 @@ class LspManager {
     if (!hasCap(caps, spec.cap)) return { result: null, unsupported: true }
     const result = await srv.request(spec.method, params, { timeoutMs: spec.timeoutMs || ASK_TIMEOUT_MS, signal })
     const fit = fitResult(result)
+    if (what === 'complete') this.giveItems(holder, fit.value)
     return { result: fit.value, truncated: fit.truncated }
+  }
+
+  /** Remembers the completion items answered to `holder` (a list or a CompletionList), for resolve. */
+  giveItems(holder, result) {
+    const items = Array.isArray(result) ? result : result && Array.isArray(result.items) ? result.items : []
+    let set = this.given.get(holder)
+    if (!set) {
+      set = new Set()
+      this.given.set(holder, set)
+    }
+    for (const it of items) {
+      if (!it || typeof it !== 'object') continue
+      let j
+      try {
+        j = JSON.stringify(it)
+      } catch {
+        continue
+      }
+      if (j.length > MAX_ITEM_CHARS) continue
+      set.delete(j)
+      set.add(j)
+      if (set.size > MAX_GIVEN_ITEMS) set.delete(set.values().next().value)
+    }
+  }
+
+  /** Whether `item` is, as sent, one the host answered to `holder`. */
+  gaveItem(holder, item) {
+    const set = this.given.get(holder)
+    if (!set) return false
+    try {
+      return set.has(JSON.stringify(item))
+    } catch {
+      return false
+    }
   }
 
   // ---- servers ----
@@ -524,7 +590,7 @@ class LspManager {
     const m = this.statusMessage(slot)
     const told = new Set()
     for (const doc of this.docsOf(slot.language)) {
-      for (const h of doc.holders) {
+      for (const h of doc.holders.keys()) {
         if (told.has(h)) continue
         told.add(h)
         this.postTo(h, m)
@@ -661,13 +727,15 @@ class LspManager {
       const p = m.params && typeof m.params === 'object' ? m.params : {}
       if (typeof p.uri !== 'string') return
       // Only for a document a page holds: a URI the server names is looked up, never resolved into a path.
-      const doc = this.docs.get(p.uri)
+      const doc = this.docByUri(p.uri)
       if (!doc || doc.language !== slot.language) return
       const fit = fitList(cleanDiagnostics(p.diagnostics), ANSWER_BUDGET)
       doc.diagnostics = fit.value
-      const msg = { t: 'lsp-diagnostics', path: doc.rel, diagnostics: fit.value }
-      if (Number.isInteger(p.version)) msg.version = p.version
-      for (const h of doc.holders) this.postTo(h, msg)
+      for (const [h, rel] of doc.holders) {
+        const msg = { t: 'lsp-diagnostics', path: rel, diagnostics: fit.value }
+        if (Number.isInteger(p.version)) msg.version = p.version
+        this.postTo(h, msg)
+      }
     } else if (m.method === 'window/showMessage') {
       const p = m.params || {}
       if (p.type === 1 && typeof p.message === 'string') this.log.warn(`${slot.language} server: ${p.message.slice(0, 500)}`)
@@ -702,7 +770,8 @@ class LspManager {
   flushWatched() {
     const list = [...this.pendingWatch]
     this.pendingWatch.clear()
-    const running = [...this.slots.values()].filter((s) => s.server && s.state === 'ready')
+    // Only servers that registered for it (their globs are not matched: a server filters what it gets).
+    const running = [...this.slots.values()].filter((s) => s.server && s.state === 'ready' && s.server.watchesFiles())
     if (running.length === 0) return
     const changes = []
     for (const real of list) {
@@ -728,10 +797,13 @@ class LspManager {
       if (before === sig) continue
       this.remember(real, sig)
       changes.push({ uri: pathToFileURL(real).href, type: before === null || (before === undefined && born) ? CREATED : CHANGED })
-      if (changes.length >= MAX_WATCH_BATCH) break
     }
     if (changes.length === 0) return
-    for (const slot of running) slot.server.notify('workspace/didChangeWatchedFiles', { changes })
+    // Several notifications when a big checkout changed more than one batch holds.
+    for (let i = 0; i < changes.length; i += MAX_WATCH_BATCH) {
+      const batch = changes.slice(i, i + MAX_WATCH_BATCH)
+      for (const slot of running) slot.server.notify('workspace/didChangeWatchedFiles', { changes: batch })
+    }
   }
 
   remember(real, sig) {

@@ -179,7 +179,8 @@ function findOnPath(name, env = process.env, cwd = process.cwd()) {
   for (const dir of dirs) {
     if (!dir) continue
     for (const x of exts) {
-      const p = path.join(dir, name + x)
+      // A relative PATH entry means relative to the project (the spawn's cwd), as the spawned program is.
+      const p = path.resolve(cwd, dir, name + x)
       if (isExecutable(p)) return p
     }
   }

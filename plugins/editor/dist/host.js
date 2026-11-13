@@ -580,8 +580,11 @@ let lspShared = null
 exports.deactivate = () => {
   if (shared) shared.watcher.close()
   shared = null
-  if (lspShared) lspShared.dispose().catch(() => {})
+  const lsp = lspShared
   lspShared = null
   for (const t of markerTimers) clearTimeout(t)
   markerTimers.clear()
+  // Returned: the loader awaits it (5 s cap) before the ctx dispose kills the children, so the
+  // servers' shutdown/exit gets its time.
+  return lsp ? lsp.dispose().catch(() => {}) : undefined
 }

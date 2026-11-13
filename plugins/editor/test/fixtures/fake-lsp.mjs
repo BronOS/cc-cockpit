@@ -99,6 +99,7 @@ function handle(m) {
 }
 
 function diagnose(uri, version, length) {
+  if (flag('--reencode')) uri = uri.replace(/\+/g, '%2B').replace(/@/g, '%40')
   send({ method: 'textDocument/publishDiagnostics', params: { uri, version, diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: `v${version} len${length}`, source: 'fake' }] } })
 }
 

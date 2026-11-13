@@ -88,6 +88,10 @@ function serveLsp(tab, manager, log) {
     if (o.length > MAX_DOC_CHARS) {
       // Too large for a server: highlighting only, said as "no server" (not an error bar).
       dropOpen(rel)
+      // A resync of a document that grew past the cap: the server's copy goes.
+      try {
+        manager.close(holder, rel)
+      } catch {}
       return holder.post({ t: 'lsp-doc', path: rel, language: null, why: 'the file is too large for a language server' })
     }
     if (o.got.length < o.parts) {
@@ -162,7 +166,11 @@ function serveLsp(tab, manager, log) {
           manager.change(holder, m.path, m.changes)
           break
         case 'lsp-close':
-          dropOpen(m.path)
+          try {
+            dropOpen(files.relativePath(m.path))
+          } catch {
+            // not a path: nothing of it is pending
+          }
           manager.close(holder, m.path)
           break
         case 'lsp-ask':
