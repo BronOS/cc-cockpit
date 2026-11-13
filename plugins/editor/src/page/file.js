@@ -23,7 +23,7 @@
 // session hears how many are left.
 
 import { basicSetup } from 'codemirror'
-import { EditorState, Compartment, StateEffect, StateField } from '@codemirror/state'
+import { EditorState, Compartment, StateEffect, StateField, Transaction } from '@codemirror/state'
 import { EditorView, keymap, Decoration, WidgetType } from '@codemirror/view'
 import { indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting, defaultHighlightStyle, StreamLanguage } from '@codemirror/language'
@@ -201,7 +201,14 @@ const conflictField = StateField.define({
   update(value, tr) {
     let list = value.list
     if (tr.docChanged && list.length) {
-      list = list.map((c) => ({ ...c, from: tr.changes.mapPos(c.from, -1), to: tr.changes.mapPos(c.to, 1) }))
+      // A region ending at a line start (its text ends with a newline) must not take in what is typed
+      // at the start of the next line: Take Claude's would delete it. Other ends grow with typing.
+      const old = tr.startState.doc
+      list = list.map((c) => ({
+        ...c,
+        from: tr.changes.mapPos(c.from, -1),
+        to: tr.changes.mapPos(c.to, c.to > c.from && old.sliceString(c.to - 1, c.to) === '\n' ? -1 : 1),
+      }))
     }
     for (const e of tr.effects) {
       if (e.is(setConflicts)) list = e.value
@@ -372,7 +379,9 @@ function applyText(text, effects) {
   const changes = view.state.changes(lineChanges(view.state.doc.toString(), text))
   replacing = true
   try {
-    view.dispatch({ changes, effects })
+    // Not in the undo history: Ctrl+Z past a reload would bring the older text back, mark the buffer
+    // dirty and let autosave write it over Claude's change.
+    view.dispatch({ changes, effects, annotations: Transaction.addToHistory.of(false) })
   } finally {
     replacing = false
   }

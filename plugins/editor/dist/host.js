@@ -348,6 +348,9 @@ exports.activate = (ctx) => {
           // The deleted bar's Close: this tab only (main's id), closed the person's way, so text
           // unsaved in any view is asked about first.
           if (typeof ctx.tabs.close !== 'function') return
+          // Only a view that reported a conflict (the deleted bar is the sender): any other page frame
+          // could otherwise close a dirty tab with the core confirmation off.
+          if (conflictViews.get(tab.id)?.get(viewKey(tab)) !== tab) return
           ctx.tabs.close(tab.id).catch((e) => tab.post({ t: 'error', message: `Close: ${e.message}` }))
         }
       })

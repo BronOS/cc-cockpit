@@ -200,8 +200,22 @@ export function merge3(base, mine, theirs) {
     if (tb === null) ok(ta)
     else if (ta === null || ta === tb) ok(tb) // theirs alone, or the same change made on both sides
     else {
-      chunks.push({ base: o.slice(rs, re).join(''), mine: ta, theirs: tb })
+      // Lines both sides carry at the region's edges (pulled in by touching hunks) are not in dispute:
+      // they stay out of the conflict, or Keep both would write them twice.
+      const la = splitLines(ta)
+      const lb = splitLines(tb)
+      let pre = 0
+      while (pre < la.length && pre < lb.length && la[pre] === lb[pre]) pre++
+      let suf = 0
+      while (suf < la.length - pre && suf < lb.length - pre && la[la.length - 1 - suf] === lb[lb.length - 1 - suf]) suf++
+      if (pre) ok(la.slice(0, pre).join(''))
+      chunks.push({
+        base: o.slice(rs, re).join(''),
+        mine: la.slice(pre, la.length - suf).join(''),
+        theirs: lb.slice(pre, lb.length - suf).join(''),
+      })
       conflicts++
+      if (suf) ok(la.slice(la.length - suf).join(''))
     }
     pos = re
   }

@@ -148,3 +148,24 @@ test('a merge never drops a line of either side when it is clean (random edits)'
     assert.equal(splitLines(out).length, 40)
   }
 })
+
+test('lines both sides carry at a conflict edge stay out of it, so Keep both writes them once', () => {
+  const r = merge3('a\nb\nc', 'a\nb\nc\nd', 'a\nb\nc\n')
+  assert.equal(r.conflicts, 1)
+  const joined = r.chunks.map((x) => ('ok' in x ? x.ok : keepBothText(x.mine, x.theirs))).join('')
+  assert.equal(joined.split('c\n').length - 1, 1)
+})
+
+test('both sides insert at the very start of the file: one conflict, shared lines outside it', () => {
+  const r = merge3('x\n', 'm\nx\n', 't\nx\n')
+  assert.equal(r.conflicts, 1)
+  const layout = conflictLayout(r.chunks)
+  assert.equal(layout.text, 'm\nx\n')
+  assert.equal(layout.conflicts[0].theirs, 't\n')
+})
+
+test('a conflict at EOF without a final newline, then Keep both', () => {
+  const r = merge3('x\ny', 'x\nY1', 'x\nY2')
+  const c = r.chunks.find((x) => !('ok' in x))
+  assert.equal(keepBothText(c.mine, c.theirs), 'Y1\nY2')
+})

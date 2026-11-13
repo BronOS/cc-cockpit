@@ -724,3 +724,33 @@ test('real host: Ctrl+S while an autosave is in flight saves again after it, not
   line.close()
   mine.watcher.close()
 })
+
+test('a save in flight while a clean merge lands: its answer does not move the merge base', () => {
+  const { ui, timers, s } = loaded('a\nb\nc\n')
+  ui.text = 'a\nb\nc\nmine\n'
+  s.edited()
+  timers.run()
+  const inflight = ui.posted.at(-1)
+  assert.equal(inflight.t, 'save')
+  s.receive({ t: 'disk', path: 'a.txt', change: 'changed', hash: 'h2' })
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2', text: 'A\nb\nc\n' }))
+  assert.equal(ui.text, 'A\nb\nc\nmine\n')
+  s.receive({ t: 'saved', req: inflight.req, hash: 'h3' })
+  // The base stays what the merge took (theirs), not the old save's text.
+  assert.deepEqual(s._state.base, { text: 'A\nb\nc\n', hash: 'h2' })
+  const again = ui.posted.at(-1)
+  assert.equal(again.t, 'save')
+  assert.equal(again.baseHash, 'h2')
+})
+
+test('Save in the deleted bar with a save already in flight: the bar stays', () => {
+  const { ui, timers, s } = loaded()
+  ui.text = 'one\nmore\n'
+  s.edited()
+  timers.run()
+  s.receive({ t: 'disk', path: 'a.txt', change: 'deleted' })
+  ui.posted.length = 0
+  assert.equal(s.saveNow(), false)
+  assert.deepEqual(ui.posted, [])
+  assert.equal(ui.last.conflict.kind, 'deleted')
+})

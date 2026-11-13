@@ -309,6 +309,8 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     // next save would be a compare-and-swap on theirs with my unmerged text and drop their change.
     if (text === null) ui.merge(conflictLayout(r.chunks))
     else if (text !== mine) ui.replace(text, { readOnly: false, noText: false })
+    // A save in flight was made against the base this merge replaces: its answer must not move it.
+    if (s.saving) s.saving.superseded = true
     s.base = next
     s.exists = true
     s.readOnly = false
@@ -443,7 +445,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       s.saveAgain = false
       return update()
     }
-    s.base = { text: s.saving.text, hash: m.hash }
+    if (!s.saving.superseded) s.base = { text: s.saving.text, hash: m.hash }
     s.exists = true
     s.saving = null
     const again = s.saveAgain
@@ -588,8 +590,15 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     },
     /** Ctrl+S, or Save in the deleted bar (which recreates the file). */
     saveNow() {
-      if (s.conflict && s.conflict.kind === 'deleted') s.conflict = null
-      return save()
+      const was = s.conflict
+      if (was && was.kind === 'deleted') s.conflict = null
+      if (save()) return true
+      // Nothing was sent (not connected, a save in flight): the file is still gone, the bar stays.
+      if (was && was.kind === 'deleted' && s.conflict === null) {
+        s.conflict = was
+        update()
+      }
+      return false
     },
     /** The final conflict's Reload: the buffer, the base and the flags become theirs. */
     takeTheirs() {

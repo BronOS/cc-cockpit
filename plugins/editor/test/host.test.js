@@ -507,6 +507,11 @@ test("the deleted bar's Close closes this tab through ctx.tabs.close; a refusal 
   await f.provided.editor.open('src/a.ts')
   const id = t.open[0].id
   const view = t.connect(id)
+  // A page that reported no conflict (no deleted bar) cannot close the tab.
+  view.send({ t: 'close' })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(t.calls.filter((c) => c[0] === 'close'), [])
+  view.send({ t: 'conflict', on: true })
   // Always this tab (main's id), whatever the page names.
   view.send({ t: 'close', id: 'someone-else' })
   await new Promise((r) => setTimeout(r, 10))
