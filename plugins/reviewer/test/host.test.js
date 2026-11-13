@@ -1391,6 +1391,7 @@ function notesSetup() {
   const f = setup({ editorAvailable: false })
   const store = new Map()
   f.ctx.storage = { get: async (k) => store.get(k) ?? null, set: async (k, v) => void store.set(k, v), delete: async (k) => void store.delete(k) }
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'b.js'), 'x\n') // addNote takes only a file that exists
   const events = []
   f.ctx.services.emit = (name, event, data) => events.push([name, event, data])
   f.ctx.overlay.start = () => pageHandle(f)
@@ -1498,5 +1499,63 @@ test("notesChange follows the overlay's draft writes and a sent review; a text a
   f.handles[1].say({ type: 'draft', draft: { global: 'g', notes: [] } })
   await new Promise((r) => setTimeout(r, 400))
   assert.deepEqual(events, [])
+  host.deactivate()
+})
+
+test('addNote racing an open: the note is in what the overlay opens with, or refused, never lost', async () => {
+  const { f, store, svc } = notesSetup()
+  const slow = f.ctx.storage
+  const realSet = slow.set
+  slow.set = async (k, v) => {
+    await new Promise((r) => setTimeout(r, 20))
+    return realSet(k, v)
+  }
+  for (let i = 0; i < 3; i++) {
+    store.clear()
+    f.handles.length = 0
+    const adds = [svc.addNote('a.js', { from: 1, text: 'first' }), svc.addNote('a.js', { from: 2, text: 'second' })].map((p) => p.then((r) => r, () => null))
+    const opened = svc.open('a.js')
+    await new Promise((r) => setTimeout(r, i * 15))
+    adds.push(svc.addNote('a.js', { from: 3, text: 'third' }).then((r) => r, () => null))
+    const results = await Promise.all(adds)
+    await opened
+    const shown = f.handles[0].posts[0].draft.notes.map((n) => n.id)
+    for (const r of results) if (r) assert.ok(shown.includes(r.id), `note ${r.id} reached the overlay (round ${i})`)
+    f.handles[0].end({ kind: 'dismissed' })
+    await new Promise((r) => setTimeout(r, 20))
+    for (const r of results) if (r) assert.ok(store.get('draft:a.js').notes.some((n) => n.id === r.id))
+  }
+  host.deactivate()
+})
+
+test('addNote refuses a path that is not a file of the project, so no stray drafts pile up', async () => {
+  const { f, store, svc } = notesSetup()
+  fs.mkdirSync(path.join(f.ctx.projectDir, 'dir'))
+  for (const bad of ['nope.js', 'dir', 'x/y.js']) await assert.rejects(svc.addNote(bad, { from: 1, text: 'x' }), /not a file of this project/, bad)
+  assert.equal(store.size, 0)
+  host.deactivate()
+})
+
+test('a queued Discuss deletes only the notes it sent: one added since stays', async () => {
+  const f = setup({ editorAvailable: false })
+  const { store } = storeFake(f)
+  const tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+  const changes = []
+  f.ctx.sessions.list = async () => [tab]
+  f.ctx.sessions.onChange = (l) => (changes.push(l), () => {})
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  const svc = f.provided.reviewer
+  await svc.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: '', notes: [{ id: 'n1', side: 'new', from: 1, to: 1, quote: '', text: 'sent' }] } })
+  const { text } = await h.discussFn()
+  h.end({ kind: 'discussed', tabId: 't1', queued: true })
+  await wait(50)
+  const added = await svc.addNote('a.js', { from: 1, text: 'later' })
+  const sentText = `About: Review: a.js\nFile: a.js\n\n${text}\n\nA note.`
+  changes[0]([{ ...tab, lastPrompt: sentText.replace(/\n/g, '\r\n').slice(0, 2048) }])
+  await wait(30)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.id), [added.id])
   host.deactivate()
 })

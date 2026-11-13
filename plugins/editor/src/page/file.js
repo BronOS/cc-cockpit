@@ -62,6 +62,7 @@ import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/
 import { createChanges } from './changes.mjs'
 import { createChangesGutter } from './changes-editor.js'
 import { createNotes } from './notes.mjs'
+import { createNoteFlow } from './note-flow.mjs'
 import { createNotesGutter } from './notes-editor.js'
 import { selectionContext } from './ask.mjs'
 import { createQuickChat } from './chat-editor.js'
@@ -521,7 +522,7 @@ function render(v) {
   // A file outside the project (a definition in node_modules): read-only, no micro (it opens project files).
   $('micro').hidden = isOutside(v.path)
   microIfSaved(v)
-  noteIfSaved(v)
+  noteFlow.onView(v)
 }
 
 const isOutside = (p) => typeof p === 'string' && (p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p))
@@ -567,7 +568,14 @@ const notesUi = createNotesGutter({ getNotes: () => notes.list() })
 const notes = createNotes({
   post: (m) => ccPanel.post(m),
   onNotes: () => notesUi.recompute(view),
-  onAdded: (ok, message) => lspMessage(ok ? 'Review note added: it is in the Reviewer too.' : `Review note not added: ${message || 'unknown error'}`, !ok),
+  onAdded: (ok, message) => noteFlow.added(ok, message),
+})
+const noteFlow = createNoteFlow({
+  view: () => session.view(),
+  saveNow: () => session.saveNow(),
+  getDoc: () => (view ? view.state.doc : null),
+  add: (n) => notes.add({ from: n.from, to: n.to, text: n.text, quote: n.quote }),
+  settle: (ok, message) => noteSettled(ok, message),
 })
 
 /** Set while an `openFile` the language features sent is on its way: a refusal is said in the language bar. */
@@ -986,7 +994,6 @@ const NOTE_MAX_CHARS = 4000
 const NOTE_QUOTE_CHARS = 500
 /** The lines and quote the open box is about, and the note waiting for the save: { from, to, quote, text, waiting }. */
 let noteTarget = null
-let notePending = null
 
 function openNoteBox() {
   hideContextMenu()
@@ -1014,43 +1021,28 @@ function submitNote() {
     $('notebox-error').textContent = 'Write the note first.'
     return
   }
-  if (notePending) {
-    $('notebox-error').textContent = 'The last note is still being saved.'
-    return
-  }
-  notePending = { ...noteTarget, text: text.slice(0, NOTE_MAX_CHARS), waiting: false }
-  closeNoteBox(true)
-  const v = session.view()
-  if (v.dirty) {
-    notePending.waiting = true
-    session.saveNow()
-  } else {
-    sendNote()
-  }
+  // The box stays open with the text until the add's outcome: every failure leaves it to try again.
+  const refused = noteFlow.submit({ ...noteTarget, text: text.slice(0, NOTE_MAX_CHARS) })
+  $('notebox-error').textContent = refused || 'Adding the note...'
 }
 
-function sendNote() {
-  const n = notePending
-  notePending = null
-  if (!n || !notes.add({ from: n.from, to: n.to, text: n.text, quote: n.quote })) lspMessage('Review note not added: another note is still being saved.', true)
-}
-
-/** The note waits for the save the host confirms; a conflict or an error drops it with the reason. */
-function noteIfSaved(v) {
-  if (!notePending || !notePending.waiting) return
-  if (v.conflict || v.error || v.readOnly) {
-    notePending = null
-    lspMessage('Review note not added: the file could not be saved first.', true)
-  } else if (v.status === 'saved') {
-    sendNote()
-  }
+/** The note's outcome: closed on success; on a failure the box keeps the text and says why. */
+function noteSettled(ok, message) {
+  lspMessage(ok ? 'Review note added: it is in the Reviewer too.' : `Review note not added: ${message || 'unknown error'}`, !ok)
+  if ($('notebox').hidden) return
+  if (ok) closeNoteBox(true)
+  else $('notebox-error').textContent = `Not added: ${message || 'unknown error'}`
 }
 
 $('notebox-add').addEventListener('click', submitNote)
-$('notebox-cancel').addEventListener('click', () => closeNoteBox(true))
+$('notebox-cancel').addEventListener('click', () => {
+  noteFlow.cancel()
+  closeNoteBox(true)
+})
 $('notebox-text').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     e.preventDefault()
+    noteFlow.cancel()
     closeNoteBox(true)
   } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault()

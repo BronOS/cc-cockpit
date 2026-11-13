@@ -30,6 +30,7 @@
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
 
+const fs = require('node:fs')
 const path = require('node:path')
 const files = require('./lib/files')
 const review = require('./lib/review')
@@ -168,8 +169,10 @@ exports.activate = (ctx) => {
   }
 
   /**
-   * One file's draft, read-modify-write at a time: addNote's own calls (and the page's drafts, while a
-   * review is open, which addNote refuses) never interleave on the stored value.
+   * One file's draft, read-modify-write at a time: addNote's own calls and a queued Discuss's delete of
+   * the sent notes never interleave on the stored value. The page's own drafts are kept apart another way:
+   * addNote is refused while a review is open or being opened (`isReviewing`), and showReview waits for
+   * the notes in flight before it reads the draft.
    */
   const noteQueue = new Map() // draft key -> the tail of its chain
   function serialNotes(key, fn) {
@@ -183,6 +186,9 @@ exports.activate = (ctx) => {
     return run
   }
   let noteSeq = 0
+  /** openKey -> count of showReview calls that have not put their overlay in `open` yet (they read the draft first). */
+  const opening_ = new Map()
+  const isReviewing = (openKey) => open.has(openKey) || opening_.has(openKey)
 
   /** A project-relative path for the notes calls: the same checks as a review's (inside the folder, by name and by symlink). */
   function notesPath(rel) {
@@ -391,12 +397,19 @@ exports.activate = (ctx) => {
       const s = list.find((x) => x.tabId === tabId)
       if (s && s.lastPrompt !== prevPrompt && promptText(s.lastPrompt).includes(want)) {
         end()
-        // A review reopened since may have changed the draft: only the one that was sent goes.
-        const now = await ctx.storage.get(draftKey)
-        if (JSON.stringify(now) === JSON.stringify(sentDraft)) {
-          await ctx.storage.delete(draftKey)
-          notesChanged(path)
-        }
+        // Only what was sent goes (by note id and text, the global note when unchanged): a note added since
+        // (the editor's addNote works while the overlay is closed) or an edit from a reopened review stays.
+        const gone = await serialNotes(draftKey, async () => {
+          const sent = review.cleanDraft(sentDraft)
+          const now = review.cleanDraft(await ctx.storage.get(draftKey))
+          const was = new Set(sent.notes.map((n) => `${n.id}\0${n.text}`))
+          const left = { global: now.global === sent.global ? '' : now.global, notes: now.notes.filter((n) => !was.has(`${n.id}\0${n.text}`)) }
+          if (left.notes.length === now.notes.length && left.global === now.global) return false
+          if (review.isEmpty(left)) await ctx.storage.delete(draftKey)
+          else await ctx.storage.set(draftKey, left)
+          return true
+        })
+        if (gone) notesChanged(path)
       } else if (!s || s.status === 'ended') {
         end()
         ctx.notify(`Review of ${what} may not have reached Claude: its tab ended while the review was queued. ${kept ? 'The draft is kept.' : 'Its draft could not be saved.'}`)
@@ -583,6 +596,23 @@ exports.activate = (ctx) => {
    * refusal when the init message would not fit). `tabId` is Discuss's preselected tab.
    */
   async function showReview(subject, { tabId } = {}) {
+    const { openKey, draftKey } = subject
+    if (open.has(openKey)) return focusExisting(open.get(openKey))
+    // From here until the overlay is in `open` the review is on its way: addNote refuses meanwhile (a note
+    // written after the draft is read below would be written over by the page), and the notes already in
+    // flight finish first, so the read sees them.
+    opening_.set(openKey, (opening_.get(openKey) || 0) + 1)
+    try {
+      await (noteQueue.get(draftKey) || Promise.resolve())
+      return await showReviewNow(subject, { tabId })
+    } finally {
+      const left = opening_.get(openKey) - 1
+      if (left > 0) opening_.set(openKey, left)
+      else opening_.delete(openKey)
+    }
+  }
+
+  async function showReviewNow(subject, { tabId } = {}) {
     const { openKey, draftKey, what, sides } = subject
     if (open.has(openKey)) return focusExisting(open.get(openKey))
     let draft = review.cleanDraft(await ctx.storage.get(draftKey))
@@ -1002,10 +1032,20 @@ exports.activate = (ctx) => {
       try {
         const p = notesPath(rel)
         const n = review.noteInput(note)
-        if (open.has(`file:${p}`)) throw new files.ReviewError(`the review of ${p} is open: add the note there`)
+        const openKey = `file:${p}`
+        if (isReviewing(openKey)) throw new files.ReviewError(`the review of ${p} is open: add the note there`)
+        // Only a real file of the working tree gets a draft: a made-up path would fill the storage with
+        // records the person never sees (no review opens them).
+        let st = null
+        try {
+          st = fs.statSync(path.join(ctx.projectDir, p))
+        } catch {}
+        if (!st || !st.isFile()) throw new files.ReviewError(`${p} is not a file of this project`)
         const key = review.draftKey(p)
         const id = `e${Date.now().toString(36)}${noteSeq++}`
         await serialNotes(key, async () => {
+          // Checked again: a review may have started to open while this waited its turn.
+          if (isReviewing(openKey)) throw new files.ReviewError(`the review of ${p} is open: add the note there`)
           const draft = review.cleanDraft(await ctx.storage.get(key))
           draft.notes.push({ id, side: 'new', from: n.from, to: n.to, quote: n.quote, text: n.text })
           const problem = review.draftProblem(draft)

@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ChangeSet, Text } from '@codemirror/state'
 import { createNotes, POLL_MS, FOCUS_MIN_MS } from '../src/page/notes.mjs'
+import { createNoteFlow } from '../src/page/note-flow.mjs'
 import { marksOf } from '../src/page/notes-editor.js'
 
 function make() {
@@ -95,8 +96,86 @@ test('a new line ends an add that was on its way, with a message', () => {
   assert.equal(events.length, 1)
   assert.equal(events[0][0], 'added')
   assert.equal(events[0][1], false)
-  assert.match(events[0][2], /connection was lost/)
+  assert.match(events[0][2], /not known whether the note was saved/)
   assert.equal(n.add({ from: 1, to: 1, text: 'y', quote: '' }), true)
+})
+
+// ---- the save-before-note flow (src/page/note-flow.mjs) ----
+
+function flow({ dirty = false, saves = true, adds = true } = {}) {
+  const log = []
+  const st = { view: { dirty, status: dirty ? 'unsaved' : 'saved' }, doc: { n: 1 } }
+  const f = createNoteFlow({
+    view: () => st.view,
+    saveNow: () => (log.push('save'), saves),
+    getDoc: () => st.doc,
+    add: (n) => (log.push(['add', n.text]), adds),
+    settle: (ok, m) => log.push(['settle', ok, m]),
+  })
+  return { f, log, st }
+}
+const NOTE = { from: 1, to: 2, text: 'why', quote: 'q' }
+
+test('a clean buffer sends at once and settles with the answer', () => {
+  const { f, log } = flow()
+  assert.equal(f.submit(NOTE), null)
+  assert.deepEqual(log, [['add', 'why']])
+  assert.equal(f.busy(), true)
+  assert.equal(f.submit(NOTE), 'The last note is still being saved.')
+  f.added(true)
+  assert.deepEqual(log[1], ['settle', true, undefined])
+  assert.equal(f.busy(), false)
+})
+
+test('a dirty buffer is saved first and the note goes once it is saved', () => {
+  const { f, log, st } = flow({ dirty: true })
+  assert.equal(f.submit(NOTE), null)
+  f.onView(st.view)
+  assert.deepEqual(log, ['save'])
+  st.view = { dirty: false, status: 'saved' }
+  f.onView(st.view)
+  assert.deepEqual(log, ['save', ['add', 'why']])
+})
+
+test('saveNow refusing (a conflict, no connection) settles at once instead of waiting', () => {
+  const { f, log } = flow({ dirty: true, saves: false })
+  f.submit(NOTE)
+  assert.equal(log[1][0], 'settle')
+  assert.equal(log[1][1], false)
+  assert.equal(f.busy(), false)
+})
+
+test('a conflict or an error while waiting drops the note with a reason', () => {
+  for (const bad of [{ conflict: {} }, { error: 'x' }, { readOnly: true }]) {
+    const { f, log } = flow({ dirty: true })
+    f.submit(NOTE)
+    f.onView({ dirty: true, status: 'unsaved', ...bad })
+    assert.deepEqual(log.filter((x) => x[0] === 'add'), [])
+    assert.equal(log.at(-1)[1], false)
+  }
+})
+
+test('a buffer that changed after the submit refuses the note: its lines may have moved', () => {
+  const { f, log, st } = flow({ dirty: true })
+  f.submit(NOTE)
+  st.doc = { n: 2 }
+  st.view = { dirty: false, status: 'saved' }
+  f.onView(st.view)
+  assert.deepEqual(log.filter((x) => x[0] === 'add'), [])
+  assert.match(log.at(-1)[2], /lines may have moved/)
+})
+
+test('another add on its way settles false; cancel drops a note still waiting for its save', () => {
+  const a = flow({ adds: false })
+  a.f.submit(NOTE)
+  assert.equal(a.log.at(-1)[1], false)
+  const b = flow({ dirty: true })
+  b.f.submit(NOTE)
+  b.f.cancel()
+  assert.equal(b.f.busy(), false)
+  b.st.view = { dirty: false, status: 'saved' }
+  b.f.onView(b.st.view)
+  assert.deepEqual(b.log, ['save'])
 })
 
 const list = (set) => {

@@ -44,10 +44,11 @@ export function createNotes(ui, timers = { now: () => Date.now() }) {
     list: () => list,
     /** A new line to the host: its answer to an older ask never comes, and the event listener is made again. */
     connect() {
-      // An add on its way died with the old line: its answer never comes.
+      // An add on its way lost its line: its answer never comes, but the host may have passed it on, so the
+      // outcome is unknown (the ask below refreshes the list; adding again blind would store a duplicate).
       if (adding) {
         adding = 0
-        ui.onAdded(false, 'The connection was lost before the note was saved: check the Reviewer, then add it again.')
+        ui.onAdded(false, 'the connection was lost, so it is not known whether the note was saved: look for it in the gutter before adding it again.')
       }
       ask(true)
     },
