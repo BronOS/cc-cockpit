@@ -259,6 +259,14 @@ opens its projects in sandboxed desktop windows running the server's web client)
   top-level string property, with no `default` and no keyword but type/format/title/description/
   `$comment`, and a schema with one has no `$ref`/`$anchor`/`$id` or other reference keyword
   (design.md §6 "Secret settings field"; enforced in `main/plugins/validate.ts`).
+- Split groups (design.md §3 "Split groups", `src/shared/tab-groups.ts`, `main/tabs/tab-groups.ts`): main's `TabGroups` is
+  the one writer; pages send small intents naming tab ids (`groups.*`, `tabs.create` `beside`, `tabs.reorder` `block`),
+  never a tree, and get a whole `groups.changed` snapshot ordered by `seq`. A group's members are contiguous in the one
+  tab order; saved leaves name `TabRecord.id` and are remapped on restore. A view's focused pane is its selected tab;
+  zoom and focus are per view. Nothing done elsewhere (another view, a plugin, an exit) moves a view's keys to another
+  terminal: that view goes keys-off, and while keys-off no command acts on the active tab and a `tabs.select` naming a
+  visible pane is ignored. Plugins reach groups only through `beside` on `ctx.sessions.open*` (only the new tab is
+  placed, never focused; `no-plugin-group-edits.test.ts`).
 
 ## Conventions
 
