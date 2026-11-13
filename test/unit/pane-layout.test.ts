@@ -129,6 +129,18 @@ describe('pane-layout', () => {
     expect(equalizeSplits(tree)).toEqual([])
   })
 
+  it('D26 N1: a pane dragged to the stop does not auto-zoom when both use the same cell', () => {
+    // The reviewer's case: a measured row of 15px against a 16px estimate; and a narrow measured column.
+    for (const c of [{ width: 7.8, height: 15 }, { width: 7.5, height: 16 }, { width: 7.796, height: 17 }]) {
+      for (const dir of ['row', 'column'] as const) {
+        const area = { width: 1400, height: 1000 }
+        const share = dragMinShare(dir === 'row' ? area.width : area.height, dir, c)
+        const root: PaneSplit = { id: 's', dir, children: [{ tab: 'a' }, { tab: 'b' }], sizes: [share, 1 - share] }
+        expect(autoZoomed(root, area, c)).toBe(false)
+      }
+    }
+  })
+
   it('keeps a dragged divider off the pane minimum', () => {
     // 20 cols of 8px + 18 padding + 14 scrollbar + 2 rounding = 194px of a 1000px split.
     expect(dragMinShare(1000, 'row', cell)).toBeCloseTo(0.194)
