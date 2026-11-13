@@ -11,6 +11,14 @@
 // is injected (`PluginAvailable`), so this file stays free of the installer and the marketplace.
 // A running tool call does not survive (design: Restore).
 //
+// Split groups (design.md §3 "Split groups") are saved beside the tabs, in the same write
+// (`ProjectRecord.tabGroups`), their leaves naming the saved `TabRecord.id`s. A restored tab gets a
+// new id, so a restore maps each saved id to its new tab (`savedId` → the spawned tab's id) and hands
+// the saved groups and that map to main's TabGroups (`restoreGroups`), which prunes the leaves whose
+// tab did not come back (a plugin command tab dropped, a failed spawn) before the desktop's
+// `tabs.list` reply. The groups are user-writable data like the rest of the record: only
+// shared/tab-groups.ts `restoreGroups` reads them, leniently and capped.
+//
 // Tabs are started when the window's renderer first asks for them (`tabs.list`), not when the
 // window is created: output a PTY prints before the page subscribed to `tabs.data` is dropped,
 // so a shell started early would show a blank terminal until the next keystroke.
@@ -20,6 +28,7 @@ import type { TabInfo } from '../shared/ipc'
 import { checkSessionName } from '../shared/session-name'
 import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
+import type { TabGroup } from '../shared/tab-groups'
 import type { ProjectView, TabKind, TabRecord } from '../shared/types'
 import { ProjectRefusal, type ProjectRegistry } from './projects/registry'
 import { SESSION_ID } from './tabs/claude-argv'
@@ -28,6 +37,11 @@ import { warnLog } from './warn-log'
 
 /** One tab to start, as TabManager.restoreTab takes it. */
 export interface RestoredTab {
+  /**
+   * The saved record's id, which the saved groups' leaves name (absent for a record without a usable
+   * one: its tab comes back, outside any group). Never the restored tab's id: that is new.
+   */
+  savedId?: string
   kind: TabKind
   /** Absent = the project folder. */
   cwd?: string
@@ -99,6 +113,8 @@ export function buildRestorePlan(
     const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag } = raw as Record<string, unknown>
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') continue
     const tab: RestoredTab = { kind }
+    const id = (raw as Record<string, unknown>).id
+    if (typeof id === 'string' && id.length > 0 && id.length <= MAX_SAVED_ID) tab.savedId = id
     if (kind === 'command') {
       const l = checkTabCommandLabel(label)
       if (!l.ok) continue
@@ -131,6 +147,15 @@ export function buildRestorePlan(
   return plan
 }
 
+function startedId(started: unknown): string | undefined {
+  if (typeof started !== 'object' || started === null) return undefined
+  const id = (started as { id?: unknown }).id
+  return typeof id === 'string' ? id : undefined
+}
+
+/** A saved tab id longer than this names no group leaf (main's are UUIDs). */
+const MAX_SAVED_ID = 64
+
 /** The injected check, a throw read as "not available": a tab is dropped rather than kept on a guess. */
 function available(check: PluginAvailable, pluginId: string): boolean {
   try {
@@ -152,7 +177,7 @@ function cwdUsable(projectPath: string, cwd: string): boolean {
 /** What to do at launch with the projects whose windows were open at last quit. */
 export interface LaunchPlan {
   /** Folder is there: open a window, then start these tabs when its renderer attaches. */
-  open: Array<{ project: ProjectView; tabs: RestoredTab[] }>
+  open: Array<{ project: ProjectView; tabs: RestoredTab[]; groups: unknown }>
   /** Folder is gone: no window; the picker offers relink or forget (Task 22). */
   missing: ProjectView[]
 }
@@ -161,7 +186,7 @@ export function planLaunch(projects: readonly ProjectView[], pluginAvailable?: P
   const plan: LaunchPlan = { open: [], missing: [] }
   for (const project of projects) {
     if (project.missing) plan.missing.push(project)
-    else plan.open.push({ project, tabs: buildRestorePlan(project, pluginAvailable) })
+    else plan.open.push({ project, tabs: buildRestorePlan(project, pluginAvailable), groups: project.tabGroups })
   }
   return plan
 }
@@ -169,8 +194,20 @@ export function planLaunch(projects: readonly ProjectView[], pluginAvailable?: P
 export interface TabRestorerOptions {
   /** The project's live tabs (TabManager.list). */
   listTabs(projectId: string): TabInfo[]
-  /** Write the records into the project's store (ProjectRegistry.update, debounced). */
-  saveTabs(projectId: string, records: TabRecord[]): void
+  /**
+   * Write the records and the split groups into the project's store in one update
+   * (ProjectRegistry.update, debounced): a group on disk must never name tabs of another save.
+   */
+  saveTabs(projectId: string, records: TabRecord[], groups: TabGroup[]): void
+  /** The project's split groups now (TabGroups.groupsOf), their leaves the live tab ids. Absent = none. */
+  listGroups?(projectId: string): TabGroup[]
+  /**
+   * After a restore spawned its tabs: the saved groups (untrusted, as read from the record) and the
+   * map from each saved tab id to its restored tab's new id (TabGroups.restore). Called once per
+   * restore run, also with no groups (the views still owe the restored order). Absent = groups are
+   * not restored (tests that do not care).
+   */
+  restoreGroups?(projectId: string, saved: unknown, idMap: ReadonlyMap<string, string>): void
   /** The project's folder (ProjectRegistry.get): the cwd saved for a tab that failed to restore. */
   projectPath(projectId: string): string | undefined
   /**
@@ -187,7 +224,7 @@ export interface TabRestorerOptions {
  * Keeps the saved tabs of every project in step with the live ones, and runs the pending restores.
  */
 export class TabRestorer {
-  private readonly pending = new Map<string, RestoredTab[]>()
+  private readonly pending = new Map<string, { tabs: RestoredTab[]; groups: unknown }>()
   private readonly running = new Map<string, Promise<void>>()
   // Saved tabs whose restore threw (spawn failed: out of ptys, the folder vanished meanwhile).
   // Every save rewrites the record from the live tabs, so without these that save would drop the
@@ -206,9 +243,12 @@ export class TabRestorer {
     this.log = options.log ?? warnLog
   }
 
-  /** Tabs to start when this project's renderer first attaches. Replaces an earlier plan. */
-  queue(projectId: string, tabs: RestoredTab[]): void {
-    if (tabs.length > 0) this.pending.set(projectId, tabs)
+  /**
+   * Tabs to start when this project's renderer first attaches, with the saved split groups over
+   * their saved ids (the record's `tabGroups`, unread). Replaces an earlier plan.
+   */
+  queue(projectId: string, tabs: RestoredTab[], groups?: unknown): void {
+    if (tabs.length > 0) this.pending.set(projectId, { tabs, groups })
     else this.pending.delete(projectId)
   }
 
@@ -230,15 +270,18 @@ export class TabRestorer {
    * still come back. The saved records are rewritten afterwards from what actually runs, plus the
    * tabs that failed (see `unrestored`).
    */
-  restore(projectId: string, ready: Promise<unknown>, spawn: (tab: RestoredTab) => void): Promise<void> {
-    const tabs = this.pending.get(projectId)
-    if (tabs) {
+  restore(projectId: string, ready: Promise<unknown>, spawn: (tab: RestoredTab) => unknown): Promise<void> {
+    const plan = this.pending.get(projectId)
+    if (plan) {
+      const { tabs, groups } = plan
       this.pending.delete(projectId)
       const startedAt = this.generation.get(projectId) ?? 0
       const run = ready.then(() => {
         // The window was closed (or the plan discarded) while the login env was captured.
         if ((this.generation.get(projectId) ?? 0) !== startedAt) return
         const failed: TabRecord[] = []
+        // Saved id → restored tab id, for the saved groups' leaves.
+        const idMap = new Map<string, string>()
         for (const tab of tabs) {
           // Dropped, not failed: a failed tab rides along in the record to be tried again, and a
           // gone plugin's tab must leave the record for good.
@@ -247,7 +290,9 @@ export class TabRestorer {
             continue
           }
           try {
-            spawn(tab)
+            // The started tab (TabManager.restoreTab's TabInfo): its new id is what the leaves become.
+            const id = startedId(spawn(tab))
+            if (id !== undefined && tab.savedId !== undefined && !idMap.has(tab.savedId)) idMap.set(tab.savedId, id)
           } catch (err) {
             this.log(
               `cannot restore a ${tab.kind} tab of project ${projectId}: ${errorText(err)}`
@@ -257,6 +302,14 @@ export class TabRestorer {
           }
         }
         if (failed.length > 0) this.unrestored.set(projectId, failed)
+        // Before the save below and before the attach answers (the desktop's `tabs.list` reply comes
+        // after this run): the groups are in place when any view first draws the tabs. A throw
+        // costs the groups only, never the restored tabs.
+        try {
+          this.options.restoreGroups?.(projectId, groups, idMap)
+        } catch (err) {
+          this.log(`cannot restore the split groups of project ${projectId}: ${errorText(err)}`)
+        }
         this.tabsChanged(projectId)
       })
       const done = run.finally(() => {
@@ -273,7 +326,7 @@ export class TabRestorer {
     if (this.frozen) return
     // Failed tabs go last: their place among the live tabs is not known, and order is cosmetic.
     const records = tabRecordsOf(this.options.listTabs(projectId))
-    this.options.saveTabs(projectId, [...records, ...(this.unrestored.get(projectId) ?? [])])
+    this.options.saveTabs(projectId, [...records, ...(this.unrestored.get(projectId) ?? [])], this.groupsOf(projectId))
   }
 
   /**
@@ -326,19 +379,31 @@ export class TabRestorer {
   requeue(projectId: string): void {
     if (this.pending.has(projectId)) return
     const records = [...tabRecordsOf(this.options.listTabs(projectId)), ...(this.unrestored.get(projectId) ?? [])]
+    // Their leaves are the live ids, which are the records' ids: the new window maps them like a launch.
+    const groups = this.groupsOf(projectId)
     this.unrestored.delete(projectId)
-    if (!this.frozen) this.options.saveTabs(projectId, records)
+    if (!this.frozen) this.options.saveTabs(projectId, records, groups)
     const path = this.options.projectPath(projectId)
     // Through buildRestorePlan like a launch: the same checks (a cwd that is gone falls back to
     // the folder, a command tab comes back not started, a shell tab never resumes).
-    this.queue(projectId, path === undefined ? [] : buildRestorePlan({ path, tabs: records }, this.options.pluginAvailable))
+    this.queue(projectId, path === undefined ? [] : buildRestorePlan({ path, tabs: records }, this.options.pluginAvailable), groups)
   }
 
   /** The user closed the project's window: its tabs are gone for good, so is their record. */
   clear(projectId: string): void {
     this.discard(projectId)
     if (this.frozen) return
-    this.options.saveTabs(projectId, [])
+    this.options.saveTabs(projectId, [], [])
+  }
+
+  /** The live groups, a throwing source read as none (the tabs are still saved). */
+  private groupsOf(projectId: string): TabGroup[] {
+    try {
+      return this.options.listGroups?.(projectId) ?? []
+    } catch (err) {
+      this.log(`cannot read the split groups of project ${projectId}: ${errorText(err)}`)
+      return []
+    }
   }
 
   /**

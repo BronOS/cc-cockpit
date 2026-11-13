@@ -344,6 +344,23 @@ describe('reorder', () => {
     expect(ids()).toEqual([t2!.id, t1!.id, t3!.id])
     expect(() => tabs.reorder(A, t1!.id, 1.5)).toThrow(/integer/)
   })
+
+  it('setOrder (tab groups) applies a permutation, never drops, duplicates or takes another project’s tab', () => {
+    const changed: string[] = []
+    const tabs = manager(undefined, undefined, (p) => changed.push(p))
+    const [t1, t2, t3] = [1, 2, 3].map(() => tabs.create(A, { kind: 'shell' }))
+    const other = tabs.create(B, { kind: 'shell' })
+    const ids = (): string[] => tabs.list(A).map((t) => t.id)
+    changed.length = 0
+    tabs.setOrder(A, [t3!.id, t1!.id, t2!.id])
+    expect(ids()).toEqual([t3!.id, t1!.id, t2!.id])
+    // A stale list: a foreign id, a duplicate, an unknown id, a tab left out.
+    tabs.setOrder(A, [other.id, t2!.id, t2!.id, 'nope', t3!.id])
+    expect(ids()).toEqual([t2!.id, t3!.id, t1!.id])
+    expect(tabs.list(B).map((t) => t.id)).toEqual([other.id])
+    // Not a save of its own: TabGroups saves tabs and groups together.
+    expect(changed).toEqual([])
+  })
 })
 
 describe('rename', () => {
