@@ -2,7 +2,7 @@
 // Files for cc-cockpit: a tree of the project folder in a panel, so the person can open any file of
 // the project (changed or not) and discuss it with Claude. A click opens the file through the
 // project's "Plugin used to open files" pick (ctx.files.open: the reviewer by default, the built-in
-// viewer if that is the pick); Edit goes to the `editor` service (micro by default).
+// viewer if that is the pick); Edit goes to the `editor` service (the bundled Editor's file tab by default).
 //
 // The host owns the file system work: the page asks for a folder, the host reads it (full Node),
 // asks git what is ignored and what changed, and watches every expanded folder so the tree follows

@@ -26,7 +26,7 @@ Two plugins, joined only through plugin services:
 | Plugin | Provides | Uses | Job |
 |---|---|---|---|
 | reviewer | `reviewer` v1 | | diff view against the last commit, annotations, global comment; the review text for Discuss with Claude |
-| editor | `editor` v1 | | the real editor: micro in a terminal overlay (below); "Edit" on every `file` overlay |
+| editor | `editor` v1 | `reviewer` v1 | the real editor: file tabs with CodeMirror (`docs/design-editor.md`; micro until 2026-11-13, below); "Edit" on every `file` overlay; the review notes in its gutter (Notes in place, below) |
 | file tree (later) | | `reviewer` v1, `editor` v1 | opens a file for review or editing |
 
 Which editor the reviewer uses is not a reviewer setting. When several enabled plugins provide
@@ -36,6 +36,9 @@ When no plugin provides `editor`, Edit is hidden. The reviewer recognises the
 `no enabled plugin in this project provides service "editor"` error and hides the button.
 
 ## The first editor: micro in a terminal overlay
+
+Historical: the code editor (`docs/design-editor.md`, 2026-11-13) replaced this. `cockpit.editor` now opens a file in a
+tab of the main tab bar and shows the reviewer's notes there; micro is left only as its "Open in micro" button.
 
 Agreed on 2026-11-02. The first plugin to provide `editor` v1 is a small wrapper around
 [micro](https://micro-editor.github.io/), a terminal editor. It needs no core change, because a
@@ -80,7 +83,8 @@ annotate({ title, html, assets?, url?, key?, tabId? })  // ... or on sanitized H
 annotate({ title, html, ..., label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })  // with a second document beside it (below)
 annotate({ ..., type? })  // the overlay's type, passed through (a source's own inbox-item { source, id })
 prepare({ key, title, type?, tabId? }), cancel({ key })  // a loading overlay an annotate fills
-features()  // the optional annotate features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original']
+features()  // the optional annotate features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes']
+notes(path), addNote(path, { from, to?, text, quote? })  // a file's line notes from outside the overlay (Notes in place, below)
 // editor v1 (implemented by the editor plugin)
 open(path, { line? })
 ```
@@ -316,6 +320,20 @@ new ones on green, layout tables) lost its look. Gmail shows the sender's stylin
   `{ type: 'original', id, index, part }` (`splitParts`), then the pictures. A frame is built when both its original
   and the main document are in, and again with the pictures at `assets-done` (and 150 ms after an `update`'s).
 
+### Notes in place (added to v1, reviewer 0.3.0, feature `'notes'`)
+
+The editor shows a file's review notes in its gutter and adds one from its context menu, so the reviewer hands them
+out through the service, from the same stored draft the overlay uses (`draft:<path>`):
+
+- `notes(path)` → the file's line notes, `{ id, from, to, text, quote }` in line order (1-based lines of the file on
+  disk): the working-tree side's notes and the rendered-view notes of a Markdown or HTML file that carry source lines.
+  Empty notes, old-side notes, PDF page notes and anchors with no lines are not lines of the file and stay out.
+- `addNote(path, { from, to?, text, quote? })` writes one note into the draft. The caller is another plugin, so every
+  field is checked with the page's caps (a text over the cap is refused, never cut; a long quote is cut). Refused while
+  the file's review overlay is open: the page owns the draft then (add the note there).
+- The event `notesChange` `{ path }` follows every change of a file's notes (the overlay's, an `addNote`), so the
+  editor re-reads them.
+
 ### Which tab Discuss starts on
 
 For `open`, `annotate` and a click alike, `tabId` goes to the overlay as `discuss: { tabId }` (a click names the
@@ -361,7 +379,8 @@ with `git show HEAD:<path>` and the working-tree file, and the view computes the
   - No note and no comment is fine: Claude is asked to discuss the file (read it and its diff) or, for an annotated
     text, gets the text itself (as plain text, cut to fit) with that request.
   - **Edit** is `cockpit.editor`'s button for the `file` type: shown for a text file inside the project, it opens
-    micro on top, and the review stays under it. It opens at the first line (a type button has no page state).
+    the file's tab and closes the overlay (micro on top until 2026-11-13). It opens at the first line (a type button has
+    no page state).
   - **Close** (the page's, and Esc / ✕) sends nothing.
 - **Drafts:** Close keeps the draft for that file in `ctx.storage` under `draft:<path>`. Reopening the
   file brings back the global comment and the notes. `discussed` clears the draft. A

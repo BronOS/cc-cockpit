@@ -115,7 +115,7 @@ main (Electron)
 ## 3. Terminal tabs and Claude sessions
 
 **Tabs** (central zone): a Claude tab (main spawns `claude` in a PTY, `cwd` = project folder or a
-subfolder), a shell tab (`$SHELL -l`), or a command tab (below). GUI apps on macOS do not get the
+subfolder), a shell tab (`$SHELL -l`), a command tab (below), or a plugin's page tab (no process; §4 "Page tabs"). GUI apps on macOS do not get the
 shell's PATH, so main reads the environment from `$SHELL -l -i` once at startup and uses it for
 every PTY.
 
@@ -576,9 +576,10 @@ and `inbox-item` `{ source, id }`.
 `did-finish-load` / `did-fail-load` / `did-stop-loading`; a terminal's first PTY output). "Still
 loading…" after 10 s; ✕ and Esc work throughout. A renderer reload brings an html overlay's loader back.
 
-**Page tabs** (`contributes.tabs`, `ctx.tabs`; design-editor §1). A third `TabKind`, `page`, beside `claude`, `shell` and
+**Page tabs** (`contributes.tabs`, `ctx.tabs`; design-editor §1). Another `TabKind`, `page`, beside `claude`, `shell` and
 `command`: a tab of the main tab bar whose content is a plugin page, drawn in its own sandboxed frame with its own
-`MessagePort` to the plugin's backend (`ctx.tabs.onOpen`), as a slot is; the frames sit outside the React root. A page
+`MessagePort` to the plugin's backend (`ctx.tabs.onOpen`, a `PageTabInstance` with `id`, `type`, `params`, `view`,
+`post`, `onMessage`, `onClose`, `onDiscuss` and `setTitle(title, icon?)`), as a slot is; the frames sit outside the React root. A page
 tab is never a terminal: the send gate, `typed` and Claude status do not apply; a saved tab keeps `type` and params and
 is asked of its plugin again on restore (a gone or revoked plugin drops it). Title and icon come from the plugin's
 request, clamped by main. The frame is mounted on first select (not at restore), the 6 most recently used stay
@@ -592,8 +593,10 @@ dot, never a flag. Discuss with Claude works on a page tab: core draws the quest
 
 **Processes** (`ctx.processes`). `spawn(argv, { cwd })` runs inside the plugin host (which can start processes already),
 so it is not a capability: argv only, never a shell, the env fixes of `ctx.exec`, bytes not text (LSP framing counts
-bytes), at most 16 live children per plugin, and every child's process group is killed on `kill`, on tab or plugin
-dispose and when the host stops. `openFile.whenPicked` lets a plugin be listed in "Plugin used to open files" without
+bytes), at most 16 live children per plugin; the handle has `pid`, `write`, `end` (closes stdin), `onData`, `onStderr`, `onExit`
+and `kill`. Every child's process group is SIGKILLed on `kill`, when the child itself exits (a grandchild would outlive
+it untracked), on the plugin's dispose (stop, reload, failed activate) and when the host stops; a tab closing kills
+nothing by itself (the plugin decides). `openFile.whenPicked` lets a plugin be listed in "Plugin used to open files" without
 being the default: the Reviewer is the default for a plain click, so the Editor (a candidate only when picked) is opened
 by Edit, `ctx.services` `editor.open` and `ccc edit`.
 
@@ -785,8 +788,9 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
 - `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars, "whenPicked"?: boolean }`). The
   plugin may take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
   `whenPicked: true`: a candidate only when the project picked it (listed in the pick, never the default).
-- `tabs[]`: page-tab types (`{ "type", "page" }`, validated like `slots[]`: needs `main`, `type` `^[a-z][a-z0-9-]{0,63}$`,
-  `page` an `.html` in the plugin folder, a type once per plugin); see Page tabs below. Main never takes a page path from the host.
+- `tabs[]`: page-tab types (`{ "type", "page", "keys"? }`, validated like `slots[]`: needs `main`, `type`
+  `^[a-z][a-z0-9-]{0,63}$`, `page` an `.html` in the plugin folder, a type once per plugin, at most 10 types; `keys` up to
+  32 chords the page takes while it has focus); see Page tabs (§4). Main never takes a page path from the host.
 - A panel's `icon` (an SVG or PNG in the plugin folder) is drawn as a mask in the strip's text colour,
   not as an image: only its shape and alpha count, so it follows the theme, hover and open states (a
   `stroke="currentColor"` SVG drawn by `<img>` came out black). `IconStrip.tsx` paints a CSS
@@ -811,8 +815,8 @@ that project.
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
 | UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.panels.slots(id, placements \| null)` (Slots, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus, onButton, setButtons, onDiscuss}` (`focus` brings it to the front, no-op after close; two-way html overlay, toolbar buttons and Discuss, §4), `ctx.overlay.buttons(type, provider)` (buttons on every overlay of a type, §4 Overlay toolbar) |
 | slots | `ctx.slots.onOpen(type, fn)` → disposer (provider side; the type must be in `contributes.slots`), a `SlotInstance` `{id, type, host, params, post, onMessage, onClose}`, `ctx.slots.available(type)` → `Promise<boolean>` (Slots, below) |
-| tabs | `ctx.tabs.onOpen(type, fn)` (the page's backend: a `TabInstance` with `post`, `onMessage`, `onClose`, `onDiscuss`), `openPage(type, params, {title, icon?, focus?})` → tab id, `list(type)`, `focus(id)`, `markUnseen(id)`, `close(id)` (page tabs, below; every call throws for a type not in `contributes.tabs`) |
-| processes | `ctx.processes.spawn(argv, {cwd})` → handle `write(bytes)`, `onData(bytes)`, `onStderr`, `onExit`, `kill` (long-running child, byte stdio, argv only; not a capability; below) |
+| tabs | `ctx.tabs.onOpen(type, fn)` (the page's backend: a `PageTabInstance` with `id`, `type`, `params`, `view`, `post`, `onMessage`, `onClose`, `onDiscuss`, `setTitle(title, icon?)`), `openPage(type, params, {title, icon?, focus?})` → tab id, `list(type)`, `focus(id)`, `markUnseen(id)`, `close(id)` (§4 "Page tabs"; every call throws for a type not in `contributes.tabs`) |
+| processes | `ctx.processes.spawn(argv, {cwd})` → handle `pid`, `write(bytes)`, `end()`, `onData(bytes)`, `onStderr`, `onExit`, `kill` (long-running child, byte stdio, argv only; not a capability; §4 "Processes") |
 | files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration), `ctx.files.reveal(path)`, `ctx.files.openWithSystem(path)`, `ctx.files.trash(path)` (the system's file manager, default app and Trash; below) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
@@ -1129,8 +1133,8 @@ Cmd/Ctrl/Alt typed into a view are forwarded to the app.
 resources (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`, `plugins/sessions`, `extraResources`). They are indexed from an allowlist
 (`BUNDLED_PLUGINS`) at every start, never copied, cannot be uninstalled (only disabled) and update with the app.
 They use only the public plugin API, with no privilege beyond being shipped; a third party can build the same under its own id.
-`build:browser` and `build:reviewer` (deterministic, a unit test rebuilds and compares bytes) produce the committed
-output; the plugins' own `node:test` tests run with `npm run test:plugins`.
+`build:browser`, `build:reviewer` and `build:editor` (deterministic, a unit test rebuilds and compares bytes) produce the
+committed output; the plugins' own `node:test` tests run with `npm run test:plugins`.
 
 *Reserved ids*: an id starting with `cockpit.` (case-insensitive, `isReservedPluginId`) is accepted only for a plugin
 loaded from the bundled root: the load path checks that the id is a `BUNDLED_PLUGINS` entry and the folder's realpath is
@@ -1153,7 +1157,7 @@ The index entry (not the manifest) may set `enabledByDefault`; the project recor
 and a skill. The reviewer (`cockpit.reviewer`) opens a changed file as a diff in a two-way html overlay (CodeMirror 6 with
 `@codemirror/merge`), takes notes on selections and one comment per file. A file review is an overlay of the type `file`: the app's toolbar gives it
 Discuss with Claude (the reviewer answers `onDiscuss` with the review text; a note is optional, New session selects
-its tab) and the editor's Edit button (micro on top, the review stays under it); its
+its tab) and the editor's Edit button (opens the file's tab and closes the overlay); its
 `reviewer` service also takes a plain text from another plugin
 (`annotate`: a ticket, a mail), as text or as allow-list-sanitized HTML with image assets, for notes in the same overlay (`prepare` shows that
 overlay at once with a loader while the caller still fetches, and the annotate of the same key fills it); its design is in `plugins/reviewer/docs/design.md`.
@@ -1195,8 +1199,10 @@ through the reviewer's `open-link` check (the caller's own links only, http(s) o
 request and console line of the app.
 
 The editor
-(`cockpit.editor`) provides `editor` v1: micro in a terminal overlay, with app settings `autosaveSeconds`, `colorscheme`
-and `microPath` and `ccc edit`; it needs micro installed and says how to install it when it is missing. Files a session
+(`cockpit.editor`, design in `docs/design-editor.md`) provides `editor` v1: files as page tabs edited with CodeMirror 6,
+language servers, merge with Claude's writes, Ask Claude, quick chat and `ccc edit`, with app settings
+`autosaveIdleSeconds`, `autosaveOnBlur`, `servers`, `quickChatModel`, `microPath` and `colorscheme`; micro is needed only
+for "Open in micro" and ripgrep for quick open and find in files (each missing tool is named with its install command). Files a session
 edits outside its project stay in the built-in viewer: plugins only receive project-relative paths. The sessions plugin
 (`cockpit.sessions`, §3 "Claude status UI") is the Claude status view that left the renderer in 0.10: the Sessions panel and the
 top bar's `sessions-strip` slot, with the `access` declaration for the other windows' tabs and the app setting `filesShown`;

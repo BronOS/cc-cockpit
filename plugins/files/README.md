@@ -4,7 +4,7 @@ A tree of the project folder in a panel (left zone), shipped with cc-cockpit. Op
 project, changed or not, to read it, attach notes and discuss it with Claude.
 
 - Click a file (or Enter): opens it through "Plugin used to open files" (Settings > Plugins), the
-  reviewer by default. Edit (hover, or `e`) opens it in the editor (micro by default).
+  reviewer by default. Edit (hover, or `e`) opens it in the editor (a file tab with the bundled Editor).
 - Everything is shown, dotfiles and git-ignored files too (ignored ones dimmed); `.git` never is.
   App settings: Hide hidden files, Hide ignored files.
 - Git marks: M modified, A added, ? untracked, R renamed, U conflict; a dot on a folder with a change.

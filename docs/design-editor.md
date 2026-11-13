@@ -1,6 +1,7 @@
 # Code editor (design)
 
-Status: revision 2 (2026-11-12): the brainstorm's design, revised after a Fable review (all findings applied). A main
+Status: implemented (2026-11-13; plan `docs/plans/completed/20261112-code-editor.md`, what v1 leaves out in §6).
+Revision 2 (2026-11-12): the brainstorm's design, revised after a Fable review (all findings applied). A main
 coding editor in cc-cockpit: files as tabs in the tab bar, CodeMirror 6, language servers from v1, and Claude features
 built in. It works the same on the desktop, in a browser and in a remote window, because it is a plugin page.
 
@@ -22,7 +23,8 @@ survive a host restart, a web reconnect and a relay backlog; each page keeps its
 compares and swaps; the save is checked on the inode; frames mount lazily; dirty and close are per view and the close
 question is core's; keyboard routing is its own piece; page-tab types are declared in the manifest; `processes` is
 not a capability (host code can already spawn); argv hardening for `rg` and `git`; one server per language per
-project; quick chat runs with `--restricted --strict-mcp-config --tools Read,Grep,Glob`. Cut from v1: Vim mode, the
+project; quick chat runs with `--restricted --strict-mcp-config --tools Read,Grep,Glob` (the build added `--safe-mode` and
+`--permission-prompts none`, §4 "Quick chat"). Cut from v1: Vim mode, the
 "since opened" mark, the Plugins-page process list, root detection.
 
 ## 1. Architecture
@@ -58,7 +60,9 @@ Keyboard: a sandboxed frame's keys never reach the shell's window listener. Desk
 maps app chords to `commands.trigger`, as webview panels do. Web shell: the panel SDK forwards chords to the parent.
 Precedence: the app table and `keyOverrides` win for chords they hold (Ctrl+Tab, Ctrl+W...); the editor's own chords
 (Ctrl+P, Ctrl+K, Ctrl+L, Ctrl+D, Ctrl+S) are declared in its manifest as page-tab keys and go to the page while it has
-focus; a conflict with the app table is shown in the keybinding editor.
+focus; a conflict with the app table is shown in the keybinding editor (Settings > Keybindings lists the key two
+commands share). The default table holds one: Ctrl+Shift+F (Cmd+Shift+F) is core's Toggle Tab Flag, so find in files
+got Ctrl+Shift+H and a context-menu item, and its declared Ctrl+Shift+F reaches the page only once the flag is rebound.
 
 `ccc edit` "the tab is marked": a core *unseen* dot on a tab opened while you were elsewhere (cleared on first view);
 never a tab flag, which is the person's alone.
@@ -150,9 +154,15 @@ picked from a short menu; delivered only in *waiting for input*, queued otherwis
 would be refused on any typed tab, which is nearly every tab.
 
 **Quick chat** (Ctrl+K on a selection): a short-lived headless Claude through `ctx.processes` in the project folder,
-with a fixed argv: `claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob --input-format stream-json
---output-format stream-json` plus the model setting. No user or project settings, hooks or MCP servers are loaded;
-the host refuses to start when the installed `claude` lacks these flags. The prompt carries the path, the selection
+with a fixed argv: `claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts
+none --input-format stream-json --output-format stream-json --verbose --include-partial-messages --model <setting>`.
+`--restricted` ignores the user, project and local settings files (their hooks and permissions with them) and removes
+the tools that run commands; `--safe-mode` turns off installed plugins (and their hooks), skills, CLAUDE.md, custom
+agents and commands, which `--restricted` alone still loaded; `--strict-mcp-config` with no config means no MCP server;
+`--tools` leaves only reading; `--permission-prompts none` denies whatever would ask instead of waiting on a prompt
+nobody answers; `--verbose` is required by `-p` with stream-json output, and `--include-partial-messages` gives the
+streamed text. So no user or project settings, plugins, hooks, CLAUDE.md or MCP servers are loaded; the host refuses
+to start when the installed `claude --help` lacks any of these flags. The prompt carries the path, the selection
 and about 30 lines around it, as data (file text can carry injected instructions; with read-only tools and no MCP the
 worst is a wrong proposal). Answers stream as Markdown; follow-ups continue the same headless session; closing the
 popup ends it. A proposed change is a replacement for the selection, shown as an inline diff; the range is mapped

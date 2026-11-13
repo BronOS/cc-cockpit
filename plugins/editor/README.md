@@ -22,7 +22,10 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   replaces one): diagnostics (underlined, in the gutter), hover, completion with snippets, signature help (Ctrl+Shift+Space),
   go to definition (F12), references (Shift+F12), rename (F2), code actions (Ctrl+.), format (Shift+Alt+F) and the
   file's symbols (Ctrl+Shift+O); Cmd instead of Ctrl on macOS. A definition in another project file opens its tab; one
-  outside the project (`node_modules`, the module cache) opens read-only, only for a location the server returned.
+  outside the project (`node_modules`, the module cache) opens read-only, only for a location the server returned,
+  and never under `/proc`, `/sys`, `/dev`, `/run` or the home's credential and history files (`.ssh`, `.gnupg`, `.aws`,
+  `.config`, `.npmrc`, shell histories and the like). A file of over 2 million characters gets no server; at most 256
+  files are open in the servers per project, 16 per tab.
   Rename, format and code actions are applied by the host: an open file in its tab (undo works, autosave saves it),
   any other file by the same compare-and-swap save; an edit that would create, rename or delete a file, or change one
   outside the project, is refused whole. A missing server leaves highlighting with its install command on the tab.
@@ -40,7 +43,8 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
 - Ask Claude (Ctrl+L, Cmd+L on macOS, or the editor's right-click menu): core's Discuss for the tab. Core draws the
   question box; the host answers with `path:start-end` (1-based) and the selected text in a code fence one backtick
   longer than any run in it (cut to 8,000 characters, with a note), or just `path:line` with no selection. Only the main selection is sent (with several cursors the others are ignored). The text goes to
-  the Claude tab you pick as your own text, delivered when it waits for input. Needs an app with page tabs' Discuss.
+  the Claude tab you pick (or a new session, under Discuss's own budget) as your own text, delivered when it waits for
+  input. Needs an app with page tabs' Discuss.
 - Quick chat (Ctrl+K, Cmd+K on macOS): a chat docked under the editor about the selection (the cursor's line with none,
   at most 20,000 characters). The host runs Claude Code headless and read-only in the project folder, with a fixed argv
   (`claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts none` plus
@@ -61,13 +65,15 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   line. The path must resolve inside the project folder (symlinks followed); a binary file goes to the project's file
   opener (the reviewer, else the built-in viewer). A missing file opens as a new one, created by its first save.
 - Saving: autosave after you stop typing (setting `autosaveIdleSeconds`, default 3 s, 0 off; an `autosaveSeconds` set
-  for micro before is its default) and when you leave the tab (`autosaveOnBlur`); Ctrl+S saves at once. Saves are
+  for micro before is its default, except 5, the old schema default, which main stored with every save and so reads
+  as unset) and when you leave the tab (`autosaveOnBlur`); Ctrl+S saves at once. Saves are
   compare-and-swap: when the file changed on disk meanwhile (Claude wrote it), nothing is overwritten.
 - Claude changing an open file: a clean tab reloads (the cursor stays where it was, the changed lines flash). A tab
   with unsaved text merges Claude's change into yours (three-way, by line): a clean merge is saved with a notice; lines
   both of you changed show Claude's version above yours with Keep mine, Take Claude's and Keep both, and nothing is
   saved until each is resolved (the tab's title shows ⚠ meanwhile). A file deleted on disk keeps its tab and text, with
-  Save (recreate it) or Close. Binary, non-UTF-8 and files over 5 MB open read-only.
+  Save (recreate it) or Close. Binary, non-UTF-8 and files over 5 MB open read-only; a file over 16 MiB is not shown at
+  all (the tab says why).
 - "Open in micro" on a file tab: [micro](https://micro-editor.github.io) on the same file in a terminal overlay (settings
   `microPath`, `colorscheme`). `ccc edit <file>[:line[:col]]` opens the file's tab at that position, marked and not selected (an open tab gets the mark again; a missing or binary file is refused; micro on an app without page tabs). Needs micro on the login-shell PATH
   (`brew install micro`, `sudo pacman -S micro`, `sudo apt install micro`; a missing micro is reported with these

@@ -46,8 +46,15 @@ Every feature in detail: [docs/features.md](docs/features.md).
 
 ## Install
 
-You need `claude` (Claude Code) on your PATH, and git for installing plugins. [micro](https://micro-editor.github.io) is
-optional: the bundled editor's "Open in micro" and `ccc edit` use it (`brew install micro`, `sudo pacman -S micro` or `sudo apt install micro`).
+You need `claude` (Claude Code) on your PATH, and git for installing plugins. The bundled editor uses a few optional
+tools when they are installed, and says which one is missing and how to install it:
+
+- [ripgrep](https://github.com/BurntSushi/ripgrep) for quick open and find in files (`brew install ripgrep`,
+  `sudo pacman -S ripgrep` or `sudo apt install ripgrep`).
+- Language servers for diagnostics, completion and go to definition: `typescript-language-server` (TypeScript and
+  JavaScript), `gopls` (Go), `intelephense` or `phpactor` (PHP), `basedpyright` or `pyright` (Python).
+- [micro](https://micro-editor.github.io) for "Open in micro" (`brew install micro`, `sudo pacman -S micro` or
+  `sudo apt install micro`).
 
 If you linked your own `cockpit.reviewer` or `cockpit.editor` before, unlink them (`ccc plugin unlink <id>`): those ids now
 belong to the bundled plugins and the app drops an old linked copy at start with a log line.

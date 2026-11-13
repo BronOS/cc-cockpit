@@ -32,13 +32,19 @@ behind it are in [design.md](design.md).
   first, naming the tab and, for Claude, its status; Cancel is the default. "Don't ask again" in
   the question, or Settings > General > Tabs > "Ask before closing a tab that is still
   running" (on by default), turns it off. A tab whose process already ended closes at once.
+  A page tab with unsaved text (an editor file) always asks, whatever that setting says, and so do
+  closing its window and quitting (on macOS, Cancel there also cancels a logout or shutdown that
+  asked the app to quit). A window reopened by a setting that needs a new window (window
+  transparency) does not ask: its page tabs end and unsaved text in them is lost, so save first.
 - Ctrl+Tab (Ctrl on every platform; Cmd+Tab is macOS's app switcher) goes back to the tab you were
   in before. Hold Ctrl and press Tab again to walk further back through the tabs in recent order,
   Shift+Tab or the arrow keys to step back; after a moment an overlay lists the tabs, and letting go
   of Ctrl picks the highlighted one. Esc cancels, Enter picks. Move the mouse over the list and it
   stays open after the release, for a click. Both chords can be rebound in Settings (Switch to
   Recent Tab). Known limit: the chord is not seen while the keyboard is in a plugin's panel page
-  (a sandboxed frame keeps its keys); a web panel forwards it, and the overlay then waits for a click or Enter.
+  (a sandboxed frame keeps its keys); a web panel forwards it, and the overlay then waits for a click or Enter. A page
+  tab (an editor file) forwards it too, but the keyboard stays in the page: the switcher's arrows and Enter also act in
+  the editor and letting go of Ctrl does not pick, so pick with a click.
 - Tab flags, to come back to the tab that matters while Claude works in many: right-click a tab
   (or Shift+F10 on it) > Flag and pick one of six colours (red, orange, yellow, green, blue,
   purple), Edit note… for a short reminder (up to 80 characters; Enter saves, Esc cancels), Clear
@@ -198,7 +204,8 @@ behind it are in [design.md](design.md).
   through `ctx.files.onOpen({ path, tabId })` (path relative to the project; main checks the tab and the path).
   With several such plugins, or to keep the built-in viewer, Settings > This Project > "Plugin used to open files"
   picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
-  fails, or it does not answer within 2 s, and for a file outside the project.
+  fails, or it does not answer within 2 s, and for a file outside the project. A plugin whose `openFile` has
+  `whenPicked: true` (the Editor) is a candidate only when the project picks it, never the default.
 - Plugins open tabs: a Claude tab with `ctx.sessions.open` (a prompt as an argument, a model and effort) and a plain
   shell tab with `ctx.sessions.openShell` (the person's "+" > shell: their login shell, with no command or environment
   from the plugin). Both take a cwd inside the project folder (checked by real path), open unselected unless the
@@ -259,15 +266,17 @@ behind it are in [design.md](design.md).
   in a tab of the main tab bar, edited with CodeMirror 6 (highlighting for TS/JS, Go, PHP, Python, JSON, YAML,
   Markdown, HTML, CSS and shell; search and replace, multi-cursor, folding, comment toggle), in the theme's colours and
   the terminal font. It autosaves after you stop typing (default 3 s, 0 off; an autosave set for micro before carries
-  over) and when you leave the tab; Ctrl+S saves at once. A save never overwrites a change made on disk meanwhile
+  over, except 5, micro's old default, which reads as unset) and when you leave the tab; Ctrl+S saves at once. A save never overwrites a change made on disk meanwhile
   (Claude writing the file): a clean tab reloads by itself (the cursor stays, changed lines flash), one with unsaved
   text merges Claude's change into yours, saved with a notice when clean; lines you both changed show Claude's version
   above yours (Keep mine, Take Claude's, Keep both; ⚠ in the tab title, nothing saved until all are resolved). A file
   deleted on disk keeps its tab with Save (recreate) or Close. Binary, non-UTF-8 and
-  files over 5 MB open read-only; a binary file goes to the reviewer instead. A tab with unsaved text shows a dot and
+  files over 5 MB open read-only, and a file over 16 MB is not shown at all (the tab says why); a binary file goes to
+  the reviewer instead. A tab with unsaved text shows a dot and
   closing it asks. In a file tab, Ctrl+P (quick open: the project's files, fuzzy filtered, ripgrep's ignore rules)
   and Ctrl+Shift+H or the context menu's Find in files (plain text, case, whole word or regex; results by file, a click
-  opens the tab at the line; Ctrl+Shift+F is Toggle Tab Flag by default and reaches the editor only once that is rebound) need [ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`, `sudo pacman -S ripgrep`, `sudo
+  opens the tab at the line; Ctrl+Shift+F is Toggle Tab Flag by default and reaches the editor only once that is
+  rebound in Settings > Keybindings, which lists a key two commands share) need [ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`, `sudo pacman -S ripgrep`, `sudo
   apt install ripgrep`); without it they say so. A plain click on a file (Sessions, Files) still opens the Reviewer;
   pick "Editor (a file tab)" under "Plugin used to open files" in Settings > This Project to open its tab instead.
   "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a
@@ -285,16 +294,19 @@ behind it are in [design.md](design.md).
     opens the Reviewer's diff); the Reviewer's notes for the file show there too, and "Add review note" on a selection
     adds one.
   - Ask Claude (Ctrl/Cmd+L, or the context menu on a selection): a question with the path, lines and selection, sent
-    to the Claude tab last used in the project (or one you pick) through the send gate, so it waits for *waiting for
-    input*.
+    to the Claude tab last used in the project (or one you pick, or a new session) through the send gate, so it waits
+    for *waiting for input*.
   - Quick chat (Ctrl/Cmd+K on a selection): a short headless Claude, read-only (Read, Grep, Glob; no settings, hooks
     or MCP servers), proposes a replacement shown as an inline diff with Accept and Reject; Claude never writes the
     file. The model is an app setting (default `sonnet`). These runs leave transcripts in `~/.claude`, so the Usage
     panel counts them.
   - Mod+click or Alt+click adds a cursor; the page tab follows Ctrl+Tab, drag, flags and restore like any tab.
 - Page tabs: a plugin can draw a tab of the main tab bar as its own page (`contributes.tabs`, `ctx.tabs`); the editor
-  is the first. Such a tab holds unsaved text, so its page stays loaded while you switch (the 6 most recent), survives a
-  plugin restart and a browser reconnect, and closing a tab with unsaved text asks. Plugins can also run long-running
+  is the first. Such a tab holds unsaved text, so its page stays loaded while you switch (the 6 most recent; a tab
+  without unsaved text that left them loads afresh when selected), survives a plugin restart and a browser reconnect,
+  and closing a tab with unsaved text asks (see closing a tab above). A plugin has at most 64 page tabs per project.
+  Unsaved text is counted per view: a browser that has the project open can make the desktop's close ask about a tab
+  until that browser disconnects. Plugins can also run long-running
   child processes with `ctx.processes` (argv only, 16 per plugin, killed with the plugin).
 - A built-in file tree (`cockpit.files`, on by default, ships with the app): a Files panel (left zone) with the
   whole project folder, so any file can be opened and discussed with Claude, changed or not. A click opens it through
@@ -791,7 +803,10 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   a rename or code action are refused. The `servers` setting names a command only, so a server runs with its own
   defaults: a Python virtualenv is found only through `pyrightconfig.json` or `[tool.pyright]`, and intelephense runs in
   its free tier. The four built-in servers were tested against fakes, not run for real. Quick open and find in files
-  need ripgrep.
+  need ripgrep. A file of over 2 million characters gets no language server, and at most 256 files (16 per tab) are
+  open in the servers at once. A definition outside the project never opens from system folders (`/proc`, `/sys`,
+  `/dev`, `/run`) or from credential and history files in your home (`.ssh`, `.gnupg`, `.aws`, `.config`, `.npmrc`,
+  shell histories and the like).
 - The reviewer and editor handle files inside the project only. A file a session edits outside its project keeps
   opening in the built-in viewer, because plugins only receive project-relative paths.
 - The web view (browser plugin) cannot stop a hostile page from navigating its top level to an
