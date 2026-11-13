@@ -2040,6 +2040,13 @@ iframe:focus-visible {
 .tab-group-handle:hover {
   background: color-mix(in srgb, var(--cc-fg) 5%, transparent);
 }
+/* A group's name is the person's text (security review: never in place of a member's label, dot or
+   tint), capped so a long one cannot push the members' tabs, and their dots, out of the strip. */
+.tab-group-name {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tab-group-zoom {
   font-size: var(--cc-text-sm);
   color: var(--cc-accent);

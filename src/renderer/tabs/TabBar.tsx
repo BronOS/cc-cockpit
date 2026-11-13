@@ -593,6 +593,8 @@ export function TabBar(props: {
                 }}
               >
                 <SplitGlyph size={13} />
+                {/* The name only as text, beside the members, never in place of a member's label or
+                    dot: a group named "needs you" must not stand in for a real status. */}
                 {g.name !== undefined && <span className="tab-group-name">{g.name}</span>}
                 {words.zoomText !== undefined && <span className="tab-group-zoom">⤢ {words.zoomText}</span>}
               </button>

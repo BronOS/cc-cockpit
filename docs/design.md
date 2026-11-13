@@ -477,6 +477,20 @@ plain tab has no group, and a project without groups behaves as before.
   remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups
   or names a `groups.*` channel (`no-plugin-group-edits.test.ts`). `SessionInfo` has no group (D11),
   and there is no `ccc` command.
+- *Focus (D3, D18).* Nothing done elsewhere moves a view's keys: no group op, close, snapshot or
+  restore sends `tabs.select`, and only the person's own act (a click on a pane or in the strip, a
+  pane chord, their own close, Move out or Ungroup) chooses a focused pane. When the focused pane
+  leaves its group because of a change elsewhere (another view closed it, moved it out or ungrouped
+  the group), the page keeps showing the rest of the group with the pane that took its
+  space as the view's tab, but marks no pane focused, gives no terminal the keys and sends no
+  `tabs.selected` until the person acts (`keysOff` in `renderer/state/groups-state.ts`). Their own
+  close or move out moves the focus to the pane that took the space, keys on; their own placement or
+  Ungroup keeps it on the same terminal. A pane hidden by zoom never takes the keys or the size.
+- *Strip.* A group is a bracketed segment of its members with a handle; every member keeps its own
+  tab with its dot, tint, flag and label, zoomed or not, so a member that needs permission or waits
+  for input always shows in the strip (the handle's description also names every asking member in
+  words). The group's name (`checkSessionName`: no control or bidi characters) is shown only as text
+  in the handle, capped in width, never in place of a member's label, dot or tint.
 - *A plugin's pane is never focused (D4).* A tab a plugin placed beside another is never sent a
   `tabs.select`, so a plugin cannot move the person's keystrokes into a pane they did not pick (a
   Claude tab waiting for input, a command it chose). With `focus: true`, main selects the anchor
