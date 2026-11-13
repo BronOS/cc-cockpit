@@ -4,6 +4,16 @@
 // flag comes the same way: main answers `tabs.flag` / `tabs.toggleFlag` with the flag as stored.
 import type { TabInfo } from '../../shared/ipc'
 import type { TabFlag } from '../../shared/tab-flag'
+import { groupOf, leavesOf, removeLeaf, type GroupsSnapshot } from '../../shared/tab-groups'
+import { successorInGroup } from '../tabs/pane-layout'
+import {
+  applyOrder,
+  initialGroupsView,
+  keepContiguous,
+  pruneView,
+  selectionAfterSnapshot,
+  type GroupsViewState
+} from './groups-state'
 
 type Exit = NonNullable<TabInfo['exit']>
 
@@ -13,7 +23,7 @@ export interface GenExit {
   gen: number
 }
 
-export interface TabsState {
+export interface TabsState extends GroupsViewState {
   tabs: TabInfo[]
   /** The selected tab; null only while there are no tabs. */
   activeId: string | null
@@ -62,7 +72,11 @@ export type TabsAction =
   | { type: 'announced'; tab: TabInfo }
   /** `tabs.restart` answered: same id, a newer generation; selection and position unchanged. */
   | { type: 'restarted'; tab: TabInfo }
-  | { type: 'closed'; tabId: string }
+  /**
+   * The tab closed. `own`: the person closed it in this view (×, Cmd+W, the exited banner, Close
+   * all), which decides where a group's focus goes (D3); a plugin's close and main's are not.
+   */
+  | { type: 'closed'; tabId: string; own?: boolean }
   /**
    * main closed the tab itself (`tabs.removed`: process `gen` exited cleanly). Like 'closed' for a
    * tab held at that generation or an older one; remembered for a tab not held yet.
@@ -82,8 +96,19 @@ export type TabsAction =
    * either: it is about the tab, and main sends it only when the view changes.
    */
   | { type: 'typed'; tabId: string; typedBy: { viewId: string; device: string } | null }
+  /**
+   * main's groups (`groups.changed`, the `groups.get` reply): applied when newer than the last one.
+   * `intent` is this view's own pending edits by tab (selectionAfterSnapshot): `leave` for a close
+   * or move out the person made here, `stay` for a placement of the tab they want to keep looking at.
+   */
+  | { type: 'groups'; snapshot: GroupsSnapshot; intent?: Readonly<Record<string, 'leave' | 'stay'>> }
+  /** This view zooms `tabId` in its group (⌘⇧Enter), or unzooms the group (`null`). Per view, never sent. */
+  | { type: 'zoom'; groupId: string; tabId: string | null }
+  /** The person clicked a pane or used a chord: the keys are on again after D3 took them off. */
+  | { type: 'keysOn' }
 
 export const initialTabsState: TabsState = {
+  ...initialGroupsView,
   tabs: [],
   activeId: null,
   earlyExits: {},
@@ -93,6 +118,33 @@ export const initialTabsState: TabsState = {
 }
 
 export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
+  return settleGroups(state, step(state, action))
+}
+
+/**
+ * After every action: a group's members stay one block in the strip (a tab main placed may arrive
+ * after the snapshot that placed it), the selected pane is remembered as its group's last focus,
+ * and zooms or focuses of panes that left are dropped.
+ */
+function settleGroups(before: TabsState, s: TabsState): TabsState {
+  if (s === before) return s
+  let next = s
+  if (s.tabs !== before.tabs || s.groups !== before.groups) {
+    const tabs = keepContiguous(s.tabs, s.groups)
+    if (tabs !== s.tabs) next = { ...next, tabs }
+  }
+  if (s.groups !== before.groups) {
+    const pruned = pruneView(s.groups, s.zoomed, s.lastFocus)
+    if (pruned.zoomed !== s.zoomed || pruned.lastFocus !== s.lastFocus) next = { ...next, ...pruned }
+  }
+  if (next.activeId !== null && (next.activeId !== before.activeId || s.groups !== before.groups)) {
+    const g = groupOf(next.groups, next.activeId)
+    if (g && next.lastFocus[g.id] !== next.activeId) next = { ...next, lastFocus: { ...next.lastFocus, [g.id]: next.activeId } }
+  }
+  return next
+}
+
+function step(state: TabsState, action: TabsAction): TabsState {
   switch (action.type) {
     case 'loaded': {
       // The list is asked for once per page load (TabsPane attachTabs); a second dispatch (a
@@ -113,6 +165,7 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
       ]
       const keep = tabs.some((t) => t.id === state.activeId)
       return {
+        ...state,
         tabs,
         activeId: keep ? state.activeId : (tabs[0]?.id ?? null),
         earlyExits,
@@ -146,10 +199,21 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
       if (index < 0) return state
       const tabs = state.tabs.filter((t) => t.id !== action.tabId)
       const closedEarly = state.listed ? state.closedEarly : [...state.closedEarly, action.tabId]
-      if (state.activeId !== action.tabId) return { ...state, tabs, closedEarly }
+      // A pane's tab: its leaf goes from this view's copy at once, as main's next snapshot will
+      // have it (the same pure op), so the group never draws a pane for a tab that is gone.
+      const order = state.tabs.map((t) => t.id)
+      const successor = state.activeId === action.tabId ? successorInGroup(state.groups, order, action.tabId) : undefined
+      const pruned = removeLeaf(state.groups, order, action.tabId)
+      const groups = pruned.ok ? pruned.groups : state.groups
+      if (state.activeId !== action.tabId) return { ...state, tabs, closedEarly, groups }
+      if (successor !== undefined) {
+        // D3: the person's own close moves the focus to the pane that took its space; any other
+        // close leaves this view with no terminal focused until a click or a chord.
+        return { ...state, tabs, closedEarly, groups, activeId: successor, keysOff: action.own !== true }
+      }
       // The tab that slides into the closed one's place (its right neighbour), else the left one.
       const next = tabs[index] ?? tabs[index - 1]
-      return { ...state, tabs, closedEarly, activeId: next?.id ?? null }
+      return { ...state, tabs, closedEarly, groups, activeId: next?.id ?? null }
     }
     case 'removed': {
       const tab = state.tabs.find((t) => t.id === action.tabId)
@@ -166,11 +230,49 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
       delete earlyExits[action.tabId]
       return tabsReducer({ ...state, earlyExits }, { type: 'closed', tabId: action.tabId })
     }
-    case 'selected':
-      if (state.activeId === action.tabId || !state.tabs.some((t) => t.id === action.tabId)) {
-        return state
+    case 'selected': {
+      if (!state.tabs.some((t) => t.id === action.tabId)) return state
+      // Selecting a member that this view's zoom hides unzooms its group first (design §1 "Zoom").
+      const g = groupOf(state.groups, action.tabId)
+      const zoomedTab = g ? state.zoomed[g.id] : undefined
+      const unzoom = g !== undefined && zoomedTab !== undefined && zoomedTab !== action.tabId
+      if (state.activeId === action.tabId && !unzoom && !state.keysOff) return state
+      const zoomed = unzoom ? omit(state.zoomed, g.id) : state.zoomed
+      return { ...state, activeId: action.tabId, zoomed, keysOff: false }
+    }
+    case 'groups': {
+      const { snapshot } = action
+      if (!(snapshot.seq > state.groupsSeq)) return state
+      const intent = state.activeId !== null ? action.intent?.[state.activeId] : undefined
+      const moved = selectionAfterSnapshot(state.groups, snapshot.groups, snapshot.order, state.activeId, intent)
+      // A tab this page closed before its list came (closedEarly) may still be in a snapshot taken
+      // before the close: it must not come back as a pane.
+      let groups = snapshot.groups
+      for (const t of state.closedEarly) {
+        const r = removeLeaf(groups, snapshot.order, t)
+        if (r.ok) groups = r.groups
       }
-      return { ...state, activeId: action.tabId }
+      const next: TabsState = {
+        ...state,
+        groups,
+        groupsSeq: snapshot.seq,
+        tabs: applyOrder(state.tabs, snapshot.order)
+      }
+      if (moved && next.tabs.some((t) => t.id === moved.activeId)) {
+        next.activeId = moved.activeId
+        next.keysOff = moved.keysOff
+      }
+      return next
+    }
+    case 'zoom': {
+      const g = state.groups.find((x) => x.id === action.groupId)
+      if (!g) return state
+      if (action.tabId === null) return state.zoomed[g.id] === undefined ? state : { ...state, zoomed: omit(state.zoomed, g.id) }
+      if (!leavesOf(g.root).includes(action.tabId)) return state
+      return { ...state, zoomed: { ...state.zoomed, [g.id]: action.tabId } }
+    }
+    case 'keysOn':
+      return state.keysOff ? { ...state, keysOff: false } : state
     case 'moved': {
       const from = state.tabs.findIndex((t) => t.id === action.tabId)
       if (from < 0) return state
@@ -225,6 +327,12 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
       }
     }
   }
+}
+
+function omit(rec: Record<string, string>, key: string): Record<string, string> {
+  const out = { ...rec }
+  delete out[key]
+  return out
 }
 
 /**
