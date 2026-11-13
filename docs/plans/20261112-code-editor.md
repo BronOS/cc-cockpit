@@ -196,12 +196,12 @@ External review: sol / high
 - Create: `plugins/editor/src/page/merge.ts`
 - Create: `plugins/editor/test/merge.test.js`
 
-- [ ] clean buffer: reload with cursor, scroll and selection mapped; flash changed lines
-- [ ] dirty buffer: merge (page base, page text, theirs); clean → applied and saved with a notice; conflicts inline
+- [x] clean buffer: reload with cursor, scroll and selection mapped; flash changed lines
+- [x] dirty buffer: merge (page base, page text, theirs); clean → applied and saved with a notice; conflicts inline
   (Keep mine, Take Claude's, Keep both), no save until resolved, conflict marker on the tab
-- [ ] deleted on disk: Save (recreate) or Close
-- [ ] write tests: clean merge, overlapping conflict, identical change, delete, two views (A saves, B merges onto A)
-- [ ] run tests - must pass before next task
+- [x] deleted on disk: Save (recreate) or Close
+- [x] write tests: clean merge, overlapping conflict, identical change, delete, two views (A saves, B merges onto A)
+- [x] run tests - must pass before next task
 
 ### Task 9: Checkpoint: Oleg tries the editor [model: sonnet]
 

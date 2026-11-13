@@ -249,14 +249,19 @@ function fakeTabs(f) {
       return id
     },
     focus: async (id) => void calls.push(['focus', id]),
+    close: async (id) => (calls.push(['close', id]), { closed: true }),
   }
-  // A frame of tab `id` connecting: the instance the host serves, with what it posts.
-  const connect = (id) => {
+  // A frame of tab `id` connecting in `view` (undefined: the desktop): the instance the host serves.
+  const connect = (id, view) => {
     const t = open.find((x) => x.id === id)
     const posted = []
     const listeners = []
     const closers = []
-    const tab = { id, type: 'file', params: t.params, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn) }
+    const setTitle = async (title, icon) => {
+      calls.push(['setTitle', id, title, icon])
+      t.title = title
+    }
+    const tab = { id, type: 'file', params: t.params, view, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), setTitle }
     for (const o of openers) o.fn(tab)
     return { posted, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()) }
   }
@@ -406,5 +411,114 @@ test('goto for a tab with no mounted frame waits for its next first open; a remo
   view = t.connect(id)
   view.send({ t: 'open', first: true, req: 1 })
   assert.deepEqual(view.posted.filter((m) => m.t === 'goto'), [{ t: 'goto', line: 2, col: 3 }])
+  host.deactivate()
+})
+
+test('conflict marker: in the title while any view reports a conflict; a stale one from before is cleared', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts')
+  const id = t.open[0].id
+  const tick = () => new Promise((r) => setTimeout(r, 10))
+  const titles = () => t.calls.filter((c) => c[0] === 'setTitle').map((c) => c[2])
+  const desk = t.connect(id)
+  const web = t.connect(id, 'view-1')
+  // A page with no conflict on its first line: the title is already plain, nothing set.
+  desk.send({ t: 'conflict', on: false })
+  await tick()
+  assert.deepEqual(titles(), [])
+  desk.send({ t: 'conflict', on: true })
+  await tick()
+  web.send({ t: 'conflict', on: true })
+  await tick()
+  assert.deepEqual(titles(), ['⚠ a.ts'])
+  assert.equal(t.calls.find((c) => c[0] === 'setTitle')[3], 'file')
+  // One view resolved: still marked while the other holds one.
+  desk.send({ t: 'conflict', on: false })
+  await tick()
+  assert.deepEqual(titles(), ['⚠ a.ts'])
+  web.send({ t: 'conflict', on: false })
+  await tick()
+  assert.deepEqual(titles(), ['⚠ a.ts', 'a.ts'])
+  host.deactivate()
+
+  // A new host (a restart) with a title saved marked: the first report clears it.
+  const f2 = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f2.ctx.projectDir = f.ctx.projectDir
+  const t2 = fakeTabs(f2)
+  host.activate(f2.ctx)
+  await f2.provided.editor.open('src/a.ts')
+  t2.open[0].title = '⚠ a.ts'
+  const again = t2.connect(t2.open[0].id)
+  again.send({ t: 'conflict', on: false })
+  await tick()
+  assert.deepEqual(
+    t2.calls.filter((c) => c[0] === 'setTitle').map((c) => c[2]),
+    ['a.ts']
+  )
+  host.deactivate()
+})
+
+test("conflict marker: a reconnect's new line keeps it without a blink; an unmounted page drops it after the grace", async (tt) => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts')
+  const id = t.open[0].id
+  tt.mock.timers.enable({ apis: ['setTimeout'] })
+  const flush = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+  }
+  const titles = () => t.calls.filter((c) => c[0] === 'setTitle').map((c) => c[2])
+  let view = t.connect(id)
+  view.send({ t: 'conflict', on: true })
+  await flush()
+  assert.deepEqual(titles(), ['⚠ a.ts'])
+  // Reconnect: the old line closes, the new one reports within the grace.
+  view.close()
+  view = t.connect(id)
+  view.send({ t: 'conflict', on: true })
+  await flush()
+  tt.mock.timers.tick(5000)
+  await flush()
+  assert.deepEqual(titles(), ['⚠ a.ts'])
+  // Unmounted for good: dropped after the grace.
+  view.close()
+  tt.mock.timers.tick(2000)
+  await flush()
+  assert.deepEqual(titles(), ['⚠ a.ts'])
+  tt.mock.timers.tick(1500)
+  await flush()
+  assert.deepEqual(titles(), ['⚠ a.ts', 'a.ts'])
+  host.deactivate()
+})
+
+test("the deleted bar's Close closes this tab through ctx.tabs.close; a refusal is told on the tab", async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts')
+  const id = t.open[0].id
+  const view = t.connect(id)
+  // Always this tab (main's id), whatever the page names.
+  view.send({ t: 'close', id: 'someone-else' })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(
+    t.calls.filter((c) => c[0] === 'close'),
+    [['close', id]]
+  )
+  f.ctx.tabs.close = async () => {
+    throw new Error('tabs.close: more than 10 closes in 60 s')
+  }
+  view.send({ t: 'close' })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(view.posted.at(-1).message, 'Close: tabs.close: more than 10 closes in 60 s')
   host.deactivate()
 })

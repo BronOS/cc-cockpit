@@ -13,6 +13,10 @@
 //                                                  in parts under the message cap; baseHash null
 //                                                  creates a file that is not there
 //                 { t: 'micro' }                   "Open in micro" (the host opens it on the tab's file)
+//                 { t: 'conflict', on }            the page holds a conflict (a merge to resolve, a file
+//                                                  deleted or no longer savable): the host marks the tab
+//                 { t: 'close' }                   the deleted bar's Close: the host closes the tab the
+//                                                  person's way (core's ask for unsaved text)
 //   host -> page  { t: 'file', req, path, exists, hash, readOnly, why?, eol, bom, size, part, parts, text? }
 //                 { t: 'saved', req, path, hash }
 //                 { t: 'changed', req, path, hash, deleted?, written?, theirsHash?, part, parts, text? }
@@ -21,9 +25,18 @@
 //                 { t: 'settings', idleSeconds, onBlur }   autosave (the plugin's settings)
 //                 { t: 'goto', line, col? }        move the cursor (a file opened again at a line)
 //
-// A `changed` answer, or a change on disk while the buffer is dirty, is a CONFLICT: the page stops
-// saving until the person picks (Reload, Keep mine). The three-way merge (plan Task 8) replaces
-// that choice for most cases.
+// A change on disk reaches a clean buffer as a reload (file.js applies it as line edits, so the
+// cursor, selections and scroll map through it, and flashes the lines). A change that meets a dirty
+// buffer (a disk event while dirty, or a save answered `changed`) is MERGED three ways (merge.mjs):
+// the page's base, its buffer and theirs. A clean merge is applied and saved with a notice; one with
+// conflicts shows them inline (my version in the text, theirs beside it, Keep mine / Take Claude's /
+// Keep both) and nothing is saved until every one is resolved. While they are open the page does not
+// merge again: the save after the last one is a compare-and-swap against the base the merge took, so
+// a newer change on disk comes back as `changed` and is merged then, onto the resolved text.
+// Only a file that can no longer be saved here (it became read-only, binary or too large) is a
+// plain conflict, with Reload alone.
+
+import { merge3, mergedText, conflictLayout } from './merge.mjs'
 
 /** Text per save message, in UTF-16 units: the host's own chunk size (files.js CHUNK_CHARS), under the 1 MiB cap. */
 export const CHUNK_CHARS = 128 * 1024
@@ -31,6 +44,12 @@ export const CHUNK_CHARS = 128 * 1024
 export const DIRTY_CHECK_MS = 120
 /** The autosave default until the host's settings come (the manifest's). */
 export const DEFAULT_IDLE_SECONDS = 3
+/** How long the "merged" notice stays in the bar. */
+export const NOTICE_MS = 6000
+/** The notice of a clean merge (design-editor.md §2). */
+export const MERGED_NOTICE = "Merged Claude's changes."
+/** A write lost from disk during our save that was not text: nothing to merge, only said. */
+export const LOST_NOT_TEXT = 'Another write to this file landed during the save and was replaced; it was not text, so it could not be merged.'
 
 /** `text` in parts of at most `size` units, never splitting a surrogate pair. At least one part. */
 export function chunkText(text, size = CHUNK_CHARS) {
@@ -77,7 +96,10 @@ function partsCollector() {
  * The session of one file tab. `ui`:
  *   post(message)            to the host (ccPanel.post)
  *   load(text, info)         show the file for the first time (a fresh editor state)
- *   replace(text)            show `text` instead of the buffer (a reload; keeps the cursor near)
+ *   replace(text, info)      show `text` instead of the buffer (a reload, a clean merge: applied as
+ *                            line edits, the cursor mapped, the changed lines flashed)
+ *   merge(layout)            show a merge with conflicts: merge.mjs conflictLayout's { text, conflicts };
+ *                            the page tells how many are left with conflictsLeft(n)
  *   getText()                the buffer now
  *   goto(line, col)          move the cursor
  *   setDirty(dirty)          ccPanel.tab.setDirty
@@ -101,11 +123,14 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     saveAgain: false,
     // The text of a save the old line lost (connect()): the reconnect answer may find it on disk.
     lost: null,
-    // { kind: 'changed', theirs, hash, written, head, final } | { kind: 'deleted' }. `head` and `text`
-    // are the host's answer (read-only flags, eol), `final`: theirs can no longer be saved over
-    // (read-only, binary, too large), so only Reload is offered.
+    // { kind: 'merge', count }: conflicts of a merge shown inline, `count` still open.
+    // { kind: 'changed', head, text, final: true }: theirs can no longer be saved over (read-only,
+    //   binary, too large), so only Reload is offered; `head` and `text` are the host's answer.
+    // { kind: 'deleted' }: gone from disk; Save recreates it, Close closes the tab.
     conflict: null,
     error: null,
+    // A passing line in the bar ("Merged Claude's changes."), gone after NOTICE_MS.
+    notice: null,
     settings: { idleSeconds: DEFAULT_IDLE_SECONDS, onBlur: true },
   }
   let nextReq = 0
@@ -118,6 +143,9 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
   let lastStatus = null
   /** A `goto` that came before the text: { line, col }. */
   let pendingGoto = null
+  let noticeTimer = null
+  /** The conflict marker last told to the host (`conflict` message), null before the first. */
+  let toldMarked = null
 
   function statusNow() {
     if (!s.loaded) return 'loading'
@@ -134,14 +162,38 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     noText: s.noText,
     dirty: s.dirty,
     status: statusNow(),
-    conflict: s.conflict ? { kind: s.conflict.kind, final: s.conflict.final === true } : null,
+    conflict: s.conflict
+      ? { kind: s.conflict.kind, final: s.conflict.final === true, ...(s.conflict.kind === 'merge' ? { count: s.conflict.count } : {}) }
+      : null,
     error: s.error,
+    notice: s.notice,
   })
+
+  /** The tab's conflict marker follows s.conflict: told to the host on a change (and on every connect). */
+  function tellMarker(force) {
+    const marked = s.conflict !== null
+    if (!force && marked === toldMarked) return
+    toldMarked = marked
+    ui.post({ t: 'conflict', on: marked })
+  }
 
   function update() {
     lastStatus = statusNow()
+    if (s.connected) tellMarker(false)
     ui.render(view())
   }
+
+  function showNotice(text) {
+    s.notice = text
+    if (noticeTimer !== null) timers.clear(noticeTimer)
+    noticeTimer = timers.set(() => {
+      noticeTimer = null
+      s.notice = null
+      update()
+    }, NOTICE_MS)
+  }
+
+  const merging = () => s.conflict !== null && s.conflict.kind === 'merge'
 
   function setDirty(dirty) {
     if (dirty === s.dirty) return
@@ -225,25 +277,71 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     s.base = { text: typeof text === 'string' ? text : '', hash: s.exists ? head.hash : null }
   }
 
-  /** The conflict for a file that is there and differs: what the host said about it rides along. */
-  function changedConflict(head, text, written) {
-    const noText = typeof text !== 'string'
-    const readOnly = head.readOnly === true
+  /** Theirs is there but cannot be saved over here (read-only, binary, too large): Reload alone. */
+  function finalConflict(head, text) {
     s.exists = true
-    // A written conflict keeps our text as the base, so Keep mine stays right even for a read-only file.
-    s.conflict = { kind: 'changed', theirs: noText ? '' : text, hash: head.hash, written, head, text, final: !written && (noText || readOnly) }
-  }
-
-  /** The disk's file is gone: the tab keeps its text, clean or not; the file comes back only on Save. */
-  function deletedConflict() {
-    s.exists = false
-    s.conflict = { kind: 'deleted' }
+    s.conflict = { kind: 'changed', head, text, final: true }
+    s.notice = null
     clearIdle()
     checkDirty()
     update()
   }
 
-  /** A second look found disk different from the base: take it when clean, else a conflict. */
+  /** Whether theirs can be merged: text the host lets us save over. */
+  const mergeable = (head, text) => typeof text === 'string' && head.readOnly !== true
+
+  /** The line ending and BOM a file head carries (a `file` answer; a `changed` one has none). */
+  function takeFormat(head) {
+    if (head.eol === '\r\n' || head.eol === '\n') s.eol = head.eol
+    if (typeof head.bom === 'boolean') s.bom = head.bom
+  }
+
+  /**
+   * Theirs met a buffer with edits the disk does not have: merge (baseText, the buffer, theirs) and
+   * take `next` ({ text, hash }: what is on disk now) as the base. Clean: the buffer becomes the
+   * merge, saved at once, with a notice. Conflicts: shown inline, no save until all are resolved.
+   */
+  function mergeIn(baseText, theirs, next) {
+    const mine = ui.getText()
+    const r = merge3(baseText, mine, theirs)
+    const text = r.conflicts === 0 ? mergedText(r.chunks) : null
+    // The page shows the merge FIRST: should drawing it fail, the base must not have moved, or the
+    // next save would be a compare-and-swap on theirs with my unmerged text and drop their change.
+    if (text === null) ui.merge(conflictLayout(r.chunks))
+    else if (text !== mine) ui.replace(text, { readOnly: false, noText: false })
+    s.base = next
+    s.exists = true
+    s.readOnly = false
+    s.why = undefined
+    s.noText = false
+    s.error = null
+    if (text !== null) {
+      s.conflict = null
+      showNotice(MERGED_NOTICE)
+      checkDirty()
+      update()
+      if (s.dirty) save()
+      return
+    }
+    s.conflict = { kind: 'merge', count: r.conflicts }
+    s.notice = null
+    clearIdle()
+    checkDirty()
+    update()
+  }
+
+  /** The disk's file is gone: the tab keeps its text, clean or not; the file comes back only on Save. */
+  function deletedConflict() {
+    s.exists = false
+    // Conflicts still open stay: the deleted bar comes once they are resolved (conflictsLeft).
+    if (!merging()) s.conflict = { kind: 'deleted' }
+    s.notice = null
+    clearIdle()
+    checkDirty()
+    update()
+  }
+
+  /** A second look found disk different from the base: take it when clean, else merge. */
   function diskDiffers(head, text) {
     // Gone: the same answer as a `deleted` event (a clean tab too: a read that lost a race with a
     // deletion must not wipe the buffer and hide the loss).
@@ -264,10 +362,9 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       checkDirty()
       return update()
     }
-    changedConflict(head, text, false)
-    clearIdle()
-    checkDirty()
-    update()
+    if (!mergeable(head, text)) return finalConflict(head, text)
+    takeFormat(head)
+    mergeIn(s.base.text, text, { text, hash: head.hash })
   }
 
   /** The hash is the base's but the host now calls the file read-only (or writable again): the flags move, the buffer stays. */
@@ -297,6 +394,15 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       return update()
     }
     // A second look: the open after a reconnect, a re-check on focus, a read after a disk event.
+    if (merging()) {
+      // Conflicts open: no second merge on top of them, only whether the file is there moves. The
+      // save after the last conflict is a compare-and-swap on the merge's base, so a change made
+      // since comes back as `changed` then and is merged onto the resolved text.
+      if (r.kind === 'reconnect') s.lost = null
+      if (!head.exists) return deletedConflict()
+      s.exists = true
+      return update()
+    }
     const nowHash = head.exists ? head.hash : null
     const lost = s.lost
     if (r.kind === 'reconnect') s.lost = null
@@ -330,6 +436,13 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
 
   function onSaved(m) {
     if (!s.saving || m.req !== s.saving.req) return
+    if (merging()) {
+      // A save sent before a merge raised conflicts: the merge's base stays the base (the save
+      // after the last conflict compares against it, and merges whatever differs then).
+      s.saving = null
+      s.saveAgain = false
+      return update()
+    }
     s.base = { text: s.saving.text, hash: m.hash }
     s.exists = true
     s.saving = null
@@ -351,38 +464,41 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     changed = null
     const { head, text } = done
     const mine = s.saving.text
+    const baseText = s.base.text
     s.saving = null
     s.saveAgain = false
-    if (head.deleted) {
-      s.exists = false
-      s.conflict = { kind: 'deleted' }
-    } else if (head.written) {
+    if (head.deleted) return deletedConflict()
+    // Conflicts open already (a disk change merged while this save was in flight): no merge on top.
+    if (merging()) return update()
+    if (head.written) {
       // Our text is on disk (head.hash, our new base), but a write into the old file landed in
-      // between and is lost from disk: `text` is that write.
-      changedConflict(head, text, true)
+      // between and is lost from disk: `text` is that write, made on the base we saved from, so it
+      // is merged into the buffer and the next save puts it back.
+      if (typeof text === 'string') return mergeIn(baseText, text, { text: mine, hash: head.hash })
       s.base = { text: mine, hash: head.hash }
+      s.exists = true
+      s.error = LOST_NOT_TEXT
     } else if (typeof text === 'string' && text === ui.getText()) {
       // Theirs is what we hold (our own earlier save that the old line never confirmed).
       s.base = { text, hash: head.hash }
       s.exists = true
+    } else if (!mergeable(head, text)) {
+      return finalConflict(head, text)
     } else {
-      changedConflict(head, text, false)
+      return mergeIn(baseText, text, { text, hash: head.hash })
     }
     clearIdle()
     checkDirty()
     update()
+    if (s.dirty) armIdle()
   }
 
   function onDisk(m) {
     if (m.path !== s.path || !s.loaded) return
     if (m.change === 'deleted') {
-      if (!s.exists) return
       // The tab stays with its text; the file comes back only on the person's Save.
-      s.exists = false
-      s.conflict = { kind: 'deleted' }
-      clearIdle()
-      checkDirty()
-      return update()
+      if (s.exists) deletedConflict()
+      return
     }
     if (s.exists && m.hash === s.base.hash) return // what we hold (our own write)
     request('reload', { t: 'read', path: s.path })
@@ -412,6 +528,8 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       s.saveAgain = false
       if (!s.loaded) request('open', { t: 'open', first: true })
       else request('reconnect', { t: 'open' })
+      // The new line's host may not know the tab's marker (a host restart): said on every line.
+      tellMarker(true)
       update()
     },
     receive(m) {
@@ -473,33 +591,35 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       if (s.conflict && s.conflict.kind === 'deleted') s.conflict = null
       return save()
     },
-    /** The conflict bar's Reload: the buffer becomes theirs. */
+    /** The final conflict's Reload: the buffer, the base and the flags become theirs. */
     takeTheirs() {
       const c = s.conflict
       if (!c || c.kind !== 'changed') return
       s.conflict = null
-      // Not written: theirs is on disk, so it is the base too. Written: our text is on disk, so the
-      // buffer differs from it and the next save writes theirs back.
-      if (!c.written) adopt({ ...c.head, exists: true, path: s.path }, c.text)
-      else {
-        s.readOnly = c.head.readOnly === true
-        s.why = s.readOnly ? c.head.why : undefined
-        s.noText = typeof c.text !== 'string'
-      }
-      ui.replace(c.theirs, { readOnly: s.readOnly, noText: s.noText })
+      adopt({ ...c.head, exists: true, path: s.path }, c.text)
+      ui.replace(s.base.text, { readOnly: s.readOnly, noText: s.noText })
       checkDirty()
       update()
-      if (s.dirty) save()
     },
-    /** The conflict bar's Keep mine: saved over theirs. */
-    keepMine() {
-      const c = s.conflict
-      if (!c || c.kind !== 'changed' || c.final) return
-      s.conflict = null
-      if (!c.written) s.base = { text: c.theirs, hash: c.hash }
+    /**
+     * The page's inline conflicts went down to `n` (the person picked Keep mine, Take Claude's or
+     * Keep both). At 0 the buffer is plain text again: autosave resumes, or the deleted bar comes
+     * when the file went meanwhile.
+     */
+    conflictsLeft(n) {
+      if (!merging() || !Number.isInteger(n) || n < 0) return
+      if (n > 0) {
+        s.conflict = { kind: 'merge', count: n }
+        return update()
+      }
+      s.conflict = s.exists ? null : { kind: 'deleted' }
       checkDirty()
       update()
-      if (s.dirty) save()
+      if (s.dirty && !s.conflict) armIdle()
+    },
+    /** The deleted bar's Close: the host closes the tab the person's way (core asks for unsaved text). */
+    closeTab() {
+      ui.post({ t: 'close' })
     },
     /** Tests: the internal state. */
     _state: s,

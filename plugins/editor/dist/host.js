@@ -98,6 +98,13 @@ const MAX_IDLE_SECONDS = 3600
 const LEGACY_DEFAULT_SECONDS = 5
 const idleOk = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_IDLE_SECONDS
 
+/** A file tab's title starts with this while a view holds a conflict (see updateMarker). */
+const CONFLICT_MARK = '⚠ '
+/** How long a closed line's conflict report outlives it (a reconnect's new line reports within it). */
+const MARKER_GRACE_MS = 3000
+/** The grace timers, cleared when the plugin stops. */
+const markerTimers = new Set()
+
 /**
  * The file tabs' autosave from the app settings: `{ idleSeconds, onBlur }`. `autosaveIdleSeconds`
  * replaced micro's `autosaveSeconds` (design-editor.md §1: "read once as a default"), so the schema
@@ -228,6 +235,42 @@ exports.activate = (ctx) => {
    */
   const pendingGoto = new Map()
   const firstOpened = new Set()
+  /**
+   * The conflict marker (design-editor.md §2 "the tab shows a conflict marker"): the title starts
+   * with it while a view's page holds a conflict (a merge to resolve, the file deleted on disk or no
+   * longer savable). The title is the tab's one shared label, so the marker is on while ANY view
+   * reports one. `conflictViews`: tab id -> the instances reporting one; `marked`: what this host
+   * last put in the title (unknown after a host restart: the pages report again on their new line).
+   */
+  const conflictViews = new Map()
+  const marked = new Map()
+  /** Who reports: one entry per view (`tab.view`, the desktop's undefined), so a new line replaces it. */
+  const viewKey = (tab) => (typeof tab.view === 'string' ? tab.view : '')
+  /** Drops `tab`'s report when it is still the view's (a newer line of the same view keeps its own). */
+  function dropReport(tab) {
+    const views = conflictViews.get(tab.id)
+    if (!views || views.get(viewKey(tab)) !== tab) return false
+    views.delete(viewKey(tab))
+    if (views.size === 0) conflictViews.delete(tab.id)
+    return true
+  }
+
+  /** Puts the marker in or takes it out of tab `id`'s title, through `tab` (an instance of it). */
+  async function updateMarker(tab, rel) {
+    let shown = marked.get(tab.id)
+    if (shown === undefined) {
+      // First report since this host started: the saved title may carry a marker from before.
+      const t = (await ctx.tabs.list('file')).find((x) => x.id === tab.id)
+      if (!t) return
+      // Another report settled it while the list was on its way.
+      shown = marked.has(tab.id) ? marked.get(tab.id) : typeof t.title === 'string' && t.title.startsWith(CONFLICT_MARK)
+    }
+    // Read after the wait: the reports may have moved meanwhile.
+    const want = (conflictViews.get(tab.id)?.size ?? 0) > 0
+    marked.set(tab.id, want)
+    if (shown === want) return
+    await tab.setTitle(`${want ? CONFLICT_MARK : ''}${path.basename(rel)}`, 'file')
+  }
 
   /**
    * Opens a project file in a file tab, or focuses the tab that already shows it and moves it to
@@ -290,11 +333,38 @@ exports.activate = (ctx) => {
             ctx.log.warn(`Open in micro ${params.path}: ${e.message}`)
             tab.post({ t: 'error', message: `Open in micro: ${e.message}` })
           })
+        } else if (m.t === 'conflict' && typeof params.path === 'string') {
+          if (m.on === true) {
+            const views = conflictViews.get(tab.id) || new Map()
+            views.set(viewKey(tab), tab)
+            conflictViews.set(tab.id, views)
+          } else {
+            const views = conflictViews.get(tab.id)
+            if (views) views.delete(viewKey(tab))
+            if (views && views.size === 0) conflictViews.delete(tab.id)
+          }
+          updateMarker(tab, params.path).catch((e) => ctx.log.warn(`conflict marker ${params.path}: ${e.message}`))
+        } else if (m.t === 'close') {
+          // The deleted bar's Close: this tab only (main's id), closed the person's way, so text
+          // unsaved in any view is asked about first.
+          if (typeof ctx.tabs.close !== 'function') return
+          ctx.tabs.close(tab.id).catch((e) => tab.post({ t: 'error', message: `Close: ${e.message}` }))
         }
       })
       tab.onClose(() => {
         set.delete(tab)
         if (set.size === 0 && instances.get(tab.id) === set) instances.delete(tab.id)
+        // A view's page gone (unmounted) holds no conflict any more. A reconnect closes the old line
+        // first and its page reports again on the new one, so the drop waits a moment: the new line's
+        // report replaces this one and the title does not blink.
+        if (conflictViews.get(tab.id)?.get(viewKey(tab)) !== tab) return
+        const timer = setTimeout(() => {
+          markerTimers.delete(timer)
+          // The tab itself may be gone (closed): then main refuses the title, which is fine.
+          if (dropReport(tab) && typeof params.path === 'string') updateMarker(tab, params.path).catch(() => {})
+        }, MARKER_GRACE_MS)
+        if (typeof timer.unref === 'function') timer.unref()
+        markerTimers.add(timer)
       })
     })
     if (typeof ctx.onSettingsChange === 'function') {
@@ -376,4 +446,6 @@ let shared = null
 exports.deactivate = () => {
   if (shared) shared.watcher.close()
   shared = null
+  for (const t of markerTimers) clearTimeout(t)
+  markerTimers.clear()
 }

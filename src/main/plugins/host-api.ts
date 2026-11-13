@@ -47,6 +47,9 @@
 //   tabs.focus      { pluginId, tabId }        -> null           select a page tab of THIS project that is
 //                                                                the plugin's own, in the host's window;
 //                                                                the page-tab open budget
+//   tabs.close      { pluginId, tabId }        -> { closed }     close a page tab of THIS project that is
+//                                                                the plugin's own, the person's way (a tab
+//                                                                dirty in a view asks there); the close budget
 //   slots.available { pluginId, type }                    -> boolean  whether a provider would draw a slot of
 //                                                                `type` here now (ctx.slots.available)
 //   panels.slots    { pluginId, panelId, placements } -> null    slot placements in the column of a panel the
@@ -867,6 +870,7 @@ export class HostApi {
       'tabs.list': (params) => this.listPageTabs(params),
       'tabs.setTitle': (params) => this.setPageTabTitle(params),
       'tabs.focus': (params) => this.focusPageTab(params),
+      'tabs.close': (params) => this.closePageTab(params),
       'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
@@ -1534,6 +1538,33 @@ export class HostApi {
     // The host's own window, never one the plugin names.
     this.deps.focusPageTab(this.scope.projectId, tabId, this.scope.windowId)
     return null
+  }
+
+  /**
+   * ctx.tabs.close: close a page tab of THIS project that is the plugin's own (the editor's "Close" on
+   * a file deleted on disk) exactly as ctx.sessions.close closes a Claude tab: the person's own close
+   * path, so a tab holding unsaved changes in a view asks there first (core's close dialog) and the
+   * answer can be `closed: false`. No bypass of that dialog: a plugin is not the person, and a dirty
+   * buffer in another view is not the plugin's to drop. The same budget as ctx.sessions.close.
+   */
+  private async closePageTab(params: unknown): Promise<{ closed: boolean }> {
+    this.alive()
+    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'tabs.close')
+    if (typeof tabId !== 'string') throw new Error('tabs.close: tabId must be a string')
+    if (!this.deps.listTabs || !this.deps.closeTab) throw new Error('tabs.close: page tabs are not available')
+    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
+    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.close: no such page tab of this plugin')
+    if (!this.closes.take(plugin.id)) {
+      throw new Error(`tabs.close: more than ${MAX_CLOSES_PER_WINDOW} closes in ${CLOSE_WINDOW_MS / 1000} s`)
+    }
+    let closed: boolean
+    try {
+      closed = await this.deps.closeTab(this.scope.windowId, this.scope.projectId, tabId)
+    } catch (err) {
+      throw withMethod('tabs.close', err)
+    }
+    return { closed }
   }
 
   /** `type` when it is one of the plugin's own `contributes.tabs` types, else a throw naming `what`. */

@@ -11,7 +11,7 @@ import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ct
 import { pageTabOpenTag } from '../../src/host/ctx/tabs'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { parsePluginSpecs } from '../../src/host/loader'
-import { HostApi, MAX_PAGE_TAB_OPENS_PER_WINDOW, MAX_PAGE_TAB_TITLES_PER_WINDOW, type HostApiDeps, type HostScope } from '../../src/main/plugins/host-api'
+import { HostApi, MAX_CLOSES_PER_WINDOW, MAX_PAGE_TAB_OPENS_PER_WINDOW, MAX_PAGE_TAB_TITLES_PER_WINDOW, type HostApiDeps, type HostScope } from '../../src/main/plugins/host-api'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import type { PageTabInstance, PluginContext } from '../../src/sdk/types'
 import type { TabInfo } from '../../src/shared/ipc'
@@ -36,9 +36,13 @@ describe('HostApi tabs.* (main)', () => {
   let emitted: Array<{ projectId: string; channel: string; payload: unknown }>
   let apis: HostApi[]
   let focused: Array<{ projectId: string; tabId: string; windowId: number }>
+  let closing: Array<{ windowId: number; projectId: string; tabId: string }>
+  let closeAnswer: boolean
 
   beforeEach(() => {
     focused = []
+    closing = []
+    closeAnswer = true
     root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-host-tabs-')))
     for (const d of ['a', 'b']) mkdirSync(join(root, d))
     opened = []
@@ -81,6 +85,8 @@ describe('HostApi tabs.* (main)', () => {
       listTabs: (pid: string) => tabs.list(pid),
       setPageTabTitle: (pid: string, tabId: string, title: string, icon: string | undefined) => tabs.setPageTitle(pid, tabId, title, icon),
       focusPageTab: (pid: string, tabId: string, windowId: number) => focused.push({ projectId: pid, tabId, windowId }),
+      // The person's close path (close-asks.ts): a dirty tab asks in its views, the answer comes back.
+      closeTab: async (windowId: number, pid: string, tabId: string) => (closing.push({ windowId, projectId: pid, tabId }), closeAnswer),
       log: () => {}
     } as unknown as HostApiDeps
     const scope: HostScope = {
@@ -182,6 +188,27 @@ describe('HostApi tabs.* (main)', () => {
     expect(focused).toHaveLength(MAX_PAGE_TAB_OPENS_PER_WINDOW - 1)
   })
 
+  it("close: only the plugin's own page tab of this project, the person's close path; the close budget", async () => {
+    const call = host()
+    const mine = (await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'a.ts' })) as { tabId: string }
+    const theirs = (await call('tabs.openPage', { pluginId: 'p.other', type: 'note', title: 'n' })) as { tabId: string }
+    const otherProject = tabs.createPage(B, { plugin: 'p.editor', type: 'file', title: 'b' })
+    const shell = tabs.create(A, { kind: 'shell' })
+    await expect(call('tabs.close', { pluginId: 'p.editor', tabId: mine.tabId })).resolves.toEqual({ closed: true })
+    expect(closing).toEqual([{ windowId: WIN_A, projectId: A, tabId: mine.tabId }])
+    // The person kept it (the dirty ask answered Cancel): closed false, nothing forced.
+    closeAnswer = false
+    await expect(call('tabs.close', { pluginId: 'p.editor', tabId: mine.tabId })).resolves.toEqual({ closed: false })
+    for (const tabId of [theirs.tabId, otherProject.id, shell.id, 'nope']) {
+      await expect(call('tabs.close', { pluginId: 'p.editor', tabId })).rejects.toThrow(/no such page tab/)
+    }
+    await expect(call('tabs.close', { pluginId: 'p.editor', tabId: 5 })).rejects.toThrow(/tabId must be a string/)
+    expect(closing).toHaveLength(2)
+    for (let i = 0; i < MAX_CLOSES_PER_WINDOW - 2; i++) await call('tabs.close', { pluginId: 'p.editor', tabId: mine.tabId })
+    await expect(call('tabs.close', { pluginId: 'p.editor', tabId: mine.tabId })).rejects.toThrow(/more than 10 closes in 60 s/)
+    expect(closing).toHaveLength(MAX_CLOSES_PER_WINDOW)
+  })
+
   it('setTitle checks the tab and the text before its budget, which refuses the next title per plugin', async () => {
     const call = host()
     const mine = (await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'a.ts' })) as { tabId: string }
@@ -273,8 +300,12 @@ describe('ctx.tabs (host)', () => {
     expect(calls.at(-1)).toEqual({ method: 'tabs.list', params: { pluginId: 'p.editor', type: 'file' } })
     await editor.tabs.focus(TAB)
     expect(calls.at(-1)).toEqual({ method: 'tabs.focus', params: { pluginId: 'p.editor', tabId: TAB } })
+    // Anything but main's `{ closed: true }` reads as not closed.
+    await expect(editor.tabs.close(TAB)).resolves.toEqual({ closed: false })
+    expect(calls.at(-1)).toEqual({ method: 'tabs.close', params: { pluginId: 'p.editor', tabId: TAB } })
     const before = calls.length
     await expect(editor.tabs.focus('not an id')).rejects.toThrow(/page tab id/)
+    await expect(editor.tabs.close('not an id')).rejects.toThrow(/page tab id/)
     expect(calls).toHaveLength(before)
   })
 

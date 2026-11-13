@@ -260,7 +260,10 @@ behind it are in [design.md](design.md).
   Markdown, HTML, CSS and shell; search and replace, multi-cursor, folding, comment toggle), in the theme's colours and
   the terminal font. It autosaves after you stop typing (default 3 s, 0 off; an autosave set for micro before carries
   over) and when you leave the tab; Ctrl+S saves at once. A save never overwrites a change made on disk meanwhile
-  (Claude writing the file): the tab asks Reload or Keep mine; a clean tab reloads by itself. Binary, non-UTF-8 and
+  (Claude writing the file): a clean tab reloads by itself (the cursor stays, changed lines flash), one with unsaved
+  text merges Claude's change into yours, saved with a notice when clean; lines you both changed show Claude's version
+  above yours (Keep mine, Take Claude's, Keep both; ⚠ in the tab title, nothing saved until all are resolved). A file
+  deleted on disk keeps its tab with Save (recreate) or Close. Binary, non-UTF-8 and
   files over 5 MB open read-only; a binary file goes to the reviewer instead. A tab with unsaved text shows a dot and
   closing it asks. "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a
   colour scheme and a path-to-micro setting); `ccc edit <file>` opens micro too, for now. micro is an optional

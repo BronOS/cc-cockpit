@@ -16,8 +16,12 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   opener (the reviewer, else the built-in viewer). A missing file opens as a new one, created by its first save.
 - Saving: autosave after you stop typing (setting `autosaveIdleSeconds`, default 3 s, 0 off; an `autosaveSeconds` set
   for micro before is its default) and when you leave the tab (`autosaveOnBlur`); Ctrl+S saves at once. Saves are
-  compare-and-swap: when the file changed on disk meanwhile (Claude wrote it), nothing is overwritten and the tab asks.
-  A clean tab reloads a file changed on disk by itself. Binary, non-UTF-8 and files over 5 MB open read-only.
+  compare-and-swap: when the file changed on disk meanwhile (Claude wrote it), nothing is overwritten.
+- Claude changing an open file: a clean tab reloads (the cursor stays where it was, the changed lines flash). A tab
+  with unsaved text merges Claude's change into yours (three-way, by line): a clean merge is saved with a notice; lines
+  both of you changed show Claude's version above yours with Keep mine, Take Claude's and Keep both, and nothing is
+  saved until each is resolved (the tab's title shows ⚠ meanwhile). A file deleted on disk keeps its tab and text, with
+  Save (recreate it) or Close. Binary, non-UTF-8 and files over 5 MB open read-only.
 - "Open in micro" on a file tab: [micro](https://micro-editor.github.io) on the same file in a terminal overlay (settings
   `microPath`, `colorscheme`). `ccc edit <file> [line]` opens micro too, for now. Needs micro on the login-shell PATH
   (`brew install micro`, `sudo pacman -S micro`, `sudo apt install micro`; a missing micro is reported with these

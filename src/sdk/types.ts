@@ -848,6 +848,12 @@ export interface PluginContext {
      * has a tab). Shares `openPage`'s budget; rejects for another plugin's tab or an unknown id.
      */
     focus(tabId: string): Promise<void>
+    /**
+     * Close one of this plugin's own page tabs of this project the way the person would: a tab with
+     * unsaved changes in a view asks there first (the app's close dialog), so `closed: false` when
+     * they keep it or the ask could not be shown. Shares `ctx.sessions.close`'s limit (10 a minute).
+     */
+    close(tabId: string): Promise<{ closed: boolean }>
   }
   /**
    * The backend of the plugin's html settings page (manifest `contributes.settings.page`), shown

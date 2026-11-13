@@ -85,3 +85,25 @@ main .cm-editor.cm-focused {
 body.loading main {
   visibility: hidden;
 }
+.bar.info {
+  box-shadow: inset 3px 0 0 var(--cc-accent);
+}
+/* Lines a reload or a merge changed (Claude's changes): a short tint that fades; file.js drops the
+   mark when the fade is over, so a redrawn line never starts it again. */
+main .cm-line.cc-flash {
+  animation: cc-flash 1.6s ease-out;
+}
+@keyframes cc-flash {
+  from {
+    background-color: color-mix(in srgb, var(--cc-accent) 30%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  main .cm-line.cc-flash {
+    animation: none;
+    background-color: color-mix(in srgb, var(--cc-accent) 15%, transparent);
+  }
+}
