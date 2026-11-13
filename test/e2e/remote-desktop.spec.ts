@@ -182,6 +182,28 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     await expect.poll(opened).toEqual(['https://example.com/from-remote'])
     expect(await titles(app)).toEqual([`Test server — ${projectName}`])
 
+    // Unsaved page tab text (remote-windows.ts "Unsaved page tabs"): the person's close of a window
+    // whose page holds an unload asks with the unsaved box, naming the window. The hold is a stand-in
+    // for the web client's own (a dirty editor frame, editor-web.spec.ts), added in the page's world:
+    // main's check runs in its own isolated world and must still see it. The test run's box answers
+    // Cancel, so the window stays; a clean page (the hold removed) closes unasked (unit tests).
+    await remote.evaluate(() => {
+      const hold = (ev: Event): void => ev.preventDefault()
+      ;(window as unknown as { __hold: typeof hold }).__hold = hold
+      window.addEventListener('beforeunload', hold)
+    })
+    await app.evaluate(({ BrowserWindow }, origin) => {
+      BrowserWindow.getAllWindows()
+        .find((w) => w.webContents.getURL().startsWith(`${origin}/`))
+        ?.close()
+    }, server.origin)
+    await expect
+      .poll(() => desktop!.cockpit.hook<Array<{ titles: string[]; kind: string }>>('unsavedAsks'))
+      .toEqual([expect.objectContaining({ kind: 'remote', titles: [`Test server — ${projectName}`] })])
+    await new Promise((r) => setTimeout(r, 500))
+    expect(remote.isClosed()).toBe(false)
+    await remote.evaluate(() => window.removeEventListener('beforeunload', (window as unknown as { __hold: (ev: Event) => void }).__hold))
+
     // The record: one server, its cookie encrypted (the fake store's marked encoding), the recent project.
     await expect.poll(() => savedServers(desktop!.cockpit.dataDir).map((s) => s.name)).toEqual(['Test server'])
     const saved = savedServers(desktop.cockpit.dataDir)[0]!

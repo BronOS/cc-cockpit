@@ -176,7 +176,9 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { ElectronRemoteWindowFactory, isRemoteWindow, readCappedText, remotePartition } = await import('../../src/main/remote/electron-remote-window')
+const { ElectronRemoteWindowFactory, HOLDS_UNLOAD_SCRIPT, isRemoteWindow, readCappedText, remotePartition, UNLOAD_PROBE_TIMEOUT_MS } = await import(
+  '../../src/main/remote/electron-remote-window'
+)
 const { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } = await import('../../src/main/remote/remote-key')
 const { WEBVIEW_WORLD_ID } = await import('../../src/main/webview/webview-input')
 const { DEVICE_KEY_STORAGE } = await import('../../src/shared/web-protocol')
@@ -194,8 +196,9 @@ function sessionHooks(log: string[], allow = (url: string) => url.startsWith('ht
   }
 }
 
-function windowHooks(log: string[]): RemoteWindowHooks {
+function windowHooks(log: string[], hold = false): RemoteWindowHooks {
   return {
+    closeRequested: () => (log.push('close requested'), hold),
     allowNavigation: (url) => (log.push(`nav ${url}`), url.startsWith('http://127.0.0.1:4100')),
     openWindow: (url) => void log.push(`open ${url}`),
     navigated: (url) => void log.push(`navigated ${url}`),
@@ -206,11 +209,11 @@ function windowHooks(log: string[]): RemoteWindowHooks {
   }
 }
 
-function make(serverId = 's1') {
+function make(serverId = 's1', holdClose = false) {
   const log: string[] = []
   const factory = new ElectronRemoteWindowFactory({ version: '0.17.0', log: (m) => void log.push(`log ${m}`) })
   const sessionView = factory.session(serverId, sessionHooks(log))
-  const view = factory.create(serverId, 'devbox', windowHooks(log))
+  const view = factory.create(serverId, 'devbox', windowHooks(log, holdClose))
   const win = state.windows.at(-1) as FakeWindow
   const ses = state.sessions.get(remotePartition(serverId)) as FakeSession
   return { log, factory, sessionView, view, win, wc: win.webContents, ses }
@@ -471,6 +474,55 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
     expect(ses.fetches[0]?.init.headers).toEqual({ 'x-cc-device-key': key })
     expect(ses.fetches[1]?.init.headers).toEqual({})
     expect(ses.fetches[2]?.init.headers).toEqual({ 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:4100', 'x-cc-device-key': key })
+  })
+
+  it("reports the person's close and holds it when main says so; main's own close is never reported, also when Electron closes again", () => {
+    const held = make('s1', true)
+    const first = prevented()
+    held.win.emit('close', first)
+    expect(first.defaultPrevented).toBe(true)
+    expect(held.log.filter((l) => l === 'close requested')).toHaveLength(1)
+    const free = make('s2', false)
+    const second = prevented()
+    free.win.emit('close', second)
+    expect(second.defaultPrevented).toBe(false)
+    // Main's close (Forget, quit): never reported, and the quit's own second close is not either.
+    held.view.close()
+    for (let i = 0; i < 2; i++) {
+      const again = prevented()
+      held.win.emit('close', again)
+      expect(again.defaultPrevented).toBe(false)
+    }
+    expect(held.log.filter((l) => l === 'close requested')).toHaveLength(1)
+    expect(held.win.calls).toEqual(['close'])
+  })
+
+  it("asks the page whether it holds an unload in main's isolated world: only a held event counts, bounded, false when closed", async () => {
+    vi.useFakeTimers()
+    try {
+      const { view, wc } = make()
+      wc.scriptAnswer = () => Promise.resolve(true)
+      await expect(view.holdsUnload()).resolves.toBe(true)
+      expect(wc.scripts).toEqual([{ world: REMOTE_KEY_WORLD_ID, code: HOLDS_UNLOAD_SCRIPT }])
+      expect(HOLDS_UNLOAD_SCRIPT).toContain("new Event('beforeunload', { cancelable: true })")
+      for (const answer of ['true', 1, null, undefined]) {
+        wc.scriptAnswer = () => Promise.resolve(answer)
+        await expect(view.holdsUnload()).resolves.toBe(false)
+      }
+      wc.scriptAnswer = () => Promise.reject(new Error('script failed'))
+      await expect(view.holdsUnload()).resolves.toBe(false)
+      // A hung or crashed page: false after the bound, so the close goes ahead.
+      wc.scriptAnswer = () => new Promise(() => undefined)
+      const pending = view.holdsUnload()
+      await vi.advanceTimersByTimeAsync(UNLOAD_PROBE_TIMEOUT_MS)
+      await expect(pending).resolves.toBe(false)
+      const runs = wc.scripts.length
+      wc.destroyed = true
+      await expect(view.holdsUnload()).resolves.toBe(false)
+      expect(wc.scripts).toHaveLength(runs)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("reads the page's key entry in main's own isolated world, bounded in time, never from a closed window", async () => {

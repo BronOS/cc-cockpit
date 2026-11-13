@@ -214,8 +214,10 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
   - `setWindowOpenHandler` denies every page-opened window; an `http(s)` URL goes to the person's own browser through
     `createOpenExternal`, under the same open budget webviews use (a page cannot flood the desktop with tabs).
   - `will-navigate` and redirects pinned to the server's origin; `will-download` cancelled; `login` cancelled;
-    `will-prevent-unload` ignored (closing always closes); the WebRTC IP policy as webviews; `devTools: false` when
-    packaged.
+    `will-prevent-unload` ignored (an unload always goes ahead); the WebRTC IP policy as webviews; `devTools: false` when
+    packaged. The person's own close of the window is held while main asks the page whether it would hold an unload
+    (a page tab with unsaved text) and, when it would, asks with the native unsaved box (`remote-windows.ts` "Unsaved
+    page tabs"); main's own closes and loads never ask.
   - Through a tunnel (either kind) the page's origin is loopback, and its requests carry cookies to any `127.0.0.1` port
     (cookies ignore ports): `webRequest.onBeforeRequest` cancels requests to any loopback host other than the server's
     own origin.

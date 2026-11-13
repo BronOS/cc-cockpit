@@ -6,6 +6,10 @@
 // native box: Discard (go ahead) or Cancel (nothing happens). The page cannot block or delay it: it
 // only ever reported.
 //
+// A desktop remote window (the server's web client, Remote servers) asks with the same box at the
+// person's close, kind `remote`, naming the window: main cannot see its tabs, only that its page holds
+// an unload (remote-windows.ts "Unsaved page tabs").
+//
 // A tab's own close asks in the renderer (close-confirm.ts, CloseTabDialog), and server mode's Close
 // project asks in the browser with the in-page approval (web/CloseProject.tsx). Server mode has no
 // window close button and its quit is a stop signal: nothing here runs there.
@@ -16,10 +20,10 @@
 import type { MessageBoxOptions } from 'electron'
 
 /**
- * What is being ended: one window's tabs (a close, or a reopen that makes the window again), or the
- * app's (every window).
+ * What is being ended: one window's tabs (a close, or a reopen that makes the window again), the
+ * app's (every window), or a remote window's (its title is the one entry).
  */
-export type UnsavedKind = 'window' | 'reopen' | 'quit'
+export type UnsavedKind = 'window' | 'reopen' | 'quit' | 'remote'
 
 /**
  * Ask whether to discard the unsaved changes of `titles` (page tab titles, at least one): true is
@@ -45,7 +49,8 @@ export function unsavedList(titles: readonly string[]): string {
 const KIND_TEXT: Record<UnsavedKind, { button: string; doing: string }> = {
   window: { button: 'Discard and Close', doing: 'Closing the window' },
   reopen: { button: 'Discard and Reopen', doing: 'Reopening the window' },
-  quit: { button: 'Discard and Quit', doing: 'Quitting' }
+  quit: { button: 'Discard and Quit', doing: 'Quitting' },
+  remote: { button: 'Discard and Close', doing: 'Closing the window' }
 }
 
 /** The message box. Cancel is the default: Enter never throws text away. */
@@ -57,7 +62,8 @@ export function unsavedDialogOptions(kind: UnsavedKind, titles: readonly string[
     defaultId: 1,
     cancelId: 1,
     noLink: true,
-    message: one ? 'A tab has unsaved changes.' : `${titles.length} tabs have unsaved changes.`,
+    // A remote window's entry is the window: how many of its tabs are unsaved is the server page's.
+    message: kind === 'remote' ? 'This window has tabs with unsaved changes.' : one ? 'A tab has unsaved changes.' : `${titles.length} tabs have unsaved changes.`,
     detail: `${unsavedList(titles)}\n\n${KIND_TEXT[kind].doing} discards ${one ? 'them' : 'all of them'}.`
   }
 }
@@ -70,7 +76,7 @@ export interface UnsavedDialogDeps<W> {
 
 /**
  * The real box, as a sheet on the window when there is one. A box that fails to show discards for a
- * close or a quit, as close-dialog.ts closes for everyone: the person asked to close or quit, and an
+ * close (a remote window's too) or a quit, as close-dialog.ts closes for everyone: the person asked to close or quit, and an
  * app that can never be closed is worse. A reopen is never forced (it only applies a look), so there
  * a failed box is Cancel. The failure is logged.
  */

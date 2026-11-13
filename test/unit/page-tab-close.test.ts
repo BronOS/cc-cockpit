@@ -168,6 +168,12 @@ describe('the window close and quit box', () => {
     expect(reopen.buttons).toEqual(['Discard and Reopen', 'Cancel'])
     expect(reopen.cancelId).toBe(1)
     expect(reopen.detail).toBe('• a.ts\n\nReopening the window discards them.')
+    // A remote window's entry is the window itself (main cannot see its tabs).
+    const remote = unsavedDialogOptions('remote', ['devbox — Api'])
+    expect(remote.buttons).toEqual(['Discard and Close', 'Cancel'])
+    expect(remote.cancelId).toBe(1)
+    expect(remote.message).toBe('This window has tabs with unsaved changes.')
+    expect(remote.detail).toBe('• devbox — Api\n\nClosing the window discards them.')
   })
 
   it("a test run's box: Cancel for a window and Discard for a quit unless answers are queued", async () => {
@@ -177,7 +183,8 @@ describe('the window close and quit box', () => {
     q.answer(true)
     await expect(q.ask(1, ['b'], 'window')).resolves.toBe(true)
     await expect(q.ask(1, ['c'], 'reopen')).resolves.toBe(false)
-    expect(q.asks().map((a) => a.kind)).toEqual(['window', 'quit', 'window', 'reopen'])
+    await expect(q.ask(1, ['devbox'], 'remote')).resolves.toBe(false)
+    expect(q.asks().map((a) => a.kind)).toEqual(['window', 'quit', 'window', 'reopen', 'remote'])
   })
 
   // The real box (index.ts passes BrowserWindow.fromId and the dialogs' showMessageBox): the button
@@ -225,6 +232,8 @@ describe('the window close and quit box', () => {
       })
       await expect(failing.ask(7, ['a.ts'], 'window')).resolves.toBe(true)
       expect(warn).toHaveBeenCalledWith('unsaved changes dialog failed, going ahead', expect.any(Error))
+      // A remote window's close too: the person asked to close it.
+      await expect(failing.ask(7, ['devbox — Api'], 'remote')).resolves.toBe(true)
       // A reopen is never forced: a box that fails to show there is Cancel.
       await expect(failing.ask(7, ['a.ts'], 'reopen')).resolves.toBe(false)
       expect(warn).toHaveBeenCalledWith('unsaved changes dialog failed, not reopening', expect.any(Error))

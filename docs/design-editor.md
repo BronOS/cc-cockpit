@@ -57,9 +57,13 @@ view asks with core's dialog (the `CloseTabDialog` pattern, an `ApprovalDialog` 
 on a window reopen (Settings › Window's "Reopen window": the new window restores the tabs, never their buffers; Cancel or
 a box that fails to show keeps the window) and on quit; the page cannot block or delay a close itself. A browser view's
 own unload (the browser tab closed, reloaded or navigated away) is the web shell's: it holds the unload with the
-browser's "Leave site?" question (`beforeunload`) while a page frame in that view is dirty. A desktop remote window
-ignores `beforeunload` (the webview hardening lets every unload go ahead, and main reloads that page itself on a
-re-pair), so its unsaved text is lost on close, a known limit.
+browser's "Leave site?" question (`beforeunload`) while a page frame in that view is dirty. A desktop remote window's
+page has the webview hardening, which lets every unload go ahead, so main asks instead: the person's own close of the
+window is held, the page is asked whether it would hold an unload (a cancelable `beforeunload` dispatched from main's
+isolated world), and when it would, core's native box asks (Discard and Close / Cancel, naming the window; a page that
+does not answer within a second, or a box that fails to show, closes). Main's own loads and closes of that window (a
+re-pair or sign-in, the tunnel back on another port, Forget, a project the server closed, and quit) do not ask: their
+state cannot wait on a box, and most of them happen to a page signed out or cut off from its server. A known limit.
 
 Keyboard: a sandboxed frame's keys never reach the shell's window listener. Desktop: `before-input-event` on the frame
 maps app chords to `commands.trigger`, as webview panels do. Web shell: the panel SDK forwards chords to the parent.

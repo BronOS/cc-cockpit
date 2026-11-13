@@ -69,6 +69,17 @@
 // whatever listened on the local port before main knew it was a gateway. It now waits for the load's
 // landing (a navigation, which asks again) and makes no probe of its own.
 //
+// Unsaved page tabs (design-editor.md §1 "Dirty and close"). The web client holds a page's unload with
+// its `beforeunload` while a page tab frame in it has unsaved text, but a remote window's page has the
+// webview hardening, which lets every unload go. So the person's own close of a remote window (its
+// close button, Alt+F4; the adapter reports it, main's own closes never) is held and the page is asked
+// whether it would hold an unload now (`holdsUnload`, a cancelable `beforeunload` dispatched from
+// main's isolated world): when it would, the native unsaved box asks (`askUnsaved`), and the window
+// closes on Discard, on a clean page, a page that did not answer, or a box that failed. Main's own
+// loads and closes (a re-pair, a sign-in, a tunnel on a new port, a reopen, Forget, a project the
+// server closed, quit) never ask: their state cannot wait on a box, and most of them happen to a page
+// that is signed out or has lost its server. A known limit (docs/features.md).
+//
 // A project the server closed (design §4 "Recent projects"): the picker's recent rows name projects
 // the server may have closed since, and the web client only shows "not open on the host" for one.
 // So before main loads a project page it asks PROJECTS_PATH through the partition (the device
@@ -324,6 +335,11 @@ export interface RemoteWindowHooks {
    * pressed. Only a click vouches for a page-driven focus move (see the header).
    */
   input(kind: 'click' | 'key'): void
+  /**
+   * The person asked to close the window (its close button, Alt+F4), never main's own `close`. True
+   * holds it: main closes the window itself once it decided (see "Unsaved page tabs" in the header).
+   */
+  closeRequested(): boolean
   /** The window closed. */
   closed(): void
 }
@@ -361,6 +377,12 @@ export interface RemoteWindowView {
   readKey(): Promise<unknown>
   /** Show `text` as the window's page, as plain text (never HTML: it may carry the server's words). */
   showError(text: string): void
+  /**
+   * Whether the page would hold an unload now (the web client's `beforeunload`: a page tab with
+   * unsaved text). False for a closed window or a page that did not answer in time; never rejects.
+   */
+  holdsUnload(): Promise<boolean>
+  /** Close the window, with no question: main's own close is final. */
   close(): void
 }
 
@@ -434,6 +456,11 @@ export interface RemoteWindowsOptions {
    * local project window; false when there is none (the picker shows then). Absent: the picker.
    */
   focusLocal?(): boolean
+  /**
+   * The person's close of window `windowId` (titled `title`) would end unsaved page tab text: true is
+   * Discard (close), false is Cancel. Absent: every close goes ahead unasked (tests of other things).
+   */
+  askUnsaved?(windowId: number, title: string): Promise<boolean>
   now?(): number
   timers?: RemoteWindowsTimers
   log?(message: string): void
@@ -497,6 +524,10 @@ interface WindowRecord {
   waiting: string | undefined
   /** A project check that could not run for want of a key: it runs once load `attempt` finished loading. */
   recheck: { project: string; attempt: number } | undefined
+  /** The title main last gave the window (the unsaved box names it). */
+  title: string
+  /** The person's close is being decided (the page asked, or the box up): another close waits for it. */
+  closing: boolean
 }
 
 export type SessionReply = { mode: string; device: { id: string } | null }
@@ -647,11 +678,12 @@ export class RemoteWindows {
         if (made.rec === undefined || made.rec.closed) return
         made.rec.clickedAt = kind === 'click' ? this.now() : undefined
       },
+      closeRequested: () => made.rec !== undefined && this.closeRequested(made.rec),
       closed: () => {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined, title: remoteTitle(server.name), closing: false }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
@@ -1021,7 +1053,7 @@ export class RemoteWindows {
     if (server === undefined || state === undefined) return
     const project = rec.project
     rec.titled = project
-    rec.view.setTitle(remoteTitle(server.name))
+    this.setTitle(rec, remoteTitle(server.name))
     if (project === undefined) return
     // My own tunnel (`cleared`): no lookup before the window's current load passed the probe. No
     // probe of its own either: the load's landing on the page is a navigation, which asks again.
@@ -1037,7 +1069,7 @@ export class RemoteWindows {
         if (entry === undefined) return
         const current = this.options.store.get(rec.serverId)
         if (current === undefined) return
-        rec.view.setTitle(remoteTitle(current.name, entry.name))
+        this.setTitle(rec, remoteTitle(current.name, entry.name))
         this.options.store.recordRecent(rec.serverId, project, entry.name, entry.at)
       },
       (err: unknown) => {
@@ -1047,6 +1079,39 @@ export class RemoteWindows {
         if (!(err instanceof RemoteNoKeyError)) this.log(`remote ${rec.serverId}: the project list did not answer: ${errorText(err)}`)
       }
     )
+  }
+
+  private setTitle(rec: WindowRecord, title: string): void {
+    rec.title = title
+    rec.view.setTitle(title)
+  }
+
+  /**
+   * The person's close (see "Unsaved page tabs" in the header): held while main asks the page and,
+   * when it holds an unload, the person. Closed on Discard, a clean or silent page, or a box that
+   * failed (the person asked to close; a window that can never close is worse), kept on Cancel.
+   * A window main closed meanwhile (Forget, quit) is left alone.
+   */
+  private closeRequested(rec: WindowRecord): boolean {
+    const ask = this.options.askUnsaved
+    if (ask === undefined || rec.closed) return false
+    if (rec.closing) return true
+    rec.closing = true
+    const done = (close: boolean): void => {
+      rec.closing = false
+      if (close && !rec.closed) rec.view.close()
+    }
+    rec.view
+      .holdsUnload()
+      .then(
+        (held) => (held && !rec.closed ? ask(rec.view.id, rec.title) : true),
+        () => true
+      )
+      .then(done, (err: unknown) => {
+        this.log(`remote ${rec.serverId}: the unsaved changes box failed, closing: ${errorText(err)}`)
+        done(true)
+      })
+    return true
   }
 
   private closed(rec: WindowRecord): void {

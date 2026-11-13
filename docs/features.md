@@ -37,8 +37,10 @@ behind it are in [design.md](design.md).
   Cancel keeps the window as it is) and quitting (on macOS, Cancel there also cancels a logout or
   shutdown that asked the app to quit). In a browser (web access), closing, reloading or leaving
   the page while one of its page tabs holds unsaved text gets the browser's own "Leave site?"
-  question. Known limit: a remote server's window on the desktop (Remote servers) closes and
-  reloads without asking, so save there first.
+  question. A remote server's window on the desktop (Remote servers) asks when you close it while
+  one of its page tabs holds unsaved text (Discard and Close, or Cancel). Known limit: quitting the
+  app, and the app's own reloads and closes of that window (signing in again, the tunnel coming
+  back on another port, Forget, the project closed on the server) do not ask, so save there first.
 - Ctrl+Tab (Ctrl on every platform; Cmd+Tab is macOS's app switcher) goes back to the tab you were
   in before. Hold Ctrl and press Tab again to walk further back through the tabs in recent order,
   Shift+Tab or the arrow keys to step back; after a moment an overlay lists the tabs, and letting go

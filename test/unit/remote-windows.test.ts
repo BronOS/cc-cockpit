@@ -194,10 +194,21 @@ class FakeView implements RemoteWindowView {
     this.hooks.navigated(this.current)
     this.hooks.loaded()
   }
+  /** Whether the page holds an unload (a dirty page tab); a test may replace the answer. */
+  held: () => Promise<boolean> = async () => false
+  holdsUnload(): Promise<boolean> {
+    return this.held()
+  }
   close(): void {
     if (this.closed) return
     this.closed = true
     this.hooks.closed()
+  }
+
+  /** The person's close (the close button), as the adapter does it: closed unless main holds it. */
+  personClose(): void {
+    if (this.closed) return
+    if (!this.hooks.closeRequested()) this.close()
   }
 
   /** The person clicked in the page (a mouse button released), as the adapter reports it. */
@@ -558,6 +569,123 @@ describe('RemoteWindows: windows', () => {
 
   it('refuses an unknown server', async () => {
     await expect(t.windows.open('zz', { origin: ORIGIN })).rejects.toThrow('unknown server')
+  })
+})
+
+describe('RemoteWindows: unsaved page tabs at the person\'s close', () => {
+  /** setup() with the unsaved box: each ask waits for the test's answer (true: Discard). */
+  function withBox() {
+    const asks: Array<{ windowId: number; title: string; answer(discard: boolean): void; fail(err: Error): void }> = []
+    const base = setup()
+    const windows = new RemoteWindows({
+      ...base.options,
+      askUnsaved: (windowId, title) =>
+        new Promise<boolean>((resolve, reject) => {
+          asks.push({ windowId, title, answer: resolve, fail: reject })
+        })
+    })
+    return { ...base, windows, asks }
+  }
+
+  it('a clean page closes with no question', async () => {
+    const t = withBox()
+    await t.windows.open('s1', { origin: ORIGIN })
+    const view = t.factory.views[0] as FakeView
+    view.personClose()
+    // Held while the page is asked, closed once it answered clean.
+    expect(view.closed).toBe(false)
+    await flush()
+    expect(view.closed).toBe(true)
+    expect(t.asks).toHaveLength(0)
+    expect(t.windows.count()).toBe(0)
+  })
+
+  it('a page holding an unload asks, naming the window; Cancel keeps it, Discard closes it, one box at a time', async () => {
+    const t = withBox()
+    await t.windows.open('s1', { origin: ORIGIN })
+    const view = t.factory.views[0] as FakeView
+    view.held = async () => true
+    view.personClose()
+    await flush()
+    expect(t.asks.map((a) => [a.windowId, a.title])).toEqual([[view.id, 'devbox']])
+    // A second close while the box is up waits for the same answer.
+    view.personClose()
+    await flush()
+    expect(t.asks).toHaveLength(1)
+    t.asks[0]!.answer(false)
+    await flush()
+    expect(view.closed).toBe(false)
+    expect(t.windows.count()).toBe(1)
+    // Asked again on the next close, and Discard closes.
+    view.personClose()
+    await flush()
+    expect(t.asks).toHaveLength(2)
+    t.asks[1]!.answer(true)
+    await flush()
+    expect(view.closed).toBe(true)
+    expect(t.windows.count()).toBe(0)
+  })
+
+  it('a box that fails, or a page that cannot answer, closes the window (the person asked to close)', async () => {
+    const t = withBox()
+    await t.windows.open('s1', { origin: ORIGIN })
+    const view = t.factory.views[0] as FakeView
+    view.held = async () => true
+    view.personClose()
+    await flush()
+    t.asks[0]!.fail(new Error('no box'))
+    await flush()
+    expect(view.closed).toBe(true)
+    expect(t.logs.some((l) => l.includes('the unsaved changes box failed, closing: no box'))).toBe(true)
+    await t.windows.open('s1', { origin: ORIGIN })
+    const second = t.factory.views[1] as FakeView
+    second.held = () => Promise.reject(new Error('gone'))
+    second.personClose()
+    await flush()
+    expect(second.closed).toBe(true)
+    expect(t.asks).toHaveLength(1)
+  })
+
+  it("main's own close while the box is up wins; the late answer does nothing", async () => {
+    const t = withBox()
+    await t.windows.open('s1', { origin: ORIGIN })
+    const view = t.factory.views[0] as FakeView
+    view.held = async () => true
+    view.personClose()
+    await flush()
+    let closes = 0
+    const close = view.close.bind(view)
+    view.close = () => {
+      closes++
+      close()
+    }
+    t.windows.closeAll()
+    expect(view.closed).toBe(true)
+    t.asks[0]!.answer(true)
+    await flush()
+    expect(closes).toBe(1)
+  })
+
+  it('a window closed while the page is asked asks nothing', async () => {
+    const t = withBox()
+    await t.windows.open('s1', { origin: ORIGIN })
+    const view = t.factory.views[0] as FakeView
+    let answer: (held: boolean) => void = () => undefined
+    view.held = () => new Promise<boolean>((resolve) => (answer = resolve))
+    view.personClose()
+    t.windows.forget('s1')
+    answer(true)
+    await flush()
+    expect(t.asks).toHaveLength(0)
+  })
+
+  it('with no box (tests of other things) the close goes ahead at once', async () => {
+    const t = setup()
+    await t.windows.open('s1', { origin: ORIGIN })
+    const view = t.factory.views[0] as FakeView
+    view.held = async () => true
+    view.personClose()
+    expect(view.closed).toBe(true)
   })
 })
 

@@ -756,6 +756,9 @@ function start(server: boolean): void {
           showPicker: () => windows.showPicker(),
           // The web client's "This computer" chip: the last focused local project window.
           focusLocal: () => windows.focusLastLocal(),
+          // The person closing a remote window whose page holds unsaved page tab text: the unsaved
+          // box, naming the window (remote-windows.ts "Unsaved page tabs"); desktop only, as `remote`.
+          ...(askUnsaved ? { askUnsaved: (windowId: number, title: string) => askUnsaved(windowId, [title], 'remote') } : {}),
           log: warnLog
         })
         return { service, windows: remoteWindows, machines: machineStatus }

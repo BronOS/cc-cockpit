@@ -20,7 +20,10 @@
 // - the webview panels' page hardening (webview-hardening.ts `hardenWebContents`): window.open
 //   denied (an http(s) link to the person's browser under the open budget), main-frame navigation
 //   and redirects pinned to the server's origin, `beforeunload` never holds a close, HTTP auth
-//   cancelled, a bad certificate refused (no "proceed anyway"), WebRTC kept off non-proxied UDP;
+//   cancelled, a bad certificate refused (no "proceed anyway"), WebRTC kept off non-proxied UDP. So
+//   the web client's own unsaved-text hold never shows; instead the person's close (never main's) is
+//   reported (`closeRequested`) and held while remote-windows.ts asks the page (`holdsUnload`) and
+//   then the person ("Unsaved page tabs" there);
 // - the user agent carries `cc-cockpit-desktop/<version> (<hostname>)` (shared/remote-agent.ts):
 //   the web client then keeps the desktop's key table and names the device after this machine.
 //   Set on the session too, so main's own requests (`fetchJson`) say the same;
@@ -104,6 +107,18 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T> {
     )
   })
 }
+
+/**
+ * Whether the page would hold an unload now, as source text: a cancelable `beforeunload` dispatched
+ * at the page's window (its own listeners run; the web client's holds while a page tab is dirty,
+ * renderer/web/main.tsx). Run in main's isolated world (REMOTE_KEY_WORLD_ID), as the key read: the
+ * page cannot see or replace the dispatch. Anything but a held event is false.
+ */
+export const HOLDS_UNLOAD_SCRIPT =
+  "(() => { try { const ev = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(ev); return ev.defaultPrevented === true } catch { return false } })()"
+
+/** How long that answer may take before the close goes ahead (a hung or crashed page answers nothing). */
+export const UNLOAD_PROBE_TIMEOUT_MS = 1_000
 
 /** The partitions this adapter prepared (isRemoteWindow). */
 const remoteSessions = new WeakSet<Session>()
@@ -266,6 +281,13 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       else if (type === 'rawKeyDown' || type === 'keyDown' || type === 'char') hooks.input('key')
     })
     win.on('focus', () => hooks.focused())
+    // Main's own close (`close` below: Forget, quit, a project the server closed) is final and never
+    // reported; it stays made, since Electron's quit closes the window again after closeAll did. Any
+    // other close is the person's, held when remote-windows.ts says so (it closes the window later).
+    let mainClose = false
+    win.on('close', (event) => {
+      if (!mainClose && hooks.closeRequested()) event.preventDefault()
+    })
     win.on('closed', () => hooks.closed())
     const id = win.id
     const webContentsId = wc.id
@@ -302,8 +324,17 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
         // text/plain: the server's words in it can never be markup.
         wc.loadURL(`data:text/plain;charset=utf-8,${encodeURIComponent(text)}`).catch(() => undefined)
       },
+      holdsUnload: () => {
+        if (win.isDestroyed() || wc.isDestroyed()) return Promise.resolve(false)
+        return within(wc.executeJavaScriptInIsolatedWorld(REMOTE_KEY_WORLD_ID, [{ code: HOLDS_UNLOAD_SCRIPT }]) as Promise<unknown>, UNLOAD_PROBE_TIMEOUT_MS).then(
+          (held) => held === true,
+          () => false
+        )
+      },
       close: () => {
-        if (!win.isDestroyed()) win.close()
+        if (win.isDestroyed()) return
+        mainClose = true
+        win.close()
       }
     }
   }
