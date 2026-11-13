@@ -349,10 +349,10 @@ host restart with a dirty buffer in `page-session.test.mjs` and `test/unit/page-
 Alt+click cursors and Alt+drag columns are checked in `editor.spec.ts`; the indent unit comes from the file.
 
 ### Task 20: [Final] Update documentation [model: sonnet]
-- [ ] `docs/features.md` (editor, page tabs, processes, known limits), `docs/design.md` (tab kinds, `contributes.tabs`,
+- [x] `docs/features.md` (editor, page tabs, processes, known limits), `docs/design.md` (tab kinds, `contributes.tabs`,
   `ctx.tabs`, `ctx.processes`, Discuss for page tabs), README if needed
-- [ ] CLAUDE.md: State line, page tabs / frames / processes rules in Implementation patterns, `build:editor` in Commands
-- [ ] move this plan to `docs/plans/completed/`
+- [x] CLAUDE.md: State line, page tabs / frames / processes rules in Implementation patterns, `build:editor` in Commands
+- [x] move this plan to `docs/plans/completed/` (done by the harness at the end)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

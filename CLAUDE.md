@@ -26,13 +26,18 @@ opens its projects in sandboxed desktop windows running the server's web client)
 `docs/design-remote-desktop.md` (revision 2), plans in `docs/plans/completed/20261112-remote-desktop.md` and
 `docs/plans/completed/20261112-remote-ssh-builtin.md`, user docs in `docs/features.md` ("Remote servers").
 
+The code editor (`cockpit.editor` rewritten as a main coding editor: page tabs, CodeMirror 6, language servers, merge with
+Claude's writes, Ask Claude, quick chat, `ccc edit`, `ctx.processes`) is implemented; design in `docs/design-editor.md`, plan in
+`docs/plans/completed/20261112-code-editor.md`, user docs in `docs/features.md` (the editor entry under the bundled plugins).
+Its language servers were only run against fakes.
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
   gateway's TLS unit tests (`web-gateway.test.ts`) need `openssl` on PATH.
 - `npm run typecheck`, `npm run lint`.
 - `npm run build` (runs `build:hello`, `build:browser` and `build:reviewer` first), `npm run build:hello` (rebuild after editing
-  `plugins/hello`; the dist is committed), `npm run build:reviewer` (bundles the overlay page of `plugins/reviewer` into the committed `overlay/review.bundle.js`; the reviewer, editor, files and sessions hosts are plain JS, with no build), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
+  `plugins/hello`; the dist is committed), `npm run build:reviewer` (bundles the overlay page of `plugins/reviewer` into the committed `overlay/review.bundle.js`; the reviewer, editor, files and sessions hosts are plain JS, with no build; the editor's page is bundled by `build:editor`), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
   master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
   pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
@@ -221,6 +226,19 @@ opens its projects in sandboxed desktop windows running the server's web client)
   may only Deny.
 - `CliCall.tabId` is set by main only when the `ccc` caller is a Claude tab (never from anything the caller sends); a plugin
   command may use it to know which tab ran it (`ccc autopilot stop`) and must answer an unknown and a foreign id the same way.
+- Page tabs (`TabKind` `page`, design.md §5 "Page tabs", design-editor §1): the frames sit outside the React root (a remount keeps
+  them), mount on first select, an LRU of 6 stays mounted, never in server mode's hidden page. A host restart or a web
+  reconnect hands the frame a new port without a reload (the page re-sends its buffers); a page-tab port is paused and resynced
+  at the relay limit, never closed. Dirty is per (tab, view), kept by main from the page's report; closing a tab dirty in any
+  view asks in core's dialog (`ApprovalDialog` in server mode) and the page cannot block it. Page keys: the app table and
+  `keyOverrides` win, a manifest's declared chords go to the page while it has focus. The unseen dot (`ccc edit`) is core's,
+  never a flag. A page tab is never typed into: no send gate, `typed` or Claude status; Discuss asks the page's `onDiscuss`.
+- `ctx.processes` (host-local, design.md §5): argv only, bytes not text, 16 live children per plugin, process groups killed on
+  close, dispose and host stop; not a capability (the host could `ctx.exec` anyway), so the cap and the kill are the control.
+- Editor host rules (`plugins/editor`): saves are compare-and-swap against what was last read, so a write Claude made
+  meanwhile is merged or conflicted, never overwritten; the host is the only LSP client (it owns `initialize`, the config,
+  URI checks and the method allow-list; a page never sends LSP and never names a binary); quick chat's argv is fixed
+  (`claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob`) and the host checks it is read-only before spawning.
 - Plugin command tabs (`ctx.sessions.openCommand`, design.md §3 "Custom commands"): kind `command` with `argv` and
   `openedBy` instead of a user `command` line; spawned as argv with no shell, never both fields (a saved record with
   both is dropped). `openedBy` is set by main from the host's own plugin, shown in the tab tooltip, and restore drops

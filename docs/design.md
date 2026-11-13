@@ -576,6 +576,27 @@ and `inbox-item` `{ source, id }`.
 `did-finish-load` / `did-fail-load` / `did-stop-loading`; a terminal's first PTY output). "Still
 loading…" after 10 s; ✕ and Esc work throughout. A renderer reload brings an html overlay's loader back.
 
+**Page tabs** (`contributes.tabs`, `ctx.tabs`; design-editor §1). A third `TabKind`, `page`, beside `claude`, `shell` and
+`command`: a tab of the main tab bar whose content is a plugin page, drawn in its own sandboxed frame with its own
+`MessagePort` to the plugin's backend (`ctx.tabs.onOpen`), as a slot is; the frames sit outside the React root. A page
+tab is never a terminal: the send gate, `typed` and Claude status do not apply; a saved tab keeps `type` and params and
+is asked of its plugin again on restore (a gone or revoked plugin drops it). Title and icon come from the plugin's
+request, clamped by main. The frame is mounted on first select (not at restore), the 6 most recently used stay
+mounted, a plugin has at most 64 page tabs per project, and server mode's hidden page never mounts one. A plugin host
+restart or a web reconnect gives the frame a new port without a reload (the page re-sends what it holds). Dirty is per
+tab and view, from the page's report; closing a tab dirty in any view asks in core's dialog (an `ApprovalDialog` in
+server mode), also on window close and quit. Keys: the app table wins for chords it holds; chords a manifest declares
+for the page go to it while it has focus. A tab opened while the person is elsewhere (`ccc edit`) gets core's unseen
+dot, never a flag. Discuss with Claude works on a page tab: core draws the question box, main asks the page's
+`onDiscuss` for the context, and the text goes through the send gate as `core` origin like an overlay's.
+
+**Processes** (`ctx.processes`). `spawn(argv, { cwd })` runs inside the plugin host (which can start processes already),
+so it is not a capability: argv only, never a shell, the env fixes of `ctx.exec`, bytes not text (LSP framing counts
+bytes), at most 16 live children per plugin, and every child's process group is killed on `kill`, on tab or plugin
+dispose and when the host stops. `openFile.whenPicked` lets a plugin be listed in "Plugin used to open files" without
+being the default: the Reviewer is the default for a plain click, so the Editor (a candidate only when picked) is opened
+by Edit, `ctx.services` `editor.open` and `ccc edit`.
+
 **Discuss with Claude** (`DiscussPopover.tsx`, `main/overlays/discuss.ts`). Shown for an overlay with a
 `type` or an `onDiscuss` handler unless the spec says `discuss: false`. It is a split button: the main part
 sends to a new session at once (no note); the ▾ part (disabled with no Claude tab) lists this window's
@@ -764,6 +785,8 @@ A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider r
 - `openFile`: one object, not a list, and it needs `main` (`{ "title": 1..100 chars, "whenPicked"?: boolean }`). The
   plugin may take a click on a changed file in the Sessions panel through `ctx.files.onOpen`; see Open file below.
   `whenPicked: true`: a candidate only when the project picked it (listed in the pick, never the default).
+- `tabs[]`: page-tab types (`{ "type", "page" }`, validated like `slots[]`: needs `main`, `type` `^[a-z][a-z0-9-]{0,63}$`,
+  `page` an `.html` in the plugin folder, a type once per plugin); see Page tabs below. Main never takes a page path from the host.
 - A panel's `icon` (an SVG or PNG in the plugin folder) is drawn as a mask in the strip's text colour,
   not as an image: only its shape and alpha count, so it follows the theme, hover and open states (a
   `stroke="currentColor"` SVG drawn by `<img>` came out black). `IconStrip.tsx` paints a CSS
@@ -788,6 +811,8 @@ that project.
 | project | `ctx.projectDir` (the project folder's real path, read-only) |
 | UI | `ctx.panels.post(id, msg)`, `onMessage`, `ctx.panels.show(id)` (reveals the panel's zone), `ctx.panels.header(id, {meta, actions} \| null)` and `onAction(id, fn)` (panel header, below), `ctx.panels.slots(id, placements \| null)` (Slots, below), `ctx.badge(id, n \| "dot")`, `ctx.overlay.open(…)` → result, `ctx.overlay.start(…)` → `{result, post, onMessage, close, focus, onButton, setButtons, onDiscuss}` (`focus` brings it to the front, no-op after close; two-way html overlay, toolbar buttons and Discuss, §4), `ctx.overlay.buttons(type, provider)` (buttons on every overlay of a type, §4 Overlay toolbar) |
 | slots | `ctx.slots.onOpen(type, fn)` → disposer (provider side; the type must be in `contributes.slots`), a `SlotInstance` `{id, type, host, params, post, onMessage, onClose}`, `ctx.slots.available(type)` → `Promise<boolean>` (Slots, below) |
+| tabs | `ctx.tabs.onOpen(type, fn)` (the page's backend: a `TabInstance` with `post`, `onMessage`, `onClose`, `onDiscuss`), `openPage(type, params, {title, icon?, focus?})` → tab id, `list(type)`, `focus(id)`, `markUnseen(id)`, `close(id)` (page tabs, below; every call throws for a type not in `contributes.tabs`) |
+| processes | `ctx.processes.spawn(argv, {cwd})` → handle `write(bytes)`, `onData(bytes)`, `onStderr`, `onExit`, `kill` (long-running child, byte stdio, argv only; not a capability; below) |
 | files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration), `ctx.files.reveal(path)`, `ctx.files.openWithSystem(path)`, `ctx.files.trash(path)` (the system's file manager, default app and Trash; below) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |

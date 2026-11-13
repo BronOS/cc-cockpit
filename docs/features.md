@@ -274,6 +274,28 @@ behind it are in [design.md](design.md).
   colour scheme and a path-to-micro setting); `ccc edit <file>[:line[:col]]` opens the file's tab at that position (marked with the unseen dot, never selected, so it cannot take the screen from a terminal being typed in; an open tab moves its cursor and gets the dot again; a missing or binary file is refused), and the Editor's skill tells Claude to use it to point at code. micro is an optional
   dependency, not shipped: install it with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install
   micro` (Linux). Without it, Open in micro shows that command and the `microPath` setting instead of failing silently.
+  Editor, continued:
+  - Language servers: TypeScript/JavaScript (`typescript-language-server`), Go (`gopls`), PHP (`intelephense`, else
+    `phpactor`) and Python (`basedpyright`, else `pyright`) give diagnostics, hover, completion, signature help,
+    go-to-definition, find references, rename, format, code actions and document symbols. A missing server is not an
+    error: the file is highlighted and a bar shows the install command. The app setting `servers` (language,
+    extensions, argv) adds or overrides one. A server runs your project's tooling, as in any IDE. A definition outside
+    the project (`node_modules`, module cache) opens read-only.
+  - Claude's changes: lines changed against git `HEAD` get a bar in the gutter (hover shows the old lines, a click
+    opens the Reviewer's diff); the Reviewer's notes for the file show there too, and "Add review note" on a selection
+    adds one.
+  - Ask Claude (Ctrl/Cmd+L, or the context menu on a selection): a question with the path, lines and selection, sent
+    to the Claude tab last used in the project (or one you pick) through the send gate, so it waits for *waiting for
+    input*.
+  - Quick chat (Ctrl/Cmd+K on a selection): a short headless Claude, read-only (Read, Grep, Glob; no settings, hooks
+    or MCP servers), proposes a replacement shown as an inline diff with Accept and Reject; Claude never writes the
+    file. The model is an app setting (default `sonnet`). These runs leave transcripts in `~/.claude`, so the Usage
+    panel counts them.
+  - Mod+click or Alt+click adds a cursor; the page tab follows Ctrl+Tab, drag, flags and restore like any tab.
+- Page tabs: a plugin can draw a tab of the main tab bar as its own page (`contributes.tabs`, `ctx.tabs`); the editor
+  is the first. Such a tab holds unsaved text, so its page stays loaded while you switch (the 6 most recent), survives a
+  plugin restart and a browser reconnect, and closing a tab with unsaved text asks. Plugins can also run long-running
+  child processes with `ctx.processes` (argv only, 16 per plugin, killed with the plugin).
 - A built-in file tree (`cockpit.files`, on by default, ships with the app): a Files panel (left zone) with the
   whole project folder, so any file can be opened and discussed with Claude, changed or not. A click opens it through
   "Plugin used to open files" (the reviewer by default: the diff for a changed file, the file itself otherwise, with
@@ -764,6 +786,12 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   list above it); a note cannot be made on the message's text
   (switch to Reader); each message's frame is as tall as the visible area and scrolls on its own (nothing can measure
   its content without script); and showing the pictures reloads the frame at its top.
+- The editor does not have: Vim mode, a "since opened" mark, a "Claude is editing this file" lock, local history beyond
+  undo, debugging (DAP), semantic tokens, call hierarchy or workspace symbol search; file create, rename and delete from
+  a rename or code action are refused. The `servers` setting names a command only, so a server runs with its own
+  defaults: a Python virtualenv is found only through `pyrightconfig.json` or `[tool.pyright]`, and intelephense runs in
+  its free tier. The four built-in servers were tested against fakes, not run for real. Quick open and find in files
+  need ripgrep.
 - The reviewer and editor handle files inside the project only. A file a session edits outside its project keeps
   opening in the built-in viewer, because plugins only receive project-relative paths.
 - The web view (browser plugin) cannot stop a hostile page from navigating its top level to an

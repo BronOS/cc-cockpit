@@ -39,7 +39,7 @@ tested).
 - **Usage at a glance.** A top-bar meter and a Usage panel: what your Claude Code work would cost at API prices, by
   project, model and session, and your plan's rate-limit windows.
 - **A built-in reviewer and editor.** Click a file Claude changed to review its diff, attach notes and send them back to
-  Claude; Edit opens the file in an editor tab (CodeMirror, autosave, never overwriting Claude's changes). Both are
+  Claude; Edit opens the file in an editor tab (CodeMirror, autosave, language servers, quick chat, never overwriting Claude's changes). Both are
   bundled plugins you can turn off or replace.
 
 Every feature in detail: [docs/features.md](docs/features.md).
