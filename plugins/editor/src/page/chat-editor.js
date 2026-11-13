@@ -108,6 +108,9 @@ export function createChatField(handlers) {
     update(value, tr) {
       let { target, proposal } = value
       let changed = false
+      // Text typed into an empty target lands outside it (mapTarget keeps the edges out), so the
+      // text would still "fit" (''): an insert at its position drops a proposal made for an empty target.
+      const emptyEdited = !!target && target.from === target.to && tr.docChanged && tr.changes.mapPos(target.from, 1) !== tr.changes.mapPos(target.from, -1)
       if (target && tr.docChanged) {
         target = mapTarget(target, tr.changes)
         changed = true
@@ -127,7 +130,7 @@ export function createChatField(handlers) {
         }
       }
       let dropped = false
-      if (proposal && !proposalFits(tr.state.doc, target, proposal.forText)) {
+      if (proposal && ((emptyEdited && !tr.effects.some((e) => e.is(accepted))) || !proposalFits(tr.state.doc, target, proposal.forText))) {
         proposal = null
         dropped = true
         changed = true
@@ -293,7 +296,8 @@ export function createQuickChat({ post, getView, message }) {
     view.dispatch({ effects: setProposal.of({ text: fitted, forText, info: proposalLines(forText, fitted) }) })
     const f = fieldOf(view)
     if (!f.proposal) {
-      // The target's text changed while Claude was answering: dropped at once (the listener saw no shown entry yet).
+      // The target's text changed while Claude was answering: the field dropped the proposal at once (the
+      // update listener already marked this entry dropped; set again here for the case it did not run).
       entry.proposal.state = 'dropped'
       return
     }
@@ -444,6 +448,22 @@ export function createQuickChat({ post, getView, message }) {
     return card
   }
 
+  function drawEntry(e) {
+    if (e.who === 'you') return el('div', 'chat-q', e.text)
+    if (e.who === 'note') return el('div', e.error ? 'chat-note error' : 'chat-note', e.text)
+    const box = el('div', e.error ? 'chat-a error' : 'chat-a')
+    if (e.tools.length) {
+      const tools = el('div', 'chat-tools')
+      for (const t of e.tools.slice(-8)) tools.append(el('div', null, t))
+      box.append(tools)
+    }
+    if (e.text) {
+      const tree = markdownTree(e.text)
+      build(tree, box, e, e.live ? null : lastReplacementOf(tree))
+    } else if (e.live) box.append(el('div', 'chat-wait', '…'))
+    return box
+  }
+
   function draw() {
     const panel = $('chat')
     if (!chat) {
@@ -469,23 +489,19 @@ export function createQuickChat({ post, getView, message }) {
 
     const log = $('chat-log')
     const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 24
+    // A finished entry keeps its DOM (re-parsing every answer on each streamed frame was costly, and
+    // replacing the nodes under a selection made earlier answers impossible to copy while streaming);
+    // only the live entry, or one whose text, proposal state or tools changed, is rebuilt.
     const out = []
     for (const e of chat.entries) {
-      if (e.who === 'you') out.push(el('div', 'chat-q', e.text))
-      else if (e.who === 'note') out.push(el('div', e.error ? 'chat-note error' : 'chat-note', e.text))
-      else {
-        const box = el('div', e.error ? 'chat-a error' : 'chat-a')
-        if (e.tools.length) {
-          const tools = el('div', 'chat-tools')
-          for (const t of e.tools.slice(-8)) tools.append(el('div', null, t))
-          box.append(tools)
-        }
-        if (e.text) {
-          const tree = markdownTree(e.text)
-          build(tree, box, e, e.live ? null : lastReplacementOf(tree))
-        } else if (e.live) box.append(el('div', 'chat-wait', '…'))
-        out.push(box)
+      const key = `${e.who}|${e.live ? 'live' : ''}|${e.error ? 'err' : ''}|${e.proposal ? e.proposal.state : ''}|${e.tools ? e.tools.length : 0}|${e.text}`
+      if (!e.live && e.dom && e.domKey === key) {
+        out.push(e.dom)
+        continue
       }
+      out.push(drawEntry(e))
+      e.dom = e.live ? null : out[out.length - 1]
+      e.domKey = key
     }
     log.replaceChildren(...out)
     if (atEnd) log.scrollTop = log.scrollHeight

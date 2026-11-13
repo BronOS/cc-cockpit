@@ -48,7 +48,7 @@ if (args.length !== expected.length + 1 || expected.some((a, i) => args[i] !== a
 
 const session = 'fake-session'
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n')
-out({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: ['Glob', 'Grep', 'Read'], mcp_servers: [], model: args.at(-1) })
+out({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: process.env.FAKE_CLAUDE_TOOLS ? process.env.FAKE_CLAUDE_TOOLS.split(',') : ['Glob', 'Grep', 'Read'], mcp_servers: [], model: args.at(-1) })
 
 let turn = 0
 function textMessage(text) {

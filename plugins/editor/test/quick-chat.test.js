@@ -169,7 +169,9 @@ test('firstPrompt: the path, the selection and the lines around it fenced as dat
 })
 
 test('followUpPrompt: the question alone, or with the selection when it changed', () => {
-  assert.equal(qc.followUpPrompt({ question: ' And? ' }), 'And?')
+  // Framed even alone: a bare `/clear` would reach claude as a slash command.
+  assert.equal(qc.followUpPrompt({ question: ' And? ' }), "The person's question:\nAnd?")
+  assert.equal(qc.followUpPrompt({ question: '/clear' }), "The person's question:\n/clear")
   assert.equal(qc.followUpPrompt({ sel: { startLine: 5, text: 'a\nb' }, question: 'q' }), 'The selection changed; it now reads (lines 5-6):\n```\na\nb\n```\n\nThe person\'s question:\nq')
 })
 
@@ -194,6 +196,8 @@ test('extractProposal: the last complete replacement block, its fence respected'
   assert.equal(qc.extractProposal('````md\n```replacement\nx\n```\n````'), null)
   assert.equal(qc.extractProposal('```replacement\r\nx\r\n```\r\n'), 'x')
   assert.equal(qc.extractProposal(undefined), null)
+  // The opener's indentation comes off the body lines, as CommonMark does (up to it, no more).
+  assert.equal(qc.extractProposal('  ```replacement\n  a\n    b\n c\n  ```'), 'a\n  b\nc')
 })
 
 test('lineSplitter: lines across chunks; an overlong line is skipped, the next one kept', () => {
@@ -204,6 +208,19 @@ test('lineSplitter: lines across chunks; an overlong line is skipped, the next o
   push(Buffer.from('f\n0123456789'))
   push(Buffer.from('ABC\nok\n'))
   assert.deepEqual(got, ['abc', 'def', 'ok'])
+})
+
+test('lineSplitter: a line split inside a multibyte character; a long line in many chunks', () => {
+  const got = []
+  const push = qc.lineSplitter((l) => got.push(l), 1000)
+  const bytes = Buffer.from('é€😀\n', 'utf8')
+  for (let i = 0; i < bytes.length; i++) push(bytes.subarray(i, i + 1))
+  assert.deepEqual(got, ['é€😀'])
+  got.length = 0
+  const big = Buffer.alloc(900, 'x')
+  for (let i = 0; i < 9; i++) push(Buffer.from(big.subarray(0, 100)))
+  push(Buffer.from('\n'))
+  assert.deepEqual(got, [big.toString()])
 })
 
 test('a chat: help check, the exact argv, streamed text, a tool, the proposal, a follow-up on the same process', async () => {
@@ -355,4 +372,37 @@ test('messages that are not chat-* are left to the other handlers', () => {
   assert.equal(s.handle({ t: 'open' }), false)
   assert.equal(s.handle(null), false)
   assert.equal(s.handle({ t: 'chat-close', id: 9 }), true)
+})
+
+test('the help probe runs from a neutral folder, not the project', async () => {
+  qc._helpChecks.clear()
+  const cwds = []
+  const inner = makeSpawn().spawn
+  await qc.checkClaude((argv, o) => (cwds.push(o.cwd), inner(argv, o)), FAKE, '/project/x')
+  assert.deepEqual(cwds, [os.tmpdir()])
+})
+
+test('the help probe: a non-zero exit and a timeout reject, and are not cached', async () => {
+  qc._helpChecks.clear()
+  const exiting = () => ({ onData() {}, onStderr() {}, onExit: (fn) => setImmediate(() => fn({ code: 2 })), end() {}, kill() {} })
+  await assert.rejects(qc.checkClaude(exiting, '/x/claude', '/p'), /exited with code 2/)
+  assert.equal(qc._helpChecks.size, 0)
+  qc._helpChecks.clear()
+  let exitFn
+  let killed = false
+  const hanging = () => ({ onData() {}, onStderr() {}, onExit: (fn) => (exitFn = fn), end() {}, kill: () => ((killed = true), exitFn({ code: null })) })
+  await assert.rejects(qc.checkClaude(hanging, '/x/claude', '/p', { timeoutMs: 30 }), /did not answer/)
+  assert.equal(killed, true)
+  assert.equal(qc._helpChecks.size, 0)
+})
+
+test('a chat ends when the init line lists a tool beyond Read, Grep, Glob', async () => {
+  const s = serve({ env: { FAKE_CLAUDE_TOOLS: 'Read,Grep,Glob,Bash' } })
+  s.handle(START)
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-end'))
+  const end = s.tab.posted.find((m) => m.t === 'chat-end')
+  assert.equal(end.error, true)
+  assert.match(end.message, /beyond Read, Grep and Glob/)
+  await waitFor(() => exited(s.children[1]))
+  assert.equal(qc._pluginChats.running, 0)
 })

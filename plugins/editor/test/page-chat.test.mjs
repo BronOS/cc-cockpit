@@ -101,6 +101,18 @@ test('the field: a proposal for text that already changed is dropped at once', (
   assert.equal(s.field(field).dropped, true)
 })
 
+test('the field: text typed at an empty target drops its proposal; an edit elsewhere keeps it', () => {
+  const { field, s: s0 } = withTarget('a\n\nb', 'a')
+  let s = s0.update({ effects: setTarget.of({ from: 2, to: 2 }) }).state
+  s = s.update({ effects: propose('', 'new') }).state
+  assert.equal(s.field(field).proposal.text, 'new')
+  s = s.update({ changes: { from: 0, insert: 'x' } }).state
+  assert.equal(s.field(field).proposal.text, 'new')
+  s = s.update({ changes: { from: 3, insert: 'typed' } }).state
+  assert.equal(s.field(field).proposal, null)
+  assert.equal(s.field(field).dropped, true)
+})
+
 test('the field: a reload that rewrites the target (Claude\'s own write) drops it', () => {
   const { field, s: s0, from } = withTarget('head\nold line\ntail', 'old line')
   let s = s0.update({ effects: propose('old line', 'new line') }).state
