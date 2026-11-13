@@ -114,8 +114,8 @@ interface Registry {
   answerScreen(tabId: string, id: number, scrollback: number): void
   write(tabId: string, data: string, reset?: boolean, size?: { cols: number; rows: number }, local?: boolean): void
   get(tabId: string): Session
-  takeOnSelect(tabId: string): void
-  activeChanged(tabId: string): void
+  takeOnSelect(tabId: string, shown?: readonly string[]): void
+  activeChanged(shown: string | readonly string[]): void
   disposeAll(): void
 }
 type RegistryClass = new (ioFor: (id: string) => Io) => Registry
@@ -417,6 +417,24 @@ describe('SessionRegistry selection takes', () => {
     r.activeChanged('q')
     r.get('p').attach(laidOutPane())
     expect(fits).toEqual([])
+  })
+
+  it('selecting a split group takes for every pane it shows (D2), also panes not attached yet', () => {
+    const { r, fits } = registry()
+    for (const id of ['a', 'b', 'c', 'z']) r.write(id, '', false, { cols: 50, rows: 30 }, false)
+    r.get('a').attach(laidOutPane())
+    // b is laid out once the group shows (after the selection's render); z is a pane hidden by zoom.
+    r.takeOnSelect('a', ['a', 'b', 'c'])
+    // The selection's effect: the panes shown keep their waiting takes.
+    r.activeChanged(['a', 'b', 'c'])
+    r.get('b').attach(laidOutPane())
+    r.get('z').attach(laidOutPane())
+    expect(fits).toEqual(['a', 'b'])
+    // A new pane whose session does not exist yet takes once it does.
+    r.takeOnSelect('a', ['a', 'n'])
+    r.write('n', '', false, { cols: 50, rows: 30 }, false)
+    r.get('n').attach(laidOutPane())
+    expect(fits).toEqual(['a', 'b', 'a', 'n'])
   })
 })
 

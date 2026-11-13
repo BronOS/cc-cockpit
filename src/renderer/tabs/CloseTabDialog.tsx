@@ -48,9 +48,19 @@ export function CloseTabDialog(props: {
         }}
       >
         <h2 id={titleId} className="confirm-title">
-          Close “{props.question.title}”?
+          {props.question.group ? `Close all tabs of “${props.question.title}”?` : `Close “${props.question.title}”?`}
         </h2>
         <p id={textId}>{closeQuestionText(props.question)}</p>
+        {props.question.group && (
+          <ul className="confirm-list">
+            {props.question.group.running.map((r, i) => (
+              <li key={i}>
+                {r.title}
+                {r.status ? ` (Claude is ${r.status})` : ''}
+              </li>
+            ))}
+          </ul>
+        )}
         <label className="confirm-check">
           <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
           {" Don't ask again"}
@@ -60,7 +70,7 @@ export function CloseTabDialog(props: {
             Cancel
           </button>
           <button type="button" className="confirm-danger" onClick={() => answer('close')}>
-            Close
+            {props.question.group ? 'Close all' : 'Close'}
           </button>
         </div>
       </div>

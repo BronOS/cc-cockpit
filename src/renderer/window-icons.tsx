@@ -178,3 +178,13 @@ export function SortGlyph(props: GlyphProps): React.JSX.Element {
     </Glyph>
   )
 }
+
+/** A split group's handle in the tab strip: a window divided in two panes. */
+export function SplitGlyph(props: GlyphProps): React.JSX.Element {
+  return (
+    <Glyph {...props}>
+      <rect x="2" y="2.75" width="12" height="10.5" rx="1.5" />
+      <path d="M8 2.75v10.5" />
+    </Glyph>
+  )
+}

@@ -30,6 +30,7 @@
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
+import type { GroupsSnapshot } from '../../shared/tab-groups'
 import { remoteViewId, type ViewId } from '../../shared/views'
 import { MAX_VIEWS_PER_DEVICE_WINDOW, MAX_WEBVIEW_FRAME_BYTES, type WebPagePaths, type WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
@@ -111,6 +112,11 @@ export interface WebConnectionDeps {
   /** Whether `tabId` is one of the project's tabs now (TabManager's own table). */
   hasTab(projectId: string, tabId: string): boolean
   /**
+   * The tabs a view selecting `tabId` follows (TabGroups.joinOrder): the tab first, then the rest of
+   * its split group, from main's own groups, never from the page. Absent: the tab alone.
+   */
+  joinOrder?(projectId: string, tabId: string): string[]
+  /**
    * Where the device's browser loads plugin files and inline overlays (PluginPages.paths). Absent:
    * none (every plugin frame and image stays empty).
    */
@@ -155,6 +161,8 @@ export interface SnapshotSources {
   signIns?: { pendingFor(windowId: number): NonNullable<WebSnapshot['signIns']> }
   /** Main's server-mode flag, passed on as `WebSnapshot.server` (a UI hint). Absent: false. */
   server?: boolean
+  /** A plain read of the project's split groups and tab order (TabGroups.get). Absent: none. */
+  groups?: { get(projectId: string): GroupsSnapshot }
 }
 
 /** The window's state for `ready` (`WebConnectionDeps.snapshot`); throws when the project is gone. */
@@ -170,7 +178,10 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
     trashAsks: sources.trashAsks?.pendingFor(windowId) ?? [],
     notices: sources.notices?.pendingFor(windowId) ?? [],
     signIns: sources.signIns?.pendingFor(windowId) ?? [],
-    server: sources.server === true
+    server: sources.server === true,
+    // Taken in the same tick as `tabs`, and before the view is registered: every `groups.changed`
+    // after it reaches the view, with a higher `seq`.
+    ...(sources.groups ? { groups: sources.groups.get(projectId) } : {})
   }
 }
 
@@ -261,9 +272,17 @@ export class WebConnections {
     this.open.get(viewId)?.terminalAck(tabId, count)
   }
 
-  /** A view shows this tab now (router `viewSelect`): join its terminal stream. */
+  /** A view shows this tab now (router `viewSelect`): join its terminal stream (and its group's). */
   select(viewId: ViewId, tabId: string): void {
     this.open.get(viewId)?.terminalSelect(tabId)
+  }
+
+  /**
+   * A project's split groups changed (TabGroups): every view of it whose selected tab is in a group
+   * joins the members it does not follow yet (a pane added in another view shows here too).
+   */
+  groupsChanged(projectId: string): void {
+    for (const conn of this.open.values()) conn.groupsChanged(projectId)
   }
 
   /**
@@ -335,6 +354,8 @@ export class WebConnection {
   private pending = 0
   private removeView: (() => void) | undefined
   private terminals: ViewTerminals | undefined
+  /** The tab this view selected last (`terminalSelect`): its group is re-joined when groups change. */
+  private selected: string | undefined
   /** The page ends of this view's panel ports (made at `hello`; every end closes when the view goes). */
   private ports: PortRelay | undefined
   /**
@@ -468,7 +489,9 @@ export class WebConnection {
       failed: (tabId, err) => this.terminalFailed(tabId, err),
       synced: (tabId) => {
         this.failedTabs.delete(tabId)
-      }
+      },
+      // A group's next member is joined once the previous snapshot has left the socket.
+      buffered: () => this.ws.bufferedAmount
     })
     this.deps.log(`web access: view ${this.viewId} (device ${this.device.id}) joined window ${windowId}`)
     const paths = this.pagePaths()
@@ -524,9 +547,22 @@ export class WebConnection {
     if (!this.closed) this.terminals?.ack(tabId, count)
   }
 
-  /** The page shows this tab now (router `viewSelect`); a tab not of this window is refused there. */
+  /**
+   * The page shows this tab now (router `viewSelect`); a tab not of this window is refused there.
+   * In a split group the view shows every pane: the group's members are joined after it (paced,
+   * view-terminals.ts `selectGroup`), from main's groups.
+   */
   terminalSelect(tabId: string): void {
-    if (!this.closed) this.terminals?.select(tabId)
+    if (this.closed || !this.caller) return
+    this.selected = tabId
+    const order = this.deps.joinOrder?.(this.caller.context.projectId, tabId) ?? [tabId]
+    this.terminals?.selectGroup(order)
+  }
+
+  /** The project's groups changed: join what the selected tab's group gained (WebConnections.groupsChanged). */
+  groupsChanged(projectId: string): void {
+    if (this.closed || this.caller?.context.projectId !== projectId || this.selected === undefined) return
+    this.terminalSelect(this.selected)
   }
 
   /** The tab's process started (WebConnections.tabStarted). */

@@ -22,6 +22,16 @@ import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
 import { currentShellChrome, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
+import { paneView, type PaneView } from '../state/groups-state'
+import { usePrefs } from '../prefs/prefs-store'
+import type { GroupsReply } from '../../shared/ipc'
+import { groupOf, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
+import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
+import { paneAtPoint } from './SplitArea'
+import { paneCommandHandlers, refusalText } from './pane-commands'
+import { SplitArea, type PaneDrop } from './SplitArea'
+import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
+import { tabLabel } from './tab-label'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
@@ -29,7 +39,8 @@ import { UpdateNotice } from '../updates/UpdateNotice'
 import { useLayout } from '../zones/use-layout'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
-import { closeAnswer, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
+import { closeAnswer, closeGroupQuestion, closeQuestion, tabIsRunning, type CloseQuestion } from './close-confirm'
+import { groupTitle } from './strip-groups'
 import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
@@ -47,7 +58,6 @@ import {
   type SwitcherState
 } from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
-import { TerminalView } from './TerminalView'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -104,6 +114,19 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     return window.cockpit.on('window.state', (s) => setFullScreen(s.fullScreen))
   }, [chrome])
   const [state, dispatch] = useReducer(tabsReducer, initialTabsState)
+  // The split view (SplitArea): the terminal area's size and about one cell of the terminal font,
+  // for D5's automatic zoom and minimums; what this view shows of its selection.
+  const [area, setArea] = useState<Size>({ width: 0, height: 0 })
+  const { terminalFont } = usePrefs()
+  const cell = useMemo(() => cellEstimate(terminalFont), [terminalFont])
+  const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cell), [area, cell])
+  const view = useMemo(() => paneView(state.groups, state.activeId, state.zoomed, autoZoom), [state.groups, state.activeId, state.zoomed, autoZoom])
+  const viewRef = useRef<PaneView>(view)
+  const autoZoomRef = useRef(autoZoom)
+  // This view's own group edits on the way, by tab (selectionAfterSnapshot): a close or move out the
+  // person made here ('leave'), or a placement of a tab they keep looking at ('stay'). Read when a
+  // snapshot comes; an entry goes once its edit's reply is in (main sends the snapshot first).
+  const intents = useRef(new Map<string, 'leave' | 'stay'>())
   // The window's zone layout, here rather than in Zones: the top bar draws the app's slot frames
   // (`appSlots`) that come with the same view.
   const layout = useLayout(props.project?.id)
@@ -128,7 +151,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const stateRef = useRef(state)
   useEffect(() => {
     stateRef.current = state
-  }, [state])
+    viewRef.current = view
+    autoZoomRef.current = autoZoom
+  }, [state, view, autoZoom])
   // "Close <tab>?" (close-confirm.ts): the question shown, null when no dialog is up.
   const [confirm, setConfirm] = useState<CloseQuestion | null>(null)
   // The start-up "Install the ccc command?" (main decides once per launch, ccc-offer.ts): the link's
@@ -250,6 +275,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const offMoved = window.cockpit.on('tabs.moved', ({ tabId, toIndex }) => {
       dispatch({ type: 'moved', tabId, toIndex })
     })
+    // The project's split groups (main/tabs/tab-groups.ts is their one writer): every change from any
+    // view, a plugin or a closing tab comes as a whole snapshot; the reducer drops an older seq.
+    const applyGroups = (snapshot: GroupsSnapshot): void => {
+      dispatch({ type: 'groups', snapshot, intent: Object.fromEntries(intents.current) })
+    }
+    const offGroups = window.cockpit.on('groups.changed', applyGroups)
     attachTabs()
       .then((tabs) => {
         dispatch({ type: 'loaded', tabs })
@@ -259,6 +290,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         // changes nothing (the reducer ignores it).
         const wanted = takeLoadTab()
         if (wanted !== undefined) dispatch({ type: 'selected', tabId: wanted })
+        // After the list: main restores the groups before it answers it (restore remaps the ids).
+        return window.cockpit.invoke('groups.get').then(applyGroups, (err: unknown) => {
+          console.warn('reading the split groups failed', err)
+        })
       })
       .catch((err: unknown) => setError(ipcErrorMessage(err)))
     return () => {
@@ -270,6 +305,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offSelect()
       offAdded()
       offMoved()
+      offGroups()
       sessions.disposeAll()
     }
   }, [sessions])
@@ -279,17 +315,20 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // in activeId, so this one effect reports them all. A failure is only logged: the selection here
   // is unaffected, and a plugin then sees the previous tab as active until the next change.
   useEffect(() => {
-    if (state.activeId === null) return
+    // D18: while a change elsewhere left this view with no focused pane, it reports nothing; the
+    // person's click, strip click or chord turns the keys on, and the selection is reported then.
+    if (state.activeId === null || state.keysOff) return
     // Browser shell, first load only (armLoadTake): the active terminal takes the size once, as a
     // click would; a tab without a terminal yet is skipped, never taken later for another tab.
     if (takeLoadTake()) sessions.takeOnLoad(state.activeId)
     // A take waiting on another tab (a selection whose terminal had not attached) is dropped, so
-    // a programmatic change after it (a close, main's tabs.select) never takes for that tab.
-    sessions.activeChanged(state.activeId)
+    // a programmatic change after it (a close, main's tabs.select) never takes for that tab. The
+    // panes the selection shows keep theirs (a split group selected takes for every pane, D2).
+    sessions.activeChanged(viewRef.current.visible.includes(state.activeId) ? viewRef.current.visible : state.activeId)
     window.cockpit.invoke('tabs.selected', { tabId: state.activeId }).catch((err: unknown) => {
       console.warn('reporting the selected tab failed', err)
     })
-  }, [state.activeId, sessions])
+  }, [state.activeId, state.keysOff, sessions])
 
   // Whether this view is on screen (a minimized window, a background browser tab): main lets only
   // a visible view size a tab's pty (main/tabs/terminal-sizes.ts). Told on mount (a page loading
@@ -320,7 +359,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    */
   const pickTab = useCallback(
     (tabId: string): void => {
-      sessions.takeOnSelect(tabId)
+      // D2: selecting a group takes for every pane it will show (a pane its zoom hides takes nothing).
+      const s = stateRef.current
+      const g = groupOf(s.groups, tabId)
+      const z = g ? s.zoomed[g.id] : undefined
+      const zoomed = { ...s.zoomed }
+      if (g && z !== undefined && z !== tabId) delete zoomed[g.id]
+      const shown = paneView(s.groups, tabId, zoomed, autoZoomRef.current).visible
+      sessions.takeOnSelect(tabId, shown)
       dispatch({ type: 'selected', tabId })
     },
     [sessions]
@@ -359,15 +405,21 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // plugin's close waiting for the outcome.
   // A plugin's close that fails is told so (declined: with several views of the window, another
   // view closing the tab first is the usual reason) and shows the error too, as the confirm path does.
-  const close = (tabId: string, done?: CloseDone): void =>
+  const close = (tabId: string, done?: CloseDone): void => {
+    // The person's own close (no plugin waiting on it): D3 moves the focus to the pane that took
+    // its space, whichever comes first, main's snapshot or this reply.
+    const own = done === undefined
+    if (own) intents.current.set(tabId, 'leave')
     run(
       window.cockpit.invoke('tabs.close', { tabId }).then(
         () => {
           sessions.dispose(tabId)
-          dispatch({ type: 'closed', tabId })
+          dispatch({ type: 'closed', tabId, own })
+          intents.current.delete(tabId)
           done?.(true)
         },
         (err: unknown) => {
+          intents.current.delete(tabId)
           if (!done) throw err
           console.warn('a plugin close failed', err)
           done(false, true)
@@ -375,6 +427,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         }
       )
     )
+  }
 
   const restart = (tabId: string): void =>
     run(
@@ -388,6 +441,194 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
 
   const cancelQueued = (tabId: string, itemId: string): void =>
     run(window.cockpit.invoke('sessions.cancelQueued', { tabId, itemId }))
+
+  // ---- Split view (design.md §1; SplitArea, pane-commands.ts) ----
+  // Group edits are small intents main checks and applies; the result comes back to every view as
+  // `groups.changed`, so nothing here changes the page's groups on a reply.
+  /** A group edit's reply: a refusal is told to the person; an intent ends with its reply. */
+  const groupEdit = useCallback((p: Promise<GroupsReply>, tabId?: string): Promise<GroupsReply> => {
+    setError(null)
+    const out = p.then(
+      (r) => {
+        if (!r.ok) setError(refusalText(r.reason))
+        return r
+      },
+      (err: unknown) => {
+        setError(ipcErrorMessage(err))
+        return { ok: false as const, reason: 'unknown-tab' as const }
+      }
+    )
+    if (tabId !== undefined) void out.finally(() => intents.current.delete(tabId))
+    return out
+  }, [])
+  /**
+   * Put `tabId` at `edge` of `at`'s pane. `select`: then show it there, focused (a drag, the tab
+   * menu's Show beside: the person moved that tab to look at it); else the focus stays on the anchor
+   * (the palette's Show Tab Beside…, run from the pane the person works in).
+   */
+  const placeTab = useCallback(
+    (tabId: string, at: string, edge: PaneEdge, select: boolean): void => {
+      intents.current.set(tabId, 'stay')
+      void groupEdit(window.cockpit.invoke('groups.place', { tabId, at, edge }), tabId).then((r) => {
+        if (r.ok && select) pickTab(tabId)
+      })
+    },
+    [groupEdit, pickTab]
+  )
+  /** The strip's label of a tab, for the drop preview ("Right of npm dev"). */
+  const labelOf = (tabId: string): string => {
+    const t = state.tabs.find((x) => x.id === tabId)
+    return t ? tabLabel(t, own.get(tabId)?.title, own.get(tabId)?.name) : 'this pane'
+  }
+  // Pane mode of a strip drag (TabBar): the edge zone under the pointer, previewed in the area.
+  const [paneDrop, setPaneDrop] = useState<PaneDrop | null>(null)
+  const paneDropRef = useRef<PaneDrop | null>(null)
+  const dragToPane = (tabId: string, point: { x: number; y: number } | null): void => {
+    let next: PaneDrop | null = null
+    if (point) {
+      const hit = paneAtPoint(document.querySelector<HTMLElement>('[data-split-area]'), point.x, point.y)
+      const edge = hit && hit.tabId !== tabId ? edgeZone(hit.rect, point) : null
+      if (hit && edge) next = { at: hit.tabId, edge, label: labelOf(hit.tabId) }
+    }
+    paneDropRef.current = next
+    setPaneDrop((d) => (d?.at === next?.at && d?.edge === next?.edge ? d : next))
+  }
+  const dropOnPane = (tabId: string): void => {
+    const d = paneDropRef.current
+    paneDropRef.current = null
+    setPaneDrop(null)
+    if (d) placeTab(tabId, d.at, d.edge, true)
+  }
+  /** The handle's click: the group, at this view's last focused pane there (else its first). */
+  const selectGroup = (groupId: string): void => {
+    const g = state.groups.find((x) => x.id === groupId)
+    if (!g) return
+    const leaves = leavesOf(g.root)
+    const last = state.lastFocus[groupId]
+    const target = last !== undefined && leaves.includes(last) ? last : leaves.find((t) => state.tabs.some((x) => x.id === t))
+    if (target) pickTab(target)
+  }
+  /** Ungroup, the person's own: the pane they are in stays selected, with its keys. */
+  const ungroup = (groupId: string): Promise<GroupsReply> => {
+    const active = stateRef.current.activeId
+    if (active !== null) intents.current.set(active, 'stay')
+    return groupEdit(window.cockpit.invoke('groups.dissolve', { groupId }), active ?? undefined)
+  }
+  const equalizeGroup = (groupId: string): void => {
+    const g = state.groups.find((x) => x.id === groupId)
+    if (!g) return
+    for (const { splitId, sizes } of equalizeSplits(g.root)) void groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes }))
+  }
+  /**
+   * The handle was dragged along the strip (D9, D17): `block` moves the whole group; `toIndex` counts
+   * the other tabs only. The strip changes when main's snapshot comes (its order is the one order).
+   */
+  const moveGroup = (groupId: string, toIndex: number): void => {
+    const g = state.groups.find((x) => x.id === groupId)
+    const first = g ? state.tabs.find((t) => leavesOf(g.root).includes(t.id)) : undefined
+    if (first) run(window.cockpit.invoke('tabs.reorder', { tabId: first.id, toIndex, block: true }))
+  }
+  /**
+   * A member dragged out of its segment (D9, D17): a plain reorder, which main turns into leaving the
+   * group there. Marked as the person's own move out, so this view's focus follows D3's own rule.
+   */
+  const detach = (tabId: string, toIndex: number): void => {
+    intents.current.set(tabId, 'leave')
+    run(
+      window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).finally(() => {
+        intents.current.delete(tabId)
+      })
+    )
+  }
+  /** Close all (the handle's menu): one question listing the running members, then each closes. */
+  const closeGroup = (groupId: string): void => {
+    const g = state.groups.find((x) => x.id === groupId)
+    if (!g || confirmFor.current !== null) return
+    const members = leavesOf(g.root).flatMap((id) => state.tabs.find((t) => t.id === id) ?? [])
+    const closeAll = (): void => {
+      for (const t of members) if (stateRef.current.tabs.some((x) => x.id === t.id)) close(t.id)
+    }
+    if (!members.some(tabIsRunning)) {
+      closeAll()
+      return
+    }
+    window.cockpit
+      .invoke('settings.confirmTabClose')
+      .catch(() => true)
+      .then((enabled) => {
+        if (confirmFor.current !== null || settingsShown.current || overlayOpen.current) return
+        const question = closeGroupQuestion(groupId, groupTitle(g), members, (id) => ownRef.current.get(id)?.status, enabled)
+        if (!question) {
+          closeAll()
+          return
+        }
+        confirmFor.current = `group:${groupId}`
+        confirmDone.current = null
+        confirmAsk.current = null
+        setConfirm(question)
+      })
+      .catch((err: unknown) => setError(ipcErrorMessage(err)))
+  }
+  /** A pane's rect in pixels in this view: from the layout, so a tab not on screen has one too. */
+  const paneSize = useCallback(
+    (tabId: string): { w: number; h: number } => {
+      const g = groupOf(stateRef.current.groups, tabId)
+      if (!g) return { w: area.width, h: area.height }
+      const r = rectsOf(g.root).panes.find((p) => p.tab === tabId)
+      return r ? { w: r.w * area.width, h: r.h * area.height } : { w: area.width, h: area.height }
+    },
+    [area]
+  )
+  /** Why a split of `tabId` on `edge` cannot be made here, or undefined (D5: the menu disables it with this). */
+  const splitBlocked = useCallback(
+    (tabId: string, edge: PaneEdge): string | undefined => {
+      if (area.width === 0) return undefined
+      return splitFits(paneSize(tabId), edge, cell) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
+    },
+    [area, cell, paneSize]
+  )
+  // Split right / down: the New tab menu at the new pane's place (D13), with a preview of it.
+  const [splitMenu, setSplitMenu] = useState<SplitMenu | null>(null)
+  const openSplit = useCallback(
+    (anchor: string, edge: 'right' | 'down'): void => {
+      const blocked = splitBlocked(anchor, edge)
+      if (blocked) {
+        setError(blocked)
+        return
+      }
+      if (stateRef.current.activeId !== anchor) pickTab(anchor)
+      loadMenuCommands()
+      // The menu sits in the middle of where the new pane will be.
+      const host = document.querySelector<HTMLElement>('[data-split-area]')?.getBoundingClientRect()
+      const g = groupOf(stateRef.current.groups, anchor)
+      const r = (g && rectsOf(g.root).panes.find((p) => p.tab === anchor)) || { x: 0, y: 0, w: 1, h: 1 }
+      const pre = edgePreview(r, edge)
+      const x = (host?.left ?? 0) + (pre.x + pre.w / 2) * (host?.width ?? 0) - 90
+      const y = (host?.top ?? 0) + (pre.y + pre.h / 2) * (host?.height ?? 0) - 60
+      setSplitMenu({ anchor, edge, x: Math.max(8, x), y: Math.max(8, y) })
+    },
+    [splitBlocked, pickTab]
+  )
+  const createInPane = (menu: SplitMenu, choice: NewPaneChoice): void => {
+    rememberSplitChoice(props.project?.id, choice)
+    setSplitMenu(null)
+    const beside = { tabId: menu.anchor, edge: menu.edge }
+    const req = choice.kind === 'command' ? { kind: 'command' as const, level: choice.level, entryId: choice.entryId, beside } : { kind: choice.kind, beside }
+    run(
+      window.cockpit.invoke('tabs.create', req).then((tab) => {
+        // null: a command entry that opens as an overlay after all (main decides); nothing to place.
+        if (tab) addPicked(tab)
+      })
+    )
+  }
+  // Show Tab Beside… (palette): pick a tab; it goes beside the focused pane.
+  const [besidePick, setBesidePick] = useState<{ edge: 'right' | 'down' } | null>(null)
+  const besideItems = useMemo((): CommandInfo[] => {
+    if (!besidePick) return []
+    return state.tabs
+      .filter((t) => t.id !== state.activeId)
+      .map((t) => ({ id: t.id, title: tabLabel(t, own.get(t.id)?.title, own.get(t.id)?.name), source: 'core' as const }))
+  }, [besidePick, state.tabs, state.activeId, own])
 
   // The strip's "+": main shows the project picker, or focuses the one already open.
   // The web shell has no host picker to show (`projects.showPicker` is `no`-class): its "+" goes to
@@ -514,7 +755,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     ownRef.current = own
     actions.current = { create, createCommand, close: requestClose, closeNow: close, toggleFlag, dropClosed }
-    paletteOpen.current = paletteCommands !== null
+    paletteOpen.current = paletteCommands !== null || besidePick !== null || splitMenu !== null
     settingsShown.current = settingsOpen
   })
   // A plugin's ctx.sessions.close (main's `sessions.closeAsk`): the person's own close path, the
@@ -609,9 +850,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       settingsRoot.current?.focus()
       return
     }
+    // D3: the keys are off until the person clicks a pane or uses a chord.
+    if (stateRef.current.keysOff) return
     const id = stateRef.current.activeId
     if (id) sessions.get(id).focus()
   }, [sessions])
+  // The split menu went unpicked (Escape, a click elsewhere): the keyboard goes back to the pane.
+  const closeSplitMenu = (): void => {
+    setSplitMenu(null)
+    requestAnimationFrame(focusActive)
+  }
   // The tab menu and its editors took the keyboard; give it back once they are gone. In a frame,
   // like every other give-back here: an item's action (Close's dialog) may raise a modal first.
   const refocusAfterMenu = useCallback((): void => {
@@ -732,6 +980,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
     setCovered(count > 0)
   }, [endSwitcher])
+  /** The answer to Close all: every member still here closes, as the person's own closes. */
+  const answerGroupClose = (q: CloseQuestion, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {
+    const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain)
+    confirmFor.current = null
+    setConfirm(null)
+    if (stopAsking) {
+      window.cockpit.invoke('settings.confirmTabCloseSet', { value: false }).catch((err: unknown) => setError(ipcErrorMessage(err)))
+    }
+    if (!doClose || !q.group) return
+    for (const id of q.group.tabIds) if (stateRef.current.tabs.some((t) => t.id === id)) actions.current.closeNow(id)
+  }
   const answerClose = useCallback(
     (tabId: string, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {
       const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain)
@@ -780,7 +1039,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // paint over it: the views hide while any is up (shell-layers.ts). An overlay main also hides
   // them for on its own (it knows the stack first); the palette and the dialogs only this page sees.
   useShellLayer(
-    settingsOpen || covered || confirm !== null || cccOffer !== null || paletteCommands !== null || switcher?.shown === true
+    settingsOpen ||
+      covered ||
+      confirm !== null ||
+      cccOffer !== null ||
+      paletteCommands !== null ||
+      besidePick !== null ||
+      splitMenu !== null ||
+      switcher?.shown === true
   )
   // Cmd+Shift+W closes the top core overlay, and with only the settings screen open that is the
   // screen. An overlay opened over it claims the chord on top of this; the handler stack in
@@ -869,6 +1135,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         }
         // The chord that opened the switcher is down too: its Tab may outlast the Ctrl.
         if (switcherRef.current) heldKeys.current.add(e.code)
+        // A pane chord may have moved the keys to another terminal: the chord's key, held on
+        // (an arrow auto-repeating after Ctrl and Alt came up), must not reach it.
+        if (id.startsWith('pane.')) swallow.current.add(e.code)
       }
     }
     window.addEventListener('keydown', onKey, true)
@@ -939,6 +1208,41 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
   }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher, pickTab])
 
+  // The split view's commands (D10). They read the state through refs, like the handlers above, and
+  // act through the same group channels as the strip's menus.
+  const paneActions = useRef({ openSplit, groupEdit, ungroup, area, cell })
+  useEffect(() => {
+    paneActions.current = { openSplit, groupEdit, ungroup, area, cell }
+  })
+  useEffect(
+    () =>
+      registerHandlers(
+        paneCommandHandlers({
+          state: () => stateRef.current,
+          view: () => viewRef.current,
+          dispatch,
+          place: (intent) => paneActions.current.groupEdit(window.cockpit.invoke('groups.place', intent), intent.tabId),
+          remove: (tabId) => paneActions.current.groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId),
+          dissolve: (groupId) => paneActions.current.ungroup(groupId),
+          resize: (groupId, splitId, sizes) => paneActions.current.groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes })),
+          intend: (tabId, intent) => intents.current.set(tabId, intent),
+          openSplit: (edge) => {
+            const id = stateRef.current.activeId
+            if (id) paneActions.current.openSplit(id, edge)
+          },
+          openBeside: (edge) => {
+            if (stateRef.current.activeId && stateRef.current.tabs.length > 1) setBesidePick({ edge })
+          },
+          minShare: (axis) => {
+            const { area: a, cell: c } = paneActions.current
+            return dragMinShare(axis === 'row' ? a.width : a.height, axis, c)
+          },
+          report: setError
+        })
+      ),
+    []
+  )
+
   return (
     // `in-page-title-bar`: full-window layers (overlays, the settings screen) start under the bar,
     // so they never sit beneath the traffic lights and the window can still be dragged by it.
@@ -960,7 +1264,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null}>
         <TabBar
           tabs={state.tabs}
-          activeId={state.activeId}
+          // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
+          activeId={state.keysOff ? null : state.activeId}
           onSelect={pickTab}
           onClose={requestClose}
           onCreate={create}
@@ -974,23 +1279,43 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onReorder={reorder}
           sessions={own}
           onCancelQueued={cancelQueued}
+          groups={state.groups}
+          zoom={view.group ? { groupId: view.group.id, ...(view.zoomTab !== undefined ? { zoomTab: view.zoomTab } : {}), auto: view.auto } : undefined}
+          onSelectGroup={selectGroup}
+          onRenameGroup={(groupId, name) => void groupEdit(window.cockpit.invoke('groups.rename', { groupId, name }))}
+          onEqualizeGroup={equalizeGroup}
+          onUngroup={ungroup}
+          onCloseGroup={closeGroup}
+          onMoveGroup={moveGroup}
+          onDetach={detach}
+          onPaneDrag={dragToPane}
+          onPaneDrop={dropOnPane}
+          splitBlocked={splitBlocked}
+          onSplit={openSplit}
+          onShowBeside={(tabId, at, edge) => placeTab(tabId, at, edge, true)}
+          onMoveOut={(tabId) => {
+            intents.current.set(tabId, 'leave')
+            void groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId)
+          }}
         />
         {error && <p role="alert" className="tabs-error">{error}</p>}
-        <div className="terminals">
-          {state.tabs.length === 0 && (
-            <p className="tabs-empty">No tabs yet. Use + to start Claude or a shell.</p>
-          )}
-          {state.tabs.map((tab) => (
-            <TerminalView
-              key={tab.id}
-              tab={tab}
-              active={tab.id === state.activeId}
-              sessions={sessions}
-              onRestart={() => restart(tab.id)}
-              onClose={() => requestClose(tab.id)}
-            />
-          ))}
-        </div>
+        <SplitArea
+          tabs={state.tabs}
+          activeId={state.activeId}
+          view={view}
+          keysOff={state.keysOff}
+          sessions={sessions}
+          details={own}
+          cell={cell}
+          onArea={setArea}
+          onPanePress={(tabId) => dispatch({ type: 'selected', tabId })}
+          onResize={(groupId, splitId, sizes) =>
+            groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes })).then((r) => r.ok)
+          }
+          onRestart={restart}
+          onClose={requestClose}
+          drop={splitMenu ? { at: splitMenu.anchor, edge: splitMenu.edge, label: labelOf(splitMenu.anchor) } : paneDrop}
+        />
       </Zones>
       {paletteCommands && (
         <CommandPalette
@@ -998,6 +1323,31 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           mac={navigator.platform.toLowerCase().includes('mac')}
           onRun={(id) => runCommand(id)}
           onClose={closePalette}
+        />
+      )}
+      {besidePick && (
+        <CommandPalette
+          commands={besideItems}
+          mac={navigator.platform.toLowerCase().includes('mac')}
+          label={besidePick.edge === 'right' ? 'Show tab beside, on the right' : 'Show tab beside, below'}
+          placeholder="Type a tab name"
+          onRun={(tabId) => {
+            const at = stateRef.current.activeId
+            if (at) placeTab(tabId, at, besidePick.edge, false)
+          }}
+          onClose={() => {
+            setBesidePick(null)
+            requestAnimationFrame(focusActive)
+          }}
+        />
+      )}
+      {splitMenu && (
+        <NewPaneMenu
+          menu={splitMenu}
+          commands={menuCommands}
+          initial={lastSplitChoice(props.project?.id)}
+          onPick={(choice) => createInPane(splitMenu, choice)}
+          onClose={closeSplitMenu}
         />
       )}
       {switcher?.shown && (
@@ -1018,7 +1368,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         <CloseTabDialog
           key={confirm.tabId}
           question={confirm}
-          onAnswer={(choice, dontAskAgain) => answerClose(confirm.tabId, choice, dontAskAgain)}
+          onAnswer={(choice, dontAskAgain) =>
+            confirm.group ? answerGroupClose(confirm, choice, dontAskAgain) : answerClose(confirm.tabId, choice, dontAskAgain)
+          }
         />
       )}
       {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}

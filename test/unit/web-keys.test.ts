@@ -2,7 +2,7 @@
 // itself move to their Alt alternative, per the browser's platform; nothing else changes.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chordOf, commandForEvent, registerHandlers, resetKeybindings, setCommands } from '../../src/renderer/commands/keybindings'
-import { browserKeeps, webKeyTable, withAlt } from '../../src/renderer/commands/web-keys'
+import { alternativeOf, browserKeeps, webKeyTable, withAlt } from '../../src/renderer/commands/web-keys'
 import { holdsPage, isOwnView, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
 import type { CommandsView } from '../../src/shared/ipc'
 
@@ -148,5 +148,40 @@ describe('holdsPage (an html overlay held by one view, design-web.md §5.4)', ()
     expect(holdsPage(undefined)).toBe(false)
     expect(holdsPage({ viewId: 'web:1' })).toBe(true)
     expect(holdsPage({ viewId: 'web:2' })).toBe(false)
+  })
+})
+
+describe('split view chords in a browser (D10)', () => {
+  it('a Mac browser keeps ⌥⌘← and ⌥⌘→ (Chrome tab switch); up and down, Shift and other platforms stay', () => {
+    expect(browserKeeps('alt+meta+left', true)).toBe(true)
+    expect(browserKeeps('alt+meta+right', true)).toBe(true)
+    expect(browserKeeps('alt+meta+up', true)).toBe(false)
+    expect(browserKeeps('alt+shift+meta+left', true)).toBe(false)
+    expect(browserKeeps('ctrl+alt+left', false)).toBe(false)
+    expect(alternativeOf('alt+meta+left')).toBe('ctrl+alt+meta+left')
+    expect(alternativeOf('meta+t')).toBe('alt+meta+t')
+  })
+
+  it('moves Focus Pane Left / Right to ⌃⌥⌘ in a Mac browser and keeps the rest', () => {
+    const v = webKeyTable(
+      view({
+        'pane.focusLeft': 'alt+meta+left',
+        'pane.focusRight': 'alt+meta+right',
+        'pane.focusUp': 'alt+meta+up',
+        'pane.resizeLeft': 'alt+shift+meta+left',
+        'pane.splitRight': 'shift+meta+d'
+      }),
+      true
+    )
+    expect(keysOf(v)).toEqual({
+      'pane.focusLeft': 'ctrl+alt+meta+left',
+      'pane.focusRight': 'ctrl+alt+meta+right',
+      'pane.focusUp': 'alt+meta+up',
+      'pane.resizeLeft': 'alt+shift+meta+left',
+      'pane.splitRight': 'shift+meta+d'
+    })
+    // A Linux host's table in a Linux browser: nothing kept.
+    const linux = view({ 'pane.focusLeft': 'ctrl+alt+left', 'pane.splitRight': 'ctrl+shift+d', 'pane.zoom': 'ctrl+shift+enter' })
+    expect(keysOf(webKeyTable(linux, false))).toEqual(keysOf(linux))
   })
 })

@@ -295,6 +295,78 @@ behind it are in [design.md](design.md).
   a plugin's settings (never a secret field), `ccc panel show <plugin>/<panel>` reveals a panel, and `ccc guide types`
   prints the SDK types.
 
+## Split view
+
+Several terminal tabs side by side in one window, like tmux panes, while each stays its own tab
+(dot, status, flag, ×, Claude session). A **split group** is a set of tabs drawn together; a
+project can have several, and a tab is in at most one. Groups, their layout and their names come
+back after a restart, like the tabs.
+
+How to make one:
+
+- **Split right / Split down** (tab menu, the palette, or Cmd+Shift+D / Cmd+Alt+Shift+D): opens the
+  New tab menu where the new pane will be (Claude, Shell, your tab commands; overlay entries are not
+  panes), starting on the last choice used for a split in this project, else Shell. Escape or a
+  click elsewhere makes nothing.
+- **Drag a tab** from the strip down into the terminal area: about 24px below the strip the drag
+  switches to pane mode; each pane has four edge zones and a preview says where it goes ("Right of
+  npm dev"). Escape, or a drop in the middle of a pane or outside the area, cancels.
+- **Show beside ▸** in a tab's menu: that tab goes right of, or below, the tab you pick. The palette's
+  Show Tab Beside (Right)… / (Below)… does it the other way round: the tab you pick comes beside the
+  pane you are in, and the keyboard stays where it was.
+
+In the strip a group is one bracketed segment: a handle (a split mark, and the group's name if it
+has one) and its member tabs, each with everything a tab has. Clicking a member shows its group with
+that pane focused; clicking the handle shows the group where you last were in it. The handle's menu
+(right-click, or Shift+F10 on it) has Rename, Equalize, Ungroup (the tabs stay, as plain tabs) and
+Close all (one question listing what still runs). Dragging the handle moves the group along the
+strip; dragging a member out of its segment makes it a plain tab there; there is no reordering
+inside a segment (move panes with a drag into the area, or Move Pane). Every member keeps its dot and
+waiting / needs-permission tint in the strip, also while its group is not shown or a zoom hides it.
+
+Working in a group:
+
+- Exactly one pane has the keyboard: the one you clicked or moved to, outlined while more than one
+  pane shows. Each pane has a thin header with its name, its status (in words when it waits for you)
+  and "Opened by <plugin>" for a tab a plugin opened. Each window and each browser view has its own
+  focused pane.
+- When the pane you type in goes away because of something you did here (its ×, Cmd+W, Move Pane Out
+  of Group), the pane that took its space gets the keyboard. When it goes because of anything else
+  (another view, a plugin), no pane has the keyboard until you click one or use a pane chord:
+  nothing you type meanwhile reaches a terminal you did not pick. When the group itself goes (an
+  Ungroup, or one of its two panes moved out) while the pane you type in is still open, that pane
+  stays shown; it keeps the keyboard if you did it here, and loses it until you act if it came from
+  elsewhere.
+- Dividers drag (the panes are drawn scaled while you drag; the terminals take their new size once,
+  on release), move with the arrow keys when focused, and a double-click makes that split even.
+  Divider sizes are the group's, the same in every view. A pane never gets smaller than 20 columns by
+  5 rows (a split that would go below is disabled in the menu with the reason) or a tenth of its split.
+- A view too small for a group (under about 40x10 per pane even with even splits, say a phone) shows
+  only the focused pane, automatically; the handle then says "zoomed (n hidden)".
+
+| Command | macOS | Linux |
+|---|---|---|
+| Split Right | ⌘⇧D | Ctrl+Shift+D |
+| Split Down | ⌥⇧⌘D | Ctrl+Alt+Shift+D |
+| Move Pane Out of Group | ⌘⇧X | Ctrl+Shift+X |
+| Focus Pane Left / Right / Above / Below | ⌥⌘ + arrow | Ctrl+Alt + arrow |
+| Resize Pane (moves the focused pane's divider) | ⌥⇧⌘ + arrow | Ctrl+Alt+Shift + arrow |
+| Zoom Pane (again: back) | ⌘⇧Enter | Ctrl+Shift+Enter |
+| Move Pane Left / Right / Up / Down, Show Tab Beside…, Equalize Panes, Ungroup Panes | palette | palette |
+
+All of them can be rebound in Settings > Keybindings. Zoom is per view and never saved; zooming
+again, selecting a hidden member or a focus chord brings the panes back. In a browser on a Mac,
+Chrome keeps ⌥⌘← / ⌥⌘→ (its tab switch), so Focus Pane Left / Right are ⌃⌥⌘← / ⌃⌥⌘→ there. On
+Linux, older GNOME and KDE setups bind Ctrl+Alt+arrows to workspaces (Omarchy's Hyprland does not):
+rebind Focus Pane there.
+
+Selecting a group sizes every pane it shows to this screen (as selecting a tab does); a pane a zoom
+hides does not take part. A plugin can open a tab beside another (`beside` on `ctx.sessions.open`,
+see `ccc guide`); such a pane never takes the keyboard.
+
+Limits: at most 8 panes per group, splits 4 deep, 32 groups per project. Only terminal tabs are panes
+(not overlays or plugin panels).
+
 ## Web access
 
 Open the cockpit in a browser on another device (a laptop, a phone): the same project window, tabs, terminals, panels

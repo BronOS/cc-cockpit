@@ -252,7 +252,7 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         }
         return (await call('sessions.send', { pluginId, tabId, text })) as SendResult
       }),
-    open: (options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string } = {}) =>
+    open: (options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string } & BesideOptions = {}) =>
       guardAsync(async () => {
         const { cwd, prompt, focus, model, effort } = (options ?? {}) as {
           cwd?: unknown
@@ -261,6 +261,7 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
           model?: unknown
           effort?: unknown
         }
+        const beside = besideOf('sessions.open', options)
         if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.open: cwd must be a string')
         if (prompt !== undefined && typeof prompt !== 'string') {
           throw new TypeError('sessions.open: prompt must be a string')
@@ -276,14 +277,16 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
           prompt,
           ...(focus ? { focus: true } : {}),
           ...(checked.model ? { model: checked.model } : {}),
-          ...(checked.effort ? { effort: checked.effort } : {})
-        })) as { tabId: string }
+          ...(checked.effort ? { effort: checked.effort } : {}),
+          ...beside
+        })) as OpenResult
       }),
     // A plain shell tab (the person's "+" > shell): only a cwd and focus, never a command, argv or
     // env; main checks the cwd and the shared open budget again.
-    openShell: (options: { cwd?: string; focus?: boolean } = {}) =>
+    openShell: (options: { cwd?: string; focus?: boolean } & BesideOptions = {}) =>
       guardAsync(async () => {
         const { cwd, focus } = (options ?? {}) as { cwd?: unknown; focus?: unknown }
+        const beside = besideOf('sessions.openShell', options)
         if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.openShell: cwd must be a string')
         if (focus !== undefined && typeof focus !== 'boolean') {
           throw new TypeError('sessions.openShell: focus must be a boolean')
@@ -291,15 +294,17 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         return (await call('sessions.openShell', {
           pluginId,
           ...(cwd !== undefined ? { cwd } : {}),
-          ...(focus ? { focus: true } : {})
-        })) as { tabId: string }
+          ...(focus ? { focus: true } : {}),
+          ...beside
+        })) as OpenResult
       }),
     // A command tab running `argv` with no shell, marked with this plugin. Only argv, cwd, title and
     // focus are sent (never an env); the argv rule is checked here for the fast error, and main checks
     // everything again (the title too) and spends the shared open budget.
-    openCommand: (options: { argv: string[]; cwd?: string; title?: string; focus?: boolean }) =>
+    openCommand: (options: { argv: string[]; cwd?: string; title?: string; focus?: boolean } & BesideOptions) =>
       guardAsync(async () => {
         const { argv, cwd, title, focus } = (options ?? {}) as { argv?: unknown; cwd?: unknown; title?: unknown; focus?: unknown }
+        const beside = besideOf('sessions.openCommand', options)
         const checked = checkCommandArgv(argv)
         if (!checked.ok) throw new TypeError(`sessions.openCommand: ${checked.reason}`)
         if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.openCommand: cwd must be a string')
@@ -312,9 +317,30 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
           argv: checked.value,
           ...(cwd !== undefined ? { cwd } : {}),
           ...(title !== undefined ? { title } : {}),
-          ...(focus ? { focus: true } : {})
-        })) as { tabId: string }
+          ...(focus ? { focus: true } : {}),
+          ...beside
+        })) as OpenResult
       })
   }
   return Object.freeze(api) as PluginContext['sessions']
+}
+
+/** `beside` / `side` of the three opens (split groups): the new tab beside a tab of this window. */
+type BesideOptions = { beside?: string; side?: 'right' | 'down' }
+type OpenResult = { tabId: string; placed?: boolean }
+
+/**
+ * The fast error for a bad `beside` / `side`; main checks again, and looks the tab up in this window
+ * (an unknown and another window's tab are the same error). Sent only when asked for: a request
+ * without them is the same as before groups existed.
+ */
+function besideOf(method: string, options: unknown): { beside?: string; side?: 'right' | 'down' } {
+  const { beside, side } = (options ?? {}) as { beside?: unknown; side?: unknown }
+  if (beside === undefined) {
+    if (side !== undefined) throw new TypeError(`${method}: side needs beside`)
+    return {}
+  }
+  if (typeof beside !== 'string' || beside.length === 0) throw new TypeError(`${method}: beside must be a tab id`)
+  if (side !== undefined && side !== 'right' && side !== 'down') throw new TypeError(`${method}: side must be 'right' or 'down'`)
+  return side === undefined ? { beside } : { beside, side }
 }

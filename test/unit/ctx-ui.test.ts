@@ -126,6 +126,24 @@ describe('ctx.sessions', () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('the three opens send beside and side only when given, checking their shape first', async () => {
+    const { ctx, calls } = setup((c) => (c.method.startsWith('sessions.open') ? { tabId: 't9', placed: false } : []))
+    await expect(ctx.sessions.open({ beside: 't1' })).resolves.toEqual({ tabId: 't9', placed: false })
+    await ctx.sessions.openShell({ beside: 't1', side: 'down' })
+    await ctx.sessions.openCommand({ argv: ['ls'], beside: 't1', side: 'right' })
+    await ctx.sessions.openShell({})
+    expect(calls.map((c) => c.params)).toEqual([
+      { pluginId: 'a.one', beside: 't1' },
+      { pluginId: 'a.one', beside: 't1', side: 'down' },
+      { pluginId: 'a.one', argv: ['ls'], beside: 't1', side: 'right' },
+      { pluginId: 'a.one' }
+    ])
+    await expect(ctx.sessions.open({ side: 'down' })).rejects.toThrow('sessions.open: side needs beside')
+    await expect(ctx.sessions.openShell({ beside: 5 as unknown as string })).rejects.toThrow('beside must be a tab id')
+    await expect(ctx.sessions.openCommand({ argv: ['ls'], beside: 't1', side: 'left' as 'down' })).rejects.toThrow("side must be 'right' or 'down'")
+    expect(calls).toHaveLength(4)
+  })
+
   it("delivers main's sessions event to every plugin's listeners, each its own copy", () => {
     const { contexts, ctx, other, logs } = setup()
     const seen: unknown[] = []

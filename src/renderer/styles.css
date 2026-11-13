@@ -1885,6 +1885,198 @@ iframe:focus-visible {
   gap: 8px;
 }
 
+/* ── Split view (SplitArea.tsx; team run 001 design §1) ──
+   Every tab's terminal sits in a `.pane` positioned by its group's layout (percent boxes), or filling
+   the area for a plain tab: one flat list, never nested, so a terminal is never remounted. */
+.pane {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.pane[hidden] {
+  display: none;
+}
+.pane-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+/* The focused pane while more than one shows: a 2px inset outline, over the terminal and the
+   header, never taking a click. */
+.pane[data-focused-pane]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border: 2px solid var(--cc-accent);
+  pointer-events: none;
+}
+/* D8: label, dot, "Opened by"; one row, the text giving way before the plugin's name. */
+.pane-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+  font-size: var(--cc-text-sm);
+  white-space: nowrap;
+  color: var(--cc-fg-muted);
+  background: var(--cc-bg);
+  border-bottom: 1px solid var(--cc-border);
+}
+.pane-header[data-focused] {
+  color: var(--cc-fg);
+}
+.pane-header > * {
+  flex: none;
+}
+.pane-header-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pane-header-ask {
+  font-weight: 500;
+  color: var(--cc-status-needs-permission);
+}
+.pane-header-by {
+  margin-left: auto;
+  color: var(--cc-fg-subtle);
+}
+.pane-starting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cc-fg-muted);
+  background: var(--cc-terminal-bg);
+}
+/* A divider: the zones' Splitter, positioned on the line between two panes. */
+.pane-divider {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+}
+.pane-divider-row {
+  width: 1px;
+  margin-left: -0.5px;
+}
+.pane-divider-row > .splitter {
+  height: 100%;
+}
+.pane-divider-column {
+  height: 1px;
+  margin-top: -0.5px;
+}
+.pane-divider-column > .splitter {
+  width: 100%;
+}
+/* Pane mode of a strip drag, and a split's new pane while its menu is open. */
+.pane-drop-preview {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 2px solid var(--cc-accent);
+  background: color-mix(in srgb, var(--cc-accent) 16%, transparent);
+  pointer-events: none;
+}
+.pane-drop-label {
+  padding: 2px 10px;
+  font-size: var(--cc-text-sm);
+  background: var(--cc-bg-banner);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+}
+/* A group in the strip: its members bracketed together behind a handle (split mark, name, zoom). */
+.tab-group {
+  position: relative;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding-right: 2px;
+  border-radius: var(--cc-radius-md);
+  box-shadow: inset 0 0 0 1px var(--cc-border-strong);
+}
+.tab-group.shown {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-accent) 70%, transparent);
+}
+.tab-group.dragged {
+  z-index: 1;
+  opacity: 0.85;
+}
+.tab-group .tab {
+  min-width: 96px;
+}
+.tab-group-handle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 7px;
+  font: inherit;
+  white-space: nowrap;
+  color: var(--cc-fg-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.tab-group-handle:hover,
+.tab-group.shown .tab-group-handle {
+  color: var(--cc-fg);
+}
+.tab-group-handle:hover {
+  background: color-mix(in srgb, var(--cc-fg) 5%, transparent);
+}
+/* A group's name is the person's text (security review: never in place of a member's label, dot or
+   tint), capped so a long one cannot push the members' tabs, and their dots, out of the strip. */
+.tab-group-name {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-group-zoom {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-accent);
+}
+/* Show beside ▸: a tab per row, Right and Below as small buttons after it. */
+.menu-beside-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 9px;
+}
+.menu-beside-row .menu-label {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu .menu-beside-row button {
+  flex: none;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+.confirm-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 /* Splitters: a hairline with a grip mark in the middle. The element is the 1px line; its ::before
    widens the grab area to 7px over the neighbours (z-index above them), and pointer events on a
    pseudo-element land on the element, so the drag code sees the bar. Accent under the pointer
