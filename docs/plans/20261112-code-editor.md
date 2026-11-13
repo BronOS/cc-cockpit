@@ -245,16 +245,16 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Modify: `plugins/editor/plugin.json` (app setting `servers`)
 - Create: `plugins/editor/test/lsp-host.test.js`, `plugins/editor/test/fixtures/fake-lsp.mjs`
 
-- [ ] built-in table with fallbacks, `servers` setting; login-shell PATH lookup; missing server → install bar
-- [ ] one server per language per project, rooted at the project; start on first file, stop a minute after last tab;
+- [x] built-in table with fallbacks, `servers` setting; login-shell PATH lookup; missing server → install bar
+- [x] one server per language per project, rooted at the project; start on first file, stop a minute after last tab;
   restart backoff (3 in 5 min) then Restart bar
-- [ ] the host owns `initialize`, `initializationOptions`, configuration and `processId`; one id space per server;
+- [x] the host owns `initialize`, `initializationOptions`, configuration and `processId`; one id space per server;
   documents refcounted per URI with one syncing owner; URIs validated; method allow-list; server-to-client requests
   answered by the host; results trimmed under the message cap
-- [ ] `workspace/didChangeWatchedFiles` from the directory watches and project changes
-- [ ] write tests against the fake server: initialize once, ids, refcounting, URI refusal, allow-list, configuration
+- [x] `workspace/didChangeWatchedFiles` from the directory watches and project changes
+- [x] write tests against the fake server: initialize once, ids, refcounting, URI refusal, allow-list, configuration
   request, backoff, idle stop, missing server
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 13: Language features in the page and workspace edits [model: opus]
 

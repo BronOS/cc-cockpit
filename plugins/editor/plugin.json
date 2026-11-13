@@ -37,6 +37,30 @@
             "maxLength": 64,
             "default": ""
           },
+          "servers": {
+            "type": "array",
+            "title": "Language servers",
+            "description": "Built in: TypeScript and JavaScript (typescript-language-server), Go (gopls), PHP (intelephense, else phpactor), Python (basedpyright, else pyright), each looked up on your login-shell PATH; a missing one leaves highlighting only, with its install command on the tab. A row here adds a language or replaces a built-in one's command (a built-in name: typescript, go, php, python). The command runs in the project folder with no shell, one argument per field, and runs the project's own tooling as any IDE's would.",
+            "maxItems": 50,
+            "default": [],
+            "items": {
+              "type": "object",
+              "title": "Server",
+              "required": ["language", "argv"],
+              "properties": {
+                "language": { "type": "string", "title": "Language", "description": "A short lowercase name: rust, typescript", "minLength": 1, "maxLength": 40 },
+                "extensions": { "type": "string", "title": "Extensions", "description": "One or more, separated by spaces or commas: rs, ron. Needed for a new language; for a built-in one, empty keeps its own.", "maxLength": 400, "default": "" },
+                "argv": {
+                  "type": "array",
+                  "title": "Command",
+                  "description": "The program, then one argument per field: rust-analyzer; or typescript-language-server, --stdio",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "items": { "type": "string", "maxLength": 4096 }
+                }
+              }
+            }
+          },
           "microPath": {
             "type": "string",
             "title": "micro command",

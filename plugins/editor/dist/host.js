@@ -21,6 +21,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const files = require('./lib/files.js')
 const search = require('./lib/search.js')
+const { LspManager } = require('./lib/lsp/manager.js')
+const { serveLsp } = require('./lib/lsp/serve.js')
 
 const INSTALL_HINT =
   'micro is not installed (or not on your login-shell PATH). Install it with `brew install micro` (macOS), ' +
@@ -351,9 +353,38 @@ exports.activate = (ctx) => {
     const settingsMessage = () => ({ t: 'settings', ...autosaveOf(app()) })
     // Quick open and find in files run rg through ctx.processes (lib/search.js); an older app has none.
     const spawn = ctx.processes && typeof ctx.processes.spawn === 'function' ? (argv, o) => ctx.processes.spawn(argv, o) : undefined
+    // The language servers (lib/lsp, design-editor.md §3): one per language for this project, the
+    // host their only client. None on an app without ctx.processes (the pages get highlighting only).
+    const lsp = spawn ? new LspManager({ root: ctx.projectDir, spawn, log: ctx.log, servers: app().servers }) : null
+    lspShared = lsp
+    if (lsp) {
+      // Project changes reach the servers as workspace/didChangeWatchedFiles (gopls and tsserver go
+      // stale otherwise): every event of the folders the file tabs already watch, and the files the
+      // project's Claude tabs write (ctx.sessions' `files`), new ones at once and all of a tab's again
+      // when its status moves (a turn ended: a file written twice is listed once).
+      mine.watcher.onFolderEvent((real) => lsp.noteChanged(real))
+      if (ctx.sessions && typeof ctx.sessions.onChange === 'function') {
+        const seen = new Map() // tabId -> { count, status }
+        ctx.sessions.onChange((list) => {
+          if (!Array.isArray(list)) return
+          const live = new Set()
+          for (const s of list) {
+            if (!s || !Array.isArray(s.files)) continue
+            live.add(s.tabId)
+            const was = seen.get(s.tabId)
+            seen.set(s.tabId, { count: s.files.length, status: s.status })
+            if (!lsp.running()) continue
+            if (!was || was.status !== s.status) lsp.noteSessionFiles(s.files)
+            else if (s.files.length > was.count) lsp.noteSessionFiles(s.files.slice(was.count))
+          }
+          for (const id of seen.keys()) if (!live.has(id)) seen.delete(id)
+        })
+      }
+    }
     ctx.tabs.onOpen('file', (tab) => {
       files.serveFileTab(mine, tab, ctx.log)
       const searching = search.serveSearch(tab, { spawn, root: ctx.projectDir, log: ctx.log })
+      const speaking = serveLsp(tab, lsp, ctx.log)
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -362,6 +393,7 @@ exports.activate = (ctx) => {
       tab.onMessage((m) => {
         if (!m || typeof m !== 'object') return
         if (searching(m)) return
+        if (speaking(m)) return
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {
@@ -427,6 +459,7 @@ exports.activate = (ctx) => {
     })
     if (typeof ctx.onSettingsChange === 'function') {
       ctx.onSettingsChange(() => {
+        if (lsp) lsp.setServers(app().servers)
         const m = settingsMessage()
         for (const set of instances.values()) for (const tab of set) tab.post(m)
       })
@@ -541,9 +574,14 @@ exports.activate = (ctx) => {
 // The file tabs' folder watches are the one thing that outlives ctx (the service, the CLI command,
 // the overlays and the tab listeners all end with it): a plugin reload closes them here.
 let shared = null
+// The language servers too: ctx.processes kills them with the plugin anyway, but a `shutdown` first
+// lets a server write its caches (gopls, tsserver) instead of dying mid-write.
+let lspShared = null
 exports.deactivate = () => {
   if (shared) shared.watcher.close()
   shared = null
+  if (lspShared) lspShared.dispose().catch(() => {})
+  lspShared = null
   for (const t of markerTimers) clearTimeout(t)
   markerTimers.clear()
 }

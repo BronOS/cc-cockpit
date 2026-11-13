@@ -486,6 +486,18 @@ class FolderWatcher {
     this.files = new Map()
     /** folder -> { count, watcher, retry, tries } */
     this.folders = new Map()
+    /** Who hears every named event of a watched folder (the language servers' didChangeWatchedFiles). */
+    this.folderListeners = new Set()
+  }
+
+  /**
+   * `listener(real)` for every entry of a watched folder an OS event names, open in a tab or not
+   * (a sibling file Claude wrote, a new file): the language servers hear about project changes
+   * from the same watches (design-editor.md §3 "Lifecycle"). Undebounced; returns the stop function.
+   */
+  onFolderEvent(listener) {
+    this.folderListeners.add(listener)
+    return () => this.folderListeners.delete(listener)
   }
 
   /** Watches `real`; returns the function that stops this one watch (its `seen(hash)` records what it read or wrote). */
@@ -607,6 +619,16 @@ class FolderWatcher {
   }
 
   event(dir, name) {
+    if (name && this.folderListeners.size) {
+      const real = path.join(dir, String(name))
+      for (const l of [...this.folderListeners]) {
+        try {
+          l(real)
+        } catch (e) {
+          if (this.log) this.log.warn(`watch ${dir}: ${e.message}`)
+        }
+      }
+    }
     // `name` can be missing (some platforms, an overflow): check every watched file of the folder.
     for (const [real, f] of this.files) {
       if (path.dirname(real) !== dir) continue
@@ -652,6 +674,7 @@ class FolderWatcher {
     }
     this.files.clear()
     this.folders.clear()
+    this.folderListeners.clear()
   }
 }
 
