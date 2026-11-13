@@ -47,7 +47,7 @@ External review: sol / high
 - **plugin tests (`node:test`)**: editor host compare-and-swap (race, symlink, non-UTF-8, EOL/BOM/mode), watcher on
   rename-replace, LSP client against a fake server, workspace edits, quick chat argv against a fake `claude`, argv
   hardening; page merge (clean, conflict, two views).
-- **e2e (Playwright)**: open from Files, type, autosave; external write (reload, merge, conflict); `ccc edit`;
+- **e2e (Playwright)**: open from Files via Edit, type, autosave; external write (reload, merge, conflict); `ccc edit`;
   diagnostics from a fake server; a page tab in a browser view surviving a reconnect with a dirty buffer.
 
 ## Progress Tracking
@@ -205,9 +205,13 @@ External review: sol / high
 
 ### Task 9: Checkpoint: Oleg tries the editor [model: sonnet]
 
-- [ ] build and start the dev app on a test data dir (check for Claude tabs in a running dev app first)
-- [ ] Oleg opens files from Files, edits, lets autosave run, has a Claude tab change an open file
-- [ ] record the feedback in this plan; if CodeMirror is rejected, stop and revisit the design before Task 10
+- [x] build and start the dev app on a test data dir (check for Claude tabs in a running dev app first)
+- [x] Oleg opens files from Files, edits, lets autosave run, has a Claude tab change an open file
+- [x] record the feedback in this plan; if CodeMirror is rejected, stop and revisit the design before Task 10
+
+Checkpoint result (2026-11-13): Oleg tried the editor in the dev app and approved it ("looks very good"); CodeMirror
+stays. A plain click on a file keeps opening the Reviewer's view (the editor does NOT become the open-file provider);
+the editor opens through Edit (the file overlay's Edit button, the editor service, `ccc edit`).
 
 ### Task 10: `ccc edit path:line:col` [model: sonnet]
 
@@ -321,7 +325,7 @@ External review: sol / high
 **Files:**
 - Create: `test/e2e/editor.spec.ts`, `test/e2e/editor-web.spec.ts`
 
-- [ ] open from Files, type, autosave lands on disk; external write reloads, merges, conflicts
+- [ ] open from Files via Edit, type, autosave lands on disk; external write reloads, merges, conflicts
 - [ ] `ccc edit path:line`; diagnostics from the fake language server
 - [ ] a file tab in a browser view: edit, reconnect with a dirty buffer, save; the desktop sees the content
 - [ ] closing a dirty tab asks; quit with a dirty tab asks

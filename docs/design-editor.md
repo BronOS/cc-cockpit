@@ -77,8 +77,9 @@ servers stay with the code.
 
 ## 2. Files, saving, Claude writing the same file
 
-**Opening.** From Files, Sessions changed files, the Reviewer's Edit button, `ccc edit` and the open-file pick (the
-editor becomes the project's open-file provider). Only files inside the project, checked by realpath; outside files go
+**Opening.** Through the Reviewer's Edit button (the file overlay), the `editor` service, `ccc edit` and the editor's
+own navigation (go-to-definition, quick open). The editor is not the project's open-file provider: a plain click on a
+file keeps opening the Reviewer's view (Oleg's decision at the checkpoint, 2026-11-13). Only files inside the project, checked by realpath; outside files go
 to the built-in viewer. Binary files, text over about 5 MB, and text that is not valid UTF-8 open read-only (saving
 would corrupt them). A file that already has a tab focuses it and moves to the line.
 
