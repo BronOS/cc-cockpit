@@ -1617,6 +1617,11 @@ function start(server: boolean): void {
       openPageTab: (projectId, spec, windowId, focus) => openPageTab(projectId, spec, windowId, focus),
       listTabs: (projectId) => tabs.list(projectId),
       setPageTabTitle: (projectId, tabId, title, icon) => tabs.setPageTitle(projectId, tabId, title, icon),
+      // As openPage's `focus`: the project's views are told to select it (only the host's own window).
+      focusPageTab: (projectId, tabId, windowId) => {
+        requireWindow(projectId, windowId)
+        sendToProject(projectId, 'tabs.select', { tabId })
+      },
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),

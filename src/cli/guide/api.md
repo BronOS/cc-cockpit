@@ -164,7 +164,8 @@ with full Node access.
   project's window and resolves its id (`params` plain JSON of at most 4 KiB, `title` cut to 80 characters,
   `icon` a glyph name such as `file`; `focus: true` selects it, else it opens with an unseen dot; at most 20
   opens per 10 s and 64 page tabs per plugin per project, rejected past either). `list(type)` resolves your
-  open tabs of that type here, `[{ id, type, params, title, icon? }]`, in tab order. `onOpen(type, (tab) => …)`
+  open tabs of that type here, `[{ id, type, params, title, icon? }]`, in tab order. `focus(id)` selects one of
+  your own page tabs of this project (a file that already has a tab; it shares `openPage`'s budget). `onOpen(type, (tab) => …)`
   hears a tab's frame connect in a view and returns a disposer; `tab` is `{ id, type, params, view, post(message),
   onMessage(fn), onClose(fn), setTitle(title, icon?), onDiscuss(fn) }`. A tab shown in the desktop window and in
   a browser has one instance per view (`view` is the browser's opaque id, `undefined` on the desktop); a host

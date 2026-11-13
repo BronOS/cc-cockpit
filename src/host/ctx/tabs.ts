@@ -9,6 +9,8 @@
 //                                      onDiscuss); again after a host restart, a web reconnect or a
 //                                      relay resync (a new line to the same page, never a reload)
 //   ctx.tabs.list(type)                this plugin's open page tabs of `type` in the project
+//   ctx.tabs.focus(id)                 select one of them (a file that already has a tab); main
+//                                      checks the tab is the plugin's own, openPage's budget
 //
 // Frames are the shell's, as for slots: main hands this host one end of the frame's channel,
 // tagged `{ "pageTabOpen": { pluginId, id, type, params?, view? } }` with the port in its transfer
@@ -390,6 +392,11 @@ export function createTabsApi(deps: TabsApiDeps): PluginContext['tabs'] {
         declared(type, 'list')
         const res = await call('tabs.list', { pluginId, type })
         return Array.isArray(res) ? (res as PageTabInfo[]) : []
+      }),
+    focus: (tabId: string): Promise<void> =>
+      guardAsync(async () => {
+        if (typeof tabId !== 'string' || !PAGE_TAB_ID_PATTERN.test(tabId)) throw new TypeError('tabs.focus: tabId must be a page tab id')
+        await call('tabs.focus', { pluginId, tabId })
       })
   })
 }

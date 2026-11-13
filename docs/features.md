@@ -255,11 +255,17 @@ behind it are in [design.md](design.md).
   the document, and the caller hears each switch (Gmail remembers it per sender).
   The reviewer renders markdown (Rendered / Source switch; the diff first when there is one) and previews images
   (10 MiB) and PDFs (pdf.js, 25 MiB, notes on selected text by page).
-- A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): opens a file in
-  [micro](https://micro-editor.github.io) in a large terminal overlay, with autosave (default 5 s, 0 off), a colour
-  scheme and a path-to-micro setting; `ccc edit <file>` too. micro is an optional dependency, not shipped: install it
-  with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install micro` (Linux). Without it, Edit shows
-  that command and the `microPath` setting instead of failing silently.
+- A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): Edit (Files, a review) opens the file
+  in a tab of the main tab bar, edited with CodeMirror 6 (highlighting for TS/JS, Go, PHP, Python, JSON, YAML,
+  Markdown, HTML, CSS and shell; search and replace, multi-cursor, folding, comment toggle), in the theme's colours and
+  the terminal font. It autosaves after you stop typing (default 3 s, 0 off; an autosave set for micro before carries
+  over) and when you leave the tab; Ctrl+S saves at once. A save never overwrites a change made on disk meanwhile
+  (Claude writing the file): the tab asks Reload or Keep mine; a clean tab reloads by itself. Binary, non-UTF-8 and
+  files over 5 MB open read-only; a binary file goes to the reviewer instead. A tab with unsaved text shows a dot and
+  closing it asks. "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a
+  colour scheme and a path-to-micro setting); `ccc edit <file>` opens micro too, for now. micro is an optional
+  dependency, not shipped: install it with `brew install micro` (Mac), `sudo pacman -S micro` or `sudo apt install
+  micro` (Linux). Without it, Open in micro shows that command and the `microPath` setting instead of failing silently.
 - A built-in file tree (`cockpit.files`, on by default, ships with the app): a Files panel (left zone) with the
   whole project folder, so any file can be opened and discussed with Claude, changed or not. A click opens it through
   "Plugin used to open files" (the reviewer by default: the diff for a changed file, the file itself otherwise, with

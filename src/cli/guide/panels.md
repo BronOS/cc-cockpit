@@ -124,6 +124,11 @@ A theme may also bring names of its own, which panels get too.
 - Tab flag colours (`SessionInfo.flag.color`): `--cc-flag-red`, `-orange`, `-yellow`, `-green`,
   `-blue`, `-purple` (each prefixed `--cc-flag-`).
 
+A page tab (`ccPanel.tab`) also gets the terminal font the person picked (Settings › Appearance ›
+Terminal), to draw code in: `--cc-terminal-font-size` (px) and `--cc-terminal-font-family`. The family
+is left out when it is a font bundled with the app (a page cannot load those) or only generic names,
+so use `var(--cc-terminal-font-family, var(--cc-font-mono))`.
+
 There is no separate error or success token: use `--cc-status-ended` / `--cc-status-waiting` for
 red and green text or dots, and `--cc-bg-error` behind an error message.
 

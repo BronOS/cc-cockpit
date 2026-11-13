@@ -8,10 +8,11 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run build:hello && npm run build:browser && npm run build:reviewer && electron-vite build",
+    "build": "npm run build:hello && npm run build:browser && npm run build:reviewer && npm run build:editor && electron-vite build",
     "build:hello": "node scripts/build-hello.mjs",
     "build:browser": "node scripts/build-browser.mjs",
     "build:reviewer": "node scripts/build-reviewer.mjs",
+    "build:editor": "node scripts/build-editor.mjs",
     "build:example": "node examples/plugin/build.mjs",
     "build:marketplace-tools": "node scripts/build-marketplace-tools.mjs",
     "build:icon": "electron scripts/render-icon.cjs",

@@ -1,6 +1,6 @@
 {
   "id": "cockpit.editor",
-  "name": "Editor (micro)",
+  "name": "Editor",
   "version": "0.1.0",
   "api": 1,
   "main": "dist/host.js",
@@ -19,10 +19,9 @@
           "autosaveIdleSeconds": {
             "type": "integer",
             "title": "Autosave after idle (seconds)",
-            "description": "A file tab saves this long after you stop typing. 0 turns idle autosave off (Ctrl+S still saves). When Claude changed the file meanwhile, the editor merges first.",
+            "description": "A file tab saves this long after you stop typing; micro autosaves this often too. 0 turns idle autosave off (Ctrl+S still saves). Empty: 3, or the micro autosave you had set before. When Claude changed the file meanwhile, nothing is overwritten.",
             "minimum": 0,
-            "maximum": 3600,
-            "default": 3
+            "maximum": 3600
           },
           "autosaveOnBlur": {
             "type": "boolean",
@@ -30,25 +29,17 @@
             "description": "A file tab saves when you leave it (another tab, another window).",
             "default": true
           },
-          "autosaveSeconds": {
-            "type": "integer",
-            "title": "Autosave (seconds)",
-            "description": "micro saves the file this often while you edit. 0 turns autosave off. micro asks before reloading a file that changed on disk (Claude may be writing it too).",
-            "minimum": 0,
-            "maximum": 3600,
-            "default": 5
-          },
           "colorscheme": {
             "type": "string",
             "title": "Colour scheme",
-            "description": "A micro colorscheme name (e.g. dracula-tc, gruvbox-tc, solarized-tc, default); empty uses your micro settings.",
+            "description": "For Open in micro: a micro colorscheme name (e.g. dracula-tc, gruvbox-tc, solarized-tc, default); empty uses your micro settings.",
             "maxLength": 64,
             "default": ""
           },
           "microPath": {
             "type": "string",
             "title": "micro command",
-            "description": "The micro binary: a name looked up on your login-shell PATH, or an absolute path.",
+            "description": "For Open in micro: the micro binary: a name looked up on your login-shell PATH, or an absolute path.",
             "minLength": 1,
             "maxLength": 512,
             "default": "micro"

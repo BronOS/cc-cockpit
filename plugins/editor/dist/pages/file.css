@@ -1,0 +1,87 @@
+/* The file tab page: a header row, a one-line bar, the editor filling the rest. Colours and sizes
+   only from the app's tokens (`ccc guide style`); the editor's own look is in src/page/file.js. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  font: var(--cc-text-m, 13px) var(--cc-font-ui, system-ui, sans-serif);
+  color: var(--cc-fg);
+  background: var(--cc-terminal-bg, var(--cc-bg));
+  overflow: hidden;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2, 8px);
+  min-height: var(--cc-control-h, 26px);
+  padding: 2px var(--cc-space-2, 8px);
+  background: var(--cc-bg-bar);
+  border-bottom: 1px solid var(--cc-border);
+  flex: none;
+}
+.path {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* a long path keeps its file name in view */
+  text-align: left;
+}
+.state {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-s, 11px);
+  white-space: nowrap;
+}
+.state[data-status='unsaved'] {
+  color: var(--cc-status-needs-permission);
+}
+.spacer {
+  flex: 1;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2, 8px);
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  background: var(--cc-bg-banner);
+  border-bottom: 1px solid var(--cc-border);
+  flex: none;
+}
+.bar[hidden] {
+  display: none;
+}
+.bar.warn {
+  box-shadow: inset 3px 0 0 var(--cc-status-needs-permission);
+}
+.bar.error {
+  background: var(--cc-bg-error);
+}
+.bar #bar-text {
+  flex: 1;
+  min-width: 0;
+}
+.bar .actions {
+  display: flex;
+  gap: var(--cc-space-1, 4px);
+}
+main {
+  flex: 1;
+  min-height: 0;
+}
+main[hidden] {
+  display: none;
+}
+main .cm-editor {
+  height: 100%;
+}
+main .cm-editor.cm-focused {
+  outline: none;
+}
+body.loading main {
+  visibility: hidden;
+}

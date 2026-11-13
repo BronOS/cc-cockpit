@@ -1,12 +1,33 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { microArgv, relativePath } = require('../dist/host.js')
+const { microArgv, relativePath, autosaveOf } = require('../dist/host.js')
 
 test('microArgv: options, file, line', () => {
-  assert.deepEqual(microArgv({}, 'src/a.ts', 12), ['micro', '-autosave', '5', 'src/a.ts', '+12'])
-  assert.deepEqual(microArgv({ autosaveSeconds: 0, colorscheme: 'gruvbox-tc', microPath: '/opt/micro' }, 'a', undefined), ['/opt/micro', '-autosave', '0', '-colorscheme', 'gruvbox-tc', 'a'])
-  assert.deepEqual(microArgv({ colorscheme: 'bad name;rm' }, '-x.txt', 0), ['micro', '-autosave', '5', './-x.txt'])
+  assert.deepEqual(microArgv({}, 'src/a.ts', 12), ['micro', '-autosave', '3', 'src/a.ts', '+12'])
+  assert.deepEqual(microArgv({ autosaveIdleSeconds: 0, colorscheme: 'gruvbox-tc', microPath: '/opt/micro' }, 'a', undefined), ['/opt/micro', '-autosave', '0', '-colorscheme', 'gruvbox-tc', 'a'])
+  assert.deepEqual(microArgv({ colorscheme: 'bad name;rm' }, '-x.txt', 0), ['micro', '-autosave', '3', './-x.txt'])
+})
+
+test('settings migration: an autosaveSeconds set for micro is the default of autosaveIdleSeconds', () => {
+  // Nothing set: the manifest's described default (the schema has none, so an unset field stays unset).
+  assert.deepEqual(autosaveOf({}), { idleSeconds: 3, onBlur: true })
+  assert.deepEqual(autosaveOf(undefined), { idleSeconds: 3, onBlur: true })
+  // The old micro setting, still in the stored values though no longer in the schema, carries over...
+  assert.deepEqual(autosaveOf({ autosaveSeconds: 10 }), { idleSeconds: 10, onBlur: true })
+  assert.deepEqual(autosaveOf({ autosaveSeconds: 0 }), { idleSeconds: 0, onBlur: true })
+  // ...until the new one is set, which wins, 0 (off) included.
+  assert.deepEqual(autosaveOf({ autosaveSeconds: 10, autosaveIdleSeconds: 2, autosaveOnBlur: false }), { idleSeconds: 2, onBlur: false })
+  assert.deepEqual(autosaveOf({ autosaveSeconds: 10, autosaveIdleSeconds: 0 }), { idleSeconds: 0, onBlur: true })
+  // A damaged value is ignored.
+  assert.deepEqual(autosaveOf({ autosaveSeconds: -1, autosaveIdleSeconds: 1.5 }), { idleSeconds: 3, onBlur: true })
+  assert.deepEqual(autosaveOf({ autosaveSeconds: 99999 }), { idleSeconds: 3, onBlur: true })
+  // micro follows the same value.
+  assert.deepEqual(microArgv({ autosaveSeconds: 7 }, 'a', 0).slice(1, 3), ['-autosave', '7'])
+  // The manifest no longer declares the old field, and the new one has no default to hide an unset value.
+  const props = require('../plugin.json').contributes.settings.app.properties
+  assert.equal(props.autosaveSeconds, undefined)
+  assert.equal('default' in props.autosaveIdleSeconds, false)
 })
 
 test('relativePath refuses escapes', () => {
@@ -139,7 +160,7 @@ test('editableFile: only a text file inside the project, never an escape', () =>
   }
 })
 
-test('"Edit" on a file overlay: only for an editable file; run opens micro on top', async () => {
+test('"Edit" on a file overlay: only for an editable file; on an app without page tabs, run opens micro on top', async () => {
   const host = require('../dist/host.js')
   const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
   f.ctx.projectDir = project()
@@ -201,12 +222,160 @@ test('file tabs: deactivate closes the watch of an open file tab (no disk event 
   f.ctx.tabs = { onOpen: (type, fn) => (opened.push({ type, fn }), () => {}) }
   host.activate(f.ctx)
   const posted = []
-  let onMessage
-  opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, post: (m) => posted.push(m), onMessage: (fn) => (onMessage = fn), onClose: () => {} })
-  onMessage({ t: 'open', req: 1 })
-  assert.equal(posted.length, 1)
+  const listeners = []
+  opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {} })
+  for (const l of listeners) l({ t: 'open', req: 1 })
+  assert.deepEqual(posted.map((m) => m.t), ['settings', 'file'])
   host.deactivate()
   fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'two\n')
   await new Promise((r) => setTimeout(r, 300))
-  assert.equal(posted.length, 1)
+  assert.equal(posted.length, 2)
+})
+
+// A fake ctx.tabs over a list of open tabs, recording what the host asks.
+function fakeTabs(f) {
+  const calls = []
+  const open = []
+  const openers = []
+  f.ctx.tabs = {
+    onOpen: (type, fn) => (openers.push({ type, fn }), () => {}),
+    list: async (type) => (calls.push(['list', type]), open.map((t) => ({ ...t }))),
+    openPage: async (type, params, options) => {
+      calls.push(['openPage', type, params, options])
+      const id = `00000000-0000-4000-8000-${String(open.length + 1).padStart(12, '0')}`
+      open.push({ id, type, params, title: options.title })
+      return id
+    },
+    focus: async (id) => void calls.push(['focus', id]),
+  }
+  // A frame of tab `id` connecting: the instance the host serves, with what it posts.
+  const connect = (id) => {
+    const t = open.find((x) => x.id === id)
+    const posted = []
+    const listeners = []
+    const closers = []
+    const tab = { id, type: 'file', params: t.params, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn) }
+    for (const o of openers) o.fn(tab)
+    return { posted, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()) }
+  }
+  return { calls, open, connect }
+}
+
+test('open routing: editor.open opens a file tab at the line, focused; a second open focuses it and moves the line', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  assert.deepEqual(await f.provided.editor.open('./src//a.ts', { line: 4 }), { opened: true })
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts', line: 4 }, { title: 'a.ts', icon: 'file', focus: true }])
+  assert.equal(t.open.length, 1)
+  const view = t.connect(t.open[0].id)
+  // Again, spelled differently: no second tab.
+  assert.deepEqual(await f.provided.editor.open('src/a.ts', { line: 9, col: 2 }), { opened: true })
+  assert.equal(t.open.length, 1)
+  assert.deepEqual(t.calls.at(-1), ['focus', t.open[0].id])
+  assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 9, col: 2 })
+  // No line: focus only, the cursor stays.
+  const n = view.posted.length
+  await f.provided.editor.open('src/a.ts')
+  assert.equal(view.posted.length, n)
+  // A missing file inside the project opens a tab too (a new file, made by its first save).
+  await f.provided.editor.open('src/new.ts')
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/new.ts' }, { title: 'new.ts', icon: 'file', focus: true }])
+  host.deactivate()
+})
+
+test('open routing: outside the project refused, a binary file goes to the project file opener', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  const viewed = []
+  f.ctx.files = { open: async (p) => (viewed.push(p), { via: 'builtin' }) }
+  host.activate(f.ctx)
+  for (const bad of ['../x', '/etc/hosts', 'link.txt']) {
+    await assert.rejects(f.provided.editor.open(bad), /^Error: editor: /, bad)
+  }
+  assert.deepEqual(await f.provided.editor.open('img.png'), { opened: true })
+  assert.deepEqual(viewed, ['img.png'])
+  assert.equal(t.open.length, 0)
+  // An app with no ctx.files.open: a binary file is refused, never put in a tab.
+  delete f.ctx.files
+  await assert.rejects(f.provided.editor.open('img.png'), /binary/)
+  host.deactivate()
+})
+
+test('service compatibility: an app without page tabs keeps micro for editor.open', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  host.activate(f.ctx)
+  assert.deepEqual(await f.provided.editor.open('src/a.ts', { line: 3 }), { opened: true })
+  assert.equal(f.started[0].kind, 'terminal')
+  assert.deepEqual(f.started[0].argv.slice(-2), ['src/a.ts', '+3'])
+})
+
+test('"Edit" on a file overlay opens the file tab and closes the overlay', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  let provider
+  f.ctx.overlay.buttons = (_t, fn) => ((provider = fn), () => {})
+  host.activate(f.ctx)
+  const info = { type: { name: 'file', data: { path: 'src/a.ts' } }, title: 'Review: src/a.ts', opener: 'cockpit.reviewer' }
+  const [b] = provider(info)
+  assert.deepEqual(await b.run(info), { close: true })
+  assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts' }, { title: 'a.ts', icon: 'file', focus: true }])
+  assert.equal(f.started.length, 0)
+  host.deactivate()
+})
+
+test('a file tab instance: settings at connect and on change, the line on the first load only, micro on the tab file', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  let settingsListener
+  f.ctx.onSettingsChange = (fn) => ((settingsListener = fn), () => {})
+  f.ctx.settings = { app: { autosaveSeconds: 8, autosaveOnBlur: false } }
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts', { line: 1 })
+  const view = t.connect(t.open[0].id)
+  assert.deepEqual(view.posted[0], { t: 'settings', idleSeconds: 8, onBlur: false })
+  view.send({ t: 'open', req: 1, first: true })
+  assert.deepEqual(view.posted.map((m) => m.t), ['settings', 'file', 'goto'])
+  assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 1 })
+  // A reconnect's open keeps the person's cursor: no goto.
+  view.send({ t: 'open', req: 2 })
+  assert.deepEqual(view.posted.map((m) => m.t), ['settings', 'file', 'goto', 'file'])
+  // Settings saved: every connected instance hears the new autosave.
+  f.ctx.settings = { app: { autosaveIdleSeconds: 1 } }
+  settingsListener(f.ctx.settings)
+  assert.deepEqual(view.posted.at(-1), { t: 'settings', idleSeconds: 1, onBlur: true })
+  // Open in micro: the tab's own file, whatever path the page sends.
+  view.send({ t: 'micro', path: 'img.png' })
+  await new Promise((r) => setTimeout(r, 600))
+  assert.equal(f.started.length, 1)
+  assert.deepEqual(f.started[0].argv.slice(-1), ['src/a.ts'])
+  // A closed instance hears nothing more.
+  view.close()
+  const n = view.posted.length
+  settingsListener(f.ctx.settings)
+  assert.equal(view.posted.length, n)
+  host.deactivate()
+})
+
+test('Open in micro that fails is told on the tab', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: new Error('spawn micro ENOENT') })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts')
+  const view = t.connect(t.open[0].id)
+  view.send({ t: 'micro' })
+  await new Promise((r) => setTimeout(r, 50))
+  assert.match(view.posted.at(-1).message, /^Open in micro: micro is not installed/)
+  host.deactivate()
 })

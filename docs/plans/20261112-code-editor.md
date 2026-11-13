@@ -178,14 +178,17 @@ External review: sol / high
 - Modify: `package.json` (`build:editor`, run by `build`), `plugins/editor/dist/host.js`
 - Create: `plugins/editor/test/page-*.test.js`
 
-- [ ] CodeMirror 6 with languages (TS/JS, Go, PHP, Python, JSON, YAML, Markdown, HTML, CSS, shell); search and replace,
+- [x] CodeMirror 6 with languages (TS/JS, Go, PHP, Python, JSON, YAML, Markdown, HTML, CSS, shell); search and replace,
   multi-cursor, folding, brackets, comment toggle, VS Code-like keys; theme tokens and terminal font
-- [ ] the page keeps its own base; autosave on focus loss and ~3 s idle (setting), Ctrl+S; dirty reported per view
-- [ ] open-file provider and the `editor` v1 service `open(path, { line })` open a file tab; an open file focuses its
+- [x] the page keeps its own base; autosave on focus loss and ~3 s idle (setting), Ctrl+S; dirty reported per view
+- [x] open-file provider and the `editor` v1 service `open(path, { line })` open a file tab; an open file focuses its
   tab; outside the project or binary → built-in viewer; "Open in micro" button; `autosaveSeconds` read once as default
-- [ ] page state re-sent on a new port (host restart, reconnect)
-- [ ] write tests: open routing, service compatibility, settings migration, state re-send
-- [ ] run tests - must pass before next task
+  (the editor does not declare `contributes.openFile`: beside the reviewer no project would have a default opener; the
+  reviewer's Edit and Files' Edit open the tab; a binary goes to `ctx.files.open`, outside is refused; new
+  `ctx.tabs.focus`)
+- [x] page state re-sent on a new port (host restart, reconnect)
+- [x] write tests: open routing, service compatibility, settings migration, state re-send
+- [x] run tests - must pass before next task
 
 ### Task 8: Reload and three-way merge in the page [model: opus]
 

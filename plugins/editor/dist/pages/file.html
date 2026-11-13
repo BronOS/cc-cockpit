@@ -3,17 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <title>File</title>
+    <!-- CSP: scripts only from this plugin's files (no inline script); the page logic is the bundle
+         built from src/page/file.js by `npm run build:editor`. Relative URLs only (web access serves
+         the page under a path prefix). -->
     <script src="../../__sdk/panel.js"></script>
-    <style>
-      html, body { height: 100%; margin: 0; }
-      body { font: var(--cc-text-s, 13px) var(--cc-font-mono, monospace); color: var(--cc-fg); background: var(--cc-bg); }
-      #status { padding: 6px 10px; color: var(--cc-fg-muted); border-bottom: 1px solid var(--cc-border); }
-      pre { margin: 0; padding: 8px 10px; white-space: pre; overflow: auto; height: calc(100% - 32px); box-sizing: border-box; }
-    </style>
+    <link rel="stylesheet" href="file.css" />
   </head>
-  <body>
-    <div id="status">Loading…</div>
-    <pre id="text"></pre>
-    <script src="file.js"></script>
+  <body class="loading">
+    <header>
+      <strong id="path" class="path"></strong>
+      <span id="state" class="state" role="status"></span>
+      <span class="spacer"></span>
+      <button id="micro" type="button" class="cc-ghost" title="Edit this file in micro, in a terminal overlay">Open in micro</button>
+    </header>
+    <!-- One line under the header: a read or save error, the file changed or deleted on disk, a file
+         that is not shown (binary, too large). Hidden while there is nothing to say. -->
+    <div id="bar" class="bar" role="alert" hidden>
+      <span id="bar-text"></span>
+      <span id="bar-actions" class="actions"></span>
+    </div>
+    <main id="editor"></main>
+    <script src="file.bundle.js"></script>
   </body>
 </html>

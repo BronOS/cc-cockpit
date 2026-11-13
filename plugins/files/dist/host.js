@@ -293,7 +293,7 @@ exports.activate = (ctx) => {
             await editor.open(rel, {})
           } catch (e) {
             const missing = /no enabled plugin/.test(e.message) && /"editor"/.test(e.message)
-            throw new Error(missing ? 'No editor: turn on "Editor (micro)" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
+            throw new Error(missing ? 'No editor: turn on "Editor" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
           }
         } else if (m.type === 'reveal') {
           await ctx.files.reveal(tree.normalizeRelative(m.path))

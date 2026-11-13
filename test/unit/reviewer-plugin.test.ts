@@ -32,6 +32,24 @@ describe('plugins/reviewer build', () => {
   }, 60_000)
 })
 
+describe('plugins/editor build', () => {
+  it('dist/pages/file.bundle.js is what a fresh build of src/page produces, with no absolute path', () => {
+    execFileSync(process.execPath, [join(REPO, 'scripts/build-editor.mjs'), tmp], { cwd: '/', stdio: 'pipe', timeout: 55_000 })
+    const fresh = readFileSync(join(tmp, 'file.bundle.js'))
+    expect(fresh.equals(readFileSync(join(EDITOR, 'dist/pages/file.bundle.js'))), 'stale plugins/editor/dist/pages/file.bundle.js: run `npm run build:editor`').toBe(true)
+    expect(fresh.toString('utf8')).not.toContain(REPO)
+  }, 60_000)
+
+  it('the file tab page loads the SDK and its bundle by relative URLs only (web access serves it under a prefix)', () => {
+    const html = readFileSync(join(EDITOR, 'dist/pages/file.html'), 'utf8')
+    expect(html).toContain('<script src="../../__sdk/panel.js"></script>')
+    expect(html).toContain('<script src="file.bundle.js"></script>')
+    expect(html).not.toMatch(/(?:src|href)="\//)
+    // No inline script: the plugin CSP blocks it.
+    expect(html).not.toMatch(/<script>(?!<\/script>)/)
+  })
+})
+
 describe('moved plugin manifests', () => {
   it.each([
     ['reviewer', REVIEWER, 'cockpit.reviewer'],

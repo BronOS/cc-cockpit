@@ -19,7 +19,8 @@ import {
   type PortLike,
   type ThemeRoot
 } from '../../src/sdk/panel-core'
-import { isPluginPage, overlayMessageOf, overlayResultOf, portMessage, themeMessage } from '../../src/renderer/plugins/frame-messages'
+import { isPluginPage, overlayMessageOf, overlayResultOf, portMessage, terminalFontVars, themeMessage } from '../../src/renderer/plugins/frame-messages'
+import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
 import { markWebShell, resetShellKindForTest } from '../../src/renderer/shell-kind'
 import type { Theme } from '../../src/shared/theme'
@@ -517,6 +518,22 @@ describe('frame messages (the shell side)', () => {
     const msg = themeMessage({ id: 'x', name: 'X', kind: 'light', vars: { '--a': '#fff' }, xterm: { red: '#f00' } })
     // The xterm palette stays in the shell.
     expect(msg).toEqual({ type: THEME_MESSAGE, theme: { kind: 'light', vars: { '--a': '#fff' } }, mac: false })
+  })
+
+  it('adds the terminal font for page tabs, leaving out the fonts bundled with the app', () => {
+    const font = (family: string) => ({ ...DEFAULT_TERMINAL_FONT, family, size: 15 })
+    // The default is a bundled @font-face a plugin frame cannot load: size only, the page keeps its own family.
+    expect(terminalFontVars(DEFAULT_TERMINAL_FONT)).toEqual({ '--cc-terminal-font-size': '13px' })
+    expect(terminalFontVars(font('"Fira Code", "Cockpit MesloLGS NF", monospace'))).toEqual({
+      '--cc-terminal-font-size': '15px',
+      '--cc-terminal-font-family': '"Fira Code", monospace'
+    })
+    expect(terminalFontVars(font("'Iosevka, Term', Menlo"))['--cc-terminal-font-family']).toBe("'Iosevka, Term', Menlo")
+    expect(terminalFontVars(font('monospace'))['--cc-terminal-font-family']).toBeUndefined()
+    // Over the SDK's 100-char value cap: no family rather than one the SDK would drop anyway.
+    expect(terminalFontVars(font(`"${'x'.repeat(120)}"`))['--cc-terminal-font-family']).toBeUndefined()
+    const msg = themeMessage({ id: 'x', name: 'X', kind: 'dark', vars: { '--a': '#000' }, xterm: {} }, false, font('Menlo'))
+    expect(msg.theme.vars).toEqual({ '--a': '#000', '--cc-terminal-font-size': '15px', '--cc-terminal-font-family': 'Menlo' })
   })
 
   it("reads a plugin overlay page's { result } and nothing else", () => {

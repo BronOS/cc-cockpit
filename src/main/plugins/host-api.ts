@@ -44,6 +44,9 @@
 //   tabs.list       { pluginId, type }         -> PageTabInfo[]  the plugin's own page tabs of that type here
 //   tabs.setTitle   { pluginId, tabId, title, icon? } -> null    a page tab of THIS project that is the
 //                                                                plugin's own; the title budget
+//   tabs.focus      { pluginId, tabId }        -> null           select a page tab of THIS project that is
+//                                                                the plugin's own, in the host's window;
+//                                                                the page-tab open budget
 //   slots.available { pluginId, type }                    -> boolean  whether a provider would draw a slot of
 //                                                                `type` here now (ctx.slots.available)
 //   panels.slots    { pluginId, panelId, placements } -> null    slot placements in the column of a panel the
@@ -458,6 +461,8 @@ export interface HostApiDeps {
    * setTitle is refused.
    */
   setPageTabTitle?(projectId: string, tabId: string, title: string, icon: string | undefined): void
+  /** Select a page tab in the project's window (ctx.tabs.focus; HostApi checked it is the plugin's own). Without it focus is refused. */
+  focusPageTab?(projectId: string, tabId: string, windowId: number): void
   /** LayoutService.setBadge: false for a panel the project does not have. */
   setBadge(projectId: string, panelKey: string, badge: PanelBadge | null): boolean
   /**
@@ -861,6 +866,7 @@ export class HostApi {
       'tabs.openPage': (params) => this.openPage(params),
       'tabs.list': (params) => this.listPageTabs(params),
       'tabs.setTitle': (params) => this.setPageTabTitle(params),
+      'tabs.focus': (params) => this.focusPageTab(params),
       'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.close': (params) => this.overlayClose(params),
@@ -1505,6 +1511,28 @@ export class HostApi {
       throw new Error(`tabs.setTitle: more than ${MAX_PAGE_TAB_TITLES_PER_WINDOW} in ${PAGE_TAB_TITLE_WINDOW_MS / 1000} s`)
     }
     this.deps.setPageTabTitle(this.scope.projectId, tabId, title as string, icon as string | undefined)
+    return null
+  }
+
+  /**
+   * ctx.tabs.focus: select a page tab of THIS project that is the plugin's own (an editor asked to
+   * open a file that already has a tab). The id is only looked up. A selection moves the person's
+   * view, as an `openPage` with `focus` does, so it spends the same budget (a loop cannot keep
+   * yanking the tab bar); checked before the budget is spent.
+   */
+  private focusPageTab(params: unknown): null {
+    this.alive()
+    const { pluginId, tabId } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'tabs.focus')
+    if (typeof tabId !== 'string') throw new Error('tabs.focus: tabId must be a string')
+    if (!this.deps.listTabs || !this.deps.focusPageTab) throw new Error('tabs.focus: page tabs are not available')
+    const tab = this.deps.listTabs(this.scope.projectId).find((t) => t.id === tabId)
+    if (tab?.kind !== 'page' || tab.page?.plugin !== plugin.id) throw new Error('tabs.focus: no such page tab of this plugin')
+    if (!this.pageTabOpens.take(plugin.id)) {
+      throw new Error(`tabs.focus: more than ${MAX_PAGE_TAB_OPENS_PER_WINDOW} opens in ${PAGE_TAB_OPEN_WINDOW_MS / 1000} s`)
+    }
+    // The host's own window, never one the plugin names.
+    this.deps.focusPageTab(this.scope.projectId, tabId, this.scope.windowId)
     return null
   }
 

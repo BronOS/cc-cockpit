@@ -4,9 +4,11 @@ import { PAGE_TAB_FRAME_NAME } from '../../shared/page-tabs'
 import { forwardedChords, onKeyTable, runForwardedChord } from '../commands/keybindings'
 import { requestPageTabPort } from '../plugins/panel-port-bus'
 import { portMessage, themeMessage } from '../plugins/frame-messages'
+import { currentPrefs, onPrefs } from '../prefs/prefs-store'
 import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
+import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
@@ -134,13 +136,21 @@ export function pageFrames(): PageFrames {
       runForwardedChord(chord)
     },
     discuss: (tabId) => discussHandler?.(tabId),
+    // Page tabs also get the terminal font (an editor draws code in it): frame-messages.ts terminalFontVars.
     theme: () => {
       const theme = currentTheme()
-      return theme ? themeMessage(theme, isMac) : undefined
+      return theme ? themeMessage(theme, isMac, currentPrefs().terminalFont) : undefined
     },
     log: (m) => console.warn(m)
   })
-  onTheme((theme) => pool.themeChanged(themeMessage(theme, isMac)))
+  onTheme((theme) => pool.themeChanged(themeMessage(theme, isMac, currentPrefs().terminalFont)))
+  let font = currentPrefs().terminalFont
+  onPrefs((prefs) => {
+    if (sameFont(prefs.terminalFont, font)) return
+    font = prefs.terminalFont
+    const theme = currentTheme()
+    if (theme) pool.themeChanged(themeMessage(theme, isMac, font))
+  })
   if (isWebShell()) onKeyTable(() => pool.keysChanged())
   frames = pool
   return pool

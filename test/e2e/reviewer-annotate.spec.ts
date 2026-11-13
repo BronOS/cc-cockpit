@@ -400,9 +400,11 @@ test('annotate companion: two columns with their own facts, a remembered divider
 })
 
 // design-next §3.3: a review of the well-known `file` type shows the bundled editor's "Edit" in the
-// toolbar (the page has no Edit of its own any more); a click opens micro on top and the review
-// stays under it. `micro` is the stand-in of test/fixtures/bin. Discuss is there too (a typed overlay).
-test('a file review gets the editor\'s Edit button; a click opens micro over it and the review stays', async ({ cockpit }) => {
+// toolbar (the page has no Edit of its own any more). Discuss is there too (a typed overlay). A
+// click opens the file's tab (design-editor.md: the editor's file tabs) and closes the review, so
+// the tab shows; its page has the text in CodeMirror, and "Open in micro" there opens micro (the
+// stand-in of test/fixtures/bin) on the same file.
+test('a file review gets the editor\'s Edit button; a click opens the file tab, and micro is a button there', async ({ cockpit }) => {
   const { page, projectDir } = cockpit
   writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\n')
   const { run } = await linkCaller(cockpit)
@@ -415,12 +417,42 @@ test('a file review gets the editor\'s Edit button; a click opens micro over it 
   await expect(toolbar.locator('.overlay-discuss')).toHaveCount(1)
   await toolbar.getByRole('button', { name: 'Edit' }).click()
 
-  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([TITLE3, 'Edit: notes.txt'])
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([])
+  const tab = page.getByRole('tab', { name: 'notes.txt' })
+  await expect(tab).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 })
+  const file = page.frameLocator('iframe[name="cc-page-tab"]:visible')
+  await expect(file.locator('.cm-content')).toContainText('two', { timeout: 15_000 })
+  await expect(file.locator('#state')).toHaveText('Saved')
+
+  await file.getByRole('button', { name: 'Open in micro' }).click()
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual(['Edit: notes.txt'])
   const terminal = page.locator('.overlay[data-kind="terminal"]')
   await expect(terminal.locator('.xterm-rows')).toContainText('FAKE-MICRO', { timeout: 15_000 })
   await expect(terminal.locator('.xterm-rows')).toContainText('notes.txt')
-
-  // Closing micro leaves the review.
   await terminal.getByRole('button', { name: 'Close overlay' }).click()
-  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title)).toEqual([TITLE3])
+  await expect.poll(async () => (await stack(cockpit)).map((o) => o.title)).toEqual([])
+})
+
+// design-editor.md §2: typing in a file tab marks it unsaved and the idle autosave writes it to disk
+// (CRLF kept); Ctrl+S saves at once.
+test('a file tab autosaves after typing and keeps the line endings', async ({ cockpit }) => {
+  const { page, projectDir } = cockpit
+  const file = join(projectDir, 'notes.txt')
+  writeFileSync(file, 'one\r\ntwo\r\n')
+  const { run } = await linkCaller(cockpit)
+  expect(await run('filetype')).toEqual({ ok: true, value: { opened: true } })
+  const toolbar = page.locator('.overlay-header').first()
+  await toolbar.getByRole('button', { name: 'Edit' }).click()
+  const frame = page.frameLocator('iframe[name="cc-page-tab"]:visible')
+  const content = frame.locator('.cm-content')
+  await expect(content).toContainText('two', { timeout: 15_000 })
+  await content.click()
+  await page.keyboard.press('ControlOrMeta+End')
+  await page.keyboard.type('three')
+  await expect(frame.locator('#state')).toHaveText('Unsaved')
+  await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('one\r\ntwo\r\nthree')
+  await expect(frame.locator('#state')).toHaveText('Saved')
+  await page.keyboard.type('!')
+  await page.keyboard.press('ControlOrMeta+s')
+  await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 2_000 }).toBe('one\r\ntwo\r\nthree!')
 })

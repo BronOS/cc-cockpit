@@ -35,8 +35,10 @@ describe('HostApi tabs.* (main)', () => {
   let opened: Array<{ projectId: string; tab: TabInfo; windowId: number; focus: boolean }>
   let emitted: Array<{ projectId: string; channel: string; payload: unknown }>
   let apis: HostApi[]
+  let focused: Array<{ projectId: string; tabId: string; windowId: number }>
 
   beforeEach(() => {
+    focused = []
     root = realpathSync(mkdtempSync(join(tmpdir(), 'ccc-host-tabs-')))
     for (const d of ['a', 'b']) mkdirSync(join(root, d))
     opened = []
@@ -78,6 +80,7 @@ describe('HostApi tabs.* (main)', () => {
       },
       listTabs: (pid: string) => tabs.list(pid),
       setPageTabTitle: (pid: string, tabId: string, title: string, icon: string | undefined) => tabs.setPageTitle(pid, tabId, title, icon),
+      focusPageTab: (pid: string, tabId: string, windowId: number) => focused.push({ projectId: pid, tabId, windowId }),
       log: () => {}
     } as unknown as HostApiDeps
     const scope: HostScope = {
@@ -158,6 +161,25 @@ describe('HostApi tabs.* (main)', () => {
     // Long titles are clamped as at open.
     await call('tabs.setTitle', { pluginId: 'p.editor', tabId: mine.tabId, title: 'y'.repeat(200) })
     expect(tabs.list(A).find((t) => t.id === mine.tabId)?.page?.title).toHaveLength(80)
+  })
+
+  it("focus: only the plugin's own page tab of this project, in the host's window; openPage's budget", async () => {
+    const call = host()
+    const mine = (await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'a.ts' })) as { tabId: string }
+    const theirs = (await call('tabs.openPage', { pluginId: 'p.other', type: 'note', title: 'n' })) as { tabId: string }
+    const otherProject = tabs.createPage(B, { plugin: 'p.editor', type: 'file', title: 'b' })
+    const shell = tabs.create(A, { kind: 'shell' })
+    await expect(call('tabs.focus', { pluginId: 'p.editor', tabId: mine.tabId })).resolves.toBeNull()
+    expect(focused).toEqual([{ projectId: A, tabId: mine.tabId, windowId: WIN_A }])
+    for (const tabId of [theirs.tabId, otherProject.id, shell.id, 'nope']) {
+      await expect(call('tabs.focus', { pluginId: 'p.editor', tabId })).rejects.toThrow(/no such page tab/)
+    }
+    await expect(call('tabs.focus', { pluginId: 'p.editor', tabId: 5 })).rejects.toThrow(/tabId must be a string/)
+    // One open (above) and one focus spent: the rest of the shared budget, then a refusal.
+    for (let i = 0; i < MAX_PAGE_TAB_OPENS_PER_WINDOW - 2; i++) await call('tabs.focus', { pluginId: 'p.editor', tabId: mine.tabId })
+    await expect(call('tabs.focus', { pluginId: 'p.editor', tabId: mine.tabId })).rejects.toThrow(/more than 20 opens in 10 s/)
+    await expect(call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'x' })).rejects.toThrow(/more than 20 tabs/)
+    expect(focused).toHaveLength(MAX_PAGE_TAB_OPENS_PER_WINDOW - 1)
   })
 
   it('setTitle checks the tab and the text before its budget, which refuses the next title per plugin', async () => {
@@ -249,6 +271,11 @@ describe('ctx.tabs (host)', () => {
     ])
     await editor.tabs.list('file')
     expect(calls.at(-1)).toEqual({ method: 'tabs.list', params: { pluginId: 'p.editor', type: 'file' } })
+    await editor.tabs.focus(TAB)
+    expect(calls.at(-1)).toEqual({ method: 'tabs.focus', params: { pluginId: 'p.editor', tabId: TAB } })
+    const before = calls.length
+    await expect(editor.tabs.focus('not an id')).rejects.toThrow(/page tab id/)
+    expect(calls).toHaveLength(before)
   })
 
   it("a frame's port makes an instance per view with params, view, messaging and setTitle", async () => {

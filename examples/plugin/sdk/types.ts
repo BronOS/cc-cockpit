@@ -843,6 +843,11 @@ export interface PluginContext {
     onOpen(type: string, listener: (tab: PageTabInstance) => void): Disposer
     /** This plugin's open page tabs of `type` in the project, in tab order. */
     list(type: string): Promise<PageTabInfo[]>
+    /**
+     * Select one of this plugin's own page tabs of this project (an editor showing a file that already
+     * has a tab). Shares `openPage`'s budget; rejects for another plugin's tab or an unknown id.
+     */
+    focus(tabId: string): Promise<void>
   }
   /**
    * The backend of the plugin's html settings page (manifest `contributes.settings.page`), shown

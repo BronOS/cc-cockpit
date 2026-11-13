@@ -39,14 +39,15 @@ tested).
 - **Usage at a glance.** A top-bar meter and a Usage panel: what your Claude Code work would cost at API prices, by
   project, model and session, and your plan's rate-limit windows.
 - **A built-in reviewer and editor.** Click a file Claude changed to review its diff, attach notes and send them back to
-  Claude; Edit opens the file in micro (optional, see below). Both are bundled plugins you can turn off or replace.
+  Claude; Edit opens the file in an editor tab (CodeMirror, autosave, never overwriting Claude's changes). Both are
+  bundled plugins you can turn off or replace.
 
 Every feature in detail: [docs/features.md](docs/features.md).
 
 ## Install
 
 You need `claude` (Claude Code) on your PATH, and git for installing plugins. [micro](https://micro-editor.github.io) is
-optional: the bundled editor plugin uses it (`brew install micro`, `sudo pacman -S micro` or `sudo apt install micro`).
+optional: the bundled editor's "Open in micro" and `ccc edit` use it (`brew install micro`, `sudo pacman -S micro` or `sudo apt install micro`).
 
 If you linked your own `cockpit.reviewer` or `cockpit.editor` before, unlink them (`ccc plugin unlink <id>`): those ids now
 belong to the bundled plugins and the app drops an old linked copy at start with a log line.
