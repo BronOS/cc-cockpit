@@ -6,16 +6,29 @@ import type { TabInfo } from '../../src/shared/ipc'
 import type { ProjectView, TabRecord } from '../../src/shared/types'
 import { ProjectRegistry } from '../../src/main/projects/registry'
 import {
-  buildRestorePlan,
+  buildRestorePlan as buildRestorePlanWithIds,
   forgetMissing,
-  planLaunch,
+  planLaunch as planLaunchWithGroups,
   relinkMissing,
   TabRestorer,
   tabRecordsOf,
   type RestoredTab
 } from '../../src/main/restore'
 import { TabManager } from '../../src/main/tabs/tab-manager'
+import { TabGroups } from '../../src/main/tabs/tab-groups'
+import { leavesOf, type GroupsSnapshot } from '../../src/shared/tab-groups'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
+
+/**
+ * The plan without `savedId` (which only the split groups' remap reads, tested below with the real
+ * functions): these tests are about which fields a record brings back.
+ */
+const plain = (plan: RestoredTab[]): RestoredTab[] => plan.map(({ savedId: _savedId, ...tab }) => tab)
+const buildRestorePlan = (...args: Parameters<typeof buildRestorePlanWithIds>): RestoredTab[] => plain(buildRestorePlanWithIds(...args))
+const planLaunch = (...args: Parameters<typeof planLaunchWithGroups>): { open: Array<{ project: ProjectView; tabs: RestoredTab[] }>; missing: ProjectView[] } => {
+  const plan = planLaunchWithGroups(...args)
+  return { missing: plan.missing, open: plan.open.map(({ project, tabs }) => ({ project, tabs: plain(tabs) })) }
+}
 
 let root: string
 let projectDir: string
@@ -488,7 +501,7 @@ describe('TabRestorer', () => {
       live.set('p1', [])
       const started: RestoredTab[] = []
       await restorer.restore('p1', Promise.resolve(), (t) => started.push(t))
-      expect(started).toEqual([
+      expect(plain(started)).toEqual([
         { kind: 'claude', resumeId: 's1' },
         { kind: 'shell' },
         { kind: 'command', command: { label: 'Dev', command: 'npm run dev' } }
@@ -528,7 +541,7 @@ describe('TabRestorer', () => {
         started.push(tab)
         live.set('p1', [...(live.get('p1') ?? []), { id: `n${started.length}`, gen: 1, kind: tab.kind, cwd: '/p', sessionId: tab.resumeId }])
       })
-      expect(started).toEqual([{ kind: 'shell' }, { kind: 'claude', resumeId: 's1' }])
+      expect(plain(started)).toEqual([{ kind: 'shell' }, { kind: 'claude', resumeId: 's1' }])
       expect(saved.at(-1)!.records.map((r) => r.id)).toEqual(['n1', 'n2'])
     })
 
@@ -853,5 +866,197 @@ describe('plugin command tabs (ctx.sessions.openCommand)', () => {
 
     // The same record with the plugin uninstalled: nothing to bring back.
     expect(buildRestorePlan(saved, () => false)).toEqual([])
+  })
+})
+
+describe('split groups (saved with the tabs, remapped on restore)', () => {
+  const groupOver = (a: string, b: string) => ({
+    id: 'g-old',
+    root: { id: 's-old', dir: 'row' as const, children: [{ tab: a }, { tab: b }], sizes: [0.3, 0.7] }
+  })
+
+  it('a plan keeps each record id as savedId; a junk id is left out', () => {
+    const plan = buildRestorePlanWithIds({
+      path: projectDir,
+      tabs: [rec({ kind: 'shell' }, 7), { ...rec({ kind: 'shell' }), id: 5 } as unknown as TabRecord, { ...rec({ kind: 'shell' }), id: 'x'.repeat(65) }]
+    })
+    expect(plan.map((t) => t.savedId)).toEqual(['tab-7', undefined, undefined])
+    const launch = planLaunchWithGroups([{ ...({ id: 'p', path: projectDir, missing: false, tabs: [] } as unknown as ProjectView), tabGroups: [groupOver('a', 'b')] }])
+    expect(launch.open[0]!.groups).toEqual([groupOver('a', 'b')])
+  })
+
+  it('saves the groups in the same write as the tabs, and clears them with the tabs', () => {
+    const saves: Array<{ records: TabRecord[]; groups: unknown }> = []
+    const groups = [groupOver('a', 'b')]
+    const restorer = new TabRestorer({
+      listTabs: () => [
+        { id: 'a', gen: 1, kind: 'shell', cwd: '/p' },
+        { id: 'b', gen: 1, kind: 'shell', cwd: '/p' }
+      ],
+      listGroups: () => groups,
+      saveTabs: (_id, records, g) => saves.push({ records, groups: g }),
+      projectPath: () => '/p'
+    })
+    restorer.tabsChanged('p1')
+    restorer.clear('p1')
+    expect(saves.map((s) => [s.records.map((r) => r.id), s.groups])).toEqual([
+      [['a', 'b'], groups],
+      [[], []]
+    ])
+  })
+
+  it('maps saved ids to the new tabs before the final save; a dropped or failed tab is not in the map', async () => {
+    const calls: Array<{ saved: unknown; map: Array<[string, string]> }> = []
+    const order: string[] = []
+    const restorer = new TabRestorer({
+      listTabs: () => [],
+      saveTabs: () => order.push('save'),
+      projectPath: () => '/p',
+      pluginAvailable: (id) => id !== 'gone.plugin',
+      restoreGroups: (_p, saved, idMap) => {
+        order.push('groups')
+        calls.push({ saved, map: [...idMap] })
+      },
+      log: () => {}
+    })
+    const saved = [groupOver('s1', 's2')]
+    restorer.queue(
+      'p1',
+      [
+        { savedId: 's1', kind: 'shell' },
+        { savedId: 's2', kind: 'command', command: { label: 'X', argv: ['x'], openedBy: 'gone.plugin' } },
+        { savedId: 's3', kind: 'shell' },
+        { savedId: 's4', kind: 'claude' }
+      ],
+      saved
+    )
+    let n = 0
+    await restorer.restore('p1', Promise.resolve(), (t) => {
+      if (t.savedId === 's3') throw new Error('out of ptys')
+      return { id: `new-${++n}` }
+    })
+    expect(calls).toEqual([{ saved, map: [['s1', 'new-1'], ['s4', 'new-2']] }])
+    expect(order).toEqual(['groups', 'save'])
+  })
+
+  it('a throwing restoreGroups costs the groups only: the tabs are restored and saved', async () => {
+    const logs: string[] = []
+    let saves = 0
+    const restorer = new TabRestorer({
+      listTabs: () => [],
+      saveTabs: () => saves++,
+      projectPath: () => '/p',
+      restoreGroups: () => {
+        throw new Error('boom')
+      },
+      log: (m) => logs.push(m)
+    })
+    restorer.queue('p1', [{ kind: 'shell' }], [])
+    let spawned = 0
+    await restorer.restore('p1', Promise.resolve(), () => ({ id: `n${++spawned}` }))
+    expect(spawned).toBe(1)
+    expect(saves).toBe(1)
+    expect(logs.join('\n')).toMatch(/split groups.*boom/)
+  })
+
+  it('requeue saves and queues the live groups, which the new window maps like a launch', async () => {
+    const saves: unknown[] = []
+    const got: Array<Array<[string, string]>> = []
+    let live: TabInfo[] = [
+      { id: 'a', gen: 1, kind: 'shell', cwd: projectDir },
+      { id: 'b', gen: 1, kind: 'shell', cwd: projectDir }
+    ]
+    const groups = [groupOver('a', 'b')]
+    const restorer = new TabRestorer({
+      listTabs: () => live,
+      listGroups: () => groups,
+      saveTabs: (_p, _r, g) => saves.push(g),
+      projectPath: () => projectDir,
+      restoreGroups: (_p, saved, idMap) => {
+        expect(saved).toEqual(groups)
+        got.push([...idMap])
+      }
+    })
+    restorer.requeue('p1')
+    expect(saves).toEqual([groups])
+    live = []
+    let n = 0
+    await restorer.restore('p1', Promise.resolve(), () => ({ id: `n${++n}` }))
+    expect(got).toEqual([[['a', 'n1'], ['b', 'n2']]])
+  })
+
+  it('end to end: a group of three, the plugin gone at next launch, comes back as a group of two over the new ids', async () => {
+    const registry = new ProjectRegistry({ dataDir, log: () => {} })
+    const project = registry.openPath(projectDir)
+    const backend = new FakePtyBackend()
+    let tabs!: TabManager
+    let groups!: TabGroups
+    const published: GroupsSnapshot[] = []
+    const restorer = new TabRestorer({
+      listTabs: (id) => tabs.list(id),
+      listGroups: (id) => groups.groupsOf(id),
+      saveTabs: (id, records, g) =>
+        registry.update(id, (r) => {
+          r.tabs = records
+          r.tabGroups = g
+        }),
+      projectPath: (id) => registry.get(id)?.path,
+      restoreGroups: (id, saved, idMap) => groups.restore(id, saved, idMap)
+    })
+    const make = (): void => {
+      groups = new TabGroups({
+        order: (id) => tabs.list(id).map((t) => t.id),
+        setOrder: (id, ids) => tabs.setOrder(id, ids),
+        publish: (_id, snapshot) => published.push(snapshot),
+        changed: (id) => restorer.tabsChanged(id),
+        log: () => {}
+      })
+      tabs = new TabManager({
+        backend,
+        projectPath: (id) => registry.get(id)?.path,
+        loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+        hooksPath: '/data/hooks.json',
+        binDir: '/data/bin',
+        sock: () => undefined,
+        lifecycle: { closed: (id) => groups.tabClosed(id) },
+        onTabsChanged: (id) => {
+          groups.sync(id)
+          restorer.tabsChanged(id)
+        },
+        emit: () => {},
+        log: () => {}
+      })
+    }
+    make()
+    const plain1 = tabs.create(project.id, { kind: 'shell' })
+    const claude = tabs.create(project.id, { kind: 'claude' })
+    const cmd = tabs.createPluginCommand(project.id, { argv: ['glow'], title: 'Glow', openedBy: 'gone.plugin' })
+    const shell = tabs.create(project.id, { kind: 'shell' })
+    expect(groups.place(project.id, { tabId: shell.id, at: claude.id, edge: 'right' }).ok).toBe(true)
+    expect(groups.place(project.id, { tabId: cmd.id, at: shell.id, edge: 'down' }).ok).toBe(true)
+    registry.flushAll()
+
+    const saved = new ProjectRegistry({ dataDir, log: () => {} }).get(project.id)!
+    expect(saved.tabs.map((t) => t.id)).toEqual([plain1.id, claude.id, shell.id, cmd.id])
+    expect(saved.tabGroups).toHaveLength(1)
+
+    // Next launch: the plugin is gone, so its tab is not restored and its leaf is pruned.
+    make()
+    published.length = 0
+    const launch = planLaunchWithGroups([saved], (id) => id !== 'gone.plugin')
+    restorer.queue(project.id, launch.open[0]!.tabs, launch.open[0]!.groups)
+    await restorer.restore(project.id, Promise.resolve(), (t) => tabs.restoreTab(project.id, t))
+    const back = tabs.list(project.id)
+    expect(back.map((t) => t.kind)).toEqual(['shell', 'claude', 'shell'])
+    const ids = back.map((t) => t.id)
+    expect(ids).not.toContain(claude.id)
+    const [g] = groups.groupsOf(project.id)
+    expect(g).toBeDefined()
+    expect(leavesOf(g!.root)).toEqual([ids[1], ids[2]])
+    expect(g!.root.sizes).toEqual([0.5, 0.5])
+    expect(published.at(-1)).toMatchObject({ order: ids, groups: [g] })
+    registry.flushAll()
+    const again = new ProjectRegistry({ dataDir, log: () => {} }).get(project.id)!
+    expect(again.tabGroups).toEqual([g])
   })
 })
