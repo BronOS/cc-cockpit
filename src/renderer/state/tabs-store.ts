@@ -244,7 +244,11 @@ function step(state: TabsState, action: TabsAction): TabsState {
       const { snapshot } = action
       if (!(snapshot.seq > state.groupsSeq)) return state
       const intent = state.activeId !== null ? action.intent?.[state.activeId] : undefined
-      const moved = selectionAfterSnapshot(state.groups, snapshot.groups, snapshot.order, state.activeId, intent)
+      // D22: the page knows which edits it sent itself; one naming any member of the selected tab's
+      // group (moving the other pane out, a close here) makes a dissolve this view's own.
+      const was = state.activeId !== null ? groupOf(state.groups, state.activeId) : undefined
+      const ownEdit = was !== undefined && leavesOf(was.root).some((t) => action.intent?.[t] !== undefined)
+      const moved = selectionAfterSnapshot(state.groups, snapshot.groups, snapshot.order, state.activeId, intent, ownEdit)
       // A tab this page closed before its list came (closedEarly) may still be in a snapshot taken
       // before the close: it must not come back as a pane.
       let groups = snapshot.groups

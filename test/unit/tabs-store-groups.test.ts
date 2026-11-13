@@ -163,22 +163,38 @@ describe('tabs store: groups', () => {
       expect(s.keysOff).toBe(true)
     })
 
-    it('D18: moved out of a two-pane group elsewhere: the remaining tab, unfocused; own Ungroup stays', () => {
+    it('D22: a dissolve keeps the same terminal; keys off only when it came from elsewhere', () => {
       const two = run([
         { type: 'loaded', tabs: ['x', 'y'].map(tab) },
         { type: 'groups', snapshot: snap(1, ['x', 'y'], [{ id: 'g', root: row('s', leaf('x'), leaf('y')) }]) },
         { type: 'selected', tabId: 'x' }
       ])
+      // Elsewhere (x or y moved out, or an Ungroup: a snapshot cannot tell them apart).
       const elsewhere = run([{ type: 'groups', snapshot: snap(2, ['y', 'x'], []) }], two)
-      expect(elsewhere.activeId).toBe('y')
+      expect(elsewhere.activeId).toBe('x')
       expect(elsewhere.keysOff).toBe(true)
+      // Own Ungroup here.
       const own = run([{ type: 'groups', snapshot: snap(2, ['x', 'y'], []), intent: { x: 'stay' } }], two)
       expect(own.activeId).toBe('x')
       expect(own.keysOff).toBe(false)
+      // Own move of the other pane out here.
+      const other = run([{ type: 'groups', snapshot: snap(2, ['x', 'y'], []), intent: { y: 'leave' } }], two)
+      expect(other.activeId).toBe('x')
+      expect(other.keysOff).toBe(false)
+      // Own move of this pane out: the one left, keys on.
+      const mine = run([{ type: 'groups', snapshot: snap(2, ['y', 'x'], []), intent: { x: 'leave' } }], two)
+      expect(mine.activeId).toBe('y')
+      expect(mine.keysOff).toBe(false)
     })
 
-    it('Ungroup keeps the selection on the same terminal', () => {
+    it('D22: an Ungroup elsewhere of a bigger group: same terminal, keys off', () => {
       const s = run([{ type: 'selected', tabId: 'c' }, { type: 'groups', snapshot: snap(2, ['a', 'b', 'c', 'd'], []) }], base())
+      expect(s.activeId).toBe('c')
+      expect(s.keysOff).toBe(true)
+    })
+
+    it('own Ungroup keeps the selection on the same terminal, keys on', () => {
+      const s = run([{ type: 'selected', tabId: 'c' }, { type: 'groups', snapshot: snap(2, ['a', 'b', 'c', 'd'], []), intent: { c: 'stay' } }], base())
       expect(s.activeId).toBe('c')
       expect(s.keysOff).toBe(false)
     })

@@ -332,8 +332,11 @@ Working in a group:
   focused pane.
 - When the pane you type in goes away because of something you did here (its ×, Cmd+W, Move Pane Out
   of Group), the pane that took its space gets the keyboard. When it goes because of anything else
-  (another view, a plugin, its process ending), no pane has the keyboard until you click one or use
-  a pane chord: nothing you type meanwhile reaches a terminal you did not pick.
+  (another view, a plugin), no pane has the keyboard until you click one or use a pane chord:
+  nothing you type meanwhile reaches a terminal you did not pick. When the group itself goes (an
+  Ungroup, or one of its two panes moved out) while the pane you type in is still open, that pane
+  stays shown; it keeps the keyboard if you did it here, and loses it until you act if it came from
+  elsewhere.
 - Dividers drag (the panes are drawn scaled while you drag; the terminals take their new size once,
   on release), move with the arrow keys when focused, and a double-click makes that split even.
   Divider sizes are the group's, the same in every view. A pane never gets smaller than 20 columns by
