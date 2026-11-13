@@ -20,8 +20,10 @@ import {
   invoke,
   leaves,
   newTaggedShell,
+  paneOf,
   paneShowing,
   paneText,
+  zoomMark,
   place,
   recordGroupEvents,
   tabsOf,
@@ -128,6 +130,7 @@ test('D3: a pane the desktop types in is unsplit by the browser: the desktop foc
     await invoke(web, 'tabs.close', { tabId: a })
     await expect.poll(async () => (await tabsOf(page)).map((t) => t.id)).toEqual([b, c])
     await expect(visiblePanes(page)).toHaveCount(2)
+    await expect(paneOf(page, a)).toHaveCount(0)
 
     // D3: no terminal is focused on the desktop until the person clicks or uses a chord.
     await expect(focusedPanes(page)).toHaveCount(0)
@@ -167,6 +170,12 @@ test('D3: a browser moves the desktop\'s pane out of its group; the desktop\'s k
     expect(((await invoke<{ ok: boolean }>(web, 'groups.remove', { tabId: a })).ok)).toBe(true)
     await expect.poll(async () => leaves((await groupsOf(page)).groups[0]!.root)).toEqual([b, c])
     expect((await tabsOf(page)).map((t) => t.id).sort()).toEqual([a, b, c, plain.id].sort())
+    // D18: the desktop keeps showing what is left of the group (B and C), with no focused pane.
+    await expect(visiblePanes(page)).toHaveCount(2)
+    await expect(paneOf(page, b)).toBeVisible()
+    await expect(paneOf(page, c)).toBeVisible()
+    await expect(paneOf(page, a)).toHaveCount(0)
+    await expect(focusedPanes(page)).toHaveCount(0)
 
     // Keys the desktop types without a click reach no tab at all: not A, B, C or the plain tab.
     await page.keyboard.type('echo leak-$((7+8))')
@@ -366,4 +375,67 @@ test('D9, D17: tabs.reorder with block moves the whole group; without it a membe
   await expect.poll(async () => (await groupsOf(page)).groups).toEqual([])
   expect(await order()).toEqual([b, c.id, d.id, a])
   expect((await tabsOf(page)).map((t) => t.id)).toEqual([b, c.id, d.id, a])
+})
+
+test('D18: when groups.remove from another view dissolves the group, this view shows the remaining plain tab, unfocused', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
+  const { browser, web } = await joinBrowser(cockpit)
+  try {
+    await typeInPane(page, paneShowing(page, 'pa-2'), 'echo mine-$((1+1))')
+    await waitPaneText(paneShowing(page, 'pa-2'), 'mine-2')
+    await expect(focusedPanes(page)).toHaveCount(1)
+    expect((await invoke<{ ok: boolean }>(web, 'groups.remove', { tabId: a })).ok).toBe(true)
+    await expect.poll(async () => (await groupsOf(page)).groups).toEqual([])
+    // What is left of the group is B, shown alone; nothing has the keys.
+    await expect(visiblePanes(page)).toHaveCount(1)
+    await expect(paneOf(page, b)).toBeVisible()
+    await expect(focusedPanes(page)).toHaveCount(0)
+    await page.keyboard.type('echo leak-$((7+8))')
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(700)
+    expect(await paneText(paneOf(page, b))).not.toContain('leak-15')
+    // A click on the pane is what gives the keys back.
+    await paneOf(page, b).locator('.xterm').click()
+    await page.keyboard.type('echo back-$((2+2))')
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, b), 'back-4')
+  } finally {
+    await browser.close()
+  }
+})
+
+test('D5: a browser view too narrow for its panes shows the group zoomed on the focused pane, automatically, per view', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
+  const { browser, web } = await joinBrowser(cockpit)
+  try {
+    await web.getByRole('tab').first().click()
+    await expect(visiblePanes(web)).toHaveCount(2)
+    await expect(zoomMark(web)).not.toHaveAttribute('data-zoom', 'auto')
+    await paneOf(web, b).locator('.xterm').click()
+
+    // A phone-sized viewport: panes would fall under about 40x10 cells.
+    await web.setViewportSize({ width: 420, height: 700 })
+    await expect(zoomMark(web)).toHaveAttribute('data-zoom', 'auto')
+    await expect(visiblePanes(web)).toHaveCount(1)
+    await expect(paneOf(web, b)).toBeVisible() // the focused pane stays
+    await expect(web.getByText(/zoomed \(1 hidden\)/)).toBeVisible()
+    // The member hidden by zoom keeps its tab in the segment.
+    await expect(web.getByRole('group').filter({ has: web.getByRole('tab') }).getByRole('tab')).toHaveCount(2)
+    // Per view: the desktop still shows both panes and is not auto-zoomed.
+    await expect(visiblePanes(page)).toHaveCount(2)
+    await expect(zoomMark(page)).not.toHaveAttribute('data-zoom', 'auto')
+    expect((await groupsOf(page)).groups).toHaveLength(1)
+    expect(leaves((await groupsOf(page)).groups[0]!.root)).toEqual([a, b])
+
+    // Wide again: both panes come back by themselves.
+    await web.setViewportSize({ width: 1280, height: 800 })
+    await expect(visiblePanes(web)).toHaveCount(2)
+    await expect(zoomMark(web)).not.toHaveAttribute('data-zoom', 'auto')
+  } finally {
+    await browser.close()
+  }
 })

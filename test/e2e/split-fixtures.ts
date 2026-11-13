@@ -5,10 +5,9 @@
 //  - `window.cockpit.invoke` in BOTH pages (the desktop's preload and the web shell's bridge), so a
 //    "split made in the browser" is the same intent the UI sends (`groups.place`, `tabs.create` +
 //    `beside`, `groups.remove`, `groups.resize`), not a drag;
-//  - a pane is shown as a visible `.terminal-view:not([hidden])` (the flat list of terminal views the
-//    design keeps; a pane hidden by zoom or another group's tab is `hidden`);
-//  - the focused pane is marked `data-focused-pane` (design §1 "Focus": only while more than one pane
-//    is visible); the value is not assumed, only that an unfocused pane has no attribute or "false";
+//  - a pane is a visible `[data-pane]` element (D19; one hidden by zoom or another group is not visible);
+//  - the focused pane is `data-focused-pane="<tabId>"` on its `data-pane="<tabId>"` element (D19; only
+//    while more than one pane is visible);
 //  - the strip segment is `role=group` with a label, panes are labelled regions, a zoomed group says
 //    "zoomed (n hidden)", a plugin-opened pane's header says "Opened by <plugin name>" (D8).
 //
@@ -47,11 +46,17 @@ export function leaves(node: PaneNode): string[] {
 export const groupOfTab = (snap: GroupsSnapshot, tabId: string): TabGroup | undefined => snap.groups.find((g) => leaves(g.root).includes(tabId))
 
 /** Visible panes: terminals drawn right now in this page. */
-export const visiblePanes = (page: Page): Locator => page.locator('.terminal-view:not([hidden])')
+export const visiblePanes = (page: Page): Locator => page.locator('[data-pane]:visible')
+/** One pane by its tab id (D19: `data-pane="<tabId>"`). */
+export const paneOf = (page: Page, tabId: string): Locator => page.locator(`[data-pane="${tabId}"]`)
+/** Dividers (D19: `role=separator` with `data-split-divider="<splitId>:<index>"`). */
+export const dividers = (page: Page): Locator => page.locator('[role="separator"][data-split-divider]')
+/** The split area's zoom state (D19: `data-zoom="manual"` or `"auto"`). */
+export const zoomMark = (page: Page): Locator => page.locator('[data-zoom]')
 /** The visible pane whose screen shows `text`. */
 export const paneShowing = (page: Page, text: string): Locator => visiblePanes(page).filter({ hasText: text })
 /** What the pane has focused: the `data-focused-pane` mark (an unfocused pane has none, or "false"). */
-export const focusedPanes = (page: Page): Locator => page.locator('[data-focused-pane]:not([data-focused-pane="false"])')
+export const focusedPanes = (page: Page): Locator => page.locator('[data-pane][data-focused-pane]')
 /** A group's strip segment (`role=group`, labelled). */
 export const segments = (page: Page): Locator => page.getByRole('group')
 

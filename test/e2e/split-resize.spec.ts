@@ -5,7 +5,7 @@
 // SIGWINCH is counted by a `trap` in each shell: the trap's line contains `winch-$((1+1))`, so the
 // text `winch-2` appears only when the trap ran, once per resize of that pty.
 import { expect, test } from './fixtures'
-import { groupOfShells, groupsOf, paneShowing, paneText, recordGroupEvents, typeInPane, visiblePanes } from './split-fixtures'
+import { dividers, groupOfShells, groupsOf, paneShowing, paneText, recordGroupEvents, typeInPane, visiblePanes } from './split-fixtures'
 
 function count(text: string, marker: string): number {
   return text.replaceAll('\n', '').split(marker).length - 1
@@ -20,7 +20,7 @@ test('a divider drag sends one resize on release, resizes each pty once, and sto
   for (const pane of [pa, pb]) await typeInPane(page, pane, "trap 'echo winch-$((1+1))' WINCH")
   await page.waitForTimeout(500)
 
-  const divider = page.locator('.zones-centre [role="separator"]')
+  const divider = dividers(page)
   await expect(divider).toHaveCount(1)
   const seqs = await recordGroupEvents(page)
   const box = (await divider.boundingBox())!
@@ -75,7 +75,7 @@ test('the divider moves with the keyboard and double-click equalizes (design §1
   test.setTimeout(120_000)
   const { page } = cockpit
   await groupOfShells(cockpit, ['pa', 'pb'])
-  const divider = page.locator('.zones-centre [role="separator"]')
+  const divider = dividers(page)
   const before = (await groupsOf(page)).groups[0]!.root.sizes
   await divider.focus()
   await page.keyboard.press('ArrowLeft')
