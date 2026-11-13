@@ -162,7 +162,7 @@ test('a changed answer is a conflict: no autosave until Reload or Keep mine', ()
   s.saveNow()
   const req = ui.posted.at(-1).req
   s.receive({ t: 'changed', req, path: 'a.txt', hash: 'h9', readOnly: false, part: 0, parts: 1, text: 'theirs\n' })
-  assert.deepEqual(ui.last.conflict, { kind: 'changed' })
+  assert.deepEqual(ui.last.conflict, { kind: 'changed', final: false })
   ui.text = 'mine2\n'
   s.edited()
   timers.run()
@@ -206,12 +206,12 @@ test('disk events: a clean tab reloads, a dirty one gets a conflict, a deletion 
   s.receive({ t: 'disk', path: 'a.txt', change: 'changed', hash: 'h3' })
   s.receive(head({ req: ui.posted.at(-1).req, hash: 'h3', text: 'three\n' }))
   assert.equal(ui.text, 'mine\n')
-  assert.deepEqual(ui.last.conflict, { kind: 'changed' })
+  assert.deepEqual(ui.last.conflict, { kind: 'changed', final: false })
   // Deleted: the tab keeps the text; Save recreates (baseHash null).
   s.keepMine()
   s.receive({ t: 'saved', req: ui.posted.at(-1).req, hash: 'h4' })
   s.receive({ t: 'disk', path: 'a.txt', change: 'deleted' })
-  assert.deepEqual(ui.last.conflict, { kind: 'deleted' })
+  assert.deepEqual(ui.last.conflict, { kind: 'deleted', final: false })
   assert.equal(ui.last.dirty, true)
   s.saveNow()
   assert.equal(ui.posted.at(-1).baseHash, null)
@@ -379,11 +379,173 @@ test('real host: a write between load and save comes back as a conflict, nothing
   s.connect()
   await settle()
   // The reconnect's open saw disk differ from the base while dirty: a conflict.
-  assert.deepEqual(ui.last.conflict, { kind: 'changed' })
+  assert.deepEqual(ui.last.conflict, { kind: 'changed', final: false })
   assert.equal(fs.readFileSync(path.join(root, 'a.txt'), 'utf8'), 'theirs\n')
   s.keepMine()
   await settle()
   assert.equal(fs.readFileSync(path.join(root, 'a.txt'), 'utf8'), 'mine\n')
+  line.close()
+  mine.watcher.close()
+})
+
+// ---- review fixes ----
+
+test('state re-send: the lost save landed and more was typed after it: its text is the base, the buffer stays and is saved', () => {
+  const { ui, s } = loaded()
+  ui.text = 'mine\n'
+  s.edited()
+  s.saveNow()
+  s.connect() // the line goes, the save's answer never comes
+  ui.text = 'mine2\n' // typed after the save
+  s.edited()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2', text: 'mine\n' }))
+  assert.equal(ui.last.conflict, null)
+  assert.equal(ui.text, 'mine2\n')
+  assert.deepEqual(s._state.base, { text: 'mine\n', hash: 'h2' })
+  const save = ui.posted.at(-1)
+  assert.equal(save.t, 'save')
+  assert.equal(save.baseHash, 'h2')
+  assert.equal(save.text, 'mine2\n')
+})
+
+test('a file deleted and recreated by someone else: one Keep mine saves it (exists is true again)', () => {
+  const { ui, s } = loaded()
+  s.receive({ t: 'disk', path: 'a.txt', change: 'deleted' })
+  ui.text = 'mine\n'
+  s.edited()
+  s.receive({ t: 'disk', path: 'a.txt', change: 'changed', hash: 'h7' })
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h7', text: 'theirs\n' }))
+  assert.deepEqual(ui.last.conflict, { kind: 'changed', final: false })
+  assert.equal(ui.last.exists, true)
+  s.keepMine()
+  const save = ui.posted.at(-1)
+  assert.equal(save.baseHash, 'h7')
+  assert.equal(save.text, 'mine\n')
+})
+
+test('a clean tab whose re-check finds the file missing keeps its text and shows the deleted bar', () => {
+  const { ui, s } = loaded()
+  s.focus()
+  const check = ui.posted.at(-1)
+  assert.deepEqual(check, { t: 'read', path: 'a.txt', headOnly: true, req: check.req })
+  s.receive({ t: 'file', req: check.req, path: 'a.txt', exists: false, part: 0, parts: 1 })
+  assert.deepEqual(ui.last.conflict, { kind: 'deleted', final: false })
+  assert.equal(ui.text, 'one\n')
+  assert.deepEqual(ui.replaced, [])
+  assert.equal(ui.last.dirty, true)
+})
+
+test('a focus re-check is head-only: the same hash costs no text, a different one reads the file', () => {
+  const { ui, s } = loaded()
+  s.focus()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1' }))
+  assert.equal(ui.posted.length, 1)
+  s.focus()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2' }))
+  const full = ui.posted.at(-1)
+  assert.deepEqual(full, { t: 'read', path: 'a.txt', req: full.req })
+  s.receive(head({ req: full.req, hash: 'h2', text: 'two\n' }))
+  assert.deepEqual(ui.replaced, ['two\n'])
+  assert.equal(s._state.base.hash, 'h2')
+})
+
+test('a changed answer for a file that became binary: only Reload, which adopts the flags', () => {
+  const { ui, s } = loaded()
+  ui.text = 'mine\n'
+  s.edited()
+  s.saveNow()
+  s.receive({ t: 'changed', req: ui.posted.at(-1).req, path: 'a.txt', hash: 'h9', readOnly: true, why: 'binary', part: 0, parts: 1 })
+  assert.deepEqual(ui.last.conflict, { kind: 'changed', final: true })
+  const before = ui.posted.length
+  s.keepMine()
+  assert.equal(ui.posted.length, before)
+  s.takeTheirs()
+  assert.equal(ui.last.noText, true)
+  assert.equal(ui.last.readOnly, true)
+  assert.equal(ui.last.conflict, null)
+})
+
+test('the same hash but now read-only: the flags move, the buffer stays', () => {
+  const { ui, s } = loaded()
+  s.focus()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why: 'permission' }))
+  assert.equal(ui.last.readOnly, true)
+  assert.equal(ui.last.conflict, null)
+})
+
+test('an error answer to a save: not saving, still dirty, the next edit re-arms the idle timer', () => {
+  const { ui, timers, s } = loaded()
+  ui.text = 'mine\n'
+  s.edited()
+  s.saveNow()
+  s.receive({ t: 'error', req: ui.posted.at(-1).req, message: 'disk full' })
+  assert.equal(ui.last.status, 'unsaved')
+  assert.equal(ui.last.error, 'disk full')
+  assert.equal(ui.last.dirty, true)
+  timers.run(0)
+  ui.text = 'mine!\n'
+  s.edited()
+  assert.ok(timers.delays().includes(3000))
+})
+
+test('a changed answer with written: Keep mine keeps the base, Reload writes theirs back', () => {
+  for (const choose of ['keep', 'reload']) {
+    const { ui, s } = loaded()
+    ui.text = 'mine\n'
+    s.edited()
+    s.saveNow()
+    s.receive({ t: 'changed', req: ui.posted.at(-1).req, path: 'a.txt', hash: 'h5', written: true, readOnly: false, part: 0, parts: 1, text: 'theirs\n' })
+    assert.deepEqual(s._state.base, { text: 'mine\n', hash: 'h5' })
+    assert.equal(ui.last.conflict.kind, 'changed')
+    if (choose === 'keep') {
+      s.keepMine()
+      assert.equal(ui.text, 'mine\n')
+      assert.equal(ui.last.dirty, false)
+    } else {
+      s.takeTheirs()
+      assert.equal(ui.text, 'theirs\n')
+      const save = ui.posted.at(-1)
+      assert.equal(save.t, 'save')
+      assert.equal(save.baseHash, 'h5')
+      assert.equal(save.text, 'theirs\n')
+    }
+  }
+})
+
+test('Save in the deleted bar creates the file (baseHash null) and `saved` clears it', () => {
+  const { ui, s } = loaded()
+  s.receive({ t: 'disk', path: 'a.txt', change: 'deleted' })
+  s.saveNow()
+  const save = ui.posted.at(-1)
+  assert.equal(save.baseHash, null)
+  s.receive({ t: 'saved', req: save.req, hash: 'h8' })
+  assert.equal(ui.last.conflict, null)
+  assert.equal(ui.last.dirty, false)
+  assert.equal(ui.last.exists, true)
+})
+
+test('real host: Ctrl+S while an autosave is in flight saves again after it, nothing lost', async () => {
+  const root = project()
+  const mine = files.makeFiles(root)
+  const ui = fakeUi()
+  let line
+  ui.post = (m) => line.send(m)
+  const timers = fakeTimers()
+  const s = createSession(ui, timers)
+  line = hostLine(mine, s)
+  s.connect()
+  await settle()
+  ui.text = 'a\n'
+  s.edited()
+  timers.run()
+  ui.text = 'ab\n'
+  s.edited()
+  assert.equal(s.saveNow(), false)
+  const onDisk = () => fs.readFileSync(path.join(root, 'a.txt'), 'utf8').replace(/\r/g, '')
+  for (let i = 0; i < 20 && onDisk() !== 'ab\n'; i++) await settle()
+  assert.equal(onDisk(), 'ab\n')
+  assert.equal(ui.last.conflict, null)
+  assert.equal(ui.last.dirty, false)
   line.close()
   mine.watcher.close()
 })

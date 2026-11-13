@@ -9,7 +9,7 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
 ```
 
 - A file tab (`contributes.tabs` type `file`): highlighting for TS/JS, Go, PHP, Python, JSON, YAML, Markdown, HTML, CSS
-  and shell; search and replace (Ctrl+F, Ctrl+H), multi-cursor (Alt+click, Ctrl+D), folding, bracket matching, comment
+  and shell; search and replace (Ctrl+F, Ctrl+H; Cmd+Alt+F for replace on macOS), multi-cursor (Alt+click, Ctrl+D), folding, bracket matching, comment
   toggle (Ctrl+/), VS Code's line keys; the app's theme colours and the terminal font.
 - `editor.open(path, { line?, col? })` opens the file's tab, or focuses the tab that already shows it and moves to the
   line. The path must resolve inside the project folder (symlinks followed); a binary file goes to the project's file

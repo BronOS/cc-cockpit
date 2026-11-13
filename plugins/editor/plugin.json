@@ -26,7 +26,7 @@
           "autosaveOnBlur": {
             "type": "boolean",
             "title": "Autosave on focus loss",
-            "description": "A file tab saves when you leave it (another tab, another window).",
+            "description": "A file tab saves when you leave it (another tab, another window). The close question for a tab with unsaved text may therefore find it already saved: Discard then discards nothing.",
             "default": true
           },
           "colorscheme": {

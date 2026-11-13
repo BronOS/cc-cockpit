@@ -94,6 +94,8 @@ function editableFile(root, data) {
 /** The manifest's default of autosaveIdleSeconds, said in its description (the schema has no `default`, see autosaveOf). */
 const DEFAULT_IDLE_SECONDS = 3
 const MAX_IDLE_SECONDS = 3600
+/** The default micro's old `autosaveSeconds` had; see autosaveOf. */
+const LEGACY_DEFAULT_SECONDS = 5
 const idleOk = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_IDLE_SECONDS
 
 /**
@@ -106,7 +108,10 @@ const idleOk = (v) => Number.isInteger(v) && v >= 0 && v <= MAX_IDLE_SECONDS
  */
 function autosaveOf(app) {
   const a = app || {}
-  const idleSeconds = idleOk(a.autosaveIdleSeconds) ? a.autosaveIdleSeconds : idleOk(a.autosaveSeconds) ? a.autosaveSeconds : DEFAULT_IDLE_SECONDS
+  // 5 was the old field's schema default, which main stores with every settings save (defaults are
+  // applied before storing): a stored 5 cannot be told from one the person chose, so it counts as unset.
+  const legacy = idleOk(a.autosaveSeconds) && a.autosaveSeconds !== LEGACY_DEFAULT_SECONDS ? a.autosaveSeconds : undefined
+  const idleSeconds = idleOk(a.autosaveIdleSeconds) ? a.autosaveIdleSeconds : legacy !== undefined ? legacy : DEFAULT_IDLE_SECONDS
   return { idleSeconds, onBlur: a.autosaveOnBlur !== false }
 }
 
@@ -216,6 +221,13 @@ exports.activate = (ctx) => {
   const hasTabs = typeof ctx.tabs === 'object' && ctx.tabs !== null
   /** tab id -> the instances of that tab now connected (one per view: the desktop, each browser). */
   const instances = new Map()
+  /**
+   * tab id -> a goto for a tab with no connected page (its frame unmounted by the LRU, or not yet
+   * mounted): sent with the page's next first open. `firstOpened` holds the tabs whose first open
+   * already used the tab's own params.line, so a later remount never jumps back to it.
+   */
+  const pendingGoto = new Map()
+  const firstOpened = new Set()
 
   /**
    * Opens a project file in a file tab, or focuses the tab that already shows it and moves it to
@@ -236,7 +248,11 @@ exports.activate = (ctx) => {
     const open = (await ctx.tabs.list('file')).find((t) => t.params && typeof t.params === 'object' && t.params.path === r.rel)
     if (open) {
       if (opts.focus !== false && typeof ctx.tabs.focus === 'function') await ctx.tabs.focus(open.id)
-      if (line !== undefined) for (const tab of instances.get(open.id) || []) tab.post({ t: 'goto', line, ...(col ? { col } : {}) })
+      if (line !== undefined) {
+        const live = instances.get(open.id)
+        if (live && live.size > 0) for (const tab of live) tab.post({ t: 'goto', line, ...(col ? { col } : {}) })
+        else pendingGoto.set(open.id, { line, col })
+      }
       return { tabId: open.id }
     }
     const params = { path: r.rel }
@@ -262,8 +278,12 @@ exports.activate = (ctx) => {
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {
-          const line = position(params.line)
-          if (line !== undefined) tab.post({ t: 'goto', line, ...(position(params.col) ? { col: position(params.col) } : {}) })
+          // The tab's own line only for its first mount; later mounts take a pending goto, else keep the top.
+          let at = pendingGoto.get(tab.id)
+          pendingGoto.delete(tab.id)
+          if (!at && !firstOpened.has(tab.id)) at = { line: position(params.line), col: position(params.col) }
+          firstOpened.add(tab.id)
+          if (at && at.line !== undefined) tab.post({ t: 'goto', line: at.line, ...(at.col ? { col: at.col } : {}) })
         } else if (m.t === 'micro') {
           // Always the tab's own file (main's params), never a path the page names.
           openEditor(params.path).catch((e) => {

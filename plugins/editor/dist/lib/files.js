@@ -692,7 +692,7 @@ function safeMessage(e, root, rel) {
  *
  *   page -> host
  *   { t: 'open', req, path? }          read the file (default: the tab's params.path) and watch it
- *   { t: 'read', req, path }           read it again (the page re-checks on focus and before a save)
+ *   { t: 'read', req, path, headOnly? } read it again (the page re-checks on focus); `headOnly`: no text in the answer
  *   { t: 'save', req, path, baseHash, part, parts, text }
  *                                      a save in `parts` messages (text split by the page, each part
  *                                      under the 1 MiB message cap); `baseHash` null recreates a deleted file
@@ -751,7 +751,7 @@ function serveFileTab(files, tab, log) {
     })
   }
 
-  function read(req, p, isOpen) {
+  function read(req, p, isOpen, headOnly) {
     let r
     try {
       r = readFile(files.root, p)
@@ -767,7 +767,9 @@ function serveFileTab(files, tab, log) {
     if (!r.exists) return post({ t: 'file', req, path: r.rel, exists: false, part: 0, parts: 1 })
     const head = describeNoReal(r)
     delete head.text
-    postParts({ t: 'file', req, path: r.rel, exists: true, ...head }, r.text)
+    // A head-only read (the page's re-check on window focus) answers the hash and flags without the
+    // text: a 5 MB file would otherwise cross the port on every click back into the tab.
+    postParts({ t: 'file', req, path: r.rel, exists: true, ...head }, headOnly ? undefined : r.text)
   }
 
   function save(m) {
@@ -849,7 +851,7 @@ function serveFileTab(files, tab, log) {
           return read(req, m.path === undefined ? params.path : m.path, true)
         }
         case 'read':
-          return read(req, m.path, false)
+          return read(req, m.path, false, m.headOnly === true)
         case 'save':
           if (req === undefined) return fail(req, m.path, new Error('a save needs a req'))
           return save({ ...m, req })

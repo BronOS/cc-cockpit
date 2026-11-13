@@ -19,6 +19,8 @@ test('settings migration: an autosaveSeconds set for micro is the default of aut
   // ...until the new one is set, which wins, 0 (off) included.
   assert.deepEqual(autosaveOf({ autosaveSeconds: 10, autosaveIdleSeconds: 2, autosaveOnBlur: false }), { idleSeconds: 2, onBlur: false })
   assert.deepEqual(autosaveOf({ autosaveSeconds: 10, autosaveIdleSeconds: 0 }), { idleSeconds: 0, onBlur: true })
+  // 5 was the old default, stored by every settings save: it cannot be told from a choice, so it is unset.
+  assert.deepEqual(autosaveOf({ autosaveSeconds: 5 }), { idleSeconds: 3, onBlur: true })
   // A damaged value is ignored.
   assert.deepEqual(autosaveOf({ autosaveSeconds: -1, autosaveIdleSeconds: 1.5 }), { idleSeconds: 3, onBlur: true })
   assert.deepEqual(autosaveOf({ autosaveSeconds: 99999 }), { idleSeconds: 3, onBlur: true })
@@ -377,5 +379,32 @@ test('Open in micro that fails is told on the tab', async () => {
   view.send({ t: 'micro' })
   await new Promise((r) => setTimeout(r, 50))
   assert.match(view.posted.at(-1).message, /^Open in micro: micro is not installed/)
+  host.deactivate()
+})
+
+test('goto for a tab with no mounted frame waits for its next first open; a remount never jumps back to params.line', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts', { line: 4 })
+  const id = t.open[0].id
+  // Opened again at a line before its frame ever mounted: that line, not the stale params.line.
+  await f.provided.editor.open('src/a.ts', { line: 9 })
+  let view = t.connect(id)
+  view.send({ t: 'open', first: true, req: 1 })
+  assert.deepEqual(view.posted.filter((m) => m.t === 'goto'), [{ t: 'goto', line: 9 }])
+  // The frame goes (LRU) and comes back: no jump at all.
+  view.close()
+  view = t.connect(id)
+  view.send({ t: 'open', first: true, req: 1 })
+  assert.deepEqual(view.posted.filter((m) => m.t === 'goto'), [])
+  // Unmounted again, opened at a line: it waits for the next mount.
+  view.close()
+  await f.provided.editor.open('src/a.ts', { line: 2, col: 3 })
+  view = t.connect(id)
+  view.send({ t: 'open', first: true, req: 1 })
+  assert.deepEqual(view.posted.filter((m) => m.t === 'goto'), [{ t: 'goto', line: 2, col: 3 }])
   host.deactivate()
 })

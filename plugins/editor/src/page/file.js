@@ -110,9 +110,10 @@ function extensions(info, text) {
     basicSetup,
     keymap.of([
       indentWithTab,
-      // Ctrl+S saves now; Ctrl+H opens search with its replace field (VS Code's keys).
+      // Ctrl+S saves now; Ctrl+H opens search with its replace field (VS Code's keys; on macOS Cmd+H
+      // is the system's Hide, and VS Code's replace there is Cmd+Alt+F).
       { key: 'Mod-s', run: () => (session.saveNow(), true), preventDefault: true },
-      { key: 'Mod-h', run: openSearchPanel, preventDefault: true },
+      { key: 'Ctrl-h', mac: 'Mod-Alt-f', run: openSearchPanel, preventDefault: true },
     ]),
     baseTheme,
     themeCompartment.of(syntaxFor()),
@@ -212,8 +213,14 @@ function render(v) {
   bar.className = 'bar'
   if (v.conflict && v.conflict.kind === 'changed') {
     bar.classList.add('warn')
-    text.textContent = 'This file changed on disk while you were editing it.'
-    actions.append(button('Reload', () => session.takeTheirs(), 'cc-ghost'), button('Keep mine', () => session.keepMine()))
+    if (v.conflict.final) {
+      // Theirs is read-only, binary or too large: saving over it is refused, so only Reload is offered.
+      text.textContent = 'This file changed on disk and can no longer be saved here.'
+      actions.append(button('Reload', () => session.takeTheirs()))
+    } else {
+      text.textContent = 'This file changed on disk while you were editing it.'
+      actions.append(button('Reload', () => session.takeTheirs(), 'cc-ghost'), button('Keep mine', () => session.keepMine()))
+    }
   } else if (v.conflict && v.conflict.kind === 'deleted') {
     bar.classList.add('warn')
     text.textContent = 'This file was deleted on disk. Your text is still here.'
@@ -227,6 +234,7 @@ function render(v) {
     text.textContent = ''
   }
   bar.hidden = text.textContent === ''
+  microIfSaved(v)
 }
 
 // ---- wiring ----
@@ -249,7 +257,22 @@ ccPanel.onMessage((m) => session.receive(m))
 // is never reloaded for these, so the buffer survives and the session re-sends what it holds.
 ccPanel.onConnect(() => session.connect())
 
-$('micro').addEventListener('click', () => ccPanel.post({ t: 'micro' }))
+// micro opens what is on disk, so the buffer is saved first and micro opens once the host confirmed it
+// (render sees `saved`); a conflict or an error cancels it, nothing is opened over unsaved text.
+let microPending = false
+function microIfSaved(v) {
+  if (!microPending) return
+  if (v.conflict || v.error || v.readOnly) microPending = false
+  else if (v.status === 'saved') {
+    microPending = false
+    ccPanel.post({ t: 'micro' })
+  }
+}
+$('micro').addEventListener('click', () => {
+  microPending = true
+  if (session.view().dirty) session.saveNow()
+  microIfSaved(session.view())
+})
 
 // Focus leaving the frame (another tab, another window, the shell) is the autosave's "focus loss".
 window.addEventListener('blur', () => session.blur())

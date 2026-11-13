@@ -99,7 +99,11 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     dirty: false,
     saving: null, // { req, text }
     saveAgain: false,
-    // { kind: 'changed', theirs, hash, written } | { kind: 'deleted' }
+    // The text of a save the old line lost (connect()): the reconnect answer may find it on disk.
+    lost: null,
+    // { kind: 'changed', theirs, hash, written, head, final } | { kind: 'deleted' }. `head` and `text`
+    // are the host's answer (read-only flags, eol), `final`: theirs can no longer be saved over
+    // (read-only, binary, too large), so only Reload is offered.
     conflict: null,
     error: null,
     settings: { idleSeconds: DEFAULT_IDLE_SECONDS, onBlur: true },
@@ -130,7 +134,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     noText: s.noText,
     dirty: s.dirty,
     status: statusNow(),
-    conflict: s.conflict ? { kind: s.conflict.kind } : null,
+    conflict: s.conflict ? { kind: s.conflict.kind, final: s.conflict.final === true } : null,
     error: s.error,
   })
 
@@ -221,11 +225,32 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     s.base = { text: typeof text === 'string' ? text : '', hash: s.exists ? head.hash : null }
   }
 
+  /** The conflict for a file that is there and differs: what the host said about it rides along. */
+  function changedConflict(head, text, written) {
+    const noText = typeof text !== 'string'
+    const readOnly = head.readOnly === true
+    s.exists = true
+    // A written conflict keeps our text as the base, so Keep mine stays right even for a read-only file.
+    s.conflict = { kind: 'changed', theirs: noText ? '' : text, hash: head.hash, written, head, text, final: !written && (noText || readOnly) }
+  }
+
+  /** The disk's file is gone: the tab keeps its text, clean or not; the file comes back only on Save. */
+  function deletedConflict() {
+    s.exists = false
+    s.conflict = { kind: 'deleted' }
+    clearIdle()
+    checkDirty()
+    update()
+  }
+
   /** A second look found disk different from the base: take it when clean, else a conflict. */
   function diskDiffers(head, text) {
+    // Gone: the same answer as a `deleted` event (a clean tab too: a read that lost a race with a
+    // deletion must not wipe the buffer and hide the loss).
+    if (!head.exists) return deletedConflict()
     // Disk holds what the buffer holds (a save whose answer the old line lost, the same edit made
     // twice): only the hash moves.
-    if (head.exists && typeof text === 'string' && !s.noText && text === ui.getText()) {
+    if (typeof text === 'string' && !s.noText && text === ui.getText()) {
       s.base = { text, hash: head.hash }
       s.exists = true
       s.conflict = null
@@ -239,12 +264,17 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       checkDirty()
       return update()
     }
-    if (head.exists) {
-      s.conflict = { kind: 'changed', theirs: typeof text === 'string' ? text : '', hash: head.hash, written: false }
-    } else {
-      s.exists = false
-      s.conflict = { kind: 'deleted' }
-    }
+    changedConflict(head, text, false)
+    clearIdle()
+    checkDirty()
+    update()
+  }
+
+  /** The hash is the base's but the host now calls the file read-only (or writable again): the flags move, the buffer stays. */
+  function roChanged(head) {
+    s.readOnly = head.readOnly === true
+    s.why = s.readOnly ? head.why : undefined
+    ui.replace(ui.getText(), { readOnly: s.readOnly, noText: s.noText })
     clearIdle()
     checkDirty()
     update()
@@ -268,12 +298,32 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     }
     // A second look: the open after a reconnect, a re-check on focus, a read after a disk event.
     const nowHash = head.exists ? head.hash : null
-    const sameRo = !head.exists || (head.readOnly === true) === s.readOnly
-    if (nowHash === (s.exists ? s.base.hash : null) && sameRo) {
+    const lost = s.lost
+    if (r.kind === 'reconnect') s.lost = null
+    // A save lost with the old line that DID land, with more typed after it: disk holds that save's
+    // text, not the buffer. It is our own write, so it becomes the base and the buffer stays dirty
+    // (not a conflict that would offer to drop the newer typing).
+    if (r.kind === 'reconnect' && head.exists && lost !== null && typeof text === 'string' && text === lost && nowHash !== (s.exists ? s.base.hash : null)) {
+      s.base = { text, hash: head.hash }
+      s.exists = true
+      s.conflict = null
+      checkDirty()
+      update()
+      if (s.dirty) save()
+      return
+    }
+    const sameHash = nowHash === (s.exists ? s.base.hash : null)
+    if (sameHash && (!head.exists || (head.readOnly === true) === s.readOnly)) {
       // Disk is still our base. A save that was in flight when the line went never answered: send
       // it again (one that did land answers `changed` with our own text, which diskDiffers settles).
       if (r.kind === 'reconnect' && s.dirty && !s.conflict) save()
       return update()
+    }
+    if (sameHash) return roChanged(head)
+    // A head-only re-check (focus) carries no text: ask for the file once it really differs.
+    if (r.kind === 'check' && head.exists && typeof text !== 'string') {
+      request('reload', { t: 'read', path: s.path })
+      return
     }
     diskDiffers(head, text)
   }
@@ -309,16 +359,14 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     } else if (head.written) {
       // Our text is on disk (head.hash, our new base), but a write into the old file landed in
       // between and is lost from disk: `text` is that write.
+      changedConflict(head, text, true)
       s.base = { text: mine, hash: head.hash }
-      s.exists = true
-      s.conflict = { kind: 'changed', theirs: text ?? '', hash: head.hash, written: true }
     } else if (typeof text === 'string' && text === ui.getText()) {
       // Theirs is what we hold (our own earlier save that the old line never confirmed).
       s.base = { text, hash: head.hash }
       s.exists = true
     } else {
-      s.exists = true
-      s.conflict = { kind: 'changed', theirs: text ?? '', hash: head.hash, written: false }
+      changedConflict(head, text, false)
     }
     clearIdle()
     checkDirty()
@@ -359,6 +407,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       // What was in flight on the old line is lost: its answers never come.
       reads.clear()
       changed = null
+      if (s.saving) s.lost = s.saving.text
       s.saving = null
       s.saveAgain = false
       if (!s.loaded) request('open', { t: 'open', first: true })
@@ -417,7 +466,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     },
     /** The page got the focus back: look at the disk again (a watch can miss a change, e.g. on a network mount). */
     focus() {
-      if (s.loaded && s.connected && !s.saving) request('check', { t: 'read', path: s.path })
+      if (s.loaded && s.connected && !s.saving) request('check', { t: 'read', path: s.path, headOnly: true })
     },
     /** Ctrl+S, or Save in the deleted bar (which recreates the file). */
     saveNow() {
@@ -431,7 +480,12 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       s.conflict = null
       // Not written: theirs is on disk, so it is the base too. Written: our text is on disk, so the
       // buffer differs from it and the next save writes theirs back.
-      if (!c.written) s.base = { text: c.theirs, hash: c.hash }
+      if (!c.written) adopt({ ...c.head, exists: true, path: s.path }, c.text)
+      else {
+        s.readOnly = c.head.readOnly === true
+        s.why = s.readOnly ? c.head.why : undefined
+        s.noText = typeof c.text !== 'string'
+      }
       ui.replace(c.theirs, { readOnly: s.readOnly, noText: s.noText })
       checkDirty()
       update()
@@ -440,7 +494,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     /** The conflict bar's Keep mine: saved over theirs. */
     keepMine() {
       const c = s.conflict
-      if (!c || c.kind !== 'changed') return
+      if (!c || c.kind !== 'changed' || c.final) return
       s.conflict = null
       if (!c.written) s.base = { text: c.theirs, hash: c.hash }
       checkDirty()
