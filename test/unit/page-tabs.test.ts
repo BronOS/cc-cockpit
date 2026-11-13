@@ -111,6 +111,7 @@ describe('manifest contributes.tabs', () => {
     expect(await errorsOf(manifest([{ type: 'file', page: '../x.html' }]))).toMatch(/must not contain "\.\." segments/)
     expect(await errorsOf(manifest([{ type: 'file', page: 'tabs/none.html' }]))).toMatch(/page tab "file" page/)
     expect(await errorsOf(manifest([{ type: 'file', page: 'tabs/file.html', keys: ['ctrl+nope+x'] }]))).toMatch(/not a valid key chord/)
+    expect(await errorsOf(manifest([{ type: 'file', page: 'tabs/file.html', keys: ['Ctrl+P', 'ctrl+p'] }]))).toMatch(/duplicate key chord/)
   })
 
   it('refuses duplicate types, too many types, and tabs without main', async () => {
@@ -205,6 +206,11 @@ describe('TabManager page tabs', () => {
     expect(() => tabs.rename(A, page.id, 'x')).toThrow(/only a Claude tab/)
     // Its token is '' (none): no 64-hex token resolves to it.
     expect(tabs.resolveToken('0'.repeat(64))).toBeUndefined()
+    // screen and ack are ignored too: no answer, no pty ack.
+    const answer = vi.fn()
+    tabs.screen(A, page.id, answer as never)
+    tabs.ack(A, page.id, 10)
+    expect(answer).not.toHaveBeenCalled()
   })
 
   it('never reaches the send gate or Claude status: the session registry has no entry for it', () => {

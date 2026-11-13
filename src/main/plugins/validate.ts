@@ -244,8 +244,12 @@ function pageTabErrors(manifest: PluginManifest): string[] {
   for (const t of tabs) {
     // The shell draws it as a sandboxed iframe served by cc-plugin://, like an html panel's page.
     if (!t.page.endsWith('.html')) errors.push(`page tab "${t.type}" page "${t.page}" must be an .html page`)
+    const seen = new Set<string>()
     for (const key of t.keys ?? []) {
-      if (normalizeChord(key, 'darwin') === null) errors.push(`page tab "${t.type}": "${key}" is not a valid key chord`)
+      const norm = normalizeChord(key, 'darwin')
+      if (norm === null) errors.push(`page tab "${t.type}": "${key}" is not a valid key chord`)
+      else if (seen.has(norm)) errors.push(`page tab "${t.type}": duplicate key chord "${key}"`)
+      else seen.add(norm)
     }
   }
   return errors

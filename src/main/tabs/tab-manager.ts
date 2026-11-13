@@ -996,14 +996,15 @@ export class TabManager {
    */
   screen(projectId: string, tabId: string, answer: ScreenAnswer): void {
     const tab = this.find(projectId, tabId)
-    if (!tab) return
+    // A page tab has no terminal: nothing to answer with, and the ask would hang.
+    if (!tab || tab.kind === 'page') return
     this.tap((t) => t.screen?.(tab.id, answer))
   }
 
   /** The desktop renderer's ack: the pty's flow, or the desktop's own while main consumes the pty. */
   ack(projectId: string, tabId: string, count: number): void {
     const tab = this.find(projectId, tabId)
-    if (!tab) return
+    if (!tab || tab.kind === 'page') return
     if (this.desktop.holds(tab.id)) this.desktop.ack(tab.id, count)
     else {
       this.pty.ack(tab.id, count)
