@@ -71,15 +71,16 @@ export interface ExecContext {
   spawnFn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess
 }
 
-function checkArgv(argv: unknown): string[] {
-  if (!Array.isArray(argv) || argv.length === 0) throw new TypeError('exec: argv must be a non-empty array')
-  if (argv.length > MAX_ARGV_ITEMS) throw new RangeError(`exec: argv has more than ${MAX_ARGV_ITEMS} items`)
+/** The argv check of `ctx.exec` and `ctx.processes.spawn`; `label` starts each message. */
+export function checkArgv(argv: unknown, label = 'exec'): string[] {
+  if (!Array.isArray(argv) || argv.length === 0) throw new TypeError(`${label}: argv must be a non-empty array`)
+  if (argv.length > MAX_ARGV_ITEMS) throw new RangeError(`${label}: argv has more than ${MAX_ARGV_ITEMS} items`)
   for (const a of argv) {
-    if (typeof a !== 'string') throw new TypeError('exec: every argv item must be a string')
+    if (typeof a !== 'string') throw new TypeError(`${label}: every argv item must be a string`)
     // A NUL ends a C string: the program would see a shorter argument than the plugin wrote.
-    if (a.includes('\0')) throw new TypeError('exec: argv items must not contain NUL')
+    if (a.includes('\0')) throw new TypeError(`${label}: argv items must not contain NUL`)
   }
-  if (argv[0] === '') throw new TypeError('exec: argv[0] must not be empty')
+  if (argv[0] === '') throw new TypeError(`${label}: argv[0] must not be empty`)
   return argv as string[]
 }
 

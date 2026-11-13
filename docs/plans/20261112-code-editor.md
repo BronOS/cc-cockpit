@@ -147,12 +147,12 @@ External review: sol / high
 - Modify: `src/cli/guide/*.md`, `examples/plugin/sdk/types.ts`
 - Create: `test/unit/host-processes.test.ts`
 
-- [ ] `spawn(argv, { cwd })` with `write(bytes)`, `onData(bytes)`, `onStderr`, `onExit`, `kill`; argv only, no shell;
+- [x] `spawn(argv, { cwd })` with `write(bytes)`, `onData(bytes)`, `onStderr`, `onExit`, `kill`; argv only, no shell;
   env fixes as in `ctx.exec`
-- [ ] cap per plugin in the host; every child killed with its process group when the host stops or the plugin reloads
-- [ ] guide text (not a boundary: host code can spawn anyway) and example types
-- [ ] write tests: argv with spaces stays one argument, bytes round trip, cap, kill on host stop, exit and stderr
-- [ ] run tests - must pass before next task
+- [x] cap per plugin in the host; every child killed with its process group when the host stops or the plugin reloads
+- [x] guide text (not a boundary: host code can spawn anyway) and example types
+- [x] write tests: argv with spaces stays one argument, bytes round trip, cap, kill on host stop, exit and stderr
+- [x] run tests - must pass before next task
 
 ### Task 6: Editor host: files and compare-and-swap [model: opus]
 

@@ -88,6 +88,17 @@ with full Node access.
   is looked up on the login-shell PATH. Resolves `{ code, stdout, stderr }` (a non-zero code
   resolves; output over 10 MiB rejects). The child reaches the person's session bus, so a CLI that
   keeps its sign-in in the system keyring (`gh`, `glab`) works as in a terminal.
+- `ctx.processes.spawn(argv, { cwd })`: a long-running child with byte stdio (a language server,
+  a tool you talk to over stdin/stdout). argv only, never a shell; the same PATH, env and cwd rule
+  as `ctx.exec`. Returns `{ pid, write(bytes), end(), onData(bytes => ...), onStderr(bytes => ...),
+  onExit(({ code, signal }) => ...), kill() }` at once; `spawn` throws when argv[0] cannot be run
+  or the cwd is no directory. `write` takes a Uint8Array (a Buffer is one), not text; `end()`
+  closes stdin. Add listeners right after `spawn`: output with no listener is dropped (it is always
+  read, so the child never blocks). `onExit` comes once, after the last output. At most 16 running
+  per plugin; every one is killed with its process group when your plugin stops or reloads and
+  when the host stops, so do not leave cleanup to `deactivate`. This is not a boundary: host code
+  can start processes anyway; it gives you the env fixes and the cleanup. Older apps have no
+  `ctx.processes`: check `typeof ctx.processes === 'object'`.
 
 ## UI
 

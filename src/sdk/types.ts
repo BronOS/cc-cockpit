@@ -160,6 +160,41 @@ export interface ExecResult {
   stderr: string
 }
 
+/** `ctx.processes.spawn` options. */
+export interface ProcessSpawnOptions {
+  /** An existing directory; defaults to the project folder, a relative path is relative to it. */
+  cwd?: string
+}
+
+/** How a `ctx.processes` child ended: `code` null when a signal ended it (`kill()` included). */
+export interface ProcessExit {
+  code: number | null
+  signal: string | null
+}
+
+/**
+ * A long-running child of `ctx.processes.spawn`, with byte stdio (a language server's framing
+ * counts bytes). Listeners added in the same tick as the spawn miss nothing; output with no
+ * listener is dropped (it is always read, so a child never blocks on a pipe nobody reads).
+ */
+export interface PluginProcess {
+  /** The child's pid (it leads its own process group). */
+  readonly pid: number
+  /**
+   * Write bytes to its stdin. Ignored once the child has exited or `end()` was called; throws for
+   * anything but a Uint8Array (a Buffer is one) and when more than 64 MiB wait unread.
+   */
+  write(bytes: Uint8Array): void
+  /** Close its stdin (a program that reads until EOF then finishes). */
+  end(): void
+  onData(listener: (bytes: Uint8Array) => void): Disposer
+  onStderr(listener: (bytes: Uint8Array) => void): Disposer
+  /** Once, after its output is delivered; a listener added after the exit is called soon after. */
+  onExit(listener: (exit: ProcessExit) => void): Disposer
+  /** SIGKILL the child and its whole process group. Nothing once it has exited. */
+  kill(): void
+}
+
 export type BadgeValue = number | 'dot' | null
 
 /**
@@ -708,6 +743,17 @@ export interface PluginContext {
   schedule(seconds: number, fn: () => unknown): Disposer
   /** Run argv (never through a shell); argv[0] is looked up on the login-shell PATH. */
   exec(argv: readonly string[], options?: ExecOptions): Promise<ExecResult>
+  /**
+   * Long-running processes with byte stdio (language servers, a headless tool talking over
+   * stdin/stdout). argv only, never a shell; the same PATH and env as `exec`. At most 16 running
+   * per plugin (spawn throws past that); every one is killed with its process group when the
+   * plugin stops or reloads and when the host stops. Not a permission: host code can start
+   * processes anyway. Older apps have no `ctx.processes`: check `typeof ctx.processes === 'object'`.
+   */
+  readonly processes: {
+    /** Start argv now; throws when argv[0] cannot be run or the cwd is not a directory. */
+    spawn(argv: readonly string[], options?: ProcessSpawnOptions): PluginProcess
+  }
 
   // UI
   /**

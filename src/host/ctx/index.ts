@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, commands, cli, files, services, themes, log, notify and openExternal; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, processes, commands, cli, files, services, themes, log, notify and openExternal; sessions, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -22,6 +22,8 @@ import {
   type OAuthTokens,
   type PluginContext,
   type PluginLogger,
+  type PluginProcess,
+  type ProcessSpawnOptions,
   type PluginSettings,
   type ServiceHandle,
   type ServiceSet
@@ -33,6 +35,7 @@ import { MAX_NOTIFY_TEXT, NOTIFY_ACTION_WAIT_MS, notifyOutcomeOf, parseNotifyOpt
 import type { HostPluginSpec } from '../loader'
 import type { ServiceRegistry } from '../services'
 import { killChild, runExec } from './exec'
+import { spawnProcess } from './processes'
 import { createAppStorageApi } from './app-storage'
 import { createFilesApi, parseOpenFile, runOpenListeners } from './files'
 import { MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
@@ -114,6 +117,8 @@ interface Runtime {
   /** This ctx's `ccc <name>` calls still running: aborted (and answered) at dispose. */
   cliCalls: Set<CliRun>
   children: Set<ChildProcess>
+  /** ctx.processes children still running (also in `children`): the per-plugin cap's count. */
+  processes: Set<ChildProcess>
   /** Settles each of this ctx's ctx.oauth calls still waiting on main (rejected at dispose). */
   oauthCalls: Set<(err: Error) => void>
   /** Settles each of this ctx's ctx.notify calls waiting for a click (`{ clicked: false }` at dispose). */
@@ -199,6 +204,7 @@ export class HostContexts {
       openListeners: new Set(),
       cliCalls: new Set(),
       children: new Set(),
+      processes: new Set(),
       oauthCalls: new Set(),
       notifyCalls: new Set(),
       webviewUsed: false,
@@ -286,6 +292,16 @@ export class HostContexts {
           ...(deps.execMaxOutputBytes !== undefined ? { maxOutputBytes: deps.execMaxOutputBytes } : {})
         })
       )
+    // In `children` too, so dispose and killChildrenAndFlush end them with exec's (ctx/processes.ts).
+    const processSpawn = (argv: readonly string[], options?: ProcessSpawnOptions): PluginProcess =>
+      spawnProcess(argv, options, {
+        projectDir: spec.projectDir,
+        env: deps.env ?? process.env,
+        children: rt.children,
+        running: rt.processes,
+        alive,
+        report: (err) => logAs('error', `a ctx.processes listener threw: ${errorText(err)}`)
+      })
 
     const register = (id: string, run: () => unknown): Disposer => {
       alive()
@@ -438,6 +454,7 @@ export class HostContexts {
         return rt.scheduler.schedule(seconds, fn)
       },
       exec,
+      processes: Object.freeze({ spawn: processSpawn }),
       panels: ui.panels,
       badge: ui.badge,
       overlay: ui.overlay,
