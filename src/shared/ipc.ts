@@ -1529,8 +1529,14 @@ export interface IpcInvokeMap {
   /** The user entries of the sender's [+] menu (read each time the menu opens). */
   'tabs.commands': { req: void; res: TabCommandMenu }
   'tabs.close': { req: { tabId: string }; res: void }
-  /** Move a tab to a position in the project's tab order (clamped to the ends). */
-  'tabs.reorder': { req: { tabId: string; toIndex: number }; res: void }
+  /**
+   * Move a tab to a position in the project's tab order (clamped to the ends). Split groups (D9):
+   * `block` (the group handle's drag) moves the whole group of `tabId`, `toIndex` counted in the
+   * order without the block; without it a group member dropped strictly inside its own segment stays
+   * put, and one dropped anywhere else leaves the group as a plain tab there. The order every view
+   * should draw is the one in the `groups.changed` that follows.
+   */
+  'tabs.reorder': { req: { tabId: string; toIndex: number; block?: boolean }; res: void }
 
   // Split terminal view (shared/tab-groups.ts). Main is the one writer; every edit is a small intent
   // naming tab ids, never a whole tree (the `layout.set` lost-update trap). Ids are looked up in the
