@@ -61,7 +61,8 @@ header {
 .bar.error {
   background: var(--cc-bg-error);
 }
-.bar #bar-text {
+.bar #bar-text,
+.bar #lsp-text {
   flex: 1;
   min-width: 0;
 }
@@ -229,4 +230,53 @@ main .cm-line.cc-flash {
   color: inherit;
   background: color-mix(in srgb, var(--cc-status-needs-permission) 35%, transparent);
   border-radius: 2px;
+}
+/* The language server's name in the header; marked when it is not running. */
+.lsp-state {
+  color: var(--cc-fg-subtle);
+  font-size: var(--cc-text-s, 11px);
+  white-space: nowrap;
+}
+.lsp-state[hidden] {
+  display: none;
+}
+.lsp-state[data-state='failed'],
+.lsp-state[data-state='missing'] {
+  color: var(--cc-status-needs-permission);
+}
+/* Hover, completion documentation and signature help: a server's text, never its markup. */
+.cc-doc {
+  max-width: min(640px, 80vw);
+  max-height: 40vh;
+  overflow: auto;
+  padding: 4px 8px;
+  font-size: var(--cc-text-s, 12px);
+}
+.cc-doc-code {
+  margin: 2px 0;
+  font-family: var(--cc-terminal-font-family, var(--cc-font-mono));
+  white-space: pre-wrap;
+}
+.cc-doc-text {
+  margin: 4px 0;
+  font-family: var(--cc-font-ui);
+  white-space: pre-wrap;
+}
+.cc-signature {
+  max-width: min(640px, 80vw);
+  padding: 2px 8px;
+}
+.cc-signature-label {
+  font-family: var(--cc-terminal-font-family, var(--cc-font-mono));
+  white-space: pre-wrap;
+}
+.cc-signature-label strong {
+  color: var(--cc-accent);
+}
+.cc-signature-count {
+  color: var(--cc-fg-subtle);
+}
+.cc-signature .cc-doc {
+  padding: 0;
+  max-height: 20vh;
 }

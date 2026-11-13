@@ -324,9 +324,18 @@ exports.activate = (ctx) => {
       const res = await ctx.files.open(r.rel)
       return { via: res && res.via }
     }
+    return showTab('path', r.rel, opts)
+  }
+
+  /**
+   * The file tab whose params hold `key: value` (`path`: a project file; `outside`: a file outside
+   * the project, read-only), focused (or pointed at, `focus: false`) and moved to the line, or a new
+   * one. Resolves `{ tabId }`.
+   */
+  async function showTab(key, value, opts) {
     const line = position(opts.line)
     const col = line === undefined ? undefined : position(opts.col)
-    const open = (await ctx.tabs.list('file')).find((t) => t.params && typeof t.params === 'object' && t.params.path === r.rel)
+    const open = (await ctx.tabs.list('file')).find((t) => t.params && typeof t.params === 'object' && t.params[key] === value)
     if (open) {
       const point = opts.focus === false
       if (!point && typeof ctx.tabs.focus === 'function') await ctx.tabs.focus(open.id)
@@ -340,11 +349,25 @@ exports.activate = (ctx) => {
       }
       return { tabId: open.id }
     }
-    const params = { path: r.rel }
+    const params = { [key]: value }
     if (line !== undefined) params.line = line
     if (col !== undefined) params.col = col
-    const tabId = await ctx.tabs.openPage('file', params, { title: path.basename(r.rel), icon: 'file', focus: opts.focus !== false })
+    const tabId = await ctx.tabs.openPage('file', params, { title: path.basename(value), icon: 'file', focus: opts.focus !== false })
     return { tabId }
+  }
+
+  /**
+   * A definition or reference outside the project (node_modules, the module cache, vendor): a
+   * read-only tab (lib/files.js readOutside), only for a path a language server returned as a
+   * location (design-editor.md §3); any other path a page names is refused. The path goes into the
+   * tab's params, which main keeps, so the tab comes back after a restart without the page naming
+   * anything.
+   */
+  async function openOutsideTab(abs, opts = {}) {
+    if (!lspShared || !lspShared.allowsOutside(abs)) throw new Error('only a location a language server returned opens outside the project')
+    // Main caps params at 4 KiB: a path that long is not shown.
+    if (abs.length > 3000) throw new Error('the path is too long to open in a tab')
+    return showTab('outside', abs, opts)
   }
 
   if (hasTabs) {
@@ -405,7 +428,12 @@ exports.activate = (ctx) => {
           if (at && at.line !== undefined) tab.post({ t: 'goto', line: at.line, ...(at.col ? { col: at.col } : {}) })
         } else if (m.t === 'openFile') {
           // Quick open's pick or a find-in-files result: a path the page names, so untrusted;
-          // openFileTab checks it by realpath inside the project like any other open.
+          // openFileTab checks it by realpath inside the project like any other open. A definition
+          // or reference outside the project names `outside`: only one a server returned opens.
+          if (typeof m.outside === 'string') {
+            openOutsideTab(m.outside, { line: m.line, col: m.col }).catch((e) => tab.post({ t: 'search-error', kind: 'open', message: e.message }))
+            return
+          }
           let rel
           try {
             rel = relativePath(m.path)

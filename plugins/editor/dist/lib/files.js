@@ -245,6 +245,33 @@ function readFile(root, rel) {
   }
 }
 
+/**
+ * A file OUTSIDE the project for a read-only tab (design-editor.md §3: a definition in
+ * `node_modules`, the module cache or vendor "opens read-only, and only for a location the server
+ * returned"). The caller decides that it may be shown: the host opens such a tab only for a path a
+ * language server returned (lib/lsp/manager.js allowsOutside) and keeps it in the tab's params,
+ * which main holds and no page can set. Read like a project file (a regular file, bounded, binary
+ * and encoding checked), always read-only (`why: 'outside'` unless a stronger reason applies), never
+ * saved and not watched. `rel` is the absolute path.
+ */
+function readOutside(abs) {
+  if (typeof abs !== 'string' || !path.isAbsolute(abs) || abs.includes('\0')) throw new Error('not an absolute path')
+  let real
+  try {
+    real = fs.realpathSync(abs)
+  } catch (e) {
+    if (e.code === 'ENOENT') return { rel: abs, exists: false }
+    throw e
+  }
+  const { fd } = openRegular(real)
+  try {
+    const d = describeBytes(readFd(fd), undefined)
+    return { rel: abs, exists: true, real, ...d, readOnly: true, why: d.readOnly ? d.why : 'outside' }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 function tempPathFor(real) {
   return path.join(path.dirname(real), `.${path.basename(real)}.cc-editor-${crypto.randomBytes(6).toString('hex')}.tmp`)
 }
@@ -774,7 +801,24 @@ function serveFileTab(files, tab, log) {
     })
   }
 
+  // A read-only tab of a file outside the project (readOutside): only the path the host put in the
+  // tab's params, never one the page names.
+  const tabParams = tab.params && typeof tab.params === 'object' ? tab.params : {}
+  const outsidePath = typeof tabParams.outside === 'string' ? tabParams.outside : null
+
   function read(req, p, isOpen, headOnly) {
+    if (outsidePath !== null && p === outsidePath) {
+      let o
+      try {
+        o = readOutside(p)
+      } catch (e) {
+        return fail(req, p, e)
+      }
+      if (!o.exists) return post({ t: 'file', req, path: p, exists: false, part: 0, parts: 1 })
+      const head = describeNoReal(o)
+      delete head.text
+      return postParts({ t: 'file', req, path: p, exists: true, ...head }, headOnly ? undefined : o.text)
+    }
     let r
     try {
       r = readFile(files.root, p)
@@ -870,8 +914,7 @@ function serveFileTab(files, tab, log) {
     try {
       switch (m.t) {
         case 'open': {
-          const params = tab.params && typeof tab.params === 'object' ? tab.params : {}
-          return read(req, m.path === undefined ? params.path : m.path, true)
+          return read(req, m.path === undefined ? (outsidePath !== null ? outsidePath : tabParams.path) : m.path, true)
         }
         case 'read':
           return read(req, m.path, false, m.headOnly === true)
@@ -928,6 +971,7 @@ module.exports = {
   encodeText,
   describeBytes,
   readFile,
+  readOutside,
   saveFile,
   chunkText,
   FolderWatcher,

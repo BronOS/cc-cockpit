@@ -4,14 +4,19 @@
 // lib/files.js's and lib/search.js's messages on the same line:
 //
 //   page -> host
-//   { t: 'lsp-open', path, part, parts, text }    the document's whole text (in parts under the 1 MiB
+//   { t: 'lsp-open', path, part, parts, text, seq? }
+//                                                 the document's whole text (in parts under the 1 MiB
 //                                                 message cap): its first open, or a resync
-//   { t: 'lsp-change', path, changes }            LSP content changes ({ range?, text }), the owner's
+//   { t: 'lsp-change', path, changes, seq? }      LSP content changes ({ range?, text }), the owner's;
+//                                                 `seq` counts the page's opens and changes, so an
+//                                                 edit the host sends back names the text it fits
 //   { t: 'lsp-close', path }                      the page no longer shows it
 //   { t: 'lsp-ask', req, what, path, ... }        `what` one of manager.js's ASKS (hover, complete,
 //                                                 resolveCompletion, signature, definition, references,
-//                                                 symbols, format, prepareRename, rename, codeActions),
+//                                                 symbols, format, prepareRename, rename, codeActions)
+//                                                 or runCodeAction ({ id } of a codeActions answer),
 //                                                 with its fields (position, range, newName, ...)
+//   { t: 'lsp-edit-done', id, applied, reason? }  the page applied (or refused) an `lsp-edit`
 //   { t: 'lsp-cancel', req }                      the page no longer wants that answer
 //   { t: 'lsp-restart', language }                the bar's Restart (or Retry once installed)
 //
@@ -23,10 +28,17 @@
 //   { t: 'lsp-diagnostics', path, version?, diagnostics }
 //   { t: 'lsp-resync', path, owner?, why? }       send `lsp-open` with the whole text again
 //   { t: 'lsp-answer', req, result, truncated?, unsupported?, unavailable? } | { t: 'lsp-answer', req, error }
+//                                                 format, rename, runCodeAction: result is what the
+//                                                 host applied { applied, files, edits, failureReason? };
+//                                                 definition, references: [{ path, range, text? } |
+//                                                 { outside, range }]; codeActions: [{ id, title, ... }]
+//   { t: 'lsp-edit', id, path, seq, edits }       apply these TextEdits (a rename, a format, a code
+//                                                 action) to the buffer, only when the page's last
+//                                                 sent `seq` is this one; answer `lsp-edit-done`
 //   { t: 'lsp-error', path?, message }
 
 const files = require('../files.js')
-const { MAX_DOC_CHARS } = require('./manager.js')
+const { MAX_DOC_CHARS, ANSWER_BUDGET } = require('./manager.js')
 
 /** Whole texts assembling at once per line, and how long one waits for its next part. */
 const MAX_PENDING_OPENS = 4
@@ -47,8 +59,29 @@ function serveLsp(tab, manager, log) {
       if (!closed) tab.post(m)
     },
   }
-  const opens = new Map() // path -> { parts, got, length, timer }
+  const opens = new Map() // path -> { parts, got, length, timer, seq }
   const asks = new Map() // req -> AbortController
+  const edits = new Map() // id -> { resolve, timer }: lsp-edit messages waiting for the page
+  let nextEdit = 0
+
+  /**
+   * Hands `list` (checked TextEdits for `rel`, lib/lsp/edits.js) to this page to apply to its buffer.
+   * Resolves `{ applied, reason? }`: the page's answer, or a refusal when it is gone, too slow or the
+   * edits do not fit in one message.
+   */
+  holder.applyEdits = (rel, list, seq, timeoutMs) =>
+    new Promise((resolve) => {
+      if (closed) return resolve({ applied: false, reason: 'the page is gone' })
+      const m = { t: 'lsp-edit', id: ++nextEdit, path: rel, seq: seq === undefined ? null : seq, edits: list }
+      if (JSON.stringify(m).length > ANSWER_BUDGET) return resolve({ applied: false, reason: 'the edit is too large to send to the page' })
+      const timer = setTimeout(() => {
+        edits.delete(m.id)
+        resolve({ applied: false, reason: 'the page did not apply the edit in time' })
+      }, timeoutMs)
+      if (typeof timer.unref === 'function') timer.unref()
+      edits.set(m.id, { resolve, timer })
+      holder.post(m)
+    })
 
   const fail = (p, e) => holder.post({ t: 'lsp-error', ...(typeof p === 'string' ? { path: p } : {}), message: String((e && e.message) || e) })
 
@@ -71,7 +104,7 @@ function serveLsp(tab, manager, log) {
       if (opens.size >= MAX_PENDING_OPENS) return fail(rel, new Error('too many documents opening at once'))
       const parts = Number.isInteger(m.parts) && m.parts >= 1 ? m.parts : 1
       if (parts > Math.ceil(MAX_DOC_CHARS / 1024) + 1) return fail(rel, new Error('too many parts'))
-      o = { parts, got: [], length: 0, timer: null }
+      o = { parts, got: [], length: 0, timer: null, seq: m.seq }
       opens.set(rel, o)
     } else if (m.part !== o.got.length) {
       dropOpen(rel)
@@ -104,7 +137,7 @@ function serveLsp(tab, manager, log) {
     opens.delete(rel)
     let r
     try {
-      r = manager.open(holder, rel, o.got.join(''))
+      r = manager.open(holder, rel, o.got.join(''), o.seq)
     } catch (e) {
       return fail(rel, e)
     }
@@ -145,6 +178,11 @@ function serveLsp(tab, manager, log) {
     opens.clear()
     for (const ctl of asks.values()) ctl.abort()
     asks.clear()
+    for (const e of edits.values()) {
+      clearTimeout(e.timer)
+      e.resolve({ applied: false, reason: 'the page is gone' })
+    }
+    edits.clear()
     if (manager) manager.closeHolder(holder)
   })
 
@@ -163,7 +201,7 @@ function serveLsp(tab, manager, log) {
           open(m)
           break
         case 'lsp-change':
-          manager.change(holder, m.path, m.changes)
+          manager.change(holder, m.path, m.changes, m.seq)
           break
         case 'lsp-close':
           try {
@@ -181,6 +219,15 @@ function serveLsp(tab, manager, log) {
           if (ctl) {
             asks.delete(m.req)
             ctl.abort()
+          }
+          break
+        }
+        case 'lsp-edit-done': {
+          const e = edits.get(m.id)
+          if (e) {
+            edits.delete(m.id)
+            clearTimeout(e.timer)
+            e.resolve({ applied: m.applied === true, ...(typeof m.reason === 'string' ? { reason: m.reason.slice(0, 300) } : {}) })
           }
           break
         }

@@ -33,11 +33,13 @@ const METHOD_NOT_FOUND = -32601
 const REQUEST_CANCELLED = -32800
 
 /**
- * What the host tells the server it can do. Deliberately what Task 13's page features use, and no
- * more: no `workspace.workspaceEdit.resourceOperations` (design §3: rename and code actions never
- * create, rename or delete files), `applyEdit` true (the host applies an edit itself), no
- * `executeCommand` from a page, no semantic tokens, inlay hints or code lens (not in v1). Snippets in
- * completion are on (the page expands them).
+ * What the host tells the server it can do. Deliberately what the page's features use, and no more:
+ * no `workspace.workspaceEdit.resourceOperations` (design §3: rename and code actions never create,
+ * rename or delete files), `applyEdit` true (the host applies an edit itself, lib/lsp/edits.js, and
+ * only while a command it ran is working), `executeCommand` (the host runs a code action's own
+ * command, never one a page names), no semantic tokens, inlay hints or code lens (not in v1).
+ * Snippets in completion are on (the page expands them); a code action's edit may be left out and
+ * resolved when it is picked.
  */
 const CLIENT_CAPABILITIES = Object.freeze({
   general: { positionEncodings: ['utf-16'] },
@@ -49,6 +51,7 @@ const CLIENT_CAPABILITIES = Object.freeze({
     didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: false },
     configuration: true,
     workspaceFolders: true,
+    executeCommand: { dynamicRegistration: false },
   },
   textDocument: {
     synchronization: { dynamicRegistration: false, didSave: false, willSave: false, willSaveWaitUntil: false },
@@ -78,6 +81,9 @@ const CLIENT_CAPABILITIES = Object.freeze({
         codeActionKind: { valueSet: ['', 'quickfix', 'refactor', 'refactor.extract', 'refactor.inline', 'refactor.rewrite', 'source', 'source.organizeImports'] },
       },
       isPreferredSupport: true,
+      disabledSupport: true,
+      dataSupport: true,
+      resolveSupport: { properties: ['edit'] },
     },
   },
   window: { workDoneProgress: true, showMessage: {}, showDocument: { support: false } },

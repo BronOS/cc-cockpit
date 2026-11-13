@@ -14,6 +14,8 @@
       <strong id="path" class="path"></strong>
       <span id="state" class="state" role="status"></span>
       <span class="spacer"></span>
+      <!-- The file's language server (its name; "…" while it starts), hidden when there is none. -->
+      <span id="lsp" class="lsp-state" hidden></span>
       <button id="micro" type="button" class="cc-ghost" title="Edit this file in micro, in a terminal overlay">Open in micro</button>
     </header>
     <!-- One line under the header: a read or save error, the file changed or deleted on disk, a file
@@ -21,6 +23,12 @@
     <div id="bar" class="bar" role="alert" hidden>
       <span id="bar-text"></span>
       <span id="bar-actions" class="actions"></span>
+    </div>
+    <!-- The language bar: the server missing (its install command), failed (Restart), and what a
+         rename, a format or a code action did. Hidden while there is nothing to say. -->
+    <div id="lsp-bar" class="bar" role="status" hidden>
+      <span id="lsp-text"></span>
+      <span id="lsp-actions" class="actions"></span>
     </div>
     <main id="editor"></main>
     <!-- Quick open (Ctrl+P) and find in files (Ctrl+Shift+F): one palette over the editor. -->

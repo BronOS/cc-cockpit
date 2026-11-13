@@ -262,13 +262,13 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Create: `plugins/editor/src/page/lsp/*.ts`, `plugins/editor/dist/lib/lsp/edits.js`
 - Create: `plugins/editor/test/lsp-features.test.js`
 
-- [ ] diagnostics (inline, gutter), hover, completion with snippets, signature help, document symbols, format
-- [ ] go-to-definition (project file → its tab; outside → read-only, only for server-returned locations), references
-- [ ] rename and code actions: no resource operations declared; host applies `WorkspaceEdit` to open files through
+- [x] diagnostics (inline, gutter), hover, completion with snippets, signature help, document symbols, format
+- [x] go-to-definition (project file → its tab; outside → read-only, only for server-returned locations), references
+- [x] rename and code actions: no resource operations declared; host applies `WorkspaceEdit` to open files through
   their pages and to unopened files through compare-and-swap
-- [ ] slow or dead server never blocks typing (timeouts, cancellation)
-- [ ] write tests: recorded server messages, a workspace edit to an unopened file, an outside location refused
-- [ ] run tests - must pass before next task
+- [x] slow or dead server never blocks typing (timeouts, cancellation)
+- [x] write tests: recorded server messages, a workspace edit to an unopened file, an outside location refused
+- [x] run tests - must pass before next task
 
 ### Task 14: Claude's changes in the gutter [model: sonnet]
 

@@ -10,6 +10,14 @@
 //   --crash-on-open       exits with code 4 on the first didOpen
 //   --banner              prints a non-LSP line on stdout first (a protocol error)
 //   --starts <file>       appends "started" to it at start (counts the starts)
+//   --outside <path>      definition also answers this file (outside the project) as a LocationLink
+//   --rename-outside      rename also edits the --outside file
+//   --rename-create       rename answers a documentChanges with a file create in it
+//   --apply-unasked       after `initialized`, asks workspace/applyEdit on src/b.ts with no command running
+// The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
+// sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
+// open), code actions with an edit, a declared command (`fake.apply`, which asks
+// workspace/applyEdit while it runs), an undeclared one and one to resolve.
 // With no arguments it exits at once: `node --test plugins/*/test/` runs every .mjs under a test
 // folder as a test file, this one included.
 import fs from 'node:fs'
@@ -37,16 +45,80 @@ if (flag('--banner')) process.stdout.write('Starting fake server v1.0\n\n\n')
 
 let nextId = 1000
 const mine = new Map() // id -> method of the requests this server sent
+const waiting = new Map() // id of our applyEdit -> the executeCommand request to answer after it
+const versions = new Map() // uri -> the version last opened or changed
+let rootUri = ''
+const range = (l1, c1, l2, c2) => ({ start: { line: l1, character: c1 }, end: { line: l2, character: c2 } })
+const bUri = () => `${rootUri}/src/b.ts`
+const outsideUri = () => {
+  const p = value('--outside')
+  return p ? `file://${p.split('/').map(encodeURIComponent).join('/')}` : null
+}
+function ask(method, params) {
+  const id = nextId++
+  mine.set(id, method)
+  send({ id, method, params })
+  return id
+}
 
 function handle(m) {
   log({ in: m })
   if (m.method === undefined && m.id !== undefined) {
     // An answer to one of our own requests.
     log({ answer: { method: mine.get(m.id), result: m.result, error: m.error } })
+    const cmd = waiting.get(m.id)
+    if (cmd !== undefined) {
+      waiting.delete(m.id)
+      send({ id: cmd, result: null })
+    }
     return
   }
   switch (m.method) {
+    case 'textDocument/rename': {
+      const uri = m.params.textDocument.uri
+      const name = m.params.newName
+      if (flag('--rename-create')) {
+        return send({ id: m.id, result: { documentChanges: [{ kind: 'create', uri: `${rootUri}/src/new.ts` }, { textDocument: { uri, version: versions.get(uri) ?? null }, edits: [{ range: range(0, 6, 0, 7), newText: name }] }] } })
+      }
+      const documentChanges = [
+        { textDocument: { uri, version: versions.get(uri) ?? null }, edits: [{ range: range(0, 6, 0, 7), newText: name }] },
+        { textDocument: { uri: bUri(), version: null }, edits: [{ range: range(0, 6, 0, 7), newText: name }, { range: range(0, 10, 0, 11), newText: '3' }] },
+      ]
+      if (flag('--rename-outside') && outsideUri()) documentChanges.push({ textDocument: { uri: outsideUri(), version: null }, edits: [{ range: range(0, 0, 0, 0), newText: 'x' }] })
+      return send({ id: m.id, result: { documentChanges } })
+    }
+    case 'textDocument/definition': {
+      const out = [{ targetUri: bUri(), targetRange: range(0, 0, 0, 11), targetSelectionRange: range(0, 6, 0, 7) }]
+      if (outsideUri()) out.push({ targetUri: outsideUri(), targetRange: range(2, 0, 2, 5), targetSelectionRange: range(2, 0, 2, 5) })
+      return send({ id: m.id, result: out })
+    }
+    case 'textDocument/references':
+      return send({ id: m.id, result: [{ uri: m.params.textDocument.uri, range: range(0, 6, 0, 7) }, { uri: bUri(), range: range(0, 6, 0, 7) }, { uri: 'untitled:Untitled-1', range: range(0, 0, 0, 1) }] })
+    case 'textDocument/formatting':
+      return send({ id: m.id, result: [{ range: range(0, 0, 0, 0), newText: '// formatted\n' }] })
+    case 'textDocument/codeAction': {
+      const uri = m.params.textDocument.uri
+      return send({
+        id: m.id,
+        result: [
+          { title: 'Insert header', kind: 'quickfix', isPreferred: true, edit: { changes: { [uri]: [{ range: range(0, 0, 0, 0), newText: '// header\n' }] } } },
+          { title: 'Run fake.apply', kind: 'source', command: { title: 'apply', command: 'fake.apply', arguments: [bUri()] } },
+          { title: 'Run undeclared', command: { title: 'x', command: 'fake.undeclared' } },
+          { title: 'Resolve me', kind: 'refactor', data: { n: 1 } },
+        ],
+      })
+    }
+    case 'codeAction/resolve':
+      return send({ id: m.id, result: { ...m.params, edit: { changes: { [bUri()]: [{ range: range(0, 0, 0, 0), newText: '// resolved\n' }] } } } })
+    case 'workspace/executeCommand': {
+      if (m.params.command !== 'fake.apply') return send({ id: m.id, error: { code: -32601, message: 'no such command' } })
+      const target = m.params.arguments[0]
+      const id = ask('workspace/applyEdit', { label: 'apply', edit: { changes: { [target]: [{ range: range(0, 0, 0, 0), newText: '// applied\n' }] } } })
+      waiting.set(id, m.id)
+      return
+    }
     case 'initialize': {
+      rootUri = m.params.rootUri
       const capabilities = {
         textDocumentSync: 2,
         completionProvider: { resolveProvider: true, triggerCharacters: ['.'] },
@@ -56,27 +128,29 @@ function handle(m) {
         documentSymbolProvider: true,
         documentFormattingProvider: true,
         renameProvider: { prepareProvider: true },
-        codeActionProvider: true,
+        codeActionProvider: { resolveProvider: true },
+        executeCommandProvider: { commands: ['fake.apply', 'fake.other'] },
       }
       if (!flag('--no-hover')) capabilities.hoverProvider = true
       return send({ id: m.id, result: { capabilities, serverInfo: { name: 'fake' } } })
     }
     case 'initialized': {
-      const ask = (method, params) => {
-        const id = nextId++
-        mine.set(id, method)
-        send({ id, method, params })
-      }
       ask('workspace/configuration', { items: [{ section: 'fake' }, { section: 'fake.inner' }, {}] })
       ask('client/registerCapability', { registrations: [{ id: 'w1', method: 'workspace/didChangeWatchedFiles', registerOptions: { watchers: [{ globPattern: '**/*' }] } }] })
       ask('workspace/notAThing', {})
+      if (flag('--apply-unasked')) ask('workspace/applyEdit', { edit: { changes: { [bUri()]: [{ range: range(0, 0, 0, 0), newText: '// unasked\n' }] } } })
       return
     }
     case 'textDocument/didOpen':
       if (flag('--crash-on-open')) process.exit(4)
+      versions.set(m.params.textDocument.uri, m.params.textDocument.version)
       return diagnose(m.params.textDocument.uri, m.params.textDocument.version, m.params.textDocument.text.length)
     case 'textDocument/didChange':
+      versions.set(m.params.textDocument.uri, m.params.textDocument.version)
       return diagnose(m.params.textDocument.uri, m.params.textDocument.version, -1)
+    case 'textDocument/didClose':
+      versions.delete(m.params.textDocument.uri)
+      return
     case 'textDocument/hover':
       if (flag('--slow-hover')) return
       return send({ id: m.id, result: { contents: { kind: 'markdown', value: `hover ${m.params.position.line}:${m.params.position.character}` } } })

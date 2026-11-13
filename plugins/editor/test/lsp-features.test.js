@@ -1,0 +1,466 @@
+'use strict'
+// The language features' host side (dist/lib/lsp/edits.js, manager.js asks, serve.js lsp-edit,
+// files.js readOutside, host.js outside tabs) against the fake server (test/fixtures/fake-lsp.mjs)
+// answering in typescript-language-server's shapes: a rename's WorkspaceEdit applied to the open
+// file through its page and to an unopened one by compare-and-swap; stale versions, resource
+// operations and files outside the project refused as a whole; definitions and references mapped
+// to project paths, an outside location opening read-only only once a server returned it; code
+// actions kept in the host (ids to the page), their commands run by the host, a server's applyEdit
+// taken only while one runs; format through the owner page.
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const cp = require('node:child_process')
+const { pathToFileURL } = require('node:url')
+const { LspManager } = require('../dist/lib/lsp/manager.js')
+const { applyWorkspaceEdit, applyTextEdits, planEdit } = require('../dist/lib/lsp/edits.js')
+const { serveLsp } = require('../dist/lib/lsp/serve.js')
+const files = require('../dist/lib/files.js')
+
+const FAKE = path.join(__dirname, 'fixtures', 'fake-lsp.mjs')
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function until(fn, ms = 5000, what = 'condition') {
+  const end = Date.now() + ms
+  for (;;) {
+    const v = fn()
+    if (v) return v
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
+    await sleep(10)
+  }
+}
+
+/** ctx.processes.spawn's shape over node's spawn (argv only). */
+function spawn(argv, { cwd }) {
+  const c = cp.spawn(argv[0], argv.slice(1), { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
+  c.on('error', () => {})
+  c.stdin.on('error', () => {})
+  return {
+    pid: c.pid,
+    write: (b) => c.stdin.write(b),
+    end: () => c.stdin.end(),
+    onData: (fn) => c.stdout.on('data', fn),
+    onStderr: (fn) => c.stderr.on('data', fn),
+    onExit: (fn) => c.on('close', (code, signal) => fn({ code, signal })),
+    kill: () => c.kill('SIGKILL'),
+  }
+}
+
+/** A project with src/a.ts and src/b.ts, and a file outside it. */
+function project() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edfeat-')))
+  fs.mkdirSync(path.join(root, 'src'))
+  fs.writeFileSync(path.join(root, 'src/a.ts'), 'const a = 1\n')
+  fs.writeFileSync(path.join(root, 'src/b.ts'), 'const b = 2\n')
+  const outDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edfeat-out-')))
+  const outside = path.join(outDir, 'lib.d.ts')
+  fs.writeFileSync(outside, 'declare const x: number\n\nexport function lib(): void\n')
+  return { root, outside }
+}
+
+const serverRow = (log, flags) => [{ language: 'typescript', argv: [process.execPath, FAKE, '--log', log, ...flags] }]
+
+function setup(flags = []) {
+  const { root, outside } = project()
+  const log = path.join(root, '..', `${path.basename(root)}.log`)
+  const all = [...flags.map((f) => (f === '--outside' ? ['--outside', outside] : [f])).flat()]
+  const m = new LspManager({ root, spawn, servers: serverRow(log, all), timing: { watchFlushMs: 20 } })
+  const parse = (l) => {
+    try {
+      return JSON.parse(l)
+    } catch {
+      return null
+    }
+  }
+  const read = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(parse).filter(Boolean) : [])
+  const got = (method) => read().filter((e) => e.in && e.in.method === method)
+  const answers = (method) => read().filter((e) => e.answer && e.answer.method === method).map((e) => e.answer)
+  const disk = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
+  return { m, root, outside, got, answers, disk, done: () => m.dispose() }
+}
+
+/**
+ * A page line holding `rel` the way lsp/client.mjs does: it counts what it sent (`seq`), applies an
+ * `lsp-edit` only when the host's seq is its own, and sends the result as its next change.
+ */
+function page(m, rel, text) {
+  const p = {
+    posts: [],
+    text,
+    seq: 0,
+    edits: [],
+    refuse: null,
+    post: (msg) => p.posts.push(msg),
+    last: (t) => [...p.posts].reverse().find((x) => x.t === t),
+    applyEdits: async (r, edits, seq) => {
+      p.edits.push({ rel: r, edits, seq })
+      if (p.refuse) return { applied: false, reason: p.refuse }
+      if (seq !== p.seq) return { applied: false, reason: 'the file changed while the language server worked; try again' }
+      p.text = applyTextEdits(p.text, edits)
+      p.seq++
+      m.change(p, rel, [{ text: p.text }], p.seq)
+      return { applied: true }
+    },
+    open: () => {
+      p.seq++
+      return m.open(p, rel, p.text, p.seq)
+    },
+  }
+  return p
+}
+
+const ready = (f) => until(() => f.m.slots.get('typescript') && f.m.slots.get('typescript').state === 'ready', 5000, 'ready')
+const pos = (line, character) => ({ position: { line, character } })
+
+// ---- edits.js on its own ----
+
+test('applyTextEdits: ranges of the original text, applied from the end; inserts at one point keep their order; an overlap or a range past the end refused', () => {
+  const text = 'const a = 1\nconst b = a + a\n'
+  const edits = [
+    { range: { start: { line: 1, character: 14 }, end: { line: 1, character: 15 } }, newText: 'z' },
+    { range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } }, newText: 'z' },
+    { range: { start: { line: 1, character: 10 }, end: { line: 1, character: 11 } }, newText: 'z' },
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: '// 1\n' },
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: '// 2\n' },
+  ]
+  assert.equal(applyTextEdits(text, edits), '// 1\n// 2\nconst z = 1\nconst b = z + z\n')
+  // UTF-16 positions: the emoji is two units.
+  assert.equal(applyTextEdits('a😀b\n', [{ range: { start: { line: 0, character: 3 }, end: { line: 0, character: 4 } }, newText: 'B' }]), 'a😀B\n')
+  assert.throws(() => applyTextEdits(text, [edits[0], { range: { start: { line: 1, character: 13 }, end: { line: 1, character: 15 } }, newText: '' }]), /overlap/)
+  assert.throws(() => applyTextEdits(text, [{ range: { start: { line: 9, character: 0 }, end: { line: 9, character: 0 } }, newText: 'x' }]), /outside the file/)
+})
+
+test('planEdit: create, rename and delete refused (none declared); a file twice, a non-file URI, a bad edit refused; `changes` and `documentChanges` both read', () => {
+  const root = '/proj'
+  const where = (uri) => {
+    if (!uri.startsWith('file:')) return null
+    const p = new URL(uri).pathname
+    return p.startsWith(root + '/') ? { rel: p.slice(root.length + 1) } : { outside: p }
+  }
+  const e = (newText) => [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText }]
+  for (const kind of ['create', 'rename', 'delete']) {
+    assert.throws(() => planEdit({ documentChanges: [{ kind, uri: 'file:///proj/x.ts' }] }, where), new RegExp(`would ${kind} a file`))
+  }
+  assert.throws(() => planEdit({ changes: { 'file:///etc/passwd': e('x') } }, where), /outside the project/)
+  assert.throws(() => planEdit({ changes: { 'untitled:1': e('x') } }, where), /not a file/)
+  assert.throws(() => planEdit({ documentChanges: [{ textDocument: { uri: 'file:///proj/a.ts', version: 1 }, edits: e('x') }, { textDocument: { uri: 'file:///proj/a.ts', version: 1 }, edits: e('y') }] }, where), /twice/)
+  assert.throws(() => planEdit({ changes: { 'file:///proj/a.ts': [{ range: { start: { line: -1, character: 0 }, end: { line: 0, character: 0 } }, newText: '' }] } }, where), /bad position/)
+  assert.throws(() => planEdit({ changes: { 'file:///proj/a.ts': [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } } }] } }, where), /not a text edit/)
+  assert.deepEqual(planEdit({ changes: { 'file:///proj/a.ts': e('x') } }, where).map((p) => [p.rel, p.version]), [['a.ts', null]])
+  assert.deepEqual(planEdit({ documentChanges: [{ textDocument: { uri: 'file:///proj/a.ts', version: 4 }, edits: e('x') }] }, where).map((p) => [p.rel, p.version]), [['a.ts', 4]])
+  assert.deepEqual(planEdit({}, where), [])
+})
+
+// ---- workspace edits through the manager ----
+
+test('a recorded rename (documentChanges, the open file versioned, the other null) edits the open file through its page and the unopened one by compare-and-swap', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const r = await f.m.ask(a, 'rename', 'src/a.ts', { ...pos(0, 6), newName: 'z' })
+  assert.deepEqual(r.result, { applied: true, files: 2, edits: 3 })
+  // The open file changed in the page (which saves it like typing); the disk still has the old text.
+  assert.equal(a.text, 'const z = 1\n')
+  assert.equal(a.edits[0].seq, 1)
+  assert.equal(f.disk('src/a.ts'), 'const a = 1\n')
+  // The unopened file was written, and the servers hear it as a watched-file change.
+  assert.equal(f.disk('src/b.ts'), 'const z = 3\n')
+  const bUri = pathToFileURL(path.join(f.root, 'src/b.ts')).href
+  await until(() => f.got('workspace/didChangeWatchedFiles').some((e) => e.in.params.changes.some((c) => c.uri === bUri)), 5000, 'watched change')
+})
+
+test('a stale document version, an open file whose page typed since, or a closed one refuses the edit before anything is written', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const aUri = pathToFileURL(path.join(f.root, 'src/a.ts')).href
+  const bUri = pathToFileURL(path.join(f.root, 'src/b.ts')).href
+  const one = [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } }, newText: 'z' }]
+  // The server's version is not the document's.
+  let r = await applyWorkspaceEdit(f.m, { documentChanges: [{ textDocument: { uri: bUri, version: null }, edits: one }, { textDocument: { uri: aUri, version: 99 }, edits: one }] })
+  assert.equal(r.applied, false)
+  assert.match(r.failureReason, /changed while the language server worked/)
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+  assert.equal(a.edits.length, 0)
+  // `changes` (no versions): the versions the host recorded when it asked.
+  const asked = f.m.versions()
+  f.m.change(a, 'src/a.ts', [{ text: 'const a = 10\n' }], ++a.seq)
+  a.text = 'const a = 10\n'
+  r = await applyWorkspaceEdit(f.m, { changes: { [aUri]: one } }, { versions: asked })
+  assert.equal(r.applied, false)
+  // A version for a file no page holds: the server thought it open; it closed since.
+  r = await applyWorkspaceEdit(f.m, { documentChanges: [{ textDocument: { uri: bUri, version: 3 }, edits: one }] })
+  assert.match(r.failureReason, /closed while/)
+  // The page refuses (it typed after the host's seq): the edit stops there, the next file untouched.
+  a.refuse = 'the file changed while the language server worked; try again'
+  r = await applyWorkspaceEdit(f.m, { documentChanges: [{ textDocument: { uri: aUri, version: null }, edits: one }, { textDocument: { uri: bUri, version: null }, edits: one }] })
+  assert.deepEqual([r.applied, r.failedChange, r.files], [false, 0, 0])
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+})
+
+test('a rename that would create a file, or edit one outside the project, is refused as a whole', async (t) => {
+  for (const flags of [['--rename-create'], ['--rename-outside', '--outside']]) {
+    const f = setup(flags)
+    t.after(f.done)
+    const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+    a.open()
+    await ready(f)
+    const r = await f.m.ask(a, 'rename', 'src/a.ts', { ...pos(0, 6), newName: 'z' })
+    assert.equal(r.result.applied, false, flags.join(' '))
+    assert.match(r.result.failureReason, flags[0] === '--rename-create' ? /would create a file/ : /outside the project/)
+    assert.equal(a.text, 'const a = 1\n')
+    assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+    assert.equal(fs.readFileSync(f.outside, 'utf8').startsWith('declare'), true)
+  }
+})
+
+test('a file no page holds that cannot be saved here (read-only, gone) fails the edit, nothing written', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const bUri = pathToFileURL(path.join(f.root, 'src/b.ts')).href
+  const one = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: 'x' }]
+  fs.linkSync(path.join(f.root, 'src/b.ts'), path.join(f.root, 'b-link.ts'))
+  let r = await applyWorkspaceEdit(f.m, { changes: { [bUri]: one } })
+  assert.equal(r.applied, false)
+  assert.match(r.failureReason, /cannot be edited here \(linked\)/)
+  fs.unlinkSync(path.join(f.root, 'b-link.ts'))
+  fs.unlinkSync(path.join(f.root, 'src/b.ts'))
+  r = await applyWorkspaceEdit(f.m, { changes: { [bUri]: one } })
+  assert.match(r.failureReason, /gone/)
+})
+
+// ---- locations ----
+
+test('definition and references: project paths and line text; an outside location is allowed only once a server returned it; non-file URIs dropped', async (t) => {
+  const f = setup(['--outside'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  assert.equal(f.m.allowsOutside(f.outside), false)
+  const def = await f.m.ask(a, 'definition', 'src/a.ts', pos(0, 6))
+  assert.deepEqual(def.result, [
+    { path: 'src/b.ts', range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } } },
+    { outside: f.outside, range: { start: { line: 2, character: 0 }, end: { line: 2, character: 5 } } },
+  ])
+  assert.equal(f.m.allowsOutside(f.outside), true)
+  assert.equal(f.m.allowsOutside('/etc/passwd'), false)
+  const refs = await f.m.ask(a, 'references', 'src/a.ts', pos(0, 6))
+  assert.deepEqual(
+    refs.result.map((l) => [l.path, l.text]),
+    [
+      ['src/a.ts', 'const a = 1'],
+      ['src/b.ts', 'const b = 2'],
+    ],
+  )
+})
+
+test('an outside file tab: read-only (why outside), only the path in its params; a page naming another absolute path is refused', () => {
+  const { root, outside } = project()
+  const shared = files.makeFiles(root)
+  const posted = []
+  let onMessage = null
+  const tab = { id: 't1', type: 'file', params: { outside }, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => (onMessage = fn), onClose: () => {} }
+  files.serveFileTab(shared, tab)
+  onMessage({ t: 'open', req: 1, first: true })
+  const file = posted.find((m) => m.t === 'file')
+  assert.equal(file.path, outside)
+  assert.equal(file.readOnly, true)
+  assert.equal(file.why, 'outside')
+  assert.match(file.text, /export function lib/)
+  onMessage({ t: 'read', req: 2, path: '/etc/hostname' })
+  assert.equal(posted.at(-1).t, 'error')
+  onMessage({ t: 'save', req: 3, path: outside, baseHash: file.hash, part: 0, parts: 1, text: 'x' })
+  assert.equal(posted.at(-1).t, 'error')
+  assert.match(fs.readFileSync(outside, 'utf8'), /^declare/)
+  shared.watcher.close()
+})
+
+// ---- code actions ----
+
+test('code actions: the page gets ids and titles only; the host applies an edit, runs a declared command (its applyEdit taken while it runs), refuses an undeclared one, resolves one with no edit', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }
+  const offer = async () => (await f.m.ask(a, 'codeActions', 'src/a.ts', { range })).result
+  let list = await offer()
+  assert.deepEqual(list.map((x) => [x.title, x.kind, x.preferred === true]), [
+    ['Insert header', 'quickfix', true],
+    ['Run fake.apply', 'source', false],
+    ['Run undeclared', undefined, false],
+    ['Resolve me', 'refactor', false],
+  ])
+  for (const x of list) assert.deepEqual(Object.keys(x).filter((k) => !['id', 'title', 'kind', 'preferred'].includes(k)), [])
+  // A forged id, or one of an older list, is refused.
+  await assert.rejects(f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: 99999 }), /no longer offered/)
+  // An edit: applied through the page.
+  let r = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: list[0].id })
+  assert.deepEqual(r.result, { applied: true, files: 1, edits: 1 })
+  assert.equal(a.text, '// header\nconst a = 1\n')
+  await assert.rejects(f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: list[1].id }), /no longer offered/)
+  // A declared command: the host runs it; the server's applyEdit while it runs writes src/b.ts.
+  list = await offer()
+  r = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: list[1].id })
+  assert.equal(r.result.applied, true)
+  assert.equal(f.disk('src/b.ts'), '// applied\nconst b = 2\n')
+  assert.deepEqual(f.got('workspace/executeCommand').map((e) => e.in.params), [{ command: 'fake.apply', arguments: [pathToFileURL(path.join(f.root, 'src/b.ts')).href] }])
+  await until(() => f.answers('workspace/applyEdit').length === 1, 5000, 'applyEdit answer')
+  assert.equal(f.answers('workspace/applyEdit')[0].result.applied, true)
+  // A command the server did not declare is never sent.
+  list = await offer()
+  await assert.rejects(f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: list[2].id }), /did not declare/)
+  assert.equal(f.got('workspace/executeCommand').length, 1)
+  // No edit and no command: resolved first (codeAction/resolve), then its edit applied.
+  list = await offer()
+  r = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: list[3].id })
+  assert.equal(r.result.applied, true)
+  assert.equal(f.disk('src/b.ts'), '// resolved\n// applied\nconst b = 2\n')
+  assert.equal(f.got('codeAction/resolve').length, 1)
+})
+
+test('workspace/applyEdit with no command of the host running is refused; the file stays', async (t) => {
+  const f = setup(['--apply-unasked'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await until(() => f.answers('workspace/applyEdit').length === 1, 5000, 'applyEdit answer')
+  const ans = f.answers('workspace/applyEdit')[0].result
+  assert.equal(ans.applied, false)
+  assert.match(ans.failureReason, /only while a command it ran is working/)
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+})
+
+test('format: the server edits applied through the owner page, also when another view asks', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  const b = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  b.open()
+  await ready(f)
+  const r = await f.m.ask(b, 'format', 'src/a.ts', { tabSize: 4, insertSpaces: true })
+  assert.deepEqual(r.result, { applied: true, files: 1, edits: 1 })
+  assert.equal(a.text, '// formatted\nconst a = 1\n')
+  assert.equal(b.edits.length, 0)
+  assert.deepEqual(f.got('textDocument/formatting')[0].in.params.options, { tabSize: 4, insertSpaces: true })
+})
+
+test('features: a ready server tells the page what it offers and its trigger characters', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'x')
+  a.open()
+  await ready(f)
+  const st = await until(() => [...a.posts].reverse().find((p) => p.t === 'lsp-status' && p.state === 'ready'), 5000, 'ready status')
+  assert.equal(st.features.hover, true)
+  assert.equal(st.features.rename, true)
+  assert.equal(st.features.codeActions, true)
+  assert.deepEqual(st.features.completeTriggers, ['.'])
+  assert.deepEqual(st.features.signatureTriggers, ['('])
+})
+
+// ---- the page line (serve.js) ----
+
+function fakeTab() {
+  const posts = []
+  const closers = []
+  return {
+    id: 't1',
+    view: undefined,
+    posts,
+    post: (m) => posts.push(m),
+    onClose: (fn) => closers.push(fn),
+    close: () => closers.forEach((fn) => fn()),
+    last: (t) => [...posts].reverse().find((p) => p.t === t),
+  }
+}
+
+test('serveLsp: the page\'s seq reaches the document; lsp-edit carries it and lsp-edit-done answers; a silent page times out; a closed one refuses', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const tab = fakeTab()
+  const handle = serveLsp(tab, f.m)
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 1, text: 'const a = 1\n', seq: 1 })
+  const doc = [...f.m.docs.values()][0]
+  assert.equal(doc.seq, 1)
+  handle({ t: 'lsp-change', path: 'src/a.ts', changes: [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } }, text: 'b' }], seq: 2 })
+  assert.equal(doc.seq, 2)
+  assert.equal(doc.text, 'const b = 1\n')
+  const edits = [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: '// x\n' }]
+  const p = doc.owner.applyEdits('src/a.ts', edits, doc.seq, 2000)
+  const sent = tab.last('lsp-edit')
+  assert.deepEqual({ ...sent, id: 0 }, { t: 'lsp-edit', id: 0, path: 'src/a.ts', seq: 2, edits })
+  handle({ t: 'lsp-edit-done', id: sent.id, applied: true })
+  assert.deepEqual(await p, { applied: true })
+  // An answer for an id nobody waits for is ignored.
+  handle({ t: 'lsp-edit-done', id: 12345, applied: true })
+  assert.deepEqual(await doc.owner.applyEdits('src/a.ts', edits, 2, 30), { applied: false, reason: 'the page did not apply the edit in time' })
+  const late = doc.owner.applyEdits('src/a.ts', edits, 2, 2000)
+  const holder = doc.owner
+  tab.close()
+  assert.deepEqual(await late, { applied: false, reason: 'the page is gone' })
+  assert.deepEqual(await holder.applyEdits('src/a.ts', edits, 2, 2000), { applied: false, reason: 'the page is gone' })
+})
+
+// ---- the host: outside tabs ----
+
+test('host: a definition outside the project opens a read-only tab; a path no server returned is refused', async (t) => {
+  const host = require('../dist/host.js')
+  const { root, outside } = project()
+  const log = path.join(root, '..', `${path.basename(root)}.hostlog`)
+  const open = []
+  const openers = []
+  const provided = {}
+  const ctx = {
+    projectDir: root,
+    settings: { app: { servers: serverRow(log, ['--outside', outside]) } },
+    exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+    processes: { spawn },
+    services: { provide: (n, impl) => (provided[n] = impl) },
+    cli: { register() {} },
+    overlay: { start: () => ({ result: new Promise(() => {}) }) },
+    log: { info() {}, warn() {} },
+    tabs: {
+      onOpen: (type, fn) => openers.push(fn),
+      list: async () => open.map((x) => ({ ...x })),
+      openPage: async (type, params, options) => {
+        const id = `tab-${open.length + 1}`
+        open.push({ id, type, params, title: options.title })
+        return id
+      },
+      focus: async () => {},
+    },
+  }
+  host.activate(ctx)
+  t.after(() => host.deactivate())
+  await provided.editor.open('src/a.ts')
+  const posted = []
+  const listeners = []
+  const tab = { id: open[0].id, type: 'file', params: open[0].params, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {}, setTitle: async () => {} }
+  for (const o of openers) o(tab)
+  const send = (m) => listeners.forEach((l) => l(m))
+  // A path no server named: refused, no tab.
+  send({ t: 'openFile', outside, line: 3 })
+  await until(() => posted.find((m) => m.t === 'search-error'), 2000, 'refusal')
+  assert.match(posted.find((m) => m.t === 'search-error').message, /only a location a language server returned/)
+  assert.equal(open.length, 1)
+  // The server returns it as a definition: then it opens, read-only, at the line.
+  send({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 1, text: 'const a = 1\n', seq: 1 })
+  await until(() => posted.find((m) => m.t === 'lsp-status' && m.state === 'ready'), 5000, 'ready')
+  send({ t: 'lsp-ask', req: 1, what: 'definition', path: 'src/a.ts', position: { line: 0, character: 6 } })
+  const ans = await until(() => posted.find((m) => m.t === 'lsp-answer' && m.req === 1), 5000, 'definition')
+  assert.equal(ans.result[1].outside, outside)
+  send({ t: 'openFile', outside, line: 3, col: 1 })
+  await until(() => open.length === 2, 2000, 'outside tab')
+  assert.deepEqual(open[1].params, { outside, line: 3, col: 1 })
+  assert.equal(open[1].title, 'lib.d.ts')
+})

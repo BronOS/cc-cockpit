@@ -21,6 +21,11 @@
 // text: no marker lines a save could write) and draws Claude's version above it as a block with Keep
 // mine, Take Claude's and Keep both; the regions are tracked through edits (conflictField) and the
 // session hears how many are left.
+//
+// Language servers (design-editor.md §3): lsp/client.mjs tells the host the buffer and asks it in
+// editor terms; lsp/editor.js draws the answers (diagnostics, hover, completion, signature help) and
+// runs the commands (F12, Shift+F12, F2, Mod+., Shift+Alt+F, Mod+Shift+O). Lists and the rename
+// prompt use the quick-open palette; the server's state (missing, failed) is the language bar.
 
 import { basicSetup } from 'codemirror'
 import { EditorState, Compartment, StateEffect, StateField, Transaction } from '@codemirror/state'
@@ -42,7 +47,9 @@ import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { languageOfText } from './languages.mjs'
 import { createSession } from './session.mjs'
 import { lineChanges, keepBothText } from './merge.mjs'
-import { createSearch, fuzzyFilter, highlightPieces } from './quick-open.mjs'
+import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces } from './quick-open.mjs'
+import { createLspClient } from './lsp/client.mjs'
+import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
 
 /* global ccPanel */
 
@@ -340,7 +347,10 @@ function extensions(info, text) {
     readOnlyCompartment.of(EditorState.readOnly.of(info.readOnly === true)),
     flashField,
     conflictField,
+    lspUi.extensions,
     EditorView.updateListener.of((u) => {
+      // Every change reaches the language server, a reload's and a merge's too: it must see the buffer.
+      if (u.docChanged) lsp.changed(lspChangesOf(u))
       if (u.docChanged && !replacing) session.edited()
       const left = conflictsOf(u.state).length
       if (left !== conflictsOf(u.startState).length) session.conflictsLeft(left)
@@ -357,6 +367,7 @@ function load(text, info) {
       view = null
     }
     host.hidden = true
+    lsp.close()
     return
   }
   host.hidden = false
@@ -369,6 +380,9 @@ function load(text, info) {
     replacing = false
   }
   view.focus()
+  // A whole new buffer (no changes to send): the language server gets all of it again.
+  lsp.close()
+  lsp.open(info.path, true)
 }
 
 /**
@@ -480,8 +494,12 @@ function render(v) {
     text.textContent = ''
   }
   bar.hidden = text.textContent === ''
+  // A file outside the project (a definition in node_modules): read-only, no micro (it opens project files).
+  $('micro').hidden = isOutside(v.path)
   microIfSaved(v)
 }
+
+const isOutside = (p) => typeof p === 'string' && (p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p))
 
 // ---- wiring ----
 
@@ -498,6 +516,91 @@ const session = createSession({
   },
   render,
 })
+
+// ---- language servers ----
+
+const lsp = createLspClient({
+  post: (m) => ccPanel.post(m),
+  getText: () => (view ? view.state.doc.toString() : ''),
+  applyEdits: (edits) => applyEditsTo(view, edits),
+  onStatus: drawLsp,
+  onDiagnostics: (list) => showDiagnostics(view, list),
+})
+
+/** Set while an `openFile` the language features sent is on its way: a refusal is said in the language bar. */
+let lspOpening = false
+
+const lspUi = lspFeatures({
+  client: lsp,
+  path: () => session.view().path,
+  goto: (line, col) => gotoLine(line, col),
+  openLocation: (loc) => {
+    lspOpening = true
+    ccPanel.post({ t: 'openFile', ...(loc.path !== undefined ? { path: loc.path } : { outside: loc.outside }), line: loc.line, col: loc.col })
+  },
+  showList: (spec) => showPalette('list', true, spec),
+  prompt: (spec) => showPalette('prompt', true, spec),
+  message: lspMessage,
+})
+
+/** The language bar: a server missing (its install command), failed (Restart), and passing messages. */
+const lspBar = { status: null, dismissed: null, message: null, error: false, timer: null }
+
+function drawLsp(status) {
+  lspBar.status = status
+  const ind = $('lsp')
+  if (!status || !status.language || status.state === 'stopped') {
+    ind.hidden = true
+  } else {
+    ind.hidden = false
+    const busy = status.state === 'starting' || status.state === 'restarting'
+    ind.textContent = `${status.name || status.language}${busy ? '…' : status.state === 'ready' ? '' : ` (${status.state})`}`
+    ind.dataset.state = status.state
+    ind.title = `Language server: ${status.state}${status.message ? ` (${status.message})` : ''}`
+  }
+  drawLspBar()
+}
+
+function drawLspBar() {
+  const bar = $('lsp-bar')
+  const text = $('lsp-text')
+  const actions = $('lsp-actions')
+  actions.replaceChildren()
+  bar.className = 'bar'
+  const st = lspBar.status
+  const key = st ? `${st.language}:${st.state}:${st.message || ''}` : null
+  if (lspBar.message) {
+    bar.classList.add(lspBar.error ? 'error' : 'info')
+    text.textContent = lspBar.message
+  } else if (st && st.state === 'missing' && lspBar.dismissed !== key) {
+    bar.classList.add('warn')
+    text.textContent = `No ${st.name || st.language} language server: highlighting only.${st.install ? ` Install it with: ${st.install}` : ''}`
+    actions.append(button('Retry', () => lsp.restart(), 'cc-ghost'), button('Dismiss', () => ((lspBar.dismissed = key), drawLspBar()), 'cc-ghost'))
+  } else if (st && st.state === 'failed' && lspBar.dismissed !== key) {
+    bar.classList.add('error')
+    text.textContent = st.message || `The ${st.name || st.language} language server stopped.`
+    if (st.language) actions.append(button('Restart', () => lsp.restart()))
+    actions.append(button('Dismiss', () => ((lspBar.dismissed = key), drawLspBar()), 'cc-ghost'))
+  } else if (st && st.state === 'restarting' && st.message) {
+    bar.classList.add('warn')
+    text.textContent = `${st.message}; restarting…`
+  } else {
+    text.textContent = ''
+  }
+  bar.hidden = text.textContent === ''
+}
+
+function lspMessage(message, error = false) {
+  lspBar.message = message
+  lspBar.error = error
+  if (lspBar.timer !== null) clearTimeout(lspBar.timer)
+  lspBar.timer = setTimeout(() => {
+    lspBar.timer = null
+    lspBar.message = null
+    drawLspBar()
+  }, error ? 8000 : 4000)
+  drawLspBar()
+}
 
 // ---- quick open (Ctrl+P) and find in files (Ctrl+Shift+F) ----
 // One palette over the editor in two modes. The host runs rg (dist/lib/search.js); quick-open.mjs
@@ -519,26 +622,38 @@ const search = createSearch({
   },
   // An open the host refused (a file gone meanwhile, the tab cap): said where it was picked.
   onOpenError: (message) => {
+    if (lspOpening) {
+      lspOpening = false
+      return lspMessage(message, true)
+    }
     if (palette.mode === null) showPalette(palette.lastMode, false)
     $('palette-status').textContent = message
     $('palette-status').classList.add('error')
   },
 })
 
-function showPalette(mode, fresh = true) {
+/**
+ * Opens the palette in `mode`: `files` (quick open), `grep` (find in files), or for the language
+ * features `list` (`spec`: { placeholder, items: [{ label, detail?, group?, num?, indent?, filter?,
+ * target }], onPick(target), empty }: definitions, references, symbols, code actions) and `prompt`
+ * (`spec`: { placeholder, value, hint, onSubmit(value) }: rename).
+ */
+function showPalette(mode, fresh = true, spec = null) {
   palette.mode = mode
-  palette.lastMode = mode
+  if (mode === 'files' || mode === 'grep') palette.lastMode = mode
+  else palette.spec = spec
   palette.index = 0
   $('palette').hidden = false
   $('palette').dataset.mode = mode
   $('palette-toggles').hidden = mode !== 'grep'
   const input = $('palette-query')
-  input.placeholder = mode === 'files' ? 'Go to a file of this project' : 'Find in the project’s files'
+  input.placeholder = mode === 'files' ? 'Go to a file of this project' : mode === 'grep' ? 'Find in the project’s files' : spec.placeholder || ''
+  if (mode === 'list' || mode === 'prompt') input.value = mode === 'prompt' ? spec.value || '' : ''
   if (fresh) {
     if (mode === 'files') {
       input.value = ''
       search.loadFiles()
-    } else {
+    } else if (mode === 'grep') {
       // The selection, when it is one short line, is the usual thing to look for.
       const main = view ? view.state.selection.main : null
       const sel = main && !main.empty ? view.state.sliceDoc(main.from, main.to) : ''
@@ -554,6 +669,7 @@ function showPalette(mode, fresh = true) {
 function hidePalette(focusEditor = true) {
   if (palette.mode === 'grep') search.stopGrep()
   palette.mode = null
+  palette.spec = null
   $('palette').hidden = true
   if (focusEditor && view) view.focus()
 }
@@ -632,6 +748,50 @@ function drawPalette() {
       const n = `${st.count} ${st.count === 1 ? 'result' : 'results'} in ${st.files} ${st.files === 1 ? 'file' : 'files'}`
       status.textContent = st.truncated ? `${n} (stopped there: narrow the search)` : n
     }
+  } else if (palette.mode === 'list') {
+    // In the language server's order (document order, the server's ranking), filtered by the query.
+    const spec = palette.spec
+    const q = query.trim()
+    let group
+    for (const it of spec.items) {
+      if (palette.rows.length >= 500) break
+      let positions = []
+      if (q) {
+        const m = fuzzyMatch(q, it.filter || it.label)
+        if (!m) continue
+        if (!it.filter || it.filter === it.label) positions = m.positions
+      }
+      if (it.group !== undefined && it.group !== group) {
+        group = it.group
+        const head = document.createElement('li')
+        head.className = 'group'
+        head.textContent = it.group
+        list.append(head)
+      }
+      const li = document.createElement('li')
+      li.className = it.num !== undefined ? 'row match' : 'row'
+      if (it.num !== undefined) {
+        const num = document.createElement('span')
+        num.className = 'num'
+        num.textContent = it.num
+        li.append(num)
+      }
+      const name = document.createElement('span')
+      name.className = it.num !== undefined ? 'text' : 'name'
+      if (it.indent) name.style.paddingLeft = `${Math.min(it.indent, 8)}em`
+      pieces(name, it.label, rangesOf(positions))
+      li.append(name)
+      if (it.detail) {
+        const d = document.createElement('span')
+        d.className = 'dir'
+        d.textContent = it.detail
+        li.append(d)
+      }
+      addRow(li, { list: it.target })
+    }
+    status.textContent = palette.rows.length ? '' : spec.empty || 'Nothing.'
+  } else if (palette.mode === 'prompt') {
+    status.textContent = palette.spec.hint || ''
   }
   palette.index = Math.min(palette.index, Math.max(0, palette.rows.length - 1))
   markRow()
@@ -657,7 +817,15 @@ function pick(i) {
   const r = palette.rows[i]
   if (!r) return
   const t = r.target
+  if (t.list !== undefined) {
+    // A language feature's row: the editor takes the keyboard back, then the pick runs.
+    const spec = palette.spec
+    hidePalette(true)
+    spec.onPick(t.list)
+    return
+  }
   hidePalette(false)
+  lspOpening = false
   if (t.path === session.view().path) {
     if (t.line) gotoLine(t.line, t.col || 1)
     else if (view) view.focus()
@@ -683,6 +851,13 @@ $('palette-query').addEventListener('keydown', (e) => {
     markRow()
   } else if (e.key === 'Enter') {
     e.preventDefault()
+    if (palette.mode === 'prompt') {
+      const spec = palette.spec
+      const value = $('palette-query').value
+      hidePalette(true)
+      spec.onSubmit(value)
+      return
+    }
     // Enter in find with no results yet: search now rather than after the pause.
     if (palette.mode === 'grep' && !palette.rows.length) search.setGrep($('palette-query').value, palette.opts, true)
     else pick(palette.index)
@@ -732,14 +907,18 @@ window.addEventListener(
 
 ccPanel.onMessage((m) => {
   if (search.receive(m)) return
+  if (lsp.receive(m)) return
   session.receive(m)
 })
 // Every new line: the first, a host restart, a browser view's reconnect, a relay resync. The page
 // is never reloaded for these, so the buffer survives and the session re-sends what it holds (and
-// a search still waiting for its answer is asked again).
+// a search still waiting for its answer is asked again, and the language server gets the buffer).
 ccPanel.onConnect(() => {
+  lsp.connect()
   session.connect()
   search.connect()
+  const v = session.view()
+  if (view && v.loaded && !v.noText) lsp.open(v.path, true)
 })
 
 // micro opens what is on disk, so the buffer is saved first and micro opens once the host confirmed it

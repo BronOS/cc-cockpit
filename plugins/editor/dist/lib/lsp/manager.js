@@ -24,6 +24,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url')
 const files = require('../files.js')
 const servers = require('./servers.js')
 const { LspServer } = require('./server.js')
+const { applyWorkspaceEdit } = require('./edits.js')
 
 /** A document over this many UTF-16 units gets no language server (highlighting only). */
 const MAX_DOC_CHARS = 2 * 1024 * 1024
@@ -51,6 +52,19 @@ const MAX_KNOWN_FILES = 20000
 /** The asks' deadlines: completion is typed against, the rest a person waits on. */
 const ASK_TIMEOUT_MS = 10 * 1000
 const COMPLETE_TIMEOUT_MS = 5 * 1000
+/** A rename or a command may make the server read the whole project. */
+const EDIT_TIMEOUT_MS = 30 * 1000
+/** Locations one definition or references answer keeps; the files read for their line text. */
+const MAX_LOCATIONS = 2000
+const MAX_LINE_TEXT_FILES = 50
+const MAX_LINE_TEXT_CHARS = 200
+const MAX_LINE_TEXT_FILE_BYTES = 1024 * 1024
+/** Outside-the-project files a server named (definition, references): the only ones a tab may show. */
+const MAX_OUTSIDE = 1000
+/** Code actions offered per ask (the page picks one by id). */
+const MAX_ACTIONS = 100
+/** A command's arguments (the server's own, handed back to it) are no bigger than this. */
+const MAX_COMMAND_CHARS = 64 * 1024
 
 // FileChangeType of workspace/didChangeWatchedFiles.
 const CREATED = 1
@@ -60,6 +74,8 @@ const DELETED = 3
 const MAX_LINE = 10_000_000
 const MAX_CHARACTER = 1_000_000
 const isIndex = (v, max) => Number.isInteger(v) && v >= 0 && v <= max
+/** A page's change counter (`seq`), or undefined. */
+const seqOf = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : undefined)
 
 /** A `{ line, character }` from a page, or a thrown Error. */
 function position(v) {
@@ -186,7 +202,9 @@ function oneLine(v, max, what) {
  * The allow-list: what a page may ask, the one LSP method each becomes, the server capability it
  * needs (an ask the server does not offer answers null, unsupported), and the params the HOST builds
  * from the page's checked fields. Nothing else a page sends reaches a server: not a method name, not
- * raw params, not `workspace/executeCommand` (a code action's command is the host's to run, Task 13).
+ * raw params, not `workspace/executeCommand` (a code action's command is the host's to run: the page
+ * picks an action the host offered it by id, `runCodeAction`, and the host runs that action's own
+ * edit and command). `post` says what the host does with a result before the page sees it.
  */
 /** A completion item (and the ones kept per page line for resolve) is no bigger than this. */
 const MAX_ITEM_CHARS = 64 * 1024
@@ -221,11 +239,13 @@ const ASKS = {
     },
   },
   signature: { method: 'textDocument/signatureHelp', cap: 'signatureHelpProvider', params: (doc, a) => at(doc, a) },
-  definition: { method: 'textDocument/definition', cap: 'definitionProvider', params: (doc, a) => at(doc, a) },
+  // Locations come back as project paths, or outside paths the host then lets a read-only tab show.
+  definition: { method: 'textDocument/definition', cap: 'definitionProvider', params: (doc, a) => at(doc, a), post: 'locations' },
   references: {
     method: 'textDocument/references',
     cap: 'referencesProvider',
     params: (doc, a) => ({ ...at(doc, a), context: { includeDeclaration: a.includeDeclaration !== false } }),
+    post: 'locations',
   },
   symbols: { method: 'textDocument/documentSymbol', cap: 'documentSymbolProvider', params: (doc) => ({ textDocument: { uri: doc.uri } }) },
   format: {
@@ -235,6 +255,8 @@ const ASKS = {
       const tabSize = Number.isInteger(a.tabSize) && a.tabSize >= 1 && a.tabSize <= 16 ? a.tabSize : 2
       return { textDocument: { uri: doc.uri }, options: { tabSize, insertSpaces: a.insertSpaces !== false } }
     },
+    // The host applies the edits (through the document's owner page); the page hears the counts.
+    post: 'textEdits',
   },
   prepareRename: {
     method: 'textDocument/prepareRename',
@@ -245,6 +267,8 @@ const ASKS = {
     method: 'textDocument/rename',
     cap: 'renameProvider',
     params: (doc, a) => ({ ...at(doc, a), newName: oneLine(a.newName, 200, 'newName') }),
+    timeoutMs: EDIT_TIMEOUT_MS,
+    post: 'workspaceEdit',
   },
   codeActions: {
     method: 'textDocument/codeAction',
@@ -265,6 +289,8 @@ const ASKS = {
       }
       return { textDocument: { uri: doc.uri }, range: r, context }
     },
+    // The page gets titles and ids; the actions themselves (edits, commands) stay in the host.
+    post: 'actions',
   },
 }
 
@@ -276,6 +302,23 @@ function hasCap(caps, cap) {
   if (typeof cap === 'function') return cap(caps || {})
   const v = caps && caps[cap]
   return v !== undefined && v !== null && v !== false
+}
+
+/**
+ * What a ready server offers, for the page: which asks make sense (a key a server lacks gets no
+ * menu entry) and the characters that start a completion or a signature help as they are typed.
+ * Plain booleans and short strings only: nothing of the server's own capability object travels.
+ */
+function featuresOf(caps) {
+  const chars = (list) => (Array.isArray(list) ? list.filter((x) => typeof x === 'string' && x.length >= 1 && x.length <= 2).slice(0, 20) : [])
+  const sig = caps.signatureHelpProvider && typeof caps.signatureHelpProvider === 'object' ? caps.signatureHelpProvider : {}
+  const comp = caps.completionProvider && typeof caps.completionProvider === 'object' ? caps.completionProvider : {}
+  const f = {}
+  for (const [what, spec] of Object.entries(ASKS)) f[what] = hasCap(caps, spec.cap)
+  f.completeTriggers = chars(comp.triggerCharacters)
+  f.signatureTriggers = chars(sig.triggerCharacters)
+  f.signatureRetriggers = chars(sig.retriggerCharacters)
+  return f
 }
 
 class LspManager {
@@ -313,6 +356,11 @@ class LspManager {
     this.known = new Map()
     /** holder -> the completion items answered to it (JSON), the only ones `resolveCompletion` takes. */
     this.given = new WeakMap()
+    /** holder -> the code actions last offered to it: { uri, srv, versions, kept: Map id -> action }. */
+    this.actions = new WeakMap()
+    this.nextAction = 0
+    /** Outside-the-project files a server returned as a location (abs path -> true, oldest first). */
+    this.outside = new Map()
     this.disposed = false
   }
 
@@ -350,7 +398,7 @@ class LspManager {
    * `{ language, name, owner, state }`, or `{ language: null }` when no server serves the file. The
    * owner sending its text again (a resync) replaces the server's copy with it.
    */
-  open(holder, rel, text) {
+  open(holder, rel, text, seq) {
     if (this.disposed) return { language: null }
     if (typeof text !== 'string') throw new Error('text must be a string')
     const r = files.resolveInProject(this.root, rel)
@@ -367,7 +415,7 @@ class LspManager {
     if (!doc) {
       if (this.docs.size >= MAX_DOCS) throw new Error('too many documents are open for the language servers')
       if (this.heldBy(holder).length >= MAX_HOLDER_DOCS) throw new Error('too many documents in one tab')
-      doc = { uri, rel: r.rel, real: r.real, language: lang.entry.language, languageId: lang.languageId, version: 1, text, holders: new Map([[holder, r.rel]]), owner: holder, diagnostics: null }
+      doc = { uri, rel: r.rel, real: r.real, language: lang.entry.language, languageId: lang.languageId, version: 1, text, holders: new Map([[holder, r.rel]]), owner: holder, diagnostics: null, seq: seqOf(seq) }
       this.docs.set(uri, doc)
       const slot = this.slotFor(doc.language)
       if (slot.idleTimer) {
@@ -378,6 +426,7 @@ class LspManager {
       else if (!slot.server && !slot.restartTimer && slot.state !== 'failed') this.startSlot(slot)
     } else if (doc.owner === holder) {
       // The owner's whole text again: after an ownership change, a resync, its own reconnect.
+      doc.seq = seqOf(seq)
       this.replaceText(doc, text)
     } else {
       if (!doc.holders.has(holder) && this.heldBy(holder).length >= MAX_HOLDER_DOCS) throw new Error('too many documents in one tab')
@@ -386,6 +435,7 @@ class LspManager {
       if (!doc.holders.has(holder)) doc.holders.set(holder, r.rel)
       if (!doc.owner) {
         doc.owner = holder
+        doc.seq = seqOf(seq)
         this.replaceText(doc, text)
       }
     }
@@ -396,8 +446,12 @@ class LspManager {
     return { language: doc.language, name: slot.entry.name, owner: doc.owner === holder, state: slot.state }
   }
 
-  /** The owner's edits (LSP content changes); another holder's are ignored (it reads). */
-  change(holder, rel, changes) {
+  /**
+   * The owner's edits (LSP content changes); another holder's are ignored (it reads). `seq` is the
+   * page's count of what it sent: an edit the host routes to the page names the seq its positions
+   * fit (lib/lsp/edits.js), so a page that typed since refuses it.
+   */
+  change(holder, rel, changes, seq) {
     const doc = this.docOf(holder, rel)
     if (!doc || doc.owner !== holder) return false
     if (!Array.isArray(changes) || changes.length === 0 || changes.length > 1000) throw new Error('changes must be a non-empty list')
@@ -411,6 +465,7 @@ class LspManager {
     }
     doc.text = text
     doc.version++
+    doc.seq = seqOf(seq)
     const slot = this.slots.get(doc.language)
     if (slot && slot.server && slot.opened.has(doc.uri)) {
       // The page's changes as they came (checked above), so the server sees a small edit, not the file.
@@ -516,6 +571,7 @@ class LspManager {
    * rejects with a message for the page. `signal` (an AbortController's) cancels it.
    */
   async ask(holder, what, rel, args, signal) {
+    if (what === 'runCodeAction') return this.runCodeAction(holder, rel, args)
     if (!Object.prototype.hasOwnProperty.call(ASKS, what)) throw new Error(`${String(what).slice(0, 60)} is not something a page may ask`)
     const spec = ASKS[what]
     const doc = this.docOf(holder, rel)
@@ -527,8 +583,23 @@ class LspManager {
     const srv = slot.server
     const caps = await srv.ready
     if (slot.server !== srv) throw new Error('the language server restarted')
+    // Given up while the server was starting (the page's deadline): nothing is sent for it.
+    if (signal && signal.aborted) throw new Error('cancelled')
     if (!hasCap(caps, spec.cap)) return { result: null, unsupported: true }
+    // What every open document was when the server was asked: an edit it answers is applied only to
+    // documents that did not move on meanwhile (edits.js).
+    const versions = this.versions()
     const result = await srv.request(spec.method, params, { timeoutMs: spec.timeoutMs || ASK_TIMEOUT_MS, signal })
+    if (spec.post === 'textEdits') {
+      if (!Array.isArray(result) || result.length === 0) return { result: { applied: true, files: 0, edits: 0 } }
+      return { result: await applyWorkspaceEdit(this, { changes: { [doc.uri]: result } }, { versions }) }
+    }
+    if (spec.post === 'workspaceEdit') {
+      if (!result) return { result: { applied: false, failureReason: 'the language server found nothing to change here', files: 0, edits: 0 } }
+      return { result: await applyWorkspaceEdit(this, result, { versions }) }
+    }
+    if (spec.post === 'actions') return this.offerActions(holder, doc, srv, versions, result)
+    if (spec.post === 'locations') return this.locations(result, what === 'references')
     const fit = fitResult(result)
     if (what === 'complete') this.giveItems(holder, fit.value)
     return { result: fit.value, truncated: fit.truncated }
@@ -568,6 +639,187 @@ class LspManager {
     }
   }
 
+  /** uri -> version of every open document now. */
+  versions() {
+    return new Map([...this.docs.values()].map((d) => [d.uri, d.version]))
+  }
+
+  /**
+   * A definition or references answer (Location, Location[] or LocationLink[]) as
+   * `[{ path, range, text? } | { outside, range }]`: a URI in the project becomes its path, one
+   * outside it (node_modules, the module cache, vendor) its absolute path, which the host from then
+   * on lets a read-only tab show (`allowsOutside`): only a location a server returned. Anything that
+   * is not a file is dropped. References get their line's text (an open document's own, else the
+   * file's, for the first MAX_LINE_TEXT_FILES files).
+   */
+  locations(result, withText) {
+    const list = result === null || result === undefined ? [] : Array.isArray(result) ? result : [result]
+    const out = []
+    const texts = new Map()
+    for (const l of list.slice(0, MAX_LOCATIONS)) {
+      if (!l || typeof l !== 'object') continue
+      const uri = typeof l.targetUri === 'string' ? l.targetUri : l.uri
+      let r
+      try {
+        r = range(l.targetSelectionRange || l.range || l.targetRange)
+      } catch {
+        continue
+      }
+      const where = this.pathOfUri(uri)
+      if (!where) continue
+      if (where.outside !== undefined) {
+        this.allowOutside(where.outside)
+        out.push({ outside: where.outside, range: r })
+        continue
+      }
+      const loc = { path: where.rel, range: r }
+      if (withText) {
+        const t = this.lineText(texts, uri, where.rel, r.start.line)
+        if (t !== undefined) loc.text = t
+      }
+      out.push(loc)
+    }
+    const fit = fitList(out, ANSWER_BUDGET)
+    return { result: fit.value, truncated: fit.truncated }
+  }
+
+  /** Line `line` of project file `rel` (an open document's own text), or undefined. `texts` caches per answer. */
+  lineText(texts, uri, rel, line) {
+    let text = texts.get(rel)
+    if (text === undefined) {
+      const doc = this.docByUri(uri)
+      text = null
+      if (doc) text = doc.text
+      else if (texts.size < MAX_LINE_TEXT_FILES) {
+        try {
+          // Read in the host's one thread for a list: a big file (a bundle, generated code) is left without text.
+          if (fs.statSync(path.join(this.root, rel)).size > MAX_LINE_TEXT_FILE_BYTES) throw new Error('large')
+          const f = files.readFile(this.root, rel)
+          if (f.exists && typeof f.text === 'string' && f.why !== 'binary') text = f.text
+        } catch {
+          // unreadable, or a link out of the project: no text
+        }
+      }
+      texts.set(rel, text)
+    }
+    if (typeof text !== 'string') return undefined
+    let at = 0
+    for (let i = 0; i < line; i++) {
+      const nl = text.indexOf('\n', at)
+      if (nl < 0) return undefined
+      at = nl + 1
+    }
+    let end = text.indexOf('\n', at)
+    if (end < 0) end = text.length
+    return text.slice(at, Math.min(end, at + MAX_LINE_TEXT_CHARS))
+  }
+
+  allowOutside(abs) {
+    this.outside.delete(abs)
+    this.outside.set(abs, true)
+    if (this.outside.size > MAX_OUTSIDE) this.outside.delete(this.outside.keys().next().value)
+  }
+
+  /** Whether a server returned `abs` (an absolute path outside the project) as a location. */
+  allowsOutside(abs) {
+    return typeof abs === 'string' && this.outside.has(abs)
+  }
+
+  /**
+   * A codeAction answer kept in the host (holder -> its last list) and told to the page as
+   * `[{ id, title, kind?, preferred?, disabled? }]`: the page never sees, so never hands back, an
+   * edit or a command.
+   */
+  offerActions(holder, doc, srv, versions, result) {
+    const kept = new Map()
+    const out = []
+    for (const a of Array.isArray(result) ? result.slice(0, MAX_ACTIONS) : []) {
+      if (!a || typeof a !== 'object' || typeof a.title !== 'string' || !a.title) continue
+      const id = ++this.nextAction
+      kept.set(id, a)
+      const o = { id, title: a.title.slice(0, 200) }
+      if (typeof a.kind === 'string') o.kind = a.kind.slice(0, 60)
+      if (a.isPreferred === true) o.preferred = true
+      if (a.disabled && typeof a.disabled === 'object') o.disabled = typeof a.disabled.reason === 'string' ? a.disabled.reason.slice(0, 200) : 'not available'
+      out.push(o)
+    }
+    this.actions.set(holder, { uri: doc.uri, srv, versions, kept })
+    return { result: out }
+  }
+
+  /**
+   * Runs code action `args.id` of the list last offered to `holder` for this document: resolved
+   * first when the server left its edit out, then its edit applied (edits.js) and its command run by
+   * the host (`workspace/executeCommand`, only a command the server declared). One use: the list is
+   * gone after it.
+   */
+  async runCodeAction(holder, rel, args) {
+    const doc = this.docOf(holder, rel)
+    if (!doc) throw new Error('the document is not open for its language server')
+    const entry = this.actions.get(holder)
+    const id = args && args.id
+    if (!entry || entry.uri !== doc.uri || !Number.isInteger(id) || !entry.kept.has(id)) throw new Error('that code action is no longer offered; ask again')
+    this.actions.delete(holder)
+    const slot = this.slots.get(doc.language)
+    const srv = slot && slot.server
+    if (!srv || srv !== entry.srv) throw new Error('the language server restarted; ask again')
+    let action = entry.kept.get(id)
+    if (action.disabled) throw new Error(`not available: ${String(action.disabled.reason || '').slice(0, 200)}`)
+    // A bare Command (an older server's answer) runs as it is.
+    if (typeof action.command === 'string') {
+      await this.executeCommand(slot, srv, action)
+      return { result: { applied: true, files: 0, edits: 0 } }
+    }
+    const caps = srv.capabilities || {}
+    if (!action.edit && !action.command && caps.codeActionProvider && caps.codeActionProvider.resolveProvider) {
+      const resolved = await srv.request('codeAction/resolve', action, { timeoutMs: EDIT_TIMEOUT_MS })
+      if (resolved && typeof resolved === 'object') action = resolved
+    }
+    let applied = { applied: true, files: 0, edits: 0 }
+    if (action.edit) {
+      applied = await applyWorkspaceEdit(this, action.edit, { versions: entry.versions })
+      if (!applied.applied) return { result: applied }
+    }
+    if (action.command && typeof action.command === 'object') await this.executeCommand(slot, srv, action.command)
+    return { result: applied }
+  }
+
+  /**
+   * Runs a server's own command (from its code action) on that server: only a command its
+   * `executeCommandProvider` lists. A `workspace/applyEdit` it makes while this runs is applied
+   * (serverApplyEdit); any other time it is refused.
+   */
+  async executeCommand(slot, srv, cmd) {
+    const caps = srv.capabilities || {}
+    const listed = caps.executeCommandProvider && Array.isArray(caps.executeCommandProvider.commands) ? caps.executeCommandProvider.commands : []
+    if (typeof cmd.command !== 'string' || !listed.includes(cmd.command)) throw new Error('the language server did not declare the command of that action')
+    const args = cmd.arguments
+    if (args !== undefined && (!Array.isArray(args) || jsonLength(args) > MAX_COMMAND_CHARS)) throw new Error("the action's command is too large")
+    slot.commands = (slot.commands || 0) + 1
+    slot.commandVersions = this.versions()
+    try {
+      await srv.request('workspace/executeCommand', args === undefined ? { command: cmd.command } : { command: cmd.command, arguments: args }, { timeoutMs: EDIT_TIMEOUT_MS })
+    } finally {
+      slot.commands--
+    }
+  }
+
+  /**
+   * The server's `workspace/applyEdit`: applied only while a command the host ran on that server is
+   * working (a server cannot rewrite project files whenever it likes), against the documents as
+   * they were when the command started.
+   */
+  async serverApplyEdit(slot, srv, edit) {
+    if (slot.server !== srv || !(slot.commands > 0)) {
+      return { applied: false, failureReason: "this editor applies a server's edit only while a command it ran is working" }
+    }
+    const r = await applyWorkspaceEdit(this, edit, { versions: slot.commandVersions })
+    const out = { applied: r.applied }
+    if (r.failureReason) out.failureReason = r.failureReason
+    if (Number.isInteger(r.failedChange)) out.failedChange = r.failedChange
+    return out
+  }
+
   // ---- servers ----
 
   slotFor(language) {
@@ -583,6 +835,7 @@ class LspManager {
     const m = { t: 'lsp-status', language: slot.language, name: slot.entry ? slot.entry.name : slot.language, state: slot.state }
     if (slot.install) m.install = slot.install
     if (slot.message) m.message = slot.message
+    if (slot.state === 'ready' && slot.server && slot.server.capabilities) m.features = featuresOf(slot.server.capabilities)
     return m
   }
 
@@ -636,6 +889,7 @@ class LspManager {
         return section.split('.').reduce((o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined), s) ?? null
       },
       onNotification: (m) => this.notification(slot, srv, m),
+      onApplyEdit: (edit) => this.serverApplyEdit(slot, srv, edit),
       onExit: (info) => this.exited(slot, srv, info),
     })
     slot.server = srv
