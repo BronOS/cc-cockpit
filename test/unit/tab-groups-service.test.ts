@@ -277,30 +277,49 @@ describe('TabGroups.reorder (D9)', () => {
     expect(members(t.groups.groupsOf('p')[0])).toEqual(['b', 'c', 'd'])
   })
 
-  it('a member dropped anywhere in its segment’s span, ends included, changes nothing (D24 Q3)', () => {
-    // QA run 1: [c,d,a,b] with group {a,b}, b to 2 (the segment's first slot) gave [c,d,b,a].
-    const q = setup({ p: ['c', 'd', 'a', 'b'] })
-    q.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
-    q.published.length = 0
-    q.saves.length = 0
-    for (const tab of ['a', 'b']) for (const at of [2, 3, 99]) q.groups.reorder('p', tab, at)
-    expect(q.orders.get('p')).toEqual(['c', 'd', 'a', 'b'])
-    expect(q.published).toEqual([])
-    expect(q.saves).toEqual([])
-    expect(members(q.groups.groupsOf('p')[0])).toEqual(['a', 'b'])
-
-    // a [b c d] e: the span is 1..3 for every member, first and last slots included.
+  it('a member’s plain reorder is a no-op only at its own position or strictly between two mates (D26 N2)', () => {
+    // a [b c d] e. In the order without the tab, b's mates c d sit at 1..2, so 2 (between them) and
+    // 1 (its own position) are no-ops; c's mates b d at 1..2: only 2 (its own); d's: 2 and 3.
     const t = grouped()
-    for (const tab of ['b', 'c', 'd']) for (const at of [1, 2, 3]) t.groups.reorder('p', tab, at)
+    const noops: Array<[string, number]> = [['b', 1], ['b', 2], ['c', 2], ['d', 2], ['d', 3]]
+    for (const [tab, at] of noops) t.groups.reorder('p', tab, at)
     expect(t.orders.get('p')).toEqual(['a', 'b', 'c', 'd', 'e'])
     expect(t.published).toEqual([])
+    expect(t.saves).toEqual([])
     expect(members(t.groups.groupsOf('p')[0])).toEqual(['b', 'c', 'd'])
-    // Just outside the span, either side, detaches.
-    t.groups.reorder('p', 'b', 0)
-    expect(t.orders.get('p')).toEqual(['b', 'a', 'c', 'd', 'e'])
-    t.groups.reorder('p', 'd', 4)
-    expect(t.orders.get('p')).toEqual(['b', 'a', 'c', 'e', 'd'])
+    // Just past the bracket detaches: b after its last mate, then c before its first.
+    t.groups.reorder('p', 'b', 3)
+    expect(t.orders.get('p')).toEqual(['a', 'c', 'd', 'b', 'e'])
+    expect(members(t.groups.groupsOf('p')[0])).toEqual(['c', 'd'])
+    t.groups.reorder('p', 'd', 1)
+    expect(t.orders.get('p')).toEqual(['a', 'd', 'c', 'b', 'e'])
     expect(t.groups.groupsOf('p')).toEqual([])
+  })
+
+  it('a group at the end of the strip can be dragged out on that side (D26 N2)', () => {
+    // [c,d,a,b], group {a,b}. b to 3 or 99 is its own position: nothing. a to 99 lands after its
+    // last mate: it detaches (the group dissolves), as does b to 2, before its first mate.
+    const make = () => {
+      const q = setup({ p: ['c', 'd', 'a', 'b'] })
+      q.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
+      q.published.length = 0
+      q.saves.length = 0
+      return q
+    }
+    const q = make()
+    q.groups.reorder('p', 'b', 3)
+    q.groups.reorder('p', 'b', 99)
+    q.groups.reorder('p', 'a', 2)
+    expect(q.published).toEqual([])
+    expect(members(q.groups.groupsOf('p')[0])).toEqual(['a', 'b'])
+    q.groups.reorder('p', 'a', 99)
+    expect(q.orders.get('p')).toEqual(['c', 'd', 'b', 'a'])
+    expect(q.groups.groupsOf('p')).toEqual([])
+    expect(q.published).toHaveLength(1)
+    const r = make()
+    r.groups.reorder('p', 'b', 2)
+    expect(r.orders.get('p')).toEqual(['c', 'd', 'b', 'a'])
+    expect(r.groups.groupsOf('p')).toEqual([])
   })
 
   it('a member dropped outside its segment detaches as a plain tab there', () => {

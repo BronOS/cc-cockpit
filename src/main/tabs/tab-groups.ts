@@ -200,14 +200,17 @@ export class TabGroups {
       const without = order.filter((t) => t !== tabId)
       const at = clamp(toIndex, without.length)
       if (group) {
-        // Anywhere within its own segment's span, ends included, is a no-op (D17, D24 Q3): the
-        // segment is contiguous, so its span is first..last member in the current order. Comparing
-        // inside `without` instead missed the segment's first slot: [c,d,a,b] with b to 2 (before a)
-        // broke the group and gave [c,d,b,a] (QA run 1).
-        const members = new Set(leavesOf(group.root))
-        const first = order.findIndex((t) => members.has(t))
-        const last = order.length - 1 - [...order].reverse().findIndex((t) => members.has(t))
-        if (at >= first && at <= last) return
+        // D17, D26 N2: the same position, or one strictly between two group mates (in the order
+        // without the tab), is a no-op; before its first mate or after its last it detaches there,
+        // so a member dropped just past its bracket leaves, and a group at either end of the strip
+        // can be dragged out on that side. The page decides a drop inside the segment by hit-testing
+        // and sends nothing; this is main's rule for what it does get.
+        if (at === from) return
+        const mates = new Set(leavesOf(group.root).filter((t) => t !== tabId))
+        const first = without.findIndex((t) => mates.has(t))
+        const last = without.length - 1 - [...without].reverse().findIndex((t) => mates.has(t))
+        // Inserting at `at` puts the tab before without[at]: between two mates when first < at <= last.
+        if (first >= 0 && at > first && at <= last) return
         const removed = removeLeaf(groups, order, tabId)
         if (removed.ok) groups = removed.groups
       }
