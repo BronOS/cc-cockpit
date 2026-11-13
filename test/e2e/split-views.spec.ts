@@ -338,3 +338,32 @@ test('groups.changed seq only grows, and a stale view never undoes a newer one',
   expect(await groupFor(page, b)).toBeDefined()
   await expect(visiblePanes(page).first()).toBeVisible()
 })
+
+test('D9, D17: tabs.reorder with block moves the whole group; without it a member dropped outside detaches, inside is a no-op; snapshot.order is the tab order', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
+  const c = await newTaggedShell(cockpit, 'pc')
+  const d = await newTaggedShell(cockpit, 'pd')
+  const order = async (): Promise<string[]> => (await groupsOf(page)).order
+  expect(await order()).toEqual([a, b, c.id, d.id])
+  expect((await tabsOf(page)).map((t) => t.id)).toEqual(await order())
+
+  // Block: the group of `a` goes to index 2 of the order without the block: after c and d.
+  await invoke(page, 'tabs.reorder', { tabId: a, toIndex: 2, block: true })
+  await expect.poll(order).toEqual([c.id, d.id, a, b])
+  expect((await tabsOf(page)).map((t) => t.id)).toEqual([c.id, d.id, a, b])
+  expect(leaves((await groupsOf(page)).groups[0]!.root)).toEqual([a, b])
+
+  // Inside its own segment, a member move without block is a no-op (panes move by drag-to-edge).
+  await invoke(page, 'tabs.reorder', { tabId: b, toIndex: 2 })
+  await page.waitForTimeout(300)
+  expect(await order()).toEqual([c.id, d.id, a, b])
+  expect((await groupsOf(page)).groups).toHaveLength(1)
+
+  // Without block, dropped outside the segment: detaches as a plain tab there; the group of one dissolves.
+  await invoke(page, 'tabs.reorder', { tabId: b, toIndex: 0 })
+  await expect.poll(async () => (await groupsOf(page)).groups).toEqual([])
+  expect(await order()).toEqual([b, c.id, d.id, a])
+  expect((await tabsOf(page)).map((t) => t.id)).toEqual([b, c.id, d.id, a])
+})
