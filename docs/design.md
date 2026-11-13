@@ -645,10 +645,14 @@ windows only; the picker and other windows stay opaque.
   the page `transparent: true` from main's record, never from the current setting: a window is
   what it was made as for its whole life. So a flip of the switch that leaves the window it was
   made in looking otherwise shows an in-page confirm there ("Reopen this window to apply? Claude
-  conversations resume; shells start fresh, and anything running now is stopped." · Reopen window
-  · Later); flipping back hides it. *Reopen window* sends `window.reopen` (project windows only;
-  main takes the project from the sender, never from the payload) and main remakes that window
-  (`WindowManager.reopen`): a modal picker over it is closed, the window is closed, and in its
+  conversations resume; shells start fresh, and anything running now is stopped. Tabs with unsaved
+  changes ask first." · Reopen window · Later); flipping back hides it. *Reopen window* sends
+  `window.reopen` (project windows only; main takes the project from the sender, never from the
+  payload) and main remakes that window (`WindowManager.reopen`). Page tabs with unsaved changes in
+  any view ask first with the window close's native box ("Discard and Reopen" · Cancel, Cancel the
+  default; a box that fails to show is Cancel, since a reopen is never forced): the new window
+  restores those tabs, never their buffers. On Discard, or with nothing unsaved, a modal picker
+  over it is closed, the window is closed, and in its
   `closed` a new one is opened for the project at once, from the current setting. In between the
   project is never treated as closed: it stays in the open list, no picker shows, the app does not
   quit, `onProjectClosed` gets `reopening` and, instead of clearing the saved tabs, saves and

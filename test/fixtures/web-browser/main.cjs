@@ -36,5 +36,9 @@ void app.whenReady().then(() => {
     globalThis.__opened.push(opened)
     return { action: 'deny' }
   })
+  // The web shell holds an unload while a page tab has unsaved text (web/main.tsx beforeunload).
+  // Electron would cancel the close silently and the spec's teardown would wait for ever, so this
+  // test browser always lets the page go; specs check the hold with a dispatched event instead.
+  win.webContents.on('will-prevent-unload', (event) => event.preventDefault())
   void win.loadURL(url)
 })

@@ -211,6 +211,11 @@ export class PageFrames {
     return this.dirty.has(tabId)
   }
 
+  /** Whether any page of this view holds unsaved changes (the web shell's unload guard). */
+  hasDirty(): boolean {
+    return this.dirty.size > 0
+  }
+
   /** The theme changed: every served page gets it. */
   themeChanged(message: object): void {
     for (const l of this.live) l.frame?.loads.themeChanged(message)

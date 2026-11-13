@@ -164,6 +164,10 @@ describe('the window close and quit box', () => {
     expect(quit.defaultId).toBe(1)
     expect(quit.cancelId).toBe(1)
     expect(unsavedDialogOptions('window', ['a', 'b']).message).toBe('2 tabs have unsaved changes.')
+    const reopen = unsavedDialogOptions('reopen', ['a.ts'])
+    expect(reopen.buttons).toEqual(['Discard and Reopen', 'Cancel'])
+    expect(reopen.cancelId).toBe(1)
+    expect(reopen.detail).toBe('• a.ts\n\nReopening the window discards them.')
   })
 
   it("a test run's box: Cancel for a window and Discard for a quit unless answers are queued", async () => {
@@ -172,7 +176,8 @@ describe('the window close and quit box', () => {
     await expect(q.ask(undefined, ['a'], 'quit')).resolves.toBe(true)
     q.answer(true)
     await expect(q.ask(1, ['b'], 'window')).resolves.toBe(true)
-    expect(q.asks().map((a) => a.kind)).toEqual(['window', 'quit', 'window'])
+    await expect(q.ask(1, ['c'], 'reopen')).resolves.toBe(false)
+    expect(q.asks().map((a) => a.kind)).toEqual(['window', 'quit', 'window', 'reopen'])
   })
 
   // The real box (index.ts passes BrowserWindow.fromId and the dialogs' showMessageBox): the button
@@ -220,6 +225,9 @@ describe('the window close and quit box', () => {
       })
       await expect(failing.ask(7, ['a.ts'], 'window')).resolves.toBe(true)
       expect(warn).toHaveBeenCalledWith('unsaved changes dialog failed, going ahead', expect.any(Error))
+      // A reopen is never forced: a box that fails to show there is Cancel.
+      await expect(failing.ask(7, ['a.ts'], 'reopen')).resolves.toBe(false)
+      expect(warn).toHaveBeenCalledWith('unsaved changes dialog failed, not reopening', expect.any(Error))
     } finally {
       warn.mockRestore()
     }
@@ -333,11 +341,14 @@ describe('the page reports, the pool keeps', () => {
     t.frames.sync([entry(TAB_A), entry(TAB_B), entry(TAB_C)])
     t.frames.show(TAB_A)
     await settle()
+    // The web shell's unload guard (web/main.tsx beforeunload) holds only while a frame is dirty.
+    expect(t.frames.hasDirty()).toBe(false)
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: 'no' })
     expect(reports).toEqual([[TAB_A, true]])
     expect(t.frames.isDirty(TAB_A)).toBe(true)
+    expect(t.frames.hasDirty()).toBe(true)
     // Past the cap of 1: the clean B goes when C shows, the dirty A stays.
     t.frames.show(TAB_B)
     await settle()
@@ -349,6 +360,7 @@ describe('the page reports, the pool keeps', () => {
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: false })
     expect(reports.at(-1)).toEqual([TAB_A, false])
     expect(t.frames.isLive(TAB_A)).toBe(false)
+    expect(t.frames.hasDirty()).toBe(false)
   })
 
   it('a closed dirty tab unmounts (main clears at the disconnect) and is no longer dirty here', async () => {
@@ -360,6 +372,7 @@ describe('the page reports, the pool keeps', () => {
     t.frames.sync([])
     expect(t.disconnects).toEqual([TAB_A])
     expect(t.frames.isDirty(TAB_A)).toBe(false)
+    expect(t.frames.hasDirty()).toBe(false)
   })
 
   it('a remounted frame (a page that navigated itself) is a clean page: dirty clears, and the LRU may trim it', async () => {

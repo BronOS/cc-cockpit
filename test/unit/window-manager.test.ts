@@ -1963,6 +1963,68 @@ describe('window close with unsaved page tabs (design-editor.md §1 "Dirty and c
     expect(win.closed).toBe(true)
   })
 
+  it('a reopen (window transparency) asks too: Cancel keeps the window, Discard reopens it', async () => {
+    const u = unsaved()
+    const a = u.wm.openPath(folder('a'))
+    const old = factory.open('project')[0]!
+    u.titles.set(old.id, ['a.ts'])
+    u.wm.reopen(a.id)
+    expect(u.asks.map((x) => [x.windowId, x.titles, x.kind])).toEqual([[old.id, ['a.ts'], 'reopen']])
+    expect(old.closed).toBe(false)
+    // A second Reopen, or the close button, while the box is up waits for the same answer.
+    u.wm.reopen(a.id)
+    old.userClose()
+    expect(u.asks).toHaveLength(1)
+    expect(old.closed).toBe(false)
+    u.asks[0]!.answer(false)
+    await settle()
+    expect(old.closed).toBe(false)
+    expect(u.wm.windowIdOf(a.id)).toBe(old.id)
+    expect(u.closed).toEqual([])
+    // Asked again; Discard reopens: the old window closes, a new one is the project's.
+    u.wm.reopen(a.id)
+    expect(u.asks).toHaveLength(2)
+    u.asks[1]!.answer(true)
+    await settle()
+    expect(old.closed).toBe(true)
+    const fresh = factory.open('project')[0]!
+    expect(fresh.id).not.toBe(old.id)
+    expect(u.wm.windowIdOf(a.id)).toBe(fresh.id)
+    expect(u.closed).toEqual([a.id])
+    expect(registry.openIds()).toEqual([a.id])
+  })
+
+  it('a reopen whose box fails to show is not done (it is never forced); nothing unsaved reopens with no ask', async () => {
+    const u = unsaved()
+    const a = u.wm.openPath(folder('a'))
+    const old = factory.open('project')[0]!
+    u.titles.set(old.id, ['a.ts'])
+    u.wm.reopen(a.id)
+    u.asks[0]!.fail(new Error('no box'))
+    await settle()
+    expect(old.closed).toBe(false)
+    expect(u.wm.windowIdOf(a.id)).toBe(old.id)
+    u.titles.set(old.id, [])
+    u.wm.reopen(a.id)
+    expect(u.asks).toHaveLength(1)
+    expect(old.closed).toBe(true)
+    expect(u.wm.windowIdOf(a.id)).not.toBe(old.id)
+  })
+
+  it("a reopen's Discard after the window was closed meanwhile does nothing", async () => {
+    const u = unsaved()
+    const a = u.wm.openPath(folder('a'))
+    const old = factory.open('project')[0]!
+    u.titles.set(old.id, ['a.ts'])
+    u.wm.reopen(a.id)
+    expect(u.wm.closeForEveryone(old.id)).toBe(true)
+    expect(old.closed).toBe(true)
+    u.asks[0]!.answer(true)
+    await settle()
+    expect(factory.open('project')).toHaveLength(0)
+    expect(u.wm.windowIdOf(a.id)).toBeUndefined()
+  })
+
   it('server mode never asks (no close button; a browser asks in the page), nor does a quit', () => {
     const u = unsaved(true)
     u.wm.openPath(folder('a'))

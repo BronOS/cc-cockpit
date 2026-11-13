@@ -53,8 +53,13 @@ Frame lifetime (a page holds unsaved text, so its frame must outlive what reload
   messages is safe once it resends; the editor's reconnect asks for the file's head only, the text only when it changed).
 
 Dirty and close: dirty is per (tab, view), kept by main from each page's report. Closing a tab that is dirty in any
-view asks with core's dialog (the `CloseTabDialog` pattern, an `ApprovalDialog` in server mode), also on window close
-and quit; the page cannot block or delay a close itself.
+view asks with core's dialog (the `CloseTabDialog` pattern, an `ApprovalDialog` in server mode), also on window close,
+on a window reopen (Settings › Window's "Reopen window": the new window restores the tabs, never their buffers; Cancel or
+a box that fails to show keeps the window) and on quit; the page cannot block or delay a close itself. A browser view's
+own unload (the browser tab closed, reloaded or navigated away) is the web shell's: it holds the unload with the
+browser's "Leave site?" question (`beforeunload`) while a page frame in that view is dirty. A desktop remote window
+ignores `beforeunload` (the webview hardening lets every unload go ahead, and main reloads that page itself on a
+re-pair), so its unsaved text is lost on close, a known limit.
 
 Keyboard: a sandboxed frame's keys never reach the shell's window listener. Desktop: `before-input-event` on the frame
 maps app chords to `commands.trigger`, as webview panels do. Web shell: the panel SDK forwards chords to the parent.

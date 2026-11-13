@@ -20,9 +20,12 @@ const BLUR_HELP: Record<BlurSupport, string> = {
   none: 'Not available on Linux: Electron has no blur behind windows there.'
 }
 
-/** What reopening costs, said once and plainly: what comes back and what does not (restore.ts). */
+/**
+ * What reopening costs, said once and plainly: what comes back and what does not (restore.ts). Tabs
+ * with unsaved changes come back without them, so main asks about those first (WindowManager.reopen).
+ */
 const REOPEN_CONFIRM =
-  'Reopen this window to apply? Claude conversations resume; shells start fresh, and anything running now is stopped.'
+  'Reopen this window to apply? Claude conversations resume; shells start fresh, and anything running now is stopped. Tabs with unsaved changes ask first.'
 
 /**
  * Settings › Appearance › Window: the see-through background of project windows
@@ -64,7 +67,8 @@ export function WindowBackgroundSettings(props: {
   }
 
   // Main closes this very window, so the reply usually never comes; a refusal shows as the page's
-  // error like any other action's.
+  // error like any other action's. With unsaved page tabs main asks first and answers at once, and
+  // Cancel there leaves this page as it is (the offer stays).
   const reopen = (): void => {
     void run('reopen', () => window.cockpit.invoke('window.reopen'))
   }

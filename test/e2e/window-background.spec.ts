@@ -60,7 +60,7 @@ const opaqueInside = (page: Page, selector: string): Promise<string[]> =>
 
 /** The offer's whole text (WindowBackgroundSettings.tsx), checked word for word. */
 const REOPEN_TEXT =
-  'Reopen this window to apply? Claude conversations resume; shells start fresh, and anything running now is stopped.'
+  'Reopen this window to apply? Claude conversations resume; shells start fresh, and anything running now is stopped. Tabs with unsaved changes ask first.'
 
 const stored = (dataDir: string): unknown =>
   (JSON.parse(readFileSync(join(dataDir, 'app.json'), 'utf8')) as { windowBackground?: unknown }).windowBackground

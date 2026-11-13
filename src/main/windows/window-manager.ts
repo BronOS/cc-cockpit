@@ -466,14 +466,43 @@ export class WindowManager {
    * first: Electron would close it with its parent anyway, and the orphan bookkeeping in
    * `projectClosed` is for a user close. The id is the caller's, resolved by main (the IPC
    * sender's project), never a renderer payload. Throws when the project has no window; a second
-   * call while the first close is still under way is a no-op.
+   * call while the first close is still under way, or while a close or unsaved box of the window is
+   * up, is a no-op.
+   *
+   * Page tabs with unsaved changes in any view ask first, as a close does (design-editor.md §1): the
+   * new window restores those tabs from their record, never their buffers, so a reopen ends that
+   * text like a close. Discard reopens; Cancel, or a box that fails to show, leaves the window as it
+   * is (a reopen only applies a look, it is never forced). No ask in server mode, where `askUnsaved`
+   * is absent (and `window.reopen` is a desktop-only channel).
    */
   reopen(projectId: string): void {
     const handle = this.projects.get(projectId)
     if (!handle) throw new Error('the project has no open window')
-    if (this.quitting || this.reopening.has(handle)) return
+    if (this.quitting || this.reopening.has(handle) || this.closing.has(handle) || this.asking.has(handle)) return
+    if (!this.paths.has(handle)) throw new Error('the project has no open window')
+    if (!this.unsavedWillAsk(handle)) {
+      this.reopenNow(handle)
+      return
+    }
+    this.asking.add(handle)
+    const answered = (discard: boolean): void => {
+      this.asking.delete(handle)
+      // Closed or reopened meanwhile (a quit, Close for everyone): the answer is about a window that is gone.
+      if (!discard || this.quitting || this.projects.get(projectId) !== handle) return
+      if (this.reopening.has(handle) || this.closing.has(handle)) return
+      this.reopenNow(handle)
+    }
+    const titles = this.options.unsavedTabs?.(handle.id) ?? []
+    this.options.askUnsaved!(handle.id, titles, 'reopen').then(answered, (err: unknown) => {
+      this.logLine(`unsaved changes dialog failed, not reopening: ${errorText(err)}`)
+      answered(false)
+    })
+  }
+
+  /** Close the window as a reopen: `projectClosed` opens it again from the folder it was opened from. */
+  private reopenNow(handle: WindowHandle): void {
     const path = this.paths.get(handle)
-    if (path === undefined) throw new Error('the project has no open window')
+    if (path === undefined) return
     if (this.pickerParent === handle) this.closePicker()
     this.reopening.set(handle, path)
     handle.close()

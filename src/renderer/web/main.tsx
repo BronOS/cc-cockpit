@@ -34,7 +34,7 @@ import { loadTerminalFont } from '../tabs/terminal-font'
 import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { startChime } from '../notify/chime'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
-import { pageTabsReady } from '../tabs/PageTabArea'
+import { hasUnsavedPages, pageTabsReady } from '../tabs/PageTabArea'
 import { keyedFetch, pageSocketProtocols, storeDeviceKey } from './device-key'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
@@ -249,6 +249,15 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
   // ctx.notify's `sound` in server mode (main sends it to a server's browsers only, web/connection.ts
   // remoteEvent). A browser may hold the sound back until the person has touched the page.
   startChime()
+  // A page tab's unsaved text lives in this view's frame (dirty is per view, design-editor.md §1), so
+  // closing, reloading or leaving this browser tab ends it like a window close: hold the unload with
+  // the browser's own "Leave site?" question while any frame here is dirty. preventDefault is the
+  // current way, `returnValue` the older browsers' (a non-empty string). Clean: nothing is held.
+  window.addEventListener('beforeunload', (ev) => {
+    if (!hasUnsavedPages()) return
+    ev.preventDefault()
+    ev.returnValue = 'unsaved'
+  })
   window.addEventListener('pagehide', () => bridge.close())
   // Closing the socket on pagehide makes the page eligible for the back/forward cache; a page
   // restored from it has a closed bridge that still says `ready`. Start over from a fresh load.

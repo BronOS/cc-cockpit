@@ -114,6 +114,14 @@ function observeAround(obs: ResizeObserver, node: Element): void {
   }
 }
 
+/**
+ * Whether a page tab of this view holds unsaved changes; false before the pool exists (nothing
+ * mounted, nothing to lose). Read by the web shell's `beforeunload`, which must not make the pool.
+ */
+export function hasUnsavedPages(): boolean {
+  return frames?.hasDirty() ?? false
+}
+
 /** The page's pool, made on first use with the DOM and IPC of this shell. */
 export function pageFrames(): PageFrames {
   if (frames) return frames

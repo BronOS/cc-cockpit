@@ -33,9 +33,12 @@ behind it are in [design.md](design.md).
   the question, or Settings > General > Tabs > "Ask before closing a tab that is still
   running" (on by default), turns it off. A tab whose process already ended closes at once.
   A page tab with unsaved text (an editor file) always asks, whatever that setting says, and so do
-  closing its window and quitting (on macOS, Cancel there also cancels a logout or shutdown that
-  asked the app to quit). A window reopened by a setting that needs a new window (window
-  transparency) does not ask: its page tabs end and unsaved text in them is lost, so save first.
+  closing its window, reopening it for a setting that needs a new window (window transparency;
+  Cancel keeps the window as it is) and quitting (on macOS, Cancel there also cancels a logout or
+  shutdown that asked the app to quit). In a browser (web access), closing, reloading or leaving
+  the page while one of its page tabs holds unsaved text gets the browser's own "Leave site?"
+  question. Known limit: a remote server's window on the desktop (Remote servers) closes and
+  reloads without asking, so save there first.
 - Ctrl+Tab (Ctrl on every platform; Cmd+Tab is macOS's app switcher) goes back to the tab you were
   in before. Hold Ctrl and press Tab again to walk further back through the tabs in recent order,
   Shift+Tab or the arrow keys to step back; after a moment an overlay lists the tabs, and letting go

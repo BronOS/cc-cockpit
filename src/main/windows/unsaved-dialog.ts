@@ -1,8 +1,10 @@
-// Unsaved changes in page tabs at a window close or a quit (design-editor.md §1 "Dirty and close").
-// A page tab (the editor's file) holds text main never sees; main only knows, per (tab, view), that a
-// page said it holds unsaved changes (TabManager.setPageDirty). Closing the window or quitting the
-// app ends every page, so either asks first, on the desktop, with a native box: Discard (close or
-// quit anyway) or Cancel (nothing happens). The page cannot block or delay it: it only ever reported.
+// Unsaved changes in page tabs at a window close, a window reopen or a quit (design-editor.md §1
+// "Dirty and close"). A page tab (the editor's file) holds text main never sees; main only knows, per
+// (tab, view), that a page said it holds unsaved changes (TabManager.setPageDirty). Closing the
+// window, reopening it (Settings › Window's "Reopen window": the new window restores the tabs, never
+// their buffers) or quitting the app ends every page, so each asks first, on the desktop, with a
+// native box: Discard (go ahead) or Cancel (nothing happens). The page cannot block or delay it: it
+// only ever reported.
 //
 // A tab's own close asks in the renderer (close-confirm.ts, CloseTabDialog), and server mode's Close
 // project asks in the browser with the in-page approval (web/CloseProject.tsx). Server mode has no
@@ -13,8 +15,11 @@
 // close-dialog.ts: the message box and the window lookup come from index.ts.
 import type { MessageBoxOptions } from 'electron'
 
-/** What is being ended: one window's tabs, or the app's (every window). */
-export type UnsavedKind = 'window' | 'quit'
+/**
+ * What is being ended: one window's tabs (a close, or a reopen that makes the window again), or the
+ * app's (every window).
+ */
+export type UnsavedKind = 'window' | 'reopen' | 'quit'
 
 /**
  * Ask whether to discard the unsaved changes of `titles` (page tab titles, at least one): true is
@@ -36,17 +41,24 @@ export function unsavedList(titles: readonly string[]): string {
   return shown.join('\n')
 }
 
+/** The Discard button and what the detail says ends the pages, per kind. */
+const KIND_TEXT: Record<UnsavedKind, { button: string; doing: string }> = {
+  window: { button: 'Discard and Close', doing: 'Closing the window' },
+  reopen: { button: 'Discard and Reopen', doing: 'Reopening the window' },
+  quit: { button: 'Discard and Quit', doing: 'Quitting' }
+}
+
 /** The message box. Cancel is the default: Enter never throws text away. */
 export function unsavedDialogOptions(kind: UnsavedKind, titles: readonly string[]): MessageBoxOptions {
   const one = titles.length === 1
   return {
     type: 'warning',
-    buttons: [kind === 'quit' ? 'Discard and Quit' : 'Discard and Close', 'Cancel'],
+    buttons: [KIND_TEXT[kind].button, 'Cancel'],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
     message: one ? 'A tab has unsaved changes.' : `${titles.length} tabs have unsaved changes.`,
-    detail: `${unsavedList(titles)}\n\n${kind === 'quit' ? 'Quitting' : 'Closing the window'} discards ${one ? 'them' : 'all of them'}.`
+    detail: `${unsavedList(titles)}\n\n${KIND_TEXT[kind].doing} discards ${one ? 'them' : 'all of them'}.`
   }
 }
 
@@ -57,9 +69,10 @@ export interface UnsavedDialogDeps<W> {
 }
 
 /**
- * The real box, as a sheet on the window when there is one. A box that fails to show discards, as
- * close-dialog.ts closes for everyone: the person asked to close or quit, and an app that can never
- * be closed is worse; the failure is logged.
+ * The real box, as a sheet on the window when there is one. A box that fails to show discards for a
+ * close or a quit, as close-dialog.ts closes for everyone: the person asked to close or quit, and an
+ * app that can never be closed is worse. A reopen is never forced (it only applies a look), so there
+ * a failed box is Cancel. The failure is logged.
  */
 export function electronAskUnsaved<W>(deps: UnsavedDialogDeps<W>): AskUnsaved {
   return async (windowId, titles, kind) => {
@@ -67,6 +80,10 @@ export function electronAskUnsaved<W>(deps: UnsavedDialogDeps<W>): AskUnsaved {
     try {
       return (await deps.showMessageBox(parent, unsavedDialogOptions(kind, titles))).response === 0
     } catch (err) {
+      if (kind === 'reopen') {
+        console.warn('unsaved changes dialog failed, not reopening', err)
+        return false
+      }
       console.warn('unsaved changes dialog failed, going ahead', err)
       return true
     }
@@ -75,8 +92,8 @@ export function electronAskUnsaved<W>(deps: UnsavedDialogDeps<W>): AskUnsaved {
 
 /**
  * A test run's box, as QueuedCloseAsk: it records what would have been asked (the `unsavedAsks`
- * hook) and answers with what a test queued (`answerUnsaved`). None queued: a window close is
- * Cancel (the window stays, as Esc would leave it), a quit is Discard, so a test run's quit (the
+ * hook) and answers with what a test queued (`answerUnsaved`). None queued: a window close or reopen
+ * is Cancel (the window stays, as Esc would leave it), a quit is Discard, so a test run's quit (the
  * harness closing the app) always ends.
  */
 export class QueuedUnsavedAsk {

@@ -368,7 +368,7 @@ test.describe('editor, desktop', () => {
     }
   })
 
-  test('closing a tab with unsaved text asks; Cancel keeps it, Discard drops it and the file is untouched; quit asks too', async () => {
+  test('closing a tab with unsaved text asks; Cancel keeps it, Discard drops it and the file is untouched; quit and a window reopen ask too', async () => {
     const { cockpit: c, close } = await launchCockpit({
       env: { CC_COCKPIT_NO_BUNDLED: '' },
       settings: editorSettings({ autosaveIdleSeconds: 0, autosaveOnBlur: false })
@@ -407,6 +407,19 @@ test.describe('editor, desktop', () => {
       // Cancel: the app is still here with the tab and its text.
       await expect(frame.locator('.cm-content')).toContainText('edited original')
       expect(readFileSync(file, 'utf8')).toBe('original\n')
+
+      // Settings › Window's "Reopen window" (window.reopen) makes the window again, which would end the
+      // page's buffer: it asks the same way, and Cancel (the test box's default for a reopen) keeps
+      // this window, its tab and its text.
+      const windowIds = (): Promise<number[]> => c.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.id))
+      const before = await windowIds()
+      await page.evaluate<void>(`window.cockpit.invoke('window.reopen')`)
+      await expect.poll(() => c.hook<Array<{ titles: string[]; kind: string }>>('unsavedAsks')).toHaveLength(2)
+      expect((await c.hook<Array<{ titles: string[]; kind: string }>>('unsavedAsks'))[1]).toMatchObject({ kind: 'reopen', titles: ['draft.txt'] })
+      expect(page.isClosed()).toBe(false)
+      expect(await windowIds()).toEqual(before)
+      await expect(frame.locator('.cm-content')).toContainText('edited original')
+      await expect(stateOf(c)).toHaveText('Unsaved')
 
       // Discard and Close on the tab: it goes, the file keeps what is on disk.
       await page.getByRole('button', { name: /^Close draft\.txt/ }).click()

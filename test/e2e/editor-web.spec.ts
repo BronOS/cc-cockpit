@@ -43,7 +43,14 @@ declare global {
   }
 }
 
-test('a file tab in a browser view: edit, the socket drops with a dirty buffer, the text stays, save; the desktop shows it', async () => {
+/** Whether the web shell's `beforeunload` holds the unload now (run in the browser's page). */
+function unloadHeld(): boolean {
+  const ev = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(ev)
+  return ev.defaultPrevented
+}
+
+test('a file tab in a browser view: edit (the unload is held), the socket drops with a dirty buffer, the text stays, save; the desktop shows it', async () => {
   test.setTimeout(120_000)
   const { cockpit: c, close } = await launchCockpit({
     env: { CC_COCKPIT_NO_BUNDLED: '' },
@@ -97,6 +104,9 @@ test('a file tab in a browser view: edit, the socket drops with a dirty buffer, 
     await web1.keyboard.type('from the browser ')
     await expect(stateOf(web1)).toHaveText('Unsaved')
     expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+    // Closing, reloading or leaving this browser tab would end the buffer: the web shell holds the
+    // unload (the browser's own "Leave site?"). A dispatched event shows the listener's answer.
+    await expect.poll(() => web1.evaluate(unloadHeld)).toBe(true)
 
     // The connection drops with the unsaved text in the buffer; the shell reconnects, the page takes
     // a new port and keeps its text and its unsaved state.
@@ -127,6 +137,8 @@ test('a file tab in a browser view: edit, the socket drops with a dirty buffer, 
     await web1.keyboard.press(`${MOD}+s`)
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 20_000 }).toBe('from the browser alpha\nbeta\ngamma\n')
     await expect(stateOf(web1)).toHaveText('Saved', { timeout: 20_000 })
+    // Saved: nothing to lose, so nothing holds the unload (the browser closes below without a question).
+    await expect.poll(() => web1.evaluate(unloadHeld)).toBe(false)
     await expect(editorFrame(page).locator('.cm-content')).toContainText('from the browser alpha', { timeout: 15_000 })
     await expect(stateOf(page)).toHaveText('Saved')
 
