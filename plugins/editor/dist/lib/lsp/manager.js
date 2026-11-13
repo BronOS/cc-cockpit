@@ -329,7 +329,7 @@ class LspManager {
    * @param {object} [o.log]
    * @param {object} [o.env] whose PATH finds the servers (default process.env: the login-shell env)
    * @param {unknown} [o.servers] the `servers` app setting
-   * @param {object} [o.timing] tests shorten the timers: { idleStopMs, restartDelaysMs, restartLimit, restartWindowMs, watchFlushMs }
+   * @param {object} [o.timing] tests shorten the timers: { idleStopMs, restartDelaysMs, restartLimit, restartWindowMs, watchFlushMs, initializeTimeoutMs }
    */
   constructor(o) {
     this.root = fs.realpathSync(o.root)
@@ -932,6 +932,8 @@ class LspManager {
       onNotification: (m) => this.notification(slot, srv, m),
       onApplyEdit: (edit) => this.serverApplyEdit(slot, srv, edit),
       onExit: (info) => this.exited(slot, srv, info),
+      // Unset outside tests: the server's own INITIALIZE_TIMEOUT_MS.
+      initializeTimeoutMs: this.timing.initializeTimeoutMs,
     })
     slot.server = srv
     slot.opened = new Set()

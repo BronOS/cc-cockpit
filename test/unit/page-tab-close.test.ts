@@ -11,7 +11,7 @@ import type { EventChannel, IpcEventMap, TabInfo } from '../../src/shared/ipc'
 import type { PageTabSpec } from '../../src/shared/page-tabs'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import { closeWillAsk } from '../../src/main/sessions/close-asks'
-import { QueuedUnsavedAsk, QuitGuard, unsavedDialogOptions, unsavedList } from '../../src/main/windows/unsaved-dialog'
+import { electronAskUnsaved, QueuedUnsavedAsk, QuitGuard, unsavedDialogOptions, unsavedList } from '../../src/main/windows/unsaved-dialog'
 import { closeAnswer, closeMayAsk, closeQuestion, closeQuestionText } from '../../src/renderer/tabs/close-confirm'
 import { unsavedText } from '../../src/renderer/web/close-project-text'
 import { PanelClient, TAB_DIRTY_MESSAGE, TAB_MESSAGE, type ThemeRoot } from '../../src/sdk/panel-core'
@@ -175,6 +175,56 @@ describe('the window close and quit box', () => {
     expect(q.asks().map((a) => a.kind)).toEqual(['window', 'quit', 'window'])
   })
 
+  // The real box (index.ts passes BrowserWindow.fromId and the dialogs' showMessageBox): the button
+  // order decides which answer throws text away, and a box that fails to show goes ahead.
+  function realBox(show: (parent: string | undefined) => Promise<{ response: number }>) {
+    const lookups: number[] = []
+    const parents: Array<string | undefined> = []
+    const ask = electronAskUnsaved<string>({
+      windowOf: (id) => {
+        lookups.push(id)
+        return id === 7 ? 'win7' : undefined
+      },
+      showMessageBox: (parent, options) => {
+        parents.push(parent)
+        expect(options.buttons).toHaveLength(2)
+        return show(parent)
+      }
+    })
+    return { ask, lookups, parents }
+  }
+
+  it('the real box: the first button (Discard) is true, Cancel is false, as a sheet on the window when there is one', async () => {
+    const discard = realBox(async () => ({ response: 0 }))
+    await expect(discard.ask(7, ['a.ts'], 'window')).resolves.toBe(true)
+    expect(discard.parents).toEqual(['win7'])
+    const cancel = realBox(async () => ({ response: 1 }))
+    await expect(cancel.ask(7, ['a.ts'], 'quit')).resolves.toBe(false)
+    // A quit with no focused window: no lookup, a free-standing box.
+    const noWindow = realBox(async () => ({ response: 1 }))
+    await expect(noWindow.ask(undefined, ['a.ts'], 'quit')).resolves.toBe(false)
+    expect(noWindow.lookups).toEqual([])
+    expect(noWindow.parents).toEqual([undefined])
+    // A window that has gone since: the box shows on its own.
+    const gone = realBox(async () => ({ response: 1 }))
+    await expect(gone.ask(3, ['a.ts'], 'window')).resolves.toBe(false)
+    expect(gone.lookups).toEqual([3])
+    expect(gone.parents).toEqual([undefined])
+  })
+
+  it('the real box: one that fails to show discards (the person asked to close) and logs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const failing = realBox(async () => {
+        throw new Error('no box')
+      })
+      await expect(failing.ask(7, ['a.ts'], 'window')).resolves.toBe(true)
+      expect(warn).toHaveBeenCalledWith('unsaved changes dialog failed, going ahead', expect.any(Error))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('server mode names the unsaved tabs in its Close project ask', () => {
     expect(unsavedText(['a.ts'])).toBe('Unsaved changes in a.ts are lost.')
     expect(unsavedText(['a', 'b'])).toBe('Unsaved changes in a and b are lost.')
@@ -219,6 +269,44 @@ describe('QuitGuard: a quit with unsaved page tabs', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(t.quits()).toBe(1)
     expect(t.g.beforeQuit()).toBe(false)
+  })
+})
+
+describe('QuitGuard: a failing box or window lookup', () => {
+  it('a box that rejects quits anyway (the person asked to quit) and logs why', async () => {
+    const logs: string[] = []
+    let quits = 0
+    const g = new QuitGuard({
+      unsaved: () => ['a.ts'],
+      windowId: () => 4,
+      ask: () => Promise.reject(new Error('no box')),
+      quit: () => quits++,
+      log: (m) => logs.push(m)
+    })
+    expect(g.beforeQuit()).toBe(true)
+    await vi.waitFor(() => expect(quits).toBe(1))
+    expect(logs).toEqual(['quit: unsaved changes dialog failed, quitting: Error: no box'])
+    // The quit it started goes through.
+    expect(g.beforeQuit()).toBe(false)
+  })
+
+  it('a window lookup that throws still asks, with no window', async () => {
+    const windows: Array<number | undefined> = []
+    const g = new QuitGuard({
+      unsaved: () => ['a.ts'],
+      windowId: () => {
+        throw new Error('window gone')
+      },
+      ask: async (windowId) => {
+        windows.push(windowId)
+        return false
+      },
+      quit: () => {
+        throw new Error('Cancel must not quit')
+      }
+    })
+    expect(g.beforeQuit()).toBe(true)
+    await vi.waitFor(() => expect(windows).toEqual([undefined]))
   })
 })
 

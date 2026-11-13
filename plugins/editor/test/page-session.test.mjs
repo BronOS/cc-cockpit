@@ -171,6 +171,8 @@ test('chunkText never splits a surrogate pair', () => {
   const parts = chunkText('ab😀cd', 3)
   assert.deepEqual(parts, ['ab', '😀c', 'd'])
   assert.deepEqual(chunkText(''), [''])
+  // Size 1: a pair is taken whole (stepping back would leave an empty part and never end).
+  assert.deepEqual(chunkText('a😀b', 1), ['a', '😀', 'b'])
 })
 
 test('a changed answer merges: a clean merge is applied and saved on theirs, with the notice', () => {

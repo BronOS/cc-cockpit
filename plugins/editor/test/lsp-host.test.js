@@ -31,10 +31,14 @@ async function until(fn, ms = 5000, what = 'condition') {
   }
 }
 
-/** ctx.processes.spawn's shape over node's spawn (argv only); `spawned` records every argv. */
+/**
+ * ctx.processes.spawn's shape over node's spawn (argv only); `spawned` records every argv, `sent`
+ * every message the host wrote (decoded here: what a server killed right after a write never logs).
+ */
 function nodeSpawn() {
   const spawned = []
   const children = []
+  const sent = []
   const spawn = (argv, { cwd }) => {
     const c = cp.spawn(argv[0], argv.slice(1), { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
     c.on('error', () => {})
@@ -42,9 +46,10 @@ function nodeSpawn() {
     if (c.pid === undefined) throw new Error(`processes: cannot run ${argv[0]}`)
     spawned.push({ argv, cwd })
     children.push(c)
+    const decoder = new Decoder((m) => sent.push(m), () => {})
     return {
       pid: c.pid,
-      write: (b) => c.stdin.write(b),
+      write: (b) => (decoder.push(b), c.stdin.write(b)),
       end: () => c.stdin.end(),
       onData: (fn) => c.stdout.on('data', fn),
       onStderr: (fn) => c.stderr.on('data', fn),
@@ -52,11 +57,25 @@ function nodeSpawn() {
       kill: () => c.kill('SIGKILL'),
     }
   }
-  return { spawn, spawned, children }
+  return { spawn, spawned, children, sent }
+}
+
+/** Every temp folder of this file (a project's .log and .starts beside it too) goes after the last test. */
+const made = []
+test.after(() => {
+  for (const root of made) for (const p of [root, `${root}.log`, `${root}.starts`]) fs.rmSync(p, { recursive: true, force: true })
+})
+
+/** A temp folder removed with the projects. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
 }
 
 function project() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edlsp-')))
+  made.push(root)
   fs.mkdirSync(path.join(root, 'src'))
   fs.writeFileSync(path.join(root, 'src/a.ts'), 'const a = 1\n')
   fs.writeFileSync(path.join(root, 'src/b.ts'), 'const b = 2\n')
@@ -168,7 +187,7 @@ test('servers: the built-in table, fallbacks in order, the setting adds and over
 })
 
 test('servers: looked up on PATH (the host env: the login-shell PATH); the first candidate found wins; missing names the install command', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edlsp-path-'))
+  const dir = tempDir('edlsp-path-')
   const bin = path.join(dir, 'phpactor')
   fs.writeFileSync(bin, '#!/bin/sh\n', { mode: 0o755 })
   fs.writeFileSync(path.join(dir, 'intelephense'), 'not executable', { mode: 0o644 })
@@ -287,7 +306,7 @@ test('an ask the server does not offer answers unsupported; codeActions get the 
 test('URIs: a path outside the project, a link out of it, an absolute path are refused; a file with no server gets none', async (t) => {
   const f = setup()
   t.after(f.done)
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'edlsp-out-'))
+  const outside = tempDir('edlsp-out-')
   fs.writeFileSync(path.join(outside, 'x.ts'), 'secret')
   fs.symlinkSync(path.join(outside, 'x.ts'), path.join(f.root, 'src/link.ts'))
   const a = holder('a')
@@ -393,6 +412,78 @@ test('a server that breaks the framing is stopped and counts as a crash', async 
   assert.match(a.last('lsp-status').message, /malformed header|not LSP/)
 })
 
+// ---- a server that never gets through `initialize` ----
+// server.js kills a server whose `initialize` failed (an error answer, the timeout); one that exits
+// first is gone on its own. Either way the manager's `exited` decides as for any crash: a restart
+// with backoff, then `failed`, its message carrying why and the last lines of the server's stderr
+// (the bar is all the person sees of a server that cannot start: "cannot find tsconfig", a missing
+// runtime). Nothing reaches a server that never initialized: no `initialized`, no didOpen.
+
+/** Every child the test spawned has closed, killed by the host (SIGKILL) unless it exited itself. */
+const allClosed = (f) => f.s.children.every((c) => c.exitCode !== null || c.signalCode !== null)
+
+test('initialize answered with an error: killed, restarted with backoff, then failed with the error and the stderr tail', async (t) => {
+  const f = setup({ flags: ['--fail-init', '--stderr', 'one\ntwo\n\nthree\nfour'], timing: { restartLimit: 1 } })
+  t.after(f.done)
+  const a = holder('a')
+  f.m.open(a, 'src/a.ts', 'x')
+  const failed = await until(() => (a.last('lsp-status')?.state === 'failed' ? a.last('lsp-status') : null), 5000, 'failed')
+  assert.equal(f.startCount(), 2) // the first start and the one restart the limit allows
+  assert.ok(a.posts.some((p) => p.t === 'lsp-status' && p.state === 'restarting'))
+  assert.equal(a.posts.some((p) => p.t === 'lsp-status' && p.state === 'ready'), false)
+  // The server's own words, then its last three non-empty stderr lines (an empty line skipped).
+  assert.match(failed.message, /stopped \(fake init failure\): two \| three \| four$/)
+  // It did not exit on its own: the host killed both starts.
+  await until(() => allClosed(f), 5000, 'children closed')
+  assert.deepEqual(f.s.children.map((c) => c.signalCode), ['SIGKILL', 'SIGKILL'])
+  assert.equal(f.got('initialize').length, 2)
+  assert.equal(f.got('initialized').length, 0)
+  assert.equal(f.got('textDocument/didOpen').length, 0)
+  assert.equal(f.m.running(), false)
+})
+
+test('initialize never answered: cancelled and killed at the timeout (60 s by default, here 150 ms), then failed', async (t) => {
+  const f = setup({ flags: ['--hang-init'], timing: { initializeTimeoutMs: 150, restartLimit: 0 } })
+  t.after(f.done)
+  const a = holder('a')
+  f.m.open(a, 'src/a.ts', 'x')
+  const failed = await until(() => (a.last('lsp-status')?.state === 'failed' ? a.last('lsp-status') : null), 5000, 'failed')
+  assert.match(failed.message, /did not answer initialize in/)
+  // The host told the server it gave up on that very request before the kill (read from what the
+  // host wrote: the kill follows at once, so the fake may never log it).
+  const init = f.s.sent.find((m) => m.method === 'initialize')
+  assert.deepEqual(f.s.sent.filter((m) => m.method === '$/cancelRequest').map((m) => m.params.id), [init.id])
+  await until(() => allClosed(f), 5000, 'child closed')
+  assert.equal(f.s.children[0].signalCode, 'SIGKILL')
+  assert.equal(f.startCount(), 1)
+  assert.equal(f.got('initialized').length, 0)
+
+  // The seam changes nothing outside tests: a server given no timeout waits INITIALIZE_TIMEOUT_MS.
+  const { LspServer } = require('../dist/lib/lsp/server.js')
+  const child = { onData() {}, onStderr() {}, onExit() {}, write() {}, kill() {} }
+  const srv = new LspServer({ spawn: () => child, argv: ['x'], root: f.root, language: 'x' })
+  let opts = null
+  srv.request = (_method, _params, o) => ((opts = o), new Promise(() => {}))
+  srv.start()
+  assert.equal(opts.timeoutMs, 60 * 1000)
+})
+
+test('a server that exits before answering initialize: a crash like any other, its exit code and stderr in the message', async (t) => {
+  const f = setup({ flags: ['--exit-before-init', '--stderr', 'boom: cannot load module'], timing: { restartLimit: 1 } })
+  t.after(f.done)
+  const a = holder('a')
+  f.m.open(a, 'src/a.ts', 'x')
+  const failed = await until(() => (a.last('lsp-status')?.state === 'failed' ? a.last('lsp-status') : null), 5000, 'failed')
+  assert.match(failed.message, /stopped \(exited with code 3\): boom: cannot load module$/)
+  assert.ok(a.posts.some((p) => p.t === 'lsp-status' && p.state === 'restarting'))
+  assert.equal(f.startCount(), 2)
+  assert.deepEqual(f.s.children.map((c) => c.exitCode), [3, 3])
+  assert.equal(f.got('initialized').length, 0)
+  // Restart (the bar) after the backoff is spent starts it again.
+  assert.equal(f.m.restart(a, 'typescript'), true)
+  await until(() => f.startCount() === 3, 5000, 'restarted')
+})
+
 test('idle stop: a minute (here 50 ms) after the last document closes, shutdown and exit; a reopen in between keeps it', async (t) => {
   const f = setup({ timing: { idleStopMs: 50 } })
   t.after(f.done)
@@ -427,7 +518,7 @@ test('a missing server: highlighting only, a bar with the install command, nothi
   assert.equal(s.spawned.length, 0)
   assert.deepEqual(await m.ask(a, 'hover', 'src/a.ts', { position: { line: 0, character: 0 } }), { result: null, unavailable: 'missing' })
   // Installed meanwhile: the next file finds it.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edlsp-bin-'))
+  const dir = tempDir('edlsp-bin-')
   fs.writeFileSync(path.join(dir, 'typescript-language-server'), `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --log /dev/null\n`, { mode: 0o755 })
   m.env = { PATH: dir }
   m.open(a, 'src/b.ts', 'y')
@@ -702,7 +793,7 @@ test('resolveCompletion takes only an item the host answered to that page', asyn
 })
 
 test('servers: a relative PATH entry is never searched (a cloned project could ship the program); absolute ones are', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edlsp-rel-'))
+  const root = tempDir('edlsp-rel-')
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   fs.mkdirSync(path.join(root, 'bin'))
   fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true })

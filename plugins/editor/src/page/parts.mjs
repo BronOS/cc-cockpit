@@ -16,7 +16,8 @@ export function chunkText(text, size = CHUNK_CHARS) {
     // joins them, but no part should be broken UTF-16 on its own.
     if (end < text.length) {
       const c = text.charCodeAt(end - 1)
-      if (c >= 0xd800 && c <= 0xdbff) end--
+      // Size 1: stepping back would leave an empty part and loop forever, so take the whole pair.
+      if (c >= 0xd800 && c <= 0xdbff) end = end - 1 > i ? end - 1 : end + 1
     }
     parts.push(text.slice(i, end))
     i = end

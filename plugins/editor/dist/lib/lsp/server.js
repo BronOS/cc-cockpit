@@ -102,6 +102,7 @@ class LspServer {
    * @param {(edit: object) => Promise<object>|object} [o.onApplyEdit] answers `workspace/applyEdit`
    * @param {(info: { code, signal, error?, stderr, requested }) => void} [o.onExit]
    * @param {number} [o.processId] whose death the server watches (the plugin host's pid)
+   * @param {number} [o.initializeTimeoutMs] tests shorten INITIALIZE_TIMEOUT_MS (a hung server's test)
    */
   constructor(o) {
     this.o = o
@@ -153,7 +154,7 @@ class LspServer {
         initializationOptions: this.o.initializationOptions || {},
         trace: 'off',
       },
-      { timeoutMs: INITIALIZE_TIMEOUT_MS },
+      { timeoutMs: this.o.initializeTimeoutMs || INITIALIZE_TIMEOUT_MS },
     ).then((result) => {
       this.capabilities = (result && typeof result === 'object' && result.capabilities) || {}
       this.notify('initialized', {})

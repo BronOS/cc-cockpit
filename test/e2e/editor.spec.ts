@@ -7,11 +7,14 @@
 //
 // The editor page is a plugin page tab: a sandboxed iframe in the page's layer (`iframe.page-tab-frame`,
 // hidden while its tab is not the shown one), so the selectors go through `frameLocator`.
+import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
+import type { OverlayInfo } from '../../src/shared/ipc'
+import { PAGE_TAB_FRAME_NAME } from '../../src/shared/page-tabs'
 import { expect, launchCockpit, test, type Cockpit, type LaunchOptions } from './fixtures'
 
 const REPO = resolve(__dirname, '../..')
@@ -60,6 +63,31 @@ async function toStart(c: Cockpit): Promise<void> {
 const stateOf = (c: Cockpit) => editorFrame(c.page).locator('#state')
 
 /**
+ * A chord as a person types it: a native key event into the window's webContents, which main's
+ * `before-input-event` sees before any frame does (index.ts, page-tab-keys.ts). Playwright's own
+ * keyboard is dispatched over DevTools and is not what that listener is about, so a test of the
+ * forwarding goes this way (as reviewer-views.spec.ts does for Esc).
+ */
+async function nativeChord(c: Cockpit, keyCode: string, modifiers: Array<'control' | 'meta' | 'shift' | 'alt'>): Promise<void> {
+  await c.app.evaluate(
+    ({ BrowserWindow }, { keyCode, modifiers }) => {
+      const wc = BrowserWindow.getAllWindows()[0]!.webContents
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+    },
+    { keyCode, modifiers }
+  )
+}
+const NATIVE_MOD = process.platform === 'darwin' ? 'meta' : 'control'
+
+/** The suite must not read the developer's git config (same shape as bundled-plugins.spec.ts). */
+const git = (cwd: string, ...args: string[]): void => {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: cwd, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+  delete env.XDG_CONFIG_HOME
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, stdio: 'ignore', env })
+}
+
+/**
  * Folders a test needs before the app starts (outside the cockpit's root, which only exists once
  * launchCockpit made it), removed after each test so a run leaves nothing in the temp dir.
  */
@@ -75,7 +103,7 @@ test.describe('editor, desktop', () => {
     for (const dir of ownTemp.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
-  test('Files > Edit opens a file tab; typing autosaves to disk; a change on disk reloads a clean tab', async () => {
+  test('Files > Edit opens a sandboxed file tab; typing autosaves to disk; a change on disk reloads a clean tab; app chords typed in it reach the shell', async () => {
     const { cockpit: c, close } = await launchCockpit({
       env: { CC_COCKPIT_NO_BUNDLED: '' },
       settings: editorSettings({ autosaveIdleSeconds: 1 })
@@ -105,6 +133,38 @@ test.describe('editor, desktop', () => {
       writeFileSync(file, 'ABC one\ntwo\nthree\nfour from disk\n')
       await expect(frame.locator('.cm-content')).toContainText('four from disk', { timeout: 10_000 })
       await expect(stateOf(c)).toHaveText('Saved')
+      expect(readFileSync(file, 'utf8')).toBe('ABC one\ntwo\nthree\nfour from disk\n')
+
+      // The page's frame is sandboxed as every plugin frame is: scripts only, never same-origin (a
+      // plugin page with its parent's origin could reach into the shell), and named so main can tell
+      // a page tab's frame when it has the keyboard (page-tab-keys.ts isPageTabFrame).
+      const iframe = page.locator('iframe.page-tab-frame:not([hidden])')
+      await expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
+      await expect(iframe).toHaveAttribute('name', PAGE_TAB_FRAME_NAME)
+
+      // App chords typed in the editor reach the shell, not the page (main's before-input-event,
+      // page-tab-keys.ts): a sandboxed frame keeps its key events, so without that wiring Cmd+W or
+      // Cmd+Shift+T in a file tab would do nothing. A recorder in the page proves the page never saw
+      // the chord's key (a lone modifier's keydown does reach it: it is no chord yet).
+      const pageFrame = page.frame({ name: PAGE_TAB_FRAME_NAME })
+      if (!pageFrame) throw new Error('no page tab frame')
+      await pageFrame.evaluate(() => {
+        const w = window as unknown as { seenKeys: string[] }
+        w.seenKeys = []
+        window.addEventListener('keydown', (e) => w.seenKeys.push(e.key), true)
+      })
+      const seenKeys = () => pageFrame.evaluate(() => (window as unknown as { seenKeys: string[] }).seenKeys)
+      await toStart(c)
+      await nativeChord(c, 'T', [NATIVE_MOD, 'shift'])
+      await expect(page.getByRole('tab', { name: /Shell/ })).toHaveAttribute('aria-selected', 'true')
+      await c.waitForTerminalText('FAKE-SHELL ready')
+      expect((await seenKeys()).filter((k) => k.toLowerCase() === 't')).toEqual([])
+      // Back in the file, the cursor in the buffer: Cmd+W closes the clean file tab, no question.
+      await page.getByRole('tab', { name: /notes\.txt/ }).click()
+      await toStart(c)
+      await nativeChord(c, 'W', [NATIVE_MOD])
+      await expect(page.getByRole('tab', { name: /notes\.txt/ })).toHaveCount(0)
+      await expect(page.getByRole('tab')).toHaveCount(1)
       expect(readFileSync(file, 'utf8')).toBe('ABC one\ntwo\nthree\nfour from disk\n')
     } finally {
       await close()
@@ -458,6 +518,163 @@ test.describe('editor, desktop', () => {
       await expect(stateOf(c)).toHaveText('Saved', { timeout: 10_000 })
       // The fake's replacement ("NEW ```x```" and "line 2") took the place of the cursor's line.
       expect(readFileSync(file, 'utf8')).toBe('first line\nNEW ```x```\nline 2\nthird line\n')
+    } finally {
+      await close()
+    }
+  })
+
+  test("Claude's changes and the Reviewer's notes in the gutter (hover, a click opens the diff); Ctrl+P opens another file; Ctrl+L asks Claude and gives the keyboard back", async () => {
+    const { cockpit: c, close } = await launchCockpit({
+      env: { CC_COCKPIT_NO_BUNDLED: '' },
+      settings: editorSettings({ autosaveIdleSeconds: 0, autosaveOnBlur: false })
+    })
+    try {
+      const { page, projectDir } = c
+      // A repository with both files committed, then a working-tree change on line 2 of a.txt: the
+      // editor reads HEAD's text through git (lib/git.js) and draws the difference from the buffer.
+      const file = join(projectDir, 'a.txt')
+      writeFileSync(file, 'one\ntwo\nthree\n')
+      writeFileSync(join(projectDir, 'b.txt'), 'bee\n')
+      git(projectDir, 'init', '-q')
+      git(projectDir, 'add', '-A')
+      git(projectDir, 'commit', '-q', '-m', 'first')
+      writeFileSync(file, 'one\nTWO\nthree\n')
+      await waitForEditor(c)
+      await expect
+        .poll(async () => (await c.hook<HostStatus>('hostStatus', projectDir)).plugins.find((p) => p.id === 'cockpit.reviewer')?.state, {
+          timeout: 15_000
+        })
+        .toBe('active')
+      await editFromFiles(c, 'a.txt')
+      const frame = editorFrame(page)
+      await expect(frame.locator('.cm-content')).toContainText('three')
+
+      // A modified bar on line 2 only; hovering it shows the line as HEAD has it.
+      const bar = frame.locator('.cc-changes-gutter .cc-change-modified')
+      await expect(bar).toHaveCount(1, { timeout: 15_000 })
+      await bar.hover()
+      const changePop = frame.locator('.cc-change-pop')
+      await expect(changePop).toContainText('Changed since the last commit')
+      await expect(changePop.locator('.cc-change-pop-old')).toHaveText('two')
+      await expect(changePop).toContainText('Click to open the diff')
+
+      // A review note from the context menu, stored by the bundled Reviewer through its `reviewer`
+      // service. The item shows only once the host said a Reviewer answers (notes.mjs `has`), which
+      // may come after the page's first paint, so the menu is opened again until it is there.
+      await frame.locator('.cm-line', { hasText: 'three' }).click()
+      const addNote = frame.getByRole('menuitem', { name: /Add review note/ })
+      await expect(async () => {
+        await page.keyboard.press('Escape')
+        await frame.locator('.cm-line', { hasText: 'three' }).click({ button: 'right' })
+        await expect(addNote).toBeVisible({ timeout: 1000 })
+      }).toPass({ timeout: 15_000 })
+      await addNote.click()
+      const box = frame.getByRole('dialog', { name: 'Add review note' })
+      await expect(box).toContainText('Review note on line 3')
+      await box.locator('#notebox-text').fill('say it in full')
+      await box.getByRole('button', { name: 'Add note' }).click()
+      await expect(box).toBeHidden({ timeout: 10_000 })
+      // The Reviewer's list comes back to the gutter: a mark on line 3, its text on hover.
+      const noteMark = frame.locator('.cc-notes-gutter [aria-label="Review note"]')
+      await expect(noteMark).toHaveCount(1, { timeout: 15_000 })
+      await noteMark.hover()
+      const notePop = frame.locator('.cc-note-pop')
+      await expect(notePop).toContainText('Review note, line 3')
+      await expect(notePop).toContainText('say it in full')
+      // Nothing of this touched the file.
+      expect(readFileSync(file, 'utf8')).toBe('one\nTWO\nthree\n')
+
+      // A click on the bar opens the Reviewer's diff of the file (the `reviewer` service's open).
+      await bar.click()
+      await expect
+        .poll(async () => (await c.hook<OverlayInfo[]>('overlays', projectDir)).map((o) => o.title), { timeout: 15_000 })
+        .toEqual(['Review: a.txt'])
+      await nativeChord(c, 'Escape', [])
+      await expect.poll(async () => (await c.hook<OverlayInfo[]>('overlays', projectDir)).length).toBe(0)
+
+      // Ctrl+P: quick open lists the project's files (rg); picking b.txt opens its own tab.
+      await frame.locator('.cm-content').click()
+      await page.keyboard.press(`${MOD}+p`)
+      const palette = frame.locator('#palette')
+      await expect(palette).toBeVisible()
+      await frame.locator('#palette-query').fill('b.txt')
+      await expect(palette.locator('li.row', { hasText: 'b.txt' })).toBeVisible({ timeout: 10_000 })
+      await page.keyboard.press('Enter')
+      await expect(page.getByRole('tab', { name: /b\.txt/ })).toHaveAttribute('aria-selected', 'true', { timeout: 10_000 })
+      await expect(frame.locator('#path')).toHaveText('b.txt')
+      await expect(frame.locator('.cm-content')).toContainText('bee')
+
+      // Ctrl+L: core's Discuss box for the page tab (PageTabDiscussDialog) over the shell. Esc cancels
+      // it and the keyboard goes back to the editor, where the cursor was: the next key is typing.
+      await toStart(c)
+      await page.keyboard.press(`${MOD}+l`)
+      const discuss = page.getByRole('dialog', { name: 'Ask Claude about “b.txt”' })
+      await expect(discuss).toBeVisible()
+      await expect(discuss.getByRole('textbox', { name: 'Your question' })).toBeFocused()
+      await page.keyboard.press('Escape')
+      await expect(discuss).toHaveCount(0)
+      // The shell hands the frame the keyboard a frame after the box goes (TabsPane focusActive), and
+      // the page puts it in the buffer (file.js refocusAfterInert: the inert layer under the box had
+      // dropped the frame's own focus). Typing before that would go to the shell's body.
+      await expect(frame.locator('.cm-content')).toBeFocused()
+      await expect.poll(() => page.evaluate(() => document.activeElement?.className)).toBe('page-tab-frame')
+      await page.keyboard.type('Z')
+      await expect(frame.locator('.cm-content')).toContainText('Zbee')
+      await expect(stateOf(c)).toHaveText('Unsaved')
+      expect(readFileSync(join(projectDir, 'b.txt'), 'utf8')).toBe('bee\n')
+    } finally {
+      await close()
+    }
+  })
+
+  // Plan Task 19's edge case for real: the buffer lives in the page, the file service in the plugin
+  // host, so a host that dies (and is restarted by main after its crash backoff) must leave the
+  // unsaved text where it is, still dirty, and the page must save it through the new host.
+  test('the plugin host crashes and restarts under a tab with unsaved text: the text stays dirty and Ctrl+S saves it', async () => {
+    const { cockpit: c, close } = await launchCockpit({
+      env: { CC_COCKPIT_NO_BUNDLED: '' },
+      settings: editorSettings({ autosaveIdleSeconds: 0, autosaveOnBlur: false })
+    })
+    try {
+      const { page, projectDir } = c
+      const file = join(projectDir, 'kept.txt')
+      writeFileSync(file, 'base\n')
+      await waitForEditor(c)
+      await editFromFiles(c, 'kept.txt')
+      const frame = editorFrame(page)
+      await expect(frame.locator('.cm-content')).toContainText('base')
+      await toStart(c)
+      await page.keyboard.type('unsaved ')
+      await expect(stateOf(c)).toHaveText('Unsaved')
+
+      // The project's host is the utility process main named after it (host-manager.ts, the metrics'
+      // `name`; `serviceName` is node's mojo service there); SIGKILL is a
+      // crash to main, which starts a new one after its first backoff (1 s).
+      const hostPids = () =>
+        c.app.evaluate(({ app }) =>
+          app
+            .getAppMetrics()
+            .filter((m) => m.type === 'Utility' && (m.name ?? '').startsWith('cc-cockpit plugin host'))
+            .map((m) => m.pid)
+        )
+      const [before] = await hostPids()
+      if (before === undefined) throw new Error('no plugin host process')
+      await c.app.evaluate((_, pid) => process.kill(pid, 'SIGKILL'), before)
+      await expect.poll(async () => (await hostPids()).filter((p) => p !== before).length, { timeout: 15_000 }).toBe(1)
+      await waitForEditor(c)
+
+      // The text is still the page's, unsaved, and main still counts the tab dirty; the file is as it was.
+      await expect(frame.locator('.cm-content')).toContainText('unsaved base')
+      await expect(stateOf(c)).toHaveText('Unsaved')
+      await expect.poll(async () => (await c.hook<Array<{ dirty?: boolean }>>('tabs', projectDir)).some((t) => t.dirty === true)).toBe(true)
+      expect(readFileSync(file, 'utf8')).toBe('base\n')
+
+      // Ctrl+S goes to the new host and writes it.
+      await frame.locator('.cm-content').click()
+      await page.keyboard.press(`${MOD}+s`)
+      await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 10_000 }).toBe('unsaved base\n')
+      await expect(stateOf(c)).toHaveText('Saved')
+      await expect.poll(async () => (await c.hook<Array<{ dirty?: boolean }>>('tabs', projectDir)).some((t) => t.dirty === true)).toBe(false)
     } finally {
       await close()
     }

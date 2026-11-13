@@ -531,7 +531,9 @@ function chunkText(text, size = CHUNK_CHARS) {
     let end = Math.min(text.length, i + size)
     if (end < text.length) {
       const c = text.charCodeAt(end - 1)
-      if (c >= 0xd800 && c <= 0xdbff) end -= 1
+      // Step back before the pair, or (size 1: stepping back would leave an empty part and loop
+      // forever) take the whole pair, one unit over the size.
+      if (c >= 0xd800 && c <= 0xdbff) end = end - 1 > i ? end - 1 : end + 1
     }
     parts.push(text.slice(i, end))
     i = end

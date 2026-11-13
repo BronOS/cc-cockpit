@@ -1481,50 +1481,77 @@ test('concurrent addNote calls keep every note', async () => {
   host.deactivate()
 })
 
+/** Polls `cond` until it holds (a condition, never a fixed sleep, decides a test). */
+async function until(cond, what, ms = 3000) {
+  const deadline = Date.now() + ms
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+    await wait(10)
+  }
+}
+
+const NOTES_A = ['reviewer', 'notesChange', { path: 'a.js' }]
+
 test("notesChange follows the overlay's draft writes and a sent review; a text annotation tells nothing", async () => {
   const { f, store, events, svc } = notesSetup()
   await svc.open('a.js')
   const h = f.handles[0]
   h.say({ type: 'draft', draft: { global: '', notes: [{ id: 'n1', side: 'new', from: 1, to: 1, quote: '', text: 'hi' }] } })
-  await new Promise((r) => setTimeout(r, 400))
-  assert.deepEqual(events, [['reviewer', 'notesChange', { path: 'a.js' }]])
+  // Told once the coalesced write lands, not before.
+  await until(() => store.has('draft:a.js'), 'the draft write')
+  await until(() => events.length === 1, 'the first notesChange')
+  assert.deepEqual(events, [NOTES_A])
   assert.equal(store.get('draft:a.js').notes.length, 1)
   await h.discussFn()
   h.end({ kind: 'discussed', tabId: 't1', queued: false })
-  await new Promise((r) => setTimeout(r, 50))
-  assert.equal(store.size, 0)
-  assert.ok(events.length >= 2) // the draft written again for Discuss, then deleted once sent
+  await until(() => store.size === 0, 'the sent draft deleted')
+  // The draft written again for Discuss (its newest copy), then deleted once sent: one event each.
+  await until(() => events.length === 3, 'the write and delete events')
+  assert.deepEqual(events, [NOTES_A, NOTES_A, NOTES_A])
   events.length = 0
   await svc.annotate({ title: 'Ticket', text: 'body' })
   f.handles[1].say({ type: 'draft', draft: { global: 'g', notes: [] } })
-  await new Promise((r) => setTimeout(r, 400))
+  // The annotation's draft is written (the known later event) and no notesChange came with it: it is
+  // not a file's review. The event would follow the write in the same then, before this poll sees it.
+  await until(() => [...store.keys()].some((k) => k.startsWith('annotate:')), "the annotation's draft write")
   assert.deepEqual(events, [])
   host.deactivate()
 })
 
-test('addNote racing an open: the note is in what the overlay opens with, or refused, never lost', async () => {
+test('addNote racing an open: a note already writing lands in what the overlay opens with; one still queued, or after, is refused', async () => {
   const { f, store, svc } = notesSetup()
-  const slow = f.ctx.storage
-  const realSet = slow.set
-  slow.set = async (k, v) => {
-    await new Promise((r) => setTimeout(r, 20))
-    return realSet(k, v)
+  // A gate on the first draft read: the first addNote is inside its read-modify-write when the open
+  // starts, the second waits its turn behind it (forced, not left to timer offsets).
+  const realGet = f.ctx.storage.get
+  let release
+  const gate = new Promise((r) => (release = r))
+  let gated = false
+  let reading = null
+  const read = new Promise((r) => (reading = r))
+  f.ctx.storage.get = async (k) => {
+    if (!gated && k === 'draft:a.js') {
+      gated = true
+      reading()
+      await gate
+    }
+    return realGet(k)
   }
-  for (let i = 0; i < 3; i++) {
-    store.clear()
-    f.handles.length = 0
-    const adds = [svc.addNote('a.js', { from: 1, text: 'first' }), svc.addNote('a.js', { from: 2, text: 'second' })].map((p) => p.then((r) => r, () => null))
-    const opened = svc.open('a.js')
-    await new Promise((r) => setTimeout(r, i * 15))
-    adds.push(svc.addNote('a.js', { from: 3, text: 'third' }).then((r) => r, () => null))
-    const results = await Promise.all(adds)
-    await opened
-    const shown = f.handles[0].posts[0].draft.notes.map((n) => n.id)
-    for (const r of results) if (r) assert.ok(shown.includes(r.id), `note ${r.id} reached the overlay (round ${i})`)
-    f.handles[0].end({ kind: 'dismissed' })
-    await new Promise((r) => setTimeout(r, 20))
-    for (const r of results) if (r) assert.ok(store.get('draft:a.js').notes.some((n) => n.id === r.id))
-  }
+  const settle = (p) => p.then((r) => ({ ok: r }), (e) => ({ err: e.message }))
+  const first = settle(svc.addNote('a.js', { from: 1, text: 'first' }))
+  const second = settle(svc.addNote('a.js', { from: 2, text: 'second' }))
+  await read
+  const opened = svc.open('a.js')
+  const third = settle(svc.addNote('a.js', { from: 3, text: 'third' }))
+  release()
+  const [r1, r2, r3] = await Promise.all([first, second, third])
+  await opened
+  assert.ok(r1.ok, 'the note already writing lands')
+  assert.match(r2.err, /review of a\.js is open/)
+  assert.match(r3.err, /review of a\.js is open/)
+  // The overlay opened with the note that landed: nothing written behind its back, nothing lost.
+  assert.deepEqual(f.handles[0].posts[0].draft.notes.map((n) => n.id), [r1.ok.id])
+  f.handles[0].end({ kind: 'dismissed' })
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.id), [r1.ok.id])
   host.deactivate()
 })
 

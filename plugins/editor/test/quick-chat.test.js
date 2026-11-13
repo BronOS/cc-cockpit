@@ -135,6 +135,27 @@ test('missingFlags: a flag counts only as a word of its own', () => {
   assert.deepEqual(qc.missingFlags(undefined), qc.REQUIRED_FLAGS)
 })
 
+// The fake's --help (fixtures/fake-claude.mjs) is written from the same flag list as the code, so it
+// cannot catch a drift in the real CLI's wording or a flag it dropped: when a `claude` is installed,
+// its own help is checked too. HOME and the config dir point at a temp dir, so nothing reads or
+// writes the person's own Claude config. Skipped where no claude is installed (CI).
+test("the installed claude's --help lists every flag quick chat passes, as missingFlags parses it", (t) => {
+  const bin = qc.findClaude(process.env)
+  if (!bin) {
+    t.skip('no claude on PATH')
+    return
+  }
+  const home = tmp('qc-home-')
+  const r = cp.spawnSync(bin, ['--help'], {
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), CLAUDE_CONFIG_DIR: path.join(home, '.claude') },
+    encoding: 'utf8',
+    timeout: 15_000,
+  })
+  assert.equal(r.status, 0, `claude --help failed: ${r.error || r.stderr}`)
+  // An older claude than the one the flags were checked against (2.1.323) also lands here: update it.
+  assert.deepEqual(qc.missingFlags(r.stdout), [], `the installed claude (${bin}) --help lacks these flags`)
+})
+
 test('findClaude: only absolute PATH entries, so a project cannot ship its own claude', () => {
   const dir = tmp()
   const bin = path.join(dir, 'claude')

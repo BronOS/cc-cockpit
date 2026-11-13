@@ -270,9 +270,14 @@ test('definition and references: project paths and line text; an outside locatio
   )
 })
 
-test('an outside file tab: read-only (why outside), only the path in its params; a page naming another absolute path is refused', () => {
+test('an outside file tab: read-only (why outside), only the path in its params; a page naming another absolute path is refused', (t) => {
   const { root, outside } = project()
   const shared = files.makeFiles(root)
+  // In t.after: a failed assertion would otherwise leave the watch open and the temp folders behind.
+  t.after(() => {
+    shared.watcher.close()
+    cleanup(root, outside)
+  })
   const posted = []
   let onMessage = null
   const tab = { id: 't1', type: 'file', params: { outside }, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => (onMessage = fn), onClose: () => {} }
@@ -288,8 +293,6 @@ test('an outside file tab: read-only (why outside), only the path in its params;
   onMessage({ t: 'save', req: 3, path: outside, baseHash: file.hash, part: 0, parts: 1, text: 'x' })
   assert.equal(posted.at(-1).t, 'error')
   assert.match(fs.readFileSync(outside, 'utf8'), /^declare/)
-  shared.watcher.close()
-  cleanup(root, outside)
 })
 
 // ---- code actions ----
@@ -481,6 +484,191 @@ test('host: a definition outside the project opens a read-only tab; a path no se
   await until(() => open.length === 2, 2000, 'outside tab')
   assert.deepEqual(open[1].params, { outside, line: 3, col: 1 })
   assert.equal(open[1].title, 'lib.d.ts')
+})
+
+/**
+ * The host (dist/host.js) over a fake ctx whose ctx.processes runs the fake server, as the
+ * lsp-features host test above, plus the ctx.sessions and ctx.onSettingsChange a test drives
+ * (`sessions(list)`, `settingsChanged()`). `spawned` records every argv the host ran; `connect(rel)`
+ * opens a file tab through the editor service and mounts one page frame on it. Deactivated and its
+ * temp folders removed after the test.
+ */
+async function hostSetup(t, flagsFor = () => []) {
+  const host = require('../dist/host.js')
+  const { root, outside } = project()
+  const log = path.join(root, '..', `${path.basename(root)}.hostlog`)
+  const open = []
+  const openers = []
+  const provided = {}
+  const spawned = []
+  let sessionsListener = null
+  let settingsListener = null
+  const ctx = {
+    projectDir: root,
+    settings: { app: { servers: serverRow(log, flagsFor(outside)) } },
+    exec: async () => ({ code: 0, stdout: '', stderr: '' }),
+    processes: { spawn: (argv, o) => (spawned.push(argv), spawn(argv, o)) },
+    services: { provide: (n, impl) => (provided[n] = impl) },
+    cli: { register() {} },
+    overlay: { start: () => ({ result: new Promise(() => {}) }) },
+    log: { info() {}, warn() {} },
+    sessions: { onChange: (fn) => ((sessionsListener = fn), () => {}) },
+    onSettingsChange: (fn) => ((settingsListener = fn), () => {}),
+    tabs: {
+      onOpen: (type, fn) => openers.push(fn),
+      list: async () => open.map((x) => ({ ...x })),
+      openPage: async (type, params, options) => {
+        const id = `tab-${open.length + 1}`
+        open.push({ id, type, params, title: options.title })
+        return id
+      },
+      focus: async () => {},
+    },
+  }
+  host.activate(ctx)
+  t.after(async () => {
+    await host.deactivate()
+    cleanup(root, outside, log)
+  })
+  const parse = (l) => {
+    try {
+      return JSON.parse(l)
+    } catch {
+      return null
+    }
+  }
+  const read = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(parse).filter(Boolean) : [])
+  const got = (method) => read().filter((e) => e.in && e.in.method === method)
+  const connect = async (rel) => {
+    await provided.editor.open(rel)
+    const o = open.find((x) => x.params.path === rel)
+    const posted = []
+    const listeners = []
+    const tab = { id: o.id, type: 'file', params: o.params, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {}, setTitle: async () => {} }
+    for (const fn of openers) fn(tab)
+    return { posted, send: (m) => listeners.forEach((l) => l(m)) }
+  }
+  return {
+    ctx,
+    root,
+    outside,
+    open,
+    spawned,
+    read,
+    got,
+    connect,
+    sessions: (list) => sessionsListener(list),
+    settingsChanged: () => settingsListener(ctx.settings),
+  }
+}
+
+/** A mounted page frame showing `rel` whose language server is ready (and has registered its file watch). */
+async function readyPage(h, rel) {
+  const view = await h.connect(rel)
+  // The page's first load: serveFileTab reads the file and watches its folder (the folder events below).
+  view.send({ t: 'open', req: 1, first: true })
+  view.send({ t: 'lsp-open', path: rel, part: 0, parts: 1, text: fs.readFileSync(path.join(h.root, rel), 'utf8'), seq: 1 })
+  await until(() => view.posted.find((m) => m.t === 'lsp-status' && m.state === 'ready'), 5000, 'ready')
+  // The fake registers workspace/didChangeWatchedFiles right after `initialized`; without that
+  // registration the manager sends it nothing. The fake logs the host's answer once it has it.
+  await until(() => h.read().some((e) => e.answer && e.answer.method === 'client/registerCapability'), 5000, 'registration answered')
+  return view
+}
+
+test('host: folder events and the Claude tabs\' files (ctx.sessions) reach the server; new tabs, a status move, growth, vanished tabs', async (t) => {
+  const h = await hostSetup(t)
+  // Claude's files sit in lib/, which no file tab shows: no folder watch there, so every change the
+  // server hears about a lib/ file came through ctx.sessions.
+  const lib = path.join(h.root, 'lib')
+  fs.mkdirSync(lib)
+  const L = (n) => path.join(lib, `l${n}.ts`)
+  const libUri = pathToFileURL(lib).href + '/'
+  /** The lib/ files of each didChangeWatchedFiles the server got (folder-event-only ones left out). */
+  const libBatches = () =>
+    h
+      .got('workspace/didChangeWatchedFiles')
+      .map((e) => e.in.params.changes.map((c) => c.uri).filter((u) => u.startsWith(libUri)).map((u) => u.slice(libUri.length)).sort())
+      .filter((b) => b.length > 0)
+  let rounds = 0
+  let size = 0
+  /**
+   * Every lib/ file is rewritten (a new size) before each ctx.sessions change: the manager skips a
+   * file unchanged since it last told the server, so a file the host wrongly passes on is always
+   * sent, and shows up in this round's or the next round's batch. A round expecting nothing is
+   * checked by the next one: its batch must be exactly that round's files.
+   */
+  const round = async (list, expect) => {
+    size++
+    for (let n = 0; n <= 4; n++) fs.writeFileSync(L(n), 'x'.repeat(size))
+    h.sessions(list)
+    if (!expect) return
+    rounds++
+    await until(() => libBatches().length >= rounds, 5000, `batch ${rounds}`)
+    assert.deepEqual(libBatches()[rounds - 1], expect, `round ${rounds}`)
+  }
+  const s = (tabId, status, ...ns) => ({ tabId, status, files: ns.map(L) })
+
+  // No server yet (no document of its language open): nothing sent, but the tab's count is kept.
+  await round([s('T0', 'busy', 0)])
+  const view = await readyPage(h, 'src/a.ts')
+
+  // A folder event of a watched folder (src/, the open tab's): a new file reaches the server.
+  fs.writeFileSync(path.join(h.root, 'src/w.ts'), 'export const w = 1\n')
+  const wUri = pathToFileURL(path.join(h.root, 'src/w.ts')).href
+  await until(() => h.got('workspace/didChangeWatchedFiles').some((e) => e.in.params.changes.some((c) => c.uri === wUri)), 5000, 'folder event')
+
+  // T0 grew (its first file, listed while no server ran, is not sent now); T1 is new: all of it.
+  await round([s('T0', 'busy', 0, 4), s('T1', 'busy', 1)], ['l1.ts', 'l4.ts'])
+  // T1 grew by one: only the new file (an off-by-one in the slice sends l1 again, or nothing).
+  await round([s('T0', 'busy', 0, 4), s('T1', 'busy', 1, 2)], ['l2.ts'])
+  // T1's status moved (a turn ended): all its files again, whatever the count.
+  await round([s('T0', 'busy', 0, 4), s('T1', 'waiting', 1, 2)], ['l1.ts', 'l2.ts'])
+  // Nothing moved for T0 and T1: nothing of theirs; T2 is new; malformed entries are skipped.
+  await round([s('T0', 'busy', 0, 4), s('T1', 'waiting', 1, 2), s('T2', 'busy', 3), { tabId: 'T9', status: 'busy' }, null], ['l3.ts'])
+  // T0 and T1 are gone: forgotten (T2 the same: nothing).
+  await round([s('T2', 'busy', 3)])
+  // Back with the same id: a new tab again, all its files; T2 still nothing.
+  await round([s('T0', 'busy', 0), s('T1', 'waiting', 1), s('T2', 'busy', 3)], ['l0.ts', 'l1.ts'])
+  assert.ok(view.posted.some((m) => m.t === 'lsp-status' && m.state === 'ready'))
+})
+
+test('host: a settings change hands the servers setting to the language servers; a changed argv restarts the server', async (t) => {
+  const h = await hostSetup(t)
+  const view = await readyPage(h, 'src/a.ts')
+  assert.equal(h.spawned.length, 1)
+  assert.equal(view.posted.findLast((m) => m.t === 'lsp-status').features.hover, true)
+  // The same setting saved again: nothing restarts.
+  h.settingsChanged()
+  // A new argv (no hover): the server restarts with it and gets its document back.
+  h.ctx.settings = { app: { ...h.ctx.settings.app, servers: [{ ...h.ctx.settings.app.servers[0], argv: [...h.ctx.settings.app.servers[0].argv, '--no-hover'] }] } }
+  h.settingsChanged()
+  const st = await until(() => {
+    const last = view.posted.findLast((m) => m.t === 'lsp-status')
+    return last && last.state === 'ready' && last.features.hover === false ? last : null
+  }, 5000, 'ready again without hover')
+  assert.equal(st.features.rename, true)
+  assert.equal(h.spawned.length, 2)
+  assert.equal(h.spawned[1].at(-1), '--no-hover')
+  await until(() => h.got('textDocument/didOpen').length === 2, 5000, 'document reopened')
+  assert.equal(h.got('initialize').length, 2)
+})
+
+test('host: an outside location whose path is over 3000 characters is refused with its own error, no tab', async (t) => {
+  // main caps a tab's params at 4 KiB; the server returned the path, so only the length refuses it.
+  let long = ''
+  const h = await hostSetup(t, (outside) => {
+    long = path.join(path.dirname(outside), ...Array(15).fill('d'.repeat(200)), 'lib.d.ts')
+    return ['--outside', long]
+  })
+  assert.ok(long.length > 3000)
+  const view = await readyPage(h, 'src/a.ts')
+  view.send({ t: 'lsp-ask', req: 1, what: 'definition', path: 'src/a.ts', position: { line: 0, character: 6 } })
+  const ans = await until(() => view.posted.find((m) => m.t === 'lsp-answer' && m.req === 1), 5000, 'definition')
+  assert.equal(ans.result[1].outside, long)
+  view.send({ t: 'openFile', outside: long, line: 3 })
+  const err = await until(() => view.posted.find((m) => m.t === 'search-error'), 5000, 'refusal')
+  assert.deepEqual(err, { t: 'search-error', kind: 'open', message: 'the path is too long to open in a tab' })
+  assert.equal(h.open.length, 1)
 })
 
 // ---- review round: edits against moving documents, disk and names ----

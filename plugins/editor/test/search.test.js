@@ -296,6 +296,43 @@ test('listFiles: NUL-separated paths, ./ dropped, capped (rg killed)', async () 
   assert.equal(f.children[0].killed, true)
 })
 
+test('an rg that never ends is killed at the timeout: what it found so far is the answer, said truncated', async () => {
+  // The fake rg never exits by itself: only the timer can end it (a network mount that hangs a read).
+  const f = fakeSpawn()
+  const slots = { used: 0, max: 1 }
+  const job = search.grep(f.spawn, '/p', 'x', { timeoutMs: 20, slots })
+  f.children[0].emit(matchLine('a', 1, 'x', [{ start: 0, end: 1 }]))
+  const r = await job.result
+  assert.equal(f.children[0].killed, true)
+  assert.deepEqual(r.matches.map((m) => `${m.path}:${m.line}`), ['a:1'])
+  assert.equal(r.truncated, true)
+  // The killed rg gave its slot back.
+  assert.equal(slots.used, 0)
+  const list = search.listFiles(f.spawn, '/p', { timeoutMs: 20, slots })
+  f.children[1].emit('./a\0./b\0')
+  assert.deepEqual(await list.result, { paths: ['a', 'b'], truncated: true })
+  assert.equal(f.children[1].killed, true)
+
+  // Through serveSearch, with the real 20 s default: its timer is taken and fired by hand.
+  const timers = []
+  const orig = global.setTimeout
+  const posted = []
+  const handle = search.serveSearch({ post: (m) => posted.push(m), onClose() {} }, { spawn: f.spawn, root: '/p', bin: 'rg', slots: { used: 0, max: 1 } })
+  try {
+    global.setTimeout = (fn, ms) => (timers.push({ fn, ms }), { unref() {} })
+    handle({ t: 'grep', req: 1, query: 'x' })
+  } finally {
+    global.setTimeout = orig
+  }
+  assert.deepEqual(timers.map((x) => x.ms), [20 * 1000])
+  f.children[2].emit(matchLine('b', 2, 'x', [{ start: 0, end: 1 }]))
+  timers[0].fn()
+  assert.equal(f.children[2].killed, true)
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(posted.map((m) => [m.t, m.req, m.truncated, m.matches.length]), [['grep', 1, true, 1]])
+})
+
 test('partsOf keeps each part near the budget and never empty', () => {
   const parts = search.partsOf(['aaaa', 'bbbb', 'cccc'], (s) => s.length, 25)
   assert.deepEqual(parts, [['aaaa'], ['bbbb'], ['cccc']])

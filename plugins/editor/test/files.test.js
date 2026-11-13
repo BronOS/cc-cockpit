@@ -9,9 +9,21 @@ const files = require('../dist/lib/files.js')
 
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex')
 
-function project() {
+/** A temp project folder; with the test's `t`, removed after it. */
+function project(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-files-'))
+  if (t) t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   return root
+}
+
+/** Makes a FIFO at `p`; false where there is no mkfifo (the caller skips). */
+function mkfifo(p) {
+  try {
+    require('node:child_process').execFileSync('mkfifo', [p])
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Replaces fs[name] for one call: `before(...args)` runs first, then the original. */
@@ -93,27 +105,31 @@ test('save: a write into the old file between the check and the rename comes bac
   assert.equal(fs.readFileSync(f, 'utf8'), 'mine\n')
 })
 
-test('save: a rename-replace before the swap is caught by the inode check', () => {
-  const root = project()
+test('save: a rename-replace before the swap is caught by the inode check, with other bytes or the same', (t) => {
+  const root = project(t)
   const f = path.join(root, 'a.txt')
-  fs.writeFileSync(f, 'base\n')
-  // While our temp file is synced, another writer renames a new file over the name (same bytes even:
-  // the inode is what tells).
-  const undo = onceBefore('fsyncSync', () => {
-    fs.writeFileSync(path.join(root, 'other.tmp'), 'replaced\n')
-    fs.renameSync(path.join(root, 'other.tmp'), f)
-  })
-  let r
-  try {
-    r = files.saveFile(root, 'a.txt', 'mine\n', sha('base\n'))
-  } finally {
-    undo()
+  // While our temp file is synced, another writer renames a new file over the name. With the base's
+  // own bytes the held inode still hashes to the base, so only the inode compare can tell: without
+  // it our rename would overwrite a file we never read (its owner, mode or a later write into it).
+  for (const theirs of ['replaced\n', 'base\n']) {
+    fs.writeFileSync(f, 'base\n')
+    const undo = onceBefore('fsyncSync', () => {
+      fs.writeFileSync(path.join(root, 'other.tmp'), theirs)
+      fs.renameSync(path.join(root, 'other.tmp'), f)
+    })
+    let r
+    try {
+      r = files.saveFile(root, 'a.txt', 'mine\n', sha('base\n'))
+    } finally {
+      undo()
+    }
+    assert.equal(r.result, 'changed', theirs)
+    assert.equal(r.text, theirs)
+    assert.equal(r.hash, sha(theirs))
+    assert.equal(r.written, undefined)
+    assert.equal(fs.readFileSync(f, 'utf8'), theirs)
+    assert.deepEqual(fs.readdirSync(root), ['a.txt'])
   }
-  assert.equal(r.result, 'changed')
-  assert.equal(r.text, 'replaced\n')
-  assert.equal(r.written, undefined)
-  assert.equal(fs.readFileSync(f, 'utf8'), 'replaced\n')
-  assert.deepEqual(fs.readdirSync(root), ['a.txt'])
 })
 
 test('save: a symlink in the project is followed, its target written and the link kept', () => {
@@ -190,8 +206,10 @@ test('save with baseHash null recreates a deleted file, but never over one that 
 test('chunkText never splits a surrogate pair and keeps every unit', () => {
   const text = 'ab😀cd😀'
   for (const size of [1, 2, 3, 4]) {
-    const parts = files.chunkText(text, Math.max(size, 2))
+    // Size 1 included: a pair at the cut is taken whole there (stepping back would loop forever).
+    const parts = files.chunkText(text, size)
     assert.equal(parts.join(''), text)
+    for (const p of parts) assert.ok(p.length <= Math.max(size, 2))
     for (const p of parts) assert.equal(p, Buffer.from(p, 'utf8').toString('utf8'))
   }
   assert.deepEqual(files.chunkText(''), [''])
@@ -207,6 +225,17 @@ function waitFor(cond, ms = 3000) {
     }
     tick()
   })
+}
+
+/** Counts the watcher's checks of a file from now on (`.n`): what a "no event" assertion waits for. */
+function countChecks(watcher) {
+  const count = { n: 0 }
+  const check = watcher.check.bind(watcher)
+  watcher.check = (real) => {
+    check(real)
+    count.n++
+  }
+  return count
 }
 
 test('the folder watch sees a rename-replace, again after it, and a delete', async () => {
@@ -230,10 +259,13 @@ test('the folder watch sees a rename-replace, again after it, and a delete', asy
     replace('three\n')
     await waitFor(() => events.length >= 2)
     assert.equal(events[1].hash, sha('three\n'))
-    // Our own save, recorded with seen(), is no event.
+    // Our own save, recorded with seen(), is no event. Waited for by the check the rename starts, not
+    // a fixed sleep (on a slow machine one could end before the check ran and pass with nothing
+    // tested): check() notifies synchronously, and any check after the replace reads 'four'.
+    const checks = countChecks(w)
     stop.seen(sha('four\n'))
     replace('four\n')
-    await new Promise((r) => setTimeout(r, 200))
+    await waitFor(() => checks.n >= 1)
     assert.equal(events.length, 2)
     fs.unlinkSync(f)
     await waitFor(() => events.length >= 3)
@@ -278,14 +310,16 @@ test('serveFileTab: open, a save in parts, a mismatch, a disk event and close', 
     assert.deepEqual(t.posted.shift(), { t: 'file', req: 1, path: 'src.txt', exists: true, hash: sha('base\n'), readOnly: false, eol: '\n', bom: false, size: 5, part: 0, parts: 1, text: 'base\n' })
 
     // A save split by the page in two parts.
+    const checks = countChecks(shared.watcher)
     t.send({ t: 'save', req: 2, path: 'src.txt', baseHash: sha('base\n'), part: 0, parts: 2, text: 'mi' })
     assert.equal(t.posted.length, 0)
     t.send({ t: 'save', req: 2, path: 'src.txt', baseHash: sha('base\n'), part: 1, parts: 2, text: 'ne\n' })
     assert.deepEqual(t.posted.shift(), { t: 'saved', req: 2, path: 'src.txt', hash: sha('mine\n') })
     assert.equal(fs.readFileSync(f, 'utf8'), 'mine\n')
 
-    // Our own save is no disk event; Claude's write is.
-    await new Promise((r) => setTimeout(r, 150))
+    // Our own save is no disk event (once the check our rename starts has run, a missed seen() would
+    // have posted one); Claude's write is.
+    await waitFor(() => checks.n >= 1)
     assert.equal(t.posted.length, 0)
     fs.writeFileSync(f, 'claude\n')
     await waitFor(() => t.posted.length >= 1)
@@ -340,6 +374,72 @@ test('serveFileTab: a big file arrives in parts under the message cap', () => {
   shared.watcher.close()
 })
 
+test('serveFileTab: a head-only read, a no-op save, a written answer that is no event for its own line, and unwatch', async (t) => {
+  const root = project(t)
+  const f = path.join(root, 'a.txt')
+  fs.writeFileSync(f, 'base\n')
+  const real = fs.realpathSync(f)
+  const shared = files.makeFiles(root, { debounceMs: 20 })
+  const tab = fakeTab({ path: 'a.txt' })
+  files.serveFileTab(shared, tab.tab)
+  t.after(() => {
+    tab.close()
+    shared.watcher.close()
+  })
+  tab.send({ t: 'open', req: 1 })
+  assert.equal(tab.posted.shift().text, 'base\n')
+
+  // The page's re-check on focus: the hash and flags in one message, no text.
+  tab.send({ t: 'read', req: 2, path: 'a.txt', headOnly: true })
+  assert.deepEqual(tab.posted, [{ t: 'file', req: 2, path: 'a.txt', exists: true, hash: sha('base\n'), readOnly: false, eol: '\n', bom: false, size: 5, part: 0, parts: 1 }])
+  tab.posted.length = 0
+
+  // A save of the base's own text writes nothing: same inode, same mtime, no temp file.
+  const before = fs.statSync(f, { bigint: true })
+  tab.send({ t: 'save', req: 3, path: 'a.txt', baseHash: sha('base\n'), part: 0, parts: 1, text: 'base\n' })
+  assert.deepEqual(tab.posted.shift(), { t: 'saved', req: 3, path: 'a.txt', hash: sha('base\n') })
+  const after = fs.statSync(f, { bigint: true })
+  assert.equal(after.ino, before.ino)
+  assert.equal(after.mtimeNs, before.mtimeNs)
+  assert.deepEqual(fs.readdirSync(root), ['a.txt'])
+
+  // A write into the old inode lands between the check and our rename: `changed {written}`, and what
+  // is on disk now is our own text, recorded as this line's seen hash. check() is synchronous: a
+  // missed seen() would post a `disk` for our own write right here.
+  const undo = onceBefore('renameSync', () => fs.writeFileSync(f, 'theirs\n'))
+  try {
+    tab.send({ t: 'save', req: 4, path: 'a.txt', baseHash: sha('base\n'), part: 0, parts: 1, text: 'mine\n' })
+  } finally {
+    undo()
+  }
+  const c = tab.posted.shift()
+  assert.equal(c.t, 'changed')
+  assert.equal(c.written, true)
+  assert.equal(c.hash, sha('mine\n'))
+  assert.equal(c.theirsHash, sha('theirs\n'))
+  assert.equal(c.text, 'theirs\n')
+  assert.equal(fs.readFileSync(f, 'utf8'), 'mine\n')
+  shared.watcher.check(real)
+  assert.deepEqual(tab.posted, [])
+  // The watch is still live: a real write after it is told.
+  fs.writeFileSync(f, 'claude\n')
+  await waitFor(() => tab.posted.some((m) => m.t === 'disk'))
+  assert.deepEqual(tab.posted.filter((m) => m.t === 'disk'), [{ t: 'disk', path: 'a.txt', change: 'changed', hash: sha('claude\n') }])
+  tab.posted.length = 0
+
+  // The page closed the file: its watch goes (the folder's too), a malformed path is ignored, and a
+  // later re-read does not watch it again.
+  tab.send({ t: 'unwatch', path: '../x' })
+  assert.equal(shared.watcher.files.has(real), true)
+  tab.send({ t: 'unwatch', path: 'a.txt' })
+  assert.equal(shared.watcher.files.size, 0)
+  assert.equal(shared.watcher.folders.size, 0)
+  tab.send({ t: 'read', req: 5, path: 'a.txt', headOnly: true })
+  assert.equal(tab.posted.shift().hash, sha('claude\n'))
+  assert.equal(shared.watcher.files.size, 0)
+  assert.deepEqual(tab.posted, [])
+})
+
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
 
 test('two lines on one file: one line saving or reading never mutes the other', async () => {
@@ -360,8 +460,9 @@ test('two lines on one file: one line saving or reading never mutes the other', 
     assert.equal(a.posted.shift().t, 'saved')
     await waitFor(() => b.posted.length >= 1)
     assert.deepEqual(b.posted.shift(), { t: 'disk', path: 'a.txt', change: 'changed', hash: sha('two\n') })
-    await new Promise((r) => setTimeout(r, 150))
-    assert.equal(a.posted.length, 0) // the saver is not told about its own write
+    // The saver is not told about its own write: B's event came from a check, and that one check()
+    // walks every line's subscription synchronously, so A's (missing) event is settled already.
+    assert.equal(a.posted.length, 0)
     // A re-read by A inside the debounce after an outside write does not hide it from B.
     fs.writeFileSync(f, 'claude\n')
     await new Promise((r) => setTimeout(r, 5))
@@ -375,16 +476,84 @@ test('two lines on one file: one line saving or reading never mutes the other', 
   }
 })
 
-test('a FIFO and a folder are not opened as files', () => {
-  const root = project()
+test('a FIFO and a folder are not opened as files', (t) => {
+  const root = project(t)
   fs.mkdirSync(path.join(root, 'dir'))
   assert.throws(() => files.readFile(root, 'dir'), /regular file|folder/)
-  try {
-    require('node:child_process').execFileSync('mkfifo', [path.join(root, 'pipe')])
-  } catch {
-    return // no mkfifo here
-  }
+  // Said as a skip, not a silent pass: the FIFO half (a read that would block the host) is untested.
+  if (!mkfifo(path.join(root, 'pipe'))) return t.skip('no mkfifo here')
   assert.throws(() => files.readFile(root, 'pipe'), /regular file/)
+})
+
+/**
+ * A temp tree for readOutside with HOME pointed into it (os.homedir() reads HOME on every call), so
+ * the home denylist (`.ssh` and the rest) matches a folder the test made, never the real home.
+ * `{ out, home, lib }`: `lib` is a library folder outside any project (a node_modules package).
+ */
+function outsideTree(t) {
+  const out = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-outside-')))
+  const savedHome = process.env.HOME
+  t.after(() => {
+    if (savedHome === undefined) delete process.env.HOME
+    else process.env.HOME = savedHome
+    fs.rmSync(out, { recursive: true, force: true })
+  })
+  const home = path.join(out, 'home')
+  fs.mkdirSync(path.join(home, '.ssh'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519'), 'PRIVATE KEY\n')
+  process.env.HOME = home
+  assert.equal(os.homedir(), home)
+  const lib = path.join(out, 'lib', 'node_modules', 'pkg')
+  fs.mkdirSync(lib, { recursive: true })
+  fs.writeFileSync(path.join(lib, 'index.d.ts'), 'export declare const x: number\n')
+  return { out, home, lib }
+}
+
+test('readOutside: a link in node_modules to a refused tree is refused by its realpath; malformed and missing paths', (t) => {
+  const { home, lib } = outsideTree(t)
+  // A plain library file opens read-only (the control: the tree itself is not refused).
+  const ok = files.readOutside(path.join(lib, 'index.d.ts'))
+  assert.equal(ok.exists, true)
+  assert.equal(ok.readOnly, true)
+  assert.equal(ok.why, 'outside')
+  assert.equal(ok.text, 'export declare const x: number\n')
+  // The named path is an innocent .d.ts in node_modules, so only the second check, on the realpath,
+  // stands between a server's answer (which a page's text decides) and the private key.
+  const link = path.join(lib, 'key.d.ts')
+  fs.symlinkSync(path.join(home, '.ssh', 'id_ed25519'), link)
+  assert.equal(files.outsideRefused(link), false)
+  assert.throws(() => files.readOutside(link), /not shown outside the project/)
+  // The same through a linked folder (a package symlinked by a workspace tool).
+  fs.symlinkSync(path.join(home, '.ssh'), path.join(lib, 'linked'))
+  assert.throws(() => files.readOutside(path.join(lib, 'linked', 'id_ed25519')), /not shown outside the project/)
+  // Named directly, the first check refuses it.
+  assert.throws(() => files.readOutside(path.join(home, '.ssh', 'id_ed25519')), /not shown outside the project/)
+  // Only an absolute path with no NUL is looked at.
+  for (const bad of ['node_modules/pkg/index.d.ts', 'index.d.ts', `${lib}/index.d.ts\0x`, '', 3, null]) {
+    assert.throws(() => files.readOutside(bad), /not an absolute path/, String(bad))
+  }
+  // A file that is not there is the tab's "deleted on disk", not an error.
+  assert.deepEqual(files.readOutside(path.join(lib, 'gone.d.ts')), { rel: path.join(lib, 'gone.d.ts'), exists: false })
+})
+
+test('readOutside: a folder and a FIFO are not opened; binary, large and non-UTF-8 files keep their own why', (t) => {
+  const { out, lib } = outsideTree(t)
+  // A binary file: no text, and its reason, not the generic `outside`.
+  fs.writeFileSync(path.join(lib, 'a.node'), Buffer.from([1, 0, 2]))
+  const b = files.readOutside(path.join(lib, 'a.node'))
+  assert.equal(b.readOnly, true)
+  assert.equal(b.why, 'binary')
+  assert.equal(b.text, undefined)
+  fs.writeFileSync(path.join(lib, 'big.js'), 'x'.repeat(files.MAX_EDIT_BYTES + 1))
+  const g = files.readOutside(path.join(lib, 'big.js'))
+  assert.equal(g.why, 'large')
+  assert.equal(g.text.length, files.MAX_EDIT_BYTES + 1)
+  fs.writeFileSync(path.join(lib, 'latin1.js'), Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]))
+  assert.equal(files.readOutside(path.join(lib, 'latin1.js')).why, 'encoding')
+  assert.throws(() => files.readOutside(lib), /regular file|folder/)
+  if (!mkfifo(path.join(out, 'pipe'))) return t.skip('no mkfifo here')
+  // A FIFO would block the read, and with it the whole plugin host.
+  assert.throws(() => files.readOutside(path.join(out, 'pipe')), /regular file/)
 })
 
 test('a file over the view cap is not hashed to the end: a cheap size-and-mtime stamp, read-only, large', () => {

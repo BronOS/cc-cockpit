@@ -14,6 +14,10 @@
 //   --rename-outside      rename also edits the --outside file
 //   --rename-create       rename answers a documentChanges with a file create in it
 //   --apply-unasked       after `initialized`, asks workspace/applyEdit on src/b.ts with no command running
+//   --fail-init           answers `initialize` with an error (code -32603, "fake init failure")
+//   --hang-init           never answers `initialize` (the host's initialize timeout)
+//   --exit-before-init    exits with code 3 on `initialize`, before any answer
+//   --stderr <text>       writes <text> and a newline to stderr at start (the crash message's tail)
 // The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
 // sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
 // open), code actions with an edit, a declared command (`fake.apply`, which asks
@@ -35,6 +39,7 @@ const log = (o) => {
 }
 const startsFile = value('--starts')
 if (startsFile) fs.appendFileSync(startsFile, 'started\n')
+if (value('--stderr') !== undefined) process.stderr.write(`${value('--stderr')}\n`)
 
 function send(m) {
   const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', ...m }), 'utf8')
@@ -118,6 +123,9 @@ function handle(m) {
       return
     }
     case 'initialize': {
+      if (flag('--hang-init')) return
+      if (flag('--exit-before-init')) process.exit(3)
+      if (flag('--fail-init')) return send({ id: m.id, error: { code: -32603, message: 'fake init failure' } })
       rootUri = m.params.rootUri
       const capabilities = {
         textDocumentSync: 2,

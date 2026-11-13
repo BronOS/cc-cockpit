@@ -55,7 +55,8 @@ import { yaml } from '@codemirror/lang-yaml'
 import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { languageOfText } from './languages.mjs'
 import { createSession } from './session.mjs'
-import { lineChanges, keepBothText } from './merge.mjs'
+import { lineChanges } from './merge.mjs'
+import { conflictField as createConflictField, setConflicts, resolveSpec } from './conflicts.mjs'
 import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces } from './quick-open.mjs'
 import { indentGuides, detectIndentUnit } from './indent-guides.mjs'
 import { createLspClient } from './lsp/client.mjs'
@@ -212,40 +213,11 @@ function flash(set) {
   }, FLASH_MS)
 }
 
-/** The merge's conflicts, [{ id, from, to, theirs }], replaced as a whole. */
-const setConflicts = StateEffect.define()
-/** One conflict resolved (its id). */
-const dropConflict = StateEffect.define()
 let nextConflictId = 0
 
-/**
- * The open conflicts, mapped through every edit: text typed at either edge of a region joins it
- * (from maps backward, to forward), so a region never loses the person's typing.
- */
-const conflictField = StateField.define({
-  create: () => ({ list: [], deco: Decoration.none }),
-  update(value, tr) {
-    let list = value.list
-    if (tr.docChanged && list.length) {
-      // A region ending at a line start (its text ends with a newline) must not take in what is typed
-      // at the start of the next line: Take Claude's would delete it. Other ends grow with typing.
-      const old = tr.startState.doc
-      list = list.map((c) => ({
-        ...c,
-        from: tr.changes.mapPos(c.from, -1),
-        to: tr.changes.mapPos(c.to, c.to > c.from && old.sliceString(c.to - 1, c.to) === '\n' ? -1 : 1),
-      }))
-    }
-    for (const e of tr.effects) {
-      if (e.is(setConflicts)) list = e.value
-      else if (e.is(dropConflict)) list = list.filter((c) => c.id !== e.value)
-    }
-    if (list === value.list) return value
-    return { list, deco: conflictDecorations(list, tr.state.doc) }
-  },
-  // A DecorationSet given directly, never a function of the view: only those may hold block widgets.
-  provide: (f) => EditorView.decorations.from(f, (value) => value.deco),
-})
+/** The open conflicts (conflicts.mjs), mapped through every edit, drawn by conflictDecorations. */
+// A DecorationSet given directly, never a function of the view: only those may hold block widgets.
+const conflictField = createConflictField(conflictDecorations, (f) => EditorView.decorations.from(f, (value) => value.deco))
 
 const conflictsOf = (state) => state.field(conflictField).list
 const mineMark = Decoration.line({ class: 'cm-conflict-mine' })
@@ -264,21 +236,12 @@ function conflictDecorations(list, doc) {
   return Decoration.set(marks, true)
 }
 
-/** Resolve conflict `id` (or every one, id null): 'mine', 'theirs' or 'both'. */
+/** Resolve conflict `id` (or every one, id null): 'mine', 'theirs' or 'both' (conflicts.mjs resolveSpec). */
 function resolveConflicts(id, how) {
   if (!view) return
-  const list = conflictsOf(view.state)
-  const targets = id === null ? list : list.filter((c) => c.id === id)
-  if (!targets.length) return
-  const changes = []
-  for (const c of targets) {
-    const mine = view.state.doc.sliceString(c.from, c.to)
-    if (how === 'theirs') changes.push({ from: c.from, to: c.to, insert: c.theirs })
-    else if (how === 'both') changes.push({ from: c.to, insert: keepBothText(mine, c.theirs).slice(mine.length) })
-  }
-  const effects = id === null ? setConflicts.of([]) : dropConflict.of(id)
-  // The person's own choice: an edit like typing (dirty, undoable), never `replacing`.
-  view.dispatch({ changes, effects, userEvent: 'input.resolve' })
+  const spec = resolveSpec(view.state, conflictField, id, how)
+  if (!spec) return
+  view.dispatch(spec)
   view.focus()
 }
 
@@ -1190,7 +1153,23 @@ window.addEventListener('focus', () => {
   session.focus()
   changes.focus()
   notes.focus()
+  refocusAfterInert()
 })
+
+// The frame got the keyboard back with nothing in it focused. A shell dialog over the tab (Ask Claude's
+// Discuss box, Settings, a close question) makes the page tab layer inert while it is up (PageTabArea),
+// and an inert subtree drops its focus, the frame's own included; the shell's iframe.focus() after the
+// dialog then lands on this page's body and the next key typed goes nowhere (found by the editor e2e:
+// Ctrl+L, Esc, typing). The keyboard goes back to what is open: the note box, the palette, the quick
+// chat, else the buffer. A click into the frame still focuses what it hits: its mousedown comes after.
+function refocusAfterInert() {
+  const at = document.activeElement
+  if (at && at !== document.body && at !== document.documentElement) return
+  if (!$('notebox').hidden) $('notebox-text').focus()
+  else if (palette.mode !== null) $('palette-query').focus()
+  else if (chat.isOpen()) $('chat-input').focus()
+  else if (view) view.focus()
+}
 setInterval(() => {
   if (document.visibilityState === 'hidden') return
   changes.poll()

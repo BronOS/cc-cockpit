@@ -3,6 +3,30 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { microArgv, relativePath, autosaveOf } = require('../dist/host.js')
 
+/** Waits until `fn()` is truthy (polling), or fails after `ms`: no fixed sleep decides a test here. */
+async function until(fn, ms = 5000, what = 'condition') {
+  const end = Date.now() + ms
+  for (;;) {
+    const v = fn()
+    if (v) return v
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
+/**
+ * Resolves after every promise chain already started has run to its end: the fake ctx.tabs,
+ * services and setTitle below answer with plain resolved promises (no I/O, no timer), so what a
+ * message to the host caused is all done by the next macrotask. For "nothing happened" checks.
+ */
+const drained = () => new Promise((r) => setImmediate(r))
+
+/** Every temp folder of this file goes after the last test. */
+const made = []
+test.after(() => {
+  for (const dir of made) require('node:fs').rmSync(dir, { recursive: true, force: true })
+})
+
 test('microArgv: options, file, line', () => {
   assert.deepEqual(microArgv({}, 'src/a.ts', 12), ['micro', '-autosave', '3', 'src/a.ts', '+12'])
   assert.deepEqual(microArgv({ autosaveIdleSeconds: 0, colorscheme: 'gruvbox-tc', microPath: '/opt/micro' }, 'a', undefined), ['/opt/micro', '-autosave', '0', '-colorscheme', 'gruvbox-tc', 'a'])
@@ -135,6 +159,7 @@ function project() {
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'x\n')
   fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))
   fs.symlinkSync(path.join(root, 'src/a.ts'), path.join(root, 'inside-link.ts'))
+  made.push(root, outside)
   return root
 }
 
@@ -213,10 +238,23 @@ test('file tabs: activate serves type `file` through ctx.tabs, and deactivate cl
   host.deactivate()
 })
 
-test('file tabs: deactivate closes the watch of an open file tab (no disk event after it)', async () => {
+test('file tabs: deactivate closes the watch of an open file tab (no disk event after it)', async (t) => {
   const fs = require('node:fs')
   const path = require('node:path')
   const host = require('../dist/host.js')
+  // Every OS watch the host starts is recorded with whether it was closed: a closed watch cannot
+  // deliver an event, which a write and a wait could only suggest (the watch debounces, so no wait
+  // length proves that nothing comes).
+  const watch = fs.watch
+  const watches = []
+  t.mock.method(fs, 'watch', (...args) => {
+    const w = watch(...args)
+    const rec = { dir: args[0], closed: false }
+    watches.push(rec)
+    const close = w.close.bind(w)
+    w.close = () => ((rec.closed = true), close())
+    return w
+  })
   const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
   f.ctx.projectDir = project()
   fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'one\n')
@@ -228,9 +266,13 @@ test('file tabs: deactivate closes the watch of an open file tab (no disk event 
   opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {} })
   for (const l of listeners) l({ t: 'open', req: 1 })
   assert.deepEqual(posted.map((m) => m.t), ['settings', 'file'])
+  // The open tab's folder is watched...
+  assert.deepEqual(watches.map((w) => [w.dir, w.closed]), [[f.ctx.projectDir, false]])
   host.deactivate()
+  // ...and no longer once the host is gone.
+  assert.deepEqual(watches.map((w) => [w.dir, w.closed]), [[f.ctx.projectDir, true]])
   fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'two\n')
-  await new Promise((r) => setTimeout(r, 300))
+  await drained()
   assert.equal(posted.length, 2)
 })
 
@@ -364,8 +406,8 @@ test('a file tab instance: settings at connect and on change, the line on the fi
   assert.deepEqual(view.posted.at(-1), { t: 'settings', idleSeconds: 1, onBlur: true })
   // Open in micro: the tab's own file, whatever path the page sends.
   view.send({ t: 'micro', path: 'img.png' })
-  await new Promise((r) => setTimeout(r, 600))
-  assert.equal(f.started.length, 1)
+  // The overlay starts once micro is found (ctx.exec); the OPEN_SETTLE_MS race after it decides nothing here.
+  await until(() => f.started.length === 1, 5000, 'micro overlay')
   assert.deepEqual(f.started[0].argv.slice(-1), ['src/a.ts'])
   // A closed instance hears nothing more.
   view.close()
@@ -384,8 +426,8 @@ test('Open in micro that fails is told on the tab', async () => {
   await f.provided.editor.open('src/a.ts')
   const view = t.connect(t.open[0].id)
   view.send({ t: 'micro' })
-  await new Promise((r) => setTimeout(r, 50))
-  assert.match(view.posted.at(-1).message, /^Open in micro: micro is not installed/)
+  const err = await until(() => view.posted.find((m) => m.t === 'error'), 5000, 'the error')
+  assert.match(err.message, /^Open in micro: micro is not installed/)
   host.deactivate()
 })
 
@@ -447,7 +489,8 @@ test('conflict marker: in the title while any view reports a conflict; a stale o
   host.activate(f.ctx)
   await f.provided.editor.open('src/a.ts')
   const id = t.open[0].id
-  const tick = () => new Promise((r) => setTimeout(r, 10))
+  // updateMarker's chain is the fake ctx.tabs.list and setTitle only: all of it has run once drained.
+  const tick = drained
   const titles = () => t.calls.filter((c) => c[0] === 'setTitle').map((c) => c[2])
   const desk = t.connect(id)
   const web = t.connect(id, 'view-1')
@@ -534,12 +577,13 @@ test("the deleted bar's Close closes this tab through ctx.tabs.close; a refusal 
   const view = t.connect(id)
   // A page that reported no conflict (no deleted bar) cannot close the tab.
   view.send({ t: 'close' })
-  await new Promise((r) => setTimeout(r, 10))
+  await drained()
   assert.deepEqual(t.calls.filter((c) => c[0] === 'close'), [])
   view.send({ t: 'conflict', on: true })
   // Always this tab (main's id), whatever the page names.
   view.send({ t: 'close', id: 'someone-else' })
-  await new Promise((r) => setTimeout(r, 10))
+  await until(() => t.calls.some((c) => c[0] === 'close'), 5000, 'close')
+  await drained()
   assert.deepEqual(
     t.calls.filter((c) => c[0] === 'close'),
     [['close', id]]
@@ -548,8 +592,8 @@ test("the deleted bar's Close closes this tab through ctx.tabs.close; a refusal 
     throw new Error('tabs.close: more than 10 closes in 60 s')
   }
   view.send({ t: 'close' })
-  await new Promise((r) => setTimeout(r, 10))
-  assert.equal(view.posted.at(-1).message, 'Close: tabs.close: more than 10 closes in 60 s')
+  const refused = await until(() => view.posted.find((m) => m.t === 'error'), 5000, 'the refusal')
+  assert.equal(refused.message, 'Close: tabs.close: more than 10 closes in 60 s')
   host.deactivate()
 })
 
@@ -637,7 +681,9 @@ test('ccc edit from a realpath cwd reaches a project opened through a symlinked 
   const host = require('../dist/host.js')
   const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
   const real = project()
-  const alias = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edalias-'))), 'proj')
+  const aliasDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edalias-')))
+  made.push(aliasDir)
+  const alias = path.join(aliasDir, 'proj')
   fs.symlinkSync(real, alias)
   f.ctx.projectDir = alias
   const t = fakeTabs(f)
@@ -681,14 +727,16 @@ test('quick open and find in files: a page pick opens its file tab; a bad path i
   await f.provided.editor.open('empty.txt')
   const view = t.connect(t.open[0].id)
   view.send({ t: 'openFile', path: 'src/a.ts', line: 3, col: 2 })
-  await new Promise((r) => setTimeout(r, 20))
+  await until(() => t.open.length === 2, 5000, 'the pick opened')
   assert.deepEqual(t.calls.at(-1), ['openPage', 'file', { path: 'src/a.ts', line: 3, col: 2 }, { title: 'a.ts', icon: 'file', focus: true }])
+  const told = () => view.posted.filter((m) => m.t === 'search-error')
   for (const bad of ['../x', '/etc/hosts', 'link.txt']) {
+    const n = told().length
     view.send({ t: 'openFile', path: bad })
-    await new Promise((r) => setTimeout(r, 20))
-    assert.equal(view.posted.at(-1).t, 'search-error', bad)
-    assert.equal(view.posted.at(-1).kind, 'open')
+    await until(() => told().length === n + 1, 5000, bad)
+    assert.equal(told().at(-1).kind, 'open')
   }
+  await drained()
   assert.equal(t.open.length, 2)
   // Search messages go to lib/search.js: no ctx.processes here (an older app), so it is said on the tab.
   view.send({ t: 'files', req: 7 })
@@ -762,10 +810,11 @@ test("Claude's changes: a file tab answers git-base from its own path and git-re
   const view = t.connect(t.open[0].id)
   // The page names no path: the tab's own is used, whatever a message says.
   view.send({ t: 'git-base', req: 5, path: 'other.txt' })
-  for (let i = 0; i < 100 && !view.posted.some((m) => m.t === 'git-base'); i++) await new Promise((r) => setTimeout(r, 20))
+  await until(() => view.posted.some((m) => m.t === 'git-base'), 5000, 'git-base')
   assert.deepEqual(view.posted.filter((m) => m.t === 'git-base'), [{ t: 'git-base', req: 5, has: true, part: 0, parts: 1, text: 'one\n' }])
   view.send({ t: 'git-review', path: 'other.txt' })
-  await new Promise((r) => setTimeout(r, 20))
+  await until(() => used.length > 0, 5000, 'the review')
+  await drained()
   assert.deepEqual(used, [['reviewer', 'a.txt']])
   // The manifest declares the reviewer service this click needs.
   assert.deepEqual(require('../plugin.json').services.uses, { reviewer: 1 })
@@ -798,7 +847,7 @@ test('Quick chat: a file tab routes chat-* messages to lib/quick-chat.js (refuse
   const view = t.connect(t.open[0].id)
   // No ctx.processes in this fake (an older app): said on the tab, nothing spawned.
   view.send({ t: 'chat-start', id: 3, question: 'why?', sel: { startLine: 1, text: 'x' } })
-  for (let i = 0; i < 50 && !view.posted.some((m) => m.t === 'chat-end'); i++) await new Promise((r) => setTimeout(r, 10))
+  await until(() => view.posted.some((m) => m.t === 'chat-end'), 5000, 'chat-end')
   assert.deepEqual(view.posted.filter((m) => m.t === 'chat-end'), [{ t: 'chat-end', id: 3, message: 'Quick chat: quick chat needs a newer cockpit (ctx.processes)', error: true }])
   await host.deactivate()
 })
@@ -820,30 +869,34 @@ test('Review notes: a file tab reads and adds notes through the reviewer service
   host.activate(f.ctx)
   await f.provided.editor.open('a.txt')
   const view = t.connect(t.open[0].id)
-  const wait = () => new Promise((r) => setTimeout(r, 20))
+  // Each answer is waited for by its req; the fake service answers with resolved promises only.
+  const answer = (t, req) => until(() => view.posted.some((m) => m.t === t && m.req === req), 5000, `${t} ${req}`)
   // No provider: no marks, nothing asked, nothing added.
   view.send({ t: 'notes-get', req: 1, connect: true })
-  await wait()
+  await answer('notes', 1)
   assert.deepEqual(view.posted.filter((m) => m.t === 'notes'), [{ t: 'notes', req: 1, has: false }])
   view.send({ t: 'notes-add', req: 2, from: 1, text: 'x' })
-  await wait()
+  await answer('notes-added', 2)
   assert.deepEqual(view.posted.filter((m) => m.t === 'notes-added'), [{ t: 'notes-added', req: 2, ok: false, message: 'no Reviewer plugin is available' }])
   assert.deepEqual(calls, [])
   // A provider (resolved again on the next ask): the tab's own path, whatever the page says.
   available = true
   view.send({ t: 'notes-get', req: 3, path: 'other.txt' })
-  await wait()
+  await answer('notes', 3)
   assert.deepEqual(calls, [['notes', 'reviewer', 'a.txt']])
   assert.deepEqual(view.posted.filter((m) => m.t === 'notes').at(-1), { t: 'notes', req: 3, has: true, notes: [{ id: 'a', from: 1, to: 1, text: 'look' }] })
   view.send({ t: 'notes-add', req: 4, path: 'other.txt', from: 2, to: 2, text: 'why', quote: 'q' })
-  await wait()
+  await answer('notes-added', 4)
+  // The fresh `notes` an add is followed by (req 0) lands before the count below.
+  await drained()
   assert.deepEqual(calls.filter((c) => c[0] === 'addNote'), [['addNote', 'a.txt', { from: 2, to: 2, text: 'why', quote: 'q' }]])
   assert.deepEqual(view.posted.filter((m) => m.t === 'notes-added').at(-1), { t: 'notes-added', req: 4, ok: true })
   // The Reviewer's event for this file pushes the notes again; the tab closing stops listening.
   assert.equal(listener.event, 'notesChange')
   const before = view.posted.length
   listener.fn({ path: 'a.txt' })
-  await wait()
+  await until(() => view.posted.length > before, 5000, 'pushed notes')
+  await drained()
   assert.deepEqual(view.posted.slice(before).map((m) => [m.t, m.req]), [['notes', 0]])
   view.close()
   assert.equal(listener, null)
