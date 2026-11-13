@@ -389,6 +389,10 @@ export class TerminalSession {
    * render dimensions: the same private API the addon reads). Undefined before xterm measured it and
    * while the terminal is drawn at a scaled font (another view's pty size), which is not the size a
    * pane of this view would get. The split view's limits use it over the font estimate.
+   *
+   * Pinned to xterm internals as of @xterm/xterm 6.0.0 and @xterm/addon-fit 0.11.0
+   * (`RenderService.dimensions.css.cell`, read the same way by FitAddon.proposeDimensions): check it
+   * on an xterm upgrade. A missing path only falls back to the estimate.
    */
   cellSize(): { width: number; height: number } | undefined {
     if (this.disposed || this.term.options.fontSize !== this.baseFontSize) return undefined

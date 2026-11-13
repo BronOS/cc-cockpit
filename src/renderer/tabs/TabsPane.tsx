@@ -119,7 +119,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [area, setArea] = useState<Size>({ width: 0, height: 0 })
   const { terminalFont } = usePrefs()
   const cell = useMemo(() => cellEstimate(terminalFont), [terminalFont])
-  const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cell), [area, cell])
+  // A see-through window's tab terminals let its glass through; overlays keep their own registry,
+  // opaque (OverlayStack).
+  const [sessions] = useState(() => new SessionRegistry(tabIo, { seeThrough: isSeeThrough() }))
+  // The 20x5 minimum (a split, a divider's stop) and D5's automatic zoom count the cells the pty will
+  // really get (qa run 1 Q4): xterm's measured cell when a terminal has one at the set font, else the
+  // estimate. One cell for all of them (D26 N1): with the estimate here and the measured cell at the
+  // stop, a pane dragged to the stop read as under 20x5 and auto-zoomed on release.
+  const cellNow = useCallback((): Size => sessions.cellSize() ?? cell, [sessions, cell])
+  // Read when the view is worked out (a snapshot, a selection, the area or the font changing), so a
+  // drag's release judges the new sizes with the same cell its stop used.
+  const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cellNow()), [area, cellNow])
   const view = useMemo(() => paneView(state.groups, state.activeId, state.zoomed, autoZoom), [state.groups, state.activeId, state.zoomed, autoZoom])
   const viewRef = useRef<PaneView>(view)
   const autoZoomRef = useRef(autoZoom)
@@ -130,12 +140,6 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The window's zone layout, here rather than in Zones: the top bar draws the app's slot frames
   // (`appSlots`) that come with the same view.
   const layout = useLayout(props.project?.id)
-  // A see-through window's tab terminals let its glass through; overlays keep their own registry,
-  // opaque (OverlayStack).
-  const [sessions] = useState(() => new SessionRegistry(tabIo, { seeThrough: isSeeThrough() }))
-  // The 20x5 minimum (a split, a divider's stop) counts the cells the pty will really get (qa run 1
-  // Q4): xterm's measured cell when a terminal has one at the set font, else the estimate.
-  const cellNow = useCallback((): Size => sessions.cellSize() ?? cell, [sessions, cell])
   const [error, setError] = useState<string | null>(null)
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
