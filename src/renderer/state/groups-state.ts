@@ -95,8 +95,9 @@ export function pruneView(groups: readonly TabGroup[], zoomed: Record<string, st
  * - Closed (not in main's `order` any more; the snapshot may beat the close event), or moved out of
  *   a group that still stands: this view keeps showing what is left of the group, on the pane that
  *   took its space. A closed pane whose two-pane group dissolved: the one tab left.
- * - The group dissolved and the selected tab is still open (an Ungroup, or one of two panes moved
- *   out): the same terminal stays shown (D22). A snapshot does not say whether another view moved
+ * - The group dissolved and the selected tab is still open and plain (an Ungroup, or one of two
+ *   panes moved out): the same terminal stays shown (D22). Moved from a two-pane group into another
+ *   group elsewhere: the tab left behind, keys off (D18, D23 R3). A snapshot does not say whether another view moved
  *   this tab out or the other one, or ungrouped, so all three get the same; from elsewhere its keys
  *   go off, from this view's own edit (`ownEdit`: an intent of this page names a member) they stay on.
  *
@@ -118,7 +119,9 @@ export function selectionAfterSnapshot(
   if (!was) return undefined
   const now = after.find((g) => g.id === was.id)
   if (now && leavesOf(now.root).includes(activeId)) return undefined
-  if (!now && intent !== 'leave' && order.includes(activeId)) {
+  // Still open and in no group now: an Ungroup, or one of two panes moved out. Moved into another
+  // group instead (D23 R3): D18's "the remaining plain tab", below, not the arrangement made elsewhere.
+  if (!now && intent !== 'leave' && order.includes(activeId) && !groupOf(after, activeId)) {
     return ownEdit ? undefined : { activeId, keysOff: true }
   }
   const leftover = leavesOf(was.root).filter((t) => t !== activeId && order.includes(t))
@@ -157,4 +160,15 @@ export function paneView(
   const auto = own === undefined && autoZoom(group)
   const zoomTab = own ?? (auto ? activeId : undefined)
   return zoomTab !== undefined ? { group, zoomTab, auto, visible: [zoomTab] } : { group, auto, visible: leavesOf(group.root) }
+}
+
+/**
+ * D23 R2: main asks the page to select a tab (`tabs.select`: a plugin's `sessions.focus`, or its
+ * `beside` + `focus: true` naming the anchor) while this view's keys are off. Main's idea of the
+ * view's selection is stale then (a keys-off view sends no `tabs.selected`), so a select of a pane
+ * the view already shows is no reason to give a terminal the keys: it is ignored, keys stay off.
+ * Anything else (a tab not on screen) is selected as usual.
+ */
+export function ignoresMainSelect(keysOff: boolean, visible: readonly string[], tabId: string): boolean {
+  return keysOff && visible.includes(tabId)
 }

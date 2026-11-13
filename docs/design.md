@@ -488,7 +488,11 @@ plain tab has no group, and a project without groups behaves as before.
   Ungroup keeps it on the same terminal. A group that dissolves while the focused tab is still open
   (an Ungroup, one of two panes moved out) keeps that terminal shown: keys on when this view's own
   edit did it (the page knows the edits it sent), keys off when it came from elsewhere (D22). A
-  plain tab closed elsewhere keeps the strip's rule. A pane hidden by zoom never takes the keys or the size.
+  plain tab closed elsewhere keeps the strip's rule. While the keys are off, commands on the active tab
+  (`tab.close`, the flag, `pane.*` split, show beside, move out, zoom, resize, move) do nothing, and a
+  `tabs.select` from main naming a pane the view shows is ignored (main's view of the selection is
+  stale then); a focused tab moved into another group elsewhere leaves the view on the tab left
+  behind (D23). A pane hidden by zoom never takes the keys or the size.
 - *Strip.* A group is a bracketed segment of its members with a handle; every member keeps its own
   tab with its dot, tint, flag and label, zoomed or not, so a member that needs permission or waits
   for input always shows in the strip (the handle's description also names every asking member in

@@ -333,7 +333,8 @@ Working in a group:
 - When the pane you type in goes away because of something you did here (its ×, Cmd+W, Move Pane Out
   of Group), the pane that took its space gets the keyboard. When it goes because of anything else
   (another view, a plugin), no pane has the keyboard until you click one or use a pane chord:
-  nothing you type meanwhile reaches a terminal you did not pick. When the group itself goes (an
+  nothing you type meanwhile reaches a terminal you did not pick, and the chords that act on the
+  focused pane (Close Tab, the flag, split, move, resize, zoom) do nothing until then. When the group itself goes (an
   Ungroup, or one of its two panes moved out) while the pane you type in is still open, that pane
   stays shown; it keeps the keyboard if you did it here, and loses it until you act if it came from
   elsewhere.
@@ -365,7 +366,8 @@ hides does not take part. A plugin can open a tab beside another (`beside` on `c
 see `ccc guide`); such a pane never takes the keyboard.
 
 Limits: at most 8 panes per group, splits 4 deep, 32 groups per project. Only terminal tabs are panes
-(not overlays or plugin panels).
+(not overlays or plugin panels). Groups come back after a restart; a tab that failed to restore (and is
+tried again next time) comes back without its group.
 
 ## Web access
 

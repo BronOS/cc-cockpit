@@ -22,7 +22,7 @@ import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
 import { currentShellChrome, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
-import { paneView, type PaneView } from '../state/groups-state'
+import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
 import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
@@ -262,6 +262,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // A plugin focused this window's tab (ctx.sessions.focus, e.g. the cockpit.sessions strip of
     // any window): main already focused the window; only the selection is ours.
     const offSelect = window.cockpit.on('tabs.select', ({ tabId }) => {
+      if (ignoresMainSelect(stateRef.current.keysOff, viewRef.current.visible, tabId)) return
       dispatch({ type: 'selected', tabId })
     })
     // A tab main started on its own (a plugin's ctx.sessions.open). One that arrives before the
@@ -1069,13 +1070,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       [SWITCH_PREV]: () => switchTabs(-1, !fromKey.current),
       'tab.newClaude': () => actions.current.create('claude'),
       'tab.newShell': () => actions.current.create('shell'),
+      // D23 R1: while the keys are off (D18) the active tab is one the person did not pick and the
+      // strip shows none selected; ⌘W or the flag chord must not act on it.
       'tab.close': () => {
         const id = stateRef.current.activeId
-        if (id) actions.current.close(id)
+        if (id && !stateRef.current.keysOff) actions.current.close(id)
       },
       [TOGGLE_FLAG_COMMAND]: () => {
         const id = stateRef.current.activeId
-        if (id) actions.current.toggleFlag(id)
+        if (id && !stateRef.current.keysOff) actions.current.toggleFlag(id)
       },
       'palette.open': () => {
         setPaletteCommands((open) => (open ? null : runnableCommands()))
@@ -1333,7 +1336,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           placeholder="Type a tab name"
           onRun={(tabId) => {
             const at = stateRef.current.activeId
-            if (at) placeTab(tabId, at, besidePick.edge, false)
+            if (at && !stateRef.current.keysOff) placeTab(tabId, at, besidePick.edge, false)
           }}
           onClose={() => {
             setBesidePick(null)

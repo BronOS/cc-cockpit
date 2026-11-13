@@ -99,6 +99,17 @@ export function paneCommandHandlers(ctx: PaneCommandContext): Record<string, () 
       if (group) done(ctx.dissolve(group.id))
     }
   }
+  // D23 R1: while the keys are off (D18), activeId names a pane the person did not pick and the strip
+  // shows nothing selected, so a command acting on "the focused pane" does nothing: a ⌘⇧X or a split
+  // meant for the pane that left must not land on the one that took its space (and move-out would
+  // even hand the keys to a third). Focus chords are the way back; Equalize and Ungroup act on the
+  // group the view shows, which the person sees.
+  const onFocused = (run: () => void) => (): void => {
+    if (!ctx.state().keysOff) run()
+  }
+  for (const name of ['pane.splitRight', 'pane.splitDown', 'pane.showBesideRight', 'pane.showBesideDown', 'pane.moveOut', 'pane.zoom']) {
+    handlers[name] = onFocused(handlers[name]!)
+  }
   for (const [name, dir] of ARROWS) {
     // Focus: the spatial neighbour, no wrap. A chord also turns the keys back on after D3 took them
     // off (staying on the same pane at the group's edge), and unzooms first: the person is moving
@@ -116,16 +127,16 @@ export function paneCommandHandlers(ctx: PaneCommandContext): Record<string, () 
       if (target !== undefined) ctx.dispatch({ type: 'selected', tabId: target })
       else if (s.keysOff) ctx.dispatch({ type: 'keysOn' })
     }
-    handlers[`pane.resize${name}`] = () => {
+    handlers[`pane.resize${name}`] = onFocused(() => {
       const s = ctx.state()
       const view = ctx.view()
       if (s.activeId === null || !view.group || view.zoomTab !== undefined) return
       const axis = dir === 'left' || dir === 'right' ? 'row' : 'column'
       const next = nudgePane(view.group.root, s.activeId, dir, RESIZE_STEP, ctx.minShare(axis))
       if (next) done(ctx.resize(view.group.id, next.splitId, next.sizes))
-    }
+    })
     // Move Pane: the focused pane goes to the far side of its neighbour that way (a swap for two).
-    handlers[`pane.move${name}`] = () => {
+    handlers[`pane.move${name}`] = onFocused(() => {
       const s = ctx.state()
       const view = ctx.view()
       if (s.activeId === null || !view.group) return
@@ -133,7 +144,7 @@ export function paneCommandHandlers(ctx: PaneCommandContext): Record<string, () 
       if (target === undefined) return
       ctx.intend(s.activeId, 'stay')
       done(ctx.place({ tabId: s.activeId, at: target, edge: dir }))
-    }
+    })
   }
   return handlers
 }
