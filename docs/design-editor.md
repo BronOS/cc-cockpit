@@ -194,3 +194,18 @@ page tabs (manifest types, open, restore, unseen dot, never typed into), frame l
 reconnect, dirty per view and the close ask, keyboard routing, `processes` (bytes, cap, kill). e2e: open from Files,
 type, autosave; an external write (reload, merge, conflict); `ccc edit`; diagnostics from a fake server; a page tab in a
 browser view surviving a reconnect with a dirty buffer.
+
+## 6. Not in v1
+
+What the design names and v1 does not do (verified against the code at Task 19; the rest of this document is built):
+- **Cut at revision 2:** Vim mode, the "since opened" mark, the Plugins-page process list, root detection (one root:
+  the project folder).
+- **Files:** a "Claude is editing this file" lock; local history beyond undo.
+- **Language servers:** debugging (DAP), semantic tokens, call hierarchy, workspace symbol search; per-server settings
+  (`initializationOptions`, `workspace/configuration` values): the `servers` setting only names a command, so a server
+  runs with its own defaults and every configuration section is answered `null`; the host has the hook for them
+  (`slot.entry.initializationOptions` / `settings`) but no settings field feeds it yet. File create, rename and delete
+  from a rename or code action are refused (the host declares no resource operations).
+- **Not run for real:** the language servers (`typescript-language-server`, `gopls`, `intelephense`, `basedpyright`) are
+  exercised against a fake server in tests and e2e; quick chat's argv was checked once against the installed `claude`
+  (Task 16) and runs against a fake in tests. A manual run with the real servers is the person's.

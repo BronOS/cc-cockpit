@@ -336,10 +336,10 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - [x] run tests - must pass before next task
 
 ### Task 19: Verify acceptance criteria [model: sonnet]
-- [ ] every point of `docs/design-editor.md` implemented or listed as not in v1
-- [ ] edge cases: path escapes, missing servers, host restart with dirty buffers, page tab restore, two views
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`
-- [ ] `npm run test:e2e`
+- [x] every point of `docs/design-editor.md` implemented or listed as not in v1
+- [x] edge cases: path escapes, missing servers, host restart with dirty buffers, page tab restore, two views
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`
+- [x] `npm run test:e2e`
 
 ### Task 20: [Final] Update documentation [model: sonnet]
 - [ ] `docs/features.md` (editor, page tabs, processes, known limits), `docs/design.md` (tab kinds, `contributes.tabs`,

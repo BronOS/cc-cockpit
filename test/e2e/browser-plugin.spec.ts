@@ -50,10 +50,12 @@ test('ccc browser open shows a local page in the built-in panel; turning it off 
 
   const core = join(cockpit.dataDir, 'claude-plugins', 'core')
   const skill = join(cockpit.dataDir, 'claude-plugins', ID)
+  // The editor ships a skill too (`ccc edit`), so its plugin dir comes after the browser's.
+  const editorSkill = join(cockpit.dataDir, 'claude-plugins', 'cockpit.editor')
   const hooks = join(cockpit.dataDir, 'hooks.json')
   await cockpit.newTab('claude')
   await cockpit.waitForTerminalText('FAKE-CLAUDE banner')
-  await expect.poll(() => cockpit.claudeRuns()).toEqual([['--settings', hooks, '--plugin-dir', core, '--plugin-dir', skill]])
+  await expect.poll(() => cockpit.claudeRuns()).toEqual([['--settings', hooks, '--plugin-dir', core, '--plugin-dir', skill, '--plugin-dir', editorSkill]])
 
   // Nothing shown yet.
   await cockpit.typeLine('/ccc browser url')
@@ -83,7 +85,7 @@ test('ccc browser open shows a local page in the built-in panel; turning it off 
   await expect(page.locator('section.panel[aria-label="Browser"]')).toHaveCount(0)
   await cockpit.newTab('claude')
   await expect.poll(() => cockpit.claudeRuns().length).toBe(2)
-  expect(cockpit.claudeRuns()[1]).toEqual(['--settings', hooks, '--plugin-dir', core])
+  expect(cockpit.claudeRuns()[1]).toEqual(['--settings', hooks, '--plugin-dir', core, '--plugin-dir', editorSkill])
 })
 
 /** A localhost port nothing listens on: bound by the OS, then closed again. */

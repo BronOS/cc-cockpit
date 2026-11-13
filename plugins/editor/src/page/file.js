@@ -8,7 +8,7 @@
 // - Ask Claude (Ctrl+L, the context menu): ask.mjs reads the selection, lib/ask.js (host) turns it into Discuss's context;
 // - languages by file name (languages.mjs); search and replace (Ctrl+F, Ctrl+H), multi-cursor
 //   (Alt+click, Ctrl+D, Ctrl+Shift+L), folding, bracket matching and auto-close, comment toggle
-//   (Ctrl+/), VS Code's line moves and copies (Alt+Up/Down, Shift+Alt+Up/Down), Tab indents;
+//   (Ctrl+/), indent guides (indent-guides.mjs), VS Code's line moves and copies (Alt+Up/Down, Shift+Alt+Up/Down), Tab indents;
 // - colours from the app's theme variables, the font from the terminal font settings when the app
 //   says one (`--cc-terminal-font-family`, `--cc-terminal-font-size`, page tabs only);
 // - autosave after the idle time and on focus loss (the host's settings), Ctrl+S at once; the dirty
@@ -57,6 +57,7 @@ import { languageOfText } from './languages.mjs'
 import { createSession } from './session.mjs'
 import { lineChanges, keepBothText } from './merge.mjs'
 import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces } from './quick-open.mjs'
+import { indentGuides } from './indent-guides.mjs'
 import { createLspClient } from './lsp/client.mjs'
 import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
 import { createChanges } from './changes.mjs'
@@ -350,6 +351,9 @@ function extensions(info, text) {
   const firstLine = text.slice(0, Math.min(text.length, 200)).split('\n', 1)[0]
   return [
     basicSetup,
+    indentGuides,
+    // VS Code's Alt+click for another cursor, besides CodeMirror's own Ctrl (Cmd on macOS) click.
+    EditorView.clickAddsSelectionRange.of((e) => e.altKey || e.metaKey || e.ctrlKey),
     // After the line numbers and the fold marks: the bar sits between them and the text.
     changesUi.extension,
     notesUi.extension,

@@ -228,6 +228,40 @@ test.describe('editor, desktop', () => {
     }
   })
 
+  test('a quit and relaunch brings a file tab back (type and params), and selecting it shows the file at its line', async () => {
+    // Own launches over one data dir (as restore.spec.ts); a relaunch keeps the first run's app.json.
+    const first = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' }, settings: editorSettings({ autosaveIdleSeconds: 0 }) })
+    const root = first.cockpit.root
+    const lines = Array.from({ length: 400 }, (_, i) => `const row${i + 1} = ${i + 1}`)
+    try {
+      const c = first.cockpit
+      writeFileSync(join(c.projectDir, 'big.ts'), lines.join('\n') + '\n')
+      await waitForEditor(c)
+      await c.newTab('shell')
+      await c.waitForTerminalText('FAKE-SHELL ready')
+      await c.typeLine('ccc edit big.ts:250')
+      await c.waitForTerminalText('big.ts:250 is open in the editor')
+      await expect(c.page.getByRole('tab', { name: /big\.ts/ })).toBeVisible()
+    } finally {
+      await first.close({ keepFiles: true })
+    }
+
+    const second = await launchCockpit({ root, folderArg: false, env: { CC_COCKPIT_NO_BUNDLED: '' } })
+    try {
+      const c = second.cockpit
+      await waitForEditor(c)
+      // Not mounted at restore: the tab is there, its page loads when it is selected.
+      const fileTab = c.page.getByRole('tab', { name: /big\.ts/ })
+      await expect(fileTab).toBeVisible({ timeout: 15_000 })
+      await fileTab.click()
+      const frame = editorFrame(c.page)
+      await expect(frame.locator('#path')).toHaveText('big.ts', { timeout: 15_000 })
+      await expect(frame.locator('.cm-content')).toContainText('const row250 = 250', { timeout: 10_000 })
+    } finally {
+      await second.close()
+    }
+  })
+
   test('closing a tab with unsaved text asks; Cancel keeps it, Discard drops it and the file is untouched; quit asks too', async () => {
     const { cockpit: c, close } = await launchCockpit({
       env: { CC_COCKPIT_NO_BUNDLED: '' },
