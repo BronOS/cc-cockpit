@@ -583,13 +583,6 @@ describe('split groups in a browser view', () => {
 })
 
 describe('windowSnapshot leaves the desktop as it was', () => {
-  it('carries the split groups when main has a source (a plain read)', () => {
-    const groups = { seq: 4, order: ['a', 'b'], groups: [{ id: 'g1', root: { id: 's1', dir: 'row' as const, children: [{ tab: 'a' }, { tab: 'b' }], sizes: [0.5, 0.5] } }] }
-    const base = { tabs: { list: () => [] }, layouts: { view: () => LAYOUT }, overlays: { infos: () => [] }, closeAsks: { pendingFor: () => [] }, linkAsks: { pendingFor: () => [] } }
-    expect(windowSnapshot({ ...base, groups: { get: (p: string) => (p === 'p1' ? groups : { seq: 0, order: [], groups: [] }) } }, { windowId: 1, projectId: 'p1' }).groups).toEqual(groups)
-    expect(windowSnapshot(base, { windowId: 1, projectId: 'p1' }).groups).toBeUndefined()
-  })
-
   it('html pages stay ready (a post is delivered, no loader) and a paused terminal stays paused', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ccc-web-snap-'))
     try {

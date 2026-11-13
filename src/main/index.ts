@@ -2865,7 +2865,7 @@ function start(server: boolean): void {
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot(
         // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
-        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server, groups: tabGroups },
+        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
         ctx
       ),
     mirror: terminalMirror,

@@ -465,10 +465,12 @@ plain tab has no group, and a project without groups behaves as before.
   did not come back, such as a dropped plugin command tab or a failed spawn, is pruned) before the
   desktop's `tabs.list` reply. A window reopen (`requeue`) saves and queues the live groups the same
   way.
-- *Browsers.* `WebSnapshot.groups` carries the snapshot at `ready`. A browser selecting a member
-  follows every pane of its group (`ViewTerminals.selectGroup`, the list from main's groups): the
-  selected one first, the others one at a time, each after the previous snapshot went out and the
-  socket drained below 1 MiB; a group gaining a member joins it for every view showing that group.
+- *Browsers.* A browser reads the groups with `groups.get` after its tab list, like the desktop (the
+  `ready` snapshot has no groups). A browser selecting a member follows every pane of its group
+  (`ViewTerminals.selectGroup`, the list from main's groups): the selected one first, the others one
+  at a time, each after the previous snapshot went out and the socket drained below 1 MiB; a group
+  gaining a member joins it for every view showing that group. A reselect (every `groups.changed`
+  re-runs it) replaces the queue but never forgets a join whose snapshot is still out (D23 R4).
 - *Plugins.* `ctx.sessions.open` / `openShell` / `openCommand` take `beside` (a tab of the host's own
   window, looked up in host-api before the open budget is spent; unknown and foreign are one error) and
   `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin`), and
