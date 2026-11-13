@@ -843,6 +843,17 @@ export class TabManager {
     }
   }
 
+  /**
+   * The tab's terminal size in cells now: its pty's, else the size its sizing view reported (an exited
+   * tab), else undefined. Only a tab of `projectId` (TabGroups' minimum check for a plugin's `beside`).
+   */
+  sizeOf(projectId: string, tabId: string): { cols: number; rows: number } | undefined {
+    const tab = this.find(projectId, tabId)
+    if (!tab) return undefined
+    const size = this.pty.sizeOf(tab.id) ?? this.sizes.sizeOf(tab.id)
+    return size ? { cols: size.cols, rows: size.rows } : undefined
+  }
+
   /** The view whose size the tab's pty has (tests, diagnostics, the terminal colour answer in index.ts). */
   sizerOf(tabId: string): ViewId | undefined {
     return this.sizes.sizerOf(tabId)

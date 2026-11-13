@@ -166,6 +166,7 @@ import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
 import { TabManager } from './tabs/tab-manager'
 import { TabGroups } from './tabs/tab-groups'
+import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
@@ -1040,17 +1041,44 @@ function start(server: boolean): void {
     projectId: string,
     options: { cwd?: string; prompt?: string; model?: string; effort?: string },
     windowId: number,
-    focus: boolean
-  ): Promise<TabInfo> => {
+    focus: boolean,
+    place?: PluginPlacement
+  ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.create(projectId, { kind: 'claude', ...options })
+    return announcePluginTab(projectId, windowId, focus, place, () => tabs.create(projectId, { kind: 'claude', ...options }))
+  }
+  /**
+   * A tab main opened for a plugin (or Discuss), told to its window, which did not ask for it: create
+   * it (placed beside `place.beside` under one groups snapshot when asked, as a plugin may: at most 3
+   * panes already, the anchor's halves above the minimum, else plain), then `tabs.added`, then the
+   * focus. A plugin-opened pane never takes focus (D4): with `focus` and a placed tab, the origin view
+   * (else the desktop page) selects the anchor, unless it shows that group already; a plain tab is
+   * selected in the window as before groups.
+   */
+  const announcePluginTab = (
+    projectId: string,
+    windowId: number,
+    focus: boolean,
+    place: PluginPlacement | undefined,
+    create: () => TabInfo
+  ): TabInfo & { placed?: boolean } => {
+    const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
+    const { tab, placed } = tabGroups.createBeside(projectId, beside, create, { plugin: true })
     // The window did not ask for it: tell it, or the tab gets no view and no output acks.
     sendToProject(projectId, 'tabs.added', tab)
     // Sent after `tabs.added` on the same webContents, so the page already has the tab when it
     // selects it.
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-    return tab
+    if (focus) {
+      // The origin view only if it is one of this window's (HostApi checked; checked again), else the desktop page.
+      const view = place?.view !== undefined && views.windowOf(place.view) === windowId ? place.view : desktopViewId(windowId)
+      const to = tabGroups.pluginFocus(projectId, { tabId: tab.id, placed, ...(place ? { anchor: place.beside } : {}) }, view, (v) =>
+        selections.selectionOf(v as ViewId)
+      )
+      if (to?.to === 'window') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })
+      else if (to?.to === 'view') views.toView(to.view as ViewId, 'tabs.select', { tabId: to.tabId })
+    }
+    return place === undefined ? tab : { ...tab, placed }
   }
   /**
    * Start a shell tab a plugin asked for (ctx.sessions.openShell, the files tree's "Open terminal
@@ -1061,14 +1089,14 @@ function start(server: boolean): void {
     projectId: string,
     options: { cwd?: string },
     windowId: number,
-    focus: boolean
-  ): Promise<TabInfo> => {
+    focus: boolean,
+    place?: PluginPlacement
+  ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
-    sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-    return tab
+    return announcePluginTab(projectId, windowId, focus, place, () =>
+      tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    )
   }
   /**
    * Start a command tab a plugin asked for (ctx.sessions.openCommand), the way openShellTab does: HostApi
@@ -1080,21 +1108,21 @@ function start(server: boolean): void {
     projectId: string,
     options: { argv: string[]; cwd?: string; title: string; openedBy: string },
     windowId: number,
-    focus: boolean
-  ): Promise<TabInfo> => {
+    focus: boolean,
+    place?: PluginPlacement
+  ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
     const name = plugins.get(options.openedBy)?.manifest?.name
-    const tab = tabs.createPluginCommand(projectId, {
-      argv: options.argv,
-      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      title: options.title,
-      openedBy: options.openedBy,
-      ...(typeof name === 'string' ? { openedByName: name } : {})
-    })
-    sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-    return tab
+    return announcePluginTab(projectId, windowId, focus, place, () =>
+      tabs.createPluginCommand(projectId, {
+        argv: options.argv,
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        title: options.title,
+        openedBy: options.openedBy,
+        ...(typeof name === 'string' ? { openedByName: name } : {})
+      })
+    )
   }
   /** Open an overlay once the login env is known (a terminal overlay's PATH depends on it). */
   const openOverlay = async (
@@ -1516,11 +1544,13 @@ function start(server: boolean): void {
       openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
-      openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
+      openTab: (projectId, options, windowId, focus, place) => openClaudeTab(projectId, options, windowId, focus === true, place),
+      // A `beside` anchor: a terminal tab of that project by TabManager's table (an overlay is never one).
+      hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
       // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
-      openShellTab: (projectId, options, windowId, focus) => openShellTab(projectId, options, windowId, focus === true),
+      openShellTab: (projectId, options, windowId, focus, place) => openShellTab(projectId, options, windowId, focus === true, place),
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
-      openCommandTab: (projectId, options, windowId, focus) => openCommandTab(projectId, options, windowId, focus === true),
+      openCommandTab: (projectId, options, windowId, focus, place) => openCommandTab(projectId, options, windowId, focus === true, place),
       setBadge: (projectId, panelKey, badge) => layouts.setBadge(projectId, panelKey, badge),
       setPanelHeader: (projectId, panelKey, header) => layouts.setHeader(projectId, panelKey, header),
       setPanelSlots: (projectId, panelKey, placements) => layouts.setSlots(projectId, panelKey, placements),
@@ -1752,7 +1782,9 @@ function start(server: boolean): void {
     publish: (projectId, snapshot) => sendToProject(projectId, 'groups.changed', snapshot),
     changed: (projectId) => restorer.tabsChanged(projectId),
     // `webConnections` is defined below; a group can change only once a window has attached.
-    groupsChanged: (projectId) => webConnections.groupsChanged(projectId)
+    groupsChanged: (projectId) => webConnections.groupsChanged(projectId),
+    // A plugin's `beside` never makes a pane smaller than the minimum (D5).
+    sizeOf: (projectId, tabId) => tabs.sizeOf(projectId, tabId)
   })
   // A project window that opens with nothing to restore gets one Claude tab when its renderer
   // first attaches (first-tab.ts; the attach handler below). The setting is read then.

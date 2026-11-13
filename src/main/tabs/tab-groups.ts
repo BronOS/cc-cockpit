@@ -17,6 +17,7 @@
 import { errorText } from '../../shared/error-text'
 import type { GroupsReply } from '../../shared/ipc'
 import {
+  PANE_MIN_CELLS,
   contiguousOrder,
   dissolve,
   groupOf,
@@ -56,6 +57,11 @@ export interface TabGroupsDeps {
    * group join its new members (web/connection.ts). Absent: nobody is told.
    */
   groupsChanged?(projectId: string): void
+  /**
+   * The anchor's terminal size in cells now (TabManager.sizeOf): a plugin's `beside` is placed only
+   * when both halves of the anchor's pane would keep PANE_MIN_CELLS (D5). Absent or unknown: no check.
+   */
+  sizeOf?(projectId: string, tabId: string): { cols: number; rows: number } | undefined
   log?: (message: string) => void
 }
 
@@ -226,9 +232,47 @@ export class TabGroups {
     return this.atomic(projectId, () => {
       const tab = create()
       if (!tab || !beside) return { tab, placed: false }
+      // A plugin never squeezes a pane below the minimum (D5, D7): its tab opens plain instead. Asked
+      // after the create (the anchor may have closed or been resized while the login env was awaited).
+      if (opts.plugin === true && !this.halvesFit(projectId, beside)) return { tab, placed: false }
       const reply = this.place(projectId, { tabId: tab.id, at: beside.tabId, edge: beside.edge }, opts)
       return { tab, placed: reply.ok }
     })
+  }
+
+  /** Whether both halves of the anchor's pane split on `edge` keep PANE_MIN_CELLS (a 1-cell divider between). */
+  private halvesFit(projectId: string, beside: BesideRequest): boolean {
+    let size: { cols: number; rows: number } | undefined
+    try {
+      size = this.deps.sizeOf?.(projectId, beside.tabId)
+    } catch (err) {
+      this.log(`tab groups size failed: ${errorText(err)}`)
+    }
+    if (!size) return true
+    const across = beside.edge === 'left' || beside.edge === 'right'
+    return across
+      ? Math.floor((size.cols - 1) / 2) >= PANE_MIN_CELLS.cols && size.rows >= PANE_MIN_CELLS.rows
+      : Math.floor((size.rows - 1) / 2) >= PANE_MIN_CELLS.rows && size.cols >= PANE_MIN_CELLS.cols
+  }
+
+  /**
+   * Where a plugin's `focus: true` goes after an open (D4, D7). Placed beside an anchor: the group is
+   * shown in the origin view only, by selecting the anchor there, so the anchor keeps focus and the new
+   * pane never takes it; nothing at all when that view already shows the group (its focused pane stays
+   * where the person left it: D3, nothing done elsewhere moves a view's keys). Not placed: the new
+   * plain tab is selected in the window, as an open did before groups existed.
+   */
+  pluginFocus(
+    projectId: string,
+    opened: { tabId: string; placed: boolean; anchor?: string },
+    view: string,
+    selectionOf: (view: string) => string | undefined
+  ): { to: 'window'; tabId: string } | { to: 'view'; view: string; tabId: string } | undefined {
+    if (!opened.placed || opened.anchor === undefined) return { to: 'window', tabId: opened.tabId }
+    const group = groupOf(this.groupsOf(projectId), opened.anchor)
+    const shown = selectionOf(view)
+    if (group && shown !== undefined && leavesOf(group.root).includes(shown)) return undefined
+    return { to: 'view', view, tabId: opened.anchor }
   }
 
   /**

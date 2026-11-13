@@ -343,3 +343,43 @@ describe('TabGroups.restore', () => {
     expect(t.groups.joinOrder('q', 'a')).toEqual(['a'])
   })
 })
+
+describe('a plugin’s beside (D4 D5 D7)', () => {
+  const withSizes = (sizes: Record<string, { cols: number; rows: number }>) => {
+    const orders = new Map([['p', ['a', 'b', 'c', 'd', 'e']]])
+    const groups = new TabGroups({
+      order: (p) => [...(orders.get(p) ?? [])],
+      setOrder: (p, ids) => void orders.set(p, [...ids]),
+      publish: () => {},
+      changed: () => {},
+      sizeOf: (_p, t) => sizes[t],
+      log: () => {}
+    })
+    return groups
+  }
+
+  it('places a plugin’s tab only while both halves of the anchor keep 20 x 5 cells; a person’s split is not checked here', () => {
+    const g = withSizes({ a: { cols: 41, rows: 11 }, b: { cols: 40, rows: 10 } })
+    expect(g.createBeside('p', { tabId: 'a', edge: 'right' }, () => ({ id: 'c' }), { plugin: true }).placed).toBe(true)
+    expect(g.createBeside('p', { tabId: 'b', edge: 'right' }, () => ({ id: 'd' }), { plugin: true }).placed).toBe(false)
+    expect(g.createBeside('p', { tabId: 'b', edge: 'down' }, () => ({ id: 'd' }), { plugin: true }).placed).toBe(false)
+    expect(g.createBeside('p', { tabId: 'b', edge: 'down' }, () => ({ id: 'd' })).placed).toBe(true)
+    // An unknown size (no pty, nobody measured it) is no reason to refuse.
+    expect(g.createBeside('p', { tabId: 'e', edge: 'down' }, () => ({ id: 'd' }), { plugin: true }).placed).toBe(true)
+  })
+
+  it('focus: a placed pane never takes focus; the origin view selects the anchor unless it shows that group already', () => {
+    const g = withSizes({})
+    g.place('p', { tabId: 'b', at: 'a', edge: 'right' })
+    g.place('p', { tabId: 'c', at: 'a', edge: 'down' })
+    const shows = (tab: string | undefined) => () => tab
+    // The view is somewhere else: it is shown the group, at the anchor.
+    expect(g.pluginFocus('p', { tabId: 'c', placed: true, anchor: 'a' }, 'web:1', shows('d'))).toEqual({ to: 'view', view: 'web:1', tabId: 'a' })
+    expect(g.pluginFocus('p', { tabId: 'c', placed: true, anchor: 'a' }, 'desktop:1', shows(undefined))).toEqual({ to: 'view', view: 'desktop:1', tabId: 'a' })
+    // It already shows the group (the person is typing in b): nothing moves its keys.
+    expect(g.pluginFocus('p', { tabId: 'c', placed: true, anchor: 'a' }, 'web:1', shows('b'))).toBeUndefined()
+    // Not placed: the new plain tab is selected in the window, as before groups.
+    expect(g.pluginFocus('p', { tabId: 'e', placed: false, anchor: 'a' }, 'web:1', shows('b'))).toEqual({ to: 'window', tabId: 'e' })
+    expect(g.pluginFocus('p', { tabId: 'e', placed: false }, 'web:1', shows('b'))).toEqual({ to: 'window', tabId: 'e' })
+  })
+})
