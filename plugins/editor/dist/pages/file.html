@@ -63,7 +63,19 @@
     <!-- The editor's context menu: Ask Claude (core's Discuss for this tab). -->
     <div id="ctxmenu" class="ctxmenu" role="menu" hidden>
       <button id="ctx-ask" type="button" role="menuitem"><span>Ask Claude about this…</span><kbd id="ctx-ask-key"></kbd></button>
+      <!-- Shown only while a Reviewer answers (the reviewer service's notes). -->
+      <button id="ctx-note" type="button" role="menuitem" hidden><span>Add review note…</span></button>
     </div>
+    <!-- Add review note: a note on the selected lines, written to the Reviewer's own store. -->
+    <section id="notebox" class="notebox" role="dialog" aria-label="Add review note" hidden>
+      <div id="notebox-about" class="notebox-about"></div>
+      <textarea id="notebox-text" rows="3" maxlength="4000" spellcheck="false" placeholder="What should change here?"></textarea>
+      <div class="notebox-actions">
+        <span id="notebox-error" class="notebox-error" role="alert"></span>
+        <button id="notebox-cancel" type="button" class="cc-ghost">Cancel</button>
+        <button id="notebox-add" type="button" class="cc-primary" title="Ctrl+Enter">Add note</button>
+      </div>
+    </section>
     <script src="file.bundle.js"></script>
   </body>
 </html>

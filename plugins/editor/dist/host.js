@@ -27,6 +27,7 @@ const search = require('./lib/search.js')
 const git = require('./lib/git.js')
 const ask = require('./lib/ask.js')
 const quickChat = require('./lib/quick-chat.js')
+const notes = require('./lib/notes.js')
 const { LspManager } = require('./lib/lsp/manager.js')
 const { serveLsp } = require('./lib/lsp/serve.js')
 
@@ -269,6 +270,19 @@ exports.activate = (ctx) => {
     await ctx.services.use('reviewer').open(rel)
   }
 
+  // The Reviewer's notes of a file (the gutter's marks, "Add review note"): the `reviewer` service looked
+  // up on every use, so a replaced, disabled or later enabled Reviewer is followed. Null: none to ask
+  // (an app without services, no provider, or the project's pick unavailable).
+  function reviewerService() {
+    try {
+      if (typeof ctx.services.use !== 'function') return null
+      if (typeof ctx.services.available === 'function' && !ctx.services.available('reviewer')) return null
+      return ctx.services.use('reviewer')
+    } catch {
+      return null
+    }
+  }
+
   // ---- file tabs ----
   // `contributes.tabs` type `file`: the host reads, saves by compare-and-swap and watches
   // (lib/files.js); the page (dist/pages/file.html) keeps its base and merges (design-editor.md §2).
@@ -431,6 +445,8 @@ exports.activate = (ctx) => {
       // Quick chat (Ctrl+K): a read-only headless Claude in the project folder (lib/quick-chat.js), about
       // the tab's own file; the model is the app setting at the chat's start.
       const chatting = quickChat.serveChat(tab, { spawn, root: ctx.projectDir, rel: tabPath, model: () => quickChat.modelOf(app()), log: ctx.log })
+      // The Reviewer's notes in the gutter and "Add review note": the tab's own file, through the reviewer service.
+      const noting = notes.serveNotes(tab, { rel: tabPath, reviewer: reviewerService, log: ctx.log })
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -443,6 +459,7 @@ exports.activate = (ctx) => {
         if (gitting(m)) return
         if (asking(m)) return
         if (chatting(m)) return
+        if (noting(m)) return
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {

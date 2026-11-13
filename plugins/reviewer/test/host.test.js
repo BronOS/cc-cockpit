@@ -768,7 +768,7 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail']
+  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes']
   assert.deepEqual(await f.provided.reviewer.features(), all)
   assert.deepEqual(host.FEATURES, all)
   // A copy: a caller changing the answer changes nothing here.
@@ -1381,5 +1381,122 @@ test('a markdown file is a review with format markdown; an over-cap image is ref
   fs.truncateSync(path.join(f.ctx.projectDir, 'big.png'), 10 * 1024 * 1024 + 1)
   await assert.rejects(f.provided.reviewer.open('big.png'), /larger than 10 MiB/)
   assert.equal(f.handles.length, 2)
+  host.deactivate()
+})
+
+// ---- notes(path), addNote and the event notesChange (feature 'notes', the editor's gutter) ----
+
+/** A fake ctx whose storage and service events are real enough to read back. */
+function notesSetup() {
+  const f = setup({ editorAvailable: false })
+  const store = new Map()
+  f.ctx.storage = { get: async (k) => store.get(k) ?? null, set: async (k, v) => void store.set(k, v), delete: async (k) => void store.delete(k) }
+  const events = []
+  f.ctx.services.emit = (name, event, data) => events.push([name, event, data])
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  return { f, store, events, svc: f.provided.reviewer }
+}
+
+test('addNote writes the stored draft the overlay reads, notes() reads it back, and notesChange is told', async () => {
+  const { f, store, events, svc } = notesSetup()
+  const r = await svc.addNote('a.js', { from: 2, to: 3, text: 'why?', quote: 'two' })
+  assert.match(r.id, /^e/)
+  assert.deepEqual(store.get('draft:a.js').notes, [{ id: r.id, side: 'new', from: 2, to: 3, quote: 'two', text: 'why?' }])
+  assert.deepEqual(await svc.notes('./a.js'), [{ id: r.id, from: 2, to: 3, text: 'why?', quote: 'two' }])
+  assert.deepEqual(events, [['reviewer', 'notesChange', { path: 'a.js' }]])
+  // The same draft the overlay opens with.
+  await svc.open('a.js')
+  assert.deepEqual(f.handles[0].posts[0].draft.notes.map((n) => n.id), [r.id])
+  host.deactivate()
+})
+
+test('addNote keeps earlier notes; notes() is in line order', async () => {
+  const { svc } = notesSetup()
+  const r = await svc.addNote('a.js', { from: 2, to: 3, text: 'why?' })
+  const r2 = await svc.addNote('a.js', { from: 1, text: 'and this' })
+  assert.notEqual(r2.id, r.id)
+  assert.deepEqual((await svc.notes('a.js')).map((n) => [n.from, n.to, n.text]), [[1, 1, 'and this'], [2, 3, 'why?']])
+  host.deactivate()
+})
+
+test("notes(): only the working-tree line notes with text; the open overlay's own draft wins over storage", async () => {
+  const { f, store, svc } = notesSetup()
+  const anchor = { prefix: '', suffix: '', occurrence: 0, length: 1, at: 0 }
+  store.set('draft:a.js', {
+    global: 'g',
+    notes: [
+      { id: '1', side: 'old', from: 1, to: 1, quote: '', text: 'old side' },
+      { id: '2', side: 'new', from: 1, to: 1, quote: 'x', text: '   ' },
+      { id: '3', page: 2, quote: '', text: 'pdf page' },
+      { id: '4', quote: 'q', anchor, text: 'html no lines' },
+      { id: '5', quote: 'q', anchor, lines: { from: 4, to: 5 }, text: 'rendered' },
+      { id: '6', side: 'new', from: 1, to: 1, quote: 'x', text: 'kept' },
+    ],
+  })
+  assert.deepEqual((await svc.notes('a.js')).map((n) => [n.id, n.from, n.to]), [['6', 1, 1], ['5', 4, 5]])
+  await svc.open('a.js')
+  f.handles[0].say({ type: 'draft', draft: { global: '', notes: [{ id: 'n1', side: 'new', from: 3, to: 3, quote: '', text: 'live' }] } })
+  assert.deepEqual((await svc.notes('a.js')).map((n) => n.id), ['n1'])
+  host.deactivate()
+})
+
+test("addNote is refused while the file's review is open, and for a bad path or note", async () => {
+  const { store, svc } = notesSetup()
+  await svc.open('a.js')
+  await assert.rejects(svc.addNote('a.js', { from: 1, text: 'x' }), /review of a\.js is open/)
+  assert.equal(store.size, 0)
+  for (const bad of ['../x', '/etc/passwd', '', 'a\0b', 5, null]) {
+    await assert.rejects(svc.addNote(bad, { from: 1, text: 'x' }), /reviewer:/, String(bad))
+    await assert.rejects(svc.notes(bad), /reviewer:/, String(bad))
+  }
+  const badNotes = [null, 'x', {}, { from: 0, text: 'x' }, { from: 1.5, text: 'x' }, { from: 1e9, text: 'x' }, { from: 3, to: 2, text: 'x' }, { from: 1, text: '' }, { from: 1, text: '  ' }, { from: 1, text: 5 }, { from: 1, text: 'x'.repeat(4001) }, { from: 1, text: 'x', quote: 5 }]
+  for (const bad of badNotes) await assert.rejects(svc.addNote('b.js', bad), /reviewer:/, JSON.stringify(bad))
+  assert.equal(store.size, 0)
+  // A long quote is cut, not refused; a note at the cap of 4000 characters is taken.
+  await svc.addNote('b.js', { from: 1, text: 'x'.repeat(4000), quote: 'q'.repeat(900) })
+  const n = (await svc.notes('b.js'))[0]
+  assert.equal(n.text.length, 4000)
+  assert.equal(n.quote.length, review.MAX_QUOTE)
+  host.deactivate()
+})
+
+test('addNote refuses a path that leaves the project through a symlink, and a full draft', async () => {
+  const { f, store, svc } = notesSetup()
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'revout-'))
+  fs.symlinkSync(outside, path.join(f.ctx.projectDir, 'link'))
+  await assert.rejects(svc.addNote('link/x.js', { from: 1, text: 'x' }), /through a symlink/)
+  await assert.rejects(svc.notes('link/x.js'), /through a symlink/)
+  store.set('draft:a.js', { global: '', notes: Array.from({ length: review.MAX_NOTES }, (_, i) => ({ id: `n${i}`, side: 'new', from: 1, to: 1, quote: '', text: 'x' })) })
+  await assert.rejects(svc.addNote('a.js', { from: 1, text: 'one more' }), /more than 200 notes/)
+  assert.equal(store.get('draft:a.js').notes.length, review.MAX_NOTES)
+  host.deactivate()
+})
+
+test('concurrent addNote calls keep every note', async () => {
+  const { svc } = notesSetup()
+  await Promise.all(Array.from({ length: 8 }, (_, i) => svc.addNote('a.js', { from: i + 1, text: `n${i}` })))
+  assert.equal((await svc.notes('a.js')).length, 8)
+  host.deactivate()
+})
+
+test("notesChange follows the overlay's draft writes and a sent review; a text annotation tells nothing", async () => {
+  const { f, store, events, svc } = notesSetup()
+  await svc.open('a.js')
+  const h = f.handles[0]
+  h.say({ type: 'draft', draft: { global: '', notes: [{ id: 'n1', side: 'new', from: 1, to: 1, quote: '', text: 'hi' }] } })
+  await new Promise((r) => setTimeout(r, 400))
+  assert.deepEqual(events, [['reviewer', 'notesChange', { path: 'a.js' }]])
+  assert.equal(store.get('draft:a.js').notes.length, 1)
+  await h.discussFn()
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(store.size, 0)
+  assert.ok(events.length >= 2) // the draft written again for Discuss, then deleted once sent
+  events.length = 0
+  await svc.annotate({ title: 'Ticket', text: 'body' })
+  f.handles[1].say({ type: 'draft', draft: { global: 'g', notes: [] } })
+  await new Promise((r) => setTimeout(r, 400))
+  assert.deepEqual(events, [])
   host.deactivate()
 })

@@ -167,6 +167,99 @@ main .cm-line.cc-flash {
   text-overflow: ellipsis;
   background: color-mix(in srgb, var(--cc-status-ended) 10%, transparent);
 }
+/* The Reviewer's notes in the gutter (notes-editor.js): a dot per noted line, the note's text on hover. */
+.cc-notes-gutter .cm-gutterElement {
+  padding: 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cc-note {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cc-accent);
+}
+.cc-note-many {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cc-accent) 40%, transparent);
+}
+.cc-note-spacer {
+  visibility: hidden;
+}
+.cc-note-pop {
+  position: fixed;
+  z-index: 20;
+  max-width: min(480px, calc(100vw - 16px));
+  max-height: 50vh;
+  overflow: hidden;
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-m, 6px);
+  box-shadow: 0 4px 16px var(--cc-shadow);
+  pointer-events: none;
+}
+.cc-note-pop-item + .cc-note-pop-item {
+  margin-top: var(--cc-space-2, 8px);
+  padding-top: var(--cc-space-1, 4px);
+  border-top: 1px solid var(--cc-border);
+}
+.cc-note-pop-head {
+  font-size: var(--cc-text-s, 11px);
+  color: var(--cc-fg-muted);
+}
+.cc-note-pop-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Add review note: a box over the editor, under the header. */
+.notebox {
+  position: fixed;
+  top: calc(var(--cc-control-h, 26px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-2, 8px);
+  padding: var(--cc-space-2, 8px);
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-m, 6px);
+  box-shadow: 0 8px 24px var(--cc-shadow);
+  z-index: 10;
+}
+.notebox[hidden] {
+  display: none;
+}
+.notebox-about {
+  font-size: var(--cc-text-s, 11px);
+  color: var(--cc-fg-muted);
+}
+.notebox textarea {
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-1);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-s, 4px);
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  resize: vertical;
+  min-height: 3.5em;
+  max-height: 40vh;
+}
+.notebox-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--cc-space-2, 8px);
+}
+.notebox-error {
+  flex: 1;
+  font-size: var(--cc-text-s, 11px);
+  color: var(--cc-status-ended);
+}
 /* Quick open and find in files: a palette over the editor, under the header. */
 .palette {
   position: fixed;
@@ -367,6 +460,9 @@ main .cm-line.cc-flash {
   border-radius: var(--cc-radius-s, 4px);
   cursor: pointer;
   text-align: left;
+}
+.ctxmenu button[hidden] {
+  display: none;
 }
 .ctxmenu button:hover,
 .ctxmenu button:focus-visible {

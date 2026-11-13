@@ -347,8 +347,18 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   view, caller }` (`reviewer.on('view', fn)`; check `caller`), so you can remember the person's choice. An original
   over the page's limits shows its Reader rendering instead. Each frame is as tall as the visible area and scrolls
   on its own (nothing can measure a frame without script).
+- The notes of a file in place (feature `'notes'`, still v1: an older reviewer rejects with `has no method "notes"`,
+  read it as none), for a plugin that shows a file itself (the editor's gutter): `notes(path)` resolves the line notes
+  of that file's review, `[{ id, from, to, text, quote }]` in line order (1-based, inclusive; the working-tree side
+  only, never the old side's, a PDF page's or a note with no text), from the open review's own draft while it is
+  open, else the stored one. `addNote(path, { from, to?, text, quote? })` adds one to the same stored draft the overlay
+  opens with and Discuss sends (`text` 1-4,000 characters, `quote` cut at 500, lines 1 to 10,000,000) and resolves `{ id }`;
+  it is refused while that file's review is open (the person adds the note there), when the draft already has 200 notes
+  or is too large, for a path outside the project folder (also through a symlink) and for any other bad input. The
+  service event `notesChange` `{ path }` (`reviewer.on('notesChange', fn)`) says a file's notes may have changed:
+  call `notes(path)` again.
 - `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type',
-  'mail', 'actions', 'update', 'original', 'fail']`. An older
+  'mail', 'actions', 'update', 'original', 'fail', 'notes']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall

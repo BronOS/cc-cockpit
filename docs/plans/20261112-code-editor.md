@@ -319,10 +319,10 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Modify: `plugins/editor/src/page/notes.ts`, `plugins/editor/dist/host.js`
 - Modify: `plugins/reviewer/test/*`, `plugins/editor/test/host.test.js`
 
-- [ ] reviewer service addition (versioned), same store as the overlay
-- [ ] gutter marks with note text on hover; "Add review note" on a selection
-- [ ] write tests for the service calls and the editor's use of them
-- [ ] run tests - must pass before next task
+- [x] reviewer service addition (versioned), same store as the overlay
+- [x] gutter marks with note text on hover; "Add review note" on a selection
+- [x] write tests for the service calls and the editor's use of them
+- [x] run tests - must pass before next task
 
 ### Task 18: e2e: desktop and browser [model: sonnet]
 

@@ -29,6 +29,13 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   notch where lines were removed); hover shows the old lines, a click opens the Reviewer's diff (the `reviewer` service,
   so the plugin uses it). The host reads `git cat-file blob HEAD:./<file>` (no shell, one argument); not a repository,
   untracked, binary, a link or git missing: no marks.
+- Review notes in place: the Reviewer's line notes of the file show as a dot in a second gutter, the note's text on
+  hover; "Add review note…" in the right-click menu writes a note on the selected lines (the cursor's line with none) to
+  the Reviewer's own store, so it is in the Reviewer's overlay and in what Discuss sends. Through the `reviewer` service
+  (`notes`, `addNote`, the event `notesChange`; the Reviewer must be 0.3.0 or newer): with no Reviewer, or an older one,
+  there are no dots and no menu item. The Reviewer numbers the lines of the file on disk, so an unsaved buffer is saved
+  before the note is added, and a dot follows its line while you type but is placed again from the Reviewer's list when
+  that changes. A note cannot be added while the file's review overlay is open (add it there).
 - Ask Claude (Ctrl+L, Cmd+L on macOS, or the editor's right-click menu): core's Discuss for the tab. Core draws the
   question box; the host answers with `path:start-end` (1-based) and the selected text in a code fence one backtick
   longer than any run in it (cut to 8,000 characters, with a note), or just `path:line` with no selection. Only the main selection is sent (with several cursors the others are ignored). The text goes to

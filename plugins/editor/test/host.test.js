@@ -779,3 +779,52 @@ test('Quick chat: a file tab routes chat-* messages to lib/quick-chat.js (refuse
   assert.deepEqual(view.posted.filter((m) => m.t === 'chat-end'), [{ t: 'chat-end', id: 3, message: 'Quick chat: quick chat needs a newer cockpit (ctx.processes)', error: true }])
   await host.deactivate()
 })
+
+test('Review notes: a file tab reads and adds notes through the reviewer service on its own path; no provider is has: false', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  const calls = []
+  let listener = null
+  let available = false
+  f.ctx.services.available = (n) => n === 'reviewer' && available
+  f.ctx.services.use = (n) => ({
+    notes: async (p) => (calls.push(['notes', n, p]), [{ id: 'a', from: 1, to: 1, text: 'look', quote: 'x' }]),
+    addNote: async (p, note) => (calls.push(['addNote', p, note]), { id: 'e1' }),
+    on: (event, fn) => ((listener = { event, fn }), () => (listener = null)),
+  })
+  host.activate(f.ctx)
+  await f.provided.editor.open('a.txt')
+  const view = t.connect(t.open[0].id)
+  const wait = () => new Promise((r) => setTimeout(r, 20))
+  // No provider: no marks, nothing asked, nothing added.
+  view.send({ t: 'notes-get', req: 1, connect: true })
+  await wait()
+  assert.deepEqual(view.posted.filter((m) => m.t === 'notes'), [{ t: 'notes', req: 1, has: false }])
+  view.send({ t: 'notes-add', req: 2, from: 1, text: 'x' })
+  await wait()
+  assert.deepEqual(view.posted.filter((m) => m.t === 'notes-added'), [{ t: 'notes-added', req: 2, ok: false, message: 'no Reviewer plugin is available' }])
+  assert.deepEqual(calls, [])
+  // A provider (resolved again on the next ask): the tab's own path, whatever the page says.
+  available = true
+  view.send({ t: 'notes-get', req: 3, path: 'other.txt' })
+  await wait()
+  assert.deepEqual(calls, [['notes', 'reviewer', 'a.txt']])
+  assert.deepEqual(view.posted.filter((m) => m.t === 'notes').at(-1), { t: 'notes', req: 3, has: true, notes: [{ id: 'a', from: 1, to: 1, text: 'look' }] })
+  view.send({ t: 'notes-add', req: 4, path: 'other.txt', from: 2, to: 2, text: 'why', quote: 'q' })
+  await wait()
+  assert.deepEqual(calls.filter((c) => c[0] === 'addNote'), [['addNote', 'a.txt', { from: 2, to: 2, text: 'why', quote: 'q' }]])
+  assert.deepEqual(view.posted.filter((m) => m.t === 'notes-added').at(-1), { t: 'notes-added', req: 4, ok: true })
+  // The Reviewer's event for this file pushes the notes again; the tab closing stops listening.
+  assert.equal(listener.event, 'notesChange')
+  const before = view.posted.length
+  listener.fn({ path: 'a.txt' })
+  await wait()
+  assert.deepEqual(view.posted.slice(before).map((m) => [m.t, m.req]), [['notes', 0]])
+  view.close()
+  assert.equal(listener, null)
+  // The manifest declares the service these calls need.
+  assert.deepEqual(require('../plugin.json').services.uses, { reviewer: 1 })
+  await host.deactivate()
+})

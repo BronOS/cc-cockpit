@@ -230,4 +230,4 @@ async function previewGit(exec, rel) {
   return { head: h.stdout.trim(), added: there.code !== 0 }
 }
 
-module.exports = { ReviewError, MAX_SIDE_BYTES, MAX_IMAGE_BYTES, MAX_PDF_BYTES, normalizeRelative, relativeFromCwd, readSides, viewKindOf, readPreview, previewGit }
+module.exports = { ReviewError, MAX_SIDE_BYTES, MAX_IMAGE_BYTES, MAX_PDF_BYTES, normalizeRelative, insideRoot, relativeFromCwd, readSides, viewKindOf, readPreview, previewGit }

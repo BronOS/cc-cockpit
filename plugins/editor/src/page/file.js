@@ -27,6 +27,10 @@
 // HEAD and diffs it against the buffer; changes-editor.js draws the bars, the hover and the click that
 // opens the Reviewer's diff.
 //
+// The Reviewer's notes in the gutter (design-editor.md §4): notes.mjs holds the notes the host reads through
+// the `reviewer` service, notes-editor.js draws a mark per noted line with the text on hover, and the context
+// menu's "Add review note" (shown only while a Reviewer answers) writes one to the Reviewer's own store.
+//
 // Language servers (design-editor.md §3): lsp/client.mjs tells the host the buffer and asks it in
 // editor terms; lsp/editor.js draws the answers (diagnostics, hover, completion, signature help) and
 // runs the commands (F12, Shift+F12, F2, Mod+., Shift+Alt+F, Mod+Shift+O). Lists and the rename
@@ -57,6 +61,8 @@ import { createLspClient } from './lsp/client.mjs'
 import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
 import { createChanges } from './changes.mjs'
 import { createChangesGutter } from './changes-editor.js'
+import { createNotes } from './notes.mjs'
+import { createNotesGutter } from './notes-editor.js'
 import { selectionContext } from './ask.mjs'
 import { createQuickChat } from './chat-editor.js'
 
@@ -345,6 +351,7 @@ function extensions(info, text) {
     basicSetup,
     // After the line numbers and the fold marks: the bar sits between them and the text.
     changesUi.extension,
+    notesUi.extension,
     keymap.of([
       indentWithTab,
       // Ctrl+S saves now; Ctrl+H opens search with its replace field (VS Code's keys; on macOS Cmd+H
@@ -394,6 +401,7 @@ function load(text, info) {
   }
   view.focus()
   changesUi.recompute(view)
+  notesUi.recompute(view)
   // A whole new buffer (no changes to send): the language server gets all of it again.
   lsp.close()
   lsp.open(info.path, true)
@@ -513,6 +521,7 @@ function render(v) {
   // A file outside the project (a definition in node_modules): read-only, no micro (it opens project files).
   $('micro').hidden = isOutside(v.path)
   microIfSaved(v)
+  noteIfSaved(v)
 }
 
 const isOutside = (p) => typeof p === 'string' && (p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p))
@@ -550,6 +559,15 @@ const changes = createChanges({
   post: (m) => ccPanel.post(m),
   onBase: () => changesUi.recompute(view),
   onError: (message) => lspMessage(message, true),
+})
+
+// ---- the Reviewer's notes in the gutter ----
+
+const notesUi = createNotesGutter({ getNotes: () => notes.list() })
+const notes = createNotes({
+  post: (m) => ccPanel.post(m),
+  onNotes: () => notesUi.recompute(view),
+  onAdded: (ok, message) => lspMessage(ok ? 'Review note added: it is in the Reviewer too.' : `Review note not added: ${message || 'unknown error'}`, !ok),
 })
 
 /** Set while an `openFile` the language features sent is on its way: a refusal is said in the language bar. */
@@ -934,6 +952,8 @@ $('editor').addEventListener('contextmenu', (e) => {
   if (!view) return
   e.preventDefault()
   const menu = $('ctxmenu')
+  // "Add review note" only while a Reviewer answers (no Reviewer, an older one: the host said has: false).
+  $('ctx-note').hidden = !notes.available()
   menu.hidden = false
   // Kept inside the frame: the menu opens up and left when the pointer is near the edge.
   const x = Math.max(0, Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4))
@@ -943,6 +963,7 @@ $('editor').addEventListener('contextmenu', (e) => {
   $('ctx-ask').focus()
 })
 $('ctx-ask').addEventListener('click', askClaude)
+$('ctx-note').addEventListener('click', openNoteBox)
 $('ctx-ask').title = ASK_LABEL
 document.addEventListener('mousedown', (e) => {
   if (!$('ctxmenu').hidden && !$('ctxmenu').contains(e.target)) hideContextMenu()
@@ -953,6 +974,88 @@ $('ctxmenu').addEventListener('keydown', (e) => {
   e.preventDefault()
   hideContextMenu()
   if (view) view.focus()
+})
+
+// ---- Add review note (design-editor.md §4 "Review notes in place") ----
+// The selection's lines (the cursor's line with none) and its text as the note's quote; the text goes to
+// the Reviewer's own store through the host. The Reviewer numbers the lines of the file on disk, so an
+// unsaved buffer is saved first (as a click on a change bar does) and the note is sent once the host
+// confirmed the save.
+
+const NOTE_MAX_CHARS = 4000
+const NOTE_QUOTE_CHARS = 500
+/** The lines and quote the open box is about, and the note waiting for the save: { from, to, quote, text, waiting }. */
+let noteTarget = null
+let notePending = null
+
+function openNoteBox() {
+  hideContextMenu()
+  if (!view || !notes.available()) return
+  const sel = selectionContext(view.state)
+  const quote = (sel.text || view.state.doc.line(sel.startLine).text).slice(0, NOTE_QUOTE_CHARS)
+  noteTarget = { from: sel.startLine, to: sel.endLine, quote }
+  $('notebox-about').textContent = sel.endLine > sel.startLine ? `Review note on lines ${sel.startLine}-${sel.endLine}` : `Review note on line ${sel.startLine}`
+  $('notebox-text').value = ''
+  $('notebox-error').textContent = ''
+  $('notebox').hidden = false
+  $('notebox-text').focus()
+}
+
+function closeNoteBox(refocus) {
+  noteTarget = null
+  $('notebox').hidden = true
+  if (refocus && view) view.focus()
+}
+
+function submitNote() {
+  if (!noteTarget) return
+  const text = $('notebox-text').value
+  if (!text.trim()) {
+    $('notebox-error').textContent = 'Write the note first.'
+    return
+  }
+  if (notePending) {
+    $('notebox-error').textContent = 'The last note is still being saved.'
+    return
+  }
+  notePending = { ...noteTarget, text: text.slice(0, NOTE_MAX_CHARS), waiting: false }
+  closeNoteBox(true)
+  const v = session.view()
+  if (v.dirty) {
+    notePending.waiting = true
+    session.saveNow()
+  } else {
+    sendNote()
+  }
+}
+
+function sendNote() {
+  const n = notePending
+  notePending = null
+  if (!n || !notes.add({ from: n.from, to: n.to, text: n.text, quote: n.quote })) lspMessage('Review note not added: another note is still being saved.', true)
+}
+
+/** The note waits for the save the host confirms; a conflict or an error drops it with the reason. */
+function noteIfSaved(v) {
+  if (!notePending || !notePending.waiting) return
+  if (v.conflict || v.error || v.readOnly) {
+    notePending = null
+    lspMessage('Review note not added: the file could not be saved first.', true)
+  } else if (v.status === 'saved') {
+    sendNote()
+  }
+}
+
+$('notebox-add').addEventListener('click', submitNote)
+$('notebox-cancel').addEventListener('click', () => closeNoteBox(true))
+$('notebox-text').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeNoteBox(true)
+  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault()
+    submitNote()
+  }
 })
 
 /** The host asked for the selection (onDiscuss): the main selection's lines and text, or nothing without an editor. */
@@ -973,7 +1076,8 @@ window.addEventListener(
   'keydown',
   (e) => {
     const mod = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
-    if (!mod || e.altKey) return
+    // The note box keeps its own keys (Ctrl+Enter adds, Esc cancels): no palette or chat behind it.
+    if (!mod || e.altKey || !$('notebox').hidden) return
     const k = e.key.toLowerCase()
     if (k === 'p' && !e.shiftKey) {
       e.preventDefault()
@@ -1007,6 +1111,7 @@ ccPanel.onMessage((m) => {
   if (chat.receive(m)) return
   if (lsp.receive(m)) return
   if (changes.receive(m)) return
+  if (notes.receive(m)) return
   session.receive(m)
 })
 // Every new line: the first, a host restart, a browser view's reconnect, a relay resync. The page
@@ -1015,6 +1120,7 @@ ccPanel.onMessage((m) => {
 ccPanel.onConnect(() => {
   lsp.connect()
   changes.connect()
+  notes.connect()
   chat.connect()
   session.connect()
   search.connect()
@@ -1060,13 +1166,19 @@ window.addEventListener('blur', () => session.blur())
 window.addEventListener('focus', () => {
   session.focus()
   changes.focus()
+  notes.focus()
 })
 setInterval(() => {
-  if (document.visibilityState !== 'hidden') changes.poll()
+  if (document.visibilityState === 'hidden') return
+  changes.poll()
+  notes.poll()
 }, 5000)
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') session.blur()
-  else changes.focus()
+  else {
+    changes.focus()
+    notes.focus()
+  }
 })
 
 if (ccPanel.theme && ccPanel.theme.onChange) {

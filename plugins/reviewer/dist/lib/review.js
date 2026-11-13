@@ -762,6 +762,56 @@ function failInput(o) {
   return { key, message, retry: o.retry === true }
 }
 
+// A line number in a service call (notes of the editor): well past any file the reviewer opens.
+const MAX_NOTE_LINE = 10000000
+
+/**
+ * The notes of a file's draft as the `notes` service call hands them out: the line notes on the
+ * working-tree side ("new") and the rendered-view notes of a Markdown or HTML file that carry their
+ * source lines, each `{ id, from, to, text, quote }`, in line order. Notes with no text (a note box the person
+ * opened and left empty), on the old side, on a PDF page or with an anchor and no source lines are not lines of
+ * the file and stay out.
+ */
+function fileNotes(draft) {
+  const out = []
+  for (const n of cleanDraft(draft).notes) {
+    if (!n.text.trim()) continue
+    let from
+    let to
+    if (isObj(n.anchor)) {
+      if (!isObj(n.lines)) continue
+      ;({ from, to } = n.lines)
+    } else if (n.page !== undefined || n.side === 'old') {
+      continue
+    } else {
+      ;({ from, to } = n)
+    }
+    out.push({ id: n.id, from, to, text: n.text, quote: n.quote })
+  }
+  return out.sort((a, b) => a.from - b.from || a.to - b.to)
+}
+
+/**
+ * The `addNote` service call's note, checked: `{ from, to, text, quote? }` -> `{ from, to, text, quote }`.
+ * The caller is another plugin, so every field is validated and the same caps as the page's inputs
+ * apply (MAX_NOTE_TEXT, MAX_QUOTE: a longer quote is cut, a longer text refused, never cut, since the
+ * person's words are the point).
+ */
+function noteInput(o) {
+  if (!isObj(o)) throw new ReviewError('addNote takes (path, { from, to, text, quote? })')
+  const line = (v, name) => {
+    if (!Number.isInteger(v) || v < 1 || v > MAX_NOTE_LINE) throw new ReviewError(`${name} must be a line number from 1 to ${MAX_NOTE_LINE}`)
+    return v
+  }
+  const from = line(o.from, 'from')
+  const to = o.to === undefined ? from : line(o.to, 'to')
+  if (to < from) throw new ReviewError('to must not be before from')
+  if (typeof o.text !== 'string' || !o.text.trim()) throw new ReviewError('text must be a non-empty string')
+  if (o.text.length > MAX_NOTE_TEXT) throw new ReviewError(`text must be at most ${MAX_NOTE_TEXT} characters`)
+  if (o.quote !== undefined && typeof o.quote !== 'string') throw new ReviewError('quote must be a string')
+  return { from, to, text: o.text, quote: typeof o.quote === 'string' ? o.quote.slice(0, MAX_QUOTE) : '' }
+}
+
 /** The asset budget a document already spent: what checkAssets carries across calls. */
 function assetBudget(lists) {
   const budget = { count: 0, total: 0, seen: new Set() }
@@ -1001,6 +1051,9 @@ module.exports = {
   actionSet,
   updateInput,
   failInput,
+  fileNotes,
+  noteInput,
+  MAX_NOTE_LINE,
   MAX_FAIL_MESSAGE,
   assetBudget,
   checkAssets,

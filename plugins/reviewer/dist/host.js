@@ -21,12 +21,16 @@
 //   for a mail (app 0.13.0): annotate's `kind: 'mail'` (the reading layout), `data-action` buttons in
 //   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
 //   assets?, hide?, status? }), which adds images to an open document without rendering it again;
+//   the notes of a file in place (the editor's gutter, feature 'notes'): notes(path) the line notes of a
+//   file's review, addNote(path, { from, to, text, quote? }) one more in the same store, and the
+//   event `notesChange` { path } when a file's notes changed (the person's, the overlay's or addNote's);
 //   annotate's `originals` [{ id, html }] and `view` (feature 'original'): the mail's own HTML and CSS
 //   in sandboxed frames (the Original view), with an Original | Reader switch told as the event `view`;
 // - `ccc review <path>`.
 //
 // Plain JavaScript host; only the overlay page (overlay/) is bundled, by `npm run build`.
 
+const path = require('node:path')
 const files = require('./lib/files')
 const review = require('./lib/review')
 
@@ -53,7 +57,9 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // each in a sandboxed frame, with an Original | Reader switch on the page told as the event `view`).
 // 'fail' (fail({ key, message, retry? }): a prepared loader whose fetch failed shows the error, with a
 // Try again told as the event `action`, instead of closing; app 0.13.2).
-const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail']
+// 'notes' (notes(path), addNote(path, note) and the event `notesChange`: the line notes of a file's review,
+// read and added from outside the overlay; the editor shows them in its gutter).
+const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes']
 // prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
 // caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
 const PREPARE_MS = 60000
@@ -146,6 +152,46 @@ exports.activate = (ctx) => {
     }
   }
   const exec = (argv) => ctx.exec(argv, { timeoutMs: 15000 })
+
+  /**
+   * The event `notesChange` { path } (feature 'notes'): a file's draft was written, deleted or added to.
+   * Told to every consumer; a path-less subject (an annotated text, a preview) has no notes of its own
+   * to tell. Never throws: an emit that fails must not break the draft's save chain.
+   */
+  function notesChanged(path) {
+    if (typeof path !== 'string') return
+    try {
+      ctx.services.emit('reviewer', 'notesChange', { path })
+    } catch (e) {
+      ctx.log.warn(`notesChange ${path}: ${e.message}`)
+    }
+  }
+
+  /**
+   * One file's draft, read-modify-write at a time: addNote's own calls (and the page's drafts, while a
+   * review is open, which addNote refuses) never interleave on the stored value.
+   */
+  const noteQueue = new Map() // draft key -> the tail of its chain
+  function serialNotes(key, fn) {
+    const prev = noteQueue.get(key) || Promise.resolve()
+    const run = prev.then(fn, fn)
+    const tail = run.catch(() => {})
+    noteQueue.set(key, tail)
+    tail.then(() => {
+      if (noteQueue.get(key) === tail) noteQueue.delete(key)
+    })
+    return run
+  }
+  let noteSeq = 0
+
+  /** A project-relative path for the notes calls: the same checks as a review's (inside the folder, by name and by symlink). */
+  function notesPath(rel) {
+    const p = files.normalizeRelative(rel)
+    if (!files.insideRoot(ctx.projectDir, path.join(ctx.projectDir, p))) {
+      throw new files.ReviewError(`path leaves the project folder through a symlink: ${p}`)
+    }
+    return p
+  }
 
   // One overlay per file (`file:<path>`) and per annotated text (`text:<key>`): a second open of
   // the same one brings the first to the front. `opening` settles when the first open has its
@@ -332,7 +378,7 @@ exports.activate = (ctx) => {
    * prompt before the send: the same review sent twice is not mistaken for this one's delivery. No
    * plugin API reports a queued item's fate, hence the prompt match.
    */
-  function watchQueued({ what, draftKey, tabId, text, sentDraft, prevPrompt, kept }) {
+  function watchQueued({ what, draftKey, path, tabId, text, sentDraft, prevPrompt, kept }) {
     const want = promptStart(text)
     let over = false
     const end = () => {
@@ -347,7 +393,10 @@ exports.activate = (ctx) => {
         end()
         // A review reopened since may have changed the draft: only the one that was sent goes.
         const now = await ctx.storage.get(draftKey)
-        if (JSON.stringify(now) === JSON.stringify(sentDraft)) await ctx.storage.delete(draftKey)
+        if (JSON.stringify(now) === JSON.stringify(sentDraft)) {
+          await ctx.storage.delete(draftKey)
+          notesChanged(path)
+        }
       } else if (!s || s.status === 'ended') {
         end()
         ctx.notify(`Review of ${what} may not have reached Claude: its tab ended while the review was queued. ${kept ? 'The draft is kept.' : 'Its draft could not be saved.'}`)
@@ -376,6 +425,8 @@ exports.activate = (ctx) => {
       {
         openKey: `file:${sides.path}`,
         draftKey: review.draftKey(sides.path),
+        // The notes service's file: told as the event `notesChange` when the draft is written or sent.
+        path: sides.path,
         what: sides.path,
         overlayTitle: overlayTitle('Review: ', sides.path),
         sides,
@@ -581,7 +632,7 @@ exports.activate = (ctx) => {
     let settle
     const opening = new Promise((resolve, reject) => (settle = { resolve, reject }))
     opening.catch(() => {}) // observed by focusExisting only when a second open comes in the wait
-    const entry = { handle, opening, caller: subject.caller || null, html: !!subject.assets }
+    const entry = { handle, opening, caller: subject.caller || null, html: !!subject.assets, draft: () => draft }
     // update(): more images for the open document (they join its asset budget), parts of it hidden,
     // a status line. Posted to the page as is: the page adds the images to the ones it has and leaves
     // the rendered document alone, so a note's anchor does not move.
@@ -645,6 +696,7 @@ exports.activate = (ctx) => {
               failed = null
               if (saveError) post({ type: 'draft-saved' })
               saveError = null
+              notesChanged(subject.path)
             },
             (e) => {
               ctx.log.error(`draft save: ${e.message}`)
@@ -827,11 +879,12 @@ exports.activate = (ctx) => {
       if (res.queued) {
         const KEPT = 'The draft is kept until Claude gets it.'
         const kept = await keep(sent.draft, KEPT)
-        watchQueued({ what, draftKey, tabId: res.tabId, text: sent.text, sentDraft: sent.draft, prevPrompt: sent.prompts.get(res.tabId), kept: kept === KEPT })
+        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, text: sent.text, sentDraft: sent.draft, prevPrompt: sent.prompts.get(res.tabId), kept: kept === KEPT })
         return
       }
       // All of it reached Claude: only now does the draft go. A failed delete only leaves it.
       await ctx.storage.delete(draftKey).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
+      notesChanged(subject.path)
     }
 
     const done = handle.result
@@ -926,6 +979,44 @@ exports.activate = (ctx) => {
     // rejects with "has no method", which a caller reads as none.
     async features() {
       return [...FEATURES]
+    },
+    // Additive in v1 (feature 'notes'): the line notes of a file's review, from the same draft the overlay
+    // keeps (the open overlay's own copy while it is open, else the stored one). [{ id, from, to, text,
+    // quote }] in line order: the working-tree side, the person's words, never the old side's or a PDF's.
+    async notes(rel) {
+      try {
+        const p = notesPath(rel)
+        const open_ = open.get(`file:${p}`)
+        const draft = open_ && open_.draft ? open_.draft() : await ctx.storage.get(review.draftKey(p))
+        return review.fileNotes(draft)
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
+    },
+    // Additive in v1 (feature 'notes'): one more line note on a file's working-tree side, in the same
+    // stored draft the overlay reads when it opens, so the note is there at the next review and in what
+    // Discuss sends. Refused while that file's review is open (its page owns the draft and would write
+    // over the note: the person adds it there), when the draft is full or too large, and for any input
+    // the page's own note box would not take. Resolves { id }.
+    async addNote(rel, note) {
+      try {
+        const p = notesPath(rel)
+        const n = review.noteInput(note)
+        if (open.has(`file:${p}`)) throw new files.ReviewError(`the review of ${p} is open: add the note there`)
+        const key = review.draftKey(p)
+        const id = `e${Date.now().toString(36)}${noteSeq++}`
+        await serialNotes(key, async () => {
+          const draft = review.cleanDraft(await ctx.storage.get(key))
+          draft.notes.push({ id, side: 'new', from: n.from, to: n.to, quote: n.quote, text: n.text })
+          const problem = review.draftProblem(draft)
+          if (problem) throw new files.ReviewError(`the note was not added: ${problem}`)
+          await ctx.storage.set(key, draft)
+        })
+        notesChanged(p)
+        return { id }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
     },
     // Additive in v1 (feature 'update', app 0.13.0): more images, hidden parts or a status line for an
     // open annotation of the same caller. The same answer for a key that is not open and one another
