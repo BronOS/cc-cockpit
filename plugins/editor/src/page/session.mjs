@@ -135,7 +135,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     settings: { idleSeconds: DEFAULT_IDLE_SECONDS, onBlur: true },
   }
   let nextReq = 0
-  /** req -> { kind: 'open' | 'reconnect' | 'check' | 'reload', parts } */
+  /** req -> { kind: 'open' | 'reconnect' | 'reconnect-text' | 'check' | 'reload', parts } */
   const reads = new Map()
   /** The `changed` answer being assembled: { req, parts }. */
   let changed = null
@@ -397,22 +397,30 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       return update()
     }
     // A second look: the open after a reconnect, a re-check on focus, a read after a disk event.
+    // `reconnect-text`: the text a reconnect's head-only answer asked for (below), the same reconnect.
+    const reconnect = r.kind === 'reconnect' || r.kind === 'reconnect-text'
     if (merging()) {
       // Conflicts open: no second merge on top of them, only whether the file is there moves. The
       // save after the last conflict is a compare-and-swap on the merge's base, so a change made
       // since comes back as `changed` then and is merged onto the resolved text.
-      if (r.kind === 'reconnect') s.lost = null
+      if (reconnect) s.lost = null
       if (!head.exists) return deletedConflict()
       s.exists = true
       return update()
     }
     const nowHash = head.exists ? head.hash : null
+    // A reconnect's head-only answer for a file whose hash moved: the text is needed (a merge, a
+    // reload, the lost save's check), asked for as the same reconnect (the new line watches already).
+    if (r.kind === 'reconnect' && head.exists && typeof text !== 'string' && !s.noText && nowHash !== (s.exists ? s.base.hash : null)) {
+      request('reconnect-text', { t: 'read', path: s.path })
+      return
+    }
     const lost = s.lost
-    if (r.kind === 'reconnect') s.lost = null
+    if (reconnect) s.lost = null
     // A save lost with the old line that DID land, with more typed after it: disk holds that save's
     // text, not the buffer. It is our own write, so it becomes the base and the buffer stays dirty
     // (not a conflict that would offer to drop the newer typing).
-    if (r.kind === 'reconnect' && head.exists && lost !== null && typeof text === 'string' && text === lost && nowHash !== (s.exists ? s.base.hash : null)) {
+    if (reconnect && head.exists && lost !== null && typeof text === 'string' && text === lost && nowHash !== (s.exists ? s.base.hash : null)) {
       s.base = { text, hash: head.hash }
       s.exists = true
       s.conflict = null
@@ -427,7 +435,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       // it again (one that did land answers `changed` with our own text, which diskDiffers settles).
       // Only that one: a buffer nobody asked to save (autosave off, the idle timer still waiting)
       // stays unsaved; a reconnect is not the person's Ctrl+S (found by the browser-view e2e).
-      if (r.kind === 'reconnect' && lost !== null && s.dirty && !s.conflict) save()
+      if (reconnect && lost !== null && s.dirty && !s.conflict) save()
       return update()
     }
     if (sameHash) return roChanged(head)
@@ -531,8 +539,11 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       if (s.saving) s.lost = s.saving.text
       s.saving = null
       s.saveAgain = false
+      // A reconnect asks for the head only (hash and flags): the page holds its base, and the text
+      // is asked for (`reconnect-text`) only when the disk differs. A relay that paused this line in
+      // a whole file's burst would otherwise get the same burst again on every resync.
       if (!s.loaded) request('open', { t: 'open', first: true })
-      else request('reconnect', { t: 'open' })
+      else request('reconnect', { t: 'open', headOnly: true })
       // The new line's host may not know the tab's marker (a host restart): said on every line.
       tellMarker(true)
       update()

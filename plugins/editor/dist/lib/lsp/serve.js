@@ -135,7 +135,11 @@ function serveLsp(tab, manager, log) {
     }
     if (o.got.length < o.parts) {
       o.timer = setTimeout(() => {
-        if (opens.get(rel) === o) opens.delete(rel)
+        if (opens.get(rel) !== o) return
+        opens.delete(rel)
+        // Told, as a save that timed out is: the page would otherwise wait for a server that never
+        // gets the document (a first open shows "failed" with this; a resync shows the message).
+        fail(rel, new Error('the text of the file did not all reach the language server'))
       }, OPEN_PART_TIMEOUT_MS)
       if (typeof o.timer.unref === 'function') o.timer.unref()
       return

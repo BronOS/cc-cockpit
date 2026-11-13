@@ -77,11 +77,18 @@ function repo(files) {
 
 const read = (root, rel, opts) => git.readBase(nodeSpawn, root, rel, opts).result
 
+/** The `-c` config every read runs with: no bare repository discovered, no transport for a lazy fetch. */
+const SAFE = [
+  '-c', 'safe.bareRepository=explicit',
+  '-c', 'protocol.allow=never',
+  ...['file', 'git', 'ssh', 'http', 'https', 'ext', 'fd'].flatMap((p) => ['-c', `protocol.${p}.allow=never`]),
+]
+
 test('blobArgv: one argument HEAD:./path, so no path is an option; escapes are refused', () => {
-  assert.deepEqual(git.blobArgv('src/a.ts'), ['git', 'cat-file', 'blob', 'HEAD:./src/a.ts'])
-  assert.deepEqual(git.blobArgv('-rf'), ['git', 'cat-file', 'blob', 'HEAD:./-rf'])
-  assert.deepEqual(git.blobArgv('--batch'), ['git', 'cat-file', 'blob', 'HEAD:./--batch'])
-  assert.deepEqual(git.blobArgv('a b:c\nd'), ['git', 'cat-file', 'blob', 'HEAD:./a b:c\nd'])
+  assert.deepEqual(git.blobArgv('src/a.ts'), ['git', ...SAFE, 'cat-file', 'blob', 'HEAD:./src/a.ts'])
+  assert.deepEqual(git.blobArgv('-rf'), ['git', ...SAFE, 'cat-file', 'blob', 'HEAD:./-rf'])
+  assert.deepEqual(git.blobArgv('--batch'), ['git', ...SAFE, 'cat-file', 'blob', 'HEAD:./--batch'])
+  assert.deepEqual(git.blobArgv('a b:c\nd'), ['git', ...SAFE, 'cat-file', 'blob', 'HEAD:./a b:c\nd'])
   for (const bad of ['', undefined, '/etc/passwd', '../x', 'a/../../x', 'a\0b']) assert.throws(() => git.blobArgv(bad), bad)
 })
 
@@ -162,7 +169,7 @@ test('the argv and cwd of a read; a blob over the cap is killed and has no base'
   const f = fakeSpawn()
   const slots = { used: 0, max: 2 }
   const job = git.readBase(f.spawn, '/proj', 'src/-a.ts', { maxBytes: 10, slots })
-  assert.deepEqual(f.children[0].argv, ['git', 'cat-file', 'blob', 'HEAD:./src/-a.ts'])
+  assert.deepEqual(f.children[0].argv, ['git', ...SAFE, 'cat-file', 'blob', 'HEAD:./src/-a.ts'])
   assert.equal(f.children[0].opts.cwd, '/proj')
   // lstat of a path that is not there: not a link, the read goes on.
   assert.equal(slots.used, 1)
@@ -196,6 +203,76 @@ test('the plugin-wide cap: a third read waits for a slot, not refused; a finishe
   // Exit reported twice gives the slot back once.
   f.children[1].exit(128)
   assert.equal(slots.used, 0)
+})
+
+test('a waiting read whose spawn throws lets the next waiting read run (it took no slot and never exits)', async () => {
+  const f = fakeSpawn()
+  let refuse = false
+  const spawn = (argv, opts) => {
+    if (refuse) {
+      refuse = false
+      throw new Error('processes: too many processes')
+    }
+    return f.spawn(argv, opts)
+  }
+  const slots = { used: 0, max: 1, queue: [] }
+  const a = git.readBase(spawn, '/p', 'a', { slots })
+  const b = git.readBase(spawn, '/p', 'b', { slots })
+  const c = git.readBase(spawn, '/p', 'c', { slots })
+  assert.equal(f.children.length, 1)
+  // a's exit starts b, whose spawn throws: c still runs.
+  refuse = true
+  f.children[0].exit(0)
+  await assert.rejects(b.result, /too many/)
+  assert.equal(f.children.length, 2)
+  assert.deepEqual(f.children[1].argv.slice(-1), ['HEAD:./c'])
+  f.children[1].emit('c\n')
+  f.children[1].exit(0)
+  assert.deepEqual(await c.result, { text: 'c\n' })
+  assert.deepEqual(await a.result, { text: '' })
+  assert.equal(slots.used, 0)
+})
+
+const gitVersion = hasGit ? cp.execFileSync('git', ['--version']).toString().match(/(\d+)\.(\d+)/) : null
+const hasSafeBare = !!gitVersion && (Number(gitVersion[1]) > 2 || (Number(gitVersion[1]) === 2 && Number(gitVersion[2]) >= 38))
+
+test('an embedded bare repository a project ships is never discovered: its config would be the project author\'s', { skip: !hasSafeBare && 'git 2.38+ needed' }, async (t) => {
+  const src = repo({ 'README.md': 'from the bare repo\n' })
+  const project = tmp()
+  t.after(() => {
+    fs.rmSync(src, { recursive: true, force: true })
+    fs.rmSync(project, { recursive: true, force: true })
+  })
+  run(project, 'clone', '-q', '--bare', src, path.join(project, 'evil'))
+  fs.writeFileSync(path.join(project, 'evil', 'README.md'), 'on disk\n')
+  // Without the -c config git takes evil/ as the repository (only the `./` syntax, which needs a work
+  // tree, keeps cat-file from reading it); with it, git refuses the repository itself.
+  const inEvil = (...args) => cp.spawnSync('git', args, { cwd: path.join(project, 'evil'), env: { ...process.env, ...GIT_ENV } }).status
+  assert.equal(inEvil('cat-file', 'blob', 'HEAD:README.md'), 0)
+  assert.notEqual(inEvil(...SAFE, 'cat-file', 'blob', 'HEAD:README.md'), 0)
+  assert.deepEqual(await read(project, 'evil/README.md'), { text: null })
+})
+
+test('serveGit runs git by its absolute path from absolute PATH entries only; a project\'s own git is never run', (t) => {
+  const root = tmp()
+  const savedPath = process.env.PATH
+  t.after(() => {
+    process.env.PATH = savedPath
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+  fs.mkdirSync(path.join(root, 'bin'))
+  fs.writeFileSync(path.join(root, 'bin', 'git'), '#!/bin/sh\n', { mode: 0o755 })
+  const f = fakeSpawn()
+  const o = fakeTab()
+  const handle = git.serveGit(o.tab, { spawn: f.spawn, root, rel: 'a.txt', slots: { used: 0, max: 2, queue: [] } })
+  process.env.PATH = 'bin'
+  handle({ t: 'git-base', req: 1 })
+  assert.equal(f.children.length, 0)
+  assert.deepEqual(o.posted, [{ t: 'git-base', req: 1, has: false }])
+  process.env.PATH = `bin${path.delimiter}${path.join(root, 'bin')}`
+  handle({ t: 'git-base', req: 2 })
+  assert.equal(f.children[0].argv[0], path.join(root, 'bin', 'git'))
+  f.children[0].exit(1)
 })
 
 test('a read cancelled while it waits for a slot never spawns', async () => {

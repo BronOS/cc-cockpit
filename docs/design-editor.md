@@ -46,8 +46,9 @@ Frame lifetime (a page holds unsaved text, so its frame must outlive what reload
   the page re-sends what it holds (open files, dirty buffers).
 - **Web reconnect:** a browser or remote view's remount keeps page-tab frames (they sit outside the remounted tree) and
   hands them a new port the same way.
-- **Relay backlog:** a page-tab port is not closed at the relay's byte limit; it is paused and resynced (the page owns
-  its buffer, so dropping messages is safe once it resends).
+- **Relay backlog:** a page-tab port is not closed at the relay's byte limit; its limit is higher (64 MiB, room for a
+  whole file's answer in one burst) and past it the port is paused and resynced (the page owns its buffer, so dropping
+  messages is safe once it resends; the editor's reconnect asks for the file's head only, the text only when it changed).
 
 Dirty and close: dirty is per (tab, view), kept by main from each page's report. Closing a tab that is dirty in any
 view asks with core's dialog (the `CloseTabDialog` pattern, an `ApprovalDialog` in server mode), also on window close
@@ -177,7 +178,8 @@ it to the cursors already there (CodeMirror's rectangular selection, which owns 
 flag; VS Code's Shift+Alt+drag is not separate). The indent unit (what Tab inserts, the indent guides' step) comes from
 the file: tabs when most indented lines start with one, else the most common space step, else CodeMirror's 2 spaces.
 Quick open (Ctrl+P): `rg --files` (ignore rules from rg itself), fuzzy filtered in the page. Find in files
-(Ctrl+Shift+F): `rg --json -e <query> -- .`. At most four rg run for the plugin at once, every tab together (they share
+(Ctrl+Shift+H, or the context menu; Ctrl+Shift+F is core's Toggle Tab Flag by default, which the app's table keeps, so it
+reaches the page only once the flag is rebound): `rg --json -e <query> -- .`. At most four rg run for the plugin at once, every tab together (they share
 ctx.processes' per-plugin cap with the language servers); past that a search is refused with a "try again".
 
 **Web and remote.** A normal plugin page under the path token. File contents travel in chunks under the message cap.

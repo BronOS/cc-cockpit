@@ -1,5 +1,5 @@
 'use strict'
-// Quick open (Ctrl+P) and find in files (Ctrl+Shift+F) for the file tab page (design-editor.md §5
+// Quick open (Ctrl+P) and find in files (Ctrl+Shift+H) for the file tab page (design-editor.md §5
 // "Editing" and "Security"). Both run ripgrep in the project folder through ctx.processes.spawn, so
 // the output is read as it comes and the child is killed at a cap (ctx.exec buffers all of it and
 // rejects past 10 MiB, which a big repository's file list or a common word reaches):
@@ -21,6 +21,8 @@
 //   host -> page  { t: 'search-error', req, kind: 'files' | 'grep', message, missing? }
 // One search of each kind per tab instance: a new one kills the one before (typing a new query).
 // At most MAX_SEARCH_PROCESSES rg children for the whole plugin; past that a search is refused.
+
+const { programPath } = require('./lsp/servers.js')
 
 /** At most this many files for quick open: far more than a fuzzy list is useful for. */
 const MAX_FILES = 50000
@@ -377,6 +379,18 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
   }
   const fail = (kind, req, e) =>
     post({ t: 'search-error', kind, req, message: e && e.message ? e.message : String(e), ...(e && e.missing ? { missing: true } : {}) })
+  /**
+   * rg by its absolute path from the absolute PATH entries (lsp/servers.js programPath), looked up per
+   * search (an install while the app runs counts): the bare name would let the spawn's PATH search
+   * take `.` or `node_modules/.bin` from the project. Null: not installed, said with the install hint.
+   */
+  const rg = () => {
+    const program = bin !== undefined ? bin : programPath('rg')
+    if (program) return program
+    const err = new Error(RG_HINT)
+    err.missing = true
+    throw err
+  }
 
   /**
    * Runs `job` as this line's one search of `kind`, killing the one before; `onDone` and `onFail`
@@ -427,9 +441,16 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
         fail('files', req, new Error('quick open needs a newer cockpit (ctx.processes)'))
         return true
       }
+      let job
+      try {
+        job = listFiles(spawn, root, { bin: rg(), slots })
+      } catch (e) {
+        fail('files', req, e)
+        return true
+      }
       start(
         'files',
-        listFiles(spawn, root, { bin, slots }),
+        job,
         ({ paths, truncated }) => {
           const parts = partsOf(paths, jsonSize)
           parts.forEach((list, i) => post({ t: 'files', req, paths: list, part: i, parts: parts.length, truncated }))
@@ -449,7 +470,7 @@ function serveSearch(tab, { spawn, root, log, bin, slots }) {
       }
       let job
       try {
-        job = grep(spawn, root, m.query, { regex: m.regex === true, caseSensitive: m.caseSensitive === true, word: m.word === true, bin, slots })
+        job = grep(spawn, root, m.query, { regex: m.regex === true, caseSensitive: m.caseSensitive === true, word: m.word === true, bin: rg(), slots })
       } catch (e) {
         fail('grep', req, e)
         return true

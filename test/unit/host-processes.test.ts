@@ -159,12 +159,26 @@ describe('ctx.processes', () => {
       p.onData((b) => (grandchild = Number(Buffer.from(b).toString())))
       const exit = new Promise<ProcessExit>((resolve) => p.onExit(resolve))
       await until(() => grandchild > 0)
-      // With the pipes held, onExit comes after the 2 s grace; the slot is freed then.
+      // The group is killed at the leader's exit, so a grandchild holding the pipes lets them close
+      // then; the slot is freed at onExit.
       expect((await exit).code).toBe(0)
       expect(ctx.running.size).toBe(0)
       await until(() => !alive(grandchild))
     }
   }, 15000)
+
+  it('the group is killed at the leader\'s exit, before the close (a pgid freed by then could be reused)', async () => {
+    const p = run(leaderLeaving(true))
+    let grandchild = 0
+    p.onData((b) => (grandchild = Number(Buffer.from(b).toString())))
+    const exit = new Promise<ProcessExit>((resolve) => p.onExit(resolve))
+    await until(() => grandchild > 0)
+    const t = Date.now()
+    await exit
+    // Well inside the 2 s grace: the grandchild died with the leader's exit and its pipes closed.
+    expect(Date.now() - t).toBeLessThan(1500)
+    await until(() => !alive(grandchild))
+  })
 
   it('a pipe held by a grandchild does not keep the exit back past the grace', async () => {
     const t = Date.now()

@@ -163,10 +163,15 @@ function isExecutable(p) {
 }
 
 /**
- * Where `name` runs from: an absolute path for a name found on `env.PATH` (or a path with a slash,
- * checked as it is, a relative one against `cwd`), else null. The same lookup Node's spawn does with
- * `options.env`, done first so a missing server is told as such (with its install command) and the
- * fallback candidate gets its turn, instead of a spawn failing.
+ * Where `name` runs from: an absolute path for a name found on the ABSOLUTE entries of `env.PATH`
+ * (or a path with a slash, checked as it is, a relative one against `cwd`: the person's own
+ * `servers` setting), else null. The lookup Node's spawn does with `options.env`, done first so a
+ * missing server is told as such (with its install command) and the fallback candidate gets its
+ * turn, instead of a spawn failing. A relative PATH entry (`.`, `node_modules/.bin`, common for JS
+ * developers) is skipped: it would resolve against the project (the spawn's cwd), and a cloned
+ * repository that ships `node_modules/.bin/typescript-language-server` would run as soon as a .ts
+ * file opened. The argv then carries the absolute path, so the spawn's own PATH search (which
+ * would take a relative entry too) never runs.
  */
 function findOnPath(name, env = process.env, cwd = process.cwd()) {
   if (typeof name !== 'string' || name === '' || name.includes('\0')) return null
@@ -177,14 +182,22 @@ function findOnPath(name, env = process.env, cwd = process.cwd()) {
   const dirs = String((env && (env.PATH ?? env.Path)) || '').split(path.delimiter)
   const exts = process.platform === 'win32' ? String(env.PATHEXT || '.EXE;.CMD;.BAT').split(';') : ['']
   for (const dir of dirs) {
-    if (!dir) continue
+    if (!dir || !path.isAbsolute(dir)) continue
     for (const x of exts) {
-      // A relative PATH entry means relative to the project (the spawn's cwd), as the spawned program is.
-      const p = path.resolve(cwd, dir, name + x)
+      const p = path.join(dir, name + x)
       if (isExecutable(p)) return p
     }
   }
   return null
+}
+
+/**
+ * The absolute path of a program the editor runs by name (git, rg) on the host's PATH, absolute
+ * entries only (findOnPath), or null when it is not installed there. Spawning the bare name instead
+ * would let ctx.processes' PATH search take a relative entry, against the project folder.
+ */
+function programPath(name, env = process.env) {
+  return findOnPath(name, env, '/')
 }
 
 /**
@@ -200,4 +213,4 @@ function resolveServer(entry, { env = process.env, cwd } = {}) {
   return { missing: true, install: entry.install, tried: entry.candidates.map((c) => c[0]) }
 }
 
-module.exports = { BUILTIN, serverTable, languageOf, findOnPath, resolveServer, parseExtensions }
+module.exports = { BUILTIN, serverTable, languageOf, findOnPath, programPath, resolveServer, parseExtensions }

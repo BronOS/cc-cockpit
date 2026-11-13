@@ -248,8 +248,18 @@ function readFile(root, rel) {
 
 /** System trees no definition lives in (process memory and environment, devices, sockets). */
 const REFUSED_OUTSIDE_ROOTS = ['/proc', '/sys', '/dev', '/run']
-/** Folders and files of the home holding credentials or app data (this app's own data dir among them). */
-const REFUSED_OUTSIDE_HOME = ['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config', '.netrc', '.password-store', '.local/share/keyrings', 'Library/Keychains', 'Library/Application Support']
+/**
+ * Folders and files of the home holding credentials, shell history or app data (this app's own data
+ * dir among them): package registry tokens, git's stored credentials, database passwords, histories
+ * with secrets typed on a command line.
+ */
+const REFUSED_OUTSIDE_HOME = [
+  '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config', '.netrc', '.password-store', '.local/share/keyrings',
+  'Library/Keychains', 'Library/Application Support',
+  '.npmrc', '.yarnrc', '.yarnrc.yml', '.git-credentials', '.pypirc', '.cargo/credentials', '.cargo/credentials.toml',
+  '.gem/credentials', '.pgpass', '.my.cnf', '.vault-token', '.terraform.d', '.local/share/fish',
+  '.bash_history', '.zsh_history', '.history', '.sh_history', '.python_history', '.node_repl_history', '.psql_history', '.mysql_history', '.lesshst',
+]
 
 /**
  * Whether an outside path is one a read-only tab never shows, whoever named it. Defense in depth
@@ -595,12 +605,15 @@ class FolderWatcher {
       d.count++
       return
     }
-    const entry = { count: 1, watcher: null, retry: null, tries: 0 }
+    const entry = { count: 1, watcher: null, retry: null, tries: 0, overCap: false }
     this.folders.set(dir, entry)
     this.arm(dir, entry)
   }
 
-  /** Starts the OS watch of `dir` (again); false when it could not (over the cap, the folder is gone: retried). */
+  /**
+   * Starts the OS watch of `dir` (again); false when it could not (the folder is gone: retried; over
+   * the cap: `overCap`, armed when another folder's watch is released, removeFolder).
+   */
   arm(dir, entry) {
     if (entry.watcher) {
       try {
@@ -611,9 +624,11 @@ class FolderWatcher {
       entry.watcher = null
     }
     if (this.armedCount() >= this.maxFolders) {
-      if (this.log) this.log.warn(`watch ${dir}: too many watched folders, not watching it`)
+      if (!entry.overCap && this.log) this.log.warn(`watch ${dir}: too many watched folders, not watching it until another one is closed`)
+      entry.overCap = true
       return false
     }
+    entry.overCap = false
     try {
       const w = this.watchImpl(dir, { persistent: false }, (event, name) => {
         this.event(dir, name)
@@ -666,7 +681,17 @@ class FolderWatcher {
     if (--d.count > 0) return
     this.folders.delete(dir)
     if (d.retry) clearTimeout(d.retry)
-    if (d.watcher) d.watcher.close()
+    if (!d.watcher) return
+    d.watcher.close()
+    d.watcher = null
+    // A slot is free: the first folder left out over the cap gets it, and its files are checked once
+    // (whatever changed while it was blind). Otherwise they would get no `disk` event for the rest of
+    // the session, only the page's focus re-check.
+    for (const [waiting, e] of this.folders) {
+      if (!e.overCap || e.watcher || e.retry) continue
+      if (this.arm(waiting, e)) this.event(waiting, undefined)
+      break
+    }
   }
 
   event(dir, name) {
@@ -765,7 +790,9 @@ function safeMessage(e, root, rel) {
  * The page speaks this, every message a JSON object with `t` and a `req` it chose (echoed back):
  *
  *   page -> host
- *   { t: 'open', req, path? }          read the file (default: the tab's params.path) and watch it
+ *   { t: 'open', req, path?, headOnly? }
+ *                                      read the file (default: the tab's params.path) and watch it;
+ *                                      `headOnly`: no text (a reconnect of a page that holds its base)
  *   { t: 'read', req, path, headOnly? } read it again (the page re-checks on focus); `headOnly`: no text in the answer
  *   { t: 'save', req, path, baseHash, part, parts, text }
  *                                      a save in `parts` messages (text split by the page, each part
@@ -938,7 +965,7 @@ function serveFileTab(files, tab, log) {
     try {
       switch (m.t) {
         case 'open': {
-          return read(req, m.path === undefined ? (outsidePath !== null ? outsidePath : tabParams.path) : m.path, true)
+          return read(req, m.path === undefined ? (outsidePath !== null ? outsidePath : tabParams.path) : m.path, true, m.headOnly === true)
         }
         case 'read':
           return read(req, m.path, false, m.headOnly === true)

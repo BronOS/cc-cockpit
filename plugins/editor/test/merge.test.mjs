@@ -2,7 +2,7 @@
 // line edits, and how a dirty buffer takes a change made on disk (design-editor.md §2).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { splitLines, diffLines, lineChanges, merge3, mergedText, conflictLayout, keepBothText, MAX_EDITS } from '../src/page/merge.mjs'
+import { splitLines, diffLines, lineChanges, merge3, mergedText, conflictLayout, keepBothText, MAX_EDITS, MAX_WORK } from '../src/page/merge.mjs'
 
 /** Applies lineChanges' edits (in offsets of the old text) the way CodeMirror does. */
 function apply(text, changes) {
@@ -57,6 +57,25 @@ test('a diff past MAX_EDITS gives up as one change and stays right', () => {
   const changes = lineChanges(`head\n${from}tail\n`, `head\n${to}tail\n`)
   assert.equal(changes.length, 1)
   assert.equal(apply(`head\n${from}tail\n`, changes), `head\n${to}tail\n`)
+})
+
+test('a diff past the work budget gives up too: few edits over a long text still cost (N+M)·D', () => {
+  // 100k lines with a change every 200 lines: 1000 edits (under MAX_EDITS), yet each step of D walks
+  // long snakes. Under the budget it is a real diff; under a tight one it gives up, and stays right.
+  const n = 100_000
+  const a = Array.from({ length: n }, (_, i) => `${i}\n`)
+  const b = a.map((l, i) => (i % 200 === 50 ? `x${l}` : l))
+  const full = diffLines(a, b)
+  assert.equal(full.gaveUp, undefined)
+  assert.equal(full.length, n / 200)
+  const t = Date.now()
+  const capped = diffLines(a, b, { maxWork: 100_000 })
+  assert.equal(capped.gaveUp, true)
+  assert.equal(capped.length, 1)
+  assert.ok(Date.now() - t < 1000)
+  assert.ok(MAX_WORK >= 1_000_000)
+  // Merges on top of a diff that gave up are coarser, never wrong.
+  assert.equal(mergedText(merge3(a.join(''), b.join(''), a.join('')).chunks), b.join(''))
 })
 
 test('clean merge: changes on different lines of both sides are both kept', () => {

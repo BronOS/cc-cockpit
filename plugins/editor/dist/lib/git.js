@@ -2,8 +2,9 @@
 // Claude's changes in the gutter, the host's half (design-editor.md §4 "Claude's changes in the
 // gutter"): the file as git `HEAD` has it, read through ctx.processes.spawn with the argv
 //
-//   git cat-file blob HEAD:./<path>
+//   git -c safe.bareRepository=explicit -c protocol.allow=never ... cat-file blob HEAD:./<path>
 //
+// (the `-c` config: SAFE_CONFIG below)
 // run in the project folder. `./` makes the path relative to that folder (it may be a subfolder of
 // the repository), and the whole `HEAD:./<path>` is ONE argument that starts with `HEAD`, so a path
 // that begins with `-` (or holds a `:`, a space, a newline) can never be an option or another
@@ -29,6 +30,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const files = require('./files.js')
+const { programPath } = require('./lsp/servers.js')
 
 /** A blob over this many bytes gets no marks: the page diffs it on every pause in typing, and a 5 MB+ file is read-only there anyway. */
 const MAX_BASE_BYTES = 2 * 1024 * 1024
@@ -39,12 +41,32 @@ const BINARY_SNIFF_BYTES = 8000
 /** At most this many git children of this plugin at once, every tab instance together. */
 const MAX_GIT_PROCESSES = 2
 
+/**
+ * Config put before the command (`git -c k=v ...`): command-line config wins over every config file,
+ * and git hands it to the children it starts (GIT_CONFIG_PARAMETERS), a lazy fetch's included.
+ * The read runs in the file's own folder, so git's discovery would also take an EMBEDDED BARE
+ * repository a cloned project ships (a folder with HEAD, config, objects/, refs/ beside the file):
+ * its config is the project author's, and with `extensions.partialClone`, a promisor remote and
+ * `core.sshCommand` a blob missing from its HEAD tree would make `cat-file` fetch it and run that
+ * command when the file merely opens. `safe.bareRepository=explicit` (git 2.38+) refuses to discover
+ * a bare repository at all; for an older git, every transport is refused: `protocol.allow=never`,
+ * and again per protocol, since a repository's own `protocol.<name>.allow` would win over the
+ * general key. An unknown key is ignored by an older git, so none of this can fail the read.
+ * (`--no-lazy-fetch` would fail on a git older than 2.45, and ctx.processes takes no env for
+ * GIT_NO_LAZY_FETCH.)
+ */
+const SAFE_CONFIG = [
+  'safe.bareRepository=explicit',
+  'protocol.allow=never',
+  ...['file', 'git', 'ssh', 'http', 'https', 'ext', 'fd'].map((p) => `protocol.${p}.allow=never`),
+].flatMap((kv) => ['-c', kv])
+
 /** The argv for the file at `rel` (project-relative, as the tab's params hold it). */
 function blobArgv(rel, bin = 'git') {
   if (typeof rel !== 'string' || rel === '' || rel.includes('\0')) throw new Error('no file')
   // The tab's params are the plugin's own, but a saved record outlives this code: never a path that leaves the folder.
   if (path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('not a project path')
-  return [bin, 'cat-file', 'blob', `HEAD:./${rel}`]
+  return [bin, ...SAFE_CONFIG, 'cat-file', 'blob', `HEAD:./${rel}`]
 }
 
 /** The git slots of this plugin: the module is loaded once per plugin host, so every tab shares them. */
@@ -123,6 +145,13 @@ function readBase(spawn, cwd, rel, opts = {}) {
   // never takes "busy" for "this file has no base" and drops the marks it had.
   const release = () => {
     slots.used--
+    runNext()
+  }
+  // The next waiting read, when a slot is free. Also after a spawn that threw: that read took no
+  // slot and never exits, so without this the reads queued behind it would wait for a git that is
+  // not running (no marks until the page asks again).
+  const runNext = () => {
+    if (slots.used >= slots.max) return
     const next = slots.queue && slots.queue.shift()
     if (next) next()
   }
@@ -132,8 +161,9 @@ function readBase(spawn, cwd, rel, opts = {}) {
       child = spawn(argv, { cwd: runIn })
     } catch (e) {
       // "cannot run" (ENOENT, EACCES: ctx.processes' own words) is git missing: no marks, not an error.
-      if (e && typeof e.message === 'string' && e.message.includes('cannot run')) return finish({ text: null })
-      return fail(e instanceof Error ? e : new Error(String(e)))
+      if (e && typeof e.message === 'string' && e.message.includes('cannot run')) finish({ text: null })
+      else fail(e instanceof Error ? e : new Error(String(e)))
+      return runNext()
     }
     started = true
     slots.used++
@@ -212,12 +242,16 @@ function serveGit(tab, { spawn, root, rel, review, log, bin, slots }) {
     if (!m || typeof m !== 'object') return false
     if (m.t === 'git-base') {
       const req = m.req
-      if (typeof spawn !== 'function' || typeof rel !== 'string') {
+      // git by its absolute path from the absolute PATH entries (lsp/servers.js programPath): the bare
+      // name would let the spawn's PATH search take `.` or `node_modules/.bin` from the project. Not
+      // installed there: no marks, as for a git that cannot run.
+      const program = bin !== undefined ? bin : programPath('git')
+      if (typeof spawn !== 'function' || typeof rel !== 'string' || !program) {
         post({ t: 'git-base', req, has: false })
         return true
       }
       cancel()
-      const job = readBase(spawn, root, rel, { bin, slots })
+      const job = readBase(spawn, root, rel, { bin: program, slots })
       running = job
       job.result.then(
         ({ text }) => {

@@ -6,7 +6,7 @@
 // SDK's `ccPanel.tab` and `onConnect`. Frames and ports are fakes; no DOM, no Electron.
 import { describe, expect, it, vi } from 'vitest'
 import { PanelPortHub, type PanelPortDeps, type PageTabRecord } from '../../src/main/plugins/panel-ports'
-import { PortRelay as MainPortRelay, RELAY_DRAIN_CHECK_MS, RELAY_HIGH_WATER, RELAY_LOW_WATER } from '../../src/main/web/port-relay'
+import { PortRelay as MainPortRelay, RELAY_DRAIN_CHECK_MS, RELAY_HIGH_WATER, RELAY_LOW_WATER, RELAY_PAGE_TAB_HIGH_WATER } from '../../src/main/web/port-relay'
 import { FrameLoads, PortRelay as BrowserPortRelay, type FrameTarget } from '../../src/renderer/web/port-relay'
 import { ReadyReconnects, layerBox, pageTabEntries } from '../../src/renderer/tabs/page-frames'
 import { pageTabMarks } from '../../src/renderer/tabs/tab-label'
@@ -426,7 +426,7 @@ describe('main relay: a page tab port is paused and resynced, not closed', () =>
     expect(isPageTabPortKey(key)).toBe(true)
     const ch = channel(1)
     t.r.take(PANEL_PORT_CHANNEL, { panelKey: key, nonce: 4 }, ch.renderer)
-    t.setBuffered(RELAY_HIGH_WATER + 1)
+    t.setBuffered(RELAY_PAGE_TAB_HIGH_WATER + 1)
     ch.host.postMessage('"one"')
     await settle()
     expect(t.r.paused(key)).toBe(true)
@@ -460,6 +460,35 @@ describe('main relay: a page tab port is paused and resynced, not closed', () =>
       { t: 'port.open', key, nonce: 5 },
       { t: 'port.msg', key, nonce: 5, m: '"four"' }
     ])
+  })
+
+  it("a whole file's answer in one burst goes out past the panels' high water: no pause, so no resync asking for it again", async () => {
+    const t = relay()
+    const key = pageTabPortKey(TAB_A)
+    const ch = channel(1)
+    t.r.take(PANEL_PORT_CHANNEL, { panelKey: key, nonce: 1 }, ch.renderer)
+    // The socket fills with each part sent (a slow link flushes nothing meanwhile): 24 parts of
+    // 768 KiB, an 18 MiB answer, more than twice the panels' high water.
+    const PART = 768 * 1024
+    let buffered = 0
+    const parts = 24
+    for (let i = 0; i < parts; i++) {
+      t.setBuffered(buffered)
+      ch.host.postMessage(JSON.stringify({ t: 'file', part: i, parts }))
+      await settle()
+      buffered += PART
+    }
+    expect(buffered).toBeGreaterThan(2 * RELAY_HIGH_WATER)
+    expect(t.r.paused(key)).toBe(false)
+    expect(t.sent.filter((f) => f.t === 'port.msg')).toHaveLength(parts)
+    expect(t.sent.some((f) => f.t === 'port.resync')).toBe(false)
+    // A panel port is still closed at its own high water.
+    const panel = channel(2)
+    t.r.take(PANEL_PORT_CHANNEL, { panelKey: 'example.plugin/main', nonce: 2 }, panel.renderer)
+    t.setBuffered(RELAY_HIGH_WATER + 1)
+    panel.host.postMessage('"x"')
+    await settle()
+    expect(panel.host.closed).toBe(true)
   })
 
   it('a message the socket cannot carry is dropped alone and logged once; the port is not paused and later messages flow', async () => {
@@ -501,7 +530,7 @@ describe('main relay: a page tab port is paused and resynced, not closed', () =>
     const timers: Array<() => void> = []
     const r = new MainPortRelay({
       send: () => true,
-      buffered: () => RELAY_HIGH_WATER + 1,
+      buffered: () => RELAY_PAGE_TAB_HIGH_WATER + 1,
       log: () => {},
       setTimeout: (fn) => (timers.push(fn), 1),
       clearTimeout: () => void timers.splice(0)

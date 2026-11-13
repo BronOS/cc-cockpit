@@ -257,6 +257,16 @@ describe('TabManager page tabs', () => {
       expect(later.flag).toBeUndefined()
     })
 
+    it('is not set on a focused open: the window selects the tab at once, no dot flashes in the views', () => {
+      const tabs = manager()
+      const shell = tabs.create(A, { kind: 'shell' })
+      selected[A] = shell.id
+      const page = tabs.createPage(A, file('a'), { focus: true })
+      expect(page.unseen).toBeUndefined()
+      expect(tabs.list(A).find((t) => t.id === page.id)?.unseen).toBeUndefined()
+      expect(tabs.createPage(A, file('b'), { focus: false }).unseen).toBe(true)
+    })
+
     it('is cleared only by a view of its own project', () => {
       const tabs = manager()
       selected[A] = 'x'

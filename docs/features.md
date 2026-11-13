@@ -266,8 +266,8 @@ behind it are in [design.md](design.md).
   deleted on disk keeps its tab with Save (recreate) or Close. Binary, non-UTF-8 and
   files over 5 MB open read-only; a binary file goes to the reviewer instead. A tab with unsaved text shows a dot and
   closing it asks. In a file tab, Ctrl+P (quick open: the project's files, fuzzy filtered, ripgrep's ignore rules)
-  and Ctrl+Shift+F (find in files: plain text, case, whole word or regex; results by file, a click opens the tab at the
-  line) need [ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`, `sudo pacman -S ripgrep`, `sudo
+  and Ctrl+Shift+H or the context menu's Find in files (plain text, case, whole word or regex; results by file, a click
+  opens the tab at the line; Ctrl+Shift+F is Toggle Tab Flag by default and reaches the editor only once that is rebound) need [ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`, `sudo pacman -S ripgrep`, `sudo
   apt install ripgrep`); without it they say so. A plain click on a file (Sessions, Files) still opens the Reviewer;
   pick "Editor (a file tab)" under "Plugin used to open files" in Settings > This Project to open its tab instead.
   "Open in micro" on the tab opens [micro](https://micro-editor.github.io) in a terminal overlay (a

@@ -27,11 +27,16 @@
 //
 // Page tabs (`@tab/<id>`, design-editor.md §1 "Relay backlog") are not closed at the high water: a
 // page tab holds unsaved text, and closing its port would leave it cut off (its frame never reloads
-// to reconnect). Its port is PAUSED instead: every message the host sends it from then on is
-// dropped, nothing queued. Once the socket has drained below RELAY_LOW_WATER (checked every
-// RELAY_DRAIN_CHECK_MS while anything is paused) the browser is told `port.resync`, and the frame
-// asks for a new port without loading again; over it the page and the plugin each re-send what
-// they hold, so the dropped messages are never needed. A message the socket cannot carry at all (a
+// to reconnect). Their high water is RELAY_PAGE_TAB_HIGH_WATER, far above a panel's: a page tab's
+// answer comes in one burst of parts (the editor posts a whole file at once, up to 16 MB of text,
+// more on the wire after two JSON escapes), and pausing in the middle of it would only have the
+// resynced page ask for the same burst again, pause again, and after the hub's connect cap the tab
+// would have no port at all. Past that high water its port is PAUSED: every message the host sends
+// it from then on is dropped, nothing queued. Once the socket has drained below RELAY_LOW_WATER
+// (checked every RELAY_DRAIN_CHECK_MS while anything is paused) the browser is told `port.resync`,
+// and the frame asks for a new port without loading again; over it the page and the plugin each
+// re-send what they hold, so the dropped messages are never needed (the editor's page then asks
+// for the file's head only, and for its text only when the disk changed meanwhile). A message the socket cannot carry at all (a
 // frame over the cap: 1 Mi characters of quote-heavy JSON can pass 4 MiB once escaped) is dropped
 // alone and logged once per port, never a pause: the plugin would re-send the same message over the
 // resynced port, pause it again, and after the hub's connect cap the tab would have no port at all.
@@ -58,7 +63,13 @@ export interface RelayPort {
  * spike's value: a few seconds of a busy terminal on a slow link, far above a panel's state push).
  */
 export const RELAY_HIGH_WATER = 8 * 1024 * 1024
-/** A paused page tab port is resynced once the socket holds no more than this unsent (half the high water). */
+/**
+ * Bytes a view's socket may hold unsent before a page tab port is paused (see the header): room for
+ * the editor's largest answer (a 16 MB read-only file, its JSON escapes, the parts' heads) on top of a
+ * panel's backlog. Still a bound on what main holds for a view that stopped reading.
+ */
+export const RELAY_PAGE_TAB_HIGH_WATER = 64 * 1024 * 1024
+/** A paused page tab port is resynced once the socket holds no more than this unsent (half the panels' high water). */
 export const RELAY_LOW_WATER = RELAY_HIGH_WATER / 2
 /** How often a relay with a paused port looks whether its socket has drained. */
 export const RELAY_DRAIN_CHECK_MS = 250
@@ -132,15 +143,16 @@ export class PortRelay {
       if (typeof e.data !== 'string' || e.data.length > MAX_PORT_MESSAGE_LENGTH) return
       // Paused (a page tab behind): dropped until the browser takes a new port and both ends re-send.
       if (held.paused !== undefined) return
-      if (this.deps.buffered() > RELAY_HIGH_WATER) {
-        if (isPageTabPortKey(key)) return this.pause(key, held, `the view is ${RELAY_HIGH_WATER} bytes behind`)
+      const pageTab = isPageTabPortKey(key)
+      if (this.deps.buffered() > (pageTab ? RELAY_PAGE_TAB_HIGH_WATER : RELAY_HIGH_WATER)) {
+        if (pageTab) return this.pause(key, held, `the view is ${RELAY_PAGE_TAB_HIGH_WATER} bytes behind`)
         this.deps.log(`web access: panel ${key}: the view is ${RELAY_HIGH_WATER} bytes behind, its port closed`)
         this.drop(key, nonce, true)
         return
       }
       if (this.deps.send({ t: 'port.msg', key, nonce, m: e.data })) return
       // Not behind, yet not sent: a frame over the cap (or the socket closing, and the view with it).
-      if (!isPageTabPortKey(key)) return this.drop(key, nonce, true)
+      if (!pageTab) return this.drop(key, nonce, true)
       if (held.oversizeLogged) return
       held.oversizeLogged = true
       this.deps.log(`web access: page tab ${key}: a message of ${e.data.length} characters did not go out (over the frame limit), dropped; later messages still flow`)

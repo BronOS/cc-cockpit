@@ -328,6 +328,14 @@ test('serveFileTab: a big file arrives in parts under the message cap', () => {
     assert.ok(Buffer.byteLength(JSON.stringify(m)) < 1024 * 1024)
   }
   assert.equal(t.posted.map((m) => m.text).join(''), text)
+  // A reconnect's open is head-only: one message, the hash and flags, no text (a page that holds its
+  // base does not get the whole file again on every relay resync).
+  t.posted.length = 0
+  t.send({ t: 'open', req: 'again', headOnly: true })
+  assert.equal(t.posted.length, 1)
+  assert.equal(t.posted[0].text, undefined)
+  assert.equal(t.posted[0].parts, 1)
+  assert.equal(t.posted[0].hash, sha(text))
   t.close()
   shared.watcher.close()
 })
@@ -661,13 +669,27 @@ test('the folder watch is armed again after its folder is deleted and recreated,
   }
 })
 
-test('folders watched are capped for the whole plugin', () => {
+test('folders watched are capped for the whole plugin; a folder left out gets the slot another one frees', () => {
   const calls = []
-  const w = new files.FolderWatcher(null, { watchImpl: () => (calls.push(1), { close() {} }), maxFolders: 2 })
-  const stops = ['/a/x', '/b/x', '/c/x'].map((p) => w.add(p, null))
-  assert.equal(calls.length, 2)
-  stops.forEach((s) => s())
-  w.close()
+  const w = new files.FolderWatcher(null, { watchImpl: (dir) => (calls.push(dir), { close() {} }), maxFolders: 2, debounceMs: 5 })
+  const checked = []
+  w.check = (real) => checked.push(real)
+  const stops = ['/a/x', '/b/x', '/c/x', '/d/x'].map((p) => w.add(p, null))
+  assert.deepEqual(calls, ['/a', '/b'])
+  assert.equal(w.armedCount(), 2)
+  // /a closes: the first folder left out (/c) is watched now, and its file is looked at once.
+  stops[0]()
+  assert.deepEqual(calls, ['/a', '/b', '/c'])
+  assert.equal(w.armedCount(), 2)
+  return new Promise((resolve) => setTimeout(resolve, 50)).then(() => {
+    assert.deepEqual(checked, ['/c/x'])
+    // A folder that was never armed frees no slot: /d still waits for one.
+    stops[3]()
+    stops[2]()
+    assert.deepEqual(calls, ['/a', '/b', '/c'])
+    stops[1]()
+    w.close()
+  })
 })
 
 test('safeMessage: an fs error is its code and the relative path, a project path in a message is cut out', () => {

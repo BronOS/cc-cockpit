@@ -55,6 +55,19 @@ describe('CommandRegistry', () => {
     expect(linux.commands.some((c) => c.key === 'ctrl+f')).toBe(false)
   })
 
+  it("the editor's find in files has a default chord the app table does not hold (the table wins a chord it holds)", () => {
+    const manifest = JSON.parse(readFileSync(new URL('../../plugins/editor/plugin.json', import.meta.url), 'utf8')) as {
+      contributes: { tabs: { keys: string[] }[] }
+    }
+    const keys = manifest.contributes.tabs[0]!.keys.map((k) => k.toLowerCase())
+    expect(keys).toContain('cmd+shift+h')
+    for (const platform of ['darwin', 'linux'] as const) {
+      const view = new CommandRegistry(platform, () => ({})).view('p')
+      const held = new Set(view.commands.map((c) => c.key))
+      expect(held.has(platform === 'darwin' ? 'shift+meta+h' : 'ctrl+shift+h')).toBe(false)
+    }
+  })
+
   it('maps Cmd to Ctrl on Linux', () => {
     const view = new CommandRegistry('linux', () => ({})).view('p1')
     expect(find(view, 'tab.close')?.key).toBe('ctrl+w')

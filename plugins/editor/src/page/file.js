@@ -66,6 +66,7 @@ import { createNotes } from './notes.mjs'
 import { createNoteFlow } from './note-flow.mjs'
 import { createNotesGutter } from './notes-editor.js'
 import { selectionContext } from './ask.mjs'
+import { keepLineBreaks } from './line-breaks.mjs'
 import { createQuickChat } from './chat-editor.js'
 
 /* global ccPanel */
@@ -378,6 +379,8 @@ function extensions(info, text) {
     themeCompartment.of(syntaxFor()),
     languageCompartment.of(languageExtension(languageOfText(info.path, firstLine))),
     readOnlyCompartment.of(EditorState.readOnly.of(info.readOnly === true)),
+    // `\n` the only line break: a `\r` the host left in (a mixed or lone-CR file) stays in the text.
+    keepLineBreaks,
     flashField,
     conflictField,
     lspUi.extensions,
@@ -679,7 +682,7 @@ function lspMessage(message, error = false) {
 
 const chat = createQuickChat({ post: (m) => ccPanel.post(m), getView: () => view, message: lspMessage })
 
-// ---- quick open (Ctrl+P) and find in files (Ctrl+Shift+F) ----
+// ---- quick open (Ctrl+P) and find in files (Ctrl+Shift+H) ----
 // One palette over the editor in two modes. The host runs rg (dist/lib/search.js); quick-open.mjs
 // keeps the requests and filters. A pick in this tab's own file moves the cursor here; any other
 // file goes to the host (`openFile`), which opens or focuses its tab (checked inside the project).
@@ -992,7 +995,13 @@ $('editor').addEventListener('contextmenu', (e) => {
 })
 $('ctx-ask').addEventListener('click', askClaude)
 $('ctx-note').addEventListener('click', openNoteBox)
+$('ctx-grep').addEventListener('click', () => {
+  hideContextMenu()
+  showPalette('grep')
+})
 $('ctx-ask').title = ASK_LABEL
+// Mod+Shift+H: Mod+Shift+F is core's Toggle Tab Flag by default, and the app's table wins a chord it holds.
+$('ctx-grep-key').textContent = IS_MAC_ASK ? '⇧⌘H' : 'Ctrl+Shift+H'
 document.addEventListener('mousedown', (e) => {
   if (!$('ctxmenu').hidden && !$('ctxmenu').contains(e.target)) hideContextMenu()
 })
@@ -1080,8 +1089,11 @@ document.addEventListener('mousedown', (e) => {
   if (palette.mode !== null && !$('palette').contains(e.target)) hidePalette(false)
 })
 // The page's chords (declared as page-tab keys in plugin.json, so the app lets them through while
-// the page has focus): Mod+P quick open, Mod+Shift+F find in files, Mod+K quick chat, Mod+L Ask Claude, Mod being CodeMirror's (Cmd on
-// macOS, Ctrl elsewhere). Caught before CodeMirror, so only the platform's own Mod: on macOS Ctrl+P is
+// the page has focus): Mod+P quick open, Mod+Shift+H or Mod+Shift+F find in files, Mod+K quick chat,
+// Mod+L Ask Claude, Mod being CodeMirror's (Cmd on macOS, Ctrl elsewhere). Mod+Shift+F is core's
+// Toggle Tab Flag in the default keybindings, and the app's table wins every chord it holds, so it
+// reaches the page only once the person rebinds the flag; Mod+Shift+H (VS Code's Replace in Files,
+// the same search view there) is free in the app's table and in CodeMirror's keymaps. Caught before CodeMirror, so only the platform's own Mod: on macOS Ctrl+P is
 // the standard keymap's cursorLineUp and must stay with the editor.
 window.addEventListener(
   'keydown',
@@ -1095,7 +1107,7 @@ window.addEventListener(
       e.stopPropagation()
       if (palette.mode === 'files') hidePalette()
       else showPalette('files')
-    } else if (k === 'f' && e.shiftKey) {
+    } else if ((k === 'h' || k === 'f') && e.shiftKey) {
       e.preventDefault()
       e.stopPropagation()
       showPalette('grep')

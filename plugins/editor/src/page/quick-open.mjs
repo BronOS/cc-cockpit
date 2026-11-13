@@ -1,4 +1,4 @@
-// Quick open (Ctrl+P) and find in files (Ctrl+Shift+F) in the file tab page, with no DOM (file.js
+// Quick open (Ctrl+P) and find in files (Ctrl+Shift+H) in the file tab page, with no DOM (file.js
 // draws them; node:test drives this with fakes). The host runs rg (dist/lib/search.js) and answers in
 // parts; this keeps which request is current, joins the parts, filters the file list fuzzily and
 // groups the matches by file. An answer to a request that is no longer current (the person typed

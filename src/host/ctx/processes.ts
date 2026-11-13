@@ -22,8 +22,9 @@
 //  - Exit is reported on 'close' (every pipe drained, so the last output is delivered before
 //    onExit). A child that exited while a grandchild still holds its pipes would never 'close':
 //    after a short grace the pipes are destroyed, which closes them.
-//  - When the leader is gone its group is SIGKILLed at once (a grandchild would otherwise outlive the
-//    plugin, untracked). After the plugin's dispose no listener is called (the kill is not a crash).
+//  - When the leader is gone its group is SIGKILLed at once, at 'exit' (a grandchild would otherwise
+//    outlive the plugin, untracked; at 'close' the pgid could already be a stranger's). After the
+//    plugin's dispose no listener is called (the kill is not a crash).
 //  - At most 16 running per plugin (counted in the host, freed on close). Every child leads its own
 //    process group (`detached`) and goes into the runtime's `children`, the set ctx.exec uses: the
 //    plugin's dispose (stop, reload, failed activate) and the host's stop (killChildrenAndFlush)
@@ -136,6 +137,12 @@ export function spawnProcess(argv: readonly string[], options: ProcessSpawnOptio
   child.stderr?.on('error', () => {})
 
   child.on('exit', () => {
+    // The leader is gone but its group may not be (a grandchild, holding the pipes or not): it is no
+    // longer tracked once 'close' comes, so nothing at dispose or host stop would reach it. Killed
+    // here, at the reap, not at 'close': once the group is empty its pgid is free, and in the up to
+    // CLOSE_GRACE_MS before 'close' a new process could get that number and lead a group of its own.
+    // While a member lives the pgid cannot be reused; ESRCH (nobody left) is swallowed.
+    killChild(child)
     graceTimer = setTimeout(() => {
       child.stdout?.destroy()
       child.stderr?.destroy()
@@ -148,10 +155,7 @@ export function spawnProcess(argv: readonly string[], options: ProcessSpawnOptio
     exit = { code, signal: signal ?? null }
     ctx.running.delete(child)
     ctx.children?.delete(child)
-    // The leader is gone but its group may not be (a grandchild, holding the pipes or not): it is no
-    // longer tracked, so nothing at dispose or host stop would reach it. The pgid cannot be reused
-    // while a member lives, so this never hits a stranger; ESRCH (nobody left) is swallowed.
-    killChild(child)
+    // The group was killed at 'exit' (above); no kill here, where the pgid may already be another's.
     child.stdin?.destroy()
     dataListeners.clear()
     stderrListeners.clear()

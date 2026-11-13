@@ -317,6 +317,30 @@ exports.activate = (ctx) => {
     return true
   }
 
+  /**
+   * Drops what this host keeps per tab id (pendingGoto, firstOpened, the conflict state) for tabs no
+   * longer open: `list` is ctx.tabs.list('file'). Without it every file tab ever opened would stay in
+   * the maps for the host's life, and a goto meant for a closed tab would linger.
+   */
+  function prune(list) {
+    // A tab with a connected page is open whatever an older list says (one opened while it was asked for).
+    const open = new Set([...list.map((t) => t.id), ...instances.keys()])
+    for (const map of [pendingGoto, marked, conflictViews]) for (const id of map.keys()) if (!open.has(id)) map.delete(id)
+    for (const id of firstOpened) if (!open.has(id)) firstOpened.delete(id)
+  }
+  /** After the last instance of tab `id` closed: prune once main's list no longer has it (a close, not an unmount). */
+  function pruneLater(id) {
+    const timer = setTimeout(() => {
+      markerTimers.delete(timer)
+      if (instances.has(id)) return
+      ctx.tabs.list('file').then((list) => {
+        if (!instances.has(id) && !list.some((t) => t.id === id)) prune(list)
+      }, () => {})
+    }, MARKER_GRACE_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    markerTimers.add(timer)
+  }
+
   /** Puts the marker in or takes it out of tab `id`'s title, through `tab` (an instance of it). */
   async function updateMarker(tab, rel) {
     let shown = marked.get(tab.id)
@@ -363,7 +387,9 @@ exports.activate = (ctx) => {
   async function showTab(key, value, opts) {
     const line = position(opts.line)
     const col = line === undefined ? undefined : position(opts.col)
-    const open = (await ctx.tabs.list('file')).find((t) => t.params && typeof t.params === 'object' && t.params[key] === value)
+    const list = await ctx.tabs.list('file')
+    prune(list)
+    const open = list.find((t) => t.params && typeof t.params === 'object' && t.params[key] === value)
     if (open) {
       const point = opts.focus === false
       if (!point && typeof ctx.tabs.focus === 'function') await ctx.tabs.focus(open.id)
@@ -514,7 +540,10 @@ exports.activate = (ctx) => {
       })
       tab.onClose(() => {
         set.delete(tab)
-        if (set.size === 0 && instances.get(tab.id) === set) instances.delete(tab.id)
+        if (set.size === 0 && instances.get(tab.id) === set) {
+          instances.delete(tab.id)
+          pruneLater(tab.id)
+        }
         // A view's page gone (unmounted) holds no conflict any more. A reconnect closes the old line
         // first and its page reports again on the new one, so the drop waits a moment: the new line's
         // report replaces this one and the title does not blink.

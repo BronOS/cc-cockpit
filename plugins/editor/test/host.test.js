@@ -416,6 +416,29 @@ test('goto for a tab with no mounted frame waits for its next first open; a remo
   host.deactivate()
 })
 
+test('what the host keeps per tab id goes once the tab is closed (the next open looks at the list)', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('src/a.ts', { line: 4 })
+  const id = t.open[0].id
+  const view = t.connect(id)
+  view.send({ t: 'open', first: true, req: 1 })
+  assert.deepEqual(view.posted.filter((m) => m.t === 'goto'), [{ t: 'goto', line: 4 }])
+  // The tab is closed (gone from main's list). The fake hands the next tab the same id: were the
+  // closed tab's "first open done" still kept, the new tab's first mount would not go to its line.
+  view.close()
+  t.open.splice(0)
+  await f.provided.editor.open('src/b.ts', { line: 7 })
+  assert.equal(t.open[0].id, id)
+  const next = t.connect(id)
+  next.send({ t: 'open', first: true, req: 1 })
+  assert.deepEqual(next.posted.filter((m) => m.t === 'goto'), [{ t: 'goto', line: 7 }])
+  host.deactivate()
+})
+
 test('conflict marker: in the title while any view reports a conflict; a stale one from before is cleared', async () => {
   const host = require('../dist/host.js')
   const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })

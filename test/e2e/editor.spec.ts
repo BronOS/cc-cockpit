@@ -359,6 +359,57 @@ test.describe('editor, desktop', () => {
     }
   })
 
+  test('find in files opens from the keyboard (Ctrl+Shift+H) and the context menu; a mixed-EOL file loads clean and is never rewritten', async () => {
+    // Autosave on blur: a buffer that differed from its base at load would be written back on the first blur.
+    const { cockpit: c, close } = await launchCockpit({
+      env: { CC_COCKPIT_NO_BUNDLED: '' },
+      settings: editorSettings({ autosaveIdleSeconds: 1, autosaveOnBlur: true })
+    })
+    try {
+      const { page, projectDir } = c
+      const mixed = 'one\r\ntwo\nthree\rfour\nfive\r\n'
+      writeFileSync(join(projectDir, 'mixed.txt'), mixed)
+      writeFileSync(join(projectDir, 'other.txt'), 'alpha\nneedle here\nomega\n')
+      await waitForEditor(c)
+      await editFromFiles(c, 'mixed.txt')
+      const frame = editorFrame(page)
+      await expect(frame.locator('.cm-content')).toContainText('five')
+      await expect(stateOf(c)).toHaveText('Saved')
+
+      // Ctrl+Shift+H: the find palette (Ctrl+Shift+F is Toggle Tab Flag in the default table).
+      await frame.locator('.cm-content').click()
+      await page.keyboard.press(`${MOD}+Shift+H`)
+      const palette = frame.locator('#palette')
+      await expect(palette).toBeVisible()
+      await expect(frame.locator('#palette-toggles')).toBeVisible()
+      await frame.locator('#palette-query').fill('needle')
+      const match = palette.locator('li.row.match', { hasText: 'needle here' })
+      await expect(match).toBeVisible({ timeout: 10_000 })
+      await expect(palette.locator('li.group', { hasText: 'other.txt' })).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(palette).toBeHidden()
+
+      // The same from the context menu.
+      await frame.locator('.cm-content').click({ button: 'right' })
+      await frame.getByRole('menuitem', { name: /Find in files/ }).click()
+      await expect(palette).toBeVisible()
+      await expect(frame.locator('#palette-toggles')).toBeVisible()
+      await page.keyboard.press('Escape')
+
+      // The mixed file was never dirty: leaving the tab (a blur) saved nothing, its CRs are all there.
+      await expect(stateOf(c)).toHaveText('Saved')
+      await page.getByRole('button', { name: /new tab/i }).first().focus()
+      await page.waitForTimeout(1500)
+      expect(readFileSync(join(projectDir, 'mixed.txt'), 'utf8')).toBe(mixed)
+      // An edit keeps the other lines' endings as they were.
+      await toStart(c)
+      await page.keyboard.type('X')
+      await expect.poll(() => readFileSync(join(projectDir, 'mixed.txt'), 'utf8'), { timeout: 10_000 }).toBe(`X${mixed}`)
+    } finally {
+      await close()
+    }
+  })
+
   test('quick chat: Ctrl+K asks Claude about the line, a proposal is accepted into the buffer only', async () => {
     // The fake `claude` of the editor's own tests, found first on the login-shell PATH as `claude`.
     const bin = tempDir('ccc-e2e-claude-bin-')

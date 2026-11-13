@@ -577,11 +577,12 @@ export class TabManager {
    * caller took `spec.plugin` from the host's own plugin and checked the type against that
    * plugin's manifest (`contributes.tabs`); the spec is checked again here (plain JSON params under
    * the cap, title clamped, a bad icon dropped) and the per-plugin cap applies. Opened while another
-   * tab is selected, it carries the unseen dot until a view shows it (markSeen).
+   * tab is selected and not `focus`ed (the window selects a focused one at once), it carries the
+   * unseen dot until a view shows it (markSeen).
    */
-  createPage(projectId: string, spec: PageTabSpec): TabInfo {
+  createPage(projectId: string, spec: PageTabSpec, { focus = false }: { focus?: boolean } = {}): TabInfo {
     const page = checkPageTabSpec(spec, isPluginId)
-    const unseen = this.selectedOf(projectId) !== undefined
+    const unseen = !focus && this.selectedOf(projectId) !== undefined
     const out = this.addPage(projectId, page, unseen)
     this.changed(projectId)
     return out

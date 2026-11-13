@@ -10,7 +10,7 @@
       {
         "type": "file",
         "page": "dist/pages/file.html",
-        "keys": ["Cmd+S", "Cmd+P", "Cmd+K", "Cmd+L", "Cmd+D", "Cmd+Shift+F", "F12", "Shift+F12", "F2", "Cmd+.", "Shift+Alt+F", "Cmd+Shift+O", "Cmd+Shift+Space"]
+        "keys": ["Cmd+S", "Cmd+P", "Cmd+K", "Cmd+L", "Cmd+D", "Cmd+Shift+H", "Cmd+Shift+F", "F12", "Shift+F12", "F2", "Cmd+.", "Shift+Alt+F", "Cmd+Shift+O", "Cmd+Shift+Space"]
       }
     ],
     "settings": {

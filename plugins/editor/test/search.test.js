@@ -217,7 +217,7 @@ test('rg slots are shared by every tab of the plugin; a killed rg holds one unti
   const f = fakeSpawn()
   const slots = { used: 0, max: 2 }
   const posted = []
-  const tab = () => search.serveSearch({ post: (m) => posted.push(m), onClose() {} }, { spawn: f.spawn, root: '/p', slots })
+  const tab = () => search.serveSearch({ post: (m) => posted.push(m), onClose() {} }, { spawn: f.spawn, root: '/p', bin: 'rg', slots })
   const a = tab()
   const b = tab()
   a({ t: 'files', req: 1 })
@@ -254,7 +254,7 @@ test('serveSearch: quick open parts are sized by their JSON; a refused post is s
     },
     onClose() {},
   }
-  const handle = search.serveSearch(tab, { spawn: f.spawn, root: '/p', slots: { used: 0, max: 4 } })
+  const handle = search.serveSearch(tab, { spawn: f.spawn, root: '/p', bin: 'rg', slots: { used: 0, max: 4 } })
   handle({ t: 'files', req: 1 })
   // Names made of control characters: each becomes six characters in JSON.
   const name = '\u0001'.repeat(200)
@@ -275,7 +275,7 @@ test('serveSearch: quick open parts are sized by their JSON; a refused post is s
     },
     onClose() {},
   }
-  const h2 = search.serveSearch(tab2, { spawn: f.spawn, root: '/p', slots: { used: 0, max: 4 } })
+  const h2 = search.serveSearch(tab2, { spawn: f.spawn, root: '/p', bin: 'rg', slots: { used: 0, max: 4 } })
   h2({ t: 'files', req: 7 })
   f.children[1].emit('./a\0')
   f.children[1].exit(0)
@@ -306,7 +306,7 @@ test('serveSearch: answers by req, a new search kills the old one and only the n
   const f = fakeSpawn()
   const posted = []
   const closers = []
-  const handle = search.serveSearch({ post: (m) => posted.push(m), onClose: (fn) => closers.push(fn) }, { spawn: f.spawn, root: '/p' })
+  const handle = search.serveSearch({ post: (m) => posted.push(m), onClose: (fn) => closers.push(fn) }, { spawn: f.spawn, root: '/p', bin: 'rg' })
   assert.equal(handle({ t: 'open' }), false)
   assert.equal(handle({ t: 'grep', req: 1, query: 'a' }), true)
   assert.equal(handle({ t: 'grep', req: 2, query: 'ab' }), true)
@@ -336,6 +336,37 @@ test('serveSearch: answers by req, a new search kills the old one and only the n
   const h2 = search.serveSearch({ post: (m) => old.push(m), onClose() {} }, { spawn: undefined, root: '/p' })
   h2({ t: 'files', req: 1 })
   assert.equal(old[0].t, 'search-error')
+})
+
+test('serveSearch runs rg by its absolute path from absolute PATH entries only: a project\'s own rg is never run', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-path-'))
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-bin-'))
+  const savedPath = process.env.PATH
+  t.after(() => {
+    process.env.PATH = savedPath
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(bin, { recursive: true, force: true })
+  })
+  fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'rg'), '#!/bin/sh\n', { mode: 0o755 })
+  const argvs = []
+  const spawn = (argv) => {
+    argvs.push(argv)
+    throw new Error('processes: cannot run (test)')
+  }
+  const posted = []
+  const handle = search.serveSearch({ post: (m) => posted.push(m), onClose() {} }, { spawn, root })
+  // Only the relative entry has an rg: not installed, said with the install hint; nothing spawned.
+  process.env.PATH = 'node_modules/.bin'
+  handle({ t: 'files', req: 1 })
+  handle({ t: 'grep', req: 2, query: 'x' })
+  assert.deepEqual(argvs, [])
+  assert.deepEqual(posted.map((m) => [m.t, m.kind, m.missing]), [['search-error', 'files', true], ['search-error', 'grep', true]])
+  // An absolute entry's rg is run by its full path.
+  fs.writeFileSync(path.join(bin, 'rg'), '#!/bin/sh\n', { mode: 0o755 })
+  process.env.PATH = `node_modules/.bin${path.delimiter}${bin}`
+  handle({ t: 'files', req: 3 })
+  assert.equal(argvs[0][0], path.join(bin, 'rg'))
 })
 
 test('real rg: a query that looks like an option stays a pattern; ignore rules hold', { skip: !hasRg && 'rg not installed' }, async () => {

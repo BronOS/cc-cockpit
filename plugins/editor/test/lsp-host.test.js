@@ -701,13 +701,22 @@ test('resolveCompletion takes only an item the host answered to that page', asyn
   assert.equal(f.got('completionItem/resolve').length, 1)
 })
 
-test('servers: a relative PATH entry is resolved against the project folder, so the spawned program is the one checked', () => {
+test('servers: a relative PATH entry is never searched (a cloned project could ship the program); absolute ones are', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edlsp-rel-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   fs.mkdirSync(path.join(root, 'bin'))
+  fs.mkdirSync(path.join(root, 'node_modules', '.bin'), { recursive: true })
   const bin = path.join(root, 'bin', 'rls')
   fs.writeFileSync(bin, '#!/bin/sh\n', { mode: 0o755 })
-  assert.equal(servers.findOnPath('rls', { PATH: 'bin' }, root), bin)
-  assert.equal(servers.findOnPath('rls', { PATH: 'bin' }, os.tmpdir()), null)
+  fs.writeFileSync(path.join(root, 'node_modules', '.bin', 'rls'), '#!/bin/sh\n', { mode: 0o755 })
+  for (const PATH of ['bin', 'node_modules/.bin', '.', `.${path.delimiter}bin`]) {
+    assert.equal(servers.findOnPath('rls', { PATH }, root), null, PATH)
+    assert.deepEqual(servers.resolveServer({ candidates: [['rls']], install: 'x' }, { env: { PATH }, cwd: root }).missing, true, PATH)
+  }
+  assert.equal(servers.findOnPath('rls', { PATH: `bin${path.delimiter}${path.join(root, 'bin')}` }, os.tmpdir()), bin)
+  assert.equal(servers.programPath('rls', { PATH: `node_modules/.bin${path.delimiter}${path.join(root, 'bin')}` }), bin)
+  // A path with a slash (the person's own `servers` setting) is still taken as given, against the project.
+  assert.equal(servers.findOnPath('bin/rls', { PATH: '' }, root), bin)
 })
 
 test('serveLsp: a close with an unnormalized path drops the pending parts', async (t) => {
@@ -717,6 +726,24 @@ test('serveLsp: a close with an unnormalized path drops the pending parts', asyn
   const handle = serveLsp(tab, f.m)
   handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 2, text: 'const ' })
   handle({ t: 'lsp-close', path: './src/a.ts' })
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 1, parts: 2, text: 'a' })
+  assert.match(tab.last('lsp-error').message, /out of order/)
+  assert.equal(f.m.docs.size, 0)
+})
+
+test('serveLsp: an open whose parts stop coming is dropped and told to the page', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = setup()
+  t.after(f.done)
+  const tab = fakeTab()
+  const handle = serveLsp(tab, f.m)
+  handle({ t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 2, text: 'const ' })
+  assert.equal(tab.last('lsp-error'), undefined)
+  t.mock.timers.tick(10 * 1000)
+  assert.match(tab.last('lsp-error').message, /did not all reach/)
+  assert.equal(tab.last('lsp-error').path, 'src/a.ts')
+  assert.equal(f.m.docs.size, 0)
+  // The late part is out of order now, not the end of a document.
   handle({ t: 'lsp-open', path: 'src/a.ts', part: 1, parts: 2, text: 'a' })
   assert.match(tab.last('lsp-error').message, /out of order/)
   assert.equal(f.m.docs.size, 0)

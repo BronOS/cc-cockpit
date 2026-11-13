@@ -47,7 +47,7 @@
         <button id="chat-send" type="button" class="cc-primary">Send</button>
       </div>
     </section>
-    <!-- Quick open (Ctrl+P) and find in files (Ctrl+Shift+F): one palette over the editor. -->
+    <!-- Quick open (Ctrl+P) and find in files (Ctrl+Shift+H): one palette over the editor. -->
     <div id="palette" class="palette" role="dialog" aria-label="Go to file or find in files" hidden>
       <div class="palette-input">
         <input id="palette-query" type="text" spellcheck="false" autocomplete="off" />
@@ -60,9 +60,10 @@
       <div id="palette-status" class="palette-status" role="status"></div>
       <ul id="palette-list" class="palette-list" role="listbox"></ul>
     </div>
-    <!-- The editor's context menu: Ask Claude (core's Discuss for this tab). -->
+    <!-- The editor's context menu: Ask Claude (core's Discuss for this tab), find in files. -->
     <div id="ctxmenu" class="ctxmenu" role="menu" hidden>
       <button id="ctx-ask" type="button" role="menuitem"><span>Ask Claude about this…</span><kbd id="ctx-ask-key"></kbd></button>
+      <button id="ctx-grep" type="button" role="menuitem"><span>Find in files…</span><kbd id="ctx-grep-key"></kbd></button>
       <!-- Shown only while a Reviewer answers (the reviewer service's notes). -->
       <button id="ctx-note" type="button" role="menuitem" hidden><span>Add review note…</span></button>
     </div>

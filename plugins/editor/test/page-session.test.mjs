@@ -313,7 +313,7 @@ test('state re-send on a new line: the file is opened again, the buffer kept, a 
   // The host restarts: the old line's answer never comes.
   s.connect()
   const reopen = ui.posted.at(-1)
-  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  assert.deepEqual(reopen, { t: 'open', headOnly: true, req: reopen.req })
   // A late answer of the old line is ignored.
   s.receive({ t: 'saved', req: lost, hash: 'stale' })
   assert.equal(s._state.base.hash, 'h1')
@@ -336,7 +336,7 @@ test('state re-send: a dirty buffer with no save in flight stays unsaved on a ne
   // The connection drops and comes back: the file is opened again and read, nothing is saved.
   s.connect()
   const reopen = ui.posted.at(-1)
-  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  assert.deepEqual(reopen, { t: 'open', headOnly: true, req: reopen.req })
   s.receive(head({ req: reopen.req, text: 'one\n' }))
   assert.equal(ui.posted.filter((m) => m.t === 'save').length, 0)
   assert.equal(ui.text, 'mine\n')
@@ -355,7 +355,7 @@ test('state re-send: with autosave on, the idle timer armed before the drop stil
   // The line drops before the timer fires: the reconnect itself saves nothing (no save was in flight).
   s.connect()
   const reopen = ui.posted.at(-1)
-  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  assert.deepEqual(reopen, { t: 'open', headOnly: true, req: reopen.req })
   s.receive(head({ req: reopen.req, text: 'one\n' }))
   assert.equal(ui.posted.filter((m) => m.t === 'save').length, 0)
   // The idle timer was kept across connect(): it fires on the new line and saves the buffer once.
@@ -381,7 +381,7 @@ test('state re-send: a save in flight with a queued save-again is sent once, wit
   ui.posted.length = 0
   s.connect()
   const reopen = ui.posted.at(-1)
-  assert.deepEqual(reopen, { t: 'open', req: reopen.req })
+  assert.deepEqual(reopen, { t: 'open', headOnly: true, req: reopen.req })
   // Disk still holds the base (the lost save never landed): one save, with what the buffer holds now.
   s.receive(head({ req: reopen.req, text: 'one\n' }))
   const saves = ui.posted.filter((m) => m.t === 'save')
@@ -642,6 +642,38 @@ test('state re-send: the lost save landed and more was typed after it: its text 
   assert.equal(save.t, 'save')
   assert.equal(save.baseHash, 'h2')
   assert.equal(save.text, 'mine2\n')
+})
+
+test('a reconnect is head-only: the same hash costs no text; a moved one asks for the text and is still the reconnect', () => {
+  // Same hash: nothing more is asked (a relay resync of a 5 MB file must not re-send it).
+  {
+    const { ui, s } = loaded()
+    s.connect()
+    const reopen = ui.posted.at(-1)
+    assert.equal(reopen.headOnly, true)
+    s.receive(head({ req: reopen.req }))
+    assert.equal(ui.posted.at(-1), reopen)
+    assert.equal(ui.last.status, 'saved')
+  }
+  // The lost save landed and more was typed after it: the head moves, the text is read, and it is
+  // still known as the reconnect's (its text is the lost save's: the base, the buffer saved).
+  const { ui, s } = loaded()
+  ui.text = 'mine\n'
+  s.edited()
+  s.saveNow()
+  s.connect()
+  ui.text = 'mine2\n'
+  s.edited()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2' }))
+  const read = ui.posted.at(-1)
+  assert.deepEqual(read, { t: 'read', path: 'a.txt', req: read.req })
+  s.receive(head({ req: read.req, hash: 'h2', text: 'mine\n' }))
+  assert.equal(ui.last.conflict, null)
+  assert.equal(ui.text, 'mine2\n')
+  assert.deepEqual(s._state.base, { text: 'mine\n', hash: 'h2' })
+  const save = ui.posted.at(-1)
+  assert.equal(save.t, 'save')
+  assert.equal(save.baseHash, 'h2')
 })
 
 test('a file deleted and recreated by someone else: merged on the text it had, saved over the new one once', () => {

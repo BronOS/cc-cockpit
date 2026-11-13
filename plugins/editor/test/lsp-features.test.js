@@ -630,7 +630,12 @@ test('runCodeAction: a page that gave up (its signal aborted) gets nothing appli
 })
 
 test('outside paths: system trees and credential folders never open, whoever names them', () => {
-  for (const p of ['/proc/self/environ', '/sys/kernel', '/dev/null', path.join(os.homedir(), '.ssh/id_ed25519'), path.join(os.homedir(), '.config/cc-cockpit/app.json')]) {
+  const home = (rel) => path.join(os.homedir(), rel)
+  for (const p of [
+    '/proc/self/environ', '/sys/kernel', '/dev/null', home('.ssh/id_ed25519'), home('.config/cc-cockpit/app.json'),
+    home('.npmrc'), home('.git-credentials'), home('.pypirc'), home('.cargo/credentials.toml'), home('.cargo/credentials'),
+    home('.bash_history'), home('.zsh_history'), home('.pgpass'),
+  ]) {
     assert.equal(files.outsideRefused(p), true, p)
   }
   assert.equal(files.outsideRefused('/usr/lib/node_modules/x/index.d.ts'), false)

@@ -15,11 +15,17 @@
 
 /**
  * A diff with more edits than this gives up and calls the whole differing middle one change: the
- * trace Myers keeps grows with the square of the edit count, and a page must never stall on a
- * reformatted 5 MB file. The merge then only gets coarser (one big region, more likely a conflict),
- * never wrong.
+ * trace Myers keeps grows with the square of the edit count. The merge then only gets coarser (one
+ * big region, more likely a conflict), never wrong.
  */
 export const MAX_EDITS = 2000
+/**
+ * A diff gives up too past this many steps of work (diagonals tried plus lines compared along them):
+ * MAX_EDITS bounds D, but Myers costs O((N+M)·D), so a heavily changed file of 100k lines could take
+ * hundreds of millions of steps under it, and the gutter diffs against HEAD on every pause in typing.
+ * About a few tens of milliseconds; a page must never stall on a reformatted 5 MB file.
+ */
+export const MAX_WORK = 5_000_000
 
 /** `text` as lines, each with its '\n' (the last one without when the text has no final newline). */
 export function splitLines(text) {
@@ -42,7 +48,7 @@ export function splitLines(text) {
  * a[aS, aE) became b[bS, bE) (either range may be empty: an insertion, a deletion). Lines between
  * regions are equal.
  */
-export function diffLines(a, b) {
+export function diffLines(a, b, { maxWork = MAX_WORK } = {}) {
   // Lines as small ints: the inner loop compares numbers, not strings.
   const ids = new Map()
   const intern = (lines) => {
@@ -61,15 +67,15 @@ export function diffLines(a, b) {
   while (pre < x.length && pre < y.length && x[pre] === y[pre]) pre++
   let post = 0
   while (post < x.length - pre && post < y.length - pre && x[x.length - 1 - post] === y[y.length - 1 - post]) post++
-  const hunks = myers(x.subarray(pre, x.length - post), y.subarray(pre, y.length - post))
+  const hunks = myers(x.subarray(pre, x.length - post), y.subarray(pre, y.length - post), maxWork)
   const out = hunks.map((h) => ({ aS: h.aS + pre, aE: h.aE + pre, bS: h.bS + pre, bE: h.bE + pre }))
   // The one hunk over everything is no diff: callers that draw per-line marks (the gutter) skip it.
   if (hunks.gaveUp) out.gaveUp = true
   return out
 }
 
-/** Myers' O(ND) diff of two int arrays as hunks; past MAX_EDITS, one hunk over everything. */
-function myers(a, b) {
+/** Myers' O(ND) diff of two int arrays as hunks; past MAX_EDITS or `maxWork` steps, one hunk over everything. */
+function myers(a, b, maxWork) {
   const n = a.length
   const m = b.length
   if (n === 0 && m === 0) return []
@@ -81,15 +87,19 @@ function myers(a, b) {
   // trace[d]: v before step d, diagonals -(d+1)..d+1 (index k + d + 1), what the walk back reads.
   const trace = []
   let found = -1
+  let work = 0
   outer: for (let d = 0; d <= limit; d++) {
     trace.push(v.slice(off - d - 1, off + d + 2))
     for (let k = -d; k <= d; k += 2) {
       let xx = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1
       let yy = xx - k
+      const from = xx
       while (xx < n && yy < m && a[xx] === b[yy]) {
         xx++
         yy++
       }
+      work += 1 + xx - from
+      if (work > maxWork) break outer
       v[off + k] = xx
       if (xx >= n && yy >= m) {
         found = d

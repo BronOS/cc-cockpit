@@ -1160,7 +1160,7 @@ function start(server: boolean): void {
   const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<TabInfo> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.createPage(projectId, spec)
+    const tab = tabs.createPage(projectId, spec, { focus })
     sendToProject(projectId, 'tabs.added', tab)
     if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
     return tab
