@@ -345,6 +345,16 @@ with full Node access.
   so output the person should read must wait: `['sh', '-c', '"$@"; read -r _', 'sh', ...argv]`.
   Unselected unless `focus: true`. It shares the 5 a minute of `open` and `openShell`. An older app has
   no `openCommand`: check `typeof ctx.sessions.openCommand === 'function'`.
+- `beside` and `side` on all three opens (`{ ..., beside: tabId, side: 'right' | 'down' }`, right by
+  default): the new tab opens as a split pane beside that tab of this window, for a command next to the
+  Claude tab that asked for it. Only the new tab is placed: no plugin call moves, resizes, closes or ungroups
+  the person's panes, and none reads which group a tab is in. A plain anchor becomes a group of the two; the
+  anchor stays visible and keeps focus. An unknown id and another window's tab reject the same way, before
+  the open counts against the 5 a minute. The answer is `{ tabId, placed }`: `placed: false` means an
+  ordinary tab opened instead, because the anchor closed meanwhile, its group already has 4 panes, or its
+  pane is too small to halve. `focus: true` shows the anchor's group in the window the call came from; the
+  new pane is never focused, so it cannot catch keys the person types. An older app ignores `beside` and
+  answers without `placed`.
 
 ## Files
 

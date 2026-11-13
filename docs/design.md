@@ -469,6 +469,13 @@ plain tab has no group, and a project without groups behaves as before.
   follows every pane of its group (`ViewTerminals.selectGroup`, the list from main's groups): the
   selected one first, the others one at a time, each after the previous snapshot went out and the
   socket drained below 1 MiB; a group gaining a member joins it for every view showing that group.
+- *Plugins.* `ctx.sessions.open` / `openShell` / `openCommand` take `beside` (a tab of the host's own
+  window, looked up in host-api before the open budget is spent; unknown and foreign are one error) and
+  `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin`), and
+  it opens plain with `placed: false` when the anchor is gone, its group has 4 panes or the anchor's
+  halves would fall under 20x5 cells. `focus: true` selects the anchor in the origin view (else the
+  desktop page) unless that view shows the group already; the new pane never takes focus (D4). No
+  other plugin call touches groups, `SessionInfo` has no group (D11), and there is no `ccc` command.
 
 ## 4. Window layout, zones, overlay
 
