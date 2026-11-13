@@ -34,7 +34,10 @@
 // 4-pane Claude group is ~4 snapshots of several MiB, which joined at once would sit in the socket
 // together against SOCKET_HIGH_WATER (connection.ts) and close the view. A member already followed
 // costs nothing and is skipped. Selecting again (another group, or the same group after it gained a
-// member) replaces whatever is still queued.
+// member) replaces whatever is still queued, but not what is in flight: a join whose snapshot has not
+// gone out still holds the queue while the tab is followed (team run 001 D23 R4). Its snapshot may
+// still be in the worker, not yet in `bufferedAmount`, so forgetting it on every `groups.changed`
+// would let a few quick edits in another view put several snapshots in flight together.
 //
 // The connection wires `select` to the view's own tab selection and `ack` to its acks. Never
 // trusted: the tab must pass `canFollow` (a tab of the view's own window, checked by main), whatever
@@ -101,8 +104,11 @@ export class ViewTerminals {
   private readonly waiting = new Set<string>()
   /** Group members still to join, in order (`selectGroup`). */
   private queue: string[] = []
-  /** The member whose snapshot the queue waits for; undefined when nothing is in flight. */
-  private head: string | undefined
+  /**
+   * Joins whose snapshot the queue waits for: a queued member's, and the selected pane's when a
+   * reselect joined it while an earlier one was still in flight. Usually zero or one.
+   */
+  private readonly inFlight = new Set<string>()
   private pumpScheduled = false
   private disposed = false
   private readonly high: number
@@ -125,24 +131,27 @@ export class ViewTerminals {
   /**
    * The view shows a group: `tabIds` is the selected (focused) pane first, then the group's other
    * members (main's TabGroups.joinOrder). The first is joined now; each of the others after the one
-   * before it is synced and the socket drained (header). Replaces any earlier queue. The answer is
-   * `select`'s for the first.
+   * before it is synced and the socket drained (header). Replaces any earlier queue, never a join in
+   * flight (D23 R4): the selected pane still joins at once (the person is looking at it), and the
+   * queue waits for both. The answer is `select`'s for the first.
    */
   selectGroup(tabIds: readonly string[]): boolean {
     if (this.disposed) return false
     const [first, ...rest] = tabIds
     this.queue = rest.filter((t) => t !== first)
-    this.head = undefined
+    // Every path that ends a join (synced, leave, a failed resync) unblocks it, so one still in the
+    // set is still followed; checked anyway so a missed path cannot hold the queue for the view's life.
+    for (const tabId of this.inFlight) if (!this.followed.has(tabId)) this.inFlight.delete(tabId)
     if (first === undefined) return false
     const started = this.start(first)
-    if (started === 'joined') this.head = first
+    if (started === 'joined') this.inFlight.add(first)
     else this.schedulePump(0)
     return started !== 'none'
   }
 
-  /** Group members still waiting for their turn (tests, diagnostics). */
+  /** Group members still waiting for their turn, in-flight joins first (tests, diagnostics). */
   queued(): string[] {
-    return this.head === undefined ? [...this.queue] : [this.head, ...this.queue]
+    return [...this.inFlight, ...this.queue]
   }
 
   private start(tabId: string): Start {
@@ -162,8 +171,7 @@ export class ViewTerminals {
 
   /** The tab's snapshot went out, or it stopped being followed: the next queued member may go. */
   private unblock(tabId: string): void {
-    if (this.head !== tabId) return
-    this.head = undefined
+    if (!this.inFlight.delete(tabId)) return
     this.schedulePump(0)
   }
 
@@ -179,12 +187,12 @@ export class ViewTerminals {
 
   /** Join queued members until one sends a snapshot (then wait for it), skipping ones already followed. */
   private pump(): void {
-    if (this.disposed || this.head !== undefined) return
+    if (this.disposed || this.inFlight.size > 0) return
     if ((this.deps.buffered?.() ?? 0) > JOIN_DRAIN_BYTES) return this.schedulePump(JOIN_DRAIN_POLL_MS)
     while (this.queue.length > 0) {
       const tabId = this.queue.shift()!
       if (this.start(tabId) === 'joined') {
-        this.head = tabId
+        this.inFlight.add(tabId)
         return
       }
     }
@@ -252,7 +260,7 @@ export class ViewTerminals {
     this.disposed = true
     this.waiting.clear()
     this.queue = []
-    this.head = undefined
+    this.inFlight.clear()
     for (const tabId of [...this.followed.keys()]) this.leave(tabId)
   }
 
