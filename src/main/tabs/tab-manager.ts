@@ -718,6 +718,27 @@ export class TabManager {
   }
 
   /**
+   * Put the project's tabs in `ids`' order (TabGroups after a group op: every group contiguous, a
+   * placed tab next to its anchor). Ids that are not the project's are skipped, and a tab `ids`
+   * leaves out keeps its relative place at the end, so a stale list can never drop or duplicate a
+   * tab. Not a save: TabGroups saves tabs and groups together once its edit is applied.
+   */
+  setOrder(projectId: string, ids: readonly string[]): void {
+    const tabs = this.order.get(projectId)
+    if (!tabs) return
+    const seen = new Set<Tab>()
+    const next: Tab[] = []
+    for (const id of ids) {
+      const tab = this.find(projectId, id)
+      if (!tab || seen.has(tab)) continue
+      seen.add(tab)
+      next.push(tab)
+    }
+    for (const tab of tabs) if (!seen.has(tab)) next.push(tab)
+    tabs.splice(0, tabs.length, ...next)
+  }
+
+  /**
    * Relaunch an exited tab in place: same id (the renderer keeps its xterm and position), same
    * kind and cwd, `--resume` when the session has a conversation to resume and its last resume
    * did not die before starting (else a fresh `claude`, see Tab.resumeFailed), and a fresh token
