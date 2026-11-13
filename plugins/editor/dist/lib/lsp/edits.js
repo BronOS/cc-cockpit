@@ -19,7 +19,10 @@
 // the same way. Everything is checked before anything is applied; then the open files are applied
 // first (a page refusing, the person typed, is the likely failure, and a page's edit can be undone)
 // and the disk files after them, and the first failure stops the rest (`failureHandling: 'abort'`,
-// as declared), reported with its index in the server's edit.
+// as declared), reported with its index in the server's edit. A cancel (the page gave up, its
+// deadline) is the same kind of stop: checked before each file, so one that comes while a page is
+// applying its part lets that part finish and changes nothing after it; the answer names the files
+// that did change (the all-or-refuse checks above cannot undo a file already written).
 
 const { pathToFileURL } = require('node:url')
 const fs = require('node:fs')
@@ -165,7 +168,8 @@ function planEdit(edit, pathOfUri) {
  *   file whose document moved on since, or that was not open then, is not edited; nor is one that
  *   was open then and is closed now (the server's positions are for the page's buffer, not the disk).
  * - `since`: the time (ms) then: a disk file written after it is not edited.
- * - `signal`: an AbortSignal; aborted before anything is applied, nothing is.
+ * - `signal`: an AbortSignal; aborted before anything is applied, nothing is; aborted part way, the
+ *   files after the one being applied are not touched and the answer says which ones changed.
  * Resolves the LSP ApplyWorkspaceEditResult plus counts: `{ applied, failureReason?, failedChange?, files, edits }`.
  */
 async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
@@ -207,10 +211,13 @@ async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
       disk.push({ ...p, uri, real: where.real })
     }
   }
-  if (signal && signal.aborted) return { applied: false, failureReason: 'cancelled', files: 0, edits: 0 }
   let done = 0
   let count = 0
-  for (const st of [...pages, ...disk]) {
+  const changed = []
+  const steps = [...pages, ...disk]
+  for (const st of steps) {
+    // Rechecked before every file: the await on a page's part is where a cancel usually lands.
+    if (signal && signal.aborted) return cancelled(st, changed, steps.length, count)
     let r
     try {
       r = st.doc ? await applyToPage(mgr, st) : applyToDisk(mgr, st, since)
@@ -219,6 +226,7 @@ async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
     }
     done++
     count += st.edits.length
+    changed.push(st.rel)
     if (r && r.lost) {
       // The edit is on disk, but a write another program made into the old file during the swap is
       // not: said as it is, and nothing more is changed.
@@ -226,6 +234,28 @@ async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
     }
   }
   return { applied: true, files: done, edits: count }
+}
+
+/** Names listed in a partial cancel's reason; the rest are counted (the page shows ~300 characters). */
+const MAX_NAMED_FILES = 5
+
+/**
+ * The answer to a cancel that came before `next` was applied: `changed` (rels) were, the others
+ * were not. Nothing changed: plain `cancelled`, as before the loop. Else not `applied` (the server's
+ * edit is not all there), with the changed files named so the person can undo them.
+ */
+function cancelled(next, changed, total, edits) {
+  if (changed.length === 0) return { applied: false, failureReason: 'cancelled', files: 0, edits: 0 }
+  const named = changed.slice(0, MAX_NAMED_FILES).join(', ')
+  const more = changed.length > MAX_NAMED_FILES ? ` and ${changed.length - MAX_NAMED_FILES} more` : ''
+  const left = total - changed.length
+  return {
+    applied: false,
+    failureReason: `cancelled part way: changed ${named}${more}; the other ${left} file${left === 1 ? ' was' : 's were'} not changed`,
+    failedChange: next.index,
+    files: changed.length,
+    edits,
+  }
 }
 
 /** Whether the file at `real` was modified after `since` (ms); a file that is gone is not (its read says so). */

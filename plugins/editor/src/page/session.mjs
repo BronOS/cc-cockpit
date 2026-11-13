@@ -36,6 +36,10 @@
 // a newer change on disk comes back as `changed` and is merged then, onto the resolved text.
 // Only a file that can no longer be saved here (it became read-only, binary or too large) is a
 // plain conflict, with Reload alone.
+// A file that turns read-only with its bytes unchanged (chmod, a second hard link) is no conflict:
+// the buffer keeps its text and, holding unsaved edits, STAYS dirty (core asks before a close or an
+// unmount drops them), and the bar says they cannot be saved there (view `stranded`), with Reload
+// to drop them. Writable again, autosave picks them up.
 
 import { merge3, mergedText, conflictLayout } from './merge.mjs'
 import { chunkText, partsCollector } from './parts.mjs'
@@ -128,6 +132,8 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       : null,
     error: s.error,
     notice: s.notice,
+    // Unsaved edits in a buffer the file no longer lets us save (roChanged).
+    stranded: s.readOnly && s.dirty && !s.conflict,
   })
 
   /** The tab's conflict marker follows s.conflict: told to the host on a change (and on every connect). */
@@ -162,11 +168,15 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     ui.setDirty(dirty)
   }
 
-  /** Compare the buffer with the base now. A file not on disk is dirty while it holds any text. */
+  /**
+   * Compare the buffer with the base now. A file not on disk is dirty while it holds any text. A
+   * read-only one is compared too: it cannot be typed in, but edits made before it turned read-only
+   * are still unsaved, and clearing the flag would let a close or the LRU drop them without an ask.
+   */
   function checkDirty() {
     if (dirtyTimer !== null) timers.clear(dirtyTimer)
     dirtyTimer = null
-    if (!s.loaded || s.readOnly || s.noText) return setDirty(false)
+    if (!s.loaded || s.noText) return setDirty(false)
     const text = ui.getText()
     setDirty(s.exists ? text !== s.base.text : text !== '')
   }
@@ -268,8 +278,10 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     const text = r.conflicts === 0 ? mergedText(r.chunks) : null
     // The page shows the merge FIRST: should drawing it fail, the base must not have moved, or the
     // next save would be a compare-and-swap on theirs with my unmerged text and drop their change.
+    // A stranded buffer (read-only with unsaved edits, roChanged) whose file is writable again: the
+    // editor must take input again even when the merge leaves the text as it is.
     if (text === null) ui.merge(conflictLayout(r.chunks))
-    else if (text !== mine) ui.replace(text, { readOnly: false, noText: false })
+    else if (text !== mine || s.readOnly) ui.replace(text, { readOnly: false, noText: false })
     // A save in flight was made against the base this merge replaces: its answer must not move it.
     if (s.saving) s.saving.superseded = true
     s.base = next
@@ -315,6 +327,13 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
       s.base = { text, hash: head.hash }
       s.exists = true
       s.conflict = null
+      // Its flags move with it (a stranded buffer whose file is writable again, or the reverse).
+      const ro = head.readOnly === true
+      if (ro !== s.readOnly) {
+        s.readOnly = ro
+        s.why = ro ? head.why : undefined
+        ui.replace(text, { readOnly: ro, noText: false })
+      }
       checkDirty()
       return update()
     }
@@ -330,7 +349,11 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     mergeIn(s.base.text, text, { text, hash: head.hash })
   }
 
-  /** The hash is the base's but the host now calls the file read-only (or writable again): the flags move, the buffer stays. */
+  /**
+   * The hash is the base's but the host now calls the file read-only (or writable again): the flags
+   * move, the buffer stays, and so does its dirty flag (view `stranded` while it cannot be saved).
+   * Writable again with edits still unsaved: autosave picks them up.
+   */
   function roChanged(head) {
     s.readOnly = head.readOnly === true
     s.why = s.readOnly ? head.why : undefined
@@ -338,6 +361,7 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     clearIdle()
     checkDirty()
     update()
+    if (s.dirty && !s.readOnly) armIdle()
   }
 
   function onFile(m) {
@@ -576,6 +600,13 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
         update()
       }
       return false
+    },
+    /** The stranded bar's Reload: a read-only file's unsaved edits are dropped, the buffer is the file again. */
+    revert() {
+      if (!s.readOnly || !s.dirty || s.conflict) return
+      ui.replace(s.base.text, { readOnly: true, noText: s.noText })
+      checkDirty()
+      update()
     },
     /** The final conflict's Reload: the buffer, the base and the flags become theirs. */
     takeTheirs() {

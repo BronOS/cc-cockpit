@@ -13,7 +13,7 @@ const cp = require('node:child_process')
 const { pathToFileURL } = require('node:url')
 const { encode, Decoder } = require('../dist/lib/lsp/framing.js')
 const servers = require('../dist/lib/lsp/servers.js')
-const { LspManager, fitResult, applyChanges, ANSWER_BUDGET } = require('../dist/lib/lsp/manager.js')
+const { LspManager, fitResult, applyChanges, syncKindOf, ANSWER_BUDGET } = require('../dist/lib/lsp/manager.js')
 const { serveLsp } = require('../dist/lib/lsp/serve.js')
 const { FolderWatcher } = require('../dist/lib/files.js')
 
@@ -349,6 +349,47 @@ test('one syncing owner: another view\'s edits are ignored; when the owner leave
   await until(() => f.got('textDocument/didChange').length === 2, 5000, 'resync didChange')
   assert.deepEqual(f.got('textDocument/didChange')[1].in.params.contentChanges, [{ text: 'b text' }])
   assert.equal(f.got('textDocument/didClose').length, 0)
+})
+
+test('syncKindOf: the number or the options object\'s change; omitted or 0 is None, an unknown kind gets the whole text', () => {
+  assert.equal(syncKindOf({ textDocumentSync: 2 }), 2)
+  assert.equal(syncKindOf({ textDocumentSync: 1 }), 1)
+  assert.equal(syncKindOf({ textDocumentSync: 0 }), 0)
+  assert.equal(syncKindOf({ textDocumentSync: { openClose: true, change: 2 } }), 2)
+  assert.equal(syncKindOf({ textDocumentSync: { openClose: true, change: 1 } }), 1)
+  assert.equal(syncKindOf({ textDocumentSync: { openClose: true } }), 0)
+  assert.equal(syncKindOf({}), 0)
+  assert.equal(syncKindOf(null), 0)
+  assert.equal(syncKindOf({ textDocumentSync: 7 }), 1)
+})
+
+for (const [label, sync] of [['a Full server (the number)', '1'], ['a Full server (the options object)', '{"openClose":true,"change":1}']]) {
+  test(`didChange to ${label}: the whole new text, never the page's range`, async (t) => {
+    const f = setup({ flags: ['--sync', sync] })
+    t.after(f.done)
+    const a = holder('a')
+    f.m.open(a, 'src/a.ts', 'const a = 1\n')
+    await until(() => f.got('textDocument/didOpen').length === 1, 5000, 'didOpen')
+    assert.equal(f.m.change(a, 'src/a.ts', [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } }, text: 'z' }]), true)
+    await until(() => f.got('textDocument/didChange').length === 1, 5000, 'didChange')
+    assert.deepEqual(f.got('textDocument/didChange')[0].in.params.contentChanges, [{ text: 'const z = 1\n' }])
+  })
+}
+
+test('didChange to a None server (0, or textDocumentSync left out): nothing is sent, the host still tracks the text', async (t) => {
+  for (const sync of ['0', 'omit']) {
+    const f = setup({ flags: ['--sync', sync] })
+    t.after(f.done)
+    const a = holder('a')
+    f.m.open(a, 'src/a.ts', 'const a = 1\n')
+    await until(() => f.got('textDocument/didOpen').length === 1, 5000, 'didOpen')
+    assert.equal(f.m.change(a, 'src/a.ts', [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } }, text: 'z' }]), true)
+    f.m.open(a, 'src/a.ts', 'resynced\n') // the owner's whole text again: no didChange either
+    // A later message proves the fake read everything before it.
+    await f.m.ask(a, 'symbols', 'src/a.ts', {})
+    assert.equal(f.got('textDocument/didChange').length, 0)
+    assert.equal([...f.m.docs.values()][0].text, 'resynced\n')
+  }
 })
 
 test('diagnostics reach every view holding the document, as project paths', async (t) => {

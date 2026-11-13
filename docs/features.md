@@ -277,7 +277,8 @@ behind it are in [design.md](design.md).
   above yours (Keep mine, Take Claude's, Keep both; ⚠ in the tab title, nothing saved until all are resolved). A file
   deleted on disk keeps its tab with Save (recreate) or Close. Binary, non-UTF-8 and
   files over 5 MB open read-only, and a file over 16 MB is not shown at all (the tab says why); a binary file goes to
-  the reviewer instead. A tab with unsaved text shows a dot and
+  the reviewer instead. A file that turns read-only while the tab has unsaved text keeps the text and the dot (the bar
+  says it cannot be saved there; Reload drops it), and it is saved once the file is writable again. A tab with unsaved text shows a dot and
   closing it asks. In a file tab, Ctrl+P (quick open: the project's files, fuzzy filtered, ripgrep's ignore rules)
   and Ctrl+Shift+H or the context menu's Find in files (plain text, case, whole word or regex; results by file, a click
   opens the tab at the line; Ctrl+Shift+F is Toggle Tab Flag by default and reaches the editor only once that is

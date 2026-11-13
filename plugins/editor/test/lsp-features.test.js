@@ -817,6 +817,65 @@ test('runCodeAction: a page that gave up (its signal aborted) gets nothing appli
   assert.equal(a.edits.length, 0)
 })
 
+test('a cancel while a page applies its part: that part finishes, no later file is touched, the answer names what changed', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  const b = page(f.m, 'src/b.ts', 'const b = 2\n')
+  a.open()
+  b.open()
+  await ready(f)
+  fs.writeFileSync(path.join(f.root, 'src/c.ts'), 'const c = 3\n')
+  const ctl = new AbortController()
+  const applyA = a.applyEdits
+  // The page gives up (its deadline, Esc) while the host waits for a's part.
+  a.applyEdits = async (...args) => {
+    ctl.abort()
+    return applyA(...args)
+  }
+  const edit = { changes: { [uriOf(f, 'src/a.ts')]: one(), [uriOf(f, 'src/b.ts')]: one(), [uriOf(f, 'src/c.ts')]: one() } }
+  const r = await applyWorkspaceEdit(f.m, edit, { signal: ctl.signal })
+  assert.deepEqual([r.applied, r.files, r.edits, r.failedChange], [false, 1, 1, 1])
+  assert.equal(r.failureReason, 'cancelled part way: changed src/a.ts; the other 2 files were not changed')
+  assert.equal(a.text, 'const z = 1\n')
+  assert.equal(b.edits.length, 0)
+  assert.equal(b.text, 'const b = 2\n')
+  assert.equal(f.disk('src/c.ts'), 'const c = 3\n')
+  // Aborted before anything: plain `cancelled`, nothing counted.
+  const r2 = await applyWorkspaceEdit(f.m, edit, { signal: ctl.signal })
+  assert.deepEqual(r2, { applied: false, failureReason: 'cancelled', files: 0, edits: 0 })
+})
+
+test('serveLsp: an edit ask the page stopped waiting for still tells the page what it changed', async () => {
+  const tab = fakeTab()
+  const answers = []
+  const manager = { ask: () => new Promise((resolve) => answers.push(resolve)), closeHolder() {} }
+  const handle = serveLsp(tab, manager)
+  // Part way: cancelled after a's part.
+  handle({ t: 'lsp-ask', req: 1, what: 'rename', path: 'src/a.ts' })
+  handle({ t: 'lsp-cancel', req: 1 })
+  answers[0]({ result: { applied: false, failureReason: 'cancelled part way: changed src/a.ts; the other 2 files were not changed', files: 1, edits: 1 } })
+  await sleep(0)
+  assert.equal(tab.posts.filter((p) => p.t === 'lsp-answer').length, 0)
+  assert.deepEqual(tab.last('lsp-error'), { t: 'lsp-error', path: 'src/a.ts', message: 'rename: cancelled part way: changed src/a.ts; the other 2 files were not changed' })
+  // All of it landed just after the page gave up.
+  handle({ t: 'lsp-ask', req: 2, what: 'format', path: 'src/a.ts' })
+  handle({ t: 'lsp-cancel', req: 2 })
+  answers[1]({ result: { applied: true, files: 1, edits: 3 } })
+  await sleep(0)
+  assert.match(tab.last('lsp-error').message, /^format: applied after the editor stopped waiting \(3 changes in 1 file\)/)
+  // Nothing changed (a hover, a refused edit): nothing to tell.
+  const before = tab.posts.length
+  handle({ t: 'lsp-ask', req: 3, what: 'rename', path: 'src/a.ts' })
+  handle({ t: 'lsp-cancel', req: 3 })
+  answers[2]({ result: { applied: false, failureReason: 'cancelled', files: 0, edits: 0 } })
+  handle({ t: 'lsp-ask', req: 4, what: 'hover', path: 'src/a.ts' })
+  handle({ t: 'lsp-cancel', req: 4 })
+  answers[3]({ result: { contents: 'x' } })
+  await sleep(0)
+  assert.equal(tab.posts.length, before)
+})
+
 test('outside paths: system trees and credential folders never open, whoever names them', () => {
   const home = (rel) => path.join(os.homedir(), rel)
   for (const p of [

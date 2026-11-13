@@ -99,7 +99,10 @@ project picked it", so it is listed in Settings > This Project, "Plugin used to 
 left out (the Reviewer stays the default, nothing becomes ambiguous). Picked, a click opens the file's tab; a binary
 file is refused by its listener and the built-in viewer shows it. Only files inside the project, checked by realpath; outside files go
 to the built-in viewer. Binary files, text over about 5 MB, and text that is not valid UTF-8 open read-only (saving
-would corrupt them). A file that already has a tab focuses it and moves to the line.
+would corrupt them). A file that already has a tab focuses it and moves to the line. A file that turns read-only
+while its tab holds unsaved edits (its permissions, a second hard link) keeps them: the tab stays dirty (closing it
+asks), the bar says they cannot be saved there (Reload drops them), and autosave resumes once it is writable again;
+one whose bytes changed into something not savable (binary, too large, not UTF-8) is the Reload-only conflict.
 
 **Base, in the page.** Each page keeps its own *base*: the text and hash it last loaded or saved. The host keeps no
 merge state, so two views and a host restart are just more writers.
@@ -148,6 +151,10 @@ rename, format, code actions, document symbols. A definition in another project 
 location outside the project (`node_modules`, module cache, vendor) opens read-only, and only for a location the server
 returned. Rename and code actions: the host declares no resource operations (no file create, rename, delete) and
 applies a `WorkspaceEdit` to open files through their pages and to unopened files through the compare-and-swap write.
+Everything is checked before the first file is touched; a cancel (the page gave up) is checked again before each file,
+so one that lands while a page applies its part stops before the next file, and the page is told which files changed.
+`didChange` follows the server's `textDocumentSync` (Incremental: the page's ranges; Full: the whole text; None or
+omitted: none).
 
 Language servers run project tooling, as in any IDE; the docs say so. The page never names a binary or a setting a
 server would use to start one.

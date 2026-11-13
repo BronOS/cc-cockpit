@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { createSession, chunkText, CHUNK_CHARS, NOTICE_MS, LOST_NOT_TEXT } from '../src/page/session.mjs'
+import { createSession, chunkText, CHUNK_CHARS, NOTICE_MS, LOST_NOT_TEXT, DIRTY_CHECK_MS } from '../src/page/session.mjs'
 
 const require = createRequire(import.meta.url)
 const files = require('../dist/lib/files.js')
@@ -40,6 +40,8 @@ function fakeUi() {
     text: '',
     loads: [],
     replaced: [],
+    // The info of each replace ({ readOnly, noText }): whether the editor takes input.
+    replaceInfo: [],
     merges: [],
     gotos: [],
     dirty: [],
@@ -49,9 +51,10 @@ function fakeUi() {
       ui.text = t
       ui.loads.push(info)
     },
-    replace: (t) => {
+    replace: (t, info) => {
       ui.text = t
       ui.replaced.push(t)
+      ui.replaceInfo.push(info)
     },
     merge: (layout) => {
       ui.text = layout.text
@@ -740,6 +743,109 @@ test('the same hash but now read-only: the flags move, the buffer stays', () => 
   s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why: 'permission' }))
   assert.equal(ui.last.readOnly, true)
   assert.equal(ui.last.conflict, null)
+})
+
+for (const why of ['permission', 'linked']) {
+  test(`unsaved edits in a file that turns read-only (${why}, same bytes) stay dirty, stranded, never saved; writable again they are`, () => {
+    const { ui, timers, s } = loaded()
+    ui.text = 'mine\n'
+    s.edited()
+    timers.run(DIRTY_CHECK_MS)
+    s.focus()
+    s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why }))
+    assert.deepEqual(ui.dirty, [true])
+    assert.equal(ui.last.dirty, true)
+    assert.equal(ui.last.status, 'unsaved')
+    assert.equal(ui.last.readOnly, true)
+    assert.equal(ui.last.stranded, true)
+    assert.equal(ui.last.conflict, null)
+    assert.deepEqual(ui.replaceInfo.at(-1), { readOnly: true, noText: false })
+    assert.equal(ui.text, 'mine\n')
+    // No save while it is read-only: not the idle timer, not blur, not Ctrl+S.
+    assert.ok(!timers.delays().includes(3000))
+    s.blur()
+    assert.equal(s.saveNow(), false)
+    assert.equal(ui.posted.filter((m) => m.t === 'save').length, 0)
+    // Another look at the same read-only file changes nothing.
+    s.focus()
+    s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why }))
+    assert.equal(ui.last.dirty, true)
+    // Writable again: the editor takes input and autosave saves the edits.
+    s.focus()
+    s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: false }))
+    assert.equal(ui.last.stranded, false)
+    assert.equal(ui.last.dirty, true)
+    assert.deepEqual(ui.replaceInfo.at(-1), { readOnly: false, noText: false })
+    timers.run()
+    assert.equal(ui.posted.at(-1).t, 'save')
+    assert.equal(ui.posted.at(-1).text, 'mine\n')
+  })
+}
+
+test("a stranded buffer's Reload drops the unsaved edits: clean, the file's text, still read-only", () => {
+  const { ui, timers, s } = loaded()
+  ui.text = 'mine\n'
+  s.edited()
+  timers.run(DIRTY_CHECK_MS)
+  s.focus()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why: 'permission' }))
+  s.revert()
+  assert.equal(ui.text, 'one\n')
+  assert.deepEqual(ui.dirty, [true, false])
+  assert.equal(ui.last.stranded, false)
+  assert.equal(ui.last.readOnly, true)
+  // A clean read-only buffer has nothing to drop.
+  s.revert()
+  assert.deepEqual(ui.dirty, [true, false])
+})
+
+for (const [why, text] of [['encoding', 'one\ufffd\n'], ['large', 'one\nbig\n'], ['binary', undefined]]) {
+  test(`unsaved edits when the file changes into one that cannot be saved here (${why}): the final conflict, still dirty until Reload`, () => {
+    const { ui, timers, s } = loaded()
+    ui.text = 'mine\n'
+    s.edited()
+    timers.run(DIRTY_CHECK_MS)
+    s.receive({ t: 'disk', path: 'a.txt', change: 'changed', hash: 'h2' })
+    s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2', readOnly: true, why, text }))
+    assert.deepEqual(ui.last.conflict, { kind: 'changed', final: true })
+    assert.equal(ui.last.dirty, true)
+    assert.equal(ui.text, 'mine\n')
+    s.takeTheirs()
+    assert.equal(ui.last.dirty, false)
+    assert.equal(ui.last.readOnly, true)
+  })
+}
+
+test('a stranded buffer whose file becomes writable with a change mine already holds: merged, input back on, saved', () => {
+  const { ui, timers, s } = loaded('one\nmid\ntwo\n')
+  ui.text = 'ONE\nmid\nTWO\n'
+  s.edited()
+  timers.run(DIRTY_CHECK_MS)
+  s.focus()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why: 'permission' }))
+  assert.equal(ui.last.stranded, true)
+  s.receive({ t: 'disk', path: 'a.txt', change: 'changed', hash: 'h2' })
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2', readOnly: false, text: 'ONE\nmid\ntwo\n' }))
+  assert.deepEqual(ui.merges, [])
+  assert.equal(ui.text, 'ONE\nmid\nTWO\n')
+  assert.deepEqual(ui.replaceInfo.at(-1), { readOnly: false, noText: false })
+  assert.equal(ui.last.readOnly, false)
+  assert.equal(ui.posted.at(-1).t, 'save')
+  assert.equal(ui.posted.at(-1).baseHash, 'h2')
+})
+
+test('a stranded buffer whose file now holds exactly the buffer (and is writable): clean, input back on', () => {
+  const { ui, timers, s } = loaded()
+  ui.text = 'mine\n'
+  s.edited()
+  timers.run(DIRTY_CHECK_MS)
+  s.focus()
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h1', readOnly: true, why: 'permission' }))
+  s.receive({ t: 'disk', path: 'a.txt', change: 'changed', hash: 'h2' })
+  s.receive(head({ req: ui.posted.at(-1).req, hash: 'h2', readOnly: false, text: 'mine\n' }))
+  assert.equal(ui.last.dirty, false)
+  assert.equal(ui.last.readOnly, false)
+  assert.deepEqual(ui.replaceInfo.at(-1), { readOnly: false, noText: false })
 })
 
 test('an error answer to a save: not saving, still dirty, the next edit re-arms the idle timer', () => {

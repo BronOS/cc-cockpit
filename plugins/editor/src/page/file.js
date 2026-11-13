@@ -449,7 +449,9 @@ const WHY = {
   large: 'too large to edit here',
   encoding: 'not UTF-8 text',
   permission: 'you cannot write it',
-  nlink: 'it has other hard links',
+  // lib/files.js lockOf and readOutside name these.
+  linked: 'it has other hard links',
+  outside: 'it is outside the project',
 }
 
 const STATUS = { loading: 'Loading…', saving: 'Saving…', unsaved: 'Unsaved', saved: 'Saved' }
@@ -493,6 +495,11 @@ function render(v) {
     bar.classList.add('warn')
     text.textContent = 'This file was deleted on disk. Your text is still here.'
     actions.append(button('Save', () => session.saveNow()), button('Close', () => session.closeTab(), 'cc-ghost'))
+  } else if (v.stranded) {
+    // It turned read-only with edits not yet saved: they stay (the tab stays dirty, a close asks).
+    bar.classList.add('warn')
+    text.textContent = `This file became read-only (${WHY[v.why] || v.why || 'read-only'}): your unsaved edits cannot be saved to it. Copy them elsewhere, or Reload to drop them.`
+    actions.append(button('Reload', () => session.revert(), 'cc-ghost'))
   } else if (v.error) {
     bar.classList.add('error')
     text.textContent = v.error

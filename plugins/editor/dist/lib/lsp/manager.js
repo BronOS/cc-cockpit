@@ -296,6 +296,24 @@ function hasCap(caps, cap) {
   return v !== undefined && v !== null && v !== false
 }
 
+/** TextDocumentSyncKind: what a server wants of `textDocument/didChange`. */
+const SYNC_NONE = 0
+const SYNC_FULL = 1
+const SYNC_INCREMENTAL = 2
+
+/**
+ * The server's `textDocumentSync` change kind: the number itself, or the `change` of a
+ * TextDocumentSyncOptions object. Omitted is None (the spec's default): no `didChange` at all. A
+ * value this host does not know gets the whole text (Full is right for any server that reads
+ * changes); only an explicit Incremental gets the page's ranges.
+ */
+function syncKindOf(caps) {
+  const v = caps ? caps.textDocumentSync : undefined
+  const kind = v !== null && typeof v === 'object' ? v.change : v
+  if (kind === undefined || kind === null || kind === SYNC_NONE) return SYNC_NONE
+  return kind === SYNC_INCREMENTAL ? SYNC_INCREMENTAL : SYNC_FULL
+}
+
 /**
  * What a ready server offers, for the page: which asks make sense (a key a server lacks gets no
  * menu entry) and the characters that start a completion or a signature help as they are typed.
@@ -470,9 +488,15 @@ class LspManager {
     doc.seq = seqOf(seq)
     const slot = this.slots.get(doc.language)
     if (slot && slot.server && slot.opened.has(doc.uri)) {
-      // The page's changes as they came (checked above), so the server sees a small edit, not the file.
-      const contentChanges = changes.map((c) => (c.range === undefined ? { text: c.text } : { range: range(c.range), text: c.text }))
-      slot.server.notify('textDocument/didChange', { textDocument: { uri: doc.uri, version: doc.version }, contentChanges })
+      const kind = syncKindOf(slot.server.capabilities)
+      // Incremental: the page's changes as they came (checked above), so the server sees a small
+      // edit, not the file. Full: the whole new text (a range fragment would become the file).
+      if (kind === SYNC_INCREMENTAL) {
+        const contentChanges = changes.map((c) => (c.range === undefined ? { text: c.text } : { range: range(c.range), text: c.text }))
+        slot.server.notify('textDocument/didChange', { textDocument: { uri: doc.uri, version: doc.version }, contentChanges })
+      } else if (kind === SYNC_FULL) {
+        slot.server.notify('textDocument/didChange', { textDocument: { uri: doc.uri, version: doc.version }, contentChanges: [{ text }] })
+      }
     }
     return true
   }
@@ -481,7 +505,8 @@ class LspManager {
     doc.text = text
     doc.version = this.nextVersion()
     const slot = this.slots.get(doc.language)
-    if (slot && slot.server && slot.opened.has(doc.uri)) {
+    // The whole text is right for Full and Incremental alike; a None server asked for no changes.
+    if (slot && slot.server && slot.opened.has(doc.uri) && syncKindOf(slot.server.capabilities) !== SYNC_NONE) {
       slot.server.notify('textDocument/didChange', { textDocument: { uri: doc.uri, version: doc.version }, contentChanges: [{ text }] })
     }
   }
@@ -1159,6 +1184,7 @@ module.exports = {
   ASKS,
   fitResult,
   applyChanges,
+  syncKindOf,
   MAX_DOC_CHARS,
   ANSWER_BUDGET,
 }

@@ -73,7 +73,8 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   both of you changed show Claude's version above yours with Keep mine, Take Claude's and Keep both, and nothing is
   saved until each is resolved (the tab's title shows ⚠ meanwhile). A file deleted on disk keeps its tab and text, with
   Save (recreate it) or Close. Binary, non-UTF-8 and files over 5 MB open read-only; a file over 16 MiB is not shown at
-  all (the tab says why).
+  all (the tab says why). A file that turns read-only while the tab has unsaved text keeps the text and stays unsaved
+  (closing asks; Reload drops it), and is saved once it is writable again.
 - "Open in micro" on a file tab: [micro](https://micro-editor.github.io) on the same file in a terminal overlay (settings
   `microPath`, `colorscheme`). `ccc edit <file>[:line[:col]]` opens the file's tab at that position, marked and not selected (an open tab gets the mark again; a missing or binary file is refused; micro on an app without page tabs). Needs micro on the login-shell PATH
   (`brew install micro`, `sudo pacman -S micro`, `sudo apt install micro`; a missing micro is reported with these

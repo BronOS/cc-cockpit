@@ -154,6 +154,22 @@ function serveLsp(tab, manager, log) {
     holder.post({ t: 'lsp-doc', path: rel, ...r })
   }
 
+  /**
+   * An ask the page stopped waiting for (its cancel, its deadline) that still changed files: an edit
+   * whose cancel came while a page applied its part, or one that finished just after the page gave
+   * up. The page showed "cancelled" or a timeout, so it is told what did change (`lsp-error`).
+   */
+  function lateEdit(m, r) {
+    const res = r && r.result
+    if (!res || typeof res !== 'object' || !(res.files > 0)) return
+    const what = typeof m.what === 'string' ? m.what : 'edit'
+    const message =
+      res.applied === true
+        ? `${what}: applied after the editor stopped waiting (${res.edits} change${res.edits === 1 ? '' : 's'} in ${res.files} file${res.files === 1 ? '' : 's'}); undo it if it should go`
+        : `${what}: ${res.failureReason || `${res.files} files were changed`}`
+    fail(typeof m.path === 'string' ? m.path : undefined, new Error(message))
+  }
+
   function ask(m) {
     const req = m.req
     if (typeof req !== 'string' && typeof req !== 'number') return fail(m.path, new Error('an ask needs a req'))
@@ -170,7 +186,7 @@ function serveLsp(tab, manager, log) {
     }
     Promise.resolve(p).then(
       (r) => {
-        if (asks.get(req) !== ctl) return
+        if (asks.get(req) !== ctl) return lateEdit(m, r)
         asks.delete(req)
         answer(r)
       },

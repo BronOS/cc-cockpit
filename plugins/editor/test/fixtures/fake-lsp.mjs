@@ -18,6 +18,7 @@
 //   --hang-init           never answers `initialize` (the host's initialize timeout)
 //   --exit-before-init    exits with code 3 on `initialize`, before any answer
 //   --stderr <text>       writes <text> and a newline to stderr at start (the crash message's tail)
+//   --sync <json>         declares this textDocumentSync (`1`, `{"change":1}`...; `omit` leaves it out)
 // The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
 // sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
 // open), code actions with an edit, a declared command (`fake.apply`, which asks
@@ -140,6 +141,9 @@ function handle(m) {
         executeCommandProvider: { commands: ['fake.apply', 'fake.other'] },
       }
       if (!flag('--no-hover')) capabilities.hoverProvider = true
+      const sync = value('--sync')
+      if (sync === 'omit') delete capabilities.textDocumentSync
+      else if (sync !== undefined) capabilities.textDocumentSync = JSON.parse(sync)
       return send({ id: m.id, result: { capabilities, serverInfo: { name: 'fake' } } })
     }
     case 'initialized': {
