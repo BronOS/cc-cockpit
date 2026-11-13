@@ -22,6 +22,10 @@
 // mine, Take Claude's and Keep both; the regions are tracked through edits (conflictField) and the
 // session hears how many are left.
 //
+// Claude's changes in the gutter (design-editor.md §4): changes.mjs asks the host for the file at git
+// HEAD and diffs it against the buffer; changes-editor.js draws the bars, the hover and the click that
+// opens the Reviewer's diff.
+//
 // Language servers (design-editor.md §3): lsp/client.mjs tells the host the buffer and asks it in
 // editor terms; lsp/editor.js draws the answers (diagnostics, hover, completion, signature help) and
 // runs the commands (F12, Shift+F12, F2, Mod+., Shift+Alt+F, Mod+Shift+O). Lists and the rename
@@ -50,6 +54,8 @@ import { lineChanges, keepBothText } from './merge.mjs'
 import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces } from './quick-open.mjs'
 import { createLspClient } from './lsp/client.mjs'
 import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
+import { createChanges } from './changes.mjs'
+import { createChangesGutter } from './changes-editor.js'
 
 /* global ccPanel */
 
@@ -334,6 +340,8 @@ function extensions(info, text) {
   const firstLine = text.slice(0, Math.min(text.length, 200)).split('\n', 1)[0]
   return [
     basicSetup,
+    // After the line numbers and the fold marks: the bar sits between them and the text.
+    changesUi.extension,
     keymap.of([
       indentWithTab,
       // Ctrl+S saves now; Ctrl+H opens search with its replace field (VS Code's keys; on macOS Cmd+H
@@ -351,6 +359,7 @@ function extensions(info, text) {
     EditorView.updateListener.of((u) => {
       // Every change reaches the language server, a reload's and a merge's too: it must see the buffer.
       if (u.docChanged) lsp.changed(lspChangesOf(u))
+      if (u.docChanged) changesUi.schedule(u.view)
       if (u.docChanged && !replacing) session.edited()
       const left = conflictsOf(u.state).length
       if (left !== conflictsOf(u.startState).length) session.conflictsLeft(left)
@@ -380,6 +389,7 @@ function load(text, info) {
     replacing = false
   }
   view.focus()
+  changesUi.recompute(view)
   // A whole new buffer (no changes to send): the language server gets all of it again.
   lsp.close()
   lsp.open(info.path, true)
@@ -405,6 +415,8 @@ function applyText(text, effects) {
 
 /** A reload or a clean merge: `text` instead of the buffer, applied as line edits (applyText). */
 function replace(text, info) {
+  // A disk change may be a checkout or a revert: HEAD's text is read again too.
+  changes.refresh()
   if (!view || (info && info.noText)) return load(text, { path: session.view().path, ...info })
   applyText(text, readOnlyCompartment.reconfigure(EditorState.readOnly.of(!!(info && info.readOnly))))
 }
@@ -525,6 +537,15 @@ const lsp = createLspClient({
   applyEdits: (edits) => applyEditsTo(view, edits),
   onStatus: drawLsp,
   onDiagnostics: (list) => showDiagnostics(view, list),
+})
+
+// ---- Claude's changes in the gutter ----
+
+const changesUi = createChangesGutter({ getBase: () => changes.base(), review: () => changes.review() })
+const changes = createChanges({
+  post: (m) => ccPanel.post(m),
+  onBase: () => changesUi.recompute(view),
+  onError: (message) => lspMessage(message, true),
 })
 
 /** Set while an `openFile` the language features sent is on its way: a refusal is said in the language bar. */
@@ -908,6 +929,7 @@ window.addEventListener(
 ccPanel.onMessage((m) => {
   if (search.receive(m)) return
   if (lsp.receive(m)) return
+  if (changes.receive(m)) return
   session.receive(m)
 })
 // Every new line: the first, a host restart, a browser view's reconnect, a relay resync. The page
@@ -915,6 +937,7 @@ ccPanel.onMessage((m) => {
 // a search still waiting for its answer is asked again, and the language server gets the buffer).
 ccPanel.onConnect(() => {
   lsp.connect()
+  changes.connect()
   session.connect()
   search.connect()
   const v = session.view()
@@ -940,9 +963,13 @@ $('micro').addEventListener('click', () => {
 
 // Focus leaving the frame (another tab, another window, the shell) is the autosave's "focus loss".
 window.addEventListener('blur', () => session.blur())
-window.addEventListener('focus', () => session.focus())
+window.addEventListener('focus', () => {
+  session.focus()
+  changes.focus()
+})
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') session.blur()
+  else changes.focus()
 })
 
 if (ccPanel.theme && ccPanel.theme.onChange) {

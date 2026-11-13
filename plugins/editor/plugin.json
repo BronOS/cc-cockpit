@@ -81,5 +81,5 @@
     ],
     "skills": [{ "id": "editor", "dir": "skills/editor" }]
   },
-  "services": { "provides": { "editor": 1 } }
+  "services": { "provides": { "editor": 1 }, "uses": { "reviewer": 1 } }
 }

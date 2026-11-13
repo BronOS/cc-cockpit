@@ -1,0 +1,203 @@
+'use strict'
+// Claude's changes in the gutter, the host's half (design-editor.md §4 "Claude's changes in the
+// gutter"): the file as git `HEAD` has it, read through ctx.processes.spawn with the argv
+//
+//   git cat-file blob HEAD:./<path>
+//
+// run in the project folder. `./` makes the path relative to that folder (it may be a subfolder of
+// the repository), and the whole `HEAD:./<path>` is ONE argument that starts with `HEAD`, so a path
+// that begins with `-` (or holds a `:`, a space, a newline) can never be an option or another
+// revision. Only the tab's own path (its params, put there by this plugin) is ever used; the page
+// asks "the base of my file" and names nothing. `cat-file blob` prints the stored bytes: no
+// textconv, no filter, no hook, no pager, and it never writes (no index refresh, no lock).
+//
+// Not a repository, no commit yet, git not installed, a file HEAD does not have (untracked, new in
+// the index, ignored) or one it has as a link, a binary or too large blob, bytes that are not UTF-8:
+// all the same answer, `has: false`, and the page draws no marks. The page does the line diff (it
+// holds the buffer); this side only hands over the text the way the page sees a file: BOM off, CRLF
+// as LF (files.decodeBytes), so a Windows file or a core.autocrlf checkout does not show as changed.
+//
+// Protocol (page <-> host, beside lib/files.js's):
+//   page -> host  { t: 'git-base', req }                  the file's text at HEAD
+//   host -> page  { t: 'git-base', req, has, part?, parts?, text? }   has: false: no marks; else in parts under the message cap
+//   page -> host  { t: 'git-review' }                     a click on a mark: the Reviewer's diff of this file
+//   host -> page  { t: 'git-review-error', message }      it could not be opened (no Reviewer, the overlay refused)
+// One read per tab instance: a new one kills the one before. At most MAX_GIT_PROCESSES git children
+// for the whole plugin (they share ctx.processes' per-plugin cap of 16 with the language servers and rg).
+
+const fs = require('node:fs')
+const path = require('node:path')
+const files = require('./files.js')
+
+/** A blob over this many bytes gets no marks: the page diffs it on every pause in typing, and a 5 MB+ file is read-only there anyway. */
+const MAX_BASE_BYTES = 2 * 1024 * 1024
+/** git is killed after this long (a network filesystem, a huge repository's cold object store). */
+const GIT_TIMEOUT_MS = 10 * 1000
+/** A NUL in the first this-many bytes makes a blob binary (git's heuristic, as files.js). */
+const BINARY_SNIFF_BYTES = 8000
+/** At most this many git children of this plugin at once, every tab instance together. */
+const MAX_GIT_PROCESSES = 2
+
+/** The argv for the file at `rel` (project-relative, as the tab's params hold it). */
+function blobArgv(rel, bin = 'git') {
+  if (typeof rel !== 'string' || rel === '' || rel.includes('\0')) throw new Error('no file')
+  // The tab's params are the plugin's own, but a saved record outlives this code: never a path that leaves the folder.
+  if (path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) throw new Error('not a project path')
+  return [bin, 'cat-file', 'blob', `HEAD:./${rel}`]
+}
+
+/** The git slots of this plugin: the module is loaded once per plugin host, so every tab shares them. */
+const pluginSlots = { used: 0, max: MAX_GIT_PROCESSES }
+
+/**
+ * Reads `rel`'s text at HEAD: `{ result: Promise<{ text: string | null }>, cancel }`. `text` is null
+ * for every case that means "no marks" (see the top); the promise rejects only when nothing could be
+ * asked at all (the per-plugin process cap, a cwd that is not a directory).
+ */
+function readBase(spawn, cwd, rel, opts = {}) {
+  const slots = opts.slots || pluginSlots
+  const none = { result: Promise.resolve({ text: null }), cancel() {} }
+  let argv
+  try {
+    argv = blobArgv(rel, opts.bin)
+  } catch {
+    return none
+  }
+  // A tracked link: HEAD has the link's target path as text, the page shows the target's content.
+  // A file gone from disk (deleted under an open tab) is not a link: its buffer is still compared with HEAD.
+  try {
+    if (fs.lstatSync(path.join(cwd, rel)).isSymbolicLink()) return none
+  } catch {
+    // Not there (or unreadable): git says what HEAD has.
+  }
+  if (slots.used >= slots.max) return { result: Promise.reject(new Error('git is busy; try again in a moment')), cancel() {} }
+  let child
+  try {
+    child = spawn(argv, { cwd })
+  } catch (e) {
+    // "cannot run" (ENOENT, EACCES: ctx.processes' own words) is git missing: no marks, not an error.
+    if (e && typeof e.message === 'string' && e.message.includes('cannot run')) return none
+    return { result: Promise.reject(e instanceof Error ? e : new Error(String(e))), cancel() {} }
+  }
+  slots.used++
+  const chunks = []
+  let bytes = 0
+  let stopped = false
+  let over = false
+  let timedOut = false
+  const stop = () => {
+    if (stopped) return
+    stopped = true
+    try {
+      child.kill()
+    } catch {
+      // Already gone.
+    }
+  }
+  const result = new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      timedOut = true
+      stop()
+    }, opts.timeoutMs ?? GIT_TIMEOUT_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    child.onData((b) => {
+      if (stopped) return
+      bytes += b.length
+      if (bytes > (opts.maxBytes ?? MAX_BASE_BYTES)) {
+        over = true
+        stop()
+        return
+      }
+      chunks.push(Buffer.from(b.buffer, b.byteOffset, b.byteLength))
+    })
+    // git's complaint (not a repository, not in HEAD) says nothing the page needs; drained, not kept.
+    if (typeof child.onStderr === 'function') child.onStderr(() => {})
+    let exited = false
+    child.onExit(({ code }) => {
+      // Once, whatever the stream says: a slot given back twice would let a third git in.
+      if (exited) return
+      exited = true
+      slots.used--
+      clearTimeout(timer)
+      if (code !== 0 || over || timedOut || stopped) return resolve({ text: null })
+      resolve({ text: textOf(Buffer.concat(chunks)) })
+    })
+  })
+  try {
+    if (typeof child.end === 'function') child.end()
+  } catch {
+    // The child may already be gone.
+  }
+  return { result, cancel: stop }
+}
+
+/** The blob as the page sees a file (BOM off, LF), or null for a binary or non-UTF-8 one. */
+function textOf(buf) {
+  if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return null
+  const d = files.decodeBytes(buf)
+  return d.encoding ? d.text : null
+}
+
+/**
+ * Serves `git-base` and `git-review` for one tab instance. `rel` is the tab's own project-relative
+ * path (undefined for a tab with none: a file outside the project), `review(rel)` opens the Reviewer's
+ * diff (a promise). Returns `handle(m)`: true when it took the message.
+ */
+function serveGit(tab, { spawn, root, rel, review, log, bin, slots }) {
+  let running = null
+  let closed = false
+  const post = (m) => {
+    if (!closed) tab.post(m)
+  }
+  const cancel = () => {
+    if (!running) return
+    running.cancelled = true
+    running.cancel()
+    running = null
+  }
+  tab.onClose(() => {
+    closed = true
+    cancel()
+  })
+
+  return function handle(m) {
+    if (!m || typeof m !== 'object') return false
+    if (m.t === 'git-base') {
+      const req = m.req
+      if (typeof spawn !== 'function' || typeof rel !== 'string') {
+        post({ t: 'git-base', req, has: false })
+        return true
+      }
+      cancel()
+      const job = readBase(spawn, root, rel, { bin, slots })
+      running = job
+      job.result.then(
+        ({ text }) => {
+          // Superseded or cancelled: the page asked again since, only the newest answer counts.
+          if (running !== job || job.cancelled) return
+          running = null
+          if (text === null) return post({ t: 'git-base', req, has: false })
+          const parts = files.chunkText(text)
+          parts.forEach((part, i) => post({ t: 'git-base', req, has: true, part: i, parts: parts.length, text: part }))
+        },
+        (e) => {
+          if (running !== job || job.cancelled) return
+          running = null
+          if (log) log.warn(`git base: ${e.message}`)
+          post({ t: 'git-base', req, has: false })
+        }
+      )
+      return true
+    }
+    if (m.t === 'git-review') {
+      if (typeof review !== 'function' || typeof rel !== 'string') return true
+      Promise.resolve()
+        .then(() => review(rel))
+        .catch((e) => post({ t: 'git-review-error', message: `Could not open the diff: ${e && e.message ? e.message : e}` }))
+      return true
+    }
+    return false
+  }
+}
+
+module.exports = { MAX_BASE_BYTES, MAX_GIT_PROCESSES, blobArgv, readBase, serveGit }

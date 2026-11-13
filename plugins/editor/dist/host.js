@@ -21,6 +21,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const files = require('./lib/files.js')
 const search = require('./lib/search.js')
+const git = require('./lib/git.js')
 const { LspManager } = require('./lib/lsp/manager.js')
 const { serveLsp } = require('./lib/lsp/serve.js')
 
@@ -255,6 +256,14 @@ exports.activate = (ctx) => {
     return rel
   }
 
+  // The Reviewer's diff of a file (a click on Claude's changes in the gutter): the public `reviewer`
+  // service (v1) `open(path)`, the project's own pick, so a replaced Reviewer answers it.
+  // Looked up at the click, not at activation: a click is rare, and the service resolves on every call.
+  async function openReview(rel) {
+    if (typeof ctx.services.use !== 'function') throw new Error('this app has no plugin services')
+    await ctx.services.use('reviewer').open(rel)
+  }
+
   // ---- file tabs ----
   // `contributes.tabs` type `file`: the host reads, saves by compare-and-swap and watches
   // (lib/files.js); the page (dist/pages/file.html) keeps its base and merges (design-editor.md §2).
@@ -408,6 +417,9 @@ exports.activate = (ctx) => {
       files.serveFileTab(mine, tab, ctx.log)
       const searching = search.serveSearch(tab, { spawn, root: ctx.projectDir, log: ctx.log })
       const speaking = serveLsp(tab, lsp, ctx.log)
+      // Claude's changes in the gutter: the tab's own file at git HEAD, and the Reviewer's diff on a click.
+      const tabPath = tab.params && typeof tab.params === 'object' && typeof tab.params.path === 'string' ? tab.params.path : undefined
+      const gitting = git.serveGit(tab, { spawn, root: ctx.projectDir, rel: tabPath, review: openReview, log: ctx.log })
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -417,6 +429,7 @@ exports.activate = (ctx) => {
         if (!m || typeof m !== 'object') return
         if (searching(m)) return
         if (speaking(m)) return
+        if (gitting(m)) return
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {

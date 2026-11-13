@@ -108,6 +108,65 @@ main .cm-line.cc-flash {
     background-color: color-mix(in srgb, var(--cc-accent) 15%, transparent);
   }
 }
+/* Claude's changes in the gutter (changes-editor.js): a bar per line that differs from git HEAD, green
+   added, blue changed, a red notch where lines were removed; the old lines in a popover on hover. */
+.cm-changes-gutter {
+  cursor: pointer;
+}
+.cm-changes-gutter .cm-gutterElement {
+  padding: 0 2px;
+}
+.cc-change {
+  width: 3px;
+  height: 100%;
+  min-height: 1em;
+}
+.cc-change-added {
+  background: var(--cc-status-waiting);
+}
+.cc-change-modified {
+  background: var(--cc-status-working);
+}
+.cc-change-deleted {
+  width: 0;
+  height: 0;
+  min-height: 0;
+  border-left: 6px solid var(--cc-status-ended);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+.cc-change-deleted.cc-change-above {
+  margin-top: -4px;
+}
+.cc-change-deleted.cc-change-below {
+  margin-top: calc(1.5em - 4px);
+}
+.cc-change-pop {
+  position: fixed;
+  z-index: 20;
+  max-width: min(640px, calc(100vw - 16px));
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  background: var(--cc-bg-menu);
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-m, 6px);
+  box-shadow: 0 4px 16px var(--cc-shadow);
+  pointer-events: none;
+}
+.cc-change-pop-head,
+.cc-change-pop-more,
+.cc-change-pop-tip {
+  font-size: var(--cc-text-s, 11px);
+  color: var(--cc-fg-muted);
+}
+.cc-change-pop-old {
+  margin: var(--cc-space-1, 4px) 0;
+  font: var(--cc-text-m, 13px) var(--cc-font-mono, monospace);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: color-mix(in srgb, var(--cc-status-ended) 10%, transparent);
+}
 /* Quick open and find in files: a palette over the editor, under the header. */
 .palette {
   position: fixed;

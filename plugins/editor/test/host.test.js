@@ -702,3 +702,48 @@ test('plain click (ctx.files.onOpen, the project picked the editor): a text file
   host.activate(g.ctx)
   assert.equal(none.length, 0)
 })
+
+test("Claude's changes: a file tab answers git-base from its own path and git-review through the reviewer service", async () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const cp = require('node:child_process')
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+  const run = (...a) => cp.execFileSync('git', a, { cwd: f.ctx.projectDir, env, stdio: 'pipe' })
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'one\n')
+  run('init', '-q')
+  run('add', '-A')
+  run('commit', '-q', '-m', 'x')
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'two\n')
+  const used = []
+  f.ctx.services.use = (name) => ({ open: async (p) => void used.push([name, p]) })
+  f.ctx.processes = {
+    spawn: (argv, { cwd }) => {
+      const c = cp.spawn(argv[0], argv.slice(1), { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
+      return {
+        pid: c.pid,
+        onData: (fn) => c.stdout.on('data', fn),
+        onStderr: (fn) => c.stderr.on('data', fn),
+        onExit: (fn) => c.on('close', (code, signal) => fn({ code, signal })),
+        end: () => c.stdin.end(),
+        kill: () => c.kill(),
+      }
+    },
+  }
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('a.txt')
+  const view = t.connect(t.open[0].id)
+  // The page names no path: the tab's own is used, whatever a message says.
+  view.send({ t: 'git-base', req: 5, path: 'other.txt' })
+  for (let i = 0; i < 100 && !view.posted.some((m) => m.t === 'git-base'); i++) await new Promise((r) => setTimeout(r, 20))
+  assert.deepEqual(view.posted.filter((m) => m.t === 'git-base'), [{ t: 'git-base', req: 5, has: true, part: 0, parts: 1, text: 'one\n' }])
+  view.send({ t: 'git-review', path: 'other.txt' })
+  await new Promise((r) => setTimeout(r, 20))
+  assert.deepEqual(used, [['reviewer', 'a.txt']])
+  // The manifest declares the reviewer service this click needs.
+  assert.deepEqual(require('../plugin.json').services.uses, { reviewer: 1 })
+  await host.deactivate()
+})

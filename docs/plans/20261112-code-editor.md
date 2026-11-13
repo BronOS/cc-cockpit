@@ -276,11 +276,11 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Create: `plugins/editor/src/page/changes.ts`, `plugins/editor/dist/lib/git.js`
 - Create: `plugins/editor/test/git.test.js`
 
-- [ ] host reads `git cat-file blob HEAD:<path>` (argv); page marks lines changed vs `HEAD`; hover shows old lines;
+- [x] host reads `git cat-file blob HEAD:<path>` (argv); page marks lines changed vs `HEAD`; hover shows old lines;
   click opens the Reviewer diff
-- [ ] not a repo or untracked: no marks
-- [ ] write tests: tracked, untracked, no repo, a path starting with `-`
-- [ ] run tests - must pass before next task
+- [x] not a repo or untracked: no marks
+- [x] write tests: tracked, untracked, no repo, a path starting with `-`
+- [x] run tests - must pass before next task
 
 ### Task 15: Ask Claude in the editor [model: sonnet]
 

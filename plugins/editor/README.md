@@ -25,6 +25,10 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   Rename, format and code actions are applied by the host: an open file in its tab (undo works, autosave saves it),
   any other file by the same compare-and-swap save; an edit that would create, rename or delete a file, or change one
   outside the project, is refused whole. A missing server leaves highlighting with its install command on the tab.
+- Claude's changes in the gutter: a bar beside each line that differs from git `HEAD` (green added, blue changed, a red
+  notch where lines were removed); hover shows the old lines, a click opens the Reviewer's diff (the `reviewer` service,
+  so the plugin uses it). The host reads `git cat-file blob HEAD:./<file>` (no shell, one argument); not a repository,
+  untracked, binary, a link or git missing: no marks.
 - A plain click on a file (the Sessions panel's changed files, the Files tree) opens the Reviewer's view unless the
   project picks "Editor (a file tab)" in Settings > This Project, "Plugin used to open files" (the manifest's
   `contributes.openFile` with `whenPicked: true`); then it opens the file's tab, and a binary file the built-in viewer.
