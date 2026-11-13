@@ -22,6 +22,7 @@
 //   --apply-delay <ms>    fake.apply waits this long before it asks workspace/applyEdit (a command
 //                         still running: the concurrency and cancel tests)
 //   --action-with-command code actions also offer one with an edit to the file and a fake.apply command
+//                         (on src/b.ts), and one whose fake.apply names the file and src/b.ts
 //   --hang-command        never answers fake.other, a cancel of it neither (a wedged command: Restart)
 // The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
 // sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
@@ -117,7 +118,10 @@ function handle(m) {
           { title: 'Run undeclared', command: { title: 'x', command: 'fake.undeclared' } },
           { title: 'Resolve me', kind: 'refactor', data: { n: 1 } },
           ...(flag('--action-with-command')
-            ? [{ title: 'Header then apply', edit: { changes: { [uri]: [{ range: range(0, 0, 0, 0), newText: '// header\n' }] } }, command: { title: 'apply', command: 'fake.apply', arguments: [bUri()] } }]
+            ? [
+                { title: 'Header then apply', edit: { changes: { [uri]: [{ range: range(0, 0, 0, 0), newText: '// header\n' }] } }, command: { title: 'apply', command: 'fake.apply', arguments: [bUri()] } },
+                { title: 'Header then apply both', edit: { changes: { [uri]: [{ range: range(0, 0, 0, 0), newText: '// header\n' }] } }, command: { title: 'apply', command: 'fake.apply', arguments: [uri, bUri()] } },
+              ]
             : []),
         ],
       })

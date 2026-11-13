@@ -173,17 +173,21 @@ Everything is checked before the first file is touched; a cancel (the page gave 
 so one that lands while a page applies its part stops before the next file, and the page is told which files changed.
 A code action's command runs on its server one at a time: a server's `workspace/applyEdit` names no command, so it is
 taken only while exactly one command the host ran is working there, checked against that command's own snapshot (the
-documents when its code action was offered, the text the server built it on; after the action's own edit, the documents
-right after that edit) and stopped with it (the page's cancel, the command's failure or deadline). A second command
+documents when its code action was offered, the text the server built it on; after the action's own edit, only the files
+that edit changed advance, to the versions it produced, so typing in another file meanwhile still refuses the command's
+edits there) and stopped with it (the page's cancel, the command's failure or deadline). A second command
 on a busy server is refused; a command the host stopped waiting for holds the server until the server answers it or
 exits, so its late edits are never taken as another command's. An action whose edit (or command edit) changed files
 before its command failed or was cancelled answers with the files counted, and a page that gave up is told.
 A page's typing before the host confirms it syncs the document (`lsp-doc`) is not lost: the page sends its whole text
 again once it does, so the host never holds a text that differs from the buffer while it takes changes.
 `didChange` follows the server's `textDocumentSync` (Incremental: the page's ranges; Full: the whole text; None or
-omitted: none). Positions count `\r\n`, a lone `\r` and `\n` as line breaks, as LSP does, in the page as in the host,
+omitted: none). Positions count `\r\n`, a lone `\r` and `\n` as line breaks, as LSP does, in the page as in the host
+(one rule: edits.js `offsetAt`, used by the host's copy of each document, its edits and its references' line text),
 though the page's editor splits lines on `\n` only (a `\r` stays in the text); a change that starts or ends between the
-`\r` and `\n` of a CRLF has no LSP position, so the page sends its whole text instead.
+`\r` and `\n` of a CRLF has no LSP position, so the page sends its whole text instead. A definition, reference or
+symbol in the same file goes to its LSP position; one in another file opens at its LSP line and column, which is off
+in a file that has a lone `\r` (that text is not in the page to convert against).
 
 Language servers run project tooling, as in any IDE; the docs say so. The page never names a binary or a setting a
 server would use to start one.

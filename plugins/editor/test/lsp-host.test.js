@@ -404,6 +404,64 @@ for (const [label, sync] of [['a Full server (the number)', '1'], ['a Full serve
   })
 }
 
+// The page's changes (convert.mjs contentChanges over a real CodeMirror buffer split on `\n` alone,
+// as the file tab splits it) through the host's copy of the document: one line-break rule (CRLF,
+// lone CR, LF) on both sides. The host's copy once counted LF alone, so an edit of `bb` in
+// `a\rbb\ncc` changed `cc` there, and a Full server got that text.
+for (const [label, sync] of [['Incremental', '2'], ['Full', '1']]) {
+  test(`mixed line breaks, ${label} sync: a page change lands in the host's copy where the page made it, and the server gets the page's text`, async (t) => {
+    const { contentChanges } = await import('../src/page/lsp/convert.mjs')
+    const { EditorState } = await import('@codemirror/state')
+    const state = (text) => EditorState.create({ doc: text, extensions: EditorState.lineSeparator.of('\n') })
+    const f = setup({ flags: ['--sync', sync] })
+    t.after(f.done)
+    const a = holder('a')
+    let st = state('a\rbb\ncc')
+    f.m.open(a, 'src/a.ts', st.doc.toString())
+    await until(() => f.got('textDocument/didOpen').length === 1, 5000, 'didOpen')
+    const doc = () => [...f.m.docs.values()][0]
+    // Each a page edit: [from, to, insert] over the buffer as it is then.
+    const steps = [
+      [[2, 4, 'XX']], // `bb`, after a lone \r: the reviewer's case
+      [[0, 1, 'A'], [5, 7, 'C\r\nD']], // two ranges, a CRLF inserted
+      [[8, 9, 'Q']], // just after a CRLF
+      [[1, 2, '']], // the lone \r removed: two LSP lines become one
+      [[0, 0, '\r\r'], [3, 3, '\r']], // lone \rs added at the start and inside a line
+    ]
+    let n = 0
+    for (const step of steps) {
+      const tr = st.update({ changes: step.map(([from, to, insert]) => ({ from, to, insert })) })
+      const changes = contentChanges(st.doc, tr.changes)
+      assert.ok(Array.isArray(changes), `step ${n}: nameable`)
+      assert.equal(f.m.change(a, 'src/a.ts', changes, ++n), true, `step ${n}: taken`)
+      st = tr.state
+      assert.equal(doc().text, st.doc.toString(), `step ${n}: the host's copy is the page's buffer`)
+      assert.equal(a.last('lsp-resync'), undefined)
+    }
+    await until(() => f.got('textDocument/didChange').length === steps.length, 5000, 'didChange')
+    const sent = f.got('textDocument/didChange').map((e) => e.in.params.contentChanges)
+    if (sync === '1') {
+      // Full: the host's copy is the text, so it must be the page's.
+      assert.deepEqual(sent[0], [{ text: 'a\rXX\ncc' }])
+      assert.deepEqual(sent.at(-1), [{ text: st.doc.toString() }])
+    } else {
+      // Incremental: the page's ranges as they came; applied in order they give the page's text.
+      assert.deepEqual(sent[0], [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 2 } }, text: 'XX' }])
+      assert.equal(sent.reduce((text, c) => applyChanges(text, c), 'a\rbb\ncc'), st.doc.toString())
+    }
+  })
+}
+
+test('applyChanges: `\\r\\n`, a lone `\\r` and `\\n` are all line breaks (as LSP and the page count them); a character past the end stops before the break', () => {
+  const r = (l1, c1, l2, c2) => ({ start: { line: l1, character: c1 }, end: { line: l2, character: c2 } })
+  assert.equal(applyChanges('a\rbb\ncc', [{ range: r(1, 0, 1, 2), text: 'XX' }]), 'a\rXX\ncc')
+  assert.equal(applyChanges('a\r\nbb\rcc', [{ range: r(2, 0, 2, 2), text: 'Y' }]), 'a\r\nbb\rY')
+  // Past the end of a CRLF line: before its \r, never between the \r and the \n.
+  assert.equal(applyChanges('ab\r\ncd', [{ range: r(0, 9, 0, 9), text: '!' }]), 'ab!\r\ncd')
+  assert.equal(applyChanges('ab\rcd', [{ range: r(0, 9, 1, 0), text: '' }]), 'abcd')
+  assert.throws(() => applyChanges('a\rb', [{ range: r(2, 0, 2, 0), text: 'x' }]), /outside/)
+})
+
 test('didChange to a None server (0, or textDocumentSync left out): nothing is sent, the host still tracks the text', async (t) => {
   for (const sync of ['0', 'omit']) {
     const f = setup({ flags: ['--sync', sync] })

@@ -168,11 +168,16 @@ function planEdit(edit, pathOfUri) {
  *   file whose document moved on since, or that was not open then, is not edited; nor is one that
  *   was open then and is closed now (the server's positions are for the page's buffer, not the disk).
  * - `since`: the time (ms) then: a disk file written after it is not edited.
+ * - `written`: real path -> the mtime (ms) an earlier edit of the same action left a disk file at
+ *   (a code action's edit before its command): such a file is checked against that, not `since`.
+ * - `produced`: filled in as files change, for a command run after this edit (manager.js
+ *   runCodeAction): `{ versions: Map uri -> the document's version right after its page applied
+ *   the edit, written: Map real -> the mtime the save left }`. Only the files this edit changed.
  * - `signal`: an AbortSignal; aborted before anything is applied, nothing is; aborted part way, the
  *   files after the one being applied are not touched and the answer says which ones changed.
  * Resolves the LSP ApplyWorkspaceEditResult plus counts: `{ applied, failureReason?, failedChange?, files, edits }`.
  */
-async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
+async function applyWorkspaceEdit(mgr, edit, { versions, since, written, produced, signal } = {}) {
   let plan
   try {
     plan = planEdit(edit, (uri) => mgr.pathOfUri(uri))
@@ -207,7 +212,7 @@ async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
       // The server thinks the file is open with a version, or the host saw it open when it asked:
       // it was closed since, and the disk is not the buffer the server saw.
       if (p.version !== null || (versions && versions.has(uri))) return refuse(p, 'was closed while the language server worked; try again')
-      if (since !== undefined && writtenSince(where.real, since)) return refuse(p, 'changed on disk while the language server worked; try again')
+      if (writtenSince(where.real, since, written)) return refuse(p, 'changed on disk while the language server worked; try again')
       disk.push({ ...p, uri, real: where.real })
     }
   }
@@ -220,7 +225,7 @@ async function applyWorkspaceEdit(mgr, edit, { versions, since, signal } = {}) {
     if (signal && signal.aborted) return cancelled(st, changed, steps.length, count)
     let r
     try {
-      r = st.doc ? await applyToPage(mgr, st) : applyToDisk(mgr, st, since)
+      r = st.doc ? await applyToPage(mgr, st, produced) : applyToDisk(mgr, st, since, written, produced)
     } catch (e) {
       return { applied: false, failureReason: `${st.rel}: ${e.message}`, failedChange: st.index, files: done, edits: count }
     }
@@ -258,17 +263,24 @@ function cancelled(next, changed, total, edits) {
   }
 }
 
-/** Whether the file at `real` was modified after `since` (ms); a file that is gone is not (its read says so). */
-function writtenSince(real, since) {
+/**
+ * Whether the file at `real` was modified after `since` (ms), or, when `written` holds it (an
+ * earlier edit of the same action saved it), since that save: its mtime is no longer the one the
+ * save left. No `since` and not in `written`: not checked. A file that is gone is not (its read says so).
+ */
+function writtenSince(real, since, written) {
+  const mine = written instanceof Map ? written.get(real) : undefined
+  if (mine === undefined && since === undefined) return false
   try {
-    return fs.statSync(real).mtimeMs > since
+    const m = fs.statSync(real).mtimeMs
+    return mine !== undefined ? m !== mine : m > since
   } catch {
     return false
   }
 }
 
 /** An open file: its document's syncing owner applies the edits to its buffer (lib/lsp/serve.js `lsp-edit`). */
-async function applyToPage(mgr, st) {
+async function applyToPage(mgr, st, produced) {
   const doc = st.doc
   // Earlier files waited on their pages: this document may have moved on meanwhile (its page typed,
   // a resync, another owner). The seq sent is the one checked, never the document's current one.
@@ -279,6 +291,11 @@ async function applyToPage(mgr, st) {
   applyTextEdits(doc.text, st.edits)
   const r = await st.owner.applyEdits(rel, st.edits, st.seq, PAGE_EDIT_TIMEOUT_MS)
   if (!r || r.applied !== true) throw new Error((r && typeof r.reason === 'string' && r.reason.slice(0, 300)) || 'the page did not apply the edit')
+  // The page posts its `lsp-change` for the edit before its `lsp-edit-done`, on one port, and this
+  // runs in the microtasks of that answer: the version now is the one the edit produced, before
+  // anything the person types next. Not recorded when the document went (a close, another owner):
+  // the snapshot keeps the old version, which no longer matches, and a command's edit is refused.
+  if (produced && produced.versions instanceof Map && mgr.docs.get(st.uri) === doc && doc.owner === st.owner) produced.versions.set(st.uri, doc.version)
   return null
 }
 
@@ -286,8 +303,8 @@ async function applyToPage(mgr, st) {
  * A file no page holds: read, edited, and written by compare-and-swap against what was read.
  * Returns `{ lost: true }` when the edit was written but another write into the old file was lost.
  */
-function applyToDisk(mgr, st, since) {
-  if (since !== undefined && writtenSince(st.real, since)) throw new Error('the file changed on disk while the language server worked; try again')
+function applyToDisk(mgr, st, since, written, produced) {
+  if (writtenSince(st.real, since, written)) throw new Error('the file changed on disk while the language server worked; try again')
   const now = files.readFile(mgr.root, st.rel)
   if (!now.exists) throw new Error('the file is gone')
   if (now.readOnly || typeof now.text !== 'string') throw new Error(`the file cannot be edited here (${now.why || 'read-only'})`)
@@ -296,7 +313,12 @@ function applyToDisk(mgr, st, since) {
   if (r.result !== 'saved' && !r.written) throw new Error('the file changed on disk meanwhile; try again')
   // The servers learn it like any project change (gopls and tsserver read unopened files from disk).
   mgr.noteChanged(now.real)
+  if (produced && produced.written instanceof Map && !r.written) {
+    try {
+      produced.written.set(st.real, fs.statSync(st.real).mtimeMs)
+    } catch {}
+  }
   return r.written ? { lost: true } : null
 }
 
-module.exports = { before, position, applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit }
+module.exports = { before, position, offsetAt, applyWorkspaceEdit, applyTextEdits, planEdit, sortEdits, textEdit }

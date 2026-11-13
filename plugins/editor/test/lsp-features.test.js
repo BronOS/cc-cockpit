@@ -1018,6 +1018,93 @@ test("runCodeAction: a command-only action checks the server's edits against the
   assert.equal(b.text, '// applied\nXconst b = 2\n')
 })
 
+test("runCodeAction: an edit then a command: only the files the action's own edit changed advance in the command's snapshot; typing elsewhere meanwhile still refuses the command's edits there", async (t) => {
+  const f = setup(['--action-with-command'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  const b = page(f.m, 'src/b.ts', 'const b = 2\n')
+  b.open()
+  await ready(f)
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }
+  const offer = async () => (await f.m.ask(a, 'codeActions', 'src/a.ts', { range })).result.find((x) => x.title === 'Header then apply both').id
+  // While the action's edit waits on a's page, the person types in b (not in the action's edit).
+  const id = await offer()
+  const apply = a.applyEdits
+  a.applyEdits = async (...args) => {
+    b.text = 'X' + b.text
+    b.seq++
+    f.m.change(b, 'src/b.ts', [{ text: b.text }], b.seq)
+    return apply(...args)
+  }
+  const r = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id })
+  a.applyEdits = apply
+  // The action's edit is in; the command's (on a and b) is refused as a whole: b moved on since the
+  // offer, and a snapshot taken after the edit would have let `// applied` land on the typed text.
+  assert.deepEqual([r.result.applied, r.result.files, r.result.edits], [true, 1, 1])
+  const ans = f.answers('workspace/applyEdit')
+  assert.equal(ans.length, 1)
+  assert.equal(ans[0].result.applied, false)
+  assert.match(ans[0].result.failureReason, /src\/b\.ts changed while the language server worked/)
+  assert.equal(a.text, '// header\nconst a = 1\n')
+  assert.equal(b.text, 'Xconst b = 2\n')
+  assert.equal(b.edits.length, 0)
+  // No typing: the file the edit changed passes at the version that edit produced, the other at the offer's.
+  const again = await offer()
+  const ok = await f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: again })
+  assert.deepEqual([ok.result.applied, ok.result.files, ok.result.edits], [true, 3, 3])
+  assert.equal(a.text, '// applied\n// header\n// header\nconst a = 1\n')
+  assert.equal(b.text, '// applied\nXconst b = 2\n')
+})
+
+test("applyWorkspaceEdit: `produced` records what the edit changed (a page's version right after it, a disk file's mtime after the save); `written` checks such a file against its own save, not `since`", async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  await sleep(20) // the files setup wrote are older than `since`, the saves below newer
+  const since = Date.now()
+  const versions = f.m.versions()
+  const insert = (text) => [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: text }]
+  const aUri = uriOf(f, 'src/a.ts')
+  const bUri = uriOf(f, 'src/b.ts')
+  const bReal = path.join(f.root, 'src/b.ts')
+  const produced = { versions: new Map(), written: new Map() }
+  const r = await applyWorkspaceEdit(f.m, { changes: { [aUri]: insert('// 1\n'), [bUri]: insert('// 1\n') } }, { versions, since, produced })
+  assert.equal(r.applied, true)
+  assert.deepEqual([...produced.versions], [[aUri, f.m.docs.get(aUri).version]])
+  assert.deepEqual([...produced.written], [[bReal, fs.statSync(bReal).mtimeMs]])
+  // The same action's next edit (its command's): b is newer than `since` but is the save's own.
+  const next = { changes: { [aUri]: insert('// 2\n'), [bUri]: insert('// 2\n') } }
+  const snapVersions = new Map([...versions, ...produced.versions])
+  // An offer just before that save (a coarse file clock may stamp it earlier than Date.now()).
+  const offered = produced.written.get(bReal) - 1
+  const without = await applyWorkspaceEdit(f.m, next, { versions: snapVersions, since: offered })
+  assert.equal(without.applied, false, 'without `written`, b is refused (newer than since)')
+  assert.equal((await applyWorkspaceEdit(f.m, next, { versions: snapVersions, since: offered, written: produced.written, produced })).applied, true)
+  assert.equal(f.disk('src/b.ts'), '// 2\n// 1\nconst b = 2\n')
+  assert.equal(a.text, '// 2\n// 1\nconst a = 1\n')
+  // Written again by someone else after that save: refused.
+  const later = new Date(Date.now() + 5000)
+  fs.utimesSync(bReal, later, later)
+  const third = await applyWorkspaceEdit(f.m, { changes: { [bUri]: insert('// 3\n') } }, { since: offered, written: produced.written })
+  assert.equal(third.applied, false)
+  assert.match(third.failureReason, /changed on disk/)
+})
+
+test('references line text: LSP lines, so `\\r\\n`, a lone `\\r` and `\\n` all break them, in an open document and in a file on disk', async (t) => {
+  const f = setup()
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'x\ry\nz')
+  a.open()
+  await ready(f)
+  fs.writeFileSync(path.join(f.root, 'src/b.ts'), 'p\rq\r\nr')
+  const at = (rel, line) => f.m.lineText(new Map(), uriOf(f, rel), rel, line)
+  assert.deepEqual(await Promise.all([0, 1, 2, 3].map((l) => at('src/a.ts', l))), ['x', 'y', 'z', undefined])
+  assert.deepEqual(await Promise.all([0, 1, 2, 3].map((l) => at('src/b.ts', l))), ['p', 'q', 'r', undefined])
+})
+
 test('commands: a stopped command the server never answers is told to the page (held) and Restart frees the server', async (t) => {
   const f = setup(['--hang-command'], { heldNoticeMs: 50 })
   t.after(f.done)

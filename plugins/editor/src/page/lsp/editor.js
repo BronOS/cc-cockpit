@@ -304,8 +304,8 @@ export function lspFeatures(deps) {
     }
     const locs = Array.isArray(r && r.result) ? r.result : []
     if (locs.length === 0) deps.message('No definition found.')
-    else if (locs.length === 1) go(locs[0])
-    else showLocations('Definitions', locs)
+    else if (locs.length === 1) go(view, locs[0])
+    else showLocations(view, 'Definitions', locs)
     return true
   }
 
@@ -321,18 +321,29 @@ export function lspFeatures(deps) {
     }
     const locs = Array.isArray(r && r.result) ? r.result : []
     if (locs.length === 0) deps.message('No references found.')
-    else showLocations(`${locs.length} reference${locs.length === 1 ? '' : 's'}${r.truncated ? ' (the first ones)' : ''}`, locs)
+    else showLocations(view, `${locs.length} reference${locs.length === 1 ? '' : 's'}${r.truncated ? ' (the first ones)' : ''}`, locs)
     return true
   }
 
-  function go(loc) {
-    const line = loc.range.start.line + 1
-    const col = loc.range.start.character + 1
-    if (loc.path !== undefined && loc.path === deps.path()) deps.goto(line, col)
-    else deps.openLocation({ ...loc, line, col })
+  /**
+   * The cursor to LSP position `pos` of this tab's buffer: through convert.mjs offsetOf, since an
+   * LSP line is not a CodeMirror line in a file with a lone `\r` (the page splits on `\n` only).
+   */
+  function gotoHere(view, pos) {
+    const doc = view.state.doc
+    const at = offsetOf(doc, pos)
+    const l = doc.lineAt(at)
+    deps.goto(l.number, at - l.from + 1)
   }
 
-  function showLocations(title, locs) {
+  function go(view, loc) {
+    if (loc.path !== undefined && loc.path === deps.path()) return gotoHere(view, loc.range.start)
+    // Another file's line, counted as LSP does: right unless that file has a lone `\r` (its text is
+    // not here to convert against).
+    deps.openLocation({ ...loc, line: loc.range.start.line + 1, col: loc.range.start.character + 1 })
+  }
+
+  function showLocations(view, title, locs) {
     deps.showList({
       placeholder: `${title}: type to filter`,
       items: locs.map((l) => {
@@ -345,7 +356,7 @@ export function lspFeatures(deps) {
           target: l,
         }
       }),
-      onPick: go,
+      onPick: (l) => go(view, l),
       empty: 'Nothing matches.',
     })
   }
@@ -445,7 +456,7 @@ export function lspFeatures(deps) {
     return true
   }
 
-  async function documentSymbols() {
+  async function documentSymbols(view) {
     if (!feature('symbols')) return deps.message('The language server lists no symbols for this file.'), true
     let r
     try {
@@ -459,7 +470,7 @@ export function lspFeatures(deps) {
     deps.showList({
       placeholder: 'Go to a symbol in this file',
       items: rows.map((s) => ({ label: s.name, indent: s.depth, detail: [s.kind, s.detail].filter(Boolean).join(' · '), filter: s.name, target: s })),
-      onPick: (s) => deps.goto(s.line + 1, s.character + 1),
+      onPick: (s) => gotoHere(view, { line: s.line, character: s.character }),
       empty: 'No symbol matches.',
     })
     return true

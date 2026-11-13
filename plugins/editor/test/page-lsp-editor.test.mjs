@@ -6,7 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EditorState } from '@codemirror/state'
 import { forEachDiagnostic } from '@codemirror/lint'
-import { applyEditsTo, showDiagnostics } from '../src/page/lsp/editor.js'
+import { applyEditsTo, showDiagnostics, lspFeatures } from '../src/page/lsp/editor.js'
 
 function fakeView(text, { readOnly = false } = {}) {
   const v = {
@@ -88,4 +88,32 @@ test('showDiagnostics: malformed entries are skipped; no view does nothing', () 
   showDiagnostics(v, [null, { message: 'no range' }, { range: { start: at(0, 0), end: at(0, 1) } }, { range: { start: at(0, 0), end: at(0, 1) }, message: 'ok' }])
   assert.deepEqual(diagnosticsOf(v.state).map((d) => d.message), ['ok'])
   assert.doesNotThrow(() => showDiagnostics(null, []))
+})
+
+test('lspFeatures: a definition or a symbol in this file goes to its LSP position, not to the CodeMirror line of that number (a lone \\r is an LSP break the buffer keeps inside a line)', async () => {
+  const range = { start: at(1, 1), end: at(1, 2) } // the second `b` of `a\rbb`: LSP line 1
+  const answers = {
+    definition: { result: [{ path: 'src/a.ts', range }] },
+    symbols: { result: [{ name: 'bb', kind: 13, range, selectionRange: range }] },
+  }
+  const gone = []
+  let list = null
+  const ui = lspFeatures({
+    client: { ready: () => true, features: () => ({ definition: true, symbols: true }), ask: async (what) => answers[what] },
+    path: () => 'src/a.ts',
+    goto: (line, col) => gone.push([line, col]),
+    openLocation: (loc) => gone.push(['open', loc.line, loc.col]),
+    showList: (spec) => (list = spec),
+    prompt() {},
+    message() {},
+  })
+  const view = { state: EditorState.create({ doc: 'a\rbb\ncc', extensions: EditorState.lineSeparator.of('\n') }), dispatch() {} }
+  await ui.goToDefinition(view)
+  await ui.documentSymbols(view)
+  list.onPick(list.items[0].target)
+  // Offset 3 is CodeMirror line 1, column 4; line 2 would be `cc`.
+  assert.deepEqual(gone, [
+    [1, 4],
+    [1, 4],
+  ])
 })

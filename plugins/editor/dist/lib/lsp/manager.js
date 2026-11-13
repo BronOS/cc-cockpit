@@ -24,7 +24,7 @@ const { pathToFileURL, fileURLToPath } = require('node:url')
 const files = require('../files.js')
 const servers = require('./servers.js')
 const { LspServer } = require('./server.js')
-const { applyWorkspaceEdit, before, position: editPosition } = require('./edits.js')
+const { applyWorkspaceEdit, before, offsetAt, position: editPosition } = require('./edits.js')
 
 /** A document over this many UTF-16 units gets no language server (highlighting only). */
 const MAX_DOC_CHARS = 2 * 1024 * 1024
@@ -93,20 +93,12 @@ function range(v) {
   return { start, end }
 }
 
-/** The UTF-16 offset of `pos` in `text`, or -1 when it is past the end. LF-only on purpose: the manager's mirror holds the page's own text, not a disk file's (edits.js offsetAt handles a disk file's CRLF and CR). (A character past a line's end is its end, as LSP says). */
-function offsetAt(text, pos) {
-  let at = 0
-  for (let l = 0; l < pos.line; l++) {
-    const nl = text.indexOf('\n', at)
-    if (nl < 0) return -1
-    at = nl + 1
-  }
-  let end = text.indexOf('\n', at)
-  if (end < 0) end = text.length
-  return Math.min(at + pos.character, end)
-}
-
-/** `text` with LSP content changes applied in order; throws on a range that is not in it. */
+/**
+ * `text` with LSP content changes applied in order; throws on a range that is not in it. Positions
+ * count `\r\n`, a lone `\r` and `\n` as line breaks (edits.js offsetAt, the one rule of the host,
+ * as the page's convert.mjs counts them): the page keeps a lone `\r` in its text, so a mirror
+ * counting `\n` alone put an edit of `bb` in `a\rbb\ncc` on `cc`, and a Full-sync server got that.
+ */
 function applyChanges(text, changes) {
   let out = text
   for (const c of changes) {
@@ -757,15 +749,11 @@ class LspManager {
       texts.set(rel, text)
     }
     if (typeof text !== 'string') return undefined
-    let at = 0
-    for (let i = 0; i < line; i++) {
-      const nl = text.indexOf('\n', at)
-      if (nl < 0) return undefined
-      at = nl + 1
-    }
-    let end = text.indexOf('\n', at)
-    if (end < 0) end = text.length
-    return text.slice(at, Math.min(end, at + MAX_LINE_TEXT_CHARS))
+    // LSP's line `line` (CRLF, lone CR and LF are breaks, edits.js offsetAt): a character past its
+    // end is its end, before its break.
+    const at = offsetAt(text, { line, character: 0 })
+    if (at < 0) return undefined
+    return text.slice(at, offsetAt(text, { line, character: MAX_LINE_TEXT_CHARS }))
   }
 
   /**
@@ -872,16 +860,22 @@ class LspManager {
     const busy = command && this.commandBusy(slot, srv)
     if (busy) throw new Error(busy)
     let applied = { applied: true, files: 0, edits: 0 }
+    // What the action's own edit changed: the open documents' versions right after their pages
+    // applied it, the disk files' mtimes after the save (edits.js `produced`).
+    const produced = { versions: new Map(), written: new Map() }
     if (action.edit) {
-      applied = await applyWorkspaceEdit(this, action.edit, { versions: entry.versions, since: entry.since, signal })
+      applied = await applyWorkspaceEdit(this, action.edit, { versions: entry.versions, since: entry.since, signal, produced })
       if (!applied.applied) return { result: applied }
     }
     if (command) {
       try {
         stop()
-        // After the action's own edit (checked against the offer above) the documents moved on by
-        // that edit, so the snapshot is taken now, at once after it; with no edit, the offer's.
-        const c = await this.executeCommand(slot, srv, command, signal, action.edit ? undefined : offered)
+        // The command was built on the offered text, moved on only by the action's own edit: the
+        // offer's snapshot with just the files that edit changed advanced to what it produced. Not a
+        // snapshot taken now: the person may have typed in another file while the edit waited on a
+        // page, and the command's edits there would pass against text they were not computed for.
+        const snapshot = { versions: new Map([...entry.versions, ...produced.versions]), since: entry.since, written: produced.written }
+        const c = await this.executeCommand(slot, srv, command, signal, snapshot)
         applied = { applied: true, files: applied.files + c.files, edits: applied.edits + c.edits }
       } catch (e) {
         // The edit is in (and the command's own edits so far): said with the files counted, so a
@@ -917,8 +911,9 @@ class LspManager {
    * `workspace/applyEdit` it makes while this runs is applied (serverApplyEdit) against the documents
    * as they were when it started, and stops with it: the page's cancel or the command's failure
    * stops its edits before their next file. Resolves `{ files, edits }` its edits changed; a failure
-   * throws with those counts as `changed`. `snapshot` ({ versions, since }) is the documents the
-   * command was built on (a code action's offer); omitted, they are taken now.
+   * throws with those counts as `changed`. `snapshot` ({ versions, since, written? }) is the
+   * documents the command was built on (a code action's offer, advanced by its own edit: `written`
+   * holds the disk files that edit saved, edits.js); omitted, they are taken now.
    */
   async executeCommand(slot, srv, cmd, signal, snapshot) {
     const caps = srv.capabilities || {}
@@ -931,7 +926,8 @@ class LspManager {
     // This command's own snapshot and stop, never shared with another command.
     const versions = snapshot && snapshot.versions instanceof Map ? snapshot.versions : this.versions()
     const since = snapshot && Number.isFinite(snapshot.since) ? snapshot.since : Date.now()
-    const run = { srv, versions, since, stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false, held: false, heldTimer: null }
+    const written = snapshot && snapshot.written instanceof Map ? snapshot.written : undefined
+    const run = { srv, versions, since, written, stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false, held: false, heldTimer: null }
     slot.command = run
     const onDone = () => {
       run.finished = true
@@ -981,7 +977,7 @@ class LspManager {
       return { applied: false, failureReason: "this editor applies a server's edit only while a command it ran is working" }
     }
     if (run.stop.signal.aborted) return { applied: false, failureReason: 'the command this edit belongs to was stopped' }
-    const p = applyWorkspaceEdit(this, edit, { versions: run.versions, since: run.since, signal: run.stop.signal })
+    const p = applyWorkspaceEdit(this, edit, { versions: run.versions, since: run.since, written: run.written, signal: run.stop.signal })
     run.inflight.add(p)
     let r
     try {
