@@ -186,6 +186,8 @@ test('a third-party open-file plugin replaces the reviewer through the pick, and
     // Plugin order (the project's enabledPlugins first, then the default-on ones), not built-in first.
     'Review (Open File Fixture)',
     'Reviewer (diff and notes) (Reviewer)',
+    // The editor offers itself as an opener too (`whenPicked`: only when the project picks it).
+    'Editor (a file tab) (Editor)',
     'Built-in viewer'
   ])
 
