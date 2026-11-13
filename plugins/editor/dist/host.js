@@ -253,6 +253,8 @@ exports.activate = (ctx) => {
    */
   const pendingGoto = new Map()
   const firstOpened = new Set()
+  /** `key\0value` -> the open of that file tab now running (showTab: one at a time per file). */
+  const opening = new Map()
   /**
    * The conflict marker (design-editor.md §2 "the tab shows a conflict marker"): the title starts
    * with it while a view's page holds a conflict (a merge to resolve, the file deleted on disk or no
@@ -348,6 +350,20 @@ exports.activate = (ctx) => {
    * one. Resolves `{ tabId }`.
    */
   async function showTab(key, value, opts) {
+    // One at a time per file: two opens at once (a double click, `ccc edit` beside a click) both saw
+    // no tab in main's list and each opened one. The second waits for the first, then finds its tab
+    // and focuses it (or moves its line) like any later open.
+    const k = `${key}\0${value}`
+    const run = (opening.get(k) || Promise.resolve()).catch(() => {}).then(() => showTabNow(key, value, opts))
+    opening.set(k, run)
+    try {
+      return await run
+    } finally {
+      if (opening.get(k) === run) opening.delete(k)
+    }
+  }
+
+  async function showTabNow(key, value, opts) {
     const line = position(opts.line)
     const col = line === undefined ? undefined : position(opts.col)
     const list = await ctx.tabs.list('file')

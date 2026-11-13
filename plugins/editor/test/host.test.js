@@ -904,3 +904,29 @@ test('Review notes: a file tab reads and adds notes through the reviewer service
   assert.deepEqual(require('../plugin.json').services.uses, { reviewer: 1 })
   await host.deactivate()
 })
+
+test('open routing: two opens of one file at once make one tab; the second focuses it and moves its line', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  // Main's answers take a while: both opens read the list before either tab exists.
+  const { list, openPage } = f.ctx.tabs
+  const later = () => new Promise((resolve) => setTimeout(resolve, 5))
+  f.ctx.tabs.list = async (type) => (await later(), list(type))
+  f.ctx.tabs.openPage = async (...a) => (await later(), openPage(...a))
+  host.activate(f.ctx)
+  const both = await Promise.all([f.provided.editor.open('src/a.ts'), f.provided.editor.open('./src/a.ts', { line: 3 }), f.provided.editor.open('src/a.ts')])
+  assert.deepEqual(both, [{ opened: true }, { opened: true }, { opened: true }])
+  assert.equal(t.open.length, 1)
+  assert.equal(t.calls.filter((c) => c[0] === 'openPage').length, 1)
+  assert.equal(t.calls.filter((c) => c[0] === 'focus').length, 2)
+  // The second open's line waits for the page (no frame connected yet).
+  const view = t.connect(t.open[0].id)
+  view.send({ t: 'open', first: true, req: 1 })
+  assert.deepEqual(view.posted.filter((m) => m.t === 'goto'), [{ t: 'goto', line: 3 }])
+  // Another file at the same time is not held up by it.
+  await Promise.all([f.provided.editor.open('src/b.ts'), f.provided.editor.open('src/c.ts')])
+  assert.equal(t.open.length, 3)
+  host.deactivate()
+})

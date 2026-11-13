@@ -349,12 +349,27 @@ function extensions(info, text) {
     lspUi.extensions,
     chat.extension,
     EditorView.updateListener.of((u) => {
-      // Every change reaches the language server, a reload's and a merge's too: it must see the buffer.
-      if (u.docChanged) lsp.changed(lspChangesOf(u))
-      if (u.docChanged) changesUi.schedule(u.view)
+      // The session's bookkeeping first, and nothing after it can undo it: CodeMirror stops this
+      // listener at a throw, and a throw before `edited` left a pasted buffer marked clean, so a
+      // close or an eviction dropped it without a word (a paste over 1 MiB made an lsp-change past
+      // the port's cap). The rest is best effort, each step on its own.
       if (u.docChanged && !replacing) session.edited()
       const left = conflictsOf(u.state).length
       if (left !== conflictsOf(u.startState).length) session.conflictsLeft(left)
+      if (!u.docChanged) return
+      // Every change reaches the language server, a reload's and a merge's too: it must see the buffer.
+      // client.mjs never throws on a failed post; a conversion that throws sends the whole text.
+      try {
+        lsp.changed(lspChangesOf(u))
+      } catch (e) {
+        console.error('editor: language server sync', e)
+        try {
+          lsp.changed(null)
+        } catch {
+          // Nothing more to do here: the next change or a resync sends the text.
+        }
+      }
+      changesUi.schedule(u.view)
     }),
   ]
 }

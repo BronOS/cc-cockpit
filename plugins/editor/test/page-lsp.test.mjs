@@ -459,3 +459,60 @@ test('client: close tells the host, clears the diagnostics and fails what waited
   k.c.open('src/a.ts', true)
   assert.equal(k.last('lsp-open').seq, 2)
 })
+
+test('client: a change too large for one port message (a big paste, thousands of cursors) goes as the whole text in parts under the cap', () => {
+  const k = readyClient()
+  // The SDK's post throws past 1 MiB (src/sdk/panel-core.ts): the fake does too.
+  const cap = 1024 * 1024
+  k.ui.post = ((push) => (m) => {
+    if (JSON.stringify(m).length > cap) throw new RangeError('post: message exceeds the cap')
+    push(m)
+  })(k.ui.post)
+  const seq = k.last('lsp-open').seq
+  const paste = '"\u0001'.repeat(300 * 1024)
+  k.ui.text = 'const a = 1\n' + paste
+  assert.doesNotThrow(() => k.c.changed([{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: 0 } }, text: paste }]))
+  assert.equal(k.last('lsp-change'), undefined, 'no lsp-change at all')
+  const opens = k.posts.filter((p) => p.t === 'lsp-open' && p.seq === seq + 1)
+  assert.ok(opens.length > 1, 'the whole text, in parts')
+  assert.equal(opens.map((p) => p.text).join(''), k.ui.text)
+  for (const p of k.posts) assert.ok(JSON.stringify(p).length <= cap)
+  // Many changes at once (the host takes at most 1000 per message): the whole text too.
+  const many = Array.from({ length: 1001 }, () => ({ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, text: 'x' }))
+  k.c.changed(many)
+  assert.equal(k.last('lsp-change'), undefined)
+  assert.equal(k.last('lsp-open').seq, seq + 2)
+  // A small change after it: incremental again.
+  k.c.changed([{ text: 'y' }])
+  assert.equal(k.last('lsp-change').seq, seq + 3)
+})
+
+test('client: a post that throws never throws into the editor update; the next change sends the whole text', () => {
+  const k = readyClient()
+  const seq = k.last('lsp-open').seq
+  const push = k.ui.post
+  k.ui.post = () => {
+    throw new Error('the port is closed')
+  }
+  assert.doesNotThrow(() => k.c.changed([{ text: 'a' }]))
+  k.ui.post = push
+  // The host never got seq+1: not an incremental change on top of a text it does not have.
+  k.c.changed([{ text: 'b' }])
+  assert.equal(k.last('lsp-change'), undefined)
+  assert.equal(k.last('lsp-open').seq, seq + 2)
+  k.c.changed([{ text: 'c' }])
+  assert.equal(k.last('lsp-change').seq, seq + 3)
+})
+
+test('file.js: the update listener marks the buffer edited before any language server work (a throw there must not leave it clean)', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const src = await readFile(new URL('../src/page/file.js', import.meta.url), 'utf8')
+  const at = src.indexOf('EditorView.updateListener.of((u) => {')
+  assert.ok(at > 0)
+  const body = src.slice(at, src.indexOf('\n    }),', at))
+  const edited = body.indexOf('session.edited()')
+  const lsp = body.indexOf('lsp.changed(')
+  assert.ok(edited > 0 && lsp > 0)
+  assert.ok(edited < lsp, 'session.edited() comes first')
+  assert.ok(/try \{\s*lsp\.changed\(/.test(body), 'the language server sync is guarded')
+})

@@ -191,7 +191,10 @@ again once it does, so the host never holds a text that differs from the buffer 
 omitted: none). Positions count `\r\n`, a lone `\r` and `\n` as line breaks, as LSP does, in the page as in the host
 (one rule: edits.js `offsetAt`, used by the host's copy of each document, its edits and its references' line text),
 though the page's editor splits lines on `\n` only (a `\r` stays in the text); a change that starts or ends between the
-`\r` and `\n` of a CRLF has no LSP position, so the page sends its whole text instead. A definition, reference or
+`\r` and `\n` of a CRLF has no LSP position, so the page sends its whole text instead, as it does for a change too large for
+one port message (a paste over 128K characters, over 1000 changes) and after a post that failed; the buffer is marked
+edited before any of it, so a failed sync never leaves a pasted buffer looking clean. A completion's auto-import is
+taken only when nothing since the ask touched its range and no reload or merge came in between. A definition, reference or
 symbol in the same file goes to its LSP position; one in another file opens at its LSP line and column, which is off
 in a file that has a lone `\r` (that text is not in the page to convert against).
 
@@ -221,7 +224,8 @@ to start when the installed `claude --help` lacks any of these flags. The prompt
 and about 30 lines around it, as data (file text can carry injected instructions; with read-only tools and no MCP the
 worst is a wrong proposal). Answers stream as Markdown; follow-ups continue the same headless session; closing the
 popup ends it. A proposed change is a replacement for the selection, shown as an inline diff; the range is mapped
-through later edits, and a proposal whose original text no longer matches is dropped. Accept puts it in the buffer;
+through later edits, and a proposal whose original text no longer matches, or whose target was edited since the
+question was sent (an empty target typed into included), is dropped. Accept puts it in the buffer;
 Claude never writes. Model: app setting, default `sonnet`. These runs leave transcripts in `~/.claude` and count in
 Usage (documented).
 

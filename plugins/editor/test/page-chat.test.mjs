@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EditorState, Text } from '@codemirror/state'
 import { chatTarget, contextAround, fitNewline, mapTarget, proposalFits, proposalLines, MAX_TARGET_CHARS } from '../src/page/chat.mjs'
-import { createChatField, setTarget, setProposal, accepted } from '../src/page/chat-editor.js'
+import { createChatField, setTarget, setProposal, accepted, asked, touchesTarget } from '../src/page/chat-editor.js'
 import { markdownTree } from '../src/page/chat-markdown.mjs'
 
 const state = (doc, anchor, head = anchor, extensions = []) => EditorState.create({ doc, selection: { anchor, head }, extensions })
@@ -139,6 +139,52 @@ test('the field: accept puts the text in and makes it the target; reject and a n
   assert.equal(s.field(field).target, null)
   assert.equal(s.field(field).proposal, null)
   assert.equal(s.field(field).deco.size, 0)
+})
+
+test('the field: text typed at an empty target while Claude answers drops the proposal when it arrives', () => {
+  const { field, s: s0 } = withTarget('a\n\nb', 'a')
+  let s = s0.update({ effects: setTarget.of({ from: 2, to: 2 }) }).state
+  s = s.update({ effects: asked.of(null) }).state
+  // The person types `mine` there before the answer: the target's text is still ''.
+  s = s.update({ changes: { from: 2, insert: 'mine' } }).state
+  assert.equal(s.doc.sliceString(s.field(field).target.from, s.field(field).target.to), '')
+  s = s.update({ effects: propose('', 'theirs') }).state
+  assert.equal(s.field(field).proposal, null)
+  assert.equal(s.field(field).dropped, true)
+  // A new question resets it: the next answer is for the text as it is now.
+  s = s.update({ effects: asked.of(null) }).state
+  s = s.update({ effects: propose('', 'theirs') }).state
+  assert.equal(s.field(field).proposal.text, 'theirs')
+})
+
+test('the field: a non-empty target edited and put back while Claude answers drops the proposal too; an edit elsewhere or at its edge does not', () => {
+  const { field, s: s0, from } = withTarget('head\nold line\ntail', 'old line')
+  let s = s0.update({ effects: asked.of(null) }).state
+  s = s.update({ changes: { from: 0, insert: '>' } }).state
+  s = s.update({ changes: { from: from + 1 + 8, insert: '!' } }).state
+  s = s.update({ effects: propose('old line', 'new line') }).state
+  assert.equal(s.field(field).proposal.text, 'new line', 'edits outside and at the edge keep it')
+  s = s.update({ effects: asked.of(null) }).state
+  s = s.update({ changes: { from: from + 2, insert: 'X' } }).state
+  s = s.update({ changes: { from: from + 2, to: from + 3 } }).state
+  assert.equal(s.doc.sliceString(s.field(field).target.from, s.field(field).target.to), 'old line')
+  s = s.update({ effects: propose('old line', 'new line') }).state
+  assert.equal(s.field(field).proposal, null)
+  assert.equal(s.field(field).dropped, true)
+})
+
+test('touchesTarget: inserts at a non-empty target\'s edges are outside; at an empty one\'s position inside', () => {
+  const st = state('abcdef', 0, 0, [])
+  const ch = (spec) => st.update({ changes: spec }).changes
+  assert.equal(touchesTarget({ from: 2, to: 4 }, ch({ from: 2, insert: 'x' })), false)
+  assert.equal(touchesTarget({ from: 2, to: 4 }, ch({ from: 4, insert: 'x' })), false)
+  assert.equal(touchesTarget({ from: 2, to: 4 }, ch({ from: 3, insert: 'x' })), true)
+  assert.equal(touchesTarget({ from: 2, to: 4 }, ch({ from: 1, to: 3 })), true)
+  assert.equal(touchesTarget({ from: 2, to: 4 }, ch({ from: 0, to: 2 })), false)
+  assert.equal(touchesTarget({ from: 2, to: 2 }, ch({ from: 2, insert: 'x' })), true)
+  assert.equal(touchesTarget({ from: 2, to: 2 }, ch({ from: 1, to: 3 })), true)
+  assert.equal(touchesTarget({ from: 2, to: 2 }, ch({ from: 0, to: 2 })), false)
+  assert.equal(touchesTarget({ from: 2, to: 2 }, ch({ from: 4, insert: 'x' })), false)
 })
 
 test('markdownTree: blocks and inline marks as a tree, raw HTML as text, links not followed', () => {

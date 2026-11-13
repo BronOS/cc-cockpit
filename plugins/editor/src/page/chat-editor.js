@@ -22,6 +22,28 @@ export const setTarget = StateEffect.define()
 export const setProposal = StateEffect.define()
 /** The proposal went into the buffer: the target is now its text `{ from, to }`. */
 export const accepted = StateEffect.define()
+/** A question about the target went to Claude: an edit to the target from here on makes its answer's proposal stale. */
+export const asked = StateEffect.define()
+
+/**
+ * Whether `changes` edit the target (in the coordinates before them). A non-empty target: a change
+ * overlapping it or an insert strictly inside (text typed at its edges stays outside, mapTarget). An
+ * empty one: an insert at its position or a change across it; its text stays '' whatever is typed
+ * there (mapTarget keeps the edges out), so the text alone can never tell.
+ */
+export function touchesTarget(target, changes) {
+  let hit = false
+  changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    if (hit) return
+    if (target.from === target.to) {
+      const p = target.from
+      hit = (fromA < p && toA > p) || (fromA <= p && toA >= p && inserted.length > 0)
+    } else {
+      hit = fromA < target.to && toA > target.from
+    }
+  })
+  return hit
+}
 
 const targetMark = Decoration.mark({ class: 'cc-chat-target' })
 const targetLine = Decoration.line({ class: 'cc-chat-target-line' })
@@ -98,45 +120,60 @@ function decorate(state, target, proposal, handlers) {
 }
 
 /**
- * The chat's state field: `{ target, proposal, dropped, deco }`. `dropped` is true on the one update
- * that dropped a proposal (its text no longer fits), so the chat can say so. `handlers` are the
- * proposal widget's Accept and Reject.
+ * The chat's state field: `{ target, proposal, touched, dropped, deco }`. `touched`: the target was
+ * edited since the last question about it (`asked`), so the answer's proposal is for a text that is
+ * gone and is dropped when it comes; tracked from the ask, not from the proposal, because the person
+ * types while Claude answers (an empty target typed into then gave `minetheirs` on Accept).
+ * `dropped` is true on the one update that dropped a proposal, so the chat can say so. `handlers`
+ * are the proposal widget's Accept and Reject.
  */
 export function createChatField(handlers) {
   return StateField.define({
-    create: () => ({ target: null, proposal: null, dropped: false, deco: Decoration.none }),
+    create: () => ({ target: null, proposal: null, touched: false, dropped: false, deco: Decoration.none }),
     update(value, tr) {
-      let { target, proposal } = value
+      let { target, proposal, touched } = value
       let changed = false
-      // Text typed into an empty target lands outside it (mapTarget keeps the edges out), so the
-      // text would still "fit" (''): an insert at its position drops a proposal made for an empty target.
-      const emptyEdited = !!target && target.from === target.to && tr.docChanged && tr.changes.mapPos(target.from, 1) !== tr.changes.mapPos(target.from, -1)
+      // Read on the target before this change (its coordinates); the accept's own change is the proposal going in.
+      const edited = !!target && tr.docChanged && !tr.effects.some((e) => e.is(accepted)) && touchesTarget(target, tr.changes)
+      if (edited && !touched) {
+        touched = true
+        changed = true
+      }
       if (target && tr.docChanged) {
         target = mapTarget(target, tr.changes)
         changed = true
       }
+      let arrived = false
       for (const e of tr.effects) {
         if (e.is(setTarget)) {
           target = e.value
           proposal = null
+          touched = false
           changed = true
         } else if (e.is(setProposal)) {
           proposal = e.value
+          arrived = !!e.value
           changed = true
         } else if (e.is(accepted)) {
           target = e.value
           proposal = null
+          touched = false
+          changed = true
+        } else if (e.is(asked)) {
+          touched = false
           changed = true
         }
       }
       let dropped = false
-      if (proposal && ((emptyEdited && !tr.effects.some((e) => e.is(accepted))) || !proposalFits(tr.state.doc, target, proposal.forText))) {
+      // A proposal arriving for a target edited since the ask, one edited while shown, or one whose
+      // text no longer fits (a reload rewrote it).
+      if (proposal && ((arrived && touched) || edited || !proposalFits(tr.state.doc, target, proposal.forText))) {
         proposal = null
         dropped = true
         changed = true
       }
       if (!changed) return value.dropped ? { ...value, dropped: false } : value
-      return { target, proposal, dropped, deco: decorate(tr.state, target, proposal, handlers) }
+      return { target, proposal, touched, dropped, deco: decorate(tr.state, target, proposal, handlers) }
     },
     provide: (field) => EditorView.decorations.from(field, (v) => v.deco),
   })
@@ -268,6 +305,8 @@ export function createQuickChat({ post, getView, message }) {
       }
       post({ t: 'chat-say', id: chat.id, question, ...(sel ? { sel } : {}) })
     }
+    // From here an edit to the target makes this answer's proposal stale (the field's `touched`).
+    if (view) view.dispatch({ effects: asked.of(null) })
     chat.entries.push({ who: 'you', text: question })
     chat.entries.push({ who: 'claude', text: '', tools: [], live: true })
     chat.busy = true

@@ -13,7 +13,7 @@
 // taken only when they fit the text: the host names the `seq` of the last change it got from this
 // page, and a page that sent more since (it typed while the server worked) refuses.
 
-import { chunkText } from '../parts.mjs'
+import { chunkText, CHUNK_CHARS } from '../parts.mjs'
 
 /** The asks' deadlines here: a little longer than the host's, so the host's own answer comes first. */
 export const ASK_TIMEOUT_MS = 12 * 1000
@@ -22,6 +22,16 @@ export const COMPLETE_TIMEOUT_MS = 6 * 1000
 export const EDIT_TIMEOUT_MS = 45 * 1000
 
 const EDIT_ASKS = new Set(['rename', 'format', 'runCodeAction'])
+
+/**
+ * The most text one `lsp-change` carries (UTF-16 units over all its changes), and the most changes:
+ * over either the whole text goes instead, in parts (sendText). A port message is capped at 1 MiB
+ * and throws past it (the SDK's post); JSON may spell a character in up to 6 units (`\u0001`), so
+ * one part's worth is safe. The host takes at most 1000 changes per message (lib/lsp/manager.js).
+ * The incident: a paste over 1 MiB made one `lsp-change` that threw in the page's update listener.
+ */
+export const MAX_CHANGE_CHARS = CHUNK_CHARS
+export const MAX_CHANGES = 1000
 
 /**
  * `ui`:
@@ -70,13 +80,33 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     for (const req of [...asks.keys()]) settle(req, new Error(why))
   }
 
+  /**
+   * A message to the host that never throws into the caller: the caller is an editor update (file.js
+   * marks the buffer dirty there), and a failed post (over the cap, a closed port) must cost the
+   * language server its sync, never the edit. False when it failed: the host's copy is behind.
+   */
+  function post(m) {
+    try {
+      ui.post(m)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** The whole text to the host (a first open, a resync, a new line), in parts under the message cap. */
   function sendText() {
     const parts = chunkText(ui.getText())
     s.seq++
-    parts.forEach((text, part) => ui.post({ t: 'lsp-open', path: s.path, part, parts: parts.length, text, seq: s.seq }))
     s.opened = true
     s.unsent = false
+    for (let part = 0; part < parts.length; part++) {
+      if (!post({ t: 'lsp-open', path: s.path, part, parts: parts.length, text: parts[part], seq: s.seq })) {
+        // Part-way: the host never completes this text; the next change sends all of it again.
+        s.unsent = true
+        return
+      }
+    }
   }
 
   /** A path the host can give a server: project-relative (an outside file's tab has an absolute one). */
@@ -150,8 +180,17 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
         s.unsent = true
         return
       }
+      // The host's copy is behind (a post failed), or the change is too large for one message (a
+      // big paste, thousands of cursors): the whole text, in parts. A text over the host's cap
+      // (2M chars) is then answered with no server (lsp-doc language null), which this page shows.
+      let chars = 0
+      for (const c of changes) chars += c && typeof c.text === 'string' ? c.text.length : 0
+      if (s.unsent || chars > MAX_CHANGE_CHARS || changes.length > MAX_CHANGES) {
+        sendText()
+        return
+      }
       s.seq++
-      ui.post({ t: 'lsp-change', path: s.path, changes, seq: s.seq })
+      if (!post({ t: 'lsp-change', path: s.path, changes, seq: s.seq })) s.unsent = true
     },
     /**
      * Asks the host (`what` one of the host's asks, `fields` its position, range...). Resolves the

@@ -14,7 +14,7 @@
 // Shift+Alt+F format, Mod+Shift+O symbols, Mod+Shift+Space signature help, Ctrl+Space completion
 // (CodeMirror's own).
 
-import { StateField, StateEffect, Prec, EditorState, ChangeSet } from '@codemirror/state'
+import { StateField, StateEffect, Prec, EditorState, ChangeSet, Transaction } from '@codemirror/state'
 import { EditorView, keymap, hoverTooltip, showTooltip } from '@codemirror/view'
 import { snippet, pickedCompletion } from '@codemirror/autocomplete'
 import { setDiagnostics, lintGutter } from '@codemirror/lint'
@@ -133,24 +133,36 @@ const signatureField = StateField.define({
  */
 const EDIT_LOG_SIZE = 200
 const editLog = StateField.define({
-  create: () => ({ seq: 0, list: [] }),
+  // `id`: this buffer's log. A whole new state (file.js load: a file loaded again, setState) starts a
+  // new one at seq 0, so a number from the old log must never be read against it.
+  create: () => ({ id: {}, seq: 0, list: [] }),
   update(value, tr) {
     if (!tr.docChanged) return value
     const list = value.list.length >= EDIT_LOG_SIZE ? value.list.slice(1) : value.list.slice()
-    list.push(tr.changes)
-    return { seq: value.seq + 1, list }
+    // `replaced`: the page put another text in (file.js applyText: a reload, a merge; kept out of the
+    // undo history), not the person's typing.
+    list.push({ changes: tr.changes, replaced: tr.annotation(Transaction.addToHistory) === false })
+    return { id: value.id, seq: value.seq + 1, list }
   },
 })
 
-/** The changes made since log number `seq` as one ChangeSet from that text to now, or null when the log no longer reaches back that far. */
-function changesSince(state, seq, startLength) {
+/**
+ * The changes made since log number `seq` of log `id` as `{ changes, replaced }`: one ChangeSet from
+ * that text to now, and whether a reload or a merge was among them. Null when the log no longer
+ * reaches back that far, or is another buffer's.
+ */
+function changesSince(state, id, seq, startLength) {
   const log = state.field(editLog, false)
-  if (!log) return null
+  if (!log || log.id !== id) return null
   const n = log.seq - seq
   if (n < 0 || n > log.list.length) return null
-  let all = ChangeSet.empty(startLength)
-  for (const c of log.list.slice(log.list.length - n)) all = all.compose(c)
-  return all
+  let changes = ChangeSet.empty(startLength)
+  let replaced = false
+  for (const c of log.list.slice(log.list.length - n)) {
+    changes = changes.compose(c.changes)
+    replaced = replaced || c.replaced
+  }
+  return { changes, replaced }
 }
 
 /**
@@ -219,7 +231,7 @@ export function lspFeatures(deps) {
     const incomplete = !!(res && !Array.isArray(res) && res.isIncomplete)
     // The text the ranges were given for: the state at the ask (the source runs with the view's state then).
     const log = context.state.field(editLog, false)
-    const req = { doc: context.state.doc, seq: log ? log.seq : -1, synced }
+    const req = { doc: context.state.doc, log: log ? log.id : null, seq: log ? log.seq : -1, synced }
     const from = word ? word.from : context.pos
     const options = []
     for (const item of items) {
@@ -264,24 +276,28 @@ export function lspFeatures(deps) {
       // Every range was given for the text at the ask (req.doc): resolved there, then carried over
       // what was typed since. With the log gone that far back, or in a view whose text the server
       // never had (req.synced), the word range alone and no extra edits.
-      const since = req.synced ? changesSince(view.state, req.seq, req.doc.length) : null
+      const since = req.synced ? changesSince(view.state, req.log, req.seq, req.doc.length) : null
       let rFrom = from
       let rTo = to
       if (te && since) {
         // Typing at the range's end (the word grows) stays inside it, and so does typing at its start.
-        const s = since.mapPos(offsetOf(req.doc, te.range.start), -1)
-        const e = since.mapPos(offsetOf(req.doc, te.range.end), 1)
+        const s = since.changes.mapPos(offsetOf(req.doc, te.range.start), -1)
+        const e = since.changes.mapPos(offsetOf(req.doc, te.range.end), 1)
         rFrom = Math.min(s, from)
         rTo = Math.max(to, e)
       }
-      // Auto-imports and the like first (they lie elsewhere, mostly at the top), then the item.
-      // Mapped as one change set over the typing since: an edit inside text deleted since shrinks away.
-      const asked = since ? editsToChanges(req.doc, extra) : null
+      // Auto-imports and the like first (they lie elsewhere, mostly at the top), then the item,
+      // carried over the typing since. Only what nothing since touched: an import line that changed
+      // meanwhile (a reload brought another import) would get the stale import beside the current
+      // one, mapping cannot tell. A reload or a merge since: none at all (the server answered on a
+      // text that is gone; the next ask gets fresh ones).
+      const asked = since && !since.replaced ? editsToChanges(req.doc, extra) : null
       let more = null
       if (Array.isArray(asked)) {
         more = []
-        ChangeSet.of(asked, req.doc.length)
-          .map(since)
+        const kept = asked.filter((c) => !since.changes.touchesRange(c.from, c.to))
+        ChangeSet.of(kept, req.doc.length)
+          .map(since.changes)
           .iterChanges((fromA, toA, _fromB, _toB, inserted) => more.push({ from: fromA, to: toA, insert: inserted.toString() }))
       }
       if (Array.isArray(more)) {

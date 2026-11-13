@@ -4,7 +4,7 @@
 // with a dispatch that applies the transaction stands in for one.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { EditorState } from '@codemirror/state'
+import { EditorState, Transaction } from '@codemirror/state'
 import { forEachDiagnostic } from '@codemirror/lint'
 import { CompletionContext } from '@codemirror/autocomplete'
 import { applyEditsTo, showDiagnostics, lspFeatures } from '../src/page/lsp/editor.js'
@@ -135,7 +135,7 @@ async function completeWith(doc, pos, result, { synced = true } = {}) {
   v.state = EditorState.create({ doc, extensions: ui.extensions })
   const source = v.state.languageDataAt('autocomplete', pos).find((s) => typeof s === 'function')
   const answer = await source(new CompletionContext(v.state, pos, true))
-  return { v, answer }
+  return { v, answer, ui }
 }
 
 test('completion: a text edit range is resolved on the text at the ask, then carried over what was typed since', async () => {
@@ -200,4 +200,42 @@ test('rename and code actions from a view that is not the syncing owner are refu
   synced = true
   await ui.codeActions(view)
   assert.deepEqual(asked, ['codeActions'])
+})
+
+test('completion: an auto-import whose range changed since the ask is dropped (a reload brought another import line); the item still lands', async () => {
+  const doc = "import { a } from 'a'\nab"
+  const item = { label: 'abc', textEdit: { range: { start: at(1, 0), end: at(1, 2) }, newText: 'abc' }, additionalTextEdits: [edit(0, 0, 0, 21, "import { a, abc } from 'a'")] }
+  // A reload (file.js applyText: out of the undo history) changed the import line meanwhile.
+  let { v, answer } = await completeWith(doc, doc.length, [item])
+  v.dispatch({ changes: { from: 9, to: 10, insert: 'b' }, annotations: Transaction.addToHistory.of(false) })
+  let len = v.state.doc.length
+  answer.options[0].apply(v, answer.options[0], len - 2, len)
+  assert.equal(v.state.doc.toString(), "import { b } from 'a'\nabc")
+  // A reload elsewhere (not the import line): every extra edit is dropped all the same.
+  ;({ v, answer } = await completeWith(doc + '\n', doc.length, [item]))
+  v.dispatch({ changes: { from: v.state.doc.length, insert: 'tail' }, annotations: Transaction.addToHistory.of(false) })
+  answer.options[0].apply(v, answer.options[0], doc.length - 2, doc.length)
+  assert.equal(v.state.doc.toString(), "import { a } from 'a'\nabc\ntail")
+  // The person's own edit inside the import line: that extra edit is dropped.
+  ;({ v, answer } = await completeWith(doc, doc.length, [item]))
+  v.dispatch({ changes: { from: 9, to: 10, insert: 'q' } })
+  len = v.state.doc.length
+  answer.options[0].apply(v, answer.options[0], len - 2, len)
+  assert.equal(v.state.doc.toString(), "import { q } from 'a'\nabc")
+  // Untouched: it lands.
+  ;({ v, answer } = await completeWith(doc, doc.length, [item]))
+  answer.options[0].apply(v, answer.options[0], doc.length - 2, doc.length)
+  assert.equal(v.state.doc.toString(), "import { a, abc } from 'a'\nabc")
+})
+
+test('completion: after a whole new state (the file loaded again) no range of the old answer is read against the new log', async () => {
+  const doc = "import { a } from 'a'\nab"
+  const item = { label: 'abc', textEdit: { range: { start: at(1, 0), end: at(1, 2) }, newText: 'abc' }, additionalTextEdits: [edit(0, 0, 0, 21, "import { a, abc } from 'a'")] }
+  const { v, answer, ui } = await completeWith(doc, doc.length, [item])
+  // A new state with the same extensions (file.js load: setState): its log starts at the same number
+  // the ask saw (0), but its text is another one.
+  const next = "import { z } from 'z'\nab"
+  v.state = EditorState.create({ doc: next, extensions: ui.extensions })
+  answer.options[0].apply(v, answer.options[0], next.length - 2, next.length)
+  assert.equal(v.state.doc.toString(), "import { z } from 'z'\nabc")
 })
