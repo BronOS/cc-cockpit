@@ -365,33 +365,48 @@ test('groups.changed seq only grows, and a stale view never undoes a newer one',
   await expect(visiblePanes(page).first()).toBeVisible()
 })
 
-test('D9, D17: tabs.reorder with block moves the whole group; without it a member dropped outside detaches, inside is a no-op; snapshot.order is the tab order', async ({ cockpit }) => {
+test('D9, D17, D26: tabs.reorder with block moves the whole group; without it a member is a no-op in place or strictly between its mates, and detaches before the first or after the last; snapshot.order is the tab order', async ({ cockpit }) => {
   test.setTimeout(120_000)
   const { page } = cockpit
-  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
-  const c = await newTaggedShell(cockpit, 'pc')
-  const d = await newTaggedShell(cockpit, 'pd')
+  const [a, b, c] = await groupOfShells(cockpit, ['pa', 'pb', 'pc'])
+  const d = (await newTaggedShell(cockpit, 'pd')).id
+  const e = (await newTaggedShell(cockpit, 'pe')).id
   const order = async (): Promise<string[]> => (await groupsOf(page)).order
-  expect(await order()).toEqual([a, b, c.id, d.id])
+  const groupTabs = async (): Promise<string[][]> => (await groupsOf(page)).groups.map((g) => leaves(g.root))
+  const reorder = async (tabId: string, toIndex: number, block?: true): Promise<void> => {
+    await invoke(page, 'tabs.reorder', { tabId, toIndex, ...(block ? { block } : {}) })
+  }
+  expect(await order()).toEqual([a, b, c, d, e])
   expect((await tabsOf(page)).map((t) => t.id)).toEqual(await order())
 
-  // Block: the group of `a` goes to index 2 of the order without the block: after c and d.
-  await invoke(page, 'tabs.reorder', { tabId: a, toIndex: 2, block: true })
-  await expect.poll(order).toEqual([c.id, d.id, a, b])
-  expect((await tabsOf(page)).map((t) => t.id)).toEqual([c.id, d.id, a, b])
-  expect(leaves((await groupsOf(page)).groups[0]!.root)).toEqual([a, b])
+  // Block: the group of `a` goes to index 2 of the order without the block: after d and e.
+  await reorder(a, 2, true)
+  await expect.poll(order).toEqual([d, e, a, b, c])
+  expect((await tabsOf(page)).map((t) => t.id)).toEqual([d, e, a, b, c])
+  expect(await groupTabs()).toEqual([[a, b, c]])
 
-  // Inside its own segment, a member move without block is a no-op (panes move by drag-to-edge).
-  await invoke(page, 'tabs.reorder', { tabId: b, toIndex: 2 })
+  // The same position: a no-op.
+  await reorder(b, 3)
   await page.waitForTimeout(300)
-  expect(await order()).toEqual([c.id, d.id, a, b])
-  expect((await groupsOf(page)).groups).toHaveLength(1)
+  expect(await order()).toEqual([d, e, a, b, c])
+  expect(await groupTabs()).toEqual([[a, b, c]])
+  // Strictly between two mates (c to index 3, between a and b in the order without c): a no-op.
+  await reorder(c, 3)
+  await page.waitForTimeout(300)
+  expect(await order()).toEqual([d, e, a, b, c])
+  expect(await groupTabs()).toEqual([[a, b, c]])
 
-  // Without block, dropped outside the segment: detaches as a plain tab there; the group of one dissolves.
-  await invoke(page, 'tabs.reorder', { tabId: b, toIndex: 0 })
-  await expect.poll(async () => (await groupsOf(page)).groups).toEqual([])
-  expect(await order()).toEqual([b, c.id, d.id, a])
-  expect((await tabsOf(page)).map((t) => t.id)).toEqual([b, c.id, d.id, a])
+  // After the last mate (a to index 4 in the order without a: past c): detaches there; the rest stays grouped.
+  await reorder(a, 4)
+  await expect.poll(groupTabs).toEqual([[b, c]])
+  expect(await order()).toEqual([d, e, b, c, a])
+  expect((await tabsOf(page)).map((t) => t.id)).toEqual([d, e, b, c, a])
+
+  // Before the first mate (c to index 2 in the order without c: before b): detaches there; the group of one dissolves.
+  await reorder(c, 2)
+  await expect.poll(groupTabs).toEqual([])
+  expect(await order()).toEqual([d, e, c, b, a])
+  expect((await tabsOf(page)).map((t) => t.id)).toEqual([d, e, c, b, a])
 })
 
 test('D18: when groups.remove from another view dissolves the group, this view shows the remaining plain tab, unfocused', async ({ cockpit }) => {
