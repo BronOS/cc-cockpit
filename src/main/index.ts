@@ -1302,7 +1302,8 @@ function start(server: boolean): void {
           trigger: (w, id) => views.toWindow(w, 'commands.trigger', { id })
         },
         windowId,
-        chordOfInput(input)
+        chordOfInput(input.type === 'keyDown' && input.isAutoRepeat ? { ...input, isAutoRepeat: false } : input),
+        input.type === 'keyDown' && input.isAutoRepeat
       )
       if (handled) event.preventDefault()
     })

@@ -274,6 +274,25 @@ describe('the page reports, the pool keeps', () => {
     expect(t.frames.isDirty(TAB_A)).toBe(false)
   })
 
+  it('a remounted frame (a page that navigated itself) is a clean page: dirty clears, and the LRU may trim it', async () => {
+    const reports: Array<[string, boolean]> = []
+    const t = pool({ guard: true, maxLive: 1, reportDirty: (tabId, dirty) => reports.push([tabId, dirty]) })
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show(TAB_A)
+    await settle()
+    t.el(TAB_A).fire()
+    t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
+    t.frames.show(TAB_B)
+    await settle()
+    expect(t.frames.isLive(TAB_A)).toBe(true)
+    // A load the shell did not start: a fresh element, whose page has nothing unsaved.
+    const old = t.el(TAB_A)
+    old.fire()
+    expect(t.elements.filter((e) => e.title === old.title)).toHaveLength(2)
+    expect(t.frames.isDirty(TAB_A)).toBe(false)
+    expect(reports.at(-1)).toEqual([TAB_A, false])
+  })
+
   it('a web reconnect says the dirty tabs again (main dropped the old view); a host restart does not', async () => {
     const reports: Array<[string, boolean]> = []
     const t = pool({ reportDirty: (tabId, dirty) => reports.push([tabId, dirty]) })

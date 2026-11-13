@@ -62,6 +62,11 @@ describe('desktop: before-input-event on a page tab frame', () => {
     expect(pageTabChord(deps, 3, 'escape')).toBe(false)
     expect(pageTabChord(deps, 3, 'ctrl+shift+w')).toBe(false)
     expect(pageTabChord(deps, 3, null)).toBe(false)
+    // An auto-repeat of an app chord is swallowed and not run again; one that is no app chord is the page's.
+    const before = triggered.length
+    expect(pageTabChord(deps, 3, 'ctrl+w', true)).toBe(true)
+    expect(pageTabChord(deps, 3, 'ctrl+s', true)).toBe(false)
+    expect(triggered).toHaveLength(before)
     expect(triggered).toEqual([
       [3, 'tab.close'],
       [3, 'tab.switchNext']

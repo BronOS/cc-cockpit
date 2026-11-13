@@ -257,6 +257,12 @@ export class PageFrames {
       // A new element (a new browsing context) at the shell's own src; the old one goes with its page.
       remount: (gen) => {
         element.remove()
+        // The fresh page starts clean and never says so: clear the old page's dirty here (it reports
+        // again when it is dirty), or the tab stays dirty until it closes.
+        if (this.dirty.delete(tabId)) {
+          this.report(tabId, false)
+          this.trim()
+        }
         element = this.element(entry, gen)
         if (entry.frame) entry.frame.element = element
         element.load(url)

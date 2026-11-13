@@ -47,9 +47,12 @@ export interface PageTabChordDeps {
  * (which runs it through its modal gate, command-gate.ts), so the caller swallows the key. The
  * keyboard stays in the frame: a command that moves it (a new tab) moves it itself.
  */
-export function pageTabChord(deps: PageTabChordDeps, windowId: number, chord: string | null): boolean {
+export function pageTabChord(deps: PageTabChordDeps, windowId: number, chord: string | null, repeat = false): boolean {
   if (chord === null) return false
   const id = forwardedCommand(chord, (c) => deps.commandFor(windowId, c))
   if (id === undefined) return false
+  // An auto-repeat of an app chord is swallowed without running it again (the web SDK does the same):
+  // holding Ctrl+W must not type or act in the page after the first press went to the shell.
+  if (repeat) return true
   return deps.trigger(windowId, id)
 }
