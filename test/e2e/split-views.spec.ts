@@ -439,3 +439,79 @@ test('D5: a browser view too narrow for its panes shows the group zoomed on the 
     await browser.close()
   }
 })
+
+test('R12: exactly one pane is marked focused while several show, and the mark follows the click', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
+  await paneOf(page, a).locator('.xterm').click()
+  await expect(focusedPanes(page)).toHaveCount(1)
+  await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+  await expect(paneOf(page, a)).toHaveAttribute('data-focused-pane', a)
+  await paneOf(page, b).locator('.xterm').click()
+  await expect(focusedPanes(page)).toHaveCount(1)
+  await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', b)
+  await expect(paneOf(page, a)).not.toHaveAttribute('data-focused-pane', /.+/)
+})
+
+test('R10, D10: the focus chord moves to the neighbour once, a held chord is swallowed, no key byte reaches a pty, no wrap', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
+  // `cat -v` shows any escape sequence that reaches the pty as ^[[C and friends.
+  for (const id of [a, b]) await typeInPane(page, paneOf(page, id), 'cat -v')
+  await page.waitForTimeout(300)
+  await paneOf(page, a).locator('.xterm').click()
+  await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+
+  // ⌥⌘→ (Ctrl+Alt+→ on Linux), held: the first press moves, the auto-repeats do nothing more.
+  const mods = process.platform === 'darwin' ? ['Meta', 'Alt'] : ['Control', 'Alt']
+  for (const m of mods) await page.keyboard.down(m)
+  for (let i = 0; i < 6; i++) await page.keyboard.down('ArrowRight')
+  await page.keyboard.up('ArrowRight')
+  for (const m of [...mods].reverse()) await page.keyboard.up(m)
+  await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', b)
+
+  // No wrap: the rightmost pane stays focused on another press.
+  for (const m of mods) await page.keyboard.down(m)
+  await page.keyboard.press('ArrowRight')
+  for (const m of [...mods].reverse()) await page.keyboard.up(m)
+  await page.waitForTimeout(300)
+  await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', b)
+
+  // Keys typed now reach B only, and nothing of the chord reached either pty.
+  await page.keyboard.type('hello-$((1+1))')
+  await page.keyboard.press('Enter')
+  await waitPaneText(paneOf(page, b), 'hello-$((1+1))')
+  for (const id of [a, b]) expect(await paneText(paneOf(page, id))).not.toContain('^[')
+  expect(await paneText(paneOf(page, a))).not.toContain('hello-')
+})
+
+test('a group name is plain text and never stands in for a member\'s status or label; bad names are refused', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b] = await groupOfShells(cockpit, ['pa', 'pb'])
+  const { browser, web } = await joinBrowser(cockpit)
+  try {
+    const group = (await groupsOf(page)).groups[0]!
+    const before = await page.getByRole('tab').allInnerTexts()
+    const name = 'needs you · question'
+    expect((await invoke<{ ok: boolean }>(web, 'groups.rename', { groupId: group.id, name })).ok).toBe(true)
+    for (const view of [page, web]) {
+      const segment = view.getByRole('group').filter({ has: view.getByRole('tab') })
+      await expect(segment).toHaveAttribute('aria-label', new RegExp(`Group ${name}, 2 tabs`))
+      // Not a status: no member has a "needs you" dot, and the tab labels are unchanged.
+      await expect(view.locator('.tab .status-dot[title*="needs you"]')).toHaveCount(0)
+    }
+    expect(await page.getByRole('tab').allInnerTexts()).toEqual(before)
+    // Names follow the tab name rule: control and bidi characters are refused, nothing changes.
+    for (const bad of ['line\nbreak', 'rtl\u202eevil']) {
+      const reply = await invoke<{ ok: boolean; reason?: string }>(web, 'groups.rename', { groupId: group.id, name: bad })
+      expect(reply.ok, JSON.stringify(bad)).toBe(false)
+    }
+    expect((await groupsOf(page)).groups[0]!.name).toBe(name)
+    expect(leaves((await groupsOf(page)).groups[0]!.root)).toEqual([a, b])
+  } finally {
+    await browser.close()
+  }
+})
