@@ -105,9 +105,9 @@ describe('CommandRegistry with new-tab menu entries', () => {
   })
 
   it('a project entry bound in one project does not put that chord in another', () => {
-    const { registry } = rig({ 'tab.newCommand.project.dev': 'Cmd+Shift+D' })
-    expect(registry.view(A).commands.find((c) => c.key === 'shift+meta+d')?.id).toBe('tab.newCommand.project.dev')
-    expect(registry.view(B).commands.some((c) => c.key === 'shift+meta+d')).toBe(false)
+    const { registry } = rig({ 'tab.newCommand.project.dev': 'Cmd+Shift+Y' })
+    expect(registry.view(A).commands.find((c) => c.key === 'shift+meta+y')?.id).toBe('tab.newCommand.project.dev')
+    expect(registry.view(B).commands.some((c) => c.key === 'shift+meta+y')).toBe(false)
   })
 
   it('reports a conflict with a core default; the user override wins it', () => {

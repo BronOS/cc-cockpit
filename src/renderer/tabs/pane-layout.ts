@@ -9,7 +9,6 @@ import {
   PANE_MIN_CELLS,
   isLeaf,
   leavesOf,
-  neighbour,
   rectsOf,
   removeLeaf,
   type PaneEdge,
@@ -253,10 +252,27 @@ export function edgeWords(edge: PaneEdge): string {
   return edge === 'left' ? 'Left of' : edge === 'right' ? 'Right of' : edge === 'up' ? 'Above' : 'Below'
 }
 
-/** The focus chord's target (⌥⌘Arrow): the spatial neighbour, no wrap (shared/tab-groups.ts). */
-export function focusTarget(root: PaneNode, tabId: string, dir: PaneEdge): string | undefined {
-  return neighbour(root, tabId, dir)
-}
-
 /** How far below the strip (px) a tab drag turns into pane mode (design §1: about 24px). */
 export const PANE_MODE_PX = 24
+
+/** `root` with split `splitId`'s sizes replaced (a drag in progress or a resize main has not echoed yet). */
+export function withSizes(root: PaneSplit, splitId: string, sizes: readonly number[]): PaneSplit {
+  const walk = (n: PaneNode): PaneNode => {
+    if (isLeaf(n)) return n
+    const children = n.children.map(walk)
+    const own = n.id === splitId && sizes.length === n.children.length ? [...sizes] : n.sizes
+    return { ...n, children, sizes: own }
+  }
+  return walk(root) as PaneSplit
+}
+
+/** The sizes of split `splitId` in `root`, or undefined. */
+export function sizesOf(root: PaneNode, splitId: string): number[] | undefined {
+  if (isLeaf(root)) return undefined
+  if (root.id === splitId) return root.sizes
+  for (const c of root.children) {
+    const s = sizesOf(c, splitId)
+    if (s) return s
+  }
+  return undefined
+}

@@ -8,7 +8,10 @@ import { usePrefs } from '../prefs/prefs-store'
 import { QueuedChip } from '../status/QueuedChip'
 import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
-import { ChevronDownGlyph, CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph } from '../window-icons'
+import { ChevronDownGlyph, CloseGlyph, CommandGlyph, PlusGlyph, ShellGlyph, SplitGlyph } from '../window-icons'
+import { groupOf, leavesOf, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
+import { PANE_MODE_PX } from './pane-layout'
+import { groupTitle, handleWords, leftSegment, stripRuns } from './strip-groups'
 import { commandTooltip, tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
 import { hiddenFlags, type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
@@ -23,6 +26,10 @@ interface TabDrag {
   startX: number
   dx: number
   toIndex: number
+  /** The handle of this group is dragged: the whole block moves (D9). */
+  groupId?: string
+  /** Pane mode: the pointer is well below the strip, over the terminal area (design §1). */
+  pane?: boolean
 }
 
 /** What the [+] menu lists after Claude and Shell: the user's entries, app-wide then project. */
@@ -170,8 +177,32 @@ export function TabBar(props: {
   /** Status of the window's Claude tabs by tab id (shell tabs have none). */
   sessions: ReadonlyMap<string, SessionDetail>
   onCancelQueued: (tabId: string, itemId: string) => void
+  /** The project's split groups (main's snapshot): members are drawn as one bracketed segment. */
+  groups: readonly TabGroup[]
+  /** This view's zoom of its shown group, for the handle's "zoomed (n hidden)". */
+  zoom: { groupId: string; zoomTab?: string; auto: boolean } | undefined
+  /** The handle's click: show the group, at this view's last focused pane there. */
+  onSelectGroup: (groupId: string) => void
+  onRenameGroup: (groupId: string, name: string | null) => void
+  onEqualizeGroup: (groupId: string) => void
+  onUngroup: (groupId: string) => void
+  onCloseGroup: (groupId: string) => void
+  /** The handle was dragged: the block goes to `toIndex` among the other tabs (D9). */
+  onMoveGroup: (groupId: string, toIndex: number) => void
+  /** A member was dragged out of its segment: it becomes a plain tab at `toIndex` (D9). */
+  onDetach: (tabId: string, toIndex: number) => void
+  /** Pane mode of a drag: the pointer over the terminal area (null: left it, or cancelled). */
+  onPaneDrag: (tabId: string, point: { x: number; y: number } | null) => void
+  /** Released in pane mode: place the tab at the previewed edge, if any. */
+  onPaneDrop: (tabId: string) => void
+  /** Why a split of the tab cannot be made (D5: the entry is disabled with this reason), or undefined. */
+  splitBlocked: (tabId: string, edge: PaneEdge) => string | undefined
+  onSplit: (tabId: string, edge: 'right' | 'down') => void
+  /** Show beside: `tabId` goes at `edge` of `at`'s pane. */
+  onShowBeside: (tabId: string, at: string, edge: 'right' | 'down') => void
+  onMoveOut: (tabId: string) => void
 }): React.JSX.Element {
-  const { tabs, activeId } = props
+  const { tabs, activeId, groups, onPaneDrag } = props
   // Settings › Appearance › Tabs; pushed by main, so every window's strip follows a pick.
   const { tabCloseSide } = usePrefs()
   const [createOpen, setCreateOpen] = useState(false)
@@ -182,9 +213,15 @@ export function TabBar(props: {
   const [renaming, setRenaming] = useState<{ tabId: string; x: number; y: number; value: string } | null>(null)
   // "Edit note…" swaps it for a one-line note editor the same way.
   const [noting, setNoting] = useState<{ tabId: string; x: number; y: number; value: string } | null>(null)
+  // "Show beside ▸" swaps it for the list of the other tabs, each with Right and Below.
+  const [beside, setBeside] = useState<{ tabId: string; x: number; y: number } | null>(null)
+  // A group handle's menu (Rename, Equalize, Ungroup, Close all), and its Rename editor.
+  const [groupMenu, setGroupMenu] = useState<{ groupId: string; x: number; y: number } | null>(null)
+  const [groupRenaming, setGroupRenaming] = useState<{ groupId: string; x: number; y: number; value: string } | null>(null)
 
   // Any click elsewhere or Escape closes whichever menu is open.
-  const anyOpen = createOpen || allOpen || menu !== null || renaming !== null || noting !== null
+  const anyOpen =
+    createOpen || allOpen || menu !== null || renaming !== null || noting !== null || beside !== null || groupMenu !== null || groupRenaming !== null
   // A webview panel's native view would paint over the menu (shell-layers.ts).
   useShellLayer(anyOpen)
   useEffect(() => {
@@ -195,6 +232,9 @@ export function TabBar(props: {
       setMenu(null)
       setRenaming(null)
       setNoting(null)
+      setBeside(null)
+      setGroupMenu(null)
+      setGroupRenaming(null)
     }
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') dismiss()
@@ -215,12 +255,12 @@ export function TabBar(props: {
   // the last of them goes, the pane gives the keyboard back to the terminal (onMenuClosed), else
   // it would be left on <body>, where typing reaches nothing.
   const ctxRef = useRef<HTMLDivElement>(null)
-  const menuOpenId = menu?.tabId
+  const menuOpenId = menu?.tabId ?? (beside ? `beside:${beside.tabId}` : undefined) ?? (groupMenu ? `group:${groupMenu.groupId}` : undefined)
   useEffect(() => {
     if (menuOpenId === undefined) return
     ctxRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not(:disabled)')?.focus()
   }, [menuOpenId])
-  const tookFocus = menu !== null || renaming !== null || noting !== null
+  const tookFocus = menu !== null || renaming !== null || noting !== null || beside !== null || groupMenu !== null || groupRenaming !== null
   const hadFocus = useRef(false)
   const onMenuClosed = props.onMenuClosed
   useEffect(() => {
@@ -306,7 +346,7 @@ export function TabBar(props: {
   useEffect(() => {
     measure()
   }, [flagKey])
-  const press = useRef<{ tabId: string; pointerId: number; startX: number } | null>(null)
+  const press = useRef<{ tabId: string; pointerId: number; startX: number; startY: number; groupId?: string } | null>(null)
   const [drag, setDrag] = useState<TabDrag | null>(null)
   const dragRef = useRef<TabDrag | null>(null)
   const setDragBoth = (d: TabDrag | null): void => {
@@ -316,12 +356,15 @@ export function TabBar(props: {
 
   // The other tabs' ids and x centres, read from the DOM at each move: the strip scrolls
   // sideways, and a tab can be added or close (a plugin, a clean exit) while the pointer is down.
-  const othersOf = (tabId: string): { ids: string[]; centres: number[] } => {
+  const othersOf = (tabId: string, groupId?: string): { ids: string[]; centres: number[] } => {
     const ids: string[] = []
     const centres: number[] = []
+    // A handle drag moves the whole block: none of its members is an "other" tab.
+    const g = groupId !== undefined ? groups.find((x) => x.id === groupId) : undefined
+    const skip = new Set(g ? leavesOf(g.root) : [tabId])
     for (const el of listRef.current?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? []) {
       const id = el.dataset.tabId
-      if (id === undefined || id === tabId) continue
+      if (id === undefined || skip.has(id)) continue
       const r = el.getBoundingClientRect()
       ids.push(id)
       centres.push(r.left + r.width / 2)
@@ -336,17 +379,20 @@ export function TabBar(props: {
     if (!dragging) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
+        const d = dragRef.current
+        if (d?.pane) onPaneDrag(d.tabId, null)
         press.current = null
         setDragBoth(null)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [dragging])
+  }, [dragging, onPaneDrag])
 
-  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>, tabId: string): void => {
+  /** A press on a tab label, or on a group's handle (`groupId`: the block moves). */
+  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>, tabId: string, groupId?: string): void => {
     if (e.button !== 0 || anyOpen) return
-    press.current = { tabId, pointerId: e.pointerId, startX: e.clientX }
+    press.current = { tabId, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, ...(groupId ? { groupId } : {}) }
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>): void => {
@@ -355,16 +401,22 @@ export function TabBar(props: {
     const dx = e.clientX - p.startX
     let d = dragRef.current
     if (!d) {
-      if (Math.abs(dx) < DRAG_THRESHOLD) return
+      if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(e.clientY - p.startY) < DRAG_THRESHOLD) return
       const from = tabs.findIndex((t) => t.id === p.tabId)
       if (from < 0) return
       // Keep the pointer's events on this label even when it leaves the strip, so the release is
       // seen wherever it happens.
       e.currentTarget.setPointerCapture(e.pointerId)
-      d = { tabId: p.tabId, pointerId: p.pointerId, from, startX: p.startX, dx, toIndex: from }
+      d = { tabId: p.tabId, pointerId: p.pointerId, from, startX: p.startX, dx, toIndex: from, ...(p.groupId ? { groupId: p.groupId } : {}) }
     }
-    const { centres } = othersOf(d.tabId)
-    setDragBoth({ ...d, dx, toIndex: dropIndex(centres, e.clientX) })
+    // Well below the strip a tab's drag turns into pane mode: the terminal area shows where it
+    // would go (design §1). A group's handle only moves the block along the strip.
+    const strip = listRef.current?.getBoundingClientRect()
+    const pane = d.groupId === undefined && strip !== undefined && e.clientY > strip.bottom + PANE_MODE_PX
+    if (pane) props.onPaneDrag(d.tabId, { x: e.clientX, y: e.clientY })
+    else if (d.pane) props.onPaneDrag(d.tabId, null)
+    const { centres } = othersOf(d.tabId, d.groupId)
+    setDragBoth({ ...d, dx, toIndex: dropIndex(centres, e.clientX), pane })
   }
 
   const endDrag = (e: React.PointerEvent<HTMLButtonElement>, drop: boolean): void => {
@@ -373,13 +425,121 @@ export function TabBar(props: {
     const d = dragRef.current
     if (!d) return
     setDragBoth(null)
-    if (drop && d.toIndex !== d.from) props.onReorder(d.tabId, d.toIndex)
+    if (d.pane) {
+      if (drop) props.onPaneDrop(d.tabId)
+      else props.onPaneDrag(d.tabId, null)
+      return
+    }
+    if (!drop) return
+    if (d.groupId !== undefined) {
+      const g = groups.find((x) => x.id === d.groupId)
+      const first = g ? tabs.findIndex((t) => leavesOf(g.root).includes(t.id)) : -1
+      if (first >= 0 && d.toIndex !== first) props.onMoveGroup(d.groupId, d.toIndex)
+      return
+    }
+    const g = groupOf(groups, d.tabId)
+    if (g) {
+      // D9: no reordering inside the segment; dropped outside it, the member leaves the group there.
+      const seg = listRef.current?.querySelector<HTMLElement>(`[data-group-id="${CSS.escape(g.id)}"]`)?.getBoundingClientRect()
+      if (seg && leftSegment(seg, e.clientX)) props.onDetach(d.tabId, d.toIndex)
+      return
+    }
+    if (d.toIndex !== d.from) props.onReorder(d.tabId, d.toIndex)
   }
 
-  // From the props, not the DOM: the strip renders `tabs` in this order.
-  const marker = drag
-    ? dropMarker(tabs.filter((t) => t.id !== drag.tabId).map((t) => t.id), drag.from, drag.toIndex)
-    : null
+  // From the props, not the DOM: the strip renders `tabs` in this order. None in pane mode, and
+  // none for a member's drag inside its own segment (D9: no reordering there).
+  const dragGroup = drag?.groupId !== undefined ? groups.find((g) => g.id === drag.groupId) : undefined
+  const moving = new Set(dragGroup ? leavesOf(dragGroup.root) : drag ? [drag.tabId] : [])
+  const marker =
+    drag && !drag.pane && (dragGroup || !groupOf(groups, drag.tabId))
+      ? dropMarker(tabs.filter((t) => !moving.has(t.id)).map((t) => t.id), drag.from, drag.toIndex)
+      : null
+  const statusOf = (id: string): TabStatus | undefined => props.sessions.get(id)?.status
+  const labelOfId = (id: string): string => {
+    const t = tabs.find((x) => x.id === id)
+    const st = props.sessions.get(id)
+    return t ? tabLabel(t, st?.title, st?.name) : 'tab'
+  }
+  const menuGroup = menuTab ? groupOf(groups, menuTab.id) : undefined
+  const splitRight = menuTab ? props.splitBlocked(menuTab.id, 'right') : undefined
+  const splitDown = menuTab ? props.splitBlocked(menuTab.id, 'down') : undefined
+  const groupOfMenu = groupMenu ? groups.find((g) => g.id === groupMenu.groupId) : undefined
+
+  const renderTab = (tab: TabInfo): React.JSX.Element => {
+    const status = props.sessions.get(tab.id)
+    // In the DOM where it shows (not CSS `order`), so Tab moves through a tab's buttons in
+    // the order the eye reads them.
+    const close = (
+      <button
+        type="button"
+        className="tab-close"
+        aria-label={`Close ${tabLabel(tab, status?.title, status?.name)}`}
+        onClick={() => props.onClose(tab.id)}
+      >
+        <CloseGlyph size={12} />
+      </button>
+    )
+    const dragged = drag?.tabId === tab.id
+    const markEdge = marker?.tabId === tab.id ? marker.edge : undefined
+    // A command tab: what it runs, where, and which plugin opened it (tab-label.ts commandTooltip).
+    const where = commandTooltip(tab) ?? (status?.title ? `${status.title}\n${tab.cwd}` : tab.cwd)
+    const flag = tab.flag
+    return (
+    <div
+      key={tab.id}
+      data-tab-id={tab.id}
+      data-drop={markEdge}
+      // The stripe (styles.css .tab[data-flag]) and, while it waits for the person, its pulse.
+      data-flag={flag?.color}
+      data-attention={attention.has(tab.id) || undefined}
+      className={`tab${tab.id === activeId ? ' active' : ''}${tab.exit ? ' exited' : ''}${dragged ? ' dragged' : ''}`}
+      style={dragged ? { transform: `translateX(${drag.dx}px)` } : undefined}
+    >
+      {tabCloseSide === 'left' && close}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={tab.id === activeId}
+        className="tab-label"
+        // The note is the tooltip's first line: the reminder is what the person flagged it for.
+        title={flag?.note ? `${flag.note}\n${where}` : where}
+        aria-description={
+          flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined
+        }
+        onClick={() => props.onSelect(tab.id)}
+        onPointerDown={(e) => onPointerDown(e, tab.id)}
+        onPointerMove={onPointerMove}
+        onPointerUp={(e) => endDrag(e, true)}
+        onPointerCancel={(e) => endDrag(e, false)}
+        onLostPointerCapture={(e) => endDrag(e, false)}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          setCreateOpen(false)
+          setMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
+        }}
+      >
+        {/* The mark before the label says the tab's kind: a Claude tab's status dot (with a
+            pulse while it works), a prompt for a shell, a window for a command entry. A
+            Claude tab with no status yet shows nothing there, as before. */}
+        {status && <StatusDot status={status.status} {...(status.tool ? { tool: status.tool } : {})} />}
+        {tab.kind === 'shell' && <ShellGlyph size={14} className="tab-kind" />}
+        {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
+        <span className="tab-text">
+          {tabLabel(tab, status?.title, status?.name)}
+          {tab.notStarted ? ' (not started)' : tab.exit ? ' (exited)' : ''}
+        </span>
+      </button>
+      {status && (
+        <QueuedChip
+          queue={status.queue}
+          onCancel={(itemId) => props.onCancelQueued(tab.id, itemId)}
+        />
+      )}
+      {tabCloseSide === 'right' && close}
+    </div>
+    )
+  }
 
   return (
     <div className="tab-bar" data-close-side={tabCloseSide}>
@@ -394,78 +554,47 @@ export function TabBar(props: {
         data-fade-end={overflow.end || undefined}
         onScroll={measure}
       >
-        {tabs.map((tab) => {
-          const status = props.sessions.get(tab.id)
-          // In the DOM where it shows (not CSS `order`), so Tab moves through a tab's buttons in
-          // the order the eye reads them.
-          const close = (
-            <button
-              type="button"
-              className="tab-close"
-              aria-label={`Close ${tabLabel(tab, status?.title, status?.name)}`}
-              onClick={() => props.onClose(tab.id)}
-            >
-              <CloseGlyph size={12} />
-            </button>
-          )
-          const dragged = drag?.tabId === tab.id
-          const markEdge = marker?.tabId === tab.id ? marker.edge : undefined
-          // A command tab: what it runs, where, and which plugin opened it (tab-label.ts commandTooltip).
-          const where = commandTooltip(tab) ?? (status?.title ? `${status.title}\n${tab.cwd}` : tab.cwd)
-          const flag = tab.flag
+        {stripRuns(tabs, groups).map((run) => {
+          if (!run.group) return renderTab(run.tabs[0]!)
+          const g = run.group
+          const words = handleWords(g, props.zoom?.groupId === g.id ? props.zoom : undefined, statusOf, labelOfId)
+          const shown = activeId !== null && leavesOf(g.root).includes(activeId)
+          const movingThis = drag?.groupId === g.id
           return (
-          <div
-            key={tab.id}
-            data-tab-id={tab.id}
-            data-drop={markEdge}
-            // The stripe (styles.css .tab[data-flag]) and, while it waits for the person, its pulse.
-            data-flag={flag?.color}
-            data-attention={attention.has(tab.id) || undefined}
-            className={`tab${tab.id === activeId ? ' active' : ''}${tab.exit ? ' exited' : ''}${dragged ? ' dragged' : ''}`}
-            style={dragged ? { transform: `translateX(${drag.dx}px)` } : undefined}
-          >
-            {tabCloseSide === 'left' && close}
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab.id === activeId}
-              className="tab-label"
-              // The note is the tooltip's first line: the reminder is what the person flagged it for.
-              title={flag?.note ? `${flag.note}\n${where}` : where}
-              aria-description={
-                flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined
-              }
-              onClick={() => props.onSelect(tab.id)}
-              onPointerDown={(e) => onPointerDown(e, tab.id)}
-              onPointerMove={onPointerMove}
-              onPointerUp={(e) => endDrag(e, true)}
-              onPointerCancel={(e) => endDrag(e, false)}
-              onLostPointerCapture={(e) => endDrag(e, false)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                setCreateOpen(false)
-                setMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
-              }}
+            <div
+              key={`group:${g.id}:${run.tabs[0]!.id}`}
+              className={`tab-group${shown ? ' shown' : ''}${movingThis ? ' dragged' : ''}`}
+              role="group"
+              aria-label={words.label}
+              data-group-id={g.id}
+              data-zoomed={words.zoomText !== undefined || undefined}
+              style={movingThis ? { transform: `translateX(${drag.dx}px)` } : undefined}
             >
-              {/* The mark before the label says the tab's kind: a Claude tab's status dot (with a
-                  pulse while it works), a prompt for a shell, a window for a command entry. A
-                  Claude tab with no status yet shows nothing there, as before. */}
-              {status && <StatusDot status={status.status} {...(status.tool ? { tool: status.tool } : {})} />}
-              {tab.kind === 'shell' && <ShellGlyph size={14} className="tab-kind" />}
-              {tab.kind === 'command' && <CommandGlyph size={14} className="tab-kind" />}
-              <span className="tab-text">
-                {tabLabel(tab, status?.title, status?.name)}
-                {tab.notStarted ? ' (not started)' : tab.exit ? ' (exited)' : ''}
-              </span>
-            </button>
-            {status && (
-              <QueuedChip
-                queue={status.queue}
-                onCancel={(itemId) => props.onCancelQueued(tab.id, itemId)}
-              />
-            )}
-            {tabCloseSide === 'right' && close}
-          </div>
+              <button
+                type="button"
+                className="tab-group-handle"
+                aria-label={words.label}
+                aria-haspopup="menu"
+                title={`${words.text}: click to show, drag to move, right-click for its menu`}
+                onClick={() => props.onSelectGroup(g.id)}
+                onPointerDown={(e) => onPointerDown(e, run.tabs[0]!.id, g.id)}
+                onPointerMove={onPointerMove}
+                onPointerUp={(e) => endDrag(e, true)}
+                onPointerCancel={(e) => endDrag(e, false)}
+                onLostPointerCapture={(e) => endDrag(e, false)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setCreateOpen(false)
+                  setMenu(null)
+                  setGroupMenu({ groupId: g.id, x: e.clientX, y: e.clientY })
+                }}
+              >
+                <SplitGlyph size={13} />
+                {g.name !== undefined && <span className="tab-group-name">{g.name}</span>}
+                {words.zoomText !== undefined && <span className="tab-group-zoom">⤢ {words.zoomText}</span>}
+              </button>
+              {run.tabs.map(renderTab)}
+            </div>
           )
         })}
       </div>
@@ -629,6 +758,48 @@ export function TabBar(props: {
             </button>
           )}
           <div role="separator" className="menu-separator" />
+          {/* The split view (design §1): a new pane beside this tab, this tab beside another, out of
+              its group. A split too small to make is disabled with the reason (D5). */}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={splitRight !== undefined}
+            title={splitRight}
+            aria-description={splitRight}
+            onClick={() => props.onSplit(menu.tabId, 'right')}
+          >
+            Split right
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={splitDown !== undefined}
+            title={splitDown}
+            aria-description={splitDown}
+            onClick={() => props.onSplit(menu.tabId, 'down')}
+          >
+            Split down
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            disabled={tabs.length < 2}
+            onClick={(e) => {
+              // Else the window's click listener closes the list this opens.
+              e.stopPropagation()
+              setBeside({ tabId: menu.tabId, x: menu.x, y: menu.y })
+              setMenu(null)
+            }}
+          >
+            Show beside ▸
+          </button>
+          {menuGroup && (
+            <button type="button" role="menuitem" onClick={() => props.onMoveOut(menu.tabId)}>
+              Move out of group
+            </button>
+          )}
+          <div role="separator" className="menu-separator" />
           {/* The person's flag (shared/tab-flag.ts), on any tab kind: a colour row, the note, clear. */}
           <div role="group" aria-label="Flag" className="menu-flag-row">
             <span className="menu-caption" aria-hidden="true">
@@ -670,6 +841,109 @@ export function TabBar(props: {
             Close
           </button>
         </div>
+      )}
+      {beside && (
+        <div
+          ref={ctxRef}
+          className="menu context-menu menu-beside"
+          role="menu"
+          aria-label={`Show ${labelOfId(beside.tabId)} beside`}
+          style={{ left: beside.x, top: beside.y }}
+          onKeyDown={(e) => walkMenu(e, true)}
+        >
+          <div className="menu-caption" aria-hidden="true">
+            Show beside
+          </div>
+          {tabs
+            .filter((t) => t.id !== beside.tabId)
+            .map((t) => {
+              const label = labelOfId(t.id)
+              return (
+                <div key={t.id} className="menu-beside-row">
+                  <span className="menu-label" aria-hidden="true">
+                    {label}
+                  </span>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label={`Right of ${label}`}
+                    title="Right"
+                    onClick={() => props.onShowBeside(beside.tabId, t.id, 'right')}
+                  >
+                    →
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label={`Below ${label}`}
+                    title="Below"
+                    onClick={() => props.onShowBeside(beside.tabId, t.id, 'down')}
+                  >
+                    ↓
+                  </button>
+                </div>
+              )
+            })}
+        </div>
+      )}
+      {groupMenu && groupOfMenu && (
+        <div
+          ref={ctxRef}
+          className="menu context-menu"
+          role="menu"
+          aria-label={`Split group ${groupTitle(groupOfMenu)}`}
+          style={{ left: groupMenu.x, top: groupMenu.y }}
+          onKeyDown={(e) => walkMenu(e, true)}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={(e) => {
+              // Else the window's click listener closes the editor this opens.
+              e.stopPropagation()
+              setGroupRenaming({ groupId: groupOfMenu.id, x: groupMenu.x, y: groupMenu.y, value: groupOfMenu.name ?? '' })
+              setGroupMenu(null)
+            }}
+          >
+            Rename
+          </button>
+          <button type="button" role="menuitem" onClick={() => props.onEqualizeGroup(groupOfMenu.id)}>
+            Equalize
+          </button>
+          <button type="button" role="menuitem" onClick={() => props.onUngroup(groupOfMenu.id)}>
+            Ungroup
+          </button>
+          <div role="separator" className="menu-separator" />
+          <button type="button" role="menuitem" onClick={() => props.onCloseGroup(groupOfMenu.id)}>
+            Close all
+          </button>
+        </div>
+      )}
+      {groupRenaming && (
+        <form
+          className="menu context-menu tab-rename"
+          role="dialog"
+          aria-label="Group name"
+          style={{ left: groupRenaming.x, top: groupRenaming.y }}
+          // The window's click listener would close the editor under the pointer.
+          onClick={(e) => e.stopPropagation()}
+          onSubmit={(e) => {
+            e.preventDefault()
+            // Empty: no name (the handle shows the split mark alone). main checks the name.
+            const name = groupRenaming.value.trim()
+            props.onRenameGroup(groupRenaming.groupId, name === '' ? null : name)
+            setGroupRenaming(null)
+          }}
+        >
+          <input
+            autoFocus
+            aria-label="Group name"
+            placeholder="Name (empty: none)"
+            maxLength={60}
+            value={groupRenaming.value}
+            onChange={(e) => setGroupRenaming({ ...groupRenaming, value: e.target.value })}
+          />
+        </form>
       )}
       {noting && (
         <form

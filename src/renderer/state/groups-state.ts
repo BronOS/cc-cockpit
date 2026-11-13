@@ -124,3 +124,34 @@ export function selectionAfterSnapshot(
   if (next === undefined) return undefined
   return { activeId: next, keysOff: intent !== 'leave' }
 }
+
+/** What this view shows of its selection: the group (none for a plain tab), its zoomed pane, the visible panes. */
+export interface PaneView {
+  group?: TabGroup
+  /** The one pane shown of the group, by this view's zoom or by D5's automatic zoom. */
+  zoomTab?: string
+  /** The automatic zoom (a narrow view), which the person cannot undo by the zoom chord. */
+  auto: boolean
+  /** Tabs drawn now: the active plain tab, or every visible pane of the group (possibly not held yet). */
+  visible: string[]
+}
+
+/**
+ * The panes this view shows: the selected tab's group, all of it or only its zoomed pane. Every pane
+ * listed is laid out (and so takes the pty size on the person's gestures, D2); every other terminal
+ * is display:none and takes nothing.
+ */
+export function paneView(
+  groups: readonly TabGroup[],
+  activeId: string | null,
+  zoomed: Readonly<Record<string, string>>,
+  autoZoom: (group: TabGroup) => boolean
+): PaneView {
+  if (activeId === null) return { auto: false, visible: [] }
+  const group = groupOf(groups, activeId)
+  if (!group) return { auto: false, visible: [activeId] }
+  const own = zoomed[group.id]
+  const auto = own === undefined && autoZoom(group)
+  const zoomTab = own ?? (auto ? activeId : undefined)
+  return zoomTab !== undefined ? { group, zoomTab, auto, visible: [zoomTab] } : { group, auto, visible: leavesOf(group.root) }
+}
