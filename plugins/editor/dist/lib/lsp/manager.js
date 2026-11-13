@@ -923,10 +923,11 @@ class LspManager {
     if (args !== undefined && (!Array.isArray(args) || jsonLength(args) > MAX_COMMAND_CHARS)) throw new Error("the action's command is too large")
     const busy = this.commandBusy(slot, srv)
     if (busy) throw new Error(busy)
-    // This command's own snapshot and stop, never shared with another command.
-    const versions = snapshot && snapshot.versions instanceof Map ? snapshot.versions : this.versions()
+    // This command's own snapshot and stop, never shared with another command (copies: its own
+    // edits move them on, serverApplyEdit).
+    const versions = new Map(snapshot && snapshot.versions instanceof Map ? snapshot.versions : this.versions())
     const since = snapshot && Number.isFinite(snapshot.since) ? snapshot.since : Date.now()
-    const written = snapshot && snapshot.written instanceof Map ? snapshot.written : undefined
+    const written = new Map(snapshot && snapshot.written instanceof Map ? snapshot.written : [])
     const run = { srv, versions, since, written, stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false, held: false, heldTimer: null }
     slot.command = run
     const onDone = () => {
@@ -969,7 +970,10 @@ class LspManager {
   /**
    * The server's `workspace/applyEdit`: applied only while a command the host ran on that server is
    * working (a server cannot rewrite project files whenever it likes), against the documents as
-   * they were when that command started, and only until that command is stopped.
+   * they were when that command started, moved on only by that command's own earlier edits, and
+   * only until that command is stopped. The command is read before the first await: server.js calls
+   * this in message order, so a request the server sent before its command's answer (one stdout
+   * chunk) belongs to the command still running then, whatever that answer settles after.
    */
   async serverApplyEdit(slot, srv, edit) {
     const run = slot.command
@@ -977,13 +981,20 @@ class LspManager {
       return { applied: false, failureReason: "this editor applies a server's edit only while a command it ran is working" }
     }
     if (run.stop.signal.aborted) return { applied: false, failureReason: 'the command this edit belongs to was stopped' }
-    const p = applyWorkspaceEdit(this, edit, { versions: run.versions, since: run.since, written: run.written, signal: run.stop.signal })
+    // What this edit changed (edits.js `produced`, as runCodeAction's edit before its command): a
+    // second edit of the same command to the same file is checked against the text the first one
+    // left, not refused as stale; any other file keeps the command's snapshot.
+    const produced = { versions: new Map(), written: new Map() }
+    const p = applyWorkspaceEdit(this, edit, { versions: run.versions, since: run.since, written: run.written, signal: run.stop.signal, produced })
     run.inflight.add(p)
     let r
     try {
       r = await p
     } finally {
       run.inflight.delete(p)
+      // Also after a refusal part way: the files it did change are this command's text now.
+      for (const [uri, v] of produced.versions) run.versions.set(uri, v)
+      for (const [real, m] of produced.written) run.written.set(real, m)
     }
     run.files += r.files || 0
     run.edits += r.edits || 0

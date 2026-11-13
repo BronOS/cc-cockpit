@@ -6,6 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EditorState } from '@codemirror/state'
 import { forEachDiagnostic } from '@codemirror/lint'
+import { CompletionContext } from '@codemirror/autocomplete'
 import { applyEditsTo, showDiagnostics, lspFeatures } from '../src/page/lsp/editor.js'
 
 function fakeView(text, { readOnly = false } = {}) {
@@ -116,4 +117,46 @@ test('lspFeatures: a definition or a symbol in this file goes to its LSP positio
     [1, 4],
     [1, 4],
   ])
+})
+
+// The completion source as CodeMirror runs it: from the language data the extensions add, with the
+// state at the ask; the option is then applied on the state of when the person accepts it.
+async function completeWith(doc, pos, result) {
+  const ui = lspFeatures({
+    client: { ready: () => true, features: () => ({ complete: true }), ask: async () => ({ result }) },
+    path: () => 'a.ts',
+    goto() {},
+    openLocation() {},
+    showList() {},
+    prompt() {},
+    message() {},
+  })
+  const v = fakeView('')
+  v.state = EditorState.create({ doc, extensions: ui.extensions })
+  const source = v.state.languageDataAt('autocomplete', pos).find((s) => typeof s === 'function')
+  const answer = await source(new CompletionContext(v.state, pos, true))
+  return { v, answer }
+}
+
+test('completion: a text edit range is resolved on the text at the ask, then carried over what was typed since', async () => {
+  // `abZZ` asked after `ab`, the item replacing the whole word; a backspace before accepting.
+  const item = { label: 'abc', textEdit: { range: { start: at(0, 0), end: at(0, 4) }, newText: 'abc' } }
+  let { v, answer } = await completeWith('abZZ', 2, [item])
+  v.dispatch({ changes: { from: 1, to: 2 } })
+  answer.options[0].apply(v, answer.options[0], 0, 1)
+  assert.equal(v.state.doc.toString(), 'abc')
+  // Typing at the end of the word instead: the range grows with it.
+  ;({ v, answer } = await completeWith('abZZ', 2, [item]))
+  v.dispatch({ changes: { from: 2, insert: 'x' } })
+  answer.options[0].apply(v, answer.options[0], 0, 3)
+  assert.equal(v.state.doc.toString(), 'abc')
+})
+
+test('completion: additional edits are carried over the typing since too', async () => {
+  // An extra edit later on the same line: typing before it moves it right.
+  const item = { label: 'abc', textEdit: { range: { start: at(0, 0), end: at(0, 2) }, newText: 'abc' }, additionalTextEdits: [edit(0, 4, 0, 7, 'bar')] }
+  const { v, answer } = await completeWith('ab; foo', 2, [item])
+  v.dispatch({ changes: { from: 2, insert: 'c' } })
+  answer.options[0].apply(v, answer.options[0], 0, 3)
+  assert.equal(v.state.doc.toString(), 'abc; bar')
 })

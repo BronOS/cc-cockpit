@@ -314,12 +314,20 @@ class LspServer {
         return reply({ success: false })
       case 'workspace/applyEdit': {
         if (!this.o.onApplyEdit) return reply({ applied: false, failureReason: 'this editor does not apply edits from the server yet' })
-        Promise.resolve()
-          .then(() => this.o.onApplyEdit(params.edit, params.label))
-          .then(
-            (r) => reply(r && typeof r === 'object' ? r : { applied: false }),
-            (e) => reply({ applied: false, failureReason: messageOf(e).slice(0, 500) }),
-          )
+        // Called now, not on a later tick: messages are handled in the order the server sent them,
+        // and the response to the command this edit belongs to may sit in the same stdout chunk
+        // right behind it; deferred, that response would settle the command first and the edit be
+        // refused while the command reported success. A throw is still an answer, not a crash.
+        let done
+        try {
+          done = Promise.resolve(this.o.onApplyEdit(params.edit, params.label))
+        } catch (e) {
+          done = Promise.reject(e)
+        }
+        done.then(
+          (r) => reply(r && typeof r === 'object' ? r : { applied: false }),
+          (e) => reply({ applied: false, failureReason: messageOf(e).slice(0, 500) }),
+        )
         return undefined
       }
       default:

@@ -958,6 +958,38 @@ test("commands: a cancel stops the server's edits before their next file and cou
   assert.equal(f.disk('src/b.ts'), '// applied\nconst b = 2\n')
 })
 
+test("commands: a command's second applyEdit to the files its first changed lands: its snapshot moves on by its own edits (an open page's version, a disk file's save)", async (t) => {
+  const f = setup(['--apply-twice'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const c = commands(f)
+  await c.run(['src/a.ts', 'src/b.ts'])
+  const ans = f.answers('workspace/applyEdit')
+  assert.deepEqual(
+    ans.map((x) => x.result),
+    [{ applied: true }, { applied: true }]
+  )
+  assert.equal(a.text, '// applied\n// applied\nconst a = 1\n')
+  assert.equal(f.disk('src/b.ts'), '// applied\n// applied\nconst b = 2\n')
+})
+
+test('commands: an applyEdit written together with the command\'s answer (one stdout chunk) is applied as part of that command, not refused', async (t) => {
+  const f = setup(['--apply-batched'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const c = commands(f)
+  assert.deepEqual(await c.run(['src/a.ts', 'src/b.ts']), { files: 2, edits: 2 })
+  assert.equal(a.text, '// applied\nconst a = 1\n')
+  assert.equal(f.disk('src/b.ts'), '// applied\nconst b = 2\n')
+  await until(() => f.answers('workspace/applyEdit').length === 1, 5000, 'applyEdit answer')
+  assert.deepEqual(f.answers('workspace/applyEdit')[0].result, { applied: true })
+  assert.equal(c.slot.command, null)
+})
+
 test('runCodeAction: an edit applied and then its command stopped is an answer counting the files (told to a page that gave up); a busy server refuses before the edit', async (t) => {
   const f = setup(['--apply-delay', '300', '--action-with-command'])
   t.after(f.done)

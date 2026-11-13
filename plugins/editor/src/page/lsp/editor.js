@@ -14,7 +14,7 @@
 // Shift+Alt+F format, Mod+Shift+O symbols, Mod+Shift+Space signature help, Ctrl+Space completion
 // (CodeMirror's own).
 
-import { StateField, StateEffect, Prec, EditorState } from '@codemirror/state'
+import { StateField, StateEffect, Prec, EditorState, ChangeSet } from '@codemirror/state'
 import { EditorView, keymap, hoverTooltip, showTooltip } from '@codemirror/view'
 import { snippet, pickedCompletion } from '@codemirror/autocomplete'
 import { setDiagnostics, lintGutter } from '@codemirror/lint'
@@ -125,6 +125,35 @@ const signatureField = StateField.define({
 })
 
 /**
+ * The buffer's recent changes, numbered, so a completion item (whose ranges were given for the text
+ * at the ask) can be carried over what was typed while the answer was on its way and after: an
+ * item's range resolved against the text of now reads a backspace's shifted offsets as the old ones
+ * (`abZZ` asked after `ab`, backspace, `abc` accepted gave `abcZ`). Bounded: an item kept past the
+ * last `EDIT_LOG_SIZE` changes falls back to the plain word range.
+ */
+const EDIT_LOG_SIZE = 200
+const editLog = StateField.define({
+  create: () => ({ seq: 0, list: [] }),
+  update(value, tr) {
+    if (!tr.docChanged) return value
+    const list = value.list.length >= EDIT_LOG_SIZE ? value.list.slice(1) : value.list.slice()
+    list.push(tr.changes)
+    return { seq: value.seq + 1, list }
+  },
+})
+
+/** The changes made since log number `seq` as one ChangeSet from that text to now, or null when the log no longer reaches back that far. */
+function changesSince(state, seq, startLength) {
+  const log = state.field(editLog, false)
+  if (!log) return null
+  const n = log.seq - seq
+  if (n < 0 || n > log.list.length) return null
+  let all = ChangeSet.empty(startLength)
+  for (const c of log.list.slice(log.list.length - n)) all = all.compose(c)
+  return all
+}
+
+/**
  * The language features as CodeMirror extensions. `deps`:
  *   client                 lsp/client.mjs
  *   path()                 this tab's file (project-relative)
@@ -184,17 +213,19 @@ export function lspFeatures(deps) {
     const res = r && r.result
     const items = Array.isArray(res) ? res : res && Array.isArray(res.items) ? res.items : []
     const incomplete = !!(res && !Array.isArray(res) && res.isIncomplete)
-    const reqPos = context.pos
+    // The text the ranges were given for: the state at the ask (the source runs with the view's state then).
+    const log = context.state.field(editLog, false)
+    const req = { doc: context.state.doc, seq: log ? log.seq : -1 }
     const from = word ? word.from : context.pos
     const options = []
     for (const item of items) {
       if (!item || typeof item.label !== 'string') continue
-      options.push(completionOption(item, reqPos, f))
+      options.push(completionOption(item, req, f))
     }
     return { from, options, ...(incomplete ? {} : { validFor: /^[\w$]*$/ }) }
   }
 
-  function completionOption(item, reqPos, f) {
+  function completionOption(item, req, f) {
     const label = typeof item.filterText === 'string' && item.filterText ? item.filterText : item.label
     const o = { label, type: completionType(item.kind) }
     if (label !== item.label) o.displayLabel = item.label
@@ -226,19 +257,28 @@ export function lspFeatures(deps) {
       return o
     }
     o.apply = (view, completion, from, to) => {
-      const doc = view.state.doc
-      // The edit's range was given for the text at the ask; what was typed since moved its end.
+      // Every range was given for the text at the ask (req.doc): resolved there, then carried over
+      // what was typed since. With the log gone that far back, the word range alone and no extra edits.
+      const since = changesSince(view.state, req.seq, req.doc.length)
       let rFrom = from
       let rTo = to
-      if (te) {
-        const s = offsetOf(doc, te.range.start)
-        const e = offsetOf(doc, te.range.end)
-        const shift = to - reqPos
+      if (te && since) {
+        // Typing at the range's end (the word grows) stays inside it, and so does typing at its start.
+        const s = since.mapPos(offsetOf(req.doc, te.range.start), -1)
+        const e = since.mapPos(offsetOf(req.doc, te.range.end), 1)
         rFrom = Math.min(s, from)
-        rTo = Math.max(to, e >= reqPos ? e + shift : e)
+        rTo = Math.max(to, e)
       }
       // Auto-imports and the like first (they lie elsewhere, mostly at the top), then the item.
-      const more = editsToChanges(doc, extra)
+      // Mapped as one change set over the typing since: an edit inside text deleted since shrinks away.
+      const asked = since ? editsToChanges(req.doc, extra) : null
+      let more = null
+      if (Array.isArray(asked)) {
+        more = []
+        ChangeSet.of(asked, req.doc.length)
+          .map(since)
+          .iterChanges((fromA, toA, _fromB, _toB, inserted) => more.push({ from: fromA, to: toA, insert: inserted.toString() }))
+      }
       if (Array.isArray(more)) {
         const outside = more.filter((c) => c.to <= rFrom || c.from >= rTo)
         if (outside.length) {
@@ -503,7 +543,7 @@ export function lspFeatures(deps) {
   )
 
   return {
-    extensions: [lintGutter(), hover, EditorState.languageData.of(() => [{ autocomplete: complete }]), signatureField, signatureTyping, keys],
+    extensions: [lintGutter(), hover, EditorState.languageData.of(() => [{ autocomplete: complete }]), editLog, signatureField, signatureTyping, keys],
     goToDefinition,
     findReferences,
     renameSymbol,

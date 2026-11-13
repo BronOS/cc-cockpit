@@ -24,6 +24,10 @@
 //   --action-with-command code actions also offer one with an edit to the file and a fake.apply command
 //                         (on src/b.ts), and one whose fake.apply names the file and src/b.ts
 //   --hang-command        never answers fake.other, a cancel of it neither (a wedged command: Restart)
+//   --apply-twice         fake.apply asks workspace/applyEdit a second time (the same inserts) once the
+//                         first is answered, and answers the command after the second
+//   --apply-batched       fake.apply writes its workspace/applyEdit and the command's answer in one
+//                         stdout write (one data chunk on the host's side), not waiting for the edit
 // The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
 // sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
 // open), code actions with an edit, a declared command (`fake.apply`, which asks
@@ -48,16 +52,20 @@ const startsFile = value('--starts')
 if (startsFile) fs.appendFileSync(startsFile, 'started\n')
 if (value('--stderr') !== undefined) process.stderr.write(`${value('--stderr')}\n`)
 
-function send(m) {
+function frame(m) {
   const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', ...m }), 'utf8')
-  process.stdout.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]))
+  return Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body])
+}
+
+function send(m) {
+  process.stdout.write(frame(m))
 }
 
 if (flag('--banner')) process.stdout.write('Starting fake server v1.0\n\n\n')
 
 let nextId = 1000
 const mine = new Map() // id -> method of the requests this server sent
-const waiting = new Map() // id of our applyEdit -> the executeCommand request to answer after it
+const waiting = new Map() // id of our applyEdit -> { cmd: the executeCommand request to answer after it, again: changes to ask next first }
 const versions = new Map() // uri -> the version last opened or changed
 let rootUri = ''
 const range = (l1, c1, l2, c2) => ({ start: { line: l1, character: c1 }, end: { line: l2, character: c2 } })
@@ -78,10 +86,11 @@ function handle(m) {
   if (m.method === undefined && m.id !== undefined) {
     // An answer to one of our own requests.
     log({ answer: { method: mine.get(m.id), result: m.result, error: m.error } })
-    const cmd = waiting.get(m.id)
-    if (cmd !== undefined) {
+    const w = waiting.get(m.id)
+    if (w !== undefined) {
       waiting.delete(m.id)
-      send({ id: cmd, result: null })
+      if (w.again) waiting.set(ask('workspace/applyEdit', { label: 'apply again', edit: { changes: w.again } }), { cmd: w.cmd })
+      else send({ id: w.cmd, result: null })
     }
     return
   }
@@ -133,7 +142,13 @@ function handle(m) {
       if (m.params.command !== 'fake.apply') return send({ id: m.id, error: { code: -32601, message: 'no such command' } })
       const changes = {}
       for (const target of m.params.arguments.filter((x) => typeof x === 'string')) changes[target] = [{ range: range(0, 0, 0, 0), newText: '// applied\n' }]
-      const go = () => waiting.set(ask('workspace/applyEdit', { label: 'apply', edit: { changes } }), m.id)
+      if (flag('--apply-batched')) {
+        const id = nextId++
+        mine.set(id, 'workspace/applyEdit')
+        process.stdout.write(Buffer.concat([frame({ id, method: 'workspace/applyEdit', params: { label: 'apply', edit: { changes } } }), frame({ id: m.id, result: null })]))
+        return
+      }
+      const go = () => waiting.set(ask('workspace/applyEdit', { label: 'apply', edit: { changes } }), { cmd: m.id, again: flag('--apply-twice') ? changes : undefined })
       const delay = Number(value('--apply-delay') || 0)
       if (delay > 0) setTimeout(go, delay)
       else go()
