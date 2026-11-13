@@ -93,7 +93,7 @@ with full Node access.
   as `ctx.exec`. Returns `{ pid, write(bytes), end(), onData(bytes => ...), onStderr(bytes => ...),
   onExit(({ code, signal }) => ...), kill() }` at once; `spawn` throws when argv[0] cannot be run
   or the cwd is no directory. `write` takes a Uint8Array (a Buffer is one), not text; `end()`
-  closes stdin. Add listeners right after `spawn`: output with no listener is dropped (it is always
+  closes stdin; write each message in one call (no backpressure signal, so a header and a body in two calls can be cut). After your plugin stops, no listener is called. Add listeners right after `spawn`: output with no listener is dropped (it is always
   read, so the child never blocks). `onExit` comes once, after the last output. At most 16 running
   per plugin; every one is killed with its process group when your plugin stops or reloads and
   when the host stops, so do not leave cleanup to `deactivate`. This is not a boundary: host code

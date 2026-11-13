@@ -182,7 +182,8 @@ export interface PluginProcess {
   readonly pid: number
   /**
    * Write bytes to its stdin. Ignored once the child has exited or `end()` was called; throws for
-   * anything but a Uint8Array (a Buffer is one) and when more than 64 MiB wait unread.
+   * anything but a Uint8Array (a Buffer is one) and when more than 64 MiB wait unread. There is no
+   * backpressure signal, so write each message (an LSP header and body) in one call.
    */
   write(bytes: Uint8Array): void
   /** Close its stdin (a program that reads until EOF then finishes). */

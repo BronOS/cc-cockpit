@@ -2,6 +2,7 @@
 // bytes on the pipes and process-group kills, which a fake spawn would not show. Temp dirs only.
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HostContexts } from '../../src/host/ctx'
@@ -144,6 +145,97 @@ describe('ctx.processes', () => {
     expect(r.out.toString()).toBe('undefined')
   })
 
+  // The leader exits at once; a grandchild of its group lives on (holding the pipes or not).
+  const leaderLeaving = (hold: boolean): string[] => [
+    node,
+    '-e',
+    `const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:${hold ? "['ignore','inherit','inherit']" : "'ignore'"}});process.stdout.write(String(c.pid));setTimeout(()=>process.exit(0),100)`
+  ]
+
+  it('kills the group of a leader that exited on its own, grandchild holding the pipes or not', async () => {
+    for (const hold of [false, true]) {
+      const p = run(leaderLeaving(hold))
+      let grandchild = 0
+      p.onData((b) => (grandchild = Number(Buffer.from(b).toString())))
+      const exit = new Promise<ProcessExit>((resolve) => p.onExit(resolve))
+      await until(() => grandchild > 0)
+      // With the pipes held, onExit comes after the 2 s grace; the slot is freed then.
+      expect((await exit).code).toBe(0)
+      expect(ctx.running.size).toBe(0)
+      await until(() => !alive(grandchild))
+    }
+  }, 15000)
+
+  it('a pipe held by a grandchild does not keep the exit back past the grace', async () => {
+    const t = Date.now()
+    const r = await collect(run(leaderLeaving(true)))
+    expect(r.exit.code).toBe(0)
+    expect(Date.now() - t).toBeLessThan(5000)
+  })
+
+  it('throws past 64 MiB pending on stdin (a fake stdin), ignores write after end()', () => {
+    const written: unknown[] = []
+    const stdin = Object.assign(new EventEmitter(), {
+      writableLength: 64 * 1024 * 1024 - 1,
+      destroyed: false,
+      writable: true,
+      write: (b: unknown) => written.push(b),
+      end: () => {
+        stdin.writable = false
+      },
+      destroy: () => {}
+    })
+    const fake = Object.assign(new EventEmitter(), { pid: 999999, stdin, stdout: new EventEmitter(), stderr: new EventEmitter() })
+    const p = spawnProcess([node], {}, { ...ctx, spawnFn: () => fake as never })
+    expect(() => p.write(new Uint8Array(1))).not.toThrow()
+    expect(() => p.write(new Uint8Array(2))).toThrow(RangeError)
+    p.end()
+    p.write(new Uint8Array(1))
+    expect(written).toHaveLength(1)
+  })
+
+  it('always reads: a child writing far more than a pipe buffer to stderr with no listener still exits', async () => {
+    const p = run([node, '-e', 'process.stderr.write(Buffer.alloc(1024*1024,1));process.stdout.write(Buffer.alloc(1024*1024,1))'])
+    const exit = await new Promise<ProcessExit>((resolve) => p.onExit(resolve))
+    expect(exit).toEqual({ code: 0, signal: null })
+  })
+
+  it('a failed spawn (ENOENT on the next tick) is not an uncaught error, and a rejecting async listener is reported', async () => {
+    let uncaught: unknown
+    const onUncaught = (e: unknown): void => {
+      uncaught = e
+    }
+    process.on('uncaughtException', onUncaught)
+    try {
+      const fake = Object.assign(new EventEmitter(), { pid: 999998, stdin: null, stdout: null, stderr: null })
+      spawnProcess([node], {}, { ...ctx, spawnFn: () => fake as never })
+      setTimeout(() => fake.emit('error', new Error('spawn ENOENT')), 0)
+      await new Promise((r) => setTimeout(r, 30))
+      expect(uncaught).toBeUndefined()
+    } finally {
+      process.off('uncaughtException', onUncaught)
+    }
+    const p = run([node, '-e', 'process.stdout.write("a")'])
+    p.onData(async () => {
+      throw new Error('async boom')
+    })
+    await collect(p)
+    await until(() => reported.length > 0)
+    expect(String(reported[0])).toContain('async boom')
+  })
+
+  it("does not call exit listeners after the plugin's dispose, and kills a group the leader left", async () => {
+    const contexts = new HostContexts({ log: () => {}, env: { PATH: process.env.PATH } })
+    const c = contexts.create(hostSpec({ id: 'a.one', dir: root, main: 'm.js' }))
+    const p = c.processes.spawn([node, '-e', 'setInterval(()=>{},1000)'])
+    let called = false
+    p.onExit(() => (called = true))
+    contexts.dispose('a.one')
+    await until(() => !alive(p.pid))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(called).toBe(false)
+  })
+
   describe('through the plugin ctx', () => {
     const forever = [node, '-e', 'setInterval(()=>{},1000)']
 
@@ -151,9 +243,8 @@ describe('ctx.processes', () => {
       const contexts = new HostContexts({ log: () => {}, env: { PATH: process.env.PATH } })
       const c = contexts.create(hostSpec({ id: 'a.one', dir: root, main: 'm.js' }))
       const p = c.processes.spawn(forever)
-      const exit = new Promise<ProcessExit>((resolve) => p.onExit(resolve))
       contexts.dispose('a.one')
-      expect(await exit).toMatchObject({ code: null, signal: 'SIGKILL' })
+      await until(() => !alive(p.pid))
       expect(() => c.processes.spawn(forever)).toThrow('deactivated')
     })
 

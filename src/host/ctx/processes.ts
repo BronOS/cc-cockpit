@@ -16,11 +16,14 @@
 //  - stdout and stderr are always read, with or without a listener: a child writing to a pipe
 //    nobody drains blocks forever (a language server logging to stderr would hang mid-request).
 //  - stdin: bytes only; writes after exit or `end()` are ignored (the child is gone, an EPIPE is
-//    its business). More than 64 MiB waiting unread throws: a child that stopped reading must not
+//    its business). There is no backpressure signal: write each message in ONE call (a header and a
+//    body in two calls can get the body refused). More than 64 MiB waiting unread throws: a child that stopped reading must not
 //    grow the host's memory without bound.
 //  - Exit is reported on 'close' (every pipe drained, so the last output is delivered before
 //    onExit). A child that exited while a grandchild still holds its pipes would never 'close':
 //    after a short grace the pipes are destroyed, which closes them.
+//  - When the leader is gone its group is SIGKILLed at once (a grandchild would otherwise outlive the
+//    plugin, untracked). After the plugin's dispose no listener is called (the kill is not a crash).
 //  - At most 16 running per plugin (counted in the host, freed on close). Every child leads its own
 //    process group (`detached`) and goes into the runtime's `children`, the set ctx.exec uses: the
 //    plugin's dispose (stop, reload, failed activate) and the host's stop (killChildrenAndFlush)
@@ -100,11 +103,26 @@ export function spawnProcess(argv: readonly string[], options: ProcessSpawnOptio
   let exit: ProcessExit | null = null
   let ended = false
   let graceTimer: ReturnType<typeof setTimeout> | undefined
+  const isAlive = (): boolean => {
+    try {
+      ctx.alive?.()
+      return true
+    } catch {
+      return false
+    }
+  }
 
   const deliver = <T>(listeners: Set<(value: T) => void>, value: T): void => {
+    // After the plugin's dispose the SIGKILL's 'close' must not run its listeners: a restart-on-exit
+    // pattern would call spawn on a dead ctx at every reload, and the kill reads as a crash.
+    if (!isAlive()) return
     for (const listener of [...listeners]) {
       try {
-        listener(value)
+        const result: unknown = listener(value)
+        // An async listener that rejects goes to the plugin's log, not the host's global handler.
+        if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+          Promise.resolve(result).catch((err: unknown) => ctx.report(err))
+        }
       } catch (err) {
         ctx.report(err)
       }
@@ -112,7 +130,10 @@ export function spawnProcess(argv: readonly string[], options: ProcessSpawnOptio
   }
   child.stdout?.on('data', (chunk: Buffer) => deliver(dataListeners, chunk))
   child.stderr?.on('data', (chunk: Buffer) => deliver(stderrListeners, chunk))
+  // A pipe error would be an uncaught 'error' event, which crashes the whole host.
   child.stdin?.on('error', () => {})
+  child.stdout?.on('error', () => {})
+  child.stderr?.on('error', () => {})
 
   child.on('exit', () => {
     graceTimer = setTimeout(() => {
@@ -127,6 +148,10 @@ export function spawnProcess(argv: readonly string[], options: ProcessSpawnOptio
     exit = { code, signal: signal ?? null }
     ctx.running.delete(child)
     ctx.children?.delete(child)
+    // The leader is gone but its group may not be (a grandchild, holding the pipes or not): it is no
+    // longer tracked, so nothing at dispose or host stop would reach it. The pgid cannot be reused
+    // while a member lives, so this never hits a stranger; ESRCH (nobody left) is swallowed.
+    killChild(child)
     child.stdin?.destroy()
     dataListeners.clear()
     stderrListeners.clear()
