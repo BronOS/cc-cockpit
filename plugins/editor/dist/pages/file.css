@@ -377,3 +377,153 @@ main .cm-line.cc-flash {
   font: inherit;
   color: var(--cc-fg-muted);
 }
+/* Quick chat (Ctrl+K, chat-editor.js): a panel docked under the editor, and in the editor its target
+   (the selection it is about) and a proposal's inline diff: the lines it removes tinted red in place,
+   its new text in a block below (new lines green) with Accept and Reject. */
+.chat {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  max-height: 45vh;
+  min-height: 0;
+  border-top: 1px solid var(--cc-border);
+  background: var(--cc-bg-bar);
+}
+.chat[hidden] {
+  display: none;
+}
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2, 8px);
+  padding: 2px var(--cc-space-2, 8px);
+  min-height: var(--cc-control-h, 26px);
+}
+.chat-about,
+.chat-model,
+.chat-status {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-s, 11px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-status {
+  min-width: 0;
+}
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--cc-space-2, 8px);
+}
+.chat-log:empty {
+  display: none;
+}
+.chat-q {
+  margin: var(--cc-space-2, 8px) 0 var(--cc-space-1, 4px);
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  white-space: pre-wrap;
+  background: var(--cc-accent-soft);
+  border-radius: var(--cc-radius-m, 6px);
+}
+.chat-a {
+  margin: var(--cc-space-1, 4px) 0;
+  overflow-wrap: anywhere;
+}
+.chat-a p {
+  margin: var(--cc-space-1, 4px) 0;
+}
+.chat-a pre {
+  margin: var(--cc-space-1, 4px) 0;
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  overflow-x: auto;
+  font: var(--cc-text-m, 13px) var(--cc-terminal-font-family, var(--cc-font-mono, monospace));
+  background: var(--cc-terminal-bg, var(--cc-bg));
+  border-radius: var(--cc-radius-s, 4px);
+}
+.chat-a code {
+  font-family: var(--cc-terminal-font-family, var(--cc-font-mono, monospace));
+}
+.chat-a.error,
+.chat-note.error {
+  color: var(--cc-status-ended);
+}
+.chat-link {
+  text-decoration: underline dotted;
+}
+.chat-tools {
+  color: var(--cc-fg-subtle);
+  font-size: var(--cc-text-s, 11px);
+}
+.chat-wait {
+  color: var(--cc-fg-muted);
+}
+.chat-note {
+  margin: var(--cc-space-1, 4px) 0;
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-s, 11px);
+}
+.chat-proposal {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2, 8px);
+  margin-top: var(--cc-space-2, 8px);
+  font-size: var(--cc-text-s, 11px);
+  color: var(--cc-fg-muted);
+}
+.chat-proposal.shown {
+  color: var(--cc-fg);
+}
+.chat-input {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--cc-space-2, 8px);
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px) var(--cc-space-2, 8px);
+}
+.chat-input textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  max-height: 30vh;
+  padding: 3px 6px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-1);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-s, 4px);
+}
+main .cc-chat-target {
+  background: color-mix(in srgb, var(--cc-accent) 14%, transparent);
+}
+main .cm-line.cc-chat-target-line {
+  background: color-mix(in srgb, var(--cc-accent) 10%, transparent);
+}
+main .cm-line.cc-chat-old {
+  background: color-mix(in srgb, var(--cc-status-ended) 18%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--cc-status-ended) 60%, transparent);
+}
+.cc-chat-proposal {
+  padding: 2px 0 var(--cc-space-1, 4px);
+  border-left: 3px solid var(--cc-status-waiting);
+  background: color-mix(in srgb, var(--cc-status-waiting) 6%, transparent);
+}
+.cc-chat-line {
+  padding: 0 6px;
+  white-space: pre;
+}
+.cc-chat-added {
+  background: color-mix(in srgb, var(--cc-status-waiting) 18%, transparent);
+}
+.cc-chat-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-1, 4px);
+  padding: var(--cc-space-1, 4px) 6px 0;
+  font-family: var(--cc-font-ui, system-ui, sans-serif);
+}
+.cc-chat-label {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-s, 11px);
+}

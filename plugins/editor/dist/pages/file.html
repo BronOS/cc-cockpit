@@ -31,6 +31,22 @@
       <span id="lsp-actions" class="actions"></span>
     </div>
     <main id="editor"></main>
+    <!-- Quick chat (Ctrl+K): a read-only headless Claude about the selection, docked under the editor. -->
+    <section id="chat" class="chat" role="dialog" aria-label="Quick chat" hidden>
+      <div class="chat-head">
+        <strong>Quick chat</strong>
+        <span id="chat-about" class="chat-about"></span>
+        <span id="chat-model" class="chat-model"></span>
+        <span id="chat-status" class="chat-status" role="status"></span>
+        <span class="spacer"></span>
+        <button id="chat-close" type="button" class="cc-ghost" title="End the chat (Esc)" aria-label="End the chat">×</button>
+      </div>
+      <div id="chat-log" class="chat-log" aria-live="polite"></div>
+      <div class="chat-input">
+        <textarea id="chat-input" rows="2" spellcheck="false"></textarea>
+        <button id="chat-send" type="button" class="cc-primary">Send</button>
+      </div>
+    </section>
     <!-- Quick open (Ctrl+P) and find in files (Ctrl+Shift+F): one palette over the editor. -->
     <div id="palette" class="palette" role="dialog" aria-label="Go to file or find in files" hidden>
       <div class="palette-input">

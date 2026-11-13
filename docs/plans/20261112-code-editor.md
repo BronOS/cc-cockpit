@@ -300,15 +300,17 @@ the editor opens through Edit (the file overlay's Edit button, the editor servic
 - Modify: `plugins/editor/plugin.json` (app setting quick chat model)
 - Create: `plugins/editor/test/quick-chat.test.js`, `plugins/editor/test/fixtures/fake-claude.mjs`
 
-- [ ] fixed argv `claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob --input-format stream-json
+- [x] fixed argv `claude -p --restricted --strict-mcp-config --tools Read,Grep,Glob --input-format stream-json
   --output-format stream-json --model <setting>` through `ctx.processes`; refuse to start when `claude --help` lacks the
-  flags; check a real headless run once by hand
-- [ ] prompt with path, selection and ~30 lines as data; streaming Markdown; follow-ups on the same process; close kills
-- [ ] proposal as an inline diff; range mapped through later edits; dropped when the original text changed; Accept
+  flags; check a real headless run once by hand (done with claude 2.1.323, `--model haiku`: the CLI needs `--verbose`
+  for stream-json output with -p; init, stream_event text_delta, assistant tool_use, user tool_result and result lines
+  as parsed; final argv adds --safe-mode, --permission-prompts none, --verbose, --include-partial-messages)
+- [x] prompt with path, selection and ~30 lines as data; streaming Markdown; follow-ups on the same process; close kills
+- [x] proposal as an inline diff; range mapped through later edits; dropped when the original text changed; Accept
   into the buffer, Reject drops; Claude never writes
-- [ ] docs note transcripts in `~/.claude` and Usage counting
-- [ ] write tests: exact argv, refusal without flags, stream parse, proposal extraction and drop, kill on close
-- [ ] run tests - must pass before next task
+- [x] docs note transcripts in `~/.claude` and Usage counting
+- [x] write tests: exact argv, refusal without flags, stream parse, proposal extraction and drop, kill on close
+- [x] run tests - must pass before next task
 
 ### Task 17: Review notes in the editor [model: sonnet]
 

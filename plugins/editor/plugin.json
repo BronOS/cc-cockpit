@@ -61,6 +61,13 @@
               }
             }
           },
+          "quickChatModel": {
+            "type": "string",
+            "title": "Quick chat model",
+            "description": "The Claude model of quick chat (Ctrl+K in a file tab). Quick chat runs Claude Code headless and read-only in the project folder; each chat is a normal Claude Code session, so it leaves a transcript in ~/.claude and counts in Usage.",
+            "enum": ["haiku", "sonnet", "opus", "fable"],
+            "default": "sonnet"
+          },
           "microPath": {
             "type": "string",
             "title": "micro command",

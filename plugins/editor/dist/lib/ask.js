@@ -133,4 +133,4 @@ function serveAsk(tab, { file, answerMs = ANSWER_MS }) {
   }
 }
 
-module.exports = { MAX_SELECTION_CHARS, contextText, fenceFor, serveAsk }
+module.exports = { MAX_SELECTION_CHARS, contextText, fenceFor, oneLine, serveAsk }

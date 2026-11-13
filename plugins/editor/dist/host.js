@@ -14,6 +14,9 @@
 // Project, "Plugin used for editor"). `ccc edit <file>[:line[:col]]` opens the file's tab at
 // that position without selecting it (the unseen dot); micro on an app without page tabs.
 //
+// In a file tab: Ask Claude (Ctrl+L, core's Discuss; lib/ask.js) and quick chat (Ctrl+K, a read-only
+// headless Claude whose proposals the person accepts into the buffer; lib/quick-chat.js).
+//
 // It also adds "Edit" to every overlay of the well-known type `file` { path } (a review, a file
 // shown by another plugin) for a text file of the project: the file's tab, and the overlay closes.
 
@@ -23,6 +26,7 @@ const files = require('./lib/files.js')
 const search = require('./lib/search.js')
 const git = require('./lib/git.js')
 const ask = require('./lib/ask.js')
+const quickChat = require('./lib/quick-chat.js')
 const { LspManager } = require('./lib/lsp/manager.js')
 const { serveLsp } = require('./lib/lsp/serve.js')
 
@@ -424,6 +428,9 @@ exports.activate = (ctx) => {
       // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection.
       const tabFile = tabPath !== undefined ? tabPath : tab.params && typeof tab.params === 'object' && typeof tab.params.outside === 'string' ? tab.params.outside : undefined
       const asking = ask.serveAsk(tab, { file: tabFile })
+      // Quick chat (Ctrl+K): a read-only headless Claude in the project folder (lib/quick-chat.js), about
+      // the tab's own file; the model is the app setting at the chat's start.
+      const chatting = quickChat.serveChat(tab, { spawn, root: ctx.projectDir, rel: tabPath, model: () => quickChat.modelOf(app()), log: ctx.log })
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -435,6 +442,7 @@ exports.activate = (ctx) => {
         if (speaking(m)) return
         if (gitting(m)) return
         if (asking(m)) return
+        if (chatting(m)) return
         // The page's first load (not a reconnect, which keeps the person's cursor): the tab's line.
         // serveFileTab answered the same `open` first (synchronously), so the page has the text.
         if (m.t === 'open' && m.first === true) {
@@ -630,6 +638,8 @@ exports.deactivate = () => {
   lspShared = null
   for (const t of markerTimers) clearTimeout(t)
   markerTimers.clear()
+  // Quick chats: their claude children die with ctx.processes; this frees their slots in the module.
+  quickChat.endAll()
   // Returned: the loader awaits it (5 s cap) before the ctx dispose kills the children, so the
   // servers' shutdown/exit gets its time.
   return lsp ? lsp.dispose().catch(() => {}) : undefined

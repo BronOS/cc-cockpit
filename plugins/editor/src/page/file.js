@@ -58,6 +58,7 @@ import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/
 import { createChanges } from './changes.mjs'
 import { createChangesGutter } from './changes-editor.js'
 import { selectionContext } from './ask.mjs'
+import { createQuickChat } from './chat-editor.js'
 
 /* global ccPanel */
 
@@ -358,6 +359,7 @@ function extensions(info, text) {
     flashField,
     conflictField,
     lspUi.extensions,
+    chat.extension,
     EditorView.updateListener.of((u) => {
       // Every change reaches the language server, a reload's and a merge's too: it must see the buffer.
       if (u.docChanged) lsp.changed(lspChangesOf(u))
@@ -624,6 +626,12 @@ function lspMessage(message, error = false) {
   }, error ? 8000 : 4000)
   drawLspBar()
 }
+
+// ---- quick chat (Ctrl+K, design-editor.md §4) ----
+// A read-only headless Claude the host runs (dist/lib/quick-chat.js), docked under the editor;
+// proposals are inline diffs the person accepts into the buffer (chat-editor.js).
+
+const chat = createQuickChat({ post: (m) => ccPanel.post(m), getView: () => view, message: lspMessage })
 
 // ---- quick open (Ctrl+P) and find in files (Ctrl+Shift+F) ----
 // One palette over the editor in two modes. The host runs rg (dist/lib/search.js); quick-open.mjs
@@ -957,7 +965,7 @@ document.addEventListener('mousedown', (e) => {
   if (palette.mode !== null && !$('palette').contains(e.target)) hidePalette(false)
 })
 // The page's chords (declared as page-tab keys in plugin.json, so the app lets them through while
-// the page has focus): Mod+P quick open, Mod+Shift+F find in files, Mod being CodeMirror's (Cmd on
+// the page has focus): Mod+P quick open, Mod+Shift+F find in files, Mod+K quick chat, Mod+L Ask Claude, Mod being CodeMirror's (Cmd on
 // macOS, Ctrl elsewhere). Caught before CodeMirror, so only the platform's own Mod: on macOS Ctrl+P is
 // the standard keymap's cursorLineUp and must stay with the editor.
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
@@ -976,6 +984,12 @@ window.addEventListener(
       e.preventDefault()
       e.stopPropagation()
       showPalette('grep')
+    } else if (k === 'k' && !e.shiftKey) {
+      // Quick chat on the selection; not while the palette is open (as Mod+L). Mod+Shift+K stays CodeMirror's delete line.
+      if (palette.mode !== null) return
+      e.preventDefault()
+      e.stopPropagation()
+      chat.open()
     } else if (k === 'l' && !e.shiftKey) {
       // Not while the palette is open: its query box keeps its own keys and the selection is hidden behind it.
       if (palette.mode !== null) return
@@ -990,6 +1004,7 @@ window.addEventListener(
 ccPanel.onMessage((m) => {
   if (m && m.t === 'ask-context') return answerAskContext(m.req)
   if (search.receive(m)) return
+  if (chat.receive(m)) return
   if (lsp.receive(m)) return
   if (changes.receive(m)) return
   session.receive(m)
@@ -1000,6 +1015,7 @@ ccPanel.onMessage((m) => {
 ccPanel.onConnect(() => {
   lsp.connect()
   changes.connect()
+  chat.connect()
   session.connect()
   search.connect()
   const v = session.view()

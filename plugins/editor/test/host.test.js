@@ -764,3 +764,18 @@ test('Ask Claude: a file tab answers core\'s Discuss with its own path, the page
   assert.deepEqual(await answer, { text: 'a.txt:2-3\n````\na\n```\nb\n````' })
   await host.deactivate()
 })
+
+test('Quick chat: a file tab routes chat-* messages to lib/quick-chat.js (refused here before anything runs)', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('a.txt')
+  const view = t.connect(t.open[0].id)
+  // No ctx.processes in this fake (an older app): said on the tab, nothing spawned.
+  view.send({ t: 'chat-start', id: 3, question: 'why?', sel: { startLine: 1, text: 'x' } })
+  for (let i = 0; i < 50 && !view.posted.some((m) => m.t === 'chat-end'); i++) await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(view.posted.filter((m) => m.t === 'chat-end'), [{ t: 'chat-end', id: 3, message: 'Quick chat: quick chat needs a newer cockpit (ctx.processes)', error: true }])
+  await host.deactivate()
+})

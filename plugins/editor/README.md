@@ -33,6 +33,19 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   question box; the host answers with `path:start-end` (1-based) and the selected text in a code fence one backtick
   longer than any run in it (cut to 8,000 characters, with a note), or just `path:line` with no selection. Only the main selection is sent (with several cursors the others are ignored). The text goes to
   the Claude tab you pick as your own text, delivered when it waits for input. Needs an app with page tabs' Discuss.
+- Quick chat (Ctrl+K, Cmd+K on macOS): a chat docked under the editor about the selection (the cursor's line with none,
+  at most 20,000 characters). The host runs Claude Code headless and read-only in the project folder, with a fixed argv
+  (`claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts none` plus
+  stream-json in and out and the model of the setting `quickChatModel`, default `sonnet`): no Bash, no edits, no MCP
+  server, no settings files, plugins, hooks or CLAUDE.md; the chat is refused when the installed `claude --help` lacks
+  any of these flags (update Claude Code). The prompt carries the file's path, the selection and about 15 lines on each
+  side as data; answers stream as Markdown (shown as text, links not followed); follow-ups go to the same Claude, and
+  closing the chat (×, Esc) ends it (so do 15 idle minutes, a turn over 5 minutes, and a reconnect of the tab's page).
+  A proposed change is a replacement for the selection, shown as an inline diff (the lines it removes tinted, its text
+  below) with Accept and Reject; it follows later edits and is dropped when the selected text changes (you typed, or
+  Claude's write was reloaded or merged). Accept puts it in the buffer as your edit (undo works, autosave saves it);
+  Claude never writes. At most 3 chats run at once in a window. Each chat is an ordinary Claude Code session: it leaves
+  a transcript in `~/.claude/projects` and counts in Usage like any other.
 - A plain click on a file (the Sessions panel's changed files, the Files tree) opens the Reviewer's view unless the
   project picks "Editor (a file tab)" in Settings > This Project, "Plugin used to open files" (the manifest's
   `contributes.openFile` with `whenPicked: true`); then it opens the file's tab, and a binary file the built-in viewer.
