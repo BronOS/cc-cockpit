@@ -122,6 +122,8 @@ export class SessionRegistry {
    * not outlive it and clear a `delivering` flag of the new process.
    */
   tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string; flag?: TabFlag }): void {
+    // Only Claude tabs. A page tab (design-editor.md §1) never even gets here (TabManager reports no
+    // `started` for it): with no entry it is outside the send gate, `typed` and Claude status.
     if (tab.kind !== 'claude') return
     const prev = this.entries.get(tab.tabId)
     this.clearDeliveryTimer(tab.tabId)
@@ -358,6 +360,15 @@ export class SessionRegistry {
       const entry = id === undefined ? undefined : this.entries.get(id)
       if (entry && entry.projectId === projectId) this.changed({ tabId: entry.tabId, entry, prev: entry })
     }
+  }
+
+  /**
+   * The tab `projectId`'s window shows, any kind (a shell or page tab too), as setActive was last
+   * told. For the page tabs' unseen dot (TabManager.createPage): opened while this is some tab, a
+   * new one was opened while the person looked elsewhere.
+   */
+  selectedTab(projectId: string): string | undefined {
+    return this.activeTabs.get(projectId)
   }
 
   /** The Claude tab `projectId`'s window shows, if the selected tab is one (see setActive). */

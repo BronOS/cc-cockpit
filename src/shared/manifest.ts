@@ -3,8 +3,10 @@
 // every string that ends up in a path, an id or a command line is constrained here, before
 // `src/main/plugins/validate.ts` (ajv, file containment, settings schemas) accepts it.
 import type { ZoneId } from './layout'
+import { MAX_PAGE_TAB_KEYS, MAX_PAGE_TAB_TYPES, PAGE_TAB_TYPE_PATTERN, type PageTabContribution } from './page-tabs'
 import { MAX_PANEL_SLOT_TYPES, MAX_PROVIDER_SLOTS, SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, SLOT_TYPE_PATTERN, type SlotContribution } from './slots'
 
+export type { PageTabContribution } from './page-tabs'
 export type { SlotContribution } from './slots'
 
 /** The plugin API major this app implements; any other major is refused. */
@@ -225,6 +227,11 @@ export interface PluginManifest {
     openFile?: OpenFileContribution
     /** Slots this plugin can draw in other plugins' panels (or the app's chrome), design-next §2. */
     slots?: SlotContribution[]
+    /**
+     * Page-tab types this plugin opens in the main tab bar (design-editor.md §1): main loads each
+     * type's page from here, never from a path the host sends (`ctx.tabs.openPage` names the type).
+     */
+    tabs?: PageTabContribution[]
   }
   /**
    * Named APIs this plugin offers (`provides`) and calls (`uses`), each with a major version. A
@@ -401,6 +408,20 @@ export const MANIFEST_SCHEMA = {
             type: 'object',
             required: ['type', 'entry'],
             properties: { type: slotType, entry: relativePath, title, minHeight: slotHeight, maxHeight: slotHeight }
+          }
+        },
+        // Duplicate types, the `.html` page, the chords and `main` are checked in validate.ts.
+        tabs: {
+          type: 'array',
+          maxItems: MAX_PAGE_TAB_TYPES,
+          items: {
+            type: 'object',
+            required: ['type', 'page'],
+            properties: {
+              type: { type: 'string', pattern: PAGE_TAB_TYPE_PATTERN.source },
+              page: relativePath,
+              keys: { type: 'array', maxItems: MAX_PAGE_TAB_KEYS, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 64 } }
+            }
           }
         }
       }

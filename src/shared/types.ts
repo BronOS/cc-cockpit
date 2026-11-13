@@ -10,10 +10,12 @@ import type { TerminalFont } from './terminal-font'
 import type { WindowBackground } from './window-background'
 
 /**
- * What a tab runs: `claude` (with our hooks), the user's login shell, or a command line from the
- * user's new-tab menu entries (`TabCommandEntry`), run by that login shell.
+ * What a tab runs: `claude` (with our hooks), the user's login shell, a command line from the
+ * user's new-tab menu entries (`TabCommandEntry`), run by that login shell, or `page`: a plugin's
+ * page (design-editor.md §1 "Core: page tabs", shared/page-tabs.ts), with no process at all: never
+ * typed into as a terminal, outside the send gate, with no Claude status.
  */
-export type TabKind = 'claude' | 'shell' | 'command'
+export type TabKind = 'claude' | 'shell' | 'command' | 'page'
 
 /**
  * One user-defined entry of the new-tab menu (design §3 Tabs, "Custom commands"): app-wide in
@@ -72,6 +74,16 @@ export interface TabRecord {
    * user-writable): read back through tabFlagOf, which drops a damaged value.
    */
   flag?: { color: string; note?: string }
+  /**
+   * A page tab (kind `page`): the plugin, its manifest tab type, the params for its `onOpen`, the
+   * title and icon main clamped (shared/page-tabs.ts). Restore checks them all again and asks
+   * whether the plugin is still installed, on in the project and declares the type.
+   */
+  plugin?: string
+  type?: string
+  params?: unknown
+  title?: string
+  icon?: string
 }
 
 /**

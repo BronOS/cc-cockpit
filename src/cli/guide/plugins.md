@@ -64,6 +64,14 @@ so a person chooses to install or link it.
   file in the Sessions panel, through `ctx.files.onOpen` (`api` topic). `title` (1-100 chars)
   names the choice in Settings > This Project, where a project with several such plugins picks one (or
   the built-in viewer); with one, it gets the clicks unless the project picks the built-in viewer.
+- `tabs` (needs `main`): page-tab types, tabs in the main tab bar whose content is your page (the
+  editor's file tabs). Each entry is `type` (`^[a-z][a-z0-9-]{0,63}$`, unique), `page` (an `.html`
+  page) and optional `keys` (up to 32 chords the page takes while it has focus; the app's own
+  chords and the person's overrides still win). At most 10 types. The app loads the page the
+  manifest names for a type, never one the host names. A tab's title is cut to 80 characters, its
+  params are plain JSON up to 4 KiB, at most 64 page tabs per plugin per project. Page tabs are
+  saved and come back at the next start while the plugin is installed, on in the project and still
+  declares the type. A page tab has no terminal: nothing is ever typed into it.
 - `skills`: each entry has `id` and `dir` (a plugin-relative folder holding `SKILL.md`), at most
   10 per plugin. The front matter of `SKILL.md` is exactly two lines, `name: <id>` and
   `description: <one line, at most 1024 chars>`; any other key, a multi-line value, a `name`

@@ -1665,6 +1665,8 @@ function start(server: boolean): void {
   })
   const tabs = new TabManager({
     backend: new NodePtyBackend(),
+    // A page tab opened while the window shows another tab gets the unseen dot (design-editor.md §1).
+    selectedTab: (projectId) => sessions.selectedTab(projectId),
     // Server mode: only browsers size a pty; a tab nobody sized starts at 120x40 (design-web.md §9.8).
     server,
     terminalTap: terminalMirror,
@@ -1727,7 +1729,15 @@ function start(server: boolean): void {
         r.tabs = records
       }),
     projectPath: (projectId) => registry.get(projectId)?.path,
-    pluginAvailable: (pluginId) => pluginAvailable(pluginId)
+    pluginAvailable: (pluginId) => pluginAvailable(pluginId),
+    // A page tab comes back only while its plugin loaded, is on in the project and still declares
+    // the type: main loads the page the manifest names for it, and only an enabled plugin's host
+    // can answer it (design-editor.md §1). Asked after pluginsLoaded (the attach below waits).
+    pageTabAvailable: (projectId, pluginId, type) => {
+      const plugin = plugins.get(pluginId)
+      if (!plugin?.manifest || !plugin.state.ok || !enabledIds(projectId).includes(pluginId)) return false
+      return (plugin.manifest.contributes?.tabs ?? []).some((t) => t.type === type)
+    }
   })
   // A project window that opens with nothing to restore gets one Claude tab when its renderer
   // first attaches (first-tab.ts; the attach handler below). The setting is read then.
@@ -2673,7 +2683,8 @@ function start(server: boolean): void {
     // once the restore has resolved, a window that opened with nothing to restore gets its first
     // Claude tab (first-tab.ts); the list returned below includes it.
     attach: async (projectId, windowId) => {
-      await restorer.restore(projectId, spawnReady, (tab) => {
+      // pluginsLoaded too: a saved page tab is checked against its plugin's manifest (pageTabAvailable).
+      await restorer.restore(projectId, Promise.all([spawnReady, pluginsLoaded]), (tab) => {
         tabs.restoreTab(projectId, tab)
       })
       await firstTab.settle(projectId, windowId, spawnReady)
@@ -2720,7 +2731,13 @@ function start(server: boolean): void {
     // A view's tab pane selection, for SessionInfo.active (the view that acted last,
     // tabs/view-selections.ts). Only a tab of the sender's project counts: anything else (a tab
     // closed while the message travelled, a foreign id) leaves it as it was.
-    select: (projectId, tabId, viewId) => selections.acted(projectId, viewId, tabId),
+    // A view showing a tab also clears its unseen dot (TabManager.markSeen), told to every view of
+    // the window as the tab as stored (`tabs.added` merges it by id and generation).
+    select: (projectId, tabId, viewId) => {
+      selections.acted(projectId, viewId, tabId)
+      const seen = tabs.markSeen(projectId, tabId)
+      if (seen) sendToProject(projectId, 'tabs.added', seen)
+    },
     // With each entry's chord from the project's resolved key table, shown next to its label.
     commands: (projectId) => {
       const keys = new Map(commands.view(projectId).commands.map((c) => [c.id, c.key]))

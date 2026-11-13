@@ -113,6 +113,12 @@ function isPlainObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// ../../src/shared/page-tabs.ts
+var PAGE_TAB_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+var MAX_PAGE_TAB_TYPES = 10;
+var MAX_PAGE_TAB_KEYS = 32;
+var MAX_PAGE_TAB_PARAMS_BYTES = 4 * 1024;
+
 // ../../src/shared/slots.ts
 var SLOT_TYPE_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 var MAX_PROVIDER_SLOTS = 10;
@@ -284,6 +290,20 @@ var MANIFEST_SCHEMA = {
             type: "object",
             required: ["type", "entry"],
             properties: { type: slotType, entry: relativePath, title, minHeight: slotHeight, maxHeight: slotHeight }
+          }
+        },
+        // Duplicate types, the `.html` page, the chords and `main` are checked in validate.ts.
+        tabs: {
+          type: "array",
+          maxItems: MAX_PAGE_TAB_TYPES,
+          items: {
+            type: "object",
+            required: ["type", "page"],
+            properties: {
+              type: { type: "string", pattern: PAGE_TAB_TYPE_PATTERN.source },
+              page: relativePath,
+              keys: { type: "array", maxItems: MAX_PAGE_TAB_KEYS, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 64 } }
+            }
           }
         }
       }

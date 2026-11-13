@@ -14,6 +14,7 @@ import type { ScreenAnswer } from '../../shared/terminal-screen'
 import { checkSessionName } from '../../shared/session-name'
 import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
+import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, type PageTabSpec } from '../../shared/page-tabs'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
 import type { TabKind } from '../../shared/types'
 import type { Env } from '../env/login-env'
@@ -139,6 +140,12 @@ export interface TabManagerOptions {
    * off. Absent in tests that do not need it.
    */
   terminalTap?: TerminalTap
+  /**
+   * The tab the project's window shows now, any kind (SessionRegistry.selectedTab, the selection of
+   * the view that acted last): a page tab opened while one is selected starts with the unseen dot
+   * (TabInfo.unseen). Absent (tests that do not care): no tab is ever unseen.
+   */
+  selectedTab?(projectId: string): string | undefined
 }
 
 /**
@@ -306,6 +313,8 @@ export interface RestoreTabOptions {
   name?: string
   /** The tab's saved flag, any kind (restore.ts read it leniently; re-read here). */
   flag?: TabFlag
+  /** Required for, and only for, kind 'page': its plugin, type, params, title, icon (re-checked here). */
+  page?: PageTabSpec
 }
 
 interface Tab {
@@ -363,6 +372,10 @@ interface Tab {
    */
   resumeFailed: boolean
   exit?: { code: number; signal: number | null }
+  /** Kind 'page' only: what it shows (checkPageTabSpec). Such a tab never has a pty, token or exit. */
+  page?: PageTabSpec
+  /** The core unseen dot (TabInfo.unseen): opened while another tab was selected, not shown since. */
+  unseen?: true
 }
 
 export class TabManager {
@@ -555,15 +568,48 @@ export class TabManager {
   }
 
   /**
+   * Open a page tab (design-editor.md §1): a plugin's page in the tab bar, with no process. The
+   * caller took `spec.plugin` from the host's own plugin and checked the type against that
+   * plugin's manifest (`contributes.tabs`); the spec is checked again here (plain JSON params under
+   * the cap, title clamped, a bad icon dropped) and the per-plugin cap applies. Opened while another
+   * tab is selected, it carries the unseen dot until a view shows it (markSeen).
+   */
+  createPage(projectId: string, spec: PageTabSpec): TabInfo {
+    const page = checkPageTabSpec(spec, isPluginId)
+    const unseen = this.selectedOf(projectId) !== undefined
+    const out = this.addPage(projectId, page, unseen)
+    this.changed(projectId)
+    return out
+  }
+
+  /**
+   * A view of `projectId` showed the tab (`tabs.selected`): its unseen dot goes. The tab as it is
+   * now when that changed something (the caller tells every view), else undefined.
+   */
+  markSeen(projectId: string, tabId: string): TabInfo | undefined {
+    const tab = this.find(projectId, tabId)
+    if (!tab?.unseen) return undefined
+    delete tab.unseen
+    return info(tab)
+  }
+
+  /**
    * Bring a saved tab back at start. Not reachable from a renderer or plugin (no IPC channel
    * maps here): `resumeId` is text from a hook payload that was saved to disk, and restore.ts
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, page }: RestoreTabOptions): TabInfo {
     // Re-read like the name: a bad saved flag only loses the flag. Any kind keeps one.
     const savedFlag = flag === undefined ? undefined : tabFlagOf(flag)
     const flagOpt = savedFlag === undefined ? {} : { flag: savedFlag }
+    if (kind === 'page') {
+      if (resumeId !== undefined || command !== undefined || name !== undefined) throw new Error('a page tab has no session or command')
+      if (!page) throw new Error('a page tab needs its plugin, type and title')
+      // Not unseen: the person had it open when the app quit.
+      return this.addPage(projectId, checkPageTabSpec(page, isPluginId), false, savedFlag)
+    }
+    if (page !== undefined) throw new Error('only a page tab has a page')
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') throw new Error('unknown tab kind')
     if (resumeId !== undefined && kind !== 'claude') throw new Error('only a Claude tab resumes')
     if (kind === 'command') {
@@ -583,6 +629,49 @@ export class TabManager {
       ...(kept === undefined ? {} : { name: kept }),
       ...flagOpt
     })
+  }
+
+  /**
+   * A page tab into the project's order: no pty, no token (resolveToken skips ''), no lifecycle
+   * `started` (the session registry has no entry for it, so the send gate, `typed` and Claude status
+   * never apply), cwd the project folder. gen 1 and no exit: it is never "not started" or exited.
+   */
+  private addPage(projectId: string, page: PageTabSpec, unseen: boolean, flag?: TabFlag): TabInfo {
+    const root = this.projectRoot(projectId)
+    const tabs = this.order.get(projectId) ?? []
+    const mine = tabs.filter((t) => t.page?.plugin === page.plugin).length
+    if (mine >= MAX_PAGE_TABS_PER_PLUGIN) {
+      throw new Error(`a plugin may keep at most ${MAX_PAGE_TABS_PER_PLUGIN} page tabs open in a project`)
+    }
+    const tab: Tab = {
+      id: randomUUID(),
+      projectId,
+      kind: 'page',
+      cwd: resolveCwd(root, undefined),
+      gen: 1,
+      spawnedAt: 0,
+      token: '',
+      resumable: false,
+      resuming: false,
+      resumeFailed: false,
+      page
+    }
+    if (unseen) tab.unseen = true
+    if (flag !== undefined) tab.flag = { ...flag }
+    this.byId.set(tab.id, tab)
+    tabs.push(tab)
+    this.order.set(projectId, tabs)
+    return info(tab)
+  }
+
+  /** The project's selected tab, any kind; a throwing source reads as none (no unseen dot). */
+  private selectedOf(projectId: string): string | undefined {
+    try {
+      return this.options.selectedTab?.(projectId)
+    } catch (err) {
+      this.log(`selected tab lookup failed: ${errorText(err)}`)
+      return undefined
+    }
   }
 
   private add(
@@ -726,6 +815,7 @@ export class TabManager {
    */
   restart(projectId: string, tabId: string): TabInfo {
     const tab = this.require(projectId, tabId)
+    if (tab.kind === 'page') throw new Error('a page tab has no process to restart')
     if (!tab.exit) throw new Error('tab is still running')
     // The folder may have been moved or deleted while the tab sat exited; check again.
     tab.cwd = resolveCwd(this.projectRoot(projectId), tab.cwd)
@@ -740,7 +830,8 @@ export class TabManager {
   /** Text for the PTY as it is (the send gate's paste goes here). Unknown tabs are ignored. */
   input(projectId: string, tabId: string, data: string): void {
     const tab = this.find(projectId, tabId)
-    if (tab) this.pty.write(tab.id, data)
+    // A page tab has no pty: nothing (the send gate's paste included) is ever written for it.
+    if (tab && tab.kind !== 'page') this.pty.write(tab.id, data)
   }
 
   /**
@@ -754,7 +845,8 @@ export class TabManager {
    */
   viewInput(projectId: string, tabId: string, data: string, viewId: ViewId = DESKTOP_VIEW): string {
     const tab = this.find(projectId, tabId)
-    if (!tab) return ''
+    // A page tab is never typed into as a terminal: no pty write, no size take, no `typedBy`.
+    if (!tab || tab.kind === 'page') return ''
     let answers = false
     this.tap((t) => {
       answers = t.answers?.(tab.id) ?? false
@@ -792,7 +884,8 @@ export class TabManager {
   resize(projectId: string, tabId: string, cols: number, rows: number, viewId: ViewId = DESKTOP_VIEW): void {
     const tab = this.find(projectId, tabId)
     // Renderer-supplied: a junk size is not even remembered (PtyService would refuse it anyway).
-    if (!tab || !validSize(cols, rows)) return
+    // A page tab has no terminal to size.
+    if (!tab || tab.kind === 'page' || !validSize(cols, rows)) return
     this.sizes.report(tab.id, viewId, cols, rows)
   }
 
@@ -802,7 +895,7 @@ export class TabManager {
    */
   fit(projectId: string, tabId: string, viewId: ViewId = DESKTOP_VIEW): boolean {
     const tab = this.find(projectId, tabId)
-    return tab ? this.sizes.take(tab.id, viewId) : false
+    return tab && tab.kind !== 'page' ? this.sizes.take(tab.id, viewId) : false
   }
 
   /** A view was hidden or shown (a minimized window, a background browser tab): hidden ones never size. */
@@ -1090,7 +1183,8 @@ export class TabManager {
     this.sizes.tabGone(tab.id)
     this.desktopLocal.delete(tab.id)
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
-    this.tap((t) => t.closed(tab.id))
+    // A page tab never had one.
+    if (tab.kind !== 'page') this.tap((t) => t.closed(tab.id))
     this.notify((l) => l.closed?.(tab.id))
     this.byId.delete(tab.id)
     const tabs = this.order.get(tab.projectId)
@@ -1210,6 +1304,8 @@ function info(tab: Tab): TabInfo {
   if (tab.name !== undefined) out.name = tab.name
   if (tab.flag !== undefined) out.flag = { ...tab.flag }
   if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }
+  if (tab.page) out.page = pageCopy(tab.page)
+  if (tab.unseen) out.unseen = true
   if (tab.command) {
     out.label = tab.command.label
     if (isPluginCommand(tab.command)) {
@@ -1222,6 +1318,14 @@ function info(tab: Tab): TabInfo {
       out.command = tab.command.command
     }
   }
+  return out
+}
+
+/** A copy a caller may keep or change: params are plain JSON (checkPageTabSpec), so a JSON round trip is exact. */
+function pageCopy(page: PageTabSpec): PageTabSpec {
+  const out: PageTabSpec = { plugin: page.plugin, type: page.type, title: page.title }
+  if (page.params !== undefined) out.params = JSON.parse(JSON.stringify(page.params)) as PageTabSpec['params']
+  if (page.icon !== undefined) out.icon = page.icon
   return out
 }
 

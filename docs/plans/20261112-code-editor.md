@@ -82,14 +82,14 @@ External review: sol / high
 - Modify: `src/main/tabs/tab-manager.ts`, `src/main/restore.ts`, `src/main/sessions/session-registry.ts`
 - Create: `test/unit/page-tabs.test.ts`
 
-- [ ] manifest `contributes.tabs: [{ type, page, keys? }]` validated like `contributes.slots` (relative page path)
-- [ ] `TabKind` `page` with plugin, type, params (plain JSON, size cap), title and icon clamped in main
-- [ ] TabManager: open, close, focus, reorder, flags; no pty, never in the send gate, never `typed`, no Claude status
-- [ ] persist; restore asks the owning plugin; drop when the plugin is gone, off or revoked; cap per plugin
-- [ ] core unseen dot on a tab opened while another tab had focus, cleared on first view (not a flag)
-- [ ] new channels with their `REMOTE_CLASS`
-- [ ] write tests: manifest validation, open, persist, restore, drop, cap, unseen dot, never typed into
-- [ ] run tests - must pass before next task
+- [x] manifest `contributes.tabs: [{ type, page, keys? }]` validated like `contributes.slots` (relative page path)
+- [x] `TabKind` `page` with plugin, type, params (plain JSON, size cap), title and icon clamped in main
+- [x] TabManager: open, close, focus, reorder, flags; no pty, never in the send gate, never `typed`, no Claude status
+- [x] persist; restore asks the owning plugin; drop when the plugin is gone, off or revoked; cap per plugin
+- [x] core unseen dot on a tab opened while another tab had focus, cleared on first view (not a flag)
+- [x] new channels with their `REMOTE_CLASS` (none needed: an unseen-dot change rides `tabs.added`, its clearing `tabs.selected`)
+- [x] write tests: manifest validation, open, persist, restore, drop, cap, unseen dot, never typed into
+- [x] run tests - must pass before next task
 
 ### Task 2: Renderer: drawing page tabs, lazy mount, frame lifetime [model: opus]
 

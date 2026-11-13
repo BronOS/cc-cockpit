@@ -18,9 +18,11 @@ export interface CloseQuestion {
 
 /**
  * The tab's process is alive. An exited tab carries `exit`, and so does a restored command tab
- * that never ran (`notStarted`, gen 0): neither has anything a close could kill.
+ * that never ran (`notStarted`, gen 0): neither has anything a close could kill. Nor does a page tab.
  */
 export function tabIsRunning(tab: TabInfo): boolean {
+  // A page tab runs no process; whether closing it loses anything is its dirty state (core's ask).
+  if (tab.kind === 'page') return false
   return tab.exit === undefined
 }
 

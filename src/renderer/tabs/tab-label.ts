@@ -9,6 +9,8 @@ import { argvText } from '../../shared/tab-commands'
  * TypeScript (not in TabBar.tsx) so pure modules and their unit tests can use it without JSX.
  */
 export function tabLabel(tab: TabInfo, title?: string, named?: string): string {
+  // A page tab's title is the one main clamped from its plugin's request (shared/page-tabs.ts).
+  if (tab.kind === 'page') return tab.page?.title ?? 'Page'
   if (tab.kind === 'command') return tab.label ?? 'Command'
   if (tab.kind === 'claude' && named) return named
   if (tab.kind === 'claude' && title) return title

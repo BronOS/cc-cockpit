@@ -229,6 +229,29 @@ function slotErrors(manifest: PluginManifest): string[] {
 }
 
 /**
+ * The page-tab rules a schema cannot say (design-editor.md §1); the schema pinned the type names,
+ * the caps and the chord count. File containment of `page` is checked with the other refs.
+ */
+function pageTabErrors(manifest: PluginManifest): string[] {
+  const errors: string[] = []
+  const tabs = manifest.contributes?.tabs ?? []
+  // The page talks only to the plugin's backend (ctx.tabs.onOpen): no host, no page tab.
+  if (tabs.length > 0 && manifest.main === undefined) {
+    errors.push('contributes.tabs needs "main": a page tab talks to ctx.tabs.onOpen in the plugin\'s host')
+  }
+  // One page per type: two entries of one type would leave main to guess which page a tab shows.
+  for (const type of duplicates(tabs.map((t) => t.type))) errors.push(`duplicate page tab type "${type}"`)
+  for (const t of tabs) {
+    // The shell draws it as a sandboxed iframe served by cc-plugin://, like an html panel's page.
+    if (!t.page.endsWith('.html')) errors.push(`page tab "${t.type}" page "${t.page}" must be an .html page`)
+    for (const key of t.keys ?? []) {
+      if (normalizeChord(key, 'darwin') === null) errors.push(`page tab "${t.type}": "${key}" is not a valid key chord`)
+    }
+  }
+  return errors
+}
+
+/**
  * Check untrusted `plugin.json` content against the plugin folder it came from. Returns every
  * problem found (a plugin author fixes them in one go) or the typed manifest. `pluginDir` is
  * resolved here, so a relative or symlinked path is fine.
@@ -292,6 +315,7 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
     errors.push('contributes.openFile needs "main": the click is handled by ctx.files.onOpen in the plugin\'s host')
   }
   errors.push(...slotErrors(manifest))
+  errors.push(...pageTabErrors(manifest))
   // The settings page (design-next §5.4) talks only to ctx.settingsPage.onOpen in the plugin's host,
   // and is drawn as a sandboxed iframe served by cc-plugin://, like a panel's page.
   const page = c.settings?.page
@@ -324,6 +348,7 @@ export async function validateManifest(raw: unknown, pluginDir: string): Promise
   }
   for (const t of c.themes ?? []) refs.push({ label: `theme "${t.id}" file`, file: t.file })
   for (const sl of c.slots ?? []) refs.push({ label: `slot "${sl.type}" entry`, file: sl.entry })
+  for (const t of c.tabs ?? []) refs.push({ label: `page tab "${t.type}" page`, file: t.page })
   if (c.settings?.page !== undefined) refs.push({ label: 'settings page entry', file: c.settings.page.entry })
 
   let realRoot: string | null = null

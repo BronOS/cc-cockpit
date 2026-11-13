@@ -9,6 +9,11 @@
 // the user's Restart; TabManager.restoreTab). A command tab a plugin opened (ctx.sessions.openCommand)
 // comes back the same way, but only while that plugin is still installed and not revoked: the check
 // is injected (`PluginAvailable`), so this file stays free of the installer and the marketplace.
+// A page tab (design-editor.md §1) comes back with its plugin, type, params, title and icon, checked
+// again, and only while its plugin is installed and not revoked (the plan) and, right before it is
+// put back, still on in the project and declaring the type (`PageTabAvailable`); at most
+// MAX_PAGE_TABS_PER_PLUGIN per plugin. Its page is asked for its content (ctx.tabs.onOpen) only when
+// a view mounts it, never at restore.
 // A running tool call does not survive (design: Restore).
 //
 // Tabs are started when the window's renderer first asks for them (`tabs.list`), not when the
@@ -20,6 +25,7 @@ import type { TabInfo } from '../shared/ipc'
 import { checkSessionName } from '../shared/session-name'
 import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
+import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, type PageTabSpec } from '../shared/page-tabs'
 import type { ProjectView, TabKind, TabRecord } from '../shared/types'
 import { ProjectRefusal, type ProjectRegistry } from './projects/registry'
 import { SESSION_ID } from './tabs/claude-argv'
@@ -39,6 +45,8 @@ export interface RestoredTab {
   command?: AnyTabCommand
   /** Any kind: the person's flag, sticky across a restart like the tab itself. */
   flag?: TabFlag
+  /** Page tabs only (and always): plugin, type, params, title, icon, checked (checkPageTabSpec). */
+  page?: PageTabSpec
 }
 
 /**
@@ -48,6 +56,14 @@ export interface RestoredTab {
  * is exactly what must not sit one Restart click away under its name.
  */
 export type PluginAvailable = (pluginId: string) => boolean
+
+/**
+ * Whether a saved page tab may come back in `projectId` right now: its plugin loaded, is on in the
+ * project (a plugin switched off there, or off in all projects, has no host to answer the page) and
+ * still declares `type` in `contributes.tabs` (an update may have dropped it; main never loads a page
+ * the manifest does not name).
+ */
+export type PageTabAvailable = (projectId: string, pluginId: string, type: string) => boolean
 
 /** The persisted shape of live tabs. Ids are saved for the record but a restored tab gets a new one. */
 export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
@@ -63,8 +79,17 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     if (t.openedByName !== undefined) record.openedByName = t.openedByName
     if (t.name !== undefined) record.name = t.name
     if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
+    if (t.page !== undefined) Object.assign(record, pageRecordFields(t.page))
     return record
   })
+}
+
+/** A page tab's fields of its saved record (flat, beside kind and cwd). The unseen dot is never saved. */
+function pageRecordFields(page: PageTabSpec): Pick<TabRecord, 'plugin' | 'type' | 'params' | 'title' | 'icon'> {
+  const out: Pick<TabRecord, 'plugin' | 'type' | 'params' | 'title' | 'icon'> = { plugin: page.plugin, type: page.type, title: page.title }
+  if (page.params !== undefined) out.params = page.params
+  if (page.icon !== undefined) out.icon = page.icon
+  return out
 }
 
 /**
@@ -83,6 +108,10 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
  *    (checkCommandArgv) and plugin id, and no `command`: a record with both is damaged, and must
  *    never fall back to running a line through the shell. It is skipped too when `pluginAvailable`
  *    says its plugin is gone or revoked. A damaged name only loses the name. Not started, as above;
+ *  - a page tab needs a valid plugin id, type and title (checkPageTabSpec: params plain JSON under
+ *    the cap, a title clamped, a bad icon dropped) and no session or command fields; it is skipped
+ *    when `pluginAvailable` says its plugin is gone or revoked, and past MAX_PAGE_TABS_PER_PLUGIN of
+ *    one plugin (a hand-edited record cannot pile more into the bar than an open could);
  *  - a cwd that is gone, is not a directory or is outside the project (the project was relinked
  *    to another folder, a symlink now points out) falls back to the project folder. The tab is
  *    still worth bringing back, and the user can see where it is.
@@ -94,9 +123,23 @@ export function buildRestorePlan(
   const plan: RestoredTab[] = []
   const records: unknown = project.tabs
   if (!Array.isArray(records)) return plan
+  const pagesOf = new Map<string, number>()
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
     const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag } = raw as Record<string, unknown>
+    if (kind === 'page') {
+      const page = pagePlanOf(raw as Record<string, unknown>)
+      if (page === undefined) continue
+      if (pluginAvailable !== undefined && !available(pluginAvailable, page.plugin)) continue
+      const count = pagesOf.get(page.plugin) ?? 0
+      if (count >= MAX_PAGE_TABS_PER_PLUGIN) continue
+      pagesOf.set(page.plugin, count + 1)
+      const tab: RestoredTab = { kind, page }
+      const f = tabFlagOf(flag)
+      if (f !== undefined) tab.flag = f
+      plan.push(tab)
+      continue
+    }
     if (kind !== 'claude' && kind !== 'shell' && kind !== 'command') continue
     const tab: RestoredTab = { kind }
     if (kind === 'command') {
@@ -129,6 +172,21 @@ export function buildRestorePlan(
     plan.push(tab)
   }
   return plan
+}
+
+/**
+ * A saved page tab's spec, or undefined when the record is damaged: any session or command field
+ * on it (a record mixing kinds is never guessed at), or a spec checkPageTabSpec refuses.
+ */
+function pagePlanOf(raw: Record<string, unknown>): PageTabSpec | undefined {
+  for (const key of ['sessionId', 'label', 'command', 'argv', 'openedBy', 'openedByName', 'name']) {
+    if (raw[key] !== undefined) return undefined
+  }
+  try {
+    return checkPageTabSpec({ plugin: raw.plugin, type: raw.type, params: raw.params, title: raw.title, icon: raw.icon }, isPluginId)
+  } catch {
+    return undefined
+  }
 }
 
 /** The injected check, a throw read as "not available": a tab is dropped rather than kept on a guess. */
@@ -180,6 +238,12 @@ export interface TabRestorerOptions {
    * Absent = every plugin is (tests that do not care).
    */
   pluginAvailable?: PluginAvailable
+  /**
+   * Whether a page tab may come back now (PageTabAvailable), asked right before the queued tabs are
+   * put back: the plugin list is loaded by then, and the plugin may have been switched off since the
+   * plan was made. Absent = every page tab may (tests that do not care).
+   */
+  pageTabAvailable?: PageTabAvailable
   log?: (message: string) => void
 }
 
@@ -246,6 +310,10 @@ export class TabRestorer {
             this.log(`not restoring a command tab of project ${projectId}: plugin ${tab.command.openedBy} is gone or revoked`)
             continue
           }
+          if (tab.page !== undefined && !this.pageOk(projectId, tab.page)) {
+            this.log(`not restoring a page tab of project ${projectId}: plugin ${tab.page.plugin} is off or no longer has type "${tab.page.type}"`)
+            continue
+          }
           try {
             spawn(tab)
           } catch (err) {
@@ -288,6 +356,7 @@ export class TabRestorer {
     if (tab.resumeId !== undefined) record.sessionId = tab.resumeId
     if (tab.name !== undefined) record.name = tab.name
     if (tab.flag !== undefined) record.flag = { ...tab.flag }
+    if (tab.page !== undefined) Object.assign(record, pageRecordFields(tab.page))
     if (tab.command !== undefined) {
       record.label = tab.command.label
       if (isPluginCommand(tab.command)) {
@@ -299,6 +368,16 @@ export class TabRestorer {
       }
     }
     return record
+  }
+
+  private pageOk(projectId: string, page: PageTabSpec): boolean {
+    const check = this.options.pageTabAvailable
+    if (check === undefined) return true
+    try {
+      return check(projectId, page.plugin, page.type)
+    } catch {
+      return false
+    }
   }
 
   private pluginOk(pluginId: string): boolean {

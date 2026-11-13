@@ -13,6 +13,7 @@ import type { TerminalFont } from './terminal-font'
 import type { ScreenAnswer } from './terminal-screen'
 import type { Theme } from './theme'
 import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-background'
+import type { PageTabSpec } from './page-tabs'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
@@ -172,6 +173,17 @@ export interface TabInfo {
    * `tabs.toggleFlag` from this window, kept for restore. The renderer applies their replies.
    */
   flag?: TabFlag
+  /**
+   * A page tab's plugin, type, params, title and icon (kind `page` only, shared/page-tabs.ts), as
+   * main checked them. The page itself is the manifest's for the type, never named here.
+   */
+  page?: PageTabSpec
+  /**
+   * The core unseen dot (design-editor.md §1): the tab was opened while another tab was selected
+   * (`ccc edit` while you type in Claude), and no view has shown it yet. Cleared by the first
+   * `tabs.selected` of it from any view. Never a flag (the person's alone) and never saved.
+   */
+  unseen?: true
 }
 
 /** One user entry of the new-tab menu as the menu shows it: no command text, main runs it by id. */
