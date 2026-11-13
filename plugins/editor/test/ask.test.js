@@ -32,6 +32,8 @@ test('contextText: the selection is cut to the cap and says so; a trailing newli
   const big = 'x'.repeat(ask.MAX_SELECTION_CHARS + 500)
   const text = ask.contextText('a.js', { startLine: 1, endLine: 9, text: big })
   assert.ok(text.length < ask.MAX_SELECTION_CHARS + 200)
+  // The header range follows the text that was kept (one line here), not the claimed end.
+  assert.match(text, /^a\.js:1\n/)
   assert.match(text, new RegExp(`\\(the selection was cut to its first ${ask.MAX_SELECTION_CHARS} characters\\)$`))
   assert.equal(ask.contextText('a.js', { startLine: 1, endLine: 2, text: 'a\nb\n' }), 'a.js:1-2\n```\na\nb\n```')
   // A cut the page made is kept.

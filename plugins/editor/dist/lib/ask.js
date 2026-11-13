@@ -63,9 +63,9 @@ function contextText(file, sel) {
   let endLine = lineNumber(sel.endLine)
   if (endLine === undefined || endLine < startLine) endLine = startLine
   const name = oneLine(file)
-  const header = endLine === startLine ? `${name}:${startLine}` : `${name}:${startLine}-${endLine}`
+  const headerFor = (end) => (end === startLine ? `${name}:${startLine}` : `${name}:${startLine}-${end}`)
   let text = typeof sel.text === 'string' ? sel.text : ''
-  if (text === '') return header
+  if (text === '') return headerFor(endLine)
   let cut = sel.cut === true
   if (text.length > MAX_SELECTION_CHARS) {
     let keep = MAX_SELECTION_CHARS
@@ -73,7 +73,12 @@ function contextText(file, sel) {
     if (code >= 0xd800 && code <= 0xdbff) keep -= 1
     text = text.slice(0, keep)
     cut = true
+    // The range follows the text actually sent, not the page's claim for the whole selection.
+    let breaks = 0
+    for (const ch of text) if (ch === '\n') breaks += 1
+    endLine = Math.min(endLine, startLine + breaks)
   }
+  const header = headerFor(endLine)
   const fence = fenceFor(text)
   const lines = [header, fence, text.endsWith('\n') ? text.slice(0, -1) : text, fence]
   if (cut) lines.push(`(the selection was cut to its first ${text.length} characters)`)

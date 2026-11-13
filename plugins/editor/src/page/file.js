@@ -977,6 +977,8 @@ window.addEventListener(
       e.stopPropagation()
       showPalette('grep')
     } else if (k === 'l' && !e.shiftKey) {
+      // Not while the palette is open: its query box keeps its own keys and the selection is hidden behind it.
+      if (palette.mode !== null) return
       e.preventDefault()
       e.stopPropagation()
       askClaude()
