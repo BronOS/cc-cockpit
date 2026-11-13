@@ -189,3 +189,24 @@ test('file tabs: activate serves type `file` through ctx.tabs, and deactivate cl
   assert.deepEqual(opened.map((o) => o.type), ['file'])
   host.deactivate()
 })
+
+test('file tabs: deactivate closes the watch of an open file tab (no disk event after it)', async () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'one\n')
+  const opened = []
+  f.ctx.tabs = { onOpen: (type, fn) => (opened.push({ type, fn }), () => {}) }
+  host.activate(f.ctx)
+  const posted = []
+  let onMessage
+  opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, post: (m) => posted.push(m), onMessage: (fn) => (onMessage = fn), onClose: () => {} })
+  onMessage({ t: 'open', req: 1 })
+  assert.equal(posted.length, 1)
+  host.deactivate()
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'two\n')
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(posted.length, 1)
+})

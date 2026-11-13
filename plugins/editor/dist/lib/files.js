@@ -34,6 +34,16 @@ const CHUNK_CHARS = 128 * 1024
 const MAX_SAVE_CHARS = MAX_EDIT_BYTES
 /** At most this many saves assembling at once per page line: a page that never sends the last part cannot pile them up. */
 const MAX_PENDING_SAVES = 4
+/** A save that stops sending parts is dropped after this long. */
+const SAVE_PART_TIMEOUT_MS = 10 * 1000
+/** Files one page line may watch, and folders the whole plugin may hold an inotify watch on (fs.inotify.max_user_watches is the user's, shared with their IDE). */
+const MAX_LINE_WATCHES = 32
+const MAX_WATCHED_FOLDERS = 128
+/** A watch that died (its folder was deleted and recreated, renamed) is re-armed this often, this many times. */
+const REARM_MS = 1000
+const REARM_TRIES = 30
+/** A temp file of an interrupted save older than this is swept when its file is opened. */
+const STALE_TEMP_MS = 60 * 1000
 /** Watch events within this window are one check: an editor's save is often a truncate, writes and a chmod. */
 const WATCH_DEBOUNCE_MS = 80
 
@@ -131,59 +141,92 @@ function encodeText(text, { eol, bom }) {
 }
 
 /**
- * An open descriptor's contents, from offset 0 (pread: the descriptor's own position is never used),
- * read to EOF rather than to the fstat size so a file growing under us is read whole: `{ buf, hash,
- * size }`. The hash covers every byte; `buf` keeps only the first MAX_VIEW_BYTES + 1 (past that the
- * file is never shown, so a 2 GB log costs a hash, not 2 GB of memory).
+ * An open descriptor's contents, from offset 0 (pread: the descriptor's own position is never used):
+ * `{ buf, hash, size }`. It runs in the project's one plugin host, so it is bounded: at most
+ * MAX_VIEW_BYTES + 1 bytes are read, hashed and kept. A file past that is never shown or saved, so
+ * its `hash` is not a content hash but `big:<size>:<mtime>` (cheap to compare: a 100 GB sparse file
+ * or a log growing under us costs one capped read, never a hash to EOF), and `size` is fstat's.
  */
 function readFd(fd) {
   const h = crypto.createHash('sha256')
   const chunks = []
-  let kept = 0
   let size = 0
   const buf = Buffer.allocUnsafe(1024 * 1024)
-  for (;;) {
-    const n = fs.readSync(fd, buf, 0, buf.length, size)
+  while (size <= MAX_VIEW_BYTES) {
+    const n = fs.readSync(fd, buf, 0, Math.min(buf.length, MAX_VIEW_BYTES + 1 - size), size)
     if (n === 0) break
     const part = buf.subarray(0, n)
     h.update(part)
+    chunks.push(Buffer.from(part))
     size += n
-    if (kept <= MAX_VIEW_BYTES) {
-      const take = Math.min(n, MAX_VIEW_BYTES + 1 - kept)
-      chunks.push(Buffer.from(part.subarray(0, take)))
-      kept += take
-    }
   }
-  return { buf: Buffer.concat(chunks, kept), hash: h.digest('hex'), size }
+  if (size > MAX_VIEW_BYTES) {
+    const st = fs.fstatSync(fd)
+    return { buf: Buffer.concat(chunks, size), hash: `big:${st.size}:${Math.floor(st.mtimeMs)}`, size: Math.max(st.size, size) }
+  }
+  return { buf: Buffer.concat(chunks, size), hash: h.digest('hex'), size }
 }
 
 /**
  * Opens the file read-only without blocking and checks it is a regular file. A FIFO or a device
  * would block the read (and the whole plugin host), so O_NONBLOCK, then fstat on the descriptor.
- * O_NOFOLLOW: `real` is a realpath, so a symlink there now was put there since we resolved it.
+ * O_NOFOLLOW covers only the LAST component: a symlink put on `real` since we resolved it. A parent
+ * folder swapped for a link in that window is caught by resolving `real` again after the open (it
+ * must still be its own realpath); what is left is the gap between that realpath and the open's
+ * own walk, a race only a local process could win, which the saves' inode and hash checks keep from
+ * becoming a write outside the project.
  */
 function openRegular(real) {
   const fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0))
-  const st = fs.fstatSync(fd)
-  if (!st.isFile()) {
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile()) throw new Error('not a regular file')
+    let again = null
+    try {
+      again = fs.realpathSync(real)
+    } catch {
+      again = null
+    }
+    if (again !== real) throw new Error('the path changed while it was opened')
+    return { fd, st }
+  } catch (e) {
     fs.closeSync(fd)
-    throw new Error('not a regular file')
+    throw e
   }
-  return { fd, st }
+}
+
+/**
+ * Why a file may not be saved by us though its text is fine: `linked` (more than one hard link: a
+ * rename-replace would cut this name off from the other, and a link to a file outside the project
+ * looks like a project file to realpath), `permission` (the file or its folder is not writable by us:
+ * a 0444 file would otherwise be replaced by rename and keep its mode, silently bypassing it).
+ * A rename-replace also drops owner, group, xattrs and ACLs: only the mode is kept.
+ */
+function lockOf(real, st) {
+  if (st.nlink > 1) return 'linked'
+  try {
+    fs.accessSync(real, fs.constants.W_OK)
+    fs.accessSync(path.dirname(real), fs.constants.W_OK)
+  } catch {
+    return 'permission'
+  }
+  return undefined
 }
 
 /**
  * What a page needs to show a file's bytes: `{ hash, text?, readOnly, why?, eol, bom, size }`.
  * Read-only (`why`): `binary` (a NUL in the first 8000 bytes: no text), `large` (over 5 MB: shown
- * when up to 16 MB, else no text), `encoding` (not valid UTF-8: the lossy text). A save of a
+ * when up to 16 MB, else no text), `encoding` (not valid UTF-8: the lossy text), or `lock` (lockOf:
+ * `linked` or `permission`, the text shown). A save of a
  * read-only file is refused by the host too, not only greyed out in the page.
  */
-function describeBytes({ buf, hash, size }) {
+function describeBytes({ buf, hash, size }, lock) {
   if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return { hash, readOnly: true, why: 'binary', eol: '\n', bom: false, size }
   if (size > MAX_VIEW_BYTES) return { hash, readOnly: true, why: 'large', eol: '\n', bom: false, size }
   const d = decodeBytes(buf)
   if (!d.encoding) return { hash, text: d.text, readOnly: true, why: 'encoding', eol: d.eol, bom: d.bom, size }
   if (size > MAX_EDIT_BYTES) return { hash, text: d.text, readOnly: true, why: 'large', eol: d.eol, bom: d.bom, size }
+  if (lock) return { hash, text: d.text, readOnly: true, why: lock, eol: d.eol, bom: d.bom, size }
   return { hash, text: d.text, readOnly: false, eol: d.eol, bom: d.bom, size }
 }
 
@@ -194,9 +237,9 @@ function describeBytes({ buf, hash, size }) {
 function readFile(root, rel) {
   const r = resolveInProject(root, rel)
   if (!r.exists) return { rel: r.rel, exists: false }
-  const { fd } = openRegular(r.real)
+  const { fd, st } = openRegular(r.real)
   try {
-    return { rel: r.rel, exists: true, real: r.real, ...describeBytes(readFd(fd)) }
+    return { rel: r.rel, exists: true, real: r.real, ...describeBytes(readFd(fd), lockOf(r.real, st)) }
   } finally {
     fs.closeSync(fd)
   }
@@ -206,14 +249,18 @@ function tempPathFor(real) {
   return path.join(path.dirname(real), `.${path.basename(real)}.cc-editor-${crypto.randomBytes(6).toString('hex')}.tmp`)
 }
 
+/** writeSync may write less than asked (a full disk part way, a signal): loop to the end. */
+function writeAll(fd, bytes) {
+  for (let off = 0; off < bytes.length; ) off += fs.writeSync(fd, bytes, off, bytes.length - off, off)
+}
+
 /** Writes `bytes` to a new temp file beside `real` (O_EXCL, `mode`) and syncs it; returns its path. */
 function writeTemp(real, bytes, mode) {
   const tmp = tempPathFor(real)
   const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), mode)
   let ok = false
   try {
-    // writeSync may write less than asked (a full disk part way, a signal): loop to the end.
-    for (let off = 0; off < bytes.length; ) off += fs.writeSync(fd, bytes, off, bytes.length - off, off)
+    writeAll(fd, bytes)
     // openSync's mode is cut by the umask: set the file's own mode exactly (0755 scripts stay 0755).
     fs.fchmodSync(fd, mode)
     fs.fsyncSync(fd)
@@ -223,6 +270,29 @@ function writeTemp(real, bytes, mode) {
     if (!ok) rmQuiet(tmp)
   }
   return tmp
+}
+
+/**
+ * Removes the temp files an interrupted save (host killed between writeTemp and the rename) left
+ * beside `real`. Only ones older than STALE_TEMP_MS: a save in progress in another window is not touched.
+ */
+function sweepTemps(real) {
+  const dir = path.dirname(real)
+  const prefix = `.${path.basename(real)}.cc-editor-`
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue
+      const p = path.join(dir, name)
+      try {
+        const st = fs.lstatSync(p)
+        if (st.isFile() && Date.now() - st.mtimeMs > STALE_TEMP_MS) rmQuiet(p)
+      } catch {
+        // gone already
+      }
+    }
+  } catch {
+    // an unreadable folder: nothing to sweep
+  }
 }
 
 function rmQuiet(p) {
@@ -262,32 +332,59 @@ function describeNoReal(r) {
  *   landed between our check and the rename (it is lost from disk); `text` is that write, so the page
  *   merges it into what it just wrote and saves again with `hash` (what is on disk now: its own text).
  * `baseHash: null` saves a file the page knows as deleted: it is created only when it is still
- * absent (a hard link of the temp file, which fails when the name exists), else `changed`.
+ * absent (a hard link of the temp file, which fails when the name exists; an exclusive create where
+ * the filesystem has no hard links), else `changed`. `opts` `{ eol, bom }` is the page's last line
+ * ending and BOM of that file, which the deleted file can no longer tell.
  *
  * Steps for an existing file: open and hold a descriptor on the current inode, hash it against
  * `baseHash`, write a temp file in the same folder (same filesystem, so the rename is atomic) with
- * the file's mode, re-check just before the rename that the name still points at the held inode and
- * its bytes still hash to `baseHash`, rename, then re-hash the held descriptor: the old inode, which
- * only a writer that opened it before the rename can still change.
+ * the file's mode, re-check just before the rename that the held inode still hashes to `baseHash`
+ * and then that the name still points at it (stat last: the window to the rename is two syscalls),
+ * rename, then re-hash the held descriptor: the old inode, which only a writer that opened it before
+ * the rename can still change. Two windows remain and cannot be closed without a lock: a
+ * rename-replace by another writer between that stat and our rename is overwritten, and a write
+ * into the old inode after the final re-hash is lost, both unnoticed.
  */
-function saveFile(root, rel, text, baseHash) {
+function saveFile(root, rel, text, baseHash, opts = {}) {
   if (typeof text !== 'string') throw new Error('text must be a string')
   if (text.length > MAX_SAVE_CHARS) throw new Error('the text is too large to save')
   const r = resolveInProject(root, rel)
 
   if (baseHash === null) {
     if (r.exists) return changedAnswer(root, r.rel)
-    const bytes = encodeText(text, { eol: '\n', bom: false })
+    const bytes = encodeText(text, { eol: opts.eol === '\r\n' ? '\r\n' : '\n', bom: opts.bom === true })
+    if (bytes.length > MAX_EDIT_BYTES) throw new Error('the text is too large to save')
     // 0666 minus the umask, as any editor creating a file: the mode of the deleted file is gone with it.
-    const umask = process.umask()
-    const tmp = writeTemp(r.real, bytes, 0o666 & ~umask)
+    const mode = 0o666 & ~process.umask()
+    const tmp = writeTemp(r.real, bytes, mode)
+    let linked = false
     try {
       fs.linkSync(tmp, r.real)
+      linked = true
     } catch (e) {
       if (e.code === 'EEXIST') return changedAnswer(root, r.rel)
-      throw e
+      // No hard links here (FAT/exFAT, some network mounts): create it exclusively and write in place.
+      if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK'].includes(e.code)) throw e
     } finally {
       rmQuiet(tmp)
+    }
+    if (!linked) {
+      let fd
+      try {
+        fd = fs.openSync(r.real, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), mode)
+      } catch (e) {
+        if (e.code === 'EEXIST') return changedAnswer(root, r.rel)
+        throw e
+      }
+      let ok = false
+      try {
+        writeAll(fd, bytes)
+        fs.fsyncSync(fd)
+        ok = true
+      } finally {
+        fs.closeSync(fd)
+        if (!ok) rmQuiet(r.real)
+      }
     }
     return { result: 'saved', hash: hashBytes(bytes) }
   }
@@ -297,12 +394,15 @@ function saveFile(root, rel, text, baseHash) {
 
   const { fd, st } = openRegular(r.real)
   try {
+    const lock = lockOf(r.real, st)
     const current = readFd(fd)
-    if (current.hash !== baseHash) return { result: 'changed', ...describeBytes(current) }
-    const shape = describeBytes(current)
+    if (current.hash !== baseHash) return { result: 'changed', ...describeBytes(current, lock) }
+    const shape = describeBytes(current, lock)
     if (shape.readOnly) throw new Error(`the file is read-only here (${shape.why})`)
 
     const bytes = encodeText(text, shape)
+    // MAX_SAVE_CHARS counts UTF-16 units, up to 3 bytes each: the file written must still reopen editable.
+    if (bytes.length > MAX_EDIT_BYTES) throw new Error('the text is too large to save')
     const newHash = hashBytes(bytes)
     if (newHash === baseHash) return { result: 'saved', hash: newHash } // nothing to write
     const tmp = writeTemp(r.real, bytes, st.mode & 0o7777)
@@ -310,6 +410,9 @@ function saveFile(root, rel, text, baseHash) {
     try {
       // The last check before the swap: the name still points at the inode we hold (no
       // rename-replace since the open) and that inode still holds the base (no write into it).
+      // The (slow) re-hash goes first and the stat last, so the window for a rename-replace is short.
+      const again = readFd(fd)
+      if (again.hash !== baseHash) return { result: 'changed', ...describeBytes(again, lock) }
       let now
       try {
         now = fs.statSync(r.real)
@@ -317,8 +420,6 @@ function saveFile(root, rel, text, baseHash) {
         now = null
       }
       if (!now || now.ino !== st.ino || now.dev !== st.dev) return changedAnswer(root, r.rel)
-      const again = readFd(fd)
-      if (again.hash !== baseHash) return { result: 'changed', ...describeBytes(again) }
       fs.renameSync(tmp, r.real)
       renamed = true
     } finally {
@@ -328,7 +429,7 @@ function saveFile(root, rel, text, baseHash) {
     // inode the name no longer points at: its write is not on disk. Hand it to the page to merge.
     const old = readFd(fd)
     if (old.hash !== baseHash) {
-      const theirs = describeBytes(old)
+      const theirs = describeBytes(old, lock)
       return { result: 'changed', written: true, ...theirs, theirsHash: theirs.hash, hash: newHash }
     }
     return { result: 'saved', hash: newHash }
@@ -359,57 +460,70 @@ function chunkText(text, size = CHUNK_CHARS) {
 
 /**
  * Watches the FOLDERS of open files (a watch on the file itself ends when Claude's tools or git
- * rename a new file over it, the usual way to write one) and calls `onChange(real, { change, hash })`
- * for each watched file whose bytes changed (`change: 'changed'`) or that went (`'deleted'`).
+ * rename a new file over it, the usual way to write one) and tells each subscriber of a file whose
+ * bytes changed (`change: 'changed'`) or that went (`'deleted'`): `notify(real, { change, hash })`.
  * Each file is refcounted (two tabs or two views of one file share a watch), and so is each folder.
- * The last hash seen is kept per file only to tell a real change from an event that changed nothing
- * (an atime, our own save, a chmod); `seen(real, hash)` records a hash the host itself read or wrote.
- * `watchImpl` is fs.watch, replaceable in tests.
+ * The last hash seen is kept PER SUBSCRIBER (a page line), only to tell a real change from an event
+ * that changed nothing (an atime, its own save, a chmod): `add` returns a stop function whose
+ * `seen(hash)` records a hash that subscriber itself read or wrote. A line's save is news to every
+ * other line watching the file, so one line's read or save never mutes another.
+ * `add(real, hash, notify)` falls back to `onChange` when it has no `notify`. `watchImpl` is fs.watch,
+ * replaceable in tests.
+ *
+ * A watch that dies (the folder deleted and recreated by git checkout, renamed, an OS error) is
+ * re-armed after `rearmMs`, up to REARM_TRIES times, and the folder's files are checked once it is.
+ * At most `maxFolders` folders hold an OS watch (the user's inotify budget is shared with their IDE).
  */
 class FolderWatcher {
-  constructor(onChange, { watchImpl = fs.watch, debounceMs = WATCH_DEBOUNCE_MS, log } = {}) {
-    this.onChange = onChange
+  constructor(onChange, { watchImpl = fs.watch, debounceMs = WATCH_DEBOUNCE_MS, rearmMs = REARM_MS, maxFolders = MAX_WATCHED_FOLDERS, log } = {}) {
+    this.onChange = onChange || (() => {})
     this.watchImpl = watchImpl
     this.debounceMs = debounceMs
+    this.rearmMs = rearmMs
+    this.maxFolders = maxFolders
     this.log = log
-    /** real path -> { count, hash, timer } */
+    /** real path -> { subs: Set<{ hash, notify }>, timer } */
     this.files = new Map()
-    /** folder -> { count, watcher } */
+    /** folder -> { count, watcher, retry, tries } */
     this.folders = new Map()
   }
 
-  /** Watches `real`; returns the function that stops this one watch. */
-  add(real, hash) {
+  /** Watches `real`; returns the function that stops this one watch (its `seen(hash)` records what it read or wrote). */
+  add(real, hash, notify) {
     let f = this.files.get(real)
-    if (f) {
-      f.count++
-      if (hash !== undefined) f.hash = hash
-    } else {
-      f = { count: 1, hash: hash === undefined ? null : hash, timer: null }
+    if (!f) {
+      f = { subs: new Set(), timer: null }
       this.files.set(real, f)
       this.addFolder(path.dirname(real))
     }
+    const sub = { hash: hash === undefined ? null : hash, notify: notify || this.onChange }
+    f.subs.add(sub)
     let done = false
-    return () => {
+    const stop = () => {
       if (done) return
       done = true
-      this.remove(real)
+      this.remove(real, sub)
     }
+    stop.seen = (h) => {
+      sub.hash = h
+    }
+    return stop
   }
 
-  /** The host read or wrote `real` as `hash` (null: absent): no event for it. */
-  seen(real, hash) {
-    const f = this.files.get(real)
-    if (f) f.hash = hash
-  }
-
-  remove(real) {
+  remove(real, sub) {
     const f = this.files.get(real)
     if (!f) return
-    if (--f.count > 0) return
+    f.subs.delete(sub)
+    if (f.subs.size > 0) return
     if (f.timer) clearTimeout(f.timer)
     this.files.delete(real)
     this.removeFolder(path.dirname(real))
+  }
+
+  armedCount() {
+    let n = 0
+    for (const d of this.folders.values()) if (d.watcher) n++
+    return n
   }
 
   addFolder(dir) {
@@ -418,17 +532,69 @@ class FolderWatcher {
       d.count++
       return
     }
-    const entry = { count: 1, watcher: null }
+    const entry = { count: 1, watcher: null, retry: null, tries: 0 }
     this.folders.set(dir, entry)
-    try {
-      entry.watcher = this.watchImpl(dir, { persistent: false }, (_event, name) => this.event(dir, name))
-      if (entry.watcher && typeof entry.watcher.on === 'function') {
-        // A folder that goes (or a watch the OS drops) ends quietly: the page re-checks on focus and before each save.
-        entry.watcher.on('error', (e) => this.log && this.log.warn(`watch ${dir}: ${e.message}`))
+    this.arm(dir, entry)
+  }
+
+  /** Starts the OS watch of `dir` (again); false when it could not (over the cap, the folder is gone: retried). */
+  arm(dir, entry) {
+    if (entry.watcher) {
+      try {
+        entry.watcher.close()
+      } catch {
+        // already closed
       }
+      entry.watcher = null
+    }
+    if (this.armedCount() >= this.maxFolders) {
+      if (this.log) this.log.warn(`watch ${dir}: too many watched folders, not watching it`)
+      return false
+    }
+    try {
+      const w = this.watchImpl(dir, { persistent: false }, (event, name) => {
+        this.event(dir, name)
+        // inotify reports the watched folder's own deletion or rename as `rename` with its own name.
+        if (event === 'rename' && name && String(name) === path.basename(dir) && entry.watcher === w) this.dropped(dir, entry, w)
+      })
+      if (w && typeof w.on === 'function') w.on('error', (e) => {
+        if (this.log) this.log.warn(`watch ${dir}: ${e.message}`)
+        this.dropped(dir, entry, w)
+      })
+      entry.watcher = w
+      return true
     } catch (e) {
       if (this.log) this.log.warn(`watch ${dir}: ${e.message}`)
+      this.scheduleRearm(dir, entry)
+      return false
     }
+  }
+
+  /** The OS watch `w` of `dir` is no longer to be trusted: close it and arm a new one soon. */
+  dropped(dir, entry, w) {
+    if (entry.watcher !== w) return
+    try {
+      w.close()
+    } catch {
+      // already closed
+    }
+    entry.watcher = null
+    this.scheduleRearm(dir, entry)
+  }
+
+  scheduleRearm(dir, entry) {
+    if (entry.retry || entry.tries >= REARM_TRIES) return
+    entry.tries++
+    entry.retry = setTimeout(() => {
+      entry.retry = null
+      if (this.folders.get(dir) !== entry) return
+      if (this.arm(dir, entry)) {
+        entry.tries = 0
+        // Whatever happened while it was blind: look at every file of the folder once.
+        this.event(dir, undefined)
+      }
+    }, this.rearmMs)
+    if (entry.retry.unref) entry.retry.unref()
   }
 
   removeFolder(dir) {
@@ -436,6 +602,7 @@ class FolderWatcher {
     if (!d) return
     if (--d.count > 0) return
     this.folders.delete(dir)
+    if (d.retry) clearTimeout(d.retry)
     if (d.watcher) d.watcher.close()
   }
 
@@ -444,7 +611,9 @@ class FolderWatcher {
     for (const [real, f] of this.files) {
       if (path.dirname(real) !== dir) continue
       if (name && String(name) !== path.basename(real)) continue
-      if (f.timer) clearTimeout(f.timer)
+      // The first event of a burst starts the timer and later ones ride on it: a file written more
+      // often than the debounce (a log) is still checked, not starved until it goes quiet.
+      if (f.timer) continue
       f.timer = setTimeout(() => {
         f.timer = null
         this.check(real)
@@ -466,18 +635,55 @@ class FolderWatcher {
     } catch {
       hash = null
     }
-    if (hash === f.hash) return
-    f.hash = hash
-    this.onChange(real, hash === null ? { change: 'deleted', hash: null } : { change: 'changed', hash })
+    const ev = hash === null ? { change: 'deleted', hash: null } : { change: 'changed', hash }
+    for (const sub of [...f.subs]) {
+      if (sub.hash === hash) continue
+      sub.hash = hash
+      sub.notify(real, ev)
+    }
   }
 
   /** Stops every watch (the plugin stops). */
   close() {
     for (const f of this.files.values()) if (f.timer) clearTimeout(f.timer)
-    for (const d of this.folders.values()) if (d.watcher) d.watcher.close()
+    for (const d of this.folders.values()) {
+      if (d.retry) clearTimeout(d.retry)
+      if (d.watcher) d.watcher.close()
+    }
     this.files.clear()
     this.folders.clear()
   }
+}
+
+const FS_ERROR_TEXT = {
+  ENOENT: 'no such file or folder',
+  EACCES: 'permission denied',
+  EPERM: 'operation not permitted',
+  ENOTDIR: 'not a folder',
+  EISDIR: 'is a folder',
+  ELOOP: 'too many links',
+  ENOSPC: 'no space left on the device',
+  EROFS: 'read-only file system',
+}
+
+/**
+ * An error as the page may read it. A Node fs error carries absolute paths ("EACCES: permission
+ * denied, open '/home/<user>/...'"), and a browser view that drives the page must not learn the
+ * user's home or project location: an fs error becomes its code's text plus the project-relative
+ * path, and any other message has the project's own paths cut out.
+ */
+function safeMessage(e, root, rel) {
+  const where = typeof rel === 'string' && rel ? `: ${rel}` : ''
+  if (e && typeof e.code === 'string' && e.code.startsWith('E')) return `${FS_ERROR_TEXT[e.code] || e.code}${where}`
+  let msg = e && e.message ? String(e.message) : String(e)
+  const roots = [root]
+  try {
+    roots.push(fs.realpathSync(root))
+  } catch {
+    // the root itself is gone
+  }
+  for (const r of roots) if (r) msg = msg.split(r).join('<project>')
+  return msg
 }
 
 /**
@@ -490,6 +696,7 @@ class FolderWatcher {
  *   { t: 'save', req, path, baseHash, part, parts, text }
  *                                      a save in `parts` messages (text split by the page, each part
  *                                      under the 1 MiB message cap); `baseHash` null recreates a deleted file
+ *                                      (the first part may carry `eol` and `bom`: the file's last ones)
  *   { t: 'unwatch', path }             the page closed this file
  *
  *   host -> page
@@ -503,17 +710,22 @@ class FolderWatcher {
  *                                      a watched file changed on disk
  *   { t: 'error', req, path?, message }
  *
- * `files` is the shared { root, watcher, lines } of the plugin (makeFiles).
+ * `files` is the shared { root, watcher } of the plugin (makeFiles).
  */
 function serveFileTab(files, tab, log) {
   const watches = new Map() // rel -> { real, stop }
-  const saves = new Map() // req -> { path, baseHash, parts, got: [] }
+  const saves = new Map() // req -> { path, baseHash, eol, bom, parts, got: [], length, timer }
   let closed = false
 
   const post = (m) => {
     if (!closed) tab.post(m)
   }
-  const fail = (req, p, e) => post({ t: 'error', req, path: p, message: e && e.message ? e.message : String(e) })
+  const fail = (req, p, e) => post({ t: 'error', req, path: p, message: safeMessage(e, files.root, p) })
+  const dropSave = (req) => {
+    const s = saves.get(req)
+    if (s && s.timer) clearTimeout(s.timer)
+    saves.delete(req)
+  }
 
   function postParts(head, text) {
     const parts = text === undefined ? [undefined] : chunkText(text)
@@ -527,18 +739,16 @@ function serveFileTab(files, tab, log) {
   function watch(rel, real, hash) {
     const w = watches.get(rel)
     if (w && w.real === real) {
-      files.watcher.seen(real, hash)
+      w.stop.seen(hash)
       return
     }
     if (w) w.stop()
-    watches.set(rel, { real, stop: files.watcher.add(real, hash) })
-    files.lines.add(lineEntry)
-  }
-
-  const lineEntry = {
-    disk(real, ev) {
-      for (const [rel, w] of watches) if (w.real === real) post({ t: 'disk', path: rel, change: ev.change, hash: ev.hash })
-    },
+    else if (watches.size >= MAX_LINE_WATCHES) throw new Error('too many files open in this tab')
+    // This line's own subscription: its hash is its own, so another line's read or save never mutes it.
+    watches.set(rel, {
+      real,
+      stop: files.watcher.add(real, hash, (_r, ev) => post({ t: 'disk', path: rel, change: ev.change, hash: ev.hash })),
+    })
   }
 
   function read(req, p, isOpen) {
@@ -548,6 +758,7 @@ function serveFileTab(files, tab, log) {
     } catch (e) {
       return fail(req, typeof p === 'string' ? p : undefined, e)
     }
+    if (isOpen && r.exists) sweepTemps(r.real)
     if (isOpen || watches.has(r.rel)) {
       // A missing file is watched at the name it would have: a recreate shows as `changed`.
       const real = r.exists ? r.real : resolveInProject(files.root, r.rel).real
@@ -568,44 +779,59 @@ function serveFileTab(files, tab, log) {
       const parts = Number.isInteger(m.parts) && m.parts >= 1 ? m.parts : 1
       // At most this many parts: a page that announces a million parts cannot hold memory forever.
       if (parts > Math.ceil(MAX_SAVE_CHARS / 1024) + 1) return fail(req, m.path, new Error('too many save parts'))
-      s = { path: m.path, baseHash: m.baseHash, parts, got: [], length: 0 }
+      s = { path: m.path, baseHash: m.baseHash, eol: m.eol, bom: m.bom, parts, got: [], length: 0, timer: null }
       saves.set(req, s)
     } else if (m.part !== s.got.length || m.path !== s.path) {
-      saves.delete(req)
+      dropSave(req)
       return fail(req, m.path, new Error('save parts out of order'))
     }
     if (typeof m.text !== 'string') {
-      saves.delete(req)
+      dropSave(req)
       return fail(req, m.path, new Error('text must be a string'))
     }
     s.got.push(m.text)
     s.length += m.text.length
     if (s.length > MAX_SAVE_CHARS) {
-      saves.delete(req)
+      dropSave(req)
       return fail(req, m.path, new Error('the text is too large to save'))
     }
-    if (s.got.length < s.parts) return
+    if (s.timer) clearTimeout(s.timer)
+    s.timer = null
+    if (s.got.length < s.parts) {
+      // Nothing bounds saves across lines, so a save whose last part never comes is dropped, not held.
+      s.timer = setTimeout(() => {
+        if (saves.get(req) === s) {
+          saves.delete(req)
+          fail(req, s.path, new Error('the save timed out'))
+        }
+      }, SAVE_PART_TIMEOUT_MS)
+      if (s.timer.unref) s.timer.unref()
+      return
+    }
     saves.delete(req)
     let answer
     let rel
     try {
       const r = resolveInProject(files.root, s.path)
       rel = r.rel
-      answer = saveFile(files.root, rel, s.got.join(''), s.baseHash === null ? null : s.baseHash)
+      answer = saveFile(files.root, rel, s.got.join(''), s.baseHash === null ? null : s.baseHash, { eol: s.eol, bom: s.bom })
     } catch (e) {
       return fail(req, s.path, e)
     }
     if (answer.result === 'saved') {
-      // Our own write is not news for this line, nor for the other lines watching the file: they
-      // hear about it from the watcher only if the bytes differ from what we wrote.
+      // Our own write is not news for THIS line (its hash moves on); every other line watching the
+      // file still has the old one and hears about it from the watcher.
       const real = resolveInProject(files.root, rel).real
-      files.watcher.seen(real, answer.hash)
-      if (!watches.has(rel)) watch(rel, real, answer.hash)
+      try {
+        watch(rel, real, answer.hash)
+      } catch {
+        // over the line's watch cap: the save is done all the same
+      }
       return post({ t: 'saved', req, path: rel, hash: answer.hash })
     }
     if (answer.written) {
-      const real = resolveInProject(files.root, rel).real
-      files.watcher.seen(real, answer.hash)
+      const w = watches.get(rel)
+      if (w) w.stop.seen(answer.hash)
     }
     const head = { ...answer }
     delete head.result
@@ -654,18 +880,14 @@ function serveFileTab(files, tab, log) {
     closed = true
     for (const w of watches.values()) w.stop()
     watches.clear()
+    for (const s of saves.values()) if (s.timer) clearTimeout(s.timer)
     saves.clear()
-    files.lines.delete(lineEntry)
   })
 }
 
-/** The plugin's shared file state: the project root, one watcher, the page lines it reports to. */
+/** The plugin's shared file state: the project root and the one watcher every page line subscribes to. */
 function makeFiles(root, opts = {}) {
-  const lines = new Set()
-  const watcher = new FolderWatcher((real, ev) => {
-    for (const line of lines) line.disk(real, ev)
-  }, opts)
-  return { root, watcher, lines }
+  return { root, watcher: new FolderWatcher(null, opts) }
 }
 
 module.exports = {
@@ -673,6 +895,8 @@ module.exports = {
   MAX_VIEW_BYTES,
   CHUNK_CHARS,
   hashBytes,
+  sweepTemps,
+  safeMessage,
   relativePath,
   resolveInProject,
   decodeBytes,

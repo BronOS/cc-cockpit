@@ -231,7 +231,7 @@ test('the folder watch sees a rename-replace, again after it, and a delete', asy
     await waitFor(() => events.length >= 2)
     assert.equal(events[1].hash, sha('three\n'))
     // Our own save, recorded with seen(), is no event.
-    w.seen(real, sha('four\n'))
+    stop.seen(sha('four\n'))
     replace('four\n')
     await new Promise((r) => setTimeout(r, 200))
     assert.equal(events.length, 2)
@@ -311,7 +311,6 @@ test('serveFileTab: open, a save in parts, a mismatch, a disk event and close', 
     t.close()
   }
   assert.equal(shared.watcher.files.size, 0)
-  assert.equal(shared.lines.size, 0)
   shared.watcher.close()
 })
 
@@ -331,4 +330,348 @@ test('serveFileTab: a big file arrives in parts under the message cap', () => {
   assert.equal(t.posted.map((m) => m.text).join(''), text)
   t.close()
   shared.watcher.close()
+})
+
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
+
+test('two lines on one file: one line saving or reading never mutes the other', async () => {
+  const root = project()
+  const f = path.join(root, 'a.txt')
+  fs.writeFileSync(f, 'one\n')
+  const shared = files.makeFiles(root, { debounceMs: 20 })
+  const a = fakeTab({ path: 'a.txt' })
+  const b = fakeTab({ path: 'a.txt' })
+  files.serveFileTab(shared, a.tab)
+  files.serveFileTab(shared, b.tab)
+  try {
+    a.send({ t: 'open', req: 1 })
+    b.send({ t: 'open', req: 1 })
+    a.posted.length = 0
+    b.posted.length = 0
+    a.send({ t: 'save', req: 2, path: 'a.txt', baseHash: sha('one\n'), part: 0, parts: 1, text: 'two\n' })
+    assert.equal(a.posted.shift().t, 'saved')
+    await waitFor(() => b.posted.length >= 1)
+    assert.deepEqual(b.posted.shift(), { t: 'disk', path: 'a.txt', change: 'changed', hash: sha('two\n') })
+    await new Promise((r) => setTimeout(r, 150))
+    assert.equal(a.posted.length, 0) // the saver is not told about its own write
+    // A re-read by A inside the debounce after an outside write does not hide it from B.
+    fs.writeFileSync(f, 'claude\n')
+    await new Promise((r) => setTimeout(r, 5))
+    a.send({ t: 'read', req: 3, path: 'a.txt' })
+    await waitFor(() => b.posted.some((m) => m.t === 'disk'))
+    assert.equal(b.posted.find((m) => m.t === 'disk').hash, sha('claude\n'))
+  } finally {
+    a.close()
+    b.close()
+    shared.watcher.close()
+  }
+})
+
+test('a FIFO and a folder are not opened as files', () => {
+  const root = project()
+  fs.mkdirSync(path.join(root, 'dir'))
+  assert.throws(() => files.readFile(root, 'dir'), /regular file|folder/)
+  try {
+    require('node:child_process').execFileSync('mkfifo', [path.join(root, 'pipe')])
+  } catch {
+    return // no mkfifo here
+  }
+  assert.throws(() => files.readFile(root, 'pipe'), /regular file/)
+})
+
+test('a file over the view cap is not hashed to the end: a cheap size-and-mtime stamp, read-only, large', () => {
+  const root = project()
+  const f = path.join(root, 'huge.log')
+  fs.writeFileSync(f, 'x'.repeat(files.MAX_VIEW_BYTES + 1))
+  const r = files.readFile(root, 'huge.log')
+  assert.equal(r.readOnly, true)
+  assert.equal(r.why, 'large')
+  assert.equal(r.text, undefined)
+  assert.match(r.hash, /^big:/)
+  assert.equal(r.size, files.MAX_VIEW_BYTES + 1)
+  assert.throws(() => files.saveFile(root, 'huge.log', 'x', r.hash), /read-only/)
+})
+
+test('a file with another hard link is read-only: a rename-replace would cut it off', () => {
+  const root = project()
+  fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
+  fs.linkSync(path.join(root, 'a.txt'), path.join(root, 'b.txt'))
+  const r = files.readFile(root, 'a.txt')
+  assert.equal(r.readOnly, true)
+  assert.equal(r.why, 'linked')
+  assert.equal(r.text, 'x\n')
+  assert.throws(() => files.saveFile(root, 'a.txt', 'y\n', r.hash), /read-only/)
+  assert.equal(fs.readFileSync(path.join(root, 'b.txt'), 'utf8'), 'x\n')
+})
+
+test('a file without write permission is read-only, not replaced by rename', { skip: isRoot }, () => {
+  const root = project()
+  const f = path.join(root, 'ro.txt')
+  fs.writeFileSync(f, 'x\n')
+  fs.chmodSync(f, 0o444)
+  const r = files.readFile(root, 'ro.txt')
+  assert.equal(r.why, 'permission')
+  assert.throws(() => files.saveFile(root, 'ro.txt', 'y\n', r.hash), /read-only/)
+  assert.equal(fs.readFileSync(f, 'utf8'), 'x\n')
+})
+
+test('a parent folder swapped for a link while the file opens is refused', () => {
+  const root = project()
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-out-'))
+  fs.writeFileSync(path.join(outside, 'a.txt'), 'secret\n')
+  fs.mkdirSync(path.join(root, 'sub'))
+  fs.writeFileSync(path.join(root, 'sub', 'a.txt'), 'mine\n')
+  const undo = onceBefore('openSync', () => {
+    fs.renameSync(path.join(root, 'sub'), path.join(root, 'sub.old'))
+    fs.symlinkSync(outside, path.join(root, 'sub'))
+  })
+  try {
+    assert.throws(() => files.readFile(root, 'sub/a.txt'), /changed while/)
+  } finally {
+    undo()
+  }
+  // And a link to a folder outside is refused up front.
+  fs.symlinkSync(outside, path.join(root, 'out'))
+  assert.throws(() => files.readFile(root, 'out/a.txt'), /outside/)
+  assert.throws(() => files.saveFile(root, 'out/a.txt', 'x', null), /outside/)
+})
+
+test('save: the temp file goes when the rename or the link fails, and `changed` returns leave none', () => {
+  const root = project()
+  const f = path.join(root, 'a.txt')
+  fs.writeFileSync(f, 'base\n')
+  const orig = fs.renameSync
+  fs.renameSync = () => {
+    throw new Error('boom')
+  }
+  try {
+    assert.throws(() => files.saveFile(root, 'a.txt', 'mine\n', sha('base\n')), /boom/)
+  } finally {
+    fs.renameSync = orig
+  }
+  assert.deepEqual(fs.readdirSync(root), ['a.txt'])
+  const origLink = fs.linkSync
+  fs.linkSync = () => {
+    throw Object.assign(new Error('nope'), { code: 'EIO' })
+  }
+  try {
+    assert.throws(() => files.saveFile(root, 'new.txt', 'x', null), /nope/)
+  } finally {
+    fs.linkSync = origLink
+  }
+  assert.deepEqual(fs.readdirSync(root), ['a.txt'])
+  // changed paths: the bytes differ at the first check, then at the re-check before the rename.
+  const r1 = files.saveFile(root, 'a.txt', 'mine\n', sha('other\n'))
+  assert.equal(r1.result, 'changed')
+  const undo = onceBefore('fsyncSync', () => fs.writeFileSync(f, 'theirs\n'))
+  let r2
+  try {
+    r2 = files.saveFile(root, 'a.txt', 'mine\n', sha('base\n'))
+  } finally {
+    undo()
+  }
+  assert.equal(r2.result, 'changed')
+  assert.equal(r2.text, 'theirs\n')
+  assert.equal(fs.readFileSync(f, 'utf8'), 'theirs\n')
+  assert.deepEqual(fs.readdirSync(root), ['a.txt'])
+})
+
+test('save with baseHash null: the old eol and BOM come back, no hard links is a plain exclusive create, a missing folder is an error', () => {
+  const root = project()
+  const s = files.saveFile(root, 'w.txt', 'a\nb\n', null, { eol: '\r\n', bom: true })
+  assert.deepEqual(fs.readFileSync(path.join(root, 'w.txt')), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('a\r\nb\r\n')]))
+  assert.equal(s.hash, sha(fs.readFileSync(path.join(root, 'w.txt'))))
+
+  const origLink = fs.linkSync
+  fs.linkSync = () => {
+    throw Object.assign(new Error('no links'), { code: 'EPERM' })
+  }
+  try {
+    assert.equal(files.saveFile(root, 'x.txt', 'hi\n', null).result, 'saved')
+    assert.equal(files.saveFile(root, 'x.txt', 'again\n', null).result, 'changed')
+  } finally {
+    fs.linkSync = origLink
+  }
+  assert.equal(fs.readFileSync(path.join(root, 'x.txt'), 'utf8'), 'hi\n')
+  assert.deepEqual(fs.readdirSync(root).sort(), ['w.txt', 'x.txt'])
+
+  assert.throws(() => files.saveFile(root, 'gone/a.txt', 'x', null), (e) => e.code === 'ENOENT')
+})
+
+test('stale temp files of an interrupted save are swept on open, fresh ones are left', () => {
+  const root = project()
+  const f = path.join(root, 'a.txt')
+  fs.writeFileSync(f, 'x\n')
+  const stale = path.join(root, '.a.txt.cc-editor-aabbccddeeff.tmp')
+  const fresh = path.join(root, '.a.txt.cc-editor-112233445566.tmp')
+  const other = path.join(root, '.b.txt.cc-editor-aabbccddeeff.tmp')
+  for (const p of [stale, fresh, other]) fs.writeFileSync(p, 'half')
+  const old = new Date(Date.now() - 10 * 60 * 1000)
+  fs.utimesSync(stale, old, old)
+  fs.utimesSync(other, old, old)
+  const shared = files.makeFiles(root)
+  const t = fakeTab({ path: 'a.txt' })
+  files.serveFileTab(shared, t.tab)
+  t.send({ t: 'open', req: 1 })
+  t.close()
+  shared.watcher.close()
+  assert.deepEqual(fs.readdirSync(root).sort(), ['.a.txt.cc-editor-112233445566.tmp', '.b.txt.cc-editor-aabbccddeeff.tmp', 'a.txt'])
+})
+
+test('serveFileTab: save bounds, a part for another path, a deleted file and errors with no absolute path', () => {
+  const root = project()
+  fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
+  const shared = files.makeFiles(root, { debounceMs: 20 })
+  const t = fakeTab({ path: 'a.txt' })
+  files.serveFileTab(shared, t.tab)
+  try {
+    // Too many saves in flight.
+    for (let i = 0; i < 4; i++) t.send({ t: 'save', req: `s${i}`, path: 'a.txt', baseHash: 'h', part: 0, parts: 2, text: 'x' })
+    assert.equal(t.posted.length, 0)
+    t.send({ t: 'save', req: 's4', path: 'a.txt', baseHash: 'h', part: 0, parts: 2, text: 'x' })
+    assert.match(t.posted.shift().message, /too many saves/)
+    // A part for another path drops that save.
+    t.send({ t: 'save', req: 's0', path: 'b.txt', baseHash: 'h', part: 1, parts: 2, text: 'x' })
+    assert.match(t.posted.shift().message, /out of order/)
+    // Too many announced parts (after the pending ones are gone), too long a text.
+    t.close()
+    shared.watcher.close()
+  } finally {
+    t.close()
+    shared.watcher.close()
+  }
+  const s2 = files.makeFiles(root, { debounceMs: 20 })
+  const u = fakeTab({ path: 'a.txt' })
+  files.serveFileTab(s2, u.tab)
+  try {
+    u.send({ t: 'save', req: 'p', path: 'a.txt', baseHash: 'h', part: 0, parts: 1e6, text: 'x' })
+    assert.match(u.posted.shift().message, /too many save parts/)
+    u.send({ t: 'save', req: 'l', path: 'a.txt', baseHash: sha('x\n'), part: 0, parts: 1, text: 'y'.repeat(files.MAX_EDIT_BYTES + 1) })
+    assert.match(u.posted.shift().message, /too large/)
+    // A string base for a file that is gone: changed {deleted}.
+    fs.unlinkSync(path.join(root, 'a.txt'))
+    u.send({ t: 'save', req: 'd', path: 'a.txt', baseHash: sha('x\n'), part: 0, parts: 1, text: 'z' })
+    const d = u.posted.find((m) => m.req === 'd')
+    assert.equal(d.t, 'changed')
+    assert.equal(d.deleted, true)
+    // Errors carry no absolute path.
+    u.posted.length = 0
+    u.send({ t: 'save', req: 'e', path: 'nodir/a.txt', baseHash: null, part: 0, parts: 1, text: 'z' })
+    u.send({ t: 'read', req: 'f', path: '../x' })
+    assert.equal(u.posted.length, 2)
+    for (const m of u.posted) {
+      assert.equal(m.t, 'error')
+      assert.ok(!m.message.includes(root), m.message)
+      assert.ok(!m.message.includes(fs.realpathSync(root)), m.message)
+    }
+    assert.match(u.posted[0].message, /nodir\/a\.txt/)
+  } finally {
+    u.close()
+    s2.watcher.close()
+  }
+})
+
+test('serveFileTab: a line may watch only so many files, and a save whose last part never comes is dropped', () => {
+  const root = project()
+  for (let i = 0; i < 33; i++) fs.writeFileSync(path.join(root, `f${i}.txt`), 'x')
+  const shared = files.makeFiles(root)
+  const t = fakeTab({ path: 'f0.txt' })
+  files.serveFileTab(shared, t.tab)
+  try {
+    for (let i = 0; i < 32; i++) t.send({ t: 'open', req: i, path: `f${i}.txt` })
+    t.posted.length = 0
+    t.send({ t: 'open', req: 'over', path: 'f32.txt' })
+    assert.match(t.posted.shift().message, /too many files/)
+  } finally {
+    t.close()
+    shared.watcher.close()
+  }
+  const orig = global.setTimeout
+  const timers = []
+  const s2 = files.makeFiles(root)
+  const t2 = fakeTab({ path: 'f0.txt' })
+  files.serveFileTab(s2, t2.tab)
+  try {
+    global.setTimeout = (fn, ms) => {
+      timers.push({ fn, ms })
+      return { unref() {} }
+    }
+    t2.send({ t: 'save', req: 'slow', path: 'f0.txt', baseHash: 'h', part: 0, parts: 2, text: 'x' })
+    global.setTimeout = orig
+    assert.equal(timers.length, 1)
+    timers[0].fn()
+    assert.match(t2.posted.shift().message, /timed out/)
+    // The save is gone: its next part is out of order, not a late save.
+    t2.send({ t: 'save', req: 'slow', path: 'f0.txt', baseHash: 'h', part: 1, parts: 2, text: 'y' })
+    assert.match(t2.posted.shift().message, /out of order/)
+  } finally {
+    global.setTimeout = orig
+    t2.close()
+    s2.watcher.close()
+  }
+})
+
+test('the folder watch is armed again after its folder is deleted and recreated, and checks the files then', async () => {
+  const root = project()
+  const dir = path.join(root, 'd')
+  fs.mkdirSync(dir)
+  const f = path.join(dir, 'a.txt')
+  fs.writeFileSync(f, 'one\n')
+  const real = fs.realpathSync(f)
+  const calls = []
+  const watchImpl = (d, opts, cb) => {
+    const w = {
+      cb,
+      closed: false,
+      handlers: {},
+      on(ev, h) {
+        this.handlers[ev] = h
+      },
+      close() {
+        this.closed = true
+      },
+    }
+    calls.push(w)
+    return w
+  }
+  const events = []
+  const w = new files.FolderWatcher((r, ev) => events.push(ev), { watchImpl, debounceMs: 10, rearmMs: 20 })
+  const stop = w.add(real, sha('one\n'))
+  try {
+    assert.equal(calls.length, 1)
+    // The OS watch dies with the folder.
+    calls[0].handlers.error(new Error('gone'))
+    assert.equal(calls[0].closed, true)
+    fs.writeFileSync(f, 'two\n') // the folder came back with other content
+    await waitFor(() => calls.length >= 2)
+    await waitFor(() => events.length >= 1)
+    assert.deepEqual(events[0], { change: 'changed', hash: sha('two\n') })
+    // The folder's own deletion, reported by inotify as `rename` with its name, drops the watch too.
+    calls[1].cb('rename', 'd')
+    assert.equal(calls[1].closed, true)
+    await waitFor(() => calls.length >= 3)
+    // A burst of events shares one check (it is not pushed back by each event).
+    fs.writeFileSync(f, 'three\n')
+    for (let i = 0; i < 5; i++) calls[2].cb('change', 'a.txt')
+    await waitFor(() => events.length >= 2)
+    assert.equal(events[1].hash, sha('three\n'))
+  } finally {
+    stop()
+    w.close()
+  }
+})
+
+test('folders watched are capped for the whole plugin', () => {
+  const calls = []
+  const w = new files.FolderWatcher(null, { watchImpl: () => (calls.push(1), { close() {} }), maxFolders: 2 })
+  const stops = ['/a/x', '/b/x', '/c/x'].map((p) => w.add(p, null))
+  assert.equal(calls.length, 2)
+  stops.forEach((s) => s())
+  w.close()
+})
+
+test('safeMessage: an fs error is its code and the relative path, a project path in a message is cut out', () => {
+  const e = Object.assign(new Error("EACCES: permission denied, open '/home/u/proj/a.txt'"), { code: 'EACCES' })
+  assert.equal(files.safeMessage(e, '/home/u/proj', 'a.txt'), 'permission denied: a.txt')
+  assert.equal(files.safeMessage(new Error('bad /home/u/proj/x'), '/home/u/proj', 'x'), 'bad <project>/x')
 })
