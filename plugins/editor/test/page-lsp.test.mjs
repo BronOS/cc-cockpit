@@ -310,6 +310,38 @@ test('client: an lsp-edit is applied only when its seq is the last one this page
   assert.equal(k.ui.applied.length, 1)
 })
 
+test('client: typing before the host confirms ownership is sent as the whole text once it does; an edit for the old text is refused', () => {
+  const k = client('abc')
+  k.c.connect()
+  k.c.open('src/a.ts', true)
+  assert.equal(k.last('lsp-open').seq, 1)
+  // Typed before lsp-doc: not sent (not the owner yet), so the host still holds "abc" at seq 1.
+  k.ui.text = 'Xabc'
+  k.c.changed([{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, text: 'X' }])
+  assert.equal(k.last('lsp-change'), undefined)
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: true, state: 'ready' })
+  // Confirmed the owner: all of the text again with the next seq, never a change on top of "abc".
+  assert.deepEqual(k.last('lsp-open'), { t: 'lsp-open', path: 'src/a.ts', part: 0, parts: 1, text: 'Xabc', seq: 2 })
+  assert.equal(k.last('lsp-change'), undefined)
+  // A format the host computed on "abc" (seq 1) is refused here.
+  k.c.receive({ t: 'lsp-edit', id: 1, path: 'src/a.ts', seq: 1, edits: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'ABC' }] })
+  assert.equal(k.last('lsp-edit-done').applied, false)
+  assert.equal(k.ui.applied.length, 0)
+  // The host's lsp-doc for the resync: nothing unsent, no second open; changes go on from seq 2.
+  const opens = k.posts.filter((p) => p.t === 'lsp-open').length
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: true, state: 'ready' })
+  assert.equal(k.posts.filter((p) => p.t === 'lsp-open').length, opens)
+  k.c.changed([{ text: 'Xabcd' }])
+  assert.equal(k.last('lsp-change').seq, 3)
+  // A view that is not the owner types, then becomes it by lsp-doc: the whole text again too.
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: false, state: 'ready' })
+  k.ui.text = 'Xabcde'
+  k.c.changed([{ text: 'Xabcde' }])
+  assert.equal(k.last('lsp-change').seq, 3)
+  k.c.receive({ t: 'lsp-doc', path: 'src/a.ts', language: 'typescript', owner: true, state: 'ready' })
+  assert.deepEqual([k.last('lsp-open').text, k.last('lsp-open').seq], ['Xabcde', 4])
+})
+
 test('client: close tells the host, clears the diagnostics and fails what waited', async () => {
   const k = readyClient()
   k.c.receive({ t: 'lsp-diagnostics', path: 'src/a.ts', diagnostics: [{ message: 'x' }] })

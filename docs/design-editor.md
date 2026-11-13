@@ -153,6 +153,14 @@ returned. Rename and code actions: the host declares no resource operations (no 
 applies a `WorkspaceEdit` to open files through their pages and to unopened files through the compare-and-swap write.
 Everything is checked before the first file is touched; a cancel (the page gave up) is checked again before each file,
 so one that lands while a page applies its part stops before the next file, and the page is told which files changed.
+A code action's command runs on its server one at a time: a server's `workspace/applyEdit` names no command, so it is
+taken only while exactly one command the host ran is working there, checked against that command's own snapshot (the
+documents when it started) and stopped with it (the page's cancel, the command's failure or deadline). A second command
+on a busy server is refused; a command the host stopped waiting for holds the server until the server answers it or
+exits, so its late edits are never taken as another command's. An action whose edit (or command edit) changed files
+before its command failed or was cancelled answers with the files counted, and a page that gave up is told.
+A page's typing before the host confirms it syncs the document (`lsp-doc`) is not lost: the page sends its whole text
+again once it does, so the host never holds a text that differs from the buffer while it takes changes.
 `didChange` follows the server's `textDocumentSync` (Incremental: the page's ranges; Full: the whole text; None or
 omitted: none).
 

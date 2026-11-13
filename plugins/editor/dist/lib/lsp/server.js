@@ -112,8 +112,15 @@ class LspServer {
     this.rootUri = pathToFileURL(o.root).href
     this.child = null
     this.nextId = 1
-    /** id -> { resolve, reject, timer, method } */
+    /** id -> { resolve, reject, timer, method, onDone } */
     this.pending = new Map()
+    /**
+     * id -> onDone of a request the host gave up on (its cancel, its deadline) while the server may
+     * still be working on it: the server answers every request, a cancelled one too (LSP), and that
+     * late answer, or the server's exit, is when it is done. Only requests that asked (`opts.onDone`:
+     * a command, at most one per server at a time, manager.js) are kept.
+     */
+    this.abandoned = new Map()
     this.capabilities = null
     this.ready = null
     this.exited = false
@@ -191,16 +198,23 @@ class LspServer {
   /**
    * Sends a request with the host's own id; resolves its result, rejects its error (an Error with
    * `code`), on timeout (after `$/cancelRequest`) and when the server exits. `opts.signal` is an
-   * AbortSignal-like { aborted, addEventListener } whose abort cancels it.
+   * AbortSignal-like { aborted, addEventListener } whose abort cancels it. `opts.onDone` is called
+   * once the server is done with the request, which after a cancel or a timeout is later than the
+   * promise: when its own answer still comes, or when it exits (never sent: at once).
    */
   request(method, params, opts = {}) {
-    if (this.exited) return Promise.reject(Object.assign(new Error(`the ${this.language} server is not running`), { code: 'exited' }))
-    if (this.pending.size >= MAX_PENDING) return Promise.reject(new Error(`the ${this.language} server has too many requests waiting`))
-    if (opts.signal && opts.signal.aborted) return Promise.reject(Object.assign(new Error('cancelled'), { code: REQUEST_CANCELLED }))
+    const onDone = typeof opts.onDone === 'function' ? opts.onDone : null
+    const never = (e) => {
+      if (onDone) onDone()
+      return Promise.reject(e)
+    }
+    if (this.exited) return never(Object.assign(new Error(`the ${this.language} server is not running`), { code: 'exited' }))
+    if (this.pending.size >= MAX_PENDING) return never(new Error(`the ${this.language} server has too many requests waiting`))
+    if (opts.signal && opts.signal.aborted) return never(Object.assign(new Error('cancelled'), { code: REQUEST_CANCELLED }))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
       const timeoutMs = opts.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS
-      const p = { method, resolve, reject, timer: null }
+      const p = { method, resolve, reject, timer: null, onDone }
       p.timer = setTimeout(() => this.cancel(id, `the ${this.language} server did not answer ${method} in ${Math.round(timeoutMs / 1000)} s`), timeoutMs)
       if (typeof p.timer.unref === 'function') p.timer.unref()
       this.pending.set(id, p)
@@ -211,16 +225,22 @@ class LspServer {
 
   /** Gives up on request `id`: tells the server (it may stop working on it) and rejects the caller. */
   cancel(id, why) {
-    if (!this.pending.has(id)) return
+    const p = this.pending.get(id)
+    if (!p) return
+    // Still working, perhaps (a cancel is only a hint to a server): done when its answer comes.
+    const kept = !this.exited && p.onDone !== null
+    if (kept) this.abandoned.set(id, p.onDone)
     if (!this.exited) this.notify('$/cancelRequest', { id })
-    this.settle(id, Object.assign(new Error(why), { code: REQUEST_CANCELLED }))
+    this.settle(id, Object.assign(new Error(why), { code: REQUEST_CANCELLED }), undefined, kept)
   }
 
-  settle(id, err, result) {
+  /** Settles request `id` for its caller; `kept`: its onDone waits in `abandoned` instead. */
+  settle(id, err, result, kept = false) {
     const p = this.pending.get(id)
     if (!p) return
     this.pending.delete(id)
     clearTimeout(p.timer)
+    if (p.onDone && !kept) p.onDone()
     if (err) p.reject(err)
     else p.resolve(result)
   }
@@ -238,7 +258,13 @@ class LspServer {
       }
       return
     }
-    // A response: only to an id this host sent (a stray or repeated id is ignored).
+    // A response: only to an id this host sent (a stray or repeated id is ignored); the late answer
+    // to one it gave up on says the server is done with it.
+    if (hasId && this.abandoned.has(m.id)) {
+      const done = this.abandoned.get(m.id)
+      this.abandoned.delete(m.id)
+      return done()
+    }
     if (!hasId || !this.pending.has(m.id)) return
     if (m.error && typeof m.error === 'object') {
       const msg = typeof m.error.message === 'string' ? m.error.message.slice(0, 500) : 'error'
@@ -313,6 +339,9 @@ class LspServer {
     for (const id of [...this.pending.keys()]) {
       this.settle(id, Object.assign(new Error(`the ${this.language} server stopped`), { code: 'exited' }))
     }
+    const abandoned = [...this.abandoned.values()]
+    this.abandoned.clear()
+    for (const done of abandoned) done()
     if (this.exitTimer) clearTimeout(this.exitTimer)
     if (this.o.onExit) this.o.onExit({ code, signal, error: this.error, stderr: this.stderr.trim(), requested: this.stopping })
   }

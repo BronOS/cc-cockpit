@@ -806,7 +806,9 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   its content without script); and showing the pictures reloads the frame at its top.
 - The editor does not have: Vim mode, a "since opened" mark, a "Claude is editing this file" lock, local history beyond
   undo, debugging (DAP), semantic tokens, call hierarchy or workspace symbol search; file create, rename and delete from
-  a rename or code action are refused. The `servers` setting names a command only, so a server runs with its own
+  a rename or code action are refused. One code action command runs per language server at a time: a second is
+  refused until the first finishes, and one cancelled while the server still works on it holds the server until the
+  server answers (or Restart). The `servers` setting names a command only, so a server runs with its own
   defaults: a Python virtualenv is found only through `pyrightconfig.json` or `[tool.pyright]`, and intelephense runs in
   its free tier. The four built-in servers were tested against fakes, not run for real. Quick open and find in files
   need ripgrep. A file of over 2 million characters gets no language server, and at most 256 files (16 per tab) are

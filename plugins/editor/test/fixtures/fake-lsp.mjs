@@ -19,10 +19,14 @@
 //   --exit-before-init    exits with code 3 on `initialize`, before any answer
 //   --stderr <text>       writes <text> and a newline to stderr at start (the crash message's tail)
 //   --sync <json>         declares this textDocumentSync (`1`, `{"change":1}`...; `omit` leaves it out)
+//   --apply-delay <ms>    fake.apply waits this long before it asks workspace/applyEdit (a command
+//                         still running: the concurrency and cancel tests)
+//   --action-with-command code actions also offer one with an edit to the file and a fake.apply command
 // The language features (test/lsp-features.test.js) answer in the shapes typescript-language-server
 // sends: rename as `documentChanges` with the open document's version (null for src/b.ts, not
 // open), code actions with an edit, a declared command (`fake.apply`, which asks
-// workspace/applyEdit while it runs), an undeclared one and one to resolve.
+// workspace/applyEdit while it runs, one insert in each file its arguments name, and answers the
+// command once that is answered, even when the host cancelled it), an undeclared one and one to resolve.
 // With no arguments it exits at once: `node --test plugins/*/test/` runs every .mjs under a test
 // folder as a test file, this one included.
 import fs from 'node:fs'
@@ -111,6 +115,9 @@ function handle(m) {
           { title: 'Run fake.apply', kind: 'source', command: { title: 'apply', command: 'fake.apply', arguments: [bUri()] } },
           { title: 'Run undeclared', command: { title: 'x', command: 'fake.undeclared' } },
           { title: 'Resolve me', kind: 'refactor', data: { n: 1 } },
+          ...(flag('--action-with-command')
+            ? [{ title: 'Header then apply', edit: { changes: { [uri]: [{ range: range(0, 0, 0, 0), newText: '// header\n' }] } }, command: { title: 'apply', command: 'fake.apply', arguments: [bUri()] } }]
+            : []),
         ],
       })
     }
@@ -118,9 +125,12 @@ function handle(m) {
       return send({ id: m.id, result: { ...m.params, edit: { changes: { [bUri()]: [{ range: range(0, 0, 0, 0), newText: '// resolved\n' }] } } } })
     case 'workspace/executeCommand': {
       if (m.params.command !== 'fake.apply') return send({ id: m.id, error: { code: -32601, message: 'no such command' } })
-      const target = m.params.arguments[0]
-      const id = ask('workspace/applyEdit', { label: 'apply', edit: { changes: { [target]: [{ range: range(0, 0, 0, 0), newText: '// applied\n' }] } } })
-      waiting.set(id, m.id)
+      const changes = {}
+      for (const target of m.params.arguments.filter((x) => typeof x === 'string')) changes[target] = [{ range: range(0, 0, 0, 0), newText: '// applied\n' }]
+      const go = () => waiting.set(ask('workspace/applyEdit', { label: 'apply', edit: { changes } }), m.id)
+      const delay = Number(value('--apply-delay') || 0)
+      if (delay > 0) setTimeout(go, delay)
+      else go()
       return
     }
     case 'initialize': {

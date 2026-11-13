@@ -43,6 +43,13 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     owner: false,
     /** Every lsp-open and lsp-change this page sent, counted: an edit back from the host names one. */
     seq: 0,
+    /**
+     * The buffer changed since the last text sent while this page was not (yet) the owner: those
+     * changes never reached the host. Typing between lsp-open and the host's lsp-doc is the case: the
+     * host holds the opened text at this seq, so once ownership is confirmed the page sends all of it
+     * again (a new seq) rather than incremental changes on top of a text the host never had.
+     */
+    unsent: false,
     status: null,
   }
   let nextReq = 0
@@ -69,6 +76,7 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     s.seq++
     parts.forEach((text, part) => ui.post({ t: 'lsp-open', path: s.path, part, parts: parts.length, text, seq: s.seq }))
     s.opened = true
+    s.unsent = false
   }
 
   /** A path the host can give a server: project-relative (an outside file's tab has an absolute one). */
@@ -100,6 +108,10 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
       if (!s.connected || !hasText || !serverable(path)) return
       if (s.opened && s.path === path) return
       s.path = path
+      // A new document (another path, or open again after a close): who syncs it is the host's
+      // lsp-doc to say, never the previous document's answer.
+      s.language = undefined
+      s.owner = false
       sendText()
     },
     /** The page shows no text any more (binary now, a deleted file reloaded as nothing). */
@@ -114,7 +126,12 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
     },
     /** The buffer changed: `changes` are LSP content changes (convert.mjs contentChanges). Only the owner's reach the server. */
     changed(changes) {
-      if (!s.opened || !s.owner || !s.language || !Array.isArray(changes) || changes.length === 0) return
+      if (!s.opened || !Array.isArray(changes) || changes.length === 0) return
+      if (!s.owner || !s.language) {
+        // Not sent (not the owner, or the host has not said yet): the host's copy is now behind.
+        s.unsent = true
+        return
+      }
       s.seq++
       ui.post({ t: 'lsp-change', path: s.path, changes, seq: s.seq })
     },
@@ -160,6 +177,10 @@ export function createLspClient(ui, timers = { set: (fn, ms) => setTimeout(fn, m
             s.opened = false
             failAll('no language server for this file')
           }
+          // The owner now, with typing the host never got (before this answer came): all of the text
+          // again, so the host never holds a text that differs from the buffer while it takes changes
+          // and sends edits that name a seq this page still has.
+          if (s.language && s.owner && s.unsent) sendText()
           if (typeof m.state === 'string') {
             s.status = { ...(s.status && s.status.language === s.language ? s.status : {}), language: s.language, name: m.name, state: m.state }
             ui.onStatus(s.status)

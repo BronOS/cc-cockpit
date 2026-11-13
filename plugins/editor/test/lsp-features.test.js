@@ -876,6 +876,119 @@ test('serveLsp: an edit ask the page stopped waiting for still tells the page wh
   assert.equal(tab.posts.length, before)
 })
 
+// ---- a server's commands: one at a time, each with its own snapshot and stop ----
+
+/** The ready slot, its server and a fake.apply command editing `rels` (fake-lsp.mjs). */
+function commands(f) {
+  const slot = f.m.slots.get('typescript')
+  const run = (rels, signal) => f.m.executeCommand(slot, slot.server, { command: 'fake.apply', arguments: rels.map((r) => uriOf(f, r)) }, signal)
+  return { slot, run }
+}
+
+test("commands: a second one on the server is refused while one runs; the first's applyEdit is checked against its own snapshot", async (t) => {
+  const f = setup(['--apply-delay', '300'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const c = commands(f)
+  const first = c.run(['src/a.ts'])
+  await until(() => f.got('workspace/executeCommand').length === 1, 5000, 'command sent')
+  // The page types while the first command works: its applyEdit (computed on the old text) must not land.
+  a.text = 'const a = 10\n'
+  a.seq++
+  f.m.change(a, 'src/a.ts', [{ text: a.text }], a.seq)
+  // A second command would take a newer snapshot, and the server's applyEdit names no command: refused.
+  await assert.rejects(c.run(['src/b.ts']), /another command of this language server is still running/)
+  assert.equal(f.got('workspace/executeCommand').length, 1)
+  assert.deepEqual(await first, { files: 0, edits: 0 })
+  const ans = f.answers('workspace/applyEdit')
+  assert.equal(ans.length, 1)
+  assert.equal(ans[0].result.applied, false)
+  assert.match(ans[0].result.failureReason, /changed while the language server worked/)
+  assert.equal(a.text, 'const a = 10\n')
+  assert.equal(a.edits.length, 0)
+  // The first answered: the next one runs, against the text as it is now.
+  assert.equal(c.slot.command, null)
+  assert.deepEqual(await c.run(['src/a.ts']), { files: 1, edits: 1 })
+  assert.equal(a.text, '// applied\nconst a = 10\n')
+})
+
+test("commands: a cancel stops the server's edits before their next file and counts what changed; a stopped command holds the server until it answers", async (t) => {
+  const f = setup(['--apply-delay', '300'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  fs.writeFileSync(path.join(f.root, 'src/c.ts'), 'const c = 3\n')
+  const c = commands(f)
+  // The page gives up while a's part of the server's edit is applied: b and c are not touched.
+  const ctl = new AbortController()
+  const applyA = a.applyEdits
+  a.applyEdits = async (...args) => {
+    ctl.abort()
+    return applyA(...args)
+  }
+  const e = await c.run(['src/a.ts', 'src/b.ts', 'src/c.ts'], ctl.signal).then(
+    () => null,
+    (x) => x,
+  )
+  assert.match(e.message, /cancelled/)
+  assert.deepEqual(e.changed, { files: 1, edits: 1 })
+  assert.equal(a.text, '// applied\nconst a = 1\n')
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+  assert.equal(f.disk('src/c.ts'), 'const c = 3\n')
+  await until(() => f.answers('workspace/applyEdit').length === 1, 5000, 'applyEdit answer')
+  assert.match(f.answers('workspace/applyEdit')[0].result.failureReason, /^cancelled part way: changed src\/a\.ts/)
+  a.applyEdits = applyA
+  await until(() => c.slot.command === null, 5000, 'the late answer')
+  // Cancelled before the server asked: it still works on it, so the server is held until it
+  // answers; its late applyEdit is refused.
+  const ctl2 = new AbortController()
+  const stopped = c.run(['src/b.ts'], ctl2.signal)
+  await until(() => f.got('workspace/executeCommand').length === 2, 5000, 'second command sent')
+  ctl2.abort()
+  await assert.rejects(stopped, /cancelled/)
+  await assert.rejects(c.run(['src/b.ts']), /has not finished a command it was asked to stop/)
+  await until(() => f.answers('workspace/applyEdit').length === 2, 5000, 'late applyEdit answer')
+  assert.deepEqual(f.answers('workspace/applyEdit')[1].result, { applied: false, failureReason: 'the command this edit belongs to was stopped' })
+  assert.equal(f.disk('src/b.ts'), 'const b = 2\n')
+  await until(() => c.slot.command === null, 5000, 'the late answer')
+  assert.deepEqual(await c.run(['src/b.ts']), { files: 1, edits: 1 })
+  assert.equal(f.disk('src/b.ts'), '// applied\nconst b = 2\n')
+})
+
+test('runCodeAction: an edit applied and then its command stopped is an answer counting the files (told to a page that gave up); a busy server refuses before the edit', async (t) => {
+  const f = setup(['--apply-delay', '300', '--action-with-command'])
+  t.after(f.done)
+  const a = page(f.m, 'src/a.ts', 'const a = 1\n')
+  a.open()
+  await ready(f)
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }
+  const offer = async () => (await f.m.ask(a, 'codeActions', 'src/a.ts', { range })).result.find((x) => x.title === 'Header then apply')
+  const ctl = new AbortController()
+  const running = f.m.ask(a, 'runCodeAction', 'src/a.ts', { id: (await offer()).id }, ctl.signal)
+  await until(() => f.got('workspace/executeCommand').length === 1, 5000, 'command sent')
+  // Another view's code action with a command while this one runs: refused, its edit not applied.
+  const other = page(f.m, 'src/b.ts', 'const b = 2\n')
+  other.open()
+  const otherId = (await f.m.ask(other, 'codeActions', 'src/b.ts', { range })).result.find((x) => x.title === 'Header then apply').id
+  await assert.rejects(f.m.ask(other, 'runCodeAction', 'src/b.ts', { id: otherId }), /still running/)
+  assert.equal(other.edits.length, 0)
+  ctl.abort()
+  const r = await running
+  assert.deepEqual([r.result.applied, r.result.files, r.result.edits], [false, 1, 1])
+  assert.equal(r.result.failureReason, 'the action changed 1 file (1 change), but its command did not finish: cancelled')
+  assert.equal(a.text, '// header\nconst a = 1\n')
+  // serve.js tells a page that stopped waiting about an answer like this one (lateEdit).
+  const tab = fakeTab()
+  const handle = serveLsp(tab, { ask: async () => r, closeHolder() {} })
+  handle({ t: 'lsp-ask', req: 1, what: 'runCodeAction', path: 'src/a.ts' })
+  handle({ t: 'lsp-cancel', req: 1 })
+  await sleep(0)
+  assert.equal(tab.last('lsp-error').message, 'runCodeAction: the action changed 1 file (1 change), but its command did not finish: cancelled')
+})
+
 test('outside paths: system trees and credential folders never open, whoever names them', () => {
   const home = (rel) => path.join(os.homedir(), rel)
   for (const p of [

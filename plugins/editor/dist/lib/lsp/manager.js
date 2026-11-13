@@ -331,6 +331,28 @@ function featuresOf(caps) {
   return f
 }
 
+/**
+ * A code action whose command failed or was stopped (`e`, executeCommand's error with `changed`)
+ * after `before` (its own edit's counts) was applied. Nothing changed: the error as it is. Else an
+ * answer, not an error, with the files counted: the page shows the reason, and one that stopped
+ * waiting still learns that files changed (serve.js lateEdit).
+ */
+function commandStopped(before, e) {
+  const changed = (e && e.changed) || { files: 0, edits: 0 }
+  const fileCount = before.files + changed.files
+  const edits = before.edits + changed.edits
+  if (fileCount === 0) throw e
+  const why = files.messageOf(e).slice(0, 200)
+  return {
+    result: {
+      applied: false,
+      failureReason: `the action changed ${fileCount} file${fileCount === 1 ? '' : 's'} (${edits} change${edits === 1 ? '' : 's'}), but its command did not finish: ${why}`,
+      files: fileCount,
+      edits,
+    },
+  }
+}
+
 class LspManager {
   /**
    * @param {object} o
@@ -820,8 +842,12 @@ class LspManager {
     // A bare Command (an older server's answer) runs as it is.
     stop()
     if (typeof action.command === 'string') {
-      await this.executeCommand(slot, srv, action, signal)
-      return { result: { applied: true, files: 0, edits: 0 } }
+      try {
+        const c = await this.executeCommand(slot, srv, action, signal)
+        return { result: { applied: true, files: c.files, edits: c.edits } }
+      } catch (e) {
+        return commandStopped({ files: 0, edits: 0 }, e)
+      }
     }
     const caps = srv.capabilities || {}
     if (!action.edit && !action.command && caps.codeActionProvider && caps.codeActionProvider.resolveProvider) {
@@ -829,22 +855,49 @@ class LspManager {
       if (resolved && typeof resolved === 'object') action = resolved
     }
     stop()
+    const command = action.command && typeof action.command === 'object' ? action.command : null
+    // A command that could not start now is refused before the action's edit is applied, not after.
+    const busy = command && this.commandBusy(slot, srv)
+    if (busy) throw new Error(busy)
     let applied = { applied: true, files: 0, edits: 0 }
     if (action.edit) {
       applied = await applyWorkspaceEdit(this, action.edit, { versions: entry.versions, since: entry.since, signal })
       if (!applied.applied) return { result: applied }
     }
-    if (action.command && typeof action.command === 'object') {
-      stop()
-      await this.executeCommand(slot, srv, action.command, signal)
+    if (command) {
+      try {
+        stop()
+        const c = await this.executeCommand(slot, srv, command, signal)
+        applied = { applied: true, files: applied.files + c.files, edits: applied.edits + c.edits }
+      } catch (e) {
+        // The edit is in (and the command's own edits so far): said with the files counted, so a
+        // page that gave up meanwhile is still told what changed (serve.js lateEdit).
+        return commandStopped(applied, e)
+      }
     }
     return { result: applied }
   }
 
   /**
+   * Why a command cannot run on `srv` now, or null. One command at a time per server: a server's
+   * `workspace/applyEdit` names no command, so it is matched to the one running, never guessed
+   * between two. A command the host stopped waiting for (a cancel, its deadline) still counts until
+   * the server answers it or exits (server.js `onDone`): it may still send that command's edits.
+   */
+  commandBusy(slot, srv) {
+    const run = slot.command
+    if (!run || run.srv !== srv || run.finished) return null
+    if (run.stop.signal.aborted) return 'the language server has not finished a command it was asked to stop; try again shortly, or restart it'
+    return 'another command of this language server is still running; try again when it finishes'
+  }
+
+  /**
    * Runs a server's own command (from its code action) on that server: only a command its
-   * `executeCommandProvider` lists. A `workspace/applyEdit` it makes while this runs is applied
-   * (serverApplyEdit); any other time it is refused.
+   * `executeCommandProvider` lists, and only when no other runs there (commandBusy). A
+   * `workspace/applyEdit` it makes while this runs is applied (serverApplyEdit) against the documents
+   * as they were when it started, and stops with it: the page's cancel or the command's failure
+   * stops its edits before their next file. Resolves `{ files, edits }` its edits changed; a failure
+   * throws with those counts as `changed`.
    */
   async executeCommand(slot, srv, cmd, signal) {
     const caps = srv.capabilities || {}
@@ -852,26 +905,55 @@ class LspManager {
     if (typeof cmd.command !== 'string' || !listed.includes(cmd.command)) throw new Error('the language server did not declare the command of that action')
     const args = cmd.arguments
     if (args !== undefined && (!Array.isArray(args) || jsonLength(args) > MAX_COMMAND_CHARS)) throw new Error("the action's command is too large")
-    slot.commands = (slot.commands || 0) + 1
-    slot.commandVersions = this.versions()
-    slot.commandSince = Date.now()
-    try {
-      await srv.request('workspace/executeCommand', args === undefined ? { command: cmd.command } : { command: cmd.command, arguments: args }, { timeoutMs: EDIT_TIMEOUT_MS, signal })
-    } finally {
-      slot.commands--
+    const busy = this.commandBusy(slot, srv)
+    if (busy) throw new Error(busy)
+    // This command's own snapshot and stop, never shared with another command.
+    const run = { srv, versions: this.versions(), since: Date.now(), stop: new AbortController(), inflight: new Set(), files: 0, edits: 0, finished: false }
+    slot.command = run
+    const onDone = () => {
+      run.finished = true
+      if (slot.command === run) slot.command = null
     }
+    const onAbort = () => run.stop.abort()
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+    let failed = null
+    try {
+      await srv.request('workspace/executeCommand', args === undefined ? { command: cmd.command } : { command: cmd.command, arguments: args }, { timeoutMs: EDIT_TIMEOUT_MS, signal, onDone })
+    } catch (e) {
+      failed = e instanceof Error ? e : new Error(String(e))
+    } finally {
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
+    // Failed, cancelled or timed out: the server's edits for it stop before their next file.
+    if (failed) run.stop.abort()
+    // An edit the server sent before it answered finishes (or stops) first, so its files are counted.
+    while (run.inflight.size) await Promise.allSettled([...run.inflight])
+    const changed = { files: run.files, edits: run.edits }
+    if (failed) throw Object.assign(failed, { changed })
+    return changed
   }
 
   /**
    * The server's `workspace/applyEdit`: applied only while a command the host ran on that server is
    * working (a server cannot rewrite project files whenever it likes), against the documents as
-   * they were when the command started.
+   * they were when that command started, and only until that command is stopped.
    */
   async serverApplyEdit(slot, srv, edit) {
-    if (slot.server !== srv || !(slot.commands > 0)) {
+    const run = slot.command
+    if (slot.server !== srv || !run || run.srv !== srv || run.finished) {
       return { applied: false, failureReason: "this editor applies a server's edit only while a command it ran is working" }
     }
-    const r = await applyWorkspaceEdit(this, edit, { versions: slot.commandVersions, since: slot.commandSince })
+    if (run.stop.signal.aborted) return { applied: false, failureReason: 'the command this edit belongs to was stopped' }
+    const p = applyWorkspaceEdit(this, edit, { versions: run.versions, since: run.since, signal: run.stop.signal })
+    run.inflight.add(p)
+    let r
+    try {
+      r = await p
+    } finally {
+      run.inflight.delete(p)
+    }
+    run.files += r.files || 0
+    run.edits += r.edits || 0
     const out = { applied: r.applied }
     if (r.failureReason) out.failureReason = r.failureReason
     if (Number.isInteger(r.failedChange)) out.failedChange = r.failedChange
@@ -883,7 +965,7 @@ class LspManager {
   slotFor(language) {
     let slot = this.slots.get(language)
     if (!slot) {
-      slot = { language, entry: this.table.table.get(language), state: 'stopped', server: null, message: undefined, install: undefined, crashes: [], idleTimer: null, restartTimer: null, opened: new Set() }
+      slot = { language, entry: this.table.table.get(language), state: 'stopped', server: null, message: undefined, install: undefined, crashes: [], idleTimer: null, restartTimer: null, opened: new Set(), command: null }
       this.slots.set(language, slot)
     }
     return slot
