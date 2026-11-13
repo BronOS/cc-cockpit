@@ -18,6 +18,16 @@ test('fuzzyMatch: characters in order, case-insensitive; the file name and word 
   assert.equal(fuzzyFilter('  ', many)[0].path, 'f0')
 })
 
+test('fuzzyMatch: positions index the path itself when lower-casing changes a length', () => {
+  // 'İ'.toLowerCase() is 'i̇' (two units): folding the whole path would shift every later position.
+  const path = 'İstanbul/MapView.ts'
+  const m = fuzzyMatch('mv', path)
+  assert.deepEqual(m.positions.map((i) => path[i]), ['M', 'V'])
+  // The camel-case bonus reads the right character: 'V' after 'p' is a word start.
+  assert.ok(fuzzyMatch('v', path).score > fuzzyMatch('e', path).score)
+  assert.deepEqual(fuzzyMatch('ist', path).positions.map((i) => path[i]), ['İ', 's', 't'])
+})
+
 test('groupMatches keeps rg order; highlightPieces splits by ranges', () => {
   const g = groupMatches([{ path: 'a', line: 1 }, { path: 'b', line: 2 }, { path: 'a', line: 3 }])
   assert.deepEqual(g.map((x) => [x.path, x.matches.map((m) => m.line)]), [['a', [1, 3]], ['b', [2]]])

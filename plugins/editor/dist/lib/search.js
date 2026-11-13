@@ -20,6 +20,7 @@
 //   page -> host  { t: 'grep-cancel' }                    stop a running search (the panel closed)
 //   host -> page  { t: 'search-error', req, kind: 'files' | 'grep', message, missing? }
 // One search of each kind per tab instance: a new one kills the one before (typing a new query).
+// At most MAX_SEARCH_PROCESSES rg children for the whole plugin; past that a search is refused.
 
 /** At most this many files for quick open: far more than a fuzzy list is useful for. */
 const MAX_FILES = 50000
@@ -36,8 +37,14 @@ const MAX_QUERY_CHARS = 1000
 const SEARCH_TIMEOUT_MS = 20 * 1000
 /** A line of rg's JSON output over this many bytes is skipped (a minified file's one line), not buffered on. */
 const MAX_JSON_LINE_BYTES = 4 * 1024 * 1024
-/** One message's text budget, well under the 1 MiB message cap (paths and lines are JSON-escaped). */
+/** One message's text budget, well under the 1 MiB message cap (items are sized by their JSON form). */
 const PART_CHARS = 256 * 1024
+/**
+ * At most this many rg children of this plugin at once, every tab instance together (a killed one
+ * counts until it exits). The editor's language servers share ctx.processes' per-plugin cap of 16
+ * with these, so a burst of searches from several tabs must not take the slots a server start needs.
+ */
+const MAX_SEARCH_PROCESSES = 4
 
 const RG_HINT =
   'ripgrep (rg) is not installed, or not on your login-shell PATH; quick open and find in files need it. ' +
@@ -122,9 +129,30 @@ function splitter(sep, onItem, maxBytes = Infinity) {
   }
 }
 
-/** UTF-16 offset in `text` of byte offset `byte` of its UTF-8 form. */
-function charOffset(bytes, byte) {
-  return bytes.subarray(0, Math.max(0, Math.min(byte, bytes.length))).toString('utf8').length
+/**
+ * Byte offsets of `bytes` (UTF-8) to UTF-16 offsets, walked forward only: `to(byte)` counts from
+ * where the last call stopped, so a line's sorted submatches cost one pass over it. Decoding from
+ * byte 0 per submatch was O(submatches x line length): a minified line with tens of thousands of
+ * hits (`;` in a bundle) held the plugin host's event loop for seconds, inside onData where the
+ * search timeout cannot cut it short. A lead byte counts its whole character (four-byte ones are a
+ * surrogate pair), so an offset inside a character lands at its end, as a decode would.
+ */
+function utf16Walker(bytes) {
+  let byte = 0
+  let units = 0
+  return {
+    get byte() {
+      return byte
+    },
+    to(target) {
+      const end = Math.min(target, bytes.length)
+      for (; byte < end; byte++) {
+        const b = bytes[byte]
+        if ((b & 0xc0) !== 0x80) units += b >= 0xf0 ? 2 : 1
+      }
+      return units
+    },
+  }
 }
 
 /**
@@ -150,28 +178,32 @@ function parseMatch(line) {
   const text = full.replace(/\r?\n$/, '')
   const bytes = Buffer.from(text, 'utf8')
   const subs = Array.isArray(d.submatches) ? d.submatches : []
-  const ranges = []
-  for (const s of subs) {
-    if (!s || !Number.isInteger(s.start) || !Number.isInteger(s.end) || s.end < s.start) continue
-    const from = charOffset(bytes, s.start)
-    const to = charOffset(bytes, s.end)
-    if (from <= text.length) ranges.push([from, Math.min(to, text.length)])
-  }
-  const first = ranges.length ? ranges[0][0] : 0
+  // rg gives submatches in order and apart; one out of order (or malformed) is skipped, so the walk
+  // only goes forward. It stops at the first match past the shown part: only those are drawn.
+  const walk = utf16Walker(bytes)
+  let first = null
   let cut = 0
   let shown = text
-  if (text.length > MAX_LINE_CHARS) {
-    cut = Math.max(0, Math.min(first - LINE_LEAD_CHARS, text.length - MAX_LINE_CHARS))
-    shown = text.slice(cut, cut + MAX_LINE_CHARS)
-  }
-  // The matches inside the shown part, clipped to it; one wholly cut off is dropped.
   const inShown = []
-  for (const [a, b] of ranges) {
+  for (const s of subs) {
+    if (!s || !Number.isInteger(s.start) || !Number.isInteger(s.end) || s.end < s.start || s.start < walk.byte) continue
+    const a = walk.to(s.start)
+    const b = Math.min(walk.to(s.end), text.length)
+    if (first === null) {
+      first = a
+      if (text.length > MAX_LINE_CHARS) {
+        cut = Math.max(0, Math.min(first - LINE_LEAD_CHARS, text.length - MAX_LINE_CHARS))
+        shown = text.slice(cut, cut + MAX_LINE_CHARS)
+      }
+    }
+    // The matches inside the shown part, clipped to it; one wholly cut off is dropped.
     const from = a - cut
     const to = b - cut
-    if (to < 0 || from > shown.length || (to === 0 && from < 0)) continue
+    if (from > shown.length) break
+    if (to < 0 || (to === 0 && from < 0)) continue
     inShown.push([Math.max(0, from), Math.min(shown.length, to)])
   }
+  if (first === null) first = 0
   return { path: rel, line: d.line_number, col: first + 1, text: shown, cut, ranges: inShown }
 }
 
@@ -180,16 +212,25 @@ function parseMatch(line) {
  * `onBytes(chunk, stop)`; `stop()` kills the child once a cap is reached. Resolves
  * `{ code, stderr, stopped, timedOut }`; rejects only when the program cannot be started.
  */
-function run(spawn, argv, cwd, onBytes, timeoutMs = SEARCH_TIMEOUT_MS) {
+function run(spawn, argv, cwd, onBytes, timeoutMs = SEARCH_TIMEOUT_MS, slots = pluginSlots) {
+  if (slots.used >= slots.max) {
+    return { result: Promise.reject(new Error('too many searches are running; try again in a moment')), cancel() {} }
+  }
   let child
   try {
     child = spawn(argv, { cwd })
   } catch (e) {
+    // Only "cannot run" (ENOENT, EACCES: ctx.processes' own words) is a missing rg; the per-plugin
+    // process cap or a cwd that is not a directory are said as they are, not as an install hint.
+    if (!(e && typeof e.message === 'string' && e.message.includes('cannot run'))) {
+      return { result: Promise.reject(e instanceof Error ? e : new Error(String(e))), cancel() {} }
+    }
     const err = new Error(RG_HINT)
     err.missing = true
     err.cause = e
     return { result: Promise.reject(err), cancel() {} }
   }
+  slots.used++
   let stopped = false
   let timedOut = false
   let stderr = ''
@@ -214,7 +255,12 @@ function run(spawn, argv, cwd, onBytes, timeoutMs = SEARCH_TIMEOUT_MS) {
     child.onStderr((bytes) => {
       if (stderr.length < 4000) stderr += Buffer.from(bytes).toString('utf8')
     })
+    let exited = false
     child.onExit(({ code }) => {
+      // Once, whatever the stream says: a slot given back twice would let a fifth rg in.
+      if (exited) return
+      exited = true
+      slots.used--
       clearTimeout(timer)
       resolve({ code, stderr: stderr.trim(), stopped, timedOut })
     })
@@ -227,6 +273,9 @@ function run(spawn, argv, cwd, onBytes, timeoutMs = SEARCH_TIMEOUT_MS) {
   }
   return { result, cancel: stop }
 }
+
+/** The rg slots of this plugin: the module is loaded once per plugin host, so every tab shares them. */
+const pluginSlots = { used: 0, max: MAX_SEARCH_PROCESSES }
 
 /** The project's files for quick open: `{ result: Promise<{ paths, truncated }>, cancel }`. */
 function listFiles(spawn, cwd, opts = {}) {
@@ -243,7 +292,7 @@ function listFiles(spawn, cwd, opts = {}) {
       truncated = true
       stop()
     }
-  }, opts.timeoutMs)
+  }, opts.timeoutMs, opts.slots)
   return {
     cancel: r.cancel,
     result: r.result.then((x) => {
@@ -282,7 +331,7 @@ function grep(spawn, cwd, query, opts = {}) {
       truncated = true
       stop()
     }
-  }, opts.timeoutMs)
+  }, opts.timeoutMs, opts.slots)
   return {
     cancel: r.cancel,
     result: r.result.then((x) => {
@@ -312,14 +361,15 @@ function partsOf(items, size, budget = PART_CHARS) {
   return parts
 }
 
-const matchSize = (m) => m.path.length + m.text.length * 2 + 40
+/** An item's size as it travels: JSON escapes a control character in a name or line to six characters. */
+const jsonSize = (x) => JSON.stringify(x).length
 
 /**
  * Serves `files`, `grep` and `grep-cancel` for one tab instance (its line to the page). Returns
  * `handle(m)`: true when it took the message. `spawn` is ctx.processes.spawn; `root` the project.
  * A closed line kills what runs and posts nothing more.
  */
-function serveSearch(tab, { spawn, root, log, bin }) {
+function serveSearch(tab, { spawn, root, log, bin, slots }) {
   const running = { files: null, grep: null }
   let closed = false
   const post = (m) => {
@@ -340,7 +390,13 @@ function serveSearch(tab, { spawn, root, log, bin }) {
       (r) => {
         if (running[kind] !== job || job.cancelled) return
         running[kind] = null
-        onDone(r)
+        try {
+          onDone(r)
+        } catch (e) {
+          // A post refused (an answer over the message cap): said, never an unhandled rejection
+          // that leaves the page waiting on "Listing files...".
+          onFail(e)
+        }
       },
       (e) => {
         if (running[kind] !== job || job.cancelled) return
@@ -373,9 +429,9 @@ function serveSearch(tab, { spawn, root, log, bin }) {
       }
       start(
         'files',
-        listFiles(spawn, root, { bin }),
+        listFiles(spawn, root, { bin, slots }),
         ({ paths, truncated }) => {
-          const parts = partsOf(paths, (p) => p.length)
+          const parts = partsOf(paths, jsonSize)
           parts.forEach((list, i) => post({ t: 'files', req, paths: list, part: i, parts: parts.length, truncated }))
         },
         (e) => {
@@ -393,7 +449,7 @@ function serveSearch(tab, { spawn, root, log, bin }) {
       }
       let job
       try {
-        job = grep(spawn, root, m.query, { regex: m.regex === true, caseSensitive: m.caseSensitive === true, word: m.word === true, bin })
+        job = grep(spawn, root, m.query, { regex: m.regex === true, caseSensitive: m.caseSensitive === true, word: m.word === true, bin, slots })
       } catch (e) {
         fail('grep', req, e)
         return true
@@ -402,7 +458,7 @@ function serveSearch(tab, { spawn, root, log, bin }) {
         'grep',
         job,
         ({ matches, files, truncated }) => {
-          const parts = partsOf(matches, matchSize)
+          const parts = partsOf(matches, jsonSize)
           parts.forEach((list, i) => post({ t: 'grep', req, matches: list, part: i, parts: parts.length, truncated, files }))
         },
         (e) => fail('grep', req, e)
@@ -423,6 +479,7 @@ module.exports = {
   MAX_MATCH_FILES,
   MAX_LINE_CHARS,
   MAX_QUERY_CHARS,
+  MAX_SEARCH_PROCESSES,
   RG_HINT,
   filesArgv,
   grepArgv,

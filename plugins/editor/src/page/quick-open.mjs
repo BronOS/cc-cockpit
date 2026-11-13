@@ -13,6 +13,13 @@ export const GREP_DEBOUNCE_MS = 250
 
 const SEPARATORS = '/._- '
 
+/** `s` lower-cased one code unit at a time, keeping its length (each unit's first lower-case unit). */
+function fold(s) {
+  let out = ''
+  for (let i = 0; i < s.length; i++) out += s[i].toLowerCase()[0]
+  return out
+}
+
 /**
  * Fuzzy match of `query` in `path` (case-insensitive, every query character in order; spaces in the
  * query are ignored): `{ score, positions }` or null. Higher is better: consecutive characters, a
@@ -20,9 +27,11 @@ const SEPARATORS = '/._- '
  * name (after the last /) score more; a shorter path wins a tie.
  */
 export function fuzzyMatch(query, path) {
-  const q = query.replace(/\s+/g, '').toLowerCase()
+  const q = fold(query.replace(/\s+/g, ''))
   if (q === '') return { score: 0, positions: [] }
-  const lower = path.toLowerCase()
+  // Folded one code unit at a time, so a position in `lower` is the same index in `path` (the
+  // highlight and the word-start bonus read `path`); `İ`.toLowerCase() is two characters.
+  const lower = fold(path)
   const nameStart = path.lastIndexOf('/') + 1
   // The file name first: `fq` should find `src/file-quick.ts` in its name, not in `src/`.
   const tryFrom = (from) => {

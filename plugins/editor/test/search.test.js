@@ -90,6 +90,15 @@ test('grepArgv: the query only ever follows -e, the paths come after --', () => 
   assert.deepEqual(search.filesArgv(), ['rg', '--no-config', '--files', '--null', '--no-messages', '--', '.'])
 })
 
+test('neither argv follows symlinks: a link out of the project is never listed or searched', () => {
+  for (const argv of [search.filesArgv(), search.grepArgv('x'), search.grepArgv('x', { regex: true, caseSensitive: true, word: true })]) {
+    const flags = argv.slice(0, argv.indexOf('--'))
+    assert.ok(!flags.includes('--follow') && !flags.includes('-L'), argv.join(' '))
+    // Nor folded into a short-flag cluster like -uL.
+    assert.ok(!flags.some((f) => /^-[^-]*L/.test(f)), argv.join(' '))
+  }
+})
+
 test('grepArgv refuses an empty, multi-line or overlong query', () => {
   for (const bad of ['', 'a\nb', 'a\rb', 'a\0b', 'x'.repeat(search.MAX_QUERY_CHARS + 1), 3, null]) {
     assert.throws(() => search.grepArgv(bad), undefined, String(bad).slice(0, 20))
@@ -119,6 +128,33 @@ test('parseMatch cuts a long line around its first match and moves the ranges wi
   assert.equal(m.cut, 5000 - 60)
   // The second match is far past the cut: dropped, not drawn at a wrong place.
   assert.equal(m.ranges.length, 1)
+})
+
+test('parseMatch walks a long line with many submatches once (no per-match decode from byte 0)', () => {
+  // A minified line: 'é' (two bytes) between hits, so byte and UTF-16 offsets differ throughout.
+  const unit = 'é;'
+  const text = unit.repeat(1_000_000) // 3 MB of UTF-8, a million submatches
+  const subs = []
+  for (let i = 0; i < 1_000_000; i++) subs.push({ start: i * 3 + 2, end: i * 3 + 3 })
+  const line = matchLine('min.js', 1, text, subs)
+  const t0 = performance.now()
+  const m = search.parseMatch(line)
+  const ms = performance.now() - t0
+  // O(submatches x line) took seconds for 65k hits; one pass is well under this.
+  assert.ok(ms < 1500, `${ms} ms`)
+  assert.equal(m.col, 2)
+  assert.equal(m.cut, 0)
+  assert.equal(m.text.length, search.MAX_LINE_CHARS)
+  // Every drawn range is a ';', and only those in the shown part are kept.
+  assert.equal(m.ranges.length, search.MAX_LINE_CHARS / 2)
+  for (const [a, b] of m.ranges) assert.equal(m.text.slice(a, b), ';')
+  // A first match deep in the line: the cut and the ranges follow it.
+  const deep = search.parseMatch(matchLine('min.js', 1, 'é'.repeat(5000) + 'NEEDLE;😀;', [{ start: 10000, end: 10006 }, { start: 10006, end: 10007 }, { start: 10011, end: 10012 }]))
+  assert.equal(deep.col, 5001)
+  assert.deepEqual(deep.ranges.map(([a, b]) => deep.text.slice(a, b)), ['NEEDLE', ';', ';'])
+  // Out of order or overlapping submatches are skipped, not walked backwards.
+  const odd = search.parseMatch(matchLine('a', 1, 'abcabc', [{ start: 3, end: 4 }, { start: 0, end: 1 }, { start: 5, end: 6 }]))
+  assert.deepEqual(odd.ranges, [[3, 4], [5, 6]])
 })
 
 test('splitter joins items across chunks and drops an item over the limit whole', () => {
@@ -167,6 +203,85 @@ test('grep: a bad regex is rg error text; no match is an empty answer; missing r
     throw new Error('processes: cannot run rg: ENOENT')
   }, '/p', 'x')
   await assert.rejects(missing.result, (e) => e.missing === true && /brew install ripgrep/.test(e.message))
+
+  // Any other refusal (the per-plugin process cap, a cwd that is not a directory) is said as it is.
+  for (const text of ['processes: this plugin already runs 16 processes', 'processes: cwd /p is not an existing directory']) {
+    const other = search.grep(() => {
+      throw new RangeError(text)
+    }, '/p', 'x')
+    await assert.rejects(other.result, (e) => e.missing !== true && e.message === text)
+  }
+})
+
+test('rg slots are shared by every tab of the plugin; a killed rg holds one until it exits', async () => {
+  const f = fakeSpawn()
+  const slots = { used: 0, max: 2 }
+  const posted = []
+  const tab = () => search.serveSearch({ post: (m) => posted.push(m), onClose() {} }, { spawn: f.spawn, root: '/p', slots })
+  const a = tab()
+  const b = tab()
+  a({ t: 'files', req: 1 })
+  b({ t: 'grep', req: 2, query: 'x' })
+  assert.equal(slots.used, 2)
+  // A third, from either tab: refused without spawning, said to the page (not as a missing rg).
+  a({ t: 'grep', req: 3, query: 'y' })
+  await new Promise((r) => setImmediate(r))
+  assert.equal(f.children.length, 2)
+  const refused = posted.find((m) => m.req === 3)
+  assert.equal(refused.t, 'search-error')
+  assert.equal(refused.missing, undefined)
+  assert.match(refused.message, /too many searches/)
+  // The killed one gives its slot back on exit (once, even if exit is told twice).
+  b({ t: 'grep-cancel' })
+  assert.equal(slots.used, 2)
+  await new Promise((r) => setImmediate(r))
+  f.children[1].exit(null)
+  assert.equal(slots.used, 1)
+  a({ t: 'grep', req: 4, query: 'z' })
+  assert.equal(f.children.length, 3)
+  assert.equal(search.MAX_SEARCH_PROCESSES <= 4, true)
+})
+
+test('serveSearch: quick open parts are sized by their JSON; a refused post is said, not a stuck page', async () => {
+  const f = fakeSpawn()
+  const posted = []
+  const MAX = 1024 * 1024 // MAX_PANEL_MESSAGE_LENGTH
+  const tab = {
+    post(m) {
+      const n = JSON.stringify(m).length
+      if (n > MAX) throw new RangeError(`message of ${n} characters is over the cap`)
+      posted.push(m)
+    },
+    onClose() {},
+  }
+  const handle = search.serveSearch(tab, { spawn: f.spawn, root: '/p', slots: { used: 0, max: 4 } })
+  handle({ t: 'files', req: 1 })
+  // Names made of control characters: each becomes six characters in JSON.
+  const name = '\u0001'.repeat(200)
+  f.children[0].emit(Array.from({ length: 3000 }, (_, i) => `./${name}${i}`).join('\0') + '\0')
+  f.children[0].exit(0)
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+  assert.ok(posted.length > 1)
+  assert.ok(posted.every((m) => m.t === 'files' && JSON.stringify(m).length < MAX))
+  assert.equal(posted.reduce((n, m) => n + m.paths.length, 0), 3000)
+
+  // A post that throws anyway: the page gets a search-error, and no unhandled rejection.
+  const errors = []
+  const tab2 = {
+    post(m) {
+      if (m.t === 'files') throw new RangeError('over the cap')
+      errors.push(m)
+    },
+    onClose() {},
+  }
+  const h2 = search.serveSearch(tab2, { spawn: f.spawn, root: '/p', slots: { used: 0, max: 4 } })
+  h2({ t: 'files', req: 7 })
+  f.children[1].emit('./a\0')
+  f.children[1].exit(0)
+  await new Promise((r) => setImmediate(r))
+  await new Promise((r) => setImmediate(r))
+  assert.deepEqual(errors, [{ t: 'search-error', kind: 'files', req: 7, message: 'over the cap' }])
 })
 
 test('listFiles: NUL-separated paths, ./ dropped, capped (rg killed)', async () => {
@@ -241,4 +356,16 @@ test('real rg: a query that looks like an option stays a pattern; ignore rules h
   const files = await search.listFiles(nodeSpawn, root).result
   assert.deepEqual(files.paths.sort(), ['b.md', 'src/a.ts'])
   assert.equal(files.truncated, false)
+})
+
+test('real rg: a symlink to a folder or file outside the project is neither listed nor searched', { skip: !hasRg && 'rg not installed' }, async () => {
+  const root = project()
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-out-')))
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'needle outside\n')
+  fs.symlinkSync(outside, path.join(root, 'linkdir'))
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))
+  const files = await search.listFiles(nodeSpawn, root).result
+  assert.deepEqual(files.paths.sort(), ['b.md', 'src/a.ts'])
+  const r = await search.grep(nodeSpawn, root, 'needle').result
+  assert.deepEqual([...new Set(r.matches.map((m) => m.path))], ['src/a.ts'])
 })

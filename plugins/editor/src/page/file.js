@@ -706,11 +706,15 @@ document.addEventListener('mousedown', (e) => {
   if (palette.mode !== null && !$('palette').contains(e.target)) hidePalette(false)
 })
 // The page's chords (declared as page-tab keys in plugin.json, so the app lets them through while
-// the page has focus): Ctrl/Cmd+P quick open, Ctrl/Cmd+Shift+F find in files. Caught before CodeMirror.
+// the page has focus): Mod+P quick open, Mod+Shift+F find in files, Mod being CodeMirror's (Cmd on
+// macOS, Ctrl elsewhere). Caught before CodeMirror, so only the platform's own Mod: on macOS Ctrl+P is
+// the standard keymap's cursorLineUp and must stay with the editor.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
 window.addEventListener(
   'keydown',
   (e) => {
-    if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+    const mod = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+    if (!mod || e.altKey) return
     const k = e.key.toLowerCase()
     if (k === 'p' && !e.shiftKey) {
       e.preventDefault()

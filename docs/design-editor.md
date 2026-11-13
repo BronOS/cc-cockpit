@@ -173,7 +173,8 @@ to the same store. The `reviewer` service gains `notes(path)`, `addNote`, `onNot
 **Editing.** Search and replace (regex, case, word), multi-cursor, bracket matching, auto-close, folding, indent
 guides, comment toggle; VS Code-like keys; colours from the cockpit theme, font from the terminal font settings.
 Quick open (Ctrl+P): `rg --files` (ignore rules from rg itself), fuzzy filtered in the page. Find in files
-(Ctrl+Shift+F): `rg --json -e <query> -- .`.
+(Ctrl+Shift+F): `rg --json -e <query> -- .`. At most four rg run for the plugin at once, every tab together (they share
+ctx.processes' per-plugin cap with the language servers); past that a search is refused with a "try again".
 
 **Web and remote.** A normal plugin page under the path token. File contents travel in chunks under the message cap.
 Two views with the same file each have a buffer and a base, and meet through compare-and-swap and merge.
