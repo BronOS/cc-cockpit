@@ -37,11 +37,13 @@ describe('pane-layout', () => {
   })
 
   it('counts cells after the pane chrome', () => {
-    // 20 cols need 160px + 18px padding; 5 rows need 80px + 16px padding (+22 header).
-    expect(holdsCells({ w: 178, h: 96 }, cell, { cols: 20, rows: 5 }, false)).toBe(true)
-    expect(holdsCells({ w: 177, h: 96 }, cell, { cols: 20, rows: 5 }, false)).toBe(false)
-    expect(holdsCells({ w: 178, h: 96 }, cell, { cols: 20, rows: 5 }, true)).toBe(false)
-    expect(holdsCells({ w: 178, h: 118 }, cell, { cols: 20, rows: 5 }, true)).toBe(true)
+    // 20 cols need 160px + 18px padding + 14px xterm keeps for its scrollbar + 1px of rounding (qa
+    // run 1 Q4: without them a pane ended at 19 columns); 5 rows need 80px + 16px padding + 1px
+    // (+22 header).
+    expect(holdsCells({ w: 193, h: 97 }, cell, { cols: 20, rows: 5 }, false)).toBe(true)
+    expect(holdsCells({ w: 192.9, h: 97 }, cell, { cols: 20, rows: 5 }, false)).toBe(false)
+    expect(holdsCells({ w: 193, h: 97 }, cell, { cols: 20, rows: 5 }, true)).toBe(false)
+    expect(holdsCells({ w: 193, h: 119 }, cell, { cols: 20, rows: 5 }, true)).toBe(true)
   })
 
   it('auto-zooms a narrow view only (D5)', () => {
@@ -128,8 +130,13 @@ describe('pane-layout', () => {
   })
 
   it('keeps a dragged divider off the pane minimum', () => {
-    // 20 cols of 8px + 18 padding = 178px of a 1000px split.
-    expect(dragMinShare(1000, 'row', cell)).toBeCloseTo(0.178)
+    // 20 cols of 8px + 18 padding + 14 scrollbar + 2 rounding = 194px of a 1000px split.
+    expect(dragMinShare(1000, 'row', cell)).toBeCloseTo(0.194)
+    // A pane at the stop holds the minimum (so it never auto-zooms), whatever the split's width.
+    for (const px of [600, 842, 1000, 1913]) {
+      const share = dragMinShare(px, 'row', { width: 7.796, height: 17 })
+      expect(holdsCells({ w: share * px - 0.01, h: 400 }, { width: 7.796, height: 17 }, { cols: 20, rows: 5 }, true)).toBe(true)
+    }
     // A wide split: main's 10% floor.
     expect(dragMinShare(4000, 'row', cell)).toBe(GROUP_CAPS.minShare)
     // Never more than half: two children always fit somewhere.

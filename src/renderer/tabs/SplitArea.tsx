@@ -22,6 +22,9 @@ import { tabLabel } from './tab-label'
 import type { SessionRegistry } from './terminal-session'
 import { TerminalView } from './TerminalView'
 
+/** How long a pane waits for its tab before it stops drawing as "Starting…" (design.md §1). */
+const STARTING_MS = 2000
+
 /** The pane mode preview of a strip drag: where the dragged tab would go. */
 export interface PaneDrop {
   /** The anchor pane's tab. */
@@ -76,8 +79,8 @@ export function SplitArea(props: {
   keysOff: boolean
   sessions: SessionRegistry
   details: ReadonlyMap<string, SessionDetail>
-  /** About one terminal cell, for the D5 limits of a divider drag. */
-  cell: Size
+  /** One terminal cell (measured when a terminal has one), for the D5 limits of a divider drag. */
+  cell: () => Size
   onArea: (size: Size) => void
   /** A press in a pane (any button): the person picks it. */
   onPanePress: (tabId: string) => void
@@ -165,7 +168,18 @@ export function SplitArea(props: {
   }
 
   const held = new Set(tabs.map((t) => t.id))
-  const starting = view.visible.filter((id) => !held.has(id))
+  const waiting = view.visible.filter((id) => !held.has(id))
+  const waitingKey = waiting.join(' ')
+  // A pane drawn as "Starting…" whose tab never arrives (a missed tabs.added, a tab that died before
+  // it was announced) is dropped from drawing after about 2 s; the next snapshot fixes the group.
+  const [gaveUp, setGaveUp] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    if (waitingKey === '') return
+    const ids = waitingKey.split(' ')
+    const timer = setTimeout(() => setGaveUp((prev) => new Set([...prev, ...ids])), STARTING_MS)
+    return () => clearTimeout(timer)
+  }, [waitingKey])
+  const starting = waiting.filter((id) => !gaveUp.has(id))
   // The anchor's box as drawn: its pane in the layout, or the whole area (a plain tab, a zoom).
   const dropRect = props.drop ? edgePreview(tiled ? rectOf(props.drop.at) : { x: 0, y: 0, w: 1, h: 1 }, props.drop.edge) : undefined
 
@@ -264,7 +278,7 @@ export function SplitArea(props: {
                   if (!(splitPx > 0)) return
                   const cur = dragRef.current?.splitId === d.splitId && dragRef.current.live ? dragRef.current : startDrag(d.splitId)
                   if (!cur) return
-                  const min = dragMinShare(splitPx, d.dir, props.cell)
+                  const min = dragMinShare(splitPx, d.dir, props.cell())
                   const next = moveDivider(cur.base, d.index, px / splitPx - (cur.base[d.index] ?? 0), min)
                   setDragBoth({ ...cur, sizes: next })
                 }}

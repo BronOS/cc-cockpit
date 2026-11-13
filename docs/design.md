@@ -480,18 +480,21 @@ plain tab has no group, and a project without groups behaves as before.
   remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups
   or names a `groups.*` channel (`no-plugin-group-edits.test.ts`). `SessionInfo` has no group (D11),
   and there is no `ccc` command.
-- *Focus (D3, D18, D22).* Nothing done elsewhere moves a view's keys: no group op, close, snapshot or
-  restore sends `tabs.select`, and only the person's own act (a click on a pane or in the strip, a
-  pane chord, their own close, Move out or Ungroup) chooses a focused pane. When the focused pane
-  leaves its group because of a change elsewhere (another view closed it, moved it out or ungrouped
-  the group), the page keeps showing the rest of the group with the pane that took its
-  space as the view's tab, but marks no pane focused, gives no terminal the keys and sends no
-  `tabs.selected` until the person acts (`keysOff` in `renderer/state/groups-state.ts`). Their own
-  close or move out moves the focus to the pane that took the space, keys on; their own placement or
-  Ungroup keeps it on the same terminal. A group that dissolves while the focused tab is still open
-  (an Ungroup, one of two panes moved out) keeps that terminal shown: keys on when this view's own
-  edit did it (the page knows the edits it sent), keys off when it came from elsewhere (D22). A
-  plain tab closed elsewhere keeps the strip's rule. A pane hidden by zoom never takes the keys or the size.
+- *Focus (D3, D18, D22, D23, D24).* Nothing done elsewhere moves a view's keys: no group op, close,
+  snapshot or restore sends `tabs.select`, and only the person's own act (a click on a pane or in
+  the strip, a pane chord, their own close, Move out or Ungroup) chooses a focused pane. After a
+  change elsewhere a view never follows its tab into an arrangement made elsewhere, and its keys go
+  off (no pane marked focused, no terminal with the keys, no `tabs.selected` until the person acts;
+  `keysOff` in `renderer/state/groups-state.ts`): a focused tab closed shows the pane that took its
+  space; one now plain (moved out, its group ungrouped or dissolved) stays shown; one moved into
+  another group shows what is left of its old group (or that group's remaining plain tab). The
+  person's own close or move out moves the focus to the pane that took the space, keys on; their own
+  placement or Ungroup, or moving the other of two panes out, keeps it on the same terminal, keys on
+  (the page knows the edits it sent). A plain tab closed elsewhere keeps the strip's rule. While the
+  keys are off, commands on the active tab (`tab.close`, the flag, `pane.*` split, show beside, move
+  out, zoom, resize, move) do nothing, and a `tabs.select` from main naming a pane the view shows is
+  ignored (main's view of the selection is stale then). A pane hidden by zoom never takes the keys
+  or the size.
 - *Strip.* A group is a bracketed segment of its members with a handle; every member keeps its own
   tab with its dot, tint, flag and label, zoomed or not, so a member that needs permission or waits
   for input always shows in the strip (the handle's description also names every asking member in

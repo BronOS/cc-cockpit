@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TabInfo } from '../../src/shared/ipc'
-import { applyOrder, keepContiguous, selectionAfterSnapshot } from '../../src/renderer/state/groups-state'
+import { applyOrder, ignoresMainSelect, keepContiguous, selectionAfterSnapshot } from '../../src/renderer/state/groups-state'
 import { initialTabsState, tabsReducer, type TabsAction, type TabsState } from '../../src/renderer/state/tabs-store'
 import type { GroupsSnapshot, PaneNode, PaneSplit, TabGroup } from '../../src/shared/tab-groups'
 
@@ -103,11 +103,29 @@ describe('tabs store: groups', () => {
       expect(s.keysOff).toBe(false)
     })
 
-    it('moved out elsewhere: the view stays on the group, keys off', () => {
+    it('D24: moved out elsewhere: the same tab, now plain, keys off', () => {
       const s = run(
         [
           { type: 'selected', tabId: 'b' },
           { type: 'groups', snapshot: snap(2, ['a', 'c', 'd', 'b'], [{ id: 'g', root: col('s2', leaf('c'), leaf('d')) }]) }
+        ],
+        base()
+      )
+      expect(s.activeId).toBe('b')
+      expect(s.keysOff).toBe(true)
+    })
+
+    it('D24: moved into another group elsewhere: what is left of the old group, keys off', () => {
+      const s = run(
+        [
+          { type: 'selected', tabId: 'b' },
+          {
+            type: 'groups',
+            snapshot: snap(2, ['a', 'b', 'c', 'd'], [
+              { id: 'g', root: col('s2', leaf('c'), leaf('d')) },
+              { id: 'h', root: row('s4', leaf('a'), leaf('b')) }
+            ])
+          }
         ],
         base()
       )
@@ -191,6 +209,32 @@ describe('tabs store: groups', () => {
       const s = run([{ type: 'selected', tabId: 'c' }, { type: 'groups', snapshot: snap(2, ['a', 'b', 'c', 'd'], []) }], base())
       expect(s.activeId).toBe('c')
       expect(s.keysOff).toBe(true)
+    })
+
+    it('D24: moved from a two-pane group into another group elsewhere: the tab left behind, keys off', () => {
+      const s = run(
+        [
+          { type: 'loaded', tabs: ['x', 'y', 'z', 'w'].map(tab) },
+          {
+            type: 'groups',
+            snapshot: snap(1, ['x', 'y', 'z', 'w'], [
+              { id: 'g', root: row('s', leaf('x'), leaf('y')) },
+              { id: 'h', root: row('t', leaf('z'), leaf('w')) }
+            ])
+          },
+          { type: 'selected', tabId: 'x' },
+          { type: 'groups', snapshot: snap(2, ['y', 'z', 'w', 'x'], [{ id: 'h', root: row('t', leaf('z'), leaf('w'), leaf('x')) }]) }
+        ]
+      )
+      expect(s.activeId).toBe('y')
+      expect(s.keysOff).toBe(true)
+    })
+
+    it('D23 R2: while keys are off, main selecting a pane the view shows is ignored', () => {
+      expect(ignoresMainSelect(true, ['b', 'd'], 'd')).toBe(true)
+      // A tab not on screen is selected as usual; with the keys on, always.
+      expect(ignoresMainSelect(true, ['b', 'd'], 'a')).toBe(false)
+      expect(ignoresMainSelect(false, ['b', 'd'], 'd')).toBe(false)
     })
 
     it('own Ungroup keeps the selection on the same terminal, keys on', () => {
