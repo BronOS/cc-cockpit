@@ -180,7 +180,8 @@ with full Node access.
   Claude: when the page calls `ccPanel.tab.discuss()` the app draws its question box over the tab, asks THIS
   view's handlers for the context (5 s; the first `{ text }` wins, null passes on, a throw sends nothing) and
   sends `About: <title>`, your text and the person's question to the Claude tab they pick, as their own text
-  through the send gate (so it reaches a tab they typed in, where `ctx.sessions.send` is refused).
+  through the send gate (so it reaches a tab they typed in, where `ctx.sessions.send` is refused). A page tab is
+  never a split pane: selected, it fills the whole tab area, and it cannot be a `beside` anchor.
 - `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):
   `onOpen((page) => …)` is the backend of your html settings page (manifest
   `contributes.settings.page`, `ccc guide settings-secrets`); it throws when the manifest declares
@@ -383,7 +384,8 @@ with full Node access.
   default): the new tab opens as a split pane beside that tab of this window, for a command next to the
   Claude tab that asked for it. Only the new tab is placed: no plugin call moves, resizes, closes or ungroups
   the person's panes, and none reads which group a tab is in. A plain anchor becomes a group of the two; the
-  anchor stays visible and keeps focus. An unknown id and another window's tab reject the same way, before
+  anchor stays visible and keeps focus. Only terminal tabs are panes: a page tab (`ctx.tabs`), an unknown id and
+another window's tab reject the same way, before
   the open counts against the 5 a minute. The answer is `{ tabId, placed }`: `placed: false` means an
   ordinary tab opened instead, because the anchor closed meanwhile, its group already has 4 panes, or its
   pane is too small to halve. `focus: true` shows the anchor's group in the window the call came from; the

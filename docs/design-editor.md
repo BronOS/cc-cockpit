@@ -39,8 +39,9 @@ The shell draws the page in the tab area in its own frame with its own `MessageP
 draws slots. Ctrl+Tab, drag, flags, close, the All tabs menu and restore work as for any tab. A saved page tab keeps
 type and params; on restore its plugin is asked again; a gone or revoked plugin drops it, one that failed to load or is off in
 the project keeps it in the record for the next launch. A page tab is never typed
-into as a terminal: the send gate, `typed` and Claude status do not apply. Title and icon are set by main from the
-plugin's request, clamped.
+into as a terminal: the send gate, `typed` and Claude status do not apply. Nor is it ever a split pane (design.md §3
+"Split groups", which hold terminal tabs only): main refuses it in a group, and its frame covers the whole tab area.
+Title and icon are set by main from the plugin's request, clamped.
 
 Frame lifetime (a page holds unsaved text, so its frame must outlive what reloads plugin pages today):
 - **Mount** on first select, not at restore; a small LRU keeps recently used frames alive; a cap on page tabs per

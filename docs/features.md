@@ -322,6 +322,7 @@ behind it are in [design.md](design.md).
   is the first. Such a tab holds unsaved text, so its page stays loaded while you switch (the 6 most recent; a tab
   without unsaved text that left them loads afresh when selected), survives a plugin restart and a browser reconnect,
   and closing a tab with unsaved text asks (see closing a tab above). A plugin has at most 64 page tabs per project.
+  A page tab is never a split pane (Split view): selected, it fills the whole tab area.
   Unsaved text is counted per view: a browser that has the project open can make the desktop's close ask about a tab
   until that browser disconnects. Plugins can also run long-running
   child processes with `ctx.processes` (argv only, 16 per plugin, killed with the plugin).
@@ -365,7 +366,9 @@ behind it are in [design.md](design.md).
 Several terminal tabs side by side in one window, like tmux panes, while each stays its own tab
 (dot, status, flag, ×, Claude session). A **split group** is a set of tabs drawn together; a
 project can have several, and a tab is in at most one. Groups, their layout and their names come
-back after a restart, like the tabs.
+back after a restart, like the tabs. Only terminal tabs (Claude, Shell, command) are panes: a page
+tab (an editor file tab, any plugin's page) has no split entries in its menu, its drag stays on the
+strip, it is not offered in Show beside, and it always fills the whole tab area when selected.
 
 How to make one:
 
