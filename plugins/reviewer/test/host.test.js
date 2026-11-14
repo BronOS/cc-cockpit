@@ -768,7 +768,7 @@ test('annotate html: Discuss sends "About <title> (<url>)" with "On «quote»: n
 test('features(): the optional annotate features, so a caller can tell this reviewer from an older one', async () => {
   const f = setup({ editorAvailable: false })
   host.activate(f.ctx)
-  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes']
+  const all = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes', 'removeNotes']
   assert.deepEqual(await f.provided.reviewer.features(), all)
   assert.deepEqual(host.FEATURES, all)
   // A copy: a caller changing the answer changes nothing here.
@@ -1471,6 +1471,49 @@ test('addNote refuses a path that leaves the project through a symlink, and a fu
   store.set('draft:a.js', { global: '', notes: Array.from({ length: review.MAX_NOTES }, (_, i) => ({ id: `n${i}`, side: 'new', from: 1, to: 1, quote: '', text: 'x' })) })
   await assert.rejects(svc.addNote('a.js', { from: 1, text: 'one more' }), /more than 200 notes/)
   assert.equal(store.get('draft:a.js').notes.length, review.MAX_NOTES)
+  host.deactivate()
+})
+
+test('removeNotes deletes only the notes whose id and text still match, keeps the comment, and tells notesChange', async () => {
+  const { store, events, svc } = notesSetup()
+  store.set('draft:a.js', {
+    global: 'whole file',
+    notes: [
+      { id: '1', side: 'new', from: 1, to: 1, quote: '', text: 'sent' },
+      { id: '2', side: 'new', from: 2, to: 2, quote: '', text: 'edited since' },
+      { id: '3', side: 'new', from: 3, to: 3, quote: '', text: 'added since' },
+    ],
+  })
+  const r = await svc.removeNotes('a.js', [
+    { id: '1', text: 'sent' },
+    { id: '2', text: 'what was sent' },
+    { id: 'gone', text: 'x' },
+  ])
+  assert.deepEqual(r, { removed: 1 })
+  assert.deepEqual(store.get('draft:a.js').global, 'whole file')
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.id), ['2', '3'])
+  assert.deepEqual(events, [NOTES_A])
+  // Nothing matching: no write, no event.
+  assert.deepEqual(await svc.removeNotes('a.js', [{ id: '1', text: 'sent' }]), { removed: 0 })
+  assert.deepEqual(await svc.removeNotes('b.js', []), { removed: 0 })
+  assert.equal(events.length, 1)
+  host.deactivate()
+})
+
+test('removeNotes deletes a draft left empty; it is refused while the review is open and for bad input', async () => {
+  const { store, svc } = notesSetup()
+  store.set('draft:a.js', { global: '', notes: [{ id: '1', side: 'new', from: 1, to: 1, quote: '', text: 'only' }, { id: '2', side: 'new', from: 2, to: 2, quote: 'q', text: '  ' }] })
+  assert.deepEqual(await svc.removeNotes('a.js', [{ id: '1', text: 'only' }]), { removed: 1 })
+  // The one note left has no words: nothing the person wrote is left, so the draft goes.
+  assert.equal(store.has('draft:a.js'), false)
+  store.set('draft:a.js', { global: '', notes: [{ id: '1', side: 'new', from: 1, to: 1, quote: '', text: 'only' }] })
+  await svc.open('a.js')
+  await assert.rejects(svc.removeNotes('a.js', [{ id: '1', text: 'only' }]), /review of a\.js is open/)
+  assert.equal(store.get('draft:a.js').notes.length, 1)
+  for (const bad of [null, 'x', {}, [null], [{ id: 1, text: 'x' }], [{ id: '', text: 'x' }], [{ id: 'x'.repeat(41), text: 'x' }], [{ id: 'a' }], [{ id: 'a', text: 'x'.repeat(4001) }], Array.from({ length: 201 }, (_, i) => ({ id: `n${i}`, text: 'x' }))]) {
+    await assert.rejects(svc.removeNotes('b.js', bad), /reviewer:/, JSON.stringify(bad).slice(0, 60))
+  }
+  await assert.rejects(svc.removeNotes('../x', []), /reviewer:/)
   host.deactivate()
 })
 

@@ -66,6 +66,8 @@
       <button id="ctx-grep" type="button" role="menuitem"><span>Find in files…</span><kbd id="ctx-grep-key"></kbd></button>
       <!-- Shown only while a Reviewer answers (the reviewer service's notes). -->
       <button id="ctx-note" type="button" role="menuitem" hidden><span>Add review note…</span></button>
+      <!-- Shown only while a Reviewer answers and this file has notes: all of them to Claude, through Ask Claude's box. -->
+      <button id="ctx-discuss-notes" type="button" role="menuitem" hidden><span>Discuss review notes…</span></button>
     </div>
     <!-- Add review note: a note on the selected lines, written to the Reviewer's own store. -->
     <section id="notebox" class="notebox" role="dialog" aria-label="Add review note" hidden>

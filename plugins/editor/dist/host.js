@@ -14,8 +14,10 @@
 // Project, "Plugin used for editor"). `ccc edit <file>[:line[:col]]` opens the file's tab at
 // that position without selecting it (the unseen dot); micro on an app without page tabs.
 //
-// In a file tab: Ask Claude (Ctrl+L, core's Discuss; lib/ask.js) and quick chat (Ctrl+K, a read-only
-// headless Claude whose proposals the person accepts into the buffer; lib/quick-chat.js).
+// In a file tab: Ask Claude (Ctrl+L, core's Discuss; lib/ask.js, with the Reviewer's notes on the asked
+// lines), "Discuss review notes" (the same Discuss with all of the file's notes, removed from the Reviewer
+// once they reached Claude) and quick chat (Ctrl+K, a read-only headless Claude whose proposals the person
+// accepts into the buffer; lib/quick-chat.js).
 //
 // It also adds "Edit" to every overlay of the well-known type `file` { path } (a review, a file
 // shown by another plugin) for a text file of the project: the file's tab, and the overlay closes.
@@ -257,6 +259,11 @@ exports.activate = (ctx) => {
     }
   }
 
+  // "Discuss review notes" delivered: the notes go from the Reviewer, as a delivered review's do. One watch
+  // set for the plugin, not per tab: the send may reach Claude after the tab closed (queued in a busy tab).
+  const sentNotes = notes.createSentWatch({ sessions: ctx.sessions, reviewer: reviewerService, log: ctx.log })
+  sentWatch = sentNotes
+
   // ---- file tabs ----
   // `contributes.tabs` type `file`: the host reads, saves by compare-and-swap and watches
   // (lib/files.js); the page (dist/pages/file.html) keeps its base and merges (design-editor.md §2).
@@ -471,14 +478,21 @@ exports.activate = (ctx) => {
       const tabPath = typeof params.path === 'string' ? params.path : undefined
       // Claude's changes in the gutter: the tab's own file at git HEAD, and the Reviewer's diff on a click.
       const gitting = git.serveGit(tab, { spawn, root: ctx.projectDir, rel: tabPath, review: openReview, log: ctx.log })
-      // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection.
+      // The path Ask Claude names: the project file, or the read-only file outside it.
       const tabFile = tabPath !== undefined ? tabPath : typeof params.outside === 'string' ? params.outside : undefined
-      const asking = ask.serveAsk(tab, { file: tabFile })
       // Quick chat (Ctrl+K): a read-only headless Claude in the project folder (lib/quick-chat.js), about
       // the tab's own file; the model is the app setting at the chat's start.
       const chatting = quickChat.serveChat(tab, { spawn, root: ctx.projectDir, rel: tabPath, model: () => quickChat.modelOf(app()), log: ctx.log })
       // The Reviewer's notes in the gutter and "Add review note": the tab's own file, through the reviewer service.
       const noting = notes.serveNotes(tab, { rel: tabPath, reviewer: reviewerService, log: ctx.log })
+      // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection, and the
+      // notes on its lines come from this instance's copy of the Reviewer's list; "Discuss review notes"
+      // sends them all and has them removed once delivered.
+      const asking = ask.serveAsk(tab, {
+        file: tabFile,
+        notes: noting.current,
+        onNotesSent: ({ text, notes: sent }) => sentNotes.watch({ rel: tabPath, text, notes: sent }),
+      })
       const set = instances.get(tab.id) || new Set()
       set.add(tab)
       instances.set(tab.id, set)
@@ -685,9 +699,13 @@ let shared = null
 // The language servers too: ctx.processes kills them with the plugin anyway, but a `shutdown` first
 // lets a server write its caches (gopls, tsserver) instead of dying mid-write.
 let lspShared = null
+// The watches of "Discuss review notes" sends: their session listeners go with ctx anyway; this ends their timers.
+let sentWatch = null
 exports.deactivate = () => {
   if (shared) shared.watcher.close()
   shared = null
+  if (sentWatch) sentWatch.dispose()
+  sentWatch = null
   const lsp = lspShared
   lspShared = null
   for (const t of markerTimers) clearTimeout(t)

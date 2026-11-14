@@ -354,11 +354,15 @@ editor's Edit (and any plugin's `file` buttons) show on it.
   open, else the stored one. `addNote(path, { from, to?, text, quote? })` adds one to the same stored draft the overlay
   opens with and Discuss sends (`text` 1-4,000 characters, `quote` cut at 500, lines 1 to 10,000,000) and resolves `{ id }`;
   it is refused while that file's review is open (the person adds the note there), when the draft already has 200 notes
-  or is too large, for a path outside the project folder (also through a symlink) and for any other bad input. The
+  or is too large, for a path outside the project folder (also through a symlink) and for any other bad input.
+  `removeNotes(path, [{ id, text }])` (feature `'removeNotes'`) deletes the notes you handed to Claude yourself, as a
+  delivered Discuss deletes a review's: only a note whose id and text still match what `notes(path)` gave you goes (one
+  edited since stays), the comment for the whole file never; it resolves `{ removed }` and is refused while that file's
+  review is open. The
   service event `notesChange` `{ path }` (`reviewer.on('notesChange', fn)`) says a file's notes may have changed:
   call `notes(path)` again.
 - `features()` (app 0.9.3+): resolves the optional annotate features this reviewer has, `['companion', 'prepare', 'type',
-  'mail', 'actions', 'update', 'original', 'fail', 'notes']`. An older
+  'mail', 'actions', 'update', 'original', 'fail', 'notes', 'removeNotes']`. An older
   reviewer ignores an option it does not know (a companion would just not be shown) and has no `features`: the call
   rejects with `service "reviewer" (plugin cockpit.reviewer) has no method "features"`, which means none. Ask before
   relying on one: `const f = await reviewer.features().catch(() => [])`, then `f.includes('companion')`, else fall

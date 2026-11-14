@@ -219,3 +219,118 @@ test('a hung Reviewer: notes-get is `has: false` after the deadline, no new call
   assert.equal(tab.posted.at(-1).ok, false)
   assert.match(tab.posted.at(-1).message, /did not answer in time/)
 })
+
+// ---- the full list for Ask Claude, and "Discuss review notes" delivered ----
+
+test("current(): null until the Reviewer answered, then its list in full (quote, text uncut by the hover's cap); null again with no Reviewer", async () => {
+  let rev = fakeReviewer({ list: [{ id: 'a', from: 2, to: 3, text: 'w'.repeat(3000), quote: 'q' }] })
+  const tab = fakeTab()
+  const handle = notes.serveNotes(tab, { rel: 'src/a.ts', reviewer: () => (rev ? rev.handle : null), log: { warn() {} } })
+  assert.equal(handle.current(), null)
+  handle({ t: 'notes-get', req: 1 })
+  await tick()
+  assert.deepEqual(handle.current(), [{ id: 'a', from: 2, to: 3, text: 'w'.repeat(3000), quote: 'q' }])
+  // The page's copy is the hover's (cut); the host's is not.
+  assert.equal(tab.posted[0].notes[0].text.length, notes.MAX_SHOWN_CHARS)
+  rev = null
+  handle({ t: 'notes-get', req: 2 })
+  await tick()
+  assert.equal(handle.current(), null)
+})
+
+/** A fake ctx.sessions: `set(list)` changes the tabs and tells every listener. */
+function fakeSessions(initial = []) {
+  let list = initial
+  const listeners = new Set()
+  return {
+    list: async () => list,
+    onChange: (fn) => (listeners.add(fn), () => listeners.delete(fn)),
+    set(next) {
+      list = next
+      for (const fn of [...listeners]) fn(list)
+    },
+    listeners,
+  }
+}
+
+const SENT = 'Review: the file as it is now, no git diff\n\n1. Line 3:\n   why?'
+const REFS = [{ id: 'a', from: 3, to: 3, text: 'why?', quote: '' }]
+const prompt = (text) => `About: a.ts\nFile: src/a.ts\n\n${text}\n\nWhat do you think?`
+
+test('createSentWatch: a tab whose next prompt has the sent text removes those notes (id and text) from the Reviewer', async () => {
+  const sessions = fakeSessions([{ tabId: 't1', lastPrompt: 'earlier' }])
+  const rev = fakeReviewer({ methods: { removeNotes: async (p, list) => (rev.calls.push(['removeNotes', p, list]), { removed: list.length }) } })
+  const w = notes.createSentWatch({ sessions, reviewer: () => rev.handle, log: { info() {}, warn() {} } })
+  await w.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  assert.equal(w.size(), 1)
+  // Another prompt (the person typed something else): not the send.
+  sessions.set([{ tabId: 't1', lastPrompt: 'something else' }])
+  await tick()
+  assert.deepEqual(rev.calls, [])
+  // Delivered to a new session (no prompt before), the send gate's whitespace aside.
+  sessions.set([{ tabId: 't1', lastPrompt: 'something else' }, { tabId: 't2', lastPrompt: prompt(SENT).replace(/\n/g, '\r\n') }])
+  await tick()
+  assert.deepEqual(rev.calls, [['removeNotes', 'src/a.ts', [{ id: 'a', text: 'why?' }]]])
+  assert.equal(w.size(), 0)
+  assert.equal(sessions.listeners.size, 0)
+})
+
+test('createSentWatch: a prompt that already had the text before the send is not its delivery', async () => {
+  const sessions = fakeSessions([{ tabId: 't1', lastPrompt: prompt(SENT) }])
+  const rev = fakeReviewer({ methods: { removeNotes: async (p, list) => (rev.calls.push(['removeNotes', p]), { removed: list.length }) } })
+  const w = notes.createSentWatch({ sessions, reviewer: () => rev.handle, log: { info() {}, warn() {} } })
+  await w.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  // Its status moved, its prompt did not: the earlier send of the same notes.
+  sessions.set([{ tabId: 't1', status: 'working', lastPrompt: prompt(SENT) }])
+  await tick()
+  assert.deepEqual(rev.calls, [])
+  assert.equal(w.size(), 1)
+  w.dispose()
+  assert.equal(w.size(), 0)
+  assert.equal(sessions.listeners.size, 0)
+})
+
+test('createSentWatch: no delivery in time keeps the notes; the oldest watch gives way past the cap', async () => {
+  const sessions = fakeSessions([])
+  const rev = fakeReviewer({ methods: { removeNotes: async () => (rev.calls.push(['removeNotes']), { removed: 1 }) } })
+  const w = notes.createSentWatch({ sessions, reviewer: () => rev.handle, log: { info() {}, warn() {} }, maxMs: 20, max: 2 })
+  await w.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(w.size(), 0)
+  sessions.set([{ tabId: 't1', lastPrompt: prompt(SENT) }])
+  await tick()
+  assert.deepEqual(rev.calls, [])
+  const w2 = notes.createSentWatch({ sessions, reviewer: () => rev.handle, log: { info() {}, warn() {} }, max: 2 })
+  for (const t of ['one', 'two', 'three']) await w2.watch({ rel: 'src/a.ts', text: `${t} ${SENT}`, notes: REFS })
+  assert.equal(w2.size(), 2)
+  sessions.set([{ tabId: 't9', lastPrompt: prompt(`one ${SENT}`) }])
+  await tick()
+  assert.deepEqual(rev.calls, [])
+  w2.dispose()
+})
+
+test('createSentWatch: an older Reviewer (no removeNotes), none, no sessions, no notes: nothing thrown, nothing removed', async () => {
+  const warned = []
+  const log = { info() {}, warn: (m) => warned.push(m) }
+  const old = fakeReviewer({ methods: { removeNotes: async () => Promise.reject(new Error('service "reviewer" (plugin cockpit.reviewer) has no method "removeNotes"')) } })
+  const sessions = fakeSessions([])
+  const w = notes.createSentWatch({ sessions, reviewer: () => old.handle, log })
+  await w.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  sessions.set([{ tabId: 't1', lastPrompt: prompt(SENT) }])
+  await tick()
+  assert.equal(warned.length, 1)
+  assert.match(warned[0], /not removed after the send: .*has no method/)
+  const none = notes.createSentWatch({ sessions: fakeSessions([]), reviewer: () => null, log })
+  await none.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  const noSessions = notes.createSentWatch({ sessions: undefined, reviewer: () => old.handle, log })
+  await noSessions.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  assert.equal(noSessions.size(), 0)
+  const w3 = notes.createSentWatch({ sessions: fakeSessions([]), reviewer: () => old.handle, log })
+  await w3.watch({ rel: 'src/a.ts', text: SENT, notes: [] })
+  await w3.watch({ rel: undefined, text: SENT, notes: REFS })
+  assert.equal(w3.size(), 0)
+  // A failing list: the prompts before the send are unknown, so nothing is watched.
+  const failing = notes.createSentWatch({ sessions: { list: async () => Promise.reject(new Error('gone')), onChange: () => () => {} }, reviewer: () => old.handle, log })
+  await failing.watch({ rel: 'src/a.ts', text: SENT, notes: REFS })
+  assert.equal(failing.size(), 0)
+})

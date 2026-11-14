@@ -213,7 +213,13 @@ Not in v1: debugging (DAP), semantic tokens, call hierarchy, workspace symbol se
 box; main asks the editor's `onDiscuss` for the context (`About: src/x.ts:40-52` and the fenced selection), adds the
 question, and sends through the send gate as person-origin text, to the Claude tab last used in the project or one
 picked from a short menu; delivered only in *waiting for input*, queued otherwise. A plugin's own `sessions.send`
-would be refused on any typed tab, which is nearly every tab.
+would be refused on any typed tab, which is nearly every tab. The Reviewer's notes whose lines overlap the asked
+lines (the cursor's line with none) follow the selection, `Review notes on these lines:` then `1. Lines 40-44:` and
+the note, as the Reviewer's own Discuss numbers notes; the page names them by id with the lines its gutter shows (the
+marks mapped through edits, so a dirty buffer matches the selection), and the host adds the Reviewer's words from its
+own copy of the list. The whole context stays under 13,000 characters (what core's 20,000 leave after the head, a
+4,000-character question and the closing prompt), the notes at most 8,000 of it (the selection's cap), cut with the
+Reviewer's `(review cut: too long)`. These notes stay in the Reviewer: they are context for a question.
 
 **Quick chat** (Ctrl+K on a selection): a short-lived headless Claude through `ctx.processes` in the project folder,
 with a fixed argv: `claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts
@@ -241,6 +247,19 @@ code. It never takes focus from a terminal being typed in: the tab opens with th
 
 **Review notes in place.** The Reviewer's notes for the file show in the gutter; "Add review note" on a selection writes
 to the same store. The `reviewer` service gains `notes(path)`, `addNote`, `onNotesChange` (versioned).
+
+**Discuss review notes** (the context menu while the Reviewer answered and the file has notes; a button in the note
+popover, which stays while the pointer moves onto it) hands every note of the file to Claude through Ask Claude's own
+path: the page calls `ccPanel.tab.discuss()` with its mode set to notes, core draws the same box and tab choice, and
+`onDiscuss` answers with the Reviewer's file-review form (`Review: the file as it is now, no git diff`, each note with
+its quote; core's `About:` and `File:` lines name the file, as for the Reviewer's `named: false`). Quotes shorten
+first, then the text is cut at 8,000 characters with the Reviewer's mark. The Reviewer deletes a review's notes once
+all of it reached Claude, so these go the same way: core does not tell a page tab where its Discuss went or whether
+it was queued, so the host reads every Claude tab's prompt before answering and then watches for a tab whose new
+prompt holds the sent text's start (the Reviewer's `watchQueued` match, over all tabs), for up to an hour, then
+calls the service's `removeNotes(path, [{ id, text }])` (feature `'removeNotes'`): only notes whose id and text still
+match go, never the file's comment, and not while its review is open. A cut text, a send that never arrives or an
+older Reviewer keeps them.
 
 ## 5. Editing, remote, security, errors, testing
 

@@ -18,6 +18,14 @@
 //                                                          (req 0: pushed on the event `notesChange`)
 //   page -> host  { t: 'notes-add', req, from, to, text, quote }
 //   host -> page  { t: 'notes-added', req, ok, message? } the answer; on success a fresh `notes` follows
+//
+// The host keeps the last list it read in full (`handle.current()`: texts uncut, quotes), for Ask Claude
+// (lib/ask.js): the page names notes by id with the lines it shows them on, and the words Claude gets
+// are the Reviewer's, never the page's hover copy.
+//
+// "Discuss review notes" hands the file's notes to Claude, as the Reviewer's Discuss hands over a review,
+// and like that review they go once they reached Claude (createSentWatch below, the Reviewer's
+// `removeNotes`). Ask Claude's notes are context for a question, not a review handed over: they stay.
 
 /** A note's text is cut to this many characters for the hover: the page shows it, it never edits it. */
 const MAX_SHOWN_CHARS = 2000
@@ -59,8 +67,12 @@ function within(p, ms, message, onLate) {
   })
 }
 
-/** The notes as the page needs them: id, lines, text (cut), in a bounded list; malformed entries dropped. */
-function shownNotes(list) {
+/**
+ * The Reviewer's answer as the host keeps it: id, lines, text and quote within the Reviewer's own caps, in a
+ * bounded list; malformed entries dropped. The Reviewer never hands out a longer text, so its text is the
+ * one `removeNotes` matches; another provider's longer one is cut here, then matches nothing and stays.
+ */
+function fullNotes(list) {
   const out = []
   if (!Array.isArray(list)) return out
   for (const n of list) {
@@ -68,9 +80,14 @@ function shownNotes(list) {
     if (!n || typeof n !== 'object') continue
     const { from, to, text } = n
     if (!Number.isSafeInteger(from) || from < 1 || !Number.isSafeInteger(to) || to < from || typeof text !== 'string' || !text.trim()) continue
-    out.push({ id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.length), from, to, text: text.length > MAX_SHOWN_CHARS ? `${text.slice(0, MAX_SHOWN_CHARS - 1)}…` : text })
+    out.push({ id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.length), from, to, text: text.slice(0, MAX_NOTE_TEXT), quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '' })
   }
   return out
+}
+
+/** The notes as the page needs them: id, lines, text (cut), in a bounded list; malformed entries dropped. */
+function shownNotes(list) {
+  return fullNotes(list).map(({ id, from, to, text }) => ({ id, from, to, text: text.length > MAX_SHOWN_CHARS ? `${text.slice(0, MAX_SHOWN_CHARS - 1)}…` : text }))
 }
 
 /** The page's `notes-add` as the Reviewer's note, or an Error with a sentence for the person. */
@@ -96,6 +113,8 @@ function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, add
   let unsubscribe = null
   /** A `notes` call that outlived its deadline and has not settled: no new one is made while it hangs. */
   let stuck = null
+  /** The last list read in full (fullNotes), or null while there is no Reviewer to ask: Ask Claude's source. */
+  let latest = null
   const post = (m) => {
     if (!closed) tab.post(m)
   }
@@ -115,6 +134,13 @@ function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, add
 
   /** The file's notes now: `{ has: false }` for every way of "there is no Reviewer to ask". */
   async function read() {
+    const r = await readNow()
+    // Kept as the page will have them: the answer is posted right after, and a later read replaces both.
+    latest = r.has ? r.full : null
+    return r.has ? { has: true, notes: r.notes } : { has: false }
+  }
+
+  async function readNow() {
     if (typeof rel !== 'string') return { has: false }
     // A hung Reviewer is asked again only once its last call settled: at most one call left behind.
     if (stuck) return { has: false }
@@ -129,7 +155,7 @@ function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, add
         stuck = call
         call.then(unstick, unstick)
       })
-      return { has: true, notes: shownNotes(list) }
+      return { has: true, notes: shownNotes(list), full: fullNotes(list) }
     } catch (e) {
       // An older Reviewer ("has no method"), one that failed to activate, a path it refuses: no marks.
       // Logged at debug level only: this is asked every few seconds.
@@ -153,7 +179,7 @@ function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, add
     }
   }
 
-  return function handle(m) {
+  function handle(m) {
     if (!m || typeof m !== 'object') return false
     if (m.t === 'notes-get') {
       const req = m.req
@@ -194,6 +220,112 @@ function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, add
     }
     return false
   }
+  /** The last list read, in full ([{ id, from, to, text, quote }], lines the file on disk's), or null: no Reviewer answered. */
+  handle.current = () => latest
+  return handle
 }
 
-module.exports = { MAX_SHOWN_CHARS, MAX_SHOWN_NOTES, REVIEWER_CALL_TIMEOUT_MS, serveNotes, shownNotes, within }
+// ---- "Discuss review notes" delivered: the notes go (the Reviewer's rule for a sent review) ----
+
+/** How much of the sent text's start must be in a tab's next prompt to count as delivered (the Reviewer's MATCH_CHARS). */
+const MATCH_CHARS = 120
+/**
+ * How long a send is watched for. Core's Discuss for a page tab tells the plugin neither the tab it
+ * went to nor whether it was queued (a busy tab takes it at the turn's end), so the watch looks at every
+ * Claude tab's next prompt until this runs out; past it the notes simply stay, as for a send that never
+ * happened (a refused target, a New session over its budget).
+ */
+const SENT_WATCH_MS = 60 * 60 * 1000
+/** At most this many sends watched at once: the oldest gives way (its notes stay). */
+const MAX_SENT_WATCHES = 10
+
+/** A prompt with control characters and runs of whitespace made one space (the send gate strips controls; the Reviewer's promptText). */
+const promptText = (s) =>
+  String(s || '')
+    .replace(/[\x00-\x1f\x7f\s]+/g, ' ')
+    .trim()
+
+/**
+ * Watches the project's Claude tabs for the notes a Discuss sent, and asks the Reviewer to remove them
+ * once one tab's prompt has the sent text's start in it: the Reviewer deletes a review's notes only when
+ * all of it reached Claude (a queued one when the tab took it), so a send that failed or was lost keeps
+ * them. A prompt counts only when it changed since the send (`watch` reads every tab's prompt first, before
+ * Discuss sends), so the same notes sent earlier are not taken for this delivery. No match within
+ * SENT_WATCH_MS: the notes stay. `removeNotes` keeps a note edited since (id and text must still match).
+ *
+ * `sessions` is ctx.sessions (list, onChange), `reviewer()` the service handle now or null. Returns
+ * `{ watch({ rel, text, notes }), dispose() }`; `watch` resolves once the prompts were read.
+ */
+function createSentWatch({ sessions, reviewer, log, maxMs = SENT_WATCH_MS, max = MAX_SENT_WATCHES }) {
+  const live = new Set()
+  const usable = !!sessions && typeof sessions.list === 'function' && typeof sessions.onChange === 'function'
+
+  async function remove(rel, notes) {
+    const svc = reviewer()
+    if (!svc) return
+    try {
+      const r = await within(svc.removeNotes(rel, notes), REVIEWER_CALL_TIMEOUT_MS, 'the Reviewer did not answer in time')
+      if (log && typeof log.info === 'function') log.info(`notes ${rel}: ${r && Number.isSafeInteger(r.removed) ? r.removed : 0} sent to Claude, removed`)
+    } catch (e) {
+      // An older Reviewer (no removeNotes), its review open now: the notes stay, as they would have.
+      if (log) log.warn(`notes ${rel}: not removed after the send: ${e && e.message ? e.message : e}`)
+    }
+  }
+
+  async function watch({ rel, text, notes }) {
+    if (!usable || typeof rel !== 'string' || typeof text !== 'string' || !Array.isArray(notes) || notes.length === 0) return
+    const want = promptText(text).slice(0, MATCH_CHARS)
+    if (!want) return
+    const before = new Map()
+    try {
+      for (const s of await sessions.list()) if (s && typeof s.tabId === 'string') before.set(s.tabId, s.lastPrompt)
+    } catch (e) {
+      // Without the prompts as they were, an earlier send of the same notes would count: nothing is watched.
+      if (log) log.warn(`sessions.list: ${e && e.message ? e.message : e}`)
+      return
+    }
+    const refs = notes.map((n) => ({ id: n.id, text: n.text }))
+    const w = { stop: null, timer: null }
+    const end = () => {
+      if (!live.delete(w)) return false
+      clearTimeout(w.timer)
+      try {
+        if (w.stop) w.stop()
+      } catch {}
+      return true
+    }
+    w.end = end
+    const check = (list) => {
+      if (!Array.isArray(list)) return
+      for (const s of list) {
+        if (!s || typeof s.lastPrompt !== 'string' || s.lastPrompt === before.get(s.tabId)) continue
+        if (!promptText(s.lastPrompt).includes(want)) continue
+        if (end()) remove(rel, refs)
+        return
+      }
+    }
+    while (live.size >= max) [...live][0].end()
+    live.add(w)
+    w.timer = setTimeout(end, maxMs)
+    if (typeof w.timer.unref === 'function') w.timer.unref()
+    try {
+      w.stop = sessions.onChange(check)
+      // A listener that matched while it was being added (called at once) ended before it had its disposer.
+      if (!live.has(w) && typeof w.stop === 'function') w.stop()
+    } catch (e) {
+      end()
+      if (log) log.warn(`sessions.onChange: ${e && e.message ? e.message : e}`)
+    }
+  }
+
+  return {
+    watch,
+    /** The sends still watched (tests). */
+    size: () => live.size,
+    dispose() {
+      for (const w of [...live]) w.end()
+    },
+  }
+}
+
+module.exports = { MAX_SHOWN_CHARS, MAX_SHOWN_NOTES, REVIEWER_CALL_TIMEOUT_MS, SENT_WATCH_MS, createSentWatch, fullNotes, promptText, serveNotes, shownNotes, within }

@@ -2,6 +2,11 @@
 // needs it for core's Discuss. Core draws the question box (ccPanel.tab.discuss()) and then asks the
 // host's onDiscuss, which asks this page for the selection (lib/ask.js turns it into the text Claude
 // gets). Pure over a CodeMirror state, so node:test runs it with no DOM.
+//
+// The Reviewer's notes go with it (design-editor.md §4): Ask Claude names the notes on the asked lines,
+// "Discuss review notes" all of them, each by id with the lines the gutter shows it on (notes-editor.js
+// noteLines: the Reviewer's lines of the file on disk, mapped through the edits since), so a dirty buffer
+// still matches the selection. The words are the host's to add; the page sends ids and lines only.
 
 /**
  * The selection's text is cut to this many characters here (the host cuts again): the whole Discuss
@@ -37,4 +42,34 @@ export function selectionContext(state, max = MAX_ASK_CHARS) {
     cut = true
   }
   return { startLine: first.number, endLine: state.doc.lineAt(end).number, text, cut }
+}
+
+/**
+ * The notes (`list`: [{ id, from, to }], the Reviewer's lines) on the lines the gutter shows them:
+ * `lines` (Map id -> { from, to }) wins where it has the note. [{ id, from, to }].
+ */
+export function placedNotes(list, lines) {
+  return list.map((n) => {
+    const at = lines && lines.get(n.id)
+    return at ? { id: n.id, from: at.from, to: at.to } : { id: n.id, from: n.from, to: n.to }
+  })
+}
+
+/** The notes of `placed` whose lines overlap startLine..endLine (inclusive). */
+export function overlapping(placed, startLine, endLine) {
+  return placed.filter((n) => n.from <= endLine && n.to >= startLine)
+}
+
+/**
+ * The page's answer to the host's `ask-context` (without `t` and `req`). `mode` 'ask' (Ask Claude): the
+ * selection, and the notes on its lines when there are any; 'notes' ("Discuss review notes"): every note.
+ * `notes` is the Reviewer's list, or null while no Reviewer answered (then no notes at all: the text is
+ * Ask Claude's own); `lines` the gutter's (noteLines).
+ */
+export function askContext(state, { mode = 'ask', notes = null, lines = null, max = MAX_ASK_CHARS } = {}) {
+  const placed = Array.isArray(notes) ? placedNotes(notes, lines) : []
+  if (mode === 'notes') return { mode: 'notes', notes: placed }
+  const sel = selectionContext(state, max)
+  const on = overlapping(placed, sel.startLine, sel.endLine)
+  return on.length > 0 ? { ...sel, notes: on } : sel
 }

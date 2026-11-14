@@ -1,11 +1,12 @@
 // The page's notes (src/page/notes.mjs: asks, answers, the one add at a time) and the gutter's marks
-// (src/page/notes-editor.js marksOf) on a CodeMirror document, with no DOM.
+// (src/page/notes-editor.js marksOf, and noteLines: where Ask Claude reads each note's lines) on a CodeMirror
+// document, with no DOM.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ChangeSet, Text } from '@codemirror/state'
 import { createNotes, POLL_MS, FOCUS_MIN_MS } from '../src/page/notes.mjs'
 import { createNoteFlow } from '../src/page/note-flow.mjs'
-import { marksOf } from '../src/page/notes-editor.js'
+import { marksOf, noteLines } from '../src/page/notes-editor.js'
 
 function make() {
   const posts = []
@@ -208,4 +209,23 @@ test('marksOf: marks ride along with an edit before a laying-on again', () => {
   const set = marksOf(doc, [note('n', 2, 2)])
   const changes = ChangeSet.of({ from: 0, insert: 'zz\n' }, doc.length)
   assert.deepEqual(list(set.map(changes)), [[5, ['n']]])
+})
+
+test("noteLines: each note's first and last marked line, after edits shifted them; a note with no mark is absent", () => {
+  const doc = Text.of(['a', 'b', 'c', 'd', 'e'])
+  const set = marksOf(doc, [note('span', 2, 4), note('one', 5, 5), note('far', 9, 9)])
+  assert.deepEqual([...noteLines(set, doc)], [
+    ['span', { from: 2, to: 4 }],
+    ['one', { from: 5, to: 5 }],
+  ])
+  // Two lines typed at the top, then line "c" (inside the span) deleted.
+  const typed = ChangeSet.of({ from: 0, insert: 'x\ny\n' }, doc.length)
+  const doc2 = typed.apply(doc)
+  const cut = ChangeSet.of({ from: doc2.line(5).from, to: doc2.line(6).from }, doc2.length)
+  const doc3 = cut.apply(doc2)
+  assert.deepEqual([...noteLines(set.map(typed).map(cut), doc3)], [
+    ['span', { from: 4, to: 5 }],
+    ['one', { from: 6, to: 6 }],
+  ])
+  assert.deepEqual([...noteLines(marksOf(doc, []), doc)], [])
 })

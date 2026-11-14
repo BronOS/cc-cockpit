@@ -301,7 +301,15 @@ behind it are in [design.md](design.md).
     adds one.
   - Ask Claude (Ctrl/Cmd+L, or the context menu on a selection): a question with the path, lines and selection, sent
     to the Claude tab last used in the project (or one you pick, or a new session) through the send gate, so it waits
-    for *waiting for input*.
+    for *waiting for input*. The Reviewer's notes on those lines go with it, after the selection (`Review notes on
+    these lines:`, each as `1. Lines 40-44:` and the note), on the lines the gutter shows them, so unsaved edits above
+    a note do not throw it off; they stay in the Reviewer.
+  - Discuss review notes (the context menu while the file has notes, or the button in a note's hover): every note of
+    the file to Claude through the same box and tab choice, in the Reviewer's own form (`Review: the file as it is
+    now, no git diff`, then each note with its quote), cut at 8,000 characters with `(review cut: too long)`. As with
+    the Reviewer's Discuss, the sent notes are deleted from the Reviewer once a Claude tab's prompt shows they arrived
+    (a queued send when the tab takes it; watched for an hour); a cut send, a failed one, or a note edited meanwhile
+    stays. Needs Reviewer 0.3.0 or newer for the notes, and one with `removeNotes` for the delete.
   - Quick chat (Ctrl/Cmd+K on a selection): a short headless Claude, read-only (Read, Grep, Glob; no settings, hooks
     or MCP servers), proposes a replacement shown as an inline diff with Accept and Reject; Claude never writes the
     file. The model is an app setting (default `sonnet`). These runs leave transcripts in `~/.claude`, so the Usage

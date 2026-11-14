@@ -38,12 +38,16 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
   - `originals: [{ id, html }]` and `view` (HTML form, optional, app 0.13.0): the Original view; see "Original view"
     below. The page's Original | Reader switch is the service event `view` `{ key, view, caller }`.
   - `features()`: the optional annotate features this reviewer has (`['companion', 'prepare', 'type', 'mail', 'actions',
-    'update', 'original', 'fail', 'notes']`); an older reviewer has no such
+    'update', 'original', 'fail', 'notes', 'removeNotes']`); an older reviewer has no such
     method (the call rejects with `has no method "features"`: read it as none).
 
   - `notes(path)`, `addNote(path, { from, to?, text, quote? })` and the event `notesChange` `{ path }` (feature
     `'notes'`): a file's line notes read and added from outside the overlay, in the same stored draft (the editor shows
     them in its gutter and adds one from its context menu). `addNote` is refused while the file's review is open.
+  - `removeNotes(path, [{ id, text }])` (feature `'removeNotes'`): the notes a caller handed to Claude itself go, as a
+    delivered Discuss's do; only those whose id and text still match what `notes(path)` gave, never the comment for the
+    whole file. Resolves `{ removed }`; refused while the file's review is open. The editor calls it once its "Discuss
+    review notes" reached Claude.
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
   for the same file or `key` brings the open overlay to the front. Sending to Claude is the app's **Discuss with

@@ -83,8 +83,9 @@ annotate({ title, html, assets?, url?, key?, tabId? })  // ... or on sanitized H
 annotate({ title, html, ..., label?, urlLabel?, companion: { title, html, assets?, url?, facts?, label?, urlLabel? } })  // with a second document beside it (below)
 annotate({ ..., type? })  // the overlay's type, passed through (a source's own inbox-item { source, id })
 prepare({ key, title, type?, tabId? }), cancel({ key })  // a loading overlay an annotate fills
-features()  // the optional annotate features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes']
+features()  // the optional annotate features: ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes', 'removeNotes']
 notes(path), addNote(path, { from, to?, text, quote? })  // a file's line notes from outside the overlay (Notes in place, below)
+removeNotes(path, [{ id, text }])  // the notes a caller sent to Claude itself go (feature 'removeNotes')
 // editor v1 (implemented by the editor plugin)
 open(path, { line? })
 ```
@@ -331,8 +332,12 @@ out through the service, from the same stored draft the overlay uses (`draft:<pa
 - `addNote(path, { from, to?, text, quote? })` writes one note into the draft. The caller is another plugin, so every
   field is checked with the page's caps (a text over the cap is refused, never cut; a long quote is cut). Refused while
   the file's review overlay is open: the page owns the draft then (add the note there).
-- The event `notesChange` `{ path }` follows every change of a file's notes (the overlay's, an `addNote`), so the
-  editor re-reads them.
+- `removeNotes(path, [{ id, text }])` (feature `'removeNotes'`) deletes the notes a caller handed to Claude on its
+  own: the editor's "Discuss review notes" sends a file's notes through the app's Discuss for its tab, and once they
+  reached Claude they go, as a delivered review's do (watchQueued's rule: only a note whose id and text still match,
+  never the global comment, an emptied draft deleted). Refused while the file's review is open, as `addNote` is.
+- The event `notesChange` `{ path }` follows every change of a file's notes (the overlay's, an `addNote`, a
+  `removeNotes`), so the editor re-reads them.
 
 ### Which tab Discuss starts on
 

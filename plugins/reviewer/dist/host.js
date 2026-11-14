@@ -22,8 +22,9 @@
 //   the document whose clicks are the service event `action` { key, id, caller }, and update({ key,
 //   assets?, hide?, status? }), which adds images to an open document without rendering it again;
 //   the notes of a file in place (the editor's gutter, feature 'notes'): notes(path) the line notes of a
-//   file's review, addNote(path, { from, to, text, quote? }) one more in the same store, and the
-//   event `notesChange` { path } when a file's notes changed (the person's, the overlay's or addNote's);
+//   file's review, addNote(path, { from, to, text, quote? }) one more in the same store, removeNotes(path,
+//   [{ id, text }]) the ones a caller handed to Claude itself (feature 'removeNotes'), and the
+//   event `notesChange` { path } when a file's notes changed (the person's, the overlay's, addNote's or removeNotes');
 //   annotate's `originals` [{ id, html }] and `view` (feature 'original'): the mail's own HTML and CSS
 //   in sandboxed frames (the Original view), with an Original | Reader switch told as the event `view`;
 // - `ccc review <path>`.
@@ -60,7 +61,9 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // Try again told as the event `action`, instead of closing; app 0.13.2).
 // 'notes' (notes(path), addNote(path, note) and the event `notesChange`: the line notes of a file's review,
 // read and added from outside the overlay; the editor shows them in its gutter).
-const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes']
+// 'removeNotes' (removeNotes(path, [{ id, text }]): the notes a caller sent to Claude itself go, as a sent
+// review's do; the editor's "Discuss review notes").
+const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes', 'removeNotes']
 // prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
 // caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
 const PREPARE_MS = 60000
@@ -1054,6 +1057,37 @@ exports.activate = (ctx) => {
         })
         notesChanged(p)
         return { id }
+      } catch (e) {
+        throw new Error(`reviewer: ${e.message}`)
+      }
+    },
+    // Additive in v1 (feature 'removeNotes'): the notes a caller sent to Claude on its own (the editor's
+    // "Discuss review notes") go, as the notes of a review Discuss delivered do (watchQueued): only those
+    // whose id and text still match what the caller read, so a note edited or added since stays; the
+    // global comment is never touched (notes() does not give it, so no caller sent it). A draft left with
+    // nothing in it is deleted. Refused while that file's review is open (its page owns the draft and
+    // would write the notes back), as addNote is. Resolves { removed } (0: nothing matched).
+    async removeNotes(rel, list) {
+      try {
+        const p = notesPath(rel)
+        const gone = review.noteRefs(list)
+        const openKey = `file:${p}`
+        if (isReviewing(openKey)) throw new files.ReviewError(`the review of ${p} is open: the notes stay there`)
+        const key = review.draftKey(p)
+        const removed = await serialNotes(key, async () => {
+          if (isReviewing(openKey)) throw new files.ReviewError(`the review of ${p} is open: the notes stay there`)
+          const raw = await ctx.storage.get(key)
+          if (raw === null || raw === undefined) return 0
+          const now = review.cleanDraft(raw)
+          const left = { global: now.global, notes: now.notes.filter((n) => !gone.has(`${n.id}\0${n.text}`)) }
+          const count = now.notes.length - left.notes.length
+          if (count === 0) return 0
+          if (review.isEmpty(left)) await ctx.storage.delete(key)
+          else await ctx.storage.set(key, left)
+          return count
+        })
+        if (removed > 0) notesChanged(p)
+        return { removed }
       } catch (e) {
         throw new Error(`reviewer: ${e.message}`)
       }

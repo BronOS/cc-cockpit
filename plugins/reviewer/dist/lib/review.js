@@ -812,6 +812,25 @@ function noteInput(o) {
   return { from, to, text: o.text, quote: typeof o.quote === 'string' ? o.quote.slice(0, MAX_QUOTE) : '' }
 }
 
+/**
+ * The `removeNotes` service call's list, checked: `[{ id, text }]` -> a Set of `id\0text` keys. A note
+ * goes only when both still match what the caller read (notes()), the same rule as a sent review's
+ * delete (watchQueued): one edited since, in the overlay or by another caller, is a different note and
+ * stays. Ids and texts as notes() gives them (an id of at most 40 characters, the text within
+ * MAX_NOTE_TEXT), at most MAX_NOTES of them.
+ */
+function noteRefs(list) {
+  if (!Array.isArray(list)) throw new ReviewError('removeNotes takes (path, [{ id, text }])')
+  if (list.length > MAX_NOTES) throw new ReviewError(`at most ${MAX_NOTES} notes at a time`)
+  const out = new Set()
+  for (const n of list) {
+    if (!isObj(n) || typeof n.id !== 'string' || !n.id || n.id.length > 40) throw new ReviewError('each note needs the id notes() gave it')
+    if (typeof n.text !== 'string' || n.text.length > MAX_NOTE_TEXT) throw new ReviewError('each note needs the text notes() gave it')
+    out.add(`${n.id}\0${n.text}`)
+  }
+  return out
+}
+
 /** The asset budget a document already spent: what checkAssets carries across calls. */
 function assetBudget(lists) {
   const budget = { count: 0, total: 0, seen: new Set() }
@@ -1053,6 +1072,7 @@ module.exports = {
   failInput,
   fileNotes,
   noteInput,
+  noteRefs,
   MAX_NOTE_LINE,
   MAX_FAIL_MESSAGE,
   assetBudget,

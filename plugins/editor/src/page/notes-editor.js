@@ -6,6 +6,10 @@
 //
 // No Reviewer (or an older one) means no marks. The gutter is always there with a fixed width
 // (initialSpacer), as the changes bar is, so the text does not shift when the first mark appears.
+//
+// The marks are also where Ask Claude reads each note's lines (noteLines): the lines the person sees it on,
+// which the selection's line numbers match even in a dirty buffer. The popover's "Discuss review notes…"
+// sends every note of the file (file.js); the note text is the Reviewer's, set as text, never markup.
 
 import { RangeSet } from '@codemirror/state'
 import { GutterMarker } from '@codemirror/view'
@@ -43,15 +47,53 @@ export function marksOf(doc, list) {
 }
 
 /**
- * `ui`: { getNotes() } the list now. Returns `{ extension, recompute(view) }`: add `extension` after the
- * changes gutter; `recompute` lays the list on the buffer now (the list changed, a new state).
+ * Each note's lines as `marks` (marksOf's set, mapped through the edits since it was laid on) place it in
+ * `doc`: Map id -> { from, to }, 1-based. A note with no mark left (all its lines were past the end when
+ * the list was laid on) is absent: its own lines are all there is.
+ */
+export function noteLines(marks, doc) {
+  const out = new Map()
+  marks.between(0, doc.length, (from, _to, m) => {
+    if (from > doc.length) return
+    const line = doc.lineAt(from).number
+    for (const n of m.notes) {
+      const at = out.get(n.id)
+      if (!at) out.set(n.id, { from: line, to: line })
+      else {
+        if (line < at.from) at.from = line
+        if (line > at.to) at.to = line
+      }
+    }
+  })
+  return out
+}
+
+/**
+ * `ui`: { getNotes() } the list now; discuss?() "Discuss review notes" (the popover's button; absent: none).
+ * Returns `{ extension, recompute(view), lines(view), hide() }`: add `extension` after the changes gutter;
+ * `recompute` lays the list on the buffer now (the list changed, a new state); `lines` is noteLines now.
  */
 export function createNotesGutter(ui) {
   const marks = createMarkGutter({
     gutterClass: 'cc-notes-gutter',
     spacerClass: 'cc-note cc-note-spacer',
     popClass: 'cc-note-pop',
+    interactive: typeof ui.discuss === 'function',
     fill(pop, m) {
+      if (typeof ui.discuss === 'function') {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.className = 'cc-note-pop-discuss'
+        b.textContent = 'Discuss review notes…'
+        b.title = "Send all of this file's review notes to Claude"
+        // The editor keeps the focus (and its selection): Discuss only needs the frame focused.
+        b.addEventListener('mousedown', (e) => e.preventDefault())
+        b.addEventListener('click', () => {
+          marks.hide()
+          ui.discuss()
+        })
+        pop.append(b)
+      }
       for (const n of m.notes) {
         const item = document.createElement('div')
         item.className = 'cc-note-pop-item'
@@ -73,5 +115,7 @@ export function createNotesGutter(ui) {
       if (!view) return
       marks.set(view, marksOf(view.state.doc, ui.getNotes()))
     },
+    lines: (view) => (view ? noteLines(marks.marks(view.state), view.state.doc) : new Map()),
+    hide: marks.hide,
   }
 }
