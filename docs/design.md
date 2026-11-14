@@ -437,6 +437,77 @@ or command no longer validates is skipped. A running tool call does not survive.
 *reopen* (§4 Window background) goes through the same path without a quit: the tabs are saved and
 queued from the live ones as the window closes (`TabRestorer.requeue`), overlays are not restored.
 
+**Split groups.** Terminal tabs (Claude, Shell, command tabs; never an overlay entry) can be shown
+side by side as a *group*: a tree of panes (`shared/tab-groups.ts`: N-ary, same-direction splits
+flattened, sizes as shares with a 10% minimum, a group always ≥ 2 panes; caps 8 panes, depth 4, 32
+groups per project). Every pane is still its own tab with its dot, status, flag and session rules; a
+plain tab has no group, and a project without groups behaves as before.
+- *State.* Main is the one writer (`main/tabs/tab-groups.ts` `TabGroups`, beside `TabManager`).
+  `TabManager` keeps the one tab order, and every group is contiguous in it, in pane reading order
+  (`contiguousOrder`, rewritten through `TabManager.setOrder` after a group op), so the strip, tab
+  shortcuts, the switcher and restore keep one order. The focused pane is the view's selected tab
+  (`tabs.selected`, unchanged); zoom is per view and never saved; divider sizes are shared by every
+  view (D1).
+- *Channels.* Edits are small intents naming ids, never a whole tree: `groups.place` (drag to an edge,
+  Show beside, move between groups), `groups.remove`, `groups.dissolve`, `groups.resize` (once, on
+  drag release), `groups.rename`, `groups.get`; `tabs.create` with `beside` creates and places in one
+  step (a refused placement leaves the tab plain); `tabs.reorder` with `block` moves a whole group,
+  and a member's plain reorder is a no-op only at its own position or strictly between two of its
+  group mates (in the order without it); anywhere else, just past its bracket included, it leaves the
+  group there (D26 N2). Every id is looked up in the
+  sender's project (unknown and foreign are one refusal, with no event); all are REMOTE_CLASS `yes`
+  (a browser may rearrange, D12). Each change, and each change of the tab order, publishes one whole
+  snapshot `groups.changed { seq, order, groups }` through `ViewRegistry` to every view (the sender
+  too); `seq` is run-wide and pages drop an older one. A member closing (`TabLifecycle.closed`)
+  loses its pane and may dissolve its group; an exited tab with its banner stays a pane.
+- *Restore.* `ProjectRecord.tabGroups` is written in the same `registry.update` as `tabs`, through
+  `TabRestorer` (so a quit's `frozen` keeps both), its leaves naming `TabRecord.id`s. Restored tabs
+  get new ids: the restore maps each saved id to its new tab, and `TabGroups.restore` rebuilds the
+  groups from the saved ones (`restoreGroups`: lenient, capped, every id re-minted; a leaf whose tab
+  did not come back, such as a dropped plugin command tab or a failed spawn, is pruned) before the
+  desktop's `tabs.list` reply. A window reopen (`requeue`) saves and queues the live groups the same
+  way.
+- *Browsers.* A browser reads the groups with `groups.get` after its tab list, like the desktop (the
+  `ready` snapshot has no groups). A browser selecting a member follows every pane of its group
+  (`ViewTerminals.selectGroup`, the list from main's groups): the selected one first, the others one
+  at a time, each after the previous snapshot went out and the socket drained below 1 MiB; a group
+  gaining a member joins it for every view showing that group. A reselect (every `groups.changed`
+  re-runs it) replaces the queue but never forgets a join whose snapshot is still out (D23 R4).
+- *Plugins.* `ctx.sessions.open` / `openShell` / `openCommand` take `beside` (a tab of the host's own
+  window, looked up in host-api before the open budget is spent; unknown and foreign are one error) and
+  `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin`), and
+  it opens plain with `placed: false` when the anchor is gone, its group has 4 panes or the anchor's
+  halves would fall under 20x5 cells. No other plugin path reaches groups: host-api has no place,
+  remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups
+  or names a `groups.*` channel (`no-plugin-group-edits.test.ts`). `SessionInfo` has no group (D11),
+  and there is no `ccc` command.
+- *Focus (D3, D18, D22, D23, D24).* Nothing done elsewhere moves a view's keys: no group op, close,
+  snapshot or restore sends `tabs.select`, and only the person's own act (a click on a pane or in
+  the strip, a pane chord, their own close, Move out or Ungroup) chooses a focused pane. After a
+  change elsewhere a view never follows its tab into an arrangement made elsewhere, and its keys go
+  off (no pane marked focused, no terminal with the keys, no `tabs.selected` until the person acts;
+  `keysOff` in `renderer/state/groups-state.ts`): a focused tab closed shows the pane that took its
+  space; one now plain (moved out, its group ungrouped or dissolved) stays shown; one moved into
+  another group shows what is left of its old group (or that group's remaining plain tab). The
+  person's own close or move out moves the focus to the pane that took the space, keys on; their own
+  placement or Ungroup, or moving the other of two panes out, keeps it on the same terminal, keys on
+  (the page knows the edits it sent). A plain tab closed elsewhere keeps the strip's rule. While the
+  keys are off, commands on the active tab (`tab.close`, the flag, `pane.*` split, show beside, move
+  out, zoom, resize, move) do nothing, and a `tabs.select` from main naming a pane the view shows is
+  ignored (main's view of the selection is stale then). A pane hidden by zoom never takes the keys
+  or the size.
+- *Strip.* A group is a bracketed segment of its members with a handle; every member keeps its own
+  tab with its dot, tint, flag and label, zoomed or not, so a member that needs permission or waits
+  for input always shows in the strip (the handle's description also names every asking member in
+  words). The group's name (`checkSessionName`: no control or bidi characters) is shown only as text
+  in the handle, capped in width, never in place of a member's label, dot or tint.
+- *A plugin's pane is never focused (D4).* A tab a plugin placed beside another is never sent a
+  `tabs.select`, so a plugin cannot move the person's keystrokes into a pane they did not pick (a
+  Claude tab waiting for input, a command it chose). With `focus: true`, main selects the anchor
+  instead, in the origin view (else the desktop page), and does nothing when that view shows the
+  anchor's group already; the new pane is visible beside it and takes focus only from the person. A
+  plain open (no `beside`, or `placed: false`) keeps the usual rule: `focus: true` selects the new tab.
+
 ## 4. Window layout, zones, overlay
 
 ```

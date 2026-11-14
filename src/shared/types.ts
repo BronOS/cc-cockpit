@@ -6,6 +6,7 @@
 import type { LayoutState } from './layout'
 import type { ProjectColor } from './project-color'
 import type { RemoteServer } from './remote-servers'
+import type { TabGroup } from './tab-groups'
 import type { TerminalFont } from './terminal-font'
 import type { WindowBackground } from './window-background'
 
@@ -126,6 +127,12 @@ export interface ProjectRecord {
   pluginSettings: Record<string, unknown>
   layout: LayoutState
   tabs: TabRecord[]
+  /**
+   * Split groups (shared/tab-groups.ts), saved in the same write as `tabs`: their leaves name
+   * `TabRecord.id`s of this record. Absent in older records = none. User-writable: read back only
+   * through `restoreGroups`, leniently and capped; a bad entry loses the layout, never a tab.
+   */
+  tabGroups?: TabGroup[]
   /** This project's entries of the new-tab menu, after the app-wide ones. Absent = none. */
   tabCommands?: TabCommandEntry[]
   bounds?: WindowBounds

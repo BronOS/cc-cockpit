@@ -27,6 +27,18 @@
 // before it ever started is forgotten (`closed`, from the lifecycle too): ids are never reused, so it
 // would only sit in the set for the connection's life.
 //
+// Split groups (team run 001 design §1 "Web and cost"): a view that selects a member of a group shows
+// every pane of it, so it follows every member (`selectGroup`, the list from main's own TabGroups,
+// never from the page). The selected (focused) pane is joined first; the others one at a time, each
+// only after the previous one's snapshot went out and the socket drained below JOIN_DRAIN_BYTES: a
+// 4-pane Claude group is ~4 snapshots of several MiB, which joined at once would sit in the socket
+// together against SOCKET_HIGH_WATER (connection.ts) and close the view. A member already followed
+// costs nothing and is skipped. Selecting again (another group, or the same group after it gained a
+// member) replaces whatever is still queued, but not what is in flight: a join whose snapshot has not
+// gone out still holds the queue while the tab is followed (team run 001 D23 R4). Its snapshot may
+// still be in the worker, not yet in `bufferedAmount`, so forgetting it on every `groups.changed`
+// would let a few quick edits in another view put several snapshots in flight together.
+//
 // The connection wires `select` to the view's own tab selection and `ack` to its acks. Never
 // trusted: the tab must pass `canFollow` (a tab of the view's own window, checked by main), whatever
 // id the page sent.
@@ -35,6 +47,14 @@ import type { TermDataFrame, TermSnapshotFrame } from '../../shared/web-protocol
 import type { MirrorView } from '../terminals/mirror'
 import { MAX_REJOINS, VIEW_HIGH_WATER, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import { MAX_FRAME_BYTES, termDataFrame, termSnapshotFrames } from './protocol'
+
+/**
+ * The next member of a group is joined only once the view's socket holds less than this unsent: the
+ * previous snapshot has left, give or take live output.
+ */
+export const JOIN_DRAIN_BYTES = 1024 * 1024
+/** How often a queued join looks at the socket again while it is above JOIN_DRAIN_BYTES. */
+export const JOIN_DRAIN_POLL_MS = 50
 
 /** The part of TerminalMirror a view uses. */
 export interface TerminalSource {
@@ -56,7 +76,14 @@ export interface ViewTerminalsDeps {
   /** Flow limits in output characters (VIEW_HIGH_WATER / VIEW_LOW_WATER); tests pass small ones. */
   highWater?: number
   lowWater?: number
+  /** Bytes the view's socket holds unsent (`ws.bufferedAmount`); absent = always drained. */
+  buffered?(): number
+  /** Runs `fn` after `ms` (a later turn even at 0: never inside a mirror callback); tests pass their own. */
+  defer?(fn: () => void, ms: number): void
 }
+
+/** What a join attempt did: a snapshot is on its way, the tab was already followed, or neither. */
+type Start = 'joined' | 'followed' | 'none'
 
 interface Followed {
   /** The mirror's leave function of the current join; null while behind. */
@@ -75,6 +102,14 @@ export class ViewTerminals {
   private readonly followed = new Map<string, Followed>()
   /** Tabs selected while the mirror did not hold them: joined at their start (see the header). */
   private readonly waiting = new Set<string>()
+  /** Group members still to join, in order (`selectGroup`). */
+  private queue: string[] = []
+  /**
+   * Joins whose snapshot the queue waits for: a queued member's, and the selected pane's when a
+   * reselect joined it while an earlier one was still in flight. Usually zero or one.
+   */
+  private readonly inFlight = new Set<string>()
+  private pumpScheduled = false
   private disposed = false
   private readonly high: number
   private readonly low: number
@@ -90,18 +125,77 @@ export class ViewTerminals {
    * not hold it (web access going off, a tab started before the mirror).
    */
   select(tabId: string): boolean {
+    return this.start(tabId) !== 'none'
+  }
+
+  /**
+   * The view shows a group: `tabIds` is the selected (focused) pane first, then the group's other
+   * members (main's TabGroups.joinOrder). The first is joined now; each of the others after the one
+   * before it is synced and the socket drained (header). Replaces any earlier queue, never a join in
+   * flight (D23 R4): the selected pane still joins at once (the person is looking at it), and the
+   * queue waits for both. The answer is `select`'s for the first.
+   */
+  selectGroup(tabIds: readonly string[]): boolean {
     if (this.disposed) return false
-    if (this.followed.has(tabId)) return true
-    if (!this.deps.canFollow(tabId)) return false
+    const [first, ...rest] = tabIds
+    this.queue = rest.filter((t) => t !== first)
+    // Every path that ends a join (synced, leave, a failed resync) unblocks it, so one still in the
+    // set is still followed; checked anyway so a missed path cannot hold the queue for the view's life.
+    for (const tabId of this.inFlight) if (!this.followed.has(tabId)) this.inFlight.delete(tabId)
+    if (first === undefined) return false
+    const started = this.start(first)
+    if (started === 'joined') this.inFlight.add(first)
+    else this.schedulePump(0)
+    return started !== 'none'
+  }
+
+  /** Group members still waiting for their turn, in-flight joins first (tests, diagnostics). */
+  queued(): string[] {
+    return [...this.inFlight, ...this.queue]
+  }
+
+  private start(tabId: string): Start {
+    if (this.disposed) return 'none'
+    if (this.followed.has(tabId)) return 'followed'
+    if (!this.deps.canFollow(tabId)) return 'none'
     const f: Followed = { leave: null, join: null, unacked: 0, behind: false, failedJoins: 0 }
     this.followed.set(tabId, f)
     if (this.join(tabId, f)) {
       this.waiting.delete(tabId)
-      return true
+      return 'joined'
     }
     this.followed.delete(tabId)
     this.waiting.add(tabId)
-    return false
+    return 'none'
+  }
+
+  /** The tab's snapshot went out, or it stopped being followed: the next queued member may go. */
+  private unblock(tabId: string): void {
+    if (!this.inFlight.delete(tabId)) return
+    this.schedulePump(0)
+  }
+
+  private schedulePump(ms: number): void {
+    if (this.pumpScheduled || this.disposed || this.queue.length === 0) return
+    this.pumpScheduled = true
+    const defer = this.deps.defer ?? ((fn: () => void, wait: number) => void setTimeout(fn, wait))
+    defer(() => {
+      this.pumpScheduled = false
+      this.pump()
+    }, ms)
+  }
+
+  /** Join queued members until one sends a snapshot (then wait for it), skipping ones already followed. */
+  private pump(): void {
+    if (this.disposed || this.inFlight.size > 0) return
+    if ((this.deps.buffered?.() ?? 0) > JOIN_DRAIN_BYTES) return this.schedulePump(JOIN_DRAIN_POLL_MS)
+    while (this.queue.length > 0) {
+      const tabId = this.queue.shift()!
+      if (this.start(tabId) === 'joined') {
+        this.inFlight.add(tabId)
+        return
+      }
+    }
   }
 
   /**
@@ -135,7 +229,10 @@ export class ViewTerminals {
     if (f.behind && f.unacked <= this.low) {
       f.behind = false
       // The tab went while the view was behind: nothing to resync.
-      if (!this.join(tabId, f)) this.followed.delete(tabId)
+      if (!this.join(tabId, f)) {
+        this.followed.delete(tabId)
+        this.unblock(tabId)
+      }
     }
   }
 
@@ -145,6 +242,7 @@ export class ViewTerminals {
     if (!f) return
     this.followed.delete(tabId)
     this.part(f)
+    this.unblock(tabId)
   }
 
   /** Tabs the view follows now, behind ones included (tests, diagnostics). */
@@ -161,6 +259,8 @@ export class ViewTerminals {
   dispose(): void {
     this.disposed = true
     this.waiting.clear()
+    this.queue = []
+    this.inFlight.clear()
     for (const tabId of [...this.followed.keys()]) this.leave(tabId)
   }
 
@@ -215,6 +315,7 @@ export class ViewTerminals {
         if (!sent) return
         f.failedJoins = 0
         this.deps.synced?.(tabId)
+        this.unblock(tabId)
       },
       item: (item) => {
         if (!current()) return
@@ -241,10 +342,14 @@ export class ViewTerminals {
         if (++f.failedJoins >= MAX_REJOINS) {
           // Not looping between main and the worker: the connection resyncs once, then closes.
           this.followed.delete(tabId)
+          this.unblock(tabId)
           this.deps.failed?.(tabId, new Error(`no snapshot after ${MAX_REJOINS} joins`))
           return
         }
-        if (!this.join(tabId, f)) this.followed.delete(tabId)
+        if (!this.join(tabId, f)) {
+          this.followed.delete(tabId)
+          this.unblock(tabId)
+        }
       }
     }
   }

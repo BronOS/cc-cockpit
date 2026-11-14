@@ -31,7 +31,7 @@ import { join } from 'node:path'
 import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
-import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type TabInfo, type UpdateState } from '../shared/ipc'
+import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type TabCreateRequest, type TabInfo, type UpdateState } from '../shared/ipc'
 import { notificationSoundOf } from '../shared/notify-sound'
 import { chosenServerName } from '../shared/remote-servers'
 import { liveChildren } from './child-registry'
@@ -66,6 +66,7 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
+  registerGroupHandlers,
   registerWebviewHandlers,
   summary
 } from './ipc/router'
@@ -167,6 +168,8 @@ import { FirstTab } from './tabs/first-tab'
 import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
 import { TabManager } from './tabs/tab-manager'
+import { TabGroups } from './tabs/tab-groups'
+import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
@@ -837,6 +840,9 @@ function start(server: boolean): void {
       // rewrite the record: closeProject drops each tab before terminating it, and an exit of a
       // tab TabManager no longer knows is ignored (no tabsChanged, no close-on-exit).
       if (reopening) restorer.requeue(projectId)
+      // Its groups die with its tabs (after the requeue, which saved and queued them): no snapshot
+      // for each tab the close below kills.
+      tabGroups.closeProject(projectId)
       // Deactivate (5 s cap), then kill. While quitting this is best effort: the app may exit
       // first, so hosts.disposeAll() (will-quit) also kills hosts still deactivating here.
       hosts.close(projectId).catch((err: unknown) => console.error('plugin host stop failed', err))
@@ -1103,17 +1109,44 @@ function start(server: boolean): void {
     projectId: string,
     options: { cwd?: string; prompt?: string; model?: string; effort?: string },
     windowId: number,
-    focus: boolean
-  ): Promise<TabInfo> => {
+    focus: boolean,
+    place?: PluginPlacement
+  ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.create(projectId, { kind: 'claude', ...options })
+    return announcePluginTab(projectId, windowId, focus, place, () => tabs.create(projectId, { kind: 'claude', ...options }))
+  }
+  /**
+   * A tab main opened for a plugin (or Discuss), told to its window, which did not ask for it: create
+   * it (placed beside `place.beside` under one groups snapshot when asked, as a plugin may: at most 3
+   * panes already, the anchor's halves above the minimum, else plain), then `tabs.added`, then the
+   * focus. A plugin-opened pane never takes focus (D4): with `focus` and a placed tab, the origin view
+   * (else the desktop page) selects the anchor, unless it shows that group already; a plain tab is
+   * selected in the window as before groups.
+   */
+  const announcePluginTab = (
+    projectId: string,
+    windowId: number,
+    focus: boolean,
+    place: PluginPlacement | undefined,
+    create: () => TabInfo
+  ): TabInfo & { placed?: boolean } => {
+    const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
+    const { tab, placed } = tabGroups.createBeside(projectId, beside, create, { plugin: true })
     // The window did not ask for it: tell it, or the tab gets no view and no output acks.
     sendToProject(projectId, 'tabs.added', tab)
     // Sent after `tabs.added` on the same webContents, so the page already has the tab when it
     // selects it.
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-    return tab
+    if (focus) {
+      // The origin view only if it is one of this window's (HostApi checked; checked again), else the desktop page.
+      const view = place?.view !== undefined && views.windowOf(place.view) === windowId ? place.view : desktopViewId(windowId)
+      const to = tabGroups.pluginFocus(projectId, { tabId: tab.id, placed, ...(place ? { anchor: place.beside } : {}) }, view, (v) =>
+        selections.selectionOf(v as ViewId)
+      )
+      if (to?.to === 'window') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })
+      else if (to?.to === 'view') views.toView(to.view as ViewId, 'tabs.select', { tabId: to.tabId })
+    }
+    return place === undefined ? tab : { ...tab, placed }
   }
   /**
    * Start a shell tab a plugin asked for (ctx.sessions.openShell, the files tree's "Open terminal
@@ -1124,14 +1157,14 @@ function start(server: boolean): void {
     projectId: string,
     options: { cwd?: string },
     windowId: number,
-    focus: boolean
-  ): Promise<TabInfo> => {
+    focus: boolean,
+    place?: PluginPlacement
+  ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
-    sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-    return tab
+    return announcePluginTab(projectId, windowId, focus, place, () =>
+      tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    )
   }
   /**
    * Start a command tab a plugin asked for (ctx.sessions.openCommand), the way openShellTab does: HostApi
@@ -1143,21 +1176,21 @@ function start(server: boolean): void {
     projectId: string,
     options: { argv: string[]; cwd?: string; title: string; openedBy: string },
     windowId: number,
-    focus: boolean
-  ): Promise<TabInfo> => {
+    focus: boolean,
+    place?: PluginPlacement
+  ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
     const name = plugins.get(options.openedBy)?.manifest?.name
-    const tab = tabs.createPluginCommand(projectId, {
-      argv: options.argv,
-      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      title: options.title,
-      openedBy: options.openedBy,
-      ...(typeof name === 'string' ? { openedByName: name } : {})
-    })
-    sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
-    return tab
+    return announcePluginTab(projectId, windowId, focus, place, () =>
+      tabs.createPluginCommand(projectId, {
+        argv: options.argv,
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        title: options.title,
+        openedBy: options.openedBy,
+        ...(typeof name === 'string' ? { openedByName: name } : {})
+      })
+    )
   }
   /**
    * Open a page tab a plugin asked for (ctx.tabs.openPage) and tell its window, as openShellTab does:
@@ -1623,11 +1656,13 @@ function start(server: boolean): void {
       openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
-      openTab: (projectId, options, windowId, focus) => openClaudeTab(projectId, options, windowId, focus === true),
+      openTab: (projectId, options, windowId, focus, place) => openClaudeTab(projectId, options, windowId, focus === true, place),
+      // A `beside` anchor: a terminal tab of that project by TabManager's table (an overlay is never one).
+      hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
       // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
-      openShellTab: (projectId, options, windowId, focus) => openShellTab(projectId, options, windowId, focus === true),
+      openShellTab: (projectId, options, windowId, focus, place) => openShellTab(projectId, options, windowId, focus === true, place),
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
-      openCommandTab: (projectId, options, windowId, focus) => openCommandTab(projectId, options, windowId, focus === true),
+      openCommandTab: (projectId, options, windowId, focus, place) => openCommandTab(projectId, options, windowId, focus === true, place),
       // ctx.tabs (design-editor.md §1): HostApi checked the plugin, its declared type and the spec.
       openPageTab: (projectId, spec, windowId, focus) => openPageTab(projectId, spec, windowId, focus),
       listTabs: (projectId) => tabs.list(projectId),
@@ -1828,13 +1863,19 @@ function start(server: boolean): void {
         sessions.tabClosed(tabId)
         // A browser that selected the tab before it ever started stops waiting for it.
         webConnections.tabClosed(tabId)
+        // Its pane goes (the group may dissolve); TabManager's own change right after saves it.
+        tabGroups.tabClosed(tabId)
       },
       renamed: (tabId, name) => void sessions.setName(tabId, name),
       flagged: (tabId, flag) => void sessions.setFlag(tabId, flag),
       output: (tabId, chunk) => sessions.tabOutput(tabId, chunk)
     },
     // Every create / close / reorder / restart / new session id: save the project's tabs.
-    onTabsChanged: (projectId) => restorer.tabsChanged(projectId),
+    // The split groups first: a changed order is published, a dead leaf pruned, before the save.
+    onTabsChanged: (projectId) => {
+      tabGroups.sync(projectId)
+      restorer.tabsChanged(projectId)
+    },
     // Read at each exit, so a settings change applies to open tabs. Never while quitting: a tab
     // that ends because the app is going (or just as it goes) must stay in the saved record and
     // come back next launch. restorer.freeze() already keeps the record; this keeps the intent
@@ -1858,10 +1899,14 @@ function start(server: boolean): void {
   // writer and registry.flushAll() on quit writes the last ones.
   const restorer = new TabRestorer({
     listTabs: (projectId) => tabs.list(projectId),
-    saveTabs: (projectId, records) =>
+    // The split groups in the same write as the tabs: a group on disk always names tabs of its own save.
+    listGroups: (projectId) => tabGroups.groupsOf(projectId),
+    saveTabs: (projectId, records, groups) =>
       registry.update(projectId, (r) => {
         r.tabs = records
+        r.tabGroups = groups
       }),
+    restoreGroups: (projectId, saved, idMap) => tabGroups.restore(projectId, saved, idMap),
     projectPath: (projectId) => registry.get(projectId)?.path,
     pluginAvailable: (pluginId) => pluginAvailable(pluginId),
     // A page tab comes back only while its plugin loaded, is on in the project and still declares
@@ -1876,6 +1921,18 @@ function start(server: boolean): void {
       if (!plugin.manifest || !plugin.state.ok || !enabledIds(projectId).includes(pluginId)) return 'later'
       return (plugin.manifest.contributes?.tabs ?? []).some((t) => t.type === type)
     }
+  })
+  // Split groups (main/tabs/tab-groups.ts): main is their one writer. The order lives in TabManager;
+  // snapshots go to every view of the project, browsers re-join the panes of their selected group.
+  const tabGroups = new TabGroups({
+    order: (projectId) => tabs.list(projectId).map((t) => t.id),
+    setOrder: (projectId, ids) => tabs.setOrder(projectId, ids),
+    publish: (projectId, snapshot) => sendToProject(projectId, 'groups.changed', snapshot),
+    changed: (projectId) => restorer.tabsChanged(projectId),
+    // `webConnections` is defined below; a group can change only once a window has attached.
+    groupsChanged: (projectId) => webConnections.groupsChanged(projectId),
+    // A plugin's `beside` never makes a pane smaller than the minimum (D5).
+    sizeOf: (projectId, tabId) => tabs.sizeOf(projectId, tabId)
   })
   // A project window that opens with nothing to restore gets one Claude tab when its renderer
   // first attaches (first-tab.ts; the attach handler below). The setting is read then.
@@ -2844,15 +2901,15 @@ function start(server: boolean): void {
     // Claude tab (first-tab.ts); the list returned below includes it.
     attach: async (projectId, windowId) => {
       // pluginsLoaded too: a saved page tab is checked against its plugin's manifest (pageTabAvailable).
-      await restorer.restore(projectId, Promise.all([spawnReady, pluginsLoaded]), (tab) => {
-        tabs.restoreTab(projectId, tab)
-      })
+      // The restored tab is returned: its new id is what the saved groups' leaves become.
+      await restorer.restore(projectId, Promise.all([spawnReady, pluginsLoaded]), (tab) => tabs.restoreTab(projectId, tab))
       await firstTab.settle(projectId, windowId, spawnReady)
       return tabs.attach(projectId)
     },
     close: (projectId, tabId) => tabs.close(projectId, tabId),
     pageUnsaved: (projectId, tabId) => tabs.pageUnsaved(projectId, tabId),
-    reorder: (projectId, tabId, toIndex) => tabs.reorder(projectId, tabId, toIndex),
+    // Through the groups (D9): a member dropped outside its segment leaves it, the handle moves the block.
+    reorder: (projectId, tabId, toIndex, block) => tabGroups.reorder(projectId, tabId, toIndex, block),
     rename: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
     // The person's flag. Wired here and nowhere else: host-api (plugins) has no flag dependency.
     flag: (projectId, tabId, patch) => tabs.setFlag(projectId, tabId, patch),
@@ -2907,24 +2964,9 @@ function start(server: boolean): void {
     create: async (projectId, options, windowId) => {
       await spawnReady
       requireWindow(projectId, windowId)
-      if (options.kind === 'command') {
-        // By id, from main's own settings, looked up after the wait: an entry deleted meanwhile
-        // is refused rather than run from a stale menu. The entry also says tab or overlay.
-        return openTabCommand(tabCommands.resolve(projectId, options.level, options.entryId), {
-          tab: (entry) => tabs.createCommand(projectId, entry),
-          // A terminal overlay in the asking window: the command tab's argv, cwd and env (the
-          // overlays' env() is buildPtyEnv with a window token, which is what a command tab
-          // gets too). Nothing waits for its result and nothing about it is saved or restored; it
-          // closes when the program exits or on Cmd+Shift+W / ✕ (OverlayManager logs which).
-          // `start` throws a spawn failure here, so the click reports it like a tab's.
-          overlay: (entry) => {
-            const dir = registry.get(projectId)?.path
-            if (!dir) throw new Error('unknown project')
-            void overlays.start(windowId, commandOverlaySpec(loginShellOf(loginEnv), entry, dir), 'new-tab menu')
-          }
-        })
-      }
-      return tabs.create(projectId, options)
+      // Split right / down: created and placed beside the anchor under one snapshot; a refused
+      // placement leaves the tab plain (D15), an overlay entry is never placed.
+      return tabGroups.createBeside(projectId, options.beside, () => createTab(projectId, options, windowId)).tab
     },
     restart: async (projectId, tabId, windowId) => {
       await spawnReady
@@ -2932,6 +2974,36 @@ function start(server: boolean): void {
       return tabs.restart(projectId, tabId)
     }
   })
+  registerGroupHandlers(router, {
+    get: (projectId) => tabGroups.get(projectId),
+    place: (projectId, intent) => tabGroups.place(projectId, intent),
+    remove: (projectId, tabId) => tabGroups.remove(projectId, tabId),
+    dissolve: (projectId, groupId) => tabGroups.dissolve(projectId, groupId),
+    resize: (projectId, groupId, splitId, sizes) => tabGroups.resize(projectId, groupId, splitId, sizes),
+    rename: (projectId, groupId, name) => tabGroups.rename(projectId, groupId, name)
+  })
+  /** A tab the person asked for (`tabs.create`), after the login env and the window check. */
+  function createTab(projectId: string, options: TabCreateRequest, windowId: number): TabInfo | null {
+    if (options.kind === 'command') {
+      // By id, from main's own settings, looked up after the wait: an entry deleted meanwhile
+      // is refused rather than run from a stale menu. The entry also says tab or overlay.
+      return openTabCommand(tabCommands.resolve(projectId, options.level, options.entryId), {
+        tab: (entry) => tabs.createCommand(projectId, entry),
+        // A terminal overlay in the asking window: the command tab's argv, cwd and env (the
+        // overlays' env() is buildPtyEnv with a window token, which is what a command tab
+        // gets too). Nothing waits for its result and nothing about it is saved or restored; it
+        // closes when the program exits or on Cmd+Shift+W / ✕ (OverlayManager logs which).
+        // `start` throws a spawn failure here, so the click reports it like a tab's.
+        overlay: (entry) => {
+          const dir = registry.get(projectId)?.path
+          if (!dir) throw new Error('unknown project')
+          void overlays.start(windowId, commandOverlaySpec(loginShellOf(loginEnv), entry, dir), 'new-tab menu')
+        }
+      })
+    }
+    // `beside` is not TabManager's: TabGroups places the tab once it exists (createBeside).
+    return tabs.create(projectId, options.cwd === undefined ? { kind: options.kind } : { kind: options.kind, cwd: options.cwd })
+  }
 
   registerLayoutHandlers(router, {
     view: (projectId) => layouts.view(projectId),
@@ -2976,6 +3048,8 @@ function start(server: boolean): void {
       ),
     mirror: terminalMirror,
     hasTab: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+    // A view selecting a split group's member follows every pane of it, from main's own groups.
+    joinOrder: (projectId, tabId) => tabGroups.joinOrder(projectId, tabId),
     pagePaths: (deviceId) => pluginPages.paths(deviceId),
     // `webAccess.changed` reaches a browser only in server mode (connection.ts `remoteEvent`).
     server,
@@ -3538,8 +3612,8 @@ function start(server: boolean): void {
     launch.missing = launch.missing.filter((p) => recentIds.has(p.id))
     // Restore is launch-only: a project whose folder was missing now keeps its saved tabs
     // until it is relinked or forgotten; opening it later in the session starts it empty.
-    for (const { project, tabs: saved } of launch.open) {
-      restorer.queue(project.id, saved)
+    for (const { project, tabs: saved, groups } of launch.open) {
+      restorer.queue(project.id, saved, groups)
       try {
         windows.openPath(project.path)
       } catch (err) {

@@ -27,6 +27,11 @@ void app.whenReady().then(() => {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    // Not resizable: a tiling window manager (Hyprland) floats a fixed-size window instead of tiling it
+    // beside the desktop's window and halving that, which would auto-zoom the split view there (D5, D25).
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
   })
   // A new tab the page opens (window.open, a target=_blank link) is recorded for the spec to read

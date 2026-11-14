@@ -41,6 +41,9 @@ import {
   type HostScope,
   sessionInfoOf
 } from '../../src/main/plugins/host-api'
+import { TabGroups } from '../../src/main/tabs/tab-groups'
+import type { PluginPlacement } from '../../src/main/plugins/host-api'
+import { leavesOf } from '../../src/shared/tab-groups'
 import { newEntry } from '../../src/main/sessions/status-reducer'
 import { RATE_LIMITS_EVENT_INTERVAL_MS, RateLimitsStore } from '../../src/main/sessions/rate-limits-store'
 import { MAX_TEXT_CHARS, PASTE_END, PASTE_START } from '../../src/main/sessions/send-gate'
@@ -2369,5 +2372,130 @@ describe('sessions.machines, focusMachine, the sessions.machines event', () => {
     apis.at(-2)!.revoke()
     apis.at(-1)!.revoke()
     expect(listeners.size).toBe(0)
+  })
+})
+
+describe('beside (split groups, D4 D6 D7)', () => {
+  let groups: TabGroups
+  let places: Array<PluginPlacement | undefined>
+  /** Sizes a test forces on an anchor (else the tab's pty: 80 x 24). */
+  let forced: Map<string, { cols: number; rows: number }>
+
+  beforeEach(() => {
+    places = []
+    forced = new Map()
+    groups = new TabGroups({
+      order: (p) => tabs.list(p).map((t) => t.id),
+      setOrder: (p, ids) => tabs.setOrder(p, ids),
+      publish: () => {},
+      changed: () => {},
+      sizeOf: (p, t) => forced.get(t) ?? tabs.sizeOf(p, t),
+      log: () => {}
+    })
+    deps.hasTab = (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId)
+    // As index.ts announcePluginTab: created and placed under one snapshot, as a plugin may.
+    const placing =
+      (create: (projectId: string, options: Record<string, unknown>) => TabInfo) =>
+      async (projectId: string, options: object, windowId: number, focus?: boolean, place?: PluginPlacement) => {
+        places.push(place)
+        const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
+        const { tab, placed } = groups.createBeside(projectId, beside, () => create(projectId, options as Record<string, unknown>), { plugin: true })
+        announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
+        return { ...tab, placed }
+      }
+    deps.openTab = placing((p, o) => tabs.create(p, { kind: 'claude', ...o }))
+    deps.openShellTab = placing((p, o) => tabs.create(p, { kind: 'shell', ...o }))
+    deps.openCommandTab = placing((p, o) =>
+      tabs.createPluginCommand(p, { ...(o as { argv: string[]; title: string; openedBy: string }) })
+    )
+  })
+
+  const members = (projectId: string): string[][] => groups.groupsOf(projectId).map((g) => leavesOf(g.root))
+
+  it('places only the new tab beside a tab of this window, right by default or down; a plain anchor becomes a group', async () => {
+    const open = hostA()
+    const anchor = tabs.create(A, { kind: 'claude' })
+    const right = (await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })) as { tabId: string; placed?: boolean }
+    expect(right.placed).toBe(true)
+    expect(members(A)).toEqual([[anchor.id, right.tabId]])
+    expect(groups.groupsOf(A)[0]!.root.dir).toBe('row')
+    const down = (await open('sessions.openCommand', { pluginId: 'a.one', argv: ['glow'], beside: right.tabId, side: 'down' })) as {
+      tabId: string
+      placed?: boolean
+    }
+    expect(down.placed).toBe(true)
+    expect(members(A)).toEqual([[anchor.id, right.tabId, down.tabId]])
+    expect(places.map((p) => p && { beside: p.beside, side: p.side })).toEqual([
+      { beside: anchor.id, side: 'right' },
+      { beside: right.tabId, side: 'down' }
+    ])
+    // Without `beside`: the answer is as before, with no `placed`.
+    expect(await open('sessions.open', { pluginId: 'a.one' })).toEqual({ tabId: expect.any(String) })
+  })
+
+  it('an unknown anchor and another window’s tab are the same error, before the budget is spent', async () => {
+    const open = hostA()
+    const foreign = tabs.create(B, { kind: 'shell' })
+    const errors: string[] = []
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW; i++) {
+      for (const beside of [foreign.id, 'no-such-tab']) {
+        await open('sessions.open', { pluginId: 'a.one', beside }).catch((err: Error) => errors.push(err.message))
+      }
+    }
+    expect(new Set(errors)).toEqual(new Set(['sessions.open: beside: no such tab in this window']))
+    expect(errors).toHaveLength(2 * MAX_OPENS_PER_WINDOW)
+    const anchor = tabs.create(A, { kind: 'shell' })
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW; i++) await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })
+    await expect(open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
+    expect(tabs.list(B)).toHaveLength(1)
+    expect(groups.groupsOf(B)).toEqual([])
+  })
+
+  it('refuses a bad beside or side shape with no tab opened', async () => {
+    const open = hostA()
+    const anchor = tabs.create(A, { kind: 'shell' })
+    await expect(open('sessions.open', { pluginId: 'a.one', side: 'down' })).rejects.toThrow('side needs beside')
+    await expect(open('sessions.open', { pluginId: 'a.one', beside: 5 })).rejects.toThrow('beside must be a tab id')
+    await expect(open('sessions.open', { pluginId: 'a.one', beside: '' })).rejects.toThrow('beside must be a tab id')
+    await expect(open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id, side: 'left' })).rejects.toThrow("side must be 'right' or 'down'")
+    expect(tabs.list(A)).toHaveLength(1)
+    const bare = { ...deps }
+    delete bare.hasTab
+    deps = bare
+    await expect(hostA()('sessions.open', { pluginId: 'a.one', beside: anchor.id })).rejects.toThrow('beside is not available')
+  })
+
+  it('fails soft to a plain tab: a group of 4 panes, an anchor too small to halve', async () => {
+    const open = hostA()
+    const anchor = tabs.create(A, { kind: 'shell' })
+    for (let i = 0; i < 3; i++) {
+      const r = (await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })) as { placed?: boolean }
+      expect(r.placed).toBe(true)
+    }
+    expect(members(A)[0]).toHaveLength(4)
+    const full = (await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })) as { tabId: string; placed?: boolean }
+    expect(full.placed).toBe(false)
+    expect(members(A)[0]).toHaveLength(4)
+    expect(tabs.list(A).some((t) => t.id === full.tabId)).toBe(true)
+    // A narrow anchor (39 columns: halves under 20) opens beside it only downwards, and a short one not at all.
+    const narrow = tabs.create(A, { kind: 'shell' })
+    forced.set(narrow.id, { cols: 39, rows: 24 })
+    const more = hostA()
+    expect(((await more('sessions.openShell', { pluginId: 'a.one', beside: narrow.id })) as { placed?: boolean }).placed).toBe(false)
+    expect(((await more('sessions.openShell', { pluginId: 'a.one', beside: narrow.id, side: 'down' })) as { placed?: boolean }).placed).toBe(true)
+    const short = tabs.create(A, { kind: 'shell' })
+    forced.set(short.id, { cols: 200, rows: 10 })
+    expect(((await more('sessions.openShell', { pluginId: 'a.one', beside: short.id, side: 'down' })) as { placed?: boolean }).placed).toBe(false)
+  })
+
+  it('passes the origin view only when it is a view of this host’s window', async () => {
+    deps.viewWindow = (view) => ({ 'web:1': WIN_A, 'web:2': WIN_B })[view]
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    const anchor = tabs.create(A, { kind: 'shell' })
+    await api.handlers['sessions.openShell']!({ pluginId: 'a.one', beside: anchor.id, focus: true }, { view: 'web:1' })
+    await api.handlers['sessions.openShell']!({ pluginId: 'a.one', beside: anchor.id, focus: true }, { view: 'web:2' })
+    expect(places.map((p) => p?.view)).toEqual(['web:1', undefined])
+    expect(announced.slice(-2).map((a) => a.focus)).toEqual([true, true])
   })
 })

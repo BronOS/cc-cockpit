@@ -20,6 +20,8 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
+  registerGroupHandlers,
+  type GroupHandlerDeps,
   registerWebviewHandlers,
   webUrlOf,
   type ProjectSettingsHandlerDeps,
@@ -850,7 +852,7 @@ describe('registerTabHandlers', () => {
       // The closing tab's generation, for the window's other views (TabHandlerDeps.others).
       ['list', PROJECT_A],
       ['close', PROJECT_A, 't1'],
-      ['reorder', PROJECT_A, 't1', 2],
+      ['reorder', PROJECT_A, 't1', 2, false],
       // The index main applied, for the other views (`tabs.moved`).
       ['list', PROJECT_A],
       // Each followed by the tab as stored, announced to the window's other views.
@@ -924,6 +926,20 @@ describe('registerTabHandlers', () => {
     expect(calls).toEqual([['commands', PROJECT_B]])
   })
 
+  it('passes a checked beside (split right / down) and the reorder block flag, nothing else', async () => {
+    const { ipc, router, calls } = tabsSetup()
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    await ipc.invoke('tabs.create', 11, [{ kind: 'shell', beside: { tabId: 't0', edge: 'down', extra: 1 } }])
+    await router.dispatch(web, 'tabs.create', { kind: 'command', level: 'app', entryId: 'e1', beside: { tabId: 't0', edge: 'right' } })
+    await ipc.invoke('tabs.reorder', 12, [{ tabId: 't1', toIndex: 0, block: true }])
+    expect(calls).toEqual([
+      ['create', PROJECT_A, { kind: 'shell', beside: { tabId: 't0', edge: 'down' } }, 1],
+      ['create', PROJECT_A, { kind: 'command', level: 'app', entryId: 'e1', beside: { tabId: 't0', edge: 'right' } }, 1],
+      ['reorder', PROJECT_B, 't1', 0, true],
+      ['list', PROJECT_B]
+    ])
+  })
+
   it('never forwards a prompt from the renderer', async () => {
     const { ipc, calls } = tabsSetup()
     await ipc.invoke('tabs.create', 11, [{ kind: 'claude', prompt: '--evil' }])
@@ -950,6 +966,11 @@ describe('registerTabHandlers', () => {
       ['tabs.close', [{ tabId: 't1', discard: 'yes' }]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 'first' }]],
       ['tabs.reorder', [{ tabId: 't1', toIndex: 1.5 }]],
+      ['tabs.reorder', [{ tabId: 't1', toIndex: 1, block: 'yes' }]],
+      ['tabs.create', [{ kind: 'shell', beside: 't1' }]],
+      ['tabs.create', [{ kind: 'shell', beside: { tabId: 5, edge: 'right' } }]],
+      ['tabs.create', [{ kind: 'shell', beside: { tabId: 't1', edge: 'diagonal' } }]],
+      ['tabs.create', [{ kind: 'command', level: 'app', entryId: 'e', beside: { tabId: 't1' } }]],
       ['tabs.rename', [{ tabId: 't1', name: 5 }]],
       ['tabs.flag', [{ tabId: 't1' }]],
       ['tabs.flag', [{ flag: null }]],
@@ -2873,5 +2894,75 @@ describe('remote server handlers', () => {
     for (const channel of ['remote.list', 'remote.connect', 'remote.open', 'remote.edit', 'remote.pickKey', 'remote.rename', 'remote.forget', 'remote.changed'] as const) {
       expect(REMOTE_CLASS[channel]).toBe('no')
     }
+  })
+})
+
+describe('registerGroupHandlers', () => {
+  function groupsSetup(): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    const ok = { ok: true as const, seq: 7 }
+    const rec =
+      (name: string, result: unknown = ok) =>
+      (...args: unknown[]) => {
+        calls.push([name, ...args])
+        return result
+      }
+    registerGroupHandlers(router, {
+      get: rec('get', { seq: 1, order: [], groups: [] }) as GroupHandlerDeps['get'],
+      place: rec('place') as GroupHandlerDeps['place'],
+      remove: rec('remove') as GroupHandlerDeps['remove'],
+      dissolve: rec('dissolve') as GroupHandlerDeps['dissolve'],
+      resize: rec('resize') as GroupHandlerDeps['resize'],
+      rename: rec('rename') as GroupHandlerDeps['rename']
+    })
+    return { ipc, router, calls }
+  }
+
+  it("acts on the sender's own project, for the desktop and a browser view alike (all `yes`, D12)", async () => {
+    const { ipc, router, calls } = groupsSetup()
+    const web = webCaller({ kind: 'project', windowId: 2, projectId: PROJECT_B }, 'web:4')
+    await expect(ipc.invoke('groups.get', 11, [{ projectId: PROJECT_B }])).resolves.toEqual({ seq: 1, order: [], groups: [] })
+    await expect(ipc.invoke('groups.place', 11, [{ tabId: 'a', at: 'b', edge: 'left', projectId: PROJECT_B }])).resolves.toEqual({ ok: true, seq: 7 })
+    await router.dispatch(web, 'groups.remove', { tabId: 'a' })
+    await router.dispatch(web, 'groups.dissolve', { groupId: 'g1' })
+    await router.dispatch(web, 'groups.resize', { groupId: 'g1', splitId: 's1', sizes: [0.3, 0.7] })
+    await ipc.invoke('groups.rename', 12, [{ groupId: 'g1', name: null }])
+    await ipc.invoke('groups.rename', 12, [{ groupId: 'g1', name: 'dev' }])
+    expect(calls).toEqual([
+      ['get', PROJECT_A],
+      ['place', PROJECT_A, { tabId: 'a', at: 'b', edge: 'left' }],
+      ['remove', PROJECT_B, 'a'],
+      ['dissolve', PROJECT_B, 'g1'],
+      ['resize', PROJECT_B, 'g1', 's1', [0.3, 0.7]],
+      ['rename', PROJECT_B, 'g1', null],
+      ['rename', PROJECT_B, 'g1', 'dev']
+    ])
+    for (const ch of ['groups.get', 'groups.place', 'groups.remove', 'groups.dissolve', 'groups.resize', 'groups.rename', 'groups.changed']) {
+      expect(REMOTE_CLASS[ch as keyof typeof REMOTE_CLASS]).toBe('yes')
+    }
+  })
+
+  it('refuses malformed payloads, the picker and unknown senders before calling the service', async () => {
+    const { ipc, calls } = groupsSetup()
+    const bad: Array<[string, unknown[]]> = [
+      ['groups.place', [{ tabId: 'a', at: 'b' }]],
+      ['groups.place', [{ tabId: 'a', at: 5, edge: 'left' }]],
+      ['groups.place', [{ tabId: 'a', at: 'b', edge: 'middle' }]],
+      ['groups.place', [null]],
+      ['groups.remove', [{ tabId: 1 }]],
+      ['groups.dissolve', [{}]],
+      ['groups.resize', [{ groupId: 'g', splitId: 's', sizes: 'half' }]],
+      ['groups.resize', [{ groupId: 'g', splitId: 's', sizes: [0.5, '0.5'] }]],
+      ['groups.resize', [{ groupId: 'g', sizes: [0.5, 0.5] }]],
+      ['groups.resize', [{ groupId: 'g', splitId: 's', sizes: new Array(100).fill(0.01) }]],
+      ['groups.rename', [{ groupId: 'g', name: 5 }]],
+      ['groups.rename', [{ name: 'x' }]]
+    ]
+    for (const [channel, args] of bad) {
+      await expect(ipc.invoke(channel, 11, args), `${channel} ${JSON.stringify(args)}`).rejects.toThrow()
+    }
+    for (const sender of [13, 99]) await expect(ipc.invoke('groups.get', sender)).rejects.toThrow()
+    expect(calls).toEqual([])
   })
 })

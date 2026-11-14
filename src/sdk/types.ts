@@ -506,6 +506,28 @@ export interface RateLimits {
 /** `delivered`: typed now (the tab was waiting for input); `queued`: sent at its next Stop. */
 export type SendResult = { readonly delivered: true } | { readonly queued: true; readonly itemId: string }
 
+/**
+ * Open a new tab as a split pane beside a tab of this window (`ctx.sessions.open`, `openShell`,
+ * `openCommand`): `beside` is that tab's id, `side` puts the new pane to its right (the default) or
+ * below it. Only the new tab is placed; a plugin never moves, resizes or closes the person's panes. A
+ * plain tab becomes a group of the two; the anchor stays visible and keeps focus. An unknown id and a
+ * tab of another window reject the same way, before the open counts against the 5 a minute. The open
+ * still succeeds as an ordinary tab (`placed: false`) when the anchor closed meanwhile, its group
+ * already has 4 panes, or its pane is too small to halve. `focus: true` shows the anchor's group in
+ * the window the call came from; the new pane is never focused (it must not catch the person's keys).
+ * An older app ignores both and answers without `placed`.
+ */
+export interface OpenBeside {
+  beside?: string
+  side?: 'right' | 'down'
+}
+
+/** What an open answers: `placed` is set only when `beside` was given (and the app knows it). */
+export interface OpenedTab {
+  tabId: string
+  placed?: boolean
+}
+
 /** What a `ccc <name>` handler gets besides its arguments. */
 export interface CliCall {
   /**
@@ -1018,17 +1040,18 @@ export interface PluginContext {
      * "Discuss in a new session"); without it the tab opens beside the one they are in, unselected.
      * `model` (`haiku`, `sonnet`, `opus` or `fable`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`) start
      * the tab with `--model` / `--effort`; absent means the person's default, anything else rejects.
-     * An older app ignores `focus`, `model` and `effort`.
+     * An older app ignores `focus`, `model` and `effort`. `beside` / `side`: see `OpenBeside`.
      */
-    open(options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string }): Promise<{ tabId: string }>
+    open(options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string } & OpenBeside): Promise<OpenedTab>
     /**
      * A plain shell tab in this window, the kind the person gets from "+" > shell: their login shell,
      * with no command, arguments or environment from the plugin and nothing typed into it. `cwd` must
      * resolve inside the project folder (the folder itself when absent). `focus: true` selects it (for
      * a click such as "Open terminal here"); without it the tab opens unselected. Counts against the
      * same 5 a minute as `open`. An older app has no `openShell`: check `typeof ctx.sessions.openShell`.
+     * `beside` / `side`: see `OpenBeside`.
      */
-    openShell(options?: { cwd?: string; focus?: boolean }): Promise<{ tabId: string }>
+    openShell(options?: { cwd?: string; focus?: boolean } & OpenBeside): Promise<OpenedTab>
     /**
      * A command tab in this window running `argv` directly, with no shell: `argv[0]` is looked up on the
      * person's PATH and every element is one argument as is (1-64 strings of 1-4096 characters, no NUL).
@@ -1041,8 +1064,9 @@ export interface PluginContext {
      * the default `tabExit` setting, so to keep output on screen wrap the command so it waits for a key.
      * Unselected unless `focus: true`. Counts against the same 5 a minute as `open` and `openShell`.
      * An older app has no `openCommand`: check `typeof ctx.sessions.openCommand === 'function'`.
+     * `beside` / `side`: see `OpenBeside`.
      */
-    openCommand(options: { argv: string[]; cwd?: string; title?: string; focus?: boolean }): Promise<{ tabId: string }>
+    openCommand(options: { argv: string[]; cwd?: string; title?: string; focus?: boolean } & OpenBeside): Promise<OpenedTab>
   }
 
   // commands

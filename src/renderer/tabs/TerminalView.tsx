@@ -7,15 +7,19 @@ import type { SessionRegistry } from './terminal-session'
 /**
  * One tab's terminal. Every tab stays mounted and an inactive one is only hidden (display:none),
  * so its xterm and scrollback survive switching tabs; unmounting would throw the buffer away.
+ *
+ * `shown`: laid out now (the selected tab, or a visible pane of its split group). `focused`: it has
+ * this view's keys (the selected tab, unless D3 took the keys off); only one terminal ever does.
  */
 export function TerminalView(props: {
   tab: TabInfo
-  active: boolean
+  shown: boolean
+  focused: boolean
   sessions: SessionRegistry
   onRestart: () => void
   onClose: () => void
 }): React.JSX.Element {
-  const { tab, active, sessions } = props
+  const { tab, shown, focused, sessions } = props
   const host = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -27,8 +31,8 @@ export function TerminalView(props: {
   }, [sessions, tab.id])
 
   useEffect(() => {
-    if (active) sessions.get(tab.id).focus()
-  }, [active, sessions, tab.id])
+    if (focused) sessions.get(tab.id).focus()
+  }, [focused, sessions, tab.id])
 
   // Which device typed last, when it was another view (design-web.md §5.2 "Input from any view"):
   // keys from two places interleave, and this says where the last ones came from. Never shown for
@@ -37,7 +41,7 @@ export function TerminalView(props: {
   const typedBy = tab.typedBy && !isOwnView(tab.typedBy.viewId) ? tab.typedBy.device : undefined
 
   return (
-    <div className="terminal-view" hidden={!active} role="tabpanel">
+    <div className="terminal-view" hidden={!shown} role="tabpanel">
       <div className="terminal-host" ref={host} />
       {typedBy !== undefined && (
         <div className="terminal-typed" role="status">

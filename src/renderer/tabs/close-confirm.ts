@@ -21,6 +21,32 @@ export interface CloseQuestion {
   status?: string
   /** A page tab with unsaved changes in some view: the ask is about those, not a process. */
   unsaved?: true
+  /**
+   * A split group's Close all (design §1 "Strip"): one question for every member, listing those
+   * still running. `tabId` is then the group's first member, `title` the group's name.
+   */
+  group?: { groupId: string; tabIds: string[]; running: Array<{ title: string; status?: string }> }
+}
+
+/**
+ * What Close all of a split group must ask, or null to close every member at once: the setting is
+ * off or nothing runs in any of them. `members` in pane order; `statusOf` the Claude tabs' statuses.
+ */
+export function closeGroupQuestion(
+  groupId: string,
+  name: string,
+  members: readonly TabInfo[],
+  statusOf: (tabId: string) => TabStatus | undefined,
+  enabled: boolean
+): CloseQuestion | null {
+  const first = members[0]
+  if (!enabled || !first) return null
+  const running = members.filter(tabIsRunning).map((t) => {
+    const status = statusOf(t.id)
+    return { title: tabLabel(t), ...(t.kind === 'claude' && status ? { status: statusLabel(status) } : {}) }
+  })
+  if (running.length === 0) return null
+  return { tabId: first.id, title: name, group: { groupId, tabIds: members.map((t) => t.id), running } }
 }
 
 /**
@@ -71,6 +97,11 @@ export function unsavedQuestion(tab: TabInfo): CloseQuestion {
 /** The sentence under the dialog's title. */
 export function closeQuestionText(q: CloseQuestion): string {
   if (q.unsaved) return 'It has unsaved changes. Closing it discards them.'
+  if (q.group) {
+    const n = q.group.tabIds.length
+    const r = q.group.running.length
+    return `This closes all ${n} tabs of the group; ${r === 1 ? '1 is' : `${r} are`} still running. Closing ends them:`
+  }
   return q.status
     ? `Claude is ${q.status} in this tab. Closing it ends the session.`
     : 'Its process is still running. Closing the tab ends it.'

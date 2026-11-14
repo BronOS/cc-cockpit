@@ -21,7 +21,16 @@
 //      FrameStream (src/main/webview/frame-stream.ts) encodes its paints and sends them to one fake
 //      viewer, through the real WebviewViewers, over a fake socket that drains at VIEWER_RATE: main's
 //      delay meanwhile, and the stream's encode cost and frame rate.
-// Exits 1 when phase 1's or phase 5's p99 delay is over the limit, so a change that puts parsing back
+//   6. group join (design.md of team run 001 §1 "Web and cost"): a browser selects a group of 4 busy
+//      Claude tabs, so main serializes four snapshots (the worker's inspect, at full scrollback) and
+//      sends them through a fake socket that drains at VIEWER_RATE. Two orders: all four at once, and
+//      the design's (the focused pane first, the rest one at a time after the previous snapshot left
+//      the socket). Reports main's p99 delay, the peak unsent bytes in the socket and the time until
+//      the last snapshot is out; the staged order must stay under SOCKET_HIGH_WATER (32 MiB, the
+//      limit at which connection.ts closes a browser to resync) and keep main's p99 under the limit.
+//      This models what main does for a join (inspect + send) on the real mirror; it does not drive
+//      ViewTerminals itself.
+// Exits 1 when phase 1's, phase 5's or phase 6's p99 delay is over the limit, so a change that puts parsing back
 // on main, or lets frames take main from the terminals, fails the bench.
 //
 // It runs as Electron's main process (the off-screen page needs Electron): started with node, it
@@ -229,6 +238,57 @@ class FakeSocket {
   }
 }
 
+/**
+ * Phase 6: the 4 tabs of a group joined at once by one browser, while the tabs keep streaming a paced
+ * Claude-like load. `staged`: the focused pane's snapshot first, the others one at a time after the
+ * previous one left the socket (the buffer is back under FRAME_DRAINED_BYTES-like 256 KiB); not staged:
+ * all inspects and sends at once. Peak unsent bytes and the time to the last snapshot are the result.
+ */
+async function groupJoin(staged) {
+  const GROUP = ids.slice(0, 4)
+  const SOCKET_HIGH_WATER = 32 * 1024 * 1024
+  const DRAINED = 256 * 1024
+  const socket = new FakeSocket()
+  let peak = 0
+  const track = setInterval(() => {
+    peak = Math.max(peak, socket.bufferedAmount())
+  }, 2)
+  const h = monitorEventLoopDelay({ resolution: 1 })
+  h.enable()
+  const t0 = performance.now()
+  const rate = 64 * 1024
+  const perTick = Math.max(1, Math.round((rate * FLUSH_MS) / 1000))
+  const feed = setInterval(() => {
+    for (const id of ids) mirror.data(id, next(id, perTick))
+  }, FLUSH_MS)
+  const sendSnapshot = async (id) => {
+    const state = await mirror.inspect(id)
+    // What goes on the wire: the serialized screen as UTF-8 (the page's snapshot message).
+    if (state) socket.send({ byteLength: Buffer.byteLength(state.data) })
+    peak = Math.max(peak, socket.bufferedAmount())
+  }
+  if (staged) {
+    await sendSnapshot(GROUP[0])
+    for (const id of GROUP.slice(1)) {
+      while (socket.bufferedAmount() > DRAINED) await new Promise((r) => setTimeout(r, 2))
+      await sendSnapshot(id)
+    }
+  } else {
+    await Promise.all(GROUP.map(sendSnapshot))
+  }
+  while (socket.bufferedAmount() > 0) await new Promise((r) => setTimeout(r, 2))
+  const lastMs = performance.now() - t0
+  clearInterval(feed)
+  clearInterval(track)
+  h.disable()
+  await Promise.all(ids.map((id) => mirror.whenParsed(id)))
+  console.log(
+    `\n6. group join (${staged ? 'staged, design order' : 'all at once'}): 4 snapshots, ${socket.frames} sent (${mib(socket.bytes)} MiB), ` +
+      `peak unsent ${mib(peak)} MiB (limit ${mib(SOCKET_HIGH_WATER)}), last snapshot out after ${lastMs.toFixed(0)} ms; main's delay p99 ${ms(h.percentile(99))} ms, max ${ms(h.max)} ms`
+  )
+  return { p99: h.percentile(99), peak, lastMs, limit: SOCKET_HIGH_WATER }
+}
+
 /** Phase 5 at one page size: the flood with the page streaming to one viewer. */
 async function streamed(lib, width, height) {
   const { FrameStream, WebviewViewers, FRAME_DRAINED_BYTES } = lib
@@ -370,6 +430,9 @@ async function main() {
   const streams = []
   for (const [w, h] of [[1280, 800], [1920, 1080]]) streams.push({ size: `${w}x${h}`, r: await streamed(frames, w, h) })
 
+  // 6. a group of 4 busy tabs joined at once (needs at least 4 tabs; the flood above filled their scrollback)
+  const joins = ids.length >= 4 ? [await groupJoin(false), await groupJoin(true)] : []
+
   mirror.stop()
   rmSync(tmp, { recursive: true, force: true })
   let ok = flood.p99 / 1e6 <= P99_LIMIT_MS
@@ -378,6 +441,12 @@ async function main() {
     const pass = r.p99 / 1e6 <= P99_LIMIT_MS
     ok &&= pass
     console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with a streamed ${size} webview p99 ${ms(r.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
+  }
+  for (const [i, j] of joins.entries()) {
+    const label = i === 0 ? 'all at once' : 'staged'
+    const pass = j.p99 / 1e6 <= P99_LIMIT_MS && j.peak <= j.limit
+    ok &&= pass
+    console.log(`${pass ? 'PASS' : 'FAIL'}: group join ${label}: p99 ${ms(j.p99)} ms, peak unsent ${mib(j.peak)} MiB, last snapshot ${j.lastMs.toFixed(0)} ms`)
   }
   return ok ? 0 : 1
 }

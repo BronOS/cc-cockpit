@@ -12,6 +12,9 @@ export function CommandPalette(props: {
   mac: boolean
   onRun: (id: string) => void
   onClose: () => void
+  /** The dialog's name and the field's hint, for a picker built on the palette (Show Tab Beside…). */
+  label?: string
+  placeholder?: string
 }): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -41,7 +44,7 @@ export function CommandPalette(props: {
       <div
         className="palette"
         role="dialog"
-        aria-label="Command palette"
+        aria-label={props.label ?? 'Command palette'}
         onMouseDown={(e) => {
           e.stopPropagation()
           // Clicking a row must not blur the input: the blur below closes the palette before the
@@ -56,8 +59,8 @@ export function CommandPalette(props: {
           role="combobox"
           aria-expanded="true"
           aria-controls="palette-list"
-          aria-label="Command"
-          placeholder="Type a command"
+          aria-label={props.placeholder ? 'Tab' : 'Command'}
+          placeholder={props.placeholder ?? 'Type a command'}
           value={query}
           // Focus left the field (Tab, another window, devtools): nothing in the palette can be
           // typed into any more, so it must not stay open over the terminal.
@@ -96,7 +99,7 @@ export function CommandPalette(props: {
               {c.key && <kbd>{displayChord(c.key, props.mac)}</kbd>}
             </li>
           ))}
-          {matches.length === 0 && <li className="palette-empty">No matching command</li>}
+          {matches.length === 0 && <li className="palette-empty">{props.placeholder ? 'No match' : 'No matching command'}</li>}
         </ul>
       </div>
     </div>

@@ -256,6 +256,7 @@ function setup(
     viewScheme?: (viewId: string, dark: boolean | undefined) => void
     pagePaths?: (deviceId: string) => WebPagePaths
     server?: boolean
+    joinOrder?: (projectId: string, tabId: string) => string[]
   } = {}
 ) {
   const windows = new Map<string, number>([
@@ -293,6 +294,7 @@ function setup(
     ...(over.viewScheme ? { viewScheme: over.viewScheme } : {}),
     ...(over.pagePaths ? { pagePaths: over.pagePaths } : {}),
     ...(over.server !== undefined ? { server: over.server } : {}),
+    ...(over.joinOrder ? { joinOrder: over.joinOrder } : {}),
     log: (m) => logs.push(m),
     helloTimeoutMs: 50
   })
@@ -525,6 +527,58 @@ describe('plugin paths (Task 20)', () => {
     a.drop()
     a.close()
     expect(conns.deviceViews('dev1')).toEqual([{ windowId: 2, projectId: 'p2' }])
+  })
+})
+
+describe('split groups in a browser view', () => {
+  /** A mirror holding every tab; each join waits for the test to deliver its snapshot. */
+  function groupMirror() {
+    const joins: Array<{ tabId: string; view: MirrorView }> = []
+    const mirror: TerminalSource = {
+      join: (tabId, view) => {
+        joins.push({ tabId, view })
+        return () => {}
+      }
+    }
+    const snapshot = (tabId: string): void =>
+      [...joins].reverse().find((j) => j.tabId === tabId)!.view.snapshot({ seq: 0, cols: 20, rows: 5, data: tabId })
+    return { mirror, joins, snapshot, joined: () => joins.map((j) => j.tabId) }
+  }
+
+  /** The next member's join runs on a timer turn (view-terminals.ts `defer`). */
+  const later = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5))
+
+  it('selecting a member joins every pane, selected first, one at a time; a member added later joins too', async () => {
+    const m = groupMirror()
+    const groups = new Map<string, string[]>([['a', ['a', 'b']], ['b', ['b', 'a']]])
+    const { connect, conns } = setup({
+      mirror: m.mirror,
+      hasTab: (projectId, tabId) => projectId === 'p1' && ['a', 'b', 'c', 'x'].includes(tabId),
+      joinOrder: (projectId, tabId) => (projectId === 'p1' ? (groups.get(tabId) ?? [tabId]) : [tabId])
+    })
+    const ws = connect('p1')
+    const other = connect('p2')
+    conns.select('web:1', 'b')
+    expect(m.joined()).toEqual(['b'])
+    m.snapshot('b')
+    await later()
+    expect(m.joined()).toEqual(['b', 'a'])
+    m.snapshot('a')
+    await later()
+    expect(ws.frames('term.snapshot').map((f) => f.tabId)).toEqual(['b', 'a'])
+    // Another view adds c to the group: this view, showing b, joins c; the p2 view is not touched.
+    groups.set('b', ['b', 'a', 'c'])
+    conns.groupsChanged('p1')
+    await later()
+    expect(m.joined()).toEqual(['b', 'a', 'c'])
+    conns.groupsChanged('p2')
+    await later()
+    expect(m.joined()).toEqual(['b', 'a', 'c'])
+    expect(other.frames('term.snapshot')).toEqual([])
+    // A plain tab joins alone.
+    conns.select('web:1', 'x')
+    await later()
+    expect(m.joined()).toEqual(['b', 'a', 'c', 'x'])
   })
 })
 

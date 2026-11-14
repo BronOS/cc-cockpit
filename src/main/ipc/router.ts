@@ -33,6 +33,8 @@ import type {
   SettingsProject,
   ShellPrefs,
   TabCommandMenu,
+  GroupsReply,
+  TabBeside,
   TabCreateRequest,
   TabInfo,
   UpdateState,
@@ -71,6 +73,7 @@ import type { OpenTarget } from '../external/open-external'
 import { warnLog } from '../warn-log'
 import { OAUTH_PASTE_REFUSED, type OAuthPasteAnswer } from '../../shared/oauth-paste'
 import { isPlainObject } from '../../shared/guards'
+import { isPaneEdge, type GroupsSnapshot, type PlaceIntent } from '../../shared/tab-groups'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
 export interface IpcEventLike {
@@ -1366,7 +1369,11 @@ export interface TabHandlerDeps {
    * `tabs.close` without `discard` leaves it open. Absent (unit tests of other handlers): never.
    */
   pageUnsaved?(projectId: string, tabId: string): boolean
-  reorder(projectId: string, tabId: string, toIndex: number): void
+  /**
+   * `block` (the group handle's drag, D9): the whole group of `tabId` moves. Without it a group
+   * member dropped outside its segment leaves the group (main/tabs/tab-groups.ts `reorder`).
+   */
+  reorder(projectId: string, tabId: string, toIndex: number, block: boolean): void
   rename(projectId: string, tabId: string, name: string | null): void
   /** The person's flag (TabManager.setFlag checks the patch); answers the flag as stored. */
   flag(projectId: string, tabId: string, patch: unknown): TabFlag | null
@@ -1457,6 +1464,11 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   const createTab = (ctx: ProjectContext, payload: unknown): TabInfo | null | Promise<TabInfo | null> => {
     const p = fields('tabs.create', payload)
     const kind = p.kind
+    // Split right / down (create and place in one step): only the shape is checked here; the anchor
+    // is looked up in the sender's project by main's TabGroups, and an unknown or foreign one leaves
+    // the new tab plain (D15), the same as a group that is full.
+    const beside = besideOf(p.beside)
+    const withBeside = beside === undefined ? {} : { beside }
     if (kind === 'command') {
       // A menu entry, by level and id only. Only these two fields are read: a `command` or
       // `label` riding along in the payload is never looked at, so a renderer cannot have main run
@@ -1464,7 +1476,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
       const { level, entryId } = p
       if (level !== 'app' && level !== 'project') throw new Error("tabs.create: level must be 'app' or 'project'")
       if (typeof entryId !== 'string') throw new Error('tabs.create: entryId must be a string')
-      return tabs.create(ctx.projectId, { kind, level, entryId }, ctx.windowId)
+      return tabs.create(ctx.projectId, { kind, level, entryId, ...withBeside }, ctx.windowId)
     }
     if (kind !== 'claude' && kind !== 'shell') throw new Error('tabs.create: unknown kind')
     const cwd = p.cwd
@@ -1472,7 +1484,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
       throw new Error('tabs.create: cwd must be a string')
     }
     // No prompt from the renderer: programmatic prompts come through sessions.open (Task 20).
-    return tabs.create(ctx.projectId, cwd === undefined ? { kind } : { kind, cwd }, ctx.windowId)
+    return tabs.create(ctx.projectId, cwd === undefined ? { kind, ...withBeside } : { kind, cwd, ...withBeside }, ctx.windowId)
   }
 
   router.handleProject('tabs.close', (ctx, payload, view) => {
@@ -1495,8 +1507,10 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (typeof toIndex !== 'number' || !Number.isInteger(toIndex)) {
       throw new Error('tabs.reorder: toIndex must be an integer')
     }
+    const block = fields('tabs.reorder', payload).block
+    if (block !== undefined && typeof block !== 'boolean') throw new Error('tabs.reorder: block must be a boolean')
     const tabId = tabIdOf('tabs.reorder', payload)
-    tabs.reorder(ctx.projectId, tabId, toIndex)
+    tabs.reorder(ctx.projectId, tabId, toIndex, block === true)
     // The index main applied (TabManager.reorder clamps to the ends), never the requested one: a
     // view asking for 99 must not leave the others to clamp against a strip of their own length.
     const applied = tabs.list(ctx.projectId).findIndex((t) => t.id === tabId)
@@ -1601,6 +1615,57 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const tabId = tabIdOf('tabs.selected', payload)
     tabs.select(ctx.projectId, tabId, view.viewId)
     if (view.remote) tabs.viewSelect(view.viewId, tabId)
+  })
+}
+
+/** What the split group handlers need from main (main/tabs/tab-groups.ts, all project-scoped by the caller). */
+export interface GroupHandlerDeps {
+  get(projectId: string): GroupsSnapshot
+  place(projectId: string, intent: PlaceIntent): GroupsReply
+  remove(projectId: string, tabId: string): GroupsReply
+  dissolve(projectId: string, groupId: string): GroupsReply
+  resize(projectId: string, groupId: string, splitId: string, sizes: readonly number[]): GroupsReply
+  rename(projectId: string, groupId: string, name: string | null): GroupsReply
+}
+
+/**
+ * Split groups (team run 001 design §1, decisions D1, D12): every edit is a small intent naming tab,
+ * group or split ids, applied by main in arrival order; all REMOTE_CLASS `yes`, the same class as
+ * `tabs.close` / `tabs.reorder` (the person's arrangement, no host screen, no wider access). Every id
+ * is looked up in the sender's own project (`ctx.projectId`, main's): an unknown and a foreign id are
+ * the same refusal, which changes nothing and publishes nothing. Only the payload's shape is checked
+ * here; a refusal of the model (`full`, `too-deep`, ...) is a `{ ok: false }` answer, not a throw.
+ */
+export function registerGroupHandlers(router: IpcRouter, groups: GroupHandlerDeps): void {
+  router.handleProject('groups.get', (ctx) => groups.get(ctx.projectId))
+
+  router.handleProject('groups.place', (ctx, payload) => {
+    const p = fields('groups.place', payload)
+    const { tabId, at, edge } = p
+    if (typeof tabId !== 'string' || typeof at !== 'string') throw new Error('groups.place: tabId and at must be strings')
+    if (!isPaneEdge(edge)) throw new Error('groups.place: bad edge')
+    return groups.place(ctx.projectId, { tabId, at, edge })
+  })
+
+  router.handleProject('groups.remove', (ctx, payload) => groups.remove(ctx.projectId, tabIdOf('groups.remove', payload)))
+
+  router.handleProject('groups.dissolve', (ctx, payload) => groups.dissolve(ctx.projectId, groupIdOf('groups.dissolve', payload)))
+
+  router.handleProject('groups.resize', (ctx, payload) => {
+    const p = fields('groups.resize', payload)
+    const { splitId, sizes } = p
+    if (typeof splitId !== 'string') throw new Error('groups.resize: splitId must be a string')
+    // A split has at most GROUP_CAPS.maxPanes children; a longer list is junk before it is a refusal.
+    if (!Array.isArray(sizes) || sizes.length > 64 || !sizes.every((v) => typeof v === 'number')) {
+      throw new Error('groups.resize: sizes must be a list of numbers')
+    }
+    return groups.resize(ctx.projectId, groupIdOf('groups.resize', payload), splitId, sizes as number[])
+  })
+
+  router.handleProject('groups.rename', (ctx, payload) => {
+    const name = fields('groups.rename', payload).name
+    if (name !== null && typeof name !== 'string') throw new Error('groups.rename: name must be a string or null')
+    return groups.rename(ctx.projectId, groupIdOf('groups.rename', payload), name)
   })
 }
 
@@ -2026,6 +2091,22 @@ function layoutTooLarge(layout: Record<string, unknown>): boolean {
 function fields(channel: string, payload: unknown): Record<string, unknown> {
   if (typeof payload !== 'object' || payload === null) throw new Error(`${channel}: bad payload`)
   return payload as Record<string, unknown>
+}
+
+function groupIdOf(channel: string, payload: unknown): string {
+  const groupId = fields(channel, payload).groupId
+  if (typeof groupId !== 'string') throw new Error(`${channel}: groupId must be a string`)
+  return groupId
+}
+
+/** `tabs.create`'s `beside`: absent, or `{ tabId: string, edge: PaneEdge }` (anything else throws). */
+function besideOf(raw: unknown): TabBeside | undefined {
+  if (raw === undefined) return undefined
+  if (!isPlainObject(raw)) throw new Error('tabs.create: beside must be an object')
+  const { tabId, edge } = raw
+  if (typeof tabId !== 'string') throw new Error('tabs.create: beside.tabId must be a string')
+  if (!isPaneEdge(edge)) throw new Error('tabs.create: bad beside.edge')
+  return { tabId, edge }
 }
 
 function tabIdOf(channel: string, payload: unknown): string {

@@ -29,6 +29,26 @@ describe('CommandRegistry', () => {
     expect(view.conflicts).toEqual([])
   })
 
+  it('binds the split view chords of D10 (Cmd is Ctrl on Linux)', () => {
+    const mac = new CommandRegistry('darwin', () => ({})).view('p')
+    const linux = new CommandRegistry('linux', () => ({})).view('p')
+    expect(find(mac, 'pane.splitRight')?.key).toBe('shift+meta+d')
+    expect(find(mac, 'pane.splitDown')?.key).toBe('alt+shift+meta+d')
+    expect(find(mac, 'pane.moveOut')?.key).toBe('shift+meta+x')
+    expect(find(mac, 'pane.zoom')?.key).toBe('shift+meta+enter')
+    expect(find(mac, 'pane.focusLeft')?.key).toBe('alt+meta+left')
+    expect(find(mac, 'pane.resizeDown')?.key).toBe('alt+shift+meta+down')
+    expect(find(linux, 'pane.splitRight')?.key).toBe('ctrl+shift+d')
+    expect(find(linux, 'pane.focusUp')?.key).toBe('ctrl+alt+up')
+    expect(find(linux, 'pane.resizeRight')?.key).toBe('ctrl+alt+shift+right')
+    expect(find(linux, 'pane.zoom')?.key).toBe('ctrl+shift+enter')
+    // Palette-only: listed with no chord taken for them.
+    for (const id of ['pane.moveLeft', 'pane.showBesideRight', 'pane.showBesideDown', 'pane.equalize', 'pane.ungroup']) {
+      expect(find(linux, id), id).toBeDefined()
+      expect(find(linux, id)?.key, id).toBeUndefined()
+    }
+  })
+
   it('has no conflicting defaults', () => {
     for (const platform of ['darwin', 'linux'] as const) {
       expect(new CommandRegistry(platform, () => ({})).view('p').conflicts).toEqual([])

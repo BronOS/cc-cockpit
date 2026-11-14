@@ -384,6 +384,23 @@ export class TerminalSession {
     })
   }
 
+  /**
+   * The terminal's real cell in CSS pixels at its own font size, as the fit addon counts it (xterm's
+   * render dimensions: the same private API the addon reads). Undefined before xterm measured it and
+   * while the terminal is drawn at a scaled font (another view's pty size), which is not the size a
+   * pane of this view would get. The split view's limits use it over the font estimate.
+   *
+   * Pinned to xterm internals as of @xterm/xterm 6.0.0 and @xterm/addon-fit 0.11.0
+   * (`RenderService.dimensions.css.cell`, read the same way by FitAddon.proposeDimensions): check it
+   * on an xterm upgrade. A missing path only falls back to the estimate.
+   */
+  cellSize(): { width: number; height: number } | undefined {
+    if (this.disposed || this.term.options.fontSize !== this.baseFontSize) return undefined
+    const core = (this.term as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } } })._core
+    const cell = core?._renderService?.dimensions?.css?.cell
+    return cell && cell.width > 0 && cell.height > 0 ? { width: cell.width, height: cell.height } : undefined
+  }
+
   /** Fit to the container and tell main the new size when it changed. */
   private refit(): void {
     const el = this.container
@@ -561,6 +578,15 @@ export class SessionRegistry {
   /** Closed tabs: late output for them must not resurrect a session that nobody disposes. */
   private readonly closed = new Set<string>()
 
+  /** One terminal cell as xterm measured it (TerminalSession.cellSize), from any open terminal. */
+  cellSize(): { width: number; height: number } | undefined {
+    for (const s of this.sessions.values()) {
+      const cell = s.cellSize()
+      if (cell) return cell
+    }
+    return undefined
+  }
+
   /**
    * Output for a tab (`reset`: a whole screen; `size`: the pty's size at this point; `local`: this view
    * sizes it, TerminalSession.write);
@@ -576,19 +602,16 @@ export class SessionRegistry {
     if (!session) {
       session = new TerminalSession(tabId, this.ioFor(tabId), this.look)
       this.sessions.set(tabId, session)
-      if (this.selectTake === tabId) {
-        this.selectTake = undefined
-        session.takeOnSelect()
-      }
+      if (this.selectTakes.delete(tabId)) session.takeOnSelect()
     }
     return session
   }
 
   /**
-   * The person selected `tabId` in this view (TerminalSession.takeOnSelect) but its session is
-   * not made yet (a tab just created with +): get() hands the take to it when it is.
+   * The person selected these tabs in this view (TerminalSession.takeOnSelect) but their sessions
+   * are not made yet (a tab just created with +, a split's new pane): get() hands each its take.
    */
-  private selectTake: string | undefined
+  private readonly selectTakes = new Set<string>()
 
   /**
    * Main asks for a tab's screen (TerminalSession.answerScreen). A tab with no session here has
@@ -605,27 +628,37 @@ export class SessionRegistry {
     this.sessions.get(tabId)?.takeOnLoad()
   }
 
-  /** The person selected `tabId` here: its terminal takes the size, now or once it is attached. */
-  takeOnSelect(tabId: string): void {
-    if (this.closed.has(tabId)) return
-    this.activeChanged(tabId)
-    const session = this.sessions.get(tabId)
-    if (session) session.takeOnSelect()
-    else this.selectTake = tabId
+  /**
+   * The person selected `tabId` here: its terminal takes the size, now or once it is attached.
+   * `shown` is every pane the selection shows (a split group's visible panes, D2: the screen the
+   * person chose to look at sizes all of it); a plain tab is only itself. A pane hidden by this
+   * view's zoom is not in it and never takes.
+   */
+  takeOnSelect(tabId: string, shown: readonly string[] = [tabId]): void {
+    const ids = shown.includes(tabId) ? shown : [tabId, ...shown]
+    this.activeChanged(ids)
+    for (const id of ids) {
+      if (this.closed.has(id)) continue
+      const session = this.sessions.get(id)
+      if (session) session.takeOnSelect()
+      else this.selectTakes.add(id)
+    }
   }
 
   /**
-   * `tabId` is the active tab now, whoever changed it: a take waiting on any other tab is
-   * dropped, so a programmatic selection (restore, a plugin's focus, a close) never inherits one.
+   * These tabs are what this view shows now (the active tab, or every visible pane of its group),
+   * whoever changed it: a take waiting on any other tab is dropped, so a programmatic selection
+   * (restore, a plugin's focus, a close) never inherits one.
    */
-  activeChanged(tabId: string): void {
-    if (this.selectTake !== tabId) this.selectTake = undefined
-    for (const [id, session] of this.sessions) if (id !== tabId) session.cancelPendingTake()
+  activeChanged(shown: string | readonly string[]): void {
+    const keep = new Set(typeof shown === 'string' ? [shown] : shown)
+    for (const id of [...this.selectTakes]) if (!keep.has(id)) this.selectTakes.delete(id)
+    for (const [id, session] of this.sessions) if (!keep.has(id)) session.cancelPendingTake()
   }
 
   dispose(tabId: string): void {
     this.closed.add(tabId)
-    if (this.selectTake === tabId) this.selectTake = undefined
+    this.selectTakes.delete(tabId)
     this.sessions.get(tabId)?.dispose()
     this.sessions.delete(tabId)
   }
@@ -634,6 +667,6 @@ export class SessionRegistry {
     for (const session of this.sessions.values()) session.dispose()
     this.sessions.clear()
     this.closed.clear()
-    this.selectTake = undefined
+    this.selectTakes.clear()
   }
 }

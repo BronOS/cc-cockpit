@@ -23,14 +23,20 @@
 //   sessions.rename { pluginId, tabId, name }  -> null           name (1-60 chars, no control/bidi/format chars) or
 //                                                                null for Claude's title; a tab of THIS project
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
-//   sessions.open   { pluginId, cwd?, prompt?, focus?, model?, effort? } -> { tabId }  a new Claude tab in this project;
+//   sessions.open   { pluginId, cwd?, prompt?, focus?, model?, effort?, beside?, side? } -> { tabId, placed? }
+//                                                                a new Claude tab in this project;
 //                                                                `focus: true` selects it in the window
-//   sessions.openShell { pluginId, cwd?, focus? } -> { tabId }  a plain shell tab in this project, the
-//                                                                person's "+" > shell: no command, argv or
-//                                                                env from the plugin; the open budget
-//   sessions.openCommand { pluginId, argv, cwd?, title?, focus? } -> { tabId }  a command tab in this
-//                                                                project running `argv` with no shell,
-//                                                                marked with the plugin; the open budget
+//   sessions.openShell { pluginId, cwd?, focus?, beside?, side? } -> { tabId, placed? }  a plain shell tab
+//                                                                in this project, the person's "+" > shell:
+//                                                                no command, argv or env from the plugin;
+//                                                                the open budget
+//   sessions.openCommand { pluginId, argv, cwd?, title?, focus?, beside?, side? } -> { tabId, placed? }
+//                                                                a command tab in this project running
+//                                                                `argv` with no shell, marked with the
+//                                                                plugin; the open budget
+//                                                                `beside` (all three): the new tab only is
+//                                                                placed beside a tab of THIS window (split
+//                                                                groups, D7), fails soft to a plain tab
 //   badge           { pluginId, panelId, value}-> null           a panel the plugin itself declares
 //   panels.show     { pluginId, panelId }      -> null           a panel the plugin itself declares (any kind)
 //   panels.header   { pluginId, panelId, header } -> null        the title bar of a panel the plugin itself
@@ -246,6 +252,17 @@ import type { MachineInfo } from '../remote/machine-status'
 /** ctx.sessions.send per plugin: at most this many texts per window. The gate's queue cap (50) also holds. */
 export const SEND_WINDOW_MS = 60_000
 export const MAX_SENDS_PER_WINDOW = 30
+/**
+ * A plugin open's `beside` (split groups, decisions D4, D6, D7), checked by HostApi: `beside` is a tab
+ * of the host's own window (looked up before the open budget is spent), `side` its edge. `view` is
+ * the origin view (a hint: where `focus: true` shows the group), never trusted for anything else.
+ */
+export interface PluginPlacement {
+  beside: string
+  side: 'right' | 'down'
+  view?: ViewId
+}
+
 /** ctx.sessions.open per plugin: each one starts a `claude` process. */
 export const OPEN_WINDOW_MS = 60_000
 export const MAX_OPENS_PER_WINDOW = 5
@@ -357,6 +374,11 @@ export interface HostApiDeps {
   /** Any tab's entry (SessionRegistry.get); the scope check is HostApi's. */
   session(tabId: string): SessionEntry | undefined
   /**
+   * Whether `tabId` is a terminal tab of `projectId` now (TabManager's own table): a `beside` anchor
+   * of another window, an overlay or an unknown id reads the same. Absent: `beside` is refused.
+   */
+  hasTab?(projectId: string, tabId: string): boolean
+  /**
    * The Claude tab this project's window shows (SessionRegistry.activeTab), for
    * `SessionInfo.active`. Without it no tab is ever marked active.
    */
@@ -431,15 +453,22 @@ export interface HostApiDeps {
     projectId: string,
     options: { cwd?: string; prompt?: string; model?: string; effort?: string },
     windowId: number,
-    focus?: boolean
-  ): Promise<{ id: string }>
+    focus?: boolean,
+    place?: PluginPlacement
+  ): Promise<{ id: string; placed?: boolean }>
   /**
    * Start a shell tab in the project and tell its window, as `openTab` does for a Claude tab: the
    * person's login shell (TabManager's `shellArgv`), nothing typed into it. Only `cwd` comes from the
    * plugin, realpath'd inside the project folder by the tab manager. Without it ctx.sessions.openShell
    * is refused.
    */
-  openShellTab?(projectId: string, options: { cwd?: string }, windowId: number, focus?: boolean): Promise<{ id: string }>
+  openShellTab?(
+    projectId: string,
+    options: { cwd?: string },
+    windowId: number,
+    focus?: boolean,
+    place?: PluginPlacement
+  ): Promise<{ id: string; placed?: boolean }>
   /**
    * Start a command tab running `argv` with no shell (TabManager.createPluginCommand) and tell its
    * window, as `openShellTab` does. `openedBy` is the plugin HostApi resolved from the host's own
@@ -450,8 +479,9 @@ export interface HostApiDeps {
     projectId: string,
     options: { argv: string[]; cwd?: string; title: string; openedBy: string },
     windowId: number,
-    focus?: boolean
-  ): Promise<{ id: string }>
+    focus?: boolean,
+    place?: PluginPlacement
+  ): Promise<{ id: string; placed?: boolean }>
   /**
    * Open a page tab in the project (TabManager.createPage, which checks the spec again and holds the
    * per-plugin cap) and tell its window, as `openShellTab` does. `spec.plugin` is the plugin HostApi
@@ -861,9 +891,9 @@ export class HostApi {
       'sessions.list': (params) => this.list(params),
       'sessions.rateLimits': (params) => this.rateLimits(params),
       'sessions.send': (params) => this.send(params),
-      'sessions.open': (params) => this.open(params),
-      'sessions.openShell': (params) => this.openShell(params),
-      'sessions.openCommand': (params) => this.openCommand(params),
+      'sessions.open': (params, meta) => this.open(params, meta),
+      'sessions.openShell': (params, meta) => this.openShell(params, meta),
+      'sessions.openCommand': (params, meta) => this.openCommand(params, meta),
       'sessions.focus': (params, meta) => this.focus(params, meta),
       'sessions.machines': (params) => this.machines(params),
       'sessions.focusMachine': (params) => this.focusMachine(params),
@@ -1367,9 +1397,9 @@ export class HostApi {
     return result.delivered ? { delivered: true } : { queued: true, itemId: result.id }
   }
 
-  private async open(params: unknown): Promise<{ tabId: string }> {
+  private async open(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, cwd, prompt, focus, model, effort } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, cwd, prompt, focus, model, effort, beside, side } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.open')
     if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.open: cwd must be a string')
     if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.open: focus must be a boolean')
@@ -1396,6 +1426,7 @@ export class HostApi {
         throw new Error(`sessions.open: prompt: ${errorText(err)}`, { cause: err })
       }
     }
+    const place = this.placement('sessions.open', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
       throw new Error(`sessions.open: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
     }
@@ -1410,9 +1441,10 @@ export class HostApi {
       this.scope.windowId,
       // Only the host's own window, the one the tab opens in, is ever told to select it: a plugin
       // can move the selection there (as its Discuss click means to), never in another project.
-      focus === true
+      focus === true,
+      place
     )
-    return { tabId: tab.id }
+    return opened(tab, place)
   }
 
   /**
@@ -1423,9 +1455,9 @@ export class HostApi {
    * the project is refused too), and so is the budget: the same RateWindow, so a plugin cannot open
    * five Claude tabs and five shells a minute.
    */
-  private async openShell(params: unknown): Promise<{ tabId: string }> {
+  private async openShell(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, cwd, focus } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, cwd, focus, beside, side } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.openShell')
     if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.openShell: cwd must be a string')
     if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.openShell: focus must be a boolean')
@@ -1436,6 +1468,7 @@ export class HostApi {
     } catch (err) {
       throw new Error(`sessions.openShell: ${errorText(err)}`, { cause: err })
     }
+    const place = this.placement('sessions.openShell', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
       throw new Error(`sessions.openShell: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
     }
@@ -1444,9 +1477,30 @@ export class HostApi {
       cwd !== undefined && cwd !== '' ? { cwd } : {},
       // The host's own window, never one the plugin names; only that window is told to select it.
       this.scope.windowId,
-      focus === true
+      focus === true,
+      place
     )
-    return { tabId: tab.id }
+    return opened(tab, place)
+  }
+
+  /**
+   * A plugin open's `beside` / `side` (split groups, design §1 "Plugin API", D6, D7), checked before
+   * the open budget is spent: the anchor must be a terminal tab of the host's own window by main's
+   * table, and an unknown id and another window's give the same error. Only the shape is settled
+   * here; whether the new tab is placed (anchor gone meanwhile, group at 4 panes, pane too small)
+   * is TabGroups' call when the tab exists, and a refusal there opens a plain tab (`placed: false`).
+   */
+  private placement(method: string, beside: unknown, side: unknown, meta: RpcMeta | undefined): PluginPlacement | undefined {
+    if (beside === undefined) {
+      if (side !== undefined) throw new Error(`${method}: side needs beside`)
+      return undefined
+    }
+    if (typeof beside !== 'string' || beside.length === 0 || beside.length > 128) throw new Error(`${method}: beside must be a tab id`)
+    if (side !== undefined && side !== 'right' && side !== 'down') throw new Error(`${method}: side must be 'right' or 'down'`)
+    if (!this.deps.hasTab) throw new Error(`${method}: beside is not available`)
+    if (!this.deps.hasTab(this.scope.projectId, beside)) throw new Error(`${method}: beside: no such tab in this window`)
+    const view = this.originOf(meta)
+    return { beside, side: side ?? 'right', ...(view === undefined ? {} : { view }) }
   }
 
   /**
@@ -1612,9 +1666,9 @@ export class HostApi {
    * nothing; the budget is sessions.open's RateWindow, shared with openShell. The project and window
    * are the host's, and `openedBy` is the plugin this host runs, never anything the request says.
    */
-  private async openCommand(params: unknown): Promise<{ tabId: string }> {
+  private async openCommand(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, argv, cwd, title, focus } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, argv, cwd, title, focus, beside, side } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.openCommand')
     const checked = checkCommandArgv(argv)
     if (!checked.ok) throw new Error(`sessions.openCommand: ${checked.reason}`)
@@ -1635,6 +1689,7 @@ export class HostApi {
     } catch (err) {
       throw new Error(`sessions.openCommand: ${errorText(err)}`, { cause: err })
     }
+    const place = this.placement('sessions.openCommand', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
       throw new Error(`sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
     }
@@ -1643,9 +1698,10 @@ export class HostApi {
       { argv: checked.value, ...(cwd !== undefined && cwd !== '' ? { cwd } : {}), title: label, openedBy: plugin.id },
       // The host's own window, never one the plugin names; only that window is told to select it.
       this.scope.windowId,
-      focus === true
+      focus === true,
+      place
     )
-    return { tabId: tab.id }
+    return opened(tab, place)
   }
 
   private badge(params: unknown): null {
@@ -2585,4 +2641,11 @@ export class HostApi {
     }, this.interval)
     this.allTimer.unref?.()
   }
+}
+
+/** What a plugin open answers: `placed` only when it asked for `beside` (absent from an older app too). */
+type OpenResult = { tabId: string; placed?: boolean }
+
+function opened(tab: { id: string; placed?: boolean }, place: PluginPlacement | undefined): OpenResult {
+  return place === undefined ? { tabId: tab.id } : { tabId: tab.id, placed: tab.placed === true }
 }

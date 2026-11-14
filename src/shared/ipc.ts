@@ -19,6 +19,7 @@ import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
+import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
@@ -214,8 +215,25 @@ export interface TabCommandMenu {
  * whether it opens a tab or a terminal overlay.
  */
 export type TabCreateRequest =
-  | { kind: 'claude' | 'shell'; cwd?: string }
-  | { kind: 'command'; level: TabCommandLevel; entryId: string }
+  | { kind: 'claude' | 'shell'; cwd?: string; beside?: TabBeside }
+  | { kind: 'command'; level: TabCommandLevel; entryId: string; beside?: TabBeside }
+
+/**
+ * `tabs.create`'s `beside` (split right / down, the New tab menu at a new pane's place): create the
+ * tab and place it beside the pane of `tabId` on `edge` in one step (shared/tab-groups.ts `place`),
+ * so no view ever sees the new tab plain first. `tabId` is looked up in the sender's project.
+ */
+export interface TabBeside {
+  tabId: string
+  edge: PaneEdge
+}
+
+/**
+ * The reply to a `groups.*` edit. `seq` is the snapshot the change produced (the sender also gets it
+ * as `groups.changed`, like every view); a refusal changes nothing (shared/tab-groups.ts reasons:
+ * `full`, `too-deep`, `unknown-tab` for an id outside the sender's project, ...).
+ */
+export type GroupsReply = { ok: true; seq: number } | { ok: false; reason: GroupRefusalReason }
 
 /** A command as the palette and the key handler see it. */
 export interface CommandInfo {
@@ -1580,8 +1598,34 @@ export interface IpcInvokeMap {
    * behind a page's report, its own or another view's).
    */
   'tabs.close': { req: { tabId: string; discard?: boolean }; res: { unsaved: true } | void }
-  /** Move a tab to a position in the project's tab order (clamped to the ends). */
-  'tabs.reorder': { req: { tabId: string; toIndex: number }; res: void }
+  /**
+   * Move a tab to a position in the project's tab order (clamped to the ends). Split groups (D9):
+   * `block` (the group handle's drag) moves the whole group of `tabId`, `toIndex` counted in the
+   * order without the block; without it a group member dropped strictly inside its own segment stays
+   * put, and one dropped anywhere else leaves the group as a plain tab there. The order every view
+   * should draw is the one in the `groups.changed` that follows.
+   */
+  'tabs.reorder': { req: { tabId: string; toIndex: number; block?: boolean }; res: void }
+
+  // Split terminal view (shared/tab-groups.ts). Main is the one writer; every edit is a small intent
+  // naming tab ids, never a whole tree (the `layout.set` lost-update trap). Ids are looked up in the
+  // sender's project; unknown and foreign are the same refusal. Every view, the sender included,
+  // gets the result as `groups.changed`. Closing a pane is `tabs.close`; focus is `tabs.selected`.
+  /** The project's groups and tab order now. */
+  'groups.get': { req: void; res: GroupsSnapshot }
+  /**
+   * Put `tabId` beside the pane of `at` on `edge` (drag to an edge, Show beside, move between
+   * groups); `at` plain makes a new group of the two.
+   */
+  'groups.place': { req: PlaceIntent; res: GroupsReply }
+  /** Move a tab out of its group: a plain tab right after the block (the group may dissolve). */
+  'groups.remove': { req: { tabId: string }; res: GroupsReply }
+  /** Ungroup: the members become plain tabs where they are; nothing closes. */
+  'groups.dissolve': { req: { groupId: string }; res: GroupsReply }
+  /** A divider drag's result, sent once on release: one share per child of split `splitId`. Shared by every view (D1). */
+  'groups.resize': { req: { groupId: string; splitId: string; sizes: number[] }; res: GroupsReply }
+  /** Name a group (1-60 characters, shared/session-name.ts rule), or clear it with `null`. */
+  'groups.rename': { req: { groupId: string; name: string | null }; res: GroupsReply }
   /** Give a Claude tab a name (1-60 characters, shared/session-name.ts), or `null` for Claude's own title. */
   'tabs.rename': { req: { tabId: string; name: string | null }; res: void }
   /**
@@ -1673,6 +1717,13 @@ export interface IpcEventMap {
    * the project's order, already clamped. The view that moved it has the change from its reply.
    */
   'tabs.moved': { tabId: string; toIndex: number }
+  /**
+   * The project's groups changed (an edit from any view, a member closed, a restore): the whole
+   * snapshot, to every view of the window including the one that made the edit. A page drops a
+   * snapshot with a `seq` older than the one it has; a snapshot may name a tab the page does not hold
+   * yet (draw it as starting for a moment rather than drop it).
+   */
+  'groups.changed': GroupsSnapshot
   /** The update notice's state changed (a check found a release, a dismissal, the setting). Every window. */
   'updates.changed': UpdateState
   /** Connected devices or a risky choice changed (desktop windows only; never sent to a remote view). */
@@ -2007,7 +2058,13 @@ export const INVOKE_CHANNELS = [
   'tabs.visibility',
   'tabs.ack',
   'tabs.screen',
-  'tabs.selected'
+  'tabs.selected',
+  'groups.get',
+  'groups.place',
+  'groups.remove',
+  'groups.dissolve',
+  'groups.resize',
+  'groups.rename'
 ] as const satisfies readonly InvokeChannel[]
 
 /** Every main -> renderer event channel, for the preload's allow-list (see INVOKE_CHANNELS). */
@@ -2018,6 +2075,7 @@ export const EVENT_CHANNELS = [
   'tabs.exit',
   'tabs.removed',
   'tabs.moved',
+  'groups.changed',
   'theme.changed',
   'updates.changed',
   'webAccess.changed',
@@ -2388,7 +2446,18 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.removed': 'yes',
   'tabs.moved': 'yes',
   'tabs.select': 'yes',
-  'tabs.added': 'yes'
+  'tabs.added': 'yes',
+
+  // Split terminal view: the person's arrangement, no host screen and no wider access, the same
+  // class as tabs.create, close and reorder (decisions D1, D12: divider sizes are shared, and a
+  // web-access browser may rearrange groups).
+  'groups.get': 'yes',
+  'groups.place': 'yes',
+  'groups.remove': 'yes',
+  'groups.dissolve': 'yes',
+  'groups.resize': 'yes',
+  'groups.rename': 'yes',
+  'groups.changed': 'yes'
 })
 
 /**

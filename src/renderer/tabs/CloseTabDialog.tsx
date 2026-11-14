@@ -50,9 +50,19 @@ export function CloseTabDialog(props: {
         }}
       >
         <h2 id={titleId} className="confirm-title">
-          Close “{props.question.title}”?
+          {props.question.group ? `Close all tabs of “${props.question.title}”?` : `Close “${props.question.title}”?`}
         </h2>
         <p id={textId}>{closeQuestionText(props.question)}</p>
+        {props.question.group && (
+          <ul className="confirm-list">
+            {props.question.group.running.map((r, i) => (
+              <li key={i}>
+                {r.title}
+                {r.status ? ` (Claude is ${r.status})` : ''}
+              </li>
+            ))}
+          </ul>
+        )}
         {/* The setting is about running processes; unsaved text always asks (close-confirm.ts). */}
         {!props.question.unsaved && (
           <label className="confirm-check">
@@ -65,7 +75,7 @@ export function CloseTabDialog(props: {
             Cancel
           </button>
           <button type="button" className="confirm-danger" onClick={() => answer('close')}>
-            {props.question.unsaved ? 'Discard and Close' : 'Close'}
+            {props.question.unsaved ? 'Discard and Close' : props.question.group ? 'Close all' : 'Close'}
           </button>
         </div>
       </div>
