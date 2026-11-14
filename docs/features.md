@@ -310,8 +310,11 @@ behind it are in [design.md](design.md).
     the notes, and one with `removeNotes` for the delete.
   - Quick chat (Ctrl/Cmd+K on a selection, or the context menu): a short headless Claude, read-only (Read, Grep, Glob; no settings, hooks
     or MCP servers), proposes a replacement shown as an inline diff with Accept and Reject; Claude never writes the
-    file. The model is an app setting (default `sonnet`). These runs leave transcripts in `~/.claude`, so the Usage
-    panel counts them.
+    file. The chat's header has a model and an effort picker, preselected from the app settings `quickChatModel`
+    (default `sonnet`) and `quickChatEffort` (default `default`: no `--effort`, Claude Code decides; else low, medium,
+    high, xhigh or max); a change applies to the chat's next question (the answer running keeps its own), which goes
+    to a new headless Claude resuming the same session. The host checks both values against its own lists. These runs
+    leave transcripts in `~/.claude`, so the Usage panel counts them.
   - Mod+click or Alt+click adds a cursor; the page tab follows Ctrl+Tab, drag, flags and restore like any tab.
 - Page tabs: a plugin can draw a tab of the main tab bar as its own page (`contributes.tabs`, `ctx.tabs`); the editor
   is the first. Such a tab holds unsaved text, so its page stays loaded while you switch (the 6 most recent; a tab

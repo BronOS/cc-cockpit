@@ -495,8 +495,13 @@ main .cm-line.cc-flash {
   padding: 2px var(--cc-space-2, 8px);
   min-height: var(--cc-control-h, 26px);
 }
+.chat-pick {
+  flex: none;
+  max-width: 9em;
+  height: calc(var(--cc-control-h, 26px) - 4px);
+  font-size: var(--cc-text-s, 11px);
+}
 .chat-about,
-.chat-model,
 .chat-status {
   color: var(--cc-fg-muted);
   font-size: var(--cc-text-s, 11px);

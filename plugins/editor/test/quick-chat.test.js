@@ -80,7 +80,7 @@ function serve(opts = {}) {
     spawn: sp.spawn,
     root,
     rel: 'rel' in opts ? opts.rel : 'src/a.txt',
-    model: () => opts.model || 'sonnet',
+    defaults: () => ({ model: opts.model || 'sonnet', effort: opts.effort || 'default' }),
     log: { warn: (w) => warnings.push(w) },
     bin: FAKE,
     limits: opts.limits,
@@ -126,6 +126,63 @@ test('modelOf: the setting when it is on the list, else sonnet; the manifest off
   assert.equal(prop.pattern, undefined)
 })
 
+const UUID = '0f1e2d3c-4b5a-4968-8776-655443322110'
+
+test('chatArgv: --effort and --resume as separate elements after the model, only when given', () => {
+  const base = qc.chatArgv('claude', 'opus')
+  assert.deepEqual(qc.chatArgv('claude', 'opus', 'default'), base)
+  assert.deepEqual(qc.chatArgv('claude', 'opus', 'high'), [...base, '--effort', 'high'])
+  assert.deepEqual(qc.chatArgv('claude', 'opus', 'max', UUID), [...base, '--effort', 'max', '--resume', UUID])
+  assert.deepEqual(qc.chatArgv('claude', 'opus', 'default', UUID), [...base, '--resume', UUID])
+  for (const bad of ['--model=x', 'turbo', '', null]) assert.throws(() => qc.chatArgv('claude', 'opus', bad), /effort must be one of/)
+  for (const bad of ['--help', 'fake-session', UUID.toUpperCase().replace('F', 'G'), `${UUID} `]) assert.throws(() => qc.chatArgv('claude', 'opus', 'low', bad), /session id/)
+})
+
+test('isSessionId: a UUID only, so --resume never takes a flag', () => {
+  assert.equal(qc.isSessionId(UUID), true)
+  assert.equal(qc.isSessionId(UUID.toUpperCase()), true)
+  for (const bad of ['', '--resume', `-${UUID.slice(1)}`, UUID.replace(/-/g, 'x'), `${UUID}0`, 42, null, undefined]) assert.equal(qc.isSessionId(bad), false, String(bad))
+})
+
+test('checkPick: the page values when on the host lists, the fallback when absent, anything else refused', () => {
+  const fallback = { model: 'sonnet', effort: 'default' }
+  assert.deepEqual(qc.checkPick({ model: 'opus', effort: 'xhigh' }, fallback), { model: 'opus', effort: 'xhigh' })
+  assert.deepEqual(qc.checkPick({}, fallback), fallback)
+  assert.deepEqual(qc.checkPick({ effort: 'low' }, fallback), { model: 'sonnet', effort: 'low' })
+  assert.deepEqual(qc.checkPick({ model: 'haiku' }, { model: 'opus', effort: 'max' }), { model: 'haiku', effort: 'max' })
+  for (const model of ['--dangerously-skip-permissions', 'claude-opus-4', '', null, 3, ['opus']]) {
+    assert.throws(() => qc.checkPick({ model }, fallback), /the model must be one of haiku, sonnet, opus, fable/)
+  }
+  for (const effort of ['turbo', '', '--effort', null, 1]) {
+    assert.throws(() => qc.checkPick({ effort }, fallback), /the effort must be one of default, low, medium, high, xhigh, max/)
+  }
+})
+
+test('effortOf, defaultsMessage: the settings, the default for anything off the list; the manifest offers the same list', () => {
+  assert.equal(qc.effortOf({ quickChatEffort: 'high' }), 'high')
+  assert.equal(qc.effortOf({ quickChatEffort: '--x' }), 'default')
+  assert.equal(qc.effortOf({}), 'default')
+  assert.equal(qc.effortOf(undefined), 'default')
+  assert.deepEqual(qc.defaultsOf({ quickChatModel: 'opus', quickChatEffort: 'low' }), { model: 'opus', effort: 'low' })
+  assert.deepEqual(qc.defaultsMessage({}), { t: 'chat-defaults', model: 'sonnet', effort: 'default', models: qc.CHAT_MODELS, efforts: qc.EFFORT_CHOICES })
+  const prop = require('../plugin.json').contributes.settings.app.properties.quickChatEffort
+  assert.deepEqual(prop.enum, qc.EFFORT_CHOICES)
+  assert.equal(prop.default, qc.DEFAULT_EFFORT)
+})
+
+// The plugin cannot import core's src/shared/session-options.ts (plugins use the public API only), so
+// its lists are copies: this keeps them in step.
+test("the model and effort lists match core's session-options.ts", () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'shared', 'session-options.ts'), 'utf8')
+  const listOf = (name) => {
+    const m = src.match(new RegExp(`export const ${name} = \\[([^\\]]*)\\]`))
+    assert.ok(m, `${name} not found`)
+    return m[1].split(',').map((s) => s.trim().replace(/^'|'$/g, ''))
+  }
+  assert.deepEqual(qc.CHAT_MODELS, listOf('SESSION_MODELS'))
+  assert.deepEqual(qc.CHAT_EFFORTS, listOf('SESSION_EFFORTS'))
+})
+
 test('missingFlags: a flag counts only as a word of its own', () => {
   const help = ['  -p, --print   Print', '  --restricted  x', '  --safe-mode   x', '  --strict-mcp-config', '  --tools <tools...>', '  --permission-prompts <t>', '  --input-format <f>', '  --output-format <f>', '  --verbose', '  --include-partial-messages', '  --model <model>'].join('\n')
   assert.deepEqual(qc.missingFlags(help), [])
@@ -154,6 +211,8 @@ test("the installed claude's --help lists every flag quick chat passes, as missi
   assert.equal(r.status, 0, `claude --help failed: ${r.error || r.stderr}`)
   // An older claude than the one the flags were checked against (2.1.323) also lands here: update it.
   assert.deepEqual(qc.missingFlags(r.stdout), [], `the installed claude (${bin}) --help lacks these flags`)
+  // The optional ones (checked against 2.1.325): a pick of an effort, a change within a chat.
+  assert.deepEqual(qc.missingFlags(r.stdout, ['--effort', '--resume']), [], `the installed claude (${bin}) --help lacks these flags`)
 })
 
 test('findClaude: only absolute PATH entries, so a project cannot ship its own claude', () => {
@@ -254,8 +313,8 @@ test('a chat: help check, the exact argv, streamed text, a tool, the proposal, a
   assert.equal(s.calls.length, 2)
   const kinds = s.tab.posted.map((m) => m.t)
   assert.deepEqual(kinds.slice(0, 2), ['chat-state', 'chat-state'])
-  assert.deepEqual(s.tab.posted[0], { t: 'chat-state', id: 1, state: 'starting', model: 'sonnet' })
-  assert.deepEqual(s.tab.posted[1], { t: 'chat-state', id: 1, state: 'thinking', model: 'sonnet' })
+  assert.deepEqual(s.tab.posted[0], { t: 'chat-state', id: 1, state: 'starting', model: 'sonnet', effort: 'default' })
+  assert.deepEqual(s.tab.posted[1], { t: 'chat-state', id: 1, state: 'thinking', model: 'sonnet', effort: 'default' })
   // The tool shows project-relative; the subagent's text never reaches the answer.
   assert.deepEqual(s.tab.posted.find((m) => m.t === 'chat-tool'), { t: 'chat-tool', id: 1, name: 'Read', detail: 'a.txt' })
   const text = s.tab.posted.filter((m) => m.t === 'chat-delta').map((m) => m.text).join('')
@@ -297,6 +356,114 @@ test('refused when claude --help lacks a flag; nothing else runs', async () => {
   assert.equal(qc._pluginChats.running, 0)
   // The failure is not cached: an updated claude is checked again.
   assert.equal(qc._helpChecks.size, 0)
+})
+
+test("a chat's model and effort: the page's pick, else the settings; a bad one is refused before anything runs", async () => {
+  const s = serve({ model: 'haiku', effort: 'low' })
+  s.handle({ ...START, model: 'opus', effort: 'high' })
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-answer'))
+  assert.deepEqual(s.calls[1], qc.chatArgv(FAKE, 'opus', 'high'))
+  assert.deepEqual(s.calls[1].slice(-4), ['--model', 'opus', '--effort', 'high'])
+  assert.deepEqual(s.tab.posted[0], { t: 'chat-state', id: 1, state: 'starting', model: 'opus', effort: 'high' })
+  s.tab.close()
+
+  // Absent: the settings.
+  const d = serve({ model: 'haiku', effort: 'low' })
+  d.handle(START)
+  await waitFor(() => d.tab.posted.some((m) => m.t === 'chat-answer'))
+  assert.deepEqual(d.calls[1], qc.chatArgv(FAKE, 'haiku', 'low'))
+  d.tab.close()
+
+  // The default effort: no --effort at all.
+  const n = serve()
+  n.handle({ ...START, effort: 'default' })
+  await waitFor(() => n.tab.posted.some((m) => m.t === 'chat-answer'))
+  assert.equal(n.calls[1].includes('--effort'), false)
+  n.tab.close()
+
+  for (const bad of [{ model: '--dangerously-skip-permissions' }, { effort: 'turbo' }, { model: 'claude-opus-4' }, { effort: '' }]) {
+    const b = serve()
+    b.handle({ ...START, ...bad })
+    await waitFor(() => b.tab.posted.some((m) => m.t === 'chat-end'))
+    const end = b.tab.posted.find((m) => m.t === 'chat-end')
+    assert.equal(end.error, true)
+    assert.match(end.message, /^Quick chat: the (model|effort) must be one of/)
+    assert.deepEqual(b.calls, [], 'nothing spawned, not even the help probe')
+    assert.equal(qc._pluginChats.running, 0)
+  }
+  await waitFor(() => s.children.concat(d.children, n.children).every(exited))
+})
+
+test('an effort the installed claude has no --effort for is refused; the default effort still runs', async () => {
+  const s = serve({ env: { FAKE_CLAUDE_NO_EFFORT: '1' } })
+  s.handle({ ...START, effort: 'high' })
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-end'))
+  assert.match(s.tab.posted.find((m) => m.t === 'chat-end').message, /has no --effort; pick the default effort or update it/)
+  assert.deepEqual(s.calls, [[FAKE, '--help']])
+  assert.equal(qc._pluginChats.running, 0)
+  // The help passed the required flags, so it stays cached; the default effort needs no --effort.
+  s.handle({ ...START, id: 2 })
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-answer' && m.id === 2))
+  assert.deepEqual(s.calls[1], qc.chatArgv(FAKE, 'sonnet'))
+  s.tab.close()
+  await waitFor(() => s.children.every(exited))
+})
+
+test('a follow-up with another model or effort resumes the session in a new claude; the old one is killed', async () => {
+  const s = serve()
+  s.handle(START)
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-state' && m.state === 'ready'))
+  // The same pick: the same process.
+  s.handle({ t: 'chat-say', id: 1, question: 'again', model: 'sonnet', effort: 'default' })
+  await waitFor(() => s.tab.posted.filter((m) => m.t === 'chat-answer').length === 2)
+  assert.equal(s.tab.posted.filter((m) => m.t === 'chat-answer')[1].text, 'turn 2: ok')
+  assert.equal(s.calls.length, 2)
+
+  s.handle({ t: 'chat-say', id: 1, question: 'deeper', model: 'opus', effort: 'max' })
+  // A second question while it switches is ignored, not an ended chat.
+  s.handle({ t: 'chat-say', id: 1, question: 'twice' })
+  await waitFor(() => s.tab.posted.filter((m) => m.t === 'chat-answer').length === 3)
+  assert.deepEqual(s.calls[2], qc.chatArgv(FAKE, 'opus', 'max', UUID))
+  assert.equal(s.calls.length, 3, 'the help check was cached')
+  assert.equal(exited(s.children[1]), true, 'the old claude is gone before the new one runs')
+  // The new process answered (its own turn count), and its exit or the old one's ends nothing.
+  assert.equal(s.tab.posted.filter((m) => m.t === 'chat-answer')[2].text, 'turn 1: ok')
+  assert.deepEqual(s.tab.posted.filter((m) => m.t === 'chat-state').at(-1), { t: 'chat-state', id: 1, state: 'ready', model: 'opus', effort: 'max' })
+  assert.equal(s.tab.posted.some((m) => m.t === 'chat-end'), false)
+  assert.deepEqual(s.prompts().slice(-1), ["The person's question:\ndeeper"])
+
+  // Absent in a follow-up: the chat's own (opus, max), not the settings.
+  s.handle({ t: 'chat-say', id: 1, question: 'more' })
+  await waitFor(() => s.tab.posted.filter((m) => m.t === 'chat-answer').length === 4)
+  assert.equal(s.calls.length, 3)
+
+  // A bad pick: an error answer, nothing spawned, the chat goes on.
+  s.handle({ t: 'chat-say', id: 1, question: 'x', effort: '--dangerously-skip-permissions' })
+  await waitFor(() => s.tab.posted.filter((m) => m.t === 'chat-answer').length === 5)
+  assert.deepEqual(s.tab.posted.filter((m) => m.t === 'chat-answer')[4], { t: 'chat-answer', id: 1, text: 'Quick chat: the effort must be one of default, low, medium, high, xhigh, max', proposal: null, error: true })
+  assert.equal(s.calls.length, 3)
+
+  s.handle({ t: 'chat-close', id: 1 })
+  await waitFor(() => s.children.every(exited))
+  assert.equal(qc._pluginChats.running, 0)
+})
+
+test('a change within a chat is refused when claude has no --resume; the chat goes on as it was', async () => {
+  const s = serve({ env: { FAKE_CLAUDE_NO_RESUME: '1' } })
+  s.handle(START)
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-state' && m.state === 'ready'))
+  s.handle({ t: 'chat-say', id: 1, question: 'deeper', model: 'opus' })
+  await waitFor(() => s.tab.posted.filter((m) => m.t === 'chat-answer').length === 2)
+  const refused = s.tab.posted.filter((m) => m.t === 'chat-answer')[1]
+  assert.equal(refused.error, true)
+  assert.match(refused.text, /no --resume, so the model or effort cannot change within a chat/)
+  assert.equal(s.calls.length, 2)
+  assert.equal(exited(s.children[1]), false)
+  s.handle({ t: 'chat-say', id: 1, question: 'then sonnet', model: 'sonnet' })
+  await waitFor(() => s.tab.posted.filter((m) => m.t === 'chat-answer').length === 3)
+  assert.equal(s.tab.posted.filter((m) => m.t === 'chat-answer')[2].text, 'turn 2: ok')
+  s.tab.close()
+  await waitFor(() => s.children.every(exited))
 })
 
 test('a bad selection or a file outside the project is refused before anything runs', async () => {

@@ -5,9 +5,9 @@
 //
 //   claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob
 //          --permission-prompts none --input-format stream-json --output-format stream-json
-//          --verbose --include-partial-messages --model <setting>
+//          --verbose --include-partial-messages --model <model> [--effort <effort>] [--resume <session>]
 //
-// What each flag is for (checked against `claude --help` of 2.1.323):
+// What each flag is for (checked against `claude --help` of 2.1.323; --effort against 2.1.325):
 //  - `--restricted`: no built-in tool that runs commands or code, no WebFetch, the user, project and
 //    local settings files ignored (their hooks, permissions and env with them), the file tools kept
 //    inside the working directory, bypassPermissions refused.
@@ -21,11 +21,19 @@
 //  - stream-json both ways: follow-ups are more user lines on the same process (one session), and
 //    the answer streams. `--verbose` is required by `-p` with stream-json output (the CLI refuses
 //    without it); `--include-partial-messages` gives the text as it is written, not per message.
-//  - `--model`: the app setting `quickChatModel`, one of a closed list (an alias, never a string that
-//    could start with `-`).
-// The host refuses to start when the installed `claude --help` lacks any of these flags (an older
-// Claude Code would fail on an unknown flag anyway; this says what to do). Nothing here comes from
-// the page: no flag, no binary, no folder. `claude` is looked up on the login-shell PATH (the plugin
+//  - `--model`: the chat's pick, default the app setting `quickChatModel`, one of a closed list (an
+//    alias, never a string that could start with `-`).
+//  - `--effort`: the chat's pick, default the app setting `quickChatEffort`; `default` passes no flag
+//    (Claude Code decides). Not in REQUIRED_FLAGS: only a chat that picks an effort needs it, and one
+//    whose `claude --help` lacks it is refused with that said.
+//  - `--resume <session>`: only when the person changes the model or effort within a chat. The
+//    process's model is fixed at spawn, so the next question goes to a new claude resuming the same
+//    session (the id from the stream's init line, used only when it is a UUID) once the old one is
+//    gone; the answer running when the pick changed keeps its own. Also checked only when used.
+// The host refuses to start when the installed `claude --help` lacks any of the required flags (an
+// older Claude Code would fail on an unknown flag anyway; this says what to do). The page names only
+// the model and effort, each checked here against the host's own lists (anything else refuses the
+// question, nothing spawned); no flag, no binary, no folder comes from it. `claude` is looked up on the login-shell PATH (the plugin
 // host's env), absolute entries only: a relative entry would let a project ship its own `claude`.
 //
 // The page's text (the selection, about 30 lines around it, the question) goes on stdin as a user
@@ -40,10 +48,14 @@
 // count in Usage (the README says so).
 //
 // Protocol (page <-> host, beside lib/files.js's):
-//   page -> host  { t: 'chat-start', id, question, sel: { startLine, endLine, text }, before, after }
-//   page -> host  { t: 'chat-say', id, question, sel? }     a follow-up; sel when the selected text changed since
+//   page -> host  { t: 'chat-start', id, question, sel: { startLine, endLine, text }, before, after, model?, effort? }
+//   page -> host  { t: 'chat-say', id, question, sel?, model?, effort? }
+//                                                           a follow-up; sel when the selected text changed since;
+//                                                           model and effort absent: the chat's (start: the settings')
 //   page -> host  { t: 'chat-close', id }                   the chat closed: the process is killed
-//   host -> page  { t: 'chat-state', id, state: 'starting' | 'thinking' | 'ready', model }
+//   host -> page  { t: 'chat-defaults', model, effort, models, efforts }   the settings' picks and the offered lists
+//                                                           (host.js sends it on open and on a settings change)
+//   host -> page  { t: 'chat-state', id, state: 'starting' | 'thinking' | 'ready', model, effort }
 //   host -> page  { t: 'chat-delta', id, text }             answer text as it is written (appended)
 //   host -> page  { t: 'chat-tool', id, name, detail }      Claude reads or searches
 //   host -> page  { t: 'chat-answer', id, text, proposal, error? }   the turn ended (proposal: string or null)
@@ -60,6 +72,14 @@ const { leavesBase, redactPaths } = require('./files.js')
 /** The models the setting offers: the same closed list core uses for ctx.sessions.open (src/shared/session-options.ts). */
 const CHAT_MODELS = ['haiku', 'sonnet', 'opus', 'fable']
 const DEFAULT_MODEL = 'sonnet'
+/**
+ * The efforts the setting and the picker offer: a copy of SESSION_EFFORTS in
+ * src/shared/session-options.ts (a plugin cannot import core's code; test/quick-chat.test.js compares
+ * the two). DEFAULT_EFFORT passes no `--effort`: Claude Code decides.
+ */
+const CHAT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const DEFAULT_EFFORT = 'default'
+const EFFORT_CHOICES = [DEFAULT_EFFORT, ...CHAT_EFFORTS]
 
 /** The flags the argv uses; `claude --help` must list every one. */
 const REQUIRED_FLAGS = [
@@ -75,6 +95,15 @@ const REQUIRED_FLAGS = [
   '--include-partial-messages',
   '--model',
 ]
+
+/** The installed claude without `--effort`: a chat that picks an effort is refused with this. */
+const NO_EFFORT =
+  'the installed Claude Code has no --effort; pick the default effort or update it (`claude update`)'
+/** The installed claude without `--resume`: the model or effort cannot change within a chat. */
+const NO_RESUME =
+  'the installed Claude Code has no --resume, so the model or effort cannot change within a chat; keep them, or start a new chat (Ctrl+K)'
+/** A model or effort change waits this long for the old claude to go before the new one resumes the session. */
+const SWITCH_WAIT_MS = 5000
 
 /** At most this many chats of this plugin at once, every tab together (they share ctx.processes' cap of 16). */
 const MAX_CHATS = 3
@@ -109,9 +138,55 @@ function modelOf(app) {
   return typeof m === 'string' && CHAT_MODELS.includes(m) ? m : DEFAULT_MODEL
 }
 
-/** The fixed argv. `model` must be on CHAT_MODELS (checked again here: it becomes an argument). */
-function chatArgv(bin, model) {
+/** The setting's effort, or DEFAULT_EFFORT (no `--effort`) for anything not on the list. */
+function effortOf(app) {
+  const e = app && app.quickChatEffort
+  return typeof e === 'string' && EFFORT_CHOICES.includes(e) ? e : DEFAULT_EFFORT
+}
+
+/** A new chat's model and effort: the app settings. */
+function defaultsOf(app) {
+  return { model: modelOf(app), effort: effortOf(app) }
+}
+
+/** What the page needs to draw the pickers: the settings' picks and the lists the host accepts. */
+function defaultsMessage(app) {
+  return { t: 'chat-defaults', ...defaultsOf(app), models: [...CHAT_MODELS], efforts: [...EFFORT_CHOICES] }
+}
+
+/**
+ * The page's model and effort for a question, checked against the host's own lists (the page is not
+ * trusted: each becomes an argument). Absent (undefined) takes `fallback`'s: the settings for a new
+ * chat, the chat's own for a follow-up. Anything else throws, and the question is refused.
+ */
+function checkPick(m, fallback) {
+  const model = m.model === undefined ? fallback.model : m.model
+  const effort = m.effort === undefined ? fallback.effort : m.effort
+  if (typeof model !== 'string' || !CHAT_MODELS.includes(model)) throw new Error(`the model must be one of ${CHAT_MODELS.join(', ')}`)
+  if (typeof effort !== 'string' || !EFFORT_CHOICES.includes(effort)) throw new Error(`the effort must be one of ${EFFORT_CHOICES.join(', ')}`)
+  return { model, effort }
+}
+
+/** Whether `id` is a session id `--resume` may take: a UUID (it becomes an argument, so never a `-` first). */
+function isSessionId(id) {
+  if (typeof id !== 'string' || id.length !== 36) return false
+  for (let i = 0; i < 36; i++) {
+    const ch = id[i]
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      if (ch !== '-') return false
+    } else if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) return false
+  }
+  return true
+}
+
+/**
+ * The fixed argv. `model` must be on CHAT_MODELS and `effort` on EFFORT_CHOICES (checked again here:
+ * each becomes an argument); `resume`, a session id, only for a chat whose model or effort changed.
+ */
+function chatArgv(bin, model, effort = DEFAULT_EFFORT, resume) {
   if (!CHAT_MODELS.includes(model)) throw new Error(`quick chat model must be one of ${CHAT_MODELS.join(', ')}`)
+  if (!EFFORT_CHOICES.includes(effort)) throw new Error(`quick chat effort must be one of ${EFFORT_CHOICES.join(', ')}`)
+  if (resume !== undefined && !isSessionId(resume)) throw new Error('quick chat can resume only a session id')
   return [
     bin,
     '-p',
@@ -130,6 +205,8 @@ function chatArgv(bin, model) {
     '--include-partial-messages',
     '--model',
     model,
+    ...(effort !== DEFAULT_EFFORT ? ['--effort', effort] : []),
+    ...(resume !== undefined ? ['--resume', resume] : []),
   ]
 }
 
@@ -150,10 +227,16 @@ function hasFlag(help, flag) {
   return false
 }
 
-/** The REQUIRED_FLAGS that `help` (the output of `claude --help`) does not list. */
-function missingFlags(help) {
+/** The `flags` (REQUIRED_FLAGS by default) that `help` (the output of `claude --help`) does not list. */
+function missingFlags(help, flags = REQUIRED_FLAGS) {
   const text = typeof help === 'string' ? help : ''
-  return REQUIRED_FLAGS.filter((f) => !hasFlag(text, f))
+  return flags.filter((f) => !hasFlag(text, f))
+}
+
+/** Throws, saying what to do, when `help` lacks a flag this pick needs beyond the required ones. */
+function checkOptionalFlags(help, { effort, resume }) {
+  if (effort !== DEFAULT_EFFORT && missingFlags(help, ['--effort']).length) throw new Error(NO_EFFORT)
+  if (resume && missingFlags(help, ['--resume']).length) throw new Error(NO_RESUME)
 }
 
 /**
@@ -217,7 +300,10 @@ function capture(spawn, argv, cwd, { timeoutMs = HELP_TIMEOUT_MS, maxBytes = MAX
 /** bin -> Promise of the help check, kept only when it passed (an update of Claude Code is then seen at the next chat). */
 const helpChecks = new Map()
 
-/** Resolves when `bin --help` lists every flag the argv uses; rejects with what is missing and what to do. */
+/**
+ * Resolves with the help text when `bin --help` lists every required flag; rejects with what is
+ * missing and what to do. The optional flags are checked on that text by checkOptionalFlags.
+ */
 function checkClaude(spawn, bin, cwd, opts) {
   let p = helpChecks.get(bin)
   if (!p) {
@@ -227,6 +313,7 @@ function checkClaude(spawn, bin, cwd, opts) {
       if (missing.length) {
         throw new Error(`the installed Claude Code lacks ${missing.join(', ')}, which quick chat needs to run read-only; update it (\`claude update\`)`)
       }
+      return help
     })
     helpChecks.set(bin, p)
     p.catch(() => {
@@ -409,13 +496,15 @@ function endAll() {
 
 /**
  * Serves quick chat for one tab instance. `rel` is the tab's own project path (undefined for a file
- * outside the project: no chat), `model()` the setting now. `bin` (tests) skips the PATH lookup.
- * Returns `handle(m)`: true when it took the message.
+ * outside the project: no chat), `defaults()` the settings now (`{ model, effort }`, defaultsOf).
+ * `bin` (tests) skips the PATH lookup. Returns `handle(m)`: true when it took the message.
  */
-function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} }) {
+function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {} }) {
   const max = limits.maxChats ?? MAX_CHATS
   const turnMs = limits.turnMs ?? TURN_TIMEOUT_MS
   const idleMs = limits.idleMs ?? IDLE_MS
+  const switchMs = limits.switchMs ?? SWITCH_WAIT_MS
+  const settings = () => (typeof defaults === 'function' ? defaults() : { model: DEFAULT_MODEL, effort: DEFAULT_EFFORT })
   const helpOpts = limits.help
   let chat = null
   let closed = false
@@ -484,7 +573,7 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
     clearTimeout(c.idleTimer)
     c.turnTimer = setTimeout(() => end(c, `Claude did not finish within ${Math.round(turnMs / 60000)} minutes; the chat ended.`), turnMs)
     if (typeof c.turnTimer.unref === 'function') c.turnTimer.unref()
-    post({ t: 'chat-state', id: c.id, state: 'thinking', model: c.model })
+    post({ t: 'chat-state', id: c.id, state: 'thinking', model: c.model, effort: c.effort })
     c.proc.write(Buffer.from(userLine(text), 'utf8'))
   }
 
@@ -502,7 +591,7 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
       text = cut(ev.result, MAX_ANSWER_CHARS)
     }
     post({ t: 'chat-answer', id: c.id, text, proposal: failed ? null : extractProposal(text), ...(failed ? { error: true } : {}) })
-    post({ t: 'chat-state', id: c.id, state: 'ready', model: c.model })
+    post({ t: 'chat-state', id: c.id, state: 'ready', model: c.model, effort: c.effort })
     c.idleTimer = setTimeout(() => end(c, `The chat ended after ${Math.round(idleMs / 60000)} idle minutes.`, false), idleMs)
     if (typeof c.idleTimer.unref === 'function') c.idleTimer.unref()
   }
@@ -522,6 +611,8 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
     // Defence in depth for the read-only guarantee: the init line lists what this Claude can use. A
     // CLI whose flags drifted, or managed settings adding tools or MCP servers, ends the chat.
     if (ev.type === 'system' && ev.subtype === 'init') {
+      // The session a model or effort change resumes; only ever an argument after `--resume`, so a UUID or nothing.
+      if (isSessionId(ev.session_id)) c.sessionId = ev.session_id
       const tools = Array.isArray(ev.tools) ? ev.tools.map((t) => (typeof t === 'string' ? t : t && t.name)) : []
       const extra = tools.filter((t) => !READ_ONLY_TOOLS.includes(t))
       const servers = Array.isArray(ev.mcp_servers) ? ev.mcp_servers.length : 0
@@ -553,44 +644,125 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
     }
   }
 
+  /**
+   * Makes `proc` the chat's claude. Its output and exit count only while it is the chat's: the one a
+   * model or effort change replaced is killed, and its last lines and its exit are ignored.
+   */
+  function attach(c, proc) {
+    c.proc = proc
+    c.stderr = ''
+    const push = lineSplitter((line) => {
+      if (c.proc === proc) onEvent(c, line)
+    })
+    proc.onData((b) => push(b))
+    if (typeof proc.onStderr === 'function') {
+      proc.onStderr((b) => {
+        if (c.proc !== proc) return
+        c.stderr = cut(c.stderr + Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString('utf8'), MAX_STDERR_CHARS, 'tail')
+      })
+    }
+    c.exited = new Promise((resolve) => {
+      proc.onExit(({ code, signal }) => {
+        resolve()
+        if (c.ended || c.proc !== proc) return
+        const why = redactPaths(oneLine(c.stderr).slice(-500), root)
+        if (log) log.warn(`quick chat: claude exited (${signal || code})${why ? `: ${why}` : ''}`)
+        end(c, `Claude exited${code !== null && code !== undefined ? ` with code ${code}` : ''}${why ? `: ${why}` : ''}`)
+      })
+    })
+  }
+
   async function start(m) {
     const id = m.id
     if (chat) end(chat)
-    const c = { id, ended: false, busy: false, answer: '', pending: '', proc: null, model: model(), slot: null, stderr: '' }
+    const c = { id, ended: false, busy: false, answer: '', pending: '', proc: null, exited: null, exe: null, model: null, effort: null, sessionId: null, slot: null, stderr: '' }
     chat = c
     let prompt
     try {
       if (typeof spawn !== 'function') throw new Error('quick chat needs a newer cockpit (ctx.processes)')
       if (typeof rel !== 'string') throw new Error('quick chat works on files of the project')
       prompt = firstPrompt({ file: rel, sel: m.sel, before: m.before, after: m.after, question: m.question })
+      const pick = checkPick(m, settings())
+      c.model = pick.model
+      c.effort = pick.effort
       if (pluginChats.running >= max) throw new Error(`${max} quick chats already run in this window; close one first`)
       c.slot = () => end(c)
       pluginChats.live.add(c.slot)
-      post({ t: 'chat-state', id, state: 'starting', model: c.model })
-      const exe = bin || findClaude(env)
-      if (!exe) throw new Error(CLAUDE_HINT)
-      await checkClaude(spawn, exe, root, helpOpts)
+      post({ t: 'chat-state', id, state: 'starting', model: c.model, effort: c.effort })
+      c.exe = bin || findClaude(env)
+      if (!c.exe) throw new Error(CLAUDE_HINT)
+      const help = await checkClaude(spawn, c.exe, root, helpOpts)
       if (c.ended) return
-      c.proc = spawn(chatArgv(exe, c.model), { cwd: root })
+      checkOptionalFlags(help, { effort: c.effort })
+      attach(c, spawn(chatArgv(c.exe, c.model, c.effort), { cwd: root }))
     } catch (e) {
       end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
       return
     }
-    const push = lineSplitter((line) => onEvent(c, line))
-    c.proc.onData((b) => push(b))
-    if (typeof c.proc.onStderr === 'function') {
-      c.proc.onStderr((b) => {
-        c.stderr = cut(c.stderr + Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString('utf8'), MAX_STDERR_CHARS, 'tail')
-      })
-    }
-    c.proc.onExit(({ code, signal }) => {
-      if (c.ended) return
-      const why = redactPaths(oneLine(c.stderr).slice(-500), root)
-      if (log) log.warn(`quick chat: claude exited (${signal || code})${why ? `: ${why}` : ''}`)
-      end(c, `Claude exited${code !== null && code !== undefined ? ` with code ${code}` : ''}${why ? `: ${why}` : ''}`)
-    })
     try {
       startTurn(c, prompt)
+    } catch (e) {
+      end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
+    }
+  }
+
+  /**
+   * A follow-up with a model or effort other than the chat's: a new claude resuming the same session
+   * with them, once the old one is gone (one writer per transcript). Throws before anything is killed
+   * when it cannot be done (no session id yet, a flag the installed claude lacks): the chat then goes
+   * on as it was. Resolves false when the chat ended meanwhile.
+   */
+  async function switchTo(c, pick) {
+    if (!c.sessionId) throw new Error('this chat cannot change its model or effort (no session to resume); start a new chat (Ctrl+K)')
+    const help = await checkClaude(spawn, c.exe, root, helpOpts)
+    checkOptionalFlags(help, { effort: pick.effort, resume: true })
+    if (c.ended) return false
+    const old = c.proc
+    const gone = c.exited
+    c.proc = null
+    try {
+      old.kill()
+    } catch {
+      // Already gone.
+    }
+    let timer
+    await Promise.race([gone, new Promise((r) => (timer = setTimeout(r, switchMs)))])
+    clearTimeout(timer)
+    if (c.ended) return false
+    c.model = pick.model
+    c.effort = pick.effort
+    attach(c, spawn(chatArgv(c.exe, c.model, c.effort, c.sessionId), { cwd: root }))
+    return true
+  }
+
+  async function say(c, m) {
+    let text
+    let pick
+    try {
+      pick = checkPick(m, { model: c.model, effort: c.effort })
+      text = followUpPrompt({ sel: m.sel, question: m.question })
+    } catch (e) {
+      post({ t: 'chat-answer', id: c.id, text: `Quick chat: ${e.message}`, proposal: null, error: true })
+      return
+    }
+    if (pick.model !== c.model || pick.effort !== c.effort) {
+      // Busy while it switches, so a second question cannot slip in while no claude is attached.
+      c.busy = true
+      try {
+        if (!(await switchTo(c, pick))) return
+      } catch (e) {
+        c.busy = false
+        if (c.ended) return
+        const message = `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`
+        // Refused before the switch: the chat goes on with its claude. Refused after the old one was
+        // killed (the spawn failed): the chat is over.
+        if (c.proc) post({ t: 'chat-answer', id: c.id, text: message, proposal: null, error: true })
+        else end(c, message)
+        return
+      }
+    }
+    try {
+      startTurn(c, text)
     } catch (e) {
       end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
     }
@@ -604,23 +776,16 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
       })
     } else if (m.t === 'chat-say') {
       const c = chat
+      // The page sends only when ready; a second question would interleave the answers. Checked before
+      // the process: a model or effort switch holds none for a moment and is no ended chat.
+      if (c && c.id === m.id && !c.ended && c.busy) return true
       if (!c || c.id !== m.id || c.ended || !c.proc) {
         post({ t: 'chat-end', id: m.id, message: 'This chat has ended; press Ctrl+K for a new one.', error: true })
         return true
       }
-      if (c.busy) return true // The page sends only when ready; a second question would interleave the answers.
-      let text
-      try {
-        text = followUpPrompt({ sel: m.sel, question: m.question })
-      } catch (e) {
-        post({ t: 'chat-answer', id: c.id, text: `Quick chat: ${e.message}`, proposal: null, error: true })
-        return true
-      }
-      try {
-        startTurn(c, text)
-      } catch (e) {
-        end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
-      }
+      say(c, m).catch((e) => {
+        if (log) log.warn(`quick chat: ${e && e.message ? e.message : e}`)
+      })
     } else if (m.t === 'chat-close') {
       if (chat && chat.id === m.id) end(chat)
     }
@@ -631,12 +796,21 @@ function serveChat(tab, { spawn, root, rel, model, log, bin, env, limits = {} })
 module.exports = {
   CHAT_MODELS,
   DEFAULT_MODEL,
+  CHAT_EFFORTS,
+  DEFAULT_EFFORT,
+  EFFORT_CHOICES,
   REQUIRED_FLAGS,
   MAX_CHATS,
   MAX_TARGET_CHARS,
   modelOf,
+  effortOf,
+  defaultsOf,
+  defaultsMessage,
+  checkPick,
+  isSessionId,
   chatArgv,
   missingFlags,
+  checkOptionalFlags,
   findClaude,
   checkClaude,
   firstPrompt,

@@ -1205,7 +1205,7 @@ request and console line of the app.
 The editor
 (`cockpit.editor`, design in `docs/design-editor.md`) provides `editor` v1: files as page tabs edited with CodeMirror 6,
 language servers, merge with Claude's writes, Ask Claude, quick chat and `ccc edit`, with app settings
-`autosaveIdleSeconds`, `autosaveOnBlur`, `servers`, `quickChatModel`, `microPath` and `colorscheme`; micro is needed only
+`autosaveIdleSeconds`, `autosaveOnBlur`, `servers`, `quickChatModel`, `quickChatEffort`, `microPath` and `colorscheme`; micro is needed only
 for "Open in micro" and ripgrep for quick open and find in files (each missing tool is named with its install command). Files a session
 edits outside its project stay in the built-in viewer: plugins only receive project-relative paths. The sessions plugin
 (`cockpit.sessions`, §3 "Claude status UI") is the Claude status view that left the renderer in 0.10: the Sessions panel and the

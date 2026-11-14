@@ -233,7 +233,8 @@ keeps them.
 
 **Quick chat** (Ctrl+K on a selection, or the context menu): a short-lived headless Claude through `ctx.processes` in the project folder,
 with a fixed argv: `claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts
-none --input-format stream-json --output-format stream-json --verbose --include-partial-messages --model <setting>`.
+none --input-format stream-json --output-format stream-json --verbose --include-partial-messages --model <model>
+[--effort <effort>] [--resume <session>]`.
 `--restricted` ignores the user, project and local settings files (their hooks and permissions with them) and removes
 the tools that run commands; `--safe-mode` turns off installed plugins (and their hooks), skills, CLAUDE.md, custom
 agents and commands, which `--restricted` alone still loaded; `--strict-mcp-config` with no config means no MCP server;
@@ -246,8 +247,16 @@ worst is a wrong proposal). Answers stream as Markdown; follow-ups continue the 
 popup ends it. A proposed change is a replacement for the selection, shown as an inline diff; the range is mapped
 through later edits, and a proposal whose original text no longer matches, or whose target was edited since the
 question was sent (an empty target typed into included), is dropped. Accept puts it in the buffer;
-Claude never writes. Model: app setting, default `sonnet`. These runs leave transcripts in `~/.claude` and count in
-Usage (documented).
+Claude never writes. Model and effort: two pickers in the chat's header, preselected from the app settings
+`quickChatModel` (default `sonnet`) and `quickChatEffort` (default `default`, which passes no `--effort` and lets Claude
+Code decide; else `low`, `medium`, `high`, `xhigh`, `max`, the list of `src/shared/session-options.ts`, copied into
+the plugin with a test comparing them). The page only sends the picked values with each question; the host checks
+them against its own lists (anything else refuses the question, nothing spawned) and puts each as its own argv
+element. A process's model is fixed at spawn, so a follow-up with another pick ends the chat's Claude and starts one
+with the new flags and `--resume <session>` (the id from the stream's init line, used only when it is a UUID), after
+the old one exited; the answer running when the pick changed keeps its own. `--effort` and `--resume` are not
+required flags: only a pick that needs one checks the help for it and is refused, with what to do, when it is missing.
+These runs leave transcripts in `~/.claude` and count in Usage (documented).
 
 **Claude's changes in the gutter.** Lines changed against git `HEAD` get a bar (host: `git cat-file blob HEAD:<path>`);
 hover shows the old lines; click opens the Reviewer's diff. Not a repo or untracked: no marks.

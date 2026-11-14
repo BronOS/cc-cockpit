@@ -57,9 +57,14 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
 - Quick chat (Ctrl+K, Cmd+K on macOS, or the right-click menu): a chat docked under the editor about the selection (the cursor's line with none,
   at most 20,000 characters). The host runs Claude Code headless and read-only in the project folder, with a fixed argv
   (`claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts none` plus
-  stream-json in and out and the model of the setting `quickChatModel`, default `sonnet`): no Bash, no edits, no MCP
+  stream-json in and out, `--model` and, when one is picked, `--effort`): no Bash, no edits, no MCP
   server, no settings files, plugins, hooks or CLAUDE.md; the chat is refused when the installed `claude --help` lacks
-  any of these flags (update Claude Code). The prompt carries the file's path, the selection and about 15 lines on each
+  any of these flags (update Claude Code). The chat's header picks the model and the effort, preselected from the app
+  settings `quickChatModel` (default `sonnet`) and `quickChatEffort` (default `default`: no `--effort`, Claude Code
+  decides; or low, medium, high, xhigh, max); the host accepts only those lists and refuses anything else. A change
+  applies to the chat's next question (the answer running keeps its own): the host ends that chat's Claude and starts
+  one with the new pick and `--resume` of the same session. An effort needs a Claude Code with `--effort`, a change
+  within a chat one with `--resume`; without them that pick is refused with a message. The prompt carries the file's path, the selection and about 15 lines on each
   side as data; answers stream as Markdown (shown as text, links not followed); follow-ups go to the same Claude, and
   closing the chat (×, Esc) ends it (so do 15 idle minutes, a turn over 5 minutes, and a reconnect of the tab's page).
   A proposed change is a replacement for the selection, shown as an inline diff (the lines it removes tinted, its text

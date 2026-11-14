@@ -287,7 +287,7 @@ test('file tabs: deactivate closes the watch of an open file tab (no disk event 
   const listeners = []
   opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {} })
   for (const l of listeners) l({ t: 'open', req: 1 })
-  assert.deepEqual(posted.map((m) => m.t), ['settings', 'file'])
+  assert.deepEqual(posted.map((m) => m.t), ['settings', 'chat-defaults', 'file'])
   // The open tab's folder is watched...
   assert.deepEqual(watches.map((w) => [w.dir, w.closed]), [[f.ctx.projectDir, false]])
   host.deactivate()
@@ -295,7 +295,7 @@ test('file tabs: deactivate closes the watch of an open file tab (no disk event 
   assert.deepEqual(watches.map((w) => [w.dir, w.closed]), [[f.ctx.projectDir, true]])
   fs.writeFileSync(path.join(f.ctx.projectDir, 'a.txt'), 'two\n')
   await drained()
-  assert.equal(posted.length, 2)
+  assert.equal(posted.length, 3)
 })
 
 // A fake ctx.tabs over a list of open tabs, recording what the host asks.
@@ -411,22 +411,26 @@ test('a file tab instance: settings at connect and on change, the line on the fi
   f.ctx.projectDir = project()
   let settingsListener
   f.ctx.onSettingsChange = (fn) => ((settingsListener = fn), () => {})
-  f.ctx.settings = { app: { autosaveSeconds: 8, autosaveOnBlur: false } }
+  f.ctx.settings = { app: { autosaveSeconds: 8, autosaveOnBlur: false, quickChatModel: 'opus', quickChatEffort: 'high' } }
   const t = fakeTabs(f)
   host.activate(f.ctx)
   await f.provided.editor.open('src/a.ts', { line: 1 })
   const view = t.connect(t.open[0].id)
   assert.deepEqual(view.posted[0], { t: 'settings', idleSeconds: 8, onBlur: false })
+  // Quick chat's pickers: the settings preselected, the lists the host accepts.
+  const efforts = ['default', 'low', 'medium', 'high', 'xhigh', 'max']
+  assert.deepEqual(view.posted[1], { t: 'chat-defaults', model: 'opus', effort: 'high', models: ['haiku', 'sonnet', 'opus', 'fable'], efforts })
   view.send({ t: 'open', req: 1, first: true })
-  assert.deepEqual(view.posted.map((m) => m.t), ['settings', 'file', 'goto'])
+  assert.deepEqual(view.posted.map((m) => m.t), ['settings', 'chat-defaults', 'file', 'goto'])
   assert.deepEqual(view.posted.at(-1), { t: 'goto', line: 1 })
   // A reconnect's open keeps the person's cursor: no goto.
   view.send({ t: 'open', req: 2 })
-  assert.deepEqual(view.posted.map((m) => m.t), ['settings', 'file', 'goto', 'file'])
-  // Settings saved: every connected instance hears the new autosave.
+  assert.deepEqual(view.posted.map((m) => m.t), ['settings', 'chat-defaults', 'file', 'goto', 'file'])
+  // Settings saved: every connected instance hears the new autosave and quick chat defaults.
   f.ctx.settings = { app: { autosaveIdleSeconds: 1 } }
   settingsListener(f.ctx.settings)
-  assert.deepEqual(view.posted.at(-1), { t: 'settings', idleSeconds: 1, onBlur: true })
+  assert.deepEqual(view.posted.at(-2), { t: 'settings', idleSeconds: 1, onBlur: true })
+  assert.deepEqual(view.posted.at(-1), { t: 'chat-defaults', model: 'sonnet', effort: 'default', models: ['haiku', 'sonnet', 'opus', 'fable'], efforts })
   // Open in micro: the tab's own file, whatever path the page sends.
   view.send({ t: 'micro', path: 'img.png' })
   // The overlay starts once micro is found (ctx.exec); the OPEN_SETTLE_MS race after it decides nothing here.

@@ -75,6 +75,73 @@ export function proposalFits(doc, target, forText) {
   return !!target && target.to <= doc.length && doc.sliceString(target.from, target.to) === forText
 }
 
+// ---- the model and effort pickers ----
+// The host sends the settings' picks and the lists it accepts (`chat-defaults`); a chat starts from
+// those and the person may change either in its header for the next question. The page only sends
+// what is picked: the host checks both against its own lists (dist/lib/quick-chat.js checkPick).
+
+/** The effort that passes no `--effort` (Claude Code decides); the host's DEFAULT_EFFORT. */
+export const DEFAULT_EFFORT = 'default'
+
+/** The host's `chat-defaults` as the pickers use it: `{ model, effort, models, efforts }`, or null when unusable. */
+export function readDefaults(m) {
+  if (!m || typeof m !== 'object') return null
+  const list = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string' && x !== '' && x.length <= 40) : [])
+  const models = list(m.models)
+  const efforts = list(m.efforts)
+  if (!models.length || !efforts.length) return null
+  const model = models.includes(m.model) ? m.model : models[0]
+  const effort = efforts.includes(m.effort) ? m.effort : efforts.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : efforts[0]
+  return { model, effort, models, efforts }
+}
+
+/** A new chat's pick: the defaults (none yet: nothing picked, the host takes its settings), none of it chosen by the person. */
+export function newPick(defaults) {
+  return { model: defaults ? defaults.model : undefined, effort: defaults ? defaults.effort : undefined, chosen: { model: false, effort: false } }
+}
+
+/** The person picked `value` for `field` ('model' or 'effort') in this chat: kept when it is on the offered list. */
+export function choosePick(pick, defaults, field, value) {
+  const list = defaults ? (field === 'model' ? defaults.models : field === 'effort' ? defaults.efforts : null) : null
+  if (!list || !list.includes(value)) return pick
+  return { ...pick, [field]: value, chosen: { ...pick.chosen, [field]: true } }
+}
+
+/** New defaults (the settings changed): what the person did not choose in this chat follows them; a choice no longer offered goes back to them. */
+export function followDefaults(pick, defaults) {
+  if (!defaults) return pick
+  const next = { ...pick, chosen: { ...pick.chosen } }
+  for (const [field, list] of [
+    ['model', defaults.models],
+    ['effort', defaults.efforts],
+  ]) {
+    if (!next.chosen[field] || !list.includes(next[field])) {
+      next[field] = defaults[field]
+      next.chosen[field] = false
+    }
+  }
+  return next
+}
+
+/** The fields a `chat-start` or `chat-say` carries: the picked model and effort (absent before any defaults came). */
+export function pickFields(pick) {
+  const out = {}
+  if (pick && typeof pick.model === 'string') out.model = pick.model
+  if (pick && typeof pick.effort === 'string') out.effort = pick.effort
+  return out
+}
+
+/** What a run uses, for the status line: `sonnet`, or `sonnet, high effort`. */
+export function runLabel(model, effort) {
+  if (typeof model !== 'string' || model === '') return ''
+  return typeof effort === 'string' && effort !== '' && effort !== DEFAULT_EFFORT ? `${model}, ${effort} effort` : model
+}
+
+/** An effort's label in the picker. */
+export function effortLabel(effort) {
+  return effort === DEFAULT_EFFORT ? 'default effort' : `${effort} effort`
+}
+
 /**
  * The proposal as it goes into the buffer: a fence body has no final newline, so when the text it
  * replaces ended with one, so does the replacement (else Accept would join two lines).

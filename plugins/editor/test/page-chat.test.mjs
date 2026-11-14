@@ -4,7 +4,23 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EditorState, Text } from '@codemirror/state'
-import { chatTarget, contextAround, fitNewline, mapTarget, proposalFits, proposalLines, MAX_TARGET_CHARS } from '../src/page/chat.mjs'
+import {
+  chatTarget,
+  choosePick,
+  contextAround,
+  DEFAULT_EFFORT,
+  effortLabel,
+  fitNewline,
+  followDefaults,
+  mapTarget,
+  newPick,
+  pickFields,
+  proposalFits,
+  proposalLines,
+  readDefaults,
+  runLabel,
+  MAX_TARGET_CHARS,
+} from '../src/page/chat.mjs'
 import { createChatField, setTarget, setProposal, accepted, asked, touchesTarget } from '../src/page/chat-editor.js'
 import { markdownTree } from '../src/page/chat-markdown.mjs'
 
@@ -203,4 +219,57 @@ test('markdownTree: blocks and inline marks as a tree, raw HTML as text, links n
   assert.deepEqual(pre, { tag: 'pre', text: 'new', info: 'replacement' })
   // Strikethrough is an allowed tag.
   assert.deepEqual(markdownTree('a~~b~~').children[0].children[1], { tag: 's', children: ['b'] })
+})
+
+// ---- the model and effort pickers (chat.mjs) ----
+
+const HOST_DEFAULTS = { t: 'chat-defaults', model: 'sonnet', effort: 'default', models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['default', 'low', 'medium', 'high', 'xhigh', 'max'] }
+
+test('readDefaults: the host lists and picks; a pick off its list falls back, an unusable message is null', () => {
+  assert.deepEqual(readDefaults(HOST_DEFAULTS), { model: 'sonnet', effort: 'default', models: HOST_DEFAULTS.models, efforts: HOST_DEFAULTS.efforts })
+  assert.deepEqual(readDefaults({ ...HOST_DEFAULTS, model: 'gpt', effort: 'turbo' }), { model: 'haiku', effort: DEFAULT_EFFORT, models: HOST_DEFAULTS.models, efforts: HOST_DEFAULTS.efforts })
+  assert.deepEqual(readDefaults({ ...HOST_DEFAULTS, models: ['opus', 7, ''], effort: 'low' }).models, ['opus'])
+  assert.equal(readDefaults({ ...HOST_DEFAULTS, models: [] }), null)
+  assert.equal(readDefaults({ t: 'chat-defaults' }), null)
+  assert.equal(readDefaults(null), null)
+})
+
+test('a chat starts from the defaults; the person picks for the next question; only listed values', () => {
+  const d = readDefaults({ ...HOST_DEFAULTS, model: 'opus', effort: 'high' })
+  let pick = newPick(d)
+  assert.deepEqual(pickFields(pick), { model: 'opus', effort: 'high' })
+  pick = choosePick(pick, d, 'model', 'haiku')
+  pick = choosePick(pick, d, 'effort', 'default')
+  assert.deepEqual(pickFields(pick), { model: 'haiku', effort: 'default' })
+  assert.deepEqual(pick.chosen, { model: true, effort: true })
+  // Off the list (a tampered option) or an unknown field: unchanged.
+  assert.equal(choosePick(pick, d, 'model', '--dangerously-skip-permissions'), pick)
+  assert.equal(choosePick(pick, d, 'effort', 'turbo'), pick)
+  assert.equal(choosePick(pick, d, 'bin', 'x'), pick)
+  // No defaults yet: nothing picked, nothing sent (the host takes its settings).
+  assert.deepEqual(pickFields(newPick(null)), {})
+  assert.equal(choosePick(newPick(null), null, 'model', 'opus').model, undefined)
+})
+
+test('followDefaults: a settings change moves what the person did not choose in the chat', () => {
+  const d1 = readDefaults(HOST_DEFAULTS)
+  const d2 = readDefaults({ ...HOST_DEFAULTS, model: 'opus', effort: 'max' })
+  assert.deepEqual(pickFields(followDefaults(newPick(d1), d2)), { model: 'opus', effort: 'max' })
+  const own = followDefaults(choosePick(newPick(d1), d1, 'model', 'haiku'), d2)
+  assert.deepEqual(pickFields(own), { model: 'haiku', effort: 'max' })
+  // A choice no longer offered goes back to the defaults.
+  const d3 = readDefaults({ ...HOST_DEFAULTS, models: ['sonnet', 'opus'], model: 'sonnet' })
+  const gone = followDefaults(own, d3)
+  assert.equal(gone.model, 'sonnet')
+  assert.equal(gone.chosen.model, false)
+  assert.equal(followDefaults(own, null), own)
+})
+
+test('runLabel and effortLabel: what the status and the picker say', () => {
+  assert.equal(runLabel('sonnet', 'default'), 'sonnet')
+  assert.equal(runLabel('opus', 'high'), 'opus, high effort')
+  assert.equal(runLabel('opus', ''), 'opus')
+  assert.equal(runLabel('', 'high'), '')
+  assert.equal(effortLabel('default'), 'default effort')
+  assert.equal(effortLabel('xhigh'), 'xhigh effort')
 })

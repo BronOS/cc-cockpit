@@ -64,9 +64,16 @@
           "quickChatModel": {
             "type": "string",
             "title": "Quick chat model",
-            "description": "The Claude model of quick chat (Ctrl+K in a file tab). Quick chat runs Claude Code headless and read-only in the project folder; each chat is a normal Claude Code session, so it leaves a transcript in ~/.claude and counts in Usage.",
+            "description": "The Claude model a new quick chat starts with (Ctrl+K in a file tab); the chat's header can change it for its next question. Quick chat runs Claude Code headless and read-only in the project folder; each chat is a normal Claude Code session, so it leaves a transcript in ~/.claude and counts in Usage.",
             "enum": ["haiku", "sonnet", "opus", "fable"],
             "default": "sonnet"
+          },
+          "quickChatEffort": {
+            "type": "string",
+            "title": "Quick chat effort",
+            "description": "The effort a new quick chat starts with (Claude Code's --effort); the chat's header can change it for its next question. default passes no --effort, so Claude Code decides.",
+            "enum": ["default", "low", "medium", "high", "xhigh", "max"],
+            "default": "default"
           },
           "microPath": {
             "type": "string",

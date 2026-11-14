@@ -1,7 +1,9 @@
 // Quick chat in the file tab (design-editor.md §4 "Quick chat"): Ctrl+K (Cmd+K on macOS) on a
 // selection opens a chat docked under the editor; the host runs a read-only headless Claude for it
 // (dist/lib/quick-chat.js) and streams the answer here, rendered as Markdown (chat-markdown.mjs).
-// Follow-ups go to the same Claude; closing the chat (×, Esc) ends it.
+// Follow-ups go to the same Claude; closing the chat (×, Esc) ends it. The header's two pickers
+// (model, effort) start from the app settings and apply to the chat's next question (chat.mjs
+// newPick, choosePick); the host checks what they send.
 //
 // The chat is about its target: the selection when it opened (the cursor's line with none), marked in
 // the editor and mapped through every later edit. A proposal (the answer's `replacement` block) is
@@ -13,7 +15,21 @@
 // a proposal for a chat that lost its target is dropped.
 import { StateEffect, StateField } from '@codemirror/state'
 import { Decoration, EditorView, WidgetType } from '@codemirror/view'
-import { chatTarget, contextAround, fitNewline, mapTarget, proposalFits, proposalLines } from './chat.mjs'
+import {
+  chatTarget,
+  choosePick,
+  contextAround,
+  effortLabel,
+  fitNewline,
+  followDefaults,
+  mapTarget,
+  newPick,
+  pickFields,
+  proposalFits,
+  proposalLines,
+  readDefaults,
+  runLabel,
+} from './chat.mjs'
 import { markdownTree } from './chat-markdown.mjs'
 
 /** The chat's target `{ from, to }` (or null: no chat); a new target drops any proposal. */
@@ -202,6 +218,8 @@ export function createQuickChat({ post, getView, message }) {
   let chat = null
   let nextId = 0
   let drawPending = false
+  /** The host's `chat-defaults` (chat.mjs readDefaults): the settings' picks and the offered lists; null until it comes. */
+  let defaults = null
 
   const fieldOf = (view) => (view ? view.state.field(field, false) : undefined)
   const liveEntry = () => (chat ? chat.entries.findLast((e) => e.who === 'claude' && e.live) : undefined)
@@ -243,7 +261,7 @@ export function createQuickChat({ post, getView, message }) {
       }
     }
     if (chat) end()
-    chat = { id: ++nextId, started: false, ended: false, busy: false, seen: t.text, askedFor: null, entries: [], state: '', model: '', tool: '' }
+    chat = { id: ++nextId, started: false, ended: false, busy: false, seen: t.text, askedFor: null, entries: [], state: '', model: '', effort: '', tool: '', pick: newPick(defaults) }
     view.dispatch({ effects: setTarget.of({ from: t.from, to: t.to }) })
     $('chat-input').value = ''
     show()
@@ -288,7 +306,7 @@ export function createQuickChat({ post, getView, message }) {
       }
       const sel = selOf()
       const { before, after } = contextAround(view.state.doc, target.from, target.to)
-      post({ t: 'chat-start', id: chat.id, question, sel, before, after })
+      post({ t: 'chat-start', id: chat.id, question, sel, before, after, ...pickFields(chat.pick) })
       chat.started = true
       chat.seen = sel.text
       chat.askedFor = sel.text
@@ -303,7 +321,7 @@ export function createQuickChat({ post, getView, message }) {
       } else {
         chat.askedFor = null
       }
-      post({ t: 'chat-say', id: chat.id, question, ...(sel ? { sel } : {}) })
+      post({ t: 'chat-say', id: chat.id, question, ...(sel ? { sel } : {}), ...pickFields(chat.pick) })
     }
     // From here an edit to the target makes this answer's proposal stale (the field's `touched`).
     if (view) view.dispatch({ effects: asked.of(null) })
@@ -372,10 +390,22 @@ export function createQuickChat({ post, getView, message }) {
 
   function receive(m) {
     if (!m || typeof m !== 'object' || typeof m.t !== 'string' || !m.t.startsWith('chat-')) return false
+    if (m.t === 'chat-defaults') {
+      const d = readDefaults(m)
+      if (!d) return true
+      defaults = d
+      // An open chat: what the person did not pick in it follows the new settings.
+      if (chat) {
+        chat.pick = followDefaults(chat.pick, defaults)
+        scheduleDraw()
+      }
+      return true
+    }
     if (!chat || m.id !== chat.id) return true
     if (m.t === 'chat-state') {
       chat.state = m.state
       if (typeof m.model === 'string') chat.model = m.model
+      if (typeof m.effort === 'string') chat.effort = m.effort
       if (m.state !== 'thinking') chat.tool = ''
     } else if (m.t === 'chat-delta') {
       const e = liveEntry()
@@ -519,8 +549,11 @@ export function createQuickChat({ post, getView, message }) {
     } else {
       about.textContent = chat.started ? '(the selection is gone)' : ''
     }
-    $('chat-model').textContent = chat.model
-    $('chat-status').textContent = chat.ended ? 'Ended' : chat.tool && chat.busy ? chat.tool : STATUS[chat.state] || ''
+    drawPickers()
+    // While an answer runs, the status names what it runs on: the pickers may already show the next question's.
+    const run = chat.busy ? runLabel(chat.model, chat.effort) : ''
+    const status = chat.ended ? 'Ended' : chat.tool && chat.busy ? chat.tool : STATUS[chat.state] || ''
+    $('chat-status').textContent = status && run && !chat.tool ? `${status} (${run})` : status
     const input = $('chat-input')
     input.disabled = chat.ended || chat.busy
     $('chat-send').disabled = chat.ended || chat.busy
@@ -547,7 +580,38 @@ export function createQuickChat({ post, getView, message }) {
     panel.dataset.state = chat.ended ? 'ended' : chat.busy ? 'busy' : 'ready'
   }
 
+  /** The model and effort pickers: the offered lists (rebuilt only when they change), the chat's pick selected. */
+  function drawPickers() {
+    const fill = (select, values, value, label) => {
+      const key = values.join('|')
+      if (select.dataset.options !== key) {
+        select.replaceChildren(
+          ...values.map((v) => {
+            const o = el('option', null, label(v))
+            o.value = v
+            return o
+          }),
+        )
+        select.dataset.options = key
+      }
+      select.hidden = values.length === 0
+      if (value !== undefined) select.value = value
+      select.disabled = !chat || chat.ended
+    }
+    fill($('chat-model'), defaults ? defaults.models : [], chat ? chat.pick.model : undefined, (v) => v)
+    fill($('chat-effort'), defaults ? defaults.efforts : [], chat ? chat.pick.effort : undefined, effortLabel)
+  }
+
+  function picked(field, value) {
+    if (!chat || chat.ended) return
+    chat.pick = choosePick(chat.pick, defaults, field, value)
+    draw()
+  }
+
   // ---- the panel's own keys and buttons ----
+
+  $('chat-model').addEventListener('change', (e) => picked('model', e.target.value))
+  $('chat-effort').addEventListener('change', (e) => picked('effort', e.target.value))
 
   $('chat-close').addEventListener('click', close)
   $('chat-send').addEventListener('click', send)

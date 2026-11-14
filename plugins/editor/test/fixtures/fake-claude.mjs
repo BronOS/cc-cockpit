@@ -2,8 +2,10 @@
 // A fake `claude` for quick chat's tests (test/quick-chat.test.js): no network, no ~/.claude.
 //
 //   fake-claude.mjs --help        prints a help text that lists quick chat's flags; with
-//                                 FAKE_CLAUDE_OLD=1 it lacks --restricted and --safe-mode
+//                                 FAKE_CLAUDE_OLD=1 it lacks --restricted and --safe-mode,
+//                                 with FAKE_CLAUDE_NO_EFFORT=1 --effort, with FAKE_CLAUDE_NO_RESUME=1 --resume
 //   fake-claude.mjs <quick chat's argv minus the program>
+//                                 (`--effort <e>` and `--resume <uuid>` optional after the model)
 //                                 refuses (exit 2) any other argv; then speaks stream-json on
 //                                 stdin/stdout the way `claude -p` 2.1.323 does: an init line, and
 //                                 per user line stream events, assistant messages and a result
@@ -25,11 +27,13 @@ if (args.includes('--help')) {
     'Options:',
     '  --include-partial-messages            Include partial message chunks as they',
     '  --input-format <format>               Input format (only works with --print)',
+    ...(process.env.FAKE_CLAUDE_NO_EFFORT === '1' ? [] : ['  --effort <level>                      Effort level for the current session']),
     '  --mcp-config <configs...>             Load MCP servers from JSON files',
     '  --model <model>                       Model for the current session.',
     '  --output-format <format>              Output format (only works with --print)',
     '  --permission-prompts <target>         Who answers permission prompts with',
     '  -p, --print                           Print response and exit',
+    ...(process.env.FAKE_CLAUDE_NO_RESUME === '1' ? [] : ['  -r, --resume [value]                  Resume a conversation by session ID']),
     ...(old ? [] : ['  --restricted                          Restricted mode: removes the built-in', '  --safe-mode                           Start with all customizations']),
     '  --strict-mcp-config                   Only use MCP servers from --mcp-config,',
     '  --tools <tools...>                    Specify the list of available tools from',
@@ -41,14 +45,36 @@ if (args.includes('--help')) {
 
 const expected = ['-p', '--restricted', '--safe-mode', '--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--permission-prompts', 'none', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model']
 const models = ['haiku', 'sonnet', 'opus', 'fable']
-if (args.length !== expected.length + 1 || expected.some((a, i) => args[i] !== a) || !models.includes(args.at(-1))) {
+const efforts = ['low', 'medium', 'high', 'xhigh', 'max']
+const uuid = (v) => typeof v === 'string' && v.length === 36 && [...v].every((ch, i) => ([8, 13, 18, 23].includes(i) ? ch === '-' : '0123456789abcdef'.includes(ch)))
+// After the model: optionally `--effort <e>`, then optionally `--resume <uuid>`, nothing else.
+const rest = args.slice(expected.length + 1)
+let effort
+let resume
+if (rest[0] === '--effort') {
+  effort = rest[1]
+  rest.splice(0, 2)
+}
+if (rest[0] === '--resume') {
+  resume = rest[1]
+  rest.splice(0, 2)
+}
+if (
+  args.length < expected.length + 1 ||
+  expected.some((a, i) => args[i] !== a) ||
+  !models.includes(args[expected.length]) ||
+  (effort !== undefined && !efforts.includes(effort)) ||
+  (resume !== undefined && !uuid(resume)) ||
+  rest.length
+) {
   process.stderr.write(`fake claude: unexpected argv ${JSON.stringify(args)}\n`)
   process.exit(2)
 }
 
-const session = 'fake-session'
+// A resumed session keeps its id, as the real one does.
+const session = resume || '0f1e2d3c-4b5a-4968-8776-655443322110'
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n')
-out({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: process.env.FAKE_CLAUDE_TOOLS ? process.env.FAKE_CLAUDE_TOOLS.split(',') : ['Glob', 'Grep', 'Read'], mcp_servers: [], model: args.at(-1) })
+out({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: process.env.FAKE_CLAUDE_TOOLS ? process.env.FAKE_CLAUDE_TOOLS.split(',') : ['Glob', 'Grep', 'Read'], mcp_servers: [], model: args[expected.length] })
 
 let turn = 0
 function textMessage(text) {

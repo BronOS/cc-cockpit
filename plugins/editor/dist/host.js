@@ -480,8 +480,8 @@ exports.activate = (ctx) => {
       // The path Ask Claude names: the project file, or the read-only file outside it.
       const tabFile = tabPath !== undefined ? tabPath : typeof params.outside === 'string' ? params.outside : undefined
       // Quick chat (Ctrl+K): a read-only headless Claude in the project folder (lib/quick-chat.js), about
-      // the tab's own file; the model is the app setting at the chat's start.
-      const chatting = quickChat.serveChat(tab, { spawn, root: ctx.projectDir, rel: tabPath, model: () => quickChat.modelOf(app()), log: ctx.log })
+      // the tab's own file; the model and effort are the chat's picks, the app settings by default.
+      const chatting = quickChat.serveChat(tab, { spawn, root: ctx.projectDir, rel: tabPath, defaults: () => quickChat.defaultsOf(app()), log: ctx.log })
       // The Reviewer's notes in the gutter and "Add review note": the tab's own file, through the reviewer service.
       const noting = notes.serveNotes(tab, { rel: tabPath, reviewer: reviewerService, log: ctx.log })
       // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection; the
@@ -495,6 +495,8 @@ exports.activate = (ctx) => {
       set.add(tab)
       instances.set(tab.id, set)
       tab.post(settingsMessage())
+      // Quick chat's pickers: the settings' model and effort preselected, the lists the host accepts.
+      tab.post(quickChat.defaultsMessage(app()))
       tab.onMessage((m) => {
         if (!m || typeof m !== 'object') return
         if (searching(m)) return
@@ -581,7 +583,13 @@ exports.activate = (ctx) => {
       ctx.onSettingsChange(() => {
         if (lsp) lsp.setServers(app().servers)
         const m = settingsMessage()
-        for (const set of instances.values()) for (const tab of set) tab.post(m)
+        const picks = quickChat.defaultsMessage(app())
+        for (const set of instances.values()) {
+          for (const tab of set) {
+            tab.post(m)
+            tab.post(picks)
+          }
+        }
       })
     }
   }
