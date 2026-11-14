@@ -220,7 +220,7 @@ test('a hung Reviewer: notes-get is `has: false` after the deadline, no new call
   assert.match(tab.posted.at(-1).message, /did not answer in time/)
 })
 
-// ---- the full list for Ask Claude, and "Discuss review notes" delivered ----
+// ---- the full list for Ask Claude, and its sent notes delivered ----
 
 test("current(): null until the Reviewer answered, then its list in full (quote, text uncut by the hover's cap); null again with no Reviewer", async () => {
   let rev = fakeReviewer({ list: [{ id: 'a', from: 2, to: 3, text: 'w'.repeat(3000), quote: 'q' }] })

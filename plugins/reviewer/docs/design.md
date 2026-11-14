@@ -333,7 +333,7 @@ out through the service, from the same stored draft the overlay uses (`draft:<pa
   field is checked with the page's caps (a text over the cap is refused, never cut; a long quote is cut). Refused while
   the file's review overlay is open: the page owns the draft then (add the note there).
 - `removeNotes(path, [{ id, text }])` (feature `'removeNotes'`) deletes the notes a caller handed to Claude on its
-  own: the editor's "Discuss review notes" sends a file's notes through the app's Discuss for its tab, and once they
+  own: the editor's Ask Claude sends a file's notes through the app's Discuss for its tab, and once they
   reached Claude they go, as a delivered review's do (watchQueued's rule: only a note whose id and text still match,
   never the global comment, an emptied draft deleted). Refused while the file's review is open, as `addNote` is.
 - The event `notesChange` `{ path }` follows every change of a file's notes (the overlay's, an `addNote`, a

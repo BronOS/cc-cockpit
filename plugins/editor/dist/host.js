@@ -14,10 +14,9 @@
 // Project, "Plugin used for editor"). `ccc edit <file>[:line[:col]]` opens the file's tab at
 // that position without selecting it (the unseen dot); micro on an app without page tabs.
 //
-// In a file tab: Ask Claude (Ctrl+L, core's Discuss; lib/ask.js, with the Reviewer's notes on the asked
-// lines), "Discuss review notes" (the same Discuss with all of the file's notes, removed from the Reviewer
-// once they reached Claude) and quick chat (Ctrl+K, a read-only headless Claude whose proposals the person
-// accepts into the buffer; lib/quick-chat.js).
+// In a file tab: Ask Claude (Ctrl+L, core's Discuss; lib/ask.js, with the file's review notes, removed from
+// the Reviewer once they reached Claude) and quick chat (Ctrl+K, a read-only headless Claude whose proposals
+// the person accepts into the buffer; lib/quick-chat.js).
 //
 // It also adds "Edit" to every overlay of the well-known type `file` { path } (a review, a file
 // shown by another plugin) for a text file of the project: the file's tab, and the overlay closes.
@@ -259,7 +258,7 @@ exports.activate = (ctx) => {
     }
   }
 
-  // "Discuss review notes" delivered: the notes go from the Reviewer, as a delivered review's do. One watch
+  // Ask Claude's notes delivered: they go from the Reviewer, as a delivered review's do. One watch
   // set for the plugin, not per tab: the send may reach Claude after the tab closed (queued in a busy tab).
   const sentNotes = notes.createSentWatch({ sessions: ctx.sessions, reviewer: reviewerService, log: ctx.log })
   sentWatch = sentNotes
@@ -485,9 +484,8 @@ exports.activate = (ctx) => {
       const chatting = quickChat.serveChat(tab, { spawn, root: ctx.projectDir, rel: tabPath, model: () => quickChat.modelOf(app()), log: ctx.log })
       // The Reviewer's notes in the gutter and "Add review note": the tab's own file, through the reviewer service.
       const noting = notes.serveNotes(tab, { rel: tabPath, reviewer: reviewerService, log: ctx.log })
-      // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection, and the
-      // notes on its lines come from this instance's copy of the Reviewer's list; "Discuss review notes"
-      // sends them all and has them removed once delivered.
+      // Ask Claude (Ctrl+L, the context menu): core's Discuss asks this instance for the selection; the
+      // file's notes come from this instance's copy of the Reviewer's list and are removed once delivered.
       const asking = ask.serveAsk(tab, {
         file: tabFile,
         notes: noting.current,
@@ -699,7 +697,7 @@ let shared = null
 // The language servers too: ctx.processes kills them with the plugin anyway, but a `shutdown` first
 // lets a server write its caches (gopls, tsserver) instead of dying mid-write.
 let lspShared = null
-// The watches of "Discuss review notes" sends: their session listeners go with ctx anyway; this ends their timers.
+// The watches of Ask Claude's sent notes: their session listeners go with ctx anyway; this ends their timers.
 let sentWatch = null
 exports.deactivate = () => {
   if (shared) shared.watcher.close()

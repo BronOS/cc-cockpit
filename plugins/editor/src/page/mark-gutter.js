@@ -3,15 +3,10 @@
 // through every change, so a mark rides along with its line while the person types; the owner lays a
 // new set with `set`. The gutter always has its width (initialSpacer), so the text does not shift
 // sideways when the first mark appears. Scrolling or typing hides the popover, which would otherwise be
-// left behind, away from its line. An `interactive` popover (the notes', with its Discuss button) stays a
-// moment after the pointer leaves the gutter, so the pointer can cross the gap to it, and goes when the
-// pointer leaves it.
+// left behind, away from its line.
 
 import { StateEffect, StateField, RangeSet } from '@codemirror/state'
 import { EditorView, gutter, GutterMarker } from '@codemirror/view'
-
-/** How long an interactive popover waits for the pointer after it left the gutter. */
-const LEAVE_MS = 300
 
 /** A blank element of the mark's width (class `cls`). */
 class Spacer extends GutterMarker {
@@ -33,7 +28,6 @@ class Spacer extends GutterMarker {
  *   popClass         the popover's class
  *   fill(pop, mark)  the popover's content for `mark` (the GutterMarker on the hovered line)
  *   click?(view)     a primary click on a marked line (the editor would only move the cursor there)
- *   interactive?     the popover has controls: it takes the pointer and stays while the pointer is on it
  * Returns `{ extension, set(view, marks), hide(), marks(state) }`.
  */
 export function createMarkGutter(opts) {
@@ -58,15 +52,8 @@ export function createMarkGutter(opts) {
   }
 
   let pop = null
-  let leaving = null
-
-  function stayOpen() {
-    clearTimeout(leaving)
-    leaving = null
-  }
 
   function hide() {
-    stayOpen()
     if (pop) pop.remove()
     pop = null
   }
@@ -78,10 +65,6 @@ export function createMarkGutter(opts) {
     pop = document.createElement('div')
     pop.className = opts.popClass
     pop.setAttribute('role', 'tooltip')
-    if (opts.interactive) {
-      pop.addEventListener('mouseenter', stayOpen)
-      pop.addEventListener('mouseleave', hide)
-    }
     opts.fill(pop, m)
     document.body.append(pop)
     // Right of the gutter, at the pointer's height; kept inside the window.
@@ -97,12 +80,7 @@ export function createMarkGutter(opts) {
       return false
     },
     mouseleave: () => {
-      if (opts.interactive && pop) {
-        stayOpen()
-        leaving = setTimeout(hide, LEAVE_MS)
-      } else {
-        hide()
-      }
+      hide()
       return false
     },
   }

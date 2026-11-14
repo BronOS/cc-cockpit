@@ -46,8 +46,8 @@ A cc-cockpit plugin (`cockpit.reviewer`), scaffolded by `ccc plugin new`.
     them in its gutter and adds one from its context menu). `addNote` is refused while the file's review is open.
   - `removeNotes(path, [{ id, text }])` (feature `'removeNotes'`): the notes a caller handed to Claude itself go, as a
     delivered Discuss's do; only those whose id and text still match what `notes(path)` gave, never the comment for the
-    whole file. Resolves `{ removed }`; refused while the file's review is open. The editor calls it once its "Discuss
-    review notes" reached Claude.
+    whole file. Resolves `{ removed }`; refused while the file's review is open. The editor calls it once the notes its Ask
+    Claude sent reached Claude.
 
   Both resolve `{ opened: true }` once the overlay is up and reject with `reviewer: <why>` otherwise; a second call
   for the same file or `key` brings the open overlay to the front. Sending to Claude is the app's **Discuss with

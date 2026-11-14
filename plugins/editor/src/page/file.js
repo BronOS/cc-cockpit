@@ -30,8 +30,7 @@
 // The Reviewer's notes in the gutter (design-editor.md §4): notes.mjs holds the notes the host reads through
 // the `reviewer` service, notes-editor.js draws a mark per noted line with the text on hover, and the context
 // menu's "Add review note" (shown only while a Reviewer answers) writes one to the Reviewer's own store.
-// Ask Claude takes the notes on the asked lines along; "Discuss review notes" (the context menu while the
-// file has notes, and the note popover) sends them all through the same Discuss.
+// Ask Claude takes all of the file's notes along (the host removes them once they reached Claude).
 //
 // Language servers (design-editor.md §3): lsp/client.mjs tells the host the buffer and asks it in
 // editor terms; lsp/editor.js draws the answers (diagnostics, hover, completion, signature help) and
@@ -582,7 +581,7 @@ const changes = createChanges({
 
 // ---- the Reviewer's notes in the gutter ----
 
-const notesUi = createNotesGutter({ getNotes: () => notes.list(), discuss: () => discussNotes() })
+const notesUi = createNotesGutter({ getNotes: () => notes.list() })
 const notes = createNotes({
   post: (m) => ccPanel.post(m),
   onNotes: () => notesUi.recompute(view),
@@ -972,14 +971,6 @@ for (const [id, key] of [
 const ASK_LABEL = 'Ask Claude about this'
 $('ctx-ask-key').textContent = IS_MAC ? '⌘L' : 'Ctrl+L'
 
-/**
- * What the next Discuss is about, read when the host asks for the context: 'ask' (the selection, with the
- * notes on its lines) or 'notes' ("Discuss review notes": every note of the file). Set right before each
- * ccPanel.tab.discuss(), the only way this page opens core's box, so a box the person cancelled leaves
- * nothing behind that the next one could pick up wrongly.
- */
-let discussMode = 'ask'
-
 function askClaude() {
   hideContextMenu()
   if (!view) return
@@ -987,20 +978,6 @@ function askClaude() {
     lspMessage('Ask Claude needs a newer cc-cockpit', true)
     return
   }
-  discussMode = 'ask'
-  ccPanel.tab.discuss()
-}
-
-/** "Discuss review notes" (the context menu, the note popover): core's same box, with all of the file's notes as the context. */
-function discussNotes() {
-  hideContextMenu()
-  notesUi.hide()
-  if (!view || !notes.available() || notes.list().length === 0) return
-  if (!ccPanel.tab || typeof ccPanel.tab.discuss !== 'function') {
-    lspMessage('Discussing review notes needs a newer cc-cockpit', true)
-    return
-  }
-  discussMode = 'notes'
   ccPanel.tab.discuss()
 }
 
@@ -1012,10 +989,8 @@ $('editor').addEventListener('contextmenu', (e) => {
   if (!view) return
   e.preventDefault()
   const menu = $('ctxmenu')
-  // "Add review note" only while a Reviewer answers (no Reviewer, an older one: the host said has: false),
-  // "Discuss review notes" only when it also has notes for this file.
+  // "Add review note" only while a Reviewer answers (no Reviewer, an older one: the host said has: false).
   $('ctx-note').hidden = !notes.available()
-  $('ctx-discuss-notes').hidden = !notes.available() || notes.list().length === 0
   menu.hidden = false
   // Kept inside the frame: the menu opens up and left when the pointer is near the edge.
   const x = Math.max(0, Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4))
@@ -1026,7 +1001,6 @@ $('editor').addEventListener('contextmenu', (e) => {
 })
 $('ctx-ask').addEventListener('click', askClaude)
 $('ctx-note').addEventListener('click', openNoteBox)
-$('ctx-discuss-notes').addEventListener('click', discussNotes)
 $('ctx-grep').addEventListener('click', () => {
   hideContextMenu()
   showPalette('grep')
@@ -1113,11 +1087,11 @@ $('notebox-text').addEventListener('keydown', (e) => {
 })
 
 /**
- * The host asked for the context (onDiscuss): the main selection's lines and text with the notes on them,
- * or ("Discuss review notes") every note; nothing without an editor. Notes only while a Reviewer answers.
+ * The host asked for the context (onDiscuss): the main selection's lines and text with the file's notes on
+ * the lines the gutter shows them; nothing without an editor. Notes only while a Reviewer answers.
  */
 function answerAskContext(req) {
-  const ctx = view ? askContext(view.state, { mode: discussMode, notes: notes.available() ? notes.list() : null, lines: notesUi.lines(view) }) : {}
+  const ctx = view ? askContext(view.state, { notes: notes.available() ? notes.list() : null, lines: notesUi.lines(view) }) : {}
   ccPanel.post({ t: 'ask-context', req, ...ctx })
 }
 

@@ -8,8 +8,7 @@
 // (initialSpacer), as the changes bar is, so the text does not shift when the first mark appears.
 //
 // The marks are also where Ask Claude reads each note's lines (noteLines): the lines the person sees it on,
-// which the selection's line numbers match even in a dirty buffer. The popover's "Discuss review notes…"
-// sends every note of the file (file.js); the note text is the Reviewer's, set as text, never markup.
+// which the selection's line numbers match even in a dirty buffer.
 
 import { RangeSet } from '@codemirror/state'
 import { GutterMarker } from '@codemirror/view'
@@ -69,31 +68,16 @@ export function noteLines(marks, doc) {
 }
 
 /**
- * `ui`: { getNotes() } the list now; discuss?() "Discuss review notes" (the popover's button; absent: none).
- * Returns `{ extension, recompute(view), lines(view), hide() }`: add `extension` after the changes gutter;
- * `recompute` lays the list on the buffer now (the list changed, a new state); `lines` is noteLines now.
+ * `ui`: { getNotes() } the list now. Returns `{ extension, recompute(view), lines(view) }`: add `extension`
+ * after the changes gutter; `recompute` lays the list on the buffer now (the list changed, a new state);
+ * `lines` is noteLines now.
  */
 export function createNotesGutter(ui) {
   const marks = createMarkGutter({
     gutterClass: 'cc-notes-gutter',
     spacerClass: 'cc-note cc-note-spacer',
     popClass: 'cc-note-pop',
-    interactive: typeof ui.discuss === 'function',
     fill(pop, m) {
-      if (typeof ui.discuss === 'function') {
-        const b = document.createElement('button')
-        b.type = 'button'
-        b.className = 'cc-note-pop-discuss'
-        b.textContent = 'Discuss review notes…'
-        b.title = "Send all of this file's review notes to Claude"
-        // The editor keeps the focus (and its selection): Discuss only needs the frame focused.
-        b.addEventListener('mousedown', (e) => e.preventDefault())
-        b.addEventListener('click', () => {
-          marks.hide()
-          ui.discuss()
-        })
-        pop.append(b)
-      }
       for (const n of m.notes) {
         const item = document.createElement('div')
         item.className = 'cc-note-pop-item'
@@ -116,6 +100,5 @@ export function createNotesGutter(ui) {
       marks.set(view, marksOf(view.state.doc, ui.getNotes()))
     },
     lines: (view) => (view ? noteLines(marks.marks(view.state), view.state.doc) : new Map()),
-    hide: marks.hide,
   }
 }

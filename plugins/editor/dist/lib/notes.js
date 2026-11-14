@@ -23,9 +23,9 @@
 // (lib/ask.js): the page names notes by id with the lines it shows them on, and the words Claude gets
 // are the Reviewer's, never the page's hover copy.
 //
-// "Discuss review notes" hands the file's notes to Claude, as the Reviewer's Discuss hands over a review,
-// and like that review they go once they reached Claude (createSentWatch below, the Reviewer's
-// `removeNotes`). Ask Claude's notes are context for a question, not a review handed over: they stay.
+// Ask Claude sends all of the file's notes after the selection, so like a review the Reviewer's Discuss
+// delivered they go once they reached Claude (createSentWatch below, the Reviewer's `removeNotes`): the
+// next ask would otherwise send them all again.
 
 /** A note's text is cut to this many characters for the hover: the page shows it, it never edits it. */
 const MAX_SHOWN_CHARS = 2000
@@ -225,7 +225,7 @@ function serveNotes(tab, { rel, reviewer, log, timeoutMs = NOTES_TIMEOUT_MS, add
   return handle
 }
 
-// ---- "Discuss review notes" delivered: the notes go (the Reviewer's rule for a sent review) ----
+// ---- Ask Claude's notes delivered: they go (the Reviewer's rule for a sent review) ----
 
 /** How much of the sent text's start must be in a tab's next prompt to count as delivered (the Reviewer's MATCH_CHARS). */
 const MATCH_CHARS = 120
@@ -246,7 +246,7 @@ const promptText = (s) =>
     .trim()
 
 /**
- * Watches the project's Claude tabs for the notes a Discuss sent, and asks the Reviewer to remove them
+ * Watches the project's Claude tabs for the notes an Ask Claude sent, and asks the Reviewer to remove them
  * once one tab's prompt has the sent text's start in it: the Reviewer deletes a review's notes only when
  * all of it reached Claude (a queued one when the tab took it), so a send that failed or was lost keeps
  * them. A prompt counts only when it changed since the send (`watch` reads every tab's prompt first, before

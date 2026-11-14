@@ -108,120 +108,89 @@ test('serveAsk: an app without onDiscuss, or a tab with no file, registers nothi
   assert.equal(t2.handlers.length, 0)
 })
 
-// ---- the Reviewer's notes with Ask Claude, and "Discuss review notes" ----
+// ---- the file's review notes with Ask Claude ----
 
 const rnote = (id, from, to, text, quote = '') => ({ id, from, to, text, quote })
 
-test('contextText: the notes on the asked lines follow the selection, numbered as the Reviewer numbers them', () => {
-  const notes = [rnote('a', 3, 3, 'why a loop?'), rnote('b', 2, 5, 'rename this\nand split it')]
-  const text = ask.contextText('src/x.ts', { startLine: 3, endLine: 4, text: 'a\nb' }, notes)
-  assert.equal(text, 'src/x.ts:3-4\n```\na\nb\n```\n\nReview notes on these lines:\n\n1. Line 3:\n   why a loop?\n\n2. Lines 2-5:\n   rename this\n   and split it')
+test("contextText: every note follows the selection in the Reviewer's form; those on the asked lines say so", () => {
+  const sel = { startLine: 3, endLine: 4, text: 'a\nb' }
+  const notes = ask.askNotes([rnote('far', 20, 20, 'later'), rnote('a', 3, 3, 'why a loop?', 'for (;;)'), rnote('b', 1, 5, 'rename this\nand split it')], sel)
+  const text = ask.contextText('src/x.ts', sel, notes)
+  assert.equal(
+    text,
+    'src/x.ts:3-4\n```\na\nb\n```\n\nReview notes on this file:\n\n' +
+      '1. Lines 1-5 (on the asked lines):\n   rename this\n   and split it\n\n' +
+      '2. Line 3 (on the asked lines):\n   > for (;;)\n   why a loop?\n\n' +
+      '3. Line 20:\n   later',
+  )
   // No notes: exactly the text of before.
-  assert.equal(ask.contextText('src/x.ts', { startLine: 3, endLine: 4, text: 'a\nb' }, []), 'src/x.ts:3-4\n```\na\nb\n```')
-  // The cursor's line with no selection takes its notes too.
-  assert.equal(ask.contextText('a.js', { startLine: 7, endLine: 7, text: '' }, [rnote('c', 7, 7, 'hm')]), 'a.js:7\n\nReview notes on these lines:\n\n1. Line 7:\n   hm')
+  assert.equal(ask.contextText('src/x.ts', sel, []), 'src/x.ts:3-4\n```\na\nb\n```')
+  // The cursor's line with no selection: the notes follow `path:line`.
+  const cursor = { startLine: 7, endLine: 7, text: '' }
+  assert.equal(ask.contextText('a.js', cursor, ask.askNotes([rnote('c', 7, 7, 'hm')], cursor)), 'a.js:7\n\nReview notes on this file:\n\n1. Line 7 (on the asked lines):\n   hm')
 })
 
-test("askNotes: only notes the page named on lines overlapping the selection, on the page's lines, in line order", () => {
-  const list = [rnote('in', 10, 10, 'kept'), rnote('out', 20, 22, 'not asked'), rnote('moved', 1, 1, 'shifted'), rnote('unnamed', 4, 4, 'page never named it')]
+test("askNotes: every note of the host's list, on the page's lines where it named them, in line order, `asked` by overlap", () => {
+  const list = [rnote('in', 10, 10, 'kept'), rnote('out', 20, 22, 'not asked'), rnote('moved', 1, 1, 'shifted'), rnote('unnamed', 5, 5, 'page never named it')]
   const sel = {
     startLine: 4,
     endLine: 6,
     notes: [
       { id: 'in', from: 6, to: 6 }, // the Reviewer says 10; the page shows it on 6 after an edit above
-      { id: 'moved', from: 4, to: 5 },
-      { id: 'out', from: 20, to: 22 },
+      { id: 'moved', from: 30, to: 31 }, // shifted out of the asked lines
       { id: 'ghost', from: 4, to: 4 }, // not in the host's list: nothing to send
-      { id: 'bad', from: 0, to: 4 },
+      { id: 'out', from: 0, to: 4 }, // malformed: the Reviewer's own lines
     ],
   }
   assert.deepEqual(
-    ask.askNotes(list, sel).map((n) => [n.id, n.from, n.to, n.text]),
+    ask.askNotes(list, sel).map((n) => [n.id, n.from, n.to, n.asked, n.text]),
     [
-      ['moved', 4, 5, 'shifted'],
-      ['in', 6, 6, 'kept'],
+      ['unnamed', 5, 5, true, 'page never named it'],
+      ['in', 6, 6, true, 'kept'],
+      ['out', 20, 22, false, 'not asked'],
+      ['moved', 30, 31, false, 'shifted'],
     ],
   )
-  // A page claim outside the selection is checked again here; no list, no lines: none.
-  assert.deepEqual(ask.askNotes(list, { startLine: 1, endLine: 2, notes: [{ id: 'out', from: 20, to: 22 }] }), [])
   assert.deepEqual(ask.askNotes(null, sel), [])
   assert.deepEqual(ask.askNotes(list, { startLine: 0, notes: sel.notes }), [])
-  assert.deepEqual(ask.askNotes(list, { startLine: 4, endLine: 6, notes: 'x' }), [])
+  assert.deepEqual(ask.askNotes(list, { startLine: 4, endLine: 6, notes: 'x' }).length, 4)
 })
 
-test("contextText: notes past the room are cut with the Reviewer's mark; the whole context stays under the cap", () => {
-  const many = Array.from({ length: 50 }, (_, i) => rnote(`n${i}`, 1, 1, `note ${i} `.repeat(40)))
-  const small = ask.contextText('a.js', { startLine: 1, endLine: 1, text: 'x' }, many)
-  assert.match(small, /\n\n\(review cut: too long\)$/)
-  // Ask Claude's own cap for the notes block, as for the selection.
-  assert.ok(small.length <= 'a.js:1\n```\nx\n```\n\n'.length + ask.MAX_ASK_CHARS)
-  // A selection at its cap leaves the notes what the whole context allows.
-  const big = ask.contextText('a.js', { startLine: 1, endLine: 1, text: 'y'.repeat(ask.MAX_ASK_CHARS + 10) }, many)
-  assert.ok(big.length <= ask.MAX_CONTEXT_CHARS, `${big.length}`)
-  assert.match(big, /Review notes on these lines:\n\n1\. Line 1:/)
-  assert.match(big, /\(review cut: too long\)$/)
-  // Never between the two halves of a surrogate pair.
-  const emoji = ask.contextText('a.js', { startLine: 1, endLine: 1, text: 'x' }, [rnote('e', 1, 1, '😀'.repeat(3000))])
-  assert.ok(!/[\ud800-\udbff]\n/.test(emoji))
-})
-
-test("notesContextText: the Reviewer's file-review form with quotes; no notes asks to discuss the file", () => {
-  const r = ask.notesContextText([rnote('a', 2, 4, 'split this', 'function big() {\n  return 1\n}'), rnote('b', 9, 9, 'typo')])
-  assert.deepEqual(r, {
-    text: 'Review: the file as it is now, no git diff\n\n1. Lines 2-4:\n   > function big() {\n   >   return 1\n   > }\n   split this\n\n2. Line 9:\n   typo',
-    cut: false,
-  })
-  assert.deepEqual(ask.notesContextText([]), { text: 'Review: the file as it is now, no git diff\n\nDiscuss this file with me: read it, then tell me what you see.', cut: false })
-})
-
-test('notesContextText: quotes are shortened first, then the end is cut and marked (cut: true)', () => {
+test("askText: quotes shorten first; past the room the notes are cut with the Reviewer's mark and say notesCut", () => {
   // Long quotes, short notes: shortening the quotes is enough, nothing of the person's is lost.
-  const quoted = Array.from({ length: 30 }, (_, i) => rnote(`q${i}`, i + 1, i + 1, `note ${i}`, 'word '.repeat(100)))
-  const a = ask.notesContextText(quoted)
-  assert.equal(a.cut, false)
-  assert.ok(a.text.length <= ask.MAX_ASK_CHARS)
+  const sel = { startLine: 1, endLine: 1, text: 'x' }
+  const quoted = ask.askNotes(Array.from({ length: 30 }, (_, i) => rnote(`q${i}`, i + 1, i + 1, `note ${i}`, 'word '.repeat(100))), sel)
+  const a = ask.askText('a.js', sel, quoted)
+  assert.equal(a.notesCut, false)
   for (let i = 0; i < 30; i++) assert.ok(a.text.includes(`note ${i}\n`) || a.text.endsWith(`note ${i}`))
-  // Notes alone over the cap: cut, with the mark.
-  const long = Array.from({ length: 5 }, (_, i) => rnote(`l${i}`, i + 1, i + 1, 'z'.repeat(3000)))
-  const b = ask.notesContextText(long)
-  assert.equal(b.cut, true)
-  assert.ok(b.text.length <= ask.MAX_ASK_CHARS)
-  assert.match(b.text, /\n\n\(review cut: too long\)$/)
+  // Ask Claude's own cap for the notes block, as for the selection.
+  const many = ask.askNotes(Array.from({ length: 50 }, (_, i) => rnote(`n${i}`, 1, 1, `note ${i} `.repeat(40))), sel)
+  const small = ask.askText('a.js', sel, many)
+  assert.equal(small.notesCut, true)
+  assert.match(small.text, /\n\n\(review cut: too long\)$/)
+  assert.ok(small.text.length <= 'a.js:1\n```\nx\n```\n\n'.length + ask.MAX_ASK_CHARS)
+  // A selection at its cap leaves the notes what the whole context allows.
+  const big = ask.askText('a.js', { startLine: 1, endLine: 1, text: 'y'.repeat(ask.MAX_ASK_CHARS + 10) }, many)
+  assert.ok(big.text.length <= ask.MAX_CONTEXT_CHARS, `${big.text.length}`)
+  assert.match(big.text, /Review notes on this file:\n\n1\. Line 1 \(on the asked lines\):/)
+  assert.equal(big.notesCut, true)
+  // Never between the two halves of a surrogate pair.
+  const emoji = ask.contextText('a.js', sel, [rnote('e', 1, 1, '😀'.repeat(5000))])
+  assert.ok(!/[\ud800-\udbff]\n/.test(emoji))
+  // A path so long no note fits: the selection alone, and the notes count as not sent.
+  const long = ask.askText('d/'.repeat(6500) + 'a.js', sel, [rnote('n', 1, 1, 'n')])
+  assert.equal(long.notesCut, true)
+  assert.ok(!long.text.includes('Review notes'))
 })
 
-test("fileNotes: every note of the host's list, on the page's lines where it named them, in line order", () => {
-  const list = [rnote('a', 5, 5, 'A'), rnote('b', 1, 2, 'B')]
-  assert.deepEqual(
-    ask.fileNotes(list, { notes: [{ id: 'a', from: 1, to: 1 }, { id: 'zz', from: 3, to: 3 }] }).map((n) => [n.id, n.from, n.to]),
-    [
-      ['a', 1, 1],
-      ['b', 1, 2],
-    ],
-  )
-  assert.deepEqual(ask.fileNotes(null, {}), [])
-})
-
-test("serveAsk: the notes on the selection come from the host's list; none, or no Reviewer, is the text of before", async () => {
-  const tab = fakeTab()
-  let list = [rnote('a', 3, 3, 'why?')]
-  const handle = ask.serveAsk(tab, { file: 'src/x.ts', notes: () => list })
-  const answer = tab.handlers[0]()
-  handle({ t: 'ask-context', req: 1, startLine: 3, endLine: 3, text: 'x', notes: [{ id: 'a', from: 3, to: 3 }] })
-  assert.deepEqual(await answer, { text: 'src/x.ts:3\n```\nx\n```\n\nReview notes on these lines:\n\n1. Line 3:\n   why?' })
-  list = null
-  const again = tab.handlers[0]()
-  handle({ t: 'ask-context', req: 2, startLine: 3, endLine: 3, text: 'x', notes: [{ id: 'a', from: 3, to: 3 }] })
-  assert.deepEqual(await again, { text: 'src/x.ts:3\n```\nx\n```' })
-})
-
-test('serveAsk: "Discuss review notes" sends every note and has the send watched; Ask Claude\'s notes are not', async () => {
+test("serveAsk: the file's notes come from the host's list and their send is watched; none, or no Reviewer, is the text of before", async () => {
   const tab = fakeTab()
   const sent = []
-  const list = [rnote('a', 3, 3, 'why?', 'x = 1'), rnote('b', 9, 9, 'and here')]
+  let list = [rnote('a', 3, 3, 'why?', 'x = 1'), rnote('b', 9, 9, 'and here')]
   const handle = ask.serveAsk(tab, { file: 'src/x.ts', notes: () => list, onNotesSent: (s) => sent.push(s) })
   const answer = tab.handlers[0]()
-  handle({ t: 'ask-context', req: 1, mode: 'notes', notes: [{ id: 'a', from: 4, to: 4 }] })
-  const want = 'Review: the file as it is now, no git diff\n\n1. Line 4:\n   > x = 1\n   why?\n\n2. Line 9:\n   and here'
+  handle({ t: 'ask-context', req: 1, startLine: 4, endLine: 4, text: 'x', notes: [{ id: 'a', from: 4, to: 4 }] })
+  const want = 'src/x.ts:4\n```\nx\n```\n\nReview notes on this file:\n\n1. Line 4 (on the asked lines):\n   > x = 1\n   why?\n\n2. Line 9:\n   and here'
   assert.deepEqual(await answer, { text: want })
   assert.equal(sent.length, 1)
   assert.equal(sent[0].text, want)
@@ -232,20 +201,24 @@ test('serveAsk: "Discuss review notes" sends every note and has the send watched
       ['b', 'and here'],
     ],
   )
-  // Ask Claude with notes: no watch.
-  const ask2 = tab.handlers[0]()
+  list = null
+  const again = tab.handlers[0]()
   handle({ t: 'ask-context', req: 2, startLine: 3, endLine: 3, text: 'x', notes: [{ id: 'a', from: 3, to: 3 }] })
-  await ask2
+  assert.deepEqual(await again, { text: 'src/x.ts:3\n```\nx\n```' })
+  list = []
+  const empty = tab.handlers[0]()
+  handle({ t: 'ask-context', req: 3, startLine: 3, endLine: 3, text: 'x' })
+  assert.deepEqual(await empty, { text: 'src/x.ts:3\n```\nx\n```' })
   assert.equal(sent.length, 1)
 })
 
-test('serveAsk: a cut notes text is sent but not watched; a failing or slow watch never holds the answer', async () => {
+test('serveAsk: cut notes are sent but not watched; a failing or slow watch never holds the answer', async () => {
   const tab = fakeTab()
   const calls = []
   const list = Array.from({ length: 5 }, (_, i) => rnote(`l${i}`, i + 1, i + 1, 'z'.repeat(3000)))
   const handle = ask.serveAsk(tab, { file: 'a.js', notes: () => list, onNotesSent: (s) => calls.push(s) })
   const answer = tab.handlers[0]()
-  handle({ t: 'ask-context', req: 1, mode: 'notes' })
+  handle({ t: 'ask-context', req: 1, startLine: 1, endLine: 1, text: '' })
   assert.match((await answer).text, /review cut: too long/)
   assert.equal(calls.length, 0)
   const failing = [
@@ -259,7 +232,7 @@ test('serveAsk: a cut notes text is sent but not watched; a failing or slow watc
     const t = fakeTab()
     const h = ask.serveAsk(t, { file: 'a.js', notes: () => [rnote('a', 1, 1, 'n')], onNotesSent })
     const p = t.handlers[0]()
-    h({ t: 'ask-context', req: 1, mode: 'notes' })
-    assert.match((await p).text, /^Review: /)
+    h({ t: 'ask-context', req: 1, startLine: 1, endLine: 1, text: '' })
+    assert.match((await p).text, /^a\.js:1\n\nReview notes on this file:/)
   }
 })

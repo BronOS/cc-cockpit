@@ -41,15 +41,14 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   there are no dots and no menu item. The Reviewer numbers the lines of the file on disk, so an unsaved buffer is saved
   before the note is added, and a dot follows its line while you type but is placed again from the Reviewer's list when
   that changes. A note cannot be added while the file's review overlay is open (add it there).
-- Review notes to Claude: Ask Claude adds the notes whose lines overlap the asked ones after the selection
-  (`Review notes on these lines:`, then `1. Lines 40-44:` and the note, as the Reviewer numbers them), on the lines the
-  dots are on (they follow your edits), and leaves them in the Reviewer. "Discuss review notes…" (the right-click menu
-  while the file has notes, or the button in a note's hover) sends all of them through the same Discuss, in the
-  Reviewer's file-review form (`Review: the file as it is now, no git diff`, each note with its quote; quotes shortened
-  first, then cut at 8,000 characters with `(review cut: too long)`). Like a review the Reviewer's Discuss delivered,
-  the sent notes are then removed (the service's `removeNotes`): the host watches the project's Claude tabs for a
-  prompt holding the sent text (core does not tell a page tab where its Discuss went), for up to an hour; a cut text,
-  a send that never arrives, an older Reviewer or a note edited since keeps them.
+- Review notes to Claude: Ask Claude adds all of the file's notes after the selection (`Review notes on this file:`,
+  then each in line order as the Reviewer writes a file review's, `1. Lines 40-44:` with its quote and the note, a note
+  on the asked lines marked `(on the asked lines)`), on the lines the dots are on (they follow your edits); quotes are
+  shortened first, then the block is cut at 8,000 characters with `(review cut: too long)`. Like a review the
+  Reviewer's Discuss delivered, the sent notes are then removed (the service's `removeNotes`), so the next ask does not
+  send them again: the host watches the project's Claude tabs for a prompt holding the sent text (core does not tell a
+  page tab where its Discuss went), for up to an hour; cut notes, a send that never arrives, an older Reviewer or a
+  note edited since keeps them.
 - Ask Claude (Ctrl+L, Cmd+L on macOS, or the editor's right-click menu): core's Discuss for the tab. Core draws the
   question box; the host answers with `path:start-end` (1-based) and the selected text in a code fence one backtick
   longer than any run in it (cut to 8,000 characters, with a note), or just `path:line` with no selection. Only the main selection is sent (with several cursors the others are ignored). The text goes to

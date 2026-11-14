@@ -198,23 +198,7 @@ main .cm-line.cc-flash {
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-m, 6px);
   box-shadow: 0 4px 16px var(--cc-shadow);
-}
-/* Above the notes: the popover is cut at 50vh, so a button at the bottom could be out of reach. */
-.cc-note-pop-discuss {
-  display: block;
-  margin: 0 0 var(--cc-space-1, 4px) auto;
-  padding: 1px var(--cc-space-2, 8px);
-  font: inherit;
-  font-size: var(--cc-text-s, 11px);
-  color: var(--cc-fg);
-  background: transparent;
-  border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-s, 4px);
-  cursor: pointer;
-}
-.cc-note-pop-discuss:hover,
-.cc-note-pop-discuss:focus-visible {
-  background: var(--cc-accent-soft);
+  pointer-events: none;
 }
 .cc-note-pop-item + .cc-note-pop-item {
   margin-top: var(--cc-space-2, 8px);

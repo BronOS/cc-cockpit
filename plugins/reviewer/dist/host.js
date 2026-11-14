@@ -62,7 +62,7 @@ const splitOk = (v) => typeof v === 'number' && Number.isFinite(v) && v >= SPLIT
 // 'notes' (notes(path), addNote(path, note) and the event `notesChange`: the line notes of a file's review,
 // read and added from outside the overlay; the editor shows them in its gutter).
 // 'removeNotes' (removeNotes(path, [{ id, text }]): the notes a caller sent to Claude itself go, as a sent
-// review's do; the editor's "Discuss review notes").
+// review's do; the editor's Ask Claude).
 const FEATURES = ['companion', 'prepare', 'type', 'mail', 'actions', 'update', 'original', 'fail', 'notes', 'removeNotes']
 // prepare: a loading overlay no annotate filled (and no cancel closed) in this long is closed, so a
 // caller that died mid-fetch leaves no spinner behind. Its fetches are bounded far under this.
@@ -1062,7 +1062,7 @@ exports.activate = (ctx) => {
       }
     },
     // Additive in v1 (feature 'removeNotes'): the notes a caller sent to Claude on its own (the editor's
-    // "Discuss review notes") go, as the notes of a review Discuss delivered do (watchQueued): only those
+    // Ask Claude) go, as the notes of a review Discuss delivered do (watchQueued): only those
     // whose id and text still match what the caller read, so a note edited or added since stays; the
     // global comment is never touched (notes() does not give it, so no caller sent it). A draft left with
     // nothing in it is deleted. Refused while that file's review is open (its page owns the draft and
