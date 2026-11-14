@@ -298,7 +298,7 @@ behind it are in [design.md](design.md).
     the project (`node_modules`, module cache) opens read-only.
   - Claude's changes: lines changed against git `HEAD` get a bar in the gutter (hover shows the old lines, a click
     opens the Reviewer's diff); the Reviewer's notes for the file show there too, and "Add review note" on a selection
-    adds one.
+    (Ctrl/Cmd+Shift+N, or the context menu) adds one.
   - Ask Claude (Ctrl/Cmd+L, or the context menu on a selection): a question with the path, lines and selection, sent
     to a new session by default (or a Claude tab you pick, the last used one listed first) through the send gate, so it waits
     for *waiting for input*. All of the file's review notes go with it, after the selection (`Review notes on this
@@ -308,7 +308,7 @@ behind it are in [design.md](design.md).
     deleted from the Reviewer once a Claude tab's prompt shows they arrived (a queued send when the tab takes it;
     watched for an hour); cut notes, a failed send or a note edited meanwhile stay. Needs Reviewer 0.3.0 or newer for
     the notes, and one with `removeNotes` for the delete.
-  - Quick chat (Ctrl/Cmd+K on a selection): a short headless Claude, read-only (Read, Grep, Glob; no settings, hooks
+  - Quick chat (Ctrl/Cmd+K on a selection, or the context menu): a short headless Claude, read-only (Read, Grep, Glob; no settings, hooks
     or MCP servers), proposes a replacement shown as an inline diff with Accept and Reject; Claude never writes the
     file. The model is an app setting (default `sonnet`). These runs leave transcripts in `~/.claude`, so the Usage
     panel counts them.

@@ -35,7 +35,7 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   so the plugin uses it). The host reads `git cat-file blob HEAD:./<file>` (no shell, one argument); not a repository,
   untracked, binary, a link or git missing: no marks.
 - Review notes in place: the Reviewer's line notes of the file show as a dot in a second gutter, the note's text on
-  hover; "Add review note…" in the right-click menu writes a note on the selected lines (the cursor's line with none) to
+  hover; "Add review note…" (Ctrl+Shift+N, Cmd+Shift+N on macOS, or the right-click menu) writes a note on the selected lines (the cursor's line with none) to
   the Reviewer's own store, so it is in the Reviewer's overlay and in what Discuss sends. Through the `reviewer` service
   (`notes`, `addNote`, the event `notesChange`; the Reviewer must be 0.3.0 or newer): with no Reviewer, or an older one,
   there are no dots and no menu item. The Reviewer numbers the lines of the file on disk, so an unsaved buffer is saved
@@ -54,7 +54,7 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   longer than any run in it (cut to 8,000 characters, with a note), or just `path:line` with no selection. Only the main selection is sent (with several cursors the others are ignored). The text goes to
   the Claude tab you pick (or a new session, under Discuss's own budget) as your own text, delivered when it waits for
   input. Needs an app with page tabs' Discuss.
-- Quick chat (Ctrl+K, Cmd+K on macOS): a chat docked under the editor about the selection (the cursor's line with none,
+- Quick chat (Ctrl+K, Cmd+K on macOS, or the right-click menu): a chat docked under the editor about the selection (the cursor's line with none,
   at most 20,000 characters). The host runs Claude Code headless and read-only in the project folder, with a fixed argv
   (`claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts none` plus
   stream-json in and out and the model of the setting `quickChatModel`, default `sonnet`): no Bash, no edits, no MCP

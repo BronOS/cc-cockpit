@@ -60,12 +60,13 @@
       <div id="palette-status" class="palette-status" role="status"></div>
       <ul id="palette-list" class="palette-list" role="listbox"></ul>
     </div>
-    <!-- The editor's context menu: Ask Claude (core's Discuss for this tab), find in files. -->
+    <!-- The editor's context menu: Ask Claude (core's Discuss for this tab), quick chat, find in files. -->
     <div id="ctxmenu" class="ctxmenu" role="menu" hidden>
       <button id="ctx-ask" type="button" role="menuitem"><span>Ask Claude about this…</span><kbd id="ctx-ask-key"></kbd></button>
+      <button id="ctx-chat" type="button" role="menuitem"><span>Quick chat…</span><kbd id="ctx-chat-key"></kbd></button>
       <button id="ctx-grep" type="button" role="menuitem"><span>Find in files…</span><kbd id="ctx-grep-key"></kbd></button>
       <!-- Shown only while a Reviewer answers (the reviewer service's notes). -->
-      <button id="ctx-note" type="button" role="menuitem" hidden><span>Add review note…</span></button>
+      <button id="ctx-note" type="button" role="menuitem" hidden><span>Add review note…</span><kbd id="ctx-note-key"></kbd></button>
     </div>
     <!-- Add review note: a note on the selected lines, written to the Reviewer's own store. -->
     <section id="notebox" class="notebox" role="dialog" aria-label="Add review note" hidden>

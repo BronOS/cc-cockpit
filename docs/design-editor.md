@@ -231,7 +231,7 @@ the sent text's start (the Reviewer's `watchQueued` match, over all tabs) for up
 file's comment, and not while its review is open. A cut notes block, a send that never arrives or an older Reviewer
 keeps them.
 
-**Quick chat** (Ctrl+K on a selection): a short-lived headless Claude through `ctx.processes` in the project folder,
+**Quick chat** (Ctrl+K on a selection, or the context menu): a short-lived headless Claude through `ctx.processes` in the project folder,
 with a fixed argv: `claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts
 none --input-format stream-json --output-format stream-json --verbose --include-partial-messages --model <setting>`.
 `--restricted` ignores the user, project and local settings files (their hooks and permissions with them) and removes
@@ -255,8 +255,8 @@ hover shows the old lines; click opens the Reviewer's diff. Not a repo or untrac
 **`ccc edit path[:line[:col]]`** opens or focuses the file tab there. The guide tells Claude to use it to point at
 code. It never takes focus from a terminal being typed in: the tab opens with the unseen dot.
 
-**Review notes in place.** The Reviewer's notes for the file show in the gutter; "Add review note" on a selection writes
-to the same store. The `reviewer` service gains `notes(path)`, `addNote`, `onNotesChange` (versioned).
+**Review notes in place.** The Reviewer's notes for the file show in the gutter; "Add review note" on a selection (Ctrl+Shift+N or
+the context menu) writes to the same store. The `reviewer` service gains `notes(path)`, `addNote`, `onNotesChange` (versioned).
 
 ## 5. Editing, remote, security, errors, testing
 

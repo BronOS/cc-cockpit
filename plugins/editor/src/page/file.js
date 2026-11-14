@@ -1000,7 +1000,14 @@ $('editor').addEventListener('contextmenu', (e) => {
   $('ctx-ask').focus()
 })
 $('ctx-ask').addEventListener('click', askClaude)
+$('ctx-chat').addEventListener('click', () => {
+  hideContextMenu()
+  chat.open()
+})
+$('ctx-chat-key').textContent = IS_MAC ? '⌘K' : 'Ctrl+K'
 $('ctx-note').addEventListener('click', openNoteBox)
+// Mod+Shift+N ("note"): free in the app's default table and in CodeMirror's keymaps.
+$('ctx-note-key').textContent = IS_MAC ? '⇧⌘N' : 'Ctrl+Shift+N'
 $('ctx-grep').addEventListener('click', () => {
   hideContextMenu()
   showPalette('grep')
@@ -1101,7 +1108,7 @@ document.addEventListener('mousedown', (e) => {
 })
 // The page's chords (declared as page-tab keys in plugin.json, so the app lets them through while
 // the page has focus): Mod+P quick open, Mod+Shift+H or Mod+Shift+F find in files, Mod+K quick chat,
-// Mod+L Ask Claude, Mod being CodeMirror's (Cmd on macOS, Ctrl elsewhere). Mod+Shift+F is core's
+// Mod+L Ask Claude, Mod+Shift+N add review note, Mod being CodeMirror's (Cmd on macOS, Ctrl elsewhere). Mod+Shift+F is core's
 // Toggle Tab Flag in the default keybindings, and the app's table wins every chord it holds, so it
 // reaches the page only once the person rebinds the flag; Mod+Shift+H (VS Code's Replace in Files,
 // the same search view there) is free in the app's table and in CodeMirror's keymaps. Caught before CodeMirror, so only the platform's own Mod: on macOS Ctrl+P is
@@ -1134,6 +1141,12 @@ window.addEventListener(
       e.preventDefault()
       e.stopPropagation()
       askClaude()
+    } else if (k === 'n' && e.shiftKey) {
+      // Add review note: only while a Reviewer answers (as the menu item), and not over the palette.
+      if (palette.mode !== null || !notes.available()) return
+      e.preventDefault()
+      e.stopPropagation()
+      openNoteBox()
     }
   },
   true
