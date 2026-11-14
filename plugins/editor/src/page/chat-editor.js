@@ -2,8 +2,9 @@
 // selection opens a chat docked under the editor; the host runs a read-only headless Claude for it
 // (dist/lib/quick-chat.js) and streams the answer here, rendered as Markdown (chat-markdown.mjs).
 // Follow-ups go to the same Claude; closing the chat (×, Esc) ends it. The header's two pickers
-// (model, effort) start from the app settings and apply to the chat's next question (chat.mjs
-// newPick, choosePick); the host checks what they send.
+// (model, effort) start from the host's defaults (the last pick a question went with, remembered
+// app-wide, or the app settings) and apply to the chat's next question (chat.mjs newPick,
+// choosePick); the host checks what they send.
 //
 // The chat is about its target: the selection when it opened (the cursor's line with none), marked in
 // the editor and mapped through every later edit. A proposal (the answer's `replacement` block) is
@@ -262,6 +263,8 @@ export function createQuickChat({ post, getView, message }) {
     }
     if (chat) end()
     chat = { id: ++nextId, started: false, ended: false, busy: false, seen: t.text, askedFor: null, entries: [], state: '', model: '', effort: '', tool: '', pick: newPick(defaults) }
+    // The last pick may have been remembered in another window since: the host's answer moves what is not chosen yet.
+    post({ t: 'chat-defaults-get' })
     view.dispatch({ effects: setTarget.of({ from: t.from, to: t.to }) })
     $('chat-input').value = ''
     show()

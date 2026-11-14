@@ -53,8 +53,12 @@
 //                                                           a follow-up; sel when the selected text changed since;
 //                                                           model and effort absent: the chat's (start: the settings')
 //   page -> host  { t: 'chat-close', id }                   the chat closed: the process is killed
-//   host -> page  { t: 'chat-defaults', model, effort, models, efforts }   the settings' picks and the offered lists
-//                                                           (host.js sends it on open and on a settings change)
+//   page -> host  { t: 'chat-defaults-get' }                a chat opened: send the defaults again
+//   host -> page  { t: 'chat-defaults', model, effort, models, efforts }   a new chat's picks and the offered lists
+//                                                           (serveChat sends it at once and on chat-defaults-get,
+//                                                           refreshDefaults on a settings change or a remembered pick)
+// A new chat starts with the last pick a question went with (PICK_KEY in ctx.appStorage, so every
+// window and a restart), while the settings are still those it was made under (rememberedPick).
 //   host -> page  { t: 'chat-state', id, state: 'starting' | 'thinking' | 'ready', model, effort }
 //   host -> page  { t: 'chat-delta', id, text }             answer text as it is written (appended)
 //   host -> page  { t: 'chat-tool', id, name, detail }      Claude reads or searches
@@ -149,9 +153,38 @@ function defaultsOf(app) {
   return { model: modelOf(app), effort: effortOf(app) }
 }
 
-/** What the page needs to draw the pickers: the settings' picks and the lists the host accepts. */
-function defaultsMessage(app) {
-  return { t: 'chat-defaults', ...defaultsOf(app), models: [...CHAT_MODELS], efforts: [...EFFORT_CHOICES] }
+/** What the page needs to draw the pickers: a new chat's `{ model, effort }` and the lists the host accepts. */
+function defaultsMessage(pick) {
+  return { t: 'chat-defaults', model: pick.model, effort: pick.effort, models: [...CHAT_MODELS], efforts: [...EFFORT_CHOICES] }
+}
+
+/**
+ * ctx.appStorage key of the last pick a question was sent with: `{ model, effort, settings: { model,
+ * effort } }`. App-wide (main owns the store, so every window's host and a restart see it); never a
+ * file the host writes and never the page's localStorage (per view).
+ */
+const PICK_KEY = 'quickChatPick'
+
+/** What PICK_KEY stores for `pick`: the settings at the time go with it (rememberedPick). */
+function pickRecord(pick, settings) {
+  return { model: pick.model, effort: pick.effort, settings: { model: settings.model, effort: settings.effort } }
+}
+
+/**
+ * A new chat's `{ model, effort }`: the remembered pick (`stored`, PICK_KEY's value) while the
+ * settings still equal those it was made under, else the settings. A person who changes a setting
+ * after a pick wants the setting. A stored value off the host's lists (an older version, a hand
+ * edit) falls back to the settings too.
+ */
+function rememberedPick(stored, settings) {
+  if (!stored || typeof stored !== 'object' || !stored.settings || typeof stored.settings !== 'object') return settings
+  if (stored.settings.model !== settings.model || stored.settings.effort !== settings.effort) return settings
+  if (typeof stored.model !== 'string' || typeof stored.effort !== 'string') return settings
+  try {
+    return checkPick({ model: stored.model, effort: stored.effort }, settings)
+  } catch {
+    return settings
+  }
 }
 
 /**
@@ -484,6 +517,8 @@ function toolDetail(root, name, input) {
  */
 const pluginChats = {
   live: new Set(),
+  /** Each open tab instance's sender of `chat-defaults` (refreshDefaults). */
+  tabs: new Set(),
   get running() {
     return this.live.size
   },
@@ -492,14 +527,24 @@ const pluginChats = {
 /** Ends every chat of the plugin (deactivate): ctx.processes kills the children anyway; this frees the slots. */
 function endAll() {
   for (const stop of [...pluginChats.live]) stop()
+  pluginChats.tabs.clear()
+}
+
+/**
+ * Sends every open tab instance of this host its new chats' defaults again (the settings changed, a
+ * pick was remembered). Another window's tabs ask when a chat opens (`chat-defaults-get`).
+ */
+function refreshDefaults() {
+  for (const send of [...pluginChats.tabs]) send()
 }
 
 /**
  * Serves quick chat for one tab instance. `rel` is the tab's own project path (undefined for a file
- * outside the project: no chat), `defaults()` the settings now (`{ model, effort }`, defaultsOf).
- * `bin` (tests) skips the PATH lookup. Returns `handle(m)`: true when it took the message.
+ * outside the project: no chat), `defaults()` the settings now (`{ model, effort }`, defaultsOf),
+ * `store` ctx.appStorage (absent: nothing remembered). `bin` (tests) skips the PATH lookup. Sends
+ * the tab its defaults at once. Returns `handle(m)`: true when it took the message.
  */
-function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {} }) {
+function serveChat(tab, { spawn, root, rel, defaults, store, log, bin, env, limits = {} }) {
   const max = limits.maxChats ?? MAX_CHATS
   const turnMs = limits.turnMs ?? TURN_TIMEOUT_MS
   const idleMs = limits.idleMs ?? IDLE_MS
@@ -511,6 +556,39 @@ function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {}
   const post = (m) => {
     if (!closed) tab.post(m)
   }
+
+  /** A new chat's model and effort: the remembered pick while it holds (rememberedPick), else the settings. */
+  async function newChatPick() {
+    const s = settings()
+    if (!store || typeof store.get !== 'function') return s
+    try {
+      return rememberedPick(await store.get(PICK_KEY), s)
+    } catch (e) {
+      if (log) log.warn(`quick chat: reading the last pick: ${e && e.message ? e.message : e}`)
+      return s
+    }
+  }
+
+  function sendDefaults() {
+    newChatPick().then((pick) => post(defaultsMessage(pick)))
+  }
+
+  /** A question went with `pick` (checked, its claude running): the next chat anywhere starts with it. */
+  function remember(pick) {
+    if (!store || typeof store.set !== 'function') return
+    store
+      .set(PICK_KEY, pickRecord(pick, settings()))
+      .then(refreshDefaults)
+      .catch((e) => {
+        if (log) log.warn(`quick chat: saving the pick: ${e && e.message ? e.message : e}`)
+      })
+  }
+
+  /** Whether the page sent a pick with this question (an older page, or one before any defaults came, sends none). */
+  const hasPick = (m) => m.model !== undefined || m.effort !== undefined
+
+  pluginChats.tabs.add(sendDefaults)
+  sendDefaults()
 
   /** Ends `c`: kills its process, stops its timers, frees its slot; tells the page when `message` is given. */
   function end(c, message, error = true) {
@@ -536,6 +614,7 @@ function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {}
 
   tab.onClose(() => {
     closed = true
+    pluginChats.tabs.delete(sendDefaults)
     if (chat) end(chat)
   })
 
@@ -682,7 +761,10 @@ function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {}
       if (typeof spawn !== 'function') throw new Error('quick chat needs a newer cockpit (ctx.processes)')
       if (typeof rel !== 'string') throw new Error('quick chat works on files of the project')
       prompt = firstPrompt({ file: rel, sel: m.sel, before: m.before, after: m.after, question: m.question })
-      const pick = checkPick(m, settings())
+      // A field the page left out: the remembered pick or the settings, as its pickers would have shown.
+      const fallback = m.model !== undefined && m.effort !== undefined ? settings() : await newChatPick()
+      if (c.ended) return
+      const pick = checkPick(m, fallback)
       c.model = pick.model
       c.effort = pick.effort
       if (pluginChats.running >= max) throw new Error(`${max} quick chats already run in this window; close one first`)
@@ -703,7 +785,10 @@ function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {}
       startTurn(c, prompt)
     } catch (e) {
       end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
+      return
     }
+    // Remembered only once its claude runs: a pick refused (an effort this claude lacks) is not kept.
+    if (hasPick(m)) remember({ model: c.model, effort: c.effort })
   }
 
   /**
@@ -765,12 +850,17 @@ function serveChat(tab, { spawn, root, rel, defaults, log, bin, env, limits = {}
       startTurn(c, text)
     } catch (e) {
       end(c, `Quick chat: ${redactPaths(e && e.message ? e.message : e, root)}`)
+      return
     }
+    if (hasPick(m)) remember({ model: c.model, effort: c.effort })
   }
 
   return function handle(m) {
     if (!m || typeof m !== 'object' || typeof m.t !== 'string' || !m.t.startsWith('chat-')) return false
-    if (m.t === 'chat-start') {
+    if (m.t === 'chat-defaults-get') {
+      // A chat opened in the page: the pick may have been remembered in another window since.
+      sendDefaults()
+    } else if (m.t === 'chat-start') {
       start(m).catch((e) => {
         if (log) log.warn(`quick chat: ${e && e.message ? e.message : e}`)
       })
@@ -806,6 +896,10 @@ module.exports = {
   effortOf,
   defaultsOf,
   defaultsMessage,
+  PICK_KEY,
+  pickRecord,
+  rememberedPick,
+  refreshDefaults,
   checkPick,
   isSessionId,
   chatArgv,

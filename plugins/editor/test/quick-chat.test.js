@@ -44,10 +44,28 @@ function makeSpawn(env = {}) {
   return { spawn, calls, children }
 }
 
+/** A tab instance; the pickers' `chat-defaults` go to `defaults`, apart from the chat's own messages. */
 function fakeTab() {
   const posted = []
+  const defaults = []
   const closers = []
-  return { posted, post: (m) => posted.push(m), onClose: (fn) => closers.push(fn), close: () => closers.forEach((f) => f()) }
+  return {
+    posted,
+    defaults,
+    post: (m) => (m && m.t === 'chat-defaults' ? defaults : posted).push(m),
+    onClose: (fn) => closers.push(fn),
+    close: () => closers.forEach((f) => f()),
+  }
+}
+
+/** ctx.appStorage over a Map, JSON in and out as main's is. */
+function memoryStore() {
+  const mem = new Map()
+  return {
+    mem,
+    get: async (k) => (mem.has(k) ? JSON.parse(mem.get(k)) : undefined),
+    set: async (k, v) => void mem.set(k, JSON.stringify(v)),
+  }
 }
 
 async function waitFor(pred, ms = 5000) {
@@ -81,6 +99,7 @@ function serve(opts = {}) {
     root,
     rel: 'rel' in opts ? opts.rel : 'src/a.txt',
     defaults: () => ({ model: opts.model || 'sonnet', effort: opts.effort || 'default' }),
+    store: opts.store,
     log: { warn: (w) => warnings.push(w) },
     bin: FAKE,
     limits: opts.limits,
@@ -164,7 +183,7 @@ test('effortOf, defaultsMessage: the settings, the default for anything off the 
   assert.equal(qc.effortOf({}), 'default')
   assert.equal(qc.effortOf(undefined), 'default')
   assert.deepEqual(qc.defaultsOf({ quickChatModel: 'opus', quickChatEffort: 'low' }), { model: 'opus', effort: 'low' })
-  assert.deepEqual(qc.defaultsMessage({}), { t: 'chat-defaults', model: 'sonnet', effort: 'default', models: qc.CHAT_MODELS, efforts: qc.EFFORT_CHOICES })
+  assert.deepEqual(qc.defaultsMessage(qc.defaultsOf({})), { t: 'chat-defaults', model: 'sonnet', effort: 'default', models: qc.CHAT_MODELS, efforts: qc.EFFORT_CHOICES })
   const prop = require('../plugin.json').contributes.settings.app.properties.quickChatEffort
   assert.deepEqual(prop.enum, qc.EFFORT_CHOICES)
   assert.equal(prop.default, qc.DEFAULT_EFFORT)
@@ -464,6 +483,96 @@ test('a change within a chat is refused when claude has no --resume; the chat go
   assert.equal(s.tab.posted.filter((m) => m.t === 'chat-answer')[2].text, 'turn 2: ok')
   s.tab.close()
   await waitFor(() => s.children.every(exited))
+})
+
+test('rememberedPick: the stored pick while the settings are those it was made under; anything stale is the settings', () => {
+  const settings = { model: 'sonnet', effort: 'default' }
+  const rec = qc.pickRecord({ model: 'opus', effort: 'high' }, settings)
+  assert.deepEqual(rec, { model: 'opus', effort: 'high', settings: { model: 'sonnet', effort: 'default' } })
+  assert.deepEqual(qc.rememberedPick(rec, settings), { model: 'opus', effort: 'high' })
+  // A setting changed after the pick: the setting wins (either one).
+  assert.deepEqual(qc.rememberedPick(rec, { model: 'haiku', effort: 'default' }), { model: 'haiku', effort: 'default' })
+  assert.deepEqual(qc.rememberedPick(rec, { model: 'sonnet', effort: 'low' }), { model: 'sonnet', effort: 'low' })
+  // Off the host's lists, half a record, or not a record: the settings.
+  for (const bad of [
+    { ...rec, model: '--dangerously-skip-permissions' },
+    { ...rec, effort: 'turbo' },
+    { ...rec, model: undefined },
+    { model: 'opus', effort: 'high' },
+    { ...rec, settings: 'x' },
+    'opus',
+    null,
+    undefined,
+    [],
+  ]) {
+    assert.deepEqual(qc.rememberedPick(bad, settings), settings, JSON.stringify(bad))
+  }
+})
+
+test('the last pick a question went with is remembered app-wide and starts the next chat, in any tab', async () => {
+  const store = memoryStore()
+  const a = serve({ store })
+  await waitFor(() => a.tab.defaults.length === 1)
+  assert.deepEqual(a.tab.defaults[0], qc.defaultsMessage({ model: 'sonnet', effort: 'default' }))
+  // Picker changes are not saved; a question sent with a pick is, once its claude runs.
+  a.handle({ ...START, model: 'opus', effort: 'high' })
+  await waitFor(() => store.mem.has(qc.PICK_KEY))
+  assert.deepEqual(JSON.parse(store.mem.get(qc.PICK_KEY)), { model: 'opus', effort: 'high', settings: { model: 'sonnet', effort: 'default' } })
+  // Every open tab of this host hears it.
+  await waitFor(() => a.tab.defaults.length === 2)
+  assert.deepEqual(a.tab.defaults[1], qc.defaultsMessage({ model: 'opus', effort: 'high' }))
+
+  // Another tab (another window, a restart: the same store): its pickers and a pick-less start.
+  const b = serve({ store })
+  await waitFor(() => b.tab.defaults.length === 1)
+  assert.deepEqual(b.tab.defaults[0], qc.defaultsMessage({ model: 'opus', effort: 'high' }))
+  b.handle(START)
+  await waitFor(() => b.tab.posted.some((m) => m.t === 'chat-answer'))
+  assert.deepEqual(b.calls[1], qc.chatArgv(FAKE, 'opus', 'high'))
+  // A page asking again (a chat opened) gets the current defaults.
+  b.handle({ t: 'chat-defaults-get' })
+  await waitFor(() => b.tab.defaults.length === 2)
+
+  // A follow-up with a pick is remembered too.
+  await waitFor(() => a.tab.posted.some((m) => m.t === 'chat-state' && m.state === 'ready'))
+  a.handle({ t: 'chat-say', id: 1, question: 'cheaper', model: 'haiku', effort: 'low' })
+  await waitFor(() => JSON.parse(store.mem.get(qc.PICK_KEY)).model === 'haiku')
+  assert.deepEqual(JSON.parse(store.mem.get(qc.PICK_KEY)), { model: 'haiku', effort: 'low', settings: { model: 'sonnet', effort: 'default' } })
+
+  // The settings changed since: they win over the remembered pick.
+  const c = serve({ store, model: 'fable' })
+  await waitFor(() => c.tab.defaults.length === 1)
+  assert.deepEqual(c.tab.defaults[0], qc.defaultsMessage({ model: 'fable', effort: 'default' }))
+
+  for (const s of [a, b, c]) s.tab.close()
+  await waitFor(() => a.children.concat(b.children).every(exited))
+})
+
+test('a refused pick is not remembered; a stale or unreadable store falls back to the settings', async () => {
+  const store = memoryStore()
+  const s = serve({ store, env: { FAKE_CLAUDE_NO_EFFORT: '1' } })
+  s.handle({ ...START, effort: 'high' })
+  await waitFor(() => s.tab.posted.some((m) => m.t === 'chat-end'))
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(store.mem.has(qc.PICK_KEY), false)
+  s.tab.close()
+
+  store.mem.set(qc.PICK_KEY, JSON.stringify({ model: 'gpt-9', effort: 'high', settings: { model: 'sonnet', effort: 'default' } }))
+  const t = serve({ store })
+  await waitFor(() => t.tab.defaults.length === 1)
+  assert.deepEqual(t.tab.defaults[0], qc.defaultsMessage({ model: 'sonnet', effort: 'default' }))
+  t.tab.close()
+
+  const broken = { get: async () => Promise.reject(new Error('main gone')), set: async () => Promise.reject(new Error('main gone')) }
+  const u = serve({ store: broken })
+  await waitFor(() => u.tab.defaults.length === 1)
+  assert.deepEqual(u.tab.defaults[0], qc.defaultsMessage({ model: 'sonnet', effort: 'default' }))
+  u.handle({ ...START, model: 'opus' })
+  await waitFor(() => u.tab.posted.some((m) => m.t === 'chat-answer'))
+  await waitFor(() => u.warnings.some((w) => /saving the pick: main gone/.test(w)))
+  assert.ok(u.warnings.some((w) => /reading the last pick: main gone/.test(w)))
+  u.tab.close()
+  await waitFor(() => u.children.every(exited))
 })
 
 test('a bad selection or a file outside the project is refused before anything runs', async () => {

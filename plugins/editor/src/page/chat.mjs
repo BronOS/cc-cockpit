@@ -76,8 +76,9 @@ export function proposalFits(doc, target, forText) {
 }
 
 // ---- the model and effort pickers ----
-// The host sends the settings' picks and the lists it accepts (`chat-defaults`); a chat starts from
-// those and the person may change either in its header for the next question. The page only sends
+// The host sends a new chat's picks (the last ones a question went with, remembered app-wide, or the
+// app settings) and the lists it accepts (`chat-defaults`); a chat starts from those and the person
+// may change either in its header for the next question. The page only sends
 // what is picked: the host checks both against its own lists (dist/lib/quick-chat.js checkPick).
 
 /** The effort that passes no `--effort` (Claude Code decides); the host's DEFAULT_EFFORT. */

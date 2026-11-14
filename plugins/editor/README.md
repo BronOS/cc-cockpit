@@ -64,7 +64,10 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   decides; or low, medium, high, xhigh, max); the host accepts only those lists and refuses anything else. A change
   applies to the chat's next question (the answer running keeps its own): the host ends that chat's Claude and starts
   one with the new pick and `--resume` of the same session. An effort needs a Claude Code with `--effort`, a change
-  within a chat one with `--resume`; without them that pick is refused with a message. The prompt carries the file's path, the selection and about 15 lines on each
+  within a chat one with `--resume`; without them that pick is refused with a message. The last pick a question went
+  with (once its Claude ran) is remembered in the plugin's app-wide storage, so the next chat in any tab or window, and
+  after a restart, starts with it; it is kept with the two settings' values of that moment and dropped as soon as
+  either setting differs, so a changed setting wins. The prompt carries the file's path, the selection and about 15 lines on each
   side as data; answers stream as Markdown (shown as text, links not followed); follow-ups go to the same Claude, and
   closing the chat (×, Esc) ends it (so do 15 idle minutes, a turn over 5 minutes, and a reconnect of the tab's page).
   A proposed change is a replacement for the selection, shown as an inline diff (the lines it removes tinted, its text

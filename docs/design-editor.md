@@ -256,6 +256,12 @@ element. A process's model is fixed at spawn, so a follow-up with another pick e
 with the new flags and `--resume <session>` (the id from the stream's init line, used only when it is a UUID), after
 the old one exited; the answer running when the pick changed keeps its own. `--effort` and `--resume` are not
 required flags: only a pick that needs one checks the help for it and is refused, with what to do, when it is missing.
+The last pick a question went with (saved once its Claude runs, not on a select change) is remembered host-side in
+`ctx.appStorage` (`quickChatPick`: main-owned, so every window and a restart see it; never a host-written file or the
+page's per-view localStorage), together with the two settings' values at the time. A new chat starts with it only
+while the settings still equal those, so a setting changed afterwards wins; a stored value off the host's lists falls
+back to the settings. The host sends the pickers' defaults when a tab connects, after a settings change or a
+remembered pick (its own window's tabs), and when a chat opens (`chat-defaults-get`, which picks up another window's).
 These runs leave transcripts in `~/.claude` and count in Usage (documented).
 
 **Claude's changes in the gutter.** Lines changed against git `HEAD` get a bar (host: `git cat-file blob HEAD:<path>`);
