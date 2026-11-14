@@ -244,7 +244,10 @@ Its language servers were only run against fakes.
   URI checks and the method allow-list; a page never sends LSP and never names a binary); quick chat's argv is fixed
   (`claude -p --restricted --safe-mode --strict-mcp-config --tools Read,Grep,Glob --permission-prompts none` plus
   stream-json in and out, `--verbose`, `--include-partial-messages` and `--model`; `REQUIRED_FLAGS` in
-  `dist/lib/quick-chat.js`) and the host refuses to spawn when `claude --help` lacks any of them. `--safe-mode` is the one
+  `dist/lib/quick-chat.js`) and the host refuses to spawn when `claude --help` lacks any of them. The page's model and
+  effort pick (`--model`, `--effort`, and `--resume <uuid>` when a pick changes mid-chat) is checked against the host's
+  own lists (`checkPick`), never passed through; `--effort` and `--resume` are not required flags, a pick needing a
+  missing one is refused. `--safe-mode` is the one
   that keeps the person's plugins, hooks, skills and CLAUDE.md out (`--restricted` alone still ran their hooks) and
   `--permission-prompts none` denies what would ask (a prompt would wait forever); never drop either.
 - Plugin command tabs (`ctx.sessions.openCommand`, design.md §3 "Custom commands"): kind `command` with `argv` and
