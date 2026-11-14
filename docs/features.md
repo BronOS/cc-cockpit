@@ -300,7 +300,7 @@ behind it are in [design.md](design.md).
     opens the Reviewer's diff); the Reviewer's notes for the file show there too, and "Add review note" on a selection
     adds one.
   - Ask Claude (Ctrl/Cmd+L, or the context menu on a selection): a question with the path, lines and selection, sent
-    to the Claude tab last used in the project (or one you pick, or a new session) through the send gate, so it waits
+    to a new session by default (or a Claude tab you pick, the last used one listed first) through the send gate, so it waits
     for *waiting for input*. All of the file's review notes go with it, after the selection (`Review notes on this
     file:`, each in the Reviewer's own form, `1. Lines 40-44:` with its quote and the note, those on the asked lines
     marked `(on the asked lines)`), on the lines the gutter shows them, so unsaved edits above a note do not throw it

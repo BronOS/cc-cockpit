@@ -123,8 +123,9 @@ describe('PageTabDiscussDialog markup', () => {
     const html = await render([{ tabId: 'c1', label: 'Claude', status: 'waiting' }], 'c1')
     expect(html).toMatch(/<button[^>]*class="page-tab-discuss-send"[^>]*disabled=""/)
     expect(html).toContain('Ask Claude about “x.ts”')
-    // The last Claude tab of this view is preselected.
-    expect(html).toMatch(/<option value="c1" selected="">/)
+    // A new session is preselected, even with a ready last Claude tab; that tab leads the list.
+    expect(html).toMatch(/<option value="new" selected="">/)
+    expect(html).toMatch(/<select[^>]*><option value="c1">/)
   })
 
   it('an idle last Claude tab is listed but not picked: a new session is', async () => {

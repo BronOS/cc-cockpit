@@ -211,8 +211,8 @@ Not in v1: debugging (DAP), semantic tokens, call hierarchy, workspace symbol se
 
 **Ask Claude** (to a tab) is core's Discuss for page tabs: select, Ctrl+L or the context menu; core draws the question
 box; main asks the editor's `onDiscuss` for the context (`About: src/x.ts:40-52` and the fenced selection), adds the
-question, and sends through the send gate as person-origin text, to the Claude tab last used in the project or one
-picked from a short menu; delivered only in *waiting for input*, queued otherwise. A plugin's own `sessions.send`
+question, and sends through the send gate as person-origin text, to a new session (the default) or a Claude tab
+picked from a short menu (the one last used in the project listed first); delivered only in *waiting for input*, queued otherwise. A plugin's own `sessions.send`
 would be refused on any typed tab, which is nearly every tab. Every review note of the file follows the selection,
 `Review notes on this file:` then the notes in line order as the Reviewer's own Discuss writes a file review's
 (`1. Lines 40-44:`, the quote as `> ` lines, the note), a note whose lines overlap the asked ones (the cursor's line

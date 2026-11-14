@@ -1,7 +1,7 @@
 // Ask Claude from a page tab (design-editor.md §4 "Ask Claude"): core's question box, drawn by the
 // shell over the tab when its page asks (`ccPanel.tab.discuss()`, the editor's Ctrl+L or context menu).
-// The person types a question and picks where it goes: the Claude tab they used last in this view
-// (preselected), another Claude tab of the window, or a new session. Send asks main
+// The person types a question and picks where it goes: a new session (preselected), the Claude tab they
+// used last in this view (listed first), or another Claude tab of the window. Send asks main
 // (`pageTabs.discuss`), which gets the context from the plugin's `onDiscuss` in this view, composes
 // `About: <title>`, the context and the question, and sends it as the person's own text through the
 // send gate (typed now when that tab waits for input, else queued), then selects that Claude tab. An
@@ -41,17 +41,18 @@ export function PageTabDiscussDialog(props: {
   /** The box goes: `sent` after a send main accepted, false for a cancel (Esc, Cancel, a click outside). */
   onClose: (sent: boolean) => void
 }): React.JSX.Element {
+  // A new session is the default pick (the person's call after trying it: a question about code usually
+  // wants a fresh context, not the middle of another task's conversation). The Claude tab this view
+  // used last still leads the list of tabs, so picking it is one step.
   const pre = preselectDiscussTarget(props.claudeTabs, props.lastClaudeTabId, undefined)
-  const preTab = pre.kind === 'tab' ? props.claudeTabs.find((t) => t.tabId === pre.tabId) : undefined
-  // A tab that would not take the text (idle) is listed but not picked for the person.
-  const initial = preTab && discussReadiness(preTab) !== 'not-ready' ? preTab.tabId : NEW_SESSION
+  const lastUsed = pre.kind === 'tab' ? pre.tabId : undefined
   const [question, setQuestion] = useState('')
-  const [target, setTarget] = useState(initial)
+  const [target, setTarget] = useState(NEW_SESSION)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const field = useRef<HTMLTextAreaElement>(null)
   const titleId = useId()
-  const ordered = orderDiscussTabs(props.claudeTabs, initial === NEW_SESSION ? undefined : initial)
+  const ordered = orderDiscussTabs(props.claudeTabs, lastUsed)
   // The pick stays on a listed tab: one that closed while the box is up falls back to a new session.
   const current = target === NEW_SESSION || ordered.some((t) => t.tabId === target) ? target : NEW_SESSION
   const currentTab = ordered.find((t) => t.tabId === current)
