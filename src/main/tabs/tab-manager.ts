@@ -1037,6 +1037,14 @@ export class TabManager {
     return size ? { cols: size.cols, rows: size.rows } : undefined
   }
 
+  /**
+   * A tab's kind, undefined for an unknown id or another project's: TabGroups' check that only
+   * terminal tabs become panes (a page tab never does, shared/tab-groups.ts isPaneKind).
+   */
+  kindOf(projectId: string, tabId: string): TabKind | undefined {
+    return this.find(projectId, tabId)?.kind
+  }
+
   /** The view whose size the tab's pty has (tests, diagnostics, the terminal colour answer in index.ts). */
   sizerOf(tabId: string): ViewId | undefined {
     return this.sizes.sizerOf(tabId)

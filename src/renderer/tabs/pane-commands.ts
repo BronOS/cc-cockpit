@@ -38,6 +38,9 @@ const ARROWS: ReadonlyArray<[string, PaneEdge]> = [
   ['Down', 'down']
 ]
 
+/** Why a page tab has no split entries (shared/tab-groups.ts isPaneKind): told for a chord, a refusal, a disabled entry. */
+export const PAGE_TAB_NOT_SPLIT = 'Split view holds terminal tabs only; a page tab cannot be a pane.'
+
 /** What a refusal from main means to the person. */
 export function refusalText(reason: GroupRefusalReason): string {
   switch (reason) {
@@ -51,6 +54,8 @@ export function refusalText(reason: GroupRefusalReason): string {
     case 'unknown-group':
     case 'unknown-split':
       return 'That tab or group is gone (changed in another view?).'
+    case 'not-a-pane':
+      return PAGE_TAB_NOT_SPLIT
     case 'bad-name':
       return 'That name cannot be used (1-60 characters, no control characters).'
     default:

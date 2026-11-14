@@ -28,17 +28,29 @@ import {
   rename,
   restoreGroups,
   setSizes,
+  isPaneKind,
   type GroupRefusalReason,
   type GroupsSnapshot,
   type PaneEdge,
   type PlaceIntent,
   type TabGroup
 } from '../../shared/tab-groups'
+import type { TabKind } from '../../shared/types'
 import { warnLog } from '../warn-log'
 
 export interface TabGroupsDeps {
-  /** The project's live terminal tab ids in TabManager's order (overlay entries are never in it). */
+  /**
+   * The project's live tab ids in TabManager's order (overlay entries are never in it; page tabs
+   * are, as they are in the strip, which is why `kindOf` decides which may be panes).
+   */
   order(projectId: string): string[]
+  /**
+   * A live tab's kind (TabManager's table), undefined for an unknown or another project's id. Only
+   * terminal kinds may be panes (isPaneKind): a page tab named in a placement is refused
+   * (`not-a-pane`) and a group loaded or synced with one prunes it. Absent: every tab may (tests that
+   * do not care).
+   */
+  kindOf?(projectId: string, tabId: string): TabKind | undefined
   /**
    * Put the project's tabs in this order (TabManager.setOrder): a permutation of `order()`. Not a
    * save by itself: the service calls `changed` once the whole edit is applied.
@@ -129,6 +141,11 @@ export class TabGroups {
    * the same `unknown-tab` refusal, and a refusal changes nothing and publishes nothing.
    */
   place(projectId: string, intent: PlaceIntent, opts: { plugin?: boolean } = {}): GroupsReply {
+    // A page tab is never a pane, as the tab placed or as the anchor (a drag, Show beside, a
+    // `tabs.create` or a plugin's `beside` naming one). An unknown id goes on to `unknown-tab`.
+    if (!this.mayBePane(projectId, intent.tabId) || !this.mayBePane(projectId, intent.at)) {
+      return { ok: false, reason: 'not-a-pane' }
+    }
     const order = this.deps.order(projectId)
     const result = place(this.groupsOf(projectId), order, intent, {
       mint: this.mint,
@@ -310,7 +327,7 @@ export class TabGroups {
     const order = this.deps.order(projectId)
     const state = this.projects.get(projectId)
     if (state && state.groups.length > 0) {
-      const live = normalizeGroups(state.groups, order, undefined, this.mint)
+      const live = normalizeGroups(state.groups, this.panesOf(projectId, order), undefined, this.mint)
       if (JSON.stringify(live) !== JSON.stringify(state.groups)) {
         state.groups = live
         this.told(projectId)
@@ -329,7 +346,9 @@ export class TabGroups {
   restore(projectId: string, saved: unknown, idMap: ReadonlyMap<string, string>): void {
     const order = this.deps.order(projectId)
     const restored = restoreGroups(saved, idMap, this.mint)
-    const groups = normalizeGroups([...this.groupsOf(projectId), ...restored], order, undefined, this.mint)
+    // Against the terminal tabs only: a saved leaf that maps to a page tab (a damaged or hand-edited
+    // record) is pruned like one whose tab did not come back.
+    const groups = normalizeGroups([...this.groupsOf(projectId), ...restored], this.panesOf(projectId, order), undefined, this.mint)
     this.apply(projectId, groups, order, contiguousOrder(order, groups), true)
   }
 
@@ -338,6 +357,18 @@ export class TabGroups {
     this.projects.delete(projectId)
     this.held.delete(projectId)
     this.saveOwed.delete(projectId)
+  }
+
+  /** False only for a live tab of the project whose kind may not be a pane (a page tab). */
+  private mayBePane(projectId: string, tabId: string): boolean {
+    if (!this.deps.kindOf) return true
+    const kind = this.deps.kindOf(projectId, tabId)
+    return kind === undefined || isPaneKind(kind)
+  }
+
+  /** The ids of `order` that may be panes: the liveness a load or a sync checks leaves against. */
+  private panesOf(projectId: string, order: readonly string[]): string[] {
+    return this.deps.kindOf ? order.filter((t) => isPaneKind(this.deps.kindOf!(projectId, t))) : [...order]
   }
 
   /** Run `fn` with this project's snapshot held until it returns, then publish once. */

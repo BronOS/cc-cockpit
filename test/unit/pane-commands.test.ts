@@ -4,7 +4,7 @@ import { paneView } from '../../src/renderer/state/groups-state'
 import { initialTabsState, tabsReducer, type TabsAction, type TabsState } from '../../src/renderer/state/tabs-store'
 import { paneCommandHandlers, refusalText } from '../../src/renderer/tabs/pane-commands'
 import { groupTitle, handleWords, leftSegment, stripRuns } from '../../src/renderer/tabs/strip-groups'
-import type { PaneNode, PaneSplit, PlaceIntent, TabGroup } from '../../src/shared/tab-groups'
+import { isPaneKind, type PaneNode, type PaneSplit, type PlaceIntent, type TabGroup } from '../../src/shared/tab-groups'
 
 const tab = (id: string): TabInfo => ({ id, kind: 'shell', cwd: '/w', gen: 1 })
 const leaf = (t: string): PaneNode => ({ tab: t })
@@ -155,6 +155,13 @@ describe('pane commands', () => {
   it('tells the person what a refusal means', () => {
     expect(refusalText('full')).toMatch(/8 panes/)
     expect(refusalText('too-many-groups')).toMatch(/32/)
+    expect(refusalText('not-a-pane')).toMatch(/page tab/)
+  })
+
+  it('only terminal kinds may be panes: a page tab never is', () => {
+    expect(['claude', 'shell', 'command'].map(isPaneKind)).toEqual([true, true, true])
+    expect(isPaneKind('page')).toBe(false)
+    expect(isPaneKind(undefined)).toBe(false)
   })
 })
 

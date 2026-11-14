@@ -428,3 +428,64 @@ describe('a plugin’s beside (D4 D5 D7)', () => {
     expect(g.pluginFocus('p', { tabId: 'e', placed: false }, 'web:1', shows('b'))).toEqual({ to: 'window', tabId: 'e' })
   })
 })
+
+describe('page tabs are never panes (design.md §3 "Split groups", §4 "Page tabs")', () => {
+  /** A TabGroups with TabManager's kinds: `pg` is a plugin's page tab, the rest terminal tabs. */
+  function withPage(initial: Record<string, string[]> = { p: ['a', 'pg', 'b'] }) {
+    const orders = new Map(Object.entries(initial).map(([k, v]) => [k, [...v]]))
+    const published: GroupsSnapshot[] = []
+    const groups = new TabGroups({
+      order: (p) => [...(orders.get(p) ?? [])],
+      kindOf: (p, id) => ((orders.get(p) ?? []).includes(id) ? (id === 'pg' ? 'page' : 'shell') : undefined),
+      setOrder: (p, ids) => {
+        orders.set(p, [...ids])
+      },
+      publish: (_p, snapshot) => published.push(structuredClone(snapshot)),
+      changed: () => {},
+      log: () => {}
+    })
+    return { groups, orders, published }
+  }
+
+  it('refuses a page tab as the tab placed and as the anchor, changing nothing', () => {
+    const t = withPage()
+    expect(t.groups.place('p', { tabId: 'pg', at: 'a', edge: 'right' })).toEqual({ ok: false, reason: 'not-a-pane' })
+    expect(t.groups.place('p', { tabId: 'a', at: 'pg', edge: 'down' })).toEqual({ ok: false, reason: 'not-a-pane' })
+    expect(t.published).toEqual([])
+    expect(t.groups.groupsOf('p')).toEqual([])
+    // An unknown or foreign id is still the one `unknown-tab` refusal.
+    expect(refusalOf(t.groups.place('p', { tabId: 'zz', at: 'a', edge: 'right' }))).toBe('unknown-tab')
+    // The terminal tabs around it still group, and the page tab is moved out of their block.
+    expect(t.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' }).ok).toBe(true)
+    expect(t.orders.get('p')).toEqual(['a', 'b', 'pg'])
+  })
+
+  it('a split beside a page tab (tabs.create, a plugin’s beside) opens the new tab plain', () => {
+    const t = withPage()
+    const { placed } = t.groups.createBeside('p', { tabId: 'pg', edge: 'right' }, () => {
+      t.orders.get('p')!.push('n')
+      return { id: 'n' }
+    })
+    expect(placed).toBe(false)
+    expect(t.groups.groupsOf('p')).toEqual([])
+  })
+
+  it('a restored group naming a page tab drops that leaf (a damaged or hand-edited record)', () => {
+    const t = withPage({ p: ['n1', 'pg', 'n2'] })
+    const saved = [{ root: { dir: 'row', children: [{ tab: 's1' }, { tab: 'sp' }, { tab: 's2' }] } }]
+    t.groups.restore('p', saved, new Map([['s1', 'n1'], ['sp', 'pg'], ['s2', 'n2']]))
+    expect(members(t.groups.groupsOf('p')[0])).toEqual(['n1', 'n2'])
+    // A two-pane group with a page tab in it is no group at all.
+    const u = withPage({ p: ['n1', 'pg'] })
+    u.groups.restore('p', [{ root: { dir: 'row', children: [{ tab: 's1' }, { tab: 'sp' }] } }], new Map([['s1', 'n1'], ['sp', 'pg']]))
+    expect(u.groups.groupsOf('p')).toEqual([])
+  })
+
+  it('a page tab dropped on a group’s segment lands after the group, as any plain tab', () => {
+    const t = withPage({ p: ['a', 'b', 'pg'] })
+    t.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
+    t.groups.reorder('p', 'pg', 1)
+    expect(t.orders.get('p')).toEqual(['a', 'b', 'pg'])
+    expect(members(t.groups.groupsOf('p')[0])).toEqual(['a', 'b'])
+  })
+})

@@ -28,6 +28,14 @@ export type SplitDir = 'row' | 'column'
 export type PaneEdge = 'left' | 'right' | 'up' | 'down'
 export const PANE_EDGES: readonly PaneEdge[] = ['left', 'right', 'up', 'down']
 
+/**
+ * The tab kinds a pane may hold: terminal tabs only (Claude, Shell, command). A page tab (a plugin's
+ * page, design.md §4 "Page tabs") never joins a group: its frame lives in one fixed layer outside the
+ * React root, laid over the whole tab area, and it has no terminal to fit into a pane. Main refuses a
+ * placement naming one (`not-a-pane`) and prunes one from a loaded group; the page never offers it.
+ */
+export const isPaneKind = (kind: string | undefined): boolean => kind === 'claude' || kind === 'shell' || kind === 'command'
+
 export interface PaneLeaf {
   tab: string
 }
@@ -91,6 +99,7 @@ export const checkGroupName = checkSessionName
 
 export type GroupRefusalReason =
   | 'unknown-tab' // a tab id that is not a live tab of the project
+  | 'not-a-pane' // a live tab of the project that is not a terminal tab (a page tab: isPaneKind)
   | 'same-tab' // a tab placed beside itself
   | 'bad-edge'
   | 'not-grouped' // removeLeaf of a plain tab

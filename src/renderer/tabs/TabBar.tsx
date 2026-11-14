@@ -9,7 +9,7 @@ import { QueuedChip } from '../status/QueuedChip'
 import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { ChevronDownGlyph, CloseGlyph, CommandGlyph, FileGlyph, PageGlyph, PlusGlyph, ShellGlyph, SplitGlyph } from '../window-icons'
-import { groupOf, leavesOf, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
+import { groupOf, isPaneKind, leavesOf, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { PANE_MODE_PX } from './pane-layout'
 import { groupTitle, handleWords, leftSegment, stripRuns } from './strip-groups'
 import { commandTooltip, pageTabMarks, tabLabel } from './tab-label'
@@ -410,9 +410,11 @@ export function TabBar(props: {
       d = { tabId: p.tabId, pointerId: p.pointerId, from, startX: p.startX, dx, toIndex: from, ...(p.groupId ? { groupId: p.groupId } : {}) }
     }
     // Well below the strip a tab's drag turns into pane mode: the terminal area shows where it
-    // would go (design §1). A group's handle only moves the block along the strip.
+    // would go (design §1). A group's handle only moves the block along the strip, and so does a
+    // page tab's drag: a page tab is never a pane (shared/tab-groups.ts isPaneKind).
     const strip = listRef.current?.getBoundingClientRect()
-    const pane = d.groupId === undefined && strip !== undefined && e.clientY > strip.bottom + PANE_MODE_PX
+    const paneable = isPaneKind(tabs.find((t) => t.id === d.tabId)?.kind)
+    const pane = d.groupId === undefined && paneable && strip !== undefined && e.clientY > strip.bottom + PANE_MODE_PX
     if (pane) props.onPaneDrag(d.tabId, { x: e.clientX, y: e.clientY })
     else if (d.pane) props.onPaneDrag(d.tabId, null)
     const { centres } = othersOf(d.tabId, d.groupId)
@@ -465,6 +467,8 @@ export function TabBar(props: {
   const splitRight = menuTab ? props.splitBlocked(menuTab.id, 'right') : undefined
   const splitDown = menuTab ? props.splitBlocked(menuTab.id, 'down') : undefined
   const groupOfMenu = groupMenu ? groups.find((g) => g.id === groupMenu.groupId) : undefined
+  // The tabs that may be panes (no page tab): Show beside needs another one.
+  const paneTabs = tabs.filter((t) => isPaneKind(t.kind)).length
 
   const renderTab = (tab: TabInfo): React.JSX.Element => {
     const status = props.sessions.get(tab.id)
@@ -776,47 +780,52 @@ export function TabBar(props: {
               Rename
             </button>
           )}
-          <div role="separator" className="menu-separator" />
           {/* The split view (design §1): a new pane beside this tab, this tab beside another, out of
-              its group. A split too small to make is disabled with the reason (D5). */}
-          <button
-            type="button"
-            role="menuitem"
-            disabled={splitRight !== undefined}
-            title={splitRight}
-            aria-description={splitRight}
-            onClick={() => props.onSplit(menu.tabId, 'right')}
-          >
-            Split right
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={splitDown !== undefined}
-            title={splitDown}
-            aria-description={splitDown}
-            onClick={() => props.onSplit(menu.tabId, 'down')}
-          >
-            Split down
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            aria-haspopup="menu"
-            disabled={tabs.length < 2}
-            onClick={(e) => {
-              // Else the window's click listener closes the list this opens.
-              e.stopPropagation()
-              setBeside({ tabId: menu.tabId, x: menu.x, y: menu.y })
-              setMenu(null)
-            }}
-          >
-            Show beside ▸
-          </button>
-          {menuGroup && (
-            <button type="button" role="menuitem" onClick={() => props.onMoveOut(menu.tabId)}>
-              Move out of group
-            </button>
+              its group. A split too small to make is disabled with the reason (D5). A page tab is
+              never a pane (shared/tab-groups.ts isPaneKind): it has none of these entries. */}
+          {isPaneKind(menuTab.kind) && (
+            <>
+              <div role="separator" className="menu-separator" />
+              <button
+                type="button"
+                role="menuitem"
+                disabled={splitRight !== undefined}
+                title={splitRight}
+                aria-description={splitRight}
+                onClick={() => props.onSplit(menu.tabId, 'right')}
+              >
+                Split right
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={splitDown !== undefined}
+                title={splitDown}
+                aria-description={splitDown}
+                onClick={() => props.onSplit(menu.tabId, 'down')}
+              >
+                Split down
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                disabled={paneTabs < 2}
+                onClick={(e) => {
+                  // Else the window's click listener closes the list this opens.
+                  e.stopPropagation()
+                  setBeside({ tabId: menu.tabId, x: menu.x, y: menu.y })
+                  setMenu(null)
+                }}
+              >
+                Show beside ▸
+              </button>
+              {menuGroup && (
+                <button type="button" role="menuitem" onClick={() => props.onMoveOut(menu.tabId)}>
+                  Move out of group
+                </button>
+              )}
+            </>
           )}
           <div role="separator" className="menu-separator" />
           {/* The person's flag (shared/tab-flag.ts), on any tab kind: a colour row, the note, clear. */}
@@ -874,7 +883,7 @@ export function TabBar(props: {
             Show beside
           </div>
           {tabs
-            .filter((t) => t.id !== beside.tabId)
+            .filter((t) => t.id !== beside.tabId && isPaneKind(t.kind))
             .map((t) => {
               const label = labelOfId(t.id)
               return (

@@ -18,6 +18,7 @@ import { CONTROL as SESSION_NAME_CONTROL } from '../../src/shared/session-name'
 import { validateManifest } from '../../src/main/plugins/validate'
 import { buildRestorePlan, TabRestorer, tabRecordsOf, type RestoredTab } from '../../src/main/restore'
 import { isPluginId, TabManager, type TabLifecycle } from '../../src/main/tabs/tab-manager'
+import { TabGroups } from '../../src/main/tabs/tab-groups'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { closeQuestion } from '../../src/renderer/tabs/close-confirm'
 import { tabLabel } from '../../src/renderer/tabs/tab-label'
@@ -448,5 +449,30 @@ describe('renderer: a page tab in the strip', () => {
     const tab: TabInfo = { id: 't', kind: 'page', cwd: projA, gen: 1, page: file('src/a.ts') }
     expect(tabLabel(tab)).toBe('a.ts')
     expect(closeQuestion(tab, undefined, true)).toBeNull()
+  })
+})
+
+describe('split groups over TabManager: a page tab is never a pane', () => {
+  it('TabManager.kindOf names a page tab; TabGroups refuses it and keeps grouping the terminals', () => {
+    const tabs = manager()
+    const a = tabs.create(A, { kind: 'shell' })
+    const page = tabs.createPage(A, file('src/a.ts'))
+    const b = tabs.create(A, { kind: 'shell' })
+    expect(tabs.kindOf(A, page.id)).toBe('page')
+    expect(tabs.kindOf(B, page.id)).toBeUndefined()
+    const groups = new TabGroups({
+      order: (p) => tabs.list(p).map((t) => t.id),
+      kindOf: (p, id) => tabs.kindOf(p, id),
+      setOrder: (p, ids) => tabs.setOrder(p, ids),
+      publish: () => {},
+      changed: () => {},
+      log: () => {}
+    })
+    expect(groups.place(A, { tabId: page.id, at: a.id, edge: 'right' })).toEqual({ ok: false, reason: 'not-a-pane' })
+    expect(groups.place(A, { tabId: b.id, at: page.id, edge: 'down' })).toEqual({ ok: false, reason: 'not-a-pane' })
+    expect(groups.place(A, { tabId: b.id, at: a.id, edge: 'right' }).ok).toBe(true)
+    expect(tabs.list(A).map((t) => t.id)).toEqual([a.id, b.id, page.id])
+    // A page tab saved with a group around it comes back plain: its plan has no saved id to map.
+    expect(buildRestorePlan({ path: projA, tabs: tabRecordsOf(tabs.list(A)) }).find((t) => t.kind === 'page')).not.toHaveProperty('savedId')
   })
 })

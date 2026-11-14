@@ -26,10 +26,10 @@ import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
 import type { GroupsReply } from '../../shared/ipc'
-import { groupOf, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
+import { groupOf, isPaneKind, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
 import { paneAtPoint } from './SplitArea'
-import { paneCommandHandlers, refusalText } from './pane-commands'
+import { PAGE_TAB_NOT_SPLIT, paneCommandHandlers, refusalText } from './pane-commands'
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
@@ -525,7 +525,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const paneDropRef = useRef<PaneDrop | null>(null)
   const dragToPane = (tabId: string, point: { x: number; y: number } | null): void => {
     let next: PaneDrop | null = null
-    if (point) {
+    // A page tab never goes into a pane (TabBar keeps its drag on the strip; this is the second look).
+    if (point && isPaneKind(stateRef.current.tabs.find((t) => t.id === tabId)?.kind)) {
       const hit = paneAtPoint(document.querySelector<HTMLElement>('[data-split-area]'), point.x, point.y)
       const edge = hit && hit.tabId !== tabId ? edgeZone(hit.rect, point) : null
       if (hit && edge) next = { at: hit.tabId, edge, label: labelOf(hit.tabId) }
@@ -622,6 +623,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   /** Why a split of `tabId` on `edge` cannot be made here, or undefined (D5: the menu disables it with this). */
   const splitBlocked = useCallback(
     (tabId: string, edge: PaneEdge): string | undefined => {
+      if (!isPaneKind(stateRef.current.tabs.find((t) => t.id === tabId)?.kind)) return PAGE_TAB_NOT_SPLIT
       if (area.width === 0) return undefined
       return splitFits(paneSize(tabId), edge, cellNow()) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
     },
@@ -666,7 +668,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const besideItems = useMemo((): CommandInfo[] => {
     if (!besidePick) return []
     return state.tabs
-      .filter((t) => t.id !== state.activeId)
+      .filter((t) => t.id !== state.activeId && isPaneKind(t.kind))
       .map((t) => ({ id: t.id, title: tabLabel(t, own.get(t.id)?.title, own.get(t.id)?.name), source: 'core' as const }))
   }, [besidePick, state.tabs, state.activeId, own])
 
@@ -1324,7 +1326,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             if (id) paneActions.current.openSplit(id, edge)
           },
           openBeside: (edge) => {
-            if (stateRef.current.activeId && stateRef.current.tabs.length > 1) setBesidePick({ edge })
+            const s = stateRef.current
+            // The focused tab is the anchor: a page tab is never a pane (shared/tab-groups.ts isPaneKind).
+            if (!isPaneKind(s.tabs.find((t) => t.id === s.activeId)?.kind)) {
+              if (s.activeId) setError(PAGE_TAB_NOT_SPLIT)
+              return
+            }
+            if (s.tabs.filter((t) => isPaneKind(t.kind)).length > 1) setBesidePick({ edge })
           },
           minShare: (axis) => {
             const { area: a, cellNow: c } = paneActions.current
