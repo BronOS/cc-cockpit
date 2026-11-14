@@ -2021,6 +2021,16 @@ iframe:focus-visible {
 .tab-group .tab {
   min-width: 96px;
 }
+/* Members sit 2px inside the group's ring, so the active tab's own ring and background never cover
+   it: the group stays one unbroken outline and the active tab shows inside it as it does in the
+   plain strip (Oleg, trying run 001: the active tab cut a gap in the ring). Same 26px overall. */
+.tab-group {
+  padding: 2px;
+}
+.tab-group .tab,
+.tab-group .tab-group-handle {
+  height: 22px;
+}
 .tab-group-handle {
   flex: none;
   display: flex;
