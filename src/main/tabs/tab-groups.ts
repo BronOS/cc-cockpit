@@ -348,8 +348,7 @@ export class TabGroups {
   restore(projectId: string, saved: unknown, idMap: ReadonlyMap<string, string>): void {
     const order = this.deps.order(projectId)
     const restored = restoreGroups(saved, idMap, this.mint)
-    // Against the terminal tabs only: a saved leaf that maps to a page tab (a damaged or hand-edited
-    // record) is pruned like one whose tab did not come back.
+    // Against the panes: a saved leaf whose tab did not come back (or is not a pane kind) is pruned.
     const groups = normalizeGroups([...this.groupsOf(projectId), ...restored], this.panesOf(projectId, order), undefined, this.mint)
     this.apply(projectId, groups, order, contiguousOrder(order, groups), true)
   }
@@ -361,7 +360,7 @@ export class TabGroups {
     this.saveOwed.delete(projectId)
   }
 
-  /** False only for a live tab of the project whose kind may not be a pane (a page tab). */
+  /** False only for a live tab of the project whose kind may not be a pane. */
   private mayBePane(projectId: string, tabId: string): boolean {
     if (!this.deps.kindOf) return true
     const kind = this.deps.kindOf(projectId, tabId)

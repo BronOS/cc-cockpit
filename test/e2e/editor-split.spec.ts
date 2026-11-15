@@ -658,7 +658,12 @@ test('menus over a file pane: the New tab menu of a split is on top of the frame
     const m = (await menu.boundingBox())!
     const onTop = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[role="menu"]') !== null, { x: m.x + m.width / 2, y: m.y + 10 })
     expect(onTop).toBe(true)
-    await expect(page.locator('.pane-drop-preview')).toHaveCount(1)
+    // Drawn in the frames' layer, above the frame: visible and over the notes.txt frame's box.
+    const preview = page.locator('.page-tab-layer > .page-tab-drop-preview')
+    await expect(preview).toBeVisible()
+    const pb = (await preview.boundingBox())!
+    const fb = (await frameEl(page, 'notes.txt').boundingBox())!
+    expect(pb.x < fb.x + fb.width && fb.x < pb.x + pb.width && pb.y < fb.y + fb.height && fb.y < pb.y + pb.height).toBe(true)
     await menu.getByRole('menuitem').first().click()
     await expect(visiblePanes(page)).toHaveCount(3)
   } finally {

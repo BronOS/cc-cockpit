@@ -244,7 +244,7 @@ describe('pane commands', () => {
     expect(refusalText('not-a-pane')).toMatch(/cannot be a pane/)
   })
 
-  it('every tab kind but an overlay may be a pane, a page tab included', () => {
+  it('every tab kind may be a pane, a page tab included', () => {
     expect(['claude', 'shell', 'command', 'page'].map(isPaneKind)).toEqual([true, true, true, true])
     expect(isPaneKind('overlay')).toBe(false)
     expect(isPaneKind(undefined)).toBe(false)

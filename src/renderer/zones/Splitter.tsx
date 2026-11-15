@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { acquireLayer } from './shell-layers'
+import { acquireDrag, acquireLayer } from './shell-layers'
 
 const KEY_STEP = 16
 
@@ -12,6 +12,14 @@ const KEY_STEP = 16
  * A drag holds a shell layer (shell-layers.ts): a webview panel's native view would take the
  * pointer from the drag wherever the bar passes over it, so views hide until the drag ends.
  */
+/** One release for two holds. */
+function both(a: () => void, b: () => void): () => void {
+  return () => {
+    a()
+    b()
+  }
+}
+
 export function Splitter(props: {
   axis: 'x' | 'y'
   /** The size this bar controls now. */
@@ -69,7 +77,7 @@ export function Splitter(props: {
         // window, and over the terminal canvas.
         e.currentTarget.setPointerCapture(e.pointerId)
         drag.current?.release()
-        drag.current = { start: pos(e), startValue: current(), release: acquireLayer() }
+        drag.current = { start: pos(e), startValue: current(), release: both(acquireLayer(), acquireDrag()) }
       }}
       onPointerMove={(e) => {
         const d = drag.current

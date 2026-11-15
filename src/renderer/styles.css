@@ -1033,6 +1033,10 @@ iframe:focus-visible {
   overflow: hidden;
   pointer-events: none;
 }
+/* A shell drag over a frame: the frame takes no pointer events (shell-layers.ts acquireDrag). */
+body.shell-dragging .page-tab-frame {
+  pointer-events: none;
+}
 .page-tab-frame {
   position: absolute;
   display: block;

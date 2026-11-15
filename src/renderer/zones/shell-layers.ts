@@ -35,6 +35,27 @@ export function acquireLayer(): () => void {
   }
 }
 
+let drags = 0
+
+/**
+ * A shell drag (a divider, a strip tab) is up until the returned release is called (twice is
+ * harmless): page frames ignore the pointer meanwhile (`body.shell-dragging`, styles.css), so the
+ * drag never depends on pointer capture alone to keep a frame from taking its events (a browser view
+ * over web access may not hold capture over a sandboxed iframe). Not a layer: a menu over a frame
+ * must still let the frame take clicks.
+ */
+export function acquireDrag(): () => void {
+  drags += 1
+  document.body.classList.add('shell-dragging')
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    drags -= 1
+    if (drags === 0) document.body.classList.remove('shell-dragging')
+  }
+}
+
 /** Whether any layer is up now. */
 export function layersUp(): boolean {
   return count > 0

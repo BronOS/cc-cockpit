@@ -8,6 +8,7 @@ import { usePrefs } from '../prefs/prefs-store'
 import { QueuedChip } from '../status/QueuedChip'
 import { StatusDot } from '../status/StatusDot'
 import { useShellLayer } from '../zones/use-shell-layer'
+import { acquireDrag } from '../zones/shell-layers'
 import { ChevronDownGlyph, CloseGlyph, CommandGlyph, FileGlyph, PageGlyph, PlusGlyph, ShellGlyph, SplitGlyph } from '../window-icons'
 import { groupOf, isPaneKind, leavesOf, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { PANE_MODE_PX } from './pane-layout'
@@ -388,6 +389,8 @@ export function TabBar(props: {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [dragging, onPaneDrag])
+  // Page frames ignore the pointer while a strip drag is up (it may end over one in pane mode).
+  useEffect(() => (dragging ? acquireDrag() : undefined), [dragging])
 
   /** A press on a tab label, or on a group's handle (`groupId`: the block moves). */
   const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>, tabId: string, groupId?: string): void => {
@@ -466,7 +469,7 @@ export function TabBar(props: {
   const splitRight = menuTab ? props.splitBlocked(menuTab.id, 'right') : undefined
   const splitDown = menuTab ? props.splitBlocked(menuTab.id, 'down') : undefined
   const groupOfMenu = groupMenu ? groups.find((g) => g.id === groupMenu.groupId) : undefined
-  // The tabs that may be panes (every kind but an overlay): Show beside needs another one.
+  // The tabs that may be panes (every tab kind: an overlay entry is never a tab): Show beside needs another one.
   const paneTabs = tabs.filter((t) => isPaneKind(t.kind)).length
 
   const renderTab = (tab: TabInfo): React.JSX.Element => {
