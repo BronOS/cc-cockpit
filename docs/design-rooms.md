@@ -94,7 +94,9 @@ main applies the plain Stop then (`waiting`, the gate's head delivered). An ack 
 on could paste into it. A tab wrongly left `working` recovers at the person's next prompt, as after an interrupted turn. When the connection
 closes unacked, main also offers the member's pointer again once the plain Stop is applied. A `ccc` that holds its
 connection open without acking is waited for 5 s (`ACK_TIMEOUT_MS`), then a log line; the block stays as it is (the
-tab `working`) until its next hook or the connection's close undoes it.
+tab `working`) until its next hook or the connection's close undoes it. Main checks the member again at the ack (same
+rule as at the Stop): a pause, the room's end, a cleared mark or the person's takeover in between answers the ack
+`acked: false`, so `ccc` prints nothing and the connection's close applies the plain Stop.
 The messages stay queued: nothing is lost, at worst the pointer comes again next Stop. The reply is short
 and fixed, so it cannot be cut into invalid JSON.
 

@@ -494,6 +494,32 @@ describe('the ack', () => {
     expect(writes).toEqual([])
   })
 
+  const revokers: Array<[string, (tabId: string) => void, { marked?: boolean }]> = [
+    ['the room paused', () => rooms.pause(roomId), {}],
+    ['the room ended', () => rooms.end(owner, roomId), {}],
+    ['the mark cleared', (tabId) => mark(tabId, { mark: false }), { marked: true }],
+    ["the person's input (takeover)", (tabId) => sessions.userInput('p1', tabId, 'x'), {}]
+  ]
+  for (const [what, revoke, opts] of revokers) {
+    it(`${what} between the Stop and its ack: acked false, then the close applies the plain Stop once`, () => {
+      member('t1', 'alpha', { typed: opts.marked })
+      if (opts.marked) mark('t1')
+      message('alpha')
+      sessions.send('t1', 'from discuss', 'core')
+      const connection = new AbortController()
+      expect(hookStop('t1', { stop_hook_active: false }, connection)).toEqual({ block: pointerText(1), ackId: 'ack-1' })
+      revoke('t1')
+      expect(stop.ack('t1', 'ack-1')).toBe(false)
+      // Revoked for good: a second ack confirms nothing either.
+      expect(stop.ack('t1', 'ack-1')).toBe(false)
+      const unblocked = vi.spyOn(stop, 'unblocked')
+      connection.abort()
+      expect(sessions.get('t1')?.status).toBe('waiting')
+      expect(writes).toEqual([{ tabId: 't1', data: paste('from discuss') }])
+      expect(unblocked).toHaveBeenCalledTimes(1)
+    })
+  }
+
   it('dispose and a closed tab stop the timer', () => {
     member('t1', 'alpha')
     message('alpha')

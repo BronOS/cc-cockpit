@@ -91,8 +91,8 @@ pointer (`3 room messages waiting: run ccc room read`), which carries no message
 
 At most 5 stops in a row are answered so; then the messages wait behind a badge on the tab, with no
 pointer either way (a `send` to you answers `held` with `capped`), until the person steps in: their
-next prompt in your tab, their click on the badge, or their Resume of the room. The gate's pastes and the Stop pointers
-both count toward this cap and toward the room's auto-pause. A message that reaches you within a second of your
+next prompt in your tab, their click on the badge, or their Resume of the room. Only the Stop pointers count toward this cap;
+the gate's pastes and the Stop pointers both count toward the room's auto-pause. A message that reaches you within a second of your
 session starting waits and is offered when that second ends, under the same rules.
 
 **The person's own typing comes first.** A tab the person has typed in gets no pointer at all unless

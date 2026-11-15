@@ -11,7 +11,9 @@
 //      answers `{ block, ackId }`.
 //   2. `ccc` sends `hook.ack` with the id on the same connection: `ack(tabId, ackId)` confirms it (the delivery
 //      counts) and main answers `{ acked: true }`. Only then does `ccc` print the block (cli/client.ts runHook). The
-//      order is what makes the next step safe: an ack main never served proves the block was never printed.
+//      order is what makes the next step safe: an ack main never served proves the block was never printed. The ack
+//      rechecks eligibility (`eligible`, the rule `stop` used): one revoked since answers `{ acked: false }`, and the
+//      close then undoes the block as in step 3.
 //   3. The connection closes with the block still unacked (`ccc` gave up on a slow reply, died, or got a refusal):
 //      `closedUnacked` drops it and the hook handler applies the plain Stop (SessionRegistry.unblockStop: `waiting`,
 //      the gate's head delivered), since Claude did stop. Only while the blocked Stop is still the tab's last event.
@@ -89,6 +91,8 @@ interface PendingBlock {
   roomId: string
   /** Undefined once the ack timeout fired: the block stays pending, so a late ack or the next Stop can count it. */
   timer: ReturnType<typeof setTimeout> | undefined
+  /** An ack found the tab no longer eligible: never acked now, left for the connection's close to undo. */
+  revoked: boolean
 }
 
 export class RoomStop {
@@ -127,18 +131,9 @@ export class RoomStop {
     if (earlier && active === true) this.delivered(earlier.roomId)
     if (active === false) this.streaks.delete(tabId)
 
-    const member = this.deps.rooms.memberOf(tabId)
-    if (!member) return undefined
-    const room = this.deps.rooms.peek(member.roomId)
-    if (!room || room.endedAt !== undefined || room.paused) return undefined
-    const held = this.deps.rooms.held(room.id, member.name)
-    if (held === 0) return undefined
-    const entry = this.deps.sessions.get(tabId)
-    // No entry, a dead process, or a paste of ours still waiting for its UserPromptSubmit (it will be the next
-    // prompt: continuing the turn now would only put the pointer in twice).
-    if (!entry || entry.status === 'ended' || entry.exitCode !== undefined || entry.delivering) return undefined
-    if (entry.typed && !this.marked(tabId, room.id, member.name)) return undefined
-    if (this.capped.has(tabId)) return undefined
+    const ok = this.eligible(tabId)
+    if (!ok) return undefined
+    const { roomId, held } = ok
     const streak = this.streaks.get(tabId) ?? 0
     if (streak >= MAX_STOP_BLOCKS_IN_A_ROW) {
       // Held behind the badge until the person's next prompt (personPrompt): not even a fresh run gets a block.
@@ -151,7 +146,7 @@ export class RoomStop {
     const ackId = this.newAckId()
     const timer = setTimeout(() => this.timedOut(tabId, ackId), this.ackTimeout)
     timer.unref?.()
-    this.pending.set(tabId, { ackId, roomId: room.id, timer })
+    this.pending.set(tabId, { ackId, roomId, timer, revoked: false })
     return { block: pointerText(held), ackId }
   }
 
@@ -160,10 +155,20 @@ export class RoomStop {
    * True when it did; false for no pending block (a later Stop ended the wait), another id, or one already acked. A
    * late ack (after the timeout's log line) still confirms: the block is pending until the next Stop. The delivery
    * counts toward the room's auto-pause.
+   *
+   * Eligibility is checked again (the same `eligible` as `stop`): a takeover by the person, a cleared mark, a pause or
+   * the room's end between the Stop and its ack revokes the block. It answers false, so `ccc` prints nothing and
+   * Claude stops; the block stays pending but revoked (no later ack can confirm it), so the connection's close
+   * applies the plain Stop through `closedUnacked` exactly once, as for any unacked block.
    */
   ack(tabId: string, ackId: unknown): boolean {
     const p = this.pending.get(tabId)
-    if (!p || typeof ackId !== 'string' || p.ackId !== ackId) return false
+    if (!p || typeof ackId !== 'string' || p.ackId !== ackId || p.revoked) return false
+    const ok = this.eligible(tabId)
+    if (!ok || ok.roomId !== p.roomId) {
+      p.revoked = true
+      return false
+    }
     if (p.timer !== undefined) clearTimeout(p.timer)
     this.pending.delete(tabId)
     this.delivered(p.roomId)
@@ -280,6 +285,25 @@ export class RoomStop {
     if (!p) return
     if (p.timer !== undefined) clearTimeout(p.timer)
     this.pending.delete(tabId)
+  }
+
+  /**
+   * The one rule for who may be continued (the header, "Who may be continued"), for `stop` and again for `ack`.
+   */
+  private eligible(tabId: string): { roomId: string; held: number } | undefined {
+    const member = this.deps.rooms.memberOf(tabId)
+    if (!member) return undefined
+    const room = this.deps.rooms.peek(member.roomId)
+    if (!room || room.endedAt !== undefined || room.paused) return undefined
+    const held = this.deps.rooms.held(room.id, member.name)
+    if (held === 0) return undefined
+    const entry = this.deps.sessions.get(tabId)
+    // No entry, a dead process, or a paste of ours still waiting for its UserPromptSubmit (it will be the next
+    // prompt: continuing the turn now would only put the pointer in twice).
+    if (!entry || entry.status === 'ended' || entry.exitCode !== undefined || entry.delivering) return undefined
+    if (entry.typed && !this.marked(tabId, room.id, member.name)) return undefined
+    if (this.capped.has(tabId)) return undefined
+    return { roomId: room.id, held }
   }
 
   private marked(tabId: string, roomId: string, name: string): boolean {
