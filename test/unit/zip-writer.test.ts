@@ -258,18 +258,37 @@ describe('zipEntries', () => {
     expect(many.data.includes(Buffer.from('504b0506', 'hex'))).toBe(false)
   })
 
+  it('skips a name over 0xffff and counts an entry before its open', async () => {
+    write('a.txt', 'a')
+    const gone = write('gone.txt')
+    const entries = await walked(proj)
+    unlinkSync(gone)
+    const long = { ...entries[1]!, name: 'x'.repeat(0x10000) }
+    const skipped: DownloadSkipped = {}
+    const zip = await collect(zipEntries(each([entries[0]!, long, ...entries.slice(1)]), { skipped }))
+    expect(readZip(zip).map((e) => e.name)).toEqual(['proj/', 'proj/a.txt'])
+    expect(skipped.name).toBe(1)
+    // The unopenable file still held its slot when the cap was checked (the walk counted it too).
+    const capped = await partial(zipEntries(each(entries), { maxEntries: 2 }))
+    expect((capped.error as ZipCapError).cap).toBe('entries')
+  })
+
   it('stops the walk and closes every descriptor on abort', async () => {
     for (let i = 0; i < 20; i++) write(`d${i}/f.bin`, randomBytes(2 * ZIP_CHUNK_BYTES))
     const before = fds()
     const ac = new AbortController()
     let chunks = 0
+    const got: Buffer[] = []
     const sink = new Writable({
-      write(_c, _e, cb) {
+      write(c, _e, cb) {
+        got.push(c)
         if (++chunks === 5) ac.abort(new Error('gone'))
         cb()
       },
     })
-    await expect(pipeline(Readable.from(zipEntries(walkFolder(walkOpts(proj, { signal: ac.signal })), { signal: ac.signal })), sink)).rejects.toThrow()
+    await expect(pipeline(Readable.from(zipEntries(walkFolder(walkOpts(proj, { signal: ac.signal })), { signal: ac.signal })), sink)).rejects.toThrow('gone')
+    expect(() => readZip(Buffer.concat(got))).toThrow()
+    expect(Buffer.concat(got).includes(Buffer.from('504b0506', 'hex'))).toBe(false)
     expect(chunks).toBeLessThan(40)
     expect(fds()).toBe(before)
   })
@@ -280,8 +299,10 @@ describe('zipEntries', () => {
     const before = fds()
     let opened = 0
     let writes = 0
+    const got: Buffer[] = []
     const sink = new Writable({
-      write(_c, _e, cb) {
+      write(c, _e, cb) {
+        got.push(c)
         cb(++writes === 3 ? new Error('socket reset') : null)
       },
     })
@@ -294,6 +315,8 @@ describe('zipEntries', () => {
     })()
     await expect(pipeline(Readable.from(zipEntries(counted)), sink)).rejects.toThrow('socket reset')
     expect(opened).toBeLessThan(4)
+    expect(() => readZip(Buffer.concat(got))).toThrow()
+    expect(Buffer.concat(got).includes(Buffer.from('504b0506', 'hex'))).toBe(false)
     expect(fds()).toBe(before)
     expect((await walk.next()).done).toBe(true) // returned, not left suspended
   })

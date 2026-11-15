@@ -183,6 +183,11 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
       fileBytes += read.bytes
       yield emit(descriptor(rec))
       central.push(rec)
+    } catch (e) {
+      // `pipeline` rejects an abort with an AbortError carrying the reason only as `cause`; the doc
+      // promises the reason itself, as between entries.
+      if (signal?.aborted && !(e instanceof ZipCapError)) signal.throwIfAborted()
+      throw e
     } finally {
       await handle.close().catch(() => undefined)
     }
