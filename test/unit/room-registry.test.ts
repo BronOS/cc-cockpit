@@ -559,6 +559,61 @@ describe('RoomRegistry', () => {
       expect(again.rebind('new-4', room.id, 'lead', 'p1')).toBe(false)
     })
 
+    it('a rebind pauses a running room (a window reopened within the run); a loaded room is paused already', () => {
+      const reg = make()
+      const room = reg.create(owner, { title: 'Team' })
+      reg.addMember(owner, room.id, { tabId: 't1', name: 'lead' })
+      reg.unbind('t1')
+      expect(reg.get(owner, room.id).paused).toBe(false)
+      expect(reg.rebind('new-1', room.id, 'lead', 'p1')).toBe(true)
+      expect(reg.get(owner, room.id).paused).toBe(true)
+      expect(JSON.parse(readFileSync(join(dir, room.id, 'room.json'), 'utf8')).paused).toBe(true)
+      expect(reg.logOf(room.id).page().entries.filter((e) => e.type === 'pause')).toMatchObject([{ why: 'restore' }])
+      // The start-up path is unchanged: load paused it, the rebind adds no second pause.
+      const again = make()
+      again.load()
+      expect(again.rebind('new-2', room.id, 'lead', 'p1')).toBe(true)
+      expect(again.get(owner, room.id).paused).toBe(true)
+      expect(again.logOf(room.id).page().entries.filter((e) => e.type === 'pause')).toHaveLength(1)
+      // A refused rebind pauses nothing.
+      const fresh = reg.create(owner, { title: 'Fresh' })
+      expect(reg.rebind('new-3', fresh.id, 'ghost', 'p1')).toBe(false)
+      expect(reg.get(owner, fresh.id).paused).toBe(false)
+    })
+
+    it('a project closed for good ends its rooms’ unbound members as closed, coordinators last and told', () => {
+      const reg = make()
+      const room = reg.create(owner, { title: 'Team' })
+      reg.addMember(owner, room.id, { tabId: 't1', name: 'lead', coordinator: true })
+      reg.addMember(owner, room.id, { tabId: 't2', name: 'dev' })
+      reg.addMember(owner, room.id, { tabId: 't3', name: 'qa' })
+      reg.enqueue(room.id, 'dev', { from: 'lead', text: 'do it' })
+      const elsewhere = reg.create(otherProject, { title: 'Elsewhere' })
+      reg.addMember(otherProject, elsewhere.id, { tabId: 't9', name: 'far' })
+      reg.unbind('t9')
+      // t3 is still bound (cannot happen through a window close; left alone all the same).
+      reg.unbind('t1')
+      reg.unbind('t2')
+      expect(reg.projectClosed('p1')).toEqual([
+        { roomId: room.id, name: 'dev', coordinator: false },
+        { roomId: room.id, name: 'lead', coordinator: true }
+      ])
+      expect(reg.members(owner, room.id).map((m) => m.name)).toEqual(['qa'])
+      const leaves = reg.logOf(room.id).page().entries.filter((e) => e.type === 'leave')
+      expect(leaves).toMatchObject([
+        { member: 'dev', why: 'closed', dropped: 1 },
+        // Told that dev left, then gone itself with that notice.
+        { member: 'lead', why: 'closed', dropped: 1 }
+      ])
+      // The names are free again; the other project's room is untouched.
+      reg.addMember(owner, room.id, { tabId: 't4', name: 'dev' })
+      expect(reg.members(otherProject, elsewhere.id).map((m) => m.name)).toEqual(['far'])
+      expect(JSON.parse(readFileSync(join(dir, room.id, 'room.json'), 'utf8')).members).toEqual({
+        qa: { coordinator: false },
+        dev: { coordinator: false }
+      })
+    })
+
     it('a bad file loses only that room, with a warning', () => {
       const reg = make()
       const good = reg.create(owner, { title: 'Good' })

@@ -389,16 +389,46 @@ export class RoomRegistry {
     const left = this.leave(tabId, 'closed')
     if (!left) return undefined
     const room = this.rooms.get(left.roomId)
-    if (!room || room.endedAt !== undefined) return left
+    if (room) this.tellCoordinatorsLeft(room, left.name)
+    return left
+  }
+
+  /** Each coordinator still in the room gets `<name> left: tab closed` (closeMember, projectClosed). */
+  private tellCoordinatorsLeft(room: RoomRecord, left: string): void {
+    if (room.endedAt !== undefined) return
     for (const [name, m] of Object.entries(room.members)) {
       if (!m.coordinator) continue
       try {
-        this.enqueue(room.id, name, { from: SYSTEM_SENDER, text: `${left.name} left: tab closed` })
+        this.enqueue(room.id, name, { from: SYSTEM_SENDER, text: `${left} left: tab closed` })
       } catch (err) {
-        this.warn(`rooms: could not tell ${name} in ${room.id} that ${left.name} left: ${err instanceof Error ? err.message : String(err)}`)
+        this.warn(`rooms: could not tell ${name} in ${room.id} that ${left} left: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
-    return left
+  }
+
+  /**
+   * The project's window closed for good (index.ts onProjectClosed: not a quit, not a reopen), right after its saved tab
+   * records were cleared. Its member tabs went `gone` with the window (unbound, members kept, as for a quit), but with
+   * the records gone nothing can rebind them: each would hold its name, count against the member cap and answer every
+   * send `held: no-tab` until its queue filled. So every member of the project's rooms with no tab leaves as if the
+   * person closed its tab (`closed`, design §1): its queue dropped, the coordinators told, coordinators last so each is
+   * told of the others first. A member restore never started (a failed spawn, a gone plugin) is one of them too: its
+   * record went with the rest. A tab still bound is left alone (none can be: rooms are one project's, one window).
+   */
+  projectClosed(projectId: string): RoomMembership[] {
+    return this.batch(() => {
+      const left: RoomMembership[] = []
+      for (const room of this.rooms.values()) {
+        if (room.projectId !== projectId || room.endedAt !== undefined) continue
+        const names = Object.keys(room.members).filter((n) => this.boundTab(room.id, n) === undefined)
+        names.sort((a, b) => Number(room.members[a]?.coordinator === true) - Number(room.members[b]?.coordinator === true))
+        for (const name of names) {
+          left.push(this.dropMember(room, name, 'closed'))
+          this.tellCoordinatorsLeft(room, name)
+        }
+      }
+      return left
+    })
   }
 
   /** The owner (`ctx.rooms.remove`) or the person (`'person'`, the room view: main checked the window) removes a member. */
@@ -445,13 +475,24 @@ export class RoomRegistry {
    * holds it. False otherwise (the tab just loses its membership). The project check is design §1's "no rooms across
    * windows": a tab record naming another project's room (a hand edit, a copied project record) would otherwise take
    * that room's member, steal its name from the real tab and get its pointer.
+   *
+   * A rebind pauses the room (design §1 "Restart"): a restored member is a resumed session the person has not looked at
+   * yet. At start-up `load` already paused it (a no-op here); a window reopened within the run (Settings › Window's
+   * "Reopen window") restores its members the same way, and without this its room would still be running, so a member
+   * with a saved mark would get the pointer pasted or a Stop block at once.
    */
   rebind(tabId: string, roomId: string, name: string, projectId: string): boolean {
     const room = this.rooms.get(roomId)
     if (!room || room.endedAt !== undefined || room.projectId !== projectId || !isMember(room, name)) return false
     if (this.tabs.has(tabId) || this.boundTab(roomId, name) !== undefined) return false
     this.tabs.set(tabId, { roomId, name })
-    this.touch(room)
+    if (room.paused) {
+      this.touch(room)
+      return true
+    }
+    room.paused = true
+    this.save(room)
+    this.logEvent(room.id, 'pause', { why: 'restore' })
     return true
   }
 

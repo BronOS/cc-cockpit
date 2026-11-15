@@ -251,8 +251,9 @@ export class RoomService {
   /**
    * TabManagerOptions.rooms: what a member tab's comings and goings mean (tab-manager.ts TabRoomHooks). A restored
    * tab's saved membership is bound only when the registry still has that member free, with the registry's
-   * coordinator flag; the person's close ends the membership (the coordinators are told and offered the pointer); a
-   * window or app going away only unbinds it.
+   * coordinator flag, and its room is paused (RoomRegistry.rebind); the person's close ends the membership (the
+   * coordinators are told and offered the pointer); a window or app going away only unbinds it (a window closed for good
+   * then ends it, projectClosed).
    */
   readonly tabHooks: TabRoomHooks = {
     rebind: (tabId, room, projectId) => {
@@ -271,6 +272,16 @@ export class RoomService {
       this.stop.tabGone(tabId)
       this.registry.unbind(tabId)
     }
+  }
+
+  /**
+   * The project's window closed for good (index.ts onProjectClosed: not a quit or a reopen), after its saved tab records
+   * were cleared: its members, unbound when their tabs went with the window, can never be bound again, so they leave as
+   * on the person's close (RoomRegistry.projectClosed). Their Stop state already went in `tabHooks.gone`; the
+   * coordinators told left with the rest (none has a tab in this project now), so there is nobody to offer the notice.
+   */
+  projectClosed(projectId: string): void {
+    this.registry.projectClosed(projectId)
   }
 
   /**

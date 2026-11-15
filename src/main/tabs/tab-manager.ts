@@ -1390,7 +1390,8 @@ export class TabManager {
   /** A project window closed: its terminals die with it (SIGKILL after the grace period, as close). */
   closeProject(projectId: string): void {
     for (const tab of [...(this.order.get(projectId) ?? [])]) {
-      // A window closing is not the person closing its tabs: members stay (design-rooms.md §1).
+      // A window closing is not the person closing its tabs: members stay, unbound (design-rooms.md §1). A close for
+      // good (no quit, no reopen) then ends them in index.ts once their saved records are cleared (RoomService.projectClosed).
       this.remove(tab, 'gone')
       this.pty.terminate(tab.id)
     }

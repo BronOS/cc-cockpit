@@ -49,9 +49,13 @@ member's private folder). A tab is in at most one room.
 
 **Restart.** Restored tabs get new ids (`tab-manager.ts`, `randomUUID`), so membership is saved in the tab record, like
 the flag: `{ room, name, coordinator, mark }` (`shared/tab-flag.ts` is the pattern). A tab that goes away because the
-app quits or its window closes stays a member; only the person's close (or `remove`, `leave`) ends membership. On
-restore a member is treated as typed (`typed` is not saved, and the restored session is the person's) and its room
-comes back **paused**, so nothing is delivered until the person resumes it in the room view.
+app quits or its window is reopened (Settings › Window's "Reopen window") stays a member; the person's close (or
+`remove`, `leave`) ends membership. Closing the project's window for good counts as the person closing its tabs: their
+saved records are cleared with it, so nothing could bind those members again, and every member of the project's rooms
+leaves `closed` (coordinators told, queues dropped). On restore a member is treated as typed (`typed` is not saved, and
+the restored session is the person's) and its room comes back **paused**, so nothing is delivered until the person
+resumes it in the room view: rooms are read paused at start-up, and any rebind of a restored member pauses its room
+too, so a window reopened within the run (or opened later in it) restores the same way.
 
 Not in v1: a tab in two rooms, rooms across windows, rooms made by the person.
 

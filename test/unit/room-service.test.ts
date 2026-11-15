@@ -51,7 +51,21 @@ beforeEach(() => {
     },
     log: () => {}
   })
-  service = new RoomService({
+  service = makeService()
+  tabs = makeTabs()
+  handlers = roomHandlers(service)
+})
+
+afterEach(() => {
+  service.dispose()
+  sessions.dispose()
+  tabs.disposeAll()
+  rmSync(dir, { recursive: true, force: true })
+  rmSync(projectDir, { recursive: true, force: true })
+})
+
+function makeService(): RoomService {
+  return new RoomService({
     dir: join(dir, 'rooms'),
     tabs: {
       setRoom: (p, t, r) => tabs.setRoom(p, t, r),
@@ -65,17 +79,7 @@ beforeEach(() => {
     newAckId: () => `ack-${ids++}`,
     log: () => {}
   })
-  tabs = makeTabs()
-  handlers = roomHandlers(service)
-})
-
-afterEach(() => {
-  service.dispose()
-  sessions.dispose()
-  tabs.disposeAll()
-  rmSync(dir, { recursive: true, force: true })
-  rmSync(projectDir, { recursive: true, force: true })
-})
+}
 
 function makeTabs(): TabManager {
   return new TabManager({
@@ -806,6 +810,66 @@ describe('tab comings and goings', () => {
     expect(sessions.get(restored.id)?.typed).toBe(true)
     expect(sessions.get(restored.id)?.room).toEqual({ title: 'Team', name: 'alice', coordinator: true })
     expect(sessions.get(restored.id)?.held).toBe(1)
+  })
+
+  it('a window closed for good (index.ts: closeProject, the records cleared, projectClosed) ends its members as a close', () => {
+    const id = room()
+    const lead = claudeTab()
+    const dev = claudeTab()
+    addTo(id, lead, 'lead', true)
+    addTo(id, dev, 'dev')
+    service.sendAsPlugin(owner, id, 'dev', 'pending')
+    tabs.closeProject(P1)
+    service.projectClosed(P1)
+    expect(service.registry.memberInfos(id)).toEqual([])
+    const leaves = service.registry.logOf(id).page().entries.filter((e) => e.type === 'leave')
+    expect(leaves).toMatchObject([
+      { member: 'dev', why: 'closed', dropped: 1 },
+      { member: 'lead', why: 'closed' }
+    ])
+    // The names are free and count against no cap: a new tab joins under one, and a send to it is not held for no tab.
+    const again = claudeTab()
+    addTo(id, again, 'dev')
+    expect(service.sendAsPlugin(owner, id, 'dev', 'hi')).toEqual([{ to: 'dev', path: 'delivered' }])
+  })
+
+  it('a window reopened within the run: its restored members rebind and their room comes back paused', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    // Reopen: the tabs go with the old window (no projectClosed), the requeued records restore in the new one.
+    tabs.closeProject(P1)
+    service.sendAsPlugin(owner, id, 'alice', 'while away')
+    expect(service.registry.peek(id)?.paused).toBe(false)
+    const restored = tabs.restoreTab(P1, { kind: 'claude', room: { id, name: 'alice', coordinator: false, mark: true } })
+    expect(service.registry.memberOf(restored.id)).toEqual({ roomId: id, name: 'alice', coordinator: false })
+    expect(service.registry.peek(id)?.paused).toBe(true)
+    // Neither path reaches the resumed session until the person resumes: no paste, no Stop block.
+    sessions.applyHook(restored.id, 'UserPromptSubmit', { prompt: 'go' })
+    sessions.applyHook(restored.id, 'Stop', {})
+    service.sendAsPlugin(owner, id, 'alice', 'more')
+    working(restored.id)
+    expect(service.stop.stop(restored.id, { stop_hook_active: false })).toBeUndefined()
+    expect(writes.filter((w) => w.tabId === restored.id)).toEqual([])
+    service.resume(id)
+    expect(service.stop.stop(restored.id, { stop_hook_active: false })?.block).toBe(pointerText(2))
+  })
+
+  it('a quit and restart is unchanged: the members stay, the room is read paused, the rebind logs no second pause', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    tabs.disposeAll()
+    service.dispose()
+    service = makeService()
+    service.load()
+    tabs = makeTabs()
+    expect(service.registry.memberInfos(id)).toEqual([{ name: 'alice', coordinator: false, held: 0 }])
+    expect(service.registry.peek(id)?.paused).toBe(true)
+    const restored = tabs.restoreTab(P1, { kind: 'claude', room: { id, name: 'alice', coordinator: false, mark: true } })
+    expect(service.registry.memberOf(restored.id)).toEqual({ roomId: id, name: 'alice', coordinator: false })
+    expect(service.registry.peek(id)?.paused).toBe(true)
+    expect(service.registry.logOf(id).page().entries.filter((e) => e.type === 'pause')).toEqual([])
   })
 
   it('a saved membership the room no longer has restores as a tab in no room', () => {

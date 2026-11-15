@@ -899,7 +899,13 @@ function start(server: boolean): void {
       // The user closed the window: its tabs are over, so is their record. While quitting the
       // same callback runs for every window and the saved tabs are exactly what must stay; on a
       // reopen they were just queued for the new window.
-      if (!quitting && !reopening) restorer.clear(projectId)
+      if (!quitting && !reopening) {
+        restorer.clear(projectId)
+        // With the records gone nothing can rebind the project's room members (their tabs went `gone` above, members
+        // kept as for a quit): they leave as on the person's close (design-rooms.md §1). A reopen's members rebind in the
+        // new window and their room comes back paused (RoomRegistry.rebind).
+        rooms.projectClosed(projectId)
+      }
       commands.closeProject(projectId)
       appMenu.refresh()
       layouts.closeProject(projectId)

@@ -402,8 +402,9 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   an unsubmitted draft in a marked tab, nothing is pasted; the badge then offers "Deliver anyway", which adds the
   pointer to whatever is in the box. Clearing the mark delivers nothing.
 - **Pause:** Pause in the room dialog holds all delivery. A room pauses itself after 100 deliveries with no input from you
-  in any member tab. After a restart a room comes back paused, with its members restored (they count as typed); resume it
-  in the dialog.
+  in any member tab. After a restart (or Settings › Window's "Reopen window") a room comes back paused, with its members
+  restored (they count as typed); resume it in the dialog. Closing the project's window ends its rooms' memberships, as
+  closing each member tab would.
 - **Documents:** in the app's data folder (`rooms/<id>/docs/`), outside every project. `shared/` is read by every member
   and written by coordinators; `members/<name>/` is written and read by that member and read by coordinators. A
   refused document answers like a missing one. UTF-8 text, 256 KiB each, 20 MiB per room (one total for all folders: a
