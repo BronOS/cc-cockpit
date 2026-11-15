@@ -221,7 +221,15 @@ terminal (a terminal holding the keyboard means the shell's window has it, and i
 
 **Moving between panes.** Terminal to frame: a pane chord or a click, as above. Frame to terminal: a click on the
 terminal pane (its press capture picks it, and xterm takes the focus from the frame), or a pane chord typed in the frame
-(below), which ends in the terminal's `focus()`. The parent may call that while a child frame has the keyboard. Keys off
+(below), which ends in the terminal's `focus()`. The parent may call that while a child frame has the keyboard. That
+call is made by the pane focus handler itself once the selection commits (`focusPane`, TabsPane), not left to the
+selection's effects: a chord typed in a frame whose pick had not rendered yet (frame to frame, a window that got no
+`blur`) has the check's pick of the frame and the chord's pick of the pane the state still called active batched into
+one render that changes no `focused` prop, and the keys stayed in the frame under an outline on Claude (the external
+review's CRITICAL, round 4). After a pane focus chord the keys are in the pane the outline shows, or on nothing. Only
+that handler asks (the shell's keydown, main's checked `commands.trigger`, the palette, and the web shell's forwarded
+chord, whose known limit is unchanged: a chord that moved the selection already moved the keys); a page's `focus()` or
+hint never reaches it. Keys off
 (D3) now also blurs a frame that holds the keyboard: SplitArea's blur looks only inside the area, and the frames are
 not in it. With the keys off nothing is picked from a frame, whatever the evidence: a click into a frame is blurred, and
 only a press the shell sees picks a pane (a header, a terminal, the strip, a chord). Thanks to the pass-through that

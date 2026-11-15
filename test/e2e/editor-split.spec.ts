@@ -681,6 +681,64 @@ test("a page's focus hint never puts the keyboard in a terminal: typing in Claud
 const sessionEntries = (c: Cockpit): Promise<Array<{ tabId: string; typed: boolean }>> => c.hook('sessions', c.projectDir)
 const splitAreaBox = (page: Page) => page.locator('[data-split-area]').boundingBox()
 
+test("a pane chord typed in a frame whose pick has not committed: the keys go where the outline goes, never left in the frame (round 4's CRITICAL)", async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const file = await openFile(c, 'notes.txt')
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const editor = await pageIn(page, 'notes.txt')
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+
+    // The keyboard goes into the file's frame with the person's evidence (the pointer came in over its
+    // header), and Cmd+Alt+Left typed there reaches the shell before the frame's pick has rendered:
+    // main's `commands.trigger` is sent while the shell's page is busy, so the check's pick of the file
+    // (at the window's `blur`, then again before the chord) and the chord's pick of Claude land in one
+    // render, which leaves the selection on Claude where it was and changes no `focused` prop. The
+    // outline shows Claude; before the fix the keys stayed in the editor and what the person typed
+    // next for Claude edited the file.
+    await paneOf(page, file).locator('[data-pane-header]').hover()
+    const chord = `${NATIVE_MOD === 'meta' ? 'meta' : 'ctrl'}+alt+left`
+    await Promise.all([
+      page.evaluate(() => {
+        document.querySelector<HTMLIFrameElement>('iframe.page-tab-frame[title="notes.txt"]')!.focus()
+        const start = performance.now()
+        while (performance.now() - start < 600) {
+          // Busy: main's message below queues behind this task, ahead of React's render.
+        }
+      }),
+      (async () => {
+        await new Promise((r) => setTimeout(r, 200))
+        await c.app.evaluate(
+          ({ BrowserWindow }, { file, chord }) => {
+            BrowserWindow.getAllWindows()[0]!.webContents.send('commands.trigger', { id: 'pane.focusLeft', chord, code: 'ArrowLeft', from: 'page-tab', tab: file })
+          },
+          { file, chord }
+        )
+      })()
+    ])
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    expect(await keysInFrame(page)).toBe(false)
+    await page.keyboard.type('zq')
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: zq')
+    await expect(editor.locator('.cm-content')).not.toContainText('zq')
+  } finally {
+    await close()
+  }
+})
+
 test('a file dragged from the strip to the right edge of the Claude pane lands beside it; typing in the frame changes the file and leaves Claude untyped', async () => {
   test.setTimeout(90_000)
   const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })

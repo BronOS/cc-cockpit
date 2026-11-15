@@ -951,6 +951,25 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (stateRef.current.tabs.find((t) => t.id === id)?.kind === 'page') pageFrames().focus(id)
     else sessions.get(id).focus()
   }, [sessions])
+  // A pane focus chord's destination (pane-commands.ts `focusPane`): given the keyboard here, after the
+  // commit, by the shell's own call. The chord's 'selected' alone is not enough (the external review's
+  // CRITICAL, round 4): typed in a frame whose pick had not committed yet (frame to frame, a window that
+  // got no `blur`, a chord close behind the click), the check's pick of the frame and the chord's pick
+  // of the pane the state still called active are batched into one render that changes no `focused`
+  // prop, so no focus effect runs and the keys stayed in the frame under an outline on Claude. Only
+  // the pane focus handler asks (a chord the shell saw, main checked through the frame-to-tab record,
+  // the palette, the web shell's forwarded chord with its known limit, page-frames.ts: one that moved
+  // the selection already moved the keys); a page's `focus()` or hint never reaches it, and
+  // focusActive keeps every modal and the keys-off rule. Each ask is a new object, run once; a selection that moved on before the commit (another
+  // pick, a close) is no longer the destination and takes nothing.
+  const [paneFocus, setPaneFocus] = useState<{ tabId: string } | null>(null)
+  const paneFocusDone = useRef<{ tabId: string } | null>(null)
+  useEffect(() => {
+    if (paneFocus === null || paneFocusDone.current === paneFocus) return
+    paneFocusDone.current = paneFocus
+    const s = stateRef.current
+    if (s.activeId === paneFocus.tabId && !s.keysOff) focusActive()
+  }, [paneFocus, focusActive])
   /** A popup went: give the keyboard back (focusActive) only for the person's close (focus-give-back.ts). */
   const giveBack = useCallback((cause: CloseCause): void => giveBackRule.current?.closed(cause, focusActive), [focusActive])
   /**
@@ -1446,7 +1465,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             const { area: a, cellNow: c } = paneActions.current
             return dragMinShare(axis === 'row' ? a.width : a.height, axis, c())
           },
-          report: setError
+          report: setError,
+          focusPane: (tabId) => setPaneFocus({ tabId })
         })
       ),
     []

@@ -27,6 +27,7 @@ function harness(selected: string, extra: TabsAction[] = [], auto = false) {
   const sent: Array<[string, unknown]> = []
   const intents: Array<[string, string]> = []
   const reports: string[] = []
+  const focusAsks: string[] = []
   const ok = (): Promise<GroupsReply> => Promise.resolve({ ok: true, seq: 2 })
   const handlers = paneCommandHandlers({
     state: () => state,
@@ -42,9 +43,10 @@ function harness(selected: string, extra: TabsAction[] = [], auto = false) {
     openSplit: (tabId, edge) => sent.push(['split', { tabId, edge }]),
     openBeside: (tabId, edge) => sent.push(['beside', { tabId, edge }]),
     minShare: () => 0.1,
-    report: (m) => reports.push(m)
+    report: (m) => reports.push(m),
+    focusPane: (tabId) => focusAsks.push(tabId)
   })
-  return { handlers, sent, intents, reports, state: () => state }
+  return { handlers, sent, intents, reports, focusAsks, state: () => state }
 }
 
 describe('pane commands', () => {
@@ -165,6 +167,38 @@ describe('pane commands', () => {
       const u = harness('b')
       u.handlers['pane.focusUp']!({ tabId: 'd' })
       expect(u.state().activeId).toBe('c')
+    })
+
+    // The external review's CRITICAL, round 4: the chord typed in frame b (c's pane still active in
+    // the state) after the check picked b's pane: the pick and the chord's move back to c leave the
+    // selection where it began, so the selection's effects alone would never move the keys out of b's
+    // frame. The destination is asked for the keys explicitly, every time a focus chord moves.
+    it('asks the destination for the keys even when the selection ends where it began', () => {
+      const h = harness('c')
+      const before = h.state().activeId
+      // The state still names c: the check's pick of b has not reached it (TabsPane's state ref).
+      h.handlers['pane.focusRight']!({ tabId: 'b' })
+      expect(h.state().activeId).toBe(before)
+      expect(h.focusAsks).toEqual(['c'])
+      const m = harness('b')
+      m.handlers['pane.focusRight']!()
+      m.handlers['pane.focusDown']!()
+      expect(m.focusAsks).toEqual(['c', 'd'])
+    })
+
+    it('a focus chord at the edge asks nothing while the keys are on; with them off, the pane it stays on', () => {
+      const h = harness('b')
+      h.handlers['pane.focusLeft']!()
+      h.handlers['pane.focusLeft']!({ tabId: 'b' })
+      expect(h.focusAsks).toEqual([])
+      const off = harness('c', [{ type: 'removed', tabId: 'c', gen: 1 }])
+      const stays = off.state().activeId!
+      off.handlers['pane.focusRight']!()
+      expect(off.focusAsks).toEqual([stays])
+      // A plain tab (no group) with the keys on: nothing to move to, nothing asked.
+      const plain = harness('a')
+      plain.handlers['pane.focusRight']!()
+      expect(plain.focusAsks).toEqual([])
     })
 
     it('move out, zoom, resize and move act on the target', () => {

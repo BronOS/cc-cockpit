@@ -33,6 +33,15 @@ export interface PaneCommandContext {
   minShare(axis: 'row' | 'column'): number
   /** Tell the person why nothing happened (the strip's error line). */
   report(message: string): void
+  /**
+   * A pane focus chord settled on `tabId`: once this view's selection has committed, the keyboard goes
+   * to that pane (its terminal, or its frame) if it is still the focused one, by the shell's own focus
+   * call. Asked even when the selection ends where it began (the external review's CRITICAL, round 4):
+   * the check before a frame's chord picks the frame's pane, the chord then selects the pane the state
+   * still called active, React batches the two, no `focused` prop changes, no focus effect runs, and
+   * the keys stayed in the frame while the outline showed the destination.
+   */
+  focusPane(tabId: string): void
 }
 
 /** What the active tab's own commands act through (TabsPane's actions). */
@@ -308,20 +317,32 @@ export function paneCommandHandlers(ctx: PaneCommandContext): Record<string, Com
   for (const [name, dir] of ARROWS) {
     // Focus: the spatial neighbour, no wrap. A chord also turns the keys back on after D3 took them
     // off (staying on the same pane at the group's edge), and unzooms first: the person is moving
-    // between panes, which a zoom hides.
+    // between panes, which a zoom hides. Wherever it lands the keyboard is then given to that pane
+    // (`focusPane`), never left to the selection's effects alone: after the chord the keys are where
+    // the outline is, never in the frame it came from. At the edge with the keys on nothing moves: the
+    // chord came from that pane (its frame checked to hold the keys) or from a webview panel's page,
+    // which keeps them as before.
     handlers[`pane.focus${name}`] = (run) => {
       const s = ctx.state()
       const at = focused(run)
       const view = ctx.view()
       if (at === null) return
       if (!view.group) {
-        if (s.keysOff) ctx.dispatch({ type: 'keysOn' })
+        if (s.keysOff) {
+          ctx.dispatch({ type: 'keysOn' })
+          ctx.focusPane(at)
+        }
         return
       }
       if (view.zoomTab !== undefined && !view.auto) ctx.dispatch({ type: 'zoom', groupId: view.group.id, tabId: null })
       const target = neighbour(view.group.root, at, dir)
-      if (target !== undefined) ctx.dispatch({ type: 'selected', tabId: target })
-      else if (s.keysOff) ctx.dispatch({ type: 'keysOn' })
+      if (target !== undefined) {
+        ctx.dispatch({ type: 'selected', tabId: target })
+        ctx.focusPane(target)
+      } else if (s.keysOff) {
+        ctx.dispatch({ type: 'keysOn' })
+        ctx.focusPane(at)
+      }
     }
     handlers[`pane.resize${name}`] = onFocused((run) => {
       const at = focused(run)
