@@ -2661,20 +2661,102 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     await expect(call('rooms.members', { pluginId: 'a.one', id })).resolves.toEqual([])
   })
 
-  it('answers the log with since and a capped limit', async () => {
+  it('answers the log as pages on the seq cursor, with a capped limit', async () => {
     const call = hostA()
     const id = await newRoom(call)
     await call('rooms.invite', { pluginId: 'a.one', id, name: 'bob' })
-    const log = (await call('rooms.log', { pluginId: 'a.one', id })) as { type: string; at: number }[]
-    expect(log.map((e) => e.type)).toEqual(['create', 'invite'])
-    expect(await call('rooms.log', { pluginId: 'a.one', id, limit: 1 })).toEqual([expect.objectContaining({ type: 'invite' })])
-    expect(await call('rooms.log', { pluginId: 'a.one', id, since: log[1]!.at })).toEqual([])
+    await call('rooms.invite', { pluginId: 'a.one', id, name: 'carol' })
+    type Page = { entries: { type: string; seq: number; member?: string }[]; more: boolean }
+    const log = (await call('rooms.log', { pluginId: 'a.one', id })) as Page
+    expect(log).toEqual({ entries: [expect.objectContaining({ type: 'create', seq: 1 }), expect.anything(), expect.anything()], more: false })
+    // No cursor: the newest. A cursor: the oldest after it, and `more` while newer ones remain.
+    expect(await call('rooms.log', { pluginId: 'a.one', id, limit: 1 })).toEqual({ entries: [expect.objectContaining({ member: 'carol' })], more: true })
+    expect(await call('rooms.log', { pluginId: 'a.one', id, since: 1, limit: 1 })).toEqual({ entries: [expect.objectContaining({ member: 'bob' })], more: true })
+    expect(await call('rooms.log', { pluginId: 'a.one', id, since: log.entries[2]!.seq })).toEqual({ entries: [], more: false })
     await expect(call('rooms.log', { pluginId: 'a.one', id, limit: 0 })).rejects.toThrow('rooms.log: limit must be')
-    await expect(call('rooms.log', { pluginId: 'a.one', id, since: 'x' })).rejects.toThrow('rooms.log: since must be a number')
+    for (const since of ['x', 1.5, -1]) {
+      await expect(call('rooms.log', { pluginId: 'a.one', id, since }), String(since)).rejects.toThrow('rooms.log: since must be a seq')
+    }
     // More than the cap asked for is the cap.
     const spy = vi.spyOn(rooms, 'log')
     await call('rooms.log', { pluginId: 'a.one', id, limit: MAX_ROOM_LOG_ENTRIES * 10 })
     expect(spy.mock.calls[0]?.[2]).toEqual({ limit: MAX_ROOM_LOG_ENTRIES })
+  })
+
+  it('refuses every rooms call while main says the plugin is off in the project, checked at call time (review M1)', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    const asked: string[] = []
+    let off: string | undefined = 'plugin disabled'
+    deps.roomsOff = (owner) => {
+      asked.push(`${owner.pluginId}@${owner.projectId}`)
+      return off
+    }
+    // The host still runs the plugin (its restart has not come yet), but the sweep's rule already says off.
+    for (const [method, extra] of [
+      ['rooms.create', { title: 'Again' }],
+      ['rooms.list', {}],
+      ['rooms.end', {}],
+      ['rooms.delete', {}],
+      ['rooms.members', {}],
+      ['rooms.invite', { name: 'bob' }],
+      ['rooms.remove', { name: 'bob' }],
+      ['rooms.send', { to: 'all', text: 'hi' }],
+      ['rooms.docs.list', {}],
+      ['rooms.docs.get', { path: 'shared/a.md' }],
+      ['rooms.docs.put', { path: 'shared/a.md', text: 'x' }],
+      ['rooms.log', {}],
+      ['rooms.open', { name: 'bob' }]
+    ] as const) {
+      await expect(call(method, { pluginId: 'a.one', id, ...extra }), method).rejects.toThrow(
+        `${method}: the plugin is not on in this project (plugin disabled)`
+      )
+    }
+    // The owner asked about is main's (this host's plugin and project), and nothing was made.
+    expect(new Set(asked)).toEqual(new Set([`a.one@${A}`]))
+    expect(tabsBackend.spawned).toEqual([])
+    expect(rooms.list({ pluginId: 'a.one', projectId: A })).toHaveLength(1)
+    off = undefined
+    await expect(call('rooms.list', { pluginId: 'a.one' })).resolves.toHaveLength(1)
+  })
+
+  it('a member tab that opened as the plugin was switched off does not join (the race with the sweep)', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    let off: string | undefined
+    deps.roomsOff = () => off
+    const open = deps.openTab
+    deps.openTab = async (...args) => {
+      // The switch and its sweep land while the tab starts: the room has no member yet, so the sweep ended nothing.
+      off = 'plugin disabled'
+      return open(...args)
+    }
+    const err = (await call('rooms.open', { pluginId: 'a.one', id, name: 'bob' }).catch((e: unknown) => e)) as Error
+    expect(err.message).toMatch(/^rooms\.open: tab \S+ opened but did not join: the plugin is not on in this project \(plugin disabled\)$/)
+    const tabId = /tab (\S+) opened/.exec(err.message)?.[1] as string
+    expect(tabs.kindOf(A, tabId)).toBe('claude')
+    expect(tabs.roomOf(A, tabId)).toBeUndefined()
+    expect(rooms.members({ pluginId: 'a.one', projectId: A }, id)).toEqual([])
+  })
+
+  it('a member tab whose room ended while it opened stays a plain tab, named in the refusal, and the open is charged', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    const open = deps.openTab
+    deps.openTab = async (...args) => {
+      rooms.end({ pluginId: 'a.one', projectId: A }, id)
+      return open(...args)
+    }
+    const err = (await call('rooms.open', { pluginId: 'a.one', id, name: 'bob' }).catch((e: unknown) => e)) as Error
+    expect(err.message).toMatch(/^rooms\.open: tab \S+ opened but did not join: the room has ended$/)
+    const tabId = /tab (\S+) opened/.exec(err.message)?.[1] as string
+    expect(tabs.kindOf(A, tabId)).toBe('claude')
+    expect(tabs.roomOf(A, tabId)).toBeUndefined()
+    expect(tabsBackend.spawned).toHaveLength(1)
+    // The open was charged: the rest of the budget, then the cap.
+    deps.openTab = open
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW - 1; i++) await call('sessions.open', { pluginId: 'a.one' })
+    await expect(call('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
   })
 
   it('refuses every rooms call once the host is revoked, and without the room service', async () => {

@@ -21,6 +21,14 @@ import { checkRoomName, checkRoomTitle, isRoomId, isRoomName } from '../../share
  * be closed) must not block this one.
  */
 export const MAX_ROOMS_PER_PLUGIN = 5
+/**
+ * Ended rooms a plugin may keep in one project before `create` refuses ("delete an ended room first"): an ended room
+ * stays until `delete` (its log and docs are the person's record), so without a bound a create/end loop would grow
+ * main's registry, the start-up load and the `list` answer without end. Refused, never dropped: deleting the oldest
+ * by itself would throw away a record. Live rooms end only into this count, so it stays under this plus
+ * MAX_ROOMS_PER_PLUGIN.
+ */
+export const MAX_ENDED_ROOMS_PER_PLUGIN = 50
 /** Members a room may have. */
 export const MAX_MEMBERS_PER_ROOM = 20
 /** How long an invite can be redeemed. */
@@ -203,9 +211,17 @@ export class RoomRegistry {
     const title = checkRoomTitle(opts.title)
     if (!title.ok) throw new RoomError('invalid', title.reason)
     let live = 0
-    for (const r of this.rooms.values()) if (owns(owner, r) && r.endedAt === undefined) live++
+    let ended = 0
+    for (const r of this.rooms.values()) {
+      if (!owns(owner, r)) continue
+      if (r.endedAt === undefined) live++
+      else ended++
+    }
     if (live >= MAX_ROOMS_PER_PLUGIN) {
       throw new RoomError('limit', `a plugin may have at most ${MAX_ROOMS_PER_PLUGIN} rooms that are not ended in a project`)
+    }
+    if (ended >= MAX_ENDED_ROOMS_PER_PLUGIN) {
+      throw new RoomError('limit', `a plugin may keep at most ${MAX_ENDED_ROOMS_PER_PLUGIN} ended rooms in a project: delete an ended room first`)
     }
     const room: RoomRecord = {
       id: this.newId(),

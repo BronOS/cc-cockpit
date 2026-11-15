@@ -407,7 +407,8 @@ plugin is switched off in the project (or in all projects), uninstalled or revok
 app has no `rooms`: check `typeof ctx.rooms === 'object'`.
 
 - `ctx.rooms.create({ title })` -> `{ id }`: a new room. The title is 1-60 characters on one line with no
-  quote, bracket, control or bidi character; at most 5 rooms not ended per plugin in a project.
+  quote, bracket, control or bidi character; at most 5 rooms not ended per plugin in a project, and at most
+  50 ended ones kept (past that, `create` refuses until you `delete` one).
 - `ctx.rooms.list()`: your rooms of this window (`RoomInfo`: `id`, `title`, `createdAt`, `endedAt` once
   ended, `paused`, `members` as a count), ended ones included. No messages.
 - `ctx.rooms.end(id)`: its members leave it (their tabs stay), its invites die; the record and docs stay.
@@ -432,10 +433,14 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   doc of the room, both areas (`shared/...`, `members/<name>/...`). A doc is UTF-8 text of at most 256 KiB
   with no control, bidi or invisible format character but tab and line breaks; 20 MiB a room. To export
   the docs at the end, read them here and write them where you like (you have Node).
-- `ctx.rooms.log(id, { since, limit })`: the room's events, oldest first, message text included: joins,
-  leaves with why, sends with what happened per recipient, doc reads, writes and refusals, pauses, the end.
-  At most `limit` (default and most 1000), the newest, with `at` after `since`; there is no event to
-  subscribe to, so poll with the last `at` you saw.
+- `ctx.rooms.log(id, { since, limit })` -> `{ entries, more }`: the room's events, oldest first, message
+  text included: joins, leaves with why, sends with what happened per recipient, doc reads, writes and
+  refusals, pauses, the end. Each entry has `seq` (1 up in the order logged, never reused), `at` and `type`.
+  At most `limit` (default and most 1000). With `since` (a `seq`, 0 for the start) the oldest entries after
+  it, `more: true` when newer ones remain; without it the newest, `more: true` when older ones were left out.
+  There is no event to subscribe to: poll with the last `seq` you got, again at once while `more`. Poll by
+  `seq`, not `at`: several events share a millisecond. A jump in `seq` means the log was trimmed (at 20 MiB
+  its oldest half is dropped, with a `trimmed` entry).
 
 ## Files
 

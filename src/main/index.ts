@@ -114,7 +114,8 @@ import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
 import { TrashAsks } from './files/trash-asks'
 import { chooseAsk } from './asks/shared-asks'
-import { enabledPluginIds, pluginOnInRecord, roomEndReason } from './plugins/enablement'
+import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
+import { RoomsPluginGate } from './rooms/rooms-plugin-gate'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
 import { pluginFileUrl, servePluginRequest } from './plugins/plugin-protocol'
@@ -527,8 +528,20 @@ function start(server: boolean): void {
     onRefreshed: () => void plugins.applyRevocations().catch((err: unknown) => console.error('applying revocations failed', err))
   })
   marketplace.loadCache()
-  // Set once the room service exists (below): ends the rooms of plugins that are no longer on in their project.
-  let endRoomsOfPluginsOff = (): void => {}
+  // A room ends when its plugin is switched off in its project (or in all projects), uninstalled or revoked
+  // (design-rooms.md §1; rooms-plugin-gate.ts has both halves: the sweep and the refusal of a ctx.rooms call). The
+  // sweep runs whenever the plugin set may have changed: after the plugins load (`loaded`, below), on every installer
+  // change (install, link, update, uninstall, a revocation) and after a switch on the Plugins page. Its deps are read
+  // only once the plugins loaded, by when `plugins` and `rooms` exist.
+  const roomsGate: RoomsPluginGate = new RoomsPluginGate({
+    plugin: (pluginId) => {
+      const plugin = plugins.get(pluginId)
+      return plugin && { plugin, revoked: !plugin.state.ok && plugin.state.revoked !== undefined }
+    },
+    project: (projectId) => registry.enablementRecord(projectId),
+    disabledBundled: () => registry.app.data.disabledBundled,
+    endRoomsOfPluginsOff: (offWhy) => rooms.endRoomsOfPluginsOff(offWhy)
+  })
   const plugins = new PluginInstaller({
     dataDir,
     bundled: bundledPluginSpecs(bundledDir, process.env, app.isPackaged),
@@ -557,8 +570,8 @@ function start(server: boolean): void {
     onChange: () => {
       devWatch.sync()
       claudePluginsBuilds.changed()
-      // An uninstalled or revoked plugin's rooms end (a no-op until the room service exists and the plugins loaded).
-      endRoomsOfPluginsOff()
+      // An uninstalled or revoked plugin's rooms end (a no-op until the plugins loaded).
+      roomsGate.sweep()
       // Remote views get a prefix per installed plugin (web/plugin-pages.ts); a new one needs its own.
       webConnections.pathsChanged()
     }
@@ -1730,7 +1743,10 @@ function start(server: boolean): void {
       // the room service is made below, and HostApi reads this only when a rooms request comes.
       get rooms() {
         return rooms
-      }
+      },
+      // Checked on every ctx.rooms call: a host still running a plugin that was just switched off or removed is
+      // refused, by the sweep's own rule (rooms-plugin-gate.ts).
+      roomsOff: (owner) => roomsGate.offWhy(owner)
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin
@@ -1829,29 +1845,8 @@ function start(server: boolean): void {
     sessions
   })
   rooms.load()
-  // A room ends when its plugin is switched off in its project (or in all projects), uninstalled or revoked
-  // (design-rooms.md §1; enablement.ts roomEndReason says which). Checked whenever the plugin set may have changed:
-  // after the plugins load, on every installer change (install, link, update, uninstall, a revocation) and after a
-  // switch on the Plugins page. Never before the load finished, nor after a failed one: every plugin would look
-  // removed then and every room would end.
-  let pluginsReadyForRooms = false
-  endRoomsOfPluginsOff = (): void => {
-    if (!pluginsReadyForRooms) return
-    rooms.endRoomsOfPluginsOff(({ pluginId, projectId }) => {
-      const plugin = plugins.get(pluginId)
-      return roomEndReason(
-        registry.get(projectId),
-        plugin,
-        plugin !== undefined && !plugin.state.ok && plugin.state.revoked !== undefined,
-        registry.app.data.disabledBundled
-      )
-    })
-  }
-  void pluginsLoaded.then(() => {
-    if (pluginsLoadFailed) return
-    pluginsReadyForRooms = true
-    endRoomsOfPluginsOff()
-  })
+  // Never before the load finished, nor after a failed one: every plugin would look removed then and every room would end.
+  void pluginsLoaded.then(() => roomsGate.loaded(pluginsLoadFailed))
   // The session gist (app setting, off by default): Haiku summarises a tab's last prompts after a
   // turn. The run gets the env a tab gets with no tab variables (no token, no socket), so `claude`
   // resolves on the same PATH as a tab's and nothing it starts can act as a tab (gist-run.ts).
@@ -2539,7 +2534,7 @@ function start(server: boolean): void {
     // reads the views again on its next load.
     bundledOffChanged: async (pluginId) => {
       // Off in all projects ends its rooms everywhere (design-rooms.md §1); on again brings none back.
-      endRoomsOfPluginsOff()
+      roomsGate.sweep()
       const plugin = plugins.get(pluginId)
       if (!plugin) return
       for (const { projectId } of windows.projectWindows()) {
@@ -2596,7 +2591,7 @@ function start(server: boolean): void {
     // The window's host restarts with the new set; its panels follow (host-manager declarePanels). A plugin switched
     // off here has its rooms in this project ended (design-rooms.md §1).
     enabledChanged: (projectId) => {
-      endRoomsOfPluginsOff()
+      roomsGate.sweep()
       return hosts.enabledChanged(projectId)
     },
     settingsChanged: (projectId, pluginId) => hosts.settingsChanged(projectId, pluginId),

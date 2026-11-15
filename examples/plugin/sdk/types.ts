@@ -593,10 +593,21 @@ export interface RoomDoc {
  * (`member`, `why`, `from`, `to`, `text`, `delivery`, `path`, ...). Message text is included.
  */
 export interface RoomLogEntry {
-  /** Epoch ms; `since` compares against it. */
+  /**
+   * The entry's number in its room, 1 up in the order logged, never reused: the cursor for `log`'s `since`. A gap
+   * means the log was trimmed (its oldest half dropped at 20 MiB, with a `trimmed` entry saying how many).
+   */
+  readonly seq: number
+  /** Epoch ms (several entries can share one: poll by `seq`, not by time). */
   readonly at: number
   readonly type: string
   readonly [field: string]: unknown
+}
+
+/** One answer of `ctx.rooms.log`: `more` is true when entries were left out past `limit` (see `log`). */
+export interface RoomLogPage {
+  readonly entries: RoomLogEntry[]
+  readonly more: boolean
 }
 
 /** What a `ccc <name>` handler gets besides its arguments. */
@@ -1148,7 +1159,10 @@ export interface PluginContext {
    * no `rooms`: check `typeof ctx.rooms === 'object'`.
    */
   readonly rooms: {
-    /** A new room: `title` is 1-60 characters on one line with no quote, bracket, control or bidi character. At most 5 not ended per plugin in a project. */
+    /**
+     * A new room: `title` is 1-60 characters on one line with no quote, bracket, control or bidi character. At most 5
+     * not ended per plugin in a project, and at most 50 ended ones kept (past that, `delete` one first).
+     */
     create(options: { title: string }): Promise<{ id: string }>
     /** This plugin's rooms in this window, ended ones included (they stay until `delete`). */
     list(): Promise<RoomInfo[]>
@@ -1191,8 +1205,12 @@ export interface PluginContext {
       get(id: string, path: string): Promise<string>
       put(id: string, path: string, text: string): Promise<void>
     }
-    /** The room's events, oldest first: at most `limit` (default and most 1000), the newest, with `at` after `since`. */
-    log(id: string, options?: { since?: number; limit?: number }): Promise<RoomLogEntry[]>
+    /**
+     * The room's events, oldest first, at most `limit` (default and most 1000). With `since` (a `seq`; 0 for the
+     * start) the OLDEST entries after it, and `more` true when newer ones remain: poll with the last `seq` you got,
+     * again at once while `more`. Without it the newest, `more` true when older ones were left out.
+     */
+    log(id: string, options?: { since?: number; limit?: number }): Promise<RoomLogPage>
   }
 
   // commands

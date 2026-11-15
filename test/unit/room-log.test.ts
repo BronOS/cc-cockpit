@@ -23,28 +23,75 @@ describe('RoomLog', () => {
     log.append('send', { from: 'a', to: 'b', text: 'hi', delivery: 'held' })
     expect(readFileSync(path, 'utf8').trim().split('\n')).toHaveLength(2)
     expect(log.read()).toEqual([
-      { member: 'a', at: 1001, type: 'join' },
-      { from: 'a', to: 'b', text: 'hi', delivery: 'held', at: 1002, type: 'send' }
+      { member: 'a', seq: 1, at: 1001, type: 'join' },
+      { from: 'a', to: 'b', text: 'hi', delivery: 'held', seq: 2, at: 1002, type: 'send' }
     ])
   })
 
-  it('a caller field cannot override at or type', () => {
+  it('a caller field cannot override seq, at or type', () => {
     const log = new RoomLog(path, undefined, clock)
-    log.append('join', { at: 1, type: 'end' })
-    expect(log.read()[0]).toMatchObject({ at: 1001, type: 'join' })
+    log.append('join', { seq: 9, at: 1, type: 'end' })
+    expect(log.read()[0]).toMatchObject({ seq: 1, at: 1001, type: 'join' })
+  })
+
+  it('numbers entries from the file itself: another instance, a restart and a torn line keep counting', () => {
+    const log = new RoomLog(path, undefined, () => 5)
+    log.append('join')
+    log.append('send')
+    new RoomLog(path, undefined, () => 5).append('leave')
+    appendFileSync(path, '{"seq":99,"at":5,"type":"sen')
+    log.append('end')
+    expect(new RoomLog(path).read().map((e) => [e.seq, e.type])).toEqual([
+      [1, 'join'],
+      [2, 'send'],
+      [3, 'leave'],
+      [4, 'end']
+    ])
   })
 
   it('reads an absent file as empty', () => {
     expect(new RoomLog(path).read()).toEqual([])
   })
 
-  it('filters by since and keeps the newest on a limit', () => {
+  it('without since answers the newest; with the since cursor the oldest after it, and says when more remain', () => {
     const log = new RoomLog(path, undefined, clock)
     for (let i = 0; i < 5; i++) log.append('send', { i })
-    expect(log.read({ since: 1002 }).map((e) => e.i)).toEqual([2, 3, 4])
-    expect(log.read({ limit: 2 }).map((e) => e.i)).toEqual([3, 4])
-    expect(log.read({ since: 1001, limit: 2 }).map((e) => e.i)).toEqual([3, 4])
+    expect(log.page({ limit: 2 })).toEqual({ entries: [expect.objectContaining({ i: 3 }), expect.objectContaining({ i: 4 })], more: true })
+    expect(log.page({ limit: 5 }).more).toBe(false)
+    expect(log.read({ since: 2 }).map((e) => e.i)).toEqual([2, 3, 4])
+    expect(log.page({ since: 1, limit: 2 })).toEqual({ entries: [expect.objectContaining({ i: 1 }), expect.objectContaining({ i: 2 })], more: true })
+    expect(log.page({ since: 3, limit: 2 })).toEqual({ entries: [expect.objectContaining({ i: 3 }), expect.objectContaining({ i: 4 })], more: false })
+    expect(log.page({ since: 5 })).toEqual({ entries: [], more: false })
+    expect(log.read({ since: 0 }).map((e) => e.seq)).toEqual([1, 2, 3, 4, 5])
     expect(log.read({ limit: 0 })).toEqual([])
+  })
+
+  it('a poll never skips an entry logged in the same millisecond as the last one it saw (review M2)', () => {
+    const log = new RoomLog(path, undefined, () => 7)
+    log.append('leave', { member: 'a' })
+    const first = log.read({ since: 0 })
+    log.append('end')
+    expect(log.read({ since: first.at(-1)!.seq }).map((e) => e.type)).toEqual(['end'])
+  })
+
+  it('a poller that fell behind pages through everything in order, across a large file with torn lines', () => {
+    const log = new RoomLog(path, undefined, clock)
+    for (let i = 0; i < 3000; i++) {
+      log.append('send', { i, text: 'y'.repeat(i % 7 === 0 ? 900 : 40) })
+      if (i % 500 === 250) appendFileSync(path, '{"seq":1,"at":5,"type":"torn')
+    }
+    expect(readFileSync(path).length).toBeGreaterThan(4 * 64 * 1024)
+    const seen: number[] = []
+    let since = 0
+    for (let page = log.page({ since, limit: 1000 }); ; page = log.page({ since, limit: 1000 })) {
+      seen.push(...page.entries.map((e) => e.i as number))
+      since = page.entries.at(-1)?.seq ?? since
+      if (!page.more) break
+    }
+    expect(seen).toEqual([...Array(3000).keys()])
+    // A cursor anywhere in the file lands on the next entry.
+    for (const at of [1, 2, 777, 1500, 2999, 3000]) expect(log.read({ since: at, limit: 1 }).map((e) => e.seq)).toEqual(at < 3000 ? [at + 1] : [])
+    expect(log.read({ limit: 3 }).map((e) => e.i)).toEqual([2997, 2998, 2999])
   })
 
   it('drops the oldest half past the cap and appends a line saying so', () => {
@@ -58,6 +105,15 @@ describe('RoomLog', () => {
     expect(entries.some((e) => e.i === 19)).toBe(true)
     expect(entries.some((e) => e.i === 0)).toBe(false)
     expect(readFileSync(path).length).toBeLessThan(700)
+    // The numbers survive the trim and keep counting: a cursor from before it still finds what is newer.
+    const seqs = entries.map((e) => e.seq)
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b))
+    expect(new Set(seqs).size).toBe(seqs.length)
+    log.append('end')
+    expect(log.read().at(-1)?.seq).toBe(Math.max(...seqs) + 1)
+    expect(log.read({ since: seqs.at(-1)! }).map((e) => e.type)).toEqual(['end'])
+    // A cursor from before the trim answers the oldest entries still there, every one newer than it.
+    expect(log.read({ since: 1, limit: 1 })[0]?.seq).toBe(entries[0]?.seq)
   })
 
   it('skips a torn last line on read and keeps appending after it', () => {
@@ -92,7 +148,7 @@ describe('RoomLog', () => {
   it('skips lines that are not log entries', () => {
     const log = new RoomLog(path, undefined, clock)
     log.append('join')
-    appendFileSync(path, '[1,2]\n{"at":"x","type":"join"}\n42\n')
+    appendFileSync(path, '[1,2]\n{"seq":2,"at":"x","type":"join"}\n{"at":5,"type":"join"}\n{"seq":0,"at":5,"type":"join"}\n42\n')
     expect(log.read()).toHaveLength(1)
   })
 

@@ -586,7 +586,7 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     expect(service.list(owner)[0]?.endedAt).toBeDefined()
     expect(service.list({ ...owner, projectId: P2 }).find((r) => r.id === there)?.endedAt).toBeUndefined()
     expect(service.list({ pluginId: 'example.other', projectId: P1 }).find((r) => r.id === other)?.endedAt).toBeUndefined()
-    expect(service.log(owner, here).at(-1)).toEqual(expect.objectContaining({ type: 'end', why: 'plugin disabled' }))
+    expect(service.log(owner, here).entries.at(-1)).toEqual(expect.objectContaining({ type: 'end', why: 'plugin disabled' }))
   })
 
   it('endRoomsOfPluginsOff ends the live rooms main says are off, with its reason, and keeps the others', () => {
@@ -611,7 +611,7 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     expect(tabs.roomOf(P1, a)).toBeUndefined()
     expect(tabs.roomOf(P2, b)).toBeUndefined()
     expect(sessions.get(b)?.room).toBeUndefined()
-    expect(service.log({ pluginId: 'example.gone', projectId: P2 }, gone).at(-1)).toEqual(expect.objectContaining({ type: 'end', why: 'plugin removed' }))
+    expect(service.log({ pluginId: 'example.gone', projectId: P2 }, gone).entries.at(-1)).toEqual(expect.objectContaining({ type: 'end', why: 'plugin removed' }))
     expect(service.list({ ...owner, projectId: P2 }).find((r) => r.id === there)?.endedAt).toBeUndefined()
     expect(service.list({ pluginId: 'example.other', projectId: P1 }).find((r) => r.id === other)?.endedAt).toBeUndefined()
     // Ended rooms are not asked about again.
@@ -665,7 +665,7 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
 
   it('the owner’s log is its own room’s only', () => {
     const id = room()
-    expect(service.log(owner, id).map((e) => e.type)).toEqual(['create'])
+    expect(service.log(owner, id).entries.map((e) => e.type)).toEqual(['create'])
     expect(() => service.log({ pluginId: 'example.other', projectId: P1 }, id)).toThrow('no such room')
   })
 })

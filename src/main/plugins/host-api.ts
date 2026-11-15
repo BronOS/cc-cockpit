@@ -126,7 +126,7 @@
 //   rooms.remove    { pluginId, id, name }     -> null            send is `from plugin` through the delivery
 //   rooms.send      { pluginId, id, to, text } -> RoomSendAnswer[] (its caps); the docs are the owner's role
 //   rooms.docs.list|get|put { pluginId, id, path?, text? }        (every doc of the room); log the room's
-//   rooms.log       { pluginId, id, since?, limit? } -> RoomLogEntry[]  events (room-service.ts does the rest)
+//   rooms.log       { pluginId, id, since?, limit? } -> RoomLogPage  events (room-service.ts does the rest)
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
 // by sessions.focus (select in that view), panels.show (reveal there), overlay.open (an html page
 // opens in that view, design-web.md §5.4), files.open and sessions.openFile (handed on to the plugin
@@ -226,6 +226,7 @@ import type {
   RoomDoc,
   RoomInfo,
   RoomLogEntry,
+  RoomLogPage,
   RoomMember,
   RoomSendAnswer,
   SendResult,
@@ -632,6 +633,12 @@ export interface HostApiDeps {
   }
   /** ctx.rooms (RoomService). Without it every rooms request is refused. */
   rooms?: HostRoomsApi
+  /**
+   * Why the owner's plugin is not on in its project now (rooms/rooms-plugin-gate.ts offWhy, the sweep's own rule), or
+   * undefined while it is. Asked on every rooms request: a host still running the plugin after a switch-off or an
+   * uninstall (the hosts restart one by one) must not create what the sweep just ended.
+   */
+  roomsOff?: (owner: RoomOwner) => string | undefined
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -1049,13 +1056,19 @@ export class HostApi {
         }),
       'rooms.log': (params) =>
         this.roomsCall(params, 'rooms.log', (rooms, owner, p) => {
-          if (p.since !== undefined && (typeof p.since !== 'number' || !Number.isFinite(p.since))) throw new Error('since must be a number')
+          // `since` is a cursor, the `seq` of the last entry seen (0 for the start), never a time: several entries
+          // share a millisecond, and a time cursor would skip the ones logged after a poll in the same one.
+          if (p.since !== undefined && (typeof p.since !== 'number' || !Number.isSafeInteger(p.since) || p.since < 0)) {
+            throw new Error('since must be a seq: a whole number, 0 or more')
+          }
           if (p.limit !== undefined && (typeof p.limit !== 'number' || !Number.isInteger(p.limit) || p.limit < 1)) {
             throw new Error('limit must be a positive whole number')
           }
-          // At most MAX_ROOM_LOG_ENTRIES, the newest: a room's log may hold 20 MiB, and the answer is one message.
+          // At most MAX_ROOM_LOG_ENTRIES: a room's log may hold 20 MiB, and the answer is one message. With `since`
+          // they are the oldest after it and `more` says to poll again, so a poller that fell behind loses nothing.
           const limit = Math.min(typeof p.limit === 'number' ? p.limit : MAX_ROOM_LOG_ENTRIES, MAX_ROOM_LOG_ENTRIES)
-          return rooms.log(owner, p.id, { ...(typeof p.since === 'number' ? { since: p.since } : {}), limit }) as RoomLogEntry[]
+          const page = rooms.log(owner, p.id, { ...(typeof p.since === 'number' ? { since: p.since } : {}), limit })
+          return { entries: page.entries as RoomLogEntry[], more: page.more } satisfies RoomLogPage
         })
     }
   }
@@ -2705,7 +2718,6 @@ export class HostApi {
     return this.deps.secrets
   }
 
-  /** The plugin a request names, only if this host process runs it. */
   /**
    * One ctx.rooms call: the plugin is one this host runs and the owner is built here from it and the host's own
    * project, never from the request (another plugin's or window's room answers "no such room" in the registry). A
@@ -2720,11 +2732,22 @@ export class HostApi {
     const p = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(p.pluginId, what)
     if (!this.deps.rooms) throw new Error(`${what}: rooms are not available`)
+    const owner: RoomOwner = { pluginId: plugin.id, projectId: this.scope.projectId }
+    this.refuseIfOff(owner, what)
     try {
-      return await body(this.deps.rooms, { pluginId: plugin.id, projectId: this.scope.projectId }, p)
+      return await body(this.deps.rooms, owner, p)
     } catch (err) {
       throw withMethod(what, err)
     }
+  }
+
+  /**
+   * Every rooms call, reads included, while the plugin is not on in this project: the host is about to stop, and its
+   * rooms have ended or are ending (rooms-plugin-gate.ts). Checked at call time, never cached at the host's start.
+   */
+  private refuseIfOff(owner: RoomOwner, what: string): void {
+    const why = this.deps.roomsOff?.(owner)
+    if (why !== undefined) throw new Error(`${what}: the plugin is not on in this project (${why})`)
   }
 
   /**
@@ -2740,6 +2763,7 @@ export class HostApi {
     const rooms = this.deps.rooms
     if (!rooms) throw new Error('rooms.open: rooms are not available')
     const owner: RoomOwner = { pluginId: plugin.id, projectId: this.scope.projectId }
+    this.refuseIfOff(owner, 'rooms.open')
     let asCoordinator: boolean
     try {
       asCoordinator = optionalBoolean(coordinator, 'coordinator')
@@ -2750,10 +2774,13 @@ export class HostApi {
     }
     const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort }, meta)
     try {
+      // Again: the plugin may have been switched off while the tab was starting, and the sweep then found no member.
+      const why = this.deps.roomsOff?.(owner)
+      if (why !== undefined) throw new Error(`the plugin is not on in this project (${why})`)
       rooms.addMember(owner, id, { tabId: tab.tabId, name, coordinator: asCoordinator })
     } catch (err) {
-      // Only a race gets here (the room ended, or a tab redeemed an invite for the same name, while the tab was
-      // starting). The tab stays, an ordinary Claude tab of the person's (closing it could raise the close dialog);
+      // Only a race gets here (the room ended, the plugin was switched off, or a tab redeemed an invite for the same
+      // name, while the tab was starting). The tab stays, an ordinary Claude tab of the person's (closing it could raise the close dialog);
       // the plugin learns which one from the message.
       this.log(`plugin ${plugin.id}: rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`)
       throw new Error(`rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`, { cause: err })
@@ -2761,6 +2788,7 @@ export class HostApi {
     return { tabId: tab.tabId }
   }
 
+  /** The plugin a request names, only if this host process runs it. */
   private plugin(pluginId: unknown, what: string): HostApiPlugin {
     const plugin = typeof pluginId === 'string' ? this.scope.plugins.find((p) => p.id === pluginId) : undefined
     if (!plugin) throw new Error(`${what}: unknown plugin`)
@@ -2818,7 +2846,7 @@ export class HostApi {
 /** What a plugin open answers: `placed` only when it asked for `beside` (absent from an older app too). */
 type OpenResult = { tabId: string; placed?: boolean }
 
-/** ctx.rooms.log answers at most this many events, the newest (a plugin polls with `since`). */
+/** ctx.rooms.log answers at most this many events (a plugin polls with the `since` cursor and pages on `more`). */
 export const MAX_ROOM_LOG_ENTRIES = 1000
 
 /** A room as its plugin sees it: no members' queues (their text reaches only `ccc room read` and the log). */

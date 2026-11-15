@@ -125,6 +125,26 @@ export class ProjectRegistry {
   }
 
   /**
+   * The record as the rooms' end rule needs it (rooms/rooms-plugin-gate.ts): the view; 'unknown' when a record file is
+   * there that this run cannot read or use (EACCES, a newer app's, a corrupt one kept for recovery) or `projects/`
+   * cannot be listed; undefined only when there is no record file (forgotten, or never there). An unreadable record
+   * must not read as "every plugin off": that would end its rooms for good, and the file may come back readable
+   * (the same rule as pluginMayBeEnabled).
+   */
+  enablementRecord(id: string): ProjectView | 'unknown' | undefined {
+    const view = this.get(id)
+    if (view) return view
+    if (!ID_PATTERN.test(id)) return undefined
+    if (this.recordsHidden() || this.files.has(id)) return 'unknown'
+    try {
+      nodeFs.lstatSync(projectFile(this.dataDir, id))
+      return 'unknown' // there, but load() could not open it (a folder with no search permission)
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : 'unknown'
+    }
+  }
+
+  /**
    * The record for a folder path, without side effects: no record is created and recents do not
    * move (unlike openPath). The socket server resolves `--project <path>` with it.
    */

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   INVITE_TTL_MS,
+  MAX_ENDED_ROOMS_PER_PLUGIN,
   MAX_MEMBERS_PER_ROOM,
   MAX_PENDING_INVITES_PER_ROOM,
   MAX_QUEUED_CHARS_PER_ROOM,
@@ -108,6 +109,27 @@ describe('RoomRegistry', () => {
     expect(reg.create(otherProject, { title: 'elsewhere' }).projectId).toBe('p2')
     reg.end(owner, made[0]?.id)
     expect(reg.create(owner, { title: 'after an end' }).title).toBe('after an end')
+  })
+
+  it('caps the ended rooms a plugin keeps in a project: create refuses until one is deleted (review m3)', () => {
+    const reg = make()
+    for (let i = 0; i < MAX_ENDED_ROOMS_PER_PLUGIN; i++) reg.end(owner, reg.create(owner, { title: `Room ${i}` }).id)
+    const refused = (() => {
+      try {
+        reg.create(owner, { title: 'one more' })
+      } catch (err) {
+        return err as RoomError
+      }
+      return undefined
+    })()
+    expect(refused?.code).toBe('limit')
+    expect(refused?.message).toContain(`at most ${MAX_ENDED_ROOMS_PER_PLUGIN} ended rooms`)
+    expect(refused?.message).toContain('delete an ended room first')
+    // Nothing was dropped to make room, and other owners have their own count.
+    expect(reg.list(owner)).toHaveLength(MAX_ENDED_ROOMS_PER_PLUGIN)
+    expect(reg.create(other, { title: 'theirs' }).pluginId).toBe('example.other')
+    reg.delete(owner, reg.list(owner)[0]?.id)
+    expect(reg.create(owner, { title: 'after a delete' }).title).toBe('after a delete')
   })
 
   it('refuses a bad title', () => {

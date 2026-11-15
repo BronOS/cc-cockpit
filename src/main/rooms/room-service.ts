@@ -28,7 +28,7 @@ import { warnLog } from '../warn-log'
 import { fenceBatch, newFenceNonce } from './room-fence'
 import { RoomDelivery, type RecipientAnswer, type RoomSendLimits } from './room-delivery'
 import { RoomDocs, type RoomDocCaller, type RoomDocEntry } from './room-docs'
-import type { RoomLogEntry } from './room-log'
+import type { RoomLogPage } from './room-log'
 import {
   RoomError,
   RoomRegistry,
@@ -410,10 +410,10 @@ export class RoomService {
     return this.docs.put(this.registry.get(owner, id).id, 'plugin', path, text)
   }
 
-  /** ctx.rooms.log: the owner's room's events, newer than `since` when given. */
-  log(owner: RoomOwner, id: unknown, opts: { since?: unknown; limit?: unknown } = {}): RoomLogEntry[] {
+  /** ctx.rooms.log: the owner's room's events, the oldest after the `since` cursor (a `seq`) when given, else the newest. */
+  log(owner: RoomOwner, id: unknown, opts: { since?: unknown; limit?: unknown } = {}): RoomLogPage {
     const room = this.registry.get(owner, id)
-    return this.registry.logOf(room.id).read({
+    return this.registry.logOf(room.id).page({
       ...(typeof opts.since === 'number' ? { since: opts.since } : {}),
       ...(typeof opts.limit === 'number' ? { limit: opts.limit } : {})
     })

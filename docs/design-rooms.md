@@ -31,7 +31,8 @@ Settings › Rooms page and the ended-room UI, `onEvent` (`log` with `since` cov
 
 A **room** is created by a plugin in its own project window: `ctx.rooms.create({ title })` returns an opaque id. The
 title is one line, at most 60 characters, no control, quote or bracket characters. A room belongs to that plugin and
-window. Caps (constants): 5 rooms per plugin in a project, 20 members per room. It ends with `ctx.rooms.end(id)` or when its plugin
+window. Caps (constants): 5 rooms per plugin in a project, 20 members per room, 50 ended rooms kept per plugin in a project
+(an ended room stays until `delete`; past 50, `create` refuses until one is deleted, never dropping one by itself). It ends with `ctx.rooms.end(id)` or when its plugin
 is disabled, removed or revoked. A room's record (members, queue, paused) and docs are kept on disk.
 
 A **member** is one Claude tab with a name unique in the room (`^[a-z][a-z0-9-]{0,30}$`, reserved: `all`, `plugin`,
@@ -151,8 +152,12 @@ and on the desktop can reveal the folder.
 - `open(id, { name, coordinator?, prompt?, model?, effort?, cwd? })` -> `{ tabId }`
 - `invite(id, { name, coordinator? })` -> `{ code, expiresAt }`, `members(id)`, `remove(id, name)`
 - `send(id, to, text)`, `docs.list / get / put(id, path...)`
-- `log(id, { since? })`: joins, leaves (with why: removed, closed, left), sends with their delivery path, doc reads,
-  writes and refusals, pauses.
+- `log(id, { since?, limit? })` -> `{ entries, more }`: joins, leaves (with why: removed, closed, left), sends with their
+  delivery path, doc reads, writes and refusals, pauses. Each entry has a `seq` per room (1 up, never reused, kept
+  across a trim and a restart: the next one is read from the file's last entry); `since` is a `seq` cursor and answers
+  the oldest entries after it, `more` when newer remain, so a poller that falls behind pages through and loses nothing
+  (a time cursor would skip entries of the same millisecond). Without `since`, the newest. A read never parses the
+  whole file on main: the newest are read back from the end, a cursor is found by a binary search over byte offsets.
 
 Main appends every event to `<data>/rooms/<id>/log.jsonl`, message text included (the person's record, shown in the room
 view), capped at 20 MiB per room (then the oldest half is dropped, with a log line); plugins read it through the API.

@@ -168,6 +168,7 @@ describe('RoomDocs access', () => {
     const e = logEntries().map((entry) => {
       const rest: Record<string, unknown> = { ...entry }
       delete rest.at
+      delete rest.seq
       return rest
     })
     expect(e).toContainEqual({ type: 'doc-write', by: 'plugin', path: 'shared/brief.md', bytes: 9 })

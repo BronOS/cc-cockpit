@@ -570,7 +570,15 @@ describe('roomEndReason (design-rooms.md §1: a room ends when its plugin is swi
     expect(roomEndReason({ enabledPlugins: [] }, installed, false)).toBe('plugin disabled')
     expect(roomEndReason({ disabledPlugins: ['cockpit.team'] }, bundled, false)).toBe('plugin disabled')
     expect(roomEndReason({}, bundled, false, ['cockpit.team'])).toBe('plugin disabled')
-    // A project that is gone has nothing on.
-    expect(roomEndReason(undefined, installed, false)).toBe('plugin disabled')
+    // A project whose record is gone (forgotten) has its own reason.
+    expect(roomEndReason(undefined, installed, false)).toBe('project removed')
+  })
+
+  it('keeps the rooms when the record cannot be read: an ended room never comes back, and the file may', () => {
+    expect(roomEndReason('unknown', installed, false)).toBeUndefined()
+    expect(roomEndReason('unknown', bundled, false, ['cockpit.team'])).toBeUndefined()
+    // Removed and revoked do not depend on the record.
+    expect(roomEndReason('unknown', undefined, false)).toBe('plugin removed')
+    expect(roomEndReason('unknown', installed, true)).toBe('plugin revoked')
   })
 })

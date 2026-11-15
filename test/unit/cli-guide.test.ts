@@ -8,7 +8,17 @@ import { GUIDE_TOPICS, guideText } from '../../src/cli/guide'
 import { MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_DESCRIPTION, MAX_SKILL_DIRS, MAX_SKILL_ENTRIES, MAX_SKILL_FILES } from '../../src/main/plugins/skill-files'
 import { MAX_SKILLS } from '../../src/shared/manifest'
 import { MAX_DOC_BYTES, MAX_ROOM_DOCS_BYTES } from '../../src/main/rooms/room-docs'
-import { MAX_MEMBERS_PER_ROOM, MAX_QUEUED_PER_MEMBER, MAX_ROOM_MESSAGE_CHARS } from '../../src/main/rooms/room-registry'
+import {
+  INVITE_TTL_MS,
+  MAX_ENDED_ROOMS_PER_PLUGIN,
+  MAX_MEMBERS_PER_ROOM,
+  MAX_QUEUED_PER_MEMBER,
+  MAX_ROOM_MESSAGE_CHARS,
+  MAX_ROOMS_PER_PLUGIN
+} from '../../src/main/rooms/room-registry'
+import { DEFAULT_ROOM_SEND_LIMITS } from '../../src/main/rooms/room-delivery'
+import { ROOM_LOG_MAX_BYTES } from '../../src/main/rooms/room-log'
+import { MAX_OPENS_PER_WINDOW, MAX_ROOM_LOG_ENTRIES, OPEN_WINDOW_MS } from '../../src/main/plugins/host-api'
 import { AUTO_PAUSE_DELIVERIES, MAX_STOP_BLOCKS_IN_A_ROW } from '../../src/main/rooms/room-stop'
 import { pointerText } from '../../src/shared/room-pointer'
 import { MAX_CLI_IO_BYTES } from '../../src/shared/plugin-cli'
@@ -174,6 +184,38 @@ describe('guide drift guards', () => {
     expect(rooms).toContain(`at most ${MAX_DOC_BYTES / 1024} KiB`)
     expect(rooms).toContain(`at most ${MAX_ROOM_DOCS_BYTES / 1024 / 1024} MiB of docs`)
     expect(rooms).toContain(pointerText(3))
+  })
+
+  it('names the ctx.rooms limits the code enforces, in the api topic and in the SDK types', () => {
+    expect(OPEN_WINDOW_MS).toBe(60_000) // "a minute" below
+    const api = topic('api')
+    const section = api.slice(api.indexOf('`ctx.rooms` puts Claude tabs'), api.indexOf('## Files'))
+    const types = readFileSync(join(__dirname, '..', '..', 'src', 'sdk', 'types.ts'), 'utf8')
+    const rooms = types.slice(types.indexOf('  // rooms\n'), types.indexOf('  // commands\n'))
+    expect(section.length).toBeGreaterThan(500)
+    expect(rooms.length).toBeGreaterThan(500)
+    // One line of prose: JSDoc's ` * ` and the guide's wrapping folded away.
+    const flat = (text: string): string => text.replace(/\n\s*\*?\s*/g, ' ').replace(/\s+/g, ' ')
+    for (const [name, text] of [
+      ['api.md', flat(section)],
+      ['types.ts', flat(rooms)]
+    ] as const) {
+      for (const want of [
+        `at most ${MAX_ROOMS_PER_PLUGIN}`,
+        `at most ${MAX_ENDED_ROOMS_PER_PLUGIN} ended ones kept`,
+        `at most ${MAX_MEMBERS_PER_ROOM} members a room`,
+        `${INVITE_TTL_MS / 60_000} minutes`,
+        `at most ${MAX_ROOM_MESSAGE_CHARS} characters`,
+        `room's ${DEFAULT_ROOM_SEND_LIMITS.roomSendsPerRoom} sends a minute`,
+        `same ${MAX_OPENS_PER_WINDOW} tabs a minute`,
+        `default and most ${MAX_ROOM_LOG_ENTRIES}`,
+        `${MAX_DOC_BYTES / 1024} KiB`,
+        `${MAX_ROOM_DOCS_BYTES / 1024 / 1024} MiB a room`,
+        `${ROOM_LOG_MAX_BYTES / 1024 / 1024} MiB`
+      ]) {
+        expect(text.toLowerCase(), `${name}: ${want}`).toContain(want.toLowerCase())
+      }
+    }
   })
 
   it('says in the cli topic where a server-mode core notice goes and that status lists it', () => {

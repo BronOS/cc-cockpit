@@ -110,7 +110,7 @@ A plugin makes a room with `ctx.rooms.create({ title })`, opens member tabs into
 `ctx.sessions.open` cap of 5 tabs a minute) or hands an existing tab an invite from
 `ctx.rooms.invite(id, { name, coordinator })`, and seeds and collects the docs with
 `ctx.rooms.docs.list / get / put` (it reads and writes every area). It sends `from plugin` with
-`ctx.rooms.send(id, to, text)`, reads the room's record with `ctx.rooms.log(id, { since })` and
-`ctx.rooms.members(id)`, and ends it with `ctx.rooms.end(id)` (`ctx.rooms.delete(id)` drops an ended
-room's docs). A plugin acts only on its own rooms in its own window, and its rooms end when it is switched
-off, uninstalled or revoked. `ccc guide api` has every call.
+`ctx.rooms.send(id, to, text)`, reads the room's record with `ctx.rooms.log(id, { since })` (`since`
+is the last `seq` seen) and `ctx.rooms.members(id)`, and ends it with `ctx.rooms.end(id)`
+(`ctx.rooms.delete(id)` drops an ended room's docs). A plugin acts only on its own rooms in its own
+window, and its rooms end when it is switched off, uninstalled or revoked. `ccc guide api` has every call.

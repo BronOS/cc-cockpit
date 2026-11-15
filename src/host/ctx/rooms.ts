@@ -2,8 +2,8 @@
 // owns, its members' identities are main's, and every rule (the owner, the names, the caps, the docs' areas) is
 // decided there (src/main/plugins/host-api.ts roomsCall, src/main/rooms/room-service.ts). Each method is one RPC
 // carrying this plugin's own id and plain data; the type checks here only give a bad call a fast error at its call
-// site, and main checks everything again. No events: a plugin that follows a room polls `log` with `since`.
-import type { PluginContext, RoomDoc, RoomInfo, RoomLogEntry, RoomMember, RoomSendAnswer } from '../../sdk/types'
+// site, and main checks everything again. No events: a plugin that follows a room polls `log` with the `since` cursor (a `seq`).
+import type { PluginContext, RoomDoc, RoomInfo, RoomLogPage, RoomMember, RoomSendAnswer } from '../../sdk/types'
 
 export interface RoomsApiDeps {
   pluginId: string
@@ -121,7 +121,7 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
       guardAsync(() => {
         const w = 'rooms.log'
         const o = options(opts, w)
-        return ask<RoomLogEntry[]>(w, {
+        return ask<RoomLogPage>(w, {
           id: text(id, w, 'id'),
           ...defined({ since: optionalNumber(o.since, w, 'since'), limit: optionalNumber(o.limit, w, 'limit') })
         })
