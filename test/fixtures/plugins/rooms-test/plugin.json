@@ -1,0 +1,15 @@
+{
+  "id": "test.rooms",
+  "name": "Rooms end to end",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "open", "title": "Rooms e2e: make a room, seed bob's kickoff, open alice, bob and carol" },
+      { "id": "work", "title": "Rooms e2e: give carol a prompt (her turn starts)" },
+      { "id": "to-carol", "title": "Rooms e2e: send carol a message" },
+      { "id": "state", "title": "Rooms e2e: record the rooms and their members" }
+    ]
+  }
+}

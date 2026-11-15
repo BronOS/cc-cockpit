@@ -56,6 +56,7 @@ export interface RoomServiceSessions {
   setRoom(tabId: string, room: (SessionRoom & { held: number }) | null): boolean
   onPersonInput(listener: (tabId: string) => void): () => void
   onPersonPrompt(listener: (tabId: string) => void): () => void
+  onChange(listener: (change: { tabId: string; entry: SessionEntry | undefined; prev: SessionEntry | undefined }) => void): () => void
 }
 
 export interface RoomServiceOptions {
@@ -149,6 +150,7 @@ export class RoomService {
   private readonly nonce: () => string
   private readonly warn: (message: string) => void
   private readonly unsubscribe: Array<() => void> = []
+  private disposed = false
   /** The `rooms.changed` throttle, by room id (`roomChanged`). */
   private readonly changeStates = new Map<string, ChangeState>()
 
@@ -206,6 +208,22 @@ export class RoomService {
     // The person's keystrokes reset the room's auto-pause count; the person's prompt ends the tab's run of Stop blocks.
     this.unsubscribe.push(options.sessions.onPersonInput((tabId) => this.stop.personInput(tabId)))
     this.unsubscribe.push(options.sessions.onPersonPrompt((tabId) => this.stop.personPrompt(tabId)))
+    // The settle window after SessionStart ended (send-gate.ts settled): the tab may take a paste now, with no hook event
+    // to say so. A message sent in that window (a plugin's kickoff right after rooms.open, the rooms e2e) was held as
+    // not waiting, and a waiting tab has no Stop coming to give it the pointer: offer it now. After the change is
+    // committed (a microtask), not from inside the registry's listener call: the paste commits another change.
+    this.unsubscribe.push(
+      options.sessions.onChange(({ tabId, entry, prev }) => {
+        if (prev?.settling === true && entry !== undefined && entry.settling !== true) queueMicrotask(() => this.settled(tabId))
+      })
+    )
+  }
+
+  /** A tab's settle window ended: a member is offered what waits for it (the delivery decides, paused and typed included). */
+  private settled(tabId: string): void {
+    if (this.disposed) return
+    const member = this.registry.memberOf(tabId)
+    if (member) this.delivery.offer(member.roomId, member.name)
   }
 
   /** Read the saved rooms (each comes back paused). Before any tab is restored, so the saved memberships can rebind. */
@@ -582,6 +600,7 @@ export class RoomService {
 
   /** App quit: the room stop's ack timers stop and the listeners go. */
   dispose(): void {
+    this.disposed = true
     for (const state of this.changeStates.values()) clearTimeout(state.timer)
     this.changeStates.clear()
     this.stop.dispose()

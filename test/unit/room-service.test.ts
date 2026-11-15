@@ -303,6 +303,59 @@ describe('room.send', () => {
     await expect(call('room.send', session(a), { to: 'Bob!', text: 'x' })).rejects.toThrow(/member name or all/)
     expect(sessions.get(b)?.held).toBe(1)
   })
+
+  // Found by the rooms e2e (Task 17): a plugin opens a member and sends at once; the tab's SessionStart opened the
+  // gate's settle window, the send was held as not waiting, and a waiting tab has no Stop coming to give the pointer.
+  it('a message held in the settle window after SessionStart gets the pointer when the window ends', async () => {
+    vi.useFakeTimers()
+    try {
+      const id = room()
+      const a = claudeTab()
+      const b = tabs.create(P1, { kind: 'claude' }).id
+      addTo(id, a, 'alice')
+      addTo(id, b, 'bob')
+      sessions.applyHook(b, 'SessionStart', { source: 'startup' })
+      expect(sessions.get(b)).toMatchObject({ status: 'waiting', settling: true })
+      expect(await call('room.send', session(a), { to: 'bob', text: 'kickoff' })).toEqual({
+        delivery: [{ to: 'bob', path: 'held', why: 'not-waiting', status: 'waiting' }]
+      })
+      expect(writes).toEqual([])
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(writes).toEqual([{ tabId: b, data: paste(pointerText(1)) }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the settle window ending offers nothing to a typed member without the mark, a paused room or a non-member', async () => {
+    vi.useFakeTimers()
+    try {
+      const id = room()
+      const a = claudeTab()
+      const b = tabs.create(P1, { kind: 'claude' }).id
+      const c = tabs.create(P1, { kind: 'claude' }).id
+      addTo(id, a, 'alice')
+      addTo(id, b, 'bob')
+      sessions.userInput(P1, b, 'x')
+      sessions.applyHook(b, 'SessionStart', { source: 'startup' })
+      sessions.applyHook(c, 'SessionStart', { source: 'startup' })
+      await call('room.send', session(a), { to: 'bob', text: 'held for the badge' })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(writes).toEqual([])
+      expect(sessions.get(b)?.held).toBe(1)
+
+      const other = room('Other')
+      const d = tabs.create(P1, { kind: 'claude' }).id
+      addTo(other, d, 'dan')
+      service.pause(other)
+      sessions.applyHook(d, 'SessionStart', { source: 'startup' })
+      service.sendAsPlugin(owner, other, 'dan', 'paused')
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(writes).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('room.read', () => {
