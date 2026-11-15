@@ -57,6 +57,8 @@ export interface RoomDocsOptions {
   log?: (message: string) => void
   /** Temp-file suffix bytes (tests pin them). */
   random?: (bytes: number) => Buffer
+  /** The room total (default MAX_ROOM_DOCS_BYTES); tests use a small one, 20 MiB in a quota'd temp dir fails with EDQUOT. */
+  maxRoomBytes?: number
 }
 
 /** Parse `shared/a/b.md` or `members/<name>/a.md`; null when anything is off (a `..`, a bad character, too deep). */
@@ -128,10 +130,12 @@ export class RoomDocs {
   private readonly writes = new Map<string, Promise<unknown>>()
   private readonly warn: (message: string) => void
   private readonly random: (bytes: number) => Buffer
+  private readonly maxRoomBytes: number
 
   constructor(private readonly options: RoomDocsOptions) {
     this.warn = options.log ?? warnLog
     this.random = options.random ?? randomBytes
+    this.maxRoomBytes = options.maxRoomBytes ?? MAX_ROOM_DOCS_BYTES
   }
 
   /** The docs the caller may read, sorted by path. A missing store is an empty list. */
@@ -213,8 +217,8 @@ export class RoomDocs {
       if (old === null && store.entries >= MAX_ROOM_DOC_ENTRIES) {
         throw new RoomError('limit', `a room's docs may be at most ${MAX_ROOM_DOC_ENTRIES} files and folders together`)
       }
-      if (store.bytes - (old?.size ?? 0) + data.length > MAX_ROOM_DOCS_BYTES) {
-        throw new RoomError('limit', `a room's docs may be at most ${MAX_ROOM_DOCS_BYTES} bytes together`)
+      if (store.bytes - (old?.size ?? 0) + data.length > this.maxRoomBytes) {
+        throw new RoomError('limit', `a room's docs may be at most ${this.maxRoomBytes} bytes together`)
       }
       parent ??= await this.walkDirs(docs, dirs, true)
       if (parent === null) throw new Refused('missing')

@@ -6,7 +6,6 @@ import { RoomLog, type RoomLogEntry } from '../../src/main/rooms/room-log'
 import {
   MAX_DOC_BYTES,
   MAX_DOC_DEPTH,
-  MAX_ROOM_DOCS_BYTES,
   MAX_ROOM_DOC_ENTRIES,
   RoomDocs,
   parseDocPath,
@@ -48,6 +47,11 @@ async function failure(p: Promise<unknown>): Promise<{ code: string; message: st
 }
 
 const NOT_FOUND = { code: 'not-found', message: 'no such doc' }
+
+/** A small room total for the cap tests: the real 20 MiB fails with EDQUOT in a quota'd temp dir. */
+const SMALL_ROOM_BYTES = 4 * MAX_DOC_BYTES
+const smallRoomDocs = (): RoomDocs =>
+  new RoomDocs({ dir, logOf: (id) => new RoomLog(logPath(id)), log: (m) => warnings.push(m), maxRoomBytes: SMALL_ROOM_BYTES })
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'room-docs-'))
@@ -333,8 +337,9 @@ describe('RoomDocs limits and text', () => {
 
   it('refuses a write that would put the room over its total, counting a replaced doc once', async () => {
     const chunk = 'a'.repeat(MAX_DOC_BYTES)
-    const fit = MAX_ROOM_DOCS_BYTES / MAX_DOC_BYTES
-    // Seeded on disk directly (writing 80 docs through put is the same code path, only slower).
+    const fit = SMALL_ROOM_BYTES / MAX_DOC_BYTES
+    docs = smallRoomDocs()
+    // Seeded on disk directly (writing them through put is the same code path, only slower).
     mkdirSync(store('shared', 'fill'), { recursive: true })
     for (let i = 0; i < fit; i++) writeFileSync(store('shared', 'fill', `f${i}.md`), chunk)
     expect((await failure(docs.put(ROOM, plugin, 'shared/one-more.md', 'x')))?.code).toBe('limit')
@@ -373,7 +378,8 @@ describe('RoomDocs concurrent writes', () => {
 
   it('holds the room total across writes in flight together', async () => {
     const chunk = 'a'.repeat(MAX_DOC_BYTES)
-    const fit = MAX_ROOM_DOCS_BYTES / MAX_DOC_BYTES
+    const fit = SMALL_ROOM_BYTES / MAX_DOC_BYTES
+    docs = smallRoomDocs()
     mkdirSync(store('shared', 'fill'), { recursive: true })
     for (let i = 0; i < fit - 1; i++) writeFileSync(store('shared', 'fill', `f${i}.md`), chunk)
     const results = await Promise.all([

@@ -20,8 +20,9 @@ import { isRoomName } from '../../shared/room-names'
 import { RoomError, isMessageText, type RoomRecord, type RoomRegistry } from './room-registry'
 
 /**
- * The person-settable room send caps (design-rooms.md §6), per plugin. `all` counts one send per recipient against
- * both. Task 11 reads them from the person's per-plugin override; until then the defaults apply.
+ * The person-settable room send caps (design-rooms.md §6), per plugin. `all` counts one send per recipient queued
+ * against both (at least one per send). Task 11 reads them from the person's per-plugin override; until then the
+ * defaults apply.
  */
 export interface RoomSendLimits {
   /** Sends a minute by one member (the owner's `plugin` sends count only against the room's cap). */
@@ -115,7 +116,14 @@ export class RoomDelivery {
    * `ctx.rooms.send`) to one member or `all` (every member but the sender). Queued in the room for each recipient,
    * then each is offered the pointer. One answer per recipient; one log line for the send, its text and every
    * recipient's path. Throws a RoomError for an unknown or ended room, a sender that is not a member, a bad name or
-   * text, a send to oneself, and a send cap (naming the cap and its value); nothing is queued then.
+   * text, a send to oneself, and a send cap (naming the cap and its value); nothing is queued then. Any other failure
+   * to queue (a failed room.json save) is rethrown after the recipients before it were queued and offered: the log
+   * line then names them and the one that failed.
+   *
+   * The caps are checked for every recipient up front (a send that could go over is refused whole) and charged for
+   * the recipients actually queued, at least one per logged send: a send to a gone name or to full queues queues
+   * nothing but still writes a log line with its text, so it must count, or a member could loop it and push the
+   * room's real record out through the log's trim.
    */
   send(roomId: string, from: string, to: unknown, text: unknown): RecipientAnswer[] {
     const room = this.deps.rooms.peek(roomId)
@@ -128,15 +136,17 @@ export class RoomDelivery {
       throw new RoomError('invalid', 'a message is non-empty text of at most 20000 characters (longer goes in a doc)')
     }
     if (to !== 'all' && !Object.hasOwn(room.members, to)) {
+      this.charge(this.window(room, from, 1), 1)
       const answer: RecipientAnswer[] = [{ to, path: 'gone' }]
       this.logSend(room.id, from, to, text, answer)
       return answer
     }
     const recipients = to === 'all' ? Object.keys(room.members).filter((name) => name !== from) : [to]
     if (recipients.length === 0) return []
-    this.count(room, from, recipients.length)
+    const window = this.window(room, from, recipients.length)
 
     const answers: RecipientAnswer[] = []
+    let queued = 0
     for (const name of recipients) {
       try {
         this.deps.rooms.enqueue(room.id, name, { from, text })
@@ -146,11 +156,16 @@ export class RoomDelivery {
           answers.push({ to: name, path: 'refused', why: err.message })
           continue
         }
+        // The ones before it are queued and were offered the pointer: count and record them before giving up.
+        this.charge(window, Math.max(queued, 1))
+        this.log(room.id, 'send', { from, to, text, delivery: answers, failed: name })
         throw err
       }
+      queued++
       // Just queued, so something waits: offer answers for it.
       answers.push(this.offer(room.id, name) ?? { to: name, path: 'held', why: 'not-waiting' })
     }
+    this.charge(window, Math.max(queued, 1))
     this.logSend(room.id, from, to, text, answers)
     return answers
   }
@@ -178,18 +193,20 @@ export class RoomDelivery {
 
   /**
    * The person clicked the held badge on a member tab (design-rooms.md §2): the pointer through the gate as their own
-   * act, so `typed`, the mark, the draft bit and a pause do not hold it back; the gate's own rule does (waiting for
-   * input, nothing in flight). The caller checked the click came from the shell page for its own tab. True when the
-   * pointer went in; false for a tab in no room, with nothing held, or not waiting.
+   * act, so `typed` and the mark do not hold it back; the gate's own rule does (waiting for input, nothing in flight).
+   * A pause and the draft bit still do: Pause holds all delivery (design §2), and a paste plus Enter on a half-typed
+   * prompt would submit both as one prompt, the gluing the draft bit exists to prevent. The caller checked the click
+   * came from the shell page for its own tab. True when the pointer went in; false for a tab in no room, with nothing
+   * held, in a paused room, with a draft, or not waiting.
    */
   deliverHeld(tabId: string): boolean {
     const member = this.deps.rooms.memberOf(tabId)
     if (!member) return false
     const room = this.deps.rooms.peek(member.roomId)
-    if (!room || room.endedAt !== undefined) return false
+    if (!room || room.endedAt !== undefined || room.paused) return false
     const held = this.deps.rooms.held(room.id, member.name)
     const entry = this.deps.sessions.get(tabId)
-    if (held === 0 || !entry || !maySend(entry)) return false
+    if (held === 0 || !entry || entry.draft === true || !maySend(entry)) return false
     const ok = this.paste(tabId, held)
     // The pointer only (no message moved): logged as the person's delivery, so the record shows why the member read.
     this.log(room.id, 'send', { from: 'person', to: member.name, via: 'badge', pointer: held, delivered: ok })
@@ -238,10 +255,10 @@ export class RoomDelivery {
   }
 
   /**
-   * Count `n` sends against the room's cap and, for a member, its own; refused whole (nothing counted) when either
-   * would go over. A cap hit names the cap and its value (design-rooms.md §6).
+   * Check that `n` more sends fit the room's cap and, for a member, its own; refused whole (nothing counted) when
+   * either would go over. A cap hit names the cap and its value (design-rooms.md §6). Returns the window to charge.
    */
-  private count(room: RoomRecord, from: string, n: number): void {
+  private window(room: RoomRecord, from: string, n: number): SendWindow {
     const limits = this.deps.limits?.(room.pluginId) ?? DEFAULT_ROOM_SEND_LIMITS
     const now = this.now()
     const roomKey = `r:${room.id}`
@@ -254,12 +271,17 @@ export class RoomDelivery {
     if (inRoom.length + n > limits.roomSendsPerRoom) {
       throw new RoomError('limit', capText(`${limits.roomSendsPerRoom} room sends a minute per room (roomSendsPerRoom)`, n))
     }
+    return { now, roomKey, memberKey, inRoom, byMember }
+  }
+
+  /** Charge `n` sends (at most what `window` checked) to the room and the member. */
+  private charge(w: SendWindow, n: number): void {
     for (let i = 0; i < n; i++) {
-      inRoom.push(now)
-      byMember.push(now)
+      w.inRoom.push(w.now)
+      w.byMember.push(w.now)
     }
-    this.sends.set(roomKey, inRoom)
-    if (memberKey !== undefined) this.sends.set(memberKey, byMember)
+    if (w.inRoom.length > 0) this.sends.set(w.roomKey, w.inRoom)
+    if (w.memberKey !== undefined && w.byMember.length > 0) this.sends.set(w.memberKey, w.byMember)
   }
 
   /** The send times of a key still inside the window (older ones dropped). */
@@ -281,6 +303,15 @@ export class RoomDelivery {
       this.warn(`rooms: could not log to ${roomId}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
+}
+
+/** A checked cap window: the times inside it, to charge once the send knows how many it queued. */
+interface SendWindow {
+  now: number
+  roomKey: string
+  memberKey: string | undefined
+  inRoom: number[]
+  byMember: number[]
 }
 
 function heldAnswer(to: string, why: HeldWhy, status: TabStatus | undefined): RecipientAnswer {

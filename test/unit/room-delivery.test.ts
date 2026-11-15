@@ -315,6 +315,53 @@ describe('caps', () => {
     expect(codeOf(() => d.send(roomId, 'plugin', 'bob', 'over'))).toBe('limit')
   })
 
+  it('a send to a gone name counts as one send (it is logged with its text)', () => {
+    limits = { roomSendsPerMember: 2, roomSendsPerRoom: 100 }
+    member('a', 'alice')
+    member('b', 'bob')
+    expect(delivery.send(roomId, 'alice', 'nobody', 'x'.repeat(20_000))).toEqual([{ to: 'nobody', path: 'gone' }])
+    expect(delivery.send(roomId, 'alice', 'nobody', 'again')).toEqual([{ to: 'nobody', path: 'gone' }])
+    expect(codeOf(() => delivery.send(roomId, 'alice', 'nobody', 'third'))).toBe('limit')
+    expect(codeOf(() => delivery.send(roomId, 'alice', 'bob', 'real'))).toBe('limit')
+    expect(logged()).toHaveLength(2)
+  })
+
+  it('charges only the recipients queued (a full queue costs nothing), at least one per send', () => {
+    limits = { roomSendsPerMember: 3, roomSendsPerRoom: 100 }
+    member('a', 'alice')
+    member('b', 'bob')
+    member('c', 'carol')
+    for (let i = 0; i < MAX_QUEUED_PER_MEMBER; i++) rooms.enqueue(roomId, 'bob', { from: 'plugin', text: `m${i}` })
+    // Checked for both up front, charged for carol only: 1 used.
+    expect(delivery.send(roomId, 'alice', 'all', 'hi').map((a) => a.path)).toEqual(['refused', 'delivered'])
+    // A send that queued nothing still counts once: 2 used.
+    expect(delivery.send(roomId, 'alice', 'bob', 'full')).toMatchObject([{ to: 'bob', path: 'refused' }])
+    expect(delivery.send(roomId, 'alice', 'carol', 'third')).toHaveLength(1)
+    expect(codeOf(() => delivery.send(roomId, 'alice', 'carol', 'fourth'))).toBe('limit')
+  })
+
+  it('another queue failure is rethrown after logging the recipients reached and the one that failed', () => {
+    member('a', 'alice')
+    member('b', 'bob')
+    member('c', 'carol')
+    member('d', 'dave')
+    const real = rooms.enqueue.bind(rooms)
+    vi.spyOn(rooms, 'enqueue').mockImplementation((id, name, msg) => {
+      if (name === 'carol') throw new Error('room.json save failed')
+      return real(id, name, msg)
+    })
+    expect(() => delivery.send(roomId, 'alice', 'all', 'partial')).toThrow('room.json save failed')
+    expect(rooms.held(roomId, 'bob')).toBe(1)
+    expect(rooms.held(roomId, 'dave')).toBe(0)
+    expect(logged().at(-1)).toMatchObject({
+      from: 'alice',
+      to: 'all',
+      text: 'partial',
+      delivery: [{ to: 'bob', path: 'delivered' }],
+      failed: 'carol'
+    })
+  })
+
   it("a full queue refuses that recipient only; the others still get the message", () => {
     limits = { roomSendsPerMember: 1000, roomSendsPerRoom: 1000 }
     member('a', 'alice')
@@ -380,15 +427,29 @@ describe("deliverHeld (the person's badge click)", () => {
     sessions.applyHook('b', 'Stop', {})
   }
 
-  it('pastes the pointer into a typed unmarked tab, even with a draft or a paused room, and logs it', () => {
+  it('pastes the pointer into a typed unmarked tab and logs it', () => {
     typedBob()
     delivery.send(roomId, 'plugin', 'bob', 'one')
     delivery.send(roomId, 'plugin', 'bob', 'two')
-    rooms.pause(roomId)
-    sessions.userInput('p1', 'b', 'draft')
     expect(delivery.deliverHeld('b')).toBe(true)
     expect(pasted('b')).toEqual([paste(pointerText(2))])
     expect(logged().at(-1)).toMatchObject({ from: 'person', to: 'bob', via: 'badge', pointer: 2, delivered: true })
+  })
+
+  it('holds in a paused room and while the person has a draft (a paste plus Enter would submit it)', () => {
+    typedBob()
+    delivery.send(roomId, 'plugin', 'bob', 'one')
+    rooms.pause(roomId)
+    expect(delivery.deliverHeld('b')).toBe(false)
+    rooms.resume(roomId)
+    sessions.userInput('p1', 'b', 'half a prompt')
+    expect(delivery.deliverHeld('b')).toBe(false)
+    expect(writes).toEqual([])
+    // Submitting the draft clears the bit; once the turn stops the click delivers.
+    sessions.applyHook('b', 'UserPromptSubmit', { prompt: 'half a prompt' })
+    sessions.applyHook('b', 'Stop', {})
+    expect(delivery.deliverHeld('b')).toBe(true)
+    expect(pasted('b')).toEqual([paste(pointerText(1))])
   })
 
   it('does nothing for a tab not waiting, with nothing held, or in no room', () => {
