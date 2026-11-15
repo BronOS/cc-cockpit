@@ -1,5 +1,5 @@
 ---
-worth: after the team experiment
+worth: designed: docs/design-groups.md §6
 where: src/main/plugins/host-api.ts:233
 added: 2026-11-13
 ---

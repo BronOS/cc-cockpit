@@ -4,8 +4,8 @@ Status: revision 1 (2026-11-14), from a brainstorm with Oleg. A core communicati
 tabs in a group; members message each other and share docs through `ccc group`, with main setting every identity and
 enforcing every rule. Comes from the team-workflow experiment (`~/Projects/team-experiment`, plugin `bronos.team`),
 whose own mailbox files, background waiter and run-dir doc layer it replaces; that plugin keeps only the workflow
-policy. Backlog items folded in: `docs/backlog/core-tab-message-bus.md`; the caps' configurability stays in
-`docs/backlog/plugin-session-open-limit-for-teams.md`.
+policy. Backlog items folded in: `docs/backlog/core-tab-message-bus.md` and
+`docs/backlog/plugin-session-open-limit-for-teams.md` (the caps as the person's setting, §6).
 
 Decisions taken in the brainstorm:
 - **Who makes groups:** plugins only (host API). The person sees groups and can remove members, never builds one.
@@ -13,7 +13,7 @@ Decisions taken in the brainstorm:
   auto-deliver mark; an idle typed tab without the mark holds its messages behind a badge.
 - **Docs:** in app data (`<data>/groups/<id>/docs/`), outside every project; the plugin exports when it wants.
 - **Doc access:** a fixed scheme (a shared area, a private folder per member, share), no rule language.
-- **Scope:** messages and docs in one release, minimal UI.
+- **Scope:** messages and docs in one release, minimal UI, plus the configurable caps.
 - **Shape:** a service in main reached through core `ccc group` (option A), over an MCP server per tab (B: tool
   definitions in every tab's context, a second way into main) and a bundled plugin (C: needs core powers anyway).
 
@@ -125,7 +125,27 @@ Core draws no session list (the Sessions panel is `cockpit.sessions`), so core g
 - Web access: reading is allowed to browsers; Pause, Remove, Delete, the badge click and the mark are `adapted`
   channels that count from a browser only in server mode (the approvals rule); plugins reach none of them.
 
-## 6. Security, failures, testing, rollout
+## 6. Limits the person sets
+
+Folded in from `docs/backlog/plugin-session-open-limit-for-teams.md` (the experiment's sixth hire waited a minute on
+the 5-a-minute open cap). Every per-plugin cap that bounds tabs and texts becomes the person's per-plugin override:
+- `sessions.open` opens a minute (default 5), `sessions.send` texts a minute (default 30);
+- group sends a minute per member (default 20) and per group (default 60), members per group (default 20), groups
+  per plugin (default 5);
+- open Claude tabs per plugin at once (new, default unlimited as today; a bound on processes beside the rate, e.g.
+  a team at 20 opens a minute, at most 15 open).
+
+Each override has a hard ceiling in main (opens 60, sends 300, members 50, groups 20) so a typo cannot unbound it.
+Set in Settings › Plugins (the plugin's row, "Limits") or with `ccc plugin limits <id> key=value...` and
+`--default <key>...`; stored app-wide in `app.json` per plugin id. The person's alone: never in plugin.json, the
+plugin's settings or `ccc plugin config`. The `ccc` write is shell-only: its request name goes in
+`HOST_ONLY_COMMANDS` (`shared/protocol.ts`), refused for any caller with a token (every cockpit tab), so a
+prompt-injected Claude cannot raise its own group's caps; the settings channel is `no` for browsers except in
+server mode (the person's own actions rule). Reading (`ccc plugin limits <id>` with no values) is allowed from a tab,
+so a coordinator can see why it waits. A cap hit says which cap and its value in the error. Guide text for
+`sessions.open`, `sessions.send` and `ctx.groups` names the defaults and that the person can change them.
+
+## 7. Security, failures, testing, rollout
 
 Rules (for CLAUDE.md's implementation patterns):
 - main is the only authority: identity from the caller's tab token or the host's own plugin, never a payload; a
