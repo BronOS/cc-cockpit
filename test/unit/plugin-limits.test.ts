@@ -23,6 +23,7 @@ import {
 import { ProjectRegistry } from '../../src/main/projects/registry'
 import { pluginLimitsHandler, pluginLimitsSetHandler, registerPluginLimitsHandlers } from '../../src/main/socket/handlers'
 import { SocketServer, type Caller } from '../../src/main/socket/socket-server'
+import { MAX_MEMBERS_PER_ROOM, MAX_ROOMS_PER_PLUGIN } from '../../src/main/rooms/room-registry'
 import { DEFAULT_PLUGIN_LIMITS, formatPluginLimits, PLUGIN_LIMIT_SPECS } from '../../src/shared/plugin-limits'
 import { PLUGIN_LIMITS_HOST_ONLY_TEXT } from '../../src/shared/protocol'
 
@@ -69,13 +70,19 @@ const store = (storage = memory(), known = (id: string) => id === 'a.one' || id 
   new PluginLimitsStore({ storage, known })
 
 describe('defaults and ceilings (design-rooms.md §6)', () => {
-  it('are the design numbers, one minute each', () => {
-    expect(DEFAULT_PLUGIN_LIMITS).toEqual({ opensPerMinute: 5, sendsPerMinute: 30, roomSendsPerMember: 20, roomSendsPerRoom: 60 })
+  it('are the design numbers', () => {
+    expect(DEFAULT_PLUGIN_LIMITS).toEqual({ opensPerMinute: 5, sendsPerMinute: 30, roomSendsPerMember: 20,
+      roomSendsPerRoom: 60,
+      roomsPerProject: 5,
+      membersPerRoom: 20
+    })
     expect(Object.fromEntries(PLUGIN_LIMIT_SPECS.map((s) => [s.key, s.ceiling]))).toEqual({
       opensPerMinute: 60,
       sendsPerMinute: 300,
       roomSendsPerMember: 120,
-      roomSendsPerRoom: 600
+      roomSendsPerRoom: 600,
+      roomsPerProject: 20,
+      membersPerRoom: 50
     })
   })
 
@@ -86,13 +93,41 @@ describe('defaults and ceilings (design-rooms.md §6)', () => {
   })
 })
 
+describe('the room caps (roomsPerProject, membersPerRoom)', () => {
+  it('defaults are the registry constants (the guide drift tests use both)', () => {
+    expect(DEFAULT_PLUGIN_LIMITS.roomsPerProject).toBe(MAX_ROOMS_PER_PLUGIN)
+    expect(DEFAULT_PLUGIN_LIMITS.membersPerRoom).toBe(MAX_MEMBERS_PER_ROOM)
+  })
+  it('resolve plugin override, then global, then default, and reset', () => {
+    const s = store()
+    expect(s.limits('a.one').membersPerRoom).toBe(20)
+    s.setGlobal([['membersPerRoom', 30], ['roomsPerProject', 8]], [])
+    expect(s.limits('a.one')).toMatchObject({ membersPerRoom: 30, roomsPerProject: 8 })
+    s.set('a.one', [['membersPerRoom', 50]], [])
+    expect(s.limits('a.one').membersPerRoom).toBe(50)
+    expect(s.limits('b.two').membersPerRoom).toBe(30)
+    s.set('a.one', [], ['membersPerRoom'])
+    expect(s.limits('a.one').membersPerRoom).toBe(30)
+  })
+
+  it('refuse a value over the ceiling and print their unit in the CLI text', () => {
+    expect(() => parseLimitValue('roomsPerProject', 21)).toThrow('roomsPerProject must be a whole number from 1 to 20')
+    expect(() => parseLimitValue('membersPerRoom', 51)).toThrow('from 1 to 50')
+    const text = formatPluginLimits(limitsView('a.one', {}), (t) => String(t))
+    expect(text).toContain('roomsPerProject    = 5 (default)  default 5, at most 20: rooms not ended at once in a project')
+    expect(text).toContain('membersPerRoom     = 20 (default)  default 20, at most 50: members in one room')
+  })
+})
+
 describe('a stored override, as read (the file is user-writable)', () => {
   it('is clamped to the ceiling; a value that is no whole number from 1 is ignored', () => {
-    expect(effectiveLimits({ opensPerMinute: 1000, sendsPerMinute: 300, roomSendsPerMember: 1, roomSendsPerRoom: 61 })).toEqual({
+    expect(effectiveLimits({ opensPerMinute: 1000, sendsPerMinute: 300, roomSendsPerMember: 1, roomSendsPerRoom: 61, roomsPerProject: 99, membersPerRoom: 100 })).toEqual({
       opensPerMinute: 60,
       sendsPerMinute: 300,
       roomSendsPerMember: 1,
-      roomSendsPerRoom: 61
+      roomSendsPerRoom: 61,
+      roomsPerProject: 20,
+      membersPerRoom: 50
     })
     for (const bad of [0, -3, 1.5, '7', null, true, Number.NaN, Number.POSITIVE_INFINITY, [9], { v: 9 }]) {
       expect(effectiveLimits({ opensPerMinute: bad }).opensPerMinute, String(bad)).toBe(5)
@@ -135,7 +170,9 @@ describe('a stored override, as read (the file is user-writable)', () => {
       ['opensPerMinute', 5, false, 'default', 5, 5, 60],
       ['sendsPerMinute', 300, true, 'plugin', 30, 30, 300],
       ['roomSendsPerMember', 20, false, 'default', 20, 20, 120],
-      ['roomSendsPerRoom', 60, false, 'default', 60, 60, 600]
+      ['roomSendsPerRoom', 60, false, 'default', 60, 60, 600],
+      ['roomsPerProject', 5, false, 'default', 5, 5, 20],
+      ['membersPerRoom', 20, false, 'default', 20, 20, 50]
     ])
   })
 })
@@ -161,7 +198,7 @@ describe('an edit', () => {
 
   it('refuses an unknown key naming the known ones, a key named twice, and an empty or malformed edit, storing nothing', () => {
     expect(() => applyLimitsEdit({}, [['maxTabs', 3]], [])).toThrow(
-      'unknown limit: maxTabs (the limits are opensPerMinute, sendsPerMinute, roomSendsPerMember, roomSendsPerRoom)'
+      'unknown limit: maxTabs (the limits are opensPerMinute, sendsPerMinute, roomSendsPerMember, roomSendsPerRoom, roomsPerProject, membersPerRoom)'
     )
     expect(() => applyLimitsEdit({}, [['__proto__', 3]], [])).toThrow('unknown limit: __proto__')
     expect(() => applyLimitsEdit({}, [['opensPerMinute', 3]], ['opensPerMinute'])).toThrow('opensPerMinute is named twice')
@@ -202,7 +239,7 @@ describe('an edit', () => {
 describe('global values', () => {
   it('resolve override > global > default, key by key', () => {
     const global = { opensPerMinute: 12, sendsPerMinute: 50 }
-    expect(effectiveLimits({ opensPerMinute: 7 }, global)).toEqual({ opensPerMinute: 7, sendsPerMinute: 50, roomSendsPerMember: 20, roomSendsPerRoom: 60 })
+    expect(effectiveLimits({ opensPerMinute: 7 }, global)).toEqual({ opensPerMinute: 7, sendsPerMinute: 50, roomSendsPerMember: 20, roomSendsPerRoom: 60, roomsPerProject: 5, membersPerRoom: 20 })
     expect(effectiveLimits(undefined, global)).toEqual({ ...DEFAULT_PLUGIN_LIMITS, opensPerMinute: 12, sendsPerMinute: 50 })
     expect(globalLimits(global)).toEqual({ ...DEFAULT_PLUGIN_LIMITS, opensPerMinute: 12, sendsPerMinute: 50 })
     const s = store(memory({ 'a.one': { opensPerMinute: 7 } }, global))
@@ -235,7 +272,9 @@ describe('global values', () => {
       ['opensPerMinute', 7, 'plugin', true, 12],
       ['sendsPerMinute', 50, 'global', false, 50],
       ['roomSendsPerMember', 20, 'default', false, 20],
-      ['roomSendsPerRoom', 60, 'default', false, 60]
+      ['roomSendsPerRoom', 60, 'default', false, 60],
+      ['roomsPerProject', 5, 'default', false, 5],
+      ['membersPerRoom', 20, 'default', false, 20]
     ])
   })
 
@@ -246,7 +285,9 @@ describe('global values', () => {
       ['opensPerMinute', 5, 'default', false, 5, 60],
       ['sendsPerMinute', 300, 'global', true, 30, 300],
       ['roomSendsPerMember', 20, 'default', false, 20, 120],
-      ['roomSendsPerRoom', 60, 'default', false, 60, 600]
+      ['roomSendsPerRoom', 60, 'default', false, 60, 600],
+      ['roomsPerProject', 5, 'default', false, 5, 20],
+      ['membersPerRoom', 20, 'default', false, 20, 50]
     ])
   })
 

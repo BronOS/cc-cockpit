@@ -73,13 +73,13 @@ External review: auto
 - Modify: `src/shared/plugin-limits.ts`, `src/main/plugins/plugin-limits.ts`
 - Modify: `test/unit/plugin-limits*.test.ts`
 
-- [ ] add `roomsPerProject` and `membersPerRoom` to `PLUGIN_LIMIT_SPECS` with defaults, ceilings and labels that carry
+- [x] add `roomsPerProject` and `membersPerRoom` to `PLUGIN_LIMIT_SPECS` with defaults, ceilings and labels that carry
       the unit; fix the "every cap is per minute" texts (header, `MAX_PLUGIN_LIMIT_EDITS` comment)
-- [ ] update `cli-guide.test.ts`'s hard-coded spec key list (:368); keep `MAX_ROOMS_PER_PLUGIN` / `MAX_MEMBERS_PER_ROOM`
+- [x] update `cli-guide.test.ts`'s hard-coded spec key list (:368); keep `MAX_ROOMS_PER_PLUGIN` / `MAX_MEMBERS_PER_ROOM`
       exported as the defaults' source (the test imports them)
-- [ ] global and per-plugin resolution, clamping and reset work for both (they should, generically: prove it)
-- [ ] write tests: resolution order, ceilings, a hand-edited value clamped, CLI format units
-- [ ] run tests - must pass before next task
+- [x] global and per-plugin resolution, clamping and reset work for both (they should, generically: prove it)
+- [x] write tests: resolution order, ceilings, a hand-edited value clamped, CLI format units
+- [x] run tests - must pass before next task
 
 ### Task 2: Room registry reads the caps [model: opus]
 
