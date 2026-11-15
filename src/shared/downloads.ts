@@ -141,6 +141,23 @@ export interface DownloadAnswer {
   requestId: string
 }
 
+/**
+ * A size as the person reads it, in decimal units as browsers' download lists show them: `512 B`,
+ * `2.3 MB`, `48 MB` (one decimal below 10, none from there). Shared by main's refusal texts, the CLI's
+ * answer and the dialog.
+ */
+export function downloadSizeText(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 1000) return `${Math.max(0, Math.round(Number.isFinite(bytes) ? bytes : 0))} B`
+  const units = ['kB', 'MB', 'GB', 'TB']
+  let v = bytes / 1000
+  let i = 0
+  while (v >= 999.5 && i < units.length - 1) {
+    v /= 1000
+    i++
+  }
+  return `${v < 9.95 ? v.toFixed(1) : Math.round(v).toString()} ${units[i]}`
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Names.
 
