@@ -130,8 +130,8 @@ External review: auto
 
 ### Task 6: [Final] Update documentation [model: sonnet]
 
-- [ ] CLAUDE.md only if a rule changes (the Rooms bullets name the caps)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] CLAUDE.md only if a rule changes (the Rooms bullets name the caps)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
