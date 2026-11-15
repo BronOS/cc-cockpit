@@ -24,7 +24,7 @@
       /* A flagged card: the flag's colour down its left edge (the token comes from view.js flagOf,
          set as --flag), and the note under the head. */
       .card[data-flag] { border-left: 3px solid var(--flag); }
-      .room, .held { flex: none; font-size: var(--cc-text-s); padding: 0 var(--cc-space-2); border-radius: 999px; border: 1px solid var(--cc-border); color: var(--cc-fg-muted); max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .room, .held { flex: none; font-size: var(--cc-text-s); padding: 0 var(--cc-space-2); border-radius: var(--cc-radius-l); border: 1px solid var(--cc-border); color: var(--cc-fg-muted); max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .held { color: var(--cc-fg); border-color: var(--cc-accent); }
       .flag { display: flex; align-items: center; gap: var(--cc-space-2); margin-top: var(--cc-space-2); font-size: var(--cc-text-s); overflow-wrap: anywhere; }
       .fdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--flag); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent); }
