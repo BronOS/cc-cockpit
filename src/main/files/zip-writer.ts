@@ -32,6 +32,8 @@
 // The writer is an async generator: the response pulls it through `pipeline(Readable.from(zip), res)`,
 // so back-pressure reaches the deflate stream and the file reads, and a closed socket returns the
 // generator, which closes the open descriptor and returns the walk (its own `signal` stops it too).
+// Nothing a dead mount can stall (an open, a read) is awaited past the abort: the slot is freed at
+// once, and a stalled read's descriptor is closed in the background when that read returns.
 //
 // Pure Node, no Electron (the plan's rule for `main/files/downloads.ts` and its helpers).
 import type { Stats } from 'node:fs'
@@ -153,6 +155,8 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
       continue
     }
     const { handle, stat } = opened
+    /** The file's feed once started: its last read has settled when this does. */
+    let fed: Promise<void> | undefined
     try {
       // Checked against the descriptor's size: what is read is cut there, so the sum never passes it.
       if (fileBytes + stat.size > maxBytes) throw new ZipCapError('bytes')
@@ -165,8 +169,9 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
       // Fed from the descriptor while this loop drains it: `pipeline` pauses the reads while the
       // deflate's output waits for the response (back-pressure). Its rejection is awaited below; the
       // catch here only keeps it from being unhandled when the loop throws first.
-      const fed = pipeline(fileChunks(handle, stat.size, read, entry, opts), deflate, signal ? { signal } : {})
-      fed.catch(() => undefined)
+      const feeding = pipeline(fileChunks(handle, stat.size, read, entry, opts), deflate, signal ? { signal } : {})
+      fed = feeding
+      feeding.catch(() => undefined)
       let compressed = 0
       try {
         for await (const chunk of deflate as AsyncIterable<Buffer>) {
@@ -174,11 +179,13 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
           yield emit(chunk)
         }
       } finally {
-        // On a return (the socket closed) the loop above destroyed the deflate, which ends `fed` too;
-        // the descriptor is closed only after the last read on it settled.
-        await fed.catch(() => undefined)
+        // On a return (the socket closed) the loop above destroyed the deflate, which ends the feed
+        // too, but only once its pending read returns: a read stalled on a dead network mount never
+        // does, and waiting here would hold the generator (and the response's `pipeline`, and the
+        // download's live slot) past the abort. So it is waited for only until the abort.
+        await untilAborted(feeding, signal).catch(() => undefined)
       }
-      await fed
+      await untilAborted(feeding, signal)
       rec.crc = read.crc
       rec.size = read.bytes
       rec.compressed = compressed
@@ -191,7 +198,12 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
       if (signal?.aborted && !(e instanceof ZipCapError)) signal.throwIfAborted()
       throw e
     } finally {
-      await handle.close().catch(() => undefined)
+      const close = (): Promise<void> => handle.close().catch(() => undefined)
+      // Aborted: the descriptor is closed in the background once the feed's last read returns (a
+      // FileHandle's close waits for it anyway), and no read starts after the abort (`fileChunks`
+      // checks the signal before each). Otherwise it closes here, before the next entry opens.
+      if (signal?.aborted) void (fed ?? Promise.resolve()).catch(() => undefined).then(close)
+      else await close()
     }
   }
 
@@ -212,6 +224,33 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
   const cdSize = offset + batchBytes - cdOffset
   batch.push(endRecord(central.length, cdSize, cdOffset))
   yield emit(Buffer.concat(batch))
+}
+
+/**
+ * `p`, or a rejection with the signal's reason once it aborts, whichever comes first; `p` itself runs
+ * on. For an await that a dead network mount can stall forever (a read, an open): a generator's
+ * `return` waits for its pending await, so without this an abort never reaches the cleanup.
+ */
+export function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p
+  if (signal.aborted) {
+    p.catch(() => undefined)
+    return Promise.reject(signal.reason)
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
 }
 
 /**

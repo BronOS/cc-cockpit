@@ -14,7 +14,8 @@
 //    the server and a zip is chunked with no length, so the received count is checked on every update;
 //  - a cancel, an interrupt, a cap, a failed link and the window closing all delete the partial (the
 //    window closing or the server forgotten during the placement too: a copy is checked between chunks
-//    and removed, and only a placement that already finished stays); the
+//    and removed, and only a placement that already finished stays); on macOS a Downloads folder with
+//    no hard links refuses the save (a copy would drop the quarantine mark, see `placeDownload`); the
 //    saved file has no exec bit (whatever mode it was written with), so it never runs by a double click
 //    on Linux.
 import { randomBytes } from 'node:crypto'
@@ -73,6 +74,9 @@ async function remove(path: string): Promise<void> {
 /** Link errors of a filesystem with no hard links (exFAT, FAT32, some SMB, NFS and FUSE mounts). */
 const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
 
+/** Why a macOS save to a Downloads folder with no hard links is refused (the notice's words). */
+export const NO_QUARANTINE_TEXT = "the Downloads folder is on a drive with no hard links, and a copy there would lose macOS's download warning"
+
 /** Temps older than this are a dead save's: a live one writes (or stalls) far sooner than a day. */
 const STALE_TEMP_MS = 24 * 60 * 60 * 1000
 
@@ -127,6 +131,10 @@ async function copyExclusive(temp: string, final: string, mode: number, signal: 
     // The last chunk written and then a cancel: still not placed, so removed like a partial.
     signal?.throwIfAborted()
     await out.close()
+    // A cancel while the close ran (it flushes, and on a network mount that can take a while): the
+    // file is whole but the save was cancelled before it was placed, so it goes like a partial too.
+    // A second close in the catch below is a no-op on a closed handle.
+    signal?.throwIfAborted()
   } catch (err) {
     await out.close().catch(() => undefined)
     // An fstat that failed leaves no identity to check against: the file stays rather than risk another's.
@@ -136,17 +144,31 @@ async function copyExclusive(temp: string, final: string, mode: number, signal: 
   }
 }
 
+export interface PlaceOptions {
+  /** The save's cancel (the window closed, the server forgotten). */
+  signal?: AbortSignal
+  /** Tests only: default `process.platform` (macOS refuses the copy fallback). */
+  platform?: NodeJS.Platform
+}
+
 /**
  * The finished temp file placed at `name` in `dir`, or the first free numbered name: hard-linked
  * (EEXIST, a link at the name included, is never overwritten and never followed), then the temp
  * removed. Its exec bits are cleared first. On a filesystem with no hard links the file is copied
  * instead (`copyExclusive`: the same EEXIST on any entry, never followed, and a failed copy removes
- * only its own file). Rejects with the reason when it is not a regular file, every name up to `(99)`
- * is taken, or the write fails, and with `signal`'s reason when it aborts first (checked before each
- * name and between a copy's chunks): the temp and any partial copy are removed; a link or copy that
- * already finished is the placed file and stays.
+ * only its own file), except on macOS, where that is refused: Chromium marked the temp with
+ * `com.apple.quarantine` (Gatekeeper's check on first open), a hard link keeps it (the same inode and
+ * its xattrs), and a byte copy would not, so a copied app or script would open with no warning.
+ * Copying the xattr needs a native call (`copyfile(3)`); refusing is the smaller, safe answer (the
+ * person moves Downloads, or saves from a browser). Rejects with the reason when it is not a regular
+ * file, every name up to `(99)` is taken, the write fails or a macOS copy is refused, and with
+ * `signal`'s reason when it aborts first (checked before each name, between a copy's chunks and after
+ * its close): the temp and any partial copy are removed; a link or copy that already finished is the
+ * placed file and stays.
  */
-export async function placeDownload(temp: string, dir: string, name: string, signal?: AbortSignal): Promise<string> {
+export async function placeDownload(temp: string, dir: string, name: string, opts: PlaceOptions = {}): Promise<string> {
+  const { signal } = opts
+  const platform = opts.platform ?? process.platform
   try {
     const st = await lstat(temp)
     if (!st.isFile()) throw new PlaceError('what was saved is not a file')
@@ -159,6 +181,7 @@ export async function placeDownload(temp: string, dir: string, name: string, sig
       try {
         await link(temp, final).catch(async (err: unknown) => {
           if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
+          if (platform === 'darwin') throw new PlaceError(NO_QUARANTINE_TEXT)
           await copyExclusive(temp, final, mode, signal)
         })
         return final
@@ -186,6 +209,8 @@ export interface SaveOptions {
   /** Called once, after the partial is removed (a failure) or the file placed (saved). */
   done(outcome: DownloadOutcome): void
   log(message: string): void
+  /** Tests only: placeDownload's platform. */
+  platform?: NodeJS.Platform
 }
 
 /** A save in progress: `cancel` stops it and removes the partial (the window closed, the server forgotten). */
@@ -259,7 +284,7 @@ export function startSave(options: SaveOptions): ActiveSave {
     }
     const placement = new AbortController()
     placing = placement
-    placeDownload(temp, dir, name, placement.signal).then(
+    placeDownload(temp, dir, name, { signal: placement.signal, platform: options.platform }).then(
       // Placed before the cancel could stop it: the file is there, and saved is the truth.
       (saved) => {
         placing = undefined

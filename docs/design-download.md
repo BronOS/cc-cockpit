@@ -359,10 +359,16 @@ No open questions are left: the owner answered the first draft's four and the re
   hard links (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`, `EXDEV`: exFAT, FAT32, some SMB, NFS and FUSE mounts), the temp
   is copied into a destination created with `O_CREAT|O_EXCL|O_NOFOLLOW` instead (the same `EEXIST` rule, so the numbered
   names still apply); a copy that fails after that create removes the destination only while it is still the file it
-  created (same dev and inode). Any other link error fails the download with a notice. The window closing or the
-  server forgotten while the file is being placed aborts the placement too (checked before each name and between the
-  copy's chunks): the temp and the partial copy are removed and the notice names the reason; a placement that already
-  finished stays saved.
+  created (same dev and inode). On macOS that copy is refused instead: Chromium marks the temp with
+  `com.apple.quarantine`, a hard link keeps it (same inode, same xattrs) but a byte copy would drop it, and copying the
+  xattr needs a native call, so the save fails with a notice ("the Downloads folder is on a drive with no hard links, and
+  a copy there would lose macOS's download warning") and the temp is removed. Any other link error fails the download
+  with a notice. The window closing or the server forgotten while the file is being placed aborts the placement too
+  (checked before each name, between the copy's chunks and after its close): the temp and the partial copy are removed
+  and the notice names the reason; a placement that already finished stays saved.
+- A browser close or a drop frees a stream's live slot at once even when a file read is stalled (a dead network mount):
+  the read and the zip's feed are awaited only until the abort, no read starts after it, and the descriptor is closed in
+  the background when the stalled read returns.
 - A folder's walk skip reason `deep` (past depth 64) was added. Folder caps are enforced again while streaming, with no
   second walk at the GET.
 - One GET per download was seen in Chromium (Task 1), so no second-GET grace exists; Electron has no Chrome download

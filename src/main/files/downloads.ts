@@ -79,7 +79,7 @@ import { MAX_OPEN_PATH_LENGTH } from '../sessions/open-file'
 import { openVerified, verifiedProblemText } from '../verified-read'
 import { countFolder, walkFolder, zipRootName, type CountCap, type FolderCount, type WalkFs } from './folder-walk'
 import { resolveProjectEntry } from './system-files'
-import { zipEntries, ZipCapError, ZIP_CHUNK_BYTES } from './zip-writer'
+import { untilAborted, zipEntries, ZipCapError, ZIP_CHUNK_BYTES } from './zip-writer'
 
 /** HostApi's answer with no origin view (a timer, a plugin command, the 10 s lapse): the plugin shows it. */
 export const DOWNLOAD_NO_ORIGIN_TEXT = 'a download needs a click in a browser view'
@@ -177,6 +177,8 @@ export interface DownloadsDeps {
   /** Tests only. */
   now?: () => number
   walkFs?: WalkFs
+  /** The open of a file served, and of each file zipped, instead of `openVerified` (one whose reads stall). */
+  open?: typeof openVerified
   walkTimeoutMs?: number
   maxBytes?: number
   maxEntries?: number
@@ -213,7 +215,11 @@ interface Live {
   kind: DownloadKind
   controller: AbortController
   res: DownloadResponse
-  /** Settles once the stream is over and out of `live` (its file closed): what `dropAll` waits for. */
+  /**
+   * Settles once the stream is over and out of `live`: what `dropAll` waits for. Its file is closed by
+   * then, or, after an abort, closing in the background once a read still in flight returns (a read
+   * stalled on a dead mount must not hold the slot or the stop).
+   */
   ended: Promise<void>
 }
 
@@ -531,7 +537,7 @@ export class Downloads {
     let size = 0
     if (resolved.kind === 'file') {
       try {
-        const opened = await openVerified(resolved.real)
+        const opened = await (this.deps.open ?? openVerified)(resolved.real)
         if (!opened.ok) return refuse(`${resolved.name} ${verifiedProblemText(opened.problem)}`)
         handle = opened.handle
         size = opened.stat.size
@@ -604,7 +610,8 @@ export class Downloads {
 
   /**
    * Everything ended and every link dropped (the gateway stopped). The abort is synchronous; the
-   * promise settles once every stream is over (its pipeline unwound, its file closed, out of `live`),
+   * promise settles once every stream is over (its pipeline unwound, out of `live`, its file closed or,
+   * when a read was still in flight, closing once it returns),
    * so a stop that awaits it leaves nothing behind. Awaiting the client's socket close is not that: the
    * browser sees the cut before this side's pipeline has rejected and its `handle.close()` has run (a
    * full test run under load showed `liveCount` still 1 after the client's close).
@@ -863,14 +870,14 @@ export class Downloads {
     const name = resolved.name
     const deviceId = token.view.deviceId
     let source: AsyncIterable<Buffer>
-    // The read in flight when the browser closes: awaited before the close, so it never hits a closed descriptor.
+    // The read in flight when the browser closes: the close waits for it, so it never hits a closed descriptor.
     const reading: { pending?: Promise<unknown> } = {}
     if (handle) {
       source = fileBytes(handle, size, signal, reading)
     } else {
       // The walk's data dir must be real like its paths.
       const walk = walkFolder({ ...this.walkOptions(resolved, await this.dataDirReal()), includeAll: token.includeAll, signal, fs: this.deps.walkFs }, skipped)
-      source = zipEntries(walk, { signal, skipped, maxBytes: this.deps.maxBytes, maxEntries: this.deps.maxEntries })
+      source = zipEntries(walk, { signal, skipped, maxBytes: this.deps.maxBytes, maxEntries: this.deps.maxEntries, open: this.deps.open })
     }
     // A browser that goes away aborts the walk too. pipeline's own cleanup destroys the source, but an
     // async generator's `return` waits for the await it is in: a walk stalled on a hung `lstat` (a dead
@@ -902,8 +909,15 @@ export class Downloads {
       return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: false, cut: 'failed' }
     } finally {
       live.res.removeListener('close', onClose)
-      await reading.pending?.catch(() => undefined)
-      await handle?.close().catch(() => undefined)
+      const close = async (): Promise<void> => {
+        await reading.pending?.catch(() => undefined)
+        await handle?.close().catch(() => undefined)
+      }
+      // Aborted (a browser close, a drop): a read stalled on a dead network mount may never return,
+      // and the live slot must not wait for it, so the descriptor closes in the background once it
+      // does (no read starts after the abort: `fileBytes` checks the signal first). Otherwise here.
+      if (signal.aborted) void close()
+      else await close()
     }
   }
 }
@@ -928,7 +942,9 @@ async function* fileBytes(handle: FileHandle, size: number, signal: AbortSignal,
     const buf = Buffer.allocUnsafe(Math.min(ZIP_CHUNK_BYTES, size - at))
     const read = handle.read(buf, 0, buf.length, at)
     reading.pending = read
-    const { bytesRead } = await read
+    // Raced: a read stalled on a dead network mount would hold the generator's `return`, and with it
+    // the response's pipeline and the live slot, past the browser's close.
+    const { bytesRead } = await untilAborted(read, signal)
     if (bytesRead === 0) throw new Error('the file shrank while it was sent')
     at += bytesRead
     yield buf.subarray(0, bytesRead)

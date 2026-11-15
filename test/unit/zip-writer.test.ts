@@ -334,6 +334,53 @@ describe('zipEntries', () => {
     await waitFor(() => closed)
   })
 
+  it('an abort ends a zip whose file read is stalled; the descriptor closes once that read returns, and no read follows', async () => {
+    // A read hung on a dead network mount: the feed's pipeline (and a FileHandle's close) waits for it,
+    // so before the race the generator's return held the response's pipeline and the live slot.
+    write('a.bin', randomBytes(4 * ZIP_CHUNK_BYTES))
+    let release: (() => void) | undefined
+    let reads = 0
+    let closed = false
+    const open: typeof openVerified = async (path, expect) => {
+      const v = await openVerified(path, expect)
+      if (v.ok) {
+        const h = v.handle
+        const realRead = h.read.bind(h) as (...a: unknown[]) => Promise<unknown>
+        const realClose = h.close.bind(h)
+        ;(h as unknown as { read: unknown }).read = async (...a: unknown[]) => {
+          if (++reads === 2) await new Promise<void>((r) => (release = r))
+          return realRead(...a)
+        }
+        h.close = async () => {
+          closed = true
+          await realClose()
+        }
+      }
+      return v
+    }
+    const waitFor = async (cond: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5))
+      expect(cond()).toBe(true)
+    }
+    const ac = new AbortController()
+    const sink = new Writable({
+      write(_c, _e, cb) {
+        cb()
+      },
+    })
+    const zipping = pipeline(Readable.from(zipEntries(walkFolder(walkOpts(proj, { signal: ac.signal })), { signal: ac.signal, open })), sink)
+    await waitFor(() => release !== undefined)
+    ac.abort(new Error('gone'))
+    const outcome = await Promise.race([zipping.then(() => 'ended', (e: Error) => e.message), new Promise((r) => setTimeout(() => r('still held'), 2000))])
+    expect(outcome).toBe('gone')
+    // Still waiting on the stalled read: the descriptor stays open until it returns, then closes.
+    expect(closed).toBe(false)
+    release?.()
+    await waitFor(() => closed)
+    // The read that was in flight was the last one: nothing reads after the abort.
+    expect(reads).toBe(2)
+  })
+
   it('on a write error destroys the source mid-entry, closing the descriptor and the walk', async () => {
     write('a.bin', randomBytes(8 * ZIP_CHUNK_BYTES))
     for (let i = 0; i < 5; i++) write(`b${i}.txt`)

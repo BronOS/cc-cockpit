@@ -20,6 +20,7 @@ import {
   type DownloadView,
   type ServeResult,
 } from '../../src/main/files/downloads'
+import { openVerified } from '../../src/main/verified-read'
 import { readZip } from '../fakes/zip-reader'
 
 let tmp: string
@@ -526,6 +527,47 @@ describe('streams', () => {
     expect(d.liveCount).toBe(0)
     expect(failures).toEqual([])
   })
+
+  for (const kind of ['file', 'folder'] as const) {
+    it(`a browser that goes away frees the live slot of a ${kind} whose read is stalled (the descriptor closes later)`, async () => {
+      write(join(proj, 'dir/big'), randomBytes(BIG))
+      // Every read after the first hangs until released (a dead network mount); the open itself is real.
+      let release: (() => void) | undefined
+      let reads = 0
+      let closed = false
+      const open: typeof openVerified = async (path, expect) => {
+        const v = await openVerified(path, expect)
+        if (v.ok) {
+          const h = v.handle
+          const realRead = h.read.bind(h) as (...a: unknown[]) => Promise<unknown>
+          const realClose = h.close.bind(h)
+          ;(h as unknown as { read: unknown }).read = async (...a: unknown[]) => {
+            if (++reads === 2) await new Promise<void>((r) => (release = r))
+            return realRead(...a)
+          }
+          h.close = async () => {
+            closed = true
+            await realClose()
+          }
+        }
+        return v
+      }
+      const d = make({ open })
+      await d.start(VIEW, rel(kind === 'file' ? 'dir/big' : 'dir'), false)
+      const res = new FakeRes()
+      const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+      await waitFor(() => release !== undefined)
+      res.destroy()
+      const result = await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])
+      expect(result).toMatchObject({ status: 'sent', completed: false, cut: 'closed' })
+      expect(d.liveCount).toBe(0)
+      expect(closed).toBe(false)
+      release?.()
+      await waitFor(() => closed)
+      expect(reads).toBe(2)
+      expect(failures).toEqual([])
+    })
+  }
 
   it('limits each device to two at once, and keeps the third link for later', async () => {
     for (const n of ['a', 'b', 'c']) write(join(proj, n), randomBytes(BIG))

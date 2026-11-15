@@ -17,6 +17,8 @@ const state = vi.hoisted(() => ({
   raceName: undefined as string | undefined,
   /** Called after each chunk the copy writes (a cancel arriving mid-copy). */
   onWrite: undefined as (() => void) | undefined,
+  /** Called as the copy's destination starts to close, before the close completes. */
+  onClose: undefined as (() => void) | undefined,
 }))
 
 vi.mock('node:fs/promises', async (orig) => {
@@ -35,7 +37,7 @@ vi.mock('node:fs/promises', async (orig) => {
       if (state.sourceCode && flags === 'r') throw Object.assign(new Error('source failed'), { code: state.sourceCode })
       const handle = await real.open(p, flags, mode)
       const creating = typeof flags === 'number' && (flags & fsConstants.O_EXCL) !== 0
-      if (!creating || (!state.writeCode && !state.onWrite)) return handle
+      if (!creating || (!state.writeCode && !state.onWrite && !state.onClose)) return handle
       const code = state.writeCode
       return new Proxy(handle, {
         get(target, key) {
@@ -43,6 +45,13 @@ vi.mock('node:fs/promises', async (orig) => {
             return async () => {
               await target.write(Buffer.from('tr'))
               throw Object.assign(new Error('disk full'), { code })
+            }
+          }
+          if (key === 'close' && state.onClose) {
+            return async () => {
+              const closing = target.close()
+              state.onClose?.()
+              await closing
             }
           }
           if (key === 'write') {
@@ -60,7 +69,7 @@ vi.mock('node:fs/promises', async (orig) => {
   }
 })
 
-import { placeDownload, startSave, type DownloadOutcome, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
+import { NO_QUARANTINE_TEXT, placeDownload, startSave, type DownloadOutcome, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
 
 let dir: string
 beforeEach(async () => {
@@ -70,6 +79,7 @@ beforeEach(async () => {
   state.sourceCode = undefined
   state.raceName = undefined
   state.onWrite = undefined
+  state.onClose = undefined
 })
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
@@ -126,6 +136,22 @@ describe('placeDownload without hard links', () => {
     expect((await readFile(final)).equals(data)).toBe(true)
   })
 
+  it('on macOS refuses to copy (the quarantine mark would be lost) and leaves nothing', async () => {
+    const temp = join(dir, '.cc-download-mm')
+    await writeFile(temp, 'hello')
+    await expect(placeDownload(temp, dir, 'a.txt', { platform: 'darwin' })).rejects.toThrow(NO_QUARANTINE_TEXT)
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('on macOS a hard link still places the file (it keeps the inode and its xattrs)', async () => {
+    state.linkCode = undefined
+    const temp = join(dir, '.cc-download-ml')
+    await writeFile(temp, 'hello')
+    const final = await placeDownload(temp, dir, 'a.txt', { platform: 'darwin' })
+    expect(await readFile(final, 'utf8')).toBe('hello')
+    expect(await readdir(dir)).toEqual(['a.txt'])
+  })
+
   it('does not copy on a link error that is not a missing-links one', async () => {
     const temp = join(dir, '.cc-download-dd')
     await writeFile(temp, 'hello')
@@ -161,7 +187,7 @@ describe('a placement cancelled mid-copy', () => {
     await writeFile(temp, big)
     const ac = new AbortController()
     state.onWrite = () => ac.abort(new Error('its window was closed'))
-    await expect(placeDownload(temp, dir, 'big.bin', ac.signal)).rejects.toThrow('its window was closed')
+    await expect(placeDownload(temp, dir, 'big.bin', { signal: ac.signal })).rejects.toThrow('its window was closed')
     expect(await readdir(dir)).toEqual([])
   })
 
@@ -174,6 +200,38 @@ describe('a placement cancelled mid-copy', () => {
     f.complete()
     await vi.waitFor(() => expect(outcomes).toHaveLength(1))
     expect(outcomes[0]).toEqual({ failed: 'its window was closed' })
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('placeDownload cancelled while the copy closes removes the whole copy too', async () => {
+    const temp = join(dir, '.cc-download-hh')
+    await writeFile(temp, big)
+    const ac = new AbortController()
+    state.onClose = () => ac.abort(new Error('its window was closed'))
+    await expect(placeDownload(temp, dir, 'big.bin', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('a window closed during the copy\'s close saves nothing, and says why', async () => {
+    const f = fakeItem()
+    const outcomes: DownloadOutcome[] = []
+    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    await writeFile(f.path(), big)
+    state.onClose = () => save.cancel('its window was closed')
+    f.complete()
+    await vi.waitFor(() => expect(outcomes).toHaveLength(1))
+    expect(outcomes[0]).toEqual({ failed: 'its window was closed' })
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('on macOS a save to a folder with no hard links fails with the reason and leaves nothing', async () => {
+    const f = fakeItem()
+    const outcomes: DownloadOutcome[] = []
+    startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined, platform: 'darwin' })
+    await writeFile(f.path(), big)
+    f.complete()
+    await vi.waitFor(() => expect(outcomes).toHaveLength(1))
+    expect(outcomes[0]).toEqual({ failed: NO_QUARANTINE_TEXT })
     expect(await readdir(dir)).toEqual([])
   })
 
