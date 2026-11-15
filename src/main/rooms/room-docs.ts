@@ -37,8 +37,11 @@ const TMP_MARK = '.tmp-'
 /** The answer to a refused doc and to a missing one: the same code and the same words. */
 const NO_DOC = 'no such doc'
 
-/** Who asks: the owning plugin, or a member as main resolved it from the tab's token. */
-export type RoomDocCaller = 'plugin' | { name: string; coordinator: boolean }
+/**
+ * Who asks: the owning plugin, the person (the room view, main checked the window: reads every folder, never writes),
+ * or a member as main resolved it from the tab's token.
+ */
+export type RoomDocCaller = 'plugin' | 'person' | { name: string; coordinator: boolean }
 
 export interface RoomDocEntry {
   /** `shared/...` or `members/<name>/...`. */
@@ -90,18 +93,20 @@ function docPathText(p: DocPath): string {
 }
 
 function mayRead(caller: RoomDocCaller, p: DocPath): boolean {
-  if (caller === 'plugin' || caller.coordinator) return true
+  if (caller === 'plugin' || caller === 'person' || caller.coordinator) return true
   return p.area === 'shared' || p.member === caller.name
 }
 
 function mayWrite(caller: RoomDocCaller, p: DocPath): boolean {
   if (caller === 'plugin') return true
+  // The room view is read-only: what is in a doc is the plugin's or a member's word, never the person's by the back door.
+  if (caller === 'person') return false
   // A coordinator reads a member's folder but never writes it: what is there is that member's own word.
   return p.area === 'shared' ? caller.coordinator : p.member === caller.name
 }
 
 function byOf(caller: RoomDocCaller): string {
-  return caller === 'plugin' ? 'plugin' : caller.name
+  return caller === 'plugin' || caller === 'person' ? caller : caller.name
 }
 
 /**
@@ -161,6 +166,22 @@ export class RoomDocs {
         return p !== null && mayRead(caller, p)
       })
       .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  }
+
+  /**
+   * The folder the room view's Reveal shows: the room's `docs/`, or the room's own folder while no doc was written;
+   * every level checked to be a plain folder (never a link). Null when neither is there.
+   */
+  async folder(roomId: string): Promise<string | null> {
+    const docs = await this.docsDir(roomId, false)
+    if (docs !== null) return docs
+    let base: string
+    try {
+      base = await realpath(this.options.dir)
+    } catch {
+      return null
+    }
+    return this.walkDirs(base, [roomId], false)
   }
 
   /** The text of a doc. Refused, missing, a link, not a file: all `not-found` with the same words. */

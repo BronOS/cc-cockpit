@@ -32,7 +32,8 @@
 //   mounts, which is after `ready` (and again after each reconnect's remount), so without this a
 //   view joining mid-ask would never show the dialog. The `ccc plugin link` confirm (`links.ask` /
 //   `links.settled`, `ready`'s `linkAsks`, main/plugins/link-asks.ts) and the Move to Trash confirm
-//   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) are the same (SHARED_ASKS),
+//   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) and a room member's Remove confirm
+//   (`rooms.removeAsk` / `rooms.removeSettled`, `roomRemoveAsks`, router.ts registerRoomViewHandlers) are the same (SHARED_ASKS),
 //   and so are a server's in-page notices (`notices.show` / `notices.gone`, `notices`,
 //   main/notifications/notifier.ts PageNoticeBackend): one shown before the shell mounted still shows.
 //   A plugin's pending OAuth sign-in in server mode is held the same way (`app.linkNotice` with
@@ -184,6 +185,14 @@ function trashAskOf(value: unknown): Record<string, unknown> | undefined {
   return { requestId: v.requestId, path: v.path, kind: v.kind, pluginId: v.pluginId }
 }
 
+/** A `rooms.removeAsk` from main (an event or `ready`'s list), checked; undefined when malformed. */
+function roomRemoveAskOf(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  if (typeof v.requestId !== 'string' || typeof v.roomId !== 'string' || typeof v.title !== 'string' || typeof v.name !== 'string') return undefined
+  return { requestId: v.requestId, roomId: v.roomId, title: v.title, name: v.name }
+}
+
 /** A `notices.show` from main (an event or `ready`'s list), checked; undefined when malformed. */
 function noticeOf(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null) return undefined
@@ -213,13 +222,14 @@ function signInOf(value: unknown): Record<string, unknown> | undefined {
 const SHARED_ASKS: ReadonlyArray<{
   ask: string
   settled: string
-  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'notices' | 'signIns'
+  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'roomRemoveAsks' | 'notices' | 'signIns'
   key: 'requestId' | 'signIn'
   parse(value: unknown): Record<string, unknown> | undefined
 }> = [
   { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', key: 'requestId', parse: closeAskOf },
   { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', key: 'requestId', parse: linkAskOf },
   { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', key: 'requestId', parse: trashAskOf },
+  { ask: 'rooms.removeAsk', settled: 'rooms.removeSettled', field: 'roomRemoveAsks', key: 'requestId', parse: roomRemoveAskOf },
   { ask: 'notices.show', settled: 'notices.gone', field: 'notices', key: 'requestId', parse: noticeOf },
   { ask: 'app.linkNotice', settled: 'oauth.signInEnded', field: 'signIns', key: 'signIn', parse: signInOf }
 ]

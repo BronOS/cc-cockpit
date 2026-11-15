@@ -22,13 +22,14 @@
 import { MAX_LINE_BYTES, ROOM_READ_MAX_TEXT_BYTES, type RoomReadReply } from '../../shared/protocol'
 import type { TabKind } from '../../shared/types'
 import type { DeliverHeldAnswer, TabRoom } from '../../shared/tab-room'
+import { ROOM_VIEW_LOG_LIMIT, ROOM_VIEW_LOG_MAX_BYTES, type RoomView, type RoomViewLogEntry, type RoomViewMember } from '../../shared/room-view'
 import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-reducer'
 import type { TabRoomHooks } from '../tabs/tab-manager'
 import { warnLog } from '../warn-log'
 import { fenceBatch, newFenceNonce } from './room-fence'
 import { RoomDelivery, type RecipientAnswer, type RoomSendLimits } from './room-delivery'
 import { RoomDocs, type RoomDocCaller, type RoomDocEntry } from './room-docs'
-import type { RoomLogPage } from './room-log'
+import type { RoomLogEntry, RoomLogPage } from './room-log'
 import {
   RoomError,
   RoomRegistry,
@@ -75,7 +76,16 @@ export interface RoomServiceOptions {
   newAckId?: () => string
   ackTimeoutMs?: number
   log?: (message: string) => void
+  /**
+   * A room of `projectId` changed (record, queue, binding, doc, log; or it was deleted): index.ts tells the project's
+   * views (`rooms.changed`) so an open room view reads it again. Coalesced per room to one call per burst (a send to
+   * `all` saves and logs once per member), after the change.
+   */
+  changed?(room: { id: string; projectId: string }): void
 }
+
+/** How long a server's browser's Remove waits for the window's answer (`rooms.removeAsk`); past it nothing is removed. */
+export const ROOM_REMOVE_ASK_MS = 5 * 60_000
 
 /** A `ccc room` caller: the Claude tab main resolved from the session token, and that tab's project. */
 export interface RoomTabCaller {
@@ -116,6 +126,8 @@ export class RoomService {
   private readonly nonce: () => string
   private readonly warn: (message: string) => void
   private readonly unsubscribe: Array<() => void> = []
+  /** Rooms changed in this burst, by id (their project): told once, on the next microtask. */
+  private readonly changedRooms = new Map<string, string>()
 
   constructor(private readonly options: RoomServiceOptions) {
     this.warn = options.log ?? warnLog
@@ -125,11 +137,22 @@ export class RoomService {
       ...(options.now ? { now: options.now } : {}),
       ...(options.newId ? { newId: options.newId } : {}),
       ...(options.random ? { random: options.random } : {}),
-      log: this.warn
+      log: this.warn,
+      changed: (room) => this.roomChanged(room)
     })
     this.docs = new RoomDocs({
       dir: options.dir,
-      logOf: (roomId) => this.registry.logOf(roomId),
+      // The docs' own log events (reads, writes, refusals) change what the room view shows too.
+      logOf: (roomId) => {
+        const log = this.registry.logOf(roomId)
+        return {
+          append: (type, fields) => {
+            log.append(type, fields)
+            const room = this.registry.peek(roomId)
+            if (room) this.roomChanged(room)
+          }
+        }
+      },
       log: this.warn,
       ...(options.random ? { random: options.random } : {})
     })
@@ -451,6 +474,77 @@ export class RoomService {
     if (member) this.delivery.offer(member.roomId, member.name)
   }
 
+  // --- the room view (rooms.view and the rest, Task 14): `projectId` is main's, the sender's window's project ---
+
+  /**
+   * The room of the person's window: one of `projectId`'s rooms, live or ended. Another project's room, an unknown id
+   * and a deleted room are the same "no such room" (a view names a room only by the id its own tabs carry).
+   */
+  personRoom(projectId: string, id: unknown): RoomRecord {
+    const room = typeof id === 'string' ? this.registry.peek(id) : undefined
+    if (!room || room.projectId !== projectId) throw new RoomError('not-found', 'no such room')
+    return room
+  }
+
+  /** `rooms.view`: members with their tab status and held counts, every doc, the newest log events. */
+  async view(projectId: string, id: unknown): Promise<RoomView> {
+    const room = this.personRoom(projectId, id)
+    const members = this.registry.memberInfos(room.id).map((m): RoomViewMember => {
+      const status = m.tabId === undefined ? 'no-tab' : (this.options.sessions.get(m.tabId)?.status ?? 'no-tab')
+      return { name: m.name, coordinator: m.coordinator, status, held: m.held, ...(m.tabId !== undefined ? { tabId: m.tabId } : {}) }
+    })
+    const docs = await this.docs.list(room.id, 'person')
+    const page = this.registry.logOf(room.id).page({ limit: ROOM_VIEW_LOG_LIMIT })
+    const log = viewLog(page.entries)
+    return {
+      id: room.id,
+      title: room.title,
+      pluginId: room.pluginId,
+      createdAt: room.createdAt,
+      ...(room.endedAt !== undefined ? { endedAt: room.endedAt } : {}),
+      paused: room.paused,
+      members,
+      docs,
+      log: log.entries,
+      logMore: page.more || log.dropped
+    }
+  }
+
+  /** `rooms.doc`: a doc's text for the read-only viewer, read as the person (every folder; logged `by person`). */
+  async personDoc(projectId: string, id: unknown, path: unknown): Promise<string> {
+    return await this.docs.get(this.personRoom(projectId, id).id, 'person', path)
+  }
+
+  personPause(projectId: string, id: unknown): void {
+    this.pause(this.personRoom(projectId, id).id)
+  }
+
+  personResume(projectId: string, id: unknown): void {
+    this.resume(this.personRoom(projectId, id).id)
+  }
+
+  /**
+   * The member a Remove names, checked before a server's browser is asked (an ask for a member that is not there would
+   * only be a dialog that does nothing): the room's title and the name for the ask's words.
+   */
+  removeTarget(projectId: string, id: unknown, name: unknown): { roomId: string; title: string; name: string } {
+    const room = this.personRoom(projectId, id)
+    if (typeof name !== 'string' || !Object.hasOwn(room.members, name)) throw new RoomError('not-found', 'no such member')
+    return { roomId: room.id, title: room.title, name }
+  }
+
+  /** `rooms.remove` once allowed: the person removes the member (checked again: it may have left during the ask). */
+  personRemove(projectId: string, id: unknown, name: unknown): void {
+    this.remove('person', this.personRoom(projectId, id).id, name)
+  }
+
+  /** `rooms.reveal`: the folder to show (room-docs.ts folder), or a refusal when the room has none on disk. */
+  async revealFolder(projectId: string, id: unknown): Promise<string> {
+    const folder = await this.docs.folder(this.personRoom(projectId, id).id)
+    if (folder === null) throw new RoomError('not-found', 'the room has no folder yet')
+    return folder
+  }
+
   /** App quit: the room stop's ack timers stop and the listeners go. */
   dispose(): void {
     this.stop.dispose()
@@ -510,9 +604,44 @@ export class RoomService {
     return this.registry.memberInfos(roomId).flatMap((m) => (m.tabId === undefined ? [] : [m.tabId]))
   }
 
+  /** Collect a change; the burst is told on the next microtask, once per room. */
+  private roomChanged(room: { id: string; projectId: string }): void {
+    if (!this.options.changed) return
+    const first = this.changedRooms.size === 0
+    this.changedRooms.set(room.id, room.projectId)
+    if (!first) return
+    queueMicrotask(() => {
+      const rooms = [...this.changedRooms]
+      this.changedRooms.clear()
+      for (const [id, projectId] of rooms) {
+        try {
+          this.options.changed?.({ id, projectId })
+        } catch (err) {
+          this.warn(`rooms: change listener failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+    })
+  }
+
   private roomEnded(room: RoomRecord, bound: string[]): void {
     for (const tabId of bound) this.releaseTab(room.projectId, tabId)
     this.delivery.forget(room.id)
     this.stop.roomGone(room.id)
   }
+}
+
+/**
+ * The log entries a room view carries: the newest that fit ROOM_VIEW_LOG_MAX_BYTES (JSON), oldest first; `dropped` when
+ * older ones were left out for the size. Entries are plain data read back from the JSON-lines file, passed on as is.
+ */
+function viewLog(entries: RoomLogEntry[]): { entries: RoomViewLogEntry[]; dropped: boolean } {
+  let bytes = 0
+  let from = entries.length
+  while (from > 0) {
+    const size = Buffer.byteLength(JSON.stringify(entries[from - 1]))
+    if (bytes + size > ROOM_VIEW_LOG_MAX_BYTES) break
+    bytes += size
+    from--
+  }
+  return { entries: entries.slice(from), dropped: from > 0 }
 }

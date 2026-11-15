@@ -67,6 +67,7 @@ import {
   registerServiceHandlers,
   registerTabHandlers,
   registerRoomStripHandlers,
+  registerRoomViewHandlers,
   registerGroupHandlers,
   registerWebviewHandlers,
   summary
@@ -114,6 +115,8 @@ import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
 import { TrashAsks } from './files/trash-asks'
+import { SharedAsks } from './asks/shared-asks'
+import type { RoomRemoveAsk } from '../shared/room-view'
 import { chooseAsk } from './asks/shared-asks'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { RoomsPluginGate } from './rooms/rooms-plugin-gate'
@@ -152,7 +155,7 @@ import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookAckHandler, hookHandler, hookTarget } from './sessions/hook-handler'
-import { RoomService } from './rooms/room-service'
+import { ROOM_REMOVE_ASK_MS, RoomService } from './rooms/room-service'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
@@ -669,6 +672,17 @@ function start(server: boolean): void {
     send: (windowId, ask) => views.toWindow(windowId, 'trash.ask', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'trash.settled', { requestId })
   })
+  // A server's browser asking to remove a room member (design-rooms.md §5): the same shared ask on every view of the
+  // window (first answer wins, `rooms.removeSettled` to the others, replayed in `ready`, 5 min then not removed).
+  const roomRemoveAsks = new SharedAsks<Omit<RoomRemoveAsk, 'requestId'>, boolean>({
+    hooks: {
+      send: (windowId, ask) => views.toWindow(windowId, 'rooms.removeAsk', ask),
+      settled: (windowId, requestId) => views.toWindow(windowId, 'rooms.removeSettled', { requestId })
+    },
+    prefix: 'room-remove',
+    refused: false,
+    timeoutMs: ROOM_REMOVE_ASK_MS
+  })
   const systemFiles = new SystemFiles({
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
@@ -910,6 +924,7 @@ function start(server: boolean): void {
       closeAsks.windowClosed(windowId)
       linkAsks.windowClosed(windowId)
       trashAsks.windowClosed(windowId)
+      roomRemoveAsks.windowClosed(windowId)
       // Its in-page notices end as dismissed (server mode; a plugin waiting on one is told now).
       pageNotices?.windowClosed(windowId)
     },
@@ -1865,7 +1880,9 @@ function start(server: boolean): void {
       kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId)
     },
     sessions,
-    limits: (pluginId) => pluginLimits.limits(pluginId)
+    limits: (pluginId) => pluginLimits.limits(pluginId),
+    // An open room view (any view of the project's window) reads the room again.
+    changed: (room) => views.toProject(room.projectId, 'rooms.changed', { roomId: room.id })
   })
   rooms.load()
   // Never before the load finished, nor after a failed one: every plugin would look removed then and every room would end.
@@ -3073,6 +3090,20 @@ function start(server: boolean): void {
     deliverHeld: (projectId, tabId, overDraft) =>
       tabs.roomOf(projectId, tabId) === undefined ? { delivered: false, why: 'no-room' } : rooms.deliverHeld(tabId, { overDraft })
   })
+  // The room view (design-rooms.md §5): every call for a room of the sender's own project (RoomService.personRoom).
+  registerRoomViewHandlers(router, {
+    server,
+    view: (projectId, roomId) => rooms.view(projectId, roomId),
+    doc: (projectId, roomId, path) => rooms.personDoc(projectId, roomId, path),
+    pause: (projectId, roomId) => rooms.personPause(projectId, roomId),
+    resume: (projectId, roomId) => rooms.personResume(projectId, roomId),
+    removeTarget: (projectId, roomId, name) => rooms.removeTarget(projectId, roomId, name),
+    remove: (projectId, roomId, name) => rooms.personRemove(projectId, roomId, name),
+    askRemove: (windowId, info) => roomRemoveAsks.ask(windowId, info),
+    removeAnswer: (windowId, requestId, remove) => roomRemoveAsks.answer(windowId, requestId, remove),
+    // The checked folder (never a link), handed to the file manager through the shell adapter, as ctx.files.reveal.
+    reveal: async (projectId, roomId) => electronSystemShell.showItemInFolder(await rooms.revealFolder(projectId, roomId))
+  })
   registerGroupHandlers(router, {
     get: (projectId) => tabGroups.get(projectId),
     place: (projectId, intent) => tabGroups.place(projectId, intent),
@@ -3142,7 +3173,7 @@ function start(server: boolean): void {
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot(
         // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
-        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
+        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, roomRemoveAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
         ctx
       ),
     mirror: terminalMirror,

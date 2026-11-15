@@ -50,6 +50,7 @@ import type { PluginServicesView } from '../../shared/services'
 import type { PluginLimitsView } from '../../shared/plugin-limits'
 import type { TabFlag } from '../../shared/tab-flag'
 import type { DeliverHeldAnswer } from '../../shared/tab-room'
+import type { RoomView } from '../../shared/room-view'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
@@ -1663,9 +1664,7 @@ export interface RoomStripHandlerDeps {
  * only when the mark goes from off to on: clearing it, or setting it again, delivers nothing.
  */
 export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHandlerDeps): void {
-  const personOnly = (channel: string, view: CallView): void => {
-    if (view.remote && !deps.server) throw new Error(`${channel}: refused for a browser view outside server mode`)
-  }
+  const personOnly = (channel: string, view: CallView): void => refuseBrowserOutsideServer(deps.server, channel, view)
   router.handleProject('tabs.roomMark', (ctx, payload, view) => {
     personOnly('tabs.roomMark', view)
     const mark = fields('tabs.roomMark', payload).mark
@@ -1681,6 +1680,101 @@ export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHand
     const overDraft = fields('rooms.deliverHeld', payload).overDraft
     if (overDraft !== undefined && overDraft !== true) throw new Error('rooms.deliverHeld: overDraft must be true or absent')
     return deps.deliverHeld(ctx.projectId, tabIdOf('rooms.deliverHeld', payload), overDraft === true)
+  })
+}
+
+/**
+ * The person's acts on a room (`adapted` channels): a browser view counts as the person only in server mode, where the
+ * browsers are the person (the approvals rule); decided by the view main bound, never the payload.
+ */
+function refuseBrowserOutsideServer(server: boolean, channel: string, view: CallView): void {
+  if (view.remote && !server) throw new Error(`${channel}: refused for a browser view outside server mode`)
+}
+
+/** A room id from a payload: a string of a sane length (the room service looks it up in the sender's project). */
+function roomIdOf(channel: string, payload: unknown): string {
+  const roomId = fields(channel, payload).roomId
+  if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 64) throw new Error(`${channel}: roomId must be a room id`)
+  return roomId
+}
+
+/**
+ * What the room view's channels need from main (design-rooms.md §5, room-service.ts "the room view"). Every call takes
+ * the sender's project (main's) and looks the room up there: another project's room is "no such room".
+ */
+export interface RoomViewHandlerDeps {
+  /** Server mode: a browser view counts as the person; outside it a browser may read but not act. */
+  server: boolean
+  view(projectId: string, roomId: string): Promise<RoomView>
+  doc(projectId: string, roomId: string, path: string): Promise<string>
+  pause(projectId: string, roomId: string): void
+  resume(projectId: string, roomId: string): void
+  /** The member a Remove names, checked (throws "no such room" / "no such member"): the ask's words. */
+  removeTarget(projectId: string, roomId: string, name: string): { roomId: string; title: string; name: string }
+  remove(projectId: string, roomId: string, name: string): void
+  /**
+   * Put the Remove confirm to every view of `windowId` (SharedAsks: first answer wins, a timeout or no view is a
+   * decline): true only when a view answered Remove.
+   */
+  askRemove(windowId: number, info: { roomId: string; title: string; name: string }): Promise<boolean>
+  /** A view's answer to that ask, for the sender's own window (SharedAsks.answer). */
+  removeAnswer(windowId: number, requestId: string, remove: boolean): boolean
+  /** Show the room's folder in the host's file manager (RoomService.revealFolder, then the shell adapter). */
+  reveal(projectId: string, roomId: string): Promise<void>
+}
+
+/**
+ * The room view's channels, all from the shell page's top frame of a project window (handleProject), for that
+ * project's rooms only. `rooms.view` and `rooms.doc` are reads (`yes`: a browser may read, message text included).
+ * Pause, Resume, Remove and the Remove answer are the person's acts (`adapted`): a browser counts only in server mode.
+ * A Remove from a server's browser is not done on the click: main asks every view of the window first (an
+ * ApprovalDialog, `rooms.removeAsk`), and removes only on a Remove answer, checking the member again then (it may have
+ * left while the dialog was up). The desktop's Remove is done at once (its dialog confirms on its own screen). Reveal
+ * is `no` (the router refuses a browser before this runs) and refused in server mode too: there the host has no
+ * screen (design-web.md §9.9, as ctx.files.reveal).
+ */
+export function registerRoomViewHandlers(router: IpcRouter, deps: RoomViewHandlerDeps): void {
+  router.handleProject('rooms.view', (ctx, payload) => deps.view(ctx.projectId, roomIdOf('rooms.view', payload)))
+
+  router.handleProject('rooms.doc', (ctx, payload) => {
+    const path = fields('rooms.doc', payload).path
+    if (typeof path !== 'string') throw new Error('rooms.doc: path must be a string')
+    return deps.doc(ctx.projectId, roomIdOf('rooms.doc', payload), path)
+  })
+
+  router.handleProject('rooms.pause', (ctx, payload, view) => {
+    refuseBrowserOutsideServer(deps.server, 'rooms.pause', view)
+    deps.pause(ctx.projectId, roomIdOf('rooms.pause', payload))
+  })
+
+  router.handleProject('rooms.resume', (ctx, payload, view) => {
+    refuseBrowserOutsideServer(deps.server, 'rooms.resume', view)
+    deps.resume(ctx.projectId, roomIdOf('rooms.resume', payload))
+  })
+
+  router.handleProject('rooms.remove', async (ctx, payload, view) => {
+    refuseBrowserOutsideServer(deps.server, 'rooms.remove', view)
+    const roomId = roomIdOf('rooms.remove', payload)
+    const name = fields('rooms.remove', payload).name
+    if (typeof name !== 'string') throw new Error('rooms.remove: name must be a string')
+    const target = deps.removeTarget(ctx.projectId, roomId, name)
+    if (view.remote && !(await deps.askRemove(ctx.windowId, target))) return { removed: false }
+    deps.remove(ctx.projectId, roomId, name)
+    return { removed: true }
+  })
+
+  router.handleProject('rooms.removeAnswer', (ctx, payload, view) => {
+    refuseBrowserOutsideServer(deps.server, 'rooms.removeAnswer', view)
+    const { requestId, remove } = fields('rooms.removeAnswer', payload)
+    if (typeof requestId !== 'string') throw new Error('rooms.removeAnswer: requestId must be a string')
+    if (typeof remove !== 'boolean') throw new Error('rooms.removeAnswer: remove must be a boolean')
+    return deps.removeAnswer(ctx.windowId, requestId, remove)
+  })
+
+  router.handleProject('rooms.reveal', (ctx, payload, view) => {
+    if (view.remote) throw new Error('rooms.reveal: refused for a browser view')
+    if (deps.server) throw new Error('rooms.reveal: refused in server mode (the host has no screen)')
+    return deps.reveal(ctx.projectId, roomIdOf('rooms.reveal', payload))
   })
 }
 

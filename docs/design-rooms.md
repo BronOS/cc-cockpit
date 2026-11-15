@@ -180,10 +180,13 @@ Core draws no session list (the Sessions panel is `cockpit.sessions`), so core g
   a refusal says why: paused, not running, a prompt to answer, busy, or a possible draft with "Deliver anyway");
   in the tab's context menu "Deliver room messages automatically" (the mark) and "Room...".
 - The room view (a core dialog from "Room..."): members with status, held counts, coordinator, Remove; docs, each
-  opening read-only in the built-in viewer, Reveal folder on the desktop; the last 200 log events; Pause / Resume.
+  opening read-only in the dialog's own text viewer (`rooms.doc`: main reads it as the person, logged `by person`; not
+  the `less` overlay, whose `v` and `!` would let an editor or a shell write a doc behind main), Reveal folder on the
+  desktop; the last 200 log events (at most 1 MiB of them); Pause / Resume. It reads the room again on `rooms.changed`.
 - Web access: reading is allowed to browsers. The badge click, the mark, Pause and Resume are `adapted` (count from a
-  browser only in server mode, the approvals rule); Remove from a browser goes through an `ApprovalDialog`; Reveal is
-  `no`. (A browser can type into a tab anyway, `tabs.input` is `yes`; the badge is no wider than that.) Plugins reach
+  browser only in server mode, the approvals rule); Remove from a browser goes through an `ApprovalDialog` that main
+  asks every view of the window (`rooms.removeAsk`, the shared-asks core, first answer wins, replayed in `ready`, 5 min
+  then not removed) before it removes; Reveal is `no`. (A browser can type into a tab anyway, `tabs.input` is `yes`; the badge is no wider than that.) Plugins reach
   none of these.
 
 ## 6. Limits the person sets

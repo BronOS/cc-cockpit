@@ -127,6 +127,11 @@ export interface RoomRegistryOptions {
   /** Random bytes for invite codes (tests pin them). */
   random?: (bytes: number) => Buffer
   log?: (message: string) => void
+  /**
+   * A room changed (its record saved, a log event appended, a tab bound or unbound, the room deleted): the room view
+   * reads it again (room-service.ts, `rooms.changed`). Called after the change; a throw is a warning.
+   */
+  changed?(room: { id: string; projectId: string }): void
 }
 
 interface PendingInvite {
@@ -296,6 +301,7 @@ export class RoomRegistry {
     rmSync(join(this.options.dir, room.id), { recursive: true, force: true })
     this.rooms.delete(room.id)
     this.logs.delete(room.id)
+    this.touch(room)
   }
 
   /**
@@ -445,12 +451,16 @@ export class RoomRegistry {
     if (!room || room.endedAt !== undefined || room.projectId !== projectId || !isMember(room, name)) return false
     if (this.tabs.has(tabId) || this.boundTab(roomId, name) !== undefined) return false
     this.tabs.set(tabId, { roomId, name })
+    this.touch(room)
     return true
   }
 
   /** The tab is gone for a quit or a window close: the member stays, with no tab, until a restore rebinds it. */
   unbind(tabId: string): void {
+    const bound = this.tabs.get(tabId)
     this.tabs.delete(tabId)
+    const room = bound ? this.rooms.get(bound.roomId) : undefined
+    if (room) this.touch(room)
   }
 
   /** Pause delivery (the person in the room view, or the auto-pause, `auto`). An ended room is left as it is. */
@@ -557,6 +567,17 @@ export class RoomRegistry {
     } catch (err) {
       this.warn(`rooms: could not log to ${roomId}: ${err instanceof Error ? err.message : String(err)}`)
     }
+    const room = this.rooms.get(roomId)
+    if (room) this.touch(room)
+  }
+
+  /** Tell the `changed` listener; its failure never undoes or refuses the change. */
+  private touch(room: RoomRecord): void {
+    try {
+      this.options.changed?.({ id: room.id, projectId: room.projectId })
+    } catch (err) {
+      this.warn(`rooms: change listener failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   private checkJoin(room: RoomRecord, rawName: unknown, tabId: string | undefined): string {
@@ -630,6 +651,7 @@ export class RoomRegistry {
     } catch (err) {
       this.warn(`rooms: could not save ${room.id}: ${err instanceof Error ? err.message : String(err)}`)
     }
+    this.touch(room)
   }
 }
 

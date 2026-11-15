@@ -21,6 +21,7 @@ import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
 import type { DeliverHeldAnswer, TabRoom } from './tab-room'
+import type { RoomRemoveAsk, RoomView } from './room-view'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
@@ -1679,6 +1680,27 @@ export interface IpcInvokeMap {
    */
   'rooms.deliverHeld': { req: { tabId: string; overDraft?: true }; res: DeliverHeldAnswer }
   /**
+   * The room view (design-rooms.md §5, shared/room-view.ts): a room of the sender's own project (by the id in a member
+   * tab's TabInfo.room): members with status, held and coordinator, the docs list, the newest log events. Reading only;
+   * every string in it is the plugin's or a member's, shown as plain text.
+   */
+  'rooms.view': { req: { roomId: string }; res: RoomView }
+  /** One doc's text for the room view's read-only viewer (the person reads every folder; logged as a read `by person`). */
+  'rooms.doc': { req: { roomId: string; path: string }; res: string }
+  /** Pause / resume the room's delivery (the person's act: a server's browsers only, like the approvals). */
+  'rooms.pause': { req: { roomId: string }; res: void }
+  'rooms.resume': { req: { roomId: string }; res: void }
+  /**
+   * Remove a member (it leaves the room, its queue dropped; the log says `removed`). From the desktop at once; from a
+   * server's browser only after a `rooms.removeAsk` was answered Remove in some view of the window (main asks, the
+   * request waits for the answer). `removed` false: the ask was declined, timed out or reached no view.
+   */
+  'rooms.remove': { req: { roomId: string; name: string }; res: { removed: boolean } }
+  /** A view's answer to a `rooms.removeAsk` (first answer wins); false for an unknown, settled or other window's ask. */
+  'rooms.removeAnswer': { req: { requestId: string; remove: boolean }; res: boolean }
+  /** Show the room's docs folder in the host's file manager: the desktop only (never a browser, never server mode). */
+  'rooms.reveal': { req: { roomId: string }; res: void }
+  /**
    * Relaunch an exited tab (same kind and cwd; `--resume` when a session id is known; a command
    * tab runs its own copy of the command again), or start a restored command tab (`notStarted`).
    */
@@ -1824,6 +1846,18 @@ export interface IpcEventMap {
   'trash.ask': { requestId: string; path: string; kind: 'file' | 'folder'; pluginId: string }
   /** A `trash.ask` is over (answered in some view, timed out or dropped): a view still showing it takes it down. */
   'trash.settled': { requestId: string }
+  /**
+   * Something in a room of this project changed (a member, a queue, a pause, a doc, a log event; or it was deleted):
+   * a room view showing it reads `rooms.view` again. Only the id: the view's content comes from that read.
+   */
+  'rooms.changed': { roomId: string }
+  /**
+   * A server's browser asked to remove a room member (`rooms.remove`): shown as an ApprovalDialog on every view of the
+   * window, first answer wins (`rooms.removeAnswer`), replayed in `ready` (`roomRemoveAsks`). Plain-text fields.
+   */
+  'rooms.removeAsk': RoomRemoveAsk
+  /** A `rooms.removeAsk` is over (answered in some view, timed out or dropped): a view still showing it takes it down. */
+  'rooms.removeSettled': { requestId: string }
   /**
    * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
    * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
@@ -2096,6 +2130,13 @@ export const INVOKE_CHANNELS = [
   'tabs.toggleFlag',
   'tabs.roomMark',
   'rooms.deliverHeld',
+  'rooms.view',
+  'rooms.doc',
+  'rooms.pause',
+  'rooms.resume',
+  'rooms.remove',
+  'rooms.removeAnswer',
+  'rooms.reveal',
   'tabs.restart',
   'tabs.input',
   'tabs.resize',
@@ -2135,6 +2176,9 @@ export const EVENT_CHANNELS = [
   'links.settled',
   'trash.ask',
   'trash.settled',
+  'rooms.changed',
+  'rooms.removeAsk',
+  'rooms.removeSettled',
   'app.linkNotice',
   'oauth.signInEnded',
   'settingsPage.held',
@@ -2480,6 +2524,20 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // approvals; the handler decides by view.remote and `server` (router.ts registerRoomStripHandlers).
   'tabs.roomMark': 'adapted',
   'rooms.deliverHeld': 'adapted',
+  // The room view (design-rooms.md §5): reading is allowed to browsers (message text included, the person's record),
+  // and so is a changed room's id. Pause, Resume and Remove are the person's acts: from a browser only in server mode,
+  // Remove there only after the window's views answered a `rooms.removeAsk` (router.ts registerRoomViewHandlers). The
+  // ask, its end and its answer reach every view like the trash confirm. Reveal opens the host's file manager: `no`.
+  'rooms.view': 'yes',
+  'rooms.doc': 'yes',
+  'rooms.changed': 'yes',
+  'rooms.pause': 'adapted',
+  'rooms.resume': 'adapted',
+  'rooms.remove': 'adapted',
+  'rooms.removeAnswer': 'adapted',
+  'rooms.removeAsk': 'yes',
+  'rooms.removeSettled': 'yes',
+  'rooms.reveal': 'no',
   'tabs.restart': 'yes',
   'tabs.input': 'yes',
   'tabs.resize': 'yes',
