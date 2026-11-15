@@ -119,7 +119,7 @@ export interface TabManagerOptions {
   closeOnCleanExit?(): boolean
   /**
    * The room registry's side of a member tab (design-rooms.md §1; RoomService wires it to
-   * RoomRegistry). Absent = no registry to ask (tests): a restored membership is kept as saved.
+   * RoomRegistry). Absent = no registry to ask (tests): a restored membership is dropped.
    */
   rooms?: TabRoomHooks
   /** Clock for a shell tab's minimum life (SHELL_MIN_LIFE_MS); tests inject one. Default Date.now. */
