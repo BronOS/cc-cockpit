@@ -357,8 +357,9 @@ export function frameBoxes(view: FrameView, root: PaneNode | undefined, area: Si
     const frac = rects ? rects.find((p) => p.tab === tab) : { x: 0, y: 0, w: 1, h: 1 }
     if (!frac) continue
     const px = toPx(frac, area)
-    const left = Math.round(px.x + inset)
-    const top = Math.round(px.y + header + inset)
+    const left = Math.min(Math.round(px.x + inset), area.width)
+    // A pane shorter than header + insets would put the top below the pane (or the area): clamp it.
+    const top = Math.min(Math.round(px.y + header + inset), area.height)
     const right = Math.round(px.x + px.w - inset)
     const bottom = Math.round(px.y + px.h - inset)
     out.push({ tab, left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) })
