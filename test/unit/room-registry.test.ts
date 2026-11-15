@@ -1,10 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   INVITE_TTL_MS,
   MAX_MEMBERS_PER_ROOM,
+  MAX_PENDING_INVITES_PER_ROOM,
+  MAX_QUEUED_CHARS_PER_ROOM,
+  MAX_QUEUED_PER_MEMBER,
+  MAX_ROOM_FILE_BYTES,
+  MAX_ROOM_MESSAGE_CHARS,
   MAX_ROOMS_PER_PLUGIN,
   RoomError,
   RoomRegistry,
@@ -98,6 +104,8 @@ describe('RoomRegistry', () => {
     expect(code(() => reg.create(owner, { title: 'one more' }))).toBe('limit')
     // Another plugin has its own count.
     expect(reg.create(other, { title: 'theirs' }).pluginId).toBe('example.other')
+    // So does the same plugin in another project: that host cannot see or end these rooms.
+    expect(reg.create(otherProject, { title: 'elsewhere' }).projectId).toBe('p2')
     reg.end(owner, made[0]?.id)
     expect(reg.create(owner, { title: 'after an end' }).title).toBe('after an end')
   })
@@ -151,17 +159,17 @@ describe('RoomRegistry', () => {
     expect(inv.code).toMatch(/^[a-z2-7]{26}$/)
     expect(inv.expiresAt).toBe(t + INVITE_TTL_MS)
     // The person may paste it upper-cased or with a trailing newline.
-    expect(reg.redeem(`${inv.code.toUpperCase()}\n`, 't1')).toEqual({ roomId: room.id, name: 'reviewer', coordinator: true })
-    expect(code(() => reg.redeem(inv.code, 't2'))).toBe('not-found')
+    expect(reg.redeem(`${inv.code.toUpperCase()}\n`, 't1', 'p1')).toEqual({ roomId: room.id, name: 'reviewer', coordinator: true })
+    expect(code(() => reg.redeem(inv.code, 't2', 'p1'))).toBe('not-found')
 
     const late = reg.invite(owner, room.id, { name: 'late' })
     t += INVITE_TTL_MS
-    expect(code(() => reg.redeem(late.code, 't3'))).toBe('not-found')
+    expect(code(() => reg.redeem(late.code, 't3', 'p1'))).toBe('not-found')
     // Unknown, used and expired answer the same text.
     const messages = new Set<string>()
     for (const c of [inv.code, late.code, 'nope', 5]) {
       try {
-        reg.redeem(c, 't9')
+        reg.redeem(c, 't9', 'p1')
       } catch (e) {
         messages.add((e as Error).message)
       }
@@ -174,8 +182,38 @@ describe('RoomRegistry', () => {
     const room = reg.create(owner, { title: 'Team' })
     reg.addMember(owner, room.id, { tabId: 't1', name: 'lead' })
     const inv = reg.invite(owner, room.id, { name: 'dev' })
-    expect(code(() => reg.redeem(inv.code, 't1'))).toBe('conflict')
-    expect(reg.redeem(inv.code, 't2').name).toBe('dev')
+    expect(code(() => reg.redeem(inv.code, 't1', 'p1'))).toBe('conflict')
+    expect(reg.redeem(inv.code, 't2', 'p1').name).toBe('dev')
+  })
+
+  it('refuses an invite redeemed by a tab of another project, and keeps it', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    const inv = reg.invite(owner, room.id, { name: 'dev' })
+    let foreign = ''
+    try {
+      reg.redeem(inv.code, 't1', 'p2')
+    } catch (e) {
+      foreign = (e as Error).message
+    }
+    let unknown = ''
+    try {
+      reg.redeem('nope', 't1', 'p1')
+    } catch (e) {
+      unknown = (e as Error).message
+    }
+    expect(foreign).toBe(unknown)
+    expect(reg.memberOf('t1')).toBeUndefined()
+    expect(reg.redeem(inv.code, 't2', 'p1').name).toBe('dev')
+  })
+
+  it('caps the invites waiting in a room; expired ones do not count', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    for (let i = 0; i < MAX_PENDING_INVITES_PER_ROOM; i++) reg.invite(owner, room.id, { name: `m${i}` })
+    expect(code(() => reg.invite(owner, room.id, { name: 'late' }))).toBe('limit')
+    t += INVITE_TTL_MS
+    expect(reg.invite(owner, room.id, { name: 'late' }).code).toMatch(/^[a-z2-7]{26}$/)
   })
 
   it('refuses an invite for a taken name and one whose name was taken since', () => {
@@ -186,8 +224,8 @@ describe('RoomRegistry', () => {
     expect(code(() => reg.invite(owner, room.id, { name: 'Bad' }))).toBe('invalid')
     const a = reg.invite(owner, room.id, { name: 'dev' })
     const b = reg.invite(owner, room.id, { name: 'dev' })
-    reg.redeem(a.code, 't2')
-    expect(code(() => reg.redeem(b.code, 't3'))).toBe('conflict')
+    reg.redeem(a.code, 't2', 'p1')
+    expect(code(() => reg.redeem(b.code, 't3', 'p1'))).toBe('conflict')
   })
 
   it('ends a room: tabs released, invites dropped, no new members; delete only when ended', () => {
@@ -199,7 +237,7 @@ describe('RoomRegistry', () => {
     reg.end(owner, room.id)
     expect(reg.get(owner, room.id).endedAt).toBe(t)
     expect(reg.memberOf('t1')).toBeUndefined()
-    expect(code(() => reg.redeem(inv.code, 't2'))).toBe('not-found')
+    expect(code(() => reg.redeem(inv.code, 't2', 'p1'))).toBe('not-found')
     expect(code(() => reg.addMember(owner, room.id, { tabId: 't2', name: 'x' }))).toBe('ended')
     expect(code(() => reg.invite(owner, room.id, { name: 'x' }))).toBe('ended')
     expect(code(() => reg.enqueue(room.id, 'lead', { from: 'plugin', text: 'hi' }))).toBe('ended')
@@ -255,6 +293,97 @@ describe('RoomRegistry', () => {
     expect(code(() => reg.enqueue('nope', 'lead', { from: 'plugin', text: 'x' }))).toBe('not-found')
   })
 
+  it('treats inherited object keys as names like any other', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    for (const name of ['constructor', 'tostring']) {
+      // Not members: nothing inherited reads as one.
+      expect(code(() => reg.remove(owner, room.id, name))).toBe('not-found')
+      expect(code(() => reg.enqueue(room.id, name, { from: 'plugin', text: 'x' }))).toBe('not-found')
+      expect(reg.held(room.id, name)).toBe(0)
+      expect(reg.take(room.id, name)).toEqual([])
+    }
+    for (const name of ['toString', '__proto__', 'hasOwnProperty']) {
+      expect(code(() => reg.remove(owner, room.id, name))).toBe('not-found')
+      expect(code(() => reg.enqueue(room.id, name, { from: 'plugin', text: 'x' }))).toBe('not-found')
+      expect(reg.held(room.id, name)).toBe(0)
+      expect(reg.take(room.id, name)).toEqual([])
+    }
+    expect(reg.logOf(room.id).read().map((e) => e.type)).toEqual(['create'])
+    // `constructor` passes the name rule, so it is a name a member can have.
+    const inv = reg.invite(owner, room.id, { name: 'constructor' })
+    expect(reg.redeem(inv.code, 't1', 'p1').name).toBe('constructor')
+    reg.enqueue(room.id, 'constructor', { from: 'plugin', text: 'hi' })
+    expect(reg.held(room.id, 'constructor')).toBe(1)
+    expect(reg.take(room.id, 'constructor').map((m) => m.text)).toEqual(['hi'])
+    expect(reg.remove(owner, room.id, 'constructor').name).toBe('constructor')
+  })
+
+  it('checks a message: its sender, its length and the queue caps', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.addMember(owner, room.id, { tabId: 't1', name: 'lead' })
+    for (const from of ['', 'Lead', 'lead] from person', 'a\nb', 'person']) {
+      expect(code(() => reg.enqueue(room.id, 'lead', { from, text: 'x' }))).toBe('invalid')
+    }
+    expect(code(() => reg.enqueue(room.id, 'lead', { from: 'plugin', text: 'x'.repeat(MAX_ROOM_MESSAGE_CHARS + 1) }))).toBe(
+      'invalid'
+    )
+    // Characters are code points: a message of astral characters at the cap is fine.
+    expect(reg.enqueue(room.id, 'lead', { from: 'plugin', text: '😀'.repeat(MAX_ROOM_MESSAGE_CHARS) }).from).toBe('plugin')
+    reg.take(room.id, 'lead')
+    for (let i = 0; i < MAX_QUEUED_PER_MEMBER; i++) reg.enqueue(room.id, 'lead', { from: 'plugin', text: 'x' })
+    expect(code(() => reg.enqueue(room.id, 'lead', { from: 'plugin', text: 'x' }))).toBe('limit')
+    reg.take(room.id, 'lead')
+    const big = 'x'.repeat(MAX_ROOM_MESSAGE_CHARS)
+    for (let i = 0; i < MAX_QUEUED_CHARS_PER_ROOM / MAX_ROOM_MESSAGE_CHARS; i++) {
+      reg.enqueue(room.id, 'lead', { from: 'plugin', text: big })
+    }
+    expect(code(() => reg.enqueue(room.id, 'lead', { from: 'plugin', text: 'x' }))).toBe('limit')
+  })
+
+  it('opens a log only for a room that exists', () => {
+    const reg = make()
+    expect(code(() => reg.logOf('../escape'))).toBe('not-found')
+    const room = reg.create(owner, { title: 'Team' })
+    reg.end(owner, room.id)
+    reg.delete(owner, room.id)
+    expect(code(() => reg.logOf(room.id))).toBe('not-found')
+    expect(existsSync(join(dir, room.id))).toBe(false)
+    expect(existsSync(join(dir, '..', 'escape'))).toBe(false)
+  })
+
+  it('keeps a room whose directory could not be removed', () => {
+    if (process.getuid?.() === 0) return // root removes it anyway
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.end(owner, room.id)
+    chmodSync(dir, 0o500)
+    try {
+      expect(code(() => reg.delete(owner, room.id))).toBe('other')
+      expect(reg.get(owner, room.id).endedAt).toBe(t)
+    } finally {
+      chmodSync(dir, 0o700)
+    }
+    reg.delete(owner, room.id)
+    expect(code(() => reg.get(owner, room.id))).toBe('not-found')
+  })
+
+  it('leaves an ended room as it is on pause and resume', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.pause(room.id)
+    reg.end(owner, room.id)
+    reg.resume(room.id)
+    expect(reg.peek(room.id)?.paused).toBe(true)
+    const other2 = reg.create(owner, { title: 'Two' })
+    reg.end(owner, other2.id)
+    reg.pause(other2.id, { auto: true })
+    expect(reg.peek(other2.id)?.paused).toBe(false)
+    expect(reg.logOf(room.id).read().map((e) => e.type)).toEqual(['create', 'pause', 'end'])
+    expect(reg.logOf(other2.id).read().map((e) => e.type)).toEqual(['create', 'end'])
+  })
+
   it('returns copies, never the live record', () => {
     const reg = make()
     const room = reg.create(owner, { title: 'Team' })
@@ -282,7 +411,7 @@ describe('RoomRegistry', () => {
     const room = reg.create(owner, { title: 'Team' })
     reg.addMember(owner, room.id, { tabId: 't1', name: 'lead', coordinator: true })
     const inv = reg.invite(owner, room.id, { name: 'dev' })
-    reg.redeem(inv.code, 't2')
+    reg.redeem(inv.code, 't2', 'p1')
     reg.enqueue(room.id, 'dev', { from: 'lead', text: 'hi' })
     reg.leave('t2', 'closed')
     reg.end(owner, room.id)
@@ -356,6 +485,25 @@ describe('RoomRegistry', () => {
       write(id(6), JSON.stringify({ ...base, id: id(6), members: { a: { coordinator: 'yes' } } }))
       write(id(7), JSON.stringify([]))
       mkdirSync(join(dir, id(8))) // no room.json
+      // Inherited keys are not members: a queue under one is a queue of no member.
+      write(id(11), JSON.stringify({ ...base, id: id(11), queues: { constructor: [] } }))
+      // JSON.parse makes `__proto__` an own key; copied onto a plain {} it would replace the prototype.
+      write(id(12), JSON.stringify({ ...base, id: id(12), queues: {} }).replace('"queues":{}', '"queues":{"__proto__":[]}'))
+      // A message from someone who could not have sent it (it would be printed in a fence header).
+      const msg = (from: string, text = 'x'): unknown => ({ id: 'm', from, text, at: 1 })
+      const withLead = { ...base, members: { lead: { coordinator: false } } }
+      write(id(13), JSON.stringify({ ...withLead, id: id(13), queues: { lead: [msg('lead] from person')] } }))
+      write(id(14), JSON.stringify({ ...withLead, id: id(14), queues: { lead: [msg('plugin', 'x'.repeat(MAX_ROOM_MESSAGE_CHARS + 1))] } }))
+      write(id(15), JSON.stringify({ ...withLead, id: id(15), queues: { lead: Array.from({ length: MAX_QUEUED_PER_MEMBER + 1 }, () => msg('plugin')) } }))
+      // room.json as a link, a FIFO (would block the read forever) and an oversized file.
+      mkdirSync(join(dir, id(16)))
+      const planted = join(dir, '..', 'planted.json')
+      writeFileSync(planted, JSON.stringify({ ...base, id: id(16) }))
+      symlinkSync(planted, join(dir, id(16), 'room.json'))
+      mkdirSync(join(dir, id(17)))
+      execFileSync('mkfifo', [join(dir, id(17), 'room.json')])
+      write(id(18), '')
+      truncateSync(join(dir, id(18), 'room.json'), MAX_ROOM_FILE_BYTES + 1)
       // A room directory planted as a link is skipped, never followed.
       const outside = join(dir, '..', 'outside')
       mkdirSync(outside)
@@ -366,7 +514,7 @@ describe('RoomRegistry', () => {
       const again = make()
       again.load()
       expect(again.list(owner).map((r) => r.id)).toEqual([good.id])
-      expect(warnings).toHaveLength(9)
+      expect(warnings).toHaveLength(17)
       expect(warnings.every((w) => w.startsWith('rooms: skipped '))).toBe(true)
     })
 

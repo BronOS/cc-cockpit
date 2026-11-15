@@ -31,7 +31,7 @@ Settings › Rooms page and the ended-room UI, `onEvent` (`log` with `since` cov
 
 A **room** is created by a plugin in its own project window: `ctx.rooms.create({ title })` returns an opaque id. The
 title is one line, at most 60 characters, no control, quote or bracket characters. A room belongs to that plugin and
-window. Caps (constants): 5 rooms per plugin, 20 members per room. It ends with `ctx.rooms.end(id)` or when its plugin
+window. Caps (constants): 5 rooms per plugin in a project, 20 members per room. It ends with `ctx.rooms.end(id)` or when its plugin
 is disabled, removed or revoked. A room's record (members, queue, paused) and docs are kept on disk.
 
 A **member** is one Claude tab with a name unique in the room (`^[a-z][a-z0-9-]{0,30}$`, reserved: `all`, `plugin`,

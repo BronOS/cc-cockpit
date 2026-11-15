@@ -7,19 +7,37 @@
 // in the tab record (Task 4) and is rebound here with `rebind`. A member whose tab is gone for a quit or a window
 // close stays a member with no tab.
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, rmSync, type Dirent } from 'node:fs'
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, readdirSync, rmSync, type Dirent } from 'node:fs'
 import { join } from 'node:path'
 import { writeFileAtomic } from '../hooks/write-file-atomic'
+import { VERIFIED_OPEN_FLAGS } from '../verified-read'
 import { warnLog } from '../warn-log'
 import { RoomLog, type RoomLogType } from './room-log'
 import { checkRoomName, checkRoomTitle, isRoomName } from './room-names'
 
-/** Rooms a plugin may have that are not ended (design-rooms.md §1). */
+/**
+ * Rooms a plugin may have that are not ended, in one project (design-rooms.md §1). Counted per project, not app-wide:
+ * a host sees, ends and deletes only its own project's rooms, so rooms left live in another project (whose window may
+ * be closed) must not block this one.
+ */
 export const MAX_ROOMS_PER_PLUGIN = 5
 /** Members a room may have. */
 export const MAX_MEMBERS_PER_ROOM = 20
 /** How long an invite can be redeemed. */
 export const INVITE_TTL_MS = 10 * 60 * 1000
+/** Invites a room may have waiting at once: each is an in-memory entry for ten minutes and a log line. */
+export const MAX_PENDING_INVITES_PER_ROOM = 20
+/** The longest message, in characters (code points; design-rooms.md §2: longer goes in a doc). */
+export const MAX_ROOM_MESSAGE_CHARS = 20_000
+/** Messages one member may have waiting: a member that never reads (or a paused room) cannot grow without bound. */
+export const MAX_QUEUED_PER_MEMBER = 100
+/**
+ * Queued text a room may hold, in UTF-16 units, across its members: every enqueue rewrites the whole room.json, so
+ * the record stays small enough to rewrite on each send.
+ */
+export const MAX_QUEUED_CHARS_PER_ROOM = 1_000_000
+/** The largest room.json read at start: the queued-text cap with JSON's worst escaping (`\uXXXX`, 6 bytes) and room to spare. */
+export const MAX_ROOM_FILE_BYTES = 8 * 1024 * 1024
 
 export interface RoomMessage {
   id: string
@@ -161,7 +179,7 @@ export class RoomRegistry {
       const path = join(this.options.dir, entry.name, 'room.json')
       let room: RoomRecord | null
       try {
-        room = parseRoom(JSON.parse(readFileSync(path, 'utf8')), entry.name)
+        room = parseRoom(JSON.parse(readRoomFile(path)), entry.name)
       } catch (err) {
         this.warn(`rooms: skipped ${path}: ${err instanceof Error ? err.message : String(err)}`)
         continue
@@ -179,9 +197,9 @@ export class RoomRegistry {
     const title = checkRoomTitle(opts.title)
     if (!title.ok) throw new RoomError('invalid', title.reason)
     let live = 0
-    for (const r of this.rooms.values()) if (r.pluginId === owner.pluginId && r.endedAt === undefined) live++
+    for (const r of this.rooms.values()) if (owns(owner, r) && r.endedAt === undefined) live++
     if (live >= MAX_ROOMS_PER_PLUGIN) {
-      throw new RoomError('limit', `a plugin may have at most ${MAX_ROOMS_PER_PLUGIN} rooms that are not ended`)
+      throw new RoomError('limit', `a plugin may have at most ${MAX_ROOMS_PER_PLUGIN} rooms that are not ended in a project`)
     }
     const room: RoomRecord = {
       id: this.newId(),
@@ -190,8 +208,8 @@ export class RoomRegistry {
       title: title.value,
       createdAt: this.now(),
       paused: false,
-      members: {},
-      queues: {}
+      members: record(),
+      queues: record()
     }
     this.rooms.set(room.id, room)
     this.save(room)
@@ -229,9 +247,11 @@ export class RoomRegistry {
   delete(owner: RoomOwner, id: unknown): void {
     const room = this.owned(owner, id)
     if (room.endedAt === undefined) throw new RoomError('conflict', 'only an ended room can be deleted')
+    // The directory first: a failed rm (EACCES, EBUSY) throws with the room still here, rather than gone from this run
+    // and back at the next start.
+    rmSync(join(this.options.dir, room.id), { recursive: true, force: true })
     this.rooms.delete(room.id)
     this.logs.delete(room.id)
-    rmSync(join(this.options.dir, room.id), { recursive: true, force: true })
   }
 
   /** A tab the plugin opened into the room (`ctx.rooms.open`): a member from the start. */
@@ -247,8 +267,13 @@ export class RoomRegistry {
     if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
     const name = checkRoomName(opts.name)
     if (!name.ok) throw new RoomError('invalid', name.reason)
-    if (room.members[name.value]) throw new RoomError('conflict', `"${name.value}" is already a member`)
+    if (Object.hasOwn(room.members, name.value)) throw new RoomError('conflict', `"${name.value}" is already a member`)
     this.dropExpired()
+    let pending = 0
+    for (const inv of this.invites.values()) if (inv.roomId === room.id) pending++
+    if (pending >= MAX_PENDING_INVITES_PER_ROOM) {
+      throw new RoomError('limit', `a room may have at most ${MAX_PENDING_INVITES_PER_ROOM} invites waiting`)
+    }
     const code = base32(this.random(16))
     const expiresAt = this.now() + INVITE_TTL_MS
     const coordinator = opts.coordinator === true
@@ -259,10 +284,12 @@ export class RoomRegistry {
   }
 
   /**
-   * `ccc room join <invite>` from the tab main resolved from the caller's token. Single use: consumed on success, and
-   * an expired one is dropped; an unknown, used or expired code all answer the same.
+   * `ccc room join <invite>` from the tab main resolved from the caller's token, with that tab's project (main's too).
+   * Single use: consumed on success, and an expired one is dropped; an unknown, used or expired code all answer the
+   * same. A tab of another project answers the same as well (no rooms across windows, design-rooms.md §1): a plugin
+   * hands codes out through its own commands, so one can reach a tab in another window.
    */
-  redeem(code: unknown, tabId: string): RoomMembership {
+  redeem(code: unknown, tabId: string, projectId: string): RoomMembership {
     if (typeof code !== 'string') throw new RoomError('not-found', NO_INVITE)
     const key = code.trim().toLowerCase()
     const inv = this.invites.get(key)
@@ -276,6 +303,8 @@ export class RoomRegistry {
       this.invites.delete(key)
       throw new RoomError('not-found', NO_INVITE)
     }
+    // Kept unused: the refusal is the tab's, and another window must not be able to burn the room's invites.
+    if (room.projectId !== projectId) throw new RoomError('not-found', NO_INVITE)
     // A tab already in a room keeps the invite unused: the refusal is the tab's, not the invite's.
     const name = this.checkJoin(room, inv.name, tabId)
     this.invites.delete(key)
@@ -297,7 +326,7 @@ export class RoomRegistry {
   /** The owner (`ctx.rooms.remove`) or the person (`'person'`, the room view: main checked the window) removes a member. */
   remove(owner: RoomOwner | 'person', id: unknown, name: unknown): RoomMembership {
     const room = owner === 'person' ? this.byId(id) : this.owned(owner, id)
-    if (typeof name !== 'string' || !room.members[name]) throw new RoomError('not-found', 'no such member')
+    if (!isMember(room, name)) throw new RoomError('not-found', 'no such member')
     return this.dropMember(room, name, 'removed')
   }
 
@@ -311,7 +340,7 @@ export class RoomRegistry {
     const r = typeof room === 'string' ? this.byId(room) : (this.rooms.get(room.id) ?? room)
     return Object.entries(r.members).map(([name, m]) => {
       const tabId = this.boundTab(r.id, name)
-      return { name, coordinator: m.coordinator, held: r.queues[name]?.length ?? 0, ...(tabId ? { tabId } : {}) }
+      return { name, coordinator: m.coordinator, held: queueOf(r, name)?.length ?? 0, ...(tabId ? { tabId } : {}) }
     })
   }
 
@@ -320,7 +349,7 @@ export class RoomRegistry {
     const bound = this.tabs.get(tabId)
     if (!bound) return undefined
     const room = this.rooms.get(bound.roomId)
-    const m = room?.members[bound.name]
+    const m = room && isMember(room, bound.name) ? room.members[bound.name] : undefined
     return m ? { roomId: bound.roomId, name: bound.name, coordinator: m.coordinator } : undefined
   }
 
@@ -336,7 +365,7 @@ export class RoomRegistry {
    */
   rebind(tabId: string, roomId: string, name: string): boolean {
     const room = this.rooms.get(roomId)
-    if (!room || room.endedAt !== undefined || !room.members[name]) return false
+    if (!room || room.endedAt !== undefined || !isMember(room, name)) return false
     if (this.tabs.has(tabId) || this.boundTab(roomId, name) !== undefined) return false
     this.tabs.set(tabId, { roomId, name })
     return true
@@ -347,52 +376,74 @@ export class RoomRegistry {
     this.tabs.delete(tabId)
   }
 
-  /** Pause delivery (the person in the room view, or the auto-pause, `auto`). */
+  /** Pause delivery (the person in the room view, or the auto-pause, `auto`). An ended room is left as it is. */
   pause(id: string, opts: { auto?: boolean } = {}): void {
     const room = this.byId(id)
-    if (room.paused) return
+    if (room.paused || room.endedAt !== undefined) return
     room.paused = true
     this.save(room)
     this.logEvent(room.id, opts.auto ? 'auto-pause' : 'pause', {})
   }
 
+  /** Resume delivery; a no-op for an ended room (nothing is delivered after the end, and the log stays ended). */
   resume(id: string): void {
     const room = this.byId(id)
-    if (!room.paused) return
+    if (!room.paused || room.endedAt !== undefined) return
     room.paused = false
     this.save(room)
     this.logEvent(room.id, 'resume', {})
   }
 
-  /** Queue a message for one member. The send itself (and its delivery path) is logged by the delivery (Task 5). */
-  enqueue(roomId: string, to: string, msg: { from: string; text: string }): RoomMessage {
+  /**
+   * Queue a message for one member. The send itself (and its delivery path) is logged by the delivery (Task 5). `from`
+   * is a member name or `plugin`, checked here too: it goes into the fence header a member reads.
+   */
+  enqueue(roomId: string, to: unknown, msg: { from: string; text: string }): RoomMessage {
     const room = this.byId(roomId)
     if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
-    if (!room.members[to]) throw new RoomError('not-found', 'no such member')
+    if (!isMember(room, to)) throw new RoomError('not-found', 'no such member')
+    if (!isSender(msg.from)) throw new RoomError('invalid', 'a message is from a member name or plugin')
+    if (!isMessageText(msg.text)) {
+      throw new RoomError('invalid', `a message is text of at most ${MAX_ROOM_MESSAGE_CHARS} characters`)
+    }
+    const queue = queueOf(room, to) ?? []
+    if (queue.length >= MAX_QUEUED_PER_MEMBER) {
+      throw new RoomError('limit', `a member may have at most ${MAX_QUEUED_PER_MEMBER} messages waiting`)
+    }
+    if (queuedChars(room) + msg.text.length > MAX_QUEUED_CHARS_PER_ROOM) {
+      throw new RoomError('limit', `a room may hold at most ${MAX_QUEUED_CHARS_PER_ROOM} characters of waiting messages`)
+    }
     const message: RoomMessage = { id: this.newId(), from: msg.from, text: msg.text, at: this.now() }
-    ;(room.queues[to] ??= []).push(message)
+    queue.push(message)
+    room.queues[to] = queue
     this.save(room)
     return { ...message }
   }
 
   /** How many messages wait for a member. */
   held(roomId: string, name: string): number {
-    return this.rooms.get(roomId)?.queues[name]?.length ?? 0
+    const room = this.rooms.get(roomId)
+    return room ? (queueOf(room, name)?.length ?? 0) : 0
   }
 
   /** Dequeue every message for a member (its own `ccc room read`). */
   take(roomId: string, name: string): RoomMessage[] {
     const room = this.rooms.get(roomId)
-    const queue = room?.queues[name]
+    const queue = room ? queueOf(room, name) : undefined
     if (!room || !queue || queue.length === 0) return []
     delete room.queues[name]
     this.save(room)
     return queue.map((m) => ({ ...m }))
   }
 
-  /** The room's log (created on first use), for the delivery, docs and `ctx.rooms.log`. */
+  /**
+   * The room's log (created on first use), for the delivery, docs and `ctx.rooms.log`. Only for a room that exists:
+   * the id is joined into a path and the first append makes the directory, so an unchecked id (`../x`) or a deleted
+   * room's would write outside a room or bring its directory back.
+   */
   logOf(roomId: string): RoomLog {
-    let log = this.logs.get(roomId)
+    const room = this.byId(roomId)
+    let log = this.logs.get(room.id)
     if (!log) {
       log = new RoomLog(join(this.options.dir, roomId, 'log.jsonl'), undefined, this.now)
       this.logs.set(roomId, log)
@@ -413,7 +464,7 @@ export class RoomRegistry {
     if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
     const name = checkRoomName(rawName)
     if (!name.ok) throw new RoomError('invalid', name.reason)
-    if (room.members[name.value]) throw new RoomError('conflict', `"${name.value}" is already a member`)
+    if (Object.hasOwn(room.members, name.value)) throw new RoomError('conflict', `"${name.value}" is already a member`)
     if (this.tabs.has(tabId)) throw new RoomError('conflict', 'the tab is already in a room')
     if (Object.keys(room.members).length >= MAX_MEMBERS_PER_ROOM) {
       throw new RoomError('limit', `a room may have at most ${MAX_MEMBERS_PER_ROOM} members`)
@@ -430,8 +481,8 @@ export class RoomRegistry {
   }
 
   private dropMember(room: RoomRecord, name: string, why: LeaveWhy): RoomMembership {
-    const coordinator = room.members[name]?.coordinator === true
-    const dropped = room.queues[name]?.length ?? 0
+    const coordinator = isMember(room, name) && room.members[name]?.coordinator === true
+    const dropped = queueOf(room, name)?.length ?? 0
     delete room.members[name]
     delete room.queues[name]
     const tabId = this.boundTab(room.id, name)
@@ -487,8 +538,84 @@ function owns(owner: RoomOwner, room: RoomRecord): boolean {
   return room.pluginId === owner.pluginId && room.projectId === owner.projectId
 }
 
+/**
+ * The live `members` and `queues` have no prototype: names come from plugins and tabs, and on a plain `{}` an
+ * inherited key (`constructor`, `toString`) reads as present and `queues['__proto__'] = list` would replace the
+ * prototype. Every lookup also goes through `Object.hasOwn` (isMember, queueOf).
+ */
+function record<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>
+}
+
+function isMember(room: RoomRecord, name: unknown): name is string {
+  return typeof name === 'string' && Object.hasOwn(room.members, name)
+}
+
+function queueOf(room: RoomRecord, name: string): RoomMessage[] | undefined {
+  return Object.hasOwn(room.queues, name) ? room.queues[name] : undefined
+}
+
+function queuedChars(room: RoomRecord): number {
+  let n = 0
+  for (const q of Object.values(room.queues)) for (const m of q) n += m.text.length
+  return n
+}
+
+/** Who a message may be from: a member name's shape or the owner (`plugin`); it is printed in the fence header. */
+function isSender(from: unknown): from is string {
+  return from === 'plugin' || isRoomName(from)
+}
+
+function isMessageText(text: unknown): text is string {
+  if (typeof text !== 'string') return false
+  if (text.length <= MAX_ROOM_MESSAGE_CHARS) return true
+  if (text.length > MAX_ROOM_MESSAGE_CHARS * 2) return false // more code points than the cap even if all are pairs
+  // Code points: each surrogate pair is one character.
+  let n = text.length
+  for (let i = 0; i < text.length - 1; i++) {
+    const c = text.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const d = text.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        n--
+        i++
+      }
+    }
+  }
+  return n <= MAX_ROOM_MESSAGE_CHARS
+}
+
+/** A copy for a caller, with the same prototype-less maps as the live record (a caller may look names up in it). */
 function copy(room: RoomRecord): RoomRecord {
-  return structuredClone(room)
+  const out = structuredClone(room)
+  out.members = Object.assign(record<RoomMemberRecord>(), out.members)
+  out.queues = Object.assign(record<RoomMessage[]>(), out.queues)
+  return out
+}
+
+/**
+ * room.json, read like the doc store reads docs: O_NOFOLLOW (a room.json planted as a link is refused, ELOOP),
+ * O_NONBLOCK and an fstat regular-file check (a FIFO would block main at start), and a size cap checked on the
+ * descriptor and while reading. Throws on any refusal; `load` turns that into a skipped room.
+ */
+function readRoomFile(path: string): string {
+  const fd = openSync(path, VERIFIED_OPEN_FLAGS)
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new Error('not a regular file')
+    if (st.size > MAX_ROOM_FILE_BYTES) throw new Error(`larger than ${MAX_ROOM_FILE_BYTES} bytes`)
+    const buf = Buffer.alloc(st.size + 1)
+    let length = 0
+    for (;;) {
+      if (length === buf.length) throw new Error(`larger than ${MAX_ROOM_FILE_BYTES} bytes`)
+      const n = readSync(fd, buf, length, buf.length - length, null)
+      if (n === 0) break
+      length += n
+    }
+    return buf.subarray(0, length).toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function isUuid(value: string): boolean {
@@ -520,24 +647,27 @@ function parseRoom(v: unknown, dirName: string): RoomRecord | null {
   if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return null
   if (endedAt !== undefined && (typeof endedAt !== 'number' || !Number.isFinite(endedAt))) return null
   if (!isObject(members) || !isObject(queues)) return null
-  const outMembers: Record<string, RoomMemberRecord> = {}
+  const outMembers = record<RoomMemberRecord>()
   for (const [name, m] of Object.entries(members)) {
     if (!isRoomName(name) || !isObject(m) || typeof m.coordinator !== 'boolean') return null
     outMembers[name] = { coordinator: m.coordinator }
   }
   if (Object.keys(outMembers).length > MAX_MEMBERS_PER_ROOM) return null
-  const outQueues: Record<string, RoomMessage[]> = {}
+  const outQueues = record<RoomMessage[]>()
+  let chars = 0
   for (const [name, q] of Object.entries(queues)) {
-    if (!outMembers[name] || !Array.isArray(q)) return null
+    if (!Object.hasOwn(outMembers, name) || !Array.isArray(q) || q.length > MAX_QUEUED_PER_MEMBER) return null
     const list: RoomMessage[] = []
     for (const m of q) {
       if (!isObject(m)) return null
-      if (typeof m.id !== 'string' || typeof m.from !== 'string' || typeof m.text !== 'string') return null
+      if (typeof m.id !== 'string' || !isSender(m.from) || !isMessageText(m.text)) return null
       if (typeof m.at !== 'number' || !Number.isFinite(m.at)) return null
+      chars += m.text.length
       list.push({ id: m.id, from: m.from, text: m.text, at: m.at })
     }
     if (list.length > 0) outQueues[name] = list
   }
+  if (chars > MAX_QUEUED_CHARS_PER_ROOM) return null
   return {
     id,
     pluginId,
