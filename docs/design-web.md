@@ -195,7 +195,8 @@ their own browser. They apply in every auth mode, None included:
   browser may also revoke and disconnect devices, which only narrows, §9.6).
 - **Web shell CSP**: `default-src 'self'`, `connect-src 'self'`, `frame-src` the plugin paths only,
   `frame-ancestors 'none'`; `Cache-Control: no-store` on the shell.
-- **Log**: sign-in, connect, disconnect, revoke, mode changes. Never terminal text or prompts.
+- **Log**: sign-in, connect, disconnect (with the close code: 1006 no close frame, 1005 the page's own close, 1001 the page
+  going away, 4xxx main's), revoke, mode changes. Never terminal text or prompts.
 
 ### 4.2 Auth mode (the person's choice)
 
@@ -290,12 +291,21 @@ Claude tab); the tabs that attach brings are announced to the other views as `ta
   and views get a size event. When the sizing view leaves, the size falls back to a remaining visible view. Only the
   person's typing counts as input: a focus or mouse report, or a view's own reply to a query, takes nothing. A view's
   page also takes the size as "fit" does, at once, when the person presses the pointer in the pane, focuses the
-  terminal, or brings the window (after it was left) or the page (visibility) back to the front while the terminal is
-  the active tab, when the person selects the tab in that view (a tab bar click, the tab switcher, a tab shortcut, a tab
+  terminal with a gesture behind it (`navigator.userActivation`: a Tab key; the focus a window hands back to the
+  textarea has none), presses a key or the pointer anywhere in the page for the first time after the window was focused
+  again (after it was left) or the page shown again while the terminal is the active tab (coming back alone takes
+  nothing: an idle desktop window regains focus whenever another window on its workspace closes, and taking then pulled
+  the size from the device in use, a flip-flop with nobody at the desktop), when the person selects the tab in that view (a tab bar click, the tab switcher, a tab shortcut, a tab
   made with +; a terminal not attached yet takes once it is, `TerminalSession.takeOnSelect`), and a browser page does so
   once when it loads (the first `ready` of the page, never a reconnect's; a tab without a terminal yet is skipped);
   programmatic focus and selection (start, restore, main's `tabs.select` from a plugin's focus or the Sessions panel,
-  the neighbour of a closed tab) never take, and a view already sizing sends nothing (`TerminalSession.takeSize`). A view that follows draws the grid scaled down to its pane, but never below
+  the neighbour of a closed tab) never take, and a view already sizing sends nothing (`TerminalSession.takeSize`). Main
+  cannot tell a gesture from its absence, so it takes the page's `tabs.fit` as given (as it must for "Fit to this
+  screen"). A fallback (the sizer hidden or gone) is not the person's choice and is undone (`view-sizes.ts`
+  `departed`): the view it fell from takes the size back when it shows again, and a gone browser's next view of the same
+  signed-in device (`WebConnections.lineageOf`; none for None's anonymous browsers) takes it back with its first size
+  report, unless a view explicitly took the size (typing, fit) in between; a gone browser's tabs are first held for
+  `RECONNECT_GRACE_MS` (5 s), so a dropped socket that reconnects changes nothing on the pty. A view that follows draws the grid scaled down to its pane, but never below
   `MIN_DRAW_SCALE` (0.7, `terminal-draw.ts`); past that the pane scrolls, kept at the bottom and the cursor. A terminal
   overlay keeps a size per view too: the first view to measure it sizes it, typing in another view moves it there
   at once, and its flow control is the desktop page's acks alone. With no headless copy to answer for it, only the

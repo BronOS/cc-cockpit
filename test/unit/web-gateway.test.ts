@@ -556,6 +556,28 @@ describe('Origin check (upgrade and state-changing requests)', () => {
     expect(gw.connections().size).toBe(0)
   })
 
+  it("the access log's disconnect line carries the close code (who ended it: the page, main, or nobody)", async () => {
+    const accessLog = new AccessLog()
+    const { gw, port } = await listening({}, { accessLog })
+    const host = `127.0.0.1:${port}`
+    const serverSaw = new Promise<void>((resolve) => {
+      gw.setSocketHandler((ws) => ws.on('close', () => resolve()))
+    })
+    const client = new wsModule.WebSocket(`ws://${host}/ws`, { origin: `http://${host}` })
+    await new Promise<void>((resolve, reject) => {
+      client.on('open', () => resolve())
+      client.on('error', reject)
+    })
+    // The page's own close() with no code (its ready timeout) arrives as 1005.
+    client.close()
+    await serverSaw
+    const lines = accessLog.recent().filter((e) => e.event === 'connect' || e.event === 'disconnect')
+    expect(lines.map((e) => [e.event, e.detail])).toEqual([
+      ['connect', undefined],
+      ['disconnect', 'close 1005']
+    ])
+  })
+
   it('turning off and leaving None in one save: the anonymous sockets get the notice too, not a plain drop', async () => {
     const { gw, port } = await listening()
     const host = `127.0.0.1:${port}`

@@ -336,6 +336,20 @@ describe('handshake', () => {
     expect(conns.deviceName('web:1')).toBeUndefined()
   })
 
+  it("lineageOf ties a view to its signed-in device (a reconnect's next view); none for None's anonymous caller or a gone view", () => {
+    const { connect, conns } = setup()
+    const ws = connect('p1')
+    connect('p1', { ...DEVICE, id: 'anon', mode: 'none' })
+    expect(conns.lineageOf('web:1')).toBe('device:dev1')
+    expect(conns.lineageOf('web:2')).toBeUndefined()
+    ws.drop()
+    ws.close()
+    expect(conns.lineageOf('web:1')).toBeUndefined()
+    // A new socket of the same device: the same lineage, a fresh view id.
+    connect('p1')
+    expect(conns.lineageOf('web:3')).toBe('device:dev1')
+  })
+
   it('a view that stops reading is closed to resync once its socket holds too much, never queued without bound', () => {
     const { connect, views, logs } = setup()
     const ws = connect('p1')

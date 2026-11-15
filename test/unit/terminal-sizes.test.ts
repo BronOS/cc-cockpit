@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SERVER_INITIAL_COLS, SERVER_INITIAL_ROWS, TabManager } from '../../src/main/tabs/tab-manager'
-import { TAKE_DEBOUNCE_MS, TerminalSizes } from '../../src/main/tabs/terminal-sizes'
+import { RECONNECT_GRACE_MS, TAKE_DEBOUNCE_MS, TerminalSizes } from '../../src/main/tabs/terminal-sizes'
 import { DesktopFlow } from '../../src/main/terminals/desktop-flow'
 import type { MirrorView } from '../../src/main/terminals/mirror'
 import { drawAt, MIN_DRAW_SCALE } from '../../src/renderer/tabs/terminal-draw'
@@ -118,7 +118,7 @@ describe('TerminalSizes', () => {
     expect(applied).toEqual(['t 120x40'])
   })
 
-  it('a hidden window never sizes: hiding the sizer falls back, its resizes and typing do nothing, showing again takes only an unsized tab', () => {
+  it('a hidden window never sizes: hiding the sizer falls back, its resizes and typing do nothing, showing again takes the size back', () => {
     const { sizes, applied } = policy()
     sizes.report('t', D, 120, 40)
     sizes.report('t', W, 50, 30)
@@ -129,12 +129,120 @@ describe('TerminalSizes', () => {
     sizes.typed('t', D)
     vi.advanceTimersByTime(TAKE_DEBOUNCE_MS * 2)
     expect(applied).toEqual(['t 50x30'])
-    // Shown again: the browser still sizes the tab (it is visible), so the desktop waits for a take.
+    // Shown again: the size only fell to the browser (nobody chose it), so the desktop has it back.
     sizes.visible(D, true)
-    expect(applied).toEqual(['t 50x30'])
+    expect(applied).toEqual(['t 50x30', 't 200x60'])
+    expect(sizes.sizerOf('t')).toBe(D)
+  })
+
+  it('a view shown again does not take back a size another view took meanwhile (typing or Fit)', () => {
+    for (const takeBy of ['typing', 'fit'] as const) {
+      const { sizes, applied } = policy()
+      sizes.report('t', D, 120, 40)
+      sizes.report('t', W, 50, 30)
+      sizes.report('t', W2, 70, 20)
+      sizes.visible(D, false)
+      // The size fell to W2 (reported last); W takes it explicitly.
+      expect(sizes.sizerOf('t')).toBe(W2)
+      if (takeBy === 'typing') {
+        sizes.typed('t', W)
+        vi.advanceTimersByTime(TAKE_DEBOUNCE_MS)
+      } else sizes.take('t', W)
+      applied.length = 0
+      sizes.visible(D, true)
+      expect(applied).toEqual([])
+      expect(sizes.sizerOf('t')).toBe(W)
+    }
+  })
+
+  it('a browser that reconnects (same lineage, a fresh view id) gets back the size that fell from it', () => {
+    const applied: string[] = []
+    const lineage: Record<string, string> = { [W]: 'device:mac', [W2]: 'device:mac', 'web:3': 'device:phone' }
+    const sizes = new TerminalSizes({
+      apply: (tabId, cols, rows) => applied.push(`${tabId} ${cols}x${rows}`),
+      lineage: (viewId) => lineage[viewId]
+    })
+    sizes.report('t', D, 120, 40)
+    sizes.report('t', W, 50, 30)
+    sizes.take('t', W)
+    applied.length = 0
+    // The socket drops: the desktop holds the size meanwhile.
+    sizes.viewGone(W)
+    expect(sizes.sizerOf('t')).toBe(D)
+    // Another device's view joining is no heir.
+    sizes.report('t', 'web:3', 90, 30)
+    expect(sizes.sizerOf('t')).toBe(D)
+    // The same device reconnects: its first report takes the size back, with no gesture.
+    sizes.report('t', W2, 51, 30)
+    expect(sizes.sizerOf('t')).toBe(W2)
+    expect(applied).toEqual(['t 120x40', 't 51x30'])
+    // Once only: a later drop and a take on the desktop meanwhile leave the size where it was put.
+    sizes.viewGone(W2)
+    sizes.take('t', D)
+    applied.length = 0
+    lineage['web:4'] = 'device:mac'
+    sizes.report('t', 'web:4', 50, 30)
+    expect(applied).toEqual([])
+    expect(sizes.sizerOf('t')).toBe(D)
+  })
+
+  it('with a reconnect grace a dropped sizer keeps the size; a take meanwhile ends it, a closed key forgets it', () => {
+    const applied: string[] = []
+    const sizes = new TerminalSizes({
+      apply: (tabId, cols, rows) => applied.push(`${tabId} ${cols}x${rows}`),
+      lineage: (viewId) => (viewId.startsWith('web:') ? 'device:mac' : undefined),
+      reconnectGraceMs: 1000
+    })
+    sizes.report('t', D, 120, 40)
+    sizes.report('t', W, 50, 30)
+    sizes.take('t', W)
+    sizes.report('u', D, 120, 40)
+    sizes.report('u', W, 50, 30)
+    sizes.take('u', W)
+    applied.length = 0
+    sizes.viewGone(W)
+    // Held: the size is still the gone view's (a restart meanwhile spawns at it).
+    expect(sizes.sizerOf('t')).toBe(W)
+    expect(sizes.sizeOf('t')).toEqual({ cols: 50, rows: 30 })
+    // The desktop's person types in t: an explicit take ends the hold at once, and the device's
+    // reconnect does not take it back. u is closed while held: nothing fires for it later.
     sizes.typed('t', D)
     vi.advanceTimersByTime(TAKE_DEBOUNCE_MS)
-    expect(applied).toEqual(['t 50x30', 't 200x60'])
+    sizes.tabGone('u')
+    sizes.report('t', W2, 50, 30)
+    vi.advanceTimersByTime(5000)
+    expect(applied).toEqual(['t 120x40'])
+    expect(sizes.sizerOf('t')).toBe(D)
+    // A view with no lineage (the desktop's window closing) falls back at once.
+    sizes.viewGone(D)
+    expect(sizes.sizerOf('t')).toBe(W2)
+  })
+
+  it('a reconnecting view that is hidden does not take back; a view with no lineage never has an heir', () => {
+    const applied: string[] = []
+    const sizes = new TerminalSizes({
+      apply: (tabId, cols, rows) => applied.push(`${tabId} ${cols}x${rows}`),
+      lineage: (viewId) => (viewId.startsWith('web:') ? 'device:mac' : undefined)
+    })
+    sizes.report('t', D, 120, 40)
+    sizes.report('t', W, 50, 30)
+    sizes.take('t', W)
+    sizes.viewGone(W)
+    applied.length = 0
+    sizes.visible(W2, false)
+    sizes.report('t', W2, 50, 30)
+    expect(sizes.sizerOf('t')).toBe(D)
+    // Shown: now it takes the size back.
+    sizes.visible(W2, true)
+    expect(sizes.sizerOf('t')).toBe(W2)
+    // The desktop (no lineage) sized, was closed: no view is its heir.
+    const other = new TerminalSizes({ apply: () => undefined, lineage: () => undefined })
+    other.report('u', D, 120, 40)
+    other.report('u', W, 50, 30)
+    other.viewGone(D)
+    expect(other.sizerOf('u')).toBe(W)
+    other.report('u', 'desktop:2', 100, 40)
+    expect(other.sizerOf('u')).toBe(W)
   })
 
   it('with no visible view left the size stays; the first view shown again takes it', () => {
@@ -240,10 +348,11 @@ describe('TabManager: the pty takes the sizing view, the desktop gets size items
     rmSync(root, { recursive: true, force: true })
   })
 
-  function manager() {
+  function manager(lineageOf?: (viewId: string) => string | undefined) {
     const events: Array<IpcEventMap['tabs.data']> = []
     const tapped: string[] = []
     const tabs = new TabManager({
+      ...(lineageOf ? { lineageOf } : {}),
       backend,
       projectPath: (id) => (id === P ? root : undefined),
       loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
@@ -326,6 +435,31 @@ describe('TabManager: the pty takes the sizing view, the desktop gets size items
     tabs.viewGone(W)
     expect(pty.resizes).toEqual([[120, 40], [50, 30], [120, 40]])
     expect(events.map((e) => `${e.cols}x${e.rows}`)).toEqual(['120x40', '50x30', '120x40'])
+  })
+
+  it("a browser's socket drop and reconnect (its device's next view) leaves the pty at its size; one that never comes back hands it on", () => {
+    const { tabs } = manager((viewId) => (viewId.startsWith('web:') ? 'device:mac' : undefined))
+    const tab = tabs.create(P, { kind: 'shell' })
+    const pty = backend.last
+    tabs.resize(P, tab.id, 120, 40, D)
+    tabs.resize(P, tab.id, 50, 30, W)
+    expect(tabs.fit(P, tab.id, W)).toBe(true)
+    // The drop: the size is held for the reconnect; the desktop's own resize (a re-tile) takes nothing.
+    tabs.viewGone(W)
+    tabs.resize(P, tab.id, 121, 40, D)
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS - 1)
+    expect(tabs.sizerOf(tab.id)).toBe(W)
+    // The same device reconnects (a fresh view id) and reports its pane: it sizes, the pty untouched.
+    tabs.resize(P, tab.id, 50, 30, W2)
+    expect(tabs.sizerOf(tab.id)).toBe(W2)
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS * 2)
+    expect(tabs.sizerOf(tab.id)).toBe(W2)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30]])
+    // Gone for good: past the grace the desktop sizes the tab.
+    tabs.viewGone(W2)
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS)
+    expect(tabs.sizerOf(tab.id)).toBe(D)
+    expect(pty.resizes).toEqual([[120, 40], [50, 30], [121, 40]])
   })
 
   it('a hidden desktop never sizes while a browser is visible', () => {
