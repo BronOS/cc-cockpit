@@ -360,8 +360,9 @@ with full Node access.
   for the person. An older app has no `rename`: check `typeof ctx.sessions.rename === 'function'`.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise (a just-opened tab takes it about a second after Claude is at its prompt). Refuses text starting with `/`, `!`, `#` or `&`.
-  At most 30 texts a minute per plugin by default (`sendsPerMinute`); the person can change it (Settings > Plugins >
-  Limits, `ccc plugin limits`, at most 300), and a refusal names the cap and its value.
+  At most 30 texts a minute per plugin by default (`sendsPerMinute`); the person can change it for every plugin or for
+  one (Settings > General > Plugin limits, Settings > Plugins > Limits, `ccc plugin limits`, at most 300), and a
+  refusal names the cap and its value.
 - `ctx.sessions.open({ cwd, prompt, focus, model, effort })`: a new Claude tab; the prompt is an argument, never typed.
   `model` (`haiku`, `sonnet`, `opus`, `fable`) and `effort` (`low`, `medium`, `high`, `xhigh`, `max`) start it with
   `--model` / `--effort`; leave them out for the person's default, anything else rejects naming the field.
@@ -369,8 +370,8 @@ with full Node access.
   window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores
   `focus`, `model` and `effort`, silently: it starts the tab with the default model. At most 5 tabs a minute per
   plugin by default, one budget with `openShell`, `openCommand` and `ctx.rooms.open` (`opensPerMinute`); the person
-  can change it (Settings > Plugins > Limits, `ccc plugin limits`, at most 60), and a refusal names the cap and its
-  value.
+  can change it for every plugin or for one (Settings > General > Plugin limits, Settings > Plugins > Limits,
+  `ccc plugin limits`, at most 60), and a refusal names the cap and its value.
 - `ctx.sessions.openShell({ cwd, focus })`: a plain shell tab in this window, the kind the person gets from
   "+" > shell: their login shell, with no command, arguments or environment from the plugin and nothing typed
   into it. `cwd` resolves inside the project folder by its real path (a link out of it is refused; absent means
@@ -435,8 +436,9 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   with `why` (`paused`, `no-tab`, `typed`, `capped`: 5 pointers in a row, held until the person steps in, `draft`,
   `not-waiting`), `gone` or `refused` (its queue is full).
   Counts against the room's 60 sends a minute, every sender together (`all` once per recipient). That cap
-  (`roomSendsPerRoom`) and a member's own 20 a minute (`roomSendsPerMember`) are defaults the person can change
-  (Settings > Plugins > Limits, `ccc plugin limits`, at most 600 and 120); a refusal names the cap and its value.
+  (`roomSendsPerRoom`) and a member's own 20 a minute (`roomSendsPerMember`) are defaults the person can change for
+  every plugin or for one (Settings > General > Plugin limits, Settings > Plugins > Limits, `ccc plugin limits`, at
+  most 600 and 120); a refusal names the cap and its value.
 - `ctx.rooms.docs.list(id)`, `ctx.rooms.docs.get(id, path)`, `ctx.rooms.docs.put(id, path, text)`: every
   doc of the room, both areas (`shared/...`, `members/<name>/...`). A doc is UTF-8 text of at most 256 KiB
   with no control, bidi or invisible format character but tab and line breaks; 20 MiB a room. To export

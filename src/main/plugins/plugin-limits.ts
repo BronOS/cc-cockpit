@@ -1,22 +1,27 @@
-// The per-plugin caps the person sets (design-rooms.md §6), main's side: the stored overrides (`app.json` ›
-// `pluginLimits[id]`) read with every value clamped, an edit checked and stored, and `limits(pluginId)`, which HostApi
-// (sessions.open / openShell / openCommand / rooms.open, sessions.send) and the room delivery call on every send or
-// open, so a change applies to the next call without a host restart.
+// The per-plugin caps the person sets (design-rooms.md §6), main's side: the stored values (`app.json` ›
+// `pluginLimitsGlobal`, the global value of each cap, and `pluginLimits[id]`, a plugin's overrides) read with every value
+// clamped, an edit checked and stored, and `limits(pluginId)`, which HostApi (sessions.open / openShell / openCommand /
+// rooms.open, sessions.send) and the room delivery call on every send or open, so a change applies to the next call
+// without a host restart. A plugin's cap is its override, else the global value, else the built-in default; a global
+// change therefore reaches every plugin without an override at its next call. Counting stays per plugin (HostApi's
+// windows and the room delivery key by plugin id): the global value is each plugin's own budget, not a shared one.
 //
-// Who writes: only the person, through Settings › Plugins (`plugins.limits.set`, router.ts; a browser only in server
-// mode) and `ccc plugin limits <id> key=value...` from a shell outside cockpit (`plugin.limits.set`, in
-// HOST_ONLY_COMMANDS). Never plugin.json, the plugin's own settings, `ccc plugin config` or anything a plugin host can
-// reach through the API. Not a boundary: a tab's process or a plugin host is the same OS user and can drop its token,
-// run `ccc plugin limits` as a shell would, or edit app.json; it keeps a prompted Claude from raising its own
-// plugin's caps as a side effect, and a plugin that is honest about the API from finding a setter.
+// Who writes: only the person, through Settings › Plugins (`plugins.limits.set`) and Settings › General
+// (`plugins.globalLimits.set`, router.ts; a browser only in server mode) and `ccc plugin limits <id> | --global
+// key=value...` from a shell outside cockpit (`plugin.limits.set`, in HOST_ONLY_COMMANDS). Never plugin.json, the
+// plugin's own settings, `ccc plugin config` or anything a plugin host can reach through the API. Not a boundary: a
+// tab's process or a plugin host is the same OS user and can drop its token, run `ccc plugin limits` as a shell would,
+// or edit app.json; it keeps a prompted Claude from raising its own plugin's caps as a side effect, and a plugin that
+// is honest about the API from finding a setter.
 //
-// The file is user-writable, so a read never trusts it: an override that is not a whole number from 1 up is ignored
-// (the default applies) and one above the ceiling reads as the ceiling, so a typo in app.json cannot unbound a cap. An
-// edit is stricter: a value outside 1..ceiling is refused, naming the range, so the person sees the typo.
+// The file is user-writable, so a read never trusts it: a value (global or override) that is not a whole number from
+// 1 up is ignored (the next level applies) and one above the ceiling reads as the ceiling, so a typo in app.json cannot
+// unbound a cap. An edit is stricter: a value outside 1..ceiling is refused, naming the range, so the person sees the
+// typo.
 //
 // Uninstalling a plugin drops its overrides (`forget`, called by the installer beside its secrets): raised caps must
 // not carry over to a different plugin that later takes the id (a link of another folder). A reinstall starts at the
-// defaults.
+// global values. The global values belong to no plugin and stay.
 import {
   DEFAULT_PLUGIN_LIMITS,
   isPluginLimitKey,
@@ -24,13 +29,15 @@ import {
   MAX_PLUGIN_LIMIT_EDITS,
   PLUGIN_LIMIT_KEYS,
   PLUGIN_LIMIT_SPECS,
+  type GlobalPluginLimitsView,
   type PluginLimitKey,
   type PluginLimits,
-  type PluginLimitsView
+  type PluginLimitsView,
+  type PluginLimitView
 } from '../../shared/plugin-limits'
 import { isPlainObject } from '../../shared/guards'
 
-/** The stored overrides of one plugin (`app.json` › `pluginLimits[id]`). */
+/** The stored global values (`app.json` › `pluginLimitsGlobal`) and overrides of each plugin (`pluginLimits[id]`). */
 export interface PluginLimitsStorage {
   /** As stored (user-writable, so anything); undefined when the plugin has none. */
   get(pluginId: string): unknown
@@ -39,32 +46,56 @@ export interface PluginLimitsStorage {
    * be written at all (read-only); otherwise it is queued like every app.json write (debounced, flushed on quit).
    */
   set(pluginId: string, overrides: Partial<PluginLimits> | undefined): void
+  /** The global values as stored (anything); undefined when none is set. */
+  getGlobal(): unknown
+  /** Store the cleaned global values; undefined (none left) removes the entry. Throws like `set`. */
+  setGlobal(values: Partial<PluginLimits> | undefined): void
 }
 
-/** The slice of the app.json file (ProjectRegistry.app, a JsonFile) the overrides live in. */
+interface AppLimitsData {
+  pluginLimits?: Record<string, unknown>
+  pluginLimitsGlobal?: unknown
+}
+
+/** The slice of the app.json file (ProjectRegistry.app, a JsonFile) the values live in. */
 export interface AppLimitsFile {
-  readonly data: { pluginLimits?: Record<string, unknown> }
+  readonly data: AppLimitsData
   /** The file loaded read-only (EACCES, or a newer schemaVersion): a write would be lost, so a set refuses. */
   readonly readOnly?: boolean
-  update(mutate: (app: { pluginLimits?: Record<string, unknown> }) => void): void
+  update(mutate: (app: AppLimitsData) => void): void
 }
 
-/** `app.json` › `pluginLimits[id]` as the storage: own properties only, and an emptied map leaves the file. */
+/**
+ * `app.json` › `pluginLimits[id]` and `pluginLimitsGlobal` as the storage: own properties only, and an emptied map
+ * leaves the file.
+ */
 export function appJsonLimitsStorage(app: AppLimitsFile): PluginLimitsStorage {
+  const writable = (): void => {
+    // Like forgetPluginRepo: a value that would only be lost at restart is refused now, not reported as set.
+    if (app.readOnly === true) throw new Error('the limits cannot be saved: app.json cannot be written (see the log)')
+  }
   return {
     get: (pluginId) => {
       const all: unknown = app.data.pluginLimits
       return isPlainObject(all) && Object.hasOwn(all, pluginId) ? all[pluginId] : undefined
     },
     set: (pluginId, overrides) => {
-      // Like forgetPluginRepo: a value that would only be lost at restart is refused now, not reported as set.
-      if (app.readOnly === true) throw new Error('the limits cannot be saved: app.json cannot be written (see the log)')
+      writable()
       app.update((a) => {
         // app.json is user-writable: a damaged top level is replaced rather than written into.
         if (!isPlainObject(a.pluginLimits)) a.pluginLimits = {}
         if (overrides === undefined) delete a.pluginLimits[pluginId]
         else a.pluginLimits[pluginId] = { ...overrides }
         if (Object.keys(a.pluginLimits).length === 0) delete a.pluginLimits
+      })
+    },
+    getGlobal: () => app.data.pluginLimitsGlobal,
+    setGlobal: (values) => {
+      writable()
+      app.update((a) => {
+        // Written whole from the cleaned values (known keys only), so a damaged entry is replaced, never merged into.
+        if (values === undefined || Object.keys(values).length === 0) delete a.pluginLimitsGlobal
+        else a.pluginLimitsGlobal = { ...values }
       })
     }
   }
@@ -76,13 +107,13 @@ export interface PluginLimitsDeps {
   known(pluginId: string): boolean
 }
 
-/** A stored value as it applies: a whole number from 1 up, at most the ceiling; anything else is no override. */
+/** A stored value (global or override) as it applies: a whole number from 1 up, at most the ceiling; anything else is none. */
 function clampStored(key: PluginLimitKey, value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) return undefined
   return Math.min(value, limitSpec(key).ceiling)
 }
 
-/** The overrides that apply from what is stored (own properties of the known keys only, each clamped). */
+/** The values that apply from what is stored, global or a plugin's (own properties of the known keys only, each clamped). */
 export function storedOverrides(stored: unknown): Partial<PluginLimits> {
   const out: Partial<PluginLimits> = {}
   if (!isPlainObject(stored)) return out
@@ -94,20 +125,43 @@ export function storedOverrides(stored: unknown): Partial<PluginLimits> {
   return out
 }
 
-/** The caps in effect: each override where one applies, else the default. */
-export function effectiveLimits(stored: unknown): PluginLimits {
-  return { ...DEFAULT_PLUGIN_LIMITS, ...storedOverrides(stored) }
+/** The global values in effect: each stored global value where one applies, else the default. */
+export function globalLimits(storedGlobal: unknown): PluginLimits {
+  return { ...DEFAULT_PLUGIN_LIMITS, ...storedOverrides(storedGlobal) }
 }
 
-export function limitsView(id: string, stored: unknown): PluginLimitsView {
+/** A plugin's caps in effect: its override where one applies, else the global value, else the default. */
+export function effectiveLimits(stored: unknown, storedGlobal?: unknown): PluginLimits {
+  return { ...globalLimits(storedGlobal), ...storedOverrides(stored) }
+}
+
+export function limitsView(id: string, stored: unknown, storedGlobal?: unknown): PluginLimitsView {
   const overrides = storedOverrides(stored)
+  const global = storedOverrides(storedGlobal)
   return {
     id,
-    limits: PLUGIN_LIMIT_SPECS.map((s) => ({
-      ...s,
-      value: overrides[s.key] ?? s.default,
-      overridden: overrides[s.key] !== undefined
-    }))
+    limits: PLUGIN_LIMIT_SPECS.map((s): PluginLimitView => {
+      const own = overrides[s.key]
+      const inherited = global[s.key]
+      return {
+        ...s,
+        value: own ?? inherited ?? s.default,
+        overridden: own !== undefined,
+        source: own !== undefined ? 'plugin' : inherited !== undefined ? 'global' : 'default',
+        inherited: inherited ?? s.default
+      }
+    })
+  }
+}
+
+export function globalLimitsView(storedGlobal: unknown): GlobalPluginLimitsView {
+  const global = storedOverrides(storedGlobal)
+  return {
+    global: true,
+    limits: PLUGIN_LIMIT_SPECS.map((s): PluginLimitView => {
+      const own = global[s.key]
+      return { ...s, value: own ?? s.default, overridden: own !== undefined, source: own !== undefined ? 'global' : 'default', inherited: s.default }
+    })
   }
 }
 
@@ -140,7 +194,8 @@ export function parseLimitValue(key: PluginLimitKey, value: unknown): number {
 }
 
 /**
- * Apply an edit to the stored overrides: `set` pairs replace a key's override, `reset` keys drop theirs. Checked
+ * Apply an edit to stored values (a plugin's overrides or the global values, the same rules): `set` pairs replace a
+ * key's value, `reset` keys drop theirs. Checked
  * whole before anything is stored: an unknown key, a bad value, a key both set and reset or named twice, or an
  * empty edit refuses it all. Returns the new overrides (only the known keys, clamped).
  */
@@ -175,13 +230,14 @@ export class PluginLimitsStore {
   constructor(private readonly deps: PluginLimitsDeps) {}
 
   /**
-   * The caps in effect for a plugin, read from the in-memory app.json on every call (an edit made here applies to the
-   * next open or send; a hand edit of the file while the app runs is not seen, and the next save overwrites it).
-   * Never throws: an unknown id or a damaged entry gets the defaults.
+   * The caps in effect for a plugin, read from the in-memory app.json on every call (an edit made here, of the plugin's
+   * overrides or of the global values, applies to the next open or send; a hand edit of the file while the app runs is
+   * not seen, and the next save overwrites it). Never throws: a damaged entry is ignored (the next level applies) and a
+   * failing read gets the defaults.
    */
   limits(pluginId: string): PluginLimits {
     try {
-      return effectiveLimits(this.deps.storage.get(pluginId))
+      return effectiveLimits(this.deps.storage.get(pluginId), this.deps.storage.getGlobal())
     } catch {
       return { ...DEFAULT_PLUGIN_LIMITS }
     }
@@ -199,15 +255,30 @@ export class PluginLimitsStore {
 
   view(pluginId: unknown): PluginLimitsView {
     const id = this.known(pluginId)
-    return limitsView(id, this.deps.storage.get(id))
+    return limitsView(id, this.deps.storage.get(id), this.deps.storage.getGlobal())
   }
 
-  /** Check and store an edit; the new view. Nothing is stored when any part is refused. */
+  /** Check and store an edit of a plugin's overrides; the new view. Nothing is stored when any part is refused. */
   set(pluginId: unknown, set: unknown, reset: unknown): PluginLimitsView {
     const id = this.known(pluginId)
     const next = applyLimitsEdit(this.deps.storage.get(id), set, reset)
     this.deps.storage.set(id, Object.keys(next).length > 0 ? next : undefined)
-    return limitsView(id, next)
+    return limitsView(id, next, this.deps.storage.getGlobal())
+  }
+
+  /** The global values (Settings › General, `ccc plugin limits --global`). */
+  globalView(): GlobalPluginLimitsView {
+    return globalLimitsView(this.deps.storage.getGlobal())
+  }
+
+  /**
+   * Check and store an edit of the global values, by the rules of a plugin's edit; the new view. Applies to the next
+   * open or send of every plugin without its own override. Nothing is stored when any part is refused.
+   */
+  setGlobal(set: unknown, reset: unknown): GlobalPluginLimitsView {
+    const next = applyLimitsEdit(this.deps.storage.getGlobal(), set, reset)
+    this.deps.storage.setGlobal(Object.keys(next).length > 0 ? next : undefined)
+    return globalLimitsView(next)
   }
 
   private known(pluginId: unknown): string {

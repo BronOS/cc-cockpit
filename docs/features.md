@@ -361,12 +361,19 @@ behind it are in [design.md](design.md).
   a plugin's settings (never a secret field), `ccc panel show <plugin>/<panel>` reveals a panel, and `ccc guide types`
   prints the SDK types.
 - Per-plugin limits: a plugin may open 5 tabs a minute and send 30 texts a minute through `ctx.sessions`, and a room
-  member sends 20 room messages a minute (60 in one room). You can change them per plugin in Settings > Plugins (the
-  plugin's "Limits") or from a shell outside cockpit: `ccc plugin limits <id>` prints them, `ccc plugin limits <id>
-  opensPerMinute=10` sets one and `--default <key>` drops an override. Keys, defaults and ceilings: `opensPerMinute`
-  5 (at most 60), `sendsPerMinute` 30 (300), `roomSendsPerMember` 20 (120), `roomSendsPerRoom` 60 (600). They are
-  stored app-wide in `app.json`, never in the plugin; the write is refused for a caller with a tab token (shell only),
-  reading is allowed. Uninstalling a plugin drops its limits.
+  member sends 20 room messages a minute (60 in one room). Each limit has a global value, set in Settings > General
+  ("Plugin limits") for every plugin, and a per-plugin override in Settings > Plugins (the plugin's "Limits"): a
+  plugin gets its override, else the global value, else the built-in default. The plugin's Limits view marks each
+  value "global" (with the value) or "set for this plugin", and "Use global" drops the override; on the General page
+  "Use default" drops a global value. Counting stays per plugin: a global 10 gives every plugin its own 10. A change
+  applies at the next open or send, with no restart. From a shell outside cockpit: `ccc plugin limits <id>` prints a
+  plugin's values, each marked `(plugin)`, `(global)` or `(default)`, `ccc plugin limits <id> opensPerMinute=10` sets
+  one and `--default <key>` drops an override; `ccc plugin limits --global` prints the global values and takes the
+  same `key=value` and `--default <key>`. Keys, defaults and ceilings (for a global value and an override alike):
+  `opensPerMinute` 5 (at most 60), `sendsPerMinute` 30 (300), `roomSendsPerMember` 20 (120), `roomSendsPerRoom` 60
+  (600). They are stored app-wide in `app.json` (`pluginLimitsGlobal`, `pluginLimits`), never in the plugin; the
+  write is refused for a caller with a tab token (shell only), reading is allowed. Uninstalling a plugin drops its own
+  limits; the global values stay.
 
 ## Rooms
 

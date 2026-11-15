@@ -1534,7 +1534,9 @@ describe('registerSettingsHandlers', () => {
       marketplacePreview: async (...args) => rec('marketplacePreview', null)(...args),
       setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args),
       pluginLimits: rec('pluginLimits', { id: 'a.one', limits: [] }),
-      setPluginLimits: rec('setPluginLimits', { id: 'a.one', limits: [] })
+      setPluginLimits: rec('setPluginLimits', { id: 'a.one', limits: [] }),
+      globalPluginLimits: rec('globalPluginLimits', { global: true as const, limits: [] }),
+      setGlobalPluginLimits: rec('setGlobalPluginLimits', { global: true as const, limits: [] })
     }
     registerSettingsHandlers(router, deps, options)
     return { ipc, calls, router }
@@ -1575,10 +1577,32 @@ describe('registerSettingsHandlers', () => {
     expect(server.calls).toEqual([['setPluginLimits', 'a.one', [['opensPerMinute', 60]], undefined]])
   })
 
+  // The global values (Settings › General) follow the same rule: a global raise widens every plugin without an
+  // override, so a desktop's browser is refused the write before the service is reached; any view reads.
+  it('global plugin limits: any view reads; the write from the desktop and a server\'s browser, never a desktop\'s browser', async () => {
+    const desktop = settingsSetup()
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    await desktop.ipc.invoke('plugins.globalLimits.get', 11, [])
+    await desktop.router.dispatch(browser, 'plugins.globalLimits.get', undefined)
+    await desktop.ipc.invoke('plugins.globalLimits.set', 11, [{ set: [['sendsPerMinute', 90]], reset: ['opensPerMinute'], id: 'ignored' }])
+    for (const payload of [{ set: [['opensPerMinute', 60]] }, { reset: ['opensPerMinute'] }]) {
+      await expect(desktop.router.dispatch(browser, 'plugins.globalLimits.set', payload)).rejects.toThrow(/outside server mode/)
+    }
+    expect(desktop.calls).toEqual([
+      ['globalPluginLimits'],
+      ['globalPluginLimits'],
+      // Only `set` and `reset` go on: a payload's `id` is not a way to reach a plugin's overrides.
+      ['setGlobalPluginLimits', [['sendsPerMinute', 90]], ['opensPerMinute']]
+    ])
+    const server = settingsSetup({ server: true })
+    await server.router.dispatch(browser, 'plugins.globalLimits.set', { set: [['opensPerMinute', 60]] })
+    expect(server.calls).toEqual([['setGlobalPluginLimits', [['opensPerMinute', 60]], undefined]])
+  })
+
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(21)
+    expect(channels).toHaveLength(23)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {

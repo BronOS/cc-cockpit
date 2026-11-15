@@ -55,7 +55,8 @@ export const TOKENLESS_COMMANDS: readonly string[] = [
   // `ccc panel show --project <path> <plugin>/<panel>` (friction round 1, Task 7): reveals a panel in
   // that project's open window, as the user could by clicking its icon.
   'panel.show',
-  // `ccc plugin limits <id>` (design-rooms.md §6): reads a plugin's caps, app-wide (so in PROJECTLESS_COMMANDS too).
+  // `ccc plugin limits <id> | --global` (design-rooms.md §6): reads a plugin's caps or the global values, app-wide (so
+  // in PROJECTLESS_COMMANDS too).
   // Allowed from a tab and from outside one: the person reads them before changing them. The write is host-only.
   'plugin.limits'
 ]
@@ -83,7 +84,7 @@ export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 
 
 /**
  * Shell-only commands: `ccc web` (design-web.md §9.4), web access settings from a shell on the server, and the write
- * of `ccc plugin limits` (design-rooms.md §6, `plugin.limits.set`), the person's per-plugin caps. Answered only for
+ * of `ccc plugin limits` (design-rooms.md §6, `plugin.limits.set`, a plugin's caps and the global values alike). Answered only for
  * a TOKENLESS caller that names no project: a request that carries any token, a Claude tab's, a
  * shell tab's or a forged one, is refused in `identify` before a handler is looked up, with
  * HOST_ONLY_TEXT, and each handler (main/socket/web-handlers.ts) refuses every caller kind but the

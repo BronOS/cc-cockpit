@@ -26,9 +26,9 @@
 //     must be enabled in that project; the host manager then checks it runs in the window.
 //   - plugin.config: project-scope settings are the caller's project's; `args` names only the
 //     plugin, the scope and the values.
-//   - plugin.limits / plugin.limits.set (design-rooms.md §6): the person's per-plugin caps, app-wide. The read takes
-//     any caller; the write is in HOST_ONLY_COMMANDS (the server refuses any token first) and refuses a
-//     non-anonymous caller again here.
+//   - plugin.limits / plugin.limits.set (design-rooms.md §6): the person's per-plugin caps and their global values
+//     (`global: true` instead of an id), app-wide. The read takes any caller; the write is in HOST_ONLY_COMMANDS (the
+//     server refuses any token first) and refuses a non-anonymous caller again here.
 // Everything in `args` is untrusted JSON: each field's type is checked here, and text is passed on
 // as one value, never through a shell.
 //
@@ -49,7 +49,7 @@ import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type Lin
 import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
 import { rootAbsoluteUrlWarnings } from '../../shared/root-absolute-urls'
 import { PLUGIN_LIMITS_HOST_ONLY_TEXT, ROOM_READ_ACK_COMMAND } from '../../shared/protocol'
-import type { PluginLimitsView } from '../../shared/plugin-limits'
+import type { GlobalPluginLimitsView, PluginLimitsView } from '../../shared/plugin-limits'
 import type { RoomService, RoomTabCaller } from '../rooms/room-service'
 import type { SessionEntry } from '../sessions/status-reducer'
 import type { Caller, Handler } from './socket-server'
@@ -556,26 +556,40 @@ export function registerPluginConfigHandler(server: { handle(cmd: string, handle
 export interface PluginLimitsOptions {
   view(pluginId: unknown): PluginLimitsView
   set(pluginId: unknown, set: unknown, reset: unknown): PluginLimitsView
+  globalView(): GlobalPluginLimitsView
+  setGlobal(set: unknown, reset: unknown): GlobalPluginLimitsView
 }
 
 /**
- * `plugin.limits { id }` (`ccc plugin limits <id>`): a plugin's caps. Any caller, a tab included: reading them changes
+ * The global values (`global: true`, `ccc plugin limits --global`) or a plugin's (`id`), never both: a request naming
+ * both or neither in a usable way is refused rather than guessed at. Anything but the literal `true` is no `global`.
+ */
+function wantsGlobal(args: Record<string, unknown>): boolean {
+  if (args.global === undefined) return false
+  if (args.global !== true) throw new Error('global is true or absent')
+  if (args.id !== undefined) throw new Error('give a plugin id or global, not both')
+  return true
+}
+
+/**
+ * `plugin.limits { id }` (`ccc plugin limits <id>`): a plugin's caps, each marked plugin, global or default;
+ * `plugin.limits { global: true }` (`--global`): the global values. Any caller, a tab included: reading them changes
  * nothing, and the person reads before writing. The store checks the id.
  */
 export function pluginLimitsHandler(options: PluginLimitsOptions): Handler {
-  return (args) => options.view(args.id)
+  return (args) => (wantsGlobal(args) ? options.globalView() : options.view(args.id))
 }
 
 /**
- * `plugin.limits.set { id, set?, reset? }` (`ccc plugin limits <id> key=value... | --default <key>...`): a shell
- * outside cockpit only. In HOST_ONLY_COMMANDS, so the server refuses any token before the lookup; refused again here
- * for every caller but the anonymous one (design-rooms.md §6). The store checks the id, the keys and the values, and
- * stores nothing when any of it is refused.
+ * `plugin.limits.set { id | global: true, set?, reset? }` (`ccc plugin limits <id> | --global key=value... |
+ * --default <key>...`): a shell outside cockpit only. In HOST_ONLY_COMMANDS, so the server refuses any token before
+ * the lookup; refused again here for every caller but the anonymous one, before anything else is read (design-rooms.md
+ * §6). The store checks the id, the keys and the values, and stores nothing when any of it is refused.
  */
 export function pluginLimitsSetHandler(options: PluginLimitsOptions): Handler {
   return (args, caller) => {
     if (caller.kind !== 'anonymous') throw new Error(PLUGIN_LIMITS_HOST_ONLY_TEXT)
-    return options.set(args.id, args.set, args.reset)
+    return wantsGlobal(args) ? options.setGlobal(args.set, args.reset) : options.set(args.id, args.set, args.reset)
   }
 }
 

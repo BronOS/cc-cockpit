@@ -301,9 +301,15 @@ export interface AppSettings {
   /**
    * pluginId -> the person's overrides of its caps (design-rooms.md §6, shared/plugin-limits.ts keys): written only
    * by Settings › Plugins and the shell-only `ccc plugin limits` write. User-writable, so every read clamps each value
-   * to 1..ceiling and ignores the rest (main/plugins/plugin-limits.ts). Absent = the defaults.
+   * to 1..ceiling and ignores the rest (main/plugins/plugin-limits.ts). Absent = the global values.
    */
   pluginLimits?: Record<string, unknown>
+  /**
+   * The global value of each cap, for every plugin without its own override (same keys and clamping as
+   * `pluginLimits[id]`): written only by Settings › General and the shell-only `ccc plugin limits --global` write.
+   * Absent = the built-in defaults.
+   */
+  pluginLimitsGlobal?: unknown
   /**
    * The one-time migration to global values ran (main/settings/project-defaults-migration.ts): stored
    * project values equal to their schema default were dropped, so they use the global value.

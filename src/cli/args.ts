@@ -73,9 +73,10 @@ export type Command =
   /**
    * `ccc plugin limits <id>` (design-rooms.md §6): no `set` and no `reset` prints the plugin's caps; `set` holds the
    * `key=value` arguments as typed (main parses and checks each value), `reset` the keys after `--default`. Either one
-   * is the write, refused in a tab (a shell outside cockpit only); never a project: the caps are app-wide.
+   * is the write, refused in a tab (a shell outside cockpit only); never a project: the caps are app-wide. `id` is
+   * null for `--global`: the global values every plugin without its own gets, read and written the same way.
    */
-  | { kind: 'plugin-limits'; id: string; set: Array<[string, string]>; reset: string[] }
+  | { kind: 'plugin-limits'; id: string | null; set: Array<[string, string]>; reset: string[] }
   /** `ccc panel show <plugin>/<panel>` (friction round 1, Task 7). */
   | { kind: 'panel-show'; plugin: string; panel: string; project?: string }
   /**
@@ -265,11 +266,16 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
         ]
       },
       {
-        synopsis: ['plugin limits <id>', 'plugin limits <id> <key>=<value>...', 'plugin limits <id> --default <key>...'],
+        synopsis: [
+          'plugin limits <id> | --global',
+          'plugin limits <id> | --global <key>=<value>...',
+          'plugin limits <id> | --global --default <key>...'
+        ],
         text: [
           "print a plugin's caps (tabs opened, texts and room messages a",
-          'minute), or change them (only from a shell outside cockpit);',
-          '--default drops an override'
+          'minute) or the global values, or change them (only from a shell',
+          'outside cockpit); --default drops a value (a plugin then gets the',
+          'global value, the global one the default)'
         ]
       },
       { synopsis: ['plugin logs <id> [--follow]'], text: ["print a plugin's log (the last lines; --follow keeps going)"] }
@@ -424,7 +430,7 @@ const PLUGIN_OPTIONS: Record<PluginSub, Readonly<Record<string, { value: string 
     '--scope': { value: 'needs app, global or project' },
     '--use-global': { value: 'needs a key' }
   },
-  limits: { '--default': 'flag' },
+  limits: { '--default': 'flag', '--global': 'flag' },
   logs: { '--follow': 'flag' }
 }
 
@@ -489,7 +495,7 @@ function parsePluginDev(rest: readonly string[]): Command {
       return config.kind === 'plugin-config' ? withProject(config) : config
     }
     case 'limits':
-      return parsePluginLimits(positional, flags.has('--default'))
+      return parsePluginLimits(positional, flags.has('--default'), flags.has('--global'))
     case 'unlink':
     case 'logs': {
       if (target === undefined) return usage(`plugin ${sub} takes one plugin id`)
@@ -533,15 +539,21 @@ function parsePluginConfig(positional: readonly string[], scope: string | undefi
 }
 
 /**
- * `ccc plugin limits <id> [key=value ... | --default key ...]`: the id, then either the edits (split at the first
- * `=`, the value kept as typed: main checks it is a whole number in range) or, with `--default`, the keys whose
- * override goes. One kind per call. Main knows the keys and names them when one is wrong.
+ * `ccc plugin limits <id> | --global [key=value ... | --default key ...]`: the id (none with `--global`), then either
+ * the edits (split at the first `=`, the value kept as typed: main checks it is a whole number in range) or, with
+ * `--default`, the keys whose value goes. One kind per call. Main knows the keys and names them when one is wrong.
  */
-function parsePluginLimits(positional: readonly string[], reset: boolean): Command {
-  const [id, ...rest] = positional
-  if (id === undefined || id === '') return usage('plugin limits takes a plugin id, then key=value to set or --default <key>')
-  const problem = pluginIdProblem(id)
-  if (problem !== undefined) return usage(`plugin limits: ${problem}`)
+function parsePluginLimits(positional: readonly string[], reset: boolean, global: boolean): Command {
+  let id: string | null = null
+  let rest: readonly string[] = positional
+  if (!global) {
+    const [first, ...more] = positional
+    if (first === undefined || first === '') return usage('plugin limits takes a plugin id or --global, then key=value to set or --default <key>')
+    const problem = pluginIdProblem(first)
+    if (problem !== undefined) return usage(`plugin limits: ${problem}`)
+    id = first
+    rest = more
+  }
   if (rest.length > MAX_PLUGIN_LIMIT_EDITS) return usage(`plugin limits: at most ${MAX_PLUGIN_LIMIT_EDITS} changes at once`)
   if (reset) {
     if (rest.length === 0) return usage('plugin limits: --default needs the keys to reset')

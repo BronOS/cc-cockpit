@@ -1,9 +1,11 @@
 import { useEffect, useId } from 'react'
 import type { AppearanceView, CccCommandView, NotificationSoundGroup, UpdateState } from '../../shared/ipc'
+import type { GlobalPluginLimitsView } from '../../shared/plugin-limits'
 import type { TabExitBehavior } from '../../shared/types'
 import { MIN_TERMINAL_WIDTH_RANGE } from '../../shared/zone-auto-hide'
 import { isServerView, isWebShell } from '../shell-kind'
 import { DiscussPromptField } from './DiscussPromptField'
+import { LimitsForm, type LimitsSave } from './LimitsForm'
 import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { WebAccessSection } from './WebAccessSection'
@@ -20,13 +22,17 @@ const loadCcc = (): Promise<CccCommandView> => window.cockpit.invoke('settings.c
 
 const loadUpdates = (): Promise<UpdateState> => window.cockpit.invoke('updates.state')
 
+// The global value of each plugin cap (design-rooms.md §6); module-level, so LimitsForm reads once per mount.
+const loadGlobalLimits = (): Promise<GlobalPluginLimitsView> => window.cockpit.invoke('plugins.globalLimits.get')
+const saveGlobalLimits = (payload: LimitsSave): Promise<GlobalPluginLimitsView> => window.cockpit.invoke('plugins.globalLimits.set', payload)
+
 /**
  * Settings › General (design-next §5.1): how the app behaves, app-wide. What a tab does when its
  * process exits, whether a project that opens empty gets a Claude tab, whether closing a running tab
  * asks first, whether the side zones give way to a narrow terminal and at what width, whether Haiku
  * writes a gist of each Claude session, whether plugin notifications ring a sound and which
- * (NotificationSoundRow), the app-wide entries of the new-tab menu, the `ccc` command line, and the
- * update notice. How the window looks is Appearance; the keys are Keybindings.
+ * (NotificationSoundRow), the app-wide entries of the new-tab menu, the global plugin limits (each plugin's
+ * own override is on Settings › Plugins), the `ccc` command line, and the update notice. How the window looks is Appearance; the keys are Keybindings.
  */
 export function GeneralPage(): React.JSX.Element {
   const { data, error: loadError, reload } = useLoaded(loadAppearance)
@@ -44,7 +50,7 @@ export function GeneralPage(): React.JSX.Element {
     <section aria-label="General">
       <PageHeader
         title="General"
-        description="App-wide: how tabs behave, notifications, Claude sessions, the new-tab menu, the command line and updates."
+        description="App-wide: how tabs behave, notifications, Claude sessions, the new-tab menu, plugin limits, the command line and updates."
       />
       {(error ?? loadError) && <p role="alert" className="settings-alert">{error ?? loadError}</p>}
       {data && (
@@ -250,6 +256,29 @@ export function GeneralPage(): React.JSX.Element {
             }
           >
             <TabCommandsEditor level="app" name="App-wide commands" entries={data.tabCommands} busy={busy} run={run} reload={reload} />
+          </Group>
+
+          <Group
+            title="Plugin limits"
+            description={
+              <>
+                How much a plugin may do a minute: the value every plugin gets unless you set its own under Settings ›
+                Plugins › Limits. Each plugin counts on its own, so every plugin gets this many. An empty field or Use
+                default goes back to the built-in default.
+              </>
+            }
+          >
+            <LimitsForm
+              level="global"
+              card
+              load={loadGlobalLimits}
+              save={saveGlobalLimits}
+              runLabel="pluginLimits"
+              busy={busy}
+              run={run}
+              ariaLabel="Plugin limits"
+              testId="global-plugin-limits"
+            />
           </Group>
 
           <Group title="Command line">
