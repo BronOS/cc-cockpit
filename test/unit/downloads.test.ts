@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import type { Stats } from 'node:fs'
-import { lstat } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
@@ -526,6 +526,56 @@ describe('streams', () => {
     expect(result).toMatchObject({ status: 'sent', completed: false, cut: 'closed' })
     expect(d.liveCount).toBe(0)
     expect(failures).toEqual([])
+  })
+
+  for (const how of ['browser close', 'dropAll'] as const) {
+    it(`a ${how} frees the live slot of a zip whose data dir lookup stalls after the head`, async () => {
+      write(join(proj, 'dir/a'), 'a')
+      // Hung only for the stream's own lookup (the head is out by then): a dead network mount.
+      const res = new FakeRes()
+      const hung = new Promise<never>(() => {})
+      const d = make({ realpath: (p) => (res.status === 200 ? hung : realpath(p)) })
+      await d.start(VIEW, rel('dir'), false)
+      const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+      await waitFor(() => d.liveCount === 1)
+      const dropped = how === 'dropAll' ? d.dropAll() : (res.destroy(), Promise.resolve())
+      const result = await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])
+      expect(result).toMatchObject({ status: 'sent', completed: false, cut: how === 'dropAll' ? 'dropped' : 'closed' })
+      expect(await Promise.race([dropped.then(() => 'settled'), new Promise((r) => setTimeout(() => r('still held'), 2000))])).toBe('settled')
+      expect(d.liveCount).toBe(0)
+      expect(failures).toEqual([])
+    })
+  }
+
+  it('dropAll frees the live slot of a file whose close stalls after the last byte (it closes later)', async () => {
+    write(join(proj, 'f'), 'hello')
+    let release: (() => void) | undefined
+    let closed = false
+    const open: typeof openVerified = async (path, expect) => {
+      const v = await openVerified(path, expect)
+      if (v.ok) {
+        const realClose = v.handle.close.bind(v.handle)
+        v.handle.close = async () => {
+          await new Promise<void>((r) => (release = r))
+          await realClose()
+          closed = true
+        }
+      }
+      return v
+    }
+    const d = make({ open })
+    await d.start(VIEW, rel('f'), false)
+    const res = new FakeRes()
+    const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+    await waitFor(() => release !== undefined)
+    expect(d.liveCount).toBe(1)
+    const dropped = d.dropAll()
+    expect(await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])).toMatchObject({ status: 'sent', completed: true })
+    await dropped
+    expect(d.liveCount).toBe(0)
+    expect(closed).toBe(false)
+    release?.()
+    await waitFor(() => closed)
   })
 
   for (const kind of ['file', 'folder'] as const) {

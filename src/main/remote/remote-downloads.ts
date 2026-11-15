@@ -71,6 +71,15 @@ async function remove(path: string): Promise<void> {
   await unlink(path).catch(() => undefined)
 }
 
+/**
+ * Remove `path` only while it is still the entry `own` names (same dev and inode): what this placement
+ * linked or created there, never a file another process put at the name meanwhile. Never throws.
+ */
+async function removeIfOwn(path: string, own: Pick<Stats, 'dev' | 'ino'>): Promise<void> {
+  const now = await lstat(path).catch(() => undefined)
+  if (now && now.dev === own.dev && now.ino === own.ino) await remove(path)
+}
+
 /** Link errors of a filesystem with no hard links (exFAT, FAT32, some SMB, NFS and FUSE mounts). */
 const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
 
@@ -112,10 +121,16 @@ const COPY_CHUNK_BYTES = 1024 * 1024
 async function copyExclusive(temp: string, final: string, mode: number, signal: AbortSignal | undefined): Promise<void> {
   const out = await open(final, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode)
   let made: Stats | undefined
+  // Every await below is followed by a look at the signal (the loop's top one follows the read and
+  // the writes; nothing they make needs more than the catch's removal): a cancel that came while one
+  // ran sends the copy to the catch, which removes it.
   try {
     made = await out.stat()
+    // A cancel while the destination was made (the create on a slow mount): it is ours and goes.
+    signal?.throwIfAborted()
     const src = await open(temp, 'r')
     try {
+      signal?.throwIfAborted()
       const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES)
       for (;;) {
         // A cancel (the window closed, the server forgotten) between chunks: a copy of gigabytes on a
@@ -138,8 +153,7 @@ async function copyExclusive(temp: string, final: string, mode: number, signal: 
   } catch (err) {
     await out.close().catch(() => undefined)
     // An fstat that failed leaves no identity to check against: the file stays rather than risk another's.
-    const now = made && (await lstat(final).catch(() => undefined))
-    if (made && now && now.dev === made.dev && now.ino === made.ino) await remove(final)
+    if (made) await removeIfOwn(final, made)
     throw err
   }
 }
@@ -162,9 +176,10 @@ export interface PlaceOptions {
  * Copying the xattr needs a native call (`copyfile(3)`); refusing is the smaller, safe answer (the
  * person moves Downloads, or saves from a browser). Rejects with the reason when it is not a regular
  * file, every name up to `(99)` is taken, the write fails or a macOS copy is refused, and with
- * `signal`'s reason when it aborts first (checked before each name, between a copy's chunks and after
- * its close): the temp and any partial copy are removed; a link or copy that already finished is the
- * placed file and stays.
+ * `signal`'s reason when it aborts first (checked after every await: before each name, after a link,
+ * after a copy's create, source open, chunks and close): the temp and any link or copy this call made
+ * at the name are removed (only while still the same inode); one that finished before the abort is the
+ * placed file and stays. Not raced: each fs call is awaited, so `done` comes after the cleanup.
  */
 export async function placeDownload(temp: string, dir: string, name: string, opts: PlaceOptions = {}): Promise<string> {
   const { signal } = opts
@@ -174,16 +189,27 @@ export async function placeDownload(temp: string, dir: string, name: string, opt
     if (!st.isFile()) throw new PlaceError('what was saved is not a file')
     // Masked to rw for everyone at most: never an exec bit, whatever umask or mode it was written with.
     const mode = st.mode & 0o666
+    // A cancel during the lstat or the chmod: they touch only the temp, which the finally removes;
+    // the loop's first look at the signal follows them.
     await chmod(temp, mode)
     for (let n = 0; n <= MAX_NAME_NUMBER; n++) {
       signal?.throwIfAborted()
       const final = join(dir, numberedName(name, n))
       try {
+        let linked = true
         await link(temp, final).catch(async (err: unknown) => {
           if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
           if (platform === 'darwin') throw new PlaceError(NO_QUARANTINE_TEXT)
+          linked = false
           await copyExclusive(temp, final, mode, signal)
         })
+        // A cancel while the link ran and it succeeded anyway (a slow mount): not placed, so the name
+        // goes, while it is still the temp's inode (a link shares it; a file someone put there after
+        // is not ours). The throw is the reason's, never EEXIST, so no other name is tried.
+        if (linked && signal?.aborted) {
+          await removeIfOwn(final, st)
+          signal.throwIfAborted()
+        }
         return final
       } catch (err) {
         if (codeOf(err) !== 'EEXIST') throw err

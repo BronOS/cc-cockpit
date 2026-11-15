@@ -19,6 +19,12 @@ const state = vi.hoisted(() => ({
   onWrite: undefined as (() => void) | undefined,
   /** Called as the copy's destination starts to close, before the close completes. */
   onClose: undefined as (() => void) | undefined,
+  /** Called after a real link succeeded, before it returns (a cancel arriving while it ran). */
+  onLink: undefined as ((final: string) => Promise<void> | void) | undefined,
+  /** Called after the copy's destination was created, before the open returns. */
+  onCreate: undefined as (() => void) | undefined,
+  /** Called after the temp was opened for reading, before the open returns. */
+  onSourceOpen: undefined as (() => void) | undefined,
 }))
 
 vi.mock('node:fs/promises', async (orig) => {
@@ -26,7 +32,11 @@ vi.mock('node:fs/promises', async (orig) => {
   return {
     ...real,
     link: async (a: string, b: string) => {
-      if (!state.linkCode) return real.link(a, b)
+      if (!state.linkCode) {
+        await real.link(a, b)
+        await state.onLink?.(b)
+        return
+      }
       if (state.raceName === basename(b)) {
         state.raceName = undefined
         await real.writeFile(b, 'theirs')
@@ -37,6 +47,8 @@ vi.mock('node:fs/promises', async (orig) => {
       if (state.sourceCode && flags === 'r') throw Object.assign(new Error('source failed'), { code: state.sourceCode })
       const handle = await real.open(p, flags, mode)
       const creating = typeof flags === 'number' && (flags & fsConstants.O_EXCL) !== 0
+      if (creating) state.onCreate?.()
+      if (flags === 'r') state.onSourceOpen?.()
       if (!creating || (!state.writeCode && !state.onWrite && !state.onClose)) return handle
       const code = state.writeCode
       return new Proxy(handle, {
@@ -80,6 +92,9 @@ beforeEach(async () => {
   state.raceName = undefined
   state.onWrite = undefined
   state.onClose = undefined
+  state.onLink = undefined
+  state.onCreate = undefined
+  state.onSourceOpen = undefined
 })
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
@@ -247,4 +262,58 @@ describe('a placement cancelled mid-copy', () => {
     expect(await readdir(dir)).toEqual(['big.bin'])
     expect((await readFile(join(dir, 'big.bin'))).equals(big)).toBe(true)
   })
+})
+
+describe('a placement cancelled while a filesystem call ran', () => {
+  const abortWith = (ac: AbortController) => () => ac.abort(new Error('its window was closed'))
+
+  it('a link that succeeded after the cancel is removed, and the temp too', async () => {
+    state.linkCode = undefined
+    const temp = join(dir, '.cc-download-la')
+    await writeFile(temp, 'hello')
+    const ac = new AbortController()
+    state.onLink = abortWith(ac)
+    await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('never removes a file another process put at the name after the cancelled link', async () => {
+    state.linkCode = undefined
+    const temp = join(dir, '.cc-download-lb')
+    await writeFile(temp, 'hello')
+    const ac = new AbortController()
+    state.onLink = async (final) => {
+      await rm(final)
+      await writeFile(final, 'theirs')
+      ac.abort(new Error('its window was closed'))
+    }
+    await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    expect(await readdir(dir)).toEqual(['a.txt'])
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('theirs')
+  })
+
+  it('a window closed during the link saves nothing, and says why', async () => {
+    state.linkCode = undefined
+    const f = fakeItem()
+    const outcomes: DownloadOutcome[] = []
+    const save = startSave({ item: f.item, dir, name: 'a.txt', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    await writeFile(f.path(), 'hello')
+    state.onLink = () => save.cancel('its window was closed')
+    f.complete()
+    await vi.waitFor(() => expect(outcomes).toHaveLength(1))
+    expect(outcomes[0]).toEqual({ failed: 'its window was closed' })
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  for (const at of ['create', 'source open'] as const) {
+    it(`a copy cancelled during its ${at} is removed, and the temp too`, async () => {
+      const temp = join(dir, `.cc-download-c${at.length}`)
+      await writeFile(temp, 'hello')
+      const ac = new AbortController()
+      if (at === 'create') state.onCreate = abortWith(ac)
+      else state.onSourceOpen = abortWith(ac)
+      await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal })).rejects.toThrow('its window was closed')
+      expect(await readdir(dir)).toEqual([])
+    })
+  }
 })

@@ -179,6 +179,8 @@ export interface DownloadsDeps {
   walkFs?: WalkFs
   /** The open of a file served, and of each file zipped, instead of `openVerified` (one whose reads stall). */
   open?: typeof openVerified
+  /** Tests only: the data dir's realpath instead of `fs.realpath` (one that stalls). */
+  realpath?: (p: string) => Promise<string>
   walkTimeoutMs?: number
   maxBytes?: number
   maxEntries?: number
@@ -719,7 +721,7 @@ export class Downloads {
   /** The data dir's realpath; its spelling as given when it cannot be resolved (dataDirRefused then compares that). */
   private async dataDirReal(): Promise<string> {
     try {
-      return await realpath(this.deps.dataDir)
+      return await (this.deps.realpath ?? realpath)(this.deps.dataDir)
     } catch {
       return resolve(this.deps.dataDir)
     }
@@ -869,26 +871,31 @@ export class Downloads {
     const skipped: DownloadSkipped = {}
     const name = resolved.name
     const deviceId = token.view.deviceId
-    let source: AsyncIterable<Buffer>
     // The read in flight when the browser closes: the close waits for it, so it never hits a closed descriptor.
     const reading: { pending?: Promise<unknown> } = {}
-    if (handle) {
-      source = fileBytes(handle, size, signal, reading)
-    } else {
-      // The walk's data dir must be real like its paths.
-      const walk = walkFolder({ ...this.walkOptions(resolved, await this.dataDirReal()), includeAll: token.includeAll, signal, fs: this.deps.walkFs }, skipped)
-      source = zipEntries(walk, { signal, skipped, maxBytes: this.deps.maxBytes, maxEntries: this.deps.maxEntries, open: this.deps.open })
-    }
-    // A browser that goes away aborts the walk too. pipeline's own cleanup destroys the source, but an
-    // async generator's `return` waits for the await it is in: a walk stalled on a hung `lstat` (a dead
-    // network mount) would hold the pipeline, and with it a live slot of the device and app-wide zip
-    // limits, forever. The walk's fs calls are raced against this signal, so the abort unwinds it. A
-    // close that pipeline made itself, for a source that threw (a read error, a cap), is that failure's.
+    // Installed before any await here: the live slot is taken already, so a browser that goes away
+    // during the data dir lookup below must abort it too, or a stalled `realpath` (a dead network
+    // mount) holds the slot and `dropAll` forever. A browser that goes away aborts the walk too.
+    // pipeline's own cleanup destroys the source, but an async generator's `return` waits for the
+    // await it is in: a walk stalled on a hung `lstat` would hold the pipeline, and with it a live
+    // slot of the device and app-wide zip limits, forever. The walk's fs calls are raced against this
+    // signal, so the abort unwinds it. A close that pipeline made itself, for a source that threw (a
+    // read error, a cap), is that failure's.
     const onClose = (): void => {
       if (!live.res.writableFinished && !counter.failed) live.controller.abort(new BrowserClosed())
     }
     live.res.once('close', onClose)
     try {
+      let source: AsyncIterable<Buffer>
+      if (handle) {
+        source = fileBytes(handle, size, signal, reading)
+      } else {
+        // The walk's data dir must be real like its paths; raced against the abort (a drop, the
+        // browser's close), since its realpath can stall like the walk's own fs calls.
+        const dataDir = await untilAborted(this.dataDirReal(), signal)
+        const walk = walkFolder({ ...this.walkOptions(resolved, dataDir), includeAll: token.includeAll, signal, fs: this.deps.walkFs }, skipped)
+        source = zipEntries(walk, { signal, skipped, maxBytes: this.deps.maxBytes, maxEntries: this.deps.maxEntries, open: this.deps.open })
+      }
       await pipeline(Readable.from(counted(source, counter), { objectMode: false }), live.res, { signal })
       return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: true }
     } catch (err) {
@@ -915,9 +922,11 @@ export class Downloads {
       }
       // Aborted (a browser close, a drop): a read stalled on a dead network mount may never return,
       // and the live slot must not wait for it, so the descriptor closes in the background once it
-      // does (no read starts after the abort: `fileBytes` checks the signal first). Otherwise here.
+      // does (no read starts after the abort: `fileBytes` checks the signal first). Otherwise here,
+      // raced against a drop all the same: a close stalled on that mount after the last byte must
+      // not hold the slot or `dropAll` either (it goes on in the background).
       if (signal.aborted) void close()
-      else await close()
+      else await untilAborted(close(), signal).catch(() => undefined)
     }
   }
 }

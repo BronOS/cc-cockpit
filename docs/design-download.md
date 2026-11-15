@@ -364,11 +364,15 @@ No open questions are left: the owner answered the first draft's four and the re
   xattr needs a native call, so the save fails with a notice ("the Downloads folder is on a drive with no hard links, and
   a copy there would lose macOS's download warning") and the temp is removed. Any other link error fails the download
   with a notice. The window closing or the server forgotten while the file is being placed aborts the placement too
-  (checked before each name, between the copy's chunks and after its close): the temp and the partial copy are removed
-  and the notice names the reason; a placement that already finished stays saved.
+  (checked after every filesystem call: before each name, after a link, after the copy's create, source open, chunks
+  and close): the temp and whatever the placement made at the name (a link that succeeded meanwhile, the partial copy;
+  only while still the same inode) are removed and the notice names the reason; a placement that already finished stays
+  saved. The calls are not raced, so the notice comes after that cleanup.
 - A browser close or a drop frees a stream's live slot at once even when a file read is stalled (a dead network mount):
   the read and the zip's feed are awaited only until the abort, no read starts after it, and the descriptor is closed in
-  the background when the stalled read returns.
+  the background when the stalled read returns. The same holds for every other await once the slot is taken: the close
+  handling is installed before the zip's data dir lookup, which is raced against the abort, and a file's close after the
+  last byte is raced against a drop.
 - A folder's walk skip reason `deep` (past depth 64) was added. Folder caps are enforced again while streaming, with no
   second walk at the GET.
 - One GET per download was seen in Chromium (Task 1), so no second-GET grace exists; Electron has no Chrome download

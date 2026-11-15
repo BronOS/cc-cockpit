@@ -147,11 +147,15 @@ async function measure(seconds, tick, stop) {
   const h = monitorEventLoopDelay({ resolution: 1 })
   h.enable()
   const t0 = performance.now()
+  // The last tick's end: the drain is measured from it, since `stop` can run the flood well past
+  // `seconds` (a zip of 17 s in a 5 s phase would otherwise count 12 s of flood as the worker's).
+  let lastTick = t0
   await new Promise((done) => {
     const timer = setInterval(() => {
       tick()
+      lastTick = performance.now()
       // `stop` extends the phase past `seconds` (the zip's end); it never shortens it.
-      if (performance.now() - t0 > seconds * 1000 && (!stop || stop())) {
+      if (lastTick - t0 > seconds * 1000 && (!stop || stop())) {
         clearInterval(timer)
         done()
       }
@@ -163,7 +167,7 @@ async function measure(seconds, tick, stop) {
     p50: h.percentile(50),
     p99: h.percentile(99),
     max: h.max,
-    drainedMs: Math.max(0, performance.now() - t0 - seconds * 1000)
+    drainedMs: Math.max(0, performance.now() - lastTick)
   }
 }
 // No event-loop utilization: under Electron, main's loop is Chromium's and Node's figure reads 0.
