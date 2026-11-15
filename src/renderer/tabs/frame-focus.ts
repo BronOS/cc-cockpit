@@ -12,13 +12,20 @@
 // What the shell can see: the iframe element gets no `focus` or `focusin` event when the keyboard
 // goes into it; the shell's window gets a `blur` (shell to frame) or nothing at all (frame to frame),
 // and `document.activeElement` changes silently. So the shell reads `activeElement` at the window's
-// `blur`, at a page's `cc-plugin.tab-focus` hint (only a reason to look) and before a chord or Ask
-// Claude from a frame, and a frame holding the keyboard counts only with evidence of the person:
+// `blur`, at a page's `cc-plugin.tab-focus` hint and before a chord or Ask Claude from a frame, and a
+// frame holding the keyboard counts only with evidence of the person:
 // - the shell's own focus call put it there (focusActive, a pane chord, a select, `wantFocus`), or
 // - the person's pointer went into it: the last pointer position the shell saw is inside or on the
 //   edge of the frame's box, no more than POINTER_FRESH_MS ago, with no shell `keydown` (and no focus
 //   moving within the shell) after it. Typing in the Claude pane while the pointer rests over the
 //   file beside it is no evidence: the keys went to the shell after the pointer stopped.
+//
+// The hint is more than a reason to look, measured: frame to frame (two frames of one plugin) the
+// shell's `activeElement` can stay on the frame the person left, so at a hint from another frame
+// while one is on record the shell focuses the hinting frame first (PageFrames.resync) and the
+// evidence then decides. A hint can therefore move the keyboard between frames (to the hinting frame
+// with evidence, else to nothing); it never reaches a terminal: resync runs only while a frame holds
+// the keyboard, and nothing the check does focuses anything but a frame's pane (`pick`).
 //
 // "On the edge" is wider than a pixel or two, measured: the shell gets NO event as the pointer goes
 // into a cross-site frame (no `pointerout`, no `pointerover` of the iframe, no `:hover` on it; the
@@ -32,14 +39,19 @@
 // (or since a key) leaves no evidence.
 //
 // Without evidence the frame is blurred and, failing safe, the keyboard goes to NOTHING (the shell's
-// body): a person who just clicked into the editor must never be typing into the Claude pane, where a
-// stray Enter, digit or "y" can answer a permission prompt (CLAUDE.md). The one exception is the
-// element the person was typing in a moment ago (a shell `keydown` within GIVE_BACK_MS, the pointer
-// not near the frame): a pane mounting beside Claude while they type took the keys mid-word, and
-// they get them back exactly where they were. And the blurred frame lets the pointer through to its
-// pane until the shell sees the pointer move (`passThrough`, PageTabArea.tsx): the person's next press
-// on it lands on the shell's pane and picks it, and their next move gives fresh pointer evidence, so a
-// click the shell could not prove costs one more click, never a key in the wrong pane.
+// body), always: a person who just clicked into the editor must never be typing into the Claude pane,
+// where a stray Enter, digit or "y" can answer a permission prompt (CLAUDE.md). Nothing a page does
+// (its `focus()`, its hint, any message) may move the keyboard INTO a terminal; keys enter one only
+// from the person's own act on it in the shell (a press on it, its strip tab, a pane chord). There is
+// no give-back to the element the person typed in a moment ago, even for a pane that mounts and takes
+// the keys mid-word beside Claude: every check without evidence is one a page could have triggered
+// (its own `focus()` raises the window `blur`, its hint the rest), and an earlier give-back let a hint
+// from a second file push the keys out of the first one into Claude. The keys typed after such a
+// steal are lost; losing keys is safe, misdirecting them is not. And the blurred frame lets the
+// pointer through to its pane until the shell sees the pointer move (`passThrough`, PageTabArea.tsx):
+// the person's next press on it lands on the shell's pane and picks it, and their next move gives
+// fresh pointer evidence, so a click the shell could not prove costs one more click, never a key in
+// the wrong pane.
 
 /** A box in viewport pixels. */
 export interface ViewportRect {
@@ -65,17 +77,10 @@ export const POINTER_NEAR_PX = 24
 export const POINTER_FRESH_MS = 3000
 
 /**
- * How recent a shell `keydown` must be for its element to get the keyboard back from a frame that
- * took it with no evidence (ms): the "typing while a pane mounts" case, a key every few hundred ms.
- * A click after a pause gets no give-back, so it never routes keys into a terminal.
+ * What the shell does about a frame holding the keyboard: pick its pane, or blur it and leave the
+ * keyboard on nothing (never on another element: a frame focus without evidence may be a page's own).
  */
-export const GIVE_BACK_MS = 500
-
-/**
- * What the shell does about a frame holding the keyboard: pick its pane, or blur it, and either leave
- * the keyboard on nothing or (`giveBack`) give it back to the element the person was just typing in.
- */
-export type FramePick = { pick: string } | { blur: true; giveBack: boolean }
+export type FramePick = { pick: string } | { blur: true }
 
 /** What the shell knows about the frame holding the keyboard (checkFrameFocus gathers it). */
 export interface FrameEvidence {
@@ -87,8 +92,6 @@ export interface FrameEvidence {
   pointerFresh: boolean
   /** A shell keydown (or a focus within the shell) came after that position. */
   keyAfterPointer: boolean
-  /** A shell keydown came within GIVE_BACK_MS, and its element is still where the person typed. */
-  recentKey: boolean
 }
 
 /**
@@ -101,16 +104,15 @@ export interface FrameEvidence {
  *   frame's pass-through lets reach the shell, a terminal click, a chord).
  * - With evidence: the person moved into that pane; the shell picks it (dispatches the selection,
  *   so the outline and `tabs.selected` follow).
- * - Without: the shell blurs the frame. The keyboard goes back only to the element of a shell key
- *   within GIVE_BACK_MS, and only with the pointer not near the frame (a person typing in Claude with
- *   the pointer resting over the file who then clicks into it gets no keys in Claude); else nowhere.
+ * - Without: the shell blurs the frame and the keyboard goes to nothing, even when the person was
+ *   typing in Claude a moment ago (a pane mounting beside it): the check may have been a page's doing.
  */
 export function framePick(activeTab: string | null, activeId: string | null, e: FrameEvidence): FramePick | null {
   if (activeTab === null) return null
-  if (activeId === null) return { blur: true, giveBack: false }
+  if (activeId === null) return { blur: true }
   if (activeTab === activeId) return null
   if (e.own || (e.pointerNear && e.pointerFresh && !e.keyAfterPointer)) return { pick: activeTab }
-  return { blur: true, giveBack: e.recentKey && !e.pointerNear }
+  return { blur: true }
 }
 
 /**
@@ -159,16 +161,15 @@ export function pointerNear(
 }
 
 /**
- * The pointer half of the evidence: the last pointer position the shell saw and when, whether a shell
- * key (or a focus within the shell) came after it, and the last shell key's element and time (the
- * give-back). `T` is the element type (DOM-free here). The shell's own focus calls are the pool's
- * half (PageFrames.ownFocus).
+ * The pointer half of the evidence: the last pointer position the shell saw and when, and whether a
+ * shell key (or a focus within the shell) came after it. It keeps no element to give the keyboard
+ * back to (the header: there is no give-back). The shell's own focus calls are the pool's half
+ * (PageFrames.ownFocus).
  */
-export class PointerEvidence<T = unknown> {
+export class PointerEvidence {
   private at: { x: number; y: number } | null = null
   private movedAt = Number.NEGATIVE_INFINITY
   private keyAfter = false
-  private key: { target: T; at: number } | null = null
 
   constructor(private readonly now: () => number = () => performance.now()) {}
 
@@ -180,20 +181,17 @@ export class PointerEvidence<T = unknown> {
     this.keyAfter = false
   }
 
-  /** A `keydown` in the shell's document, at `target` (the element that had the keyboard). */
-  shellKey(target: T | null): void {
+  /** A `keydown` in the shell's document. */
+  shellKey(): void {
     this.keyAfter = true
-    this.key = target === null ? null : { target, at: this.now() }
   }
 
   /**
-   * The focus moved to `target`, an element of the shell: whatever holds the keyboard after this was
-   * not put there by the pointer's last move, and a key typed before it into another element is not
-   * where the person types now.
+   * The focus moved to an element of the shell: whatever holds the keyboard after this was not put
+   * there by the pointer's last move.
    */
-  shellFocus(target: T): void {
+  shellFocus(): void {
     this.keyAfter = true
-    if (this.key && this.key.target !== target) this.key = null
   }
 
   /** Whether the last pointer position is in or near `rect`, nearer to it than to `others` (pointerNear). */
@@ -210,9 +208,68 @@ export class PointerEvidence<T = unknown> {
   keyAfterPointer(): boolean {
     return this.keyAfter
   }
+}
 
-  /** The element of the last shell key, when it came within GIVE_BACK_MS; else null. */
-  recentKeyTarget(): T | null {
-    return this.key !== null && this.now() - this.key.at <= GIVE_BACK_MS ? this.key.target : null
+/** What the check needs of the frame pool (PageFrames; a fake in the unit tests). */
+export interface FrameCheckPool {
+  keyboardTab(): string | null
+  resync(tabId: string): void
+  isVisible(tabId: string): boolean
+  frameRects(): ReadonlyMap<string, ViewportRect>
+  ownFocus(tabId: string): boolean
+  blurFrame(tabId: string): void
+  passThrough(tabId: string): void
+}
+
+/**
+ * What the check needs from TabsPane, which owns the selection: the focused pane (null while the keys
+ * are off, D3) and picking a pane as the person's own act. There is no way here to focus anything
+ * else: no "give the keyboard back to the focused pane" (often a Claude terminal) and no give-back to
+ * where the person typed last, since a frame focus the shell could not prove may be a page's doing.
+ */
+export interface FrameFocusHandler {
+  activeId(): string | null
+  pick(tabId: string): void
+}
+
+/**
+ * Whether the frame holding the keyboard now may keep it (design-split-pages.md §4): run at the
+ * window's `blur`, at a page's `cc-plugin.tab-focus` hint (`hinted`: its frame's tab) and before a
+ * chord or Ask Claude from a frame (PageTabArea.tsx checkFrameFocus), whose target it names. With
+ * the person's evidence the pane is picked. Without, the frame is blurred, lets the pointer through to
+ * its pane until the pointer moves (so the next press on it is one the shell sees), and the keyboard
+ * goes to nothing. A hint from another frame while one is on record first puts the record right
+ * (PageFrames.resync: the keyboard moves to the hinting frame), so a hint can move the keyboard
+ * between frames; its effects are only `resync`, `blurFrame`, `passThrough` and `pick` of a frame's
+ * pane, so nothing a page posts ever puts the keyboard in a terminal.
+ */
+export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, pointer: PointerEvidence, hinted?: string): FrameCheck {
+  // Frame to frame, the shell's `activeElement` can stay on the frame the person left (measured:
+  // two frames of one plugin); a hint from another frame while one holds the keyboard puts it right
+  // first (resync is a no-op unless a frame holds it), and the evidence below decides as for any frame.
+  if (hinted !== undefined && pool.keyboardTab() !== hinted) pool.resync(hinted)
+  const tab = pool.keyboardTab()
+  if (tab === null) return 'none'
+  // Only a visible pane's frame names a target (a hidden one has no box and cannot hold the
+  // keyboard; were one to, nothing the person sees is there).
+  if (!pool.isVisible(tab)) {
+    pool.blurFrame(tab)
+    return 'blurred'
   }
+  const rects = pool.frameRects()
+  const others = [...rects].filter(([id]) => id !== tab).map(([, rect]) => rect)
+  const decision = framePick(tab, handler.activeId(), {
+    own: pool.ownFocus(tab),
+    pointerNear: pointer.near(rects.get(tab) ?? null, others),
+    pointerFresh: pointer.fresh(),
+    keyAfterPointer: pointer.keyAfterPointer()
+  })
+  if (decision === null) return { tab }
+  if ('pick' in decision) {
+    handler.pick(decision.pick)
+    return { tab }
+  }
+  pool.blurFrame(tab)
+  pool.passThrough(tab)
+  return 'blurred'
 }

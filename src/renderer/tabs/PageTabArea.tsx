@@ -9,7 +9,7 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import type { PaneNode } from '../../shared/tab-groups'
-import { framePick, PointerEvidence, type FrameCheck } from './frame-focus'
+import { checkFrames, PointerEvidence, type FrameCheck, type FrameFocusHandler } from './frame-focus'
 import { frameBoxes } from './pane-layout'
 import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
@@ -40,16 +40,6 @@ export function setPageTabDiscussHandler(fn: (tabId: string) => void): () => voi
   }
 }
 
-/**
- * What the focus check (checkFrameFocus) needs from TabsPane, which owns the selection: the focused
- * pane (null while the keys are off, D3) and picking a pane as the person's own act. There is no
- * "give the keyboard back to the focused pane": that pane is often a Claude terminal, and a frame
- * focus the shell could not prove is as often a real click into the file (frame-focus.ts).
- */
-export interface FrameFocusHandler {
-  activeId(): string | null
-  pick(tabId: string): void
-}
 let focusHandler: FrameFocusHandler | undefined
 
 /** TabsPane takes the focus check's decisions; returns the function that removes exactly this handler. */
@@ -61,61 +51,20 @@ export function setFrameFocusHandler(handler: FrameFocusHandler): () => void {
 }
 
 /** The pointer half of the focus evidence (frame-focus.ts), fed by the listeners `pageFrames` adds. */
-const pointer = new PointerEvidence<EventTarget>()
-
-/** The element of a shell key within GIVE_BACK_MS that can take the keyboard again, else null. */
-function giveBackTarget(): HTMLElement | null {
-  const el = pointer.recentKeyTarget()
-  return el instanceof HTMLElement && el.isConnected && el !== document.body && !(el instanceof HTMLIFrameElement) ? el : null
-}
+const pointer = new PointerEvidence()
 
 /**
- * Whether the frame holding the keyboard now may keep it (design-split-pages.md §4): read at the
- * window's `blur`, at a page's `cc-plugin.tab-focus` hint, and before a chord or Ask Claude from a
- * frame (TabsPane's `commands.trigger`, the pool's `chord` and `discuss` below), whose target it names.
- * With the person's evidence (the shell's own focus call, or their pointer going into it) the pane is
- * picked. Without, the frame is blurred, lets the pointer through to its pane until the pointer moves
- * (so the next press on it is one the shell sees), and the keyboard goes to nothing, or back to the
- * element the person was typing in a moment ago (framePick's `giveBack`), never to "the focused
- * pane". Nothing here rests on what a page posts: the hint (`hinted`, its frame's tab) says when to
- * look and, while another frame is on record, to put the record right (PageFrames.resync); the
- * evidence decides.
+ * The shell's focus check (frame-focus.ts checkFrames, design-split-pages.md §4) for this page's pool
+ * and TabsPane's selection: read at the window's `blur`, at a page's `cc-plugin.tab-focus` hint
+ * (`hinted`, its frame's tab) and before a chord or Ask Claude from a frame (TabsPane's
+ * `commands.trigger`, the pool's `chord` and `discuss` below). Without evidence the frame is blurred
+ * and the keyboard goes to nothing; nothing here ever focuses a terminal.
  */
 export function checkFrameFocus(hinted?: string): FrameCheck {
   const pool = frames
   const handler = focusHandler
   if (!pool || !handler) return 'none'
-  // Frame to frame, the shell's `activeElement` can stay on the frame the person left (measured:
-  // two frames of one plugin); a hint from another frame while one holds the keyboard puts it right
-  // first (PageFrames.resync), and the evidence below decides as for any other frame.
-  if (hinted !== undefined && pool.keyboardTab() !== hinted) pool.resync(hinted)
-  const tab = pool.keyboardTab()
-  if (tab === null) return 'none'
-  // Only a visible pane's frame names a target (a hidden one has no box and cannot hold the
-  // keyboard; were one to, nothing the person sees is there).
-  if (!pool.isVisible(tab)) {
-    pool.blurFrame(tab)
-    return 'blurred'
-  }
-  const rects = pool.frameRects()
-  const others = [...rects].filter(([id]) => id !== tab).map(([, rect]) => rect)
-  const giveTo = giveBackTarget()
-  const decision = framePick(tab, handler.activeId(), {
-    own: pool.ownFocus(tab),
-    pointerNear: pointer.near(rects.get(tab) ?? null, others),
-    pointerFresh: pointer.fresh(),
-    keyAfterPointer: pointer.keyAfterPointer(),
-    recentKey: giveTo !== null
-  })
-  if (decision === null) return { tab }
-  if ('pick' in decision) {
-    handler.pick(decision.pick)
-    return { tab }
-  }
-  pool.blurFrame(tab)
-  pool.passThrough(tab)
-  if (decision.giveBack) giveTo?.focus()
-  return 'blurred'
+  return checkFrames(pool, handler, pointer, hinted)
 }
 
 /**
@@ -154,12 +103,12 @@ function watchFrameFocus(): void {
   window.addEventListener('pointerdown', moved, true)
   window.addEventListener('pointerout', moved, true)
   window.addEventListener('wheel', moved, { capture: true, passive: true })
-  window.addEventListener('keydown', (e) => pointer.shellKey(e.target), true)
+  window.addEventListener('keydown', () => pointer.shellKey(), true)
   document.addEventListener(
     'focusin',
     (e) => {
       if (e.target instanceof HTMLIFrameElement || e.target === null) return
-      pointer.shellFocus(e.target)
+      pointer.shellFocus()
       frames?.shellFocused()
     },
     true

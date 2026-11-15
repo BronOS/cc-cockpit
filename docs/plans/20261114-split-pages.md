@@ -190,7 +190,7 @@ External review: sol / high
   coming back from a file pane arms no size take
 - [x] editor: drop `view.focus()` from `load()` in `plugins/editor/src/page/file.js` (the shell's `wantFocus` gives the
   first select the keyboard); keep the focus calls that follow the person's acts; `npm run build:editor`
-- [x] write tests: `framePick` (own focus picks, pointer evidence picks, neither blurs and leaves the keys on nothing (or gives them back to a key typed within 500 ms), a shell
+- [x] write tests: `framePick` (own focus picks, pointer evidence picks, neither blurs and leaves the keys on nothing (no give-back: Task 4's review), a shell
   keydown after the pointer blurs, keys off picks nothing, T equal to `activeId` is no change); `wantFocus` does nothing
   when the tab is not the focused pane or the keys are off; the size take ignores a `blur` with `hasFocus()` true; the
   SDK posts `cc-plugin.tab-focus` on window focus; a source check `plugins/editor/test/page-focus.test.mjs` (no page test loads

@@ -1113,8 +1113,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   )
   // A frame took the keyboard (design-split-pages.md §4, checkFrameFocus): with the person's evidence
   // its pane is picked as their own act (the outline and `tabs.selected` follow, D18's keys on);
-  // without, the frame is blurred and the keyboard goes to nothing (never "back to the focused pane",
-  // often a Claude terminal), unless the person was typing somewhere a moment ago (frame-focus.ts).
+  // without, the frame is blurred and the keyboard goes to nothing, never "back to the focused pane"
+  // (often a Claude terminal) nor to where the person typed last (frame-focus.ts). `pick` is only
+  // ever called with the tab of a frame holding the keyboard, a page tab, never a terminal.
   useEffect(
     () =>
       setFrameFocusHandler({

@@ -5,7 +5,8 @@
 // which frame has the keys (§4, plan Task 3): a frame that takes the keyboard by itself is blurred,
 // the pointer going into one picks its pane, keys off reach no frame, and `ccc edit` keeps the keys.
 // A chord or Ask Claude from a frame acts on that frame's tab (§4, plan Task 4): file A to file B,
-// Cmd+W in a file beside Claude, a pane chord from the frame, the page's own chords only in its frame.
+// Cmd+W in a file beside Claude, a pane chord from the frame, the page's own chords only in its frame,
+// and a page's focus hint never putting the keyboard in a terminal (Task 4's review).
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Frame, Page } from '@playwright/test'
@@ -197,7 +198,9 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await expect(page.locator('iframe.page-tab-frame')).toHaveCount(0)
 
     // Unprompted focus: the file pane mounts beside Claude (Show Tab Beside's placement) while the
-    // person types in Claude. Every key lands in Claude; the frame never keeps the keyboard.
+    // person types in Claude. Every key lands in Claude; the frame never takes the keyboard (the
+    // editor no longer focuses itself at load, and `wantFocus` is only for the focused pane). A page
+    // that did take it would be blurred with the keys to nothing, never handed back to Claude (§4).
     expect(await domFocusInTerminal(page)).toBe(true)
     expect((await place(page, file, claude, 'right')).ok).toBe(true)
     await page.keyboard.type('abc')
@@ -475,6 +478,57 @@ test('keys to the focused pane: Cmd+W in the file beside Claude closes the file,
     await nativeChord(c, 'W', [NATIVE_MOD])
     await expect.poll(async () => (await tabsOf(page)).map((t) => t.kind)).toEqual(['claude'])
     await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  } finally {
+    await close()
+  }
+})
+
+test("a page's focus hint never puts the keyboard in a terminal: typing in Claude, a chord into file A, then file B's hint, and no key reaches Claude", async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'a.txt'), 'alpha\n')
+    writeFileSync(join(projectDir, 'b.txt'), 'beta\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const a = await openFile(c, 'a.txt')
+    const b = await openFile(c, 'b.txt')
+    // Claude | A | B.
+    expect((await place(page, a, claude, 'right')).ok).toBe(true)
+    expect((await place(page, b, a, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(3)
+    const [fa, fb] = [await pageIn(page, 'a.txt'), await pageIn(page, 'b.txt')]
+
+    // The person types in Claude, then moves to A with a pane chord: the shell's own focus call.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.type('k')
+    await nativeChord(c, 'Right', [NATIVE_MOD, 'alt'])
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+    // Within moments of that key, B's page posts the focus hint (no click in it). The review's MAJOR:
+    // a give-back to the element of the recent key put the keyboard in the Claude textarea here.
+    await fb.evaluate(() => window.parent.postMessage({ type: 'cc-plugin.tab-focus' }, '*'))
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    // The keys go to nothing: not Claude, not either page. The outline stays on A, the person's pick.
+    await page.keyboard.type('yy')
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(700)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+    await expect(fa.locator('.cm-content')).not.toContainText('yy')
+    await expect(fb.locator('.cm-content')).not.toContainText('yy')
+    // Claude got the 'k' only: the person clicks its pane and ends the line.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: k')
+    expect(await paneText(paneOf(page, claude))).not.toContain('yy')
   } finally {
     await close()
   }

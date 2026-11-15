@@ -131,18 +131,22 @@ shell's document. In Electron 45 the iframe element gets no `focus` or `focusin`
 when the keyboard goes from the shell into a frame, the shell sees only the window's `blur`; from frame to frame it sees
 nothing, and `document.activeElement` changes without an event. `document.hasFocus()` stays true while a frame holds
 the keyboard. So the shell reads `document.activeElement` at these points: the window's `blur`; a `cc-plugin.tab-focus`
-hint the panel SDK posts on its own window's `focus` (only a reason to look, never trusted for what it says); before
-every chord from a frame; and before Ask Claude.
+hint the panel SDK posts on its own window's `focus` (a reason to look, never trusted for what it says, but see below:
+with another frame on record it moves the keyboard to the hinting frame); before every chord from a frame; and before
+Ask Claude.
 
 *Measured, Electron 45 (plan Task 4's e2e):* a click from one page tab frame into another of the same plugin (two
 files) moves the keyboard but leaves the shell's `document.activeElement` on the first frame for good, not only
 without an event. So at a hint from frame X while the record names another frame, the shell focuses X's iframe
 element first (`PageFrames.resync`, recorded as no focus of its own, so it is no evidence), and the check then decides
 as for any frame. Only while a frame is on record: a hint while a terminal or the shell holds the keyboard moves
-nothing (a real move into a frame from there does update `activeElement`, and the window `blur` runs the check). A page
-that posts the hint without the focus gains nothing it could not take by calling `focus()` itself, and only from
-another frame. A page without the SDK posts no hint, so after a click into it from another frame the record stays on
-the frame left until the next move the shell sees (a known limit, as below).
+nothing (a real move into a frame from there does update `activeElement`, and the window `blur` runs the check). So **a
+hint can move the keyboard between frames; it never reaches a terminal.** With fresh pointer evidence near X (the
+person came over X's header a moment ago, then moved to another frame by a chord the shell does not see as a key), X's
+hint alone gets X picked; without evidence the keyboard goes to nothing, so a page posting the hint in a loop can empty
+the keyboard of the frame the person types in on every post, never fill a terminal. Both are page to page and no more
+than a page could do with `focus()` plus the hint. A page without the SDK posts no hint, so after a click into it from
+another frame the record stays on the frame left until the next move the shell sees (a known limit, as below).
 
 **Unprompted focus is allowed, so the shell checks.** In the spike, a sandboxed cross-site frame calling `focus()`
 with no user activation took the keyboard from the parent. The bundled editor did this on every load (`view.focus()`
@@ -169,10 +173,20 @@ its frame a minute ago.
 With evidence, and T not `activeId`, the shell picks T as the person's own act (keys on). Without evidence the shell
 fails safe: it calls the iframe element's `blur()` and the keyboard goes to *nothing* (the shell's body), never to "the
 focused pane". That pane is often a Claude terminal, and an unproven frame focus is as often a real click into the file
-(the cases above), after which a stray Enter, digit or "y" would answer a permission prompt. The one exception is the
-"typing while a pane mounts" case: when a shell `keydown` came within 500 ms (`GIVE_BACK_MS`) and the pointer is not
-near T's frame, the element that key went to (the Claude terminal's textarea, say) is focused again, so the person keeps
-typing where they were. A focus moving to another shell element after that key drops it. The blurred frame then lets
+(the cases above), after which a stray Enter, digit or "y" would answer a permission prompt.
+
+**Nothing a page does can move the keyboard into a terminal.** Not a page's `focus()`, not its hint, not any message:
+keys enter a terminal only from the person's own act on it in the shell (a press on it, its strip tab, a pane chord
+typed in the shell, the shell's `focusActive` after such an act). So there is no give-back either: an unproven frame
+focus never hands the keyboard back to the element the person typed in last, not even in the "typing while a pane
+mounts" case (a file pane mounting beside Claude takes the keys mid-word). Every check that finds an unproven frame
+focus is one a page could have triggered (its own `focus()` raises the window `blur`, its hint the rest), and an earlier
+give-back to a key typed within 500 ms let a hint from file B push the keyboard out of file A, just chosen by a chord,
+into the Claude textarea. The keys typed after such a steal are lost (the person sees the outline still on Claude and
+the cursor gone, and clicks); losing keys is safe, misdirecting them is not. The bundled editor no longer focuses
+itself at load (below), so the steal needs a page that does. The check itself (`checkFrames`, frame-focus.ts) has no
+way to focus anything but a frame's pane (`pick`, only ever a page tab); unit tests hold it to that for a hint, a
+frame's own focus and a hint loop. The blurred frame then lets
 the pointer through to its pane (`pointer-events: none` on the iframe, `PageFrames.passThrough`) until the shell next
 sees the pointer move, press or wheel: the person's next press on it, even without moving, lands on the shell's pane
 body and picks the pane (its `mousedown` default is prevented so the frame keeps the keyboard), and their next move
@@ -374,7 +388,9 @@ Unit (vitest, DOM-free):
   `not-ready` pane is skipped, and all `not-ready` gives none; a Claude tab outside the group is never picked; the
   dialog starts on `preselect` and falls back to New session when that tab closes.
 - `framePick`: the shell's own focus and pointer evidence each pick; a focus with neither, or with a shell keydown after
-  the pointer, blurs and gives the keys back; with the keys off nothing is picked.
+  the pointer, blurs and leaves the keys on nothing (no give-back); with the keys off nothing is picked. `checkFrames`:
+  a hint from B after a chord into A, a frame's own focus while the person types in Claude, and a hint loop never put
+  the keyboard in a terminal and never pick one.
 - Chord targets (`pane-commands.test.ts`, the tab handlers): `tab.close`, the flag and `pane.*` act on the target passed
   in, not on `activeId`.
 - The in-Group commands (`command-registry.test.ts`): derived ids and titles, none for an overlay entry; the default is

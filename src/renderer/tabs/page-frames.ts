@@ -35,7 +35,8 @@
 // Focus (design-split-pages.md §4, frame-focus.ts): the pool records its own focus calls (`ownFocus`,
 // the shell's half of the evidence that a frame holding the keyboard was put there by the person),
 // says which frame holds the keyboard (`keyboardTab`), blurs one (`blurFrame`, `blurKeyboard`), lets a
-// blurred one pass the pointer to its pane until the pointer moves (`passThrough`) and hands on a page's `cc-plugin.tab-focus` hint (`focusHint`: only a reason for the shell to look).
+// blurred one pass the pointer to its pane until the pointer moves (`passThrough`) and hands on a page's `cc-plugin.tab-focus` hint (`focusHint`: a reason for the shell to look, and
+// with another frame on record a move of the keyboard into the hinting frame, `resync`; never into a terminal).
 // `wantFocus` takes the keyboard at the load only for the focused pane with the keys on (`show`'s
 // `focused` is null while they are off), so a pane shown by a group change elsewhere never takes it.
 //
@@ -158,7 +159,8 @@ export interface PageFramesOptions {
    * A live frame's page says its window got the focus (`cc-plugin.tab-focus`): the shell reads
    * `document.activeElement` now (frame to frame, it sees no event of its own), after `resync` when
    * that still names another frame. Never trusted for what it says: any page may post it any time,
-   * and the check decides by the shell's evidence only.
+   * and the check decides by the shell's evidence only. So a hint can move the keyboard between
+   * frames (to the hinting one with evidence, else to nothing), never into a terminal.
    */
   focusHint?(tabId: string): void
   maxLive?: number
@@ -384,7 +386,9 @@ export class PageFrames {
    * good, so without this every chord, Ask Claude and blur would act on the frame the person left. A
    * page that lies gains nothing it could not take itself: the keyboard was already in a frame (never
    * in a terminal: only called while one holds it, `keyboardTab`), and any page may call `focus()`.
-   * The check that follows decides whether it keeps it.
+   * The check that follows decides whether it keeps it; without evidence the keyboard goes to nothing,
+   * never back to an element of the shell (frame-focus.ts: a page looping the hint can only empty
+   * the keyboard of the frame the person types in, never fill a terminal).
    */
   resync(tabId: string): void {
     if (!this.visible.has(tabId) || this.keyboardTab() === null) return
