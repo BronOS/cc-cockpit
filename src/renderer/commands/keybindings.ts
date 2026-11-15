@@ -36,7 +36,7 @@ let captures = 0
 // Told whenever the table changes (setCommands): page tabs in the web shell get the new chord list.
 const tableListeners = new Set<() => void>()
 // Runs a command for a chord a page tab forwarded (TabsPane: through its modal gate).
-let forwardedRunner: ((id: string, ctx: CommandContext | undefined, chord: string) => void) | undefined
+let forwardedRunner: ((id: string, ctx: CommandContext | undefined, chord: string, code?: string) => void) | undefined
 
 /** Stop keys from firing commands until the returned function is called (once; further calls do nothing). */
 export function captureKeys(): () => void {
@@ -92,10 +92,11 @@ export function forwardedChords(): string[] {
 }
 
 /**
- * Set who runs a forwarded chord's command (TabsPane), given the chord too (a pane chord's key is held
- * so its auto-repeat does not reach the terminal it moved to); returns the function that removes it.
+ * Set who runs a forwarded chord's command (TabsPane), given the chord and the key's code the page
+ * sent, if any (a pane chord's key is held so its auto-repeat does not reach the terminal it moved
+ * to); returns the function that removes it.
  */
-export function setForwardedRunner(fn: (id: string, ctx: CommandContext | undefined, chord: string) => void): () => void {
+export function setForwardedRunner(fn: (id: string, ctx: CommandContext | undefined, chord: string, code?: string) => void): () => void {
   forwardedRunner = fn
   return () => {
     if (forwardedRunner === fn) forwardedRunner = undefined
@@ -105,13 +106,14 @@ export function setForwardedRunner(fn: (id: string, ctx: CommandContext | undefi
 /**
  * A chord the page tab `tabId` forwarded: its command runs through the runner TabsPane set (the same
  * gate as a key typed in the shell), for that tab. False when it is not bound, nothing here runs it,
- * or keys are captured (the keybinding editor recording).
+ * or keys are captured (the keybinding editor recording). `code` is the page's word for the key's
+ * physical code: it only decides which auto-repeats the shell swallows (HeldChordKeys).
  */
-export function runForwardedChord(chord: string, tabId: string): boolean {
+export function runForwardedChord(chord: string, tabId: string, code?: string): boolean {
   if (captures > 0 || !forwardedRunner) return false
   const id = chords.get(chord)
   if (id === undefined || !handlers.has(id)) return false
-  forwardedRunner(id, { tabId }, chord)
+  forwardedRunner(id, { tabId }, chord, code)
   return true
 }
 

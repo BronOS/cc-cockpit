@@ -1889,11 +1889,15 @@ export interface IpcEventMap {
   /**
    * A chord typed into a native view the page cannot see (a webview panel, `from: 'webview'`) or into
    * a page tab's frame (`from: 'page-tab'`, desktop) that main resolved to this command: run it as if
-   * the key had been pressed here (same modal rules). `chord` is the canonical chord main saw (the
-   * shell holds its key after a pane chord). A page tab's chord whose frame no longer holds the
-   * keyboard is dropped, never run for the active tab (frame-focus.ts chordTarget).
+   * the key had been pressed here (same modal rules). `chord` is the canonical chord main saw and
+   * `code` its key's physical code (the shell holds that key after a pane chord). `tab` is the page
+   * tab main recorded for the frame the chord was typed in (page-tab-keys.ts PageTabFrameTabs): the
+   * chord runs only while that tab's frame still holds the keyboard, and is dropped otherwise, never
+   * run for another tab or the active one (frame-focus.ts chordTarget).
    */
-  'commands.trigger': { id: string; chord: string; from: 'page-tab' | 'webview' }
+  'commands.trigger':
+    | { id: string; chord: string; code?: string; from: 'webview' }
+    | { id: string; chord: string; code: string; from: 'page-tab'; tab: string }
 }
 
 export type InvokeChannel = keyof IpcInvokeMap

@@ -67,46 +67,64 @@ function keyOfEvent(e: KeyEventLike): string | null {
   return chord === null ? null : (splitChord(chord)?.key ?? null)
 }
 
+/** A KeyboardEvent `code` as Chromium spells one (`KeyH`, `ArrowLeft`, `Digit1`). */
+const KEY_CODE_PATTERN = /^[A-Za-z0-9]{1,32}$/
+
 /**
  * The keys of pane chords that came from outside the shell's document (main's `commands.trigger`
  * from a page tab's frame or a webview panel, the web shell's forwarded chords), held so their
  * auto-repeat is swallowed (the external review's MAJOR). The shell's own keydown path holds the
- * chord's `code` until its keyup (TabsPane `swallow`); a forwarded chord has no event here, only its
- * canonical text, so this holds its key: Ctrl+Alt+Left held in a file pane moves the keys to the
- * terminal, the person lets go of Ctrl and Alt first, and the arrow's repeats now reach the shell's
- * document, where without this they would go into the terminal (a Claude prompt's cursor, its
- * choices). Only repeats are swallowed: the keyup may have gone to the frame, never to the shell, so a
- * fresh press of the key (no repeat) ends the hold and is the person's, as is a keyup or a window blur.
+ * chord's `code` until its keyup (TabsPane `swallow`); a forwarded one holds the physical `code` that
+ * came with it and the key its canonical text names: Ctrl+Alt+Left held in a file pane moves the keys
+ * to the terminal, the person lets go of Ctrl and Alt first, and the arrow's repeats now reach the
+ * shell's document, where without this they would go into the terminal (a Claude prompt's cursor, its
+ * choices). The code is what holds on any layout (round 2: on Dvorak Ctrl+Alt+H is the chord `h`, by
+ * the code, and the same key repeats as `d` once the modifiers are up); the name covers a chord that
+ * came with no usable code (a page in the web shell sent none). Matching either swallows more
+ * repeats, never fewer: the safe side. Only repeats are swallowed: the keyup may have gone to the
+ * frame, never to the shell, so a fresh press of the key (no repeat) ends the hold and is the
+ * person's, as is a keyup or a window blur.
  */
 export class HeldChordKeys {
-  private readonly keys = new Set<string>()
+  private held: Array<{ key: string | undefined; code: string | undefined }> = []
 
-  /** A pane chord forwarded to the shell ran: hold its key (`ctrl+alt+left` holds `left`). */
-  hold(chord: string): void {
-    const key = splitChord(chord)?.key
-    if (key) this.keys.add(key)
+  /**
+   * A pane chord forwarded to the shell ran: hold its key (`ctrl+alt+left` holds `left`) and the
+   * physical `code` it was typed with, when one came that looks like a code.
+   */
+  hold(chord: string, code?: unknown): void {
+    const named = splitChord(chord)?.key
+    const key = named ? named : undefined
+    const physical = typeof code === 'string' && KEY_CODE_PATTERN.test(code) ? code : undefined
+    if (key === undefined && physical === undefined) return
+    this.held.push({ key, code: physical })
   }
 
   /** Whether this keydown is an auto-repeat of a held key (swallow it); a fresh press ends the hold. */
   swallows(e: KeyEventLike & { repeat: boolean }): boolean {
-    if (this.keys.size === 0) return false
-    const key = keyOfEvent(e)
-    if (key === null || !this.keys.has(key)) return false
+    if (this.held.length === 0) return false
+    const at = this.held.findIndex(this.matches(e))
+    if (at < 0) return false
     if (e.repeat) return true
-    this.keys.delete(key)
+    this.held = this.held.filter((_, i) => i !== at)
     return false
   }
 
   /** A keyup in the shell's document: that key is no longer held. */
   released(e: KeyEventLike): void {
-    if (this.keys.size === 0) return
-    const key = keyOfEvent(e)
-    if (key !== null) this.keys.delete(key)
+    if (this.held.length === 0) return
+    const matches = this.matches(e)
+    this.held = this.held.filter((h) => !matches(h))
   }
 
   /** The window lost the keyboard: no keyup will come here, nothing is held. */
   clear(): void {
-    this.keys.clear()
+    this.held = []
+  }
+
+  private matches(e: KeyEventLike): (h: { key: string | undefined; code: string | undefined }) => boolean {
+    const key = keyOfEvent(e)
+    return (h) => (h.code !== undefined && e.code === h.code) || (h.key !== undefined && key === h.key)
   }
 }
 

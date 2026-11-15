@@ -6,7 +6,7 @@
 // declared keys clash only in Settings › Keybindings (CommandRegistry.bindings pageKeys).
 import { afterEach, describe, expect, it } from 'vitest'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
-import { isPageTabFrame, pageTabChord } from '../../src/main/tabs/page-tab-keys'
+import { MAX_TRACKED_PAGE_TAB_FRAMES, PageTabFrameTabs, pageTabChord } from '../../src/main/tabs/page-tab-keys'
 import {
   forwardedChords,
   onKeyTable,
@@ -19,7 +19,7 @@ import {
 } from '../../src/renderer/commands/keybindings'
 import { chordOfKey, PanelClient, TAB_KEY_MESSAGE, TAB_MESSAGE, type KeyLike, type ThemeRoot } from '../../src/sdk/panel-core'
 import { chordFromEvent } from '../../src/shared/keys'
-import { PAGE_TAB_FRAME_NAME } from '../../src/shared/page-tabs'
+import { pageTabFrameName, pageTabOfFrameName } from '../../src/shared/page-tabs'
 import { entry, pool, settle, TAB_A, TAB_B } from '../fakes/fake-page-frames'
 
 afterEach(() => resetKeybindings())
@@ -35,47 +35,100 @@ const key = (k: string, code: string, mods: Partial<KeyLike> = {}): KeyLike => (
 })
 
 describe('desktop: before-input-event on a page tab frame', () => {
-  const frame = { name: PAGE_TAB_FRAME_NAME, url: 'cc-plugin://cockpit.editor/page/file.html', parent: {} }
+  const TAB = '0b7c1e2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d'
+  const OTHER = '9f8e7d6c-5b4a-4321-8fed-cba987654321'
+  const top = { parent: null }
+  const URL = 'cc-plugin://cockpit.editor/page/file.html'
+  // A frame as Electron's WebFrameMain shows it: about:blank (in the shell's process) until it loads.
+  const child = (id: number, name: string, url = 'about:blank', parent: unknown = top) => ({ frameTreeNodeId: id, name, url, parent })
 
-  it('is a page tab frame only as a named cc-plugin child frame', () => {
-    expect(isPageTabFrame(frame)).toBe(true)
-    expect(isPageTabFrame({ ...frame, parent: null })).toBe(false)
-    expect(isPageTabFrame({ ...frame, name: '' })).toBe(false)
-    expect(isPageTabFrame({ ...frame, url: 'https://example.com/' })).toBe(false)
-    expect(isPageTabFrame(null)).toBe(false)
+  it('the shell names a frame after its tab; anything else is no page tab name', () => {
+    expect(pageTabFrameName(TAB)).toBe(`cc-page-tab:${TAB}`)
+    expect(pageTabOfFrameName(pageTabFrameName(TAB))).toBe(TAB)
+    expect(pageTabOfFrameName('cc-page-tab')).toBeUndefined()
+    expect(pageTabOfFrameName('cc-page-tab:not-an-id')).toBeUndefined()
+    expect(pageTabOfFrameName(`x${pageTabFrameName(TAB)}`)).toBeUndefined()
+  })
+
+  it("main records a frame's tab when the shell sets its src, before any page runs in it, and only then", () => {
+    const frames = new PageTabFrameTabs()
+    const f = child(7, pageTabFrameName(TAB))
+    frames.navigating(f, URL, top)
+    // Before the load commits the frame is still about:blank: no plugin page, no page tab.
+    expect(frames.tabOf(f)).toBeUndefined()
+    const loaded = { ...f, url: URL }
+    expect(frames.tabOf(loaded)).toBe(TAB)
+    // The page renames its window to another tab's frame name, then navigates itself (or the shell
+    // navigates it again): the record stays, never read again (the review's CRITICAL, round 2).
+    const renamed = { ...loaded, name: pageTabFrameName(OTHER) }
+    frames.navigating(renamed, URL, renamed)
+    frames.navigating(renamed, URL, top)
+    expect(frames.tabOf(renamed)).toBe(TAB)
+    // Not the top frame's own navigation, not its own child, no plugin page, no page tab name.
+    const a = child(8, pageTabFrameName(OTHER))
+    frames.navigating(a, URL, { parent: top })
+    frames.navigating(a, URL, null)
+    expect(frames.tabOf({ ...a, url: URL })).toBeUndefined()
+    const nested = child(9, pageTabFrameName(OTHER), 'about:blank', loaded)
+    frames.navigating(nested, URL, top)
+    expect(frames.tabOf({ ...nested, url: URL })).toBeUndefined()
+    const web = child(10, pageTabFrameName(OTHER))
+    frames.navigating(web, 'https://example.com/', top)
+    expect(frames.tabOf({ ...web, url: 'https://example.com/' })).toBeUndefined()
+    const panel = child(11, 'cc-panel')
+    frames.navigating(panel, URL, top)
+    expect(frames.tabOf({ ...panel, url: URL })).toBeUndefined()
+    // The top frame itself and no frame are no page tab's.
+    expect(frames.tabOf({ frameTreeNodeId: 1, name: '', url: URL, parent: null })).toBeUndefined()
+    expect(frames.tabOf(null)).toBeUndefined()
+    // A frame that left the plugin's pages is no page tab's either.
+    expect(frames.tabOf({ ...loaded, url: 'about:blank' })).toBeUndefined()
+    // The top page reloaded: its frames went.
+    frames.clear()
+    expect(frames.tabOf(loaded)).toBeUndefined()
+  })
+
+  it('keeps a bounded record: the oldest frame goes first', () => {
+    const frames = new PageTabFrameTabs()
+    for (let i = 0; i <= MAX_TRACKED_PAGE_TAB_FRAMES; i++) frames.navigating(child(100 + i, pageTabFrameName(TAB)), URL, top)
+    expect(frames.tabOf(child(100, pageTabFrameName(TAB), URL))).toBeUndefined()
+    expect(frames.tabOf(child(101, pageTabFrameName(TAB), URL))).toBe(TAB)
+    expect(frames.tabOf(child(100 + MAX_TRACKED_PAGE_TAB_FRAMES, pageTabFrameName(TAB), URL))).toBe(TAB)
   })
 
   it('the app table wins: its chords go to the shell, the rest (declared keys, typing, Escape) to the page', () => {
     const table: Record<string, string> = { 'ctrl+w': 'tab.close', 'ctrl+tab': 'tab.switchNext', escape: 'overlay.pop', 'ctrl+shift+w': 'overlay.closeTop' }
-    const triggered: Array<[number, string, string]> = []
+    const triggered: Array<[number, string, string, unknown]> = []
+    const at = { tab: TAB, code: 'KeyW' }
     const deps = {
       commandFor: (_w: number, c: string) => table[c],
-      trigger: (w: number, id: string, chord: string) => {
-        triggered.push([w, id, chord])
+      trigger: (w: number, id: string, chord: string, origin: unknown) => {
+        triggered.push([w, id, chord, origin])
         return true
       }
     }
-    expect(pageTabChord(deps, 3, 'ctrl+w')).toBe(true)
-    expect(pageTabChord(deps, 3, 'ctrl+tab')).toBe(true)
+    expect(pageTabChord(deps, 3, 'ctrl+w', at)).toBe(true)
+    expect(pageTabChord(deps, 3, 'ctrl+tab', at)).toBe(true)
     // The editor's own Ctrl+S, not in the table: the page's.
-    expect(pageTabChord(deps, 3, 'ctrl+s')).toBe(false)
-    expect(pageTabChord(deps, 3, 'escape')).toBe(false)
-    expect(pageTabChord(deps, 3, 'ctrl+shift+w')).toBe(false)
-    expect(pageTabChord(deps, 3, null)).toBe(false)
+    expect(pageTabChord(deps, 3, 'ctrl+s', at)).toBe(false)
+    expect(pageTabChord(deps, 3, 'escape', at)).toBe(false)
+    expect(pageTabChord(deps, 3, 'ctrl+shift+w', at)).toBe(false)
+    expect(pageTabChord(deps, 3, null, at)).toBe(false)
     // An auto-repeat of an app chord is swallowed and not run again; one that is no app chord is the page's.
     const before = triggered.length
-    expect(pageTabChord(deps, 3, 'ctrl+w', true)).toBe(true)
-    expect(pageTabChord(deps, 3, 'ctrl+s', true)).toBe(false)
+    expect(pageTabChord(deps, 3, 'ctrl+w', at, true)).toBe(true)
+    expect(pageTabChord(deps, 3, 'ctrl+s', at, true)).toBe(false)
     expect(triggered).toHaveLength(before)
-    // The chord goes with the command (the shell holds a pane chord's key against its auto-repeat).
+    // The chord goes with the command, and where main saw it: the frame's tab (the shell runs it only
+    // while that frame holds the keys) and the physical code (held after a pane chord).
     expect(triggered).toEqual([
-      [3, 'tab.close', 'ctrl+w'],
-      [3, 'tab.switchNext', 'ctrl+tab']
+      [3, 'tab.close', 'ctrl+w', at],
+      [3, 'tab.switchNext', 'ctrl+tab', at]
     ])
   })
 
   it('a window that is gone takes nothing', () => {
-    expect(pageTabChord({ commandFor: () => 'tab.close', trigger: () => false }, 3, 'ctrl+w')).toBe(false)
+    expect(pageTabChord({ commandFor: () => 'tab.close', trigger: () => false }, 3, 'ctrl+w', { tab: TAB, code: 'KeyW' })).toBe(false)
   })
 })
 
@@ -132,7 +185,8 @@ describe('web shell: the SDK forwards the chords the shell listed', () => {
     expect(c.keyDown(key('w', 'KeyW', { ctrlKey: true, altKey: true }))).toBe(true)
     expect(c.keyDown(key('s', 'KeyS', { ctrlKey: true }))).toBe(false)
     expect(c.keyDown(key('Tab', 'Tab', { ctrlKey: true, altKey: true, repeat: true }))).toBe(true)
-    expect(sent).toEqual([{ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' }])
+    // With the key's physical code: the shell holds it after a pane chord (HeldChordKeys).
+    expect(sent).toEqual([{ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w', code: 'KeyW' }])
     // A new table replaces the list.
     c.receive({ type: TAB_MESSAGE, tab: { type: 'other' }, keys: ['ctrl+s'] }, [])
     expect(c.api.tab?.type).toBe('file')
@@ -166,7 +220,7 @@ describe('web shell: the pool and the key table', () => {
 
   it('a forwarded chord counts only from the shown frame with the keyboard, only a listed one, and names that frame\'s tab', async () => {
     const chords: string[] = []
-    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c, tabId) => chords.push(`${c} ${tabId}`), userActive: () => true })
+    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c, tabId, code) => chords.push(`${c} ${tabId}${code === undefined ? '' : ` ${code}`}`), userActive: () => true })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
     t.frames.show([TAB_A], TAB_A)
     await settle()
@@ -182,6 +236,10 @@ describe('web shell: the pool and the key table', () => {
     b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+t' })
     b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
     expect(chords).toEqual([`ctrl+alt+w ${TAB_B}`])
+    // The page's code goes on (it only decides which repeats the shell swallows); junk does not.
+    b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w', code: 'KeyW' })
+    b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w', code: 42 })
+    expect(chords.slice(1)).toEqual([`ctrl+alt+w ${TAB_B} KeyW`, `ctrl+alt+w ${TAB_B}`])
   })
 
   it('two visible frames: a chord from the one without the keyboard is dropped, from the one with it names its tab', async () => {
@@ -240,13 +298,14 @@ describe('web shell: the pool and the key table', () => {
     // No runner, or no handler for the command: nothing runs.
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     const chords: string[] = []
-    const off = setForwardedRunner((id, ctx, chord) => {
+    const off = setForwardedRunner((id, ctx, chord, code) => {
       ran.push([id, ctx?.tabId])
-      chords.push(chord)
+      chords.push(code === undefined ? chord : `${chord} ${code}`)
     })
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     registerHandlers({ 'tab.close': () => {} })
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(true)
+    expect(runForwardedChord('ctrl+w', 'page-1', 'KeyW')).toBe(true)
     expect(runForwardedChord('ctrl+q', 'page-1')).toBe(false)
     // The keybinding editor recording: no chord runs anything.
     const release = captureKeys()
@@ -255,8 +314,11 @@ describe('web shell: the pool and the key table', () => {
     off()
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     // The command runs for the frame's own tab (design-split-pages.md §4), never "the active tab".
-    expect(ran).toEqual([['tab.close', 'page-1']])
-    expect(chords).toEqual(['ctrl+w'])
+    expect(ran).toEqual([
+      ['tab.close', 'page-1'],
+      ['tab.close', 'page-1']
+    ])
+    expect(chords).toEqual(['ctrl+w', 'ctrl+w KeyW'])
   })
 
   it('a new key table is told to its listeners', () => {

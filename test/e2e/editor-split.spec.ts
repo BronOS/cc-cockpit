@@ -473,8 +473,23 @@ test('file A to file B: the outline follows the click, and Ask Claude and Cmd+W 
     // The box took the focus from B, which saved Q (the editor's autosave on focus loss).
     await expect.poll(() => readFileSync(join(projectDir, 'b.txt'), 'utf8')).toBe('betaQ\n')
 
-    // Cmd+W typed in B (main's before-input-event; `commands.trigger` names no tab): B closes, A
-    // stays, its page untouched.
+    // The external review's CRITICAL, round 2: a chord main saw typed in A that reaches the shell only
+    // once B holds the keyboard is dropped, never run for B. The race is main's send against a focus
+    // move, so it is sent here as main sends it, naming A; the flag chord naming B right after it (one
+    // channel, in order) is the sync point: B is flagged and still open.
+    await c.app.evaluate(
+      ({ BrowserWindow }, { a, b }) => {
+        const wc = BrowserWindow.getAllWindows()[0]!.webContents
+        wc.send('commands.trigger', { id: 'tab.close', chord: 'meta+w', code: 'KeyW', from: 'page-tab', tab: a })
+        wc.send('commands.trigger', { id: 'tab.toggleFlag', chord: 'meta+alt+f', code: 'KeyF', from: 'page-tab', tab: b })
+      },
+      { a, b }
+    )
+    await expect.poll(async () => (await tabsOf(page)).find((t) => t.id === b)?.flag).toBeTruthy()
+    expect((await tabsOf(page)).map((t) => t.page?.title)).toEqual(['a.txt', 'b.txt'])
+
+    // Cmd+W typed in B (main's before-input-event; `commands.trigger` names the tab main knows B's
+    // frame by): B closes, A stays, its page untouched.
     await nativeChord(c, 'W', [NATIVE_MOD])
     await expect.poll(async () => (await tabsOf(page)).map((t) => t.page?.title)).toEqual(['a.txt'])
     await expect(frameEl(page, 'a.txt')).toHaveCount(1)

@@ -113,7 +113,7 @@ export interface PageTabEntry {
 
 export interface PageFramesOptions {
   /** A new frame element in the layer, hidden, loading nothing yet (`title`: its accessible name). */
-  createFrame(title: string): PageFrameElement
+  createFrame(title: string, tabId: string): PageFrameElement
   /** The page URL main names for the tab (`pageTabs.src`); null: none here (plugin off, hidden page). */
   src(tabId: string): Promise<string | null>
   /** The URL this shell loads for it (web: the HTTP path, page-paths.ts); undefined: none. */
@@ -142,7 +142,7 @@ export interface PageFramesOptions {
    * its command for that tab (through its gate), never for "the active tab", which may be the pane
    * beside it (design-split-pages.md §4 "Chords from a frame name their tab").
    */
-  chord?(chord: string, tabId: string): void
+  chord?(chord: string, tabId: string, code?: string): void
   /**
    * Whether the person gave real input a moment ago (web shell: `navigator.userActivation.isActive`,
    * transient activation: set by a trusted key press or click in the frame or the shell, which a
@@ -566,7 +566,7 @@ export class PageFrames {
 
   /** A frame element for `entry` whose loads report generation `gen`, placed at its pane's box while visible. */
   private element(entry: Live, gen: number): PageFrameElement {
-    const el = this.o.createFrame(entry.tab.title)
+    const el = this.o.createFrame(entry.tab.title, entry.tab.id)
     el.place(this.boxFor(entry.tab.id))
     el.onLoad(() => {
       entry.frame?.loads.loaded(gen)
@@ -596,7 +596,7 @@ export class PageFrames {
   /** A message the tab's page posted to the shell. Anything not understood is ignored. */
   private fromPage(tabId: string, el: PageFrameElement, data: unknown): void {
     if (typeof data !== 'object' || data === null) return
-    const { type, dirty, chord } = data as { type?: unknown; dirty?: unknown; chord?: unknown }
+    const { type, dirty, chord, code } = data as { type?: unknown; dirty?: unknown; chord?: unknown; code?: unknown }
     if (type === TAB_DIRTY_MESSAGE && typeof dirty === 'boolean') {
       if (dirty === this.dirty.has(tabId)) return
       if (dirty) this.dirty.add(tabId)
@@ -612,7 +612,11 @@ export class PageFrames {
     // while nobody uses it. Transient activation lasts seconds and is not tied to one key, so a page
     // the person is typing in can still post a listed chord they did not press (a known limit).
     if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && this.visible.has(tabId) && el.hasFocus()) {
-      if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord, tabId)
+      // `code`, the page's word for the key's physical code, only decides which auto-repeats the shell
+      // swallows after a pane chord (HeldChordKeys, which also holds the chord's key by name).
+      if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) {
+        this.o.chord?.(chord, tabId, typeof code === 'string' && code.length <= 32 ? code : undefined)
+      }
       return
     }
     if (type === TAB_DISCUSS_MESSAGE && this.visible.has(tabId) && el.hasFocus()) {

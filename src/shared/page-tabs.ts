@@ -30,13 +30,27 @@ export interface PageTabContribution {
 }
 
 /**
- * The `name` of every page tab iframe the shell makes (PageTabArea.tsx). Main tells a page tab's frame
- * from the shell page and the other plugin frames by it in `before-input-event` (design-editor.md §1
- * "Keyboard"), to send the app's chords typed there to the shell. A page may rename its own window:
- * that only stops the forwarding for itself, and a panel naming itself so only gets the chords the
- * shell would have run anyway, through the shell's own command gate.
+ * The prefix of every page tab iframe's `name` (PageTabArea.tsx), which is `cc-page-tab:<tab id>`
+ * (pageTabFrameName). Main reads the name once, when the shell page itself navigates its own child
+ * frame (`will-frame-navigate`, page-tab-keys.ts PageTabFrameTabs), before any page runs in it, and
+ * from then on knows that frame as that tab's: a chord typed in it names its tab (design-split-pages.md
+ * §4), as main saw it, never as the page says. A page may rename its own window afterwards: main never
+ * reads the name again, so that changes nothing.
  */
 export const PAGE_TAB_FRAME_NAME = 'cc-page-tab'
+
+/** The `name` the shell gives `tabId`'s page tab iframe. */
+export function pageTabFrameName(tabId: string): string {
+  return `${PAGE_TAB_FRAME_NAME}:${tabId}`
+}
+
+/** The tab id in a page tab iframe's name (pageTabFrameName), or undefined when it is none. */
+export function pageTabOfFrameName(name: string): string | undefined {
+  const prefix = `${PAGE_TAB_FRAME_NAME}:`
+  if (!name.startsWith(prefix)) return undefined
+  const id = name.slice(prefix.length)
+  return PAGE_TAB_ID_PATTERN.test(id) ? id : undefined
+}
 
 /** At most this many `contributes.tabs` entries per plugin. */
 export const MAX_PAGE_TAB_TYPES = 10

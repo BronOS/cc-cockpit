@@ -246,9 +246,9 @@ describe('webviewChord (main\'s routing of a chord typed into a view)', () => {
       shell: (w) =>
         opts.closed?.includes(w)
           ? undefined
-          : { focus: () => void log.push(`focus ${w}`), trigger: (id, chord) => void log.push(`trigger ${w} ${id} ${chord}`) }
+          : { focus: () => void log.push(`focus ${w}`), trigger: (id, chord, code) => void log.push(`trigger ${w} ${id} ${chord}${code === undefined ? '' : ` ${code}`}`) }
     }
-    return { log, route: (w: number, c: string) => webviewChord(deps, w, c) }
+    return { log, route: (w: number, c: string, code?: string) => webviewChord(deps, w, c, code) }
   }
 
   it('the overlay keys go first; a chord an overlay takes is not run as a command', () => {
@@ -266,6 +266,10 @@ describe('webviewChord (main\'s routing of a chord typed into a view)', () => {
     expect(route(2, 'meta+t')).toBe(false)
     expect(route(2, 'meta+j')).toBe(true)
     expect(log).toEqual(['overlay 2 meta+t', 'overlay 2 meta+j', 'focus 2', 'trigger 2 zone.toggleBottom meta+j'])
+    // The key's physical code goes with the chord (the shell holds it after a pane chord).
+    log.length = 0
+    expect(route(1, 'meta+t', 'KeyT')).toBe(true)
+    expect(log).toEqual(['overlay 1 meta+t', 'focus 1', 'trigger 1 tab.newClaude meta+t KeyT'])
   })
 
   it('leaves the key to the page when nothing takes it or the window is gone', () => {

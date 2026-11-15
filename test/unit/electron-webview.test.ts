@@ -108,7 +108,7 @@ function events(over: Partial<WebviewEvents> = {}): WebviewEvents & { log: strin
     openWindow: (url) => void log.push(`open ${url}`),
     navigated: (commit) => void log.push(commit ? 'navigated' : 'title'),
     loadFailed: (url, error) => void log.push(`failed ${url} ${error}`),
-    chord: (c) => (log.push(`chord ${c}`), c === 'meta+t'),
+    chord: (c, code) => (log.push(`chord ${c}${code === undefined ? '' : ` ${code}`}`), c === 'meta+t'),
     gone: () => void log.push('gone'),
     ...over
   }
@@ -216,7 +216,8 @@ describe('ElectronWebviewFactory', () => {
     wc.emit('did-navigate-in-page', {}, 'https://ok/#a', false) // a sub-frame: not reported
     wc.emit('did-navigate-in-page', {}, 'https://ok/#b', true)
     wc.emit('render-process-gone')
-    expect(ev.log).toEqual(['chord meta+t', 'chord k', 'navigated', 'gone'])
+    // With the key's physical code (the shell holds it after a pane chord).
+    expect(ev.log).toEqual(['chord meta+t KeyT', 'chord k KeyK', 'navigated', 'gone'])
   })
 
   // Review finding (ext round 10): a failed load only reached console.warn, so `ccc browser open`

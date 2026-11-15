@@ -121,25 +121,32 @@ export function framePick(activeTab: string | null, activeId: string | null, e: 
  */
 export type FrameCheck = 'none' | 'blurred' | { tab: string }
 
-/** Where main saw a chord it sent as `commands.trigger`: a page tab's frame, or a webview panel's view. */
-export type ChordSource = 'page-tab' | 'webview'
+/**
+ * Where main saw a chord it sent as `commands.trigger`: a page tab's frame, named by the tab main
+ * recorded for it (page-tab-keys.ts PageTabFrameTabs; undefined when the message carried none), or a
+ * webview panel's view.
+ */
+export type ChordSource = { from: 'page-tab'; tab: string | undefined } | { from: 'webview' }
 
 /**
- * Whom a chord main sent (`commands.trigger`, which names no tab) runs for, after the check: the
- * frame's tab when a frame has the keys (design-split-pages.md §4 "Chords from a frame name their
- * tab"), and nobody (null, dropped) when the frame held them with no evidence: the person typed it
- * where the shell says no keys belong, and the pane the outline shows is not where they typed it
- * (Cmd+W there would close the file they did not click into). With no frame holding the keys, only a
- * webview panel's chord runs for the view's active tab (`{}`); one main saw in a page tab's frame is
- * dropped: that frame lost the keyboard before the chord got here (the external review's CRITICAL:
- * the window `blur`'s check blurred it in between, so Cmd+W typed into a file the shell had just
- * refused would have closed the Claude tab the outline shows). The source is unknown in the shell
- * otherwise, so anything but `webview` counts as a frame's.
+ * Whom a chord main sent (`commands.trigger`) runs for, after the check (design-split-pages.md §4
+ * "Chords from a frame name their tab"), and nobody (null, dropped) when the frame held the keys with
+ * no evidence: the person typed it where the shell says no keys belong, and the pane the outline shows
+ * is not where they typed it (Cmd+W there would close the file they did not click into).
+ * - A page tab's chord runs only for the tab main saw it typed in, and only while that tab's frame
+ *   still holds the keyboard. Anything else is dropped: no frame holds it any more (the window
+ *   `blur`'s check refused the frame in between: run for the active tab, Cmd+W typed into a file
+ *   would close the Claude tab the outline shows), or another frame does (the external review's
+ *   CRITICAL, round 2: Cmd+W typed in page A while page B took the keyboard before the chord got
+ *   here would close B).
+ * - A webview panel's chord runs for the frame's tab when one holds the keyboard in the shell's
+ *   document (webviewChord focused the shell first, whose last focused element may be a frame), and
+ *   for the view's active tab (`{}`) when none does.
  */
-export function chordTarget(at: FrameCheck, from: ChordSource): { tabId?: string } | null {
+export function chordTarget(at: FrameCheck, source: ChordSource): { tabId?: string } | null {
   if (at === 'blurred') return null
-  if (at === 'none') return from === 'webview' ? {} : null
-  return { tabId: at.tab }
+  if (source.from === 'page-tab') return at !== 'none' && source.tab !== undefined && at.tab === source.tab ? { tabId: at.tab } : null
+  return at === 'none' ? {} : { tabId: at.tab }
 }
 
 /** How far `at` is from `rect` in px (0 inside it); Infinity for an empty box. */

@@ -420,7 +420,7 @@ test('a file review gets the editor\'s Edit button; a click opens the file tab, 
   await expect.poll(async () => (await stack(cockpit)).map((o) => o.title), { timeout: 15_000 }).toEqual([])
   const tab = page.getByRole('tab', { name: 'notes.txt' })
   await expect(tab).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 })
-  const file = page.frameLocator('iframe[name="cc-page-tab"]:visible')
+  const file = page.frameLocator('iframe[name^="cc-page-tab:"]:visible')
   await expect(file.locator('.cm-content')).toContainText('two', { timeout: 15_000 })
   await expect(file.locator('#state')).toHaveText('Saved')
 
@@ -443,7 +443,7 @@ test('a file tab autosaves after typing and keeps the line endings', async ({ co
   expect(await run('filetype')).toEqual({ ok: true, value: { opened: true } })
   const toolbar = page.locator('.overlay-header').first()
   await toolbar.getByRole('button', { name: 'Edit' }).click()
-  const frame = page.frameLocator('iframe[name="cc-page-tab"]:visible')
+  const frame = page.frameLocator('iframe[name^="cc-page-tab:"]:visible')
   const content = frame.locator('.cm-content')
   await expect(content).toContainText('two', { timeout: 15_000 })
   await content.click()

@@ -14,7 +14,7 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { OverlayInfo } from '../../src/shared/ipc'
-import { PAGE_TAB_FRAME_NAME } from '../../src/shared/page-tabs'
+import { pageTabOfFrameName } from '../../src/shared/page-tabs'
 import { expect, launchCockpit, test, type Cockpit, type LaunchOptions } from './fixtures'
 
 const REPO = resolve(__dirname, '../..')
@@ -143,17 +143,18 @@ test.describe('editor, desktop', () => {
       expect(readFileSync(file, 'utf8')).toBe('ABC one\ntwo\nthree\nfour from disk\n')
 
       // The page's frame is sandboxed as every plugin frame is: scripts only, never same-origin (a
-      // plugin page with its parent's origin could reach into the shell), and named so main can tell
-      // a page tab's frame when it has the keyboard (page-tab-keys.ts isPageTabFrame).
+      // plugin page with its parent's origin could reach into the shell), and named after its tab so
+      // main knows whose frame has the keyboard (page-tab-keys.ts PageTabFrameTabs).
       const iframe = page.locator('iframe.page-tab-frame:not([hidden])')
       await expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
-      await expect(iframe).toHaveAttribute('name', PAGE_TAB_FRAME_NAME)
+      const frameName = await iframe.getAttribute('name')
+      expect(frameName === null ? undefined : pageTabOfFrameName(frameName)).toMatch(/^[0-9a-f-]{36}$/)
 
       // App chords typed in the editor reach the shell, not the page (main's before-input-event,
       // page-tab-keys.ts): a sandboxed frame keeps its key events, so without that wiring Cmd+W or
       // Cmd+Shift+T in a file tab would do nothing. A recorder in the page proves the page never saw
       // the chord's key (a lone modifier's keydown does reach it: it is no chord yet).
-      const pageFrame = page.frame({ name: PAGE_TAB_FRAME_NAME })
+      const pageFrame = page.frame({ name: frameName ?? '' })
       if (!pageFrame) throw new Error('no page tab frame')
       await pageFrame.evaluate(() => {
         const w = window as unknown as { seenKeys: string[] }

@@ -222,18 +222,24 @@ leave it has not seen a return from. A move into a frame keeps the document focu
 does not arm a size take, before or after the person first left the window; only leaving the window does. Leaving the
 app while a frame holds the keyboard fires no shell `blur`, so that return arms nothing (a press in the pane still takes).
 
-**Chords from a frame name their tab.** Desktop: main's `before-input-event` sends the app's chords from any page-tab
-frame (`isPageTabFrame`, `page-tab-keys.ts`, unchanged) as `commands.trigger`, which names no tab. The shell resolves
-the target from `document.activeElement` at that moment (a live frame of a visible pane, with `document.hasFocus()`
-true). A webview panel's chord also arrives as `commands.trigger`, but its WebContentsView holds the keyboard then and
-the shell document has no focus, so no target is resolved and it runs for `activeId`. Main says which it was (`from:
-'page-tab' | 'webview'`): a page tab's chord that finds no frame holding the keyboard is dropped, never run for
-`activeId`. The chord crosses processes, and the window `blur`'s check may have blurred its frame in between (a page's
-`focus()` with no evidence, then Cmd+W typed into it at once would have closed the Claude pane the outline shows).
-`commands.trigger` also carries the chord: after a `pane.*` chord from a frame or a webview (or the web shell's
-forwarded one), the shell holds the chord's key and swallows its auto-repeats (`HeldChordKeys`, `pane-commands.ts`),
-as its own keydown path does with `swallow`, so an arrow held on after the modifiers came up never reaches the terminal
-the chord moved to; a fresh press, a keyup or a window `blur` ends the hold. Web shell: `chord(chord)` carries the tab `fromPage` knows,
+**Chords from a frame name their tab.** Desktop: main's `before-input-event` sends the app's chords from a page-tab
+frame as `commands.trigger` with `from: 'page-tab'` and the tab main knows that frame by (`PageTabFrameTabs`,
+`page-tab-keys.ts`). The shell names each frame `cc-page-tab:<tab id>`, and main reads that name once, at the
+`will-frame-navigate` of the shell's own src set on its own child frame, before any page runs there; it is keyed by
+`frameTreeNodeId` and never read or overwritten again, so a page renaming or navigating itself changes nothing. The
+shell also reads which frame holds the keyboard from `document.activeElement` at that moment (a live frame of a
+visible pane, with `document.hasFocus()` true), and runs the chord only when that frame is the named tab's. Anything
+else is dropped, never run for `activeId` or another tab. The chord crosses processes, so the keyboard may have moved
+in between. The window `blur`'s check may have blurred the frame: a page's `focus()` with no evidence, then Cmd+W typed
+into it at once would have closed the Claude pane the outline shows. Or another page may have taken the keyboard:
+Cmd+W typed in A would have closed B. A webview panel's chord (`from: 'webview'`) also arrives as `commands.trigger`,
+but its WebContentsView holds the keyboard then and the shell document has no focus, so no frame is found and it runs
+for `activeId`. `commands.trigger` also carries the chord and its key's physical `code`. After a `pane.*` chord from a
+frame or a webview (or the web shell's forwarded one, whose page sends the code too), the shell holds that key and
+swallows its auto-repeats (`HeldChordKeys`, `pane-commands.ts`), as its own keydown path does with `swallow`. So an
+arrow held on after the modifiers came up never reaches the terminal the chord moved to. The hold matches the code or
+the chord's key name: on Dvorak, Ctrl+Alt+H is the chord `h` (by code), and the same key repeats as `d` once the
+modifiers are up. A fresh press, a keyup or a window `blur` ends the hold. Web shell: `chord(chord)` carries the tab `fromPage` knows,
 under the gate "listed chord, frame visible in this view, frame has the keyboard, `userActive`". In both shells the
 command runs with that target, `runCommand(id, { tabId })`. Every handler that acts on "the active tab" (`tab.close`,
 the flag, `pane.*`, split right / down, the in-Group commands) reads `target ?? stateRef.current.activeId`. When the

@@ -30,8 +30,9 @@
 //                                                 loader goes (spec `ready: 'manual'`); ignored elsewhere
 //   { type: 'cc-plugin.tab-dirty', dirty }         `ccPanel.tab.setDirty(bool)`: the page tab holds unsaved
 //                                                 changes in this view, or not (sent on a change only)
-//   { type: 'cc-plugin.tab-key', chord }           an app chord typed in a page tab (one of `keys`): the
+//   { type: 'cc-plugin.tab-key', chord, code }     an app chord typed in a page tab (one of `keys`): the
 //                                                 page did not handle it, the shell runs its command
+//                                                 (`code`: the key's physical code, held after a pane chord)
 //   { type: 'cc-plugin.tab-discuss' }              `ccPanel.tab.discuss()`: Ask Claude from this page tab;
 //                                                 the shell draws its question box (design-editor.md §4)
 //
@@ -314,7 +315,7 @@ export class PanelClient {
     private readonly styles?: BaseStyles,
     componentsCss?: string,
     /** Where a slot page's size requests and `ready()` go: the parent window (the shell), in the browser. */
-    private readonly toParent?: (message: { type: string; height?: number; width?: number; dirty?: boolean; chord?: string }) => void
+    private readonly toParent?: (message: { type: string; height?: number; width?: number; dirty?: boolean; chord?: string; code?: string }) => void
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -430,7 +431,7 @@ export class PanelClient {
     if (this.forwarded.size === 0) return false
     const chord = chordOfKey(e)
     if (chord === null || !this.forwarded.has(chord)) return false
-    if (!e.repeat) this.toParent?.({ type: TAB_KEY_MESSAGE, chord })
+    if (!e.repeat) this.toParent?.({ type: TAB_KEY_MESSAGE, chord, ...(typeof e.code === 'string' ? { code: e.code } : {}) })
     return true
   }
 

@@ -63,7 +63,7 @@ import {
 } from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
 import { checkFrameFocus, pageFrames, setFrameFocusHandler } from './PageTabArea'
-import { chordTarget } from './frame-focus'
+import { chordTarget, type ChordSource } from './frame-focus'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -1281,30 +1281,34 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
     window.addEventListener('blur', onBlur)
     // A chord typed into a webview panel's page or a page tab's frame, resolved by main (auto-repeats
-    // never come). main names no tab, so the shell reads which frame has the keyboard now
-    // (checkFrameFocus, design-split-pages.md §4): a page frame of a visible pane holding it is the
-    // chord's target, picked as the focused pane when it was not; one holding it with no evidence of
-    // the person is blurred and the chord dropped (frame-focus.ts chordTarget), and so is one main saw
-    // in a page tab's frame when no frame holds the keyboard by the time it got here (the window
-    // `blur`'s check may have blurred it in between: never run for the active tab). A webview panel's
-    // page holds the keyboard outside the shell's document (`document.hasFocus()` false): no frame, the
-    // active tab. A pane chord's key is held (HeldChordKeys): its auto-repeat goes nowhere.
-    const offTrigger = window.cockpit.on('commands.trigger', ({ id, chord, from }) => {
+    // never come). The shell reads which frame has the keyboard now (checkFrameFocus,
+    // design-split-pages.md §4): one holding it with no evidence of the person is blurred and the
+    // chord dropped. A page tab's chord names the tab main saw it typed in (page-tab-keys.ts
+    // PageTabFrameTabs) and runs only while that tab's frame still holds the keyboard: dropped when
+    // none does any more (the window `blur`'s check may have blurred it in between) or another frame
+    // took it before the chord got here (Cmd+W typed in A must not close B). A webview panel's page
+    // holds the keyboard outside the shell's document (`document.hasFocus()` false): no frame, the
+    // active tab (frame-focus.ts chordTarget). A pane chord's key is held by its physical code
+    // (HeldChordKeys): its auto-repeat goes nowhere.
+    const offTrigger = window.cockpit.on('commands.trigger', (msg) => {
       // Not fromKey: a switch chord from a web panel's page opens the switcher sticky, since the
       // modifier may be up before the chord got here.
+      const { id, chord, code } = msg
       if (typeof id !== 'string' || !allowed(id)) return
-      const target = chordTarget(checkFrameFocus(), from === 'webview' ? 'webview' : 'page-tab')
+      const source: ChordSource =
+        msg.from === 'webview' ? { from: 'webview' } : { from: 'page-tab', tab: typeof msg.tab === 'string' ? msg.tab : undefined }
+      const target = chordTarget(checkFrameFocus(), source)
       if (!target) return
       runCommand(id, target)
-      if (id.startsWith('pane.') && typeof chord === 'string') heldChords.current.hold(chord)
+      if (id.startsWith('pane.') && typeof chord === 'string') heldChords.current.hold(chord, code)
     })
     // The web shell's page tabs forward the app's chords themselves (page-frames.ts, PageTabArea.tsx:
     // already checked to come from the frame with the keyboard, which names its tab): the same gate,
-    // and the same hold of a pane chord's key.
-    const offForwarded = setForwardedRunner((id, ctx, chord) => {
+    // and the same hold of a pane chord's key (by the code the page sent, and its name).
+    const offForwarded = setForwardedRunner((id, ctx, chord, code) => {
       if (!allowed(id)) return
       runCommand(id, ctx)
-      if (id.startsWith('pane.')) heldChords.current.hold(chord)
+      if (id.startsWith('pane.')) heldChords.current.hold(chord, code)
     })
     // Plugin commands run in this window's plugin host, through main; they come and go with the
     // plugins (registered after the host activates, gone when it stops): `commands.updated`. The

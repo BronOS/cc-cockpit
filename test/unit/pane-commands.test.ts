@@ -231,16 +231,23 @@ describe('pane commands', () => {
       expect(off.log).toEqual([])
     })
 
-    it("main's chord runs for the frame with the keys, for activeId with no frame only from a webview panel, and not at all for a blurred one", () => {
-      expect(chordTarget({ tab: 'page-1' }, 'page-tab')).toEqual({ tabId: 'page-1' })
-      expect(chordTarget({ tab: 'page-1' }, 'webview')).toEqual({ tabId: 'page-1' })
-      expect(chordTarget('none', 'webview')).toEqual({})
-      expect(chordTarget('blurred', 'page-tab')).toBeNull()
-      expect(chordTarget('blurred', 'webview')).toBeNull()
+    it("main's chord runs for the frame main saw it typed in while that frame keeps the keys, for activeId with no frame only from a webview panel, and not at all for a blurred one", () => {
+      const fromPage = (tab: string | undefined) => ({ from: 'page-tab' as const, tab })
+      const webview = { from: 'webview' as const }
+      expect(chordTarget({ tab: 'page-1' }, fromPage('page-1'))).toEqual({ tabId: 'page-1' })
+      expect(chordTarget({ tab: 'page-1' }, webview)).toEqual({ tabId: 'page-1' })
+      expect(chordTarget('none', webview)).toEqual({})
+      expect(chordTarget('blurred', fromPage('page-1'))).toBeNull()
+      expect(chordTarget('blurred', webview)).toBeNull()
       // The external review's CRITICAL: Cmd+W typed in a file frame the window blur's check refused
       // before the chord arrived finds no frame with the keys; it is dropped, never run for the
       // active tab (the Claude pane the outline shows).
-      expect(chordTarget('none', 'page-tab')).toBeNull()
+      expect(chordTarget('none', fromPage('page-1'))).toBeNull()
+      // Round 2: Cmd+W typed in page A, page B took the keyboard before the chord got here: the
+      // check finds B's frame, which is not where the person typed it. Dropped, B stays open.
+      expect(chordTarget({ tab: 'page-2' }, fromPage('page-1'))).toBeNull()
+      // A page tab's chord that names no tab names none of them.
+      expect(chordTarget({ tab: 'page-1' }, fromPage(undefined))).toBeNull()
     })
 
     describe('HeldChordKeys: a forwarded pane chord\'s key held on never reaches the terminal it moved to', () => {
@@ -265,6 +272,28 @@ describe('pane commands', () => {
         expect(h.swallows(ev('ArrowRight', 'ArrowRight', true))).toBe(false)
         expect(h.swallows(ev('a', 'KeyA', false))).toBe(false)
         h.released(ev('ArrowLeft', 'ArrowLeft', false))
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(false)
+      })
+
+      it('holds the physical key: on Dvorak the repeat of the key held after Ctrl+Alt+H is a d', () => {
+        const h = new HeldChordKeys()
+        // Dvorak: the key at KeyH types d; with Alt the chord names it by its code, h.
+        h.hold('ctrl+alt+h', 'KeyH')
+        expect(h.swallows(ev('d', 'KeyH', true, { ctrlKey: true, altKey: true }))).toBe(true)
+        // Ctrl and Alt let go: the same key repeats as d. Without the code it went to the terminal.
+        expect(h.swallows(ev('d', 'KeyH', true))).toBe(true)
+        // Another key is the person's.
+        expect(h.swallows(ev('h', 'KeyJ', false))).toBe(false)
+        h.released(ev('d', 'KeyH', false))
+        expect(h.swallows(ev('d', 'KeyH', true))).toBe(false)
+        // A fresh press of the held key ends the hold, by code too.
+        h.hold('ctrl+alt+h', 'KeyH')
+        expect(h.swallows(ev('d', 'KeyH', false))).toBe(false)
+        expect(h.swallows(ev('d', 'KeyH', true))).toBe(false)
+        // A code that does not look like one is not held; the chord's key still is.
+        h.hold('ctrl+alt+left', 'Arrow Left!')
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(true)
+        h.clear()
         expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(false)
       })
 

@@ -190,7 +190,7 @@ import { rendererLocation } from './windows/create-window'
 import { crashWindowPage, ElectronWindowFactory } from './windows/electron-window-factory'
 import { electronAskClose, QueuedCloseAsk } from './windows/close-dialog'
 import { electronAskUnsaved, QueuedUnsavedAsk, QuitGuard, type AskUnsaved } from './windows/unsaved-dialog'
-import { isPageTabFrame, pageTabChord } from './tabs/page-tab-keys'
+import { PageTabFrameTabs, pageTabChord } from './tabs/page-tab-keys'
 import { PageTabDiscuss } from './tabs/page-tab-discuss'
 import { CLOSE, type WebFoldersRequest, type WebOpenProjectRequest } from '../shared/web-protocol'
 import type { WebSecretsStatus } from '../shared/web-access'
@@ -1272,7 +1272,7 @@ function start(server: boolean): void {
     ...(server
       ? {}
       : {
-          chord: (windowId: number, chord: string) =>
+          chord: (windowId: number, chord: string, code?: string) =>
             webviewChord(
               {
                 overlayChord: (w, c) => overlays.handleChord(w, c),
@@ -1282,12 +1282,14 @@ function start(server: boolean): void {
                   if (!win || win.isDestroyed()) return undefined
                   return {
                     focus: () => win.webContents.focus(),
-                    trigger: (id, chord) => sendToWindow(w, 'commands.trigger', { id, chord, from: 'webview' })
+                    trigger: (id, chord, code) =>
+                      sendToWindow(w, 'commands.trigger', { id, chord, ...(code !== undefined ? { code } : {}), from: 'webview' })
                   }
                 }
               },
               windowId,
-              chord
+              chord,
+              code
             ),
           // A hidden view must not keep the keyboard: the shell page takes it back. Only in the focused
           // window (the manager asks isWindowFocused first): on macOS webContents.focus() also brings
@@ -1370,21 +1372,33 @@ function start(server: boolean): void {
     // the server's page in it has its own overlays and keys, and no shell page of ours.
     if (isOffscreenWindow(win) || isRemoteWindow(win)) return
     const windowId = win.id
+    // Which page tab each page tab frame of this window shows, recorded as the shell page sets the
+    // frame's src (page-tab-keys.ts PageTabFrameTabs): a chord names the tab main saw it typed in.
+    // Not in server mode: the hidden page mounts no page tab.
+    const pageTabFrames = new PageTabFrameTabs()
+    if (!server) {
+      win.webContents.on('will-frame-navigate', (event) => {
+        if (!event.isMainFrame) pageTabFrames.navigating(event.frame, event.url, event.initiator)
+      })
+    }
     win.webContents.on('before-input-event', (event, input) => {
       if (overlays.topKind(windowId) !== undefined && overlays.handleChord(windowId, chordOfInput(input))) {
         event.preventDefault()
         return
       }
       // A page tab's frame has the keyboard: the app's chords go to the shell (page-tab-keys.ts,
-      // design-editor.md §1 "Keyboard"). Not in server mode: the hidden page mounts no page tab.
-      if (server || !isPageTabFrame(win.webContents.focusedFrame)) return
+      // design-editor.md §1 "Keyboard"), naming that frame's tab and the key's physical code.
+      if (server) return
+      const tab = pageTabFrames.tabOf(win.webContents.focusedFrame)
+      if (tab === undefined) return
       const handled = pageTabChord(
         {
           commandFor: (w, c) => commandForChord(w, c),
-          trigger: (w, id, chord) => views.toWindow(w, 'commands.trigger', { id, chord, from: 'page-tab' })
+          trigger: (w, id, chord, origin) => views.toWindow(w, 'commands.trigger', { id, chord, code: origin.code, from: 'page-tab', tab: origin.tab })
         },
         windowId,
         chordOfInput(input.type === 'keyDown' && input.isAutoRepeat ? { ...input, isAutoRepeat: false } : input),
+        { tab, code: input.code },
         input.type === 'keyDown' && input.isAutoRepeat
       )
       if (handled) event.preventDefault()
@@ -1398,6 +1412,7 @@ function start(server: boolean): void {
       win.webContents.on('did-navigate', () => {
         webviews.resetWindow(windowId)
         tabs.clearViewDirty(desktopViewId(windowId))
+        pageTabFrames.clear()
       })
     }
   })

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { TabInfo } from '../../shared/ipc'
-import { PAGE_TAB_FRAME_NAME } from '../../shared/page-tabs'
+import { pageTabFrameName } from '../../shared/page-tabs'
 import { forwardedChords, onKeyTable, runForwardedChord } from '../commands/keybindings'
 import { requestPageTabPort } from '../plugins/panel-port-bus'
 import { portMessage, themeMessage } from '../plugins/frame-messages'
@@ -110,12 +110,13 @@ function layerElement(): HTMLDivElement {
 }
 
 /** An iframe in the layer, sandboxed as PluginFrame's (`allow-scripts` only, never same-origin). */
-function createFrame(title: string): PageFrameElement {
+function createFrame(title: string, tabId: string): PageFrameElement {
   const iframe = document.createElement('iframe')
   iframe.className = 'page-tab-frame'
   iframe.title = title
-  // How main tells a page tab's frame on the desktop (before-input-event, page-tab-keys.ts).
-  iframe.name = PAGE_TAB_FRAME_NAME
+  // How main tells a page tab's frame on the desktop, and whose tab it is (before-input-event,
+  // page-tab-keys.ts): read once by main when this page sets the frame's src, before the page runs.
+  iframe.name = pageTabFrameName(tabId)
   iframe.setAttribute('sandbox', 'allow-scripts')
   iframe.hidden = true
   layerElement().appendChild(iframe)
@@ -220,8 +221,8 @@ export function pageFrames(): PageFrames {
     },
     // The web shell's pages forward the app's chords (no before-input-event there); the desktop lists none.
     keys: () => (isWebShell() ? forwardedChords() : undefined),
-    chord: (chord, tabId) => {
-      if (frameHasKeys(tabId)) runForwardedChord(chord, tabId)
+    chord: (chord, tabId, code) => {
+      if (frameHasKeys(tabId)) runForwardedChord(chord, tabId, code)
     },
     // A trusted key press (or click) in the frame activates its ancestors too (the HTML spec's user
     // activation), the shell included; a page's script cannot set it. It is transient (true for a

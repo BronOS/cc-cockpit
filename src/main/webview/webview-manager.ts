@@ -149,8 +149,11 @@ export interface WebviewEvents {
    * view committed an empty page at `url`.
    */
   loadFailed(url: string, error: string): void
-  /** A key chord typed into the page (the shell never sees those); true: consumed. */
-  chord(chord: string): boolean
+  /**
+   * A key chord typed into the page (the shell never sees those), with its key's physical `code`
+   * (the shell holds that key after a pane chord: HeldChordKeys); true: consumed.
+   */
+  chord(chord: string, code?: string): boolean
   /** The page went away by itself (renderer crash or kill); the view is to be dropped. */
   gone(): void
 }
@@ -204,7 +207,7 @@ export interface WebviewManagerDeps {
    */
   openExternal(url: string, windowId: number): void
   /** A chord typed into a view (overlay and app keys); true when it was acted on. Default: none. */
-  chord?(windowId: number, chord: string): boolean
+  chord?(windowId: number, chord: string, code?: string): boolean
   /**
    * The page a view shows changed (coalesced like onNavigate), or the view went (empty page): the
    * window's toolbar follows it. Not called for views of a window that is closing.
@@ -708,7 +711,7 @@ export class WebviewManager {
         // page", Reload disabled).
         this.navigated(rec)
       },
-      chord: (chord) => this.deps.chord?.(owner.windowId, chord) ?? false,
+      chord: (chord, code) => this.deps.chord?.(owner.windowId, chord, code) ?? false,
       gone: () => {
         // The page crashed or was killed (also fires after our own destroy: then it is no longer
         // the record). The next navigate makes a new view.
@@ -1024,7 +1027,7 @@ export interface WebviewChordDeps {
   /** The window's key table: the command bound to `chord`, if any. */
   commandFor(windowId: number, chord: string): string | undefined
   /** The window's shell page, or undefined when the window is gone. */
-  shell(windowId: number): { focus(): void; trigger(id: string, chord: string): void } | undefined
+  shell(windowId: number): { focus(): void; trigger(id: string, chord: string, code?: string): void } | undefined
 }
 
 /**
@@ -1034,13 +1037,13 @@ export interface WebviewChordDeps {
  * command-gate.ts), with the keyboard handed back to the page first since the command acts on the
  * shell (a new tab's terminal must get the keys that follow). True when the chord was taken.
  */
-export function webviewChord(deps: WebviewChordDeps, windowId: number, chord: string): boolean {
+export function webviewChord(deps: WebviewChordDeps, windowId: number, chord: string, code?: string): boolean {
   if (deps.overlayChord(windowId, chord)) return true
   const id = forwardedCommand(chord, (c) => deps.commandFor(windowId, c))
   if (id === undefined) return false
   const shell = deps.shell(windowId)
   if (!shell) return false
   shell.focus()
-  shell.trigger(id, chord)
+  shell.trigger(id, chord, code)
   return true
 }

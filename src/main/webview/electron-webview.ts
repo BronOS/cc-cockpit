@@ -32,7 +32,7 @@ export class ElectronWebviewFactory implements WebviewViewFactory {
     hardenWebContents(wc, events)
     // Keys typed into the page never reach the shell UI; app and overlay keys are resolved in main.
     wc.on('before-input-event', (event, input) => {
-      if (events.chord(chordOfInput(input) ?? '')) event.preventDefault()
+      if (events.chord(chordOfInput(input) ?? '', input.code)) event.preventDefault()
     })
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     view.setVisible(false)
