@@ -113,7 +113,7 @@ running app's.
 | --- | --- |
 | macOS, arm64 | v0.1.0 installed with `brew` on a Mac and ran: first launch needed allowing the app once. Upgrading over a running app is untested |
 | Linux x64 | Runs from source, tried on Hyprland/Wayland; restoring window size and position may not work there. The packaged AppImage launched only via `--appimage-extract-and-run --no-sandbox` (no libfuse2 here); a plain double-click run (FUSE, Chromium sandbox) and Ubuntu are untested; the `.deb` was built and unpacked but not launched |
-| Linux x64, server mode | The unpacked build (`npm run package:dir`) ran headless with no display and no network, checked by `scripts/server-mode-smoke.mjs`. The `.deb` was installed and started on a Debian server (up to 0.19.1 it needed `sudo apt install libasound2` first; fixed in 0.19.2). The AppImage on a stock Ubuntu Server, the systemd unit on a real server and Tailscale were not run |
+| Linux x64, server mode | The unpacked build (`npm run package:dir`) ran headless with no display and no network, checked by `scripts/server-mode-smoke.mjs`. The `.deb` was installed and started on a Debian server (up to 0.19.1 it needed `sudo apt install libasound2` first; fixed in 0.19.3). The AppImage on a stock Ubuntu Server, the systemd unit on a real server and Tailscale were not run |
 | macOS x64 | Not supported yet |
 | Windows | Not supported |
 

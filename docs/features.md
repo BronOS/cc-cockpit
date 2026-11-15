@@ -797,7 +797,7 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
 - `.deb`: installed and started on a Debian server (server mode). It ships `chrome-sandbox`, so it is the install
   expected to work. Up to 0.19.1 its Depends missed `libasound2` (and `libgbm1`), so on a bare server the first start
   failed with `libasound.so.2: cannot open shared object file` until `sudo apt install libasound2` (`libasound2t64` on
-  trixie and Ubuntu 24.04); from 0.19.2 the package lists every library Electron links (`electron-builder.yml` › `deb`).
+  trixie and Ubuntu 24.04); from 0.19.3 the package lists every library Electron links (`electron-builder.yml` › `deb`).
 - AUR package (`packaging/aur`): unpublished and not run.
 - AppImage: not run in server mode. It needs FUSE, and with no setuid sandbox helper it is inferred to abort where
   unprivileged user namespaces are restricted (Ubuntu 23.10 and later, most containers), because the app never passes
