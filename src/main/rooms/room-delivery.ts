@@ -17,6 +17,7 @@ import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-re
 import { warnLog } from '../warn-log'
 import type { TabRoom } from '../../shared/tab-room'
 import { isRoomName } from '../../shared/room-names'
+import { pointerText } from '../../shared/room-pointer'
 import { RoomError, isMessageText, type RoomRecord, type RoomRegistry } from './room-registry'
 
 /**
@@ -36,10 +37,9 @@ export const DEFAULT_ROOM_SEND_LIMITS: Readonly<RoomSendLimits> = Object.freeze(
 /** The window both caps count over. */
 export const ROOM_SEND_WINDOW_MS = 60_000
 
-/** The pointer (design-rooms.md §2): fixed text, the count only. The Stop hook's block reason is the same text (Task 6). */
-export function pointerText(count: number): string {
-  return count === 1 ? '1 room message waiting: run ccc room read' : `${count} room messages waiting: run ccc room read`
-}
+// The pointer (design-rooms.md §2): fixed text, the count only. The Stop hook's block reason is the same text (Task 6);
+// it lives in src/shared because `ccc hook Stop` checks a reply against it (Task 7).
+export { pointerText }
 
 /** Why a message waits in the room's queue instead of a pointer going in now. */
 export type HeldWhy =

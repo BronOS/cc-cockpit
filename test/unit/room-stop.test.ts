@@ -91,7 +91,7 @@ const mark = (tabId: string, patch: Partial<TabRoom> = {}): void => {
 const handler = () => hookHandler(sessions, stop)
 const caller = (tabId: string): Caller => ({ kind: 'session', tabId, projectId: 'p1' })
 function hookStop(tabId: string, payload: unknown = { stop_hook_active: false }): unknown {
-  return handler()({ event: 'Stop', payload }, caller(tabId), new AbortController().signal)
+  return handler()({ event: 'Stop', payload, reply: true }, caller(tabId), new AbortController().signal)
 }
 /** A turn that goes on after a block (the continued turn runs a tool) and stops again. */
 function continued(tabId: string): void {

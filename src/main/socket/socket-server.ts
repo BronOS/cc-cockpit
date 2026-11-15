@@ -7,7 +7,7 @@
 //     with timingSafeEqual). A Claude tab's token is a SESSION token: that tab and its project,
 //     for every command. A shell tab's, a command tab's or a terminal overlay's is a WINDOW token:
 //     that window's project, like `--project` names it, and only for the WINDOW_TOKEN_COMMANDS
-//     (never `hook` or `session.*`). The kind comes from the lookup, never from the request. A
+//     (never `hook`, `hook.ack` or `session.*`). The kind comes from the lookup, never from the request. A
 //     token that matches nothing is refused outright, even for a command a tokenless caller could
 //     use: a stale or forged token is a broken caller, not an anonymous one.
 //   - without a token: only the TOKENLESS_COMMANDS, and only with `project` (`--project <path>`),
@@ -121,7 +121,7 @@ const DEFAULT_MAX_CONNECTIONS = 128
  */
 const MAX_IN_FLIGHT = 16
 
-/** Socket errors a client causes just by going away: `ccc hook` closes without reading the reply. */
+/** Socket errors a client causes just by going away: `ccc hook` (but Stop) closes without reading the reply. */
 const PEER_GONE = new Set(['EPIPE', 'ECONNRESET'])
 
 export class SocketServer {
@@ -303,7 +303,9 @@ export class SocketServer {
       // A handler returned something JSON cannot carry (a cycle, a BigInt).
       text = send({ id, ok: false, error: `unserializable result: ${errorText(err)}` })
     }
-    // The client may be gone: `ccc hook` is fire-and-forget and closes without reading.
+    // The client may be gone: `ccc hook` is fire-and-forget and closes without reading. Stop is the
+    // exception (protocol.ts STOP_REPLY_ARG): `ccc` reads this reply on the same connection and may
+    // send `hook.ack` after it, which is served like any request line, in order.
     if (!socket.destroyed && socket.writable) socket.write(text)
   }
 

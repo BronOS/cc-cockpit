@@ -32,7 +32,7 @@
 //     /done <name>        PostToolUse { tool_name, tool_input: {} } (a dialog tool answered)
 //     /permission         Notification { notification_type: permission_prompt }
 //     /idle               Notification { notification_type: idle_prompt }
-//     /stop               Stop
+//     /stop               Stop { stop_hook_active: false }, and the block loop below
 //     /end                SessionEnd { reason: other }
 //     /later <ms> <line>  run the scripted <line> after <ms> milliseconds (a turn that ends while
 //                         the person is in another tab: the tab flag's attention pulse)
@@ -41,6 +41,15 @@
 //                         CC_COCKPIT_SOCK); args split on whitespace, no shell. Prints
 //                         `FAKE-CLAUDE ccc exit=<code> out=<json stdout> err=<json stderr, cut at 300 characters>`.
 // Each prints `FAKE-CLAUDE hook <Event>` once the hook command has returned.
+//
+// Stop blocks (rooms, Task 7), as Claude Code 2.1.325 does them: a Stop hook that exits 0 and prints
+// `{"decision":"block","reason":<text>}` on stdout continues the turn instead of ending it. The fake
+// prints `FAKE-CLAUDE block <json reason>`, runs the scripted line in $FAKE_CLAUDE_ON_BLOCK (the
+// continued turn: `/ccc room read`, say) and stops again with `stop_hook_active: true`. Claude Code
+// overrides the hook after 8 blocks in a row (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, read from the 2.1.325
+// binary; the env var of that name changes it here as there): a 9th block is ignored, printed as
+// `FAKE-CLAUDE block cap`, and the turn ends. Anything else on stdout (no JSON, another decision,
+// no reason) ends the turn like a plain Stop.
 //
 // Bracketed paste (Task 15). Input from `ESC[200~` up to `ESC[201~` is one paste, even across
 // lines; it is appended verbatim (markers included) as one JSON string per line to
@@ -125,9 +134,10 @@ if (settings !== undefined && process.env.FAKE_CLAUDE_NO_HOOKS !== '1') {
 }
 const sessionId = `fake-session-${process.pid}`
 
+/** Runs the event's hook command; returns its stdout when it exited 0 (what Claude reads), else ''. */
 function fireHook(event, fields) {
   const command = hookCommands[event]
-  if (!command) return
+  if (!command) return ''
   const input = JSON.stringify({
     session_id: sessionId,
     cwd: process.cwd(),
@@ -135,8 +145,43 @@ function fireHook(event, fields) {
     ...fields
   })
   // Synchronous like the real hooks: Claude waits for the command, so events keep their order.
-  spawnSync('/bin/sh', ['-c', command], { input, stdio: ['pipe', 'ignore', 'ignore'], timeout: 5000 })
+  const r = spawnSync('/bin/sh', ['-c', command], { input, stdio: ['pipe', 'pipe', 'ignore'], timeout: 5000, encoding: 'utf8' })
   console.log(`FAKE-CLAUDE hook ${event}`)
+  return r.status === 0 ? String(r.stdout ?? '') : ''
+}
+
+/** Claude Code 2.1.325's default for CLAUDE_CODE_STOP_HOOK_BLOCK_CAP. */
+const DEFAULT_STOP_BLOCK_CAP = 8
+
+/** The block reason in a Stop hook's stdout, or undefined when it does not block. */
+function blockReason(stdout) {
+  let parsed
+  try {
+    parsed = JSON.parse(stdout.trim())
+  } catch {
+    return undefined
+  }
+  if (!parsed || parsed.decision !== 'block' || typeof parsed.reason !== 'string') return undefined
+  return parsed.reason
+}
+
+/** A turn ends: Stop, and as long as the hook blocks (up to the cap), the turn goes on and stops again. */
+function stopTurn() {
+  const capEnv = Number(process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP)
+  const cap = Number.isInteger(capEnv) && capEnv > 0 ? capEnv : DEFAULT_STOP_BLOCK_CAP
+  let blocks = 0
+  for (;;) {
+    const reason = blockReason(fireHook('Stop', { stop_hook_active: blocks > 0 }))
+    if (reason === undefined) return
+    if (blocks >= cap) {
+      console.log('FAKE-CLAUDE block cap')
+      return
+    }
+    blocks++
+    console.log(`FAKE-CLAUDE block ${JSON.stringify(reason)}`)
+    const onBlock = process.env.FAKE_CLAUDE_ON_BLOCK
+    if (onBlock) scripted(onBlock)
+  }
 }
 
 /** The longest stderr the `/ccc` echo prints; longer is cut with `...`. */
@@ -179,7 +224,7 @@ function scripted(line) {
     case 'idle':
       fireHook('Notification', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' })
       break
-    case 'stop': fireHook('Stop', {}); break
+    case 'stop': stopTurn(); break
     case 'end': fireHook('SessionEnd', { reason: 'other' }); break
   }
   return true

@@ -149,7 +149,7 @@ import { migrateSessionFilesShown, needsSessionFilesMigration } from './settings
 import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
-import { hookHandler } from './sessions/hook-handler'
+import { hookAckHandler, hookHandler } from './sessions/hook-handler'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
@@ -2189,6 +2189,10 @@ function start(server: boolean): void {
       }
     })
   )
+
+  // `ccc hook Stop`'s ack of a block it printed (protocol.ts HOOK_ACK_COMMAND). No room stop is
+  // wired yet (rooms Task 8), so no Stop is blocked and an ack confirms nothing.
+  socket.handle('hook.ack', hookAckHandler())
 
   // `ccc statusline` (Claude Code's status line in a Claude tab, cli/statusline.ts): the plan usage
   // goes to the store, the session's cost and context fill to its entry. A Claude tab only (the

@@ -1,7 +1,7 @@
 // The user-facing `ccc` commands as socket handlers (plan: Task 21): open, session note/steps,
 // overlay, sessions, notify; the plugin commands (plan B Task 5): plugin.cli.spec, plugin.cli,
 // plugin.cli.list; and the plugin dev loop (Task 6): plugin.link, plugin.unlink, plugin.list.
-// (`hook` is sessions/hook-handler.ts.)
+// (`hook` and `hook.ack` are sessions/hook-handler.ts.)
 //
 // Authority (CLAUDE.md: main is the only authority): the SocketServer already built `caller` from
 // the token or `--project`; nothing in `args` names a tab, window or project main would trust.

@@ -601,7 +601,7 @@ describe('version check against a fake app', () => {
       id: 1,
       token: TOKEN,
       cmd: 'hook',
-      args: { event: 'Stop', payload: {} }
+      args: { event: 'Stop', payload: {}, reply: true }
     })
   })
 

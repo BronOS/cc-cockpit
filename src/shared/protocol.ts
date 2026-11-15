@@ -10,8 +10,10 @@
 // A client may half-close after its last request (`socket.end(line)`): main still answers every
 // request on the connection, then ends it. A connection with no traffic and nothing in progress
 // is closed after a while (socket-server.ts), so a client sends its request right after connecting.
+// Hooks are fire-and-forget except `Stop`, which reads one reply and may ack it (`hook.ack`): see STOP_REPLY_ARG.
 
 import { isPlainObject } from './guards'
+import { isPointerText } from './room-pointer'
 
 export const PROTOCOL_VERSION = 1
 
@@ -104,6 +106,51 @@ export const HOST_ONLY_COMMANDS: readonly string[] = [
 
 /** What a tab (any token) is told for a HOST_ONLY_COMMANDS request, whatever the request and whether it has a handler. */
 export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside cc-cockpit'
+
+/**
+ * The Stop hook's reply (design-rooms.md §2 "The Stop pointer", plan Task 7). Every hook event is fire-and-forget:
+ * `ccc hook <Event>` writes `{ cmd: 'hook', token, args: { event, payload } }` and closes without reading, so a hook
+ * costs one write. Only `Stop` asks for a reply, with `args.reply: true` (STOP_REPLY_ARG): `ccc` then reads one reply
+ * line within its 500 ms budget. A result `{ block, ackId }` (StopBlockReply) means main answered the Stop with the room
+ * pointer: `ccc` prints `{"decision":"block","reason":<block>}` for Claude Code, then sends
+ *   { cmd: 'hook.ack', token, args: { ackId } }
+ * on the same connection and closes. Any other result (null: a plain Stop), an error, garbage, a reason that is not
+ * exactly the fixed pointer text or a slow reply prints nothing, and the hook still exits 0.
+ *
+ * Main blocks only a Stop that asked (`reply === true`): a `ccc` from before this change never prints the block, and a
+ * Stop main took as blocked would leave that tab `working`. `hook.ack` is a session-token command like `hook` (a window
+ * token, a `--project` caller and an anonymous one are refused), confirms only the block main just issued to that same
+ * tab with that id (rooms/room-stop.ts `ack`), and is neither HOST_ONLY nor a `ccc` command a person types
+ * (CORE_CLI_COMMANDS).
+ */
+export const STOP_REPLY_ARG = 'reply'
+export const HOOK_ACK_COMMAND = 'hook.ack'
+
+/** A Stop reply that blocks: the pointer text and the id the ack carries back. */
+export interface StopBlockReply {
+  block: string
+  ackId: string
+}
+
+/** Most characters an ack id may have; main's are 32 hex characters (room-stop.ts). */
+const MAX_ACK_ID_LENGTH = 64
+
+/**
+ * The block in a Stop reply's result, or undefined for anything else. Strict on purpose: what `ccc` prints goes into
+ * Claude's context, so the reason must be exactly the fixed pointer text (nothing a socket owner could choose beyond a
+ * count), and the ack id a short run of letters, digits, `-` or `_`.
+ */
+export function stopBlockOf(result: unknown): StopBlockReply | undefined {
+  if (!isPlainObject(result)) return undefined
+  const { block, ackId } = result
+  if (!isPointerText(block)) return undefined
+  if (typeof ackId !== 'string' || ackId.length === 0 || ackId.length > MAX_ACK_ID_LENGTH) return undefined
+  for (const c of ackId) {
+    const ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '-' || c === '_'
+    if (!ok) return undefined
+  }
+  return { block, ackId }
+}
 
 /** Keys that reach an object's prototype when copied with Object.assign or a for...in loop. */
 const RESERVED_ARG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])

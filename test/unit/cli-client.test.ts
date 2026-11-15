@@ -156,14 +156,15 @@ describe('runHook: the app is up', () => {
     expect(request.project).toBeUndefined()
   })
 
-  it('does not wait for a reply: resolves while the app stays silent', async () => {
+  it('does not wait for a reply to any event but Stop: resolves while the app stays silent', async () => {
     const seen: Request[] = []
     await fakeApp((r) => seen.push(r))
     const started = Date.now()
     // A 10 s budget: a client that waited for a reply (the fake app never sends one) would run
     // into it, past vitest's 5 s test timeout. Resolving well before it proves it did not wait,
     // without a bound tight enough to trip on a slow machine.
-    await runHook('Stop', env(), stdinOf('{}'), 10_000)
+    // Not Stop, the one event that reads a reply (hook-stop-reply.test.ts).
+    await runHook('PreToolUse', env(), stdinOf('{}'), 10_000)
     expect(Date.now() - started).toBeLessThan(3000)
     await waitFor(() => seen[0])
   })
@@ -172,14 +173,14 @@ describe('runHook: the app is up', () => {
     const seen: Request[] = []
     await fakeApp((r) => seen.push(r))
     await runHook('Stop', env(), stdinOf('not json'))
-    expect((await waitFor(() => seen[0])).args).toEqual({ event: 'Stop', payload: null })
+    expect((await waitFor(() => seen[0])).args).toEqual({ event: 'Stop', payload: null, reply: true })
   })
 
   it('marks a payload over the stdin cap as truncated and drops it', async () => {
     const seen: Request[] = []
     await fakeApp((r) => seen.push(r))
     await runHook('Stop', env(), stdinOf('{"p":"' + 'a'.repeat(STDIN_CAP_BYTES) + '"}'))
-    expect((await waitFor(() => seen[0])).args).toEqual({ event: 'Stop', payload: null, truncated: true })
+    expect((await waitFor(() => seen[0])).args).toEqual({ event: 'Stop', payload: null, truncated: true, reply: true })
   })
 
   it('run() parses argv and dispatches the hook', async () => {
@@ -267,12 +268,12 @@ describe('buildHookRequestLine', () => {
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(STDIN_CAP_BYTES)
     const line = buildHookRequestLine('Stop', TOKEN, { text, truncated: false })
     expect(Buffer.byteLength(line) - 1).toBeLessThanOrEqual(MAX_LINE_BYTES)
-    expect(parseRequest(line.trim()).args).toEqual({ event: 'Stop', payload: null, truncated: true })
+    expect(parseRequest(line.trim()).args).toEqual({ event: 'Stop', payload: null, truncated: true, reply: true })
   })
 
   it('treats empty stdin as payload null without a truncated flag', () => {
     const line = buildHookRequestLine('Stop', TOKEN, { text: '', truncated: false })
-    expect(parseRequest(line.trim()).args).toEqual({ event: 'Stop', payload: null })
+    expect(parseRequest(line.trim()).args).toEqual({ event: 'Stop', payload: null, reply: true })
   })
 })
 

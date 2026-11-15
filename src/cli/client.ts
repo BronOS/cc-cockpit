@@ -21,12 +21,16 @@ import { isPlainObject } from '../shared/guards'
 import { ADD_DEVICE_EXPIRES_TEXT } from '../shared/web-access'
 import {
   encodeRequest,
+  HOOK_ACK_COMMAND,
   LineFramer,
   MAX_LINE_BYTES,
   parseReply,
   PROTOCOL_VERSION,
+  STOP_REPLY_ARG,
+  stopBlockOf,
   type Reply,
-  type Request
+  type Request,
+  type StopBlockReply
 } from '../shared/protocol'
 import {
   CLI_CLIENT_DEADLINE_MS,
@@ -94,6 +98,8 @@ export function resolveSocketPath(env: Env, system: SystemInputs = systemInputs(
  * (`payload: null`, `truncated: true`): cut-off JSON cannot be parsed, and main still learns the
  * event happened, which is all the status needs. The same is done when the payload is under the
  * cap but its request line would exceed the server's line limit (the connection would be closed).
+ * A Stop also carries `reply: true` (protocol.ts STOP_REPLY_ARG): this `ccc` reads the reply, so
+ * main may answer it with the room pointer.
  */
 export function buildHookRequestLine(
   event: string,
@@ -109,13 +115,14 @@ export function buildHookRequestLine(
       payload = null
     }
   }
+  const reply = event === 'Stop' ? { [STOP_REPLY_ARG]: true } : {}
   const make = (): string =>
     encodeRequest({
       v: PROTOCOL_VERSION,
       id: 1,
       token,
       cmd: 'hook',
-      args: truncated ? { event, payload, truncated: true } : { event, payload }
+      args: truncated ? { event, payload, truncated: true, ...reply } : { event, payload, ...reply }
     })
   let line = make()
   // The framer's cap is on the line without its newline.
@@ -138,16 +145,70 @@ function sendAndForget(socket: Socket, line: string): Promise<void> {
 }
 
 /**
- * `ccc hook <event>`: report one Claude hook to main. Fire-and-forget within `budgetMs` in total.
- * Never rejects. Resolves (and so lets the caller exit 0) in every case, including when stdin
- * never closes or the owner of the socket accepts and never reads: whatever has not finished by
- * the deadline is abandoned.
+ * The Stop hook's round trip (protocol.ts STOP_REPLY_ARG): write the request without half-closing,
+ * read one reply line, and resolve with its block when the reply is a valid one, else undefined.
+ * Resolves undefined, never rejects, on garbage, an error reply, a closed or broken connection and
+ * an over-long line. The hook's deadline ends the wait from outside: runHook destroys the socket,
+ * which settles this through 'close'.
+ */
+function sendAndReadStop(socket: Socket, line: string): Promise<StopBlockReply | undefined> {
+  return new Promise((resolve) => {
+    const framer = new LineFramer()
+    let settled = false
+    const done = (block: StopBlockReply | undefined): void => {
+      if (settled) return
+      settled = true
+      socket.removeListener('data', onData)
+      resolve(block)
+    }
+    const onData = (chunk: Buffer): void => {
+      let lines: string[]
+      try {
+        lines = framer.push(chunk)
+      } catch {
+        done(undefined) // an over-long line: not a reply this client accepts
+        return
+      }
+      const first = lines[0]
+      if (first === undefined) return
+      let reply: Reply
+      try {
+        reply = parseReply(first)
+      } catch {
+        done(undefined)
+        return
+      }
+      done(reply.ok && reply.id === 1 ? stopBlockOf(reply.result) : undefined)
+    }
+    socket.on('data', onData)
+    socket.once('error', () => done(undefined))
+    socket.once('close', () => done(undefined))
+    socket.once('end', () => done(undefined))
+    socket.write(line)
+  })
+}
+
+/** The line `ccc hook Stop` prints for a block: Claude Code's Stop hook decision, the fixed pointer as the reason. */
+export function stopBlockOutput(block: StopBlockReply): string {
+  return `${JSON.stringify({ decision: 'block', reason: block.block })}\n`
+}
+
+/**
+ * `ccc hook <event>`: report one Claude hook to main. Fire-and-forget within `budgetMs` in total,
+ * except Stop, which reads main's reply in the same budget: a valid block (the room pointer,
+ * design-rooms.md §2) is printed with `write` as Claude Code's `decision: block` JSON, then acked
+ * on the same connection with `hook.ack`. Never rejects. Resolves (and so lets the caller exit 0)
+ * in every case, including when stdin never closes or the owner of the socket accepts and never
+ * reads or never answers: whatever has not finished by the deadline is abandoned, and nothing is
+ * printed after it. A failing write prints nothing and sends no ack: main then keeps the tab
+ * `working` (room-stop.ts), which the person's next prompt recovers.
  */
 export async function runHook(
   event: string,
   env: Env,
   stdin: Readable,
-  budgetMs: number = HOOK_BUDGET_MS
+  budgetMs: number = HOOK_BUDGET_MS,
+  write: (text: string) => void = () => {}
 ): Promise<void> {
   const path = hookSocketPath(env)
   const token = env.APP_TAB_TOKEN
@@ -169,7 +230,27 @@ export async function runHook(
     })
     const [input, connected] = await Promise.all([readStdinCapped(stdin, STDIN_CAP_BYTES), connecting])
     if (over) return
-    await sendAndForget(connected, buildHookRequestLine(event, token, input))
+    const line = buildHookRequestLine(event, token, input)
+    if (event !== 'Stop') {
+      await sendAndForget(connected, line)
+      return
+    }
+    const block = await sendAndReadStop(connected, line)
+    if (over || block === undefined) {
+      connected.end()
+      return
+    }
+    try {
+      write(stopBlockOutput(block))
+    } catch {
+      // stdout closed: Claude gets no block, so no ack either (main keeps the messages queued)
+      connected.end()
+      return
+    }
+    await sendAndForget(
+      connected,
+      encodeRequest({ v: PROTOCOL_VERSION, id: 2, token, cmd: HOOK_ACK_COMMAND, args: { ackId: block.ackId } })
+    )
   })().catch(() => {
     // ENOENT / ECONNREFUSED / ETIMEDOUT / EPIPE: the app is not there or not listening. Silent.
   })
@@ -796,9 +877,10 @@ export async function run(
     switch (command.kind) {
       case 'hook':
         // Produced here with no socket round trip, and before delivery, so it is printed when the
-        // app is not running or delivery fails. Only SessionStart: any other event's stdout would
-        // land in Claude's context or transcript (a UserPromptSubmit hook's stdout is added to
-        // the prompt). A failing write is swallowed: the hook still delivers and exits 0.
+        // app is not running or delivery fails. Only SessionStart here, and Stop's block below:
+        // any other event's stdout would land in Claude's context or transcript (a
+        // UserPromptSubmit hook's stdout is added to the prompt). A failing write is swallowed:
+        // the hook still delivers and exits 0.
         if (command.event === 'SessionStart') {
           try {
             out.stdout(`${SESSION_START_NOTE}\n`)
@@ -806,7 +888,8 @@ export async function run(
             // stdout closed: nothing to tell
           }
         }
-        await runHook(command.event, env, stdin)
+        // Stop may print the room pointer's block (runHook); every other event prints nothing.
+        await runHook(command.event, env, stdin, HOOK_BUDGET_MS, (text) => out.stdout(text))
         return 0
       case 'statusline':
         // index.ts runs the exact call itself without this file (startup cost); this path is the
