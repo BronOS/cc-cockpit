@@ -73,10 +73,20 @@ const MIN_SCALED_FONT_PX = 4
 /**
  * Whether this window was ever left (blurred) since the page loaded: a window `focus` before that
  * is the window being shown at start or restore, not the person coming back to it, and must not
- * take a terminal's size (two side-by-side windows would otherwise ping-pong at every launch).
+ * arm a take (two side-by-side windows would otherwise ping-pong at every launch).
  */
 let windowLeft = false
 let watchingBlur = false
+
+/**
+ * Whether the page has the person's transient activation now (a press or key in it within the last
+ * few seconds; false where the API is missing). A focus event alone is no gesture: the window
+ * manager gives a window focus back when another one closes (a test run's or a dev app's window on
+ * the same workspace), and the terminal's textarea is focused again with it, with nobody there.
+ */
+function userActivated(): boolean {
+  return typeof navigator !== 'undefined' && navigator.userActivation?.isActive === true
+}
 
 /** ESC c: full reset (screen, scrollback, modes), parsed in order with the writes before it. */
 const RIS = '\x1bc'
@@ -121,7 +131,13 @@ export class TerminalSession {
    * created has no terminal attached yet) and for the pty's first size item (resolvePendingTake).
    */
   private pendingTake = false
-  /** The window and page listeners of the take on focus, removed on dispose. */
+  /**
+   * The window came back to the front (focused after it was left, or the page shown again) and the
+   * person has not pressed or typed in it since: that first press or key, anywhere in the page,
+   * takes (listenForTakes). Coming back alone takes nothing.
+   */
+  private backArmed = false
+  /** The window and page listeners of the take on return, removed on dispose. */
   private readonly offTakeListeners: () => void
   private readonly offTheme: () => void
   private readonly offPrefs: () => void
@@ -292,9 +308,14 @@ export class TerminalSession {
   }
 
   /**
-   * Takes on real gestures only: a pointer press in the pane, a focus of the terminal that this
-   * class did not start (Tab key, a click), the window focused after it was left, the page shown
-   * again. Programmatic focus (this.focus(), tab activation at start or restore) never takes.
+   * Takes on the person's gestures in this view only: a pointer press in the pane, a focus of the
+   * terminal that this class did not start and that comes with a gesture (Tab key), and the first
+   * press or key anywhere in the page after the window was focused again (after it was left) or the
+   * page shown again. Coming back alone never takes: an idle desktop window regains focus whenever
+   * another window on its workspace closes, and taking then pulled the size from the device the
+   * person was using (each re-tile of the idle window resized the pty, and their next click took
+   * it back: a flip-flop with nobody at this screen). Programmatic focus (this.focus(), tab
+   * activation at start or restore) never takes.
    */
   private listenForTakes(): () => void {
     if (!watchingBlur) {
@@ -303,23 +324,47 @@ export class TerminalSession {
       window.addEventListener('blur', () => (windowLeft = true))
     }
     const onWindowFocus = (): void => {
-      if (windowLeft) this.takeSize()
+      if (windowLeft) this.backArmed = true
     }
     const onVisibility = (): void => {
-      if (document.visibilityState === 'visible') this.takeSize()
+      if (document.visibilityState === 'visible') this.backArmed = true
+    }
+    // Capture, on the window: a key typed into xterm or a press on any part of the shell counts,
+    // before a handler there can stop it. A press in the pane is left to onPointerDown (one take).
+    const onGesture = (event: Event): void => {
+      if (!this.backArmed) return
+      if (event.type === 'pointerdown' && this.inPane(event.target)) return
+      this.backArmed = false
+      this.takeSize()
     }
     window.addEventListener('focus', onWindowFocus)
     document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pointerdown', onGesture, true)
+    window.addEventListener('keydown', onGesture, true)
     return () => {
       window.removeEventListener('focus', onWindowFocus)
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pointerdown', onGesture, true)
+      window.removeEventListener('keydown', onGesture, true)
     }
   }
 
-  private readonly onPointerDown = (): void => this.takeSize()
+  private inPane(target: EventTarget | null): boolean {
+    const el = this.container
+    return el !== undefined && target !== null && (target === el || (typeof el.contains === 'function' && el.contains(target as Node)))
+  }
 
+  private readonly onPointerDown = (): void => {
+    this.backArmed = false
+    this.takeSize()
+  }
+
+  /**
+   * A focus of the terminal's textarea takes only with a gesture behind it (a Tab key; a click is
+   * onPointerDown's already): the window getting focus back focuses the textarea again too.
+   */
   private readonly onTermFocus = (): void => {
-    if (!this.focusing) this.takeSize()
+    if (!this.focusing && userActivated()) this.takeSize()
   }
 
   /** Show the terminal in `container`; safe to call again with a new container (a remount). */

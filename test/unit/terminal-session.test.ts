@@ -16,6 +16,8 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24
     options: Record<string, unknown>
     element: { style: Record<string, string> } | undefined
+    // The hidden input xterm focuses (TerminalSession listens for its focus).
+    textarea: EventTarget | undefined
     unicode = { activeVersion: '' }
     modes = { synchronizedOutputMode: false }
     // What shared/terminal-screen.ts atGround reads: 0 is the parser's ground state.
@@ -36,6 +38,7 @@ vi.mock('@xterm/xterm', () => ({
     }
     open(): void {
       this.element = { style: {} }
+      this.textarea = new EventTarget()
     }
     write(_data: string, cb?: () => void): void {
       cb?.()
@@ -99,6 +102,7 @@ interface Session {
   attach(container: HTMLElement): void
   takeOnLoad(): void
   takeOnSelect(): void
+  focus(): void
   dispose(): void
 }
 type ScreenReply = { id: number; screen?: { cols: number; rows: number; data: string }; busy?: true }
@@ -133,6 +137,7 @@ interface FakeTerm {
   cols: number
   rows: number
   resizes: Array<[number, number]>
+  textarea: EventTarget
 }
 
 /** A laid-out pane (the active tab's); clientWidth/Height 0 is a hidden one. */
@@ -273,27 +278,114 @@ describe('TerminalSession takes the size when the page loads', () => {
 })
 
 describe('TerminalSession takes the size on interaction', () => {
-  it('a press in the pane or the page shown again takes while another view sizes the pty; never while this view sizes it', () => {
+  /** navigator.userActivation: whether the page has the person's transient activation now. */
+  function activation(isActive: boolean): void {
+    vi.stubGlobal('navigator', { userActivation: { isActive } })
+  }
+
+  it('a press in the pane takes while another view sizes the pty; never while this view sizes it', () => {
     const { s, container, fits } = session()
     // This view sizes the pty (web access off: the desktop always): nothing is sent.
     container.dispatchEvent(new Event('pointerdown'))
-    fakeDocument.dispatchEvent(new Event('visibilitychange'))
     expect(fits()).toBe(0)
     s.write('', false, { cols: 50, rows: 30 }, false)
     container.dispatchEvent(new Event('pointerdown'))
     expect(fits()).toBe(1)
-    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+  })
+
+  // The bug: an idle desktop window got focus back when another window on its workspace closed
+  // (a test run's), and its terminal took the size from the device the person was using.
+  it('a window focus after a blur takes nothing; the first press or key in the page after it does', () => {
+    const { s, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    fakeWindow.dispatchEvent(new Event('blur'))
+    fakeWindow.dispatchEvent(new Event('focus'))
+    expect(fits()).toBe(0)
+    fakeWindow.dispatchEvent(new Event('keydown'))
+    expect(fits()).toBe(1)
+    // Once per return: the next key is typing, which main's own rule (a typing take) covers.
+    fakeWindow.dispatchEvent(new Event('keydown'))
+    expect(fits()).toBe(1)
+    fakeWindow.dispatchEvent(new Event('blur'))
+    fakeWindow.dispatchEvent(new Event('focus'))
+    fakeWindow.dispatchEvent(new Event('pointerdown'))
     expect(fits()).toBe(2)
   })
 
-  it('a window focus takes only after the window was left (not the focus it gets at start)', () => {
+  it('a press or key with no return before it takes nothing (outside the pane)', () => {
     const { s, fits } = session()
     s.write('', false, { cols: 50, rows: 30 }, false)
-    // The module's blur flag is shared by every session: a fresh module would start unset, but
-    // an earlier test may have blurred; this test blurs itself and checks the take after it.
+    fakeWindow.dispatchEvent(new Event('keydown'))
+    fakeWindow.dispatchEvent(new Event('pointerdown'))
+    expect(fits()).toBe(0)
+  })
+
+  it('the page shown again takes nothing until the first press or key', () => {
+    const { s, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    expect(fits()).toBe(0)
+    fakeWindow.dispatchEvent(new Event('pointerdown'))
+    expect(fits()).toBe(1)
+  })
+
+  it('a press in the pane after a return takes once, not twice', () => {
+    const { s, container, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
     fakeWindow.dispatchEvent(new Event('blur'))
     fakeWindow.dispatchEvent(new Event('focus'))
+    // The window's capture listener sees the press first and leaves it to the pane's.
+    Object.assign(container, { contains: (node: unknown) => node === container })
+    const press = new Event('pointerdown')
+    Object.defineProperty(press, 'target', { value: container })
+    fakeWindow.dispatchEvent(press)
+    container.dispatchEvent(new Event('pointerdown'))
     expect(fits()).toBe(1)
+    fakeWindow.dispatchEvent(new Event('keydown'))
+    expect(fits()).toBe(1)
+  })
+
+  it('a focus of the terminal takes only with a gesture behind it (a Tab key), not the focus a window gets back', () => {
+    const { s, term, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    activation(false)
+    term.textarea.dispatchEvent(new Event('focus'))
+    expect(fits()).toBe(0)
+    activation(true)
+    term.textarea.dispatchEvent(new Event('focus'))
+    expect(fits()).toBe(1)
+    // Programmatic focus (tab activation, restore) never takes, gesture or not.
+    s.focus()
+    expect(fits()).toBe(1)
+  })
+
+  it('"Fit to this screen" still takes at once', () => {
+    let button: { hidden: boolean; listeners: Array<() => void> } | undefined
+    // The button is made with document.createElement: given to the shared fake for this test only.
+    Object.assign(fakeDocument, {
+      createElement: () => {
+        const made = { hidden: true, listeners: [] as Array<() => void> }
+        button = made
+        return Object.assign(made, {
+          addEventListener: (_type: string, fn: () => void) => made.listeners.push(fn),
+          remove: () => undefined,
+          parentElement: null
+        })
+      }
+    })
+    vi.useFakeTimers()
+    try {
+      const { s, fits } = session()
+      pane.cols = 120
+      s.write('', false, { cols: 50, rows: 30 }, false)
+      vi.advanceTimersByTime(1000)
+      expect(button?.hidden).toBe(false)
+      for (const fn of button?.listeners ?? []) fn()
+      expect(fits()).toBe(1)
+    } finally {
+      vi.useRealTimers()
+      delete (fakeDocument as { createElement?: unknown }).createElement
+    }
   })
 
   it('a hidden pane (an inactive tab) never takes', () => {
@@ -302,6 +394,7 @@ describe('TerminalSession takes the size on interaction', () => {
     Object.assign(container, { clientWidth: 0, clientHeight: 0 })
     container.dispatchEvent(new Event('pointerdown'))
     fakeDocument.dispatchEvent(new Event('visibilitychange'))
+    fakeWindow.dispatchEvent(new Event('keydown'))
     expect(fits()).toBe(0)
   })
 })
