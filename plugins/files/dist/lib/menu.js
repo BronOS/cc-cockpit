@@ -16,11 +16,11 @@
    * ctx.sessions.openShell exists; `rules`: the "Open with" rules matching a file.
    * `download`: ctx.files.download exists (the host's `reset` env); the Download items are for a
    * browser view only (`remote`), since on the host's screen the file is already there.
-   * `heavy`: the folder's `.git` or `node_modules` may be in the zip: true when its listing is not
-   * known (collapsed row) or holds either name; false hides "with .git and node_modules", which
-   * would then give the same zip as the plain item.
+   * A folder always gets both zip items: whether the two zips differ cannot be told from the page
+   * (the listing never shows `.git`, hides ignored names when asked, is capped, and holds direct
+   * children only, while the walk drops both names at any depth).
    */
-  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false, heavy = true }) {
+  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false }) {
     // On the host's screen only: hidden in a browser view.
     const desktop = system && !remote
     const ids = []
@@ -39,8 +39,7 @@
       if (kind === 'dir' && shell) ids.push('terminal')
       ids.push('new-file', 'new-folder')
       if (remote && download) {
-        ids.push('download-zip')
-        if (heavy) ids.push('download-zip-all')
+        ids.push('download-zip', 'download-zip-all')
       }
     }
     ids.push('sep', 'copy-path')

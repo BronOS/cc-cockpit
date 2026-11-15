@@ -401,11 +401,12 @@ test('menuEntries: Download items only in a browser view of an app with ctx.file
   }
 })
 
-test('menuEntries: the include item shows unless the open listing holds neither .git nor node_modules', () => {
+test('menuEntries: a folder always has the include item, right after the plain zip', () => {
+  // The page cannot tell whether the two zips differ (.git is never listed, nested
+  // node_modules are not visible), so the item never depends on the listing.
   const on = { system: true, shell: true, remote: true, download: true }
-  assert.ok(menuEntries({ kind: 'dir', ...on, heavy: true }).includes('download-zip-all'))
-  assert.ok(menuEntries({ kind: 'dir', ...on }).includes('download-zip-all'))
-  const ids = menuEntries({ kind: 'root', ...on, heavy: false })
-  assert.ok(ids.includes('download-zip'))
-  assert.ok(!ids.includes('download-zip-all'))
+  for (const kind of ['dir', 'root']) {
+    const ids = menuEntries({ kind, ...on })
+    assert.equal(ids.indexOf('download-zip-all'), ids.indexOf('download-zip') + 1, kind)
+  }
 })

@@ -374,11 +374,7 @@ function menuItems(target) {
   const { rel, kind } = target
   const post = (type, extra = {}) => () => ccPanel.post({ type, path: rel, ...extra })
   const remote = ccPanel.view?.remote === true
-  // "Download as .zip with .git and node_modules" only where the zip could differ: the row is
-  // collapsed (its listing is not shown, so unknown) or the open listing holds either folder.
-  const listing = kind !== 'file' && expanded.has(rel) ? dirs.get(rel) : null
-  const heavy = !listing || listing.entries.some((e) => e.name === '.git' || e.name === 'node_modules')
-  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download, heavy })
+  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download })
   const items = []
   for (const e of entries) {
     if (e === 'sep') items.push('sep')

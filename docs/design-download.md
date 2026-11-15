@@ -89,7 +89,8 @@ separator on Windows where `a\..\..\x` leaves the folder; control or bidi charac
 - *Files click:* two items on a folder row and the project folder, "Download as .zip" and "Download as .zip with .git and
   node_modules". The click has no dialog to hold a checkbox, a dialog only for folders would bring back the confirm the
   owner removed, the menu is a flat list (`panels/tree.js`, no submenus), and a setting would hide a per-download choice.
-  The second item shows when the expanded row's listing holds either name, or the row is collapsed (unknown).
+  Both always show: the page cannot tell whether they differ (the listing never shows `.git`, holds direct children
+  only, can be filtered or capped, while the walk drops both names at any depth).
 - *`ccc download`:* a checkbox in the dialog, unchecked whatever Claude asked; the offer's walk counts both totals, so the
   dialog shows both sizes. The state travels in the accept (§2.2).
 

@@ -17,7 +17,7 @@ project, changed or not, to read it, attach notes and discuss it with Claude.
   asks first (the app's dialog); Open with default app refuses scripts and programs.
 - Download (0.4.0, browser views only, needs an app with `ctx.files.download`): a file has Download; a folder row and the
   project folder have Download as .zip (without `.git` and `node_modules`) and Download as .zip with .git and
-  node_modules (shown when the open listing holds either name, or the row is collapsed). A refusal shows as an error line.
+  node_modules (always both). A refusal shows as an error line.
 - Open with (app setting, 0.3.0): rules of extensions and what opens them: the system's default app, a terminal
   command (in an overlay, or a new tab through `ctx.sessions.openCommand`; the tab says Files opened it), or the
   file viewer. A click takes the first matching rule; the menu lists every matching rule and Open in file viewer.
