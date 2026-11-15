@@ -29,11 +29,12 @@
       .flag { display: flex; align-items: center; gap: var(--cc-space-2); margin-top: var(--cc-space-2); font-size: var(--cc-text-s); overflow-wrap: anywhere; }
       .fdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--flag); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent); }
       .card { cursor: pointer; overflow: hidden; }
-      /* The tab the window shows: a frame twice as thick as the others, in the accent colour.
-         Thickness, not only a shade: a strong border one step from the plain one was invisible in
-         a low-contrast theme (Tokyo Night) and to someone who cannot tell close shades apart. An
-         inset shadow, not the border, so a flagged card keeps its flag colour down the left edge. */
-      .card[data-active] { border-color: var(--cc-accent); box-shadow: inset 0 0 0 1px var(--cc-accent); }
+      /* The tab the window shows: the frame in the accent colour. A strong border one step from the
+         plain one was invisible in a low-contrast theme (Tokyo Night) and to someone who cannot tell
+         close shades apart; the accent is a different hue. A 2px frame was too heavy. A flagged card
+         keeps its flag colour down the left edge (the rule above wins on that side). */
+      .card[data-active] { border-top-color: var(--cc-accent); border-right-color: var(--cc-accent); border-bottom-color: var(--cc-accent); }
+      .card[data-active]:not([data-flag]) { border-left-color: var(--cc-accent); }
       .head { display: flex; align-items: center; gap: var(--cc-space-2); }
       .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--cc-status-idle, var(--cc-fg-subtle)); }
       .dot[data-status='starting'] { background: var(--cc-status-starting, var(--cc-fg-subtle)); }
