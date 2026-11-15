@@ -229,7 +229,9 @@ export class Downloads {
   /** Per window, when its recent offers were made (the 10 per 10 min limit). */
   private readonly offerTimes = new Map<number, number[]>()
   /** The last offerAsks send: its id and whether a view took it (read right after `ask`, which sends synchronously). */
-  private lastOfferSend: { requestId: string; sent: boolean } | undefined
+  private lastOfferSend: { requestId: string; sent: boolean; threw?: true } | undefined
+  /** Per window, offers past the first limit check and not yet asked (parallel calls must not all pass it). */
+  private readonly offersInFlight = new Map<number, number>()
 
   constructor(private readonly deps: DownloadsDeps) {
     this.now = deps.now ?? Date.now
@@ -239,9 +241,15 @@ export class Downloads {
       hooks: {
         send: (windowId, info) => {
           // SharedAsks adds the id to the content, so the payload is exactly a DownloadOffer.
-          const sent = this.deps.offers?.send(windowId, info as DownloadOffer) === true
-          this.lastOfferSend = { requestId: info.requestId, sent }
-          return sent
+          try {
+            const sent = this.deps.offers?.send(windowId, info as DownloadOffer) === true
+            this.lastOfferSend = { requestId: info.requestId, sent }
+            return sent
+          } catch (err) {
+            // SharedAsks settles the ask on a throw; offer() must not call that "on this computer".
+            this.lastOfferSend = { requestId: info.requestId, sent: false, threw: true }
+            throw err
+          }
         },
         settled: (windowId, requestId) => this.deps.offers?.settled(windowId, requestId)
       },
@@ -259,12 +267,30 @@ export class Downloads {
    * every browser view of the window. Answers at once, never waits for the click; throws with the exit-1
    * text for a refused path, too large, the desktop with no browser view, and the limits.
    */
-  async offer(caller: { projectId: string; windowId: number }, abs: string): Promise<OfferResult> {
+  async offer(caller: { projectId: string; windowId: number }, abs: string, peerGone?: AbortSignal): Promise<OfferResult> {
     if (!this.deps.offers) throw new Error('downloads are not available')
     const windowId = caller.windowId
-    // Checked before the walk too, so a flood of offers never costs a walk each.
-    const limit = this.offerLimitProblem(windowId)
+    this.sweepOffers()
+    // Checked before the walk too, so a flood of offers never costs a walk each. In-flight offers count
+    // as taken places: N parallel calls would otherwise all pass this check and each walk for up to 10 s.
+    const limit = this.offerLimitProblem(windowId, this.offersInFlight.get(windowId) ?? 0)
     if (limit) throw new Error(limit)
+    this.offersInFlight.set(windowId, (this.offersInFlight.get(windowId) ?? 0) + 1)
+    try {
+      return await this.offerChecked(caller, abs, peerGone)
+    } finally {
+      const left = (this.offersInFlight.get(windowId) ?? 1) - 1
+      if (left > 0) this.offersInFlight.set(windowId, left)
+      else this.offersInFlight.delete(windowId)
+    }
+  }
+
+  private async offerChecked(
+    caller: { projectId: string; windowId: number },
+    abs: string,
+    peerGone: AbortSignal | undefined
+  ): Promise<OfferResult> {
+    const windowId = caller.windowId
     const target = { projectId: caller.projectId, abs }
     const resolved = await this.resolve(target, windowId)
     const server = this.deps.server === true
@@ -290,15 +316,21 @@ export class Downloads {
     } else {
       info = { ...common, kind: 'file', size: resolved.size ?? 0 }
     }
-    // Again after the awaits: two offers counted at once must not both pass a limit of one left.
-    const late = this.offerLimitProblem(windowId)
+    // Again after the awaits (own place excluded: it is counted in flight): two offers counted at once
+    // must not both pass a limit of one left.
+    const late = this.offerLimitProblem(windowId, (this.offersInFlight.get(windowId) ?? 1) - 1)
     if (late) throw new Error(late)
+    // The caller timed out or left during the walk: Claude was told the app did not answer, so no offer.
+    if (peerGone?.aborted) throw new Error('the caller went away')
+    // The window may have closed during the awaits (windowClosed has run): an ask now would wait for nobody.
+    if (this.deps.windowOf(caller.projectId) !== windowId) throw new Error('the project window is gone')
 
     this.lastOfferSend = undefined
     const answered = this.offerAsks.ask(windowId, info)
-    const send = this.lastOfferSend as { requestId: string; sent: boolean } | undefined
+    const send = this.lastOfferSend as { requestId: string; sent: boolean; threw?: true } | undefined
     // Not sent and not held: SharedAsks settled it already. On a desktop that is the last browser view
     // leaving between the check above and the send: the desktop case after all.
+    if (send?.threw) throw new Error('the offer could not be sent to the browser views')
     if (send === undefined || !this.offerAsks.isPending(windowId, send.requestId)) throw new Error(onThisComputer)
     const id = send.requestId
     this.offers.set(id, { windowId, target, expiresAt: this.now() + this.offerMs })
@@ -689,11 +721,11 @@ export class Downloads {
   }
 
   /** Why the window may not get another offer now (3 waiting, 10 per 10 min), or null. */
-  private offerLimitProblem(windowId: number): string | null {
-    if (this.offerAsks.pendingFor(windowId).length >= DOWNLOAD_OFFERS_WAITING_MAX) {
+  private offerLimitProblem(windowId: number, inFlight = 0): string | null {
+    if (this.offerAsks.pendingFor(windowId).length + inFlight >= DOWNLOAD_OFFERS_WAITING_MAX) {
       return `${DOWNLOAD_OFFERS_WAITING_MAX} download offers are already waiting in this project; wait for the person to answer them`
     }
-    if (this.recentOffers(windowId).length >= DOWNLOAD_OFFERS_MAX) {
+    if (this.recentOffers(windowId).length + inFlight >= DOWNLOAD_OFFERS_MAX) {
       return `${DOWNLOAD_OFFERS_MAX} downloads were offered in this project in the last ${Math.round(DOWNLOAD_OFFERS_WINDOW_MS / 60_000)} minutes; try again later`
     }
     return null

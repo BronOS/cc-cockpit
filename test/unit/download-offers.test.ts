@@ -326,6 +326,44 @@ describe('offers: limits per window', () => {
     await expect(d.offer(CALLER, file)).resolves.toMatchObject({ waiting: false })
   })
 
+  it('parallel calls count in flight: only the free places pass', async () => {
+    const d = make()
+    const file = write(join(proj, 'a.txt'))
+    const results = await Promise.allSettled(Array.from({ length: 5 }, () => d.offer(CALLER, file)))
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(DOWNLOAD_OFFERS_WAITING_MAX)
+    expect(offers).toHaveLength(DOWNLOAD_OFFERS_WAITING_MAX)
+  })
+
+  it('a caller that went away during the walk gets no offer', async () => {
+    const d = make()
+    const ac = new AbortController()
+    const p = d.offer(CALLER, write(join(proj, 'a.txt')), ac.signal)
+    ac.abort()
+    await expect(p).rejects.toThrow(/went away/)
+    expect(offers).toHaveLength(0)
+  })
+
+  it('a window gone during the awaits gets no offer', async () => {
+    let open = true
+    const d = make({ windowOf: (id) => (id === 'p1' && open ? WINDOW : undefined) })
+    const p = d.offer(CALLER, write(join(proj, 'a.txt')))
+    open = false
+    await expect(p).rejects.toThrow(/gone/)
+    expect(offers).toHaveLength(0)
+  })
+
+  it('a throwing send is not reported as the desktop case', async () => {
+    const d = make({
+      offers: {
+        send: () => {
+          throw new Error('boom')
+        },
+        settled: () => undefined,
+      },
+    })
+    await expect(d.offer(CALLER, write(join(proj, 'a.txt')))).rejects.toThrow('could not be sent')
+  })
+
   it('no offer hooks: refused', async () => {
     const d = make({ offers: undefined })
     await expect(d.offer(CALLER, write(join(proj, 'a.txt')))).rejects.toThrow('downloads are not available')

@@ -589,7 +589,7 @@ export interface DownloadCliOptions {
   /** The project window that is open now. */
   windowIdOf(projectId: string): number | undefined
   /** Downloads.offer: throws with the exit-1 text; answers at once, never waits for the click. */
-  offer(caller: { projectId: string; windowId: number }, abs: string): Promise<{ text: string }>
+  offer(caller: { projectId: string; windowId: number }, abs: string, peerGone?: AbortSignal): Promise<{ text: string }>
 }
 
 /** What a tokenless `ccc download` is told (it reaches here only if the server's tables ever widened). */
@@ -601,7 +601,7 @@ export const DOWNLOAD_TAB_ONLY_TEXT = 'run it in a tab of the project'
  * caller's project's open one. Prints the offer's line (exit 0), or the refusal (exit 1).
  */
 export function downloadHandler(options: DownloadCliOptions): Handler {
-  return async (args, caller) => {
+  return async (args, caller, peerGone) => {
     if (caller.kind !== 'session' && caller.kind !== 'window') throw new Error(`download: ${DOWNLOAD_TAB_ONLY_TEXT}`)
     const path = args.path
     if (typeof path !== 'string' || path === '' || path.includes('\0') || !isAbsolute(path)) {
@@ -609,7 +609,7 @@ export function downloadHandler(options: DownloadCliOptions): Handler {
     }
     const windowId = options.windowIdOf(caller.projectId)
     if (windowId === undefined) throw new Error(NOT_OPEN)
-    const { text } = await options.offer({ projectId: caller.projectId, windowId }, path)
+    const { text } = await options.offer({ projectId: caller.projectId, windowId }, path, peerGone)
     return { text }
   }
 }

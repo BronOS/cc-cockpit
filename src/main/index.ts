@@ -2293,7 +2293,7 @@ function start(server: boolean): void {
   // server already refused a tokenless caller (protocol.ts WINDOW_TOKEN_COMMANDS).
   registerDownloadHandler(socket, {
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
-    offer: (caller, abs) => downloads.offer(caller, abs)
+    offer: (caller, abs, peerGone) => downloads.offer(caller, abs, peerGone)
   })
 
   // `ccc web` (socket/web-handlers.ts, design-web.md §9.4): a shell on the server only (any token
