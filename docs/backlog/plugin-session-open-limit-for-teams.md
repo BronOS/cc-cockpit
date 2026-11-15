@@ -1,5 +1,5 @@
 ---
-worth: designed: docs/design-groups.md §6
+worth: designed: docs/design-rooms.md §6
 where: src/main/plugins/host-api.ts:233
 added: 2026-11-13
 ---

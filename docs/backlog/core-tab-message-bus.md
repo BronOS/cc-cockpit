@@ -1,5 +1,5 @@
 ---
-worth: designed: docs/design-groups.md
+worth: designed: docs/design-rooms.md
 where: src/main/sessions/send-gate.ts, src/main/claude-plugins/, src/cli/
 added: 2026-11-13
 ---
