@@ -111,7 +111,8 @@ test('a chord bound to a new-tab menu entry opens its tab, shows in the [+] menu
   await page.keyboard.press('ControlOrMeta+Shift+P')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
   await palette.getByRole('combobox', { name: 'Command' }).fill('New tab:')
-  await expect(palette.getByRole('option')).toHaveCount(2)
+  // Each entry and its derived "… in Group" command (design-split-pages.md §4).
+  await expect(palette.getByRole('option')).toHaveCount(4)
   await page.keyboard.press('Escape')
   await expect(palette).toHaveCount(0)
 

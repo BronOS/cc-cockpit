@@ -344,11 +344,11 @@ External review: sol / high
   `editor-web.spec.ts`, `split-views.spec.ts`)
 
 ### Task 10: Verify acceptance criteria [model: sonnet]
-- [ ] every point of `docs/design-split-pages.md` implemented or listed in its §9
-- [ ] edge cases: 8 page panes in one group (all live while shown, trimmed to 6 when hidden), a `'later'` page tab on
+- [x] every point of `docs/design-split-pages.md` implemented or listed in its §9
+- [x] edge cases: 8 page panes in one group (all live while shown, trimmed to 6 when hidden), a `'later'` page tab on
   relaunch (plain tab at the strip's end, group dissolved), a plugin `beside` naming a page tab (placed, never focused)
-- [ ] `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`, `npm run build:editor` (bundle unchanged)
-- [ ] `npm run test:e2e`
+- [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`, `npm run build:editor` (bundle unchanged)
+- [x] `npm run test:e2e`
 
 ### Task 11: [Final] Update documentation [model: sonnet]
 - [ ] `docs/features.md`: Split view (page tabs as panes, file beside Claude, Close all asks about unsaved files, Ask
