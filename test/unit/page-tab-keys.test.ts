@@ -88,12 +88,54 @@ describe('desktop: before-input-event on a page tab frame', () => {
     expect(frames.tabOf(loaded)).toBeUndefined()
   })
 
-  it('keeps a bounded record: the oldest frame goes first', () => {
-    const frames = new PageTabFrameTabs()
-    for (let i = 0; i <= MAX_TRACKED_PAGE_TAB_FRAMES; i++) frames.navigating(child(100 + i, pageTabFrameName(TAB)), URL, top)
-    expect(frames.tabOf(child(100, pageTabFrameName(TAB), URL))).toBeUndefined()
-    expect(frames.tabOf(child(101, pageTabFrameName(TAB), URL))).toBe(TAB)
-    expect(frames.tabOf(child(100 + MAX_TRACKED_PAGE_TAB_FRAMES, pageTabFrameName(TAB), URL))).toBe(TAB)
+  // The final review's MAJOR: records were never pruned and the oldest went past the cap, so in a window
+  // open all day the file kept beside Claude since the morning (the oldest frame, still in use) was the
+  // one forgotten, and its chords stopped reaching the shell.
+  it("a frame gone from the window's frame tree is forgotten at the next record; one in use all day never is", () => {
+    const live = new Set<number>([1])
+    const frames = new PageTabFrameTabs(() => live)
+    const kept = child(5, pageTabFrameName(TAB))
+    live.add(5)
+    frames.navigating(kept, URL, top)
+    // A day of files opened and closed, trimmed and remounted beside it: far more than the cap.
+    for (let i = 0; i < MAX_TRACKED_PAGE_TAB_FRAMES * 4; i++) {
+      const id = 1000 + i
+      live.add(id)
+      frames.navigating(child(id, pageTabFrameName(OTHER)), URL, top)
+      live.delete(id)
+    }
+    expect(frames.tabOf({ ...kept, url: URL })).toBe(TAB)
+    // Only the live frames are on record (the last one left the tree after its record).
+    frames.navigating(child(9, pageTabFrameName(OTHER)), URL, top)
+    expect(frames.size).toBe(2)
+    expect(frames.tabOf(child(1000, pageTabFrameName(OTHER), URL))).toBeUndefined()
+  })
+
+  it('a tree main cannot read prunes nothing; the cap then evicts the frame least recently used for a key', () => {
+    let readable = false
+    const frames = new PageTabFrameTabs(() => {
+      if (!readable) throw new Error('the window is going away')
+      return [100]
+    })
+    for (let i = 0; i < MAX_TRACKED_PAGE_TAB_FRAMES; i++) frames.navigating(child(100 + i, pageTabFrameName(TAB)), URL, top)
+    expect(frames.size).toBe(MAX_TRACKED_PAGE_TAB_FRAMES)
+    // The oldest record is the frame typed in: a key refreshes it, so the next record evicts frame 101.
+    expect(frames.tabOf(child(100, pageTabFrameName(TAB), URL))).toBe(TAB)
+    frames.navigating(child(100 + MAX_TRACKED_PAGE_TAB_FRAMES, pageTabFrameName(TAB)), URL, top)
+    expect(frames.size).toBe(MAX_TRACKED_PAGE_TAB_FRAMES)
+    expect(frames.tabOf(child(100, pageTabFrameName(TAB), URL))).toBe(TAB)
+    expect(frames.tabOf(child(101, pageTabFrameName(TAB), URL))).toBeUndefined()
+    expect(frames.tabOf(child(102, pageTabFrameName(TAB), URL))).toBe(TAB)
+    // With no reader at all (the default) the same bound holds.
+    const bare = new PageTabFrameTabs()
+    for (let i = 0; i <= MAX_TRACKED_PAGE_TAB_FRAMES; i++) bare.navigating(child(100 + i, pageTabFrameName(TAB)), URL, top)
+    expect(bare.size).toBe(MAX_TRACKED_PAGE_TAB_FRAMES)
+    expect(bare.tabOf(child(100, pageTabFrameName(TAB), URL))).toBeUndefined()
+    // Once the tree reads again, every frame not in it goes at the next record.
+    readable = true
+    frames.navigating(child(5000, pageTabFrameName(TAB)), URL, top)
+    expect(frames.size).toBe(2)
+    expect(frames.tabOf(child(100, pageTabFrameName(TAB), URL))).toBe(TAB)
   })
 
   it('the app table wins: its chords go to the shell, the rest (declared keys, typing, Escape) to the page', () => {

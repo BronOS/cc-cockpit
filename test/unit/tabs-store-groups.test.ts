@@ -97,6 +97,25 @@ describe('tabs store: groups', () => {
       expect(run([{ type: 'selected', tabId: 'd' }], s).keysOff).toBe(false)
     })
 
+    // The final review's MAJOR: a frame the focus check refused leaves the keys on nothing, and the
+    // view goes keys off with the selection kept, marked as the refusal's kind (a frame clicked into
+    // with evidence may pick, frame-focus.ts). D3's kind is never turned into it, and a D3 change
+    // after a refusal makes the keys off D3's.
+    it("a refused frame focus: keys off, selection kept, the refusal's kind until the keys come back", () => {
+      const s = run([{ type: 'selected', tabId: 'c' }, { type: 'focusRefused' }], base())
+      expect([s.activeId, s.keysOff, s.focusRefused]).toEqual(['c', true, true])
+      expect(run([{ type: 'selected', tabId: 'b' }], s)).toMatchObject({ activeId: 'b', keysOff: false, focusRefused: false })
+      expect(run([{ type: 'keysOn' }], s)).toMatchObject({ activeId: 'c', keysOff: false, focusRefused: false })
+      expect(run([{ type: 'selected', tabId: 'c' }], s)).toMatchObject({ activeId: 'c', keysOff: false, focusRefused: false })
+      // The focused pane closed elsewhere after the refusal: D3's keys off from then on.
+      expect(run([{ type: 'removed', tabId: 'c', gen: 1 }], s)).toMatchObject({ activeId: 'd', keysOff: true, focusRefused: false })
+      // Already keys off by D3: a refusal changes nothing.
+      const d3 = run([{ type: 'selected', tabId: 'c' }, { type: 'removed', tabId: 'c', gen: 1 }], base())
+      expect(run([{ type: 'focusRefused' }], d3)).toBe(d3)
+      // No tab at all: nothing to take the keys from.
+      expect(run([{ type: 'focusRefused' }], initialTabsState)).toBe(initialTabsState)
+    })
+
     it('a plain tab closed elsewhere keeps the strip rule', () => {
       const s = run([{ type: 'removed', tabId: 'a', gen: 1 }], base())
       expect(s.activeId).toBe('b')

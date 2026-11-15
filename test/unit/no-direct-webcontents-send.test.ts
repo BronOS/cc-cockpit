@@ -47,10 +47,11 @@ const FORBIDDEN = [
   // An IPC event's sender is a WebContents too, and `event.reply` sends through it.
   /\bsender\s*\??\.\s*(send|postMessage)\s*\(/,
   /\.\s*reply\s*\(/,
-  // A `.webContents` access may only read the id or the focused frame (which frame has the keyboard,
-  // page-tab-keys.ts), focus the page or listen: anything else (a `send`, `?.send`, an alias
-  // `= win.webContents`, a member on the next line) is refused.
-  /\??\.\s*webContents\b(?!\s*\??\.\s*(id\b|focusedFrame\b|focus\s*\(|on\s*\())/
+  // A `.webContents` access may only read the id, the focused frame (which frame has the keyboard,
+  // page-tab-keys.ts) or the ids of its frame tree (`mainFrame.framesInSubtree`: which page tab frames
+  // are still there), focus the page or listen: anything else (a `send`, `?.send`, a bare `mainFrame`
+  // whose `send` reaches the page, an alias `= win.webContents`, a member on the next line) is refused.
+  /\??\.\s*webContents\b(?!\s*\??\.\s*(id\b|focusedFrame\b|mainFrame\s*\??\.\s*framesInSubtree\b|focus\s*\(|on\s*\())/
 ]
 
 function sources(dir: string): string[] {
@@ -103,11 +104,12 @@ describe('no direct webContents sends outside the view registry', () => {
       'webContents.fromId(id)?.send(x)',
       'event.sender.send(x)',
       'event.reply(x)',
+      'win.webContents.mainFrame.send(x)',
       '// win.webContents.send(x) is not allowed here',
       ' * getAllWindows() in a doc comment'
     ].join('\n')
     // Every line but the two comments.
-    expect(offences('x.ts', sample)).toEqual(Array.from({ length: 11 }, (_, i) => `x.ts:${i + 1}`))
+    expect(offences('x.ts', sample)).toEqual(Array.from({ length: 12 }, (_, i) => `x.ts:${i + 1}`))
   })
 
   it('toBrowserViews reaches browser views only, never a desktop view (the hidden page in server mode)', () => {
@@ -125,6 +127,7 @@ describe('no direct webContents sends outside the view registry', () => {
     const sample = [
       'windows.resolveSender(win.webContents.id)',
       'win.webContents.focus()',
+      'win.webContents.mainFrame.framesInSubtree.map((f) => f.frameTreeNodeId)',
       "win.webContents.on('did-navigate', () => {})",
       'this.log(`refused, webContents ${event.sender.id}`)'
     ].join('\n')

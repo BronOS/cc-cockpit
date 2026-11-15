@@ -49,6 +49,14 @@ export interface TabsState extends GroupsViewState {
    * until a snapshot of that tab arrives; one that never does costs an id.
    */
   removedEarly: Record<string, number>
+  /**
+   * The keys are off (`keysOff`) because the shell's focus check refused a frame (frame-focus.ts: a
+   * frame held the keyboard with no evidence of the person, blurred, the keys on nothing), not because
+   * the focused pane was taken away elsewhere (D3). Only meaningful while `keysOff`. The difference:
+   * here a frame the person then clicks into with evidence is picked (their next click works, as with
+   * the keys on), while D3's keys off picks nothing from a frame, whatever the evidence.
+   */
+  focusRefused: boolean
 }
 
 /**
@@ -106,6 +114,16 @@ export type TabsAction =
   | { type: 'zoom'; groupId: string; tabId: string | null }
   /** The person clicked a pane or used a chord: the keys are on again after D3 took them off. */
   | { type: 'keysOn' }
+  /**
+   * The shell's focus check blurred a frame for want of evidence (frame-focus.ts checkFrames): the
+   * keyboard is on nothing, so the view goes keys off (the final review's MAJOR). With the outline
+   * and `activeId` left on the pane beside it (often Claude), the person's next Cmd+W, flag or pane
+   * chord, typed believing they were in the file they clicked, acted on that pane: Cmd+W ended the
+   * Claude session at once with the close question turned off. Keys off, no command acts on the
+   * active tab (D23 R1) until the person picks a pane. A view already keys off stays as it is (D3's
+   * stricter kind is never relaxed by a page).
+   */
+  | { type: 'focusRefused' }
 
 export const initialTabsState: TabsState = {
   ...initialGroupsView,
@@ -114,11 +132,15 @@ export const initialTabsState: TabsState = {
   earlyExits: {},
   listed: false,
   closedEarly: [],
-  removedEarly: {}
+  removedEarly: {},
+  focusRefused: false
 }
 
 export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
-  return settleGroups(state, step(state, action))
+  const next = settleGroups(state, step(state, action))
+  // The refusal's kind of keys off ends with the keys off: whatever turned them on again (a pick, a
+  // chord, the check picking a frame) or another rule took them off anew (D3, set in its own cases).
+  return next.focusRefused && !next.keysOff ? { ...next, focusRefused: false } : next
 }
 
 /**
@@ -209,7 +231,7 @@ function step(state: TabsState, action: TabsAction): TabsState {
       if (successor !== undefined) {
         // D3: the person's own close moves the focus to the pane that took its space; any other
         // close leaves this view with no terminal focused until a click or a chord.
-        return { ...state, tabs, closedEarly, groups, activeId: successor, keysOff: action.own !== true }
+        return { ...state, tabs, closedEarly, groups, activeId: successor, keysOff: action.own !== true, focusRefused: false }
       }
       // The tab that slides into the closed one's place (its right neighbour), else the left one.
       const next = tabs[index] ?? tabs[index - 1]
@@ -265,6 +287,8 @@ function step(state: TabsState, action: TabsAction): TabsState {
       if (moved && next.tabs.some((t) => t.id === moved.activeId)) {
         next.activeId = moved.activeId
         next.keysOff = moved.keysOff
+        // A change elsewhere decided the keys (D3): its kind of keys off, never the refusal's.
+        next.focusRefused = false
       }
       return next
     }
@@ -277,6 +301,8 @@ function step(state: TabsState, action: TabsAction): TabsState {
     }
     case 'keysOn':
       return state.keysOff ? { ...state, keysOff: false } : state
+    case 'focusRefused':
+      return state.activeId === null || state.keysOff ? state : { ...state, keysOff: true, focusRefused: true }
     case 'moved': {
       const from = state.tabs.findIndex((t) => t.id === action.tabId)
       if (from < 0) return state

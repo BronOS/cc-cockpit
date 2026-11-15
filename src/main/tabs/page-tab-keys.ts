@@ -27,7 +27,11 @@ export interface TrackedFrameLike {
   readonly frameTreeNodeId: number
 }
 
-/** At most this many frames remembered per window: far above the mounted LRU (6) plus remounts. */
+/**
+ * At most this many frames remembered per window, a backstop only: a record goes when its frame is no
+ * longer in the window's frame tree (`liveFrames`), so the map holds the live page tab frames (the
+ * mounted LRU of 6 plus the visible panes). Past it, the record least recently used for a key goes.
+ */
 export const MAX_TRACKED_PAGE_TAB_FRAMES = 256
 
 /**
@@ -39,13 +43,27 @@ export const MAX_TRACKED_PAGE_TAB_FRAMES = 256
  * before any page ran in it. Never read again and never overwritten: a page renaming its window or
  * navigating itself, or a frame it nests, changes nothing (derived from the sender, never from what the
  * page says). Keyed by frameTreeNodeId, which a WebFrameMain swapped by the cross-process navigation
- * keeps. A frame's end is not watched (its WebFrameMain object is replaced at that swap, so its
- * destroyed state says nothing about the element): the oldest record goes past the cap, and the shell
- * page reloading clears them all (`clear`). A frame past the cap is simply no page tab's: its chords
- * go to the page, which is the safe side.
+ * keeps.
+ *
+ * A frame's end is read from the frame tree, not from its WebFrameMain (that object is replaced at the
+ * swap, so its destroyed state says nothing about the element): at each new record, every record
+ * whose frameTreeNodeId is no longer in the window's tree (`liveFrames`: the iframe element removed, a
+ * page tab closed, trimmed from the LRU or remounted) goes first. The final review's MAJOR: with the
+ * cap alone and the oldest record evicted first, a window open all day made the longest-lived frame
+ * still in use (the file kept beside Claude since the morning) the one forgotten, and its app chords
+ * stopped reaching the shell until a reload. The cap stays as a backstop for a tree main could not
+ * read, and then evicts the record least recently used for a key (`tabOf` refreshes a hit), never the
+ * frame being typed in. A frame forgotten anyway is simply no page tab's: its chords go to the page,
+ * the safe side. The shell page reloading clears them all (`clear`).
  */
 export class PageTabFrameTabs {
   private readonly tabs = new Map<number, string>()
+
+  /**
+   * `liveFrames`: the frameTreeNodeIds of the window's frame tree now (index.ts: the main frame's
+   * `framesInSubtree`), or undefined when it cannot be read; then only the cap prunes.
+   */
+  constructor(private readonly liveFrames: () => Iterable<number> | undefined = () => undefined) {}
 
   /** A `will-frame-navigate` of the window's webContents: `frame` is navigated to `url` by `initiator`. */
   navigating(frame: TrackedFrameLike | null | undefined, url: string, initiator: { readonly parent: unknown } | null | undefined): void {
@@ -55,11 +73,28 @@ export class PageTabFrameTabs {
     if (this.tabs.has(frame.frameTreeNodeId) || !url.startsWith('cc-plugin:')) return
     const tabId = pageTabOfFrameName(frame.name)
     if (tabId === undefined) return
+    this.prune()
     if (this.tabs.size >= MAX_TRACKED_PAGE_TAB_FRAMES) {
-      const oldest = this.tabs.keys().next()
-      if (!oldest.done) this.tabs.delete(oldest.value)
+      // Insertion order is use order (`tabOf` re-inserts a hit): the first is the least recently used.
+      const stalest = this.tabs.keys().next()
+      if (!stalest.done) this.tabs.delete(stalest.value)
     }
     this.tabs.set(frame.frameTreeNodeId, tabId)
+  }
+
+  /** Drop the records of frames no longer in the window's frame tree; nothing when it cannot be read. */
+  private prune(): void {
+    if (this.tabs.size === 0) return
+    let live: Set<number>
+    try {
+      const ids = this.liveFrames()
+      if (ids === undefined) return
+      live = new Set(ids)
+    } catch {
+      // The window's contents going away mid-call: keep every record (the cap still bounds them).
+      return
+    }
+    for (const id of [...this.tabs.keys()]) if (!live.has(id)) this.tabs.delete(id)
   }
 
   /**
@@ -69,7 +104,17 @@ export class PageTabFrameTabs {
    */
   tabOf(frame: TrackedFrameLike | null | undefined): string | undefined {
     if (!frame || frame.parent === null || frame.parent === undefined || !frame.url.startsWith('cc-plugin:')) return undefined
-    return this.tabs.get(frame.frameTreeNodeId)
+    const tab = this.tabs.get(frame.frameTreeNodeId)
+    if (tab === undefined) return undefined
+    // Used now: to the back of the eviction order (the cap's backstop evicts the least recently used).
+    this.tabs.delete(frame.frameTreeNodeId)
+    this.tabs.set(frame.frameTreeNodeId, tab)
+    return tab
+  }
+
+  /** How many frames are on record (tests). */
+  get size(): number {
+    return this.tabs.size
   }
 
   /** The shell page (re)loaded: its frames went with it. */

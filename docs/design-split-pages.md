@@ -187,7 +187,7 @@ focus never hands the keyboard back to the element the person typed in last, not
 mounts" case (a file pane mounting beside Claude takes the keys mid-word). Every check that finds an unproven frame
 focus is one a page could have triggered (its own `focus()` raises the window `blur`, its hint the rest), and an earlier
 give-back to a key typed within 500 ms let a hint from file B push the keyboard out of file A, just chosen by a chord,
-into the Claude textarea. The keys typed after such a steal are lost (the person sees the outline still on Claude and
+into the Claude textarea. The keys typed after such a steal are lost (the person sees the outline gone, the view keys off, and
 the cursor gone, and clicks); losing keys is safe, misdirecting them is not. The bundled editor no longer focuses
 itself at load (below), so the steal needs a page that does. The check itself (`checkFrames`, frame-focus.ts) has no
 way to focus anything but a frame's pane (`pick`, only ever a page tab); unit tests hold it to that for a hint, a
@@ -196,7 +196,15 @@ the pointer through to its pane (`pointer-events: none` on the iframe, `PageFram
 sees the pointer move, press or wheel: the person's next press on it, even without moving, lands on the shell's pane
 body and picks the pane (its `mousedown` default is prevented so the frame keeps the keyboard), and their next move
 gives fresh pointer evidence for a click into the frame. A click the shell could not prove costs one more click, never
-a key in the wrong pane. A pure `framePick(activeTab, activeId, evidence)` decides, unit-tested; the pool's own-focus
+a key in the wrong pane. Nor a chord on the wrong pane (the final review's MAJOR): a refusal also puts the view keys off
+(`focusRefused`, `TabsState.focusRefused`; checkFrames' `refuse`). Before, the outline and `activeId` stayed on the pane
+beside the file, and the person who clicked into the file and typed Cmd+W, the flag chord or a pane chord had it act on
+that pane: with the close question off, Cmd+W ended the Claude session at once. Keys off, the outline goes, no command
+acts on the active tab (D23 R1) and a `tabs.select` naming a visible pane is ignored until the person picks a pane (a
+press, the strip, a pane chord). Keys off moves no keys anywhere. This kind of keys off differs from D3's in one way: the
+person's next click into a frame with evidence picks it (`framePick`'s `refused`, the focused pane's own frame too, since
+the pick is what turns the keys on), so the recovery above is unchanged; D3's keys off still picks nothing from a frame.
+A view already keys off by D3 stays D3's, and a D3 change after a refusal makes it D3's. A pure `framePick(activeTab, activeId, evidence)` decides, unit-tested; the pool's own-focus
 record counts only while its tab stays the focused pane (`show` drops it when the selection moves on).
 
 A shell popup's give-back follows the same rule (`FocusGiveBack`, focus-give-back.ts; external review round 3). The
@@ -243,8 +251,11 @@ app while a frame holds the keyboard fires no shell `blur`, so that return arms 
 frame as `commands.trigger` with `from: 'page-tab'` and the tab main knows that frame by (`PageTabFrameTabs`,
 `page-tab-keys.ts`). The shell names each frame `cc-page-tab:<tab id>`, and main reads that name once, at the
 `will-frame-navigate` of the shell's own src set on its own child frame, before any page runs there; it is keyed by
-`frameTreeNodeId` and never read or overwritten again, so a page renaming or navigating itself changes nothing. The
-shell also reads which frame holds the keyboard from `document.activeElement` at that moment (a live frame of a
+`frameTreeNodeId` and never read or overwritten again, so a page renaming or navigating itself changes nothing. A
+record goes when its frame leaves the window's frame tree (checked against `mainFrame.framesInSubtree` at each new
+record), so the map holds the live page tab frames; its cap (256) is a backstop that evicts the record least recently
+used for a key, never the frame kept beside Claude all day (the final review's MAJOR: a FIFO cap forgot exactly that
+frame, and its chords stopped reaching the shell). The shell also reads which frame holds the keyboard from `document.activeElement` at that moment (a live frame of a
 visible pane, with `document.hasFocus()` true), and runs the chord only when that frame is the named tab's. Anything
 else is dropped, never run for `activeId` or another tab. The chord crosses processes, so the keyboard may have moved
 in between. The window `blur`'s check may have blurred the frame: a page's `focus()` with no evidence, then Cmd+W typed

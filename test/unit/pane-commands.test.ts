@@ -265,6 +265,27 @@ describe('pane commands', () => {
       expect(off.log).toEqual([])
     })
 
+    // The final review's MAJOR: the person clicks into the file beside Claude, the shell cannot prove
+    // it and blurs the frame (keys on nothing), and their Cmd+W, typed believing they are in the file,
+    // is a shell keydown with no target. It acted on `activeId`, the Claude pane: with the close
+    // question off, the session ended at once. The refusal now puts the view keys off.
+    it('after a refused frame focus, Cmd+W, the flag and the pane commands act on nothing until the person picks a pane', () => {
+      const h = harness('b', [{ type: 'focusRefused' }])
+      expect([h.state().activeId, h.state().keysOff, h.state().focusRefused]).toEqual(['b', true, true])
+      const log: string[] = []
+      const active = activeTabHandlers({ state: h.state, close: (id) => log.push(`close ${id}`), toggleFlag: (id) => log.push(`flag ${id}`) })
+      active['tab.close']!()
+      active[TOGGLE_FLAG_COMMAND]!()
+      const before = h.state()
+      for (const n of ['pane.splitRight', 'pane.showBesideDown', 'pane.moveOut', 'pane.zoom', 'pane.resizeRight', 'pane.moveRight']) h.handlers[n]!()
+      expect([log, h.sent, h.intents, h.state()]).toEqual([[], [], [], before])
+      // A pane chord typed in the shell is the person's pick: the keys come back (here to c, right of b).
+      h.handlers['pane.focusRight']!()
+      expect([h.state().activeId, h.state().keysOff, h.state().focusRefused, h.focusAsks]).toEqual(['c', false, false, ['c']])
+      active['tab.close']!()
+      expect(log).toEqual(['close c'])
+    })
+
     it("main's chord runs for the frame main saw it typed in while that frame keeps the keys, for activeId with no frame only from a webview panel, and not at all for a blurred one", () => {
       const fromPage = (tab: string | undefined) => ({ from: 'page-tab' as const, tab })
       const webview = { from: 'webview' as const }

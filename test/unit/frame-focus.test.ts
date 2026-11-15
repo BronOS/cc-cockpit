@@ -73,6 +73,19 @@ describe('framePick', () => {
   // The external review's MAJOR: the selection alone is no evidence. With the file pane focused and
   // the person typing in a shell field (the palette, a search box), the page's own focus() must not
   // take their keys.
+  // The final review's MAJOR: a refusal puts the view keys off with `activeId` still named. The
+  // person's next click into a frame with evidence picks it, the focused pane's own frame too (the
+  // pick is what turns the keys back on); without evidence it is blurred again. D3's keys off (null)
+  // stays as it was: nothing is picked.
+  it('after a refusal, evidence picks the frame, the focused pane included; none blurs again', () => {
+    expect(framePick(TAB_A, CLAUDE, ev({ pointerNear: true }), true)).toEqual({ pick: TAB_A })
+    expect(framePick(TAB_A, TAB_A, ev({ pointerNear: true }), true)).toEqual({ pick: TAB_A })
+    expect(framePick(TAB_A, TAB_A, ev(), true)).toEqual({ blur: true })
+    expect(framePick(TAB_A, CLAUDE, ev({ pointerNear: true, keyAfterPointer: true }), true)).toEqual({ blur: true })
+    expect(framePick(TAB_A, null, ev({ pointerNear: true }), true)).toEqual({ blur: true })
+    expect(framePick(null, CLAUDE, ev(), true)).toBeNull()
+  })
+
   it("the focused pane's own frame needs evidence too: without, it is blurred", () => {
     expect(framePick(TAB_A, TAB_A, ev({ keyAfterPointer: true }))).toEqual({ blur: true })
     expect(framePick(TAB_A, TAB_A, ev())).toEqual({ blur: true })
@@ -302,17 +315,33 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
     }
     const picks: string[] = []
     let active = focused
-    const handler = { activeId: () => active, pick: (id: string) => void picks.push(id) }
+    // TabsPane's state as the handler sees it: a refusal puts the view keys off (TabsState.focusRefused)
+    // with `activeId` still named; a pick turns the keys on again.
+    const keys = { refusals: 0, off: false }
+    const handler = {
+      activeId: () => active,
+      refused: () => keys.off,
+      pick: (id: string) => {
+        picks.push(id)
+        keys.off = false
+      },
+      refuse: () => {
+        keys.refusals++
+        keys.off = true
+      }
+    }
     let now = 10_000
     const pointer = new PointerEvidence(() => now)
     return {
       t,
       keyboard,
+      keys,
       picks,
       pointer,
       handler,
       select: (id: string) => {
         active = id
+        keys.off = false
         t.frames.show([TAB_A, TAB_B], id)
       },
       wait: (ms: number) => void (now += ms)
@@ -445,6 +474,46 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
     expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
   })
 
+  // The final review's MAJOR: the person's own click into the file beside Claude that the shell cannot
+  // prove (a tap, a pointer that jumped in) left the outline and `activeId` on Claude, and their next
+  // Cmd+W acted on Claude. Every refusal now puts the view keys off; their next click with evidence
+  // picks the file and turns the keys on again.
+  it('a refused frame puts the view keys off; the next click into it with evidence picks it and turns them on', async () => {
+    const s = await setup(CLAUDE)
+    // The pointer jumped into B with no shell event over it (a touch tap): no evidence.
+    s.t.el(TAB_B).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
+    expect([s.keys.refusals, s.keys.off, s.picks, s.keyboard.terminal]).toEqual([1, true, [], false])
+    // Nothing holding the keyboard: no further refusal.
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('none')
+    expect(s.keys.refusals).toBe(1)
+    // The person moves over B (the shell sees it through the pass-through) and clicks into it.
+    s.pointer.moved(500, 100)
+    s.t.el(TAB_B).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_B })
+    expect([s.keys.refusals, s.keys.off, s.picks]).toEqual([1, false, [TAB_B]])
+  })
+
+  it('after a refusal of the focused pane\'s own frame, the next click into it with evidence picks it again (the keys back on)', async () => {
+    const s = await setup(TAB_A)
+    s.pointer.shellInput()
+    s.t.el(TAB_A).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
+    expect(s.keys.off).toBe(true)
+    s.pointer.moved(100, 100)
+    s.t.el(TAB_A).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_A })
+    expect([s.keys.off, s.picks]).toEqual([false, [TAB_A]])
+  })
+
+  it('a hidden frame holding the keyboard is refused too: the view goes keys off', async () => {
+    const s = await setup(TAB_B)
+    s.t.frames.focus(TAB_B)
+    s.t.frames.show([TAB_A], TAB_A)
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
+    expect(s.keys.refusals).toBe(1)
+  })
+
   it('with fresh pointer evidence for B, its hint picks B (page to page, the outline follows): only ever a page tab', async () => {
     const s = await setup(TAB_A)
     s.t.frames.focus(TAB_A)
@@ -470,7 +539,7 @@ describe('checkFrames: the pointer evidence is measured in viewport pixels', () 
     t.el(TAB_A).fire()
     t.el(TAB_B).fire()
     const picks: string[] = []
-    const handler = { activeId: () => TAB_A, pick: (id: string) => void picks.push(id) }
+    const handler = { activeId: () => TAB_A, refused: () => false, pick: (id: string) => void picks.push(id), refuse: () => {} }
     return { t, picks, handler, pointer: new PointerEvidence(() => 1000) }
   }
 

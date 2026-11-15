@@ -1202,13 +1202,22 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // A frame took the keyboard (design-split-pages.md §4, checkFrameFocus): with the person's evidence
   // its pane is picked as their own act (the outline and `tabs.selected` follow, D18's keys on);
   // without, the frame is blurred and the keyboard goes to nothing, never "back to the focused pane"
-  // (often a Claude terminal) nor to where the person typed last (frame-focus.ts). `pick` is only
-  // ever called with the tab of a frame holding the keyboard, a page tab, never a terminal.
+  // (often a Claude terminal) nor to where the person typed last (frame-focus.ts), and the view goes
+  // keys off (`refuse`): the outline and every command on the active tab stop until the person picks a
+  // pane, so a Cmd+W typed next in the belief they are in the file closes nothing. `pick` is only ever
+  // called with the tab of a frame holding the keyboard, a page tab, never a terminal. After a
+  // refusal `activeId` is still given, so the person's next click into a frame with evidence picks it;
+  // D3's keys off gives none (nothing is picked from a frame).
   useEffect(
     () =>
       setFrameFocusHandler({
-        activeId: () => (stateRef.current.keysOff ? null : stateRef.current.activeId),
-        pick: (tabId) => dispatch({ type: 'selected', tabId })
+        activeId: () => {
+          const s = stateRef.current
+          return s.keysOff && !s.focusRefused ? null : s.activeId
+        },
+        refused: () => stateRef.current.keysOff && stateRef.current.focusRefused,
+        pick: (tabId) => dispatch({ type: 'selected', tabId }),
+        refuse: () => dispatch({ type: 'focusRefused' })
       }),
     []
   )

@@ -264,7 +264,8 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await page.mouse.up()
     await expect.poll(() => keysInFrame(page)).toBe(false)
     expect(await domFocusInTerminal(page)).toBe(false)
-    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    // The view is keys off (the final review's MAJOR): no outline, so no pane looks like it has them.
+    await expect(focusedPanes(page)).toHaveCount(0)
     await page.keyboard.type('yn')
     await page.keyboard.press('Enter')
     await expect.poll(() => domFocusInTerminal(page)).toBe(false)
@@ -313,9 +314,11 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await page.keyboard.type('qq')
     await expect(page.locator('#e2e-shell-field')).toHaveValue('ab')
     await page.evaluate(() => document.getElementById('e2e-shell-field')?.remove())
-    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    // The refusal put the view keys off: no outline until the person picks a pane.
+    await expect(focusedPanes(page)).toHaveCount(0)
     // The 'qq' typed after the page took the keys from the shell field reached nothing: the person
-    // clicks into the file again and a later key lands there first.
+    // clicks into the file again (with evidence, which picks it even keys off after a refusal) and a
+    // later key lands there first.
     await fileHeader.hover()
     await editor.locator('.cm-line', { hasText: 'two' }).click()
     await expect.poll(() => keysInFrame(page)).toBe(true)
@@ -397,7 +400,8 @@ test("a page's focus() closing the palette or the tab switcher over Claude: the 
     await expect.poll(() => keysInFrame(page)).toBe(false)
     await page.waitForTimeout(300)
     expect(await domFocusInTerminal(page)).toBe(false)
-    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    // The refused frame put the view keys off: no outline on Claude, whose pane has no keys.
+    await expect(focusedPanes(page)).toHaveCount(0)
     await page.keyboard.type('nn')
     await page.keyboard.press('Enter')
 
@@ -626,6 +630,65 @@ test('keys to the focused pane: Cmd+W in the file beside Claude closes the file,
   }
 })
 
+// The final review's MAJOR: a click into the file pane beside Claude that the shell cannot prove (a
+// touch tap, a pointer that jumped in, a key typed after the last move) blurs the frame with the keys
+// on nothing, but the outline and `activeId` stayed on Claude. The person, believing they are in the
+// file, types Cmd+W: a shell keydown with no frame target, which closed the Claude tab at once (the
+// close question is off in these specs, as with "Don't ask again"). The refusal now puts the view keys
+// off, and no command acts on the active tab until the person picks a pane.
+test('a refused click into the file beside Claude: Cmd+W closes nothing, until the person picks the file and it closes the file', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\nthree\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const file = await openFile(c, 'notes.txt')
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const editor = await pageIn(page, 'notes.txt')
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+
+    // One step from the Claude pane straight into the frame (no shell event over the file), a key
+    // after the move, then the click: no evidence, the frame is blurred and the keys go to nothing.
+    const line = await editor.locator('.cm-line', { hasText: 'two' }).boundingBox()
+    if (!line) throw new Error('no line box')
+    await page.mouse.move(line.x + 10, line.y + line.height / 2)
+    await page.keyboard.type('m')
+    await page.waitForTimeout(500)
+    await page.mouse.down()
+    await page.mouse.up()
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await expect(focusedPanes(page)).toHaveCount(0)
+
+    // Cmd+W, typed as a person does (a native key into the window): the Claude tab stays, no question.
+    await nativeChord(c, 'W', [NATIVE_MOD])
+    await page.waitForTimeout(700)
+    expect((await tabsOf(page)).map((t) => t.id)).toEqual([claude, file])
+    await expect(page.getByRole('alertdialog')).toHaveCount(0)
+    expect((await groupFor(page, claude)) !== undefined).toBe(true)
+
+    // The person's next click on the file, without moving, reaches its pane (the blurred frame lets
+    // the pointer through) and picks it: now Cmd+W closes the file, and Claude stays.
+    await page.mouse.down()
+    await page.mouse.up()
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+    await nativeChord(c, 'W', [NATIVE_MOD])
+    await expect.poll(async () => (await tabsOf(page)).map((t) => t.id)).toEqual([claude])
+    await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  } finally {
+    await close()
+  }
+})
+
 test("a page's focus hint never puts the keyboard in a terminal: typing in Claude, a chord into file A, then file B's hint, and no key reaches Claude", async () => {
   test.setTimeout(90_000)
   const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
@@ -658,12 +721,13 @@ test("a page's focus hint never puts the keyboard in a terminal: typing in Claud
     await fb.evaluate(() => window.parent.postMessage({ type: 'cc-plugin.tab-focus' }, '*'))
     await expect.poll(() => keysInFrame(page)).toBe(false)
     expect(await domFocusInTerminal(page)).toBe(false)
-    // The keys go to nothing: not Claude, not either page. The outline stays on A, the person's pick.
+    // The keys go to nothing: not Claude, not either page. The view is keys off (B's refused frame):
+    // no outline, and no command acts on A or Claude until the person picks a pane.
     await page.keyboard.type('yy')
     await page.keyboard.press('Enter')
     await page.waitForTimeout(700)
     expect(await domFocusInTerminal(page)).toBe(false)
-    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+    await expect(focusedPanes(page)).toHaveCount(0)
     await expect(fa.locator('.cm-content')).not.toContainText('yy')
     await expect(fb.locator('.cm-content')).not.toContainText('yy')
     // Claude got the 'k' only: the person clicks its pane and ends the line.

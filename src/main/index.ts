@@ -1374,8 +1374,10 @@ function start(server: boolean): void {
     const windowId = win.id
     // Which page tab each page tab frame of this window shows, recorded as the shell page sets the
     // frame's src (page-tab-keys.ts PageTabFrameTabs): a chord names the tab main saw it typed in.
-    // Not in server mode: the hidden page mounts no page tab.
-    const pageTabFrames = new PageTabFrameTabs()
+    // Not in server mode: the hidden page mounts no page tab. A record goes once its frame left the
+    // window's frame tree (read at each new record), so a frame in use all day is never forgotten.
+    // A read that throws (the contents going away) prunes nothing (PageTabFrameTabs.prune).
+    const pageTabFrames = new PageTabFrameTabs(() => win.webContents.mainFrame.framesInSubtree.map((f) => f.frameTreeNodeId))
     if (!server) {
       win.webContents.on('will-frame-navigate', (event) => {
         if (!event.isMainFrame) pageTabFrames.navigating(event.frame, event.url, event.initiator)

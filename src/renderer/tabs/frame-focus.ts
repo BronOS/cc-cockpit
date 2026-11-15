@@ -56,7 +56,11 @@
 // pointer through to its pane until the shell sees the pointer move (`passThrough`, PageTabArea.tsx):
 // the person's next press on it lands on the shell's pane and picks it, and their next move gives
 // fresh pointer evidence, so a click the shell could not prove costs one more click, never a key in
-// the wrong pane.
+// the wrong pane. Nor a chord on the wrong pane: the refusal also puts the view keys off (no outline,
+// and no command acts on the active tab, D23 R1), since the person who clicked into the file and
+// typed Cmd+W believes they are in it, and the outline and `activeId` were still on the pane beside it
+// (the final review's MAJOR: Cmd+W ended the Claude session there). Unlike D3's keys off, the person's
+// next click into a frame with evidence is picked (`framePick`'s `refused`), so that click still works.
 
 declare const viewportSpace: unique symbol
 
@@ -112,22 +116,26 @@ export interface FrameEvidence {
 
 /**
  * The decision (pure). `activeTab`: the tab whose frame holds the keyboard now (null: none does);
- * `activeId`: the view's focused pane, null while the keys are off (D3).
+ * `activeId`: the view's focused pane, null while the keys are off (D3); `refused`: the keys are off
+ * because an earlier check refused a frame (TabsState.focusRefused), `activeId` then still named.
  *
  * - No frame holds the keyboard: nothing to do (null).
- * - Keys off: the frame is blurred, whatever the evidence; nothing is picked and nothing gets the
+ * - Keys off (D3): the frame is blurred, whatever the evidence; nothing is picked and nothing gets the
  *   keyboard until the person picks a pane the shell sees (a header or pane press, which the blurred
  *   frame's pass-through lets reach the shell, a terminal click, a chord).
  * - With evidence: the person moved into that pane; the shell picks it (dispatches the selection,
- *   so the outline and `tabs.selected` follow), or keeps it (null) when it is the focused pane.
+ *   so the outline and `tabs.selected` follow), or keeps it (null) when it is the focused pane. After
+ *   a refusal it is always picked, the focused pane's own frame too: the pick is what turns the keys
+ *   back on (a refused click into the file, then the person's next one, with evidence, works).
  * - Without: the shell blurs the frame and the keyboard goes to nothing (the header's fail-safe),
- *   the focused pane's own frame included (the header: a shell field may have had the keys).
+ *   the focused pane's own frame included (the header: a shell field may have had the keys), and the
+ *   view goes keys off (`refuse`, checkFrames) so no command acts on the pane the outline was on.
  */
-export function framePick(activeTab: string | null, activeId: string | null, e: FrameEvidence): FramePick | null {
+export function framePick(activeTab: string | null, activeId: string | null, e: FrameEvidence, refused = false): FramePick | null {
   if (activeTab === null) return null
   if (activeId === null) return { blur: true }
   if (!(e.own || (e.pointerNear && e.pointerFresh && !e.keyAfterPointer))) return { blur: true }
-  return activeTab === activeId ? null : { pick: activeTab }
+  return activeTab === activeId && !refused ? null : { pick: activeTab }
 }
 
 /**
@@ -301,11 +309,22 @@ export interface FrameCheckPool {
 
 /**
  * What the check needs from TabsPane, which owns the selection: the focused pane (null while the keys
- * are off, D3) and picking a pane as the person's own act. Nothing here focuses anything else (header).
+ * are off by D3), whether the keys are off by an earlier refusal (then `activeId` still names the
+ * pane), picking a pane as the person's own act, and putting the view keys off when a frame is
+ * refused. Nothing here focuses anything else (header).
  */
 export interface FrameFocusHandler {
   activeId(): string | null
+  /** The keys are off because a check refused a frame (TabsState.focusRefused). */
+  refused(): boolean
   pick(tabId: string): void
+  /**
+   * A frame was blurred for want of evidence and the keyboard is on nothing: the view goes keys off
+   * (the final review's MAJOR), so Cmd+W, the flag and the pane chords typed next, in the belief the
+   * click went into the file, act on nothing rather than on the pane the outline was on (often the
+   * Claude pane beside it: Cmd+W would end the session). Keys off moves no keys anywhere.
+   */
+  refuse(): void
 }
 
 /**
@@ -315,8 +334,9 @@ export interface FrameFocusHandler {
  * the person's evidence the pane is picked; without, the frame is blurred and lets the pointer
  * through to its pane until the pointer moves (so the next press on it is one the shell sees). A frame
  * kept or picked is `proven`: it counts as the shell's own focus until the focus moves within the
- * shell, so a chord typed in it minutes later (the pointer evidence long stale) still names it. Its
- * effects are only `resync`, `blurFrame`, `passThrough`, `proven` and `pick`: never a terminal (header).
+ * shell, so a chord typed in it minutes later (the pointer evidence long stale) still names it. A frame
+ * blurred puts the view keys off (`refuse`). Its effects are only `resync`, `blurFrame`, `passThrough`,
+ * `proven`, `pick` and `refuse`: never a terminal (header).
  */
 export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, pointer: PointerEvidence, hinted?: string): FrameCheck {
   // Frame to frame, the shell's `activeElement` can stay on the frame the person left (measured:
@@ -329,16 +349,22 @@ export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, po
   // keyboard; were one to, nothing the person sees is there).
   if (!pool.isVisible(tab)) {
     pool.blurFrame(tab)
+    handler.refuse()
     return 'blurred'
   }
   const rects = pool.frameRects()
   const others = [...rects].filter(([id]) => id !== tab).map(([, rect]) => rect)
-  const decision = framePick(tab, handler.activeId(), {
-    own: pool.ownFocus(tab),
-    pointerNear: pointer.near(rects.get(tab) ?? null, others),
-    pointerFresh: pointer.fresh(),
-    keyAfterPointer: pointer.keyAfterPointer()
-  })
+  const decision = framePick(
+    tab,
+    handler.activeId(),
+    {
+      own: pool.ownFocus(tab),
+      pointerNear: pointer.near(rects.get(tab) ?? null, others),
+      pointerFresh: pointer.fresh(),
+      keyAfterPointer: pointer.keyAfterPointer()
+    },
+    handler.refused()
+  )
   if (decision === null || 'pick' in decision) {
     if (decision !== null) handler.pick(decision.pick)
     pool.proven(tab)
@@ -346,5 +372,6 @@ export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, po
   }
   pool.blurFrame(tab)
   pool.passThrough(tab)
+  handler.refuse()
   return 'blurred'
 }
