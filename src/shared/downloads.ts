@@ -77,6 +77,8 @@ export type DownloadSkipReason =
   | 'unreadable'
   /** A name a receiving system would misread (`\`, control or bidi characters, invalid UTF-8). */
   | 'name'
+  /** More than DOWNLOAD_WALK_MAX_DEPTH folders below the root (the walk is bounded, never a stack to exhaust). */
+  | 'deep'
 
 export type DownloadSkipped = Partial<Record<DownloadSkipReason, number>>
 

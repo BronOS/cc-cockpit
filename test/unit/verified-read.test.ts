@@ -2,12 +2,13 @@
 // verified descriptor. Each case swaps something between the check and the read, the window a
 // read by name would leave open. Real files in a temp dir.
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readInside, resolveInside } from '../../src/main/plugins/validate'
-import { readVerified } from '../../src/main/verified-read'
+import { openVerified, readVerified } from '../../src/main/verified-read'
 
 let root: string
 let folder: string
@@ -76,6 +77,63 @@ describe('readVerified', () => {
     expect(await readVerified(target.real, 4, target)).toEqual({ ok: false, problem: 'too-large' })
     rmSync(target.real)
     expect(await readVerified(target.real, 1024, target)).toEqual({ ok: false, problem: 'missing' })
+  })
+})
+
+describe('openVerified', () => {
+  it('hands over the checked descriptor and its fstat', async () => {
+    const target = await checked()
+    const opened = await openVerified(target.real, target)
+    if (!opened.ok) throw new Error(opened.problem)
+    try {
+      expect(opened.stat.size).toBe(13)
+      expect(opened.stat.ino).toBe(target.ino)
+      expect((await opened.handle.readFile()).toString()).toBe('<p>inside</p>')
+    } finally {
+      await opened.handle.close()
+    }
+  })
+
+  it('refuses a replaced file, a missing one, a symlink and a swapped folder above it', async () => {
+    const target = await checked()
+    writeFileSync(join(folder, 'sub', 'other.html'), 'other')
+    renameSync(join(folder, 'sub', 'other.html'), target.real)
+    expect(await openVerified(target.real, target)).toEqual({ ok: false, problem: 'changed' })
+    rmSync(target.real)
+    expect(await openVerified(target.real)).toEqual({ ok: false, problem: 'missing' })
+    symlinkSync(join(outside, 'page.html'), target.real)
+    expect(await openVerified(target.real)).toEqual({ ok: false, problem: 'symlink' })
+    rmSync(target.real)
+    writeFileSync(target.real, 'back')
+    renameSync(join(folder, 'sub'), join(root, 'old-sub'))
+    symlinkSync(join(root, 'old-sub'), join(folder, 'sub'))
+    expect(await openVerified(target.real)).toEqual({ ok: false, problem: 'changed' })
+  })
+
+  it('refuses a FIFO without blocking, a device and a Unix socket', async () => {
+    const fifo = join(folder, 'fifo')
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
+    expect(await openVerified(fifo)).toEqual({ ok: false, problem: 'not-file' })
+    expect(await openVerified('/dev/null')).toEqual({ ok: false, problem: 'not-file' })
+    const sock = join(folder, 's.sock')
+    const server = createServer()
+    await new Promise<void>((resolve) => server.listen(sock, resolve))
+    try {
+      expect(await openVerified(sock)).toEqual({ ok: false, problem: 'not-file' })
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it.runIf(process.platform === 'linux')('leaves no descriptor open on a refusal', async () => {
+    const fds = (): number => readdirSync('/proc/self/fd').length
+    const target = await checked()
+    const before = fds()
+    for (let i = 0; i < 20; i++) {
+      expect((await openVerified('/dev/null')).ok).toBe(false)
+      expect((await openVerified(target.real, { dev: target.dev, ino: target.ino + 1 })).ok).toBe(false)
+    }
+    expect(fds()).toBe(before)
   })
 })
 

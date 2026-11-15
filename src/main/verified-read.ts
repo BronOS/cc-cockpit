@@ -15,7 +15,8 @@
 // What this cannot prove: Node has no openat() or F_GETPATH, so an ancestor flipped to a symlink
 // for the open and back again before the recheck is not caught. The checks narrow that to the
 // microseconds between two system calls, for someone already able to write inside the folder.
-// skill-files.ts does the same, synchronously, for the skill copy (its build must be synchronous).
+// openVerified stops after the checks and hands the descriptor over, for a caller that streams it (a
+// download, a zip entry). skill-files.ts does the same, synchronously, for the skill copy (its build must be synchronous).
 // Pure Node, no Electron.
 import { constants, type Stats } from 'node:fs'
 import { open, realpath, stat, type FileHandle } from 'node:fs/promises'
@@ -57,12 +58,19 @@ export function sameFile(a: Pick<Stats, 'dev' | 'ino'>, b: Pick<Stats, 'dev' | '
   return a.dev === b.dev && a.ino === b.ino
 }
 
+export type VerifiedOpen = { ok: true; handle: FileHandle; stat: Stats } | { ok: false; problem: Exclude<VerifiedProblem, 'too-large'> }
+
 /**
- * The bytes of `real` (absolute, already realpath'd and checked by the caller), read as above.
- * `expect`: the dev/inode the caller's own stat saw, when it has one. Throws only for an fs error
- * other than the refusals (EACCES, EIO): the callers already treat a failed read as one.
+ * `real` (absolute, already realpath'd and checked by the caller) opened through one verified
+ * descriptor, as above, for a caller that streams instead of reading whole (a download, a zip
+ * entry): the handle is the caller's to close, `stat` is the descriptor's fstat (its size is what a
+ * download promises in `Content-Length`). Refused: a symlink at the last component, anything but a
+ * regular file (a FIFO opened non-blocking, a device; a Unix socket fails the open with ENXIO), and a
+ * name that no longer leads to the descriptor's file. `expect`: the dev/inode the caller's own stat
+ * saw, when it has one (a download's token re-resolved at the GET). Throws only for an fs error other
+ * than the refusals (EACCES, EIO), with nothing left open.
  */
-export async function readVerified(real: string, maxBytes: number, expect?: Pick<Stats, 'dev' | 'ino'>): Promise<VerifiedRead> {
+export async function openVerified(real: string, expect?: Pick<Stats, 'dev' | 'ino'>): Promise<VerifiedOpen> {
   let handle: FileHandle
   try {
     handle = await open(real, VERIFIED_OPEN_FLAGS)
@@ -70,13 +78,37 @@ export async function readVerified(real: string, maxBytes: number, expect?: Pick
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, problem: 'missing' }
     if (code === 'ELOOP') return { ok: false, problem: 'symlink' }
+    // A Unix socket cannot be opened as a file (Linux ENXIO, macOS EOPNOTSUPP): not a file, not an error.
+    if (code === 'ENXIO' || code === 'EOPNOTSUPP') return { ok: false, problem: 'not-file' }
     throw err
   }
   try {
     const st = await handle.stat()
-    if (!st.isFile()) return { ok: false, problem: 'not-file' }
-    if (expect !== undefined && !sameFile(st, expect)) return { ok: false, problem: 'changed' }
-    if (!(await namesFile(real, st))) return { ok: false, problem: 'changed' }
+    let problem: 'not-file' | 'changed' | undefined
+    if (!st.isFile()) problem = 'not-file'
+    else if (expect !== undefined && !sameFile(st, expect)) problem = 'changed'
+    else if (!(await namesFile(real, st))) problem = 'changed'
+    if (problem === undefined) return { ok: true, handle, stat: st }
+    await handle.close().catch(() => {})
+    return { ok: false, problem }
+  } catch (err) {
+    // fstat failing (EIO): the descriptor must not leak with the throw.
+    await handle.close().catch(() => {})
+    throw err
+  }
+}
+
+/**
+ * The bytes of `real` (absolute, already realpath'd and checked by the caller), read as above
+ * (`openVerified`, then at most `maxBytes` from the descriptor). `expect`: the dev/inode the caller's
+ * own stat saw, when it has one. Throws only for an fs error other than the refusals (EACCES, EIO):
+ * the callers already treat a failed read as one.
+ */
+export async function readVerified(real: string, maxBytes: number, expect?: Pick<Stats, 'dev' | 'ino'>): Promise<VerifiedRead> {
+  const opened = await openVerified(real, expect)
+  if (!opened.ok) return opened
+  const { handle, stat: st } = opened
+  try {
     if (st.size > maxBytes) return { ok: false, problem: 'too-large' }
     const data = await readCapped(handle, Math.min(st.size, maxBytes), maxBytes)
     return data === null ? { ok: false, problem: 'too-large' } : { ok: true, data }
