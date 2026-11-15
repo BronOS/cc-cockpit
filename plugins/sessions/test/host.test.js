@@ -265,3 +265,15 @@ test('refused goes to the page that asked, and only that page', async () => {
   assert.equal(calls.filter((c) => c[0] === 'post' && c[2].type === 'state').every((c) => c.length === 3), true)
   host.deactivate()
 })
+
+test('a room member tab reaches the panel with its room and held fields untouched', async () => {
+  const host = load()
+  const room = { title: 'Release', name: 'alice', coordinator: true }
+  const own = [{ tabId: 't1', status: 'idle', notes: [], files: [], room, held: 2 }]
+  const { ctx, calls } = fakeCtx({ own })
+  host.activate(ctx)
+  await tick()
+  const last = calls.filter((c) => c[0] === 'post').at(-1)[2].sessions
+  assert.deepEqual(last[0].room, room)
+  assert.equal(last[0].held, 2)
+})

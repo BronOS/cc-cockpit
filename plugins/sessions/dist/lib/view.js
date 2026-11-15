@@ -52,6 +52,22 @@
   }
 
   /**
+   * A room member's marker (SessionInfo.room): `{ text, title }` or undefined. The room title is a
+   * plugin's text, so it is only ever drawn as text (textContent / title attribute), capped here.
+   * `text` is the member's name (with a star for the coordinator), `title` the tooltip.
+   */
+  function roomOf(room) {
+    if (!room || typeof room !== 'object' || typeof room.name !== 'string' || room.name === '') return undefined
+    const name = room.name.slice(0, 40)
+    const roomTitle = typeof room.title === 'string' ? room.title.slice(0, 120) : ''
+    const coordinator = room.coordinator === true
+    return {
+      text: coordinator ? `${name} \u2605` : name,
+      title: `Room${roomTitle ? ` ${roomTitle}` : ''}: ${name}${coordinator ? ' (coordinator)' : ''}`
+    }
+  }
+
+  /**
    * The panel's two groups: the flagged tabs first ("Flagged", the ones the person marked to come
    * back to), then the rest, each in the list's order (tab creation order). `index` is each tab's
    * 1-based place in the whole list, so "Claude N" names a tab the same in either group.
@@ -111,6 +127,10 @@
     }
     const flag = flagOf(session.flag)
     if (flag) card.flag = flag
+    const room = roomOf(session.room)
+    if (room) card.room = room
+    // The held count only means something in a room (messages waiting for the person to deliver).
+    if (room && Number.isInteger(session.held) && session.held > 0) card.held = session.held
     if (typeof session.gist === 'string' && session.gist !== '') {
       card.summary = { text: session.gist, title: session.lastPrompt || session.gist, gist: true }
     } else if (typeof session.lastPrompt === 'string' && session.lastPrompt !== '') {
@@ -198,5 +218,5 @@
       })
   }
 
-  return { FILES_SHOWN, machineView, FLAG_COLORS, filesShownOf, flagOf, groupSessions, isColor, statusText, splitPath, cardView, metaText, stripView }
+  return { FILES_SHOWN, machineView, FLAG_COLORS, filesShownOf, flagOf, roomOf, groupSessions, isColor, statusText, splitPath, cardView, metaText, stripView }
 })
