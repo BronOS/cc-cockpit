@@ -83,6 +83,7 @@ export class SessionRegistry {
   /** Insertion order = tab creation order, which is what the strip's stable sort relies on. */
   private readonly entries = new Map<string, SessionEntry>()
   private readonly listeners = new Set<(change: SessionChange) => void>()
+  private readonly inputListeners = new Set<(tabId: string) => void>()
   private readonly interval: number
   private readonly log: (message: string) => void
   private lastSent = -Infinity
@@ -230,8 +231,36 @@ export class SessionRegistry {
    * `hook` socket handler) must call this before any `await`, so two hooks from one connection
    * cannot be reordered (see status-reducer.ts). False when the tab has no entry.
    */
-  applyHook(tabId: string, event: HookEvent, payload: unknown): boolean {
-    return this.apply(tabId, { type: 'hook', event, payload })
+  applyHook(tabId: string, event: HookEvent, payload: unknown, blocked?: string): boolean {
+    // `blocked` is the ack id of the room block main answered this Stop with (rooms/room-stop.ts);
+    // only a Stop can be blocked, so it is dropped for any other event.
+    const ev: ReducerEvent = event === 'Stop' && blocked !== undefined ? { type: 'hook', event, payload, blocked } : { type: 'hook', event, payload }
+    return this.apply(tabId, ev)
+  }
+
+  /**
+   * A Stop main answered with a room block got no ack from `ccc` in time (rooms/room-stop.ts,
+   * design-rooms.md §2): it is applied as the plain Stop it then was (`waiting`, the gate delivers
+   * its head), but only while the entry still holds that very block (SessionEntry.blockedStop). A
+   * later hook cleared it, so a turn that went on is never set waiting by a late timer. True when
+   * the Stop was applied.
+   */
+  unblockStop(tabId: string, ackId: string): boolean {
+    const prev = this.entries.get(tabId)
+    if (prev?.blockedStop === undefined || prev.blockedStop !== ackId) return false
+    return this.apply(tabId, { type: 'hook', event: 'Stop', payload: null })
+  }
+
+  /**
+   * Listen for the person's input in a tab (every chunk userInput counts as the person's, not only
+   * the first): the room stop resets a tab's run of Stop blocks and its room's auto-pause count on
+   * it (rooms/room-stop.ts). The tab id only, after the input's own change was applied.
+   */
+  onPersonInput(listener: (tabId: string) => void): () => void {
+    this.inputListeners.add(listener)
+    return () => {
+      this.inputListeners.delete(listener)
+    }
   }
 
   /**
@@ -272,6 +301,13 @@ export class SessionRegistry {
       // Stop pointer and the badge still reach the tab), it never types anything.
       if (next.draft !== true) next = { ...next, draft: true }
       if (next !== entry) this.set(entry, next, dropped)
+      for (const listener of [...this.inputListeners]) {
+        try {
+          listener(tabId)
+        } catch (err) {
+          this.log(`session registry: a person-input subscriber threw: ${errorText(err)}`)
+        }
+      }
     }
     if (isAnswerKey(data)) this.apply(tabId, { type: 'answer' })
   }
@@ -515,6 +551,7 @@ export class SessionRegistry {
     for (const timer of this.settleTimers.values()) clearTimeout(timer)
     this.settleTimers.clear()
     this.listeners.clear()
+    this.inputListeners.clear()
   }
 
   private apply(tabId: string, event: ReducerEvent): boolean {

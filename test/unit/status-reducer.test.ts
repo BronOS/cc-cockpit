@@ -556,3 +556,40 @@ describe('UserPromptSubmit and harness markup (harness-markup.ts)', () => {
     expect(e.recentPrompts).toEqual(Array.from({ length: MAX_RECENT_PROMPTS }, (_, i) => `p${i + 3}`))
   })
 })
+
+describe('a Stop main answered with the room pointer (design-rooms.md §2 "The Stop pointer")', () => {
+  const blockedStop = (ackId: string): ReducerEvent => ({ type: 'hook', event: 'Stop', payload: {}, blocked: ackId })
+
+  it('is not a Stop: the tab stays working, the tool clears and the block waits for its ack', () => {
+    const next = reduce(withStatus('working', { tool: 'Bash' }), blockedStop('a1'))
+    expect(next).toMatchObject({ status: 'working', blockedStop: 'a1' })
+    expect(next.tool).toBeUndefined()
+  })
+
+  it('a plain Stop is waiting as before and clears an older block', () => {
+    expect(reduce(withStatus('working'), hook('Stop')).status).toBe('waiting')
+    const next = reduce(withStatus('working', { blockedStop: 'a1' }), hook('Stop'))
+    expect(next.status).toBe('waiting')
+    expect(next.blockedStop).toBeUndefined()
+  })
+
+  it('a new blocked Stop replaces the older block', () => {
+    expect(reduce(withStatus('working', { blockedStop: 'a1' }), blockedStop('a2')).blockedStop).toBe('a2')
+  })
+
+  it.each(HOOKS.filter((e) => e !== 'Stop'))('any later %s clears the block: the turn went on', (event) => {
+    const next = reduce(withStatus('working', { blockedStop: 'a1' }), hook(event, { tool_name: 'Bash' }))
+    expect(next.blockedStop).toBeUndefined()
+  })
+
+  it('the exit clears it; an answer key (the person) does not', () => {
+    expect(reduce(withStatus('working', { blockedStop: 'a1' }), { type: 'exit', code: 0 }).blockedStop).toBeUndefined()
+    const entry = withStatus('working', { blockedStop: 'a1' })
+    expect(reduce(entry, { type: 'answer' })).toBe(entry)
+  })
+
+  it('an ended entry is not revived by a blocked Stop', () => {
+    const dead = reduce(withStatus('working'), { type: 'exit', code: 1 })
+    expect(reduce(dead, blockedStop('a1'))).toBe(dead)
+  })
+})

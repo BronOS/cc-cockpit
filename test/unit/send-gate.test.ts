@@ -807,3 +807,17 @@ describe('registry wiring', () => {
     expect(texts()).toEqual([paste('a')])
   })
 })
+
+describe('a Stop main answered with the room pointer (rooms/room-stop.ts)', () => {
+  it('delivers no head, even on an entry that would take text', () => {
+    const e = entryIn('waiting', { queue: [item('a', 'a', 'core')] })
+    const step = afterEvent(e, { type: 'hook', event: 'Stop', payload: {}, blocked: 'ack-1' })
+    expect(step.write).toBeUndefined()
+    expect(step.entry.queue).toHaveLength(1)
+  })
+
+  it('a plain Stop still delivers the head', () => {
+    const e = entryIn('waiting', { queue: [item('a', 'a', 'core')] })
+    expect(afterEvent(e, hook('Stop')).write).toBe(paste('a'))
+  })
+})

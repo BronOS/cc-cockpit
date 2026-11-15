@@ -96,6 +96,11 @@ export interface RoomDeliveryDeps {
   tabRoom(tabId: string): TabRoom | undefined
   /** The plugin's room send caps, read on every send (Task 11: the person's override). Defaults when absent. */
   limits?(pluginId: string): RoomSendLimits
+  /**
+   * A pointer went in through the gate on main's own decision (offer), not the person's badge click: the room stop
+   * counts it toward the room's auto-pause (room-stop.ts delivered).
+   */
+  delivered?(roomId: string): void
   now?: () => number
   log?: (message: string) => void
 }
@@ -188,7 +193,9 @@ export class RoomDelivery {
       return decision.pointer ? heldAnswer(name, 'no-tab', undefined) : heldAnswer(name, decision.why, decision.status)
     }
     // The gate re-checks at the paste (a failed PTY write is also a false): held, the next chance decides again.
-    return this.paste(tabId, held) ? { to: name, path: 'delivered' } : heldAnswer(name, 'not-waiting', entry?.status)
+    if (!this.paste(tabId, held)) return heldAnswer(name, 'not-waiting', entry?.status)
+    this.deps.delivered?.(room.id)
+    return { to: name, path: 'delivered' }
   }
 
   /**

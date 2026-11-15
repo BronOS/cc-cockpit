@@ -7,24 +7,35 @@
 // timestamp or sequence number and are in Claude's order only because every hook is synchronous
 // (hooks-file.ts), so an `await` here would let the per-connection async serve() reorder two
 // hooks. Do not add one.
+//
+// A Stop is first offered to the room stop (rooms/room-stop.ts, design-rooms.md §2 "The Stop
+// pointer"), also synchronously: a member with room messages that may be continued gets the fixed
+// pointer as the reply `{ block, ackId }` (Task 7's `ccc` prints it as `decision: block` and acks),
+// and the Stop is applied as blocked, so the tab stays working and the gate delivers nothing. Every
+// other event, and a Stop with no block, answers null as before.
 import { isHookEvent } from '../../shared/hooks'
+import type { StopBlock } from '../rooms/room-stop'
 import type { Handler } from '../socket/socket-server'
 import type { SessionRegistry } from './session-registry'
 
-export function hookHandler(registry: Pick<SessionRegistry, 'applyHook'>): Handler {
+export function hookHandler(
+  registry: Pick<SessionRegistry, 'applyHook'>,
+  rooms?: { stop(tabId: string, payload: unknown): StopBlock | undefined }
+): Handler {
   return (args, caller) => {
     // A hook always runs inside a Claude tab. A --project caller has no business here, and
     // neither has a window token (a shell tab running `ccc hook` by hand, or a `claude` started in
     // one whose user hooks call it): applying it would create a status entry for a tab that is
     // not a Claude session. The server refuses that token for `hook` already; this is the second
-    // line. The CLI does not read the reply, so the hook still exits 0.
+    // line. A refused hook still exits 0 (the CLI never fails a hook).
     if (caller.kind !== 'session') throw new Error('hook needs a Claude session token')
     const event = args.event
     if (typeof event !== 'string' || !isHookEvent(event)) throw new Error('unknown hook event')
     // `payload` is null when the CLI could not parse stdin (oversized or not JSON; `truncated`
     // says which, and changes nothing here): the event still counts, with no payload to read.
     // The reducer treats any non-object payload that way, so it is passed through as is.
-    registry.applyHook(caller.tabId, event, args.payload)
-    return null
+    const block = event === 'Stop' ? rooms?.stop(caller.tabId, args.payload) : undefined
+    registry.applyHook(caller.tabId, event, args.payload, block?.ackId)
+    return block === undefined ? null : { block: block.block, ackId: block.ackId }
   }
 }

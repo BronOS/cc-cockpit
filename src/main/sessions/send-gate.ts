@@ -11,7 +11,10 @@
 //     in flight (`delivering`) and not in the settle window right after SessionStart (`settling`);
 //   - a delivery happens on exactly three occasions: a `send` that finds the tab sendable, a
 //     `Stop` (one queue item per Stop; the rest wait for later Stops), and the end of the settle
-//     window (`settled`, one item: text sent while the tab was starting);
+//     window (`settled`, one item: text sent while the tab was starting). A Stop main answered with
+//     the room pointer as a block (rooms/room-stop.ts) is not one: Claude goes on working, so the
+//     head waits; if `ccc` never acks that block, the room stop applies a plain Stop later
+//     (SessionRegistry.unblockStop), and that one delivers;
 //   - nothing else delivers: not an idle Notification that promotes a tab to waiting, not the
 //     `delivering` timeout, not a restart (a restart's SessionStart only opens a settle window).
 //
@@ -28,7 +31,8 @@
 //     texts only from the first keystroke main has read, so a paste main writes before that
 //     keystroke reaches it still lands; the plan accepts that;
 //   - delivery is synchronous inside our Stop hook. If another Stop hook of the user returns
-//     decision "block" (loop-style plugins), Claude keeps working and the paste lands mid-turn;
+//     decision "block" (loop-style plugins), Claude keeps working and the paste lands mid-turn
+//     (main knows only about its own block, the room pointer);
 //   - a permission dialog raised while the main agent is waiting (background task, subagent) is on
 //     screen before its Notification(permission_prompt) reaches main, possibly seconds before
 //     (claude 2.1.314 has a 6 s notify timer for it). The tool's PreToolUse fires BEFORE the permission check and the
@@ -269,7 +273,9 @@ export function afterEvent(entry: SessionEntry, event: ReducerEvent): GateStep {
   if (event.event === 'UserPromptSubmit') {
     return entry.delivering ? { entry: { ...entry, delivering: false } } : { entry }
   }
-  if (event.event === 'Stop') return deliverHead(entry)
+  // A blocked Stop (status-reducer.ts) left the tab working, so maySend would refuse anyway; the
+  // explicit check keeps the rule readable here and safe should the reducer's answer ever change.
+  if (event.event === 'Stop') return event.blocked === undefined ? deliverHead(entry) : { entry }
   return { entry }
 }
 
