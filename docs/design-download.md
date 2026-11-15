@@ -374,6 +374,11 @@ No open questions are left: the owner answered the first draft's four and the re
   handling is installed before the zip's data dir lookup, which is raced against the abort, the walk's `lstat` and
   listing are raced, each zip entry's open and its close after the entry's last byte are raced against the abort, and a
   single file's close after the last byte is raced against a drop.
+- An offer's checks (`ccc download`: resolve's realpaths, `stat` and the file probe's open, the folder count) are raced
+  against the caller going away and the window closing: its in-flight place among the 3 waiting is freed at once and the
+  checks finish in the background with no offer (re-checked before the ask). The count's 10 s budget ends a stalled walk
+  with the caller still there. A start (`ctx.files.download`, an accepted offer) is raced against the window closing the
+  same way, with no token minted after it.
 - A folder's walk skip reason `deep` (past depth 64) was added. Folder caps are enforced again while streaming, with no
   second walk at the GET.
 - One GET per download was seen in Chromium (Task 1), so no second-GET grace exists; Electron has no Chrome download

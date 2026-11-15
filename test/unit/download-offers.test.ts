@@ -2,7 +2,8 @@
 // one payload, first answer wins, `hold` only in server mode, the desktop with no browser view refused,
 // `ready`'s replay, the accept taken only from a remote view of the offer's window, a Try again only
 // from the accepting device, and the per-window limits. Real trees in a temp dir, like downloads.test.ts.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Stats } from 'node:fs'
+import { lstat, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +19,7 @@ import {
 } from '../../src/shared/downloads'
 import { desktopViewId } from '../../src/shared/views'
 import { windowSnapshot, type SnapshotSources } from '../../src/main/web/connection'
+import { openVerified } from '../../src/main/verified-read'
 
 let tmp: string
 let proj: string
@@ -87,6 +89,101 @@ function write(abs: string, data = 'hello'): string {
   writeFileSync(abs, data)
   return abs
 }
+
+/** Never settles: an fs call on a dead network mount. */
+const HUNG = new Promise<never>(() => {})
+
+/**
+ * Each await of an offer's checks that a dead mount can stall (resolve's data dir realpath, the file
+ * probe's open, the folder count's lstat and readdir), hung for paths under `stalled/` (or while
+ * `hangDataDir`), real for the rest.
+ */
+function stallingDeps(stall: 'realpath' | 'open' | 'lstat' | 'readdir', hangDataDir: { on: boolean }): Partial<DownloadsDeps> {
+  const hit = (p: string): boolean => p.includes('/stalled')
+  return {
+    realpath: (p) => (stall === 'realpath' && hangDataDir.on ? HUNG : realpath(p)),
+    probeOpen: (p, expect) => (stall === 'open' && hit(p) ? HUNG : openVerified(p, expect)),
+    walkFs: {
+      lstat: (p: string): Promise<Stats> => (stall === 'lstat' && hit(p) ? HUNG : lstat(p)),
+      readdir: (p: string): Promise<Buffer[]> => (stall === 'readdir' && hit(p) ? HUNG : Promise.resolve(readdirSync(p, { encoding: 'buffer' }))),
+    },
+  }
+}
+
+/** `p` settled within 2 s, or 'still held'. */
+function settledSoon<T>(p: Promise<T>): Promise<PromiseSettledResult<T> | 'still held'> {
+  return Promise.race([
+    p.then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason }),
+    ),
+    new Promise<'still held'>((r) => setTimeout(() => r('still held'), 2000)),
+  ])
+}
+
+describe('offers: a stalled check never holds a place', () => {
+  // The stalled target per stall: a file for the realpath (resolve) and the open (the probe), a folder
+  // for the count's lstat and readdir.
+  for (const stall of ['realpath', 'open', 'lstat', 'readdir'] as const) {
+    for (const how of ['the callers leave', 'the window closes'] as const) {
+      it(`a ${stall} stalled in ${DOWNLOAD_OFFERS_WAITING_MAX} offers: ${how}, their places free at once, a healthy offer works`, async () => {
+        const hangDataDir = { on: true }
+        const d = make({ ...stallingDeps(stall, hangDataDir), walkTimeoutMs: 60_000 })
+        const target = stall === 'lstat' || stall === 'readdir' ? join(proj, 'stalled') : write(join(proj, 'stalled', 'a.txt'))
+        mkdirSync(join(proj, 'stalled'), { recursive: true })
+        write(join(proj, 'stalled', 'b.txt'))
+        const callers = Array.from({ length: DOWNLOAD_OFFERS_WAITING_MAX }, () => new AbortController())
+        const stuck = callers.map((ac) => d.offer(CALLER, target, ac.signal))
+        // All places are held: one more is refused before any fs call.
+        await expect(d.offer(CALLER, write(join(proj, 'ok.txt')))).rejects.toThrow(/already waiting/)
+        if (how === 'the callers leave') for (const ac of callers) ac.abort()
+        else d.windowClosed(WINDOW)
+        for (const p of stuck) {
+          const r = await settledSoon(p)
+          expect(r).toMatchObject({ status: 'rejected' })
+          expect(String((r as PromiseRejectedResult).reason)).toMatch(how === 'the callers leave' ? /went away/ : /window is gone/)
+        }
+        hangDataDir.on = false
+        await expect(d.offer(CALLER, join(proj, 'ok.txt'))).resolves.toMatchObject({ waiting: false })
+        expect(offers.map((o) => o.offer.name)).toEqual(['ok.txt'])
+      })
+    }
+  }
+
+  it('the folder count\'s budget frees the place of a walk stalled with its caller still there', async () => {
+    const d = make({ ...stallingDeps('lstat', { on: false }), walkTimeoutMs: 50 })
+    mkdirSync(join(proj, 'stalled'))
+    const stuck = Array.from({ length: DOWNLOAD_OFFERS_WAITING_MAX }, () => d.offer(CALLER, join(proj, 'stalled'), new AbortController().signal))
+    for (const p of stuck) await expect(p).rejects.toThrow('stalled has too many files to count')
+    await expect(d.offer(CALLER, write(join(proj, 'ok.txt')))).resolves.toMatchObject({ waiting: false })
+  })
+
+  it('a stalled check that finishes after its caller left makes no offer', async () => {
+    let release: ((v: string) => void) | undefined
+    const d = make({ realpath: (p) => (release ? realpath(p) : new Promise<string>((r) => (release = r)).then(() => realpath(p))) })
+    const ac = new AbortController()
+    const p = d.offer(CALLER, write(join(proj, 'a.txt')), ac.signal)
+    await vi.waitFor(() => expect(release).toBeDefined())
+    ac.abort()
+    await expect(p).rejects.toThrow(/went away/)
+    release?.('')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(offers).toEqual([])
+    expect(d.offerCount).toBe(0)
+  })
+
+  it('a start (ctx.files.download, an accept) stalled in its checks ends when the window closes, with no token', async () => {
+    const hangDataDir = { on: true }
+    const d = make(stallingDeps('realpath', hangDataDir))
+    write(join(proj, 'a.txt'))
+    const p = d.start(PHONE, { projectId: 'p1', rel: 'a.txt' }, false)
+    d.windowClosed(WINDOW)
+    const r = await settledSoon(p)
+    expect(r).toMatchObject({ status: 'rejected' })
+    expect(String((r as PromiseRejectedResult).reason)).toMatch(/window is gone/)
+    expect(starts).toEqual([])
+  })
+})
 
 describe('offers: who gets one', () => {
   it('a desktop with no browser view refuses: the file is already on this computer', async () => {

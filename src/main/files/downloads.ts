@@ -179,6 +179,8 @@ export interface DownloadsDeps {
   walkFs?: WalkFs
   /** The open of a file served, and of each file zipped, instead of `openVerified` (one whose reads stall). */
   open?: typeof openVerified
+  /** Tests only: the check's probe open instead of `openVerified` (one that stalls), apart from `open` above. */
+  probeOpen?: typeof openVerified
   /** Tests only: the data dir's realpath instead of `fs.realpath` (one that stalls). */
   realpath?: (p: string) => Promise<string>
   walkTimeoutMs?: number
@@ -256,6 +258,11 @@ export class Downloads {
   private lastOfferSend: { requestId: string; sent: boolean; threw?: true } | undefined
   /** Per window, offers past the first limit check and not yet asked (parallel calls must not all pass it). */
   private readonly offersInFlight = new Map<number, number>()
+  /**
+   * Per window, aborted by windowClosed: the offers and starts awaiting their checks there. Kept only
+   * while one is in flight (`users`), so a window that never offers leaves nothing behind.
+   */
+  private readonly windowCalls = new Map<number, { controller: AbortController; users: number }>()
 
   constructor(private readonly deps: DownloadsDeps) {
     this.now = deps.now ?? Date.now
@@ -300,19 +307,51 @@ export class Downloads {
     const limit = this.offerLimitProblem(windowId, this.offersInFlight.get(windowId) ?? 0)
     if (limit) throw new Error(limit)
     this.offersInFlight.set(windowId, (this.offersInFlight.get(windowId) ?? 0) + 1)
+    const call = this.windowCall(windowId)
+    const signal = peerGone ? AbortSignal.any([peerGone, call.signal]) : call.signal
     try {
-      return await this.offerChecked(caller, abs, peerGone)
+      // Raced: a resolve or a count stalled on a dead mount (a realpath, an lstat, the open) would
+      // otherwise hold this in-flight place until it returned, and three such calls would refuse every
+      // later offer as "already waiting" though their callers had gone. On the caller's cancel or the
+      // window closing the place is freed at once; the checks finish in the background and, seeing the
+      // signal aborted, never make an offer. The folder count's own 10 s budget ends the walk too.
+      return await untilAborted(this.offerChecked(caller, abs, signal), signal)
+    } catch (err) {
+      if (signal.aborted) throw new Error(call.signal.aborted ? 'the project window is gone' : 'the caller went away', { cause: err })
+      throw err
     } finally {
+      call.release()
       const left = (this.offersInFlight.get(windowId) ?? 1) - 1
       if (left > 0) this.offersInFlight.set(windowId, left)
       else this.offersInFlight.delete(windowId)
     }
   }
 
+  /** The window's abort signal (windowClosed fires it) for one call; `release` when the call is over. */
+  private windowCall(windowId: number): { signal: AbortSignal; release: () => void } {
+    let entry = this.windowCalls.get(windowId)
+    if (!entry) {
+      entry = { controller: new AbortController(), users: 0 }
+      this.windowCalls.set(windowId, entry)
+    }
+    entry.users += 1
+    const held = entry
+    let released = false
+    return {
+      signal: held.controller.signal,
+      release: () => {
+        if (released) return
+        released = true
+        held.users -= 1
+        if (held.users === 0 && this.windowCalls.get(windowId) === held) this.windowCalls.delete(windowId)
+      }
+    }
+  }
+
   private async offerChecked(
     caller: { projectId: string; windowId: number },
     abs: string,
-    peerGone: AbortSignal | undefined
+    signal: AbortSignal
   ): Promise<OfferResult> {
     const windowId = caller.windowId
     const target = { projectId: caller.projectId, abs }
@@ -329,7 +368,7 @@ export class Downloads {
     }
     let info: OfferInfo
     if (resolved.kind === 'folder') {
-      const count = await this.countChecked(resolved, displayPath(resolved.named))
+      const count = await this.countChecked(resolved, displayPath(resolved.named), signal)
       info = {
         ...common,
         kind: 'folder',
@@ -340,12 +379,14 @@ export class Downloads {
     } else {
       info = { ...common, kind: 'file', size: resolved.size ?? 0 }
     }
+    // The caller timed out or left during the walk, or the window closed: offer() has answered already
+    // and freed this place (Claude was told the app did not answer), so these late checks make no offer.
+    // First, before the limit below, which counts this call's own place as still held.
+    if (signal.aborted) throw new Error('the caller went away')
     // Again after the awaits (own place excluded: it is counted in flight): two offers counted at once
     // must not both pass a limit of one left.
     const late = this.offerLimitProblem(windowId, (this.offersInFlight.get(windowId) ?? 1) - 1)
     if (late) throw new Error(late)
-    // The caller timed out or left during the walk: Claude was told the app did not answer, so no offer.
-    if (peerGone?.aborted) throw new Error('the caller went away')
     // The window may have closed during the awaits (windowClosed has run): an ask now would wait for nobody.
     if (this.deps.windowOf(caller.projectId) !== windowId) throw new Error('the project window is gone')
 
@@ -418,6 +459,10 @@ export class Downloads {
 
   /** The window closed: its waiting offers end (settled for every view), its accepted ones with them. */
   windowClosed(windowId: number): void {
+    // Offers and starts still checking there end now (their places freed); a new call after this is
+    // refused by resolve's window check, so the entry can go with it.
+    this.windowCalls.get(windowId)?.controller.abort(new Error('the project window is gone'))
+    this.windowCalls.delete(windowId)
     this.offerAsks.windowClosed(windowId)
     for (const [id, record] of this.offers) if (record.windowId === windowId) this.offers.delete(id)
     this.offerTimes.delete(windowId)
@@ -443,8 +488,25 @@ export class Downloads {
   ): Promise<{ requestId: string; name: string; kind: DownloadKind }> {
     // The desktop page and server mode's hidden page never get a link (design §3.4, §4).
     if (!isRemoteViewId(view.viewId)) throw new Error(DOWNLOAD_DESKTOP_TEXT)
-    const resolved = await this.resolve(target, view.windowId)
-    if (resolved.kind === 'folder') await this.checkCount(resolved, target, includeAll)
+    // Raced against the window closing, like an offer: the plugin's call (or the dialog's Download)
+    // answers at once then, and checks stalled on a dead mount finish in the background with no token.
+    const call = this.windowCall(view.windowId)
+    let resolved: ResolvedDownload
+    try {
+      resolved = await untilAborted(
+        (async () => {
+          const r = await this.resolve(target, view.windowId)
+          if (r.kind === 'folder') await this.checkCount(r, target, includeAll, call.signal)
+          return r
+        })(),
+        call.signal
+      )
+    } catch (err) {
+      if (call.signal.aborted) throw new Error('the project window is gone', { cause: err })
+      throw err
+    } finally {
+      call.release()
+    }
     this.sweep()
     const token = randomBytes(32).toString('base64url')
     this.tokens.set(token, {
@@ -731,7 +793,7 @@ export class Downloads {
   private async probeFile(real: string, shown: string): Promise<number> {
     let opened: Awaited<ReturnType<typeof openVerified>>
     try {
-      opened = await openVerified(real)
+      opened = await (this.deps.probeOpen ?? openVerified)(real)
     } catch {
       throw new Error(`${shown} cannot be read`)
     }
@@ -743,20 +805,22 @@ export class Downloads {
   }
 
   /** The counting pass before a view gets anything: past a cap or the 10 s bound, refused with the counts. */
-  private async checkCount(resolved: ResolvedDownload, target: DownloadTarget, includeAll: boolean): Promise<void> {
+  private async checkCount(resolved: ResolvedDownload, target: DownloadTarget, includeAll: boolean, signal?: AbortSignal): Promise<void> {
     const shown = 'rel' in target ? (target.rel === '' ? 'the project folder' : displayPath(target.rel)) : displayPath(resolved.named)
-    const count = await this.countChecked(resolved, shown)
+    const count = await this.countChecked(resolved, shown, signal)
     if (includeAll && count.allOver !== undefined) {
       throw new Error(`${shown} with .git and node_modules is too large to download: ${this.overText(count.allCap)}`)
     }
   }
 
   /** Both totals of a folder, or a throw when the plain zip passes a cap or cannot be counted in time. */
-  private async countChecked(resolved: ResolvedDownload, shown: string): Promise<Extract<FolderCount, { ok: true }>> {
+  /** `signal`: the caller's cancel (an offer's peerGone, the window closing); the walk stops on it. */
+  private async countChecked(resolved: ResolvedDownload, shown: string, signal?: AbortSignal): Promise<Extract<FolderCount, { ok: true }>> {
     let count: FolderCount
     try {
       count = await countFolder({
         ...this.walkOptions(resolved, await this.dataDirReal()),
+        ...(signal ? { signal } : {}),
         fs: this.deps.walkFs,
         timeoutMs: this.deps.walkTimeoutMs,
         maxBytes: this.deps.maxBytes,
