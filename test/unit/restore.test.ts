@@ -384,6 +384,45 @@ describe('room membership', () => {
     expect(rooms2.take(room.id, 'lead').map((m) => [m.from, m.text])).toEqual([['system', 'dev left: tab closed']])
     sessions.dispose()
   })
+
+  it('two saved records claiming the same member: the first is bound and typed, the second comes back in no room', () => {
+    const rooms = new RoomRegistry({ dir: join(dataDir, 'rooms'), log: () => {} })
+    const owner = { pluginId: 'example.team', projectId: 'p1' }
+    const room = rooms.create(owner, { title: 'Team' })
+    rooms.addMember(owner, room.id, { tabId: 'old', name: 'lead', coordinator: true })
+    rooms.unbind('old')
+    const hooks: TabRoomHooks = {
+      rebind: (tabId, r) => (rooms.rebind(tabId, r.id, r.name) ? rooms.memberOf(tabId) : undefined),
+      closed: (tabId) => void rooms.memberClosed(tabId),
+      gone: (tabId) => rooms.unbind(tabId)
+    }
+    const project = new ProjectRegistry({ dataDir, log: () => {} }).openPath(projectDir)
+    const sessions = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: () => {} })
+    const tabs = new TabManager({
+      backend: new FakePtyBackend(),
+      projectPath: () => projectDir,
+      loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+      hooksPath: '/data/hooks.json',
+      binDir: '/data/bin',
+      sock: () => undefined,
+      rooms: hooks,
+      lifecycle: { started: (t) => sessions.tabStarted(t), closed: (id) => sessions.tabClosed(id) },
+      emit: () => {},
+      log: () => {}
+    })
+    const saved = { id: room.id, name: 'lead', coordinator: true, mark: true }
+    const first = tabs.restoreTab(project.id, { kind: 'claude', room: saved })
+    const second = tabs.restoreTab(project.id, { kind: 'claude', room: saved })
+    expect(first.room).toEqual(saved)
+    expect(sessions.get(first.id)?.typed).toBe(true)
+    expect(second.room).toBeUndefined()
+    expect(sessions.get(second.id)?.typed).not.toBe(true)
+    // Closing the unbound one tells the registry nothing: the first still holds the member.
+    tabs.close(project.id, second.id)
+    expect(rooms.memberOf(first.id)).toEqual({ roomId: room.id, name: 'lead', coordinator: true })
+    expect(rooms.memberInfos(room.id).map((m) => m.name)).toEqual(['lead'])
+    sessions.dispose()
+  })
 })
 
 describe('tabRecordsOf', () => {

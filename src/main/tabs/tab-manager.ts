@@ -265,7 +265,7 @@ export interface TabLifecycle {
   flagged?(tabId: string, flag: TabFlag | null): void
   /**
    * The tab's room membership or the person's mark changed (`null`: in no room any more). Not called
-   * for a membership a restore brought back (the tab is born with it, TabEvent) nor for the tab's
+   * for a membership a restore brought back (`started` carries it, TabEvent.room) nor for the tab's
    * close (`closed` says it).
    */
   roomChanged?(tabId: string, room: TabRoom | null): void
@@ -336,6 +336,8 @@ export interface TabEvent {
   cwd: string
   name?: string
   flag?: TabFlag
+  /** The room membership the tab starts with (a restored member the registry rebound), mark included. */
+  room?: TabRoom
   /**
    * The tab is the person's from its start: a restored room member (design-rooms.md §1 "Restart":
    * `typed` is not saved, and the restored session is the person's), so the session registry's
@@ -1028,10 +1030,13 @@ export class TabManager {
     this.changed(tab.projectId)
   }
 
-  /** A saved membership asked of the registry (TabRoomHooks.rebind); kept as saved with no registry, dropped on a throw. */
+  /**
+   * A saved membership asked of the registry (TabRoomHooks.rebind); dropped on a throw and with no registry: the
+   * saved file is user-writable, and a mark (the person's safety switch) nobody confirmed must not come back.
+   */
   private rebindRoom(tabId: string, saved: TabRoom): TabRoom | undefined {
     const hooks = this.options.rooms
-    if (!hooks) return { ...saved }
+    if (!hooks) return undefined
     try {
       const bound = hooks.rebind(tabId, { id: saved.id, name: saved.name })
       return bound === undefined ? undefined : { ...saved, coordinator: bound.coordinator === true }
@@ -1610,6 +1615,7 @@ function tabEvent(tab: Tab): TabEvent {
     cwd: tab.cwd,
     ...(tab.name === undefined ? {} : { name: tab.name }),
     ...(tab.flag === undefined ? {} : { flag: { ...tab.flag } }),
+    ...(tab.room === undefined ? {} : { room: { ...tab.room } }),
     ...(tab.restoredMember ? { typed: true as const } : {})
   }
 }

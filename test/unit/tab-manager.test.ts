@@ -1626,14 +1626,16 @@ describe('room membership', () => {
     expect(tabs.roomOf(A, tab.id)).toBeUndefined()
   })
 
-  it('sets the mark only on a member, as a boolean, and saves it without an event of its own', () => {
+  it('sets the mark only on a member, as a boolean, saves it and tells every view (tabs.added, as a join does)', () => {
     const { tabs, rooms, changed } = rig()
     const tab = tabs.create(A, { kind: 'claude' })
     expect(() => tabs.setRoomMark(A, tab.id, true)).toThrow(/in no room/)
     tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
     for (const bad of ['yes', 1, null, undefined]) expect(() => tabs.setRoomMark(A, tab.id, bad), String(bad)).toThrow(/true or false/)
     changed.length = 0
+    events.length = 0
     expect(tabs.setRoomMark(A, tab.id, true)).toBe(true)
+    expect(events.map((e) => e.channel)).toEqual(['tabs.added'])
     expect(tabs.roomOf(A, tab.id)?.mark).toBe(true)
     expect(rooms.at(-1)).toEqual([tab.id, { id: ROOM, name: 'alice', coordinator: false, mark: true }])
     expect(changed).toEqual([A])
@@ -1748,9 +1750,16 @@ describe('room membership', () => {
     expect(calls[1]).toBe(`gone ${calls[0]!.split(' ')[1]}`)
   })
 
-  it('with no registry to ask, a restored membership is kept as saved', () => {
+  it('with no registry to ask, a restored membership (and its mark) is dropped', () => {
     const tabs = manager()
     const room = { id: ROOM, name: 'alice', coordinator: true, mark: true }
-    expect(tabs.restoreTab(A, { kind: 'claude', room }).room).toEqual(room)
+    expect(tabs.restoreTab(A, { kind: 'claude', room }).room).toBeUndefined()
+  })
+
+  it('tells the lifecycle a restored member\'s room and mark in `started`', () => {
+    const { tabs, started } = rig()
+    const room = { id: ROOM, name: 'alice', coordinator: false, mark: true }
+    tabs.restoreTab(A, { kind: 'claude', room })
+    expect(started.at(-1)).toMatchObject({ room, typed: true })
   })
 })
