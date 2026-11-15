@@ -533,3 +533,135 @@ test("a page's focus hint never puts the keyboard in a terminal: typing in Claud
     await close()
   }
 })
+
+// Strip, menus and previews for page panes (plan Task 5).
+const sessionEntries = (c: Cockpit): Promise<Array<{ tabId: string; typed: boolean }>> => c.hook('sessions', c.projectDir)
+const splitAreaBox = (page: Page) => page.locator('[data-split-area]').boundingBox()
+
+test('a file dragged from the strip to the right edge of the Claude pane lands beside it; typing in the frame changes the file and leaves Claude untyped', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const file = await openFile(c, 'notes.txt')
+    const editor = await pageIn(page, 'notes.txt')
+    await mark(editor, 'kept')
+
+    // The strip drag into pane mode: well below the strip, at the Claude pane's right edge.
+    // The Claude tab shown (a file frame under the pointer would take Playwright's moves from the drag).
+    await page.getByRole('tab', { name: /Claude/ }).first().click()
+    const tab = page.getByRole('tab', { name: /notes\.txt/ })
+    const tabBox = (await tab.boundingBox())!
+    await tab.hover()
+    await page.mouse.down()
+    const area = (await splitAreaBox(page))!
+    // A short first move: the strip's capture starts at the drag threshold, on the label under the pointer.
+    await page.mouse.move(tabBox.x + tabBox.width / 2 + 6, tabBox.y + tabBox.height / 2 + 6)
+    await page.mouse.move(tabBox.x + tabBox.width / 2 + 6, tabBox.y + tabBox.height + 60, { steps: 5 })
+    await page.mouse.move(area.x + area.width - 12, area.y + area.height / 2, { steps: 10 })
+    await expect(page.locator('.pane-drop-preview')).toHaveCount(1)
+    await page.mouse.up()
+    await expect(visiblePanes(page)).toHaveCount(2)
+    expect(await groupFor(page, file)).toBeDefined()
+    await expect(frameEl(page, 'notes.txt')).toBeVisible()
+    expect(await markOf(editor)).toBe('kept')
+
+    await clickInto(page, file, editor, 'two')
+    await page.keyboard.type('Z')
+    await expect.poll(() => readFileSync(join(projectDir, 'notes.txt'), 'utf8')).toContain('Z')
+    expect((await sessionEntries(c)).find((s) => s.tabId === claude)?.typed).toBe(false)
+  } finally {
+    await close()
+  }
+})
+
+test('two files side by side by Show beside: distinct boxes, a divider drag moves both, and the group is back after a relaunch', async () => {
+  test.setTimeout(150_000)
+  const first = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  const { root } = first.cockpit
+  try {
+    const { cockpit: c } = first
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'a.txt'), 'alpha\n')
+    writeFileSync(join(projectDir, 'b.txt'), 'beta\n')
+    await pluginActive(c, 'cockpit.editor')
+    await openFile(c, 'a.txt')
+    await openFile(c, 'b.txt')
+    await page.getByRole('tab', { name: /b\.txt/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Show beside ▸' }).click()
+    await page.getByRole('menuitem', { name: 'Right of a.txt' }).click()
+    await expect(visiblePanes(page)).toHaveCount(2)
+    await expect(frameEl(page, 'a.txt')).toBeVisible()
+    await expect(frameEl(page, 'b.txt')).toBeVisible()
+    const [ba, bb] = [await frameEl(page, 'a.txt').boundingBox(), await frameEl(page, 'b.txt').boundingBox()]
+    expect(ba!.x + ba!.width).toBeLessThanOrEqual(bb!.x)
+
+    // A divider drag moves both frames.
+    const divider = page.locator('[role="separator"][data-split-divider]')
+    const d = (await divider.boundingBox())!
+    // Grabbed beside the pane headers and moved along them: Playwright's synthetic moves are hit-tested
+    // into the frame under them (a real pointer keeps its capture across it), so the path stays on the shell.
+    const y = d.y + 12
+    await page.mouse.move(d.x + d.width / 2, y)
+    await page.mouse.down()
+    await page.mouse.move(d.x + d.width / 2 - 150, y, { steps: 10 })
+    await page.mouse.up()
+    await expect.poll(async () => (await frameEl(page, 'a.txt').boundingBox())!.width).toBeLessThan(ba!.width - 50)
+    await expect.poll(async () => (await frameEl(page, 'b.txt').boundingBox())!.width).toBeGreaterThan(bb!.width + 50)
+  } finally {
+    await first.close({ keepFiles: true })
+  }
+  const second = await launchCockpit({ root, folderArg: false, env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const c = second.cockpit
+    await expect.poll(async () => (await tabsOf(c.page)).filter((t) => t.kind === 'page').length, { timeout: 30_000 }).toBe(2)
+    const [x, y] = (await tabsOf(c.page)).map((t) => t.id)
+    await expect
+      .poll(async () => {
+        const gx = await groupFor(c.page, x!)
+        return gx !== undefined && gx.id === (await groupFor(c.page, y!))?.id
+      })
+      .toBe(true)
+  } finally {
+    await second.close()
+  }
+})
+
+test('menus over a file pane: the New tab menu of a split is on top of the frame and takes the click', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'notes.txt'), 'one\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const file = await openFile(c, 'notes.txt')
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    await pageIn(page, 'notes.txt')
+
+    // Split down of the file pane: the New tab menu is placed over the file's frame and takes the click.
+    await page.getByRole('tab', { name: /notes\.txt/ }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Split down' }).click()
+    const menu = page.getByRole('menu').last()
+    await expect(menu).toBeVisible()
+    const m = (await menu.boundingBox())!
+    const onTop = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[role="menu"]') !== null, { x: m.x + m.width / 2, y: m.y + 10 })
+    expect(onTop).toBe(true)
+    await expect(page.locator('.pane-drop-preview')).toHaveCount(1)
+    await menu.getByRole('menuitem').first().click()
+    await expect(visiblePanes(page)).toHaveCount(3)
+  } finally {
+    await close()
+  }
+})

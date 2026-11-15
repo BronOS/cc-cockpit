@@ -410,8 +410,7 @@ export function TabBar(props: {
       d = { tabId: p.tabId, pointerId: p.pointerId, from, startX: p.startX, dx, toIndex: from, ...(p.groupId ? { groupId: p.groupId } : {}) }
     }
     // Well below the strip a tab's drag turns into pane mode: the terminal area shows where it
-    // would go (design §1). A group's handle only moves the block along the strip, and so does a
-    // page tab's drag: a page tab is never a pane (shared/tab-groups.ts isPaneKind).
+    // would go (design §1). A group's handle only moves the block along the strip.
     const strip = listRef.current?.getBoundingClientRect()
     const paneable = isPaneKind(tabs.find((t) => t.id === d.tabId)?.kind)
     const pane = d.groupId === undefined && paneable && strip !== undefined && e.clientY > strip.bottom + PANE_MODE_PX
@@ -467,7 +466,7 @@ export function TabBar(props: {
   const splitRight = menuTab ? props.splitBlocked(menuTab.id, 'right') : undefined
   const splitDown = menuTab ? props.splitBlocked(menuTab.id, 'down') : undefined
   const groupOfMenu = groupMenu ? groups.find((g) => g.id === groupMenu.groupId) : undefined
-  // The tabs that may be panes (no page tab): Show beside needs another one.
+  // The tabs that may be panes (every kind but an overlay): Show beside needs another one.
   const paneTabs = tabs.filter((t) => isPaneKind(t.kind)).length
 
   const renderTab = (tab: TabInfo): React.JSX.Element => {
@@ -781,8 +780,7 @@ export function TabBar(props: {
             </button>
           )}
           {/* The split view (design §1): a new pane beside this tab, this tab beside another, out of
-              its group. A split too small to make is disabled with the reason (D5). A page tab is
-              never a pane (shared/tab-groups.ts isPaneKind): it has none of these entries. */}
+              its group. A split too small to make is disabled with the reason (D5). Every tab kind has them. */}
           {isPaneKind(menuTab.kind) && (
             <>
               <div role="separator" className="menu-separator" />

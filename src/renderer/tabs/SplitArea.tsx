@@ -129,6 +129,8 @@ export function SplitArea(props: {
   const layout = useMemo(() => (tiled && root ? rectsOf(root) : undefined), [tiled, root])
   const rectOf = (tabId: string): PaneRect => layout?.panes.find((p) => p.tab === tabId) ?? { x: 0, y: 0, w: 1, h: 1 }
   const many = view.visible.length > 1
+  // A page pane shows: its frames' layer lies over the area, so the drop preview is drawn in the layer (PageTabArea).
+  const showsPageNow = view.visible.some((id) => tabs.find((t) => t.id === id)?.kind === 'page')
   const unavailable = usePageUnavailable()
 
   // D3: the keys went off (this view's focused pane was taken away from elsewhere). The terminal
@@ -326,8 +328,10 @@ export function SplitArea(props: {
         zoomed={view.zoomTab !== undefined}
         root={root}
         many={many}
+        preview={props.drop && dropRect ? box(dropRect) : undefined}
+        previewLabel={props.drop ? `${edgeWords(props.drop.edge)} ${props.drop.label}` : undefined}
       />
-      {props.drop && dropRect && (
+      {props.drop && dropRect && !showsPageNow && (
         <div className="pane-drop-preview" style={box(dropRect)} aria-hidden="true">
           <span className="pane-drop-label">
             {edgeWords(props.drop.edge)} {props.drop.label}

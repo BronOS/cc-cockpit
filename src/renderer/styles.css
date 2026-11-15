@@ -4794,3 +4794,7 @@ ul.settings-alert {
   font-size: 12px;
   color: var(--cc-status-ended);
 }
+/* The drop preview inside the page frames' layer (PageTabArea): above the frames, the pointer goes through. */
+.page-tab-layer > .page-tab-drop-preview {
+  z-index: 2;
+}

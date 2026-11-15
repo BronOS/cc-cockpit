@@ -196,6 +196,18 @@ describe('pane commands', () => {
       ])
     })
 
+    it('a page tab splits and shows beside like any other (no refusal text for it any more)', () => {
+      const page: TabInfo = { id: 'p', kind: 'page', cwd: '/w', gen: 1 }
+      const h = harness('p', [{ type: 'added', tab: page } as TabsAction])
+      h.handlers['pane.splitRight']!({ tabId: 'p' })
+      h.handlers['pane.showBesideRight']!({ tabId: 'p' })
+      expect(h.sent).toEqual([
+        ['split', { tabId: 'p', edge: 'right' }],
+        ['beside', { tabId: 'p', edge: 'right' }]
+      ])
+      expect(h.reports).toEqual([])
+    })
+
     it('Close Tab and the flag act on the target; with no target on activeId; with the keys off on nothing', () => {
       const run = (selected: string, extra: TabsAction[] = []) => {
         const state = [
@@ -229,10 +241,10 @@ describe('pane commands', () => {
   it('tells the person what a refusal means', () => {
     expect(refusalText('full')).toMatch(/8 panes/)
     expect(refusalText('too-many-groups')).toMatch(/32/)
-    expect(refusalText('not-a-pane')).toMatch(/page tab/)
+    expect(refusalText('not-a-pane')).toMatch(/cannot be a pane/)
   })
 
-  it('only terminal kinds may be panes: a page tab never is', () => {
+  it('every tab kind but an overlay may be a pane, a page tab included', () => {
     expect(['claude', 'shell', 'command', 'page'].map(isPaneKind)).toEqual([true, true, true, true])
     expect(isPaneKind('overlay')).toBe(false)
     expect(isPaneKind(undefined)).toBe(false)

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import type { TabInfo } from '../../shared/ipc'
 import { PAGE_TAB_FRAME_NAME } from '../../shared/page-tabs'
 import { forwardedChords, onKeyTable, runForwardedChord } from '../commands/keybindings'
@@ -306,6 +307,13 @@ export function PageTabArea(props: {
   zoomed: boolean
   root: PaneNode | undefined
   many: boolean
+  /**
+   * The strip drag's or split menu's drop preview (a share of the area, from `edgePreview`), drawn here
+   * while a page pane shows: the layer lies over the area, so a preview in SplitArea would be under
+   * the frames. SplitArea draws it itself otherwise. `children` is its label.
+   */
+  preview?: React.CSSProperties
+  previewLabel?: string
 }): React.JSX.Element {
   const { tabs, listed, activeId, keysOff, inert, visible, zoomed, root, many } = props
   const placeholder = useRef<HTMLDivElement>(null)
@@ -399,5 +407,17 @@ export function PageTabArea(props: {
   }, [])
 
   // Only a box to measure: the frame itself is in the layer, laid over it.
-  return <div ref={placeholder} className="page-tab-area" hidden={!showsPage} aria-hidden="true" />
+  return (
+    <>
+      <div ref={placeholder} className="page-tab-area" hidden={!showsPage} aria-hidden="true" />
+      {showsPage &&
+        props.preview &&
+        createPortal(
+          <div className="pane-drop-preview page-tab-drop-preview" style={props.preview} aria-hidden="true">
+            <span className="pane-drop-label">{props.previewLabel}</span>
+          </div>,
+          layerElement()
+        )}
+    </>
+  )
 }

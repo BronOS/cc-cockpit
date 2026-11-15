@@ -29,7 +29,7 @@ import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, isPaneKind, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
 import { paneAtPoint } from './SplitArea'
-import { activeTabHandlers, PAGE_TAB_NOT_SPLIT, paneCommandHandlers, refusalText } from './pane-commands'
+import { activeTabHandlers, paneCommandHandlers, refusalText } from './pane-commands'
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
@@ -526,7 +526,6 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const paneDropRef = useRef<PaneDrop | null>(null)
   const dragToPane = (tabId: string, point: { x: number; y: number } | null): void => {
     let next: PaneDrop | null = null
-    // A page tab never goes into a pane (TabBar keeps its drag on the strip; this is the second look).
     if (point && isPaneKind(stateRef.current.tabs.find((t) => t.id === tabId)?.kind)) {
       const hit = paneAtPoint(document.querySelector<HTMLElement>('[data-split-area]'), point.x, point.y)
       const edge = hit && hit.tabId !== tabId ? edgeZone(hit.rect, point) : null
@@ -624,7 +623,6 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   /** Why a split of `tabId` on `edge` cannot be made here, or undefined (D5: the menu disables it with this). */
   const splitBlocked = useCallback(
     (tabId: string, edge: PaneEdge): string | undefined => {
-      if (!isPaneKind(stateRef.current.tabs.find((t) => t.id === tabId)?.kind)) return PAGE_TAB_NOT_SPLIT
       if (area.width === 0) return undefined
       return splitFits(paneSize(tabId), edge, cellNow()) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
     },
@@ -1345,11 +1343,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           openSplit: (tabId, edge) => paneActions.current.openSplit(tabId, edge),
           openBeside: (tabId, edge) => {
             const s = stateRef.current
-            // The focused tab is the anchor: a page tab is never a pane (shared/tab-groups.ts isPaneKind).
-            if (!isPaneKind(s.tabs.find((t) => t.id === tabId)?.kind)) {
-              setError(PAGE_TAB_NOT_SPLIT)
-              return
-            }
+            // The focused tab is the anchor; the pick lists the other tabs (every kind is a pane).
+            if (!s.tabs.some((t) => t.id === tabId)) return
             if (s.tabs.filter((t) => isPaneKind(t.kind)).length > 1) setBesidePick({ edge })
           },
           minShare: (axis) => {

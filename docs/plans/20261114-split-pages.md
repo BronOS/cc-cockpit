@@ -238,18 +238,18 @@ External review: sol / high
 - Modify: `src/renderer/tabs/SplitArea.tsx`, `src/renderer/tabs/PageTabArea.tsx`, `src/renderer/styles.css`
 - Modify: `test/unit/pane-commands.test.ts`, `test/e2e/editor-split.spec.ts`
 
-- [ ] remove `PAGE_TAB_NOT_SPLIT` and the page-tab refusals in `splitBlocked`, `openBeside` and the `not-a-pane` text
+- [x] remove `PAGE_TAB_NOT_SPLIT` and the page-tab refusals in `splitBlocked`, `openBeside` and the `not-a-pane` text
   (`refusalText` keeps a generic line for it); `besideItems` and TabBar's Show beside list page tabs
-- [ ] TabBar: the tab menu gets the split entries for a page tab; the drag gets pane mode (`paneable` on every kind);
+- [x] TabBar: the tab menu gets the split entries for a page tab; the drag gets pane mode (`paneable` on every kind);
   Split Right / Down on a focused page tab opens the New tab menu at the new pane
-- [ ] the drop preview of a strip drag and the split menu's preview move into the layer's non-frame child (above the
+- [x] the drop preview of a strip drag and the split menu's preview move into the layer's non-frame child (above the
   frames, `pointer-events: none`, placed from the same `edgePreview` rect), so they show over frames
-- [ ] write tests: Split Right on a page tab opens the menu; `PAGE_TAB_NOT_SPLIT` is gone; Show beside offers page tabs
-- [ ] e2e: *file beside Claude* by dragging the file tab to the right edge of the Claude pane (marker survives, typing in
+- [x] write tests: Split Right on a page tab opens the menu; `PAGE_TAB_NOT_SPLIT` is gone; Show beside offers page tabs
+- [x] e2e: *file beside Claude* by dragging the file tab to the right edge of the Claude pane (marker survives, typing in
   the frame changes the file, the Claude tab's `typed` stays false); *two files side by side* by Show beside: distinct
   boxes, a divider drag moves both, restored after a relaunch in the same group (new ids); *a menu over a frame*: the tab
   menu and the New tab menu over a file pane are on top and take the click
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
 
 ### Task 6: New tab in Group commands (chord + Alt) [model: opus]
 
