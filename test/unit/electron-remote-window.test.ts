@@ -442,12 +442,13 @@ describe('ElectronRemoteWindowFactory: downloads', () => {
     const item = new FakeDownloadItem()
     ses.emit('will-download', prevented(), item, win.webContents)
     const log: string[] = []
-    wrapped?.onUpdated(() => log.push('updated'))
+    wrapped?.onUpdated((s) => log.push(`updated ${s}`))
     wrapped?.onDone((s) => log.push(`done ${s}`))
     item.emit('updated', {}, 'progressing')
+    item.emit('updated', {}, 'interrupted')
     item.emit('done', {}, 'completed')
     wrapped?.cancel()
-    expect(log).toEqual(['updated', 'done completed'])
+    expect(log).toEqual(['updated progressing', 'updated interrupted', 'done completed'])
     expect(item.cancelled).toBe(1)
   })
 

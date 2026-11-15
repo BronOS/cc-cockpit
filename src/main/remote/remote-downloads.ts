@@ -16,7 +16,8 @@
 //    saved file has no exec bit (whatever mode it was written with), so it never runs by a double click
 //    on Linux.
 import { randomBytes } from 'node:crypto'
-import { chmod, link, lstat, unlink } from 'node:fs/promises'
+import { chmod, copyFile, link, lstat, readdir, unlink } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP_DOWNLOAD_MAX_BYTES, downloadSizeText } from '../../shared/downloads'
 import { errorText } from '../../shared/error-text'
@@ -35,8 +36,11 @@ export interface RemoteDownloadItem {
   /** Where it saves. Only inside the `will-download` call: later, Electron has shown its own dialog. */
   setSavePath(path: string): void
   cancel(): void
-  /** More bytes came (or the transfer stalled and may resume). */
-  onUpdated(listener: () => void): void
+  /**
+   * More bytes came, or the transfer `interrupted`: Electron reports a resumable failure (network
+   * loss, a body shorter than its length, a disk or file error) here and never emits `done` for it.
+   */
+  onUpdated(listener: (state: 'progressing' | 'interrupted') => void): void
   /** It ended, once. */
   onDone(listener: (state: 'completed' | 'cancelled' | 'interrupted') => void): void
 }
@@ -70,12 +74,37 @@ async function remove(path: string): Promise<void> {
   await unlink(path).catch(() => undefined)
 }
 
+/** Link errors of a filesystem with no hard links (exFAT, FAT32, some SMB, NFS and FUSE mounts). */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
+
+/** Temps older than this are a dead save's: a live one writes (or stalls) far sooner than a day. */
+const STALE_TEMP_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Remove the `.cc-download-*` temps (and Chromium's `.crdownload` beside them) a crash or a quit left
+ * in `dir`: hidden partials of up to the cap the person cannot see. Only those untouched for a day, so
+ * a save of another running instance is never cut. Never throws.
+ */
+export async function sweepDownloadTemps(dir: string, now: number = Date.now()): Promise<void> {
+  const names = await readdir(dir).catch(() => [] as string[])
+  await Promise.all(
+    names
+      .filter((n) => n.startsWith(DOWNLOAD_TEMP_PREFIX))
+      .map(async (n) => {
+        const path = join(dir, n)
+        const st = await lstat(path).catch(() => undefined)
+        if (st?.isFile() && now - st.mtimeMs > STALE_TEMP_MS) await remove(path)
+      })
+  )
+}
+
 /**
  * The finished temp file placed at `name` in `dir`, or the first free numbered name: hard-linked
  * (EEXIST, a link at the name included, is never overwritten and never followed), then the temp
- * removed. Its exec bits are cleared first. Rejects with the reason when it is not a regular file,
- * every name up to `(99)` is taken, or the link fails (a Downloads folder on a filesystem with no
- * hard links: the download fails rather than risk a write that could follow a link).
+ * removed. Its exec bits are cleared first. On a filesystem with no hard links the file is copied with
+ * COPYFILE_EXCL instead (O_CREAT|O_EXCL: the same EEXIST on any entry, a dangling link included, and
+ * never followed). Rejects with the reason when it is not a regular file, every name up to `(99)` is
+ * taken, or the write fails.
  */
 export async function placeDownload(temp: string, dir: string, name: string): Promise<string> {
   try {
@@ -86,7 +115,10 @@ export async function placeDownload(temp: string, dir: string, name: string): Pr
     for (let n = 0; n <= MAX_NAME_NUMBER; n++) {
       const final = join(dir, numberedName(name, n))
       try {
-        await link(temp, final)
+        await link(temp, final).catch(async (err: unknown) => {
+          if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
+          await copyFile(temp, final, fsConstants.COPYFILE_EXCL)
+        })
         return final
       } catch (err) {
         if (codeOf(err) !== 'EEXIST') throw err
@@ -143,8 +175,14 @@ export function startSave(options: SaveOptions): ActiveSave {
     options.done(outcome)
   }
   options.progress(item.totalBytes() > 0 ? 0 : 'indeterminate')
-  item.onUpdated(() => {
+  item.onUpdated((state) => {
     if (ended || stopped !== undefined) return
+    // A resumable interrupt never reaches `done` and nothing here resumes it: stop it, so the cancel's
+    // `done` removes the partial and frees the server's one saving slot.
+    if (state === 'interrupted') {
+      stop('the download was interrupted')
+      return
+    }
     if (cap()) {
       stop(overText)
       return

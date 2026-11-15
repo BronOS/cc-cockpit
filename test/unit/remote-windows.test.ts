@@ -3,11 +3,11 @@
 // project), titles and recent names from the server's project list, the origin moving with the
 // tunnel, and the re-pair loop (once, serialised per server, bounded, never for Direct).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { DESKTOP_DOWNLOAD_BURST, DESKTOP_DOWNLOAD_BURST_MS, DESKTOP_DOWNLOAD_MAX_BYTES, DOWNLOAD_CLICK_MS } from '../../src/shared/downloads'
-import { MAX_NAME_NUMBER, numberedName, placeDownload, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
+import { MAX_NAME_NUMBER, numberedName, placeDownload, sweepDownloadTemps, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
 import type { RemoteServer } from '../../src/shared/remote-servers'
 import { REMOTE_DEVICE_COOKIE } from '../../src/main/remote/remote-cookie'
 import {
@@ -1832,7 +1832,7 @@ class FakeItem implements RemoteDownloadItem {
   savePath: string | undefined
   cancelled = false
   received = 0
-  private readonly updatedListeners: Array<() => void> = []
+  private readonly updatedListeners: Array<(state: 'progressing' | 'interrupted') => void> = []
   private readonly doneListeners: Array<(state: 'completed' | 'cancelled' | 'interrupted') => void> = []
   constructor(
     readonly chain: string[],
@@ -1862,7 +1862,7 @@ class FakeItem implements RemoteDownloadItem {
     this.cancelled = true
     this.end('cancelled')
   }
-  onUpdated(listener: () => void): void {
+  onUpdated(listener: (state: 'progressing' | 'interrupted') => void): void {
     this.updatedListeners.push(listener)
   }
   onDone(listener: (state: 'completed' | 'cancelled' | 'interrupted') => void): void {
@@ -1872,12 +1872,16 @@ class FakeItem implements RemoteDownloadItem {
   write(bytes: string): void {
     appendFileSync(this.savePath as string, bytes)
     this.received += Buffer.byteLength(bytes)
-    for (const l of this.updatedListeners) l()
+    for (const l of this.updatedListeners) l('progressing')
   }
   /** Chromium reports `received` bytes (no write: a cap test cannot write 4 GiB). */
   report(received: number): void {
     this.received = received
-    for (const l of this.updatedListeners) l()
+    for (const l of this.updatedListeners) l('progressing')
+  }
+  /** A resumable interrupt, as Electron reports it: `updated`, never `done` (until someone cancels). */
+  interrupt(): void {
+    for (const l of this.updatedListeners) l('interrupted')
   }
   end(state: 'completed' | 'cancelled' | 'interrupted'): void {
     for (const l of this.doneListeners) l(state)
@@ -2134,6 +2138,19 @@ describe('RemoteWindows: downloads', () => {
     }
   })
 
+  it('an interrupt Electron can resume is stopped: partial removed, slot freed, notice shown', async () => {
+    const view = await openWindow()
+    view.click()
+    const item = new FakeItem([D_URL], 'x.bin')
+    expect(start(item, view)).toBe(true)
+    item.write('part')
+    item.interrupt()
+    expect(item.cancelled).toBe(true)
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe('x.bin was not saved: the download was interrupted'))
+    expect(readdirSync(dir)).toEqual([])
+    expect((await saveOne(await openWindow(), 'y.bin')).text).toBe('Saved y.bin to Downloads')
+  })
+
   it('closing the window cancels its download and removes the partial', async () => {
     const view = await openWindow()
     view.click()
@@ -2181,6 +2198,18 @@ describe('RemoteWindows: downloads', () => {
     writeFileSync(temp, 'x')
     await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('are taken in Downloads')
     expect(existsSync(temp)).toBe(false)
+  })
+
+  it('sweeps stale save temps only, leaving fresh ones and the person\'s files', async () => {
+    const stale = join(dir, '.cc-download-aaaaaaaaaaaaaaaa')
+    const fresh = join(dir, '.cc-download-bbbbbbbbbbbbbbbb')
+    const mine = join(dir, 'report.pdf')
+    for (const f of [stale, fresh, mine]) writeFileSync(f, 'x')
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    utimesSync(stale, old, old)
+    await sweepDownloadTemps(dir)
+    expect(readdirSync(dir).sort()).toEqual(['.cc-download-bbbbbbbbbbbbbbbb', 'report.pdf'])
+    await expect(sweepDownloadTemps(join(dir, 'missing'))).resolves.toBeUndefined()
   })
 
   it('a Downloads folder that cannot be found refuses with a notice', async () => {

@@ -258,7 +258,6 @@ export function allowRemoteNavigation(url: string, origin: string | undefined): 
   return onOrigin(url, origin)
 }
 
-/** The query parameter of the web client's "This computer" chip (renderer/web/desktop-chip.ts). */
 /**
  * Whether a download's URL chain is the server's own download link (see "Downloads" in the header):
  * one URL (nothing redirected), on `origin` exactly, the path `/d/<token>` as main mints it and no
@@ -270,6 +269,7 @@ export function isRemoteDownload(chain: readonly string[], origin: string | unde
   return u !== undefined && u.origin === origin && isDownloadUrl(u.pathname) && u.search === '' && u.hash === ''
 }
 
+/** The query parameter of the web client's "This computer" chip (renderer/web/desktop-chip.ts). */
 export const DESKTOP_LOCAL_PARAM = 'cc-desktop'
 
 /**

@@ -166,7 +166,7 @@ export function downloadItemView(item: DownloadItem): RemoteDownloadItem {
     setSavePath: (path) => item.setSavePath(path),
     cancel: () => item.cancel(),
     onUpdated: (listener) => {
-      item.on('updated', () => listener())
+      item.on('updated', (_event, state) => listener(state))
     },
     onDone: (listener) => {
       item.once('done', (_event, state) => listener(state))

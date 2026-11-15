@@ -24,6 +24,7 @@ import {
   session,
   type OpenDialogOptions
 } from 'electron'
+import { sweepDownloadTemps } from './remote/remote-downloads'
 import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { homedir, hostname, tmpdir, userInfo } from 'node:os'
@@ -624,6 +625,8 @@ function start(server: boolean): void {
   )
   // Set on before-quit: from then on closing windows is not the user ending their tabs.
   let quitting = false
+  /** The Downloads folder's stale save temps are swept once, before the first remote download. */
+  let sweptDownloads = false
   // Set when server mode's start order failed (server-start.ts): will-quit ends the run with status 1.
   let startFailed = false
   // ctx.files.reveal / openWithSystem / trash (files/system-files.ts): `shell` through its adapter.
@@ -776,8 +779,12 @@ function start(server: boolean): void {
           downloads: {
             dir: () => {
               const dir = factory.downloadsDir()
-              // The test run's folder may not exist yet; the desktop's own always does.
-              if (testRun) mkdirSync(dir, { recursive: true })
+              // Neither the test run's folder nor, on Linux, the desktop's own is sure to exist.
+              mkdirSync(dir, { recursive: true })
+              if (!sweptDownloads) {
+                sweptDownloads = true
+                void sweepDownloadTemps(dir)
+              }
               return dir
             },
             notice: (text, saved) => {
