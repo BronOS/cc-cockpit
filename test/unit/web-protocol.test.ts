@@ -1150,7 +1150,10 @@ describe('through the gateway', () => {
     await until(() => ctx.views.viewsOf(1).length === 2)
     client.on('error', () => undefined)
     client.send('x'.repeat(MAX_FRAME_BYTES + 1))
-    expect(await closed).toBe(1009)
+    // The gateway closes with 1009 the moment the frame passes the cap, while this client may still be
+    // writing the rest of it: on macOS that write then meets a reset socket and the client reports 1006
+    // (no close frame read) instead. Either way the socket is closed; the registry check below is the point.
+    expect([1006, 1009]).toContain(await closed)
     await until(() => ctx.views.viewsOf(1).length === 1)
   })
 })
