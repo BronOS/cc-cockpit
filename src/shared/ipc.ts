@@ -1673,8 +1673,11 @@ export interface IpcInvokeMap {
    * Answers the mark as stored; the tab reaches every view as `tabs.added` (main emits it, the reply adds nothing).
    */
   'tabs.roomMark': { req: { tabId: string; mark: boolean }; res: boolean }
-  /** The held badge's click: the room pointer through the send gate as the person's own act, or why it did not go in. */
-  'rooms.deliverHeld': { req: { tabId: string }; res: DeliverHeldAnswer }
+  /**
+   * The held badge's click: the room pointer through the send gate as the person's own act, or why it did not go in.
+   * `overDraft`: the person's "Deliver anyway" after a `draft` answer (the pointer is added to what is in the box).
+   */
+  'rooms.deliverHeld': { req: { tabId: string; overDraft?: true }; res: DeliverHeldAnswer }
   /**
    * Relaunch an exited tab (same kind and cwd; `--resume` when a session id is known; a command
    * tab runs its own copy of the command again), or start a restored command tab (`notStarted`).

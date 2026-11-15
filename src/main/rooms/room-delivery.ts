@@ -205,12 +205,15 @@ export class RoomDelivery {
   /**
    * The person clicked the held badge on a member tab (design-rooms.md §2): the pointer through the gate as their own
    * act, so `typed` and the mark do not hold it back; the gate's own rule does (waiting for input, nothing in flight).
-   * A pause and the draft bit still do: Pause holds all delivery (design §2), and a paste plus Enter on a half-typed
-   * prompt would submit both as one prompt, the gluing the draft bit exists to prevent. The caller checked the click
-   * came from the shell page for its own tab. Answers `delivered`, or why not (no room, nothing held, paused, a draft,
-   * not waiting) so the strip can tell the person instead of a click that silently did nothing.
+   * A pause holds it (Pause holds all delivery, design §2). The draft bit holds it unless `overDraft`: a paste plus Enter
+   * on a half-typed prompt would submit both as one prompt, and main cannot see whether the box is empty (an answered
+   * permission prompt sets no bit, but Ctrl+U or Backspace leaves it set), so the strip asks and the person's "Deliver
+   * anyway" sends `overDraft`, their choice to add the pointer to whatever is in the box. The caller checked the click
+   * came from the shell page for its own tab. Answers `delivered`, or why not (no room, nothing held, paused, ended, a
+   * permission prompt, busy, a draft) so the strip can tell the person instead of a click that silently did nothing.
+   * The state reasons come before the draft, so "Deliver anyway" is offered only when it would go in.
    */
-  deliverHeld(tabId: string): DeliverHeldAnswer {
+  deliverHeld(tabId: string, options: { overDraft?: boolean } = {}): DeliverHeldAnswer {
     const member = this.deps.rooms.memberOf(tabId)
     if (!member) return { delivered: false, why: 'no-room' }
     const room = this.deps.rooms.peek(member.roomId)
@@ -219,14 +222,17 @@ export class RoomDelivery {
     if (held === 0) return { delivered: false, why: 'nothing-held' }
     if (room.paused) return { delivered: false, why: 'paused' }
     const entry = this.deps.sessions.get(tabId)
-    if (!entry) return { delivered: false, why: 'not-waiting' }
-    if (entry.draft === true) return { delivered: false, why: 'draft' }
-    if (!maySend(entry)) return { delivered: false, why: 'not-waiting' }
+    if (!entry || entry.exitCode !== undefined || entry.status === 'ended') return { delivered: false, why: 'ended' }
+    if (entry.status === 'needs-permission') return { delivered: false, why: 'permission' }
+    if (!maySend(entry)) return { delivered: false, why: 'busy' }
+    const overDraft = entry.draft === true && options.overDraft === true
+    if (entry.draft === true && !overDraft) return { delivered: false, why: 'draft' }
     const ok = this.paste(tabId, held)
     // The pointer only (no message moved): logged as the person's delivery, so the record shows why the member read.
-    this.log(room.id, 'send', { from: 'person', to: member.name, via: 'badge', pointer: held, delivered: ok })
+    const fields = { from: 'person', to: member.name, via: 'badge', pointer: held, delivered: ok }
+    this.log(room.id, 'send', overDraft ? { ...fields, overDraft: true } : fields)
     // The gate re-checks at the paste (a failed PTY write too): not waiting after all.
-    return ok ? { delivered: true } : { delivered: false, why: 'not-waiting' }
+    return ok ? { delivered: true } : { delivered: false, why: 'busy' }
   }
 
   /**

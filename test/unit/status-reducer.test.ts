@@ -10,6 +10,7 @@ import {
   MAX_TOOL_CHARS,
   cap,
   isAnswerKey,
+  isDialogKey,
   newEntry,
   reduce,
   withNote,
@@ -364,6 +365,11 @@ describe('answering a permission dialog (keystroke)', () => {
       hook('Notification', { notification_type: 'permission_prompt', message: 'm' })
     )
     expect(entry.status).toBe('needs-permission')
+  })
+
+  it('isDialogKey: an answer key or an arrow (both cursor modes), as the whole chunk', () => {
+    for (const key of ['\r', '1', '9', '\x1b[A', '\x1b[B', '\x1bOC', '\x1bOD']) expect(isDialogKey(key)).toBe(true)
+    for (const key of ['\x1b', 'y', '0', '\x1b[B\r', '\x15', '\x7f', '\t', 'hello']) expect(isDialogKey(key)).toBe(false)
   })
 
   it('isAnswerKey: Enter or a lone digit 1-9, as the whole chunk', () => {

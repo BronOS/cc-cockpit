@@ -673,17 +673,17 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     sessions.applyHook(t, 'Stop', {})
     service.sendAsPlugin(owner, id, 'alice', 'x')
     expect(writes).toEqual([])
-    // Cleared or never set, the offer still holds it.
-    service.markChanged(t)
+    // Never set, the offer still holds it.
+    service.markTurnedOn(t)
     expect(writes).toEqual([])
     service.pause(id)
     expect(service.deliverHeld(t)).toEqual({ delivered: false, why: 'paused' })
     service.resume(id)
     tabs.setRoomMark(P1, t, true)
-    service.markChanged(t)
+    service.markTurnedOn(t)
     expect(writes).toEqual([{ tabId: t, data: paste(pointerText(1)) }])
     // A tab in no room: a no-op.
-    service.markChanged(claudeTab())
+    service.markTurnedOn(claudeTab())
     expect(writes).toHaveLength(1)
   })
 

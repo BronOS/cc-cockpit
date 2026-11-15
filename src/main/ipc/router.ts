@@ -1641,10 +1641,17 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
 export interface RoomStripHandlerDeps {
   /** Server mode: a browser view counts as the person (the approvals rule); outside it a browser is refused. */
   server: boolean
-  /** TabManager.setRoomMark (throws for a tab of another project or in no room), then what waits is offered again. */
+  /** The tab's stored mark (TabManager.roomOf): undefined for a tab of another project or in no room. */
+  markOf(projectId: string, tabId: string): boolean | undefined
+  /** TabManager.setRoomMark (throws for a tab of another project or in no room): the mark as stored. */
   roomMark(projectId: string, tabId: string, mark: boolean): boolean
-  /** The badge's click on a tab of `projectId`: the pointer, or why not (RoomService.deliverHeld). */
-  deliverHeld(projectId: string, tabId: string): DeliverHeldAnswer
+  /** The mark went from off to on (RoomService.markTurnedOn): what waits is offered again. */
+  markTurnedOn(projectId: string, tabId: string): void
+  /**
+   * The badge's click on a tab of `projectId`: the pointer, or why not (RoomService.deliverHeld). `overDraft` is the
+   * person's "Deliver anyway" after a `draft` answer.
+   */
+  deliverHeld(projectId: string, tabId: string, overDraft: boolean): DeliverHeldAnswer
 }
 
 /**
@@ -1652,7 +1659,8 @@ export interface RoomStripHandlerDeps {
  * (handleProject), the tab id looked up inside that project. Both are `adapted`: a mark lets room text into a tab the
  * person typed in, and the badge pastes into it, so a browser view counts only in server mode, where the browsers are
  * the person (decided by the view main bound, never the payload). Nothing is announced here: TabManager.setRoomMark
- * already tells every view (`tabs.added`), and a delivery changes the sessions snapshot.
+ * already tells every view (`tabs.added`), and a delivery changes the sessions snapshot. What waits is offered again
+ * only when the mark goes from off to on: clearing it, or setting it again, delivers nothing.
  */
 export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHandlerDeps): void {
   const personOnly = (channel: string, view: CallView): void => {
@@ -1662,11 +1670,17 @@ export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHand
     personOnly('tabs.roomMark', view)
     const mark = fields('tabs.roomMark', payload).mark
     if (typeof mark !== 'boolean') throw new Error('tabs.roomMark: mark must be true or false')
-    return deps.roomMark(ctx.projectId, tabIdOf('tabs.roomMark', payload), mark)
+    const tabId = tabIdOf('tabs.roomMark', payload)
+    const was = deps.markOf(ctx.projectId, tabId) === true
+    const stored = deps.roomMark(ctx.projectId, tabId, mark)
+    if (stored && !was) deps.markTurnedOn(ctx.projectId, tabId)
+    return stored
   })
   router.handleProject('rooms.deliverHeld', (ctx, payload, view) => {
     personOnly('rooms.deliverHeld', view)
-    return deps.deliverHeld(ctx.projectId, tabIdOf('rooms.deliverHeld', payload))
+    const overDraft = fields('rooms.deliverHeld', payload).overDraft
+    if (overDraft !== undefined && overDraft !== true) throw new Error('rooms.deliverHeld: overDraft must be true or absent')
+    return deps.deliverHeld(ctx.projectId, tabIdOf('rooms.deliverHeld', payload), overDraft === true)
   })
 }
 

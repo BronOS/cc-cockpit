@@ -48,10 +48,18 @@ export type DeliverHeldWhy =
   | 'nothing-held'
   /** The room is paused: Pause holds every delivery, the badge's too, until the person resumes it. */
   | 'paused'
-  /** The person has unsent input in the box: a paste plus Enter would submit it glued to the pointer. */
+  /**
+   * The person typed in the tab since their last prompt (the draft bit), so the box may hold unsent text: a paste plus
+   * Enter would submit it glued to the pointer. Main cannot see the box, so the strip offers "Deliver anyway" (the
+   * request again with `overDraft`), the person's own choice.
+   */
   | 'draft'
-  /** The tab is not waiting for input (Claude is working, a permission prompt, starting, a paste in flight). */
-  | 'not-waiting'
+  /** The tab's Claude is not running (not started yet, or it exited). */
+  | 'ended'
+  /** A permission prompt or a dialog (AskUserQuestion, ExitPlanMode) waits for the person's answer. */
+  | 'permission'
+  /** Claude is working or starting, or a paste is in flight (or the PTY write failed): not waiting for input yet. */
+  | 'busy'
 
 /** The `rooms.deliverHeld` reply: the pointer went in, or why not. */
 export type DeliverHeldAnswer = { delivered: true } | { delivered: false; why: DeliverHeldWhy }

@@ -20,7 +20,7 @@ import type { TabFlag } from '../../shared/tab-flag'
 import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
-import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SendOrigin, type SessionEntry, type SessionRoom } from './status-reducer'
+import { cap, isAnswerKey, isDialogKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SendOrigin, type SessionEntry, type SessionRoom } from './status-reducer'
 import { isPersonInput } from './terminal-reports'
 import { cleanTitle, TitleParser } from './terminal-title'
 import { warnLog } from '../warn-log'
@@ -317,10 +317,15 @@ export class SessionRegistry {
         dropped = step.dropped
       }
       // The draft bit (design-rooms.md §2), on every input of the person's, not only the first: a
-      // marked member gets no room pointer pasted on top of what they may be typing. Set on any key,
-      // an answer to a permission dialog included: a wrong guess only holds a pointer back (the
-      // Stop pointer and the badge still reach the tab), it never types anything.
-      if (next.draft !== true) next = { ...next, draft: true }
+      // marked member gets no gate pointer, and the badge's click asks first, on top of what they
+      // may be typing. Not for a key a permission prompt or dialog takes while one is up (Enter, a
+      // digit, an arrow: isDialogKey), read from the status before this chunk's answer step: it
+      // leaves nothing in the box, and setting the bit for it held every pointer with an empty box
+      // until the person sent a prompt. Any other key sets it, so a wrong guess only ever holds a
+      // pointer back (the Stop pointer still reaches a marked tab, and the badge offers "Deliver
+      // anyway"), it never types anything onto real unsent text.
+      const dialogKey = entry.status === 'needs-permission' && isDialogKey(data)
+      if (!dialogKey && next.draft !== true) next = { ...next, draft: true }
       if (next !== entry) this.set(entry, next, dropped)
       this.notify(this.inputListeners, tabId, 'person-input')
     }

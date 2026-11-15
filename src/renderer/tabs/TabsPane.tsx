@@ -33,7 +33,7 @@ import { PAGE_TAB_NOT_SPLIT, paneCommandHandlers, refusalText } from './pane-com
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
-import { deliverHeldText } from './tab-room'
+import { DELIVER_ANYWAY_LABEL, deliverHeldText } from './tab-room'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
@@ -148,6 +148,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // (`appSlots`) that come with the same view.
   const layout = useLayout(props.project?.id)
   const [error, setError] = useState<string | null>(null)
+  // The tab whose badge click last answered `draft`: the strip's error then carries "Deliver anyway" for it (shown only
+  // while that error is the one on screen, so a later error never inherits the button).
+  const [draftHeld, setDraftHeld] = useState<string | null>(null)
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
   const { own } = useSessions()
@@ -714,10 +717,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const roomMark = (tabId: string, mark: boolean): void => run(window.cockpit.invoke('tabs.roomMark', { tabId, mark }))
   // The held badge: the pointer as the person's own act. A click that put nothing in says why (tab-room.ts), never
   // silence; the badge's count follows from the next sessions snapshot.
-  const deliverHeld = (tabId: string): void =>
+  // A `draft` answer offers "Deliver anyway": main cannot see the input box, so the person says whether to add the
+  // pointer to what may be in it (overDraft, their own act; main still checks everything else again).
+  const deliverHeld = (tabId: string, overDraft = false): void =>
     run(
-      window.cockpit.invoke('rooms.deliverHeld', { tabId }).then((answer) => {
-        if (!answer.delivered) setError(deliverHeldText(answer.why))
+      window.cockpit.invoke('rooms.deliverHeld', overDraft ? { tabId, overDraft: true } : { tabId }).then((answer) => {
+        if (answer.delivered) return
+        setDraftHeld(answer.why === 'draft' ? tabId : null)
+        setError(deliverHeldText(answer.why))
       })
     )
 
@@ -1413,7 +1420,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             void groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId)
           }}
         />
-        {error && <p role="alert" className="tabs-error">{error}</p>}
+        {error && (
+          <p role="alert" className="tabs-error">
+            {error}
+            {draftHeld !== null && error === deliverHeldText('draft') && (
+              <button type="button" className="tabs-error-action" onClick={() => deliverHeld(draftHeld, true)}>
+                {DELIVER_ANYWAY_LABEL}
+              </button>
+            )}
+          </p>
+        )}
         <SplitArea
           tabs={state.tabs}
           activeId={state.activeId}

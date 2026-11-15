@@ -291,6 +291,38 @@ describe('setRoom (SessionInfo.room / held, the room delivery)', () => {
     expect(reg.setRoom('nope', { ...ROOM, held: 1 })).toBe(false)
   })
 
+  it('the draft bit: set by keys for the box, not by the keys a permission prompt takes while it is up', () => {
+    start('c1')
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'go' })
+    reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+    // An arrow moves the highlight, Enter answers: the takeover counts, the box holds nothing.
+    reg.userInput(P1, 'c1', '\x1b[B')
+    expect(reg.get('c1')).toMatchObject({ typed: true, status: 'needs-permission' })
+    reg.userInput(P1, 'c1', '\r')
+    expect(reg.get('c1')?.status).toBe('working')
+    expect(reg.get('c1')?.draft).toBeUndefined()
+    // A digit answers too.
+    reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+    reg.userInput(P1, 'c1', '2')
+    expect(reg.get('c1')?.draft).toBeUndefined()
+    // Once the prompt is answered (working), the same keys may be typing ahead into the box.
+    reg.userInput(P1, 'c1', '2')
+    expect(reg.get('c1')?.draft).toBe(true)
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: '2' })
+    // Under a prompt, Esc (denies and gives the box back) and any text still set it.
+    for (const key of ['\x1b', 'y']) {
+      reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+      reg.userInput(P1, 'c1', key)
+      expect(reg.get('c1')?.draft, JSON.stringify(key)).toBe(true)
+      reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'p' })
+      expect(reg.get('c1')?.draft).toBeUndefined()
+    }
+    // Waiting for input: Enter on an empty box is still the person's key for the box.
+    reg.applyHook('c1', 'Stop', {})
+    reg.userInput(P1, 'c1', '\r')
+    expect(reg.get('c1')?.draft).toBe(true)
+  })
+
   it('survives a restart of the same tab (the draft bit does not); never in the summaries, in the own window snapshot', () => {
     start('c1')
     reg.setRoom('c1', { ...ROOM, held: 3 })

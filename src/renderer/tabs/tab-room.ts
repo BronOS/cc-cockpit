@@ -56,10 +56,15 @@ export function heldBadge(tab: TabInfo, detail: SessionDetail | undefined): Held
   const what = held === 1 ? '1 room message waiting' : `${held} room messages waiting`
   // The reason the person would otherwise have to guess: a typed tab without the mark gets no pointer of its own
   // (design-rooms.md §2), so the count waits for them; any other tab gets it at its next chance.
+  // A marked typed tab: the gate pastes only while nothing the person typed may be unsent (the draft bit, which the
+  // strip cannot see), so "waits for input" alone would promise a delivery that may not come.
+  const typed = detail?.typed === true
   const why =
-    detail?.typed === true && !tab.room.mark
+    typed && !tab.room.mark
       ? `Held: you typed in this tab, so room messages wait for you. Turn on "${MARK_LABEL}" in the tab menu to let them in.`
-      : 'Claude gets them when it next stops or waits for input.'
+      : typed
+        ? 'Claude gets them when it next stops, or when it waits for input with nothing you typed unsent.'
+        : 'Claude gets them when it next stops or waits for input.'
   return {
     text: held > BADGE_MAX ? `${BADGE_MAX}+` : String(held),
     tooltip: `${what}\n${why}\nClick to have Claude read them now.`,
@@ -84,6 +89,9 @@ export function roomMenuItems(tab: TabInfo, options: { roomView: boolean }): Roo
   return items
 }
 
+/** The strip's button after a `draft` answer: the person's choice to deliver on top of what is in the box. */
+export const DELIVER_ANYWAY_LABEL = 'Deliver anyway'
+
 /** What the strip says when the badge's click put nothing in (rooms.deliverHeld's `why`). */
 export function deliverHeldText(why: DeliverHeldWhy): string {
   switch (why) {
@@ -94,8 +102,13 @@ export function deliverHeldText(why: DeliverHeldWhy): string {
     case 'paused':
       return 'The room is paused: resume it in the room view to deliver its messages.'
     case 'draft':
-      return 'You have unsent text in this tab: send or clear it, then click the badge again.'
-    case 'not-waiting':
+      // Main cannot see the box: the person may have cleared it, or it may hold a half-typed prompt.
+      return `You typed in this tab since your last prompt, so the box may hold unsent text. Send it first, or "${DELIVER_ANYWAY_LABEL}" adds the pointer to whatever is in the box and sends both.`
+    case 'ended':
+      return 'Claude is not running in this tab: restart it to deliver room messages.'
+    case 'permission':
+      return 'Claude is waiting for your answer to a prompt in this tab: answer it, then click the badge again.'
+    case 'busy':
       return 'Claude is busy in this tab: click the badge again once it waits for input.'
   }
 }

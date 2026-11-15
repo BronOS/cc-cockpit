@@ -1,7 +1,7 @@
 // Rooms Task 13: the tab strip's room parts (design-rooms.md §5). A fixture plugin (room-strip) makes a room and opens
 // its member bob; the strip shows the marker, a message held for a typed tab shows the badge, its click pastes the
-// fixed pointer as the person's act (and says why when it cannot), and the person's mark is set and cleared from the
-// tab's context menu, stored on the tab by main.
+// fixed pointer as the person's act (and says why when it cannot, with "Deliver anyway" for a possible draft), and the
+// person's mark is set and cleared from the tab's context menu, stored on the tab by main; setting it delivers at once.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -72,20 +72,54 @@ test('a member tab shows its marker; the held badge delivers the pointer; the ma
   await expect(badge).toHaveText('1')
   // Clicked again while Claude works: nothing goes in, and the strip says why.
   await badge.click()
-  await expect(cockpit.page.locator('.tabs-error')).toContainText('Claude is busy')
+  const error = cockpit.page.locator('.tabs-error')
+  await expect(error).toContainText('Claude is busy')
   expect(cockpit.pastes()).toHaveLength(1)
 
-  // The mark, from the tab menu: stored on the tab by main, shown checked, in the marker's tooltip, cleared again.
+  // A draft: the person ends the turn by hand, and the keys of `/stop` set the draft bit (main cannot see the box). The
+  // click says so and offers "Deliver anyway", the person's choice; that puts the pointer in.
+  await cockpit.typeLine('/stop')
+  await expect.poll(async () => (await entry(cockpit)).status).toBe('waiting')
+  expect((await entry(cockpit)).draft).toBe(true)
+  await badge.click()
+  await expect(error).toContainText('may hold unsent text')
+  expect(cockpit.pastes()).toHaveLength(1)
+  await error.getByRole('button', { name: 'Deliver anyway' }).click()
+  await expect.poll(() => cockpit.pastes()).toHaveLength(2)
+  expect(cockpit.pastes()[1]).toBe(`\x1b[200~${pointerText(1)}\x1b[201~`)
+  await expect(error).toHaveCount(0)
+  await expect.poll(async () => (await entry(cockpit)).status).toBe('working')
+
+  // Waiting again with nothing unsent (the prompt clears the bit, then the scheduled Stop): still held, typed, no mark.
+  await cockpit.typeLine('/later 1500 /stop')
+  await cockpit.typeLine('/prompt mine')
+  await expect.poll(async () => (await entry(cockpit)).status, { timeout: 10_000 }).toBe('waiting')
+  expect((await entry(cockpit)).draft).not.toBe(true)
+  await expect(badge).toHaveText('1')
+  expect(cockpit.pastes()).toHaveLength(2)
+
+  // The mark, from the tab menu: stored on the tab by main, shown checked, in the marker's tooltip. Turned on while the
+  // tab waits with no draft, what is held goes in at once, not at the next Stop.
   const menuItem = cockpit.page.getByRole('menuitemcheckbox', { name: 'Deliver room messages automatically' })
   await tab.getByRole('tab').click({ button: 'right' })
   await expect(menuItem).toHaveAttribute('aria-checked', 'false')
   await menuItem.click()
   await expect.poll(() => tabRoom(cockpit)).toMatchObject({ name: 'bob', mark: true })
+  await expect.poll(() => cockpit.pastes()).toHaveLength(3)
+  expect(cockpit.pastes()[2]).toBe(`\x1b[200~${pointerText(1)}\x1b[201~`)
   await expect(marker).toHaveAttribute('title', /delivered automatically/)
   await expect(badge).not.toHaveAttribute('title', /you typed in this tab/)
+  await expect.poll(async () => (await entry(cockpit)).status).toBe('working')
+
+  // Cleared, and waiting again: nothing more goes in (clearing never offers, and a typed tab without the mark holds).
   await tab.getByRole('tab').click({ button: 'right' })
   await expect(menuItem).toHaveAttribute('aria-checked', 'true')
   await menuItem.click()
   await expect.poll(() => tabRoom(cockpit)).toMatchObject({ name: 'bob', mark: false })
   await expect(marker).toHaveAttribute('title', 'Room "Strip test" as bob')
+  await cockpit.typeLine('/later 1500 /stop')
+  await cockpit.typeLine('/prompt mine')
+  await expect.poll(async () => (await entry(cockpit)).status, { timeout: 10_000 }).toBe('waiting')
+  await expect(badge).toHaveAttribute('title', /you typed in this tab/)
+  expect(cockpit.pastes()).toHaveLength(3)
 })

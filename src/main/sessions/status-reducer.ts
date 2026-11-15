@@ -129,9 +129,10 @@ export interface SessionEntry {
   /**
    * The draft bit (design-rooms.md §2 "The mark"): the person's input reached the tab since its last
    * UserPromptSubmit, so its input box may hold a half-typed prompt. Set by SessionRegistry.userInput
-   * (the path that sets `typed`), cleared by the reducer on UserPromptSubmit. While set, a marked
-   * member gets no room pointer pasted by the gate (the paste would be glued to the draft and
-   * submitted with it). Never persisted.
+   * (the path that sets `typed`), except for a key a permission prompt or dialog takes while one is
+   * up (isDialogKey); cleared by the reducer on UserPromptSubmit. While set, a marked member gets no
+   * room pointer pasted by the gate (the paste would be glued to the draft and submitted with it),
+   * and the badge's click delivers only on the person's "Deliver anyway". Never persisted.
    */
   draft?: boolean
   /**
@@ -192,6 +193,22 @@ export type ReducerEvent =
  */
 export function isAnswerKey(data: string): boolean {
   return data === '\r' || /^[1-9]$/.test(data)
+}
+
+/** The arrow keys, in xterm's normal (CSI) and application (SS3) cursor modes: they move a dialog's highlight. */
+const ARROW_KEYS: ReadonlySet<string> = new Set(['\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D', '\x1bOA', '\x1bOB', '\x1bOC', '\x1bOD'])
+
+/**
+ * Whether one renderer input chunk, typed while the tab shows a permission prompt or a dialog tool (`needs-permission`),
+ * is a key that dialog takes and that leaves nothing in the input box: an answer key (isAnswerKey) or an arrow key
+ * moving the highlight. Such a chunk does not set the draft bit (SessionRegistry.userInput): the incident was a person
+ * who approved a tool with Enter, and the bit then held every room pointer, the badge's too, with an empty box until
+ * they typed and sent a prompt. Every other key still sets it, Esc included (it denies and gives the box back, which
+ * may still hold what was typed while Claude worked), and so does text typed into a dialog's free-text option: the
+ * rule may only ever miss a draft that cannot exist, never one that may.
+ */
+export function isDialogKey(data: string): boolean {
+  return isAnswerKey(data) || ARROW_KEYS.has(data)
 }
 
 /** A fresh entry for a tab whose process was just started. */

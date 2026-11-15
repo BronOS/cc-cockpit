@@ -431,17 +431,22 @@ export class RoomService {
     for (const m of this.registry.memberInfos(roomId)) this.delivery.offer(roomId, m.name)
   }
 
-  /** The held badge's click (rooms.deliverHeld): the pointer as the person's own act, or why it did not go in. */
-  deliverHeld(tabId: string): DeliverHeldAnswer {
-    return this.delivery.deliverHeld(tabId)
+  /**
+   * The held badge's click (rooms.deliverHeld): the pointer as the person's own act, or why it did not go in.
+   * `overDraft`: the person's "Deliver anyway" after a `draft` answer (RoomDelivery.deliverHeld).
+   */
+  deliverHeld(tabId: string, options: { overDraft?: boolean } = {}): DeliverHeldAnswer {
+    return this.delivery.deliverHeld(tabId, options)
   }
 
   /**
-   * The person set or cleared the mark on a member tab (tabs.roomMark, after TabManager.setRoomMark stored it): what
-   * waits is offered again, so a marked typed tab waiting for input gets the pointer now instead of at its next Stop.
-   * Cleared, the offer holds it behind the badge as before. A no-op for a tab in no room.
+   * The person turned the mark on for a member tab (tabs.roomMark, after TabManager.setRoomMark stored it, only when it
+   * was off before: the strip handlers decide): what waits is offered again, so a marked typed tab waiting for input
+   * gets the pointer now instead of at its next Stop. Never on clearing the mark or setting it again: an untyped member
+   * held at the per-tab Stop cap waits for the person's next prompt (design §2 "Loops"), and turning delivery off must
+   * not deliver. A no-op for a tab in no room.
    */
-  markChanged(tabId: string): void {
+  markTurnedOn(tabId: string): void {
     const member = this.registry.memberOf(tabId)
     if (member) this.delivery.offer(member.roomId, member.name)
   }

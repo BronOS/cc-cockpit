@@ -1018,6 +1018,11 @@ iframe:focus-visible {
   background: var(--cc-bg-error);
   border-bottom: 1px solid var(--cc-border);
 }
+/* The one action an error may carry (the held badge's "Deliver anyway", TabsPane). */
+.tabs-error-action {
+  margin-left: 10px;
+  font: inherit;
+}
 .tabs-empty {
   margin: 0;
   padding: 16px 14px;

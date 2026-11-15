@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionDetail, TabInfo } from '../../src/shared/ipc'
-import { deliverHeldText, heldBadge, MARK_LABEL, roomMarker, roomMenuItems, ROOM_VIEW_LABEL } from '../../src/renderer/tabs/tab-room'
+import { DELIVER_ANYWAY_LABEL, deliverHeldText, heldBadge, MARK_LABEL, roomMarker, roomMenuItems, ROOM_VIEW_LABEL } from '../../src/renderer/tabs/tab-room'
 import type { DeliverHeldWhy } from '../../src/shared/tab-room'
 
 const ROOM_ID = '0b0f7c1e-3c59-4f0e-9b7e-2f6f3d8a1c42'
@@ -57,11 +57,14 @@ describe('heldBadge', () => {
     const typed = heldBadge(member(), inRoom({ held: 2, typed: true }))?.tooltip
     expect(typed).toContain('you typed in this tab')
     expect(typed).toContain(MARK_LABEL)
-    // Marked, or untyped: the pointer comes on its own at the next chance.
-    for (const t of [heldBadge(member({ mark: true }), inRoom({ held: 2, typed: true })), heldBadge(member(), inRoom({ held: 2 }))]) {
-      expect(t?.tooltip).toContain('when it next stops or waits for input')
-      expect(t?.tooltip).not.toContain('you typed')
-    }
+    // Untyped: the pointer comes on its own at the next chance.
+    const untyped = heldBadge(member(), inRoom({ held: 2 }))
+    expect(untyped?.tooltip).toContain('when it next stops or waits for input')
+    expect(untyped?.tooltip).not.toContain('you typed')
+    // Marked and typed: the Stop pointer always, the gate's only with nothing the person typed unsent (the draft bit).
+    const marked = heldBadge(member({ mark: true }), inRoom({ held: 2, typed: true }))
+    expect(marked?.tooltip).toContain('when it next stops, or when it waits for input with nothing you typed unsent')
+    expect(marked?.tooltip).not.toContain('Held: you typed')
   })
 
   it('is absent with nothing held, a junk count, no room or another kind', () => {
@@ -92,11 +95,18 @@ describe('roomMenuItems', () => {
 
 describe('deliverHeldText', () => {
   it('names every reason a badge click put nothing in', () => {
-    const whys: DeliverHeldWhy[] = ['no-room', 'nothing-held', 'paused', 'draft', 'not-waiting']
+    const whys: DeliverHeldWhy[] = ['no-room', 'nothing-held', 'paused', 'draft', 'ended', 'permission', 'busy']
     const texts = whys.map(deliverHeldText)
     expect(new Set(texts).size).toBe(whys.length)
     expect(deliverHeldText('paused')).toMatch(/paused/)
-    expect(deliverHeldText('draft')).toMatch(/unsent text/)
-    expect(deliverHeldText('not-waiting')).toMatch(/busy/)
+    // A draft: main cannot see the box, so the text names the way out instead of "clear it".
+    expect(deliverHeldText('draft')).toMatch(/may hold unsent text/)
+    expect(deliverHeldText('draft')).toContain(`"${DELIVER_ANYWAY_LABEL}"`)
+    expect(deliverHeldText('draft')).not.toMatch(/clear it/)
+    // Not waiting has three distinct reasons: only "busy" says Claude is busy.
+    expect(deliverHeldText('busy')).toMatch(/busy/)
+    expect(deliverHeldText('ended')).toMatch(/not running/)
+    expect(deliverHeldText('permission')).toMatch(/answer/)
+    for (const why of ['ended', 'permission'] as const) expect(deliverHeldText(why)).not.toMatch(/busy/)
   })
 })

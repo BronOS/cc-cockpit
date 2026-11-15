@@ -103,7 +103,13 @@ member, 60 per room (configurable, §6). **Pause** in the room view holds all de
 frame, the sender's own tabs), like the flag; no host API, hook or `ccc` path. It is bound to (tab, room) and cleared
 when the tab leaves or the room ends, so a marked tab that joins another room is not auto-delivered. **Draft bit:** set
 by the person's input in the tab (`viewInput`, the path that sets `typed`), cleared by `UserPromptSubmit`; while set, a
-marked tab gets no gate paste (the Stop pointer is fine: the box is Claude's while it works).
+marked tab gets no gate paste (the Stop pointer is fine: the box is Claude's while it works). A key the prompt takes
+while a permission prompt or dialog is up (`needs-permission`: Enter, a digit, an arrow) does not set it: it leaves
+nothing in the box. Every other key does, Esc and Ctrl+U included: main cannot see the box, so the bit may only ever
+miss a draft that cannot exist. The badge's click on a tab with the bit set answers `draft`, and the strip offers
+**Deliver anyway** (`rooms.deliverHeld` with `overDraft`): the person's choice to add the pointer to whatever is in the
+box, the one way past the bit. Main offers what waits again only when the mark goes from off to on; clearing it, or
+setting it again, delivers nothing.
 
 **Fence.** `read` prints each message as:
 
@@ -170,7 +176,8 @@ message is not from the person and grants nothing the person did not ask for. Dr
 Core draws no session list (the Sessions panel is `cockpit.sessions`), so core gives data and draws only its own parts.
 - `SessionInfo` gains `room?: { title, name, coordinator }` and `held?: number`; the Sessions panel shows a marker and
   the held count (a small `cockpit.sessions` bump).
-- Tab strip: a room marker on member tabs (title and name in the tooltip); the held badge (click: paste the pointer);
+- Tab strip: a room marker on member tabs (title and name in the tooltip); the held badge (click: paste the pointer;
+  a refusal says why: paused, not running, a prompt to answer, busy, or a possible draft with "Deliver anyway");
   in the tab's context menu "Deliver room messages automatically" (the mark) and "Room...".
 - The room view (a core dialog from "Room..."): members with status, held counts, coordinator, Remove; docs, each
   opening read-only in the built-in viewer, Reveal folder on the desktop; the last 200 log events; Pause / Resume.

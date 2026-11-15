@@ -2995,14 +2995,25 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
   function roomSetup(options: { server?: boolean } = {}): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
+    // The stored marks main would hold: t1 starts off, `marked` starts on.
+    const marks = new Map<string, boolean>([
+      ['t1', false],
+      ['t2', false],
+      ['marked', true]
+    ])
     registerRoomStripHandlers(router, {
       server: options.server === true,
+      markOf: (_projectId, tabId) => marks.get(tabId),
       roomMark: (projectId, tabId, mark) => {
         calls.push(['roomMark', projectId, tabId, mark])
+        marks.set(tabId, mark)
         return mark
       },
-      deliverHeld: (projectId, tabId) => {
-        calls.push(['deliverHeld', projectId, tabId])
+      markTurnedOn: (projectId, tabId) => {
+        calls.push(['markTurnedOn', projectId, tabId])
+      },
+      deliverHeld: (projectId, tabId, overDraft) => {
+        calls.push(['deliverHeld', projectId, tabId, overDraft])
         return tabId === 'held' ? { delivered: true } : { delivered: false, why: 'paused' }
       }
     })
@@ -3017,10 +3028,33 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
     expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1' }])).toEqual({ delivered: false, why: 'paused' })
     expect(calls).toEqual([
       ['roomMark', PROJECT_A, 't1', true],
+      ['markTurnedOn', PROJECT_A, 't1'],
       ['roomMark', PROJECT_B, 't2', false],
-      ['deliverHeld', PROJECT_A, 'held'],
-      ['deliverHeld', PROJECT_A, 't1']
+      ['deliverHeld', PROJECT_A, 'held', false],
+      ['deliverHeld', PROJECT_A, 't1', false]
     ])
+  })
+
+  it('offers what waits again only when the mark goes from off to on', async () => {
+    const { ipc, calls } = roomSetup()
+    // Set again while on, cleared, cleared again: stored, nothing offered (turning delivery off must not deliver).
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: false }])).toBe(false)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: false }])).toBe(false)
+    expect(calls.filter((c) => c[0] === 'markTurnedOn')).toEqual([])
+    // Off to on: offered once; on again: not.
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: true }])).toBe(true)
+    expect(calls.filter((c) => c[0] === 'markTurnedOn')).toEqual([['markTurnedOn', PROJECT_A, 'marked']])
+  })
+
+  it('"Deliver anyway": overDraft true passes through, anything but true or absent is refused', async () => {
+    const { ipc, calls } = roomSetup()
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', overDraft: true }])).toEqual({ delivered: true })
+    for (const overDraft of [false, 'true', 1, null]) {
+      await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', overDraft }])).rejects.toThrow(/overDraft must be true or absent/)
+    }
+    expect(calls).toEqual([['deliverHeld', PROJECT_A, 'held', true]])
   })
 
   it('refuses a mark that is not a boolean and a missing tab id before main is asked', async () => {
@@ -3056,7 +3090,8 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
     expect(await server.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held' })).toEqual({ delivered: true })
     expect(server.calls).toEqual([
       ['roomMark', PROJECT_A, 't1', true],
-      ['deliverHeld', PROJECT_A, 'held']
+      ['markTurnedOn', PROJECT_A, 't1'],
+      ['deliverHeld', PROJECT_A, 'held', false]
     ])
     expect(REMOTE_CLASS['tabs.roomMark']).toBe('adapted')
     expect(REMOTE_CLASS['rooms.deliverHeld']).toBe('adapted')

@@ -452,13 +452,50 @@ describe("deliverHeld (the person's badge click)", () => {
     expect(pasted('b')).toEqual([paste(pointerText(1))])
   })
 
-  it('does nothing for a tab not waiting, with nothing held, or in no room', () => {
+  it('"Deliver anyway" (overDraft) goes past the draft bit only, logged as such', () => {
+    typedBob()
+    delivery.send(roomId, 'plugin', 'bob', 'one')
+    // The person typed and cleared the box (Ctrl+U): main cannot tell, the bit stays.
+    sessions.userInput('p1', 'b', 'x')
+    sessions.userInput('p1', 'b', '\x15')
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'draft' })
+    // A pause still holds it, and so does a tab that is not waiting.
+    rooms.pause(roomId)
+    expect(delivery.deliverHeld('b', { overDraft: true })).toEqual({ delivered: false, why: 'paused' })
+    rooms.resume(roomId)
+    expect(writes).toEqual([])
+    expect(delivery.deliverHeld('b', { overDraft: true })).toEqual({ delivered: true })
+    expect(pasted('b')).toEqual([paste(pointerText(1))])
+    expect(logged().at(-1)).toMatchObject({ from: 'person', to: 'bob', via: 'badge', pointer: 1, delivered: true, overDraft: true })
+  })
+
+  it('a tab whose last input answered a permission prompt has no draft: the badge delivers after the Stop', () => {
+    typedBob()
+    delivery.send(roomId, 'plugin', 'bob', 'one')
+    sessions.applyHook('b', 'UserPromptSubmit', { prompt: 'go' })
+    sessions.applyHook('b', 'Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission' })
+    expect(sessions.get('b')?.status).toBe('needs-permission')
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'permission' })
+    // Down to "Yes, and don't ask again", then Enter: keys the prompt takes, nothing left in the box.
+    sessions.userInput('p1', 'b', '\x1b[B')
+    sessions.userInput('p1', 'b', '\r')
+    expect(sessions.get('b')?.draft).toBeUndefined()
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'busy' }) // working again
+    sessions.applyHook('b', 'Stop', {})
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: true })
+    expect(pasted('b')).toEqual([paste(pointerText(1))])
+  })
+
+  it('does nothing for a tab not waiting, ended, with nothing held, or in no room', () => {
     typedBob()
     expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'nothing-held' })
     delivery.send(roomId, 'plugin', 'bob', 'one')
     sessions.applyHook('b', 'UserPromptSubmit', { prompt: 'y' })
-    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'not-waiting' }) // working
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'busy' }) // working
+    expect(delivery.deliverHeld('b', { overDraft: true })).toEqual({ delivered: false, why: 'busy' })
     expect(delivery.deliverHeld('nope')).toEqual({ delivered: false, why: 'no-room' })
+    sessions.tabExited('b', 0)
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'ended' })
     expect(writes).toEqual([])
   })
 })

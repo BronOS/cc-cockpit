@@ -37,27 +37,54 @@ function sites(re: RegExp): string[] {
 
 const filesOf = (found: string[]): string[] => [...new Set(found.map((s) => s.slice(0, s.lastIndexOf(':'))))].sort()
 
-describe('the room mark and the badge are reached only from the shell page', () => {
-  it('setRoomMark is defined in the tab manager and called only from the strip handlers in index.ts', () => {
-    const found = sites(/\bsetRoomMark\s*\(/)
-    expect(filesOf(found)).toEqual(['src/main/index.ts', 'src/main/tabs/tab-manager.ts'])
-    const index = readFileSync(join(ROOT, 'src', 'main', 'index.ts'), 'utf8')
-    const start = index.indexOf('registerRoomStripHandlers(router, {')
-    expect(start).toBeGreaterThan(0)
-    const block = index.slice(start, index.indexOf('\n  })\n', start))
-    // One call in index.ts, and it is inside the strip handlers' deps.
-    expect(index.match(/\.setRoomMark\(/g)).toHaveLength(1)
-    expect(block).toContain('tabs.setRoomMark(projectId, tabId, mark)')
-  })
+/** Code lines of index.ts, and the registerRoomStripHandlers call's lines (from its opening to its closing `})`). */
+function indexParts(): { code: string[]; block: string[] } {
+  const lines = codeLines(readFileSync(join(ROOT, 'src', 'main', 'index.ts'), 'utf8'))
+  const open = lines.findIndex(({ text }) => text.trim() === 'registerRoomStripHandlers(router, {')
+  expect(open).toBeGreaterThan(0)
+  const close = lines.findIndex(({ text }, i) => i > open && text === '  })')
+  expect(close).toBeGreaterThan(open)
+  return { code: lines.map((l) => l.text), block: lines.slice(open, close + 1).map((l) => l.text) }
+}
 
-  it('deliverHeld is called only by the room service and the strip handlers', () => {
-    const found = sites(/\.deliverHeld\s*\(/)
-    expect(filesOf(found)).toEqual(['src/main/index.ts', 'src/main/ipc/router.ts', 'src/main/rooms/room-service.ts'])
-    const index = readFileSync(join(ROOT, 'src', 'main', 'index.ts'), 'utf8')
-    const start = index.indexOf('registerRoomStripHandlers(router, {')
-    const block = index.slice(start, index.indexOf('\n  })\n', start))
-    expect(index.match(/\.deliverHeld\(/g)).toHaveLength(1)
-    expect(block).toContain('rooms.deliverHeld(tabId)')
+const count = (lines: string[], re: RegExp): number => lines.reduce((n, l) => n + (l.match(new RegExp(re.source, 'g'))?.length ?? 0), 0)
+
+describe('the room mark and the badge are reached only from the shell page', () => {
+  // A bare-name match, not a call: `.bind(tabs)`, `const { setRoomMark } = tabs`, `tabs['setRoomMark']` and a call
+  // all name it, so a second path cannot hide behind a spelling the receiving module never writes.
+  const GUARDED = {
+    setRoomMark: { re: /\bsetRoomMark\b/, files: ['src/main/index.ts', 'src/main/tabs/tab-manager.ts'] },
+    deliverHeld: {
+      re: /\bdeliverHeld\b/,
+      // The renderer names the channel and its own handler; a page reaches main only over IPC (the channel test below).
+      files: [
+        'src/main/index.ts',
+        'src/main/ipc/router.ts',
+        'src/main/rooms/room-delivery.ts',
+        'src/main/rooms/room-service.ts',
+        'src/renderer/tabs/TabsPane.tsx',
+        'src/shared/ipc.ts'
+      ]
+    },
+    markTurnedOn: { re: /\bmarkTurnedOn\b/, files: ['src/main/index.ts', 'src/main/ipc/router.ts', 'src/main/rooms/room-service.ts'] }
+  }
+
+  for (const [name, { re, files }] of Object.entries(GUARDED)) {
+    it(`${name} is named in code only by its own files`, () => {
+      expect(filesOf(sites(re))).toEqual([...files].sort())
+    })
+  }
+
+  it('in index.ts, each is named only inside the strip handlers, and the writer and the badge are called once', () => {
+    const { code, block } = indexParts()
+    for (const { re } of Object.values(GUARDED)) expect(count(code, re), re.source).toBe(count(block, re))
+    expect(count(code, /\bsetRoomMark\b/)).toBe(1)
+    expect(block.join('\n')).toContain('tabs.setRoomMark(projectId, tabId, mark)')
+    // The deps key and the one call each.
+    expect(count(code, /\bdeliverHeld\b/)).toBe(2)
+    expect(count(code, /\brooms\.deliverHeld\(/)).toBe(1)
+    expect(count(code, /\bmarkTurnedOn\b/)).toBe(2)
+    expect(count(code, /\brooms\.markTurnedOn\(/)).toBe(1)
   })
 
   it('the channels are named only by the shared channel list, the router and the shell renderer', () => {
@@ -72,7 +99,7 @@ describe('the room mark and the badge are reached only from the shell page', () 
     const dirs = ['src/main/plugins', 'src/host', 'src/main/socket', 'src/main/sessions', 'src/main/hooks', 'src/cli', 'src/sdk', 'plugins']
     const files = dirs.flatMap((d) => sources(join(ROOT, d))).filter((p) => !p.includes('node_modules'))
     expect(files.length).toBeGreaterThan(20)
-    const forbidden = [/\bsetRoomMark\b/, /\bdeliverHeld\b/, /\bmarkChanged\b/, /(['"`])(tabs\.roomMark|rooms\.deliverHeld)\1/]
+    const forbidden = [/\bsetRoomMark\b/, /\bdeliverHeld\b/, /\bmarkTurnedOn\b/, /(['"`])(tabs\.roomMark|rooms\.deliverHeld)\1/]
     const found = files.flatMap((p) =>
       codeLines(readFileSync(p, 'utf8'))
         .filter(({ text }) => forbidden.some((re) => re.test(text)))
