@@ -618,7 +618,8 @@ function readRoomFile(path: string): string {
   }
 }
 
-function isUuid(value: string): boolean {
+/** A room id's shape (`randomUUID`, lower case); the doc store checks it too before joining an id into a path. */
+export function isUuid(value: string): boolean {
   if (value.length !== 36) return false
   for (let i = 0; i < 36; i++) {
     const ch = value[i] as string
