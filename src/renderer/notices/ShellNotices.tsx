@@ -28,6 +28,7 @@ import {
   downloadFailedText,
   downloadStartAction,
   dropDownloadNotice,
+  MAX_DOWNLOAD_NAMES,
   READY_NOTICE_MS,
   type DownloadNotice
 } from './download-start'
@@ -192,8 +193,11 @@ function DownloadNotices(): React.JSX.Element | null {
       if (action.kind === 'none') return
       const { start } = action
       names.current.set(start.requestId, start.name)
-      // Bounded: the oldest name goes past 32 (a failure that late reads "The download failed").
-      if (names.current.size > 32) names.current.delete(names.current.keys().next().value!)
+      // Bounded: the oldest name goes past MAX_DOWNLOAD_NAMES.
+      if (names.current.size > MAX_DOWNLOAD_NAMES) {
+        const oldest = names.current.keys().next()
+        if (!oldest.done) names.current.delete(oldest.value)
+      }
       if (action.kind === 'click') {
         try {
           clickDownload(document, start)

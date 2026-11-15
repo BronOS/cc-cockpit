@@ -64,6 +64,9 @@ export const MAX_DOWNLOAD_NOTICES = 4
 /** How long a ready link stays: its token lives 60 s (DOWNLOAD_TOKEN_MS), after which the link answers nothing. */
 export const READY_NOTICE_MS = 60_000
 
+/** Recent starts whose names a view keeps for a later failure's text: past it the oldest goes (that failure reads "The download failed"). */
+export const MAX_DOWNLOAD_NAMES = 32
+
 /**
  * A notice joins the list. One per request id: a failure replaces the ready link of the same request
  * (the shell drops the link on a click anyway, and the failure notice holds none: the token's retry window

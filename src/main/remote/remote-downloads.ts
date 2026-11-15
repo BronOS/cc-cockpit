@@ -20,7 +20,7 @@ import { chmod, copyFile, link, lstat, readdir, unlink } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP_DOWNLOAD_MAX_BYTES, downloadSizeText } from '../../shared/downloads'
-import { errorText } from '../../shared/error-text'
+import { codeOf, errorText } from '../../shared/error-text'
 
 /** What a download is, as the adapter hands it over (Electron's DownloadItem, wrapped). */
 export interface RemoteDownloadItem {
@@ -58,12 +58,6 @@ export function numberedName(name: string, n: number): string {
   if (n === 0) return name
   const dot = name.lastIndexOf('.')
   return dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`
-}
-
-/** The error's code (`EEXIST`), or undefined. */
-function codeOf(err: unknown): string | undefined {
-  const code = (err as { code?: unknown } | null)?.code
-  return typeof code === 'string' ? code : undefined
 }
 
 /** A refusal of our own, whose text the notice shows as is (a system error's would name the temp path). */

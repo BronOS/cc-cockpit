@@ -308,12 +308,9 @@ export class DeviceStore {
    * port) must not keep a device from expiring.
    */
   check(cookie: string | undefined, keys: readonly string[] = []): WebDevice | undefined {
-    if (cookie === undefined) return undefined
-    const parts = cookieParts(cookie)
-    if (!parts) return undefined
-    const record = this.file.data.devices.find((d) => d.id === parts.id)
-    // Hash and compare even for an unknown id, so the time taken does not say which ids exist.
-    const secretOk = matchesHash(parts.secret, record?.secretHash ?? DUMMY_HASH) && record !== undefined
+    const found = this.byCookie(cookie)
+    if (!found) return undefined
+    const { record, secretOk } = found
     let keyOk = false
     const offered = keys.slice(0, MAX_OFFERED_KEYS)
     for (const key of offered.length > 0 ? offered : ['']) {
@@ -323,7 +320,7 @@ export class DeviceStore {
     }
     if (!secretOk || !keyOk || !record) return undefined
     const now = this.now()
-    if (now - record.lastSeenAt > DEVICE_IDLE_MS && !this.open.has(record.id)) {
+    if (this.idle(record, now)) {
       this.drop([record.id], 'expired')
       return undefined
     }
@@ -340,14 +337,31 @@ export class DeviceStore {
    * lookup this narrow changes nothing); an expired device names nobody.
    */
   checkCookie(cookie: string | undefined): WebDevice | undefined {
+    const found = this.byCookie(cookie)
+    if (!found?.secretOk || !found.record) return undefined
+    if (this.idle(found.record, this.now())) return undefined
+    return publicOf(found.record)
+  }
+
+  /**
+   * The record a cookie's id names and whether its secret matches, for `check` and `checkCookie`;
+   * undefined for no or a malformed cookie. The secret is hashed and compared even for an unknown id
+   * (against a dummy), so the time taken does not say which ids exist. `record` is returned even when
+   * the secret is wrong: `check` still compares the offered keys against its key hash, so a wrong
+   * secret costs the same as a right one.
+   */
+  private byCookie(cookie: string | undefined): { record: DeviceRecord | undefined; secretOk: boolean } | undefined {
     if (cookie === undefined) return undefined
     const parts = cookieParts(cookie)
     if (!parts) return undefined
     const record = this.file.data.devices.find((d) => d.id === parts.id)
     const secretOk = matchesHash(parts.secret, record?.secretHash ?? DUMMY_HASH) && record !== undefined
-    if (!secretOk || !record) return undefined
-    if (this.now() - record.lastSeenAt > DEVICE_IDLE_MS && !this.open.has(record.id)) return undefined
-    return publicOf(record)
+    return { record, secretOk }
+  }
+
+  /** Unused for DEVICE_IDLE_MS with no socket open: the device has expired. */
+  private idle(record: DeviceRecord, now: number): boolean {
+    return now - record.lastSeenAt > DEVICE_IDLE_MS && !this.open.has(record.id)
   }
 
   /** The gateway handed a socket to this device: it is in use for as long as the socket is open. */

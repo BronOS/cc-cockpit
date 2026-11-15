@@ -584,6 +584,10 @@ export function panelShowHandler(options: PanelShowOptions): Handler {
   }
 }
 
+export function registerPanelShowHandler(server: { handle(cmd: string, handler: Handler): void }, options: PanelShowOptions): void {
+  server.handle('panel.show', panelShowHandler(options))
+}
+
 /** What `download` needs from main (index.ts binds files/downloads.ts and the window table). */
 export interface DownloadCliOptions {
   /** The project window that is open now. */
@@ -616,10 +620,6 @@ export function downloadHandler(options: DownloadCliOptions): Handler {
 
 export function registerDownloadHandler(server: { handle(cmd: string, handler: Handler): void }, options: DownloadCliOptions): void {
   server.handle('download', downloadHandler(options))
-}
-
-export function registerPanelShowHandler(server: { handle(cmd: string, handler: Handler): void }, options: PanelShowOptions): void {
-  server.handle('panel.show', panelShowHandler(options))
 }
 
 /** Register every user command on the server (a `handle(cmd, handler)` is all it needs). */

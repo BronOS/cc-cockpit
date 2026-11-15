@@ -7,3 +7,9 @@ export function errorText(err: unknown): string {
 export function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err))
 }
+
+/** The `code` of a caught node error (`EEXIST`, `ENOENT`), or undefined when it has none. */
+export function codeOf(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code
+  return typeof code === 'string' ? code : undefined
+}

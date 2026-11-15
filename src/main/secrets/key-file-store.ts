@@ -33,6 +33,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import * as nodeFs from 'node:fs'
 import { FAKE_PREFIX, KEYFILE_PREFIX, SecretStoreError, STORED_BY_KEYCHAIN, type SecretStore } from './secret-store'
 import { ownerOnlyMode } from '../paths'
+import { codeOf } from '../../shared/error-text'
 import { warnLog } from '../warn-log'
 
 /** The key's length: AES-256. */
@@ -91,12 +92,6 @@ export interface KeyFileSecretStore extends SecretStore {
 }
 
 type Loaded = { key: Buffer; made: boolean } | { reason: string }
-
-/** The code of a node fs error, or undefined. */
-function codeOf(err: unknown): string | undefined {
-  const code = (err as { code?: unknown } | null)?.code
-  return typeof code === 'string' ? code : undefined
-}
 
 /** Reads exactly `size` bytes from the start of `fd`, or fewer when the file is shorter. */
 function readAll(fs: KeyFileFs, fd: number, size: number): Buffer {

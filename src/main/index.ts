@@ -404,6 +404,9 @@ function start(server: boolean): void {
   // secret store (secrets/secret-store.ts): a shipped app never takes a test-only path, whatever its
   // environment says (the test-hooks chunk is still in app.asar, but nothing loads it).
   const testRun = isTestRun(process.env, app.isPackaged)
+  // A test run's remote windows save downloads here (made on the first save), never to the
+  // developer's own Downloads; the `remoteDownloadsDir` test hook reads the same folder.
+  const testDownloadsDir = testRun ? join(dataDir, 'Downloads') : undefined
   // hooks.json and bin/ccc are rebuilt at every start (their paths change between dev and a
   // packaged build) and must exist before the first Claude tab can spawn: `claude --settings
   // <hooks.json>` names the wrapper. start() runs before `ready`, so no tab exists yet. A failure
@@ -485,6 +488,8 @@ function start(server: boolean): void {
   const views: ViewRegistry<Electron.MessagePortMain> = new ViewRegistry({
     windowIdOf: (projectId): number | undefined => windows.windowIdOf(projectId)
   })
+  // Whether a window has a live browser view (a remote view id): the shared asks and downloads decide by it.
+  const hasRemoteView = (windowId: number): boolean => views.viewsOf(windowId).some((v) => isRemoteViewId(v))
   // Every link main opens outside the app (external/open-external.ts): the OS browser on the desktop,
   // a clickable notice in a browser view, and in server mode never the host's browser. The OS opener
   // looks shell.openExternal up at each call, so the e2e's recorder that replaces it is what runs.
@@ -648,7 +653,7 @@ function start(server: boolean): void {
     shell: electronSystemShell,
     confirmTrash: chooseAsk({
       server,
-      hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+      hasRemoteView,
       shared: trashAsks.ask,
       native:
         testTrashConfirm?.confirm ??
@@ -694,11 +699,10 @@ function start(server: boolean): void {
     ? undefined
     : (() => {
         const store = new RemoteServerStore({ app: registry.app, secrets: secretStore })
-        // A test run saves remote downloads under the data dir (the e2e reads them there through the
-        // `remoteDownloadsDir` hook), never to the developer's own Downloads.
+        // A test run saves remote downloads under the data dir (`testDownloadsDir`).
         const factory = new ElectronRemoteWindowFactory({
           version: app.isPackaged ? app.getVersion() : BUILD_VERSION,
-          ...(testRun ? { downloadsDir: join(dataDir, 'Downloads') } : {}),
+          ...(testDownloadsDir !== undefined ? { downloadsDir: testDownloadsDir } : {}),
           log: warnLog
         })
         // `remote.changed` goes to the open picker only, through the view registry like `projects.changed`.
@@ -1781,7 +1785,7 @@ function start(server: boolean): void {
       // token's GET must come with that device's cookie. `downloads` is defined below; these run only
       // once a host exists.
       downloads: {
-        hasBrowserView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+        hasBrowserView: hasRemoteView,
         start: async (caller, viewId, path, includeAll) => {
           const deviceId = webConnections.deviceIdOf(viewId, caller.windowId)
           if (deviceId === undefined) throw new Error('the browser view is gone')
@@ -2149,7 +2153,7 @@ function start(server: boolean): void {
       settled: (windowId, requestId) => void views.toBrowserViews(windowId, 'downloads.settled', { requestId })
     },
     server,
-    hasBrowserView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+    hasBrowserView: hasRemoteView,
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     dataDir,
@@ -2370,7 +2374,7 @@ function start(server: boolean): void {
     // Server mode: never the native dialog (it aborts main under Ozone headless) nor the queued fake.
     confirmLink: chooseAsk({
       server,
-      hasRemoteView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+      hasRemoteView,
       shared: (windowId, info, signal) => linkAsks.ask(windowId, info, signal),
       native:
         testLinkConfirm?.confirm ??
@@ -3277,7 +3281,7 @@ function start(server: boolean): void {
           serverMode: () => server,
           // The folder remote windows save downloads to in a test run (`<data>/Downloads`, made on the
           // first save), never the developer's own; the remote-window e2e reads what landed there.
-          remoteDownloadsDir: () => join(dataDir, 'Downloads'),
+          remoteDownloadsDir: () => testDownloadsDir,
           // How many url overlay views and webview panel views main made this run (server mode: none
           // on a screen, `offscreenWebviews` counts its off-screen pages).
           nativeViewsMade: () => ({ ...nativeViewsMade }),
