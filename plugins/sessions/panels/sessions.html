@@ -29,7 +29,11 @@
       .flag { display: flex; align-items: center; gap: var(--cc-space-2); margin-top: var(--cc-space-2); font-size: var(--cc-text-s); overflow-wrap: anywhere; }
       .fdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--flag); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-fg) 14%, transparent); }
       .card { cursor: pointer; overflow: hidden; }
-      .card[data-active] { border-color: var(--cc-border-strong); }
+      /* The tab the window shows: a frame twice as thick as the others, in the accent colour.
+         Thickness, not only a shade: a strong border one step from the plain one was invisible in
+         a low-contrast theme (Tokyo Night) and to someone who cannot tell close shades apart. An
+         inset shadow, not the border, so a flagged card keeps its flag colour down the left edge. */
+      .card[data-active] { border-color: var(--cc-accent); box-shadow: inset 0 0 0 1px var(--cc-accent); }
       .head { display: flex; align-items: center; gap: var(--cc-space-2); }
       .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--cc-status-idle, var(--cc-fg-subtle)); }
       .dot[data-status='starting'] { background: var(--cc-status-starting, var(--cc-fg-subtle)); }

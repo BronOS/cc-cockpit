@@ -107,7 +107,8 @@ behind it are in [design.md](design.md).
 - Claude status from hooks: tab dots (core), and through the bundled Sessions plugin (`cockpit.sessions`, on by default,
   ships with the app) a top-bar strip of the other windows' sessions and a Sessions panel (left zone) with notes,
   steps and changed files (a click opens the file through "Plugin used to open files", the built-in `git diff` overlay
-  without one). A permission prompt, a question from Claude and a plan approval all show as needing you and sort first.
+  without one). The card of the tab the window shows has a double-thickness frame in the accent colour. A permission
+  prompt, a question from Claude and a plan approval all show as needing you and sort first.
   With the plugin off there is no strip and no panel; tabs, dots, `ccc sessions` and notifications work as before.
   The strip also has one chip per connected server (see "Remote servers" › "Other machines in the strip").
   A Sessions panel placed before 0.10 keeps its zone, order and size.

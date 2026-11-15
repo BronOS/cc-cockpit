@@ -33,7 +33,10 @@ function cardEl(session, index) {
   const li = el('li', 'cc-card card')
   li.dataset.tabId = card.tabId
   li.dataset.status = card.status
-  if (card.active) li.dataset.active = ''
+  if (card.active) {
+    li.dataset.active = ''
+    li.setAttribute('aria-current', 'true')
+  }
   if (card.flag) {
     // Only a token view.js built from one of the six names (flagOf), never the raw value.
     li.dataset.flag = card.flag.color
