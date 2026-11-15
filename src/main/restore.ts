@@ -2,7 +2,7 @@
 // start. No Electron import: the registry and the tab manager come in through small interfaces
 // so vitest drives all of it with temp dirs and fakes.
 //
-// What is saved: per project, the tabs in order (kind, cwd, Claude session id, name, flag) in
+// What is saved: per project, the tabs in order (kind, cwd, Claude session id, name, flag, room) in
 // `projects/<id>.json`; which windows were open is `openProjects` in app.json (the window manager
 // already keeps it). What comes back: Claude tabs with `claude --resume <id>` (no id yet = a
 // fresh `claude`), shell tabs fresh, command tabs NOT started (their own saved command waits for
@@ -32,6 +32,7 @@ import { errorText } from '../shared/error-text'
 import type { TabInfo } from '../shared/ipc'
 import { checkSessionName } from '../shared/session-name'
 import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
+import { tabRoomOf, type TabRoom } from '../shared/tab-room'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
 import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, type PageTabSpec } from '../shared/page-tabs'
 import type { TabGroup } from '../shared/tab-groups'
@@ -59,6 +60,12 @@ export interface RestoredTab {
   command?: AnyTabCommand
   /** Any kind: the person's flag, sticky across a restart like the tab itself. */
   flag?: TabFlag
+  /**
+   * Claude tabs only: the room membership and the person's mark (design-rooms.md §1 "Restart"). A
+   * quit or a window close keeps it; TabManager.restoreTab keeps it only when the room registry
+   * still has that member, under the tab's new id.
+   */
+  room?: TabRoom
   /** Page tabs only (and always): plugin, type, params, title, icon, checked (checkPageTabSpec). */
   page?: PageTabSpec
 }
@@ -96,6 +103,7 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     if (t.openedByName !== undefined) record.openedByName = t.openedByName
     if (t.name !== undefined) record.name = t.name
     if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
+    if (t.room !== undefined) record.room = { id: t.room.id, name: t.room.name, coordinator: t.room.coordinator, mark: t.room.mark }
     if (t.page !== undefined) Object.assign(record, pageRecordFields(t.page))
     return record
   })
@@ -143,7 +151,7 @@ export function buildRestorePlan(
   const pagesOf = new Map<string, number>()
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room } = raw as Record<string, unknown>
     if (kind === 'page') {
       const page = pagePlanOf(raw as Record<string, unknown>)
       if (page === undefined) continue
@@ -184,6 +192,11 @@ export function buildRestorePlan(
     if (kind === 'claude' && name !== undefined) {
       const n = checkSessionName(name)
       if (n.ok && n.value !== null) tab.name = n.value
+    }
+    // Membership is a Claude tab's only; a damaged one is dropped, not the tab (tabRoomOf).
+    if (kind === 'claude') {
+      const r = tabRoomOf(room)
+      if (r !== undefined) tab.room = r
     }
     // Any kind keeps its flag; a damaged one is dropped, not the tab (tabFlagOf).
     const f = tabFlagOf(flag)
@@ -423,6 +436,7 @@ export class TabRestorer {
     if (tab.resumeId !== undefined) record.sessionId = tab.resumeId
     if (tab.name !== undefined) record.name = tab.name
     if (tab.flag !== undefined) record.flag = { ...tab.flag }
+    if (tab.room !== undefined) record.room = { ...tab.room }
     if (tab.page !== undefined) Object.assign(record, pageRecordFields(tab.page))
     if (tab.command !== undefined) {
       record.label = tab.command.label

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { EventChannel, IpcEventMap } from '../../src/shared/ipc'
 import { KILL_GRACE_MS } from '../../src/main/pty/pty-service'
-import { SHELL_MIN_LIFE_MS, TabManager, resolveCwd, type TabLifecycle } from '../../src/main/tabs/tab-manager'
+import { SHELL_MIN_LIFE_MS, TabManager, resolveCwd, type TabLifecycle, type TabRoomHooks } from '../../src/main/tabs/tab-manager'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const A = 'aaaaaaaaaaaaaaaa'
@@ -50,11 +50,14 @@ function manager(
   lifecycle?: TabLifecycle,
   onTabsChanged?: (projectId: string) => void,
   loginEnv: Record<string, string> = { PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' },
-  closeOnCleanExit?: () => boolean
+  closeOnCleanExit?: () => boolean,
+  rooms?: TabRoomHooks,
+  log: (message: string) => void = () => {}
 ): TabManager {
   return new TabManager({
     onTabsChanged,
     closeOnCleanExit,
+    rooms,
     now: () => clock,
     backend,
     projectPath: (id) => ({ [A]: projA, [B]: projB })[id],
@@ -66,7 +69,7 @@ function manager(
     emit: <C extends EventChannel>(projectId: string, channel: C, payload: IpcEventMap[C]) => {
       events.push({ projectId, channel, payload })
     },
-    log: () => {}
+    log
   })
 }
 
@@ -1561,5 +1564,193 @@ describe('plugin command tabs', () => {
     expect(backend.last.argv).toEqual(GLOW.argv)
     expect(backend.last.options.cwd).toBe(join(projA, 'sub'))
     expect(() => tabs.restoreTab(A, { kind: 'command', command: { label: 'x', argv: ['a\0'], openedBy: 'a.b' } })).toThrow('NUL')
+  })
+})
+
+describe('room membership', () => {
+  const ROOM = '1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed'
+  const OTHER = '6ec0bd7f-11c0-43da-975e-2a8ad9ebae0b'
+
+  /** A recorder for the registry side; `bound` answers rebind (undefined: the room no longer has the member). */
+  function rig(opts: { bound?: { coordinator: boolean } | undefined | 'throw'; close?: boolean } = {}) {
+    const calls: string[] = []
+    const rooms: unknown[] = []
+    const started: unknown[] = []
+    const changed: string[] = []
+    const logs: string[] = []
+    const bound = 'bound' in opts ? opts.bound : { coordinator: false }
+    const hooks: TabRoomHooks = {
+      rebind: (tabId, room) => {
+        calls.push(`rebind ${tabId} ${room.id} ${room.name}`)
+        if (bound === 'throw') throw new Error('registry down')
+        return bound
+      },
+      closed: (tabId, room) => calls.push(`closed ${tabId} ${room.id} ${room.name}`),
+      gone: (tabId) => calls.push(`gone ${tabId}`)
+    }
+    const tabs = manager(
+      '/data/app.sock',
+      { roomChanged: (id, room) => rooms.push([id, room]), started: (t) => started.push(t) },
+      (projectId) => changed.push(projectId),
+      undefined,
+      () => opts.close === true,
+      hooks,
+      (m) => logs.push(m)
+    )
+    return { tabs, calls, rooms, started, changed, logs }
+  }
+
+  it('joins a Claude tab unmarked, tells the lifecycle, saves and tells every view', () => {
+    const { tabs, rooms, changed } = rig()
+    const tab = tabs.create(A, { kind: 'claude' })
+    events.length = 0
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: true })).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: false })
+    expect(tabs.list(A)[0]!.room).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: false })
+    expect(tabs.roomOf(A, tab.id)).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: false })
+    expect(rooms).toEqual([[tab.id, { id: ROOM, name: 'alice', coordinator: true, mark: false }]])
+    expect(changed).toContain(A)
+    expect(events.map((e) => e.channel)).toEqual(['tabs.added'])
+    // Another project's window does not see the tab.
+    expect(() => tabs.setRoom(B, tab.id, { id: ROOM, name: 'alice', coordinator: false })).toThrow(/unknown tab/)
+    expect(tabs.roomOf(B, tab.id)).toBeUndefined()
+  })
+
+  it('refuses a shell tab and a membership that fails the rules', () => {
+    const { tabs } = rig()
+    const shell = tabs.create(A, { kind: 'shell' })
+    expect(() => tabs.setRoom(A, shell.id, { id: ROOM, name: 'alice', coordinator: false })).toThrow(/only a Claude tab/)
+    const tab = tabs.create(A, { kind: 'claude' })
+    for (const bad of [{ id: 'not-a-uuid', name: 'alice' }, { id: ROOM, name: 'all' }, { id: ROOM, name: 'Alice' }]) {
+      expect(() => tabs.setRoom(A, tab.id, { ...bad, coordinator: false }), JSON.stringify(bad)).toThrow(/not a valid room membership/)
+    }
+    expect(tabs.roomOf(A, tab.id)).toBeUndefined()
+  })
+
+  it('sets the mark only on a member, as a boolean, and saves it without an event of its own', () => {
+    const { tabs, rooms, changed } = rig()
+    const tab = tabs.create(A, { kind: 'claude' })
+    expect(() => tabs.setRoomMark(A, tab.id, true)).toThrow(/in no room/)
+    tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
+    for (const bad of ['yes', 1, null, undefined]) expect(() => tabs.setRoomMark(A, tab.id, bad), String(bad)).toThrow(/true or false/)
+    changed.length = 0
+    expect(tabs.setRoomMark(A, tab.id, true)).toBe(true)
+    expect(tabs.roomOf(A, tab.id)?.mark).toBe(true)
+    expect(rooms.at(-1)).toEqual([tab.id, { id: ROOM, name: 'alice', coordinator: false, mark: true }])
+    expect(changed).toEqual([A])
+    // The same mark again changes nothing.
+    tabs.setRoomMark(A, tab.id, true)
+    expect(changed).toEqual([A])
+    expect(() => tabs.setRoomMark(B, tab.id, false)).toThrow(/unknown tab/)
+  })
+
+  it('clears the mark on another room, keeps it for the same membership, and drops both on leave', () => {
+    const { tabs, rooms } = rig()
+    const tab = tabs.create(A, { kind: 'claude' })
+    tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
+    tabs.setRoomMark(A, tab.id, true)
+    // A coordinator change of the same member is not a new membership.
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: true }).mark).toBe(true)
+    // Another name in the same room, or another room, is: the mark goes.
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'bob', coordinator: false }).mark).toBe(false)
+    tabs.setRoomMark(A, tab.id, true)
+    expect(tabs.setRoom(A, tab.id, { id: OTHER, name: 'bob', coordinator: false }).mark).toBe(false)
+    tabs.setRoomMark(A, tab.id, true)
+    tabs.clearRoom(A, tab.id)
+    expect(tabs.roomOf(A, tab.id)).toBeUndefined()
+    expect(tabs.list(A)[0]!.room).toBeUndefined()
+    expect(rooms.at(-1)).toEqual([tab.id, null])
+    // A later join starts unmarked.
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false }).mark).toBe(false)
+    // clearRoom of a tab in no room, or an unknown one, is a no-op.
+    const n = rooms.length
+    tabs.clearRoom(A, tabs.create(A, { kind: 'claude' }).id)
+    tabs.clearRoom(A, 'nope')
+    expect(rooms).toHaveLength(n)
+  })
+
+  it('the person closing a member tab ends the membership; a non-member close tells nothing', () => {
+    const { tabs, calls } = rig()
+    const tab = tabs.create(A, { kind: 'claude' })
+    const plain = tabs.create(A, { kind: 'claude' })
+    tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
+    tabs.close(A, plain.id)
+    expect(calls).toEqual([])
+    tabs.close(A, tab.id)
+    expect(calls).toEqual([`closed ${tab.id} ${ROOM} alice`])
+  })
+
+  it('a clean exit that closes the tab ends the membership too (the tab is gone for good)', () => {
+    const { tabs, calls } = rig({ close: true })
+    const tab = tabs.create(A, { kind: 'claude' })
+    tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
+    backend.last.exit(0)
+    expect(calls).toEqual([`closed ${tab.id} ${ROOM} alice`])
+  })
+
+  it('a window close or a quit keeps the membership: only the tab binding goes', () => {
+    const { tabs, calls } = rig()
+    const a = tabs.create(A, { kind: 'claude' })
+    const b = tabs.create(B, { kind: 'claude' })
+    tabs.setRoom(A, a.id, { id: ROOM, name: 'alice', coordinator: false })
+    tabs.setRoom(B, b.id, { id: OTHER, name: 'bob', coordinator: false })
+    tabs.closeProject(A)
+    expect(calls).toEqual([`gone ${a.id}`])
+    tabs.disposeAll()
+    expect(calls).toEqual([`gone ${a.id}`, `gone ${b.id}`])
+  })
+
+  it('a restored member is rebound under its new id before it starts, keeps its mark and is born typed', () => {
+    const { tabs, calls, started } = rig({ bound: { coordinator: true } })
+    const tab = tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: true } })
+    expect(calls).toEqual([`rebind ${tab.id} ${ROOM} alice`])
+    // The registry's coordinator flag wins over the saved one; the mark is the saved one.
+    expect(tab.room).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: true })
+    expect(started).toEqual([expect.objectContaining({ tabId: tab.id, typed: true })])
+  })
+
+  it('a restored tab whose room no longer has the member comes back in no room and not typed', () => {
+    const { tabs, calls, started } = rig({ bound: undefined })
+    const tab = tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: true } })
+    expect(calls).toEqual([`rebind ${tab.id} ${ROOM} alice`])
+    expect(tab.room).toBeUndefined()
+    expect((started[0] as { typed?: true }).typed).toBeUndefined()
+    // Closing it later tells the registry nothing.
+    tabs.close(A, tab.id)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('a damaged saved membership, or one on another kind, is dropped without asking the registry', () => {
+    const { tabs, calls } = rig()
+    const bad = [
+      { id: 'x', name: 'alice', coordinator: false, mark: false },
+      { id: ROOM, name: 'system', coordinator: false, mark: false },
+      { id: ROOM, name: 'alice', coordinator: 'yes', mark: false },
+      'room'
+    ]
+    for (const room of bad) expect(tabs.restoreTab(A, { kind: 'claude', room: room as never }).room, JSON.stringify(room)).toBeUndefined()
+    expect(tabs.restoreTab(A, { kind: 'shell', room: { id: ROOM, name: 'alice', coordinator: false, mark: false } }).room).toBeUndefined()
+    expect(calls).toEqual([])
+    // A damaged mark is no mark.
+    expect(tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: 'yes' as never } }).room?.mark).toBe(false)
+  })
+
+  it('a throwing rebind loses only the membership; a spawn that fails after a rebind unbinds it again', () => {
+    const thrown = rig({ bound: 'throw' })
+    const tab = thrown.tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: false } })
+    expect(tab.room).toBeUndefined()
+    expect(thrown.logs.some((l) => l.includes('room rebind failed'))).toBe(true)
+
+    const { tabs, calls } = rig()
+    backend.failWith = new Error('no pty')
+    expect(() => tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'bob', coordinator: false, mark: false } })).toThrow(/no pty/)
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatch(/^rebind /)
+    expect(calls[1]).toBe(`gone ${calls[0]!.split(' ')[1]}`)
+  })
+
+  it('with no registry to ask, a restored membership is kept as saved', () => {
+    const tabs = manager()
+    const room = { id: ROOM, name: 'alice', coordinator: true, mark: true }
+    expect(tabs.restoreTab(A, { kind: 'claude', room }).room).toEqual(room)
   })
 })

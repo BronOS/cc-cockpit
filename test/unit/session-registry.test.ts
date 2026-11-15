@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionsSnapshot } from '../../src/shared/ipc'
 import { hookHandler } from '../../src/main/sessions/hook-handler'
 import { MAX_GIST_CHARS, SessionRegistry, type SessionChange } from '../../src/main/sessions/session-registry'
+import { TYPED_ERROR } from '../../src/main/sessions/send-gate'
 
 const P1 = 'p1'
 const P2 = 'p2'
@@ -129,6 +130,20 @@ describe('entries', () => {
     reg.tabClosed('c1')
     start('c1')
     expect(reg.get('c1')?.typed).toBe(false)
+  })
+
+  it('typed: a restored room member is born typed, keeps it over a restart, and a plugin text is refused', () => {
+    reg.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj', typed: true })
+    start('c2')
+    expect(reg.get('c1')?.typed).toBe(true)
+    expect(reg.get('c2')?.typed).toBe(false)
+    reg.applyHook('c1', 'SessionStart', { session_id: 's' })
+    reg.applyHook('c1', 'Stop', {})
+    expect(() => reg.send('c1', 'from a plugin', 'plugin')).toThrow(TYPED_ERROR)
+    // A restart's started event carries it again; without it, the earlier entry's flag still holds.
+    reg.tabExited('c1', 1)
+    start('c1')
+    expect(reg.get('c1')?.typed).toBe(true)
   })
 
   it('typed: a gate delivery (send) does not set it; an answer key both sets it and answers', () => {

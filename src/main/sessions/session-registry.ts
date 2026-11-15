@@ -121,7 +121,7 @@ export class SessionRegistry {
    * it again. The old process's queue was already dropped at its exit; its delivery timer must
    * not outlive it and clear a `delivering` flag of the new process.
    */
-  tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string; flag?: TabFlag }): void {
+  tabStarted(tab: { tabId: string; projectId: string; kind: TabKind; cwd: string; name?: string; flag?: TabFlag; typed?: true }): void {
     // Only Claude tabs. A page tab (design-editor.md §1) never even gets here (TabManager reports no
     // `started` for it): with no entry it is outside the send gate, `typed` and Claude status.
     if (tab.kind !== 'claude') return
@@ -130,8 +130,10 @@ export class SessionRegistry {
     this.clearSettleTimer(tab.tabId)
     this.titles.set(tab.tabId, new TitleParser())
     // `typed` survives the restart too: the tab is the same one the person took over (and the
-    // restart is theirs), and the flag is never cleared while the tab exists.
-    this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId, typed: prev?.typed }))
+    // restart is theirs), and the flag is never cleared while the tab exists. A restored room
+    // member is born typed (TabEvent.typed, design-rooms.md §1 "Restart"): `typed` is not saved,
+    // and the restored session is the person's, so its room's messages wait for the person's mark.
+    this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId, typed: prev?.typed === true || tab.typed === true }))
   }
 
   /**

@@ -16,7 +16,7 @@ import {
   RoomRegistry,
   type RoomOwner
 } from '../../src/main/rooms/room-registry'
-import { checkRoomName, checkRoomTitle, isPathPart, isPathPartChar, ROOM_NAME } from '../../src/main/rooms/room-names'
+import { checkRoomName, checkRoomTitle, isPathPart, isPathPartChar, ROOM_NAME } from '../../src/shared/room-names'
 
 let dir: string
 let t: number
@@ -533,5 +533,53 @@ describe('RoomRegistry', () => {
       expect(reg.get(owner, room.id).title).toBe('Team')
       expect(warnings.some((w) => w.startsWith(`rooms: could not save ${room.id}`))).toBe(true)
     })
+  })
+
+  it("the person closing a member's tab drops it and its queue, logs why, and tells every other coordinator", () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.addMember(owner, room.id, { tabId: 't1', name: 'lead', coordinator: true })
+    reg.addMember(owner, room.id, { tabId: 't2', name: 'dev' })
+    reg.addMember(owner, room.id, { tabId: 't3', name: 'qa', coordinator: true })
+    reg.addMember(owner, room.id, { tabId: 't4', name: 'ops' })
+    reg.enqueue(room.id, 'dev', { from: 'lead', text: 'do it' })
+    expect(reg.memberClosed('t2')).toEqual({ roomId: room.id, name: 'dev', coordinator: false })
+    expect(reg.memberOf('t2')).toBeUndefined()
+    expect(reg.held(room.id, 'dev')).toBe(0)
+    // Every coordinator is told, from `system` (a reserved name no member can take); other members are not.
+    for (const name of ['lead', 'qa']) {
+      expect(reg.take(room.id, name).map((m) => [m.from, m.text])).toEqual([['system', 'dev left: tab closed']])
+    }
+    expect(reg.held(room.id, 'ops')).toBe(0)
+    const leave = reg.logOf(room.id).read().find((e) => e.type === 'leave')
+    expect(leave).toMatchObject({ member: 'dev', why: 'closed', dropped: 1 })
+    // A coordinator closing is told to the other coordinators, never to itself.
+    reg.memberClosed('t1')
+    expect(reg.take(room.id, 'qa').map((m) => m.text)).toEqual(['lead left: tab closed'])
+    // A tab in no room: nothing.
+    expect(reg.memberClosed('t2')).toBeUndefined()
+    expect(reg.memberClosed('nope')).toBeUndefined()
+  })
+
+  it('a coordinator whose queue is full misses the notice with a warning; the leave still happens', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.addMember(owner, room.id, { tabId: 't1', name: 'lead', coordinator: true })
+    reg.addMember(owner, room.id, { tabId: 't2', name: 'dev' })
+    for (let i = 0; i < MAX_QUEUED_PER_MEMBER; i++) reg.enqueue(room.id, 'lead', { from: 'dev', text: `m${i}` })
+    expect(reg.memberClosed('t2')?.name).toBe('dev')
+    expect(reg.memberOf('t2')).toBeUndefined()
+    expect(warnings.some((w) => w.includes('could not tell lead'))).toBe(true)
+  })
+
+  it('a member cannot send as system, and a saved system message reloads', () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.addMember(owner, room.id, { tabId: 't1', name: 'lead', coordinator: true })
+    expect(code(() => reg.addMember(owner, room.id, { tabId: 't2', name: 'system' }))).toBe('invalid')
+    reg.enqueue(room.id, 'lead', { from: 'system', text: 'dev left: tab closed' })
+    const again = make()
+    again.load()
+    expect(again.peek(room.id)?.queues.lead?.[0]?.from).toBe('system')
   })
 })

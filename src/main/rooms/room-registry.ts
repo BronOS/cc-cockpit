@@ -13,7 +13,7 @@ import { writeFileAtomic } from '../hooks/write-file-atomic'
 import { VERIFIED_OPEN_FLAGS } from '../verified-read'
 import { warnLog } from '../warn-log'
 import { RoomLog, type RoomLogType } from './room-log'
-import { checkRoomName, checkRoomTitle, isRoomName } from './room-names'
+import { checkRoomName, checkRoomTitle, isRoomId, isRoomName } from '../../shared/room-names'
 
 /**
  * Rooms a plugin may have that are not ended, in one project (design-rooms.md §1). Counted per project, not app-wide:
@@ -39,9 +39,15 @@ export const MAX_QUEUED_CHARS_PER_ROOM = 1_000_000
 /** The largest room.json read at start: the queued-text cap with JSON's worst escaping (`\uXXXX`, 6 bytes) and room to spare. */
 export const MAX_ROOM_FILE_BYTES = 8 * 1024 * 1024
 
+/**
+ * The sender of main's own notices to a room (a member's tab closed, design-rooms.md §7 "Failures"). A reserved name,
+ * so no member can take it; never the person.
+ */
+export const SYSTEM_SENDER = 'system'
+
 export interface RoomMessage {
   id: string
-  /** A member name or `plugin` (the owner's `ctx.rooms.send`); never the person. */
+  /** A member name, `plugin` (the owner's `ctx.rooms.send`) or `system` (main's own notices); never the person. */
   from: string
   text: string
   at: number
@@ -323,6 +329,28 @@ export class RoomRegistry {
     return this.dropMember(room, bound.name, why)
   }
 
+  /**
+   * The person closed a member's tab (TabRoomHooks.closed): the member leaves (`closed`, its queue dropped and logged
+   * with the count) and every coordinator still in the room is told by a `system` message, `<name> left: tab closed`
+   * (design-rooms.md §7 "Failures"). A coordinator whose queue is full misses the notice (warned); the log has it.
+   * Undefined for a tab in no room.
+   */
+  memberClosed(tabId: string): RoomMembership | undefined {
+    const left = this.leave(tabId, 'closed')
+    if (!left) return undefined
+    const room = this.rooms.get(left.roomId)
+    if (!room || room.endedAt !== undefined) return left
+    for (const [name, m] of Object.entries(room.members)) {
+      if (!m.coordinator) continue
+      try {
+        this.enqueue(room.id, name, { from: SYSTEM_SENDER, text: `${left.name} left: tab closed` })
+      } catch (err) {
+        this.warn(`rooms: could not tell ${name} in ${room.id} that ${left.name} left: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return left
+  }
+
   /** The owner (`ctx.rooms.remove`) or the person (`'person'`, the room view: main checked the window) removes a member. */
   remove(owner: RoomOwner | 'person', id: unknown, name: unknown): RoomMembership {
     const room = owner === 'person' ? this.byId(id) : this.owned(owner, id)
@@ -396,7 +424,7 @@ export class RoomRegistry {
 
   /**
    * Queue a message for one member. The send itself (and its delivery path) is logged by the delivery (Task 5). `from`
-   * is a member name or `plugin`, checked here too: it goes into the fence header a member reads.
+   * is a member name, `plugin` or `system`, checked here too: it goes into the fence header a member reads.
    */
   enqueue(roomId: string, to: unknown, msg: { from: string; text: string }): RoomMessage {
     const room = this.byId(roomId)
@@ -561,9 +589,9 @@ function queuedChars(room: RoomRecord): number {
   return n
 }
 
-/** Who a message may be from: a member name's shape or the owner (`plugin`); it is printed in the fence header. */
+/** Who a message may be from: a member name's shape, the owner (`plugin`) or main (`system`); it is printed in the fence header. */
 function isSender(from: unknown): from is string {
-  return from === 'plugin' || isRoomName(from)
+  return from === 'plugin' || from === SYSTEM_SENDER || isRoomName(from)
 }
 
 function isMessageText(text: unknown): text is string {
@@ -618,17 +646,8 @@ function readRoomFile(path: string): string {
   }
 }
 
-/** A room id's shape (`randomUUID`, lower case); the doc store checks it too before joining an id into a path. */
-export function isUuid(value: string): boolean {
-  if (value.length !== 36) return false
-  for (let i = 0; i < 36; i++) {
-    const ch = value[i] as string
-    if (i === 8 || i === 13 || i === 18 || i === 23) {
-      if (ch !== '-') return false
-    } else if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false
-  }
-  return true
-}
+/** A room id's shape (one rule with the saved tab record, shared/room-names.ts isRoomId); the doc store checks it too. */
+export const isUuid = isRoomId
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)

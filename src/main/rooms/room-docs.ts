@@ -19,7 +19,7 @@ import { join } from 'node:path'
 import { readVerified } from '../verified-read'
 import { warnLog } from '../warn-log'
 import type { RoomLogType } from './room-log'
-import { isPathPart, isRoomName } from './room-names'
+import { isPathPart, isRoomName } from '../../shared/room-names'
 import { RoomError, isUuid } from './room-registry'
 
 /** Per doc, in UTF-8 bytes: a `ccc` reply is one socket line (1 MiB) and plugin CLI I/O is 256 KiB (design §3). */

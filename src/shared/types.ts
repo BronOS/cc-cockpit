@@ -76,6 +76,12 @@ export interface TabRecord {
    */
   flag?: { color: string; note?: string }
   /**
+   * A Claude tab's room membership and the person's mark (shared/tab-room.ts). Plain data here (the
+   * file is user-writable): read back through tabRoomOf, which drops a damaged value, and kept only
+   * when the room registry still has that member (TabManager.restoreTab).
+   */
+  room?: { id: string; name: string; coordinator: boolean; mark: boolean }
+  /**
    * A page tab (kind `page`): the plugin, its manifest tab type, the params for its `onOpen`, the
    * title and icon main clamped (shared/page-tabs.ts). Restore checks them all again and asks
    * whether the plugin is still installed, on in the project and declares the type.

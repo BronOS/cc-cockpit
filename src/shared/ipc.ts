@@ -19,6 +19,7 @@ import type { PluginServicesView } from './services'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
+import type { TabRoom } from './tab-room'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
@@ -174,6 +175,11 @@ export interface TabInfo {
    * `tabs.toggleFlag` from this window, kept for restore. The renderer applies their replies.
    */
   flag?: TabFlag
+  /**
+   * A Claude tab's room membership and the person's mark (shared/tab-room.ts): set by main's room
+   * service, the mark only by the person from this window; kept for restore. Absent = in no room.
+   */
+  room?: TabRoom
   /**
    * A page tab's plugin, type, params, title and icon (kind `page` only, shared/page-tabs.ts), as
    * main checked them. The page itself is the manifest's for the type, never named here.

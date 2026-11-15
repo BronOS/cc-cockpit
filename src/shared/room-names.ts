@@ -1,7 +1,8 @@
 // The words of a room (design-rooms.md §1, §3): a member's name, the room's title and the parts of
-// a doc path. One rule for the registry (names, titles) and the docs store (path parts), since the
+// a doc path. One rule for the registry (names, titles), the docs store (path parts) and the saved tab
+// record (tab-room.ts; here in shared for that reason, the renderer reads it too), since the
 // fence (`[cockpit room "<title>" <nonce>] from <name> ...`) and the doc paths are built from them.
-import { CONTROL } from '../../shared/session-name'
+import { CONTROL } from './session-name'
 
 /** Names a member may not take: `all` is the send-to-everyone word, the rest would read as someone other than a member in a fence header. */
 export const RESERVED_ROOM_NAMES: readonly string[] = Object.freeze(['all', 'plugin', 'person', 'user', 'system'])
@@ -76,5 +77,20 @@ export function isPathPart(part: unknown): part is string {
   if (typeof part !== 'string' || part === '' || part === '.' || part === '..') return false
   if (part.length > MAX_PATH_PART_CHARS) return false
   for (const ch of part) if (!isPathPartChar(ch)) return false
+  return true
+}
+
+/**
+ * A room id's shape (`randomUUID`, lower case): the registry checks it before joining an id into a path, and the saved
+ * tab record (tab-room.ts) before keeping a membership. No regex, like the path parts.
+ */
+export function isRoomId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length !== 36) return false
+  for (let i = 0; i < 36; i++) {
+    const ch = value[i] as string
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      if (ch !== '-') return false
+    } else if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false
+  }
   return true
 }
