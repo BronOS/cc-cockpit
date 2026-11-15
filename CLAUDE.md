@@ -62,10 +62,10 @@ are panes too (a file beside Claude); design in `docs/design-split-pages.md`.
   Electron main (build first, headless on Linux), with a packaged executable it runs that as Node (`ELECTRON_RUN_AS_NODE`);
   exits 1 on failure. Run it after changing `ssh-client.ts`, the ssh2 version or the bundling in `electron.vite.config.ts`.
 - `node --expose-gc scripts/web-terminal-bench.mjs [tabs] [seconds] [p99ms]`: the headless terminals' cost to main's event
-  loop, plus a streamed animated off-screen page (1280x800, then 1920x1080) through the real `FrameStream`; it re-runs itself
+  loop, plus a streamed animated off-screen page (1280x800, then 1920x1080) through the real `FrameStream`, and a 1 GiB zip through the real zip writer; it re-runs itself
   as Electron's main (headless on Linux, no `npm run build` needed) and exits 1 when a phase's p99 is over the limit (parsing
-  back on main, or encoding frames stalling it). Run it after changing `main/terminals/mirror.ts`, `mirror-worker.ts` or
-  `main/webview/frame-stream.ts`.
+  back on main, or encoding frames stalling it). Run it after changing `main/terminals/mirror.ts`, `mirror-worker.ts`,
+  `main/webview/frame-stream.ts` or `main/files/zip-writer.ts` / `downloads.ts`.
 
 ## Implementation patterns
 
