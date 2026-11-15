@@ -30,7 +30,12 @@
 //      limit at which connection.ts closes a browser to resync) and keep main's p99 under the limit.
 //      This models what main does for a join (inspect + send) on the real mirror; it does not drive
 //      ViewTerminals itself.
-// Exits 1 when phase 1's, phase 5's or phase 6's p99 delay is over the limit, so a change that puts parsing back
+//   7. zip download (design-download.md, plan 20261114-download.md Task 12): the flood again while the
+//      real zip writer (src/main/files/zip-writer.ts) streams a 1 GiB zip through `pipeline` to a
+//      draining sink, as the gateway's /d/ route does for a folder download: main's delay meanwhile
+//      and the zip's throughput. The tree is one 16 MiB file (half Claude-like text, half random
+//      bytes) listed 64 times under different names, so the disk holds 16 MiB, not 1 GiB.
+// Exits 1 when phase 1's, 5's, 6's or 7's p99 delay is over the limit, so a change that puts parsing back
 // on main, or lets frames take main from the terminals, fails the bench.
 //
 // It runs as Electron's main process (the off-screen page needs Electron): started with node, it
@@ -38,7 +43,9 @@
 // `--ozone-platform=headless --disable-gpu`, so no display is needed) and exits with its status.
 import { spawn } from 'node:child_process'
 import { build } from 'esbuild'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { Writable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
@@ -135,14 +142,14 @@ let mirror
 let ids
 
 /** Run `tick` every FLUSH_MS for `seconds`, then wait for the worker; main's delay meanwhile. */
-async function measure(seconds, tick) {
+async function measure(seconds, tick, stop) {
   const h = monitorEventLoopDelay({ resolution: 1 })
   h.enable()
   const t0 = performance.now()
   await new Promise((done) => {
     const timer = setInterval(() => {
       tick()
-      if (performance.now() - t0 > seconds * 1000) {
+      if (performance.now() - t0 > seconds * 1000 || stop?.()) {
         clearInterval(timer)
         done()
       }
@@ -289,6 +296,52 @@ async function groupJoin(staged) {
   return { p99: h.percentile(99), peak, lastMs, limit: SOCKET_HIGH_WATER }
 }
 
+/**
+ * Phase 7: the flood beside a 1 GiB zip made by the real zip writer and drained by a sink that
+ * discards, until the zip ends (at least SECONDS). The zip's deflate runs on the libuv pool, so what
+ * could reach main is the generator's per-chunk hops and the file reads' completions.
+ */
+async function zipDownload(lib, tmp) {
+  const FILE_BYTES = 16 * 1024 * 1024
+  const COPIES = 64
+  const dir = join(tmp, 'zip-tree')
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, 'big.bin')
+  const buf = Buffer.alloc(FILE_BYTES)
+  buf.write(text.slice(0, FILE_BYTES / 2), 0, 'latin1')
+  for (let i = FILE_BYTES / 2; i < FILE_BYTES; i++) buf[i] = Math.floor(rand() * 256)
+  writeFileSync(file, buf)
+  const stat = statSync(file)
+  async function* entries() {
+    for (let i = 0; i < COPIES; i++) yield { kind: 'file', path: file, name: `tree/big-${i}.bin`, stat }
+  }
+  let zipped = 0
+  let chunks = 0
+  const sink = new Writable({
+    highWaterMark: 1024 * 1024,
+    write(chunk, _enc, cb) {
+      zipped += chunk.length
+      chunks++
+      cb()
+    }
+  })
+  let done = false
+  const t0 = performance.now()
+  const zip = pipeline(lib.zipEntries(entries(), { maxBytes: 4 * 1024 * 1024 * 1024 }), sink).finally(() => {
+    done = true
+  })
+  const count = { posted: 0 }
+  const r = await measure(SECONDS, () => floodTick(count), () => done)
+  await zip
+  const seconds = (performance.now() - t0) / 1000
+  console.log(
+    `\n7. zip download + flooded: ${mib(FILE_BYTES * COPIES)} MiB in, ${mib(zipped)} MiB zip out (${chunks} chunks) in ${seconds.toFixed(1)} s = ` +
+      `${(FILE_BYTES * COPIES / 1024 / 1024 / seconds).toFixed(0)} MiB/s; ${mib(count.posted)} MiB parsed meanwhile`
+  )
+  console.log(`   ${line(r)}`)
+  return r
+}
+
 /** Phase 5 at one page size: the flood with the page streaming to one viewer. */
 async function streamed(lib, width, height) {
   const { FrameStream, WebviewViewers, FRAME_DRAINED_BYTES } = lib
@@ -382,6 +435,8 @@ async function main() {
       "export { FRAME_DRAINED_BYTES } from './src/shared/web-protocol'"
     ].join('\n')
   })
+  await bundle(tmp, 'zip.cjs', "src/main/files/zip-writer.ts")
+  const zipLib = createRequire(join(tmp, 'zip.cjs'))(join(tmp, 'zip.cjs'))
   const { TerminalMirror, nodeMirrorWorker } = createRequire(join(tmp, 'mirror.cjs'))(join(tmp, 'mirror.cjs'))
   const frames = createRequire(join(tmp, 'frames.cjs'))(join(tmp, 'frames.cjs'))
 
@@ -433,6 +488,9 @@ async function main() {
   // 6. a group of 4 busy tabs joined at once (needs at least 4 tabs; the flood above filled their scrollback)
   const joins = ids.length >= 4 ? [await groupJoin(false), await groupJoin(true)] : []
 
+  // 7. a 1 GiB zip streaming beside the flooded tabs
+  const zipRun = await zipDownload(zipLib, tmp)
+
   mirror.stop()
   rmSync(tmp, { recursive: true, force: true })
   let ok = flood.p99 / 1e6 <= P99_LIMIT_MS
@@ -447,6 +505,11 @@ async function main() {
     const pass = j.p99 / 1e6 <= P99_LIMIT_MS && j.peak <= j.limit
     ok &&= pass
     console.log(`${pass ? 'PASS' : 'FAIL'}: group join ${label}: p99 ${ms(j.p99)} ms, peak unsent ${mib(j.peak)} MiB, last snapshot ${j.lastMs.toFixed(0)} ms`)
+  }
+  {
+    const pass = zipRun.p99 / 1e6 <= P99_LIMIT_MS
+    ok &&= pass
+    console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with a 1 GiB zip download p99 ${ms(zipRun.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
   }
   return ok ? 0 : 1
 }
