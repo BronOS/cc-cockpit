@@ -31,6 +31,9 @@ import {
   READY_NOTICE_MS,
   type DownloadNotice
 } from './download-start'
+import { DownloadDialog } from './DownloadDialog'
+import { AcceptedOffers, downloadOfferOf, offerAcceptPayload } from './download-dialog-model'
+import type { DownloadOffer } from '../../shared/downloads'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
@@ -45,6 +48,7 @@ export function ShellNotices(): React.JSX.Element {
       <LinkNotice />
       <LinkConfirm />
       <TrashConfirm />
+      <DownloadOffers />
       <DownloadNotices />
       <PageNotices />
     </>
@@ -124,6 +128,48 @@ function PageNotices(): React.JSX.Element | null {
   )
 }
 
+/** What this view accepted in a dialog, for the failure notice's Try again (module-level: the dialog and the notices are siblings). */
+const acceptedOffers = new AcceptedOffers()
+
+/**
+ * The `ccc download` offers (design-download.md §2.2): one DownloadDialog at a time, the oldest first,
+ * shared like the trash ask (`downloads.settled` from any view's answer takes it down; the bridge
+ * replays the window's pending offers on a join). Download posts `downloads.accept` with the include
+ * choice (unchecked unless the person checked it), Cancel posts `downloads.answer`.
+ */
+function DownloadOffers(): React.JSX.Element | null {
+  const [offers, setOffers] = useState<readonly DownloadOffer[]>([])
+  useEffect(() => {
+    const offOffer = window.cockpit.on('downloads.offer', (p) => {
+      const offer = downloadOfferOf(p)
+      if (offer !== undefined) setOffers((prev) => addSharedAsk(prev, offer))
+    })
+    const offSettled = window.cockpit.on('downloads.settled', ({ requestId }) => setOffers((prev) => dropSharedAsk(prev, requestId)))
+    return () => {
+      offOffer()
+      offSettled()
+    }
+  }, [])
+  const offer = offers[0]
+  if (!offer) return null
+  return (
+    <DownloadDialog
+      key={offer.requestId}
+      offer={offer}
+      onAnswer={(accept) => {
+        setOffers((prev) => dropSharedAsk(prev, offer.requestId))
+        if (accept === undefined) {
+          window.cockpit.invoke('downloads.answer', { requestId: offer.requestId }).catch(() => {})
+          return
+        }
+        const payload = offerAcceptPayload(offer, accept.all)
+        acceptedOffers.note(offer.requestId, payload.all)
+        window.cockpit.invoke('downloads.accept', payload).catch(() => {})
+      }}
+    />
+  )
+}
+
 /**
  * Downloads to this browser's device (design-download.md §2.1, §3.2; download-start.ts decides).
  * `downloads.start`: the link is clicked at once while the click that asked for it still counts as the
@@ -172,8 +218,15 @@ function DownloadNotices(): React.JSX.Element | null {
       const failed = downloadFailedOf(p)
       if (failed === undefined) return
       const name = names.current.get(failed.requestId)
+      const retryAll = acceptedOffers.get(failed.requestId)
       setNotices((prev) =>
-        addDownloadNotice(prev, { kind: 'failed', requestId: failed.requestId, reason: failed.reason, ...(name !== undefined ? { name } : {}) })
+        addDownloadNotice(prev, {
+          kind: 'failed',
+          requestId: failed.requestId,
+          reason: failed.reason,
+          ...(name !== undefined ? { name } : {}),
+          ...(retryAll !== undefined ? { retryAll } : {})
+        })
       )
     })
     return () => {
@@ -196,7 +249,24 @@ function DownloadNotices(): React.JSX.Element | null {
               </a>
             </>
           ) : (
-            <span className="link-notice-text">{downloadFailedText(n)}</span>
+            <>
+              <span className="link-notice-text">{downloadFailedText(n)}</span>
+              {n.retryAll !== undefined ? (
+                <button
+                  type="button"
+                  className="download-retry"
+                  data-testid="download-retry"
+                  onClick={() => {
+                    drop(n.requestId)
+                    // Main takes a retry only from the accepting device within the offer's life; its
+                    // failure comes back as a new notice.
+                    window.cockpit.invoke('downloads.accept', { requestId: n.requestId, all: n.retryAll === true }).catch(() => {})
+                  }}
+                >
+                  Try again
+                </button>
+              ) : null}
+            </>
           )}
           <button type="button" className="link-notice-close" aria-label="Dismiss" onClick={() => drop(n.requestId)}>
             ×

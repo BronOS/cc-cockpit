@@ -66,6 +66,7 @@ import {
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
 import { isSignInId } from '../../shared/oauth-paste'
+import { downloadOfferOf } from '../notices/download-dialog-model'
 import { PortRelay, type ChannelLike } from './port-relay'
 
 /** The parts of a browser WebSocket the bridge uses (`WebSocket` itself fits). */
@@ -213,13 +214,14 @@ function signInOf(value: unknown): Record<string, unknown> | undefined {
 const SHARED_ASKS: ReadonlyArray<{
   ask: string
   settled: string
-  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'notices' | 'signIns'
+  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'downloadOffers' | 'notices' | 'signIns'
   key: 'requestId' | 'signIn'
   parse(value: unknown): Record<string, unknown> | undefined
 }> = [
   { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', key: 'requestId', parse: closeAskOf },
   { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', key: 'requestId', parse: linkAskOf },
   { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', key: 'requestId', parse: trashAskOf },
+  { ask: 'downloads.offer', settled: 'downloads.settled', field: 'downloadOffers', key: 'requestId', parse: (v) => downloadOfferOf(v) as Record<string, unknown> | undefined },
   { ask: 'notices.show', settled: 'notices.gone', field: 'notices', key: 'requestId', parse: noticeOf },
   { ask: 'app.linkNotice', settled: 'oauth.signInEnded', field: 'signIns', key: 'signIn', parse: signInOf }
 ]

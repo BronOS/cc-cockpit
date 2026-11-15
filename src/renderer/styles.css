@@ -4830,3 +4830,19 @@ ul.settings-alert {
 .page-tab-layer > .page-tab-drop-preview {
   z-index: 2;
 }
+/* The `ccc download` offer (DownloadDialog.tsx): the path is read in full to decide, so it wraps and never cuts. */
+.download-offer-path {
+  font-family: var(--cc-font-mono, monospace);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.download-offer-warn {
+  color: var(--cc-status-ended, #cd3131);
+}
+.download-offer-note {
+  color: var(--cc-status-ended, #cd3131);
+}
+.download-notice button.download-retry {
+  font: inherit;
+  cursor: pointer;
+}

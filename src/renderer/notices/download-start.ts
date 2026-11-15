@@ -52,7 +52,8 @@ export function downloadFailedOf(payload: unknown): DownloadFailed | undefined {
 /** One download notice: a link ready to click, or a failure with its reason. */
 export type DownloadNotice =
   | { kind: 'ready'; requestId: string; url: string; name: string }
-  | { kind: 'failed'; requestId: string; name?: string; reason: string }
+  /** `retryAll`: this view accepted the request in a dialog (`ccc download`), so Try again repeats that accept with its include choice. */
+  | { kind: 'failed'; requestId: string; name?: string; reason: string; retryAll?: boolean }
 
 /**
  * Notices kept at once: past it the oldest go. Main bounds the starts (10 a minute per plugin) and a
