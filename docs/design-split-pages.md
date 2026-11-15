@@ -134,6 +134,16 @@ the keyboard. So the shell reads `document.activeElement` at these points: the w
 hint the panel SDK posts on its own window's `focus` (only a reason to look, never trusted for what it says); before
 every chord from a frame; and before Ask Claude.
 
+*Measured, Electron 45 (plan Task 4's e2e):* a click from one page tab frame into another of the same plugin (two
+files) moves the keyboard but leaves the shell's `document.activeElement` on the first frame for good, not only
+without an event. So at a hint from frame X while the record names another frame, the shell focuses X's iframe
+element first (`PageFrames.resync`, recorded as no focus of its own, so it is no evidence), and the check then decides
+as for any frame. Only while a frame is on record: a hint while a terminal or the shell holds the keyboard moves
+nothing (a real move into a frame from there does update `activeElement`, and the window `blur` runs the check). A page
+that posts the hint without the focus gains nothing it could not take by calling `focus()` itself, and only from
+another frame. A page without the SDK posts no hint, so after a click into it from another frame the record stays on
+the frame left until the next move the shell sees (a known limit, as below).
+
 **Unprompted focus is allowed, so the shell checks.** In the spike, a sandboxed cross-site frame calling `focus()`
 with no user activation took the keyboard from the parent. The bundled editor did this on every load (`view.focus()`
 in `load()`, `plugins/editor/src/page/file.js`). A file pane that mounts while the person types in the Claude pane
@@ -200,7 +210,10 @@ true). A webview panel's chord also arrives as `commands.trigger`, but its WebCo
 the shell document has no focus, so no target is resolved. Web shell: `chord(chord)` carries the tab `fromPage` knows,
 under the gate "listed chord, frame visible in this view, frame has the keyboard, `userActive`". In both shells the
 command runs with that target, `runCommand(id, { tabId })`. Every handler that acts on "the active tab" (`tab.close`,
-the flag, `pane.*`, split right / down, the in-Group commands) reads `target ?? stateRef.current.activeId`. Selecting
+the flag, `pane.*`, split right / down, the in-Group commands) reads `target ?? stateRef.current.activeId`. When the
+check blurs the frame (it held the keyboard with no evidence), the chord is dropped, never run for `activeId`: the person
+typed it where the shell says no keys belong, and the pane the outline shows is not where they typed (`chordTarget`,
+`frame-focus.ts`). Selecting
 first and running after does not work: `stateRef.current` is written in an effect (`TabsPane.tsx`) and
 `commands.trigger` runs the handler synchronously, so Cmd+W would close the Claude pane the person just left. The
 shell still dispatches the selection, for the outline and `tabs.selected`. A visible frame without the keyboard can post

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { CccCommandView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
-import { TOGGLE_FLAG_COMMAND, type FlagPatch } from '../../shared/tab-flag'
+import type { FlagPatch } from '../../shared/tab-flag'
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { CommandPalette } from '../commands/CommandPalette'
 import { commandAllowed } from '../commands/command-gate'
@@ -29,7 +29,7 @@ import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, isPaneKind, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
 import { paneAtPoint } from './SplitArea'
-import { PAGE_TAB_NOT_SPLIT, paneCommandHandlers, refusalText } from './pane-commands'
+import { activeTabHandlers, PAGE_TAB_NOT_SPLIT, paneCommandHandlers, refusalText } from './pane-commands'
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
@@ -62,7 +62,8 @@ import {
   type SwitcherState
 } from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
-import { pageFrames, setFrameFocusHandler } from './PageTabArea'
+import { checkFrameFocus, pageFrames, setFrameFocusHandler } from './PageTabArea'
+import { chordTarget } from './frame-focus'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -1100,7 +1101,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       setPageTabDiscussHandler((tabId) => {
         const modalUp =
           paletteOpen.current || overlayOpen.current || settingsShown.current || confirmFor.current !== null || offerShown.current || discussShown.current
-        if (!discussMayOpen(tabId, { modalUp, switcherUp: switcherRef.current !== null, activeId: stateRef.current.activeId }, discussCooldown.current)) return
+        // `activeId: tabId`: PageTabArea asks only after checkFrameFocus found this tab's visible frame
+        // holding the keyboard and picked its pane (the second of two files the person clicked into);
+        // that selection reaches stateRef at the next effect, so the stale activeId (the first file)
+        // must not refuse it. With the keys off the check blurs the frame and never asks.
+        if (!discussMayOpen(tabId, { modalUp, switcherUp: switcherRef.current !== null, activeId: tabId }, discussCooldown.current)) return
         discussShown.current = true
         setDiscussFor(lastClaude.current === undefined ? { tabId } : { tabId, preferred: lastClaude.current })
       }),
@@ -1168,16 +1173,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       [SWITCH_PREV]: () => switchTabs(-1, !fromKey.current),
       'tab.newClaude': () => actions.current.create('claude'),
       'tab.newShell': () => actions.current.create('shell'),
-      // D23 R1: while the keys are off (D18) the active tab is one the person did not pick and the
-      // strip shows none selected; ⌘W or the flag chord must not act on it.
-      'tab.close': () => {
-        const id = stateRef.current.activeId
-        if (id && !stateRef.current.keysOff) actions.current.close(id)
-      },
-      [TOGGLE_FLAG_COMMAND]: () => {
-        const id = stateRef.current.activeId
-        if (id && !stateRef.current.keysOff) actions.current.toggleFlag(id)
-      },
+      // Close Tab and the flag chord, for the frame's tab when a frame's chord names one (D23 R1 keys off).
+      ...activeTabHandlers({
+        state: () => stateRef.current,
+        close: (id) => actions.current.close(id),
+        toggleFlag: (id) => actions.current.toggleFlag(id)
+      }),
       'palette.open': () => {
         setPaletteCommands((open) => (open ? null : runnableCommands()))
       },
@@ -1260,15 +1261,22 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     }
     window.addEventListener('blur', onBlur)
     // A chord typed into a webview panel's page or a page tab's frame, resolved by main (auto-repeats
-    // never come).
+    // never come). main names no tab, so the shell reads which frame has the keyboard now
+    // (checkFrameFocus, design-split-pages.md §4): a page frame of a visible pane holding it is the
+    // chord's target, picked as the focused pane when it was not; one holding it with no evidence of
+    // the person is blurred and the chord dropped (frame-focus.ts chordTarget). A webview panel's page
+    // holds the keyboard outside the shell's document (`document.hasFocus()` false): no frame, no target.
     const offTrigger = window.cockpit.on('commands.trigger', ({ id }) => {
       // Not fromKey: a switch chord from a web panel's page opens the switcher sticky, since the
       // modifier may be up before the chord got here.
-      if (typeof id === 'string' && allowed(id)) runCommand(id)
+      if (typeof id !== 'string' || !allowed(id)) return
+      const target = chordTarget(checkFrameFocus())
+      if (target) runCommand(id, target)
     })
-    // The web shell's page tabs forward the app's chords themselves (page-frames.ts): the same gate.
-    const offForwarded = setForwardedRunner((id) => {
-      if (allowed(id)) runCommand(id)
+    // The web shell's page tabs forward the app's chords themselves (page-frames.ts, PageTabArea.tsx:
+    // already checked to come from the frame with the keyboard, which names its tab): the same gate.
+    const offForwarded = setForwardedRunner((id, ctx) => {
+      if (allowed(id)) runCommand(id, ctx)
     })
     // Plugin commands run in this window's plugin host, through main; they come and go with the
     // plugins (registered after the host activates, gone when it stops): `commands.updated`. The
@@ -1333,15 +1341,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           dissolve: (groupId) => paneActions.current.ungroup(groupId),
           resize: (groupId, splitId, sizes) => paneActions.current.groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes })),
           intend: (tabId, intent) => intents.current.set(tabId, intent),
-          openSplit: (edge) => {
-            const id = stateRef.current.activeId
-            if (id) paneActions.current.openSplit(id, edge)
-          },
-          openBeside: (edge) => {
+          openSplit: (tabId, edge) => paneActions.current.openSplit(tabId, edge),
+          openBeside: (tabId, edge) => {
             const s = stateRef.current
             // The focused tab is the anchor: a page tab is never a pane (shared/tab-groups.ts isPaneKind).
-            if (!isPaneKind(s.tabs.find((t) => t.id === s.activeId)?.kind)) {
-              if (s.activeId) setError(PAGE_TAB_NOT_SPLIT)
+            if (!isPaneKind(s.tabs.find((t) => t.id === tabId)?.kind)) {
+              setError(PAGE_TAB_NOT_SPLIT)
               return
             }
             if (s.tabs.filter((t) => isPaneKind(t.kind)).length > 1) setBesidePick({ edge })

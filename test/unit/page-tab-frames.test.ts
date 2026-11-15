@@ -283,12 +283,37 @@ describe('PageFrames: several visible page panes (design-split-pages.md §3)', (
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
     t.frames.show([TAB_A, TAB_B], TAB_A)
     await settle()
+    // A visible frame without the keyboard asks nothing; the one with it (not the focused pane, A) does.
+    t.el(TAB_A).fromPage({ type: TAB_DISCUSS_MESSAGE })
+    expect(asked).toEqual([])
     t.el(TAB_B).focusedNow = true
+    t.el(TAB_A).fromPage({ type: TAB_DISCUSS_MESSAGE })
     t.el(TAB_B).fromPage({ type: TAB_DISCUSS_MESSAGE })
     expect(asked).toEqual([TAB_B])
     t.frames.show([TAB_A], TAB_A)
     t.el(TAB_B).fromPage({ type: TAB_DISCUSS_MESSAGE })
     expect(asked).toEqual([TAB_B])
+  })
+
+  it("resync: a hint from another frame while one holds the keyboard focuses the hinting frame, recording no focus of the shell's own", async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A), entry(TAB_B), entry(TAB_C)])
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    await settle()
+    t.el(TAB_A).fire()
+    t.el(TAB_B).fire()
+    // No frame holds the keyboard (a terminal has it): a hint moves nothing.
+    t.frames.resync(TAB_B)
+    expect(t.el(TAB_B).focused).toBe(0)
+    // A holds it on record; B's page says it got the focus: B's element is focused, and it is no
+    // evidence (the page asked, the shell did not).
+    t.el(TAB_A).focusedNow = true
+    t.frames.resync(TAB_B)
+    expect(t.el(TAB_B).focused).toBe(1)
+    expect(t.frames.ownFocus(TAB_B)).toBe(false)
+    // A frame not shown in this view: never.
+    t.frames.resync(TAB_C)
+    expect(t.frames.isLive(TAB_C)).toBe(false)
   })
 
   it('a page main names none for is listed as unavailable (its pane says so) until it is shown again', async () => {

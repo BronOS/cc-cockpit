@@ -210,26 +210,26 @@ External review: sol / high
 - Modify: `src/renderer/tabs/page-frames.ts`, `src/renderer/tabs/PageTabArea.tsx`
 - Modify: `test/unit/pane-commands.test.ts`, `test/unit/page-tab-frames.test.ts`, `test/unit/page-tab-keys.test.ts`, `test/e2e/editor-split.spec.ts`
 
-- [ ] `CommandHandler` takes an optional `{ tabId }`; `runCommand(id, ctx?)`; `runForwardedChord(chord, tabId)` and the
+- [x] `CommandHandler` takes an optional `{ tabId }`; `runCommand(id, ctx?)`; `runForwardedChord(chord, tabId)` and the
   forwarded runner pass it through the same `allowed` gate
-- [ ] desktop `commands.trigger`: before running, resolve the target from `document.activeElement` (a live frame of a
+- [x] desktop `commands.trigger`: before running, resolve the target from `document.activeElement` (a live frame of a
   visible pane with `document.hasFocus()` true; a webview panel's chord resolves none since the shell has no focus),
   run Task 3's pick on it, then `runCommand(id, { tabId })`
-- [ ] web shell: the pool's `fromPage` gate becomes "listed chord, frame visible in this view, frame has the keyboard,
+- [x] web shell: the pool's `fromPage` gate becomes "listed chord, frame visible in this view, frame has the keyboard,
   `userActive`" and calls `chord(chord, tabId)`; `discuss` likewise from a visible frame with the keyboard only (re-read
   focus before the box, so Ask Claude from the second of two files is not dropped for a stale `activeId`)
-- [ ] every active-tab handler reads `target ?? stateRef.current.activeId`: `tab.close`, the flag
+- [x] every active-tab handler reads `target ?? stateRef.current.activeId`: `tab.close`, the flag
   (`TOGGLE_FLAG_COMMAND`), `pane.*` in `paneCommandHandlers` (focus, move, resize, zoom, move out, split right / down,
   show beside), and the later in-Group commands; the shell still dispatches the selection for the outline
-- [ ] a page's declared chords go to the page only while its frame has the keyboard (Ctrl+P in the Claude pane beside a
+- [x] a page's declared chords go to the page only while its frame has the keyboard (Ctrl+P in the Claude pane beside a
   file goes to Claude); Ctrl+Tab from a frame opens the switcher sticky as today
-- [ ] write tests: `tab.close`, the flag and `pane.*` act on the target passed in, not `activeId`; a chord or discuss
+- [x] write tests: `tab.close`, the flag and `pane.*` act on the target passed in, not `activeId`; a chord or discuss
   from a visible frame without the keyboard, or from a hidden one, is dropped; the web chord carries the frame's tab
-- [ ] e2e: *file A to file B* — two files side by side, click into A then B: outline and `tabs.selected` follow, Cmd+W
+- [x] e2e: *file A to file B* — two files side by side, click into A then B: outline and `tabs.selected` follow, Cmd+W
   closes B, Ask Claude from B opens its box; *keys to the focused pane* — click into the file frame, native Cmd/Ctrl+W
   (`nativeChord`): the file tab closes, the Claude tab stays; with the Claude pane focused the editor's Ctrl+P does not
   reach the page; a pane focus chord typed in the frame puts the keyboard in the terminal (`domFocusInTerminal`)
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
 
 ### Task 5: Strip, menus and previews for page panes [model: sonnet]
 

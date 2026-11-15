@@ -136,8 +136,12 @@ export interface PageFramesOptions {
    * none (the desktop, where main takes them in `before-input-event`).
    */
   keys?(): readonly string[] | undefined
-  /** A forwarded chord typed in the focused page tab: the shell runs its command (through its gate). */
-  chord?(chord: string): void
+  /**
+   * A forwarded chord typed in page tab `tabId`, whose visible frame has the keyboard: the shell runs
+   * its command for that tab (through its gate), never for "the active tab", which may be the pane
+   * beside it (design-split-pages.md §4 "Chords from a frame name their tab").
+   */
+  chord?(chord: string, tabId: string): void
   /**
    * Whether the person gave real input a moment ago (web shell: `navigator.userActivation.isActive`,
    * transient activation: set by a trusted key press or click in the frame or the shell, which a
@@ -152,8 +156,9 @@ export interface PageFramesOptions {
   discuss?(tabId: string): void
   /**
    * A live frame's page says its window got the focus (`cc-plugin.tab-focus`): the shell reads
-   * `document.activeElement` now (frame to frame, it sees no event of its own). Never trusted for
-   * what it says: any page may post it any time, and the check only looks.
+   * `document.activeElement` now (frame to frame, it sees no event of its own), after `resync` when
+   * that still names another frame. Never trusted for what it says: any page may post it any time,
+   * and the check decides by the shell's evidence only.
    */
   focusHint?(tabId: string): void
   maxLive?: number
@@ -339,6 +344,11 @@ export class PageFrames {
     return this.live.find((l) => l.frame?.element.hasFocus() === true)?.tab.id ?? null
   }
 
+  /** Whether the tab is one of the panes this view shows now (`show`'s visible set). */
+  isVisible(tabId: string): boolean {
+    return this.visible.has(tabId)
+  }
+
   /** Whether the shell's own focus call put the keyboard in this visible tab's frame (frame-focus.ts). */
   ownFocus(tabId: string): boolean {
     return this.own === tabId && this.visible.has(tabId)
@@ -363,6 +373,23 @@ export class PageFrames {
   /** The focus moved to an element of the shell: what the shell focused before is no evidence any more. */
   shellFocused(): void {
     this.own = null
+  }
+
+  /**
+   * The shell's record says frame `other` holds the keyboard but `tabId`'s page says its window just
+   * got the focus (its `cc-plugin.tab-focus`): focus `tabId`'s frame element so the record matches
+   * again, recording no focus of the shell's own (it is no evidence: the page asked). Measured
+   * (Electron 45, the plan's Task 4 e2e): a click from one page tab frame into another of the same
+   * plugin moves the keyboard but leaves the shell's `document.activeElement` on the first frame, for
+   * good, so without this every chord, Ask Claude and blur would act on the frame the person left. A
+   * page that lies gains nothing it could not take itself: the keyboard was already in a frame (never
+   * in a terminal: only called while one holds it, `keyboardTab`), and any page may call `focus()`.
+   * The check that follows decides whether it keeps it.
+   */
+  resync(tabId: string): void {
+    if (!this.visible.has(tabId) || this.keyboardTab() === null) return
+    const el = this.live.find((l) => l.tab.id === tabId)?.frame?.element
+    if (el && !el.hasFocus()) el.focus()
   }
 
   /** Take the keyboard from the tab's frame (it took it with no evidence of the person). */
@@ -571,7 +598,7 @@ export class PageFrames {
     // while nobody uses it. Transient activation lasts seconds and is not tied to one key, so a page
     // the person is typing in can still post a listed chord they did not press (a known limit).
     if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && this.visible.has(tabId) && el.hasFocus()) {
-      if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord)
+      if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord, tabId)
       return
     }
     if (type === TAB_DISCUSS_MESSAGE && this.visible.has(tabId) && el.hasFocus()) {

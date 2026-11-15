@@ -4,7 +4,9 @@
 // keep their pages through a plugin host restart (a new port each, no reload). The shell decides
 // which frame has the keys (§4, plan Task 3): a frame that takes the keyboard by itself is blurred,
 // the pointer going into one picks its pane, keys off reach no frame, and `ccc edit` keeps the keys.
-import { writeFileSync } from 'node:fs'
+// A chord or Ask Claude from a frame acts on that frame's tab (§4, plan Task 4): file A to file B,
+// Cmd+W in a file beside Claude, a pane chord from the frame, the page's own chords only in its frame.
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Frame, Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -348,5 +350,132 @@ test('unprompted focus at a relaunch: the restored group mounts the file pane wh
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
   } finally {
     await second.close()
+  }
+})
+
+/**
+ * A chord as a person types it: a native key event into the window's webContents, which main's
+ * `before-input-event` sees before any frame does (page-tab-keys.ts), as editor.spec.ts does.
+ * Playwright's own keyboard goes over DevTools, which that listener does not see.
+ */
+async function nativeChord(c: Cockpit, keyCode: string, modifiers: Array<'control' | 'meta' | 'shift' | 'alt'>): Promise<void> {
+  await c.app.evaluate(
+    ({ BrowserWindow }, { keyCode, modifiers }) => {
+      const wc = BrowserWindow.getAllWindows()[0]!.webContents
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+    },
+    { keyCode, modifiers }
+  )
+}
+const NATIVE_MOD = process.platform === 'darwin' ? 'meta' : 'control'
+const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+
+/**
+ * A click into the editor of `tabId` on the line showing `text`, coming in over its pane header: the
+ * shell's last pointer position is then at the frame's edge, its evidence that the person went in
+ * (plan Task 3: the shell sees no event as the pointer enters a frame, so a jump from elsewhere would
+ * prove nothing).
+ */
+async function clickInto(page: Page, tabId: string, frame: Frame, text: string): Promise<void> {
+  await paneOf(page, tabId).locator('[data-pane-header]').hover()
+  await frame.locator('.cm-line', { hasText: text }).click()
+}
+
+test('file A to file B: the outline follows the click, and Ask Claude and Cmd+W from B act on B', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'a.txt'), 'alpha\n')
+    writeFileSync(join(projectDir, 'b.txt'), 'beta\n')
+    await pluginActive(c, 'cockpit.editor')
+    const a = await openFile(c, 'a.txt')
+    const b = await openFile(c, 'b.txt')
+    expect((await place(page, b, a, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const [fa, fb] = [await pageIn(page, 'a.txt'), await pageIn(page, 'b.txt')]
+
+    // Into A, then into B: each click moves the outline and the strip's selection with it. Frame to
+    // frame the shell sees no event of its own, and its `activeElement` stays on the frame left (two
+    // frames of one plugin); the page's focus hint makes it look and put that right.
+    await clickInto(page, a, fa, 'alpha')
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+    await expect(page.getByRole('tab', { name: /a\.txt/ })).toHaveAttribute('aria-selected', 'true')
+    await clickInto(page, b, fb, 'beta')
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', b)
+    await expect(page.getByRole('tab', { name: /b\.txt/ })).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.type('Q')
+    await expect(fb.locator('.cm-content')).toContainText('Q')
+    await expect(fa.locator('.cm-content')).not.toContainText('Q')
+
+    // Ask Claude from B (the editor's Ctrl+L): B's box, not A's.
+    await page.keyboard.press(`${MOD}+l`)
+    const discuss = page.getByRole('dialog', { name: 'Ask Claude about “b.txt”' })
+    await expect(discuss).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(discuss).toHaveCount(0)
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+
+    // The box took the focus from B, which saved Q (the editor's autosave on focus loss).
+    await expect.poll(() => readFileSync(join(projectDir, 'b.txt'), 'utf8')).toBe('betaQ\n')
+
+    // Cmd+W typed in B (main's before-input-event; `commands.trigger` names no tab): B closes, A
+    // stays, its page untouched.
+    await nativeChord(c, 'W', [NATIVE_MOD])
+    await expect.poll(async () => (await tabsOf(page)).map((t) => t.page?.title)).toEqual(['a.txt'])
+    await expect(frameEl(page, 'a.txt')).toHaveCount(1)
+    await expect(fa.locator('.cm-content')).toContainText('alpha')
+  } finally {
+    await close()
+  }
+})
+
+test('keys to the focused pane: Cmd+W in the file beside Claude closes the file, Ctrl+P in Claude never reaches the page, a pane chord in the frame moves the keys to the terminal', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const file = await openFile(c, 'notes.txt')
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const editor = await pageIn(page, 'notes.txt')
+
+    // The Claude pane focused: the editor's own Ctrl+P (quick open) is the page's only while its frame
+    // has the keyboard, so here it goes to Claude and no palette opens in the page.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.press(`${MOD}+p`)
+    await page.waitForTimeout(500)
+    await expect(editor.locator('#palette')).toBeHidden()
+    expect(await keysInFrame(page)).toBe(false)
+
+    // A pane focus chord typed in the frame (Cmd+Alt+Left): the keys go to the Claude terminal.
+    await clickInto(page, file, editor, 'two')
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    await nativeChord(c, 'Left', [NATIVE_MOD, 'alt'])
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.type('hey')
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: hey')
+    await expect(editor.locator('.cm-content')).not.toContainText('hey')
+
+    // Back into the file and Cmd+W there: the file tab closes, the Claude tab stays (its pane was the
+    // one the state ref still called active a moment before the chord ran).
+    await clickInto(page, file, editor, 'one')
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    await nativeChord(c, 'W', [NATIVE_MOD])
+    await expect.poll(async () => (await tabsOf(page)).map((t) => t.kind)).toEqual(['claude'])
+    await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  } finally {
+    await close()
   }
 })

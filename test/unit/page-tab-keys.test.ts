@@ -163,9 +163,9 @@ describe('web shell: the pool and the key table', () => {
     expect(d.el(TAB_A).sent).toContainEqual({ type: TAB_MESSAGE, tab: { type: 'file' } })
   })
 
-  it('a forwarded chord counts only from the shown frame with the keyboard, and only a listed one', async () => {
+  it('a forwarded chord counts only from the shown frame with the keyboard, only a listed one, and names that frame\'s tab', async () => {
     const chords: string[] = []
-    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => chords.push(c), userActive: () => true })
+    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c, tabId) => chords.push(`${c} ${tabId}`), userActive: () => true })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
     t.frames.show([TAB_A], TAB_A)
     await settle()
@@ -180,7 +180,21 @@ describe('web shell: the pool and the key table', () => {
     b.focusedNow = true
     b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+t' })
     b.fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
-    expect(chords).toEqual(['ctrl+alt+w'])
+    expect(chords).toEqual([`ctrl+alt+w ${TAB_B}`])
+  })
+
+  it('two visible frames: a chord from the one without the keyboard is dropped, from the one with it names its tab', async () => {
+    const chords: string[] = []
+    const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c, tabId) => chords.push(`${c} ${tabId}`), userActive: () => true })
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    await settle()
+    // B has the keyboard (the person clicked into it), A is still the view's focused pane.
+    t.el(TAB_B).focusedNow = true
+    t.el(TAB_A).fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
+    expect(chords).toEqual([])
+    t.el(TAB_B).fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })
+    expect(chords).toEqual([`ctrl+alt+w ${TAB_B}`])
   })
 
   it('a forwarded chord counts only while the browser says the person just gave real input (a script alone cannot run app commands)', async () => {
@@ -221,21 +235,22 @@ describe('web shell: the pool and the key table', () => {
       conflicts: []
     })
     expect(forwardedChords().sort()).toEqual(['alt+b', 'ctrl+w'])
-    const ran: string[] = []
+    const ran: Array<[string, string | undefined]> = []
     // No runner, or no handler for the command: nothing runs.
-    expect(runForwardedChord('ctrl+w')).toBe(false)
-    const off = setForwardedRunner((id) => ran.push(id))
-    expect(runForwardedChord('ctrl+w')).toBe(false)
+    expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
+    const off = setForwardedRunner((id, ctx) => ran.push([id, ctx?.tabId]))
+    expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     registerHandlers({ 'tab.close': () => {} })
-    expect(runForwardedChord('ctrl+w')).toBe(true)
-    expect(runForwardedChord('ctrl+q')).toBe(false)
+    expect(runForwardedChord('ctrl+w', 'page-1')).toBe(true)
+    expect(runForwardedChord('ctrl+q', 'page-1')).toBe(false)
     // The keybinding editor recording: no chord runs anything.
     const release = captureKeys()
-    expect(runForwardedChord('ctrl+w')).toBe(false)
+    expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     release()
     off()
-    expect(runForwardedChord('ctrl+w')).toBe(false)
-    expect(ran).toEqual(['tab.close'])
+    expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
+    // The command runs for the frame's own tab (design-split-pages.md §4), never "the active tab".
+    expect(ran).toEqual([['tab.close', 'page-1']])
   })
 
   it('a new key table is told to its listeners', () => {

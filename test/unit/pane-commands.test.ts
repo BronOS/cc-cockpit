@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { GroupsReply, TabInfo } from '../../src/shared/ipc'
 import { paneView } from '../../src/renderer/state/groups-state'
 import { initialTabsState, tabsReducer, type TabsAction, type TabsState } from '../../src/renderer/state/tabs-store'
-import { paneCommandHandlers, refusalText } from '../../src/renderer/tabs/pane-commands'
+import { activeTabHandlers, paneCommandHandlers, refusalText } from '../../src/renderer/tabs/pane-commands'
+import { chordTarget } from '../../src/renderer/tabs/frame-focus'
+import { TOGGLE_FLAG_COMMAND } from '../../src/shared/tab-flag'
 import { groupTitle, handleWords, leftSegment, stripRuns } from '../../src/renderer/tabs/strip-groups'
 import { isPaneKind, type PaneNode, type PaneSplit, type PlaceIntent, type TabGroup } from '../../src/shared/tab-groups'
 
@@ -37,8 +39,8 @@ function harness(selected: string, extra: TabsAction[] = [], auto = false) {
     dissolve: (groupId) => (sent.push(['dissolve', groupId]), ok()),
     resize: (groupId, splitId, sizes) => (sent.push(['resize', { groupId, splitId, sizes }]), ok()),
     intend: (tabId, intent) => intents.push([tabId, intent]),
-    openSplit: (edge) => sent.push(['split', edge]),
-    openBeside: (edge) => sent.push(['beside', edge]),
+    openSplit: (tabId, edge) => sent.push(['split', { tabId, edge }]),
+    openBeside: (tabId, edge) => sent.push(['beside', { tabId, edge }]),
     minShare: () => 0.1,
     report: (m) => reports.push(m)
   })
@@ -149,6 +151,78 @@ describe('pane commands', () => {
       expect(h.state().keysOff).toBe(false)
       h.handlers['pane.zoom']!()
       expect(Object.keys(h.state().zoomed)).toEqual(['g'])
+    })
+  })
+
+  // design-split-pages.md §4 "Chords from a frame name their tab": a chord typed in a page frame runs
+  // for that frame's tab. The shell picked it just before, but the state still names the pane the
+  // person left (TabsPane's state ref is written in an effect, the chord runs at once).
+  describe('a chord from a frame acts on the tab it names, not activeId', () => {
+    it('focus moves from the target, not from the stale active pane', () => {
+      const h = harness('d')
+      h.handlers['pane.focusRight']!({ tabId: 'b' })
+      expect(h.state().activeId).toBe('c')
+      const u = harness('b')
+      u.handlers['pane.focusUp']!({ tabId: 'd' })
+      expect(u.state().activeId).toBe('c')
+    })
+
+    it('move out, zoom, resize and move act on the target', () => {
+      const h = harness('b')
+      h.handlers['pane.moveOut']!({ tabId: 'd' })
+      expect(h.intents).toEqual([['d', 'leave']])
+      expect(h.sent).toEqual([['remove', 'd']])
+      const z = harness('b')
+      z.handlers['pane.zoom']!({ tabId: 'c' })
+      expect(z.state().zoomed).toEqual({ g: 'c' })
+      const r = harness('b')
+      r.handlers['pane.resizeDown']!({ tabId: 'c' })
+      expect(r.sent).toEqual([['resize', { groupId: 'g', splitId: 's2', sizes: [expect.closeTo(0.55, 9), expect.closeTo(0.45, 9)] }]])
+      const m = harness('b')
+      m.handlers['pane.moveUp']!({ tabId: 'd' })
+      expect(m.intents).toEqual([['d', 'stay']])
+      expect(m.sent).toEqual([['place', { tabId: 'd', at: 'c', edge: 'up' }]])
+    })
+
+    it('split right / down and show beside open at the target', () => {
+      const h = harness('b')
+      h.handlers['pane.splitRight']!({ tabId: 'c' })
+      h.handlers['pane.splitDown']!()
+      h.handlers['pane.showBesideDown']!({ tabId: 'd' })
+      expect(h.sent).toEqual([
+        ['split', { tabId: 'c', edge: 'right' }],
+        ['split', { tabId: 'b', edge: 'down' }],
+        ['beside', { tabId: 'd', edge: 'down' }]
+      ])
+    })
+
+    it('Close Tab and the flag act on the target; with no target on activeId; with the keys off on nothing', () => {
+      const run = (selected: string, extra: TabsAction[] = []) => {
+        const state = [
+          { type: 'loaded', tabs: ['a', 'b', 'c', 'd'].map(tab) } as TabsAction,
+          { type: 'groups', snapshot: { seq: 1, order: ['a', 'b', 'c', 'd'], groups: [G] } } as TabsAction,
+          { type: 'selected', tabId: selected } as TabsAction,
+          ...extra
+        ].reduce(tabsReducer, initialTabsState)
+        const log: string[] = []
+        const handlers = activeTabHandlers({ state: () => state, close: (id) => log.push(`close ${id}`), toggleFlag: (id) => log.push(`flag ${id}`) })
+        return { handlers, log }
+      }
+      const h = run('b')
+      h.handlers['tab.close']!({ tabId: 'c' })
+      h.handlers[TOGGLE_FLAG_COMMAND]!({ tabId: 'd' })
+      h.handlers['tab.close']!()
+      expect(h.log).toEqual(['close c', 'flag d', 'close b'])
+      const off = run('c', [{ type: 'removed', tabId: 'c', gen: 1 }])
+      off.handlers['tab.close']!()
+      off.handlers[TOGGLE_FLAG_COMMAND]!()
+      expect(off.log).toEqual([])
+    })
+
+    it("main's chord runs for the frame with the keys, for activeId with no frame, and not at all for a blurred one", () => {
+      expect(chordTarget({ tab: 'page-1' })).toEqual({ tabId: 'page-1' })
+      expect(chordTarget('none')).toEqual({})
+      expect(chordTarget('blurred')).toBeNull()
     })
   })
 

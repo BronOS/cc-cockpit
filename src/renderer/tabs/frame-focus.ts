@@ -113,6 +113,27 @@ export function framePick(activeTab: string | null, activeId: string | null, e: 
   return { blur: true, giveBack: e.recentKey && !e.pointerNear }
 }
 
+/**
+ * What the shell's check found (PageTabArea.tsx checkFrameFocus): no page frame holds the keyboard
+ * (`none`: a terminal, the shell, a webview panel's page outside the document), the visible frame of
+ * `tab` holds it and keeps it (its pane is the focused one now, picked if it was not), or one held it
+ * with no evidence and was blurred.
+ */
+export type FrameCheck = 'none' | 'blurred' | { tab: string }
+
+/**
+ * Whom a chord main sent (`commands.trigger`, which names no tab) runs for, after the check: the
+ * frame's tab when a frame has the keys (design-split-pages.md §4 "Chords from a frame name their
+ * tab"), the view's active tab when none does (`{}`: a chord from a webview panel, or from a frame
+ * that lost the keyboard before it arrived), and nobody (null, dropped) when the frame held them with no
+ * evidence: the person typed it where the shell says no keys belong, and the pane the outline shows
+ * is not where they typed it (Cmd+W there would close the file they did not click into).
+ */
+export function chordTarget(at: FrameCheck): { tabId?: string } | null {
+  if (at === 'blurred') return null
+  return at === 'none' ? {} : { tabId: at.tab }
+}
+
 /** How far `at` is from `rect` in px (0 inside it); Infinity for an empty box. */
 export function distanceTo(at: { x: number; y: number }, rect: ViewportRect): number {
   if (!(rect.width > 0) || !(rect.height > 0)) return Number.POSITIVE_INFINITY

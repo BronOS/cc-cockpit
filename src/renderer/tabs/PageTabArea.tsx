@@ -9,7 +9,7 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import type { PaneNode } from '../../shared/tab-groups'
-import { framePick, PointerEvidence } from './frame-focus'
+import { framePick, PointerEvidence, type FrameCheck } from './frame-focus'
 import { frameBoxes } from './pane-layout'
 import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
@@ -71,20 +71,32 @@ function giveBackTarget(): HTMLElement | null {
 
 /**
  * Whether the frame holding the keyboard now may keep it (design-split-pages.md §4): read at the
- * window's `blur`, at a page's `cc-plugin.tab-focus` hint, and by TabsPane before it acts for a frame.
+ * window's `blur`, at a page's `cc-plugin.tab-focus` hint, and before a chord or Ask Claude from a
+ * frame (TabsPane's `commands.trigger`, the pool's `chord` and `discuss` below), whose target it names.
  * With the person's evidence (the shell's own focus call, or their pointer going into it) the pane is
  * picked. Without, the frame is blurred, lets the pointer through to its pane until the pointer moves
  * (so the next press on it is one the shell sees), and the keyboard goes to nothing, or back to the
  * element the person was typing in a moment ago (framePick's `giveBack`), never to "the focused
- * pane". Nothing here rests on what a page posts: the hint only says when to look,
- * `document.activeElement` says what.
+ * pane". Nothing here rests on what a page posts: the hint (`hinted`, its frame's tab) says when to
+ * look and, while another frame is on record, to put the record right (PageFrames.resync); the
+ * evidence decides.
  */
-export function checkFrameFocus(): void {
+export function checkFrameFocus(hinted?: string): FrameCheck {
   const pool = frames
   const handler = focusHandler
-  if (!pool || !handler) return
+  if (!pool || !handler) return 'none'
+  // Frame to frame, the shell's `activeElement` can stay on the frame the person left (measured:
+  // two frames of one plugin); a hint from another frame while one holds the keyboard puts it right
+  // first (PageFrames.resync), and the evidence below decides as for any other frame.
+  if (hinted !== undefined && pool.keyboardTab() !== hinted) pool.resync(hinted)
   const tab = pool.keyboardTab()
-  if (tab === null) return
+  if (tab === null) return 'none'
+  // Only a visible pane's frame names a target (a hidden one has no box and cannot hold the
+  // keyboard; were one to, nothing the person sees is there).
+  if (!pool.isVisible(tab)) {
+    pool.blurFrame(tab)
+    return 'blurred'
+  }
   const rects = pool.frameRects()
   const others = [...rects].filter(([id]) => id !== tab).map(([, rect]) => rect)
   const giveTo = giveBackTarget()
@@ -95,14 +107,27 @@ export function checkFrameFocus(): void {
     keyAfterPointer: pointer.keyAfterPointer(),
     recentKey: giveTo !== null
   })
-  if (decision === null) return
+  if (decision === null) return { tab }
   if ('pick' in decision) {
     handler.pick(decision.pick)
-    return
+    return { tab }
   }
   pool.blurFrame(tab)
   pool.passThrough(tab)
   if (decision.giveBack) giveTo?.focus()
+  return 'blurred'
+}
+
+/**
+ * Whether `tabId`'s frame is the one with the keyboard after checkFrameFocus (picked as the focused
+ * pane if it was not): the web shell's forwarded chord and any Ask Claude act for it only then. The
+ * pool already took the message only from a visible frame with the keyboard; this reads the focus
+ * again and dispatches the pick, so Ask Claude from the second of two files is not refused for the
+ * first one's stale `activeId`, and the outline and `tabs.selected` follow the chord.
+ */
+function frameHasKeys(tabId: string): boolean {
+  const at = checkFrameFocus()
+  return typeof at === 'object' && at.tab === tabId
 }
 
 /**
@@ -118,7 +143,7 @@ function watchFrameFocus(): void {
   // task's gap (or, for a page's hint, in the cross-process message's) land in the frame and stay
   // there: a mount-time steal while the person types can put a character into the page (an editor's
   // buffer, then its autosave). The gap is a few ms; nothing typed before the blur is replayed.
-  window.addEventListener('blur', () => setTimeout(checkFrameFocus, 0))
+  window.addEventListener('blur', () => setTimeout(() => void checkFrameFocus(), 0))
   const moved = (e: PointerEvent | WheelEvent): void => {
     pointer.moved(e.clientX, e.clientY)
     // The shell sees the pointer again: a frame blurred for want of evidence takes it back (the
@@ -265,8 +290,8 @@ export function pageFrames(): PageFrames {
     },
     // The web shell's pages forward the app's chords (no before-input-event there); the desktop lists none.
     keys: () => (isWebShell() ? forwardedChords() : undefined),
-    chord: (chord) => {
-      runForwardedChord(chord)
+    chord: (chord, tabId) => {
+      if (frameHasKeys(tabId)) runForwardedChord(chord, tabId)
     },
     // A trusted key press (or click) in the frame activates its ancestors too (the HTML spec's user
     // activation), the shell included; a page's script cannot set it. It is transient (true for a
@@ -274,8 +299,10 @@ export function pageFrames(): PageFrames {
     // they pressed this chord. A browser without the API takes no forwarded chord (the safe side:
     // the chord is only lost inside page tabs).
     userActive: () => (navigator.userActivation as UserActivation | undefined)?.isActive === true,
-    discuss: (tabId) => discussHandler?.(tabId),
-    focusHint: () => checkFrameFocus(),
+    discuss: (tabId) => {
+      if (frameHasKeys(tabId)) discussHandler?.(tabId)
+    },
+    focusHint: (tabId) => void checkFrameFocus(tabId),
     // Page tabs also get the terminal font (an editor draws code in it): frame-messages.ts terminalFontVars.
     theme: () => {
       const theme = currentTheme()

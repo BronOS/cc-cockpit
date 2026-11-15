@@ -11,7 +11,17 @@ import { parseTabCommandId } from '../../shared/tab-commands'
 import { isWebShell } from '../shell-kind'
 import { webKeyTable } from './web-keys'
 
-export type CommandHandler = () => void
+/**
+ * What a command runs for. `tabId`: the tab whose page frame the chord was typed in (design-split-pages.md
+ * §4 "Chords from a frame name their tab"); absent, the command acts on the view's active tab. A handler
+ * acting on "the active tab" reads `ctx?.tabId ?? activeId`: selecting the frame's tab first and running
+ * after does not work, since TabsPane's state ref is written in an effect and the chord runs at once.
+ */
+export interface CommandContext {
+  tabId?: string
+}
+
+export type CommandHandler = (ctx?: CommandContext) => void
 
 let chords = new Map<string, string>()
 // Per command, the handlers registered for it, latest last; the latest one runs. A stack, not a
@@ -26,7 +36,7 @@ let captures = 0
 // Told whenever the table changes (setCommands): page tabs in the web shell get the new chord list.
 const tableListeners = new Set<() => void>()
 // Runs a command for a chord a page tab forwarded (TabsPane: through its modal gate).
-let forwardedRunner: ((id: string) => void) | undefined
+let forwardedRunner: ((id: string, ctx?: CommandContext) => void) | undefined
 
 /** Stop keys from firing commands until the returned function is called (once; further calls do nothing). */
 export function captureKeys(): () => void {
@@ -82,7 +92,7 @@ export function forwardedChords(): string[] {
 }
 
 /** Set who runs a forwarded chord's command (TabsPane); returns the function that removes it. */
-export function setForwardedRunner(fn: (id: string) => void): () => void {
+export function setForwardedRunner(fn: (id: string, ctx?: CommandContext) => void): () => void {
   forwardedRunner = fn
   return () => {
     if (forwardedRunner === fn) forwardedRunner = undefined
@@ -90,15 +100,15 @@ export function setForwardedRunner(fn: (id: string) => void): () => void {
 }
 
 /**
- * A chord a page tab forwarded: its command runs through the runner TabsPane set (the same gate as a
- * key typed in the shell). False when it is not bound, nothing here runs it, or keys are captured
- * (the keybinding editor recording).
+ * A chord the page tab `tabId` forwarded: its command runs through the runner TabsPane set (the same
+ * gate as a key typed in the shell), for that tab. False when it is not bound, nothing here runs it,
+ * or keys are captured (the keybinding editor recording).
  */
-export function runForwardedChord(chord: string): boolean {
+export function runForwardedChord(chord: string, tabId: string): boolean {
   if (captures > 0 || !forwardedRunner) return false
   const id = chords.get(chord)
   if (id === undefined || !handlers.has(id)) return false
-  forwardedRunner(id)
+  forwardedRunner(id, { tabId })
   return true
 }
 
@@ -139,11 +149,11 @@ export function chordOf(id: string): string | undefined {
   return commands.find((c) => c.id === id)?.key
 }
 
-/** Run a command by id; false when this window has no handler for it. */
-export function runCommand(id: string): boolean {
+/** Run a command by id (for `ctx.tabId` when a frame's chord names one); false when this window has no handler for it. */
+export function runCommand(id: string, ctx?: CommandContext): boolean {
   const fn = handlers.get(id)?.at(-1)
   if (!fn) return false
-  fn()
+  fn(ctx)
   return true
 }
 
