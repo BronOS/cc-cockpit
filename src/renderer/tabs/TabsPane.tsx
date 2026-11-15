@@ -34,6 +34,7 @@ import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
 import { DELIVER_ANYWAY_LABEL, deliverHeldText } from './tab-room'
+import { RoomDialog } from '../rooms/RoomDialog'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
@@ -192,6 +193,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   useEffect(() => {
     discussShown.current = discussOpen
   }, [discussOpen])
+  // The room view (design-rooms.md §5, rooms/RoomDialog.tsx) from a member tab's "Room...": the room's id (from the
+  // tab record main wrote), null when no dialog is up. Modal like the ccc offer (the key handler and focusActive read
+  // the ref). It stays up by room id when the tab leaves the room meanwhile: the room is still the person's to look at.
+  const [roomFor, setRoomFor] = useState<string | null>(null)
+  const roomOpen = roomFor !== null
+  const roomShown = useRef(false)
+  useEffect(() => {
+    roomShown.current = roomOpen
+  }, [roomOpen])
+  // Any of the page's own modal dialogs (beside the close question, which has its own ref): no command runs meanwhile.
+  const modalShown = (): boolean => offerShown.current || discussShown.current || roomShown.current
   // The Claude tab this view showed last: the box sends there unless the person picks another.
   const lastClaude = useRef<string | undefined>(undefined)
   useEffect(() => {
@@ -728,6 +740,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       })
     )
 
+  // The tab menu's "Room...": the room view for the tab's room (its id from the tab record), unless another modal is up.
+  const openRoom = (tabId: string): void => {
+    const room = stateRef.current.tabs.find((t) => t.id === tabId)?.room
+    if (!room || confirmFor.current !== null || settingsShown.current || overlayOpen.current || modalShown()) return
+    roomShown.current = true
+    setRoomFor(room.id)
+  }
+
   const move = (tabId: string, delta: -1 | 1): void => {
     const from = state.tabs.findIndex((t) => t.id === tabId)
     if (from < 0) return
@@ -924,7 +944,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    */
   const focusActive = useCallback((): void => {
     // The close dialog keeps the focus on its own buttons until it is answered.
-    if (paletteOpen.current || overlayOpen.current || confirmFor.current !== null || offerShown.current || discussShown.current) return
+    if (paletteOpen.current || overlayOpen.current || confirmFor.current !== null || modalShown()) return
     if (settingsShown.current) {
       settingsRoot.current?.focus()
       return
@@ -994,8 +1014,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // on the way, the ccc offer, the settings screen): the switcher goes, or its keys would answer
   // the modal's buttons and a release would switch tabs behind it.
   useEffect(() => {
-    if (confirm !== null || cccOffer !== null || discussOpen || settingsOpen) endSwitcher(undefined)
-  }, [confirm, cccOffer, discussOpen, settingsOpen, endSwitcher])
+    if (confirm !== null || cccOffer !== null || discussOpen || roomOpen || settingsOpen) endSwitcher(undefined)
+  }, [confirm, cccOffer, discussOpen, roomOpen, settingsOpen, endSwitcher])
   // A tab closed or added while the switcher is open: keep the list to the tabs that exist, the
   // highlight on the same tab where it can be, and give up when nothing is left to switch to.
   useEffect(() => {
@@ -1104,6 +1124,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (wasConfirming.current && confirm === null) requestAnimationFrame(focusActive)
     wasConfirming.current = confirm !== null
   }, [confirm, focusActive])
+  const wasRoomOpen = useRef(false)
+  useEffect(() => {
+    if (wasRoomOpen.current && !roomOpen) requestAnimationFrame(focusActive)
+    wasRoomOpen.current = roomOpen
+  }, [roomOpen, focusActive])
   const wasDiscussing = useRef(false)
   useEffect(() => {
     if (wasDiscussing.current && !discussOpen) requestAnimationFrame(focusActive)
@@ -1118,7 +1143,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     () =>
       setPageTabDiscussHandler((tabId) => {
         const modalUp =
-          paletteOpen.current || overlayOpen.current || settingsShown.current || confirmFor.current !== null || offerShown.current || discussShown.current
+          paletteOpen.current || overlayOpen.current || settingsShown.current || confirmFor.current !== null || modalShown()
         if (!discussMayOpen(tabId, { modalUp, switcherUp: switcherRef.current !== null, activeId: stateRef.current.activeId }, discussCooldown.current)) return
         discussShown.current = true
         setDiscussFor(lastClaude.current === undefined ? { tabId } : { tabId, preferred: lastClaude.current })
@@ -1149,6 +1174,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       confirm !== null ||
       cccOffer !== null ||
       discussOpen ||
+      roomOpen ||
       paletteCommands !== null ||
       besidePick !== null ||
       splitMenu !== null ||
@@ -1195,7 +1221,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     })
     const allowed = (id: string): boolean =>
       commandAllowed(id, {
-        confirming: confirmFor.current !== null || offerShown.current || discussShown.current,
+        confirming: confirmFor.current !== null || modalShown(),
         paletteOpen: paletteOpen.current,
         overlayOpen: overlayOpen.current,
         settingsShown: settingsShown.current
@@ -1229,7 +1255,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if (!id) return
       // Esc belongs to the palette while it is open (its field closes it); taking it here for
       // "pop the top overlay" would leave the palette stuck open. Likewise the close dialog's.
-      if ((paletteOpen.current || confirmFor.current !== null || offerShown.current || discussShown.current) && id === 'overlay.pop') return
+      if ((paletteOpen.current || confirmFor.current !== null || modalShown()) && id === 'overlay.pop') return
       e.preventDefault()
       e.stopPropagation()
       // Holding Cmd+T must not open a tab per repeat. A held Ctrl+Tab steps through the tabs, as
@@ -1379,9 +1405,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
         slots={layout.appSlots}
-        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />
-      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />}
-      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen}>
+        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen} />
+      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen} />}
+      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen}>
         <TabBar
           tabs={state.tabs}
           // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
@@ -1397,6 +1423,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onFlag={flag}
           onRoomMark={roomMark}
           onDeliverHeld={deliverHeld}
+          onOpenRoom={openRoom}
           onMenuClosed={refocusAfterMenu}
           onReorder={reorder}
           sessions={own}
@@ -1449,7 +1476,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         >
           {/* A page tab has no terminal and is never a pane: its frame is drawn by PageTabArea, in a
               layer of its own laid over this placeholder, which fills the whole split area. */}
-          <PageTabArea tabs={state.tabs} listed={state.listed} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />
+          <PageTabArea tabs={state.tabs} listed={state.listed} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen} />
         </SplitArea>
       </Zones>
       {paletteCommands && (
@@ -1511,6 +1538,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           }
         />
       )}
+      {roomFor !== null && <RoomDialog key={roomFor} roomId={roomFor} live={own} onClose={() => setRoomFor(null)} />}
       {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}
       {discussFor !== null && discussTab && (
         <PageTabDiscussDialog
