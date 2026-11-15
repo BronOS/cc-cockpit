@@ -339,11 +339,11 @@ test.describe('editor, desktop', () => {
       await expect(frame.locator('.cm-content')).toContainText('ijkl')
       const line = (text: string) => frame.locator('.cm-line', { hasText: text })
 
-      // A cursor at the start of line 1, then Alt+click the start of lines 2 and 3 (x 0 is the line's
-      // left padding: its first position). One typed letter lands at all three.
+      // A cursor at the start of line 1, then Alt+click the start of lines 2 and 3 (x 9 is inside the line's
+      // text, past the gutters, on the left half of its first letter). One typed letter lands at all three.
       await toStart(c)
-      await line('efgh').click({ modifiers: ['Alt'], position: { x: 0, y: 4 } })
-      await line('ijkl').click({ modifiers: ['Alt'], position: { x: 0, y: 4 } })
+      await line('efgh').click({ modifiers: ['Alt'], position: { x: 9, y: 4 } })
+      await line('ijkl').click({ modifiers: ['Alt'], position: { x: 9, y: 4 } })
       await page.keyboard.type('X')
       await expect(frame.locator('.cm-content')).toContainText('XabcdXefghXijkl')
 
