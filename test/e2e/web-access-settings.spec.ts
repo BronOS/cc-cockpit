@@ -80,10 +80,10 @@ test('web access settings: Show hides the link, a device is listed and revoked, 
 
   // A bad port is refused on the page, with nothing saved.
   await settings.getByLabel('Port', { exact: true }).fill('80')
-  await settings.getByRole('button', { name: 'Save' }).click()
+  await settings.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(settings.getByRole('alert')).toContainText('port must be a whole number')
   await settings.getByLabel('Port', { exact: true }).fill(String(port))
-  await settings.getByRole('button', { name: 'Save' }).click()
+  await settings.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(settings.getByLabel('Port', { exact: true })).toHaveValue(String(port))
 
   await enabled.click()
@@ -141,7 +141,7 @@ test('web access sign-in modes: a password before the switch, a desktop confirm 
   await page.keyboard.press('ControlOrMeta+,')
   await expect(settings).toBeVisible()
   await settings.getByLabel('Port', { exact: true }).fill(String(port))
-  await settings.getByRole('button', { name: 'Save' }).click()
+  await settings.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(settings.getByLabel('Port', { exact: true })).toHaveValue(String(port))
   await settings.getByRole('checkbox', { name: 'Allow browsers to connect' }).click()
   await expect(settings.getByText(`listening on port ${port}`)).toBeVisible()
@@ -208,7 +208,7 @@ test('web access network binds: the §4.3 confirms, and a cancelled one leaves l
   await page.keyboard.press('ControlOrMeta+,')
   await expect(settings).toBeVisible()
   await settings.getByLabel('Port', { exact: true }).fill(String(port))
-  await settings.getByRole('button', { name: 'Save' }).click()
+  await settings.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(settings.getByLabel('Port', { exact: true })).toHaveValue(String(port))
   const enabled = settings.getByRole('checkbox', { name: 'Allow browsers to connect' })
   await enabled.click()
@@ -217,7 +217,7 @@ test('web access network binds: the §4.3 confirms, and a cancelled one leaves l
   // Plain http on every network: the confirm says what it means; Cancel has the focus, so Enter keeps loopback.
   const bind = settings.getByLabel('Listen on', { exact: true })
   await bind.fill('0.0.0.0')
-  await settings.getByRole('button', { name: 'Save' }).click()
+  await settings.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(confirm).toBeVisible()
   expect(await paintedOnTop(page, 'web-access-risk-confirm')).toBe(true)
   await expect(confirm).toHaveAttribute('data-risk', 'plain-http')
@@ -235,7 +235,7 @@ test('web access network binds: the §4.3 confirms, and a cancelled one leaves l
   await expect(enabled).not.toBeChecked()
   await settings.getByLabel('Certificate file').fill('/nonexistent/cert.pem')
   await settings.getByLabel('Key file').fill('/nonexistent/key.pem')
-  await settings.getByRole('button', { name: 'Save' }).click()
+  await settings.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(settings.getByLabel('Listen on', { exact: true })).toHaveValue('0.0.0.0')
   await expect(confirm).toHaveCount(0)
   await settings.getByRole('combobox', { name: 'Sign-in' }).selectOption('none')
@@ -274,7 +274,7 @@ test('web access network bind accepted: the confirm is on top, the gateway rebin
     await expect(settings).toBeVisible()
     const bind = settings.getByLabel('Listen on', { exact: true })
     await bind.fill('0.0.0.0')
-    await settings.getByRole('button', { name: 'Save' }).click()
+    await settings.getByRole('button', { name: 'Save', exact: true }).click()
 
     // The confirm is up, over the settings screen, and has the keyboard.
     await expect(confirm).toBeVisible()
