@@ -518,7 +518,9 @@ describe('parseKey', () => {
     expect(parseKey(enc.private, '')).toEqual({ kind: 'needs-passphrase' })
     expect(parseKey(enc.private, 'nope')).toEqual({ kind: 'wrong-passphrase' })
     expect(parseKey(enc.private, 'open sesame').kind).toBe('ok')
-  })
+    // Synchronous bcrypt_pbkdf in ssh2's plain JS (the generate and both passphrase tries): about 70 ms
+    // alone, but a full parallel `npm test` starves the worker and the 5 s default ran out twice.
+  }, 20_000)
 
   it('does the same for an old-style encrypted PEM key', async () => {
     const { generateKeyPairSync } = await import('node:crypto')
@@ -532,7 +534,9 @@ describe('parseKey', () => {
     const ok = parseKey(privateKey, 'pem pass')
     expect(ok.kind).toBe('ok')
     if (ok.kind === 'ok') expect(ok.key.type).toBe('ssh-rsa')
-  })
+    // A synchronous 2048-bit RSA generate (a random prime search with a long tail) plus the PEM key
+    // derivations: quick alone, past the 5 s default now and then on a worker starved by the full run.
+  }, 20_000)
 
   it('a public key, garbage and an empty file are unsupported', () => {
     expect(parseKey(clientKey.public).kind).toBe('unsupported')

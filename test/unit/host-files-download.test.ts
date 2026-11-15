@@ -66,9 +66,9 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
   for (const api of apis.splice(0)) api.dispose()
-  downloads.dropAll()
+  await downloads.dropAll()
   rmSync(root, { recursive: true, force: true })
 })
 

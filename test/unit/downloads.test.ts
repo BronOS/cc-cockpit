@@ -538,10 +538,11 @@ describe('streams', () => {
     expect(d.tokenCount).toBe(0)
     expect(b.destroyed).toBe(false)
     await d.start({ ...VIEW, deviceId: 'dev-b' }, rel('log'), false)
-    d.dropAll()
+    const dropped = d.dropAll()
     expect(await servingB).toMatchObject({ status: 'sent', completed: false, cut: 'dropped' })
     expect(() => readZip(b.body)).toThrow()
     expect(d.tokenCount).toBe(0)
+    await dropped
     expect(d.liveCount).toBe(0)
     expect(failures).toEqual([])
   })

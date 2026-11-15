@@ -207,6 +207,8 @@ interface Live {
   kind: DownloadKind
   controller: AbortController
   res: DownloadResponse
+  /** Settles once the stream is over and out of `live` (its file closed): what `dropAll` waits for. */
+  ended: Promise<void>
 }
 
 /** Why main ended a live response itself (a revoke, a disconnect, the gateway's stop). */
@@ -529,7 +531,14 @@ export class Downloads {
       if (consumed || gone) return { status: 'refused', reason: gone ? 'the browser went away' : problem }
       return refuse(problem)
     }
-    const live: Live = { deviceId: token.view.deviceId, kind: resolved.kind, controller: new AbortController(), res }
+    let ended!: () => void
+    const live: Live = {
+      deviceId: token.view.deviceId,
+      kind: resolved.kind,
+      controller: new AbortController(),
+      res,
+      ended: new Promise<void>((resolve) => (ended = resolve))
+    }
     try {
       res.writeHead(200, resolved.kind === 'file' ? { ...headers(resolved.name), 'Content-Length': String(size) } : headers(resolved.name))
     } catch (err) {
@@ -542,6 +551,7 @@ export class Downloads {
       return await this.stream(token, resolved, live, handle, size)
     } finally {
       this.live.delete(live)
+      ended()
     }
   }
 
@@ -570,10 +580,21 @@ export class Downloads {
     return ended
   }
 
-  /** Everything ended and every link dropped (the gateway stopped). */
-  dropAll(): void {
+  /**
+   * Everything ended and every link dropped (the gateway stopped). The abort is synchronous; the
+   * promise settles once every stream is over (its pipeline unwound, its file closed, out of `live`),
+   * so a stop that awaits it leaves nothing behind. Awaiting the client's socket close is not that: the
+   * browser sees the cut before this side's pipeline has rejected and its `handle.close()` has run (a
+   * full test run under load showed `liveCount` still 1 after the client's close).
+   */
+  dropAll(): Promise<void> {
     this.tokens.clear()
-    for (const live of this.live) this.drop(live)
+    const ended: Array<Promise<void>> = []
+    for (const live of this.live) {
+      this.drop(live)
+      ended.push(live.ended)
+    }
+    return Promise.all(ended).then(() => undefined)
   }
 
   /** Live responses now (tests, a status line). */

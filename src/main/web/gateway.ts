@@ -318,6 +318,24 @@ function readBody(req: IncomingMessage, max: number): Promise<string | undefined
 }
 
 /** Whether two plans name the same TLS files (both none counts as the same). */
+/** `done`, or `ms` passed, whichever is first; never rejects. */
+function graceful(done: Promise<void>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref()
+    done.then(
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      () => {
+        clearTimeout(timer)
+        resolve()
+      }
+    )
+  })
+}
+
 function sameTls(a: OkPlan, b: OkPlan): boolean {
   return a.tls?.certPath === b.tls?.certPath && a.tls?.keyPath === b.tls?.keyPath
 }
@@ -651,7 +669,7 @@ export class WebGateway {
     // download too (closeAllConnections below would cut the responses anyway; this also drops the
     // unused links, which must not work on the next listener).
     this.deps.pages?.tokens.clear()
-    this.deps.downloads?.dropAll()
+    const downloadsEnded = this.deps.downloads?.dropAll()
     if (wss) {
       const clients = [...wss.clients]
       if (notice === undefined || clients.length === 0) {
@@ -674,6 +692,9 @@ export class WebGateway {
       }
       wss.close()
     }
+    // The dropped downloads are over (pipelines unwound, files closed) before the stop resolves, so a
+    // stop leaves no stream behind; capped so a file system that never answers a close cannot hold it.
+    if (downloadsEnded) await graceful(downloadsEnded, CLOSE_GRACE_MS)
     if (!server) return
     await new Promise<void>((resolve) => {
       // Keep-alive connections would hold close() open until they time out.

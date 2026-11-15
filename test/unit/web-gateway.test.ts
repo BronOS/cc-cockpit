@@ -1534,9 +1534,12 @@ describe('downloads (/d/)', () => {
     expect(res.headers['content-security-policy']).toBe("sandbox; default-src 'none'")
     expect(res.headers['x-frame-options']).toBeUndefined()
     expect(res.headers['location']).toBeUndefined()
-    expect(downloadLines(s)).toEqual([
-      expect.objectContaining({ event: 'download', device: s.deviceId, name: 'Phone', file: 'report.pdf', bytes: 11, detail: 'completed' })
-    ])
+    // The line is written once serve's stream has unwound, which can be after the client read the end.
+    await vi.waitFor(() =>
+      expect(downloadLines(s)).toEqual([
+        expect.objectContaining({ event: 'download', device: s.deviceId, name: 'Phone', file: 'report.pdf', bytes: 11, detail: 'completed' })
+      ])
+    )
     // A second GET: the token is used up; a bare 204 and nobody told (that view is downloading).
     const again = await get(s, token)
     expect(again.status).toBe(204)
@@ -1638,7 +1641,7 @@ describe('downloads (/d/)', () => {
     expect(sent).toBe('a"b_cdünï.txt')
     expect(res.headers['content-disposition']).toBe(contentDisposition(sent))
     expect(res.headers['content-disposition']).toBe(`attachment; filename="a\\"b_cd_n_.txt"; filename*=UTF-8''a%22b_cd%C3%BCn%C3%AF.txt`)
-    expect(downloadLines(s)[0]).toMatchObject({ file: sent })
+    await vi.waitFor(() => expect(downloadLines(s)[0]).toMatchObject({ file: sent }))
   })
 
   it('a revoke mid-stream cuts the download and drops the device`s other links', async () => {
@@ -1685,7 +1688,7 @@ describe('downloads (/d/)', () => {
     const res = await http(s.port, { path: `/d/${await mint(s, 'f', 'none')}`, headers: { Host: s.host } })
     expect(res.status).toBe(200)
     expect(res.body).toBe('ok')
-    expect(downloadLines(s)).toEqual([expect.objectContaining({ device: 'none', name: 'No sign-in', detail: 'completed' })])
+    await vi.waitFor(() => expect(downloadLines(s)).toEqual([expect.objectContaining({ device: 'none', name: 'No sign-in', detail: 'completed' })]))
     // A signed-in device's link in None mode still needs its cookie.
     const own = await mint(s, 'f')
     expect((await http(s.port, { path: `/d/${own}`, headers: { Host: s.host } })).status).toBe(204)
@@ -1703,9 +1706,10 @@ describe('downloads (/d/)', () => {
     expect(await stalled.started).toBe(200)
     await mint(s, 'big')
     await s.gw.stop()
-    expect(await stalled.ended()).toBe('cut')
-    expect(s.downloads.tokenCount).toBe(0)
+    // The stop waited for the stream to unwind, not only for the sockets to close.
     expect(s.downloads.liveCount).toBe(0)
+    expect(s.downloads.tokenCount).toBe(0)
+    expect(await stalled.ended()).toBe('cut')
   })
 
   it('a download`s connection leaves the sign-in budget once its 200 goes out', async () => {
