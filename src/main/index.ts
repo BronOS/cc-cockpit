@@ -158,7 +158,7 @@ import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import { registerCliHandlers, registerDownloadHandler, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { registerWebHandlers, webHandlerDeps } from './socket/web-handlers'
 import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
@@ -880,6 +880,8 @@ function start(server: boolean): void {
       closeAsks.windowClosed(windowId)
       linkAsks.windowClosed(windowId)
       trashAsks.windowClosed(windowId)
+      // Its `ccc download` offers end (settled for every view) and an accepted one's Try again with them.
+      downloads.windowClosed(windowId)
       // Its in-page notices end as dismissed (server mode; a plugin waiting on one is told now).
       pageNotices?.windowClosed(windowId)
     },
@@ -2098,6 +2100,8 @@ function start(server: boolean): void {
   // revoke, disconnect, None mode ending and its stop. The hooks reach one browser view each
   // (ViewRegistry.toView), never the desktop page or the hidden page: a link is for the device that
   // view is on, and `toView` false (the view went meanwhile) drops the token unused.
+  // `ccc download`'s offers go to the window's browser views only (toBrowserViews: never the desktop
+  // page or the hidden page), held in server mode while none is attached and replayed in `ready`.
   const downloads = new Downloads({
     hooks: {
       start: (viewId, payload) => isRemoteViewId(viewId) && views.toView(viewId, 'downloads.start', payload),
@@ -2105,6 +2109,12 @@ function start(server: boolean): void {
         if (isRemoteViewId(viewId)) views.toView(viewId, 'downloads.failed', payload)
       }
     },
+    offers: {
+      send: (windowId, offer) => views.toBrowserViews(windowId, 'downloads.offer', offer) > 0,
+      settled: (windowId, requestId) => void views.toBrowserViews(windowId, 'downloads.settled', { requestId })
+    },
+    server,
+    hasBrowserView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     dataDir,
@@ -2278,6 +2288,12 @@ function start(server: boolean): void {
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
     openOverlay
+  })
+  // `ccc download` (design-download.md §2.2): an offer to the tab's window's browser views; the
+  // server already refused a tokenless caller (protocol.ts WINDOW_TOKEN_COMMANDS).
+  registerDownloadHandler(socket, {
+    windowIdOf: (projectId) => windows.windowIdOf(projectId),
+    offer: (caller, abs) => downloads.offer(caller, abs)
   })
 
   // `ccc web` (socket/web-handlers.ts, design-web.md §9.4): a shell on the server only (any token
@@ -3105,7 +3121,7 @@ function start(server: boolean): void {
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot(
         // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
-        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
+        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, downloadOffers: downloads, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
         ctx
       ),
     mirror: terminalMirror,
@@ -3196,7 +3212,15 @@ function start(server: boolean): void {
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
     closeAnswer: (windowId, viewId, requestId, answer) => closeAsks.answer(windowId, viewId, requestId, answer),
     linkAnswer: (windowId, requestId, allow, remote) => linkAsks.answer(windowId, requestId, allow, { remote }),
-    trashAnswer: (windowId, requestId, move) => trashAsks.answer(windowId, requestId, move)
+    trashAnswer: (windowId, requestId, move) => trashAsks.answer(windowId, requestId, move),
+    // The accepting view's device is main's own (the connection's sign-in), as for ctx.files.download:
+    // the token's GET must come with that device's cookie, and a Try again is taken from it only.
+    downloadAccept: async (windowId, viewId, requestId, all) => {
+      const deviceId = webConnections.deviceIdOf(viewId, windowId)
+      if (deviceId === undefined) return false
+      return downloads.accept({ viewId, windowId, deviceId }, requestId, all)
+    },
+    downloadDecline: (windowId, requestId) => downloads.decline(windowId, requestId)
   })
 
   // e2e only (the harness sets CC_COCKPIT_TEST=1, never a packaged app): a dynamic import, so no other run loads it.

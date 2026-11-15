@@ -1059,6 +1059,14 @@ describe('registerSessionHandlers', () => {
       closeAnswer: (windowId, viewId, requestId, answer) => {
         calls.push(['closeAnswer', windowId, viewId, requestId, answer])
         return true
+      },
+      downloadAccept: async (windowId, viewId, requestId, all) => {
+        calls.push(['downloadAccept', windowId, viewId, requestId, all])
+        return true
+      },
+      downloadDecline: (windowId, requestId) => {
+        calls.push(['downloadDecline', windowId, requestId])
+        return true
       }
     })
     return { ipc, router, calls }
@@ -1118,6 +1126,31 @@ describe('registerSessionHandlers', () => {
     await expect(ipc.invoke('trash.answer', 12, [{ requestId: 3, move: true }])).rejects.toThrow()
     await expect(ipc.invoke('trash.answer', 13, [{ requestId: 'trash-1', move: true }])).rejects.toThrow()
     expect(calls).toHaveLength(2)
+  })
+
+  // design-download.md §6: Download (`adapted`) only from a remote view, with the sender's window and
+  // view; the desktop page (where the file already is) answers false without reaching main.
+  it('downloads.accept is taken only from a remote view, with its own window and view, and checks the shape', async () => {
+    const { ipc, router, calls } = sessionsSetup()
+    await expect(ipc.invoke('downloads.accept', 12, [{ requestId: 'offer-1', all: false }])).resolves.toBe(false)
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await expect(router.dispatch(web, 'downloads.accept', { requestId: 'offer-1', all: true, windowId: 2, viewId: 'web:9' })).resolves.toBe(true)
+    expect(calls).toEqual([['downloadAccept', 1, 'web:4', 'offer-1', true]])
+    await expect(router.dispatch(web, 'downloads.accept', { requestId: 'offer-1', all: 'yes' })).rejects.toThrow()
+    await expect(router.dispatch(web, 'downloads.accept', { requestId: 1, all: true })).rejects.toThrow()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('downloads.answer declines for the sender’s window from any view, never one from the payload', async () => {
+    const { ipc, router, calls } = sessionsSetup()
+    await expect(ipc.invoke('downloads.answer', 12, [{ requestId: 'offer-1', windowId: 1 }])).resolves.toBe(true)
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    await router.dispatch(web, 'downloads.answer', { requestId: 'offer-2', windowId: 2 })
+    expect(calls).toEqual([
+      ['downloadDecline', 2, 'offer-1'],
+      ['downloadDecline', 1, 'offer-2']
+    ])
+    await expect(router.dispatch(web, 'downloads.answer', { requestId: 3 })).rejects.toThrow()
   })
 
   it('answers and cancels for the sender’s project, ignoring any project in the payload', async () => {

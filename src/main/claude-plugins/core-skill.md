@@ -29,6 +29,8 @@ Rules:
 - `ccc` exits 0 and prints nothing when the app is not running: no output means the app is
   closed, not that the command worked.
 - Never type into another tab's session; other tabs and windows are not yours.
+- Offer an artifact the person asked for once with `ccc download <path>`; it fails on a local
+  desktop, where the file is already theirs. They decide in the browser; you are not told the answer.
 - A plugin runs with full Node access: linking or installing one is the user's decision, never
   yours alone.
 - Reviewing or writing a plugin page: check it uses the components and follows the rules of `ccc guide style`

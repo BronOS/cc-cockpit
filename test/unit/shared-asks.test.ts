@@ -4,7 +4,7 @@ import { SharedAsks } from '../../src/main/asks/shared-asks'
 type Info = { name: string }
 type Answer = 'yes' | 'no' | 'nobody'
 
-function setup(send: boolean | (() => boolean) = true, timeoutMs = 1000) {
+function setup(send: boolean | (() => boolean) = true, timeoutMs = 1000, hold?: boolean) {
   const sent: Array<[number, Info & { requestId: string }]> = []
   const settled: Array<[number, string]> = []
   const asks = new SharedAsks<Info, Answer>({
@@ -17,7 +17,8 @@ function setup(send: boolean | (() => boolean) = true, timeoutMs = 1000) {
     },
     prefix: 'thing',
     refused: 'nobody',
-    timeoutMs
+    timeoutMs,
+    ...(hold === undefined ? {} : { hold })
   })
   return { asks, sent, settled }
 }
@@ -117,5 +118,42 @@ describe('SharedAsks (the shared-ask core)', () => {
     ])
     list[0]!.name = 'changed'
     expect(asks.pendingFor(1)[0]!.name).toBe('a')
+  })
+
+  it('hold: no view now keeps the ask for a view that joins; the timeout still ends it', async () => {
+    vi.useFakeTimers()
+    const { asks, settled } = setup(false, 5000, true)
+    const p = asks.ask(1, { name: 'held' })
+    expect(asks.size).toBe(1)
+    expect(asks.pendingFor(1)).toEqual([{ name: 'held', requestId: 'thing-1' }])
+    expect(settled).toEqual([])
+    // A view that joined (ready's replay) answers it.
+    expect(asks.answer(1, 'thing-1', 'yes')).toBe(true)
+    await expect(p).resolves.toBe('yes')
+    const late = asks.ask(1, { name: 'late' })
+    vi.advanceTimersByTime(5000)
+    await expect(late).resolves.toBe('nobody')
+  })
+
+  it('hold does not keep an ask whose send threw (a broken hook, not an absent view)', async () => {
+    const asks = new SharedAsks<Info, Answer>({
+      hooks: {
+        send: () => {
+          throw new Error('broken')
+        }
+      },
+      prefix: 'thing',
+      refused: 'nobody',
+      timeoutMs: 1000,
+      hold: true
+    })
+    await expect(asks.ask(1, { name: 'a' })).resolves.toBe('nobody')
+    expect(asks.size).toBe(0)
+  })
+
+  it('without hold, no view settles at once (every ask but the server-mode download offer)', async () => {
+    const { asks } = setup(false, 5000, false)
+    await expect(asks.ask(1, { name: 'a' })).resolves.toBe('nobody')
+    expect(asks.size).toBe(0)
   })
 })

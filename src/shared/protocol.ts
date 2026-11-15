@@ -70,11 +70,13 @@ export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions']
  * the way `--project <path>` does, and grants nothing `--project` does not already grant any
  * local process; it only spares naming the folder and keeps naming the right window after the
  * shell cd's elsewhere. So: the TOKENLESS_COMMANDS, plus `plugin.cli.list` (behind `ccc help`,
- * which lists the window's plugin commands wherever the window is known). Never `hook` or
+ * which lists the window's plugin commands wherever the window is known), and `download`
+ * (design-download.md §1.1: it offers to the browser views of the window the tab is in; never
+ * tokenless, where no window anybody looks at is named). Never `hook` or
  * `session.*`: a shell tab is not a Claude session, and a hook or a note from one must not create
  * or touch a status entry. Fixed here for the same reason as TOKENLESS_COMMANDS.
  */
-export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 'plugin.cli.list']
+export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 'plugin.cli.list', 'download']
 
 /**
  * `ccc web` (design-web.md §9.4): web access settings from a shell on the server. Answered only for

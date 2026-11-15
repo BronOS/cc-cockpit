@@ -24,6 +24,9 @@
 //     must be enabled in that project; the host manager then checks it runs in the window.
 //   - plugin.config: project-scope settings are the caller's project's; `args` names only the
 //     plugin, the scope and the values.
+//   - download: a Claude tab's or a window token's project and its open window only (never
+//     tokenless: a `--project` caller names no window anybody looks at); `args` names only the path,
+//     which files/downloads.ts resolves and checks.
 // Everything in `args` is untrusted JSON: each field's type is checked here, and text is passed on
 // as one value, never through a shell.
 //
@@ -579,6 +582,40 @@ export function panelShowHandler(options: PanelShowOptions): Handler {
     if (!options.showPanel(projectId, `${plugin}/${panel}`)) throw new Error(`plugin ${plugin} has no panel "${panel}" in this project`)
     return null
   }
+}
+
+/** What `download` needs from main (index.ts binds files/downloads.ts and the window table). */
+export interface DownloadCliOptions {
+  /** The project window that is open now. */
+  windowIdOf(projectId: string): number | undefined
+  /** Downloads.offer: throws with the exit-1 text; answers at once, never waits for the click. */
+  offer(caller: { projectId: string; windowId: number }, abs: string): Promise<{ text: string }>
+}
+
+/** What a tokenless `ccc download` is told (it reaches here only if the server's tables ever widened). */
+export const DOWNLOAD_TAB_ONLY_TEXT = 'run it in a tab of the project'
+
+/**
+ * `download { path }` (design-download.md §1.1, §2.2): offer a file or folder to the person's browser
+ * views. The caller must be a tab of the project (a Claude tab or a window token); the window is the
+ * caller's project's open one. Prints the offer's line (exit 0), or the refusal (exit 1).
+ */
+export function downloadHandler(options: DownloadCliOptions): Handler {
+  return async (args, caller) => {
+    if (caller.kind !== 'session' && caller.kind !== 'window') throw new Error(`download: ${DOWNLOAD_TAB_ONLY_TEXT}`)
+    const path = args.path
+    if (typeof path !== 'string' || path === '' || path.includes('\0') || !isAbsolute(path)) {
+      throw new Error('download needs an absolute path')
+    }
+    const windowId = options.windowIdOf(caller.projectId)
+    if (windowId === undefined) throw new Error(NOT_OPEN)
+    const { text } = await options.offer({ projectId: caller.projectId, windowId }, path)
+    return { text }
+  }
+}
+
+export function registerDownloadHandler(server: { handle(cmd: string, handler: Handler): void }, options: DownloadCliOptions): void {
+  server.handle('download', downloadHandler(options))
 }
 
 export function registerPanelShowHandler(server: { handle(cmd: string, handler: Handler): void }, options: PanelShowOptions): void {

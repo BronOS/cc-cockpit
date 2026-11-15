@@ -509,6 +509,12 @@ export interface WebSnapshot {
    */
   trashAsks?: Array<IpcEventMap['trash.ask']>
   /**
+   * `ccc download` offers still waiting (files/downloads.ts pendingOffers; held in server mode while no
+   * browser was attached), replayed to the shell's `downloads.offer` listener the same way;
+   * `downloads.settled` takes them down. Absent (an older fixture) reads as none.
+   */
+  downloadOffers?: Array<IpcEventMap['downloads.offer']>
+  /**
    * In-page notices still up (server mode, notifier.ts PageNoticeBackend.pendingFor: the window's and
    * the app-wide ones, oldest first), replayed to the shell's `notices.show` listener like `closeAsks`;
    * `notices.gone` takes them down. Absent (an older fixture, the desktop) reads as none.

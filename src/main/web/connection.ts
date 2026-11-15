@@ -155,6 +155,8 @@ export interface SnapshotSources {
   linkAsks: { pendingFor(windowId: number): WebSnapshot['linkAsks'] }
   /** A plain read of the window's pending Move to Trash confirms (TrashAsks.pendingFor). Absent: none. */
   trashAsks?: { pendingFor(windowId: number): NonNullable<WebSnapshot['trashAsks']> }
+  /** A plain read of the window's waiting `ccc download` offers (Downloads.pendingOffers). Absent: none. */
+  downloadOffers?: { pendingOffers(windowId: number): NonNullable<WebSnapshot['downloadOffers']> }
   /** A plain read of the in-page notices for the window (PageNoticeBackend.pendingFor, server mode). Absent: none. */
   notices?: { pendingFor(windowId: number): NonNullable<WebSnapshot['notices']> }
   /** A plain read of the window's pending plugin sign-ins (PluginOAuth.pendingFor, server mode only). Absent: none. */
@@ -174,6 +176,7 @@ export function windowSnapshot(sources: SnapshotSources, { windowId, projectId }
     closeAsks: sources.closeAsks.pendingFor(windowId),
     linkAsks: sources.linkAsks.pendingFor(windowId),
     trashAsks: sources.trashAsks?.pendingFor(windowId) ?? [],
+    downloadOffers: sources.downloadOffers?.pendingOffers(windowId) ?? [],
     notices: sources.notices?.pendingFor(windowId) ?? [],
     signIns: sources.signIns?.pendingFor(windowId) ?? [],
     server: sources.server === true

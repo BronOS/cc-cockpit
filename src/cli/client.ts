@@ -196,6 +196,12 @@ export const SESSION_START_NOTE =
 export const CONNECT_TIMEOUT_MS = 2000
 /** How long a command that does not wait for the user may wait for main's reply. */
 export const REPLY_TIMEOUT_MS = 10_000
+/**
+ * `ccc download`'s wait for main's reply: it never waits for the person's click (main answers once
+ * the offer is out), but a folder is counted first, a walk bounded by DOWNLOAD_WALK_MS (10 s), which
+ * the plain 10 s reply wait would cut off just as it finished. Bounded all the same.
+ */
+export const DOWNLOAD_REPLY_TIMEOUT_MS = 30_000
 
 export interface Output {
   stdout(text: string): void
@@ -291,6 +297,13 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
     case 'notify':
       cmd = 'notify'
       args = { text: command.text }
+      break
+    case 'download':
+      // Only from a tab of the project (a Claude tab's or a window token): a tokenless caller names no
+      // window anybody looks at (design-download.md §1.1). main refuses it again (protocol.ts).
+      if (!token) return { error: 'download: run it in a tab of the project' }
+      cmd = 'download'
+      args = { path: abs(command.path) }
       break
     case 'overlay': {
       cmd = 'overlay'
@@ -462,7 +475,9 @@ export async function runCommand(
       command.kind === 'plugin-unlink' ||
       (command.kind === 'plugin-config' && (command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0))
         ? undefined
-        : REPLY_TIMEOUT_MS
+        : command.kind === 'download'
+          ? DOWNLOAD_REPLY_TIMEOUT_MS
+          : REPLY_TIMEOUT_MS
     const trip = await roundTrip(socket, encodeRequest(request), waits)
     warnOnVersionMismatch(trip, out)
     if ('closed' in trip) {
@@ -738,6 +753,7 @@ function formatResult(command: UserCommand, result: unknown): string {
   }
   if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
   if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`
+  if (command.kind === 'download') return `${plainLine(field(result, 'text'))}\n`
   if (command.kind === 'plugin-config') {
     if (command.json) return `${JSON.stringify(result)}\n`
     return command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0

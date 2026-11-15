@@ -111,8 +111,13 @@ describe('REMOTE_CLASS drift', () => {
   })
 
   // Downloads (design-download.md §6): sent to one browser view only, the one the link is for.
-  it.each(['downloads.start', 'downloads.failed'])('%s is yes', (channel) => {
+  it.each(['downloads.start', 'downloads.failed', 'downloads.offer', 'downloads.settled', 'downloads.answer'])('%s is yes', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
+
+  // Download in a `ccc download` offer: only from a remote view of the offer's window (the router's view.remote).
+  it('downloads.accept is adapted', () => {
+    expect(REMOTE_CLASS['downloads.accept']).toBe('adapted')
   })
 })
 

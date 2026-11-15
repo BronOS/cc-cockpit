@@ -34,6 +34,23 @@ stderr).
   browsers instead: those with the caller's project open (a tab's, or `--project`), or every
   browser when it names no project; a project with no open window shows it nowhere. It goes after
   10 minutes if nobody dismisses it.
+- `ccc download <path>` offers a file, or a folder as a `.zip`, to the person's device: a dialog in
+  every browser view of this project's window (a plain browser, server mode's browsers, the desktop's
+  remote window) shows the full path, its size and any warning, and the person clicks Download or
+  Cancel there; the first answer wins and you are not told which. Only from a tab of the project
+  (a Claude tab or a shell tab; refused outside one, "run it in a tab of the project"). The path is
+  made absolute against the current folder. Inside the project anything goes (a link downloads its
+  target under the link's name); outside it a path is refused when it or the file it leads to is in
+  a hidden folder of the home, `/proc`, `/sys`, `/dev` or `/run`; the app's data folder is refused
+  everywhere, and `/` or the home itself cannot be a zip. A folder's zip leaves out symlinks,
+  special files, and `.git` and `node_modules` below it (the person may include those in the
+  dialog), and is limited to 2 GiB of files and 20,000 entries. Answers at once, exit 0:
+  `offered report.pdf (2.3 MB) to the browser views of this project; the person decides`, or in
+  server mode with no browser attached `...; no browser shows this project now; the offer waits 10
+  min`. Exit 1 for a refused path, a folder too large, a desktop window with no browser view
+  attached ("this project is on this computer: <path>": the file is already there), or the limits
+  (3 offers waiting and 10 offers per 10 minutes per window). Offer an artifact the person asked
+  for, once.
 - `ccc [--project <path>] <plugin command> [args...]` runs a command a plugin enabled in this
   project adds. `ccc help` inside a tab lists them; `ccc <plugin command> --help` (a leading `--help` or `-h`; the plugin never receives it) prints its usage
   without running it. Main answers an unknown command, a plugin that is not enabled here or not

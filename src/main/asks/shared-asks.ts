@@ -7,8 +7,8 @@
 // machinery, not a copy: what differs per ask is who may give which answer (LinkAsks refuses a
 // remote Allow on the desktop), which the owner checks before it calls `answer` here.
 //
-// Never answers by itself with anything but `refused`: no view took the ask, a closed window, a
-// vanished caller (`signal`) and the wait running out all settle with it. The wait must end (a window
+// Never answers by itself with anything but `refused`: no view took the ask (unless `hold`), a closed
+// window, a vanished caller (`signal`) and the wait running out all settle with it. The wait must end (a window
 // can sit unattended overnight), so every ask carries a timeout.
 //
 // No Electron import: the hooks are functions (index.ts posts through the ViewRegistry), so vitest
@@ -29,6 +29,13 @@ export interface SharedAskOptions<Info, Answer> {
   /** The answer when nobody gave one (timeout, abort, closed window, no view). */
   refused: Answer
   timeoutMs: number
+  /**
+   * `send` returning false does not settle: the ask waits its timeout for a view to join and find it
+   * in `ready` (`pendingFor`). Only `ccc download`'s offers in server mode use it (design-download.md
+   * §2.2): a phone's socket drops while it sleeps, and the offer must still be there when it wakes.
+   * Off for every other ask, where no view means nobody can answer now.
+   */
+  hold?: boolean
 }
 
 interface Pending<Info, Answer> {
@@ -59,13 +66,14 @@ export class SharedAsks<Info extends object, Answer> {
         entry.offAbort = () => signal.removeEventListener('abort', onAbort)
       }
       this.pending.set(requestId, entry)
-      let sent: boolean
+      // A send that threw is a broken hook, not "no view now": settled even under `hold`.
+      let sent: boolean | 'threw'
       try {
         sent = this.options.hooks.send(windowId, entry.info)
       } catch {
-        sent = false
+        sent = 'threw'
       }
-      if (!sent) this.settle(requestId, this.options.refused)
+      if (sent === 'threw' || (!sent && this.options.hold !== true)) this.settle(requestId, this.options.refused)
     })
   }
 

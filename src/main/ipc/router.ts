@@ -1691,6 +1691,14 @@ export interface SessionHandlerDeps {
    * of the window wins; false for an ask of another window, an unknown or a settled one.
    */
   trashAnswer(windowId: number, requestId: string, move: boolean): boolean
+  /**
+   * Download in a `ccc download` offer's dialog (Downloads.accept): `viewId` is the sender, already
+   * known to be a remote view; main finds its device and checks the offer's window and, for a Try
+   * again, the accepting device. Absent: refused.
+   */
+  downloadAccept?(windowId: number, viewId: ViewId, requestId: string, all: boolean): Promise<boolean>
+  /** Cancel in that dialog (Downloads.decline): settles the offer for every view of the window. Absent: refused. */
+  downloadDecline?(windowId: number, requestId: string): boolean
 }
 
 /**
@@ -1725,6 +1733,27 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     if (typeof requestId !== 'string') throw new Error('trash.answer: requestId must be a string')
     if (typeof move !== 'boolean') throw new Error('trash.answer: move must be a boolean')
     return deps.trashAnswer(ctx.windowId, requestId, move)
+  })
+
+  // `adapted` (design-download.md §6): Download in a `ccc download` offer is taken only from a remote
+  // view (`view.remote`, main's own binding), never the desktop page or server mode's hidden page (the
+  // file is already on that computer, and nobody sits at the hidden page); the window, the view and
+  // its device are the sender's, never the payload's. Downloads.accept checks the offer's window and,
+  // for a Try again, the accepting device.
+  router.handleProject('downloads.accept', async (ctx, payload, view) => {
+    const { requestId, all } = fields('downloads.accept', payload)
+    if (typeof requestId !== 'string') throw new Error('downloads.accept: requestId must be a string')
+    if (typeof all !== 'boolean') throw new Error('downloads.accept: all must be a boolean')
+    if (!view.remote || !deps.downloadAccept) return false
+    return deps.downloadAccept(ctx.windowId, view.viewId, requestId, all)
+  })
+
+  // `yes`: Cancel declines an offer of the sender's own window (ctx), for every view; one "no" is the
+  // person's answer, and Claude may ask again.
+  router.handleProject('downloads.answer', (ctx, payload) => {
+    const { requestId } = fields('downloads.answer', payload)
+    if (typeof requestId !== 'string') throw new Error('downloads.answer: requestId must be a string')
+    return deps.downloadDecline?.(ctx.windowId, requestId) ?? false
   })
 
   // The window and the view are the sender's (ctx, view), never values in the payload: only a view

@@ -21,7 +21,7 @@ import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
-import type { DownloadFailed, DownloadStart } from './downloads'
+import type { DownloadAccept, DownloadAnswer, DownloadFailed, DownloadOffer, DownloadSettled, DownloadStart } from './downloads'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
@@ -1141,6 +1141,17 @@ export interface IpcInvokeMap {
    * answer either way: the Trash is recoverable and the person in the browser may be the one who asked.
    */
   'trash.answer': { req: { requestId: string; move: boolean }; res: boolean }
+  /**
+   * Download in a `downloads.offer` dialog (`ccc download`, design-download.md §2.2), with the include
+   * choice. Main takes the view, its window and its device from the connection, never the payload:
+   * accepted only from a browser view of the offer's window (the desktop and hidden page are refused),
+   * it settles the offer for every view and starts the download for this view alone
+   * (`downloads.start`); an offer already accepted is a Try again, taken only from the accepting
+   * device. False when refused or the start failed (then `downloads.failed` says why).
+   */
+  'downloads.accept': { req: DownloadAccept; res: boolean }
+  /** Cancel in a `downloads.offer` dialog: declines it for every view of the sender's window; false for an unknown or settled id. */
+  'downloads.answer': { req: DownloadAnswer; res: boolean }
 
   // Zones.
   /** The sender's project layout, reconciled with the panels that exist. Plain query. */
@@ -1803,6 +1814,14 @@ export interface IpcEventMap {
    */
   'downloads.failed': DownloadFailed
   /**
+   * A `ccc download` offer (design-download.md §2.2, §2.3): the download dialog in every browser view of
+   * the window (`ViewRegistry.toBrowserViews`, never the desktop page or the hidden page), replayed in
+   * `ready.downloadOffers`; first answer wins.
+   */
+  'downloads.offer': DownloadOffer
+  /** A `downloads.offer` is over (accepted or declined in some view, run out, window closed): take its dialog down. */
+  'downloads.settled': DownloadSettled
+  /**
    * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
    * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
    * Sent only to the view that asked; `url` is http(s), checked by main. In server mode a link with no
@@ -1964,6 +1983,8 @@ export const INVOKE_CHANNELS = [
   'sessions.closeAnswer',
   'links.answer',
   'trash.answer',
+  'downloads.accept',
+  'downloads.answer',
   'layout.get',
   'layout.set',
   'commands.list',
@@ -2118,6 +2139,8 @@ export const EVENT_CHANNELS = [
   'trash.settled',
   'downloads.start',
   'downloads.failed',
+  'downloads.offer',
+  'downloads.settled',
   'app.linkNotice',
   'oauth.signInEnded',
   'settingsPage.held',
@@ -2253,6 +2276,15 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // that view may use and a reason. The desktop page never gets one (main's toView to a remote id).
   'downloads.start': 'yes',
   'downloads.failed': 'yes',
+  // `ccc download`'s offer: to the window's browser views only (toBrowserViews), and its settle. Cancel
+  // can only decline an offer of the sender's own window (the router's window), so any view may send it.
+  // Download is `adapted`: main takes it only from a remote view of the offer's window (`view.remote`
+  // and the connection's binding and device, never the payload), and a Try again only from the
+  // accepting device (files/downloads.ts accept).
+  'downloads.offer': 'yes',
+  'downloads.settled': 'yes',
+  'downloads.answer': 'yes',
+  'downloads.accept': 'adapted',
   'app.linkNotice': 'yes',
   'oauth.signInEnded': 'yes',
   'project.updated': 'yes',

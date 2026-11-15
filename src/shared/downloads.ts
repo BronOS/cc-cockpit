@@ -117,6 +117,8 @@ export type DownloadOffer = {
   path: string
   /** The real path, when the named one is a link to elsewhere. */
   real?: string
+  /** `downloadName` of what is sent (a folder's `<name>.zip`): what `runnable` was decided on. */
+  name: string
   /** Outside the project (shown in the warning colour). */
   outside: boolean
   /** `runnableByName` matches the name that will be sent ("this file can run programs when opened"). */
@@ -127,6 +129,12 @@ export type DownloadOffer = {
       kind: 'folder'
       /** Without and with `.git` / `node_modules`: the dialog shows both sizes beside its checkbox. */
       counts: { plain: DownloadTotals; all: DownloadTotals }
+      /**
+       * With `.git` / `node_modules` the zip would pass a cap: the counting stopped there, so
+       * `counts.all` is a lower bound and an accept with the include choice is refused.
+       */
+      allTooLarge?: true
+      /** What the plain zip leaves out, by reason. */
       skipped: DownloadSkipped
     }
 )

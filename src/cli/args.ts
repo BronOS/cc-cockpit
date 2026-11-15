@@ -43,6 +43,8 @@ export type Command =
   | { kind: 'overlay'; project?: string; target: OverlayTarget }
   | { kind: 'sessions'; json: boolean }
   | { kind: 'notify'; text: string }
+  /** `ccc download <path>` (design-download.md §1.1): the path as typed; client.ts makes it absolute. */
+  | { kind: 'download'; path: string }
   | { kind: 'help'; command?: string }
   | { kind: 'guide'; topic?: string }
   /**
@@ -206,6 +208,20 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       return text === undefined ? usage('notify needs some text') : { kind: 'notify', text }
     },
     usage: [{ synopsis: ['notify <text>'], text: ['show a system notification'] }]
+  },
+  download: {
+    parse: (rest) => {
+      // No include flag: whether .git and node_modules go along is the person's choice, in the dialog.
+      const [path, ...extra] = rest
+      if (path === undefined || path === '' || extra.length > 0) return usage('download takes one path')
+      return { kind: 'download', path }
+    },
+    usage: [
+      {
+        synopsis: ['download <path>'],
+        text: ["offer a file or folder (as a .zip) to the browsers showing this", 'project; the person decides there (in a tab of the project)']
+      }
+    ]
   },
   guide: {
     parse: (rest) => {

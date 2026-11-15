@@ -28,6 +28,18 @@
 // gateway's stop). A stream outlives its view (a reconnect mints a new view id, and the bytes are already
 // the device's). Limits: DOWNLOAD_STREAMS_PER_DEVICE at once per device, DOWNLOAD_ZIPS_MAX zips app-wide.
 //
+// Offers (`ccc download`, design §2.2): Claude's tab names the window, not the device the person is
+// at, so the offer goes to every browser view of the window through a SharedAsks (one payload per
+// window, replayed in `ready`, first answer wins, `downloads.settled` to the others). In server mode it
+// is held while no browser is attached (`hold`: a phone's socket drops while it sleeps); on a desktop
+// with no browser view it is refused (the file is already where the person is). Download in a view's
+// dialog is `accept`: the view, its window and its device are the connection's (the router's caller),
+// the offer is settled for every view, the target re-walked with the include choice and the Files
+// path's `start` run for that view alone. An accepted offer stays for its remaining life, bound to the
+// accepting device, so the failure notice's Try again is `accept` again from that device only. Limits
+// per window (a window token has no tab id to key on): DOWNLOAD_OFFERS_WAITING_MAX waiting, and
+// DOWNLOAD_OFFERS_MAX per DOWNLOAD_OFFERS_WINDOW_MS. Claude is never told the answer.
+//
 // No Electron (the plan's rule): the views are reached through hooks (index.ts posts through the
 // ViewRegistry), the response is anything with `writeHead` that is Writable (http's ServerResponse).
 import { randomBytes } from 'node:crypto'
@@ -39,6 +51,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { Readable, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import {
+  DOWNLOAD_OFFER_MS,
+  DOWNLOAD_OFFERS_MAX,
+  DOWNLOAD_OFFERS_WAITING_MAX,
+  DOWNLOAD_OFFERS_WINDOW_MS,
   DOWNLOAD_STREAMS_PER_DEVICE,
   DOWNLOAD_TOKEN_MS,
   DOWNLOAD_ZIP_MAX_BYTES,
@@ -48,17 +64,20 @@ import {
   downloadSizeText,
   type DownloadFailed,
   type DownloadKind,
+  type DownloadOffer,
   type DownloadSkipped,
   type DownloadStart,
 } from '../../shared/downloads'
 import { errorText } from '../../shared/error-text'
+import { runnableByName } from '../../shared/runnable-files'
+import { SharedAsks } from '../asks/shared-asks'
 import { dataDirRefused, downloadRootRefused, outsideRefused, type OutsideEnv } from '../../shared/outside-paths'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { within } from '../path-within'
 import { displayPath } from '../plugins/link-request'
 import { MAX_OPEN_PATH_LENGTH } from '../sessions/open-file'
 import { openVerified, verifiedProblemText } from '../verified-read'
-import { countFolder, walkFolder, zipRootName, type WalkFs } from './folder-walk'
+import { countFolder, walkFolder, zipRootName, type FolderCount, type WalkFs } from './folder-walk'
 import { resolveProjectEntry } from './system-files'
 import { zipEntries, ZipCapError, ZIP_CHUNK_BYTES } from './zip-writer'
 
@@ -105,8 +124,41 @@ export interface DownloadsHooks {
   failed(viewId: ViewId, payload: DownloadFailed): void
 }
 
+/** How an offer reaches the window's browser views (index.ts: ViewRegistry.toBrowserViews). */
+export interface DownloadOfferHooks {
+  /** `downloads.offer` to every browser view of the window, never the desktop or hidden page; false when none took it. */
+  send(windowId: number, offer: DownloadOffer): boolean
+  /** `downloads.settled` to every browser view of the window: the offer was answered or ran out. */
+  settled(windowId: number, requestId: string): void
+}
+
+/** An offer's content without its id (SharedAsks adds it): distributed over the file and folder shapes. */
+type OfferInfo = DownloadOffer extends infer T ? (T extends unknown ? Omit<T, 'requestId'> : never) : never
+
+/** What `ccc download` gets back (exit 0): the line it prints. */
+export interface OfferResult {
+  requestId: string
+  text: string
+  /** No browser view took it now (server mode only: held for one to join). */
+  waiting: boolean
+}
+
+interface OfferRecord {
+  windowId: number
+  target: { projectId: string; abs: string }
+  expiresAt: number
+  /** The device whose view accepted it: the only one a Try again is taken from. */
+  acceptedBy?: string
+}
+
 export interface DownloadsDeps {
   hooks: DownloadsHooks
+  /** `ccc download`'s offers. Absent: `offer` refuses (tests of the Files path only). */
+  offers?: DownloadOfferHooks
+  /** Main's server-mode flag: offers are held while no browser is attached, never refused for it. */
+  server?: boolean
+  /** Whether a browser view shows the window now (the desktop's "this project is on this computer"). */
+  hasBrowserView?(windowId: number): boolean
   /** The project's folder (the registry's real path). */
   projectPath(projectId: string): string | undefined
   /** The window open for the project now (WindowManager.windowIdOf). */
@@ -122,6 +174,7 @@ export interface DownloadsDeps {
   walkTimeoutMs?: number
   maxBytes?: number
   maxEntries?: number
+  offerTimeoutMs?: number
 }
 
 /** A response the download is written to: http's ServerResponse, or a test's Writable. */
@@ -169,10 +222,147 @@ export class Downloads {
   private readonly live = new Set<Live>()
   private readonly now: () => number
   private readonly env: OutsideEnv
+  private readonly offerMs: number
+  private readonly offerAsks: SharedAsks<OfferInfo, 'accepted' | 'declined'>
+  /** Every offer not over yet: waiting (in offerAsks) or accepted (until its life ends). */
+  private readonly offers = new Map<string, OfferRecord>()
+  /** Per window, when its recent offers were made (the 10 per 10 min limit). */
+  private readonly offerTimes = new Map<number, number[]>()
+  /** The last offerAsks send: its id and whether a view took it (read right after `ask`, which sends synchronously). */
+  private lastOfferSend: { requestId: string; sent: boolean } | undefined
 
   constructor(private readonly deps: DownloadsDeps) {
     this.now = deps.now ?? Date.now
     this.env = deps.env ?? { home: homedir(), platform: process.platform }
+    this.offerMs = deps.offerTimeoutMs ?? DOWNLOAD_OFFER_MS
+    this.offerAsks = new SharedAsks<OfferInfo, 'accepted' | 'declined'>({
+      hooks: {
+        send: (windowId, info) => {
+          // SharedAsks adds the id to the content, so the payload is exactly a DownloadOffer.
+          const sent = this.deps.offers?.send(windowId, info as DownloadOffer) === true
+          this.lastOfferSend = { requestId: info.requestId, sent }
+          return sent
+        },
+        settled: (windowId, requestId) => this.deps.offers?.settled(windowId, requestId)
+      },
+      prefix: 'offer',
+      refused: 'declined',
+      timeoutMs: this.offerMs,
+      // Only in server mode (design §2.2): on a desktop an offer nobody can see now is refused instead.
+      hold: deps.server === true
+    })
+  }
+
+  /**
+   * `ccc download <abs>` from a tab of the project (`caller`: the token's project and its open window,
+   * main's own tables): the path resolved and checked, a folder counted (both totals), then the offer to
+   * every browser view of the window. Answers at once, never waits for the click; throws with the exit-1
+   * text for a refused path, too large, the desktop with no browser view, and the limits.
+   */
+  async offer(caller: { projectId: string; windowId: number }, abs: string): Promise<OfferResult> {
+    if (!this.deps.offers) throw new Error('downloads are not available')
+    const windowId = caller.windowId
+    // Checked before the walk too, so a flood of offers never costs a walk each.
+    const limit = this.offerLimitProblem(windowId)
+    if (limit) throw new Error(limit)
+    const target = { projectId: caller.projectId, abs }
+    const resolved = await this.resolve(target, windowId)
+    const server = this.deps.server === true
+    const onThisComputer = `this project is on this computer: ${displayPath(resolved.named)}`
+    if (!server && this.deps.hasBrowserView?.(windowId) !== true) throw new Error(onThisComputer)
+    const common = {
+      path: resolved.named,
+      ...(resolved.real !== resolved.named ? { real: resolved.real } : {}),
+      name: resolved.name,
+      outside: resolved.outside,
+      runnable: runnableByName(resolved.name) !== null
+    }
+    let info: OfferInfo
+    if (resolved.kind === 'folder') {
+      const count = await this.countChecked(resolved, displayPath(resolved.named))
+      info = {
+        ...common,
+        kind: 'folder',
+        counts: { plain: { ...count.plain }, all: { ...count.all } },
+        ...(count.allOver !== undefined ? { allTooLarge: true as const } : {}),
+        skipped: { ...count.skipped.plain }
+      }
+    } else {
+      info = { ...common, kind: 'file', size: resolved.size ?? 0 }
+    }
+    // Again after the awaits: two offers counted at once must not both pass a limit of one left.
+    const late = this.offerLimitProblem(windowId)
+    if (late) throw new Error(late)
+
+    this.lastOfferSend = undefined
+    const answered = this.offerAsks.ask(windowId, info)
+    const send = this.lastOfferSend as { requestId: string; sent: boolean } | undefined
+    // Not sent and not held: SharedAsks settled it already. On a desktop that is the last browser view
+    // leaving between the check above and the send: the desktop case after all.
+    if (send === undefined || !this.offerAsks.isPending(windowId, send.requestId)) throw new Error(onThisComputer)
+    const id = send.requestId
+    this.offers.set(id, { windowId, target, expiresAt: this.now() + this.offerMs })
+    this.offerTimes.set(windowId, [...this.recentOffers(windowId), this.now()])
+    void answered.then((answer) => {
+      // Declined, run out, window closed: over. Accepted: kept for a Try again until its life ends.
+      if (answer === 'declined') this.offers.delete(id)
+    })
+    const what = `${resolved.name} (${offerSizeText(info)})`
+    const text = send.sent
+      ? `offered ${what} to the browser views of this project; the person decides`
+      : `offered ${what}; no browser shows this project now; the offer waits ${Math.round(this.offerMs / 60_000)} min`
+    return { requestId: id, text, waiting: !send.sent }
+  }
+
+  /**
+   * Download in a view's dialog (`downloads.accept`, `adapted`): `view` is the connection's (the
+   * router's caller and main's device table), never the payload's. Taken only from a browser view of
+   * the offer's window: a waiting offer is settled for every view and started for this one; an accepted
+   * one is a Try again, taken only from the accepting device within the offer's life. A start that
+   * fails tells this view (`downloads.failed`, the notice with Try again). False when refused or failed.
+   */
+  async accept(view: DownloadView, requestId: string, all: boolean): Promise<boolean> {
+    if (!isRemoteViewId(view.viewId)) return false
+    this.sweepOffers()
+    const record = this.offers.get(requestId)
+    if (!record || record.windowId !== view.windowId) return false
+    if (this.offerAsks.isPending(view.windowId, requestId)) {
+      // Recorded before the answer settles it, so the ask's `then` sees an accepted offer.
+      record.acceptedBy = view.deviceId
+      if (!this.offerAsks.answer(view.windowId, requestId, 'accepted')) return false
+    } else if (record.acceptedBy === undefined || record.acceptedBy !== view.deviceId) {
+      return false
+    }
+    try {
+      await this.start(view, record.target, all === true, requestId)
+      return true
+    } catch (err) {
+      this.deps.hooks.failed(view.viewId, { requestId, reason: errorText(err) })
+      return false
+    }
+  }
+
+  /** Cancel in a view's dialog (`downloads.answer`): settles a waiting offer for every view of the window. */
+  decline(windowId: number, requestId: string): boolean {
+    return this.offerAsks.answer(windowId, requestId, 'declined')
+  }
+
+  /** The offers still waiting in the window, oldest first (`ready`'s `downloadOffers`). Copies. */
+  pendingOffers(windowId: number): DownloadOffer[] {
+    return this.offerAsks.pendingFor(windowId) as DownloadOffer[]
+  }
+
+  /** The window closed: its waiting offers end (settled for every view), its accepted ones with them. */
+  windowClosed(windowId: number): void {
+    this.offerAsks.windowClosed(windowId)
+    for (const [id, record] of this.offers) if (record.windowId === windowId) this.offers.delete(id)
+    this.offerTimes.delete(windowId)
+  }
+
+  /** Offers not over yet, waiting or accepted (tests). */
+  get offerCount(): number {
+    this.sweepOffers()
+    return this.offers.size
   }
 
   /**
@@ -471,7 +661,15 @@ export class Downloads {
   /** The counting pass before a view gets anything: past a cap or the 10 s bound, refused with the counts. */
   private async checkCount(resolved: ResolvedDownload, target: DownloadTarget, includeAll: boolean): Promise<void> {
     const shown = 'rel' in target ? (target.rel === '' ? 'the project folder' : displayPath(target.rel)) : displayPath(resolved.named)
-    let count: Awaited<ReturnType<typeof countFolder>>
+    const count = await this.countChecked(resolved, shown)
+    if (includeAll && count.allOver !== undefined) {
+      throw new Error(`${shown} with .git and node_modules is too large to download: ${this.overText(count.all)}`)
+    }
+  }
+
+  /** Both totals of a folder, or a throw when the plain zip passes a cap or cannot be counted in time. */
+  private async countChecked(resolved: ResolvedDownload, shown: string): Promise<Extract<FolderCount, { ok: true }>> {
+    let count: FolderCount
     try {
       count = await countFolder({
         ...this.walkOptions(resolved, await this.dataDirReal()),
@@ -487,8 +685,31 @@ export class Downloads {
       if (count.problem === 'timeout') throw new Error(`${shown} has too many files to count`)
       throw new Error(`${shown} is too large to download: ${this.overText(count.plain)}`)
     }
-    if (includeAll && count.allOver !== undefined) {
-      throw new Error(`${shown} with .git and node_modules is too large to download: ${this.overText(count.all)}`)
+    return count
+  }
+
+  /** Why the window may not get another offer now (3 waiting, 10 per 10 min), or null. */
+  private offerLimitProblem(windowId: number): string | null {
+    if (this.offerAsks.pendingFor(windowId).length >= DOWNLOAD_OFFERS_WAITING_MAX) {
+      return `${DOWNLOAD_OFFERS_WAITING_MAX} download offers are already waiting in this project; wait for the person to answer them`
+    }
+    if (this.recentOffers(windowId).length >= DOWNLOAD_OFFERS_MAX) {
+      return `${DOWNLOAD_OFFERS_MAX} downloads were offered in this project in the last ${Math.round(DOWNLOAD_OFFERS_WINDOW_MS / 60_000)} minutes; try again later`
+    }
+    return null
+  }
+
+  /** The window's offer times still inside DOWNLOAD_OFFERS_WINDOW_MS. */
+  private recentOffers(windowId: number): number[] {
+    const since = this.now() - DOWNLOAD_OFFERS_WINDOW_MS
+    return (this.offerTimes.get(windowId) ?? []).filter((t) => t > since)
+  }
+
+  /** Accepted offers past their life dropped (a waiting one ends through its ask's own timeout). */
+  private sweepOffers(): void {
+    const now = this.now()
+    for (const [id, record] of this.offers) {
+      if (record.acceptedBy !== undefined && now >= record.expiresAt) this.offers.delete(id)
     }
   }
 
@@ -591,6 +812,13 @@ export class Downloads {
       await handle?.close().catch(() => undefined)
     }
   }
+}
+
+/** "2.3 MB", or for a folder "312 files, 48 MB before compression" (the plain zip's totals). */
+function offerSizeText(info: OfferInfo): string {
+  if (info.kind === 'file') return downloadSizeText(info.size)
+  const n = info.counts.plain.files
+  return `${n.toLocaleString('en-US')} ${n === 1 ? 'file' : 'files'}, ${downloadSizeText(info.counts.plain.bytes)} before compression`
 }
 
 /**

@@ -403,14 +403,15 @@ describe('runCommand against a fake app', () => {
       ['help'],
       ['open', '/p'],
       ['notify', 'hi'],
-      ['sessions']
+      ['sessions'],
+      ['download', 'out/report.pdf']
     ]
     for (const argv of argvs) {
       expect(await run(argv, tab(), Readable.from([]), io, CWD), argv.join(' ')).toBe(0)
     }
     expect(err).toBe('')
     const sent = new Set(app.seen.map((r) => r.cmd))
-    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'panel.show', 'plugin.cli.spec', 'plugin.cli', 'plugin.cli.list', 'open', 'notify', 'sessions']) {
+    for (const cmd of ['overlay', 'plugin.link', 'plugin.unlink', 'plugin.list', 'plugin.config', 'panel.show', 'plugin.cli.spec', 'plugin.cli', 'plugin.cli.list', 'open', 'notify', 'sessions', 'download']) {
       expect(sent.has(cmd), cmd).toBe(true)
     }
     for (const r of app.seen) {
