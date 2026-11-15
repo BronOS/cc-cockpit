@@ -7,6 +7,8 @@ export const ROOM_LOG_MAX_BYTES = 20 * 1024 * 1024
 
 /** The events main logs (design-rooms.md §4); `trimmed` is the line the cap itself appends. */
 export type RoomLogType =
+  | 'create'
+  | 'invite'
   | 'join'
   | 'leave'
   | 'send'
