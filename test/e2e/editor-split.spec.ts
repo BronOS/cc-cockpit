@@ -715,3 +715,53 @@ test('New Claude Tab in Group (Cmd+Alt+T) typed in a wide file pane opens Claude
     await close()
   }
 })
+
+test('Close all with a dirty file: the dialog names it even with the setting off, Cancel keeps the group and the text, Close closes every member', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({
+    env: { CC_COCKPIT_NO_BUNDLED: '' },
+    // No autosave, no save on blur: the typed text stays unsaved while the menu takes the focus.
+    settings: { pluginSettings: { 'cockpit.editor': { autosaveIdleSeconds: 0, autosaveOnBlur: false } } }
+  })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'a.txt'), 'alpha\n')
+    writeFileSync(join(projectDir, 'b.txt'), 'beta\n')
+    await pluginActive(c, 'cockpit.editor')
+    const a = await openFile(c, 'a.txt')
+    const b = await openFile(c, 'b.txt')
+    expect((await place(page, b, a, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const fa = await pageIn(page, 'a.txt')
+    await clickInto(page, a, fa, 'alpha')
+    await page.keyboard.type('Q')
+    await expect(fa.locator('.cm-content')).toContainText('Q')
+    await expect.poll(async () => (await c.hook<Array<{ id: string; dirty?: boolean }>>('tabs', projectDir)).find((t) => t.id === a)?.dirty).toBe(true)
+
+    const closeAll = async (): Promise<void> => {
+      await page.locator('[data-group-handle]').first().click({ button: 'right' })
+      await page.getByRole('menuitem', { name: 'Close all' }).click()
+    }
+    await closeAll()
+    const dialog = page.getByRole('alertdialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('a.txt')
+    await expect(dialog).toContainText('unsaved changes')
+    await expect(dialog.getByRole('button', { name: 'Close all' })).toBeVisible()
+    await expect(dialog.getByText("Don't ask again")).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toHaveCount(0)
+    expect((await tabsOf(page)).map((t) => t.id)).toEqual(expect.arrayContaining([a, b]))
+    expect(await groupFor(page, a)).toBeDefined()
+    await expect(fa.locator('.cm-content')).toContainText('Q')
+
+    await closeAll()
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Close all' }).click()
+    await expect.poll(async () => (await tabsOf(page)).filter((t) => t.id === a || t.id === b).length).toBe(0)
+    expect(readFileSync(join(projectDir, 'a.txt'), 'utf8')).not.toContain('Q')
+  } finally {
+    await close()
+  }
+})

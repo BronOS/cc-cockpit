@@ -589,7 +589,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const closeAll = (): void => {
       for (const t of members) if (stateRef.current.tabs.some((x) => x.id === t.id)) close(t.id)
     }
-    if (!members.some(tabIsRunning)) {
+    // Nothing running and nothing unsaved (here or as main knows it): close at once. An unsaved
+    // member makes the question whatever the setting says (closeGroupQuestion).
+    const dirtyHere = (id: string): boolean => pageFrames().isDirty(id)
+    if (!members.some((t) => tabIsRunning(t) || (t.kind === 'page' && (t.dirty === true || dirtyHere(t.id))))) {
       closeAll()
       return
     }
@@ -598,7 +601,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       .catch(() => true)
       .then((enabled) => {
         if (confirmFor.current !== null || settingsShown.current || overlayOpen.current) return
-        const question = closeGroupQuestion(groupId, groupTitle(g), members, (id) => ownRef.current.get(id)?.status, enabled)
+        const question = closeGroupQuestion(groupId, groupTitle(g), members, (id) => ownRef.current.get(id)?.status, enabled, dirtyHere)
         if (!question) {
           closeAll()
           return
@@ -1060,7 +1063,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       window.cockpit.invoke('settings.confirmTabCloseSet', { value: false }).catch((err: unknown) => setError(ipcErrorMessage(err)))
     }
     if (!doClose || !q.group) return
-    for (const id of q.group.tabIds) if (stateRef.current.tabs.some((t) => t.id === id)) actions.current.closeNow(id)
+    // `discard` for exactly the unsaved members the question listed; the rest close plainly, so one
+    // main still holds unsaved (dirty in another view) is refused and asked about alone.
+    const discard = new Set(q.group.unsaved)
+    for (const id of q.group.tabIds) if (stateRef.current.tabs.some((t) => t.id === id)) actions.current.closeNow(id, undefined, discard.has(id))
   }
   const answerClose = useCallback(
     (tabId: string, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {
@@ -1498,10 +1504,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onCancel={() => endSwitcher(undefined)}
         />
       )}
-      {confirm && confirm.unsaved && isServerView() && (
-        <CloseTabApproval key={confirm.tabId} question={confirm} onAnswer={(choice) => answerClose(confirm.tabId, choice, false)} />
+      {confirm && (confirm.unsaved || (confirm.group && confirm.group.unsaved.length > 0)) && isServerView() && (
+        <CloseTabApproval
+          key={confirm.tabId}
+          question={confirm}
+          onAnswer={(choice) => (confirm.group ? answerGroupClose(confirm, choice, false) : answerClose(confirm.tabId, choice, false))}
+        />
       )}
-      {confirm && !(confirm.unsaved && isServerView()) && (
+      {confirm && !((confirm.unsaved || (confirm.group && confirm.group.unsaved.length > 0)) && isServerView()) && (
         <CloseTabDialog
           key={confirm.tabId}
           question={confirm}

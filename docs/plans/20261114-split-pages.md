@@ -288,20 +288,20 @@ External review: sol / high
 - Modify: `src/renderer/tabs/close-confirm.ts`, `src/renderer/tabs/CloseTabDialog.tsx`, `src/renderer/tabs/TabsPane.tsx`
 - Modify: `test/unit/close-confirm.test.ts`, `test/e2e/editor-split.spec.ts`
 
-- [ ] `closeGroupQuestion` lists running members and, as their own kind of line, page members with unsaved changes
+- [x] `closeGroupQuestion` lists running members and, as their own kind of line, page members with unsaved changes
   (`tab.dirty` or this view's `isDirty`); asks when any member is unsaved whatever the setting, and when the setting is
   on and any member runs; `CloseQuestion.group` carries the unsaved ids
-- [ ] `closeGroup` no longer returns early when nothing runs but something is unsaved; Close sends `discard: true` for
+- [x] `closeGroup` no longer returns early when nothing runs but something is unsaved; Close sends `discard: true` for
   exactly the listed unsaved members and a plain close for the rest; a member main refuses with `{ unsaved: true }`
   (dirty in another view not reported here) is asked about alone, or dropped and kept open when a dialog is already up
-- [ ] server view: a group question with unsaved members is an `ApprovalDialog` (a `CloseTabApproval` variant) with no
+- [x] server view: a group question with unsaved members is an `ApprovalDialog` (a `CloseTabApproval` variant) with no
   "Don't ask again" and the button "Discard and Close all"; a question with only running members keeps `CloseTabDialog`
-- [ ] write tests: Close all with an unsaved page member asks with the setting off; the answer discards exactly the listed
+- [x] write tests: Close all with an unsaved page member asks with the setting off; the answer discards exactly the listed
   members; nothing unsaved and nothing running closes at once; server: an approval saying "Discard and Close all" with no
   "Don't ask again"
-- [ ] e2e: *Close all with a dirty file* — type in one file, Close all: the dialog names it; Cancel keeps the group and the
+- [x] e2e: *Close all with a dirty file* — type in one file, Close all: the dialog names it; Cancel keeps the group and the
   text; Close closes every member
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
 
 ### Task 8: Ask Claude preselects the Claude pane of the group [model: sonnet]
 

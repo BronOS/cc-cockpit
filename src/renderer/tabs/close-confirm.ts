@@ -25,28 +25,51 @@ export interface CloseQuestion {
    * A split group's Close all (design §1 "Strip"): one question for every member, listing those
    * still running. `tabId` is then the group's first member, `title` the group's name.
    */
-  group?: { groupId: string; tabIds: string[]; running: Array<{ title: string; status?: string }> }
+  group?: {
+    groupId: string
+    tabIds: string[]
+    running: Array<{ title: string; status?: string }>
+    /** Page members with unsaved changes (ids, and their labels in `unsavedTitles`): Close discards exactly these. */
+    unsaved: string[]
+    unsavedTitles: string[]
+  }
 }
 
 /**
- * What Close all of a split group must ask, or null to close every member at once: the setting is
- * off or nothing runs in any of them. `members` in pane order; `statusOf` the Claude tabs' statuses.
+ * What Close all of a split group must ask, or null to close every member at once. It asks when any
+ * page member has unsaved changes (whatever the setting: what a close loses there is text, as for
+ * one tab) and when the setting is on and any member runs. `members` in pane order; `statusOf` the
+ * Claude tabs' statuses; `localDirty`: this view's own page of the tab says it is dirty
+ * (PageFrames.isDirty), which `tab.dirty` (main's round trip) may not show yet. With the setting off
+ * the running members are not listed: only the unsaved ones are why it asks.
  */
 export function closeGroupQuestion(
   groupId: string,
   name: string,
   members: readonly TabInfo[],
   statusOf: (tabId: string) => TabStatus | undefined,
-  enabled: boolean
+  enabled: boolean,
+  localDirty: (tabId: string) => boolean = () => false
 ): CloseQuestion | null {
   const first = members[0]
-  if (!enabled || !first) return null
-  const running = members.filter(tabIsRunning).map((t) => {
+  if (!first) return null
+  const unsavedTabs = members.filter((t) => t.kind === 'page' && (t.dirty === true || localDirty(t.id)))
+  const running = (enabled ? members.filter(tabIsRunning) : []).map((t) => {
     const status = statusOf(t.id)
     return { title: tabLabel(t), ...(t.kind === 'claude' && status ? { status: statusLabel(status) } : {}) }
   })
-  if (running.length === 0) return null
-  return { tabId: first.id, title: name, group: { groupId, tabIds: members.map((t) => t.id), running } }
+  if (running.length === 0 && unsavedTabs.length === 0) return null
+  return {
+    tabId: first.id,
+    title: name,
+    group: {
+      groupId,
+      tabIds: members.map((t) => t.id),
+      running,
+      unsaved: unsavedTabs.map((t) => t.id),
+      unsavedTitles: unsavedTabs.map((t) => tabLabel(t))
+    }
+  }
 }
 
 /**
@@ -100,7 +123,11 @@ export function closeQuestionText(q: CloseQuestion): string {
   if (q.group) {
     const n = q.group.tabIds.length
     const r = q.group.running.length
-    return `This closes all ${n} tabs of the group; ${r === 1 ? '1 is' : `${r} are`} still running. Closing ends them:`
+    const u = q.group.unsaved.length
+    const parts: string[] = []
+    if (r > 0) parts.push(`${r === 1 ? '1 is' : `${r} are`} still running (closing ends ${r === 1 ? 'it' : 'them'})`)
+    if (u > 0) parts.push(`${u === 1 ? '1 has' : `${u} have`} unsaved changes (closing discards them)`)
+    return `This closes all ${n} tabs of the group; ${parts.join(' and ')}:`
   }
   return q.status
     ? `Claude is ${q.status} in this tab. Closing it ends the session.`

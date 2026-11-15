@@ -61,10 +61,14 @@ export function CloseTabDialog(props: {
                 {r.status ? ` (Claude is ${r.status})` : ''}
               </li>
             ))}
+            {props.question.group.unsavedTitles.map((t, i) => (
+              <li key={`u${i}`}>{t} (unsaved changes)</li>
+            ))}
           </ul>
         )}
-        {/* The setting is about running processes; unsaved text always asks (close-confirm.ts). */}
-        {!props.question.unsaved && (
+        {/* The setting is about running processes; unsaved text always asks (close-confirm.ts). A group
+            question with unsaved members has no "Don't ask again" either: it would not stop that ask. */}
+        {!props.question.unsaved && !(props.question.group && props.question.group.unsaved.length > 0) && (
           <label className="confirm-check">
             <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
             {" Don't ask again"}
@@ -89,14 +93,28 @@ export function CloseTabDialog(props: {
  * never the default, is not reached by typing, and is live only after a second (ApprovalDialog).
  */
 export function CloseTabApproval(props: { question: CloseQuestion; onAnswer: (choice: 'close' | 'cancel') => void }): React.JSX.Element {
+  const group = props.question.group
   return (
     <ApprovalDialog
-      title={<>Close “{props.question.title}”?</>}
-      allowLabel="Discard and Close"
+      title={group ? <>Close all tabs of “{props.question.title}”?</> : <>Close “{props.question.title}”?</>}
+      allowLabel={group ? 'Discard and Close all' : 'Discard and Close'}
       denyLabel="Cancel"
       onAnswer={(allow) => props.onAnswer(allow ? 'close' : 'cancel')}
     >
       <p>{closeQuestionText(props.question)}</p>
+      {group && (
+        <ul className="confirm-list">
+          {group.running.map((r, i) => (
+            <li key={i}>
+              {r.title}
+              {r.status ? ` (Claude is ${r.status})` : ''}
+            </li>
+          ))}
+          {group.unsavedTitles.map((t, i) => (
+            <li key={`u${i}`}>{t} (unsaved changes)</li>
+          ))}
+        </ul>
+      )}
     </ApprovalDialog>
   )
 }
