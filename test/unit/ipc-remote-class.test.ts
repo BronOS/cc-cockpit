@@ -95,7 +95,9 @@ describe('REMOTE_CLASS drift', () => {
     // A plugin's OAuth sign-in settled by the pasted redirect (§9.9): a server's browsers only.
     'oauth.paste',
     // Opening a known project makes a window on the host's screen: a server's browsers only.
-    'settings.projectOpen'
+    'settings.projectOpen',
+    // Raising a plugin's caps widens what it may do on the host (design-rooms.md §6): a server's browsers only.
+    'plugins.limits.set'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })
@@ -103,6 +105,11 @@ describe('REMOTE_CLASS drift', () => {
   // The Move to Trash confirm (files/trash-asks.ts): a trash started from a browser is answered there.
   // A sign-in's end (§9.9): main sends it to a window's browsers in server mode only, like app.linkNotice.
   it.each(['app.linkNotice', 'oauth.signInEnded'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
+
+  // Reading a plugin's caps changes nothing (design-rooms.md §6): every view may.
+  it.each(['plugins.limits.get'])('%s is yes', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
   })
 

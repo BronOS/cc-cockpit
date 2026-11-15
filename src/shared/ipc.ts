@@ -16,6 +16,7 @@ import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-bac
 import type { PageTabSpec } from './page-tabs'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
+import type { PluginLimitsView } from './plugin-limits'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
@@ -1171,6 +1172,17 @@ export interface IpcInvokeMap {
   /** The Restart of "plugin stopped: Restart": start the sender's project's plugin host again. */
   'plugins.restart': { req: void; res: void }
   /**
+   * A plugin's caps (design-rooms.md §6) for its Settings › Plugins row ("Limits"): app-wide, the id is looked up in
+   * main's plugin list. Reading changes nothing.
+   */
+  'plugins.limits.get': { req: { id: string }; res: PluginLimitsView }
+  /**
+   * Change a plugin's caps: `set` as `[key, value]` pairs, `reset` the keys whose override goes; checked whole in main
+   * (a value outside 1..ceiling or an unknown key refuses it all). From a browser only in server mode (`adapted`): a
+   * browser of a desktop must not raise what a plugin may do on the host.
+   */
+  'plugins.limits.set': { req: { id: string; set?: Array<[string, number]>; reset?: string[] }; res: PluginLimitsView }
+  /**
    * A click on a plugin panel's header action. main delivers it to the plugin's onAction only when
    * the panel is one of the sender's project and its current header has that action, not busy or
    * disabled; false when it was dropped (the header changed under the click, the host is gone).
@@ -1950,6 +1962,8 @@ export const INVOKE_CHANNELS = [
   'commands.run',
   'panels.connect',
   'plugins.restart',
+  'plugins.limits.get',
+  'plugins.limits.set',
   'panels.action',
   'slots.connect',
   'slots.disconnect',
@@ -2250,6 +2264,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'panels.action': 'yes',
   'panels.reload': 'yes',
   'plugins.restart': 'yes',
+  // A plugin's caps (design-rooms.md §6): any view may read them; the write raises what a plugin may do on the host,
+  // so a browser counts only in server mode (where it is the only screen), decided by the handler from main's flag.
+  'plugins.limits.get': 'yes',
+  'plugins.limits.set': 'adapted',
   'slots.connect': 'yes',
   'slots.disconnect': 'yes',
   'slots.height': 'yes',

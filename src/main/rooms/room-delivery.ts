@@ -18,12 +18,13 @@ import { warnLog } from '../warn-log'
 import type { TabRoom } from '../../shared/tab-room'
 import { isRoomName } from '../../shared/room-names'
 import { pointerText } from '../../shared/room-pointer'
+import { DEFAULT_PLUGIN_LIMITS } from '../../shared/plugin-limits'
 import { RoomError, isMessageText, type RoomRecord, type RoomRegistry } from './room-registry'
 
 /**
  * The person-settable room send caps (design-rooms.md §6), per plugin. `all` counts one send per recipient queued
- * against both (at least one per send). Task 11 reads them from the person's per-plugin override; until then the
- * defaults apply.
+ * against both (at least one per send). Read through `limits(pluginId)` (main/plugins/plugin-limits.ts, the person's
+ * per-plugin override) on every send; the defaults without it.
  */
 export interface RoomSendLimits {
   /** Sends a minute by one member (the owner's `plugin` sends count only against the room's cap). */
@@ -32,7 +33,10 @@ export interface RoomSendLimits {
   roomSendsPerRoom: number
 }
 
-export const DEFAULT_ROOM_SEND_LIMITS: Readonly<RoomSendLimits> = Object.freeze({ roomSendsPerMember: 20, roomSendsPerRoom: 60 })
+export const DEFAULT_ROOM_SEND_LIMITS: Readonly<RoomSendLimits> = Object.freeze({
+  roomSendsPerMember: DEFAULT_PLUGIN_LIMITS.roomSendsPerMember,
+  roomSendsPerRoom: DEFAULT_PLUGIN_LIMITS.roomSendsPerRoom
+})
 
 /** The window both caps count over. */
 export const ROOM_SEND_WINDOW_MS = 60_000
@@ -94,7 +98,7 @@ export interface RoomDeliveryDeps {
   }
   /** The tab's membership and the person's mark as the tab manager keeps it (TabManager.roomOf, the tab's own project). */
   tabRoom(tabId: string): TabRoom | undefined
-  /** The plugin's room send caps, read on every send (Task 11: the person's override). Defaults when absent. */
+  /** The plugin's room send caps, read on every send (PluginLimitsStore.limits: the person's override). Defaults when absent. */
   limits?(pluginId: string): RoomSendLimits
   /**
    * A pointer went in through the gate on main's own decision (offer), not the person's badge click: the room stop

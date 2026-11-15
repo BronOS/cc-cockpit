@@ -1531,7 +1531,9 @@ describe('registerSettingsHandlers', () => {
       updateAllMarketplace: async (...args) => rec('updateAllMarketplace', { updated: [], failed: [] })(...args),
       refreshMarketplace: async (...args) => rec('refreshMarketplace', { indexes: [], entries: [], warnings: [] })(...args),
       marketplacePreview: async (...args) => rec('marketplacePreview', null)(...args),
-      setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args)
+      setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args),
+      pluginLimits: rec('pluginLimits', { id: 'a.one', limits: [] }),
+      setPluginLimits: rec('setPluginLimits', { id: 'a.one', limits: [] })
     }
     registerSettingsHandlers(router, deps, options)
     return { ipc, calls, router }
@@ -1551,10 +1553,31 @@ describe('registerSettingsHandlers', () => {
     expect(server.calls).toEqual([['openProject', 'p3']])
   })
 
+  // plugins.limits.set is `adapted` (design-rooms.md §6): raising a cap widens what a plugin may do on the host, so a
+  // desktop's browser is refused and a server's browser (the only screen there) may; the read is any view's.
+  it('plugin limits: any view reads; the write from the desktop and a server\'s browser, never a desktop\'s browser', async () => {
+    const desktop = settingsSetup()
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    await desktop.ipc.invoke('plugins.limits.get', 11, [{ id: 'a.one' }])
+    await desktop.router.dispatch(browser, 'plugins.limits.get', { id: 'a.two' })
+    await desktop.ipc.invoke('plugins.limits.set', 11, [{ id: 'a.one', set: [['opensPerMinute', 10]], reset: ['sendsPerMinute'] }])
+    await expect(desktop.router.dispatch(browser, 'plugins.limits.set', { id: 'a.one', set: [['opensPerMinute', 60]] })).rejects.toThrow(
+      /outside server mode/
+    )
+    expect(desktop.calls).toEqual([
+      ['pluginLimits', 'a.one'],
+      ['pluginLimits', 'a.two'],
+      ['setPluginLimits', 'a.one', [['opensPerMinute', 10]], ['sendsPerMinute']]
+    ])
+    const server = settingsSetup({ server: true })
+    await server.router.dispatch(browser, 'plugins.limits.set', { id: 'a.one', set: [['opensPerMinute', 60]] })
+    expect(server.calls).toEqual([['setPluginLimits', 'a.one', [['opensPerMinute', 60]], undefined]])
+  })
+
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(19)
+    expect(channels).toHaveLength(21)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {

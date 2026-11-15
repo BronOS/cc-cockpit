@@ -275,10 +275,14 @@ import { pluginFileUrl } from './plugin-protocol'
 import { resolveInside } from './validate'
 import { warnLog } from '../warn-log'
 import type { MachineInfo } from '../remote/machine-status'
+import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../shared/plugin-limits'
 
-/** ctx.sessions.send per plugin: at most this many texts per window. The gate's queue cap (50) also holds. */
+/**
+ * ctx.sessions.send per plugin: at most this many texts per window by default; the person's `sendsPerMinute` limit
+ * (plugin-limits.ts, read on every send) replaces it. The gate's queue cap (50) also holds.
+ */
 export const SEND_WINDOW_MS = 60_000
-export const MAX_SENDS_PER_WINDOW = 30
+export const MAX_SENDS_PER_WINDOW = DEFAULT_PLUGIN_LIMITS.sendsPerMinute
 /**
  * A plugin open's `beside` (split groups, decisions D4, D6, D7), checked by HostApi: `beside` is a tab
  * of the host's own window (looked up before the open budget is spent), `side` its edge. `view` is
@@ -290,9 +294,12 @@ export interface PluginPlacement {
   view?: ViewId
 }
 
-/** ctx.sessions.open per plugin: each one starts a `claude` process. */
+/**
+ * ctx.sessions.open per plugin: each one starts a `claude` process. The default; the person's `opensPerMinute` limit
+ * (plugin-limits.ts, read on every open) replaces it, for openShell, openCommand and rooms.open too (one budget).
+ */
 export const OPEN_WINDOW_MS = 60_000
-export const MAX_OPENS_PER_WINDOW = 5
+export const MAX_OPENS_PER_WINDOW = DEFAULT_PLUGIN_LIMITS.opensPerMinute
 /**
  * ctx.sessions.focus / close / openFile per plugin (design-next §4.1). focus moves the person's
  * window and selection, close may put a dialog in front of them, openFile opens a viewer or wakes
@@ -639,6 +646,11 @@ export interface HostApiDeps {
    * uninstall (the hosts restart one by one) must not create what the sweep just ended.
    */
   roomsOff?: (owner: RoomOwner) => string | undefined
+  /**
+   * The person's caps for a plugin (PluginLimitsStore.limits, design-rooms.md §6), asked on every open and send so an
+   * edit applies to the next call. Without it the defaults apply.
+   */
+  limits?(pluginId: string): PluginLimits
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -726,14 +738,22 @@ interface OverlayLink {
   discussPrimary?: boolean
 }
 
-/** A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. */
+/**
+ * A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. `max` is a number,
+ * or a function of the key read on every take (the person's per-plugin limits: a change applies to the next call).
+ */
 export class RateWindow {
   private readonly windows = new Map<string, { start: number; count: number }>()
 
   constructor(
-    private readonly max: number,
+    private readonly max: number | ((key: string) => number),
     private readonly windowMs: number
   ) {}
+
+  /** The budget of `key` now. */
+  limit(key: string): number {
+    return typeof this.max === 'number' ? this.max : this.max(key)
+  }
 
   take(key: string, now = Date.now()): boolean {
     let win = this.windows.get(key)
@@ -742,7 +762,7 @@ export class RateWindow {
       win = { start: now, count: 0 }
       this.windows.set(key, win)
     }
-    if (win.count >= this.max) return false
+    if (win.count >= this.limit(key)) return false
     win.count++
     return true
   }
@@ -757,6 +777,14 @@ export class RateWindow {
     const win = this.windows.get(key)
     if (win && win.count > 0) win.count--
   }
+}
+
+/**
+ * A per-plugin cap hit (design-rooms.md §6): names the cap, its value and that the person sets it, so a plugin author
+ * reading the error knows it is not a fixed rule of the app.
+ */
+function capHit(max: number, what: string, key: string): string {
+  return `more than ${max} ${what} a minute (the ${key} limit; the person can change it in Settings › Plugins)`
 }
 
 /**
@@ -855,8 +883,9 @@ export async function pluginPageSrc(pluginId: string, pluginDir: string, file: u
 }
 
 export class HostApi {
-  private readonly sends = new RateWindow(MAX_SENDS_PER_WINDOW, SEND_WINDOW_MS)
-  private readonly opens = new RateWindow(MAX_OPENS_PER_WINDOW, OPEN_WINDOW_MS)
+  // The person's per-plugin caps (design-rooms.md §6), read on every call; the defaults without a store.
+  private readonly sends = new RateWindow((id) => this.limitsOf(id).sendsPerMinute, SEND_WINDOW_MS)
+  private readonly opens = new RateWindow((id) => this.limitsOf(id).opensPerMinute, OPEN_WINDOW_MS)
   private readonly overlayStarts = new RateWindow(MAX_OVERLAYS_PER_WINDOW, OVERLAY_WINDOW_MS)
   private readonly secretWrites = new RateWindow(MAX_SECRET_WRITES_PER_WINDOW, SECRET_WRITE_WINDOW_MS)
   private readonly authorizes = new RateWindow(MAX_AUTHORIZES_PER_WINDOW, AUTHORIZE_WINDOW_MS)
@@ -1502,7 +1531,7 @@ export class HostApi {
     // Validated before the budget is spent: a refused text (a "/" command) costs nothing.
     const clean = prepareText(text)
     if (!this.sends.take(plugin.id)) {
-      throw new Error(`sessions.send: more than ${MAX_SENDS_PER_WINDOW} texts in ${SEND_WINDOW_MS / 1000} s`)
+      throw new Error(`sessions.send: ${capHit(this.sends.limit(plugin.id), 'texts', 'sendsPerMinute')}`)
     }
     // The gate is the only way in: typed now only while the tab waits for input, else queued.
     // It throws before queueing anything (an ended session, a full queue, a tab the person took
@@ -1558,7 +1587,7 @@ export class HostApi {
     const place = this.placement(what, beside, side, meta)
     // One budget for every open of the plugin (sessions.open, openShell, openCommand, rooms.open).
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`${what}: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`${what}: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
     const tab = await this.deps.openTab(
       this.scope.projectId,
@@ -1600,7 +1629,7 @@ export class HostApi {
     }
     const place = this.placement('sessions.openShell', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`sessions.openShell: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`sessions.openShell: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
     const tab = await this.deps.openShellTab(
       this.scope.projectId,
@@ -1821,7 +1850,7 @@ export class HostApi {
     }
     const place = this.placement('sessions.openCommand', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`sessions.openCommand: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
     const tab = await this.deps.openCommandTab(
       this.scope.projectId,
@@ -2793,6 +2822,15 @@ export class HostApi {
     const plugin = typeof pluginId === 'string' ? this.scope.plugins.find((p) => p.id === pluginId) : undefined
     if (!plugin) throw new Error(`${what}: unknown plugin`)
     return plugin
+  }
+
+  /** The person's caps for one of this host's plugins; the defaults when main has no store or it fails. */
+  private limitsOf(pluginId: string): PluginLimits {
+    try {
+      return this.deps.limits?.(pluginId) ?? DEFAULT_PLUGIN_LIMITS
+    } catch {
+      return DEFAULT_PLUGIN_LIMITS
+    }
   }
 
   private alive(): void {

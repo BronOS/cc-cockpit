@@ -56,6 +56,7 @@ import { defaultLayout } from '../../src/shared/layout'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 import { unusedOAuth, unusedSecrets } from '../fakes/unused-host-services'
 import type { RpcMeta } from '../../src/host/rpc'
+import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../src/shared/plugin-limits'
 
 const A = 'aaaaaaaaaaaaaaaa'
 const B = 'bbbbbbbbbbbbbbbb'
@@ -511,7 +512,7 @@ describe('sessions.openShell', () => {
     for (let i = 0; i < 3; i++) await open('sessions.open', { pluginId: 'a.one' })
     for (let i = 0; i < MAX_OPENS_PER_WINDOW - 3; i++) await open('sessions.openShell', { pluginId: 'a.one' })
     await expect(open('sessions.openShell', { pluginId: 'a.one' })).rejects.toThrow(
-      `sessions.openShell: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`
+      `sessions.openShell: more than ${MAX_OPENS_PER_WINDOW} tabs a minute (the opensPerMinute limit;`
     )
     await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
     expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
@@ -622,7 +623,7 @@ describe('sessions.openCommand', () => {
     await open('sessions.openShell', { pluginId: 'a.one' })
     for (let i = 0; i < MAX_OPENS_PER_WINDOW - 2; i++) await open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })
     await expect(open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })).rejects.toThrow(
-      `sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`
+      `sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs a minute (the opensPerMinute limit;`
     )
     await expect(open('sessions.openShell', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
     await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
@@ -2767,5 +2768,59 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     delete deps.rooms
     await expect(hostA()('rooms.create', { pluginId: 'a.one', title: 'x' })).rejects.toThrow('rooms.create: rooms are not available')
     await expect(hostA()('rooms.open', { pluginId: 'a.one', id: 'x', name: 'bob' })).rejects.toThrow('rooms.open: rooms are not available')
+  })
+})
+
+// The person's per-plugin caps (rooms Task 11, design-rooms.md §6): HostApi asks `limits(pluginId)` on every open and
+// send, so an override applies to the next call, per plugin, and a cap hit names the cap and its value.
+describe('the person\'s per-plugin limits', () => {
+  it('an override replaces the open cap for every open kind, read on every call, per plugin', async () => {
+    const overrides = new Map<string, Partial<PluginLimits>>([['a.one', { opensPerMinute: 7 }]])
+    const asked: string[] = []
+    deps.limits = (pluginId) => {
+      asked.push(pluginId)
+      return { ...DEFAULT_PLUGIN_LIMITS, ...overrides.get(pluginId) }
+    }
+    const open = hostA()
+    for (let i = 0; i < 3; i++) await open('sessions.open', { pluginId: 'a.one' })
+    for (let i = 0; i < 2; i++) await open('sessions.openShell', { pluginId: 'a.one' })
+    for (let i = 0; i < 2; i++) await open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })
+    expect(tabsBackend.spawned).toHaveLength(7)
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(
+      'sessions.open: more than 7 tabs a minute (the opensPerMinute limit; the person can change it in Settings › Plugins)'
+    )
+    // Raised meanwhile: the next open fits, with no host restart.
+    overrides.set('a.one', { opensPerMinute: 8 })
+    await open('sessions.openShell', { pluginId: 'a.one' })
+    await expect(open('sessions.openCommand', { pluginId: 'a.one', argv: ['ls'] })).rejects.toThrow('more than 8 tabs a minute')
+    // a.two has no override: the default.
+    for (let i = 0; i < DEFAULT_PLUGIN_LIMITS.opensPerMinute; i++) await open('sessions.open', { pluginId: 'a.two' })
+    await expect(open('sessions.open', { pluginId: 'a.two' })).rejects.toThrow(`more than ${DEFAULT_PLUGIN_LIMITS.opensPerMinute} tabs a minute`)
+    expect(new Set(asked)).toEqual(new Set(['a.one', 'a.two']))
+  })
+
+  it('an override replaces the send cap; lowered, it applies to the next send', async () => {
+    let sends = 2
+    deps.limits = () => ({ ...DEFAULT_PLUGIN_LIMITS, sendsPerMinute: sends })
+    const tab = waitingTab(A)
+    const send = hostA()
+    await send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'one' })
+    await send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'two' })
+    await expect(send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'three' })).rejects.toThrow(
+      'sessions.send: more than 2 texts a minute (the sendsPerMinute limit; the person can change it in Settings › Plugins)'
+    )
+    sends = 3
+    await send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'three' })
+    sends = 1
+    await expect(send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'four' })).rejects.toThrow('more than 1 texts a minute')
+  })
+
+  it('a failing limits store gives the defaults rather than refusing every open', async () => {
+    deps.limits = () => {
+      throw new Error('broken')
+    }
+    const open = hostA()
+    for (let i = 0; i < DEFAULT_PLUGIN_LIMITS.opensPerMinute; i++) await open('sessions.open', { pluginId: 'a.one' })
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${DEFAULT_PLUGIN_LIMITS.opensPerMinute} tabs a minute`)
   })
 })

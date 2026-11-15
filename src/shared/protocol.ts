@@ -54,7 +54,10 @@ export const TOKENLESS_COMMANDS: readonly string[] = [
   'plugin.config',
   // `ccc panel show --project <path> <plugin>/<panel>` (friction round 1, Task 7): reveals a panel in
   // that project's open window, as the user could by clicking its icon.
-  'panel.show'
+  'panel.show',
+  // `ccc plugin limits <id>` (design-rooms.md §6): reads a plugin's caps, app-wide (so in PROJECTLESS_COMMANDS too).
+  // Allowed from a tab and from outside one: the person reads them before changing them. The write is host-only.
+  'plugin.limits'
 ]
 
 /**
@@ -64,7 +67,7 @@ export const TOKENLESS_COMMANDS: readonly string[] = [
  * their folder) and still must name `--project`. A subset of TOKENLESS_COMMANDS, fixed here for the
  * same reason: registering a handler can never widen what an anonymous caller may do.
  */
-export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions']
+export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions', 'plugin.limits']
 
 /**
  * Commands a WINDOW token may use (a shell tab's, a command tab's, a terminal overlay's; main
@@ -79,19 +82,20 @@ export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions']
 export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 'plugin.cli.list']
 
 /**
- * `ccc web` (design-web.md §9.4): web access settings from a shell on the server. Answered only for
+ * Shell-only commands: `ccc web` (design-web.md §9.4), web access settings from a shell on the server, and the write
+ * of `ccc plugin limits` (design-rooms.md §6, `plugin.limits.set`), the person's per-plugin caps. Answered only for
  * a TOKENLESS caller that names no project: a request that carries any token, a Claude tab's, a
  * shell tab's or a forged one, is refused in `identify` before a handler is looked up, with
  * HOST_ONLY_TEXT, and each handler (main/socket/web-handlers.ts) refuses every caller kind but the
  * tokenless one again. Projectless (no project is involved) and never in TOKENLESS_COMMANDS or
- * WINDOW_TOKEN_COMMANDS. All eight names were listed before the first handler existed, so no
- * handler could ever be reached by a tab first; SocketServer.handle refuses a `web.*` handler whose
- * name is not here.
+ * WINDOW_TOKEN_COMMANDS. All eight `web.*` names were listed before the first handler existed, so no
+ * handler could ever be reached by a tab first; SocketServer.handle refuses a handler whose name is in a
+ * HOST_ONLY_FAMILIES prefix but not here, and wraps every listed one so it refuses a non-anonymous caller again.
  *
- * Not a boundary: a tab's process is the same OS user and can drop its token or edit app.json
- * itself (§9.12). It is there so a Claude session never reconfigures access, or prints the access
- * link into its transcript, as a side effect of a prompt (an injection included), and so v1's rule
- * "a view does not widen its own access" stays visible: a shell tab is reached from a browser too.
+ * Not a boundary: a tab's process is the same OS user and can drop its token (`env -u APP_TAB_TOKEN`) or edit
+ * app.json itself (§9.12). It is there so a Claude session never reconfigures access, prints the access link into
+ * its transcript or raises its own plugin's caps as a side effect of a prompt (an injection included), and so v1's
+ * rule "a view does not widen its own access" stays visible: a shell tab is reached from a browser too.
  */
 export const HOST_ONLY_COMMANDS: readonly string[] = [
   'web.status',
@@ -101,11 +105,33 @@ export const HOST_ONLY_COMMANDS: readonly string[] = [
   'web.add-device',
   'web.password',
   'web.mode',
-  'web.set'
+  'web.set',
+  'plugin.limits.set'
 ]
 
-/** What a tab (any token) is told for a HOST_ONLY_COMMANDS request, whatever the request and whether it has a handler. */
+/**
+ * Name prefixes that belong to host-only commands: a handler registered under one of these whose name is not in
+ * HOST_ONLY_COMMANDS is a start-up error (SocketServer.handle), since identify would let a session token reach it.
+ * `plugin.limits` itself (the read) is no member: the family is the dot after it.
+ */
+export const HOST_ONLY_FAMILIES: readonly string[] = ['web.', 'plugin.limits.']
+
+/** What a tab (any token) is told for a `ccc web` request, whatever the request and whether it has a handler. */
 export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside cc-cockpit'
+
+/** What a tab is told for the `ccc plugin limits` write. */
+export const PLUGIN_LIMITS_HOST_ONLY_TEXT =
+  'the limits are the person\'s: change them in Settings › Plugins or with `ccc plugin limits` from a shell outside cc-cockpit'
+
+/** The refusal of a HOST_ONLY_COMMANDS request from any caller but a tokenless, projectless one. */
+export function hostOnlyText(cmd: string): string {
+  return cmd.startsWith('plugin.limits.') ? PLUGIN_LIMITS_HOST_ONLY_TEXT : HOST_ONLY_TEXT
+}
+
+/** A name a handler may be registered under only when HOST_ONLY_COMMANDS lists it. */
+export function inHostOnlyFamily(cmd: string): boolean {
+  return HOST_ONLY_FAMILIES.some((prefix) => cmd.startsWith(prefix))
+}
 
 /**
  * The Stop hook's reply (design-rooms.md §2 "The Stop pointer", plan Task 7). Every hook event is fire-and-forget:

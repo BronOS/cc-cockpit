@@ -15,6 +15,7 @@
 // CORE_CLI_COMMANDS (src/shared/manifest.ts), the list main reserves against plugin command names.
 import { isHookEvent, type HookEvent } from '../shared/hooks'
 import { MAX_PLUGIN_CONFIG_EDITS, parseConfigValue, PLUGIN_CONFIG_SCOPES, type PluginConfigScope } from '../shared/plugin-config'
+import { MAX_PLUGIN_LIMIT_EDITS } from '../shared/plugin-limits'
 import type { WebAccessRisk } from '../shared/types'
 import { WEB_RISK_ORDER, WEB_SHELL_MODES } from '../shared/web-access'
 import {
@@ -69,6 +70,12 @@ export type Command =
    * the `--use-global <key>` keys (repeatable; alone, no `set`): drop this project's overrides.
    */
   | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; useGlobal?: string[]; project?: string }
+  /**
+   * `ccc plugin limits <id>` (design-rooms.md §6): no `set` and no `reset` prints the plugin's caps; `set` holds the
+   * `key=value` arguments as typed (main parses and checks each value), `reset` the keys after `--default`. Either one
+   * is the write, refused in a tab (a shell outside cockpit only); never a project: the caps are app-wide.
+   */
+  | { kind: 'plugin-limits'; id: string; set: Array<[string, string]>; reset: string[] }
   /** `ccc panel show <plugin>/<panel>` (friction round 1, Task 7). */
   | { kind: 'panel-show'; plugin: string; panel: string; project?: string }
   /**
@@ -257,6 +264,14 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
           'secret fields only in Settings'
         ]
       },
+      {
+        synopsis: ['plugin limits <id>', 'plugin limits <id> <key>=<value>...', 'plugin limits <id> --default <key>...'],
+        text: [
+          "print a plugin's caps (tabs opened, texts and room messages a",
+          'minute), or change them (only from a shell outside cockpit);',
+          '--default drops an override'
+        ]
+      },
       { synopsis: ['plugin logs <id> [--follow]'], text: ["print a plugin's log (the last lines; --follow keeps going)"] }
     ]
   },
@@ -392,7 +407,7 @@ function pluginIdProblem(id: string): string | undefined {
   return undefined
 }
 
-type PluginSub = 'new' | 'link' | 'unlink' | 'list' | 'config' | 'logs'
+type PluginSub = 'new' | 'link' | 'unlink' | 'list' | 'config' | 'limits' | 'logs'
 
 /**
  * The options of each `ccc plugin` subcommand: `value` takes the next argument (the message is
@@ -409,6 +424,7 @@ const PLUGIN_OPTIONS: Record<PluginSub, Readonly<Record<string, { value: string 
     '--scope': { value: 'needs app, global or project' },
     '--use-global': { value: 'needs a key' }
   },
+  limits: { '--default': 'flag' },
   logs: { '--follow': 'flag' }
 }
 
@@ -419,7 +435,7 @@ function isPluginSub(sub: string): sub is PluginSub {
 /** `ccc plugin <sub> …`: the dev loop. A mistyped one is a usage error (exit 2), as for every user command. */
 function parsePluginDev(rest: readonly string[]): Command {
   const [sub, ...args] = rest
-  if (sub === undefined) return usage('plugin needs new, link, unlink, list, config or logs')
+  if (sub === undefined) return usage('plugin needs new, link, unlink, list, config, limits or logs')
   if (!isPluginSub(sub)) return usage(`unknown plugin command: ${sub}`)
   if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'plugin' }
   const options = PLUGIN_OPTIONS[sub]
@@ -472,6 +488,8 @@ function parsePluginDev(rest: readonly string[]): Command {
       const config = parsePluginConfig(positional, values.get('--scope'), flags.has('--json'), useGlobal)
       return config.kind === 'plugin-config' ? withProject(config) : config
     }
+    case 'limits':
+      return parsePluginLimits(positional, flags.has('--default'))
     case 'unlink':
     case 'logs': {
       if (target === undefined) return usage(`plugin ${sub} takes one plugin id`)
@@ -512,6 +530,35 @@ function parsePluginConfig(positional: readonly string[], scope: string | undefi
   }
   if (scope !== undefined && set.length === 0) return usage('plugin config: --scope goes with key=value to set')
   return { kind: 'plugin-config', id, json, ...(scope !== undefined ? { scope: scope as PluginConfigScope } : {}), set }
+}
+
+/**
+ * `ccc plugin limits <id> [key=value ... | --default key ...]`: the id, then either the edits (split at the first
+ * `=`, the value kept as typed: main checks it is a whole number in range) or, with `--default`, the keys whose
+ * override goes. One kind per call. Main knows the keys and names them when one is wrong.
+ */
+function parsePluginLimits(positional: readonly string[], reset: boolean): Command {
+  const [id, ...rest] = positional
+  if (id === undefined || id === '') return usage('plugin limits takes a plugin id, then key=value to set or --default <key>')
+  const problem = pluginIdProblem(id)
+  if (problem !== undefined) return usage(`plugin limits: ${problem}`)
+  if (rest.length > MAX_PLUGIN_LIMIT_EDITS) return usage(`plugin limits: at most ${MAX_PLUGIN_LIMIT_EDITS} changes at once`)
+  if (reset) {
+    if (rest.length === 0) return usage('plugin limits: --default needs the keys to reset')
+    const keys: string[] = []
+    for (const key of rest) {
+      if (key === '' || key.includes('=')) return usage(`plugin limits: --default takes keys, not key=value: ${key}`)
+      keys.push(key)
+    }
+    return { kind: 'plugin-limits', id, set: [], reset: keys }
+  }
+  const set: Array<[string, string]> = []
+  for (const pair of rest) {
+    const eq = pair.indexOf('=')
+    if (eq <= 0) return usage(`plugin limits: expected key=value, got ${pair}`)
+    set.push([pair.slice(0, eq), pair.slice(eq + 1)])
+  }
+  return { kind: 'plugin-limits', id, set, reset: [] }
 }
 
 function parseSession(rest: readonly string[]): Command {

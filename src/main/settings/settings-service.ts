@@ -22,6 +22,8 @@
 //    `setting:projectDefault:<field>`. A save is checked alone (what a project with no overrides
 //    gets) and merged with every open project's overrides, and refused naming the first project it
 //    would make invalid. Only the projects whose effective values changed hear of it.
+//  - A plugin's caps (design-rooms.md §6, `app.json` › `pluginLimits[pluginId]`) are read and edited here for the
+//    row's "Limits" section, through the same store `ccc plugin limits` uses (main/plugins/plugin-limits.ts).
 import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MarketplaceUpdateAllResult, MarketplaceView, PluginAppSettingsView, PluginSettingsSaveResult, PluginView, SettingsProject } from '../../shared/ipc'
@@ -35,6 +37,8 @@ import { offAppWide } from '../plugins/enablement'
 import type { InstalledPlugin, PluginInstaller } from '../plugins/installer'
 import type { PluginEntry } from '../plugins/plugin-index'
 import { isPlainObject } from '../../shared/guards'
+import type { PluginLimitsView } from '../../shared/plugin-limits'
+import type { PluginLimitsStore } from '../plugins/plugin-limits'
 import { appSettingKey, projectDefaultSettingKey } from '../secrets/plugin-secrets'
 import { checkFormSettings, effectiveProjectValues, saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
 
@@ -93,6 +97,8 @@ export interface SettingsDeps {
   settingsFingerprint(projectId: string, pluginId: string): string
   /** One plugin's settings changed in one project: push them to it (HostManager.settingsChanged). */
   projectSettingsChanged(projectId: string, pluginId: string): Promise<void>
+  /** The person's per-plugin caps, `app.json` › `pluginLimits` (PluginLimitsStore). Without it the Limits calls are refused. */
+  limits?: Pick<PluginLimitsStore, 'view' | 'set'>
 }
 
 const MAX_MARKETPLACE_URLS = 20
@@ -230,6 +236,27 @@ export class SettingsService {
     if (current.includes(id) === off) return
     this.deps.bundledOff.set(off ? [...current, id] : current.filter((x) => x !== id))
     await this.deps.bundledOffChanged(id)
+  }
+
+  /**
+   * A plugin's caps (design-rooms.md §6) for its row's "Limits" section. The store (main/plugins/plugin-limits.ts)
+   * checks the id against the installed plugins; `app.json` › `pluginLimits[id]` is the only place they live.
+   */
+  pluginLimits(id: unknown): PluginLimitsView {
+    return this.limitsStore().view(id)
+  }
+
+  /**
+   * Change a plugin's caps from its row: `set` pairs and `reset` keys, checked whole by the store (nothing stored
+   * when any part is refused). Applies to the plugin's next open or send in every window; nothing restarts.
+   */
+  setPluginLimits(id: unknown, set: unknown, reset: unknown): PluginLimitsView {
+    return this.limitsStore().set(id, set, reset)
+  }
+
+  private limitsStore(): Pick<PluginLimitsStore, 'view' | 'set'> {
+    if (!this.deps.limits) throw new Error('plugin limits are not available')
+    return this.deps.limits
   }
 
   // -------------------------------------------------------------------------------------------

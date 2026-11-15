@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   HOST_ONLY_COMMANDS,
+  HOST_ONLY_TEXT,
+  hostOnlyText,
+  inHostOnlyFamily,
   LineFramer,
   PROJECTLESS_COMMANDS,
   TOKENLESS_COMMANDS,
@@ -137,10 +140,19 @@ function catchError(fn: () => unknown): unknown {
 }
 
 describe('HOST_ONLY_COMMANDS (ccc web, design-web.md §9.4)', () => {
-  it('lists all eight ccc web requests, those whose handler comes later included', () => {
+  it('lists all eight ccc web requests, those whose handler comes later included, and the plugin limits write', () => {
     expect([...HOST_ONLY_COMMANDS].sort()).toEqual(
-      ['web.status', 'web.revoke', 'web.stop', 'web.link', 'web.add-device', 'web.password', 'web.mode', 'web.set'].sort()
+      ['web.status', 'web.revoke', 'web.stop', 'web.link', 'web.add-device', 'web.password', 'web.mode', 'web.set', 'plugin.limits.set'].sort()
     )
+  })
+
+  it('puts every listed name in a host-only family, and the plugin limits read in none (design-rooms.md §6)', () => {
+    for (const cmd of HOST_ONLY_COMMANDS) expect(inHostOnlyFamily(cmd), cmd).toBe(true)
+    expect(inHostOnlyFamily('plugin.limits')).toBe(false)
+    expect(TOKENLESS_COMMANDS).toContain('plugin.limits')
+    expect(PROJECTLESS_COMMANDS).toContain('plugin.limits')
+    expect(hostOnlyText('web.set')).toBe(HOST_ONLY_TEXT)
+    expect(hostOnlyText('plugin.limits.set')).toMatch(/Settings › Plugins.*outside cc-cockpit/)
   })
 
   it('is kept out of every list a tab token or a --project caller is let through by', () => {

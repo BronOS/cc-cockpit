@@ -1112,12 +1112,14 @@ export interface PluginContext {
     onRateLimits(listener: (rateLimits: RateLimits) => void): Disposer
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
-     * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute.
+     * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute (the
+     * default `sendsPerMinute`; the person can change it in Settings > Plugins > Limits, and the error names the cap).
      */
     send(tabId: string, text: string): Promise<SendResult>
     /**
      * A new Claude tab in this window; `cwd` must resolve inside the project folder, `prompt` is
-     * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute.
+     * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute (the
+     * default `opensPerMinute`, shared with openShell, openCommand and rooms.open; the person can change it).
      * `focus: true` also selects the new tab in this window (for a click the person made, such as
      * "Discuss in a new session"); without it the tab opens beside the one they are in, unselected.
      * `model` (`haiku`, `sonnet`, `opus` or `fable`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`) start
@@ -1192,7 +1194,8 @@ export interface PluginContext {
     /**
      * A message `from plugin` to a member or `all` (every member): at most 20000 characters (more goes in a doc).
      * The answer says per recipient what happened. Counts against the room's 60 sends a minute, every sender together
-     * (`all` once per recipient); a send over it rejects naming the cap.
+     * (`all` once per recipient); a send over it rejects naming the cap. That cap and a member's 20 a minute are
+     * defaults the person can change (Settings > Plugins > Limits).
      */
     send(id: string, to: string, text: string): Promise<RoomSendAnswer[]>
     /**

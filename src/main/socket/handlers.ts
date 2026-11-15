@@ -26,6 +26,9 @@
 //     must be enabled in that project; the host manager then checks it runs in the window.
 //   - plugin.config: project-scope settings are the caller's project's; `args` names only the
 //     plugin, the scope and the values.
+//   - plugin.limits / plugin.limits.set (design-rooms.md §6): the person's per-plugin caps, app-wide. The read takes
+//     any caller; the write is in HOST_ONLY_COMMANDS (the server refuses any token first) and refuses a
+//     non-anonymous caller again here.
 // Everything in `args` is untrusted JSON: each field's type is checked here, and text is passed on
 // as one value, never through a shell.
 //
@@ -45,7 +48,8 @@ import type { HostCliCall } from '../plugins/host-manager'
 import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type LinkDialogInfo } from '../plugins/link-request'
 import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
 import { rootAbsoluteUrlWarnings } from '../../shared/root-absolute-urls'
-import { ROOM_READ_ACK_COMMAND } from '../../shared/protocol'
+import { PLUGIN_LIMITS_HOST_ONLY_TEXT, ROOM_READ_ACK_COMMAND } from '../../shared/protocol'
+import type { PluginLimitsView } from '../../shared/plugin-limits'
 import type { RoomService, RoomTabCaller } from '../rooms/room-service'
 import type { SessionEntry } from '../sessions/status-reducer'
 import type { Caller, Handler } from './socket-server'
@@ -546,6 +550,38 @@ export function pluginConfigHandler(options: PluginConfigOptions): Handler {
 
 export function registerPluginConfigHandler(server: { handle(cmd: string, handler: Handler): void }, options: PluginConfigOptions): void {
   server.handle('plugin.config', pluginConfigHandler(options))
+}
+
+/** What `plugin.limits` and `plugin.limits.set` need from main (index.ts binds the PluginLimitsStore). */
+export interface PluginLimitsOptions {
+  view(pluginId: unknown): PluginLimitsView
+  set(pluginId: unknown, set: unknown, reset: unknown): PluginLimitsView
+}
+
+/**
+ * `plugin.limits { id }` (`ccc plugin limits <id>`): a plugin's caps. Any caller, a tab included: reading them changes
+ * nothing, and the person reads before writing. The store checks the id.
+ */
+export function pluginLimitsHandler(options: PluginLimitsOptions): Handler {
+  return (args) => options.view(args.id)
+}
+
+/**
+ * `plugin.limits.set { id, set?, reset? }` (`ccc plugin limits <id> key=value... | --default <key>...`): a shell
+ * outside cockpit only. In HOST_ONLY_COMMANDS, so the server refuses any token before the lookup; refused again here
+ * for every caller but the anonymous one (design-rooms.md §6). The store checks the id, the keys and the values, and
+ * stores nothing when any of it is refused.
+ */
+export function pluginLimitsSetHandler(options: PluginLimitsOptions): Handler {
+  return (args, caller) => {
+    if (caller.kind !== 'anonymous') throw new Error(PLUGIN_LIMITS_HOST_ONLY_TEXT)
+    return options.set(args.id, args.set, args.reset)
+  }
+}
+
+export function registerPluginLimitsHandlers(server: { handle(cmd: string, handler: Handler): void }, options: PluginLimitsOptions): void {
+  server.handle('plugin.limits', pluginLimitsHandler(options))
+  server.handle('plugin.limits.set', pluginLimitsSetHandler(options))
 }
 
 /** What `panel.show` needs from main (index.ts binds the plugin list, the project record and the layout service). */

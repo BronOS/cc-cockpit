@@ -62,7 +62,7 @@ export interface RoomServiceOptions {
   dir: string
   tabs: RoomServiceTabs
   sessions: RoomServiceSessions
-  /** The plugin's room send caps (Task 11: the person's override); the defaults when absent. */
+  /** The plugin's room send caps (PluginLimitsStore.limits: the person's override, read on every send); the defaults when absent. */
   limits?(pluginId: string): RoomSendLimits
   now?: () => number
   newId?: () => string

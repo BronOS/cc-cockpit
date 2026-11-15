@@ -47,6 +47,7 @@ import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from 
 import { isSettingsPageScope } from '../../shared/settings-page'
 import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
+import type { PluginLimitsView } from '../../shared/plugin-limits'
 import type { TabFlag } from '../../shared/tab-flag'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
@@ -761,6 +762,10 @@ export interface SettingsHandlerDeps {
   savePluginSettings(id: unknown, values: unknown, secrets: unknown): Promise<PluginSettingsSaveResult>
   /** The global values of a plugin's project fields (SettingsService.saveProjectDefaults), checked like the app ones. */
   saveProjectDefaults(id: unknown, values: unknown, secrets: unknown): Promise<PluginSettingsSaveResult>
+  /** A plugin's caps (SettingsService.pluginLimits); the store checks the id. */
+  pluginLimits(id: unknown): PluginLimitsView
+  /** Change a plugin's caps (SettingsService.setPluginLimits); the store checks everything. */
+  setPluginLimits(id: unknown, set: unknown, reset: unknown): PluginLimitsView
 }
 
 /**
@@ -839,6 +844,15 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
   router.handleProject('settings.pluginProjectDefaultsSave', (_ctx, payload) => {
     const p = fields('settings.pluginProjectDefaultsSave', payload)
     return deps.saveProjectDefaults(p.id, p.values, p.secrets)
+  })
+  // A plugin's caps (design-rooms.md §6). The read is any view's. The write is `adapted`: raising a cap widens what a
+  // plugin may do on the host, so a browser of a desktop is refused (the person changes it at the desktop); in server
+  // mode a browser is the only screen and may. Decided by the view main bound the call to and main's own flag.
+  router.handleProject('plugins.limits.get', (_ctx, payload) => deps.pluginLimits(idOf('plugins.limits.get', payload)))
+  router.handleProject('plugins.limits.set', (_ctx, payload, view) => {
+    if (view.remote && options.server !== true) throw new Error('plugins.limits.set: refused for a browser view outside server mode')
+    const p = fields('plugins.limits.set', payload)
+    return deps.setPluginLimits(p.id, p.set, p.reset)
   })
 }
 

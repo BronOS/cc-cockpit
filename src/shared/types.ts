@@ -299,6 +299,12 @@ export interface AppSettings {
    */
   pluginProjectDefaults?: Record<string, unknown>
   /**
+   * pluginId -> the person's overrides of its caps (design-rooms.md §6, shared/plugin-limits.ts keys): written only
+   * by Settings › Plugins and the shell-only `ccc plugin limits` write. User-writable, so every read clamps each value
+   * to 1..ceiling and ignores the rest (main/plugins/plugin-limits.ts). Absent = the defaults.
+   */
+  pluginLimits?: Record<string, unknown>
+  /**
    * The one-time migration to global values ran (main/settings/project-defaults-migration.ts): stored
    * project values equal to their schema default were dropped, so they use the global value.
    */

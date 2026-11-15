@@ -159,7 +159,16 @@ import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerPanelShowHandler, registerRoomHandlers, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import {
+  registerCliHandlers,
+  registerPanelShowHandler,
+  registerRoomHandlers,
+  registerPluginCliHandlers,
+  registerPluginConfigHandler,
+  registerPluginDevHandlers,
+  registerPluginLimitsHandlers
+} from './socket/handlers'
+import { appJsonLimitsStorage, PluginLimitsStore } from './plugins/plugin-limits'
 import { registerWebHandlers, webHandlerDeps } from './socket/web-handlers'
 import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
@@ -1746,7 +1755,10 @@ function start(server: boolean): void {
       },
       // Checked on every ctx.rooms call: a host still running a plugin that was just switched off or removed is
       // refused, by the sweep's own rule (rooms-plugin-gate.ts).
-      roomsOff: (owner) => roomsGate.offWhy(owner)
+      roomsOff: (owner) => roomsGate.offWhy(owner),
+      // The person's caps on opens and sends (design-rooms.md §6), read on every call. A getter: the store is made
+      // below, and HostApi reads it only when an open or a send comes.
+      limits: (pluginId) => pluginLimits.limits(pluginId)
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin
@@ -1829,11 +1841,18 @@ function start(server: boolean): void {
     // delivery must not set SessionInfo.typed (the person's takeover flag).
     write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
   })
+  // The person's per-plugin caps (design-rooms.md §6, plugins/plugin-limits.ts): `app.json` › `pluginLimits[id]`, read
+  // with every value clamped on each open and send (HostApi, the room delivery), written only by Settings › Plugins and
+  // the shell-only `ccc plugin limits` write.
+  const pluginLimits: PluginLimitsStore = new PluginLimitsStore({
+    storage: appJsonLimitsStorage(registry.app),
+    known: (pluginId) => plugins.get(pluginId) !== undefined
+  })
   // Rooms (design-rooms.md, rooms/room-service.ts): messages and shared docs between Claude tabs. The service owns the
   // room registry, the doc store, the delivery and the Stop decision; the tab manager (`tabs`, defined below, reached
   // only once a tab exists) keeps the saved membership and the person's mark. Loaded now, before any window restores
-  // its tabs, so a restored member can rebind (each room comes back paused). The send caps are the defaults until the
-  // person's per-plugin limits exist (rooms Task 11).
+  // its tabs, so a restored member can rebind (each room comes back paused). The room send caps are the person's
+  // per-plugin limits, read on every send.
   const rooms: RoomService = new RoomService({
     dir: join(dataDir, 'rooms'),
     tabs: {
@@ -1842,7 +1861,8 @@ function start(server: boolean): void {
       roomOf: (projectId, tabId) => tabs.roomOf(projectId, tabId),
       kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId)
     },
-    sessions
+    sessions,
+    limits: (pluginId) => pluginLimits.limits(pluginId)
   })
   rooms.load()
   // Never before the load finished, nor after a failed one: every plugin would look removed then and every room would end.
@@ -2237,6 +2257,8 @@ function start(server: boolean): void {
 
   // `ccc room ...` (socket/handlers.ts roomHandlers): a Claude tab's session token only, identity from the token.
   registerRoomHandlers(socket, rooms)
+  // `ccc plugin limits <id>` (read, any caller) and its write (HOST_ONLY_COMMANDS: a shell outside cockpit only).
+  registerPluginLimitsHandlers(socket, pluginLimits)
 
   // `ccc statusline` (Claude Code's status line in a Claude tab, cli/statusline.ts): the plan usage
   // goes to the store, the session's cost and context fill to its entry. A Claude tab only (the
@@ -2564,7 +2586,8 @@ function start(server: boolean): void {
     // Text of what the host gets: compared before and after a global save, never shown or logged.
     settingsFingerprint: (projectId, pluginId) => JSON.stringify(hostSettingsOf(projectId, pluginId)),
     projectSettingsChanged: (projectId, pluginId) =>
-      hosts.settingsChanged(projectId, pluginId).catch((err: unknown) => console.error('plugin settings push failed', err))
+      hosts.settingsChanged(projectId, pluginId).catch((err: unknown) => console.error('plugin settings push failed', err)),
+    limits: pluginLimits
   })
   // Plugin services on the Plugins page: status over the set the project's host runs, and the pick.
   const serviceChoices = new ServiceChoices({

@@ -100,14 +100,15 @@ members count as typed: a restored member gets pointers again only once the pers
 If the person removes you, closes your tab or the plugin ends the room, you are out and `ccc room`
 says you are in no room.
 
-Limits: sends per minute are capped per member and per room (a refused send says which cap), a member
-may have 100 messages waiting, and a room has at most 20 members.
+Limits: sends per minute are capped per member and per room (by default 20 and 60; the person can
+change them, and a refused send says which cap and its value), a member may have 100 messages waiting,
+and a room has at most 20 members.
 
 ## For plugins: `ctx.rooms`
 
 A plugin makes a room with `ctx.rooms.create({ title })`, opens member tabs into it with
 `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd })` (counted against the
-`ctx.sessions.open` cap of 5 tabs a minute) or hands an existing tab an invite from
+`ctx.sessions.open` cap, 5 tabs a minute by default, which the person can change) or hands an existing tab an invite from
 `ctx.rooms.invite(id, { name, coordinator })`, and seeds and collects the docs with
 `ctx.rooms.docs.list / get / put` (it reads and writes every area). It sends `from plugin` with
 `ctx.rooms.send(id, to, text)`, reads the room's record with `ctx.rooms.log(id, { since })` (`since`

@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MarketplaceEntryView, MarketplaceIndexView, MarketplaceView, PluginView } from '../../shared/ipc'
+import type { PluginLimitsView } from '../../shared/plugin-limits'
 import { MARKETPLACE_CATEGORIES, STALE_AFTER_MS, type MarketplaceCategory } from '../../shared/marketplace'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
 import { GearIcon } from './icons'
@@ -10,6 +11,9 @@ import {
   clampPage,
   FILTER_LABELS,
   filterCards,
+  limitsDraft,
+  limitsEdit,
+  type LimitsDraft,
   pageCount,
   pageOf,
   pageSlice,
@@ -457,6 +461,7 @@ function PluginCardItem(props: {
   const [updateTag, setUpdateTag] = useState('')
   const [uninstalling, setUninstalling] = useState(false)
   const [showSettings, setShowSettings] = useState(props.open)
+  const [showLimits, setShowLimits] = useState(false)
   const row = useRef<HTMLLIElement>(null)
   useEffect(() => {
     if (props.open) row.current?.scrollIntoView?.({ block: 'start' })
@@ -609,6 +614,12 @@ function PluginCardItem(props: {
                   Settings
                 </button>
               )}
+              {/* The person's caps on this plugin's opens and sends (design-rooms.md §6); every installed plugin has them. */}
+              {plugin !== undefined && (
+                <button type="button" className="quiet" aria-expanded={showLimits} onClick={() => setShowLimits((s) => !s)}>
+                  Limits
+                </button>
+              )}
               {plugin !== undefined && plugin.source.kind !== 'bundled' && (
                 <button type="button" className="quiet" disabled={busy !== null} onClick={() => setUninstalling(true)}>
                   Uninstall
@@ -696,6 +707,7 @@ function PluginCardItem(props: {
         </form>
       )}
       {plugin !== undefined && <PluginSettings plugin={plugin} shown={showSettings} reload={reload} />}
+      {plugin !== undefined && showLimits && <PluginLimits id={plugin.id} name={plugin.name} busy={busy} run={run} />}
     </li>
   )
 }
@@ -742,5 +754,106 @@ function PluginSettings(props: { plugin: PluginView; shown: boolean; reload: () 
       {/* The plugin's html page for the app scope (design-next §5.4), under its forms. */}
       {plugin.settingsPage && <PluginSettingsPage pluginId={plugin.id} pluginName={plugin.name} scope="app" />}
     </>
+  )
+}
+
+/**
+ * A plugin's "Limits" (design-rooms.md §6): the caps on the tabs it opens and the texts and room messages it sends a
+ * minute, the person's to raise or lower within main's ceilings. Read from main when shown (`plugins.limits.get`) and
+ * saved whole (`plugins.limits.set`, which checks every value again); an empty field goes back to the default. They are
+ * the person's alone: no plugin call and no Claude tab can change them (`ccc plugin limits` writes only from a shell
+ * outside cockpit).
+ */
+function PluginLimits(props: { id: string; name: string; busy: string | null; run: Action['run'] }): React.JSX.Element {
+  const { id, busy, run } = props
+  const [view, setView] = useState<PluginLimitsView | null>(null)
+  const [draft, setDraft] = useState<LimitsDraft>({})
+  const [failed, setFailed] = useState(false)
+  const baseId = useId()
+  const apply = (v: PluginLimitsView): void => {
+    setView(v)
+    setDraft(limitsDraft(v))
+  }
+  useEffect(() => {
+    let live = true
+    window.cockpit.invoke('plugins.limits.get', { id }).then(
+      (v) => {
+        if (live) apply(v)
+      },
+      () => {
+        if (live) setFailed(true)
+      }
+    )
+    return () => {
+      live = false
+    }
+  }, [id])
+  if (failed) return <p className="settings-error">The limits could not be read.</p>
+  if (view === null) return <p className="settings-item-meta">Loading limits…</p>
+  const { edit, problems } = limitsEdit(view, draft)
+  const save = (payload: { set?: Array<[string, number]>; reset?: string[] }): void => {
+    void run(`limits ${id}`, () => window.cockpit.invoke('plugins.limits.set', { id, ...payload })).then((v) => {
+      if (v) apply(v)
+    })
+  }
+  return (
+    <form
+      className="settings-subpanel"
+      aria-label={`Limits of ${props.name}`}
+      data-testid="plugin-limits"
+      onSubmit={(ev) => {
+        ev.preventDefault()
+        if (edit !== null && Object.keys(problems).length === 0) save(edit)
+      }}
+    >
+      <p className="settings-item-meta">
+        How much this plugin may do a minute. Raise a cap only for a plugin you trust to use it; an empty field goes back to the
+        default.
+      </p>
+      {view.limits.map((l) => {
+        const inputId = `${baseId}-${l.key}`
+        const problem = problems[l.key]
+        return (
+          <div className="settings-row" key={l.key}>
+            <div className="settings-row-text">
+              <label className="settings-row-label" htmlFor={inputId}>
+                {l.label}
+              </label>
+              <div className="settings-row-help">
+                <span className="mono">{l.key}</span> · default {l.default}, at most {l.ceiling}
+                {l.overridden && ' · set by you'}
+              </div>
+              {problem !== undefined && (
+                <div role="alert" className="settings-error">
+                  {problem}
+                </div>
+              )}
+            </div>
+            <div className="settings-row-control">
+              <input
+                id={inputId}
+                type="text"
+                inputMode="numeric"
+                className="settings-tag mono"
+                value={draft[l.key] ?? ''}
+                aria-invalid={problem !== undefined}
+                onChange={(ev) => setDraft((d) => ({ ...d, [l.key]: ev.target.value }))}
+                spellCheck={false}
+              />
+              {l.overridden && (
+                <button type="button" className="quiet" disabled={busy !== null} onClick={() => save({ reset: [l.key] })}>
+                  Use default
+                </button>
+              )}
+            </div>
+          </div>
+        )
+      })}
+      <div className="settings-row-control">
+        <button type="submit" className="primary" disabled={busy !== null || edit === null || Object.keys(problems).length > 0}>
+          Save limits
+        </button>
+      </div>
+    </form>
   )
 }

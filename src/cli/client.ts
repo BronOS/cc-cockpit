@@ -43,6 +43,7 @@ import {
   type PluginCliSpec
 } from '../shared/plugin-cli'
 import { formatPluginConfig, formatPluginConfigSet, type PluginConfigSetResult, type PluginConfigView } from '../shared/plugin-config'
+import { formatPluginLimits } from '../shared/plugin-limits'
 import { formatUsageEntry, parseArgs, USAGE, usageFor, type Command } from './args'
 import { guideText, topicList } from './guide'
 import { hookSocketPath } from './hook-socket'
@@ -453,6 +454,16 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       }
       routing = callerOf(env, command.project, cwd, 'plugin config')
       break
+    // `ccc plugin limits`: app-wide, so no project; the token goes along when there is one (the default routing), for
+    // the read (allowed from a tab) and so main refuses the write with the host-only text (protocol.ts HOST_ONLY_COMMANDS).
+    case 'plugin-limits':
+      args = { id: command.id }
+      if (command.set.length > 0 || command.reset.length > 0) {
+        cmd = 'plugin.limits.set'
+        if (command.set.length > 0) args.set = command.set
+        if (command.reset.length > 0) args.reset = command.reset
+      } else cmd = 'plugin.limits'
+      break
     // `ccc room ...`: the token alone (the default routing); main takes the tab, room and name from it, never from args.
     case 'room-status':
       cmd = 'room.status'
@@ -559,14 +570,15 @@ function roundTrip(socket: Socket, line: string, timeoutMs: number | undefined):
 /** What `ccc web` prints, exit 1, when nothing answers on the socket. */
 export const NOT_RUNNING = 'cc-cockpit is not running'
 
+/** A command a person runs to see or change the app's own settings: "not running" is an answer they need. */
 function isWebCommand(command: UserCommand): boolean {
-  return command.kind.startsWith('web-')
+  return command.kind.startsWith('web-') || command.kind === 'plugin-limits'
 }
 
 /**
  * A user command (everything but `hook`): one request, one reply. Exit codes: 0 with the result
  * printed, or 0 and silent when the app is not there (not running, stale socket), because scripts and skills call `ccc` without checking that the cockpit is
- * open (`ccc web` excepted: exit 1, NOT_RUNNING); 1 with the app's error on stderr (main refused the request, or dropped the connection unanswered); 2 for a usage error.
+ * open (`ccc web` and `ccc plugin limits` excepted: exit 1, NOT_RUNNING); 1 with the app's error on stderr (main refused the request, or dropped the connection unanswered); 2 for a usage error.
  */
 export async function runCommand(
   command: UserCommand,
@@ -892,6 +904,7 @@ function formatResult(command: UserCommand, result: unknown): string {
       ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
       : formatPluginConfig(result as PluginConfigView, plainLine)
   }
+  if (command.kind === 'plugin-limits') return formatPluginLimits(result, plainLine)
   if (command.kind === 'plugin-list') {
     const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
     if (command.json) return `${JSON.stringify(list)}\n`
