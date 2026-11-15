@@ -136,11 +136,13 @@ test('ccc download from a Claude tab: an armed dialog in both browser views, a c
     const path = join(projectDir, 'report.bin')
     expect(await offer(c, path, 0)).toBe(0)
     const dialogs = [first, second].map((b) => b.page.getByTestId('download-offer'))
+    // Inert is checked at the first visible frame, before the arming timer can run out on a slow machine.
+    await expect(dialogs[0]!).toBeVisible()
+    await expect(dialogs[0]!.getByTestId('download-offer-accept')).toBeDisabled()
     for (const d of dialogs) {
       await expect(d).toBeVisible()
       await expect(d.getByTestId('download-offer-path')).toHaveText(path)
     }
-    await expect(dialogs[0]!.getByTestId('download-offer-accept')).toBeDisabled()
     await expect(dialogs[0]!.getByTestId('download-offer-accept')).toBeEnabled({ timeout: 5_000 })
 
     // Cancel in the second view closes both, and nothing downloads.
@@ -188,6 +190,9 @@ test('ccc download from a Claude tab: an armed dialog in both browser views, a c
     expect(await offer(c, join(c.root, 'home', '.ssh', 'x'), 3)).toBe(1)
     await new Promise((r) => setTimeout(r, 500))
     for (const d of dialogs) await expect(d).toHaveCount(0)
+    // The refusals left nothing on disk: only the one accepted download exists, in the first view.
+    expect(await first.downloads()).toHaveLength(1)
+    expect(await second.downloads()).toEqual([])
   } finally {
     for (const b of browsers) await b.close()
     await close()
