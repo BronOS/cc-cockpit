@@ -204,3 +204,67 @@ test('web access turned on while a tab is full-screen: the browser shows its scr
     await browser.close()
   }
 })
+
+/** The pty's size as `stty size` sees it, printed in the browser (its sizer: typing there takes nothing). */
+async function ptySize(browser: Awaited<ReturnType<typeof openBrowser>>, marker: string): Promise<string> {
+  const { page: webPage } = browser
+  await webPage.keyboard.type(`echo ${marker}-$(stty size | tr ' ' x)`)
+  await webPage.keyboard.press('Enter')
+  // The command line holds `${marker}-$(`: only the output matches digits.
+  const pattern = new RegExp(`${marker}-(\\d+x\\d+)`)
+  await browser.waitForTerminalText(pattern)
+  const match = pattern.exec((await browser.terminalText()).replaceAll('\n', ''))
+  if (!match?.[1]) throw new Error(`no ${marker} size printed`)
+  return match[1]
+}
+
+// The release blocker: an idle desktop window got focus back when another window on its workspace
+// closed (a test run's, a dev app's), and its terminal took the size from the device the person was
+// using, with nobody at the desktop. Coming back takes nothing now; the person's first press does.
+test('web access: a desktop window that is left and focused again does not take the size; a press in it does', async ({ cockpit }) => {
+  test.setTimeout(90_000)
+  const { page } = cockpit
+  const web = await enableWebAccess(cockpit)
+  await cockpit.newTab('shell')
+  await cockpit.waitForTerminalText('FAKE-SHELL ready')
+
+  const browser = await openBrowser(web.link)
+  try {
+    const { page: webPage } = browser
+    const projects = webPage.getByRole('list', { name: 'Open projects' }).getByRole('link')
+    await expect(projects).toHaveCount(1)
+    await projects.click()
+    await browser.waitForTerminalText('FAKE-SHELL ready')
+    const host = webPage.locator('.terminal-view:not([hidden]) .terminal-host')
+    // The browser took the size when it loaded; zoomed in, its pane is far smaller than the desktop's.
+    await browser.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.setZoomFactor(2.5))
+    await webPage.locator('.terminal-view:not([hidden]) .xterm').click()
+    const before = await ptySize(browser, 'sa')
+    await expect(host).not.toHaveClass(/terminal-crop/)
+
+    // The desktop window is left and focused again, its terminal's textarea focused with it, the
+    // way a window manager hands focus back: no press, no key. Both the real window calls and the
+    // page's own events (a headless run may not move focus at all).
+    await cockpit.app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0]
+      win?.blur()
+      win?.focus()
+    })
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('blur'))
+      window.dispatchEvent(new Event('focus'))
+      document.querySelector<HTMLTextAreaElement>('.terminal-view:not([hidden]) .xterm-helper-textarea')?.focus()
+    })
+    // Time for a take to reach main and the pty, had there been one (tabs.fit is at once).
+    await page.waitForTimeout(1000)
+    expect(await ptySize(browser, 'sb')).toBe(before)
+    await expect(host).not.toHaveClass(/terminal-crop/)
+
+    // A press in the desktop's pane is the person there: it takes, and the browser now follows the
+    // desktop's far larger size (cropped).
+    await page.locator('.terminal-view:not([hidden]) .terminal-host').click()
+    await expect(host).toHaveClass(/terminal-crop/)
+  } finally {
+    await browser.close()
+  }
+})

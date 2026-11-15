@@ -173,6 +173,8 @@ export interface OverlayManagerOptions {
   isViewLive?(viewId: ViewId, windowId: number): boolean
   /** A view's device name for `info.heldBy` ("Desktop", a browser's device). Default: the view id. */
   deviceOf?(viewId: ViewId): string
+  /** A view's lineage across a reconnect (TabManagerOptions.lineageOf), for the overlays' sizes. */
+  lineageOf?(viewId: ViewId): string | undefined
   /**
    * The command a chord fires in this window (main's command registry with the user's overrides),
    * so `overlay.pop` / `overlay.closeTop` follow a rebinding in keys typed into a url view.
@@ -490,7 +492,8 @@ export class OverlayManager {
     this.sizes = new ViewSizes<string>({
       apply: (overlayId, cols, rows) => this.pty.resize(overlayId, cols, rows),
       debounceMs: 0,
-      ...(options.server === true ? { measured: (viewId: ViewId) => isRemoteViewId(viewId) } : {})
+      ...(options.server === true ? { measured: (viewId: ViewId) => isRemoteViewId(viewId) } : {}),
+      ...(options.lineageOf ? { lineage: (viewId: ViewId) => options.lineageOf?.(viewId) } : {})
     })
     this.log = options.log ?? warnLog
     this.pty = new PtyService({

@@ -1069,11 +1069,16 @@ export class WebGateway {
       if (tracked) this.deps.auth.devices.socketOpened(device.id)
       this.deps.accessLog.write({ event: 'connect', device: device.id, name: device.name })
       this.connectionsChanged()
-      ws.on('close', () => {
+      ws.on('close', (code: number) => {
         this.sockets.delete(ws)
         this.alive.delete(ws)
         if (tracked) this.deps.auth.devices.socketClosed(device.id)
-        this.deps.accessLog.write({ event: 'disconnect', device: device.id, name: device.name })
+        // The close code tells a drop's side apart, which the log alone could not (a device that
+        // reconnected every 13 s for hours): 1006 no close frame (the network, a tunnel, a peer
+        // that died), 1005 the page's own close() (its ready timeout, a retry), 1001 the page going
+        // away (a reload), a 4xxx code main's own close (web-protocol.ts CLOSE). The number only:
+        // a peer's close reason is its own text.
+        this.deps.accessLog.write({ event: 'disconnect', device: device.id, name: device.name, detail: `close ${code}` })
         this.connectionsChanged()
       })
       // `ws` reports an oversize or malformed frame as an 'error' on the socket (after sending the

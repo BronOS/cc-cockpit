@@ -302,6 +302,17 @@ export class WebConnections {
   }
 
   /**
+   * What ties an open view to the views of the same screen before and after a reconnect (the size
+   * a dropped view held goes back to it, views/view-sizes.ts `departed`): its signed-in device's id.
+   * Undefined for None's anonymous caller (every browser is that one "device") and a view that is
+   * gone. The id is main's own (devices.ts), never the page's.
+   */
+  lineageOf(viewId: ViewId): string | undefined {
+    const conn = this.open.get(viewId)
+    return conn !== undefined && conn.deviceMode !== 'none' ? `device:${conn.deviceId}` : undefined
+  }
+
+  /**
    * The signed-in device behind an open view, for `web-access.log` when it acts on the card (server
    * mode's Revoke and Disconnect, design-web.md §9.6); undefined for a view that is gone.
    */
@@ -384,6 +395,11 @@ export class WebConnection {
   /** The signed-in device's name (TabInfo.typedBy). */
   get deviceName(): string {
     return this.device.name
+  }
+
+  /** How the device signed in ('none': the anonymous caller every browser shares, WebConnections.lineageOf). */
+  get deviceMode(): WebDevice['mode'] {
+    return this.device.mode
   }
 
   /**

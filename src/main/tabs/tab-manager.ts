@@ -26,7 +26,7 @@ import { DesktopFlow, VIEW_LOW_WATER } from '../terminals/desktop-flow'
 import type { MirrorView } from '../terminals/mirror'
 import type { TokenOwner } from '../socket/socket-server'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
-import { TerminalSizes } from './terminal-sizes'
+import { RECONNECT_GRACE_MS, TerminalSizes } from './terminal-sizes'
 import { claudeArgv, commandArgv, loginShellOf, shellArgv } from './claude-argv'
 import { warnLog } from '../warn-log'
 
@@ -131,6 +131,14 @@ export interface TabManagerOptions {
    * requester's own text, web/devices.ts), the desktop's. Default: "Desktop" or "a browser".
    */
   deviceOf?: (viewId: ViewId) => string
+  /**
+   * Which views are one screen across a reconnect (a browser view's signed-in device id; undefined
+   * for the desktop's and None's anonymous browsers): a tab whose size fell from a view that left
+   * goes back to the next view of its lineage (views/view-sizes.ts `departed`).
+   */
+  lineageOf?: (viewId: ViewId) => string | undefined
+  /** Overrides RECONNECT_GRACE_MS (views/view-sizes.ts) for tests. */
+  reconnectGraceMs?: number
   /** Overrides SHELL_MIN_LIFE_MS; main sets it only under CC_COCKPIT_TEST so e2e can exit fast. */
   shellMinLifeMs?: number
   log?: (message: string) => void
@@ -434,6 +442,8 @@ export class TabManager {
       // Server mode: only a browser's report counts. The hidden page's resize observer still runs
       // (at its 480x320 window), and as a tab's only view it would size the pty to that.
       ...(options.server === true ? { measured: (viewId: ViewId) => isRemoteViewId(viewId) } : {}),
+      // A browser that drops and reconnects keeps the size it had (views/view-sizes.ts `hold`).
+      ...(options.lineageOf ? { lineage: options.lineageOf, reconnectGraceMs: options.reconnectGraceMs ?? RECONNECT_GRACE_MS } : {}),
       ...(options.sizeDebounceMs === undefined ? {} : { debounceMs: options.sizeDebounceMs })
     })
     this.desktop = new DesktopFlow({

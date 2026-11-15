@@ -21,6 +21,9 @@
 // was active last (typed or reported a size); with none, the pty keeps its size, and the first view
 // that shows again takes it. A hidden view that is the tab's only view still sizes it (nobody else
 // can: a restarted tab in a minimized window must not stay at 80 x 24).
+// A fallback is undone: the view the size fell from takes it back when shown again, and a browser
+// that dropped keeps it for RECONNECT_GRACE_MS, its device's next view taking it back (also later),
+// unless a view explicitly took the size meanwhile (views/view-sizes.ts `departed`).
 //
 // View ids come from main (router CallView, never a payload); tab ids are checked by TabManager
 // before they get here. No Electron, no timers of its own beyond the injected ones: vitest drives it.
@@ -29,7 +32,7 @@
 
 import { ViewSizes, type ViewSizesDeps } from '../views/view-sizes'
 
-export { TAKE_DEBOUNCE_MS } from '../views/view-sizes'
+export { RECONNECT_GRACE_MS, TAKE_DEBOUNCE_MS } from '../views/view-sizes'
 
 export type TerminalSizesDeps = ViewSizesDeps<string>
 

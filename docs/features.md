@@ -491,7 +491,7 @@ Open button (it would open a window on the desktop's screen; a server's browsers
 Browser panel of a project open on a desktop, show "available on the desktop" (in server mode the panel is streamed to the browser, see Server mode); window controls, full screen and the update notice are not shown. With no theme
 picked ("Follow the system"), each browser shows the light or dark built-in of its own system setting, not the
 computer's; a picked theme is the same everywhere. On a computer with no display (server mode) the approvals move to the browser: see Server mode below. A terminal has one
-size for all places (the one that typed, clicked, selected its tab or was brought to the front last, or "Fit to this screen"). An HTML overlay or a plugin's settings page is
+size for all places (the one that typed, clicked or selected its tab last, or "Fit to this screen"; a window or browser tab brought back to the front takes it at your first click or key there, not by itself). An HTML overlay or a plugin's settings page is
 open in one place at a time, with Take over on the others.
 
 **For plugin authors:** nothing has to change for a panel to work in a browser, with three rules. Load everything by a
@@ -979,13 +979,18 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   from a blank one when the desktop did not answer, so a cursor position or mode query then reports the top-left corner
   and default modes rather than the program's real state.
 - A terminal shown in several places (the desktop window and browsers) has one size: the place that typed last (after
-  half a second without the other typing), that pressed "Fit to this screen", or where you clicked or focused the
-  terminal, selected its tab (a click in the tab bar, the tab switcher, a tab shortcut, or a new tab made with +; not a
-  tab selected by a plugin or the Sessions panel, nor the neighbour of a closed tab), brought its window or browser tab
-  to the front, or opened or reloaded the browser page (at once). The others draw it at that size, scaled
+  half a second without the other typing), that pressed "Fit to this screen", or where you clicked in the terminal or
+  moved into it with the keyboard, selected its tab (a click in the tab bar, the tab switcher, a tab shortcut, or a new
+  tab made with +; not a tab selected by a plugin or the Sessions panel, nor the neighbour of a closed tab), clicked or
+  pressed a key in its window or browser tab after bringing it back to the front, or opened or reloaded the browser page
+  (at once). Bringing a window back to the front alone takes nothing: an idle window that gets focus back because
+  another window closed must not take the size from the place you are using. The others draw it at that size, scaled
   down (a smaller font, never below 70%; past that the terminal scrolls, kept at the bottom and the cursor) when it is
   larger than their pane, with empty space when it is smaller. A
-  minimized window or a browser tab in the background never sizes a terminal while another place shows it.
+  minimized window or a browser tab in the background never sizes a terminal while another place shows it; the size it
+  had goes back to it when it is shown again, unless another place took the size meanwhile. A browser whose connection
+  drops keeps the size for 5 seconds, so a reconnect (the same device) changes nothing; one that does not come back
+  hands it on, and a later reconnect of that device takes it back unless another place took it meanwhile.
 - Keys typed in a browser are the person's, as on the desktop: they mark the tab as typed in (plugins can no longer
   send to it) and answer Claude's dialogs. Keys from the desktop and browsers typing at once interleave, as two
   keyboards on one machine would; there is no turn-taking. When the last keys in a tab came from another place, its

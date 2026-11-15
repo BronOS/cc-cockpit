@@ -190,7 +190,10 @@ terminal tabs only: a page tab is never a pane.
 - With web access on, a headless terminal mirror worker (`main/terminals/mirror-worker.ts`; `view-terminals.ts` for browser views) owns pty flow control and answers the
   program's terminal queries; views get numbered chunks and snapshots and resync from them, the desktop included. Do not add a
   second consumer of pty data or a reply path that bypasses the worker. Terminal size has one owner (last typer or "Fit to this
-  screen"); a pty-less tab refits in main.
+  screen"); only a person's gesture in a view takes it (a window regaining focus or a page shown again takes nothing until
+  the first press or key there), and an automatic fallback (sizer hidden or dropped) goes back to that view or its device's
+  reconnect unless someone took the size meanwhile (`view-sizes.ts` `departed`, `RECONNECT_GRACE_MS`); a pty-less tab refits
+  in main.
 - A plugin host call's *origin view* (`src/host/ctx/origin-view.ts`, `AsyncLocalStorage`, kept until the listener returns, 10 s cap)
   is a hint for focus-like calls only (a wrong view costs a focus on the wrong screen); main's checks never rest on it. Plugins
   keep working unchanged; `ctx.panels.post` takes the optional `{ view }`.

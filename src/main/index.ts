@@ -1064,6 +1064,7 @@ function start(server: boolean): void {
       return last === undefined ? live : [last, ...live.filter((v) => v !== last)]
     },
     deviceOf: (viewId) => viewDevice(viewId),
+    lineageOf: (viewId) => webConnections.lineageOf(viewId),
     commandForChord,
     // `hosts` is defined below; these run once a typed overlay is open (design-next §3.3).
     typeButtons: (windowId): OverlayTypeButtons | undefined => hosts.overlayButtons(windowId),
@@ -1889,6 +1890,8 @@ function start(server: boolean): void {
     closeOnCleanExit: () => !quitting && tabExitOf(registry.app.data.tabExit) === 'close-clean',
     // TabInfo.typedBy: the typing view's device (viewDevice).
     deviceOf: (viewId) => viewDevice(viewId),
+    // A browser that reconnects (a fresh view id) gets back the tabs whose size fell from it.
+    lineageOf: (viewId) => webConnections.lineageOf(viewId),
     emit: sendToProject,
     // The desktop page alone: a tab's screen is asked of it to seed web access's copy (mirror.ts
     // "Seeding"). The same view sink `tabs.data` goes through, so the ask follows that output.
