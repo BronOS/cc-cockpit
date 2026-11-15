@@ -53,13 +53,10 @@
 // fresh pointer evidence, so a click the shell could not prove costs one more click, never a key in
 // the wrong pane.
 
-/** A box in viewport pixels. */
-export interface ViewportRect {
-  left: number
-  top: number
-  width: number
-  height: number
-}
+import type { FrameRect } from './page-frames'
+
+/** A box in viewport pixels; the frame layer sits at the viewport's origin, so this is a FrameRect. */
+export type ViewportRect = FrameRect
 
 /**
  * How far outside a frame's box the last pointer position may be and still count as "went into it":
@@ -76,10 +73,7 @@ export const POINTER_NEAR_PX = 24
  */
 export const POINTER_FRESH_MS = 3000
 
-/**
- * What the shell does about a frame holding the keyboard: pick its pane, or blur it and leave the
- * keyboard on nothing (never on another element: a frame focus without evidence may be a page's own).
- */
+/** What the shell does about a frame holding the keyboard: pick its pane, or blur it (keyboard on nothing; see the header). */
 export type FramePick = { pick: string } | { blur: true }
 
 /** What the shell knows about the frame holding the keyboard (checkFrameFocus gathers it). */
@@ -104,8 +98,7 @@ export interface FrameEvidence {
  *   frame's pass-through lets reach the shell, a terminal click, a chord).
  * - With evidence: the person moved into that pane; the shell picks it (dispatches the selection,
  *   so the outline and `tabs.selected` follow).
- * - Without: the shell blurs the frame and the keyboard goes to nothing, even when the person was
- *   typing in Claude a moment ago (a pane mounting beside it): the check may have been a page's doing.
+ * - Without: the shell blurs the frame and the keyboard goes to nothing (the header's fail-safe).
  */
 export function framePick(activeTab: string | null, activeId: string | null, e: FrameEvidence): FramePick | null {
   if (activeTab === null) return null
@@ -270,9 +263,7 @@ export interface FrameCheckPool {
 
 /**
  * What the check needs from TabsPane, which owns the selection: the focused pane (null while the keys
- * are off, D3) and picking a pane as the person's own act. There is no way here to focus anything
- * else: no "give the keyboard back to the focused pane" (often a Claude terminal) and no give-back to
- * where the person typed last, since a frame focus the shell could not prove may be a page's doing.
+ * are off, D3) and picking a pane as the person's own act. Nothing here focuses anything else (header).
  */
 export interface FrameFocusHandler {
   activeId(): string | null
@@ -283,12 +274,9 @@ export interface FrameFocusHandler {
  * Whether the frame holding the keyboard now may keep it (design-split-pages.md §4): run at the
  * window's `blur`, at a page's `cc-plugin.tab-focus` hint (`hinted`: its frame's tab) and before a
  * chord or Ask Claude from a frame (PageTabArea.tsx checkFrameFocus), whose target it names. With
- * the person's evidence the pane is picked. Without, the frame is blurred, lets the pointer through to
- * its pane until the pointer moves (so the next press on it is one the shell sees), and the keyboard
- * goes to nothing. A hint from another frame while one is on record first puts the record right
- * (PageFrames.resync: the keyboard moves to the hinting frame), so a hint can move the keyboard
- * between frames; its effects are only `resync`, `blurFrame`, `passThrough` and `pick` of a frame's
- * pane, so nothing a page posts ever puts the keyboard in a terminal.
+ * the person's evidence the pane is picked; without, the frame is blurred and lets the pointer
+ * through to its pane until the pointer moves (so the next press on it is one the shell sees). Its
+ * effects are only `resync`, `blurFrame`, `passThrough` and `pick`: never a terminal (header).
  */
 export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, pointer: PointerEvidence, hinted?: string): FrameCheck {
   // Frame to frame, the shell's `activeElement` can stay on the frame the person left (measured:
