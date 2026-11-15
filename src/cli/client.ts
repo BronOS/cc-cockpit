@@ -309,11 +309,24 @@ export const REPLY_TIMEOUT_MS = 10_000
 export interface Output {
   stdout(text: string): void
   stderr(text: string): void
+  /**
+   * `stdout`, resolved with whether the text was written out (not merely queued), for a caller that must know before it
+   * goes on (`ccc room read`'s ack). Absent in an Output whose writes are synchronous: `stdout` is then enough.
+   */
+  stdoutFlushed?(text: string): Promise<boolean>
 }
 
 const processOutput: Output = {
   stdout: (text) => void process.stdout.write(text),
-  stderr: (text) => void process.stderr.write(text)
+  stderr: (text) => void process.stderr.write(text),
+  stdoutFlushed: (text) =>
+    new Promise<boolean>((resolve) => {
+      // A pipe's write is async: the callback runs once it is flushed, with the error when the reader went away (EPIPE).
+      // That error is also emitted as an `error` event afterwards, which with no listener would crash the process (exit
+      // 1, index.ts): the listener stays on purpose, this caller has already answered it through `resolve(false)`.
+      process.stdout.on('error', () => resolve(false))
+      process.stdout.write(text, (err) => resolve(err === null || err === undefined))
+    })
 }
 
 /** A version as the app reports it. Anything else in a reply is not worth printing. */
@@ -934,7 +947,9 @@ function stripOneNewline(s: string): string {
  * characters a message, 256 KiB a doc, the characters a doc may hold) and says which one it was.
  */
 async function readRoomStdin(stdin: Readable, what: string, out: Output): Promise<{ text: string } | { code: number }> {
-  const read = await readStdinBounded(stdin, MAX_CLI_IO_BYTES, STDIN_READ_TIMEOUT_MS)
+  // Strict UTF-8: a Latin-1 or binary stdin would otherwise be sent with U+FFFD in place of its bytes (a doc "exactly as
+  // given" stored changed, which main cannot tell from what was meant).
+  const read = await readStdinBounded(stdin, MAX_CLI_IO_BYTES, STDIN_READ_TIMEOUT_MS, true)
   if ('timedOut' in read) {
     out.stderr(`ccc: ${what}: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`)
     return { code: CLI_TIMEOUT_CODE }
@@ -944,8 +959,16 @@ async function readRoomStdin(stdin: Readable, what: string, out: Output): Promis
     out.stderr(`ccc: ${what}: reading stdin failed: ${read.error}\n`)
     return { code: 1 }
   }
-  if (read.truncated || encodedBytes(read.text) > MAX_LINE_BYTES - 4096) {
+  if (read.truncated) {
     out.stderr(`ccc: ${what}: stdin is over ${MAX_CLI_IO_BYTES / 1024} KiB\n`)
+    return { code: 1 }
+  }
+  if (read.invalidUtf8) {
+    out.stderr(`ccc: ${what}: stdin is not valid UTF-8 text\n`)
+    return { code: 1 }
+  }
+  if (encodedBytes(read.text) > MAX_LINE_BYTES - 4096) {
+    out.stderr(`ccc: ${what}: stdin is too large once encoded for the app (each control character takes up to six bytes)\n`)
     return { code: 1 }
   }
   return { text: read.text }
@@ -1010,7 +1033,21 @@ async function runRoomRead(env: Env, out: Output): Promise<number> {
       return 0
     }
     // main's fenced text as it is: its fence escapes the control characters, and flattening it would join its lines.
-    out.stdout(`${batch.text}\n`)
+    // The ack goes only once the text has left this process: `write` returns as soon as it is queued, and a reader that
+    // went away (Esc, the Bash tool's timeout) would leave messages acked and dropped that nobody saw. Not flushed in
+    // time, or a write error: no ack, so the same batch shows again at the next read.
+    const text = `${batch.text}\n`
+    let written: boolean | typeof TIMED_OUT = true
+    try {
+      if (out.stdoutFlushed) written = await within(out.stdoutFlushed(text), REPLY_TIMEOUT_MS)
+      else out.stdout(text)
+    } catch {
+      written = false
+    }
+    if (written !== true) {
+      out.stderr('ccc: could not write the room messages to stdout; they stay queued and show again at the next ccc room read\n')
+      return 0
+    }
     const ack = typeof batch.ack === 'string' ? batch.ack : undefined
     if (ack === undefined) {
       out.stderr('ccc: the app sent no ack for this read; the messages may show again\n')
@@ -1113,6 +1150,12 @@ export async function run(
       case 'room-send':
       case 'room-doc-put': {
         if (command.text !== undefined) return await runCommand(command, env, cwd, out)
+        // Nothing to wait up to 40 s for stdin over: main refuses a tokenless caller anyway (and stays the authority).
+        // A tab's env always has the token, app running or not, so this is never the app-closed silent exit 0.
+        if (!env.APP_TAB_TOKEN) {
+          out.stderr('ccc: ccc room needs a Claude tab (run it inside a cockpit Claude tab)\n')
+          return 1
+        }
         const what = command.kind === 'room-send' ? 'room send' : 'room doc put'
         const read = await readRoomStdin(stdin, what, out)
         if ('code' in read) return read.code

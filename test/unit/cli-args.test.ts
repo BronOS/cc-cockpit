@@ -167,6 +167,10 @@ describe('ccc room (design-rooms.md §4)', () => {
     expect(parseArgs(['room', 'send', 'bob', '--', '--help'])).toEqual({ kind: 'room-send', to: 'bob', text: '--help' })
     // `-` among other words is text, not stdin.
     expect(parseArgs(['room', 'send', 'bob', 'a', '-'])).toEqual({ kind: 'room-send', to: 'bob', text: 'a -' })
+    // A body of exactly --help or -h is a help request; inside other words it is text.
+    expect(parseArgs(['room', 'send', 'bob', '--help'])).toEqual({ kind: 'help', command: 'room' })
+    expect(parseArgs(['room', 'send', 'bob', '-h'])).toEqual({ kind: 'help', command: 'room' })
+    expect(parseArgs(['room', 'send', 'bob', 'see', '--help'])).toEqual({ kind: 'room-send', to: 'bob', text: 'see --help' })
   })
 
   it.each([[['room', 'send']], [['room', 'send', 'bob']], [['room', 'send', 'bob', '  ']], [['room', 'send', '-', 'hi']], [['room', 'send', '--json', 'hi']]])(

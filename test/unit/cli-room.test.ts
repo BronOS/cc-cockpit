@@ -232,9 +232,38 @@ describe('ccc room send - and doc put: stdin', () => {
     // 200 KiB of control characters is under the raw cap but six times that as JSON: over MAX_LINE_BYTES.
     const c2 = capture()
     expect(await run(['room', 'doc', 'put', 'shared/x.md', '-'], env(), stdinOf('\u0001'.repeat(200 * 1024)), c2.out, root)).toBe(1)
-    expect(c2.stderr()).toContain('stdin is over 256 KiB')
+    // Not "over 256 KiB": it is not, only its encoding is.
+    expect(c2.stderr()).toContain('too large once encoded')
+    expect(c2.stderr()).not.toContain('over 256 KiB')
     expect(seen).toEqual([])
     expect(MAX_LINE_BYTES).toBeGreaterThan(MAX_CLI_IO_BYTES)
+  })
+
+  it('stdin that is not UTF-8 is refused with nothing sent, not sent with U+FFFD in it', async () => {
+    const seen: Request[] = []
+    await fakeApp(seen, [ok(null), ok(null)])
+    for (const argv of [['room', 'doc', 'put', 'shared/x.md', '-'], ['room', 'send', 'bob', '-']]) {
+      const c = capture()
+      expect(await run(argv, env(), Readable.from([Buffer.from([0x63, 0x61, 0x66, 0xe9])]), c.out, root)).toBe(1)
+      expect(c.stderr()).toContain('not valid UTF-8')
+    }
+    // A leading BOM is valid text and goes through exactly.
+    const bom = capture()
+    expect(await run(['room', 'doc', 'put', 'shared/x.md', '-'], env(), stdinOf('\ufeffhi'), bom.out, root)).toBe(0)
+    expect(seen.map((r) => r.args)).toEqual([{ path: 'shared/x.md', text: '\ufeffhi' }])
+  })
+
+  it('with no tab token it refuses at once instead of waiting for stdin', async () => {
+    const seen: Request[] = []
+    await fakeApp(seen, [ok(null)])
+    const open = new PassThrough() // never closed: a read would end in exit 124 after 40 s
+    for (const argv of [['room', 'send', 'bob', '-'], ['room', 'doc', 'put', 'shared/x.md', '-']]) {
+      const c = capture()
+      expect(await run(argv, { CC_COCKPIT_SOCK: sock }, open, c.out, root)).toBe(1)
+      expect(c.stderr()).toContain('needs a Claude tab')
+    }
+    expect(seen).toEqual([])
+    open.destroy()
   })
 
   it('a doc is sent exactly: a text of 256 KiB with many line breaks still goes', async () => {
@@ -319,6 +348,39 @@ describe('ccc room read: print, then ack on the same connection', () => {
     })
     await run(['room', 'read'], env(), stdinOf(''), c.out, root)
     expect(printedAtAck).toBe(`${BATCH}\n`)
+  })
+
+  it('sends no ack when the text did not reach stdout: a failed write, or one that never completes', async () => {
+    for (const flush of [() => Promise.resolve(false), () => Promise.reject(new Error('EPIPE')), () => new Promise<boolean>(() => {})]) {
+      const seen: Request[] = []
+      const server = await fakeApp(seen, [ok({ count: 1, more: 0, text: BATCH, ack: 'm-1' }), ok({ acked: 1 }, 2)])
+      const c = capture()
+      const out: Output = { ...c.out, stdoutFlushed: flush }
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        const pending = run(['room', 'read'], env(), stdinOf(''), out, root)
+        while (seen.length === 0) await new Promise<void>((r) => setImmediate(r))
+        await vi.advanceTimersByTimeAsync(10_001)
+        expect(await pending).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+      expect(seen.map((r) => r.cmd)).toEqual(['room.read'])
+      expect(c.stderr()).toContain('stay queued')
+      await new Promise<void>((r) => server.close(() => r()))
+      closers.pop()
+    }
+  })
+
+  it('acks once a flushed write reports success', async () => {
+    const seen: Request[] = []
+    await fakeApp(seen, [ok({ count: 1, more: 0, text: BATCH, ack: 'm-1' }), ok({ acked: 1 }, 2)])
+    const c = capture()
+    let written = ''
+    const out: Output = { ...c.out, stdoutFlushed: async (t) => ((written += t), true) }
+    expect(await run(['room', 'read'], env(), stdinOf(''), out, root)).toBe(0)
+    expect(written).toBe(`${BATCH}\n`)
+    expect(seen.map((r) => r.cmd)).toEqual(['room.read', ROOM_READ_ACK_COMMAND])
   })
 
   it('a refused ack is a warning, not a failure: the text was printed and may show again', async () => {

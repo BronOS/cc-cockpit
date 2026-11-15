@@ -628,6 +628,8 @@ function parseRoom(rest: readonly string[]): Command {
       const [to, ...body] = args
       if (to === undefined || to === '' || to.startsWith('-')) return usage('room send takes a member name or all, then the text (or - for stdin)')
       if (body.length === 1 && body[0] === '-') return { kind: 'room-send', to }
+      // `send bob --help` is a help request, not a message: the text `--help` is `send bob -- --help`.
+      if (body.length === 1 && (body[0] === '--help' || body[0] === '-h')) return { kind: 'help', command: 'room' }
       const text = words(body)
       return text === undefined ? usage('room send needs some text (or - to read it from stdin)') : { kind: 'room-send', to, text }
     }

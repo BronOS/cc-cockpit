@@ -102,12 +102,21 @@ describe('room fence', () => {
     const worst = { from: 'alice', text: '\u202e'.repeat(MAX_ROOM_MESSAGE_CHARS) }
     const lines = { from: 'alice', text: '\n'.repeat(MAX_ROOM_MESSAGE_CHARS) }
     const batch = fenceBatch('Team', [worst, lines, worst, lines, worst, lines, worst, lines], NONCE)
-    expect(batch.count).toBeGreaterThan(0)
+    // The first message alone is past the batch cap (it always goes), so it goes alone.
+    expect(batch.count).toBe(1)
     expect(batch.count + batch.more).toBe(8)
     const reply = JSON.stringify({ id: 1, ok: true, result: { ...batch, ack: 'x'.repeat(36) }, appVersion: '0.0.0' })
-    expect(Buffer.byteLength(reply)).toBeLessThan(ROOM_READ_MAX_TEXT_BYTES + 4096)
     expect(Buffer.byteLength(reply)).toBeLessThan(MAX_LINE_BYTES)
-    // One message alone always fits the budget (protocol.ts: at most 9 bytes a character).
-    expect(Buffer.byteLength(JSON.stringify(fenceMessage('Team', worst, NONCE)))).toBeLessThan(ROOM_READ_MAX_TEXT_BYTES)
+    // One message alone is at most 9 bytes a character (protocol.ts): far below the line, though past the batch cap.
+    expect(Buffer.byteLength(JSON.stringify(fenceMessage('Team', worst, NONCE)))).toBeLessThan(MAX_LINE_BYTES / 4)
+  })
+
+  it('cuts a batch near 25k characters, so Claude Code\'s Bash tool shows all of it inline', () => {
+    const messages = Array.from({ length: 100 }, (_, i) => ({ from: 'alice', text: `${i} ${'word '.repeat(400)}` }))
+    const batch = fenceBatch('Team', messages, NONCE)
+    expect(batch.count).toBeGreaterThan(5)
+    expect(batch.more).toBeGreaterThan(0)
+    expect(batch.text.length).toBeLessThanOrEqual(ROOM_READ_MAX_TEXT_BYTES)
+    expect(ROOM_READ_MAX_TEXT_BYTES).toBeLessThan(30_000)
   })
 })

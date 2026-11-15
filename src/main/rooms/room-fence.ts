@@ -97,7 +97,7 @@ function jsonBytes(text: string): number {
 
 /**
  * The oldest of `messages` whose fenced text, JSON-encoded, stays within `maxBytes` (always at least one: a single
- * message is far below the cap, protocol.ts ROOM_READ_MAX_TEXT_BYTES), under one nonce. When some are left, the text
+ * message may pass the cap, protocol.ts ROOM_READ_MAX_TEXT_BYTES, and is still far below a socket line), under one nonce. When some are left, the text
  * ends with the room pointer for them (the Stop pointer's own fixed text and count, outside every fence), so Claude
  * reads again and the count it sees is the one the next Stop would give.
  */

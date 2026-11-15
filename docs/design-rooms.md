@@ -65,8 +65,9 @@ delivers only the pointer); the send gate's own queue is never used for room mes
 plugin/core origins do not apply.
 
 **Pull, not push.** A member gets messages in one of two ways, both ending in the messages being printed in its own turn:
-1. `ccc room read` prints the oldest held messages that fit one reply line (fenced, below; when more wait, the pointer
-   for them after the last fence) and dequeues them once `ccc` acks that it printed them (`room.read.ack`, protocol.ts
+1. `ccc room read` prints the oldest held messages that fit about 25k characters (`ROOM_READ_MAX_TEXT_BYTES`, what Claude Code's Bash tool
+   shows inline; always at least one, so a single long message may pass it) (fenced, below; when more wait, the pointer
+   for them after the last fence) and dequeues them once `ccc` acks that its stdout write completed (`room.read.ack`, protocol.ts
    `ROOM_READ_ACK_COMMAND`): a read whose reply never reached Claude (Esc, the deadline, a closed socket) is read again
    by the next one, so a message is shown at least once and never lost. Always available.
 2. A **pointer** that makes Claude run `read`: `N room messages waiting: run ccc room read`, fixed text, no message
@@ -128,8 +129,9 @@ puts a copy in `shared/`.
 The owning plugin reads and writes any doc of its rooms (`ctx.rooms.docs.list/get/put`): it seeds a member's kickoff into
 `members/<name>/` before opening the tab, and exports the docs itself at the end (it has Node).
 
-Limits: UTF-8 text only (no control character but tab, LF and CR, so the JSON-escaped doc is at most twice its size and
-always fits a `ccc` reply), 256 KiB per doc (a `ccc` reply is one socket line, `MAX_LINE_BYTES` 1 MiB, and plugin CLI I/O is
+Limits: UTF-8 text only (no control, bidi or invisible format character but tab, LF and CRLF: the fence's set, so a doc is
+safe to print raw into a terminal for `doc get` and its JSON-escaped form is at most twice its size and always fits a `ccc`
+reply), 256 KiB per doc (a `ccc` reply is one socket line, `MAX_LINE_BYTES` 1 MiB, and plugin CLI I/O is
 256 KiB for that reason), 20 MiB per room; path parts `[A-Za-z0-9._-]`, depth at most 4, no `..`; files opened with
 `O_NOFOLLOW` and checked by `fstat` on that descriptor (the key-file pattern), parent directories made by main only;
 writes are temp file plus rename, one at a time, last write wins; no versions. Docs outlive the room: an ended room's

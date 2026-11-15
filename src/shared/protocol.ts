@@ -182,12 +182,16 @@ export interface RoomReadReply {
 }
 
 /**
- * Most bytes the JSON encoding of a read's `text` may take (JSON escapes counted, not characters), so the reply line
- * fits MAX_LINE_BYTES with room to spare for the envelope. One message always fits: 20k characters (room-registry.ts
- * MAX_ROOM_MESSAGE_CHARS) at most 9 bytes each once fenced and encoded (an empty line's `| ` and `\n`, or a visibly
- * escaped character: `\u{202e}` encodes as 9), so at most 180 KB.
+ * Most bytes the JSON encoding of a read's `text` may take when a second message is added (JSON escapes counted, not
+ * characters, so the printed text is never longer than this in characters). Near 25k because Claude Code's Bash tool
+ * shows about 30k characters of output inline and saves more to a file with a short preview (older versions cut the
+ * middle): a batch past that is "delivered" and acked but not seen. A batch always holds at least one message, so
+ * one alone may pass it: 20k characters (room-registry.ts MAX_ROOM_MESSAGE_CHARS) print as up to about 60k when they
+ * are mostly line breaks (`| ` and a line break each), and encode to at most 9 bytes a character once fenced (a
+ * visibly escaped character: `\u{202e}` encodes as 9), so at most 180 KB: far below MAX_LINE_BYTES, which is the hard
+ * line. The `more` pointer after the batch makes the next read fetch the rest.
  */
-export const ROOM_READ_MAX_TEXT_BYTES = 768 * 1024
+export const ROOM_READ_MAX_TEXT_BYTES = 25 * 1000
 
 /** Keys that reach an object's prototype when copied with Object.assign or a for...in loop. */
 const RESERVED_ARG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])

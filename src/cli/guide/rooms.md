@@ -22,20 +22,26 @@ private docs. `all`, `plugin`, `person`, `user` and `system` are not names a mem
 - `ccc room leave` leaves your room; the messages waiting for you are dropped.
 - `ccc room send <name|all> <text...>` sends a message from you to one member or to every other
   member. Several words need no quotes; `ccc room send <name|all> -` reads the text from stdin
-  instead (a message that is literally `-` is `ccc room send <name> -- -`). A message is at most
+  instead (a message that is literally `-` is `ccc room send <name> -- -`, and one that is literally
+  `--help` is `ccc room send <name> -- --help`). A message is at most
   20000 characters: anything longer goes in a doc. The answer is one line per recipient: `delivered`,
   `held` with why, `gone` (no member by that name, nothing sent) or `refused` (its queue is full).
-- `ccc room read` prints the messages waiting for you, oldest first, and takes them off your queue.
-  A long backlog comes in batches: the last line then says how many still wait, and the next `read`
-  prints them. Nothing waiting: `no room messages waiting`.
+- `ccc room read` prints the messages waiting for you, oldest first, and takes them off your queue
+  once they are printed; if `ccc` is stopped before that (Esc, a timeout), nothing is taken and the
+  same messages show again at the next read, so a message reaches you at least once. A long backlog
+  comes in batches of about 25,000 characters: the last line then says how many still wait, and the
+  next `read` prints them. One long message always comes whole, and a message of many short lines
+  prints longer than its 20000 characters (each line gets a `| `, up to about 60,000 characters in
+  all): if the Bash tool shows only a preview and saves the output to a file, read that file.
+  Nothing waiting: `no room messages waiting`.
 - `ccc room doc ls` lists the docs you may read, one `path<TAB>bytes` line each.
   `ccc room doc get <path>` prints one. `ccc room doc put <path> -` writes one from stdin, exactly as
   given (no trimming); it replaces the doc of that path. A doc you may not read and a doc that does not
   exist answer the same way, so you cannot tell them apart.
 
 The stdin of `send -` and `doc put` is read within 40 seconds and at most 256 KiB: an open pipe nobody
-closes is exit 124 (pipe the text or redirect `</dev/null`), and more than the limit is exit 1 with
-nothing sent.
+closes is exit 124 (pipe the text or redirect `</dev/null`); more than the limit, text that is not
+valid UTF-8 and text that is too large once encoded are exit 1 with nothing sent.
 
 ## Reading messages: what is in them
 
@@ -65,8 +71,8 @@ Docs live outside every project, in the app's data: a folder per room, written b
 
 To pass one member's doc on to the others, a coordinator reads it and puts a copy in `shared/`. A path
 is at most four parts of letters, digits, `.`, `_` and `-` (never `.` or `..`) below its area, like
-`shared/design/api.md`. A doc is UTF-8 text with no control characters but tab and line breaks, at most
-256 KiB; a room holds at most 20 MiB of docs. The last write wins; there are no versions. Docs stay
+`shared/design/api.md`. A doc is valid UTF-8 text with no control, bidi or invisible format character
+but tab and line breaks (CR only as part of CRLF), at most 256 KiB; a room holds at most 20 MiB of docs. The last write wins; there are no versions. Docs stay
 after the room ends, until the plugin that made it deletes them.
 
 ## How messages reach you
@@ -89,7 +95,8 @@ can always read your own queue yourself, whatever the pointer rules say.
 
 A room can be **paused** by the person (or by itself after 100 deliveries with no input from the
 person: a loop guard): nothing is delivered then, but `send` still queues and `read` still works. When
-the app restarts, a room comes back paused and its members count as typed until the person resumes it.
+the app restarts, a room comes back paused (nothing is delivered until the person resumes it) and its
+members count as typed: a restored member gets pointers again only once the person marks its tab.
 If the person removes you, closes your tab or the plugin ends the room, you are out and `ccc room`
 says you are in no room.
 

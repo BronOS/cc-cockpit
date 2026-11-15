@@ -284,12 +284,12 @@ describe('RoomDocs limits and text', () => {
   })
 
   it('keeps UTF-8 text whole and refuses what is not text', async () => {
-    const text = 'héllo — 日本 🎉\nline two\r\n\tindented'
+    const text = 'héllo — 日本 🎉\nline two\r\n\tindented\r\n'
     await docs.put(ROOM, alice, 'members/alice/u.md', text)
     expect(await docs.get(ROOM, alice, 'members/alice/u.md')).toBe(text)
     // C0 controls other than tab, LF and CR are refused: ESC, BEL, a form feed each JSON-escape to six bytes, which
     // would let a doc under the cap outgrow a `ccc` reply line.
-    for (const bad of ['lone \ud800 surrogate', 'trail \udc00 first', 'nul \0 byte', 'esc \x1b[2K', 'bell \x07', 'ff \f', 42, undefined]) {
+    for (const bad of ['lone \ud800 surrogate', 'trail \udc00 first', 'nul \0 byte', 'esc \x1b[2K', 'bell \x07', 'ff \f', 'del \x7f', 'c1 \u009b2K', 'rlo \u202e', 'isolate \u2066x\u2069', 'zwsp \u200b', 'lone cr \rx', 'ls \u2028', 'bom \ufeff mid', 42, undefined]) {
       expect((await failure(docs.put(ROOM, plugin, 'shared/bad.md', bad)))?.code).toBe('invalid')
     }
     mkdirSync(store('shared'), { recursive: true })
