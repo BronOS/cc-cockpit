@@ -71,11 +71,17 @@ const FIT_BUTTON_DELAY_MS = 400
 const MIN_SCALED_FONT_PX = 4
 
 /**
- * Whether this window was ever left (blurred) since the page loaded: a window `focus` before that
- * is the window being shown at start or restore, not the person coming back to it, and must not
- * arm a take (two side-by-side windows would otherwise ping-pong at every launch).
+ * How many times this window was left (blurred with the document losing the keyboard) since the page
+ * loaded, and whether it is left now. Each session compares the count with the last one it saw
+ * (`seenLeaves`), so a window `focus` arms a take only once per real leave: a `focus` at start or
+ * restore is the window being shown, not the person coming back (two side-by-side windows would
+ * otherwise ping-pong at every launch), and after a return a `focus` coming back from a file pane's
+ * frame is no return either (a boolean set at the first leave and never cleared armed every one).
+ * Leaving the app while a frame holds the keyboard fires no shell `blur`, so it is not counted: the
+ * return then arms nothing, and a press in the pane still takes (onPointerDown).
  */
-let windowLeft = false
+let windowLeaves = 0
+let windowAway = false
 let watchingBlur = false
 
 /** `document.hasFocus()`; false where it is missing (a test's fake document). */
@@ -85,7 +91,7 @@ function documentHasFocus(): boolean {
 
 /** Tests only: the page as just loaded, never left. */
 export function resetWindowLeftForTest(): void {
-  windowLeft = false
+  windowAway = false
 }
 
 /**
@@ -147,6 +153,8 @@ export class TerminalSession {
    * takes (listenForTakes). Coming back alone takes nothing.
    */
   private backArmed = false
+  /** The window leaves this session has seen a return from (`windowLeaves`). */
+  private seenLeaves = 0
   /** The window and page listeners of the take on return, removed on dispose. */
   private readonly offTakeListeners: () => void
   private readonly offTheme: () => void
@@ -335,16 +343,27 @@ export class TerminalSession {
       // tab's frame blurs the shell's window too, but `document.hasFocus()` stays true then, and
       // coming back from a file pane is no return to the window (design-split-pages.md §4). Looked
       // at once more a task later, in case the blur's own moment still says the document has it.
+      const left = (): void => {
+        if (windowAway) return
+        windowAway = true
+        windowLeaves++
+      }
       window.addEventListener('blur', () => {
-        if (!documentHasFocus()) windowLeft = true
+        if (!documentHasFocus()) left()
         else
           setTimeout(() => {
-            if (!documentHasFocus()) windowLeft = true
+            if (!documentHasFocus()) left()
           }, 0)
       })
+      window.addEventListener('focus', () => {
+        windowAway = false
+      })
     }
+    // Made while the window is left (a tab a plugin opened meanwhile): the coming return is one.
+    this.seenLeaves = windowAway ? windowLeaves - 1 : windowLeaves
     const onWindowFocus = (): void => {
-      if (windowLeft) this.backArmed = true
+      if (windowLeaves !== this.seenLeaves) this.backArmed = true
+      this.seenLeaves = windowLeaves
     }
     const onVisibility = (): void => {
       if (document.visibilityState === 'visible') this.backArmed = true

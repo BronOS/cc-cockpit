@@ -207,19 +207,23 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
 
     // The page takes the keyboard by itself (a script's focus(), no click in it) while the pointer
-    // rests over the file pane and the person types in Claude: the shell blurs the frame and the keys
-    // go back to the Claude pane.
+    // rests over the file pane and the person types in Claude: the shell blurs the frame, and with the
+    // pointer over the file (it could have been a click) the keys go to nothing, never to Claude.
     const fileHeader = paneOf(page, file).locator('[data-pane-header]')
     await fileHeader.hover()
     await page.keyboard.type('g')
     await editor.evaluate(() => (document.querySelector('.cm-content') as HTMLElement).focus())
     await expect.poll(() => keysInFrame(page)).toBe(false)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await page.keyboard.type('xx')
+    // A click on the Claude pane gives it the keys again.
+    await paneOf(page, claude).locator('.xterm').click()
     await expect.poll(() => domFocusInTerminal(page)).toBe(true)
     await page.keyboard.type('hi')
     await page.keyboard.press('Enter')
     await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: ghi')
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
-    await expect(editor.locator('.cm-content')).not.toContainText(/abc|def|hi/)
+    await expect(editor.locator('.cm-content')).not.toContainText(/abc|def|hi|xx/)
 
     // `ccc edit` of the visible file from the Claude pane: the file moves to the line, the keys stay.
     await cccEditFromClaude(c, claude, 'notes.txt:4')
@@ -237,6 +241,44 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
     await page.keyboard.type('Q')
     await expect(editor.locator('.cm-content')).toContainText('Q')
+
+    // The review's MAJOR: typing in Claude with the pointer resting over the file, then a click into
+    // it without moving. The shell has no evidence (the pointer came in with no shell event, a key
+    // came after it), so the frame is blurred and the keys go to NOTHING: not one key reaches Claude.
+    // The next click on the file, still without moving, reaches the shell's pane (the blurred frame
+    // lets the pointer through) and picks it.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    const line = await editor.locator('.cm-line', { hasText: 'three' }).boundingBox()
+    if (!line) throw new Error('no line box')
+    // One step from the Claude pane straight into the frame: the shell sees no move over the file.
+    await page.mouse.move(line.x + 10, line.y + line.height / 2)
+    await page.keyboard.type('m')
+    await page.waitForTimeout(800)
+    await page.mouse.down()
+    await page.mouse.up()
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    await page.keyboard.type('yn')
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(500)
+    await page.mouse.down()
+    await page.mouse.up()
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+    await page.keyboard.type('P')
+    await expect(editor.locator('.cm-content')).toContainText('P')
+    await expect(editor.locator('.cm-content')).not.toContainText(/yn|m/)
+    // Claude got only the 'm' typed while its pane had the keys: nothing after the click.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: m')
+    expect(await paneText(paneOf(page, claude))).not.toMatch(/FAKE-CLAUDE echo: m?yn/)
+    // Back to the file for the keys-off case below (the person clicks its pane header).
+    await fileHeader.click()
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
 
     // Keys off on a page pane: a change from elsewhere moves the focused file out (a raw
     // `groups.remove`, no intent of this view). The frame is blurred and no key reaches any frame or

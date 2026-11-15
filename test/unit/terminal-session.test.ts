@@ -348,6 +348,42 @@ describe('TerminalSession takes the size on interaction', () => {
     }
   })
 
+  // The review's finding: a flag set at the first real leave and never cleared armed every later
+  // shell `focus`, the one coming back from a file pane's frame included.
+  it('after one real leave and return, coming back from a frame arms no take (once per leave)', async () => {
+    const aTaskLater = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+    try {
+      resetWindowLeftForTest()
+      let focused = false
+      Object.assign(fakeDocument, { hasFocus: () => focused })
+      const { s, fits } = session()
+      s.write('', false, { cols: 50, rows: 30 }, false)
+      // A real leave and return: one take on the first key.
+      fakeWindow.dispatchEvent(new Event('blur'))
+      focused = true
+      fakeWindow.dispatchEvent(new Event('focus'))
+      fakeWindow.dispatchEvent(new Event('keydown'))
+      expect(fits()).toBe(1)
+      // Into a file pane's frame and back, twice: the document kept the keyboard, nothing arms.
+      for (let i = 0; i < 2; i++) {
+        fakeWindow.dispatchEvent(new Event('blur'))
+        await aTaskLater()
+        fakeWindow.dispatchEvent(new Event('focus'))
+        fakeWindow.dispatchEvent(new Event('pointerdown'))
+      }
+      expect(fits()).toBe(1)
+      // A second real leave arms again.
+      focused = false
+      fakeWindow.dispatchEvent(new Event('blur'))
+      focused = true
+      fakeWindow.dispatchEvent(new Event('focus'))
+      fakeWindow.dispatchEvent(new Event('keydown'))
+      expect(fits()).toBe(2)
+    } finally {
+      delete (fakeDocument as { hasFocus?: unknown }).hasFocus
+    }
+  })
+
   it('a press or key with no return before it takes nothing (outside the pane)', () => {
     const { s, fits } = session()
     s.write('', false, { cols: 50, rows: 30 }, false)

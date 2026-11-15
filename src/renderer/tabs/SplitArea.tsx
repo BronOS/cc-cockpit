@@ -246,7 +246,12 @@ export function SplitArea(props: {
               // A page pane's body is empty: its frame lies over it, in PageTabArea's layer
               // (design-split-pages.md §2), and moves live with a divider (no CSS scaling: a scaled
               // frame blurs its text and misplaces clicks; a page has no pty to spare a resize).
-              <div className="pane-body pane-page-body">
+              // A press reaches this body on the inset band around the frame, or through a frame
+              // blurred for want of evidence (which lets the pointer through until it moves,
+              // frame-focus.ts): the pane press above picks the pane and its
+              // frame takes the keyboard, which the press's default (focus to nothing, as for any
+              // press on an unfocusable element) would take away again.
+              <div className="pane-body pane-page-body" onMouseDown={(e) => e.preventDefault()}>
                 {unavailable.has(tab.id) && <p className="pane-page-unavailable">This page is not available: its plugin is off or did not load.</p>}
               </div>
             ) : (

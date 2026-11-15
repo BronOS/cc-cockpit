@@ -42,13 +42,13 @@ export function setPageTabDiscussHandler(fn: (tabId: string) => void): () => voi
 
 /**
  * What the focus check (checkFrameFocus) needs from TabsPane, which owns the selection: the focused
- * pane (null while the keys are off, D3), picking a pane as the person's own act, and giving the
- * keyboard back to the focused pane (focusActive).
+ * pane (null while the keys are off, D3) and picking a pane as the person's own act. There is no
+ * "give the keyboard back to the focused pane": that pane is often a Claude terminal, and a frame
+ * focus the shell could not prove is as often a real click into the file (frame-focus.ts).
  */
 export interface FrameFocusHandler {
   activeId(): string | null
   pick(tabId: string): void
-  giveBack(): void
 }
 let focusHandler: FrameFocusHandler | undefined
 
@@ -61,35 +61,48 @@ export function setFrameFocusHandler(handler: FrameFocusHandler): () => void {
 }
 
 /** The pointer half of the focus evidence (frame-focus.ts), fed by the listeners `pageFrames` adds. */
-const pointer = new PointerEvidence()
+const pointer = new PointerEvidence<EventTarget>()
+
+/** The element of a shell key within GIVE_BACK_MS that can take the keyboard again, else null. */
+function giveBackTarget(): HTMLElement | null {
+  const el = pointer.recentKeyTarget()
+  return el instanceof HTMLElement && el.isConnected && el !== document.body && !(el instanceof HTMLIFrameElement) ? el : null
+}
 
 /**
  * Whether the frame holding the keyboard now may keep it (design-split-pages.md §4): read at the
  * window's `blur`, at a page's `cc-plugin.tab-focus` hint, and by TabsPane before it acts for a frame.
  * With the person's evidence (the shell's own focus call, or their pointer going into it) the pane is
- * picked; without, the frame is blurred and the keyboard goes back to the focused pane. Nothing here
- * rests on what a page posts: the hint only says when to look, `document.activeElement` says what.
+ * picked. Without, the frame is blurred, lets the pointer through to its pane until the pointer moves
+ * (so the next press on it is one the shell sees), and the keyboard goes to nothing, or back to the
+ * element the person was typing in a moment ago (framePick's `giveBack`), never to "the focused
+ * pane". Nothing here rests on what a page posts: the hint only says when to look,
+ * `document.activeElement` says what.
  */
 export function checkFrameFocus(): void {
   const pool = frames
   const handler = focusHandler
   if (!pool || !handler) return
   const tab = pool.keyboardTab()
+  if (tab === null) return
   const rects = pool.frameRects()
   const others = [...rects].filter(([id]) => id !== tab).map(([, rect]) => rect)
-  const decision = framePick(
-    tab,
-    handler.activeId(),
-    tab !== null && pool.ownFocus(tab),
-    tab !== null && pointer.near(rects.get(tab) ?? null, others),
-    pointer.keyAfterPointer()
-  )
-  if (decision === null || tab === null) return
-  if ('pick' in decision) handler.pick(decision.pick)
-  else {
-    pool.blurFrame(tab)
-    handler.giveBack()
+  const giveTo = giveBackTarget()
+  const decision = framePick(tab, handler.activeId(), {
+    own: pool.ownFocus(tab),
+    pointerNear: pointer.near(rects.get(tab) ?? null, others),
+    pointerFresh: pointer.fresh(),
+    keyAfterPointer: pointer.keyAfterPointer(),
+    recentKey: giveTo !== null
+  })
+  if (decision === null) return
+  if ('pick' in decision) {
+    handler.pick(decision.pick)
+    return
   }
+  pool.blurFrame(tab)
+  pool.passThrough(tab)
+  if (decision.giveBack) giveTo?.focus()
 }
 
 /**
@@ -101,17 +114,27 @@ export function checkFrameFocus(): void {
 function watchFrameFocus(): void {
   // A task later, not in the `blur` itself: the browser is still moving the keyboard into the frame
   // then, and a blur and refocus made during that event are undone by it (the e2e's frame kept the
-  // keyboard, its document still focused, with the shell's textarea focused too).
+  // keyboard, its document still focused, with the shell's textarea focused too). Keys typed in that
+  // task's gap (or, for a page's hint, in the cross-process message's) land in the frame and stay
+  // there: a mount-time steal while the person types can put a character into the page (an editor's
+  // buffer, then its autosave). The gap is a few ms; nothing typed before the blur is replayed.
   window.addEventListener('blur', () => setTimeout(checkFrameFocus, 0))
-  const moved = (e: PointerEvent): void => pointer.moved(e.clientX, e.clientY)
+  const moved = (e: PointerEvent | WheelEvent): void => {
+    pointer.moved(e.clientX, e.clientY)
+    // The shell sees the pointer again: a frame blurred for want of evidence takes it back (the
+    // position just recorded is the evidence for its next click).
+    frames?.endPassThrough()
+  }
   window.addEventListener('pointermove', moved, true)
+  window.addEventListener('pointerdown', moved, true)
   window.addEventListener('pointerout', moved, true)
-  window.addEventListener('keydown', () => pointer.shellKey(), true)
+  window.addEventListener('wheel', moved, { capture: true, passive: true })
+  window.addEventListener('keydown', (e) => pointer.shellKey(e.target), true)
   document.addEventListener(
     'focusin',
     (e) => {
-      if (e.target instanceof HTMLIFrameElement) return
-      pointer.shellKey()
+      if (e.target instanceof HTMLIFrameElement || e.target === null) return
+      pointer.shellFocus(e.target)
       frames?.shellFocused()
     },
     true
@@ -179,6 +202,11 @@ function createFrame(title: string): PageFrameElement {
     },
     focus: () => iframe.focus(),
     blur: () => iframe.blur(),
+    // A style of its own, never `inert` or a move: the page stays as it is, only the pointer goes to
+    // the pane under it (styles.css `.page-tab-frame` sets pointer-events auto).
+    passThrough: (on) => {
+      iframe.style.pointerEvents = on ? 'none' : ''
+    },
     rect: () => {
       if (iframe.hidden) return null
       const r = iframe.getBoundingClientRect()

@@ -169,16 +169,18 @@ External review: sol / high
 - Create: `src/renderer/tabs/frame-focus.ts` (DOM-free `framePick` and the pointer-evidence state)
 - Modify: `src/renderer/tabs/PageTabArea.tsx`, `src/renderer/tabs/page-frames.ts`, `src/renderer/tabs/TabsPane.tsx`
 - Modify: `src/renderer/tabs/SplitArea.tsx`, `src/renderer/tabs/terminal-session.ts`
-- Modify: `src/shared/page-tabs.ts`, `src/sdk/panel-core.ts`, `plugins/editor/src/page/file.js`, `plugins/editor/dist/pages/file.bundle.js`
+- Modify: `src/sdk/panel-core.ts`, `plugins/editor/src/page/file.js`, `plugins/editor/dist/pages/file.bundle.js`
 - Create: `test/unit/frame-focus.test.ts`, `plugins/editor/test/page-focus.test.mjs`; Modify: `test/unit/page-tab-frames.test.ts`, `test/unit/terminal-session.test.ts`, `test/unit/panel-sdk.test.ts`
 
 - [x] `framePick(activeTab, activeId, ownFocus, pointer, keyAfterPointer)`: with evidence (the shell's own
   `pageFrames().focus(T)`, or the last shell pointer position inside or on the edge of T's frame box with no shell
-  `keydown` after it) and T not `activeId`: pick T (keys on); without evidence: blur the iframe element, then
-  `focusActive`; keys off: never a pick. The pool records its own focus calls; the shell tracks `pointermove` /
+  `keydown` after it) and T not `activeId`: pick T (keys on); without evidence: blur the iframe element and leave the
+  keyboard on nothing (review fix: not `focusActive`, which handed it to a Claude terminal), except back to the element
+  of a shell key within 500 ms with the pointer not near the frame; the blurred frame passes the pointer to its pane
+  until it moves; keys off: never a pick. The pool records its own focus calls; the shell tracks `pointermove` /
   `pointerout` and `keydown` (capture) for the evidence
 - [x] read `document.activeElement` at the window `blur`, at a `cc-plugin.tab-focus` hint (new `TAB_FOCUS_MESSAGE` in
-  `shared/page-tabs.ts`; panel-core posts it on its own window's `focus`; never trusted for what it says); the pick
+  `sdk/panel-core.ts`, beside the other page-tab message constants; panel-core posts it on its own window's `focus`; never trusted for what it says); the pick
   dispatches `selected` so the outline and `tabs.selected` follow; `panel.ts` still builds with no import or `require(`
 - [x] `wantFocus` takes the keyboard on load only when its tab is still the focused pane and the keys are on; the
   PageTabArea select effect checks the keys too (a pane shown by another view's group change never takes keys, D3)
@@ -188,7 +190,7 @@ External review: sol / high
   coming back from a file pane arms no size take
 - [x] editor: drop `view.focus()` from `load()` in `plugins/editor/src/page/file.js` (the shell's `wantFocus` gives the
   first select the keyboard); keep the focus calls that follow the person's acts; `npm run build:editor`
-- [x] write tests: `framePick` (own focus picks, pointer evidence picks, neither blurs and gives the keys back, a shell
+- [x] write tests: `framePick` (own focus picks, pointer evidence picks, neither blurs and leaves the keys on nothing (or gives them back to a key typed within 500 ms), a shell
   keydown after the pointer blurs, keys off picks nothing, T equal to `activeId` is no change); `wantFocus` does nothing
   when the tab is not the focused pane or the keys are off; the size take ignores a `blur` with `hasFocus()` true; the
   SDK posts `cc-plugin.tab-focus` on window focus; a source check `plugins/editor/test/page-focus.test.mjs` (no page test loads

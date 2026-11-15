@@ -1108,15 +1108,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   )
   // A frame took the keyboard (design-split-pages.md §4, checkFrameFocus): with the person's evidence
   // its pane is picked as their own act (the outline and `tabs.selected` follow, D18's keys on);
-  // without, the keyboard goes back to the focused pane, and with the keys off to nothing.
+  // without, the frame is blurred and the keyboard goes to nothing (never "back to the focused pane",
+  // often a Claude terminal), unless the person was typing somewhere a moment ago (frame-focus.ts).
   useEffect(
     () =>
       setFrameFocusHandler({
         activeId: () => (stateRef.current.keysOff ? null : stateRef.current.activeId),
-        pick: (tabId) => dispatch({ type: 'selected', tabId }),
-        giveBack: focusActive
+        pick: (tabId) => dispatch({ type: 'selected', tabId })
       }),
-    [focusActive]
+    []
   )
   const wasOffering = useRef(false)
   useEffect(() => {

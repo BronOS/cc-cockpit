@@ -142,22 +142,56 @@ the editor. D4 exists to keep a plugin from taking the keys from a Claude tab wa
 what a visible frame beside one could do. `navigator.userActivation` cannot tell the cases apart: it is true precisely
 while the person types. When `activeElement` is the frame of tab T, it counts only with shell-side evidence:
 - the shell's own `pageFrames().focus(T)` put it there (focusActive, a pane chord, `wantFocus`), or
-- the person's pointer went into it: the last pointer position the shell saw (a `pointermove`, or the `pointerout` as
-  the pointer crossed into the frame) is inside or on the edge of T's frame box, and no shell `keydown` came after it.
+- the person's pointer went into it: the last pointer position the shell saw (a `pointermove`, `pointerdown`, `wheel`,
+  or the `pointerout` as the pointer left the shell's area) is inside T's frame box or within 24 px of it
+  (`POINTER_NEAR_PX`), nearer to T's box than to any other visible frame's, no more than 3 s old (`POINTER_FRESH_MS`),
+  and no shell `keydown` (nor a focus moving within the shell) came after it.
 
-With evidence, and T not `activeId`, the shell picks T as the person's own act (keys on). Without evidence, the shell
-calls the iframe element's `blur()` and then `focusActive`, so the keyboard goes back to the focused pane (with the keys
-off, to nothing). A pure `framePick(activeTab, activeId, ownFocus, pointer, keyAfterPointer)` decides, unit-tested.
+*Measured, Electron 45:* the shell gets no event at all as the pointer goes into a cross-site frame (no `pointerout`,
+no `pointerover` of the iframe, no `:hover` on it) and none while it is inside one. The last position the shell has is
+one event's travel short of the frame's edge, hence the 24 px; two frames across a divider are 6 px apart, hence the
+nearest frame only. A pointer that jumps into a frame from far away (a test's teleporting mouse, a touch or pen tap),
+that crosses from one frame straight into another with no event over the shell between them, or that came in more than
+3 s before the click (its travel inside the frame is unseen) leaves no evidence. The 3 s bound keeps hover from being
+consent for ever: a page focusing itself later (a host message, a loop) is not picked because the pointer stopped beside
+its frame a minute ago.
+
+With evidence, and T not `activeId`, the shell picks T as the person's own act (keys on). Without evidence the shell
+fails safe: it calls the iframe element's `blur()` and the keyboard goes to *nothing* (the shell's body), never to "the
+focused pane". That pane is often a Claude terminal, and an unproven frame focus is as often a real click into the file
+(the cases above), after which a stray Enter, digit or "y" would answer a permission prompt. The one exception is the
+"typing while a pane mounts" case: when a shell `keydown` came within 500 ms (`GIVE_BACK_MS`) and the pointer is not
+near T's frame, the element that key went to (the Claude terminal's textarea, say) is focused again, so the person keeps
+typing where they were. A focus moving to another shell element after that key drops it. The blurred frame then lets
+the pointer through to its pane (`pointer-events: none` on the iframe, `PageFrames.passThrough`) until the shell next
+sees the pointer move, press or wheel: the person's next press on it, even without moving, lands on the shell's pane
+body and picks the pane (its `mousedown` default is prevented so the frame keeps the keyboard), and their next move
+gives fresh pointer evidence for a click into the frame. A click the shell could not prove costs one more click, never
+a key in the wrong pane. A pure `framePick(activeTab, activeId, evidence)` decides, unit-tested; the pool's own-focus
+record counts only while its tab stays the focused pane (`show` drops it when the selection moves on).
 The editor drops its `view.focus()` on load: the shell's `wantFocus` already gives a page the keyboard on its first
 select, and a page that keeps focusing itself is now only blurred.
+
+*Known limits.* The check runs a task after the window's `blur` (a blur and refocus made inside that event are undone
+by the browser), or when a page's hint arrives across processes: keys typed in that gap of a few ms land in the frame
+and stay there, so a mount-time steal while the person types can put a character into the page (an editor's buffer).
+Frame to frame, the shell sees nothing of its own: it learns of a page that took the keyboard from another frame only
+from the stealing page's `cc-plugin.tab-focus` hint (posted by the panel SDK, whose use is opt-in), or at the next
+check (a chord or Ask Claude from a frame, the next shell `blur`). A page tab without the SDK that focuses itself while
+another frame holds the keyboard keeps it unnoticed until then; it can take keys from another page, never from a
+terminal (a terminal holding the keyboard means the shell's window has it, and its `blur` runs the check).
 
 **Moving between panes.** Terminal to frame: a pane chord or a click, as above. Frame to terminal: a click on the
 terminal pane (its press capture picks it, and xterm takes the focus from the frame), or a pane chord typed in the frame
 (below), which ends in the terminal's `focus()`. The parent may call that while a child frame has the keyboard. Keys off
 (D3) now also blurs a frame that holds the keyboard: SplitArea's blur looks only inside the area, and the frames are
-not in it. The terminal size take (`terminal-session.ts`, `windowLeft` / `backArmed`) sets `windowLeft` only when
-`document.hasFocus()` is false after the `blur`. A move into a frame keeps the document focused, so coming back from a
-file pane does not arm a size take; only leaving the window does.
+not in it. With the keys off nothing is picked from a frame, whatever the evidence: a click into a frame is blurred, and
+only a press the shell sees picks a pane (a header, a terminal, the strip, a chord). Thanks to the pass-through that
+includes the person's next press on that same frame. The terminal size take (`terminal-session.ts`, `windowLeaves` /
+`backArmed`) counts a leave only when `document.hasFocus()` is false after the `blur`, and each session arms once per
+leave it has not seen a return from. A move into a frame keeps the document focused, so coming back from a file pane
+does not arm a size take, before or after the person first left the window; only leaving the window does. Leaving the
+app while a frame holds the keyboard fires no shell `blur`, so that return arms nothing (a press in the pane still takes).
 
 **Chords from a frame name their tab.** Desktop: main's `before-input-event` sends the app's chords from any page-tab
 frame (`isPageTabFrame`, `page-tab-keys.ts`, unchanged) as `commands.trigger`, which names no tab. The shell resolves

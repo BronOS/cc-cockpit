@@ -52,6 +52,11 @@ export class FakeElement implements PageFrameElement {
     this.blurred++
     this.focusedNow = false
   }
+  /** Whether it lets the pointer through to its pane now, and how often that was set. */
+  through = false
+  passThrough(on: boolean): void {
+    this.through = on
+  }
   /** Its viewport box: the layer is at the viewport's origin here, so the placed box. */
   rect(): FrameRect | null {
     return this.box

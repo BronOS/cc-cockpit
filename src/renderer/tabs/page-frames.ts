@@ -34,8 +34,8 @@
 //
 // Focus (design-split-pages.md §4, frame-focus.ts): the pool records its own focus calls (`ownFocus`,
 // the shell's half of the evidence that a frame holding the keyboard was put there by the person),
-// says which frame holds the keyboard (`keyboardTab`), blurs one (`blurFrame`, `blurKeyboard`) and
-// hands on a page's `cc-plugin.tab-focus` hint (`focusHint`: only a reason for the shell to look).
+// says which frame holds the keyboard (`keyboardTab`), blurs one (`blurFrame`, `blurKeyboard`), lets a
+// blurred one pass the pointer to its pane until the pointer moves (`passThrough`) and hands on a page's `cc-plugin.tab-focus` hint (`focusHint`: only a reason for the shell to look).
 // `wantFocus` takes the keyboard at the load only for the focused pane with the keys on (`show`'s
 // `focused` is null while they are off), so a pane shown by a group change elsewhere never takes it.
 //
@@ -89,6 +89,11 @@ export interface PageFrameElement {
   focus(): void
   /** Take the keyboard from it (it took it with no evidence of the person, or the keys went off). */
   blur(): void
+  /**
+   * Let the pointer through to the pane under it (on) or take it again (off): a frame blurred for
+   * want of evidence, so the person's next press on it reaches the shell (frame-focus.ts).
+   */
+  passThrough(on: boolean): void
   /** Its box in viewport pixels while placed, else null (the pointer evidence, frame-focus.ts). */
   rect(): FrameRect | null
   /** What its page posts to the shell (`event.source` is this frame's window; nothing else). */
@@ -192,6 +197,8 @@ export class PageFrames {
    * null once the focus moved within the shell (`shellFocused`) or a frame was blurred.
    */
   private own: string | null = null
+  /** Tabs whose frame lets the pointer through to its pane now (`passThrough`), until it moves. */
+  private readonly through = new Set<string>()
 
   constructor(private readonly o: PageFramesOptions) {
     this.max = Math.max(1, o.maxLive ?? MAX_LIVE_PAGE_FRAMES)
@@ -227,6 +234,10 @@ export class PageFrames {
     const pages = visible.filter((id) => this.tabs.has(id))
     this.visible = new Set(pages)
     this.focused = focused !== null && this.visible.has(focused) ? focused : null
+    // The shell's own focus call counts for the pane it was made for while that pane stays the
+    // focused one: once the selection moved on (to a page still loading, a terminal, keys off), a
+    // frame the shell focused before and that takes the keyboard again is not picked back by it.
+    if (this.own !== null && this.own !== this.focused) this.own = null
     // Shown again after main had no page for it: worth one more look (the plugin may be on now).
     const again = pages.filter((id) => !before.has(id) && this.none.has(id))
     if (again.length > 0) this.setNone([...this.none].filter((id) => !again.includes(id)))
@@ -316,6 +327,7 @@ export class PageFrames {
     if (!l) return
     if (l.frame) {
       this.own = tabId
+      this.takePointer(tabId)
       // Already holding it (the person clicked into it and the shell picked the pane): focusing the
       // frame again could only move the page's own focus.
       if (!l.frame.element.hasFocus()) l.frame.element.focus()
@@ -357,6 +369,34 @@ export class PageFrames {
   blurFrame(tabId: string): void {
     if (this.own === tabId) this.own = null
     this.live.find((l) => l.tab.id === tabId)?.frame?.element.blur()
+  }
+
+  /**
+   * The tab's frame lets the pointer through to its pane (it was blurred for want of evidence): the
+   * person's next press there lands on the shell's pane and picks it, a press the shell sees. Ends at
+   * the shell's next sight of the pointer (`endPassThrough`) or its own focus call for the tab.
+   */
+  passThrough(tabId: string): void {
+    const el = this.live.find((l) => l.tab.id === tabId)?.frame?.element
+    if (!el) return
+    this.through.add(tabId)
+    el.passThrough(true)
+  }
+
+  /** The shell saw the pointer move (or press, or wheel): every frame takes the pointer again. */
+  endPassThrough(): void {
+    if (this.through.size === 0) return
+    for (const id of [...this.through]) this.takePointer(id)
+  }
+
+  /** Whether the tab's frame lets the pointer through now (tests). */
+  passesThrough(tabId: string): boolean {
+    return this.through.has(tabId)
+  }
+
+  private takePointer(tabId: string): void {
+    if (!this.through.delete(tabId)) return
+    this.live.find((l) => l.tab.id === tabId)?.frame?.element.passThrough(false)
   }
 
   /** Take the keyboard from whichever frame holds it (D3: the keys went off); returns that tab, or null. */
@@ -568,6 +608,7 @@ export class PageFrames {
   private unmount(entry: Live): void {
     entry.gone = true
     if (this.own === entry.tab.id) this.own = null
+    this.through.delete(entry.tab.id)
     // Its page goes with whatever it had not saved; main clears this view's dirty at the disconnect.
     this.dirty.delete(entry.tab.id)
     this.live = this.live.filter((l) => l !== entry)

@@ -4,41 +4,72 @@
 // keyboard, blurring one, the page's focus hint). DOM-free; the browser's behaviour is e2e's
 // (editor-split.spec.ts).
 import { describe, expect, it } from 'vitest'
-import { distanceTo, framePick, PointerEvidence, pointerNear, POINTER_NEAR_PX } from '../../src/renderer/tabs/frame-focus'
+import {
+  distanceTo,
+  framePick,
+  GIVE_BACK_MS,
+  PointerEvidence,
+  pointerNear,
+  POINTER_FRESH_MS,
+  POINTER_NEAR_PX,
+  type FrameEvidence
+} from '../../src/renderer/tabs/frame-focus'
 import { TAB_FOCUS_MESSAGE } from '../../src/sdk/panel-core'
 import { boxOf, entry, pool, settle, TAB_A, TAB_B } from '../fakes/fake-page-frames'
 
 const CLAUDE = 'claude-tab'
 
+/** Evidence with nothing in it, and `over` set. */
+const ev = (over: Partial<FrameEvidence> = {}): FrameEvidence => ({
+  own: false,
+  pointerNear: false,
+  pointerFresh: true,
+  keyAfterPointer: false,
+  recentKey: false,
+  ...over
+})
+
 describe('framePick', () => {
   it("the shell's own focus picks the frame's pane (keys on)", () => {
-    expect(framePick(TAB_A, CLAUDE, true, false, false)).toEqual({ pick: TAB_A })
+    expect(framePick(TAB_A, CLAUDE, ev({ own: true }))).toEqual({ pick: TAB_A })
     // A key in the shell after the pointer does not void the shell's own call.
-    expect(framePick(TAB_A, CLAUDE, true, false, true)).toEqual({ pick: TAB_A })
+    expect(framePick(TAB_A, CLAUDE, ev({ own: true, keyAfterPointer: true }))).toEqual({ pick: TAB_A })
   })
 
-  it('the pointer going into the frame, with no shell key after it, picks its pane', () => {
-    expect(framePick(TAB_A, CLAUDE, false, true, false)).toEqual({ pick: TAB_A })
+  it('the pointer going into the frame a moment ago, with no shell key after it, picks its pane', () => {
+    expect(framePick(TAB_A, CLAUDE, ev({ pointerNear: true }))).toEqual({ pick: TAB_A })
   })
 
-  it('with neither, the frame is blurred and the keyboard goes back to the focused pane', () => {
-    expect(framePick(TAB_A, CLAUDE, false, false, false)).toEqual({ blur: true })
+  it('hover is not consent for ever: a pointer that stopped beside the frame long ago is no evidence', () => {
+    expect(framePick(TAB_A, CLAUDE, ev({ pointerNear: true, pointerFresh: false }))).toEqual({ blur: true, giveBack: false })
   })
 
-  it('a shell keydown after the pointer stopped over the frame is no evidence: typing in Claude beside it', () => {
-    expect(framePick(TAB_A, CLAUDE, false, true, true)).toEqual({ blur: true })
+  // The review's MAJOR: the focused pane is often the Claude terminal, and an unproven frame focus is
+  // as often a real click into the file; a key typed into Claude then could answer a permission prompt.
+  it('with no evidence the frame is blurred and the keyboard goes to nothing, never to the focused pane', () => {
+    expect(framePick(TAB_A, CLAUDE, ev())).toEqual({ blur: true, giveBack: false })
+    // Typing in Claude with the pointer resting over the file, then a click into it without moving:
+    // no evidence (the key came after the pointer), and the keys must not go back to Claude.
+    expect(framePick(TAB_A, CLAUDE, ev({ pointerNear: true, keyAfterPointer: true }))).toEqual({ blur: true, giveBack: false })
+    // Even within GIVE_BACK_MS of that key: the pointer over the frame says it may have been a click.
+    expect(framePick(TAB_A, CLAUDE, ev({ pointerNear: true, keyAfterPointer: true, recentKey: true }))).toEqual({ blur: true, giveBack: false })
   })
 
-  it('keys off picks nothing, whatever the evidence: the frame is blurred', () => {
-    expect(framePick(TAB_A, null, true, true, false)).toEqual({ blur: true })
-    expect(framePick(TAB_A, null, false, false, false)).toEqual({ blur: true })
+  it('a pane mounting while the person types elsewhere: the keyboard goes back to where they were typing', () => {
+    expect(framePick(TAB_A, CLAUDE, ev({ keyAfterPointer: true, recentKey: true }))).toEqual({ blur: true, giveBack: true })
+  })
+
+  it('keys off picks nothing and gives nothing back, whatever the evidence: the frame is blurred', () => {
+    expect(framePick(TAB_A, null, ev({ own: true, pointerNear: true }))).toEqual({ blur: true, giveBack: false })
+    expect(framePick(TAB_A, null, ev({ recentKey: true }))).toEqual({ blur: true, giveBack: false })
+    expect(framePick(TAB_A, null, ev())).toEqual({ blur: true, giveBack: false })
   })
 
   it("the focused pane's own frame, or no frame with the keyboard, is no change", () => {
-    expect(framePick(TAB_A, TAB_A, false, false, true)).toBeNull()
-    expect(framePick(TAB_A, TAB_A, true, true, false)).toBeNull()
-    expect(framePick(null, CLAUDE, false, false, false)).toBeNull()
-    expect(framePick(null, null, false, false, false)).toBeNull()
+    expect(framePick(TAB_A, TAB_A, ev({ keyAfterPointer: true }))).toBeNull()
+    expect(framePick(TAB_A, TAB_A, ev({ own: true, pointerNear: true }))).toBeNull()
+    expect(framePick(null, CLAUDE, ev())).toBeNull()
+    expect(framePick(null, null, ev())).toBeNull()
   })
 })
 
@@ -75,13 +106,43 @@ describe('pointer evidence', () => {
     expect(p.near(rect)).toBe(false)
     p.moved(150, 80)
     expect([p.near(rect), p.keyAfterPointer()]).toEqual([true, false])
-    p.shellKey()
+    p.shellKey(null)
     expect(p.keyAfterPointer()).toBe(true)
     p.moved(160, 90)
     expect(p.keyAfterPointer()).toBe(false)
+    p.shellFocus('textarea')
+    expect(p.keyAfterPointer()).toBe(true)
     // A non-finite position (a synthetic event) is no position.
     p.moved(Number.NaN, 0)
     expect(p.near(rect)).toBe(true)
+  })
+
+  it('the last position is fresh for POINTER_FRESH_MS; the last key names its element for GIVE_BACK_MS', () => {
+    let now = 1000
+    const p = new PointerEvidence<string>(() => now)
+    expect(p.fresh()).toBe(false)
+    expect(p.recentKeyTarget()).toBeNull()
+    p.moved(150, 80)
+    now += POINTER_FRESH_MS
+    expect(p.fresh()).toBe(true)
+    now += 1
+    expect(p.fresh()).toBe(false)
+    p.shellKey('claude-textarea')
+    expect(p.recentKeyTarget()).toBe('claude-textarea')
+    now += GIVE_BACK_MS
+    expect(p.recentKeyTarget()).toBe('claude-textarea')
+    now += 1
+    // A click after a pause: nothing to give back.
+    expect(p.recentKeyTarget()).toBeNull()
+    // The focus moving within the shell to the same element keeps the key; to another drops it.
+    p.shellKey('claude-textarea')
+    p.shellFocus('claude-textarea')
+    expect(p.recentKeyTarget()).toBe('claude-textarea')
+    p.shellFocus('rename-input')
+    expect(p.recentKeyTarget()).toBeNull()
+    // A key with no element (the shell's body) gives back nothing either.
+    p.shellKey(null)
+    expect(p.recentKeyTarget()).toBeNull()
   })
 })
 
@@ -142,6 +203,34 @@ describe("PageFrames: the shell's half of the evidence", () => {
     expect(t.frames.blurKeyboard()).toBeNull()
     t.frames.show([TAB_A], TAB_A)
     expect(t.frames.frameRect(TAB_B)).toBeNull()
+  })
+
+  it('the shell\'s own focus counts only while its pane stays the focused one', async () => {
+    const { t } = await twoPanes()
+    t.frames.focus(TAB_A)
+    expect(t.frames.ownFocus(TAB_A)).toBe(true)
+    // The selection moves to B (still loading, or a terminal): A's old focus call is no evidence for A.
+    t.frames.show([TAB_A, TAB_B], TAB_B)
+    expect(t.frames.ownFocus(TAB_A)).toBe(false)
+    t.frames.focus(TAB_B)
+    // Keys off (no focused pane): none either.
+    t.frames.show([TAB_A, TAB_B], null)
+    expect(t.frames.ownFocus(TAB_B)).toBe(false)
+  })
+
+  it('a blurred frame lets the pointer through to its pane until the shell sees the pointer, or focuses it itself', async () => {
+    const { t } = await twoPanes()
+    t.frames.passThrough(TAB_B)
+    expect([t.el(TAB_B).through, t.frames.passesThrough(TAB_B), t.el(TAB_A).through]).toEqual([true, true, false])
+    t.frames.endPassThrough()
+    expect([t.el(TAB_B).through, t.frames.passesThrough(TAB_B)]).toEqual([false, false])
+    // The shell's own focus call (the person pressed the pane through it) takes the pointer back too.
+    t.frames.passThrough(TAB_A)
+    t.frames.focus(TAB_A)
+    expect([t.el(TAB_A).through, t.frames.passesThrough(TAB_A)]).toEqual([false, false])
+    // A tab with no live frame: nothing to set.
+    t.frames.passThrough('no-such-tab')
+    expect(t.frames.passesThrough('no-such-tab')).toBe(false)
   })
 
   it("hands on a page's focus hint from any live frame; it carries nothing the shell trusts", async () => {
