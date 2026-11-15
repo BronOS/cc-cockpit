@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionsSnapshot } from '../../src/shared/ipc'
 import { hookHandler } from '../../src/main/sessions/hook-handler'
 import { MAX_GIST_CHARS, SessionRegistry, type SessionChange } from '../../src/main/sessions/session-registry'
+import { TYPED_ERROR } from '../../src/main/sessions/send-gate'
 
 const P1 = 'p1'
 const P2 = 'p2'
@@ -131,6 +132,20 @@ describe('entries', () => {
     expect(reg.get('c1')?.typed).toBe(false)
   })
 
+  it('typed: a restored room member is born typed, keeps it over a restart, and a plugin text is refused', () => {
+    reg.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj', typed: true })
+    start('c2')
+    expect(reg.get('c1')?.typed).toBe(true)
+    expect(reg.get('c2')?.typed).toBe(false)
+    reg.applyHook('c1', 'SessionStart', { session_id: 's' })
+    reg.applyHook('c1', 'Stop', {})
+    expect(() => reg.send('c1', 'from a plugin', 'plugin')).toThrow(TYPED_ERROR)
+    // A restart's started event carries it again; without it, the earlier entry's flag still holds.
+    reg.tabExited('c1', 1)
+    start('c1')
+    expect(reg.get('c1')?.typed).toBe(true)
+  })
+
   it('typed: a gate delivery (send) does not set it; an answer key both sets it and answers', () => {
     const written: string[] = []
     const r = new SessionRegistry({ projectName: () => 'x', broadcast: () => {}, write: (_e, d) => void written.push(d) })
@@ -252,6 +267,78 @@ describe('setFlag', () => {
   it('is born with the tab (a restored or restarted tab)', () => {
     reg.tabStarted({ tabId: 'c1', projectId: P1, kind: 'claude', cwd: '/proj', flag: { color: 'blue' } })
     expect(reg.get('c1')!.flag).toEqual({ color: 'blue' })
+  })
+})
+
+describe('setRoom (SessionInfo.room / held, the room delivery)', () => {
+  const ROOM = { title: 'Team', name: 'bob', coordinator: false }
+
+  it('mirrors the membership, keeps held only above 0, reports a change only when something moved, clears with null', () => {
+    start('c1')
+    const seen: unknown[] = []
+    reg.onChange((c) => seen.push([c.entry?.room, c.entry?.held]))
+    expect(reg.setRoom('c1', { ...ROOM, held: 2 })).toBe(true)
+    expect(reg.get('c1')).toMatchObject({ room: ROOM, held: 2 })
+    reg.setRoom('c1', { ...ROOM, held: 2 })
+    expect(seen).toEqual([[ROOM, 2]])
+    reg.setRoom('c1', { ...ROOM, held: 0 })
+    expect(reg.get('c1')).not.toHaveProperty('held')
+    reg.setRoom('c1', { ...ROOM, coordinator: true, held: 0 })
+    expect(reg.get('c1')!.room).toEqual({ ...ROOM, coordinator: true })
+    reg.setRoom('c1', null)
+    expect(reg.get('c1')).not.toHaveProperty('room')
+    expect(seen).toHaveLength(4)
+    expect(reg.setRoom('nope', { ...ROOM, held: 1 })).toBe(false)
+  })
+
+  it('the draft bit: set by keys for the box, not by the keys a permission prompt takes while it is up', () => {
+    start('c1')
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'go' })
+    reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+    // An arrow moves the highlight, Enter answers: the takeover counts, the box holds nothing.
+    reg.userInput(P1, 'c1', '\x1b[B')
+    expect(reg.get('c1')).toMatchObject({ typed: true, status: 'needs-permission' })
+    reg.userInput(P1, 'c1', '\r')
+    expect(reg.get('c1')?.status).toBe('working')
+    expect(reg.get('c1')?.draft).toBeUndefined()
+    // A digit answers too.
+    reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+    reg.userInput(P1, 'c1', '2')
+    expect(reg.get('c1')?.draft).toBeUndefined()
+    // Once the prompt is answered (working), the same keys may be typing ahead into the box.
+    reg.userInput(P1, 'c1', '2')
+    expect(reg.get('c1')?.draft).toBe(true)
+    reg.applyHook('c1', 'UserPromptSubmit', { prompt: '2' })
+    // Under a prompt, Esc (denies and gives the box back) and any text still set it.
+    for (const key of ['\x1b', 'y']) {
+      reg.applyHook('c1', 'Notification', { notification_type: 'permission_prompt', message: 'm' })
+      reg.userInput(P1, 'c1', key)
+      expect(reg.get('c1')?.draft, JSON.stringify(key)).toBe(true)
+      reg.applyHook('c1', 'UserPromptSubmit', { prompt: 'p' })
+      expect(reg.get('c1')?.draft).toBeUndefined()
+    }
+    // Waiting for input: Enter on an empty box is still the person's key for the box.
+    reg.applyHook('c1', 'Stop', {})
+    reg.userInput(P1, 'c1', '\r')
+    expect(reg.get('c1')?.draft).toBe(true)
+  })
+
+  it('survives a restart of the same tab (the draft bit does not); never in the summaries, in the own window snapshot', () => {
+    start('c1')
+    reg.setRoom('c1', { ...ROOM, held: 3 })
+    reg.userInput(P1, 'c1', 'x')
+    expect(reg.get('c1')?.draft).toBe(true)
+    reg.tabExited('c1', 0)
+    start('c1')
+    expect(reg.get('c1')).toMatchObject({ room: ROOM, held: 3, typed: true })
+    expect(reg.get('c1')?.draft).toBeUndefined()
+    const text = JSON.stringify([reg.summariesFor(P1), reg.summariesFor(P2), reg.snapshotFor(P2)])
+    expect(text).not.toContain('Team')
+    expect(text).not.toContain('held')
+    // The tab's own window draws the strip's marker and held badge from its snapshot (design-rooms.md §5); the draft
+    // bit stays main's.
+    expect(reg.snapshotFor(P1).own[0]).toMatchObject({ room: ROOM, held: 3, typed: true })
+    expect(reg.snapshotFor(P1).own[0]).not.toHaveProperty('draft')
   })
 })
 

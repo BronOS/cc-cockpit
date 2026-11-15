@@ -71,6 +71,7 @@ import {
   registerWebviewHandlers,
   summary
 } from './ipc/router'
+import { registerRoomStripHandlers, registerRoomViewHandlers } from './ipc/room-handlers'
 import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
 import { AppMenu, focusedProjectIdOf, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'
@@ -117,6 +118,7 @@ import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
 import { TrashAsks } from './files/trash-asks'
 import { chooseAsk } from './asks/shared-asks'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
+import { RoomsPluginGate } from './rooms/rooms-plugin-gate'
 import { PluginInstaller, type InstalledPlugin } from './plugins/installer'
 import { PanelPortHub } from './plugins/panel-ports'
 import { pluginFileUrl, servePluginRequest } from './plugins/plugin-protocol'
@@ -151,7 +153,9 @@ import { migrateSessionFilesShown, needsSessionFilesMigration } from './settings
 import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
-import { hookHandler } from './sessions/hook-handler'
+import { hookAckHandler, hookHandler, hookTarget } from './sessions/hook-handler'
+import { createRoomRemoveAsks, settleGoneRemoveAsks } from './rooms/room-remove-asks'
+import { RoomService } from './rooms/room-service'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
@@ -159,7 +163,17 @@ import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerDownloadHandler, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import {
+  registerCliHandlers,
+  registerDownloadHandler,
+  registerPanelShowHandler,
+  registerRoomHandlers,
+  registerPluginCliHandlers,
+  registerPluginConfigHandler,
+  registerPluginDevHandlers,
+  registerPluginLimitsHandlers
+} from './socket/handlers'
+import { appJsonLimitsStorage, PluginLimitsStore } from './plugins/plugin-limits'
 import { registerWebHandlers, webHandlerDeps } from './socket/web-handlers'
 import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
@@ -532,6 +546,20 @@ function start(server: boolean): void {
     onRefreshed: () => void plugins.applyRevocations().catch((err: unknown) => console.error('applying revocations failed', err))
   })
   marketplace.loadCache()
+  // A room ends when its plugin is switched off in its project (or in all projects), uninstalled or revoked
+  // (design-rooms.md §1; rooms-plugin-gate.ts has both halves: the sweep and the refusal of a ctx.rooms call). The
+  // sweep runs whenever the plugin set may have changed: after the plugins load (`loaded`, below), on every installer
+  // change (install, link, update, uninstall, a revocation) and after a switch on the Plugins page. Its deps are read
+  // only once the plugins loaded, by when `plugins` and `rooms` exist.
+  const roomsGate: RoomsPluginGate = new RoomsPluginGate({
+    plugin: (pluginId) => {
+      const plugin = plugins.get(pluginId)
+      return plugin && { plugin, revoked: !plugin.state.ok && plugin.state.revoked !== undefined }
+    },
+    project: (projectId) => registry.enablementRecord(projectId),
+    disabledBundled: () => registry.app.data.disabledBundled,
+    endRoomsOfPluginsOff: (offWhy) => rooms.endRoomsOfPluginsOff(offWhy)
+  })
   const plugins = new PluginInstaller({
     dataDir,
     bundled: bundledPluginSpecs(bundledDir, process.env, app.isPackaged),
@@ -544,6 +572,8 @@ function start(server: boolean): void {
     reloadHosts: (id) => hosts.reloadPlugin(id),
     beforeLink: (id) => registry.forgetPluginRepo(id),
     secrets: pluginSecrets,
+    // `pluginLimits` is defined further down: this only runs on an uninstall, long after.
+    limits: { forget: (pluginId) => pluginLimits.forget(pluginId) },
     revocation: (plugin) => marketplace.revocationFor(plugin),
     // A plugin revoked at load is seen before `ready`, when a Notification cannot be shown yet.
     // `coreNotices` is declared further down: this only runs after load() has started, i.e. after it exists.
@@ -560,6 +590,8 @@ function start(server: boolean): void {
     onChange: () => {
       devWatch.sync()
       claudePluginsBuilds.changed()
+      // An uninstalled or revoked plugin's rooms end (a no-op until the plugins loaded).
+      roomsGate.sweep()
       // Remote views get a prefix per installed plugin (web/plugin-pages.ts); a new one needs its own.
       webConnections.pathsChanged()
     }
@@ -647,6 +679,9 @@ function start(server: boolean): void {
     send: (windowId, ask) => views.toWindow(windowId, 'trash.ask', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'trash.settled', { requestId })
   })
+  // A server's browser asking to remove a room member (design-rooms.md §5): the same shared ask on every view of the
+  // window (first answer wins, `rooms.removeSettled` to the others, replayed in `ready`, 5 min then not removed).
+  const roomRemoveAsks = createRoomRemoveAsks(views)
   const systemFiles = new SystemFiles({
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
@@ -904,7 +939,13 @@ function start(server: boolean): void {
       // The user closed the window: its tabs are over, so is their record. While quitting the
       // same callback runs for every window and the saved tabs are exactly what must stay; on a
       // reopen they were just queued for the new window.
-      if (!quitting && !reopening) restorer.clear(projectId)
+      if (!quitting && !reopening) {
+        restorer.clear(projectId)
+        // With the records gone nothing can rebind the project's room members (their tabs went `gone` above, members
+        // kept as for a quit): they leave as on the person's close (design-rooms.md §1). A reopen's members rebind in the
+        // new window and their room comes back paused (RoomRegistry.rebind).
+        rooms.projectClosed(projectId)
+      }
       commands.closeProject(projectId)
       appMenu.refresh()
       layouts.closeProject(projectId)
@@ -921,6 +962,7 @@ function start(server: boolean): void {
       trashAsks.windowClosed(windowId)
       // Its `ccc download` offers end (settled for every view) and an accepted one's Try again with them.
       downloads.windowClosed(windowId)
+      roomRemoveAsks.windowClosed(windowId)
       // Its in-page notices end as dismissed (server mode; a plugin waiting on one is told now).
       pageNotices?.windowClosed(windowId)
     },
@@ -1793,7 +1835,18 @@ function start(server: boolean): void {
         }
       },
       // In server mode reveal and openWithSystem are refused whatever the origin (design-web.md §9.9).
-      server
+      server,
+      // ctx.rooms (design-rooms.md §4): HostApi builds the owner from the host's own plugin and project. A getter:
+      // the room service is made below, and HostApi reads this only when a rooms request comes.
+      get rooms() {
+        return rooms
+      },
+      // Checked on every ctx.rooms call: a host still running a plugin that was just switched off or removed is
+      // refused, by the sweep's own rule (rooms-plugin-gate.ts).
+      roomsOff: (owner) => roomsGate.offWhy(owner),
+      // The person's caps on opens and sends (design-rooms.md §6), read on every call. A getter: the store is made
+      // below, and HostApi reads it only when an open or a send comes.
+      limits: (pluginId) => pluginLimits.limits(pluginId)
     }
   })
   // Linked dev plugins: a change in the folder re-validates the manifest and reloads that one plugin
@@ -1876,6 +1929,36 @@ function start(server: boolean): void {
     // delivery must not set SessionInfo.typed (the person's takeover flag).
     write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
   })
+  // The person's per-plugin caps (design-rooms.md §6, plugins/plugin-limits.ts): `app.json` › `pluginLimits[id]`, read
+  // with every value clamped on each open and send (HostApi, the room delivery), written only by Settings › Plugins and
+  // the shell-only `ccc plugin limits` write.
+  const pluginLimits: PluginLimitsStore = new PluginLimitsStore({
+    storage: appJsonLimitsStorage(registry.app),
+    known: (pluginId) => plugins.get(pluginId) !== undefined
+  })
+  // Rooms (design-rooms.md, rooms/room-service.ts): messages and shared docs between Claude tabs. The service owns the
+  // room registry, the doc store, the delivery and the Stop decision; the tab manager (`tabs`, defined below, reached
+  // only once a tab exists) keeps the saved membership and the person's mark. Loaded now, before any window restores
+  // its tabs, so a restored member can rebind (each room comes back paused). The room send caps are the person's
+  // per-plugin limits, read on every send.
+  const rooms: RoomService = new RoomService({
+    dir: join(dataDir, 'rooms'),
+    tabs: {
+      setRoom: (projectId, tabId, room) => tabs.setRoom(projectId, tabId, room),
+      clearRoom: (projectId, tabId) => tabs.clearRoom(projectId, tabId),
+      roomOf: (projectId, tabId) => tabs.roomOf(projectId, tabId),
+      kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId)
+    },
+    sessions,
+    limits: (pluginId) => pluginLimits.limits(pluginId),
+    // An open room view (any view of the project's window) reads the room again.
+    changed: (room) => views.toProject(room.projectId, 'rooms.changed', { roomId: room.id }),
+    // A Remove ask whose member left, was removed, or whose room ended or was deleted is over: the dialogs close now.
+    anyChange: (roomId) => settleGoneRemoveAsks(roomRemoveAsks, roomId, (name) => rooms.hasLiveMember(roomId, name))
+  })
+  rooms.load()
+  // Never before the load finished, nor after a failed one: every plugin would look removed then and every room would end.
+  void pluginsLoaded.then(() => roomsGate.loaded(pluginsLoadFailed))
   // The session gist (app setting, off by default): Haiku summarises a tab's last prompts after a
   // turn. The run gets the env a tab gets with no tab variables (no token, no socket), so `claude`
   // resolves on the same PATH as a tab's and nothing it starts can act as a tab (gist-run.ts).
@@ -1930,9 +2013,13 @@ function start(server: boolean): void {
     // hooks would hand them its token and every prompt. `socket` is defined below; this runs at
     // spawn time only.
     sock: (): string | undefined => (socket.listening ? sock : undefined),
+    // A member tab's restore (rebind), the person's close (the membership ends) and a window or quit (unbound only).
+    rooms: rooms.tabHooks,
     lifecycle: {
       started: (tab) => {
         sessions.tabStarted(tab)
+        // A member (restored and rebound, or restarted): its SessionInfo room fields, and an offer of what waits.
+        rooms.tabStarted(tab.tabId)
         // A browser that selected the tab before it had a process joins its terminal now
         // (web/view-terminals.ts `started`). Only called once a window attached, after
         // `webConnections` below is defined.
@@ -1942,6 +2029,7 @@ function start(server: boolean): void {
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
       closed: (tabId) => {
         sessions.tabClosed(tabId)
+        rooms.tabClosed(tabId)
         // A browser that selected the tab before it ever started stops waiting for it.
         webConnections.tabClosed(tabId)
         // Its pane goes (the group may dissolve); TabManager's own change right after saves it.
@@ -2278,21 +2366,22 @@ function start(server: boolean): void {
   // resume, once a prompt makes it resumable (TabManager.sessionStarted / sessionPrompted).
   socket.handle(
     'hook',
-    hookHandler({
-      applyHook: (tabId, event, payload) => {
-        if (!sessions.applyHook(tabId, event, payload)) return false
-        const sessionId = sessions.get(tabId)?.sessionId
-        if (event === 'SessionStart' && sessionId !== undefined) {
-          // `source` tells an interactive `/resume` (a stored conversation, stays resumable) from
-          // `/clear` (an empty one); a non-string counts as neither.
-          const source = isPlainObject(payload) ? payload.source : undefined
-          tabs.sessionStarted(tabId, sessionId, typeof source === 'string' ? source : undefined)
-        }
-        if (event === 'UserPromptSubmit') tabs.sessionPrompted(tabId)
-        return true
-      }
-    })
+    // The registry, then the tab manager's resume bookkeeping; `blocked` reaches applyHook (hook-handler.ts hookTarget).
+    hookHandler(
+      hookTarget(sessions, tabs),
+      // The room stop: a member's Stop with room messages waiting may be answered with the pointer (design-rooms.md §2).
+      rooms.stop
+    )
   )
+
+  // `ccc hook Stop`'s ack of a block, which it prints once this confirms (protocol.ts HOOK_ACK_COMMAND): the room stop
+  // confirms only the block it is waiting on for the token's tab.
+  socket.handle('hook.ack', hookAckHandler(rooms.stop))
+
+  // `ccc room ...` (socket/handlers.ts roomHandlers): a Claude tab's session token only, identity from the token.
+  registerRoomHandlers(socket, rooms)
+  // `ccc plugin limits <id>` (read, any caller) and its write (HOST_ONLY_COMMANDS: a shell outside cockpit only).
+  registerPluginLimitsHandlers(socket, pluginLimits)
 
   // `ccc statusline` (Claude Code's status line in a Claude tab, cli/statusline.ts): the plan usage
   // goes to the store, the session's cost and context fill to its entry. A Claude tab only (the
@@ -2595,6 +2684,8 @@ function start(server: boolean): void {
     // list); their hosts restart as on a This project toggle. Every open window's settings page
     // reads the views again on its next load.
     bundledOffChanged: async (pluginId) => {
+      // Off in all projects ends its rooms everywhere (design-rooms.md §1); on again brings none back.
+      roomsGate.sweep()
       const plugin = plugins.get(pluginId)
       if (!plugin) return
       for (const { projectId } of windows.projectWindows()) {
@@ -2624,7 +2715,8 @@ function start(server: boolean): void {
     // Text of what the host gets: compared before and after a global save, never shown or logged.
     settingsFingerprint: (projectId, pluginId) => JSON.stringify(hostSettingsOf(projectId, pluginId)),
     projectSettingsChanged: (projectId, pluginId) =>
-      hosts.settingsChanged(projectId, pluginId).catch((err: unknown) => console.error('plugin settings push failed', err))
+      hosts.settingsChanged(projectId, pluginId).catch((err: unknown) => console.error('plugin settings push failed', err)),
+    limits: pluginLimits
   })
   // Plugin services on the Plugins page: status over the set the project's host runs, and the pick.
   const serviceChoices = new ServiceChoices({
@@ -2648,8 +2740,12 @@ function start(server: boolean): void {
       const checked = hostSettingsOf(projectId, pluginId)
       return checked.ok ? { ok: true } : checked
     },
-    // The window's host restarts with the new set; its panels follow (host-manager declarePanels).
-    enabledChanged: (projectId) => hosts.enabledChanged(projectId),
+    // The window's host restarts with the new set; its panels follow (host-manager declarePanels). A plugin switched
+    // off here has its rooms in this project ended (design-rooms.md §1).
+    enabledChanged: (projectId) => {
+      roomsGate.sweep()
+      return hosts.enabledChanged(projectId)
+    },
     settingsChanged: (projectId, pluginId) => hosts.settingsChanged(projectId, pluginId),
     layouts,
     secrets: pluginSecrets,
@@ -3091,6 +3187,32 @@ function start(server: boolean): void {
       return tabs.restart(projectId, tabId)
     }
   })
+  // The person's room acts on a member tab (design-rooms.md §2, §5). Wired here and nowhere else: host-api, the hooks
+  // and the socket handlers reach neither TabManager.setRoomMark nor the badge (no-plugin-room-mark.test.ts).
+  registerRoomStripHandlers(router, {
+    server,
+    membershipOf: (projectId, tabId) => tabs.roomOf(projectId, tabId),
+    roomMark: (projectId, tabId, mark) => tabs.setRoomMark(projectId, tabId, mark),
+    // After setRoomMark, which threw for a tab of another project: the tab is the sender's own.
+    markTurnedOn: (_projectId, tabId) => rooms.markTurnedOn(tabId),
+    // roomOf looks the tab up in the sender's own project only: another project's tab answers as in no room.
+    deliverHeld: (projectId, tabId, overDraft) =>
+      tabs.roomOf(projectId, tabId) === undefined ? { delivered: false, why: 'no-room' } : rooms.deliverHeld(tabId, { overDraft })
+  })
+  // The room view (design-rooms.md §5): every call for a room of the sender's own project (RoomService.personRoom).
+  registerRoomViewHandlers(router, {
+    server,
+    view: (projectId, roomId) => rooms.view(projectId, roomId),
+    doc: (projectId, roomId, path) => rooms.personDoc(projectId, roomId, path),
+    pause: (projectId, roomId) => rooms.personPause(projectId, roomId),
+    resume: (projectId, roomId) => rooms.personResume(projectId, roomId),
+    removeTarget: (projectId, roomId, name) => rooms.removeTarget(projectId, roomId, name),
+    remove: (projectId, roomId, name) => rooms.personRemove(projectId, roomId, name),
+    askRemove: (windowId, info) => roomRemoveAsks.ask(windowId, info),
+    removeAnswer: (windowId, requestId, remove) => roomRemoveAsks.answer(windowId, requestId, remove),
+    // The checked folder (never a link), handed to the file manager through the shell adapter, as ctx.files.reveal.
+    reveal: async (projectId, roomId) => electronSystemShell.showItemInFolder(await rooms.revealFolder(projectId, roomId))
+  })
   registerGroupHandlers(router, {
     get: (projectId) => tabGroups.get(projectId),
     place: (projectId, intent) => tabGroups.place(projectId, intent),
@@ -3160,7 +3282,7 @@ function start(server: boolean): void {
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot(
         // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
-        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, downloadOffers: downloads, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
+        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, downloadOffers: downloads, roomRemoveAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
         ctx
       ),
     mirror: terminalMirror,
@@ -3616,7 +3738,9 @@ function start(server: boolean): void {
     sessionGist.dispose()
     rateLimits.dispose()
     sessions.dispose()
+    // Members stay members with no tab (design-rooms.md §1 "Restart"); then the room stop's ack timers stop.
     tabs.disposeAll()
+    rooms.dispose()
     registry.flushAll()
     pluginIndex.flush()
     pluginSecrets.flush()

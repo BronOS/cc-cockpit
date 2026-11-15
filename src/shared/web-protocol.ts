@@ -515,6 +515,11 @@ export interface WebSnapshot {
    */
   downloadOffers?: Array<IpcEventMap['downloads.offer']>
   /**
+   * Room member Remove confirms still waiting (a server's browser asked, `rooms.removeAsk`), replayed to the shell's
+   * `rooms.removeAsk` listener the same way. Absent (an older fixture, the desktop) reads as none.
+   */
+  roomRemoveAsks?: Array<IpcEventMap['rooms.removeAsk']>
+  /**
    * In-page notices still up (server mode, notifier.ts PageNoticeBackend.pendingFor: the window's and
    * the app-wide ones, oldest first), replayed to the shell's `notices.show` listener like `closeAsks`;
    * `notices.gone` takes them down. Absent (an older fixture, the desktop) reads as none.

@@ -114,6 +114,8 @@ main (Electron)
 
 ## 3. Terminal tabs and Claude sessions
 
+Rooms (messages and shared docs between Claude tabs, delivered by pull): `docs/design-rooms.md`.
+
 **Tabs** (central zone): a Claude tab (main spawns `claude` in a PTY, `cwd` = project folder or a
 subfolder), a shell tab (`$SHELL -l`), a command tab (below), or a plugin's page tab (no process; §4 "Page tabs"). GUI apps on macOS do not get the
 shell's PATH, so main reads the environment from `$SHELL -l -i` once at startup and uses it for
@@ -267,7 +269,7 @@ touched; Claude outside the app is never seen.
 | `Notification` (permission) | needs permission |
 | Enter or a digit typed into a needs-permission tab | working (the dialog was answered); not for a dialog tool |
 | `PostToolUse` | working (a dialog tool's: the dialog was answered, its tool name cleared) |
-| `Stop`, `Notification` (idle) | waiting for input |
+| `Stop`, `Notification` (idle) | waiting for input (a `Stop` main answered with a room block stays `working`: the turn goes on, see `design-rooms.md` §2) |
 | `SessionEnd` / PTY exit | ended |
 
 `PostToolUse` for Edit / Write / MultiEdit / NotebookEdit adds `file_path` to the tab's
@@ -832,6 +834,8 @@ serial and (per WebContents) Bluetooth choosers are cancelled, and `getDisplayMe
 A new need of the shell page is added to `APP_PAGE_PERMISSIONS`, never a wider rule.
 
 ## 5. Plugin package and API
+
+`ctx.rooms` and the per-plugin limits the person sets: `docs/design-rooms.md` §4 and §6.
 
 **Package**: a folder or git repo with `plugin.json`; ships built JS (no build at install).
 

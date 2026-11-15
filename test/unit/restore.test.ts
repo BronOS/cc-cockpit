@@ -14,7 +14,9 @@ import {
   tabRecordsOf,
   type RestoredTab
 } from '../../src/main/restore'
-import { TabManager } from '../../src/main/tabs/tab-manager'
+import { TabManager, type TabRoomHooks } from '../../src/main/tabs/tab-manager'
+import { RoomRegistry } from '../../src/main/rooms/room-registry'
+import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabGroups } from '../../src/main/tabs/tab-groups'
 import { leavesOf, type GroupsSnapshot } from '../../src/shared/tab-groups'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
@@ -257,6 +259,169 @@ describe('tab flags', () => {
       ['claude', { color: 'red', note: 'review the plan' }],
       ['shell', { color: 'green' }]
     ])
+  })
+})
+
+describe('room membership', () => {
+  const ROOM = '1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed'
+  const member = { id: ROOM, name: 'alice', coordinator: true, mark: true }
+
+  it('is saved and restored for a Claude tab; a damaged one, or one on another kind, is dropped, not the tab', () => {
+    expect(
+      tabRecordsOf([
+        { id: 'a', gen: 1, kind: 'claude', cwd: '/p', room: member },
+        { id: 'b', gen: 1, kind: 'claude', cwd: '/p' }
+      ])
+    ).toEqual([
+      { id: 'a', kind: 'claude', cwd: '/p', room: member },
+      { id: 'b', kind: 'claude', cwd: '/p' }
+    ])
+    const plan = buildRestorePlan({
+      path: projectDir,
+      tabs: [
+        rec({ kind: 'claude', room: member }, 1),
+        rec({ kind: 'claude', room: { ...member, id: '../x' } }, 2),
+        rec({ kind: 'claude', room: { ...member, name: 'person' } }, 3),
+        rec({ kind: 'claude', room: { ...member, mark: 'yes' as never } }, 4),
+        rec({ kind: 'shell', room: member }, 5)
+      ]
+    })
+    expect(plan.map((t) => [t.kind, t.room])).toEqual([
+      ['claude', member],
+      ['claude', undefined],
+      ['claude', undefined],
+      ['claude', { ...member, mark: false }],
+      ['shell', undefined]
+    ])
+  })
+
+  it('a tab that failed to restore keeps its membership in the record', async () => {
+    const saved: TabRecord[][] = []
+    const restorer = new TabRestorer({ listTabs: () => [], saveTabs: (_id, r) => saved.push(r), projectPath: () => '/p', log: () => {} })
+    restorer.queue('p1', [{ kind: 'claude', room: member }])
+    await restorer.restore('p1', Promise.resolve(), () => {
+      throw new Error('out of ptys')
+    })
+    expect(saved.at(-1)).toEqual([{ id: expect.any(String), kind: 'claude', cwd: '/p', room: member }])
+  })
+
+  it('survives a quit on disk: the restored tab has a new id, is rebound, typed and paused; the person closing it ends it', async () => {
+    const roomsDir = join(dataDir, 'rooms')
+    // What the room service wires (Task 8): the registry is the authority, matched by room id and name.
+    const hooksOf = (reg: RoomRegistry): TabRoomHooks => ({
+      rebind: (tabId, r, projectId) => (reg.rebind(tabId, r.id, r.name, projectId) ? reg.memberOf(tabId) : undefined),
+      closed: (tabId) => void reg.memberClosed(tabId),
+      gone: (tabId) => reg.unbind(tabId)
+    })
+    const registry = new ProjectRegistry({ dataDir, log: () => {} })
+    const project = registry.openPath(projectDir)
+    const owner = { pluginId: 'example.team', projectId: project.id }
+    const backend = new FakePtyBackend()
+    let tabs: TabManager
+    const sessions = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: () => {} })
+    const restorer = new TabRestorer({
+      listTabs: (id) => tabs.list(id),
+      saveTabs: (id, records) =>
+        registry.update(id, (r) => {
+          r.tabs = records
+        }),
+      projectPath: (id) => registry.get(id)?.path
+    })
+    const makeManager = (rooms: RoomRegistry): TabManager =>
+      new TabManager({
+        backend,
+        projectPath: (id) => registry.get(id)?.path,
+        loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+        hooksPath: '/data/hooks.json',
+        binDir: '/data/bin',
+        sock: () => undefined,
+        onTabsChanged: (id) => restorer.tabsChanged(id),
+        rooms: hooksOf(rooms),
+        lifecycle: { started: (t) => sessions.tabStarted(t), closed: (id) => sessions.tabClosed(id) },
+        emit: () => {},
+        log: () => {}
+      })
+
+    // Run 1: a plugin opened two tabs into its room; the person marked one.
+    const rooms1 = new RoomRegistry({ dir: roomsDir, log: () => {} })
+    tabs = makeManager(rooms1)
+    const room = rooms1.create(owner, { title: 'Team' })
+    const lead = tabs.create(project.id, { kind: 'claude' })
+    const dev = tabs.create(project.id, { kind: 'claude' })
+    for (const [tab, name, coordinator] of [[lead, 'lead', true], [dev, 'dev', false]] as const) {
+      const m = rooms1.addMember(owner, room.id, { tabId: tab.id, name, coordinator })
+      tabs.setRoom(project.id, tab.id, { id: m.roomId, name: m.name, coordinator: m.coordinator })
+    }
+    tabs.setRoomMark(project.id, dev.id, true)
+    registry.flushAll()
+    // Quit: nothing written from here on, the tabs go with the app, the members stay.
+    restorer.freeze()
+    tabs.disposeAll()
+    expect(rooms1.memberOf(lead.id)).toBeUndefined()
+    expect(rooms1.memberInfos(room.id).map((m) => m.name)).toEqual(['lead', 'dev'])
+
+    // Run 2: the rooms come back paused, the tabs under new ids, rebound by room id and name.
+    const rooms2 = new RoomRegistry({ dir: roomsDir, log: () => {} })
+    rooms2.load()
+    tabs = makeManager(rooms2)
+    const restorer2 = new TabRestorer({ listTabs: (id) => tabs.list(id), saveTabs: () => {}, projectPath: (id) => registry.get(id)?.path })
+    restorer2.queue(project.id, buildRestorePlan(new ProjectRegistry({ dataDir, log: () => {} }).get(project.id)!))
+    await restorer2.restore(project.id, Promise.resolve(), (t) => tabs.restoreTab(project.id, t))
+    const [lead2, dev2] = tabs.list(project.id)
+    expect([lead2!.id, dev2!.id]).not.toContain(lead.id)
+    expect([lead2!.id, dev2!.id]).not.toContain(dev.id)
+    expect(lead2!.room).toEqual({ id: room.id, name: 'lead', coordinator: true, mark: false })
+    expect(dev2!.room).toEqual({ id: room.id, name: 'dev', coordinator: false, mark: true })
+    expect(rooms2.memberOf(dev2!.id)).toEqual({ roomId: room.id, name: 'dev', coordinator: false })
+    expect(rooms2.peek(room.id)?.paused).toBe(true)
+    // The restored members are the person's: typed from the start.
+    expect(sessions.get(lead2!.id)?.typed).toBe(true)
+    expect(sessions.get(dev2!.id)?.typed).toBe(true)
+
+    // The person closes dev: it leaves the room and the coordinator is told.
+    tabs.close(project.id, dev2!.id)
+    expect(rooms2.memberInfos(room.id).map((m) => m.name)).toEqual(['lead'])
+    expect(rooms2.take(room.id, 'lead').map((m) => [m.from, m.text])).toEqual([['system', 'dev left: tab closed']])
+    sessions.dispose()
+  })
+
+  it('two saved records claiming the same member: the first is bound and typed, the second comes back in no room', () => {
+    const rooms = new RoomRegistry({ dir: join(dataDir, 'rooms'), log: () => {} })
+    const project = new ProjectRegistry({ dataDir, log: () => {} }).openPath(projectDir)
+    const owner = { pluginId: 'example.team', projectId: project.id }
+    const room = rooms.create(owner, { title: 'Team' })
+    rooms.addMember(owner, room.id, { tabId: 'old', name: 'lead', coordinator: true })
+    rooms.unbind('old')
+    const hooks: TabRoomHooks = {
+      rebind: (tabId, r, projectId) => (rooms.rebind(tabId, r.id, r.name, projectId) ? rooms.memberOf(tabId) : undefined),
+      closed: (tabId) => void rooms.memberClosed(tabId),
+      gone: (tabId) => rooms.unbind(tabId)
+    }
+    const sessions = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: () => {} })
+    const tabs = new TabManager({
+      backend: new FakePtyBackend(),
+      projectPath: () => projectDir,
+      loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh', HOME: '/home/u' }),
+      hooksPath: '/data/hooks.json',
+      binDir: '/data/bin',
+      sock: () => undefined,
+      rooms: hooks,
+      lifecycle: { started: (t) => sessions.tabStarted(t), closed: (id) => sessions.tabClosed(id) },
+      emit: () => {},
+      log: () => {}
+    })
+    const saved = { id: room.id, name: 'lead', coordinator: true, mark: true }
+    const first = tabs.restoreTab(project.id, { kind: 'claude', room: saved })
+    const second = tabs.restoreTab(project.id, { kind: 'claude', room: saved })
+    expect(first.room).toEqual(saved)
+    expect(sessions.get(first.id)?.typed).toBe(true)
+    expect(second.room).toBeUndefined()
+    expect(sessions.get(second.id)?.typed).not.toBe(true)
+    // Closing the unbound one tells the registry nothing: the first still holds the member.
+    tabs.close(project.id, second.id)
+    expect(rooms.memberOf(first.id)).toEqual({ roomId: room.id, name: 'lead', coordinator: true })
+    expect(rooms.memberInfos(room.id).map((m) => m.name)).toEqual(['lead'])
+    sessions.dispose()
   })
 })
 

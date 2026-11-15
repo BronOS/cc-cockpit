@@ -11,7 +11,10 @@
 //     in flight (`delivering`) and not in the settle window right after SessionStart (`settling`);
 //   - a delivery happens on exactly three occasions: a `send` that finds the tab sendable, a
 //     `Stop` (one queue item per Stop; the rest wait for later Stops), and the end of the settle
-//     window (`settled`, one item: text sent while the tab was starting);
+//     window (`settled`, one item: text sent while the tab was starting). A Stop main answered with
+//     the room pointer as a block (rooms/room-stop.ts) is not one: Claude goes on working, so the
+//     head waits for the next Stop. Not even a block `ccc` never acked delivers later: a lost ack may
+//     hide a turn that went on, so nothing is typed on a timer;
 //   - nothing else delivers: not an idle Notification that promotes a tab to waiting, not the
 //     `delivering` timeout, not a restart (a restart's SessionStart only opens a settle window).
 //
@@ -28,7 +31,8 @@
 //     texts only from the first keystroke main has read, so a paste main writes before that
 //     keystroke reaches it still lands; the plan accepts that;
 //   - delivery is synchronous inside our Stop hook. If another Stop hook of the user returns
-//     decision "block" (loop-style plugins), Claude keeps working and the paste lands mid-turn;
+//     decision "block" (loop-style plugins), Claude keeps working and the paste lands mid-turn
+//     (main knows only about its own block, the room pointer);
 //   - a permission dialog raised while the main agent is waiting (background task, subagent) is on
 //     screen before its Notification(permission_prompt) reaches main, possibly seconds before
 //     (claude 2.1.314 has a 6 s notify timer for it). The tool's PreToolUse fires BEFORE the permission check and the
@@ -186,10 +190,28 @@ export const TYPED_ERROR = 'the person is typing in this tab'
  * person's own action, so it still goes in.
  */
 export function send(entry: SessionEntry, item: QueuedText): GateStep {
+  // A room pointer never waits in this queue (sendNow): queued, it could outlive the room's own
+  // decision (the mark, the draft bit, a pause) and be pasted at a later Stop nobody re-checked.
+  if (item.origin === 'room') throw new Error('a room pointer is never queued')
   if (entry.status === 'ended') throw new Error('the session has ended')
   if (item.origin === 'plugin' && entry.typed) throw new Error(TYPED_ERROR)
   if (entry.queue.length >= MAX_QUEUE) throw new Error(`the queue is full (${MAX_QUEUE} items)`)
   return deliverHead({ ...entry, queue: [...entry.queue, item] })
+}
+
+/**
+ * The room pointer (rooms/room-delivery.ts, design-rooms.md §2): pasted now when the tab may take
+ * text, otherwise nothing (no `write`) and the item is gone. Never queued, never put back: the
+ * room's queue is the truth, so a pointer that could not go in leaves the messages held, and the
+ * next chance (a Stop's pointer, the next send, the person's badge click) decides again. The
+ * gate's own queue is not touched either way, so an older queued text keeps its place for the
+ * next Stop. Throws for an ended session, like send.
+ */
+export function sendNow(entry: SessionEntry, item: QueuedText): GateStep {
+  if (item.origin !== 'room') throw new Error('only a room pointer is sent without the queue')
+  if (entry.status === 'ended') throw new Error('the session has ended')
+  if (!maySend(entry)) return { entry }
+  return { entry: { ...entry, delivering: true }, write: pasteBytes(item.text), delivered: item }
 }
 
 /**
@@ -206,9 +228,11 @@ export function send(entry: SessionEntry, item: QueuedText): GateStep {
  */
 export function takenOver(entry: SessionEntry): GateStep {
   if (entry.typed) return { entry }
-  const kept = entry.queue.filter((q) => q.origin !== 'plugin')
+  // Only `core` stays: a `room` item never gets queued (sendNow), but if one ever did, the
+  // takeover is exactly when it must go (design-rooms.md §2: a pointer is never kept past it).
+  const kept = entry.queue.filter((q) => q.origin === 'core')
   const step: GateStep = { entry: { ...entry, typed: true, queue: kept } }
-  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => q.origin === 'plugin')
+  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => q.origin !== 'core')
   return step
 }
 
@@ -249,7 +273,9 @@ export function afterEvent(entry: SessionEntry, event: ReducerEvent): GateStep {
   if (event.event === 'UserPromptSubmit') {
     return entry.delivering ? { entry: { ...entry, delivering: false } } : { entry }
   }
-  if (event.event === 'Stop') return deliverHead(entry)
+  // A blocked Stop (status-reducer.ts) left the tab working, so maySend would refuse anyway; the
+  // explicit check keeps the rule readable here and safe should the reducer's answer ever change.
+  if (event.event === 'Stop') return event.blocked === undefined ? deliverHead(entry) : { entry }
   return { entry }
 }
 

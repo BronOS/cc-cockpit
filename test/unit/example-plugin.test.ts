@@ -1,7 +1,7 @@
 // examples/plugin is the master copy of the public template repo BronOS/cc-cockpit-plugin-example.
 // Authors build from that repo alone, so it carries a copy of the API types and a built host; both
 // go stale in silence unless something here compares them. It is also listed in the official index,
-// so anyone can install it: the fake ctx below has no exec, sessions, overlay or secrets, and a call
+// so anyone can install it: the fake ctx below has no exec, sessions, rooms, overlay or secrets, and a call
 // to any of them would fail these tests.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'

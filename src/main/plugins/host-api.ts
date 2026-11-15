@@ -121,6 +121,17 @@
 //                                                                request came from (originOf), only that
 //                                                                one: main/files/downloads.ts checks the
 //                                                                path and mints the view's link
+//   rooms.create    { pluginId, title }        -> { id }         ctx.rooms (design-rooms.md §4), each call on
+//   rooms.list      { pluginId }               -> RoomInfo[]      the plugin's OWN rooms of THIS project only:
+//   rooms.end|delete { pluginId, id }          -> null            the owner is main's (the plugin this host runs,
+//   rooms.open      { pluginId, id, name, coordinator?, cwd?,     the project it was spawned for), another
+//                     prompt?, model?, effort? } -> { tabId }     plugin's or window's room is "no such room";
+//   rooms.invite    { pluginId, id, name, coordinator? } -> { code, expiresAt }   open is sessions.open (its
+//   rooms.members   { pluginId, id }           -> RoomMember[]    checks and its budget) plus the membership;
+//   rooms.remove    { pluginId, id, name }     -> null            send is `from plugin` through the delivery
+//   rooms.send      { pluginId, id, to, text } -> RoomSendAnswer[] (its caps); the docs are the owner's role
+//   rooms.docs.list|get|put { pluginId, id, path?, text? }        (every doc of the room); log the room's
+//   rooms.log       { pluginId, id, since?, limit? } -> RoomLogPage  events (room-service.ts does the rest)
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
 // by sessions.focus (select in that view), panels.show (reveal there), overlay.open (an html page
 // opens in that view, design-web.md §5.4), files.open and sessions.openFile (handed on to the plugin
@@ -210,11 +221,25 @@
 // functions (index.ts), unit tests pass the real pure ones with fakes underneath.
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
-import type { RpcHandler, RpcMeta } from '../../host/rpc'
+import { MAX_RPC_MESSAGE_LENGTH, type RpcHandler, type RpcMeta } from '../../host/rpc'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { DOWNLOAD_PLUGIN_MAX, DOWNLOAD_PLUGIN_WINDOW_MS } from '../../shared/downloads'
 import { DOWNLOAD_DESKTOP_TEXT, DOWNLOAD_NO_ORIGIN_TEXT } from '../files/downloads'
-import type { OAuthTokens, OverlayResult as PluginOverlayResult, PageTabInfo, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
+import type {
+  OAuthTokens,
+  OverlayResult as PluginOverlayResult,
+  PageTabInfo,
+  RateLimits,
+  RoomDoc,
+  RoomInfo,
+  RoomLogEntry,
+  RoomLogPage,
+  RoomMember,
+  RoomSendAnswer,
+  SendResult,
+  SessionInfo,
+  SessionSummary
+} from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo, TabInfo } from '../../shared/ipc'
@@ -250,15 +275,21 @@ import { checkSessionName } from '../../shared/session-name'
 import { checkSessionOptions } from '../../shared/session-options'
 import { checkCommandArgv, checkTabCommandLabel, defaultCommandTitle, TAB_COMMAND_LABEL_MAX } from '../../shared/tab-commands'
 import { resolveCwd } from '../tabs/tab-manager'
+import type { RoomOwner, RoomRecord } from '../rooms/room-registry'
+import type { RoomService } from '../rooms/room-service'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
 import { pluginFileUrl } from './plugin-protocol'
 import { resolveInside } from './validate'
 import { warnLog } from '../warn-log'
 import type { MachineInfo } from '../remote/machine-status'
+import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../shared/plugin-limits'
 
-/** ctx.sessions.send per plugin: at most this many texts per window. The gate's queue cap (50) also holds. */
+/**
+ * ctx.sessions.send per plugin: at most this many texts per window by default; the person's `sendsPerMinute` limit
+ * (plugin-limits.ts, read on every send) replaces it. The gate's queue cap (50) also holds.
+ */
 export const SEND_WINDOW_MS = 60_000
-export const MAX_SENDS_PER_WINDOW = 30
+export const MAX_SENDS_PER_WINDOW = DEFAULT_PLUGIN_LIMITS.sendsPerMinute
 /**
  * A plugin open's `beside` (split groups, decisions D4, D6, D7), checked by HostApi: `beside` is a tab
  * of the host's own window (looked up before the open budget is spent), `side` its edge. `view` is
@@ -270,9 +301,12 @@ export interface PluginPlacement {
   view?: ViewId
 }
 
-/** ctx.sessions.open per plugin: each one starts a `claude` process. */
+/**
+ * ctx.sessions.open per plugin: each one starts a `claude` process. The default; the person's `opensPerMinute` limit
+ * (plugin-limits.ts, read on every open) replaces it, for openShell, openCommand and rooms.open too (one budget).
+ */
 export const OPEN_WINDOW_MS = 60_000
-export const MAX_OPENS_PER_WINDOW = 5
+export const MAX_OPENS_PER_WINDOW = DEFAULT_PLUGIN_LIMITS.opensPerMinute
 /**
  * ctx.sessions.focus / close / openFile per plugin (design-next §4.1). focus moves the person's
  * window and selection, close may put a dialog in front of them, openFile opens a viewer or wakes
@@ -622,6 +656,19 @@ export interface HostApiDeps {
     hasBrowserView(windowId: number): boolean
     start(caller: { windowId: number; projectId: string }, view: ViewId, path: string, includeAll: boolean): Promise<void>
   }
+  /** ctx.rooms (RoomService). Without it every rooms request is refused. */
+  rooms?: HostRoomsApi
+  /**
+   * Why the owner's plugin is not on in its project now (rooms/rooms-plugin-gate.ts offWhy, the sweep's own rule), or
+   * undefined while it is. Asked on every rooms request: a host still running the plugin after a switch-off or an
+   * uninstall (the hosts restart one by one) must not create what the sweep just ended.
+   */
+  roomsOff?: (owner: RoomOwner) => string | undefined
+  /**
+   * The person's caps for a plugin (PluginLimitsStore.limits, design-rooms.md §6), asked on every open and send so an
+   * edit applies to the next call. Without it the defaults apply.
+   */
+  limits?(pluginId: string): PluginLimits
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -645,6 +692,28 @@ export interface HostApiPlugin {
   /** The types of its manifest `contributes.tabs`: the only page tabs ctx.tabs may open or list. Absent is none. */
   pageTabs?: readonly string[]
 }
+
+/**
+ * The room service as ctx.rooms reaches it (rooms/room-service.ts RoomService): the owner-side calls, each taking the
+ * owner HostApi built from the host's own plugin and project. They throw RoomError for a refusal.
+ */
+export type HostRoomsApi = Pick<
+  RoomService,
+  | 'create'
+  | 'list'
+  | 'end'
+  | 'delete'
+  | 'checkAdd'
+  | 'addMember'
+  | 'invite'
+  | 'members'
+  | 'remove'
+  | 'sendAsPlugin'
+  | 'ownerDocList'
+  | 'ownerDocGet'
+  | 'ownerDocPut'
+  | 'log'
+>
 
 /** Who is asking: fixed when main spawned the host process. */
 export interface HostScope {
@@ -687,14 +756,22 @@ interface OverlayLink {
   discussPrimary?: boolean
 }
 
-/** A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. */
+/**
+ * A fixed-window counter per key (plugin id): `take` is false once the window's budget is spent. `max` is a number,
+ * or a function of the key read on every take (the person's per-plugin limits: a change applies to the next call).
+ */
 export class RateWindow {
   private readonly windows = new Map<string, { start: number; count: number }>()
 
   constructor(
-    private readonly max: number,
+    private readonly max: number | ((key: string) => number),
     private readonly windowMs: number
   ) {}
+
+  /** The budget of `key` now. */
+  limit(key: string): number {
+    return typeof this.max === 'number' ? this.max : this.max(key)
+  }
 
   take(key: string, now = Date.now()): boolean {
     let win = this.windows.get(key)
@@ -703,7 +780,7 @@ export class RateWindow {
       win = { start: now, count: 0 }
       this.windows.set(key, win)
     }
-    if (win.count >= this.max) return false
+    if (win.count >= this.limit(key)) return false
     win.count++
     return true
   }
@@ -718,6 +795,14 @@ export class RateWindow {
     const win = this.windows.get(key)
     if (win && win.count > 0) win.count--
   }
+}
+
+/**
+ * A per-plugin cap hit (design-rooms.md §6): names the cap, its value and that the person sets it, so a plugin author
+ * reading the error knows it is not a fixed rule of the app.
+ */
+function capHit(max: number, what: string, key: string): string {
+  return `more than ${max} ${what} a minute (the ${key} limit; the person can change it in Settings › Plugins)`
 }
 
 /**
@@ -747,6 +832,10 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   if (e.flag !== undefined) out.flag = e.flag.note === undefined ? { color: e.flag.color } : { color: e.flag.color, note: e.flag.note }
   if (e.costUsd !== undefined) out.costUsd = e.costUsd
   if (e.contextPercent !== undefined) out.contextPercent = e.contextPercent
+  // The room's title, the member's name and flag, and the held count; never the messages, which reach
+  // only the member's own `ccc room read` (design-rooms.md §5). Summaries (scope all) get neither.
+  if (e.room !== undefined) out.room = { title: e.room.title, name: e.room.name, coordinator: e.room.coordinator }
+  if (e.held !== undefined) out.held = e.held
   if (active) out.active = true
   return out
 }
@@ -812,8 +901,9 @@ export async function pluginPageSrc(pluginId: string, pluginDir: string, file: u
 }
 
 export class HostApi {
-  private readonly sends = new RateWindow(MAX_SENDS_PER_WINDOW, SEND_WINDOW_MS)
-  private readonly opens = new RateWindow(MAX_OPENS_PER_WINDOW, OPEN_WINDOW_MS)
+  // The person's per-plugin caps (design-rooms.md §6), read on every call; the defaults without a store.
+  private readonly sends = new RateWindow((id) => this.limitsOf(id).sendsPerMinute, SEND_WINDOW_MS)
+  private readonly opens = new RateWindow((id) => this.limitsOf(id).opensPerMinute, OPEN_WINDOW_MS)
   private readonly overlayStarts = new RateWindow(MAX_OVERLAYS_PER_WINDOW, OVERLAY_WINDOW_MS)
   private readonly secretWrites = new RateWindow(MAX_SECRET_WRITES_PER_WINDOW, SECRET_WRITE_WINDOW_MS)
   private readonly authorizes = new RateWindow(MAX_AUTHORIZES_PER_WINDOW, AUTHORIZE_WINDOW_MS)
@@ -968,7 +1058,57 @@ export class HostApi {
       'files.reveal': (params, meta) => this.filesReveal(params, meta),
       'files.openWithSystem': (params, meta) => this.filesOpenWithSystem(params, meta),
       'files.trash': (params) => this.filesTrash(params),
-      'files.download': (params, meta) => this.filesDownload(params, meta)
+      'files.download': (params, meta) => this.filesDownload(params, meta),
+      'rooms.create': (params) => this.roomsCall(params, 'rooms.create', (rooms, owner, p) => ({ id: rooms.create(owner, { title: p.title }).id })),
+      'rooms.list': (params) => this.roomsCall(params, 'rooms.list', (rooms, owner) => rooms.list(owner).map(roomInfoOf)),
+      'rooms.end': (params) =>
+        this.roomsVoid(params, 'rooms.end', (rooms, owner, p) => rooms.end(owner, p.id)),
+      'rooms.delete': (params) =>
+        this.roomsVoid(params, 'rooms.delete', (rooms, owner, p) => rooms.delete(owner, p.id)),
+      'rooms.open': (params, meta) => this.roomsOpen(params, meta),
+      'rooms.invite': (params) =>
+        this.roomsCall(params, 'rooms.invite', (rooms, owner, p) => {
+          const coordinator = optionalBoolean(p.coordinator, 'coordinator')
+          const invite = rooms.invite(owner, p.id, { name: p.name, coordinator })
+          return { code: invite.code, expiresAt: invite.expiresAt }
+        }),
+      'rooms.members': (params) =>
+        this.roomsCall(params, 'rooms.members', (rooms, owner, p) =>
+          rooms.members(owner, p.id).map(
+            (m): RoomMember => ({ name: m.name, coordinator: m.coordinator, held: m.held, ...(m.tabId !== undefined ? { tabId: m.tabId } : {}) })
+          )
+        ),
+      'rooms.remove': (params) =>
+        this.roomsVoid(params, 'rooms.remove', (rooms, owner, p) => rooms.remove(owner, p.id, p.name)),
+      'rooms.send': (params) =>
+        this.roomsCall(params, 'rooms.send', (rooms, owner, p) =>
+          rooms.sendAsPlugin(owner, p.id, p.to, p.text).map((a) => ({ ...a }) as RoomSendAnswer)
+        ),
+      'rooms.docs.list': (params) =>
+        this.roomsCall(params, 'rooms.docs.list', async (rooms, owner, p) =>
+          (await rooms.ownerDocList(owner, p.id)).map((d): RoomDoc => ({ path: d.path, size: d.size }))
+        ),
+      'rooms.docs.get': (params) => this.roomsCall(params, 'rooms.docs.get', (rooms, owner, p) => rooms.ownerDocGet(owner, p.id, p.path)),
+      'rooms.docs.put': (params) =>
+        this.roomsVoid(params, 'rooms.docs.put', (rooms, owner, p) => rooms.ownerDocPut(owner, p.id, p.path, p.text)),
+      'rooms.log': (params) =>
+        this.roomsCall(params, 'rooms.log', (rooms, owner, p) => {
+          // `since` is a cursor, the `seq` of the last entry seen (0 for the start), never a time: several entries
+          // share a millisecond, and a time cursor would skip the ones logged after a poll in the same one.
+          if (p.since !== undefined && (typeof p.since !== 'number' || !Number.isSafeInteger(p.since) || p.since < 0)) {
+            throw new Error('since must be a seq: a whole number, 0 or more')
+          }
+          if (p.limit !== undefined && (typeof p.limit !== 'number' || !Number.isInteger(p.limit) || p.limit < 1)) {
+            throw new Error('limit must be a positive whole number')
+          }
+          // At most MAX_ROOM_LOG_ENTRIES and MAX_ROOM_LOG_PAGE_BYTES: a room's log may hold 20 MiB, and the answer is
+          // one message (a page past the RPC cap would fail to encode, and a `since` poller would ask for it forever).
+          // With `since` they are the oldest after it and `more` says to poll again, so a poller that fell behind loses
+          // nothing.
+          const limit = Math.min(typeof p.limit === 'number' ? p.limit : MAX_ROOM_LOG_ENTRIES, MAX_ROOM_LOG_ENTRIES)
+          const page = rooms.log(owner, p.id, { ...(typeof p.since === 'number' ? { since: p.since } : {}), limit, maxBytes: MAX_ROOM_LOG_PAGE_BYTES })
+          return { entries: page.entries as RoomLogEntry[], more: page.more } satisfies RoomLogPage
+        })
     }
   }
 
@@ -1401,7 +1541,7 @@ export class HostApi {
     // Validated before the budget is spent: a refused text (a "/" command) costs nothing.
     const clean = prepareText(text)
     if (!this.sends.take(plugin.id)) {
-      throw new Error(`sessions.send: more than ${MAX_SENDS_PER_WINDOW} texts in ${SEND_WINDOW_MS / 1000} s`)
+      throw new Error(`sessions.send: ${capHit(this.sends.limit(plugin.id), 'texts', 'sendsPerMinute')}`)
     }
     // The gate is the only way in: typed now only while the tab waits for input, else queued.
     // It throws before queueing anything (an ended session, a full queue, a tab the person took
@@ -1419,20 +1559,28 @@ export class HostApi {
 
   private async open(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, cwd, prompt, focus, model, effort, beside, side } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'sessions.open')
-    if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.open: cwd must be a string')
-    if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.open: focus must be a boolean')
+    const { pluginId, ...options } = (params ?? {}) as Record<string, unknown>
+    return this.openClaude('sessions.open', this.plugin(pluginId, 'sessions.open'), options, meta)
+  }
+
+  /**
+   * A new Claude tab in this project (ctx.sessions.open, and ctx.rooms.open with `what` 'rooms.open'): every check
+   * before the shared open budget is spent, then the spawn in the host's own window.
+   */
+  private async openClaude(what: string, plugin: HostApiPlugin, options: Record<string, unknown>, meta?: RpcMeta): Promise<OpenResult> {
+    const { cwd, prompt, focus, model, effort, beside, side } = options
+    if (cwd !== undefined && typeof cwd !== 'string') throw new Error(`${what}: cwd must be a string`)
+    if (focus !== undefined && typeof focus !== 'boolean') throw new Error(`${what}: focus must be a boolean`)
     // Closed lists (shared/session-options.ts), checked before the budget is spent; the values end up
     // as `--model` / `--effort` argv elements, so nothing outside the lists gets that far.
     const checked = checkSessionOptions({ model, effort })
-    if (!checked.ok) throw new Error(`sessions.open: ${checked.reason}`)
+    if (!checked.ok) throw new Error(`${what}: ${checked.reason}`)
     // Checked here too, before the budget is spent, so a bad cwd costs nothing; the tab manager
     // checks it again (same rule) when it spawns.
     try {
       resolveCwd(this.scope.projectDir, cwd || undefined)
     } catch (err) {
-      throw new Error(`sessions.open: ${errorText(err)}`, { cause: err })
+      throw new Error(`${what}: ${errorText(err)}`, { cause: err })
     }
     // The prompt is an argv element, never typed, so no paste framing is at stake; it gets the
     // gate's rules anyway: control bytes out, a size cap, and no leading "/", "!", "#" or "&" (Claude
@@ -1443,12 +1591,13 @@ export class HostApi {
       try {
         text = prepareText(prompt)
       } catch (err) {
-        throw new Error(`sessions.open: prompt: ${errorText(err)}`, { cause: err })
+        throw new Error(`${what}: prompt: ${errorText(err)}`, { cause: err })
       }
     }
-    const place = this.placement('sessions.open', beside, side, meta)
+    const place = this.placement(what, beside, side, meta)
+    // One budget for every open of the plugin (sessions.open, openShell, openCommand, rooms.open).
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`sessions.open: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`${what}: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
     const tab = await this.deps.openTab(
       this.scope.projectId,
@@ -1490,7 +1639,7 @@ export class HostApi {
     }
     const place = this.placement('sessions.openShell', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`sessions.openShell: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`sessions.openShell: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
     const tab = await this.deps.openShellTab(
       this.scope.projectId,
@@ -1711,7 +1860,7 @@ export class HostApi {
     }
     const place = this.placement('sessions.openCommand', beside, side, meta)
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`sessions.openCommand: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`sessions.openCommand: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
     const tab = await this.deps.openCommandTab(
       this.scope.projectId,
@@ -2653,11 +2802,100 @@ export class HostApi {
     return this.deps.secrets
   }
 
+  /**
+   * One ctx.rooms call: the plugin is one this host runs and the owner is built here from it and the host's own
+   * project, never from the request (another plugin's or window's room answers "no such room" in the registry). A
+   * refusal comes back as an Error naming the method; the room service's messages name no other room or path.
+   */
+  private async roomsCall<T>(
+    params: unknown,
+    what: string,
+    body: (rooms: HostRoomsApi, owner: RoomOwner, p: Record<string, unknown>) => T | Promise<T>
+  ): Promise<T> {
+    this.alive()
+    const p = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(p.pluginId, what)
+    if (!this.deps.rooms) throw new Error(`${what}: rooms are not available`)
+    const owner: RoomOwner = { pluginId: plugin.id, projectId: this.scope.projectId }
+    this.refuseIfOff(owner, what)
+    try {
+      return await body(this.deps.rooms, owner, p)
+    } catch (err) {
+      throw withMethod(what, err)
+    }
+  }
+
+  /** roomsCall for a method that answers nothing: the RPC reply is `null`, whatever the room service returned. */
+  private async roomsVoid(
+    params: unknown,
+    what: string,
+    body: (rooms: HostRoomsApi, owner: RoomOwner, p: Record<string, unknown>) => unknown
+  ): Promise<null> {
+    await this.roomsCall(params, what, body)
+    return null
+  }
+
+  /**
+   * Every rooms call, reads included, while the plugin is not on in this project: the host is about to stop, and its
+   * rooms have ended or are ending (rooms-plugin-gate.ts). Checked at call time, never cached at the host's start.
+   */
+  private refuseIfOff(owner: RoomOwner, what: string): void {
+    const why = this.deps.roomsOff?.(owner)
+    if (why !== undefined) throw new Error(`${what}: the plugin is not on in this project (${why})`)
+  }
+
+  /**
+   * ctx.rooms.open: a new Claude tab that is a member of the plugin's room from the start (design-rooms.md §1). The
+   * room and the name are checked first, then the tab opens as ctx.sessions.open would open it (its checks, the cwd
+   * inside the project, the same open budget; never focused, never placed beside a tab), then it joins. Only the
+   * documented options are read: a `focus` or `beside` riding along is never looked at.
+   */
+  private async roomsOpen(params: unknown, meta?: RpcMeta): Promise<{ tabId: string }> {
+    this.alive()
+    const { pluginId, id, name, coordinator, cwd, prompt, model, effort } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'rooms.open')
+    const rooms = this.deps.rooms
+    if (!rooms) throw new Error('rooms.open: rooms are not available')
+    const owner: RoomOwner = { pluginId: plugin.id, projectId: this.scope.projectId }
+    this.refuseIfOff(owner, 'rooms.open')
+    let asCoordinator: boolean
+    try {
+      asCoordinator = optionalBoolean(coordinator, 'coordinator')
+      // Before the budget is spent and a `claude` process starts: a tab that could not join is not opened.
+      rooms.checkAdd(owner, id, name)
+    } catch (err) {
+      throw withMethod('rooms.open', err)
+    }
+    const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort }, meta)
+    try {
+      // Again: the plugin may have been switched off while the tab was starting, and the sweep then found no member.
+      const why = this.deps.roomsOff?.(owner)
+      if (why !== undefined) throw new Error(`the plugin is not on in this project (${why})`)
+      rooms.addMember(owner, id, { tabId: tab.tabId, name, coordinator: asCoordinator })
+    } catch (err) {
+      // Only a race gets here (the room ended, the plugin was switched off, or a tab redeemed an invite for the same
+      // name, while the tab was starting). The tab stays, an ordinary Claude tab of the person's (closing it could raise the close dialog);
+      // the plugin learns which one from the message.
+      this.log(`plugin ${plugin.id}: rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`)
+      throw new Error(`rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`, { cause: err })
+    }
+    return { tabId: tab.tabId }
+  }
+
   /** The plugin a request names, only if this host process runs it. */
   private plugin(pluginId: unknown, what: string): HostApiPlugin {
     const plugin = typeof pluginId === 'string' ? this.scope.plugins.find((p) => p.id === pluginId) : undefined
     if (!plugin) throw new Error(`${what}: unknown plugin`)
     return plugin
+  }
+
+  /** The person's caps for one of this host's plugins; the defaults when main has no store or it fails. */
+  private limitsOf(pluginId: string): PluginLimits {
+    try {
+      return this.deps.limits?.(pluginId) ?? DEFAULT_PLUGIN_LIMITS
+    } catch {
+      return DEFAULT_PLUGIN_LIMITS
+    }
   }
 
   private alive(): void {
@@ -2710,6 +2948,33 @@ export class HostApi {
 
 /** What a plugin open answers: `placed` only when it asked for `beside` (absent from an older app too). */
 type OpenResult = { tabId: string; placed?: boolean }
+
+/** ctx.rooms.log answers at most this many events (a plugin polls with the `since` cursor and pages on `more`). */
+export const MAX_ROOM_LOG_ENTRIES = 1000
+/**
+ * ...and at most this many bytes of them (their JSON lines, never fewer than one entry): the RPC cap less room for
+ * the envelope. A UTF-8 byte count is never below the UTF-16 length the cap is counted in, so a page under it fits.
+ * One entry is far below it (a 20,000-character message, escaped, and a delivery line per member).
+ */
+export const MAX_ROOM_LOG_PAGE_BYTES = MAX_RPC_MESSAGE_LENGTH - 64 * 1024
+
+/** A room as its plugin sees it: no members' queues (their text reaches only `ccc room read` and the log). */
+function roomInfoOf(r: RoomRecord): RoomInfo {
+  return {
+    id: r.id,
+    title: r.title,
+    createdAt: r.createdAt,
+    paused: r.paused,
+    members: Object.keys(r.members).length,
+    ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {})
+  }
+}
+
+/** An optional boolean field of a request: absent is false, anything but a boolean is refused. */
+function optionalBoolean(value: unknown, field: string): boolean {
+  if (value !== undefined && typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
+  return value === true
+}
 
 function opened(tab: { id: string; placed?: boolean }, place: PluginPlacement | undefined): OpenResult {
   return place === undefined ? { tabId: tab.id } : { tabId: tab.id, placed: tab.placed === true }

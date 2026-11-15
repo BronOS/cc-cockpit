@@ -10,8 +10,10 @@
 // A client may half-close after its last request (`socket.end(line)`): main still answers every
 // request on the connection, then ends it. A connection with no traffic and nothing in progress
 // is closed after a while (socket-server.ts), so a client sends its request right after connecting.
+// Hooks are fire-and-forget except `Stop`, which reads one reply and may ack it (`hook.ack`): see STOP_REPLY_ARG.
 
 import { isPlainObject } from './guards'
+import { isPointerText } from './room-pointer'
 
 export const PROTOCOL_VERSION = 1
 
@@ -52,7 +54,10 @@ export const TOKENLESS_COMMANDS: readonly string[] = [
   'plugin.config',
   // `ccc panel show --project <path> <plugin>/<panel>` (friction round 1, Task 7): reveals a panel in
   // that project's open window, as the user could by clicking its icon.
-  'panel.show'
+  'panel.show',
+  // `ccc plugin limits <id>` (design-rooms.md §6): reads a plugin's caps, app-wide (so in PROJECTLESS_COMMANDS too).
+  // Allowed from a tab and from outside one: the person reads them before changing them. The write is host-only.
+  'plugin.limits'
 ]
 
 /**
@@ -62,7 +67,7 @@ export const TOKENLESS_COMMANDS: readonly string[] = [
  * their folder) and still must name `--project`. A subset of TOKENLESS_COMMANDS, fixed here for the
  * same reason: registering a handler can never widen what an anonymous caller may do.
  */
-export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions']
+export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions', 'plugin.limits']
 
 /**
  * Commands a WINDOW token may use (a shell tab's, a command tab's, a terminal overlay's; main
@@ -79,19 +84,20 @@ export const PROJECTLESS_COMMANDS: readonly string[] = ['notify', 'sessions']
 export const WINDOW_TOKEN_COMMANDS: readonly string[] = [...TOKENLESS_COMMANDS, 'plugin.cli.list', 'download']
 
 /**
- * `ccc web` (design-web.md §9.4): web access settings from a shell on the server. Answered only for
+ * Shell-only commands: `ccc web` (design-web.md §9.4), web access settings from a shell on the server, and the write
+ * of `ccc plugin limits` (design-rooms.md §6, `plugin.limits.set`), the person's per-plugin caps. Answered only for
  * a TOKENLESS caller that names no project: a request that carries any token, a Claude tab's, a
  * shell tab's or a forged one, is refused in `identify` before a handler is looked up, with
  * HOST_ONLY_TEXT, and each handler (main/socket/web-handlers.ts) refuses every caller kind but the
  * tokenless one again. Projectless (no project is involved) and never in TOKENLESS_COMMANDS or
- * WINDOW_TOKEN_COMMANDS. All eight names were listed before the first handler existed, so no
- * handler could ever be reached by a tab first; SocketServer.handle refuses a `web.*` handler whose
- * name is not here.
+ * WINDOW_TOKEN_COMMANDS. All eight `web.*` names were listed before the first handler existed, so no
+ * handler could ever be reached by a tab first; SocketServer.handle refuses a handler whose name is in a
+ * HOST_ONLY_FAMILIES prefix but not here, and wraps every listed one so it refuses a non-anonymous caller again.
  *
- * Not a boundary: a tab's process is the same OS user and can drop its token or edit app.json
- * itself (§9.12). It is there so a Claude session never reconfigures access, or prints the access
- * link into its transcript, as a side effect of a prompt (an injection included), and so v1's rule
- * "a view does not widen its own access" stays visible: a shell tab is reached from a browser too.
+ * Not a boundary: a tab's process is the same OS user and can drop its token (`env -u APP_TAB_TOKEN`) or edit
+ * app.json itself (§9.12). It is there so a Claude session never reconfigures access, prints the access link into
+ * its transcript or raises its own plugin's caps as a side effect of a prompt (an injection included), and so v1's
+ * rule "a view does not widen its own access" stays visible: a shell tab is reached from a browser too.
  */
 export const HOST_ONLY_COMMANDS: readonly string[] = [
   'web.status',
@@ -101,11 +107,126 @@ export const HOST_ONLY_COMMANDS: readonly string[] = [
   'web.add-device',
   'web.password',
   'web.mode',
-  'web.set'
+  'web.set',
+  'plugin.limits.set'
 ]
 
-/** What a tab (any token) is told for a HOST_ONLY_COMMANDS request, whatever the request and whether it has a handler. */
+/** What a tab (any token) is told for a `ccc web` request, whatever the request and whether it has a handler. */
 export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside cc-cockpit'
+
+/** What a tab is told for the `ccc plugin limits` write. */
+export const PLUGIN_LIMITS_HOST_ONLY_TEXT =
+  'the limits are the person\'s: change them in Settings › Plugins or with `ccc plugin limits` from a shell outside cc-cockpit'
+
+/** Each host-only family's name prefix and what a tab is told for any command in it: one table, so a new family has its text. */
+const HOST_ONLY_FAMILY_TEXTS: Readonly<Record<string, string>> = {
+  'web.': HOST_ONLY_TEXT,
+  'plugin.limits.': PLUGIN_LIMITS_HOST_ONLY_TEXT
+}
+
+/**
+ * Name prefixes that belong to host-only commands: a handler registered under one of these whose name is not in
+ * HOST_ONLY_COMMANDS is a start-up error (SocketServer.handle), since identify would let a session token reach it.
+ * `plugin.limits` itself (the read) is no member: the family is the dot after it.
+ */
+export const HOST_ONLY_FAMILIES: readonly string[] = Object.keys(HOST_ONLY_FAMILY_TEXTS)
+
+/** The refusal of a HOST_ONLY_COMMANDS request from any caller but a tokenless, projectless one. */
+export function hostOnlyText(cmd: string): string {
+  const family = HOST_ONLY_FAMILIES.find((prefix) => cmd.startsWith(prefix))
+  return family === undefined ? HOST_ONLY_TEXT : (HOST_ONLY_FAMILY_TEXTS[family] ?? HOST_ONLY_TEXT)
+}
+
+/** A name a handler may be registered under only when HOST_ONLY_COMMANDS lists it. */
+export function inHostOnlyFamily(cmd: string): boolean {
+  return HOST_ONLY_FAMILIES.some((prefix) => cmd.startsWith(prefix))
+}
+
+/**
+ * The Stop hook's reply (design-rooms.md §2 "The Stop pointer"). Every hook event is fire-and-forget:
+ * `ccc hook <Event>` writes `{ cmd: 'hook', token, args: { event, payload } }` and closes without reading, so a hook
+ * costs one write. Only `Stop` asks for a reply, with `args.reply: true` (STOP_REPLY_ARG): `ccc` then reads one reply
+ * line within its budget (cli/client.ts STOP_HOOK_BUDGET_MS). A result `{ block, ackId }` (StopBlockReply) means main
+ * answered the Stop with the room pointer: `ccc` then sends
+ *   { v, id: 2, cmd: 'hook.ack', token, args: { ackId } }
+ * on the same connection, reads main's answer, and only on `{ acked: true }` prints
+ * `{"decision":"block","reason":<block>}` for Claude Code. The connection is never half-closed before that. Main undoes
+ * a block whose connection closes before its ack (the Stop is applied as plain): the ack coming first is what proves
+ * an unacked block was never printed. Any other result (null: a plain Stop), an error, garbage, a reason that is not
+ * exactly the fixed pointer text, a refused ack or a slow reply prints nothing, and the hook still exits 0.
+ *
+ * Main blocks only a Stop that asked (`reply === true`): a `ccc` from before this change never prints the block, and a
+ * Stop main took as blocked would leave that tab `working`. `hook.ack` is a session-token command like `hook` (a window
+ * token, a `--project` caller and an anonymous one are refused), confirms only the block main just issued to that same
+ * tab with that id (rooms/room-stop.ts `ack`), and is neither HOST_ONLY nor a `ccc` command a person types
+ * (CORE_CLI_COMMANDS).
+ */
+export const STOP_REPLY_ARG = 'reply'
+export const HOOK_ACK_COMMAND = 'hook.ack'
+
+/** A Stop reply that blocks: the pointer text and the id the ack carries back. */
+export interface StopBlockReply {
+  block: string
+  ackId: string
+}
+
+/** Most characters an ack id may have; main's are 32 hex characters (room-stop.ts). */
+const MAX_ACK_ID_LENGTH = 64
+
+/**
+ * The block in a Stop reply's result, or undefined for anything else. Strict on purpose: what `ccc` prints goes into
+ * Claude's context, so the reason must be exactly the fixed pointer text (nothing a socket owner could choose beyond a
+ * count), and the ack id a short run of letters, digits, `-` or `_`.
+ */
+export function stopBlockOf(result: unknown): StopBlockReply | undefined {
+  if (!isPlainObject(result)) return undefined
+  const { block, ackId } = result
+  if (!isPointerText(block)) return undefined
+  if (typeof ackId !== 'string' || ackId.length === 0 || ackId.length > MAX_ACK_ID_LENGTH) return undefined
+  for (const c of ackId) {
+    const ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '-' || c === '_'
+    if (!ok) return undefined
+  }
+  return { block, ackId }
+}
+
+/**
+ * `ccc room read` (design-rooms.md §2 "Pull, not push"), a two-step read so no message is lost to a reply that never
+ * reached Claude (a `ccc` killed by Esc or its 40 s deadline, a socket closed before main wrote, a framer refusing the
+ * line). `room.read` (session token, no args) answers RoomReadReply and takes nothing off the queue: the oldest
+ * messages that fit ROOM_READ_MAX_TEXT_BYTES, fenced, with `more` still waiting after them and, when `more` > 0, the
+ * room pointer for `more` as the text's last line (outside every fence). `ccc` prints `text` and only then sends
+ *   { v, id: 2, cmd: 'room.read.ack', token, args: { ack } }
+ * on the same connection, with the reply's `ack`, and reads main's `{ acked: n }`. Main then drops the queue's head up
+ * to and including that batch; an ack main does not know (already acked, the member left, a later batch) drops
+ * nothing. A read with no ack is delivered again by the next read: at least once, never lost; a `ccc` killed between
+ * its print and its ack repeats that batch once. `count` 0 means nothing waits (`text` empty, no `ack`).
+ */
+export const ROOM_READ_ACK_COMMAND = 'room.read.ack'
+
+/** `room.read`'s result. */
+export interface RoomReadReply {
+  /** Messages in this batch. */
+  count: number
+  /** Messages still waiting after it (the next read's). */
+  more: number
+  /** The fenced batch (and the pointer line when `more` > 0); empty for none. */
+  text: string
+  /** What `room.read.ack` carries back once `text` is printed; absent for an empty read. */
+  ack?: string
+}
+
+/**
+ * Most bytes the JSON encoding of a read's `text` may take when a second message is added (JSON escapes counted, not
+ * characters, so the printed text is never longer than this in characters). Near 25k because Claude Code's Bash tool
+ * shows about 30k characters of output inline and saves more to a file with a short preview (older versions cut the
+ * middle): a batch past that is "delivered" and acked but not seen. A batch always holds at least one message, so
+ * one alone may pass it: 20k characters (room-registry.ts MAX_ROOM_MESSAGE_CHARS) print as up to about 60k when they
+ * are mostly line breaks (`| ` and a line break each), and encode to at most 9 bytes a character once fenced (a
+ * visibly escaped character: `\u{202e}` encodes as 9), so at most 180 KB: far below MAX_LINE_BYTES, which is the hard
+ * line. The `more` pointer after the batch makes the next read fetch the rest.
+ */
+export const ROOM_READ_MAX_TEXT_BYTES = 25 * 1000
 
 /** Keys that reach an object's prototype when copied with Object.assign or a for...in loop. */
 const RESERVED_ARG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])

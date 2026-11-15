@@ -6,7 +6,7 @@
 // record's own choice comes back unchanged once it is taken out of that list.
 // Record files and app.json are user-writable, so a damaged list counts as empty instead of throwing.
 
-interface EnablementRecord {
+export interface EnablementRecord {
   enabledPlugins?: unknown
   disabledPlugins?: unknown
 }
@@ -71,4 +71,26 @@ export function enabledPluginIds(
     else if (onInRecord(record, p)) out.add(p.id)
   }
   return [...out]
+}
+
+/**
+ * Why a plugin's rooms in a project end now (design-rooms.md §1: a room ends when its plugin is disabled, removed or
+ * revoked), or undefined while the plugin is on there. `plugin` is the installed plugin (undefined once it is
+ * uninstalled), `revoked` its marketplace revocation, `record` the project's record: undefined for a project whose
+ * record is gone (forgotten), 'unknown' for one this run cannot read, which keeps the rooms (ProjectRegistry
+ * enablementRecord: an ended room never comes back, and the file may). An invalid manifest is not a reason: the
+ * plugin is still the person's, as for a saved command tab (index.ts pluginAvailable), and a linked folder mid-edit
+ * must not end a room. The one rule for both the sweep and main's refusal of a rooms call (rooms-plugin-gate.ts).
+ */
+export function roomEndReason(
+  record: EnablementRecord | 'unknown' | undefined,
+  plugin: EnablementPlugin | undefined,
+  revoked: boolean,
+  disabledBundled?: unknown
+): 'plugin removed' | 'plugin revoked' | 'plugin disabled' | 'project removed' | undefined {
+  if (plugin === undefined) return 'plugin removed'
+  if (revoked) return 'plugin revoked'
+  if (record === 'unknown') return undefined
+  if (record === undefined) return 'project removed'
+  return pluginEnabledIn(record, plugin, disabledBundled) ? undefined : 'plugin disabled'
 }

@@ -56,6 +56,17 @@ function cardEl(session, index) {
   title.title = card.tooltip
   title.addEventListener('click', () => focusTab(card.tabId))
   head.appendChild(title)
+  if (card.room) {
+    // Room title and name are a plugin's text: textContent only (el), never markup.
+    const room = el('span', 'room', card.room.text)
+    room.title = card.room.title
+    head.appendChild(room)
+    if (card.held) {
+      const held = el('span', 'held', `${card.held} held`)
+      held.title = `${card.held} room ${card.held === 1 ? 'message' : 'messages'} waiting for you to deliver`
+      head.appendChild(held)
+    }
+  }
   head.appendChild(el('span', 'status', card.statusText))
   if (card.steps) {
     const steps = el('span', 'steps', card.steps.text)

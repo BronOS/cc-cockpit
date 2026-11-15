@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { SessionDetail, TabCommandMenu, TabInfo, TabStatus } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import { splitChord } from '../../shared/keys'
+import type { TabRoomRef } from '../../shared/tab-room'
 import { FLAG_COLOR_LABEL, FLAG_COLORS, MAX_FLAG_NOTE_CHARS, type FlagColor, type FlagPatch } from '../../shared/tab-flag'
 import { chordKeys, chordOf } from '../commands/keybindings'
 import { usePrefs } from '../prefs/prefs-store'
@@ -17,6 +18,7 @@ import { commandTooltip, pageTabMarks, tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
 import { hiddenFlags, type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
 import { allTabsOrder, nextAttention, sameIds, statusesOf } from './tab-flags'
+import { heldBadge, roomMarker, roomMenuItems } from './tab-room'
 import { FlagSwatch } from './FlagSwatch'
 
 /** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
@@ -168,6 +170,15 @@ export function TabBar(props: {
   onRename: (tabId: string, name: string | null) => void
   /** The person's flag: a colour, a note, both, or `null` to clear (main checks and stores it). */
   onFlag: (tabId: string, patch: FlagPatch | null) => void
+  /**
+   * The person's room mark on a member tab (tab-room.ts; main stores it, the tab comes back as `tabs.added`). `room`:
+   * the membership the entry showed, so main refuses the toggle once the tab is in another room.
+   */
+  onRoomMark: (tabId: string, room: TabRoomRef, mark: boolean) => void
+  /** The held badge's click: the room pointer as the person's own act, for the room the badge was drawn for. */
+  onDeliverHeld: (tabId: string, room: TabRoomRef) => void
+  /** "Room..." in a member tab's menu; absent: the entry is not shown. */
+  onOpenRoom?: (tabId: string) => void
   /**
    * The tab menu or one of its editors (rename, flag note) closed: they took the keyboard, so the
    * pane gives it back to the active terminal (TabsPane focusActive, which knows what is modal).
@@ -491,6 +502,8 @@ export function TabBar(props: {
     // A command tab: what it runs, where, and which plugin opened it (tab-label.ts commandTooltip).
     const where = commandTooltip(tab) ?? (status?.title ? `${status.title}\n${tab.cwd}` : tab.cwd)
     const flag = tab.flag
+    const room = roomMarker(tab, status)
+    const held = heldBadge(tab, status)
     return (
     <div
       key={tab.id}
@@ -513,6 +526,7 @@ export function TabBar(props: {
         aria-description={
           [
             flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined,
+            room?.tooltip.replace(/\n/g, ', '),
             ...pageTabMarks(tab)
           ]
             .filter((d) => d !== undefined)
@@ -547,7 +561,24 @@ export function TabBar(props: {
             were elsewhere. Neither is a flag, which is the person's alone. */}
         {tab.dirty && <span className="tab-dirty" aria-hidden="true" />}
         {tab.unseen && <span className="tab-unseen" aria-hidden="true" />}
+        {/* The room marker (design-rooms.md §5): the member's name; room, role and mark in its tooltip. */}
+        {room && (
+          <span className="tab-room" title={room.tooltip} aria-hidden="true">
+            {room.name}
+          </span>
+        )}
       </button>
+      {held && (
+        <button
+          type="button"
+          className="tab-held"
+          title={held.tooltip}
+          aria-label={held.label}
+          onClick={() => props.onDeliverHeld(tab.id, held.room)}
+        >
+          {held.text}
+        </button>
+      )}
       {status && (
         <QueuedChip
           queue={status.queue}
@@ -828,6 +859,31 @@ export function TabBar(props: {
               )}
             </>
           )}
+          {/* A member tab's room entries (tab-room.ts): the person's mark, and the room view. */}
+          {roomMenuItems(menuTab, { roomView: props.onOpenRoom !== undefined }).map((item, i) => (
+            <Fragment key={item.id}>
+              {i === 0 && <div role="separator" className="menu-separator" />}
+              {item.id === 'mark' ? (
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={item.checked}
+                  title={item.description}
+                  aria-description={item.description}
+                  onClick={() => props.onRoomMark(menu.tabId, item.room, !item.checked)}
+                >
+                  <span className="menu-check" aria-hidden="true">
+                    {item.checked ? '✓' : ''}
+                  </span>
+                  {item.label}
+                </button>
+              ) : (
+                <button type="button" role="menuitem" onClick={() => props.onOpenRoom?.(menu.tabId)}>
+                  {item.label}
+                </button>
+              )}
+            </Fragment>
+          ))}
           <div role="separator" className="menu-separator" />
           {/* The person's flag (shared/tab-flag.ts), on any tab kind: a colour row, the note, clear. */}
           <div role="group" aria-label="Flag" className="menu-flag-row">

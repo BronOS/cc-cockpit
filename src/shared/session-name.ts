@@ -16,6 +16,15 @@ export const MAX_SESSION_NAME_CHARS = 60
 // eslint-disable-next-line no-control-regex
 export const CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/
 
+/**
+ * For text a model reads and the person watches (a room's messages, fenced, and its docs): CONTROL and every other
+ * invisible format character (Unicode Cf) but ZWNJ and ZWJ, which words and emoji need. The rest hide text from the
+ * person while a model still reads it: the tag characters U+E0000-E007F spell out ASCII that a terminal shows as
+ * nothing ("ASCII smuggling"), and the soft hyphen, U+180E, the interlinear annotation marks U+FFF9-FFFB and the
+ * like draw nothing. Not CONTROL itself: a tab's name keeps the tag characters of a subdivision flag.
+ */
+export const HIDDEN_TEXT = new RegExp(`${CONTROL.source}|(?![\\u200c\\u200d])\\p{Cf}`, 'u')
+
 export type SessionNameCheck = { ok: true; value: string | null } | { ok: false; reason: string }
 
 /** `null` (or undefined) clears the name; a string is trimmed and must be 1-60 characters without control, bidi or invisible format characters. */

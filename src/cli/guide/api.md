@@ -310,6 +310,9 @@ with full Node access.
   come from the tab's Claude Code status line while the app setting "Rate limits from the status line" is on
   (Settings > General > Claude sessions, the default); absent before Claude's first status line and once
   the tab's process ended. A change reaches `onChange`. An older app never sends them.
+  `room` is the tab's room, `{ title, name, coordinator }` (the room's title, the tab's member name, whether it is a
+  coordinator), absent for a tab in no room; `held` is how many room messages wait for that member, absent when none do.
+  Never the messages themselves. Both are the app's to set; a change reaches `onChange`. An older app never sends them.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
   included (at most 4 a second).
 - `ctx.sessions.rateLimits()`: the person's Claude plan usage, account-wide (the same in every window
@@ -357,12 +360,17 @@ with full Node access.
   for the person. An older app has no `rename`: check `typeof ctx.sessions.rename === 'function'`.
 - `ctx.sessions.send(tabId, text)`: typed only while the tab is waiting for input, queued
   otherwise (a just-opened tab takes it about a second after Claude is at its prompt). Refuses text starting with `/`, `!`, `#` or `&`.
+  At most 30 texts a minute per plugin by default (`sendsPerMinute`); the person can change it (Settings > Plugins >
+  Limits, `ccc plugin limits`, at most 300), and a refusal names the cap and its value.
 - `ctx.sessions.open({ cwd, prompt, focus, model, effort })`: a new Claude tab; the prompt is an argument, never typed.
   `model` (`haiku`, `sonnet`, `opus`, `fable`) and `effort` (`low`, `medium`, `high`, `xhigh`, `max`) start it with
   `--model` / `--effort`; leave them out for the person's default, anything else rejects naming the field.
   The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
   window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores
-  `focus`, `model` and `effort`, silently: it starts the tab with the default model.
+  `focus`, `model` and `effort`, silently: it starts the tab with the default model. At most 5 tabs a minute per
+  plugin by default, one budget with `openShell`, `openCommand` and `ctx.rooms.open` (`opensPerMinute`); the person
+  can change it (Settings > Plugins > Limits, `ccc plugin limits`, at most 60), and a refusal names the cap and its
+  value.
 - `ctx.sessions.openShell({ cwd, focus })`: a plain shell tab in this window, the kind the person gets from
   "+" > shell: their login shell, with no command, arguments or environment from the plugin and nothing typed
   into it. `cwd` resolves inside the project folder by its real path (a link out of it is refused; absent means
@@ -392,6 +400,56 @@ with full Node access.
   there and a small page pane is halved anyway). `focus: true` shows the anchor's group in the window the call came from; the
   new pane is never focused, so it cannot catch keys the person types. An older app ignores `beside` and
   answers without `placed`.
+
+## Rooms
+
+`ctx.rooms` puts Claude tabs of this window in a room, where they message each other and share docs
+through `ccc room` (`ccc guide rooms` has what a member sees). The app sets every identity and enforces
+every rule; your plugin only acts on its own rooms of this window: another plugin's room, another window's
+and an unknown id all reject the same way, as "no such room". A refusal rejects with an Error naming the
+method and the rule. Rooms are kept by the app, not by your plugin: they outlive a host restart, a reload
+and an app restart (a room comes back paused then, until the person resumes it). A room ends when your
+plugin is switched off in the project (or in all projects), uninstalled or revoked; its docs stay. An older
+app has no `rooms`: check `typeof ctx.rooms === 'object'`.
+
+- `ctx.rooms.create({ title })` -> `{ id }`: a new room. The title is 1-60 characters on one line with no
+  quote, bracket, control or bidi character; at most 5 rooms not ended per plugin in a project, and at most
+  50 ended ones kept (past that, `create` refuses until you `delete` one).
+- `ctx.rooms.list()`: your rooms of this window (`RoomInfo`: `id`, `title`, `createdAt`, `endedAt` once
+  ended, `paused`, `members` as a count), ended ones included. No messages.
+- `ctx.rooms.end(id)`: its members leave it (their tabs stay), its invites die; the record and docs stay.
+  `ctx.rooms.delete(id)` removes an ended room with its docs and log.
+- `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd })` -> `{ tabId }`: a new Claude tab
+  of this window that is a member from the start. `name` matches `^[a-z][a-z0-9-]{0,30}$`, is unique in
+  the room and is not `all`, `plugin`, `person`, `user` or `system`; at most 20 members a room. `prompt`,
+  `model`, `effort` and `cwd` are `ctx.sessions.open`'s, with its checks, and the open counts against the
+  same 5 tabs a minute; the tab opens unselected. The room and the name are checked before the tab opens.
+  Seed the member's kickoff (`members/<name>/...`) first, and have the prompt tell it to read it.
+- `ctx.rooms.invite(id, { name, coordinator })` -> `{ code, expiresAt }`: a one-time invite (10 minutes)
+  for an existing tab, which joins by running `ccc room join <code>` itself; hand the code out through your
+  own command. A plugin can never pull a tab into a room.
+- `ctx.rooms.members(id)`: `RoomMember` per member (`name`, `coordinator`, `tabId` while it has a tab,
+  `held`: messages waiting). `ctx.rooms.remove(id, name)`: the member leaves (its tab stays), its waiting
+  messages are dropped and no coordinator is told (only the person closing a tab tells them); refused on an ended room.
+- `ctx.rooms.send(id, to, text)`: a message `from plugin` to a member name or `all`, at most 20000
+  characters (more goes in a doc). The answer is a `RoomSendAnswer` per recipient: `delivered`, `held`
+  with `why` (`paused`, `no-tab`, `typed`, `capped`: 5 pointers in a row, held until the person steps in, `draft`,
+  `not-waiting`), `gone` or `refused` (its queue is full).
+  Counts against the room's 60 sends a minute, every sender together (`all` once per recipient). That cap
+  (`roomSendsPerRoom`) and a member's own 20 a minute (`roomSendsPerMember`) are defaults the person can change
+  (Settings > Plugins > Limits, `ccc plugin limits`, at most 600 and 120); a refusal names the cap and its value.
+- `ctx.rooms.docs.list(id)`, `ctx.rooms.docs.get(id, path)`, `ctx.rooms.docs.put(id, path, text)`: every
+  doc of the room, both areas (`shared/...`, `members/<name>/...`). A doc is UTF-8 text of at most 256 KiB
+  with no control, bidi or invisible format character but tab and line breaks; 20 MiB a room. To export
+  the docs at the end, read them here and write them where you like (you have Node).
+- `ctx.rooms.log(id, { since, limit })` -> `{ entries, more }`: the room's events, oldest first, message
+  text included: joins, leaves with why, sends with what happened per recipient, doc reads, writes and
+  refusals, pauses, the end. Each entry has `seq` (1 up in the order logged, never reused), `at` and `type`.
+  At most `limit` (default and most 1000). With `since` (a `seq`, 0 for the start) the oldest entries after
+  it, `more: true` when newer ones remain; without it the newest, `more: true` when older ones were left out.
+  There is no event to subscribe to: poll with the last `seq` you got, again at once while `more`. Poll by
+  `seq`, not `at`: several events share a millisecond. A jump in `seq` means the log was trimmed (at 20 MiB
+  its oldest half is dropped, with a `trimmed` entry).
 
 ## Files
 

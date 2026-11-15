@@ -15,6 +15,7 @@
 // CORE_CLI_COMMANDS (src/shared/manifest.ts), the list main reserves against plugin command names.
 import { isHookEvent, type HookEvent } from '../shared/hooks'
 import { MAX_PLUGIN_CONFIG_EDITS, parseConfigValue, PLUGIN_CONFIG_SCOPES, type PluginConfigScope } from '../shared/plugin-config'
+import { MAX_PLUGIN_LIMIT_EDITS } from '../shared/plugin-limits'
 import type { WebAccessRisk } from '../shared/types'
 import { WEB_RISK_ORDER, WEB_SHELL_MODES } from '../shared/web-access'
 import {
@@ -71,6 +72,12 @@ export type Command =
    * the `--use-global <key>` keys (repeatable; alone, no `set`): drop this project's overrides.
    */
   | { kind: 'plugin-config'; id: string; json: boolean; scope?: PluginConfigScope; set: Array<[string, unknown]>; useGlobal?: string[]; project?: string }
+  /**
+   * `ccc plugin limits <id>` (design-rooms.md §6): no `set` and no `reset` prints the plugin's caps; `set` holds the
+   * `key=value` arguments as typed (main parses and checks each value), `reset` the keys after `--default`. Either one
+   * is the write, refused in a tab (a shell outside cockpit only); never a project: the caps are app-wide.
+   */
+  | { kind: 'plugin-limits'; id: string; set: Array<[string, string]>; reset: string[] }
   /** `ccc panel show <plugin>/<panel>` (friction round 1, Task 7). */
   | { kind: 'panel-show'; plugin: string; panel: string; project?: string }
   /**
@@ -106,6 +113,18 @@ export type Command =
       /** As typed ('' clears it); the client makes it absolute against its cwd. */
       startFolder?: string
     }
+  /**
+   * `ccc room …` (design-rooms.md §4): a Claude tab only, identity from its token (main decides). `send` and `doc put`
+   * carry no `text` when it comes from stdin (`-`): client.ts reads it, bounded, and fills it in before the request.
+   */
+  | { kind: 'room-status'; json: boolean }
+  | { kind: 'room-join'; invite: string }
+  | { kind: 'room-leave' }
+  | { kind: 'room-send'; to: string; text?: string }
+  | { kind: 'room-read' }
+  | { kind: 'room-doc-ls' }
+  | { kind: 'room-doc-get'; path: string }
+  | { kind: 'room-doc-put'; path: string; text?: string }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -261,6 +280,14 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
           'secret fields only in Settings'
         ]
       },
+      {
+        synopsis: ['plugin limits <id>', 'plugin limits <id> <key>=<value>...', 'plugin limits <id> --default <key>...'],
+        text: [
+          "print a plugin's caps (tabs opened, texts and room messages a",
+          'minute), or change them (only from a shell outside cockpit);',
+          '--default drops an override'
+        ]
+      },
       { synopsis: ['plugin logs <id> [--follow]'], text: ["print a plugin's log (the last lines; --follow keeps going)"] }
     ]
   },
@@ -290,6 +317,22 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       {
         synopsis: ['web set --start-folder <path>'],
         text: ["where the browser's folder browser starts (server mode);", "'' for the home folder (the default)"]
+      }
+    ]
+  },
+  room: {
+    parse: (rest) => parseRoom(rest),
+    usage: [
+      { synopsis: ['room [status] [--json]'], text: ['my room: its title, my name, the members and their status (in a Claude tab)'] },
+      { synopsis: ['room join <invite>', 'room leave'], text: ['join the room an invite names, or leave my room'] },
+      {
+        synopsis: ['room send <name|all> <text...>', 'room send <name|all> -'],
+        text: ['send a message to a member or to all (- reads stdin);', 'the answer says delivered, held or gone per recipient']
+      },
+      { synopsis: ['room read'], text: ['print the room messages waiting for me, fenced'] },
+      {
+        synopsis: ['room doc ls', 'room doc get <path>', 'room doc put <path> -'],
+        text: ['the room docs I may read; print one; write one from stdin']
       }
     ]
   },
@@ -380,7 +423,7 @@ function pluginIdProblem(id: string): string | undefined {
   return undefined
 }
 
-type PluginSub = 'new' | 'link' | 'unlink' | 'list' | 'config' | 'logs'
+type PluginSub = 'new' | 'link' | 'unlink' | 'list' | 'config' | 'limits' | 'logs'
 
 /**
  * The options of each `ccc plugin` subcommand: `value` takes the next argument (the message is
@@ -397,6 +440,7 @@ const PLUGIN_OPTIONS: Record<PluginSub, Readonly<Record<string, { value: string 
     '--scope': { value: 'needs app, global or project' },
     '--use-global': { value: 'needs a key' }
   },
+  limits: { '--default': 'flag' },
   logs: { '--follow': 'flag' }
 }
 
@@ -407,7 +451,7 @@ function isPluginSub(sub: string): sub is PluginSub {
 /** `ccc plugin <sub> …`: the dev loop. A mistyped one is a usage error (exit 2), as for every user command. */
 function parsePluginDev(rest: readonly string[]): Command {
   const [sub, ...args] = rest
-  if (sub === undefined) return usage('plugin needs new, link, unlink, list, config or logs')
+  if (sub === undefined) return usage('plugin needs new, link, unlink, list, config, limits or logs')
   if (!isPluginSub(sub)) return usage(`unknown plugin command: ${sub}`)
   if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'plugin' }
   const options = PLUGIN_OPTIONS[sub]
@@ -460,6 +504,8 @@ function parsePluginDev(rest: readonly string[]): Command {
       const config = parsePluginConfig(positional, values.get('--scope'), flags.has('--json'), useGlobal)
       return config.kind === 'plugin-config' ? withProject(config) : config
     }
+    case 'limits':
+      return parsePluginLimits(positional, flags.has('--default'))
     case 'unlink':
     case 'logs': {
       if (target === undefined) return usage(`plugin ${sub} takes one plugin id`)
@@ -500,6 +546,35 @@ function parsePluginConfig(positional: readonly string[], scope: string | undefi
   }
   if (scope !== undefined && set.length === 0) return usage('plugin config: --scope goes with key=value to set')
   return { kind: 'plugin-config', id, json, ...(scope !== undefined ? { scope: scope as PluginConfigScope } : {}), set }
+}
+
+/**
+ * `ccc plugin limits <id> [key=value ... | --default key ...]`: the id, then either the edits (split at the first
+ * `=`, the value kept as typed: main checks it is a whole number in range) or, with `--default`, the keys whose
+ * override goes. One kind per call. Main knows the keys and names them when one is wrong.
+ */
+function parsePluginLimits(positional: readonly string[], reset: boolean): Command {
+  const [id, ...rest] = positional
+  if (id === undefined || id === '') return usage('plugin limits takes a plugin id, then key=value to set or --default <key>')
+  const problem = pluginIdProblem(id)
+  if (problem !== undefined) return usage(`plugin limits: ${problem}`)
+  if (rest.length > MAX_PLUGIN_LIMIT_EDITS) return usage(`plugin limits: at most ${MAX_PLUGIN_LIMIT_EDITS} changes at once`)
+  if (reset) {
+    if (rest.length === 0) return usage('plugin limits: --default needs the keys to reset')
+    const keys: string[] = []
+    for (const key of rest) {
+      if (key === '' || key.includes('=')) return usage(`plugin limits: --default takes keys, not key=value: ${key}`)
+      keys.push(key)
+    }
+    return { kind: 'plugin-limits', id, set: [], reset: keys }
+  }
+  const set: Array<[string, string]> = []
+  for (const pair of rest) {
+    const eq = pair.indexOf('=')
+    if (eq <= 0) return usage(`plugin limits: expected key=value, got ${pair}`)
+    set.push([pair.slice(0, eq), pair.slice(eq + 1)])
+  }
+  return { kind: 'plugin-limits', id, set, reset: [] }
 }
 
 function parseSession(rest: readonly string[]): Command {
@@ -587,6 +662,64 @@ function parseWebMode(args: readonly string[]): Command {
   // `confirm` goes on to main, which refuses it with its reason (WEB_SHELL_MODES says why).
   if (mode === undefined || (mode !== 'confirm' && !WEB_SHELL_MODES.some((m) => m === mode))) return usage(`web mode takes ${WEB_MODES_TEXT}`)
   return { kind: 'web-mode', mode, confirm }
+}
+
+/**
+ * `ccc room [status] [--json] | join <invite> | leave | send <to> <text...>|- | read | doc ls|get <path>|put <path> -`.
+ * Each takes a fixed shape; anything else is a usage error. Nothing here checks a name, an invite or a path: main does
+ * (a refused doc and a missing one answer the same, so a typo here saves nothing but a round trip). `-` as the whole
+ * text is stdin; a message that is literally `-` is `send <to> -- -` (`--` ends the options, as in `session note`).
+ */
+function parseRoom(rest: readonly string[]): Command {
+  const [sub, ...args] = rest
+  if (sub === undefined) return { kind: 'room-status', json: false }
+  if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'room' }
+  switch (sub) {
+    case '--json':
+      return args.length === 0 ? { kind: 'room-status', json: true } : usage('room takes only --json')
+    case 'status':
+      if (args.length === 0) return { kind: 'room-status', json: false }
+      if (args.length === 1 && args[0] === '--json') return { kind: 'room-status', json: true }
+      return usage('room status takes only --json')
+    case 'join':
+      return args.length === 1 && args[0] !== '' ? { kind: 'room-join', invite: args[0] as string } : usage('room join takes one invite')
+    case 'leave':
+      return args.length === 0 ? { kind: 'room-leave' } : usage('room leave takes no arguments')
+    case 'read':
+      return args.length === 0 ? { kind: 'room-read' } : usage('room read takes no arguments')
+    case 'send': {
+      const [to, ...body] = args
+      if (to === undefined || to === '' || to.startsWith('-')) return usage('room send takes a member name or all, then the text (or - for stdin)')
+      if (body.length === 1 && body[0] === '-') return { kind: 'room-send', to }
+      // `send bob --help` is a help request, not a message: the text `--help` is `send bob -- --help`.
+      if (body.length === 1 && (body[0] === '--help' || body[0] === '-h')) return { kind: 'help', command: 'room' }
+      const text = words(body)
+      return text === undefined ? usage('room send needs some text (or - to read it from stdin)') : { kind: 'room-send', to, text }
+    }
+    case 'doc':
+      return parseRoomDoc(args)
+    default:
+      return usage(`unknown room command: ${sub}`)
+  }
+}
+
+function parseRoomDoc(args: readonly string[]): Command {
+  const [sub, ...rest] = args
+  if (sub === undefined) return usage('room doc needs ls, get or put')
+  if (rest[0] === '--help' || rest[0] === '-h') return { kind: 'help', command: 'room' }
+  switch (sub) {
+    case 'ls':
+      return rest.length === 0 ? { kind: 'room-doc-ls' } : usage('room doc ls takes no arguments')
+    case 'get':
+      return rest.length === 1 && rest[0] !== '' ? { kind: 'room-doc-get', path: rest[0] as string } : usage('room doc get takes one path')
+    case 'put':
+      // The text is always stdin: a doc is too big and too exact (no trimming) for an argument.
+      return rest.length === 2 && rest[0] !== '' && rest[1] === '-'
+        ? { kind: 'room-doc-put', path: rest[0] as string }
+        : usage('room doc put takes a path and - (the doc is read from stdin)')
+    default:
+      return usage(`unknown room doc command: ${sub}`)
+  }
 }
 
 /** A port as typed: digits only (no sign, no exponent, no spaces), checked against the range by main. */

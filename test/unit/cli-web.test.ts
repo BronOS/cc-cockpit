@@ -39,6 +39,7 @@ import {
   encodeRequest,
   HOST_ONLY_COMMANDS,
   HOST_ONLY_TEXT,
+  hostOnlyText,
   LineFramer,
   parseReply,
   parseRequest,
@@ -305,7 +306,7 @@ describe('web handlers over the real socket', () => {
     const deps = await serve(true)
     for (const cmd of HOST_ONLY_COMMANDS) {
       for (const token of [SESSION, WINDOW]) {
-        expect(await ask({ cmd, token, args: { all: true } }), cmd).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
+        expect(await ask({ cmd, token, args: { all: true } }), cmd).toEqual({ id: 1, ok: false, error: hostOnlyText(cmd) })
       }
     }
     expect(deps.calls).toEqual([])

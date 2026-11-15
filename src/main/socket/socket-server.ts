@@ -7,14 +7,15 @@
 //     with timingSafeEqual). A Claude tab's token is a SESSION token: that tab and its project,
 //     for every command. A shell tab's, a command tab's or a terminal overlay's is a WINDOW token:
 //     that window's project, like `--project` names it, and only for the WINDOW_TOKEN_COMMANDS
-//     (never `hook` or `session.*`). The kind comes from the lookup, never from the request. A
+//     (never `hook`, `hook.ack` or `session.*`). The kind comes from the lookup, never from the request. A
 //     token that matches nothing is refused outright, even for a command a tokenless caller could
 //     use: a stale or forged token is a broken caller, not an anonymous one.
 //   - without a token: only the TOKENLESS_COMMANDS, and only with `project` (`--project <path>`),
 //     which main resolves against its own project registry. The PROJECTLESS_COMMANDS (notify,
 //     sessions) may leave `project` out; they act on no single project.
-//   - the HOST_ONLY_COMMANDS (`ccc web`): tokenless and projectless only. Any token is refused with
-//     HOST_ONLY_TEXT before the lookup; the caller is `anonymous`.
+//   - the HOST_ONLY_COMMANDS (`ccc web`, the `ccc plugin limits` write): tokenless and projectless only. Any token is
+//     refused with hostOnlyText before the lookup; the caller is `anonymous`, and every listed handler is wrapped at
+//     registration so it refuses any other caller again.
 // Handlers get that identity as `caller`; anything in `args` that looks like a tab or project id
 // is just data to be looked up inside the caller's scope.
 //
@@ -26,7 +27,8 @@ import { errorText } from '../../shared/error-text'
 import {
   encodeReply,
   HOST_ONLY_COMMANDS,
-  HOST_ONLY_TEXT,
+  hostOnlyText,
+  inHostOnlyFamily,
   LineFramer,
   parseRequest,
   PROJECTLESS_COMMANDS,
@@ -121,7 +123,7 @@ const DEFAULT_MAX_CONNECTIONS = 128
  */
 const MAX_IN_FLIGHT = 16
 
-/** Socket errors a client causes just by going away: `ccc hook` closes without reading the reply. */
+/** Socket errors a client causes just by going away: `ccc hook` (but Stop) closes without reading the reply. */
 const PEER_GONE = new Set(['EPIPE', 'ECONNRESET'])
 
 export class SocketServer {
@@ -139,13 +141,21 @@ export class SocketServer {
   /** Register the handler for `cmd`. One per command; a second registration is a bug. */
   handle(cmd: string, handler: Handler): void {
     if (this.handlers.has(cmd)) throw new Error(`socket command ${cmd} is already registered`)
-    // A `web.*` handler missing from HOST_ONLY_COMMANDS would be reached by whatever identify lets
-    // through for an unlisted name (a session token reaches every handler), so a Claude tab could
-    // print the access link. Refused at registration, so the drift is a start-up error, not a hole.
-    if (cmd.startsWith('web.') && !HOST_ONLY_COMMANDS.includes(cmd)) {
+    // A `web.*` (or `plugin.limits.*`) handler missing from HOST_ONLY_COMMANDS would be reached by whatever identify
+    // lets through for an unlisted name (a session token reaches every handler), so a Claude tab could print the access
+    // link or raise its plugin's caps. Refused at registration, so the drift is a start-up error, not a hole.
+    if (inHostOnlyFamily(cmd) && !HOST_ONLY_COMMANDS.includes(cmd)) {
       throw new Error(`socket command ${cmd} must be listed in HOST_ONLY_COMMANDS`)
     }
-    this.handlers.set(cmd, handler)
+    // A listed one answers the tokenless, projectless caller only, whatever identify decided: identify refuses every
+    // other caller first, and this keeps that true for a handler whose own check was forgotten.
+    const served: Handler = HOST_ONLY_COMMANDS.includes(cmd)
+      ? (args, caller, peerGone) => {
+          if (caller.kind !== 'anonymous') throw new Error(hostOnlyText(cmd))
+          return handler(args, caller, peerGone)
+        }
+      : handler
+    this.handlers.set(cmd, served)
   }
 
   get listening(): boolean {
@@ -303,7 +313,9 @@ export class SocketServer {
       // A handler returned something JSON cannot carry (a cycle, a BigInt).
       text = send({ id, ok: false, error: `unserializable result: ${errorText(err)}` })
     }
-    // The client may be gone: `ccc hook` is fire-and-forget and closes without reading.
+    // The client may be gone: `ccc hook` is fire-and-forget and closes without reading. Stop is the
+    // exception (protocol.ts STOP_REPLY_ARG): `ccc` reads this reply on the same connection and may
+    // send `hook.ack` after it, which is served like any request line, in order.
     if (!socket.destroyed && socket.writable) socket.write(text)
   }
 
@@ -316,11 +328,11 @@ export class SocketServer {
   }
 
   private identify(request: Request): Caller {
-    // `ccc web` (HOST_ONLY_COMMANDS, design-web.md §9.4): a shell on the server, never a tab. Any
-    // token is refused before it is even looked up and before any handler, registered or not, so a
-    // Claude tab learns nothing and reaches nothing; the handlers refuse every other caller again.
+    // `ccc web` and the `ccc plugin limits` write (HOST_ONLY_COMMANDS, design-web.md §9.4, design-rooms.md §6): a
+    // shell outside the app, never a tab. Any token is refused before it is even looked up and before any handler,
+    // registered or not, so a Claude tab learns nothing and reaches nothing; the handlers refuse every other caller again.
     if (HOST_ONLY_COMMANDS.includes(request.cmd)) {
-      if (request.token !== undefined) throw new Error(HOST_ONLY_TEXT)
+      if (request.token !== undefined) throw new Error(hostOnlyText(request.cmd))
       if (request.project !== undefined && request.project !== '') throw new Error(`${request.cmd} names no project`)
       return { kind: 'anonymous' }
     }

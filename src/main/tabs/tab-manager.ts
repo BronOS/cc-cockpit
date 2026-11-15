@@ -13,6 +13,7 @@ import type { EventChannel, IpcEventMap, TabInfo } from '../../shared/ipc'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
 import { checkSessionName } from '../../shared/session-name'
 import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
+import { sameTabRoom, tabRoomOf, type TabRoom } from '../../shared/tab-room'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
 import { checkPageTabSpec, MAX_PAGE_TABS_PER_PLUGIN, pageTabIconOf, pageTabTitleOf, type PageTabSpec } from '../../shared/page-tabs'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../../shared/tab-commands'
@@ -116,6 +117,11 @@ export interface TabManagerOptions {
    * that never close a tab whatever this says.
    */
   closeOnCleanExit?(): boolean
+  /**
+   * The room registry's side of a member tab (design-rooms.md §1; RoomService wires it to
+   * RoomRegistry). Absent = no registry to ask (tests): a restored membership is dropped.
+   */
+  rooms?: TabRoomHooks
   /** Clock for a shell tab's minimum life (SHELL_MIN_LIFE_MS); tests inject one. Default Date.now. */
   now?: () => number
   /** Overrides TAKE_DEBOUNCE_MS (terminal-sizes.ts) for tests. */
@@ -225,6 +231,28 @@ export interface TerminalFlow {
 }
 
 /**
+ * What a member tab's comings and goings mean to the room registry (design-rooms.md §1 "Restart"):
+ * only the person's close (or a plugin's, or a clean exit closing the tab: the tab is gone for good,
+ * never restored) ends a membership; a tab that goes with its window or the app stays a member with
+ * no tab until a restore binds its saved membership again. Called synchronously; one that throws is
+ * logged and does not undo the tab operation.
+ */
+export interface TabRoomHooks {
+  /**
+   * A restored tab's saved membership, under the tab's new id, before its process starts: the
+   * member's current coordinator flag when the room still has that member free (RoomRegistry.rebind
+   * then memberOf), undefined when not (the room ended or was deleted, the member was removed):
+   * the tab then comes back in no room. `projectId` is the tab's own (main's), so a room of another
+   * project is refused (RoomRegistry.rebind).
+   */
+  rebind(tabId: string, room: { id: string; name: string }, projectId: string): { coordinator: boolean } | undefined
+  /** A member tab was closed for good (TabManager.close, a clean exit closing it): its membership ends. */
+  closed(tabId: string, room: TabRoom): void
+  /** A member tab went with its window or the app: the member stays, unbound (RoomRegistry.unbind). */
+  gone(tabId: string): void
+}
+
+/**
  * Tab lifecycle as other main modules see it. Plain callbacks, called synchronously; one that
  * throws is logged and does not undo the tab operation that triggered it.
  */
@@ -242,6 +270,12 @@ export interface TabLifecycle {
   renamed?(tabId: string, name: string | null): void
   /** The person flagged the tab, changed its flag or cleared it (`null`). Only ever the person (setFlag). */
   flagged?(tabId: string, flag: TabFlag | null): void
+  /**
+   * The tab's room membership or the person's mark changed (`null`: in no room any more). Not called
+   * for a membership a restore brought back (`started` carries it, TabEvent.room) nor for the tab's
+   * close (`closed` says it).
+   */
+  roomChanged?(tabId: string, room: TabRoom | null): void
   /**
    * A Claude tab's PTY printed `chunk` (each batch PtyService flushes, so a few per frame at most).
    * For the terminal title (session-registry.ts tabOutput); shell and command tabs are not reported.
@@ -309,6 +343,14 @@ export interface TabEvent {
   cwd: string
   name?: string
   flag?: TabFlag
+  /** The room membership the tab starts with (a restored member the registry rebound), mark included. */
+  room?: TabRoom
+  /**
+   * The tab is the person's from its start: a restored room member (design-rooms.md §1 "Restart":
+   * `typed` is not saved, and the restored session is the person's), so the session registry's
+   * entry is born typed and its room's messages wait for the person's mark.
+   */
+  typed?: true
 }
 
 /** A tab to bring back at start (restore.ts builds these from the saved records). */
@@ -327,6 +369,11 @@ export interface RestoreTabOptions {
   name?: string
   /** The tab's saved flag, any kind (restore.ts read it leniently; re-read here). */
   flag?: TabFlag
+  /**
+   * A Claude tab's saved room membership (restore.ts read it leniently; re-read here), kept only
+   * when the room registry still has that member (TabRoomHooks.rebind). Ignored on any other kind.
+   */
+  room?: TabRoom
   /** Required for, and only for, kind 'page': its plugin, type, params, title, icon (re-checked here). */
   page?: PageTabSpec
 }
@@ -349,6 +396,13 @@ interface Tab {
   name?: string
   /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
   flag?: TabFlag
+  /**
+   * Kind 'claude' only: the tab's room membership (setRoom / clearRoom, the room service) and the
+   * person's mark on it (setRoomMark); saved and restored with the tab.
+   */
+  room?: TabRoom
+  /** A restored room member: the session registry's entry is born typed (TabEvent.typed). Never saved. */
+  restoredMember?: true
   /** Any kind: the view the person last typed in (TabInfo.typedBy); not saved, the views are gone after a restart. */
   typedBy?: { viewId: ViewId; device: string }
   /**
@@ -705,7 +759,7 @@ export class TabManager {
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, page }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page }: RestoreTabOptions): TabInfo {
     // Re-read like the name: a bad saved flag only loses the flag. Any kind keeps one.
     const savedFlag = flag === undefined ? undefined : tabFlagOf(flag)
     const flagOpt = savedFlag === undefined ? {} : { flag: savedFlag }
@@ -730,10 +784,13 @@ export class TabManager {
     const checked = name === undefined ? undefined : checkSessionName(name)
     // A bad saved name only loses the name: the tab and its session still come back.
     const kept = checked?.ok ? (checked.value ?? undefined) : undefined
+    // Membership is a Claude tab's only; a bad saved value only loses it (tabRoomOf), like the name.
+    const savedRoom = kind === 'claude' && room !== undefined ? tabRoomOf(room) : undefined
     return this.add(projectId, kind, cwd, {
       ...(resumeId === undefined ? {} : { resumeId }),
       ...(kept === undefined ? {} : { name: kept }),
-      ...flagOpt
+      ...flagOpt,
+      ...(savedRoom === undefined ? {} : { room: savedRoom })
     })
   }
 
@@ -787,7 +844,17 @@ export class TabManager {
     projectId: string,
     kind: TabKind,
     cwd: string | undefined,
-    opts: { prompt?: string; model?: string; effort?: string; resumeId?: string; command?: AnyTabCommand; start?: boolean; name?: string; flag?: TabFlag }
+    opts: {
+      prompt?: string
+      model?: string
+      effort?: string
+      resumeId?: string
+      command?: AnyTabCommand
+      start?: boolean
+      name?: string
+      flag?: TabFlag
+      room?: TabRoom
+    }
   ): TabInfo {
     const root = this.projectRoot(projectId)
     const tab: Tab = {
@@ -806,9 +873,25 @@ export class TabManager {
     // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
     if (opts.name !== undefined) tab.name = opts.name
     if (opts.flag !== undefined) tab.flag = { ...opts.flag }
+    // Before start() too: the registry binds the new id first, and the session registry's entry is
+    // born typed (a restored member is the person's; TabEvent.typed).
+    if (opts.room !== undefined) {
+      const room = this.rebindRoom(tab.id, tab.projectId, opts.room)
+      if (room !== undefined) {
+        tab.room = room
+        tab.restoredMember = true
+      }
+    }
     const started = opts.start !== false
     if (started) {
-      this.start(tab, opts.prompt, opts.resumeId, opts.model, opts.effort)
+      try {
+        this.start(tab, opts.prompt, opts.resumeId, opts.model, opts.effort)
+      } catch (err) {
+        // The registry bound the new id above; a tab that never came to be must not hold the member.
+        // `gone`, not `closed`: the restorer keeps the record for the next launch (restore.ts unrestored).
+        this.roomTabGone(tab, 'gone')
+        throw err
+      }
     } else {
       // Not spawned: gen stays 0 and the tab reads as exited, so the banner, the strip's
       // "(exited)" mark, restart()'s guard and close()'s no-op terminate treat it like any
@@ -843,7 +926,7 @@ export class TabManager {
    * terminate for a tab whose process already exited.
    */
   private closeTab(tab: Tab): void {
-    this.remove(tab)
+    this.remove(tab, 'closed')
     this.pty.terminate(tab.id)
     this.changed(tab.projectId)
   }
@@ -902,6 +985,93 @@ export class TabManager {
     else tab.flag = next
     this.notify((l) => l.flagged?.(tab.id, next === undefined ? null : { ...next }))
     this.changed(tab.projectId)
+  }
+
+  /**
+   * The tab joined a room (the room service, after RoomRegistry.addMember or redeem): main-internal,
+   * never reached from IPC, a plugin or a hook with a payload's membership. A Claude tab of
+   * `projectId` only. A new membership starts unmarked, so a mark the person gave for one room never
+   * carries into another (design-rooms.md §2 "The mark"). Saved with the tab and told to every view.
+   */
+  setRoom(projectId: string, tabId: string, room: { id: string; name: string; coordinator: boolean }): TabRoom {
+    const tab = this.require(projectId, tabId)
+    if (tab.kind !== 'claude') throw new Error('only a Claude tab can be in a room')
+    const next = tabRoomOf({ id: room.id, name: room.name, coordinator: room.coordinator, mark: false })
+    if (next === undefined) throw new Error('not a valid room membership')
+    // The same room and name keeps the mark (a coordinator change is not a new membership).
+    if (tab.room?.id === next.id && tab.room.name === next.name) next.mark = tab.room.mark
+    this.storeRoom(tab, next)
+    return { ...next }
+  }
+
+  /** The tab left its room (left, removed, the room ended): the membership and its mark go. A no-op for a tab in none. */
+  clearRoom(projectId: string, tabId: string): void {
+    const tab = this.find(projectId, tabId)
+    if (tab) this.storeRoom(tab, undefined)
+  }
+
+  /**
+   * The person's mark on a member tab of `projectId` ("Deliver room messages automatically",
+   * design-rooms.md §2). The ONLY writer of the mark, for the shell page's `tabs.roomMark` IPC alone
+   * (the flag's pattern, setFlag): a mark lets room messages into a tab the person typed in, so a
+   * plugin, hook or `ccc` path that could set it would make it worthless. Throws for a tab in no
+   * room. Returns the mark as stored.
+   */
+  setRoomMark(projectId: string, tabId: string, mark: unknown): boolean {
+    const tab = this.require(projectId, tabId)
+    if (typeof mark !== 'boolean') throw new Error('mark must be true or false')
+    if (!tab.room) throw new Error('the tab is in no room')
+    this.storeRoom(tab, { ...tab.room, mark })
+    return mark
+  }
+
+  /** The tab's membership and mark, if any (the room delivery reads the mark here). */
+  roomOf(projectId: string, tabId: string): TabRoom | undefined {
+    const room = this.find(projectId, tabId)?.room
+    return room ? { ...room } : undefined
+  }
+
+  private storeRoom(tab: Tab, next: TabRoom | undefined): void {
+    if (sameTabRoom(tab.room, next)) return
+    if (next === undefined) delete tab.room
+    else tab.room = next
+    this.notify((l) => l.roomChanged?.(tab.id, next === undefined ? null : { ...next }))
+    // Every view, the asking one included: a membership changes on main's side (a `ccc room join`, a
+    // plugin's open), never as the reply to a view's request.
+    this.options.emit(tab.projectId, 'tabs.added', info(tab))
+    this.changed(tab.projectId)
+  }
+
+  /**
+   * A saved membership asked of the registry (TabRoomHooks.rebind); dropped on a throw and with no registry: the
+   * saved file is user-writable, so the membership comes back only when the registry still has that member free in
+   * this project, and the mark with it, never on its own. The mark itself is read back as saved (design-rooms.md §1:
+   * membership and the mark are saved in the tab record): whoever can write that file is the person's own account,
+   * which could set it in the app as well.
+   */
+  private rebindRoom(tabId: string, projectId: string, saved: TabRoom): TabRoom | undefined {
+    const hooks = this.options.rooms
+    if (!hooks) return undefined
+    try {
+      const bound = hooks.rebind(tabId, { id: saved.id, name: saved.name }, projectId)
+      return bound === undefined ? undefined : { ...saved, coordinator: bound.coordinator === true }
+    } catch (err) {
+      this.log(`room rebind failed: ${errorText(err)}`)
+      return undefined
+    }
+  }
+
+  /** Tell the room registry a member tab is gone: for good (`closed`) or with its window or the app (`gone`). */
+  private roomTabGone(tab: Tab, why: 'closed' | 'gone'): void {
+    const hooks = this.options.rooms
+    const room = tab.room
+    if (!hooks || !room) return
+    try {
+      if (why === 'closed') hooks.closed(tab.id, { ...room })
+      else hooks.gone(tab.id)
+    } catch (err) {
+      this.log(`room hook failed: ${errorText(err)}`)
+    }
   }
 
   /** Move to `toIndex` in the project's order, clamped to the ends. */
@@ -1231,13 +1401,16 @@ export class TabManager {
   /** A project window closed: its terminals die with it (SIGKILL after the grace period, as close). */
   closeProject(projectId: string): void {
     for (const tab of [...(this.order.get(projectId) ?? [])]) {
-      this.remove(tab)
+      // A window closing is not the person closing its tabs: members stay, unbound (design-rooms.md §1). A close for
+      // good (no quit, no reopen) then ends them in index.ts once their saved records are cleared (RoomService.projectClosed).
+      this.remove(tab, 'gone')
       this.pty.terminate(tab.id)
     }
   }
 
-  /** App quit. */
+  /** App quit. Members stay members (design-rooms.md §1): only their tab binding goes. */
   disposeAll(): void {
+    for (const tab of this.byId.values()) this.roomTabGone(tab, 'gone')
     this.pty.disposeAll()
     this.byId.clear()
     this.order.clear()
@@ -1336,7 +1509,11 @@ export class TabManager {
     }
   }
 
-  private remove(tab: Tab): void {
+  /**
+   * `why` is the room registry's: `closed` ends a membership (the person's or a plugin's close, a
+   * clean exit closing the tab), `gone` keeps it (the window closed).
+   */
+  private remove(tab: Tab, why: 'closed' | 'gone'): void {
     // The desktop's flow first: the tap's close ends the tab's joins and releases it, and a desktop
     // still held then would try to rejoin a closed tab and log a stale screen that nobody sees.
     this.desktop.closed(tab.id)
@@ -1347,6 +1524,7 @@ export class TabManager {
     // A page tab never had one.
     if (tab.kind !== 'page') this.tap((t) => t.closed(tab.id))
     this.notify((l) => l.closed?.(tab.id))
+    this.roomTabGone(tab, why)
     this.byId.delete(tab.id)
     const tabs = this.order.get(tab.projectId)
     if (!tabs) return
@@ -1452,7 +1630,9 @@ function tabEvent(tab: Tab): TabEvent {
     kind: tab.kind,
     cwd: tab.cwd,
     ...(tab.name === undefined ? {} : { name: tab.name }),
-    ...(tab.flag === undefined ? {} : { flag: { ...tab.flag } })
+    ...(tab.flag === undefined ? {} : { flag: { ...tab.flag } }),
+    ...(tab.room === undefined ? {} : { room: { ...tab.room } }),
+    ...(tab.restoredMember ? { typed: true as const } : {})
   }
 }
 
@@ -1464,6 +1644,7 @@ function info(tab: Tab): TabInfo {
   if (tab.gen === 0) out.notStarted = true
   if (tab.name !== undefined) out.name = tab.name
   if (tab.flag !== undefined) out.flag = { ...tab.flag }
+  if (tab.room !== undefined) out.room = { ...tab.room }
   if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }
   if (tab.page) out.page = pageCopy(tab.page)
   if (tab.pluginName !== undefined) out.pluginName = tab.pluginName

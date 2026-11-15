@@ -172,3 +172,32 @@ test('machines: junk is dropped', () => {
   assert.deepEqual(view.machineView(undefined), [])
   assert.deepEqual(view.machineView([null, { id: 1, name: 'x' }, { id: 'm', name: 'ok', waiting: -1 }]).map((m) => m.tooltip), ['ok'])
 })
+
+test('room: a member card carries the marker (name, star for the coordinator) and the held count', () => {
+  const room = { title: 'Release', name: 'alice', coordinator: false }
+  const plain = view.cardView(session({ room }))
+  assert.deepEqual(plain.room, { text: 'alice', title: 'Room Release: alice' })
+  assert.equal(plain.held, undefined)
+  const coord = view.cardView(session({ room: { ...room, coordinator: true }, held: 3 }))
+  assert.deepEqual(coord.room, { text: 'alice ★', title: 'Room Release: alice (coordinator)' })
+  assert.equal(coord.held, 3)
+})
+
+test('room: no room, no marker and no held count; a held count alone or a bad one is ignored', () => {
+  const none = view.cardView(session())
+  assert.equal(none.room, undefined)
+  assert.equal(none.held, undefined)
+  assert.equal(view.cardView(session({ held: 4 })).held, undefined)
+  for (const held of [0, -1, 1.5, '2', NaN]) {
+    assert.equal(view.cardView(session({ room: { title: 't', name: 'a', coordinator: false }, held })).held, undefined, String(held))
+  }
+  for (const bad of [null, 'x', {}, { name: '' }, { name: 5 }]) assert.equal(view.roomOf(bad), undefined, JSON.stringify(bad))
+})
+
+test('room: the title is plugin text, kept as text and capped', () => {
+  const r = view.roomOf({ title: '<img src=x onerror=alert(1)>' + 'x'.repeat(500), name: 'n'.repeat(100), coordinator: false })
+  assert.ok(r.title.startsWith('Room <img src=x onerror=alert(1)>'))
+  assert.ok(r.title.length < 250)
+  assert.equal(r.text.length, 40)
+  assert.equal(view.roomOf({ name: 'a', coordinator: false }).title, 'Room: a')
+})

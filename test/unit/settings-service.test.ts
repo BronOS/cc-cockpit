@@ -2,6 +2,7 @@
 // validation (ajv) and fakes for the installer, the registry and the windows.
 import { describe, expect, it } from 'vitest'
 import type { InstalledPlugin } from '../../src/main/plugins/installer'
+import { PluginLimitsStore } from '../../src/main/plugins/plugin-limits'
 import { SettingsService, type SettingsDeps } from '../../src/main/settings/settings-service'
 import { defaultLayout } from '../../src/shared/layout'
 import type { PluginManifest } from '../../src/shared/manifest'
@@ -331,5 +332,30 @@ describe('off in all projects (bundled plugins)', () => {
     await expect(r.service.setBundledOff(5, true)).rejects.toThrow(/on or off/)
     expect(r.calls).toEqual([])
     expect(r.bundledOff.value).toBeUndefined()
+  })
+})
+
+// A plugin's "Limits" (design-rooms.md §6): read and changed through the same store `ccc plugin limits` uses, which
+// knows only the installed plugins; without a store the calls are refused.
+describe('plugin limits', () => {
+  it('reads and changes an installed plugin\'s caps; refuses an unknown one and works without restarting anything', () => {
+    const r = rig()
+    const stored = new Map<string, unknown>()
+    r.deps.limits = new PluginLimitsStore({
+      storage: { get: (id) => stored.get(id), set: (id, v) => (v === undefined ? stored.delete(id) : stored.set(id, v)) },
+      known: (id) => r.plugins.some((p) => p.id === id)
+    })
+    const service = new SettingsService(r.deps)
+    expect(service.pluginLimits('test.mail').limits.every((l) => !l.overridden)).toBe(true)
+    const view = service.setPluginLimits('test.mail', [['opensPerMinute', 20]], undefined)
+    expect(view.limits.find((l) => l.key === 'opensPerMinute')).toMatchObject({ value: 20, overridden: true })
+    expect(stored.get('test.mail')).toEqual({ opensPerMinute: 20 })
+    expect(() => service.setPluginLimits('nobody.here', [['opensPerMinute', 20]], undefined)).toThrow('not installed')
+    expect(() => service.setPluginLimits('test.mail', [['opensPerMinute', 61]], undefined)).toThrow('from 1 to 60')
+    expect(r.calls).toEqual([])
+  })
+
+  it('refuses both calls when main gave it no store', () => {
+    expect(() => rig().service.pluginLimits('test.mail')).toThrow('not available')
   })
 })

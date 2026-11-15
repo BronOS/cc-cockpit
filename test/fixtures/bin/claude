@@ -32,7 +32,7 @@
 //     /done <name>        PostToolUse { tool_name, tool_input: {} } (a dialog tool answered)
 //     /permission         Notification { notification_type: permission_prompt }
 //     /idle               Notification { notification_type: idle_prompt }
-//     /stop               Stop
+//     /stop               Stop { stop_hook_active: false }, and the block loop below
 //     /end                SessionEnd { reason: other }
 //     /later <ms> <line>  run the scripted <line> after <ms> milliseconds (a turn that ends while
 //                         the person is in another tab: the tab flag's attention pulse)
@@ -40,7 +40,19 @@
 //                         (main prepends <data>/bin), with the tab's env (APP_TAB_TOKEN,
 //                         CC_COCKPIT_SOCK); args split on whitespace, no shell. Prints
 //                         `FAKE-CLAUDE ccc exit=<code> out=<json stdout> err=<json stderr, cut at 300 characters>`.
+//                         `/ccc <args...> <<< <text>` passes <text> (the rest of the line) on stdin.
+//     /sleep <ms>         block for <ms> milliseconds, as a turn that is busy (Claude working): nothing else runs
+//     /waitfile <path>    the same until <path> exists (at most 60 s): a busy turn the spec ends itself
 // Each prints `FAKE-CLAUDE hook <Event>` once the hook command has returned.
+//
+// Stop blocks (rooms, design-rooms.md §2), as Claude Code 2.1.325 does them: a Stop hook that exits 0 and prints
+// `{"decision":"block","reason":<text>}` on stdout continues the turn instead of ending it. The fake
+// prints `FAKE-CLAUDE block <json reason>`, runs the scripted lines in $FAKE_CLAUDE_ON_BLOCK (one per line of
+// the value; the continued turn: `/ccc room read`, say) and stops again with `stop_hook_active: true`. Claude Code
+// overrides the hook after 8 blocks in a row (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, read from the 2.1.325
+// binary; the env var of that name changes it here as there, 0 or a non-number meaning no cap): a 9th
+// block is ignored, printed as `FAKE-CLAUDE block cap`, and the turn ends. Anything else on stdout (no JSON, another decision,
+// no reason) ends the turn like a plain Stop.
 //
 // Bracketed paste (Task 15). Input from `ESC[200~` up to `ESC[201~` is one paste, even across
 // lines; it is appended verbatim (markers included) as one JSON string per line to
@@ -49,7 +61,14 @@
 // The PTY is in cooked mode, so the line discipline has already turned the paste's trailing `\r`
 // into the `\n` that ends the line (not recorded), and an embedded newline splits the paste into
 // lines that are joined back with `\n` here. Canonical mode caps a line at 1024 bytes on macOS:
-// keep pasted lines short.
+// keep pasted lines short. $FAKE_CLAUDE_ON_PASTE, when set, holds scripted lines (one per line of the
+// value) run after each paste's UserPromptSubmit: the turn the paste started (`/ccc room read` for a
+// room pointer, then `/later <ms> /stop` to end it).
+//
+// $FAKE_CLAUDE_RUN_LOG, when set, gets one JSON line per `/ccc` run, `{ session, args, status, stdout,
+// stderr }` (whole, not cut), and per Stop block, `{ session, block: <reason> }`; `session` is the id the
+// fake reports in its hooks (`fake-session-<pid>`), so a spec can tell the tabs apart (the rooms e2e). A line of
+// $FAKE_CLAUDE_ON_BLOCK or $FAKE_CLAUDE_ON_PASTE the interpreter does not know is logged as `{ session, unknown: <line> }`.
 'use strict'
 const fs = require('node:fs')
 const { spawnSync } = require('node:child_process')
@@ -125,9 +144,10 @@ if (settings !== undefined && process.env.FAKE_CLAUDE_NO_HOOKS !== '1') {
 }
 const sessionId = `fake-session-${process.pid}`
 
+/** Runs the event's hook command; returns its stdout when it exited 0 (what Claude reads), else ''. */
 function fireHook(event, fields) {
   const command = hookCommands[event]
-  if (!command) return
+  if (!command) return ''
   const input = JSON.stringify({
     session_id: sessionId,
     cwd: process.cwd(),
@@ -135,9 +155,64 @@ function fireHook(event, fields) {
     ...fields
   })
   // Synchronous like the real hooks: Claude waits for the command, so events keep their order.
-  spawnSync('/bin/sh', ['-c', command], { input, stdio: ['pipe', 'ignore', 'ignore'], timeout: 5000 })
+  const r = spawnSync('/bin/sh', ['-c', command], { input, stdio: ['pipe', 'pipe', 'ignore'], timeout: 5000, encoding: 'utf8' })
   console.log(`FAKE-CLAUDE hook ${event}`)
+  return r.status === 0 ? String(r.stdout ?? '') : ''
 }
+
+/** Claude Code 2.1.325's default for CLAUDE_CODE_STOP_HOOK_BLOCK_CAP. */
+const DEFAULT_STOP_BLOCK_CAP = 8
+
+/** The block reason in a Stop hook's stdout, or undefined when it does not block. */
+function blockReason(stdout) {
+  let parsed
+  try {
+    parsed = JSON.parse(stdout.trim())
+  } catch {
+    return undefined
+  }
+  if (!parsed || parsed.decision !== 'block' || typeof parsed.reason !== 'string') return undefined
+  return parsed.reason
+}
+
+/** A turn ends: Stop, and as long as the hook blocks (up to the cap), the turn goes on and stops again. */
+function stopTurn() {
+  // As 2.1.325 reads it (`Ht=CLAUDE_CODE_STOP_HOOK_BLOCK_CAP??8; if(Ht>0&&Ke>Ht)`): unset is 8, and a value set to 0,
+  // a negative number or anything that is not a number (NaN > 0 is false) disables the cap.
+  const capEnv = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+  const cap = capEnv === undefined ? DEFAULT_STOP_BLOCK_CAP : Number(capEnv)
+  let blocks = 0
+  for (;;) {
+    const reason = blockReason(fireHook('Stop', { stop_hook_active: blocks > 0 }))
+    if (reason === undefined) return
+    if (cap > 0 && blocks >= cap) {
+      console.log('FAKE-CLAUDE block cap')
+      return
+    }
+    blocks++
+    console.log(`FAKE-CLAUDE block ${JSON.stringify(reason)}`)
+    runLog({ block: reason })
+    scriptedLines(process.env.FAKE_CLAUDE_ON_BLOCK)
+  }
+}
+
+/** One JSON line in $FAKE_CLAUDE_RUN_LOG (see the header), when it is set. */
+function runLog(record) {
+  const file = process.env.FAKE_CLAUDE_RUN_LOG
+  if (file) fs.appendFileSync(file, JSON.stringify({ session: sessionId, ...record }) + '\n')
+}
+
+/** Every line of an env value as a scripted line, in order (FAKE_CLAUDE_ON_BLOCK, FAKE_CLAUDE_ON_PASTE). */
+function scriptedLines(value) {
+  if (!value) return
+  for (const line of value.split('\n')) {
+    // A line the interpreter does not know (a typo in a spec's script) is a log line, not a silent no-op.
+    if (line.trim() !== '' && !scripted(line)) runLog({ unknown: line })
+  }
+}
+
+/** The longest `/waitfile` blocks. */
+const MAX_WAITFILE_MS = 60000
 
 /** The longest stderr the `/ccc` echo prints; longer is cut with `...`. */
 const MAX_ECHOED_ERR = 300
@@ -149,10 +224,31 @@ function scripted(line) {
     setTimeout(() => scripted(later[2]), Number(later[1]))
     return true
   }
+  const sleep = /^\/sleep\s+(\d+)$/.exec(line)
+  if (sleep) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(sleep[1]))
+    return true
+  }
+  const waitFile = /^\/waitfile\s+(\S+)$/.exec(line)
+  if (waitFile) {
+    // A busy turn that lasts until the spec says so (a file appears), capped so a lost spec cannot hang the tab.
+    for (let waited = 0; waited < MAX_WAITFILE_MS && !fs.existsSync(waitFile[1]); waited += 50) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    }
+    return true
+  }
   const c = /^\/ccc(?:\s+(.*))?$/.exec(line)
   if (c) {
-    const args = (c[1] || '').split(/\s+/).filter(Boolean)
-    const r = spawnSync('ccc', args, { encoding: 'utf8', timeout: 15000 })
+    let rest = c[1] || ''
+    let input
+    const here = rest.indexOf(' <<< ')
+    if (here >= 0) {
+      input = rest.slice(here + ' <<< '.length)
+      rest = rest.slice(0, here)
+    }
+    const args = rest.split(/\s+/).filter(Boolean)
+    const r = spawnSync('ccc', args, { encoding: 'utf8', timeout: 15000, ...(input !== undefined ? { input } : {}) })
+    runLog({ args, status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') })
     // stderr is cut: a usage error prints the whole USAGE text (about 60 terminal rows once `ccc web` was in
     // it), and a line that tall scrolls `exit=<code>`, its first words, out of the visible terminal the
     // specs read (cli.spec 'session note and steps' waited for 'exit=2').
@@ -179,7 +275,7 @@ function scripted(line) {
     case 'idle':
       fireHook('Notification', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' })
       break
-    case 'stop': fireHook('Stop', {}); break
+    case 'stop': stopTurn(); break
     case 'end': fireHook('SessionEnd', { reason: 'other' }); break
   }
   return true
@@ -199,6 +295,7 @@ function pasted(raw) {
   console.log(`FAKE-CLAUDE paste ${JSON.stringify(raw)}`)
   const text = raw.slice(raw.indexOf(PASTE_START) + PASTE_START.length, raw.lastIndexOf(PASTE_END))
   fireHook('UserPromptSubmit', { prompt: text })
+  scriptedLines(process.env.FAKE_CLAUDE_ON_PASTE)
 }
 
 const rl = readline.createInterface({ input: process.stdin, terminal: false })

@@ -1,7 +1,7 @@
 // writeFileAtomic writes hooks.json and the generated bin/ccc: the exact mode (an executable must
 // stay 0755 whatever the umask), a replace that is a rename, and no temp file left behind when that
 // rename fails. Temp dirs only.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -50,6 +50,25 @@ describe('writeFileAtomic', () => {
     expect(readFileSync(path, 'utf8')).toBe('new')
     expect(mode(path)).toBe(0o600)
     expect(readdirSync(root)).toEqual(['hooks.json'])
+  })
+
+  it.skipIf(!POSIX)('never writes through a link planted at the temp name, nor at the target', () => {
+    const outside = join(root, 'outside.txt')
+    writeFileSync(outside, 'untouched')
+    const dir = join(root, 'room')
+    mkdirSync(dir)
+    const path = join(dir, 'room.json')
+    symlinkSync(outside, `${path}.${process.pid}.tmp`)
+    writeFileAtomic(path, Buffer.from('new'), 0o600)
+    expect(readFileSync(path, 'utf8')).toBe('new')
+    expect(readFileSync(outside, 'utf8')).toBe('untouched')
+    expect(readdirSync(dir)).toEqual(['room.json'])
+    // A link at the target itself is replaced, not followed.
+    rmSync(path)
+    symlinkSync(outside, path)
+    writeFileAtomic(path, 'again', 0o600)
+    expect(lstatSync(path).isFile()).toBe(true)
+    expect(readFileSync(outside, 'utf8')).toBe('untouched')
   })
 
   it('throws when the rename fails and leaves no temp file behind', () => {

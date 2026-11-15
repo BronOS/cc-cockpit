@@ -136,3 +136,82 @@ describe('ccc web (design-web.md §9.4)', () => {
     expect(JSON.stringify(parsed)).not.toContain('hunter2')
   })
 })
+
+describe('ccc room (design-rooms.md §4)', () => {
+  it('parses status in its three spellings', () => {
+    expect(parseArgs(['room'])).toEqual({ kind: 'room-status', json: false })
+    expect(parseArgs(['room', 'status'])).toEqual({ kind: 'room-status', json: false })
+    expect(parseArgs(['room', '--json'])).toEqual({ kind: 'room-status', json: true })
+    expect(parseArgs(['room', 'status', '--json'])).toEqual({ kind: 'room-status', json: true })
+    expect(parseArgs(['room', 'status', 'x']).kind).toBe('usage')
+    expect(parseArgs(['room', '--json', 'x']).kind).toBe('usage')
+  })
+
+  it('parses join, leave and read, each with its fixed shape', () => {
+    expect(parseArgs(['room', 'join', 'ABC234'])).toEqual({ kind: 'room-join', invite: 'ABC234' })
+    expect(parseArgs(['room', 'join']).kind).toBe('usage')
+    expect(parseArgs(['room', 'join', '']).kind).toBe('usage')
+    expect(parseArgs(['room', 'join', 'a', 'b']).kind).toBe('usage')
+    expect(parseArgs(['room', 'leave'])).toEqual({ kind: 'room-leave' })
+    expect(parseArgs(['room', 'leave', 'now']).kind).toBe('usage')
+    expect(parseArgs(['room', 'read'])).toEqual({ kind: 'room-read' })
+    expect(parseArgs(['room', 'read', '--all']).kind).toBe('usage')
+  })
+
+  it('parses send: the words join into one text, a lone - is stdin, -- ends the options', () => {
+    expect(parseArgs(['room', 'send', 'bob', 'the', 'build', 'is', 'green'])).toEqual({ kind: 'room-send', to: 'bob', text: 'the build is green' })
+    expect(parseArgs(['room', 'send', 'all', 'one text'])).toEqual({ kind: 'room-send', to: 'all', text: 'one text' })
+    // No `text` key at all: client.ts reads stdin and fills it in.
+    expect(parseArgs(['room', 'send', 'bob', '-'])).toEqual({ kind: 'room-send', to: 'bob' })
+    expect(parseArgs(['room', 'send', 'bob', '--', '-'])).toEqual({ kind: 'room-send', to: 'bob', text: '-' })
+    expect(parseArgs(['room', 'send', 'bob', '--', '--help'])).toEqual({ kind: 'room-send', to: 'bob', text: '--help' })
+    // `-` among other words is text, not stdin.
+    expect(parseArgs(['room', 'send', 'bob', 'a', '-'])).toEqual({ kind: 'room-send', to: 'bob', text: 'a -' })
+    // A body of exactly --help or -h is a help request; inside other words it is text.
+    expect(parseArgs(['room', 'send', 'bob', '--help'])).toEqual({ kind: 'help', command: 'room' })
+    expect(parseArgs(['room', 'send', 'bob', '-h'])).toEqual({ kind: 'help', command: 'room' })
+    expect(parseArgs(['room', 'send', 'bob', 'see', '--help'])).toEqual({ kind: 'room-send', to: 'bob', text: 'see --help' })
+  })
+
+  it.each([[['room', 'send']], [['room', 'send', 'bob']], [['room', 'send', 'bob', '  ']], [['room', 'send', '-', 'hi']], [['room', 'send', '--json', 'hi']]])(
+    'refuses the malformed send %j with a usage message',
+    (argv) => {
+      expect(parseArgs(argv).kind).toBe('usage')
+    }
+  )
+
+  it('parses doc ls, get and put (put always reads stdin)', () => {
+    expect(parseArgs(['room', 'doc', 'ls'])).toEqual({ kind: 'room-doc-ls' })
+    expect(parseArgs(['room', 'doc', 'get', 'shared/brief.md'])).toEqual({ kind: 'room-doc-get', path: 'shared/brief.md' })
+    expect(parseArgs(['room', 'doc', 'put', 'members/bob/q.md', '-'])).toEqual({ kind: 'room-doc-put', path: 'members/bob/q.md' })
+    for (const argv of [
+      ['room', 'doc'],
+      ['room', 'doc', 'ls', 'x'],
+      ['room', 'doc', 'get'],
+      ['room', 'doc', 'get', 'a', 'b'],
+      ['room', 'doc', 'put', 'a'],
+      ['room', 'doc', 'put', 'a', 'text'],
+      ['room', 'doc', 'put', '-'],
+      ['room', 'doc', 'put', 'a', '-', 'x'],
+      ['room', 'doc', 'rm', 'a']
+    ]) {
+      expect(parseArgs(argv).kind, argv.join(' ')).toBe('usage')
+    }
+  })
+
+  it('refuses an unknown subcommand and answers --help with the usage of room', () => {
+    expect(parseArgs(['room', 'create', 'x'])).toEqual({ kind: 'usage', message: 'unknown room command: create' })
+    expect(parseArgs(['room', '--help'])).toEqual({ kind: 'help', command: 'room' })
+    expect(parseArgs(['room', 'send', '--help'])).toEqual({ kind: 'help', command: 'room' })
+    expect(parseArgs(['room', 'doc', 'put', '--help'])).toEqual({ kind: 'help', command: 'room' })
+  })
+
+  it('is a core command: reserved against plugin commands, with a usage block naming every subcommand', () => {
+    expect(CORE_CLI_COMMANDS).toContain('room')
+    expect(RESERVED_CLI_NAMES).toContain('room')
+    const usage = usageFor('room') as string
+    for (const sub of ['room [status] [--json]', 'room join <invite>', 'room leave', 'room send <name|all>', 'room read', 'room doc ls', 'room doc get <path>', 'room doc put <path> -']) {
+      expect(usage, sub).toContain(`ccc ${sub}`)
+    }
+  })
+})

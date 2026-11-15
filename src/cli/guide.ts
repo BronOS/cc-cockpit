@@ -12,6 +12,7 @@ import devLoop from './guide/dev-loop.md?raw'
 import overview from './guide/overview.md?raw'
 import panels from './guide/panels.md?raw'
 import plugins from './guide/plugins.md?raw'
+import rooms from './guide/rooms.md?raw'
 import settingsSecrets from './guide/settings-secrets.md?raw'
 import style from './guide/style.md?raw'
 import webview from './guide/webview.md?raw'
@@ -38,6 +39,7 @@ export const GUIDE_TOPICS: readonly GuideTopic[] = [
   { name: 'settings-secrets', summary: 'settings forms, secret fields, ctx.secrets, OAuth', text: settingsSecrets },
   { name: 'dev-loop', summary: 'linking, rebuilding and debugging a plugin', text: devLoop },
   { name: 'webview', summary: 'webview panels: showing web pages and local files', text: webview },
+  { name: 'rooms', summary: 'rooms: messages and shared docs between Claude tabs (ccc room)', text: rooms },
   { name: 'types', summary: 'the SDK types (PluginContext and friends), as TypeScript', text: sdkTypes, verbatim: true }
 ]
 

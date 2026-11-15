@@ -57,7 +57,9 @@ describe('REMOTE_CLASS drift', () => {
     'remote.pickKey',
     'remote.rename',
     'remote.forget',
-    'remote.changed'
+    'remote.changed',
+    // The room view's Reveal opens the host's file manager (design-rooms.md §5).
+    'rooms.reveal'
   ])('%s is no', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('no')
   })
@@ -95,7 +97,19 @@ describe('REMOTE_CLASS drift', () => {
     // A plugin's OAuth sign-in settled by the pasted redirect (§9.9): a server's browsers only.
     'oauth.paste',
     // Opening a known project makes a window on the host's screen: a server's browsers only.
-    'settings.projectOpen'
+    'settings.projectOpen',
+    // Raising a plugin's caps widens what it may do on the host (design-rooms.md §6): a server's browsers only.
+    'plugins.limits.set',
+    // The person's room mark and the held badge (design-rooms.md §5): let room text into a typed tab, so a server's
+    // browsers only, like the approvals.
+    'tabs.roomMark',
+    'rooms.deliverHeld',
+    // The room view's acts (design-rooms.md §5): Pause, Resume and Remove count from a server's browsers only, Remove
+    // there through the window's ApprovalDialog ask, whose answer is the same act.
+    'rooms.pause',
+    'rooms.resume',
+    'rooms.remove',
+    'rooms.removeAnswer'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })
@@ -103,6 +117,16 @@ describe('REMOTE_CLASS drift', () => {
   // The Move to Trash confirm (files/trash-asks.ts): a trash started from a browser is answered there.
   // A sign-in's end (§9.9): main sends it to a window's browsers in server mode only, like app.linkNotice.
   it.each(['app.linkNotice', 'oauth.signInEnded'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
+
+  // Reading a plugin's caps changes nothing (design-rooms.md §6): every view may.
+  it.each(['plugins.limits.get'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
+
+  // The room view reads (message text included, the person's record) and the Remove ask's own events: every view.
+  it.each(['rooms.view', 'rooms.doc', 'rooms.changed', 'rooms.removeAsk', 'rooms.removeSettled'])('%s is yes', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
   })
 

@@ -13,6 +13,7 @@ import {
   pasteBytes,
   prepareText,
   send,
+  sendNow,
   SESSION_START_SETTLE_MS,
   settled,
   stripControls,
@@ -170,6 +171,41 @@ describe('send (pure)', () => {
     for (const s of ['starting', 'idle', 'working', 'needs-permission', 'ended'] as const) {
       expect(maySend(entryIn(s))).toBe(false)
     }
+  })
+})
+
+describe('sendNow (pure, the room pointer)', () => {
+  const pointer = (id = 'r', text = '2 room messages waiting: run ccc room read'): QueuedText => item(id, text, 'room')
+
+  it('writes at once when waiting, and leaves the queue as it was (an older text keeps its place)', () => {
+    const step = sendNow(entryIn('waiting', { queue: [item('old')] }), pointer())
+    expect(step.write).toBe(paste('2 room messages waiting: run ccc room read'))
+    expect(step.delivered).toEqual(pointer())
+    expect(step.entry).toMatchObject({ queue: [item('old')], delivering: true })
+  })
+
+  it.each<TabStatus>(['working', 'idle', 'starting', 'needs-permission'])('in %s: nothing written and nothing queued', (status) => {
+    const step = sendNow(entryIn(status), pointer())
+    expect(step).toEqual({ entry: entryIn(status) })
+  })
+
+  it('nothing while a paste is in flight or the start settles', () => {
+    expect(sendNow(entryIn('waiting', { delivering: true }), pointer()).write).toBeUndefined()
+    expect(sendNow(entryIn('waiting', { settling: true }), pointer()).write).toBeUndefined()
+    expect(sendNow(entryIn('waiting', { settling: true }), pointer()).entry.queue).toEqual([])
+  })
+
+  it('refuses an ended session and any origin but room; send refuses a room item', () => {
+    expect(() => sendNow(entryIn('ended'), pointer())).toThrow(/ended/)
+    expect(() => sendNow(entryIn('waiting'), item('p'))).toThrow(/only a room pointer/)
+    expect(() => sendNow(entryIn('waiting'), item('c', 'c', 'core'))).toThrow(/only a room pointer/)
+    expect(() => send(entryIn('working'), pointer())).toThrow('a room pointer is never queued')
+  })
+
+  it('takenOver drops a room item too (never kept past a takeover), core stays', () => {
+    const step = takenOver(entryIn('working', { queue: [pointer('r1'), item('c1', 'c1', 'core'), item('p1')] }))
+    expect(step.entry.queue.map((q) => q.id)).toEqual(['c1'])
+    expect(step.dropped?.map((q) => q.id)).toEqual(['r1', 'p1'])
   })
 })
 
@@ -665,7 +701,12 @@ describe('registry wiring', () => {
       const queued = reg.send('t1', 'discuss again', 'core')
       changes.length = 0
       reg.userInput('p1', 't1', 'y')
-      expect(changes).toEqual([]) // already typed: no change, the core item stays
+      // Already typed: only the room draft bit moves (the prompt cleared it), nothing dropped, the core item stays.
+      expect(changes).toHaveLength(1)
+      expect(changes[0]).toMatchObject({ entry: { draft: true, typed: true } })
+      expect(changes[0]!.dropped).toBeUndefined()
+      reg.userInput('p1', 't1', 'z')
+      expect(changes).toHaveLength(1) // the draft bit already set: no change
       expect(reg.get('t1')?.queue.map((q) => q.id)).toEqual([queued.id])
       expect(texts()).toEqual([paste('before'), paste('discuss')])
     })
@@ -686,10 +727,97 @@ describe('registry wiring', () => {
     })
   })
 
+  describe('the room pointer (sendPointer) and the draft bit', () => {
+    const POINTER = '1 room message waiting: run ccc room read'
+
+    it('pastes now when waiting; not at all otherwise, and no later Stop pastes it', () => {
+      expect(reg.sendPointer('t1', POINTER)).toBe(false) // starting
+      ev('UserPromptSubmit')
+      expect(reg.sendPointer('t1', POINTER)).toBe(false) // working
+      ev('Stop')
+      expect(texts()).toEqual([])
+      expect(reg.get('t1')?.queue).toEqual([])
+      expect(reg.sendPointer('t1', POINTER)).toBe(true)
+      expect(texts()).toEqual([paste(POINTER)])
+      expect(reg.get('t1')).toMatchObject({ delivering: true, queue: [] })
+      expect(reg.sendPointer('t1', POINTER)).toBe(false) // in flight: no second paste on top
+      ev('UserPromptSubmit')
+      expect(reg.get('t1')?.delivering).toBe(false)
+    })
+
+    it('a failed paste is not put back in the queue', () => {
+      ev('Stop')
+      failWrite = true
+      expect(reg.sendPointer('t1', POINTER)).toBe(false)
+      expect(reg.get('t1')).toMatchObject({ queue: [], delivering: false })
+      failWrite = false
+      ev('UserPromptSubmit')
+      ev('Stop')
+      expect(texts()).toEqual([])
+    })
+
+    it('throws for an unknown tab and an ended session', () => {
+      expect(() => reg.sendPointer('nope', POINTER)).toThrow('unknown tab')
+      reg.tabExited('t1', 0)
+      expect(() => reg.sendPointer('t1', POINTER)).toThrow(/ended/)
+    })
+
+    it('plugin and core texts are unchanged around a pointer: held while it is in flight, delivered in order at later Stops', () => {
+      ev('Stop')
+      expect(reg.sendPointer('t1', POINTER)).toBe(true)
+      expect(reg.send('t1', 'plugin text', 'plugin').delivered).toBe(false)
+      expect(reg.send('t1', 'About: core', 'core').delivered).toBe(false)
+      ev('Stop') // still delivering the pointer: nothing more
+      expect(texts()).toEqual([paste(POINTER)])
+      ev('UserPromptSubmit')
+      ev('Stop')
+      ev('UserPromptSubmit')
+      ev('Stop')
+      expect(texts()).toEqual([paste(POINTER), paste('plugin text'), paste('About: core')])
+    })
+
+    it("the person's input sets the draft bit on every prompt; UserPromptSubmit clears it; reports do not set it", () => {
+      ev('Stop')
+      reg.userInput('p1', 't1', `${ESC}[I`) // a focus report
+      expect(reg.get('t1')?.draft).toBeUndefined()
+      reg.userInput('p1', 't1', 'h')
+      expect(reg.get('t1')).toMatchObject({ typed: true, draft: true })
+      ev('UserPromptSubmit')
+      expect(reg.get('t1')?.draft).toBeUndefined()
+      ev('Stop')
+      reg.userInput('p1', 't1', 'again')
+      expect(reg.get('t1')?.draft).toBe(true)
+      // Another project's window is not this tab's input.
+      ev('UserPromptSubmit')
+      reg.userInput('p2', 't1', 'x')
+      expect(reg.get('t1')?.draft).toBeUndefined()
+    })
+
+    it('the gate does not look at the draft bit: the room delivery decides that', () => {
+      ev('Stop')
+      reg.userInput('p1', 't1', 'h')
+      expect(reg.sendPointer('t1', POINTER)).toBe(true)
+    })
+  })
+
   it('a Stop through the hook handler delivers synchronously, before the handler returns', () => {
     ev('UserPromptSubmit')
     reg.send('t1', 'a', 'plugin')
     hookHandler(reg)({ event: 'Stop', payload: {} }, { kind: 'session', tabId: 't1', projectId: 'p1' })
     expect(texts()).toEqual([paste('a')])
+  })
+})
+
+describe('a Stop main answered with the room pointer (rooms/room-stop.ts)', () => {
+  it('delivers no head, even on an entry that would take text', () => {
+    const e = entryIn('waiting', { queue: [item('a', 'a', 'core')] })
+    const step = afterEvent(e, { type: 'hook', event: 'Stop', payload: {}, blocked: 'ack-1' })
+    expect(step.write).toBeUndefined()
+    expect(step.entry.queue).toHaveLength(1)
+  })
+
+  it('a plain Stop still delivers the head', () => {
+    const e = entryIn('waiting', { queue: [item('a', 'a', 'core')] })
+    expect(afterEvent(e, hook('Stop')).write).toBe(paste('a'))
   })
 })

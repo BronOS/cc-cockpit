@@ -1,0 +1,14 @@
+{
+  "id": "test.roomview",
+  "name": "Room view",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "open", "title": "Room view: make a room and open alice (coordinator) and bob" },
+      { "id": "doc", "title": "Room view: write the kickoff doc" },
+      { "id": "send", "title": "Room view: send bob a numbered message" }
+    ]
+  }
+}

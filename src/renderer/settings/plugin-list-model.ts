@@ -3,6 +3,7 @@
 // search rules are unit-tested without a page. Nothing here fetches: the page has the whole index
 // already (main caps it at 5 MiB and 2000 entries), so a new page or a new search is no new request.
 import type { MarketplaceEntryView, MarketplaceView, PluginView } from '../../shared/ipc'
+import type { PluginLimitsView } from '../../shared/plugin-limits'
 import type { MarketplaceCategory } from '../../shared/marketplace'
 
 export const PAGE_SIZE = 20
@@ -154,4 +155,67 @@ export function updateAllEntries(view: MarketplaceView | null): MarketplaceEntry
 export function updateAllStillShown(shown: MarketplaceEntryView[], view: MarketplaceView): boolean {
   const now = updateAllEntries(view)
   return shown.every((s) => now.some((e) => e.indexUrl === s.indexUrl && e.id === s.id && e.repo === s.repo && e.commit === s.commit))
+}
+
+/**
+ * A plugin's "Limits" section (design-rooms.md §6): the text in each cap's field, keyed by cap. Starts as the value
+ * in effect, so an untouched form changes nothing.
+ */
+export type LimitsDraft = Record<string, string>
+
+export function limitsDraft(view: PluginLimitsView): LimitsDraft {
+  return Object.fromEntries(view.limits.map((l) => [l.key, String(l.value)]))
+}
+
+/** What Save sends (`plugins.limits.set`); main checks it all again. */
+export interface LimitsEdit {
+  set: Array<[string, number]>
+  reset: string[]
+}
+
+/**
+ * The edit a draft makes, and the field problems that keep Save off. A field left empty drops its override (the
+ * default applies); a whole number from 1 to the ceiling is set unless it is already what applies (the default with
+ * no override, or the override itself); anything else is a problem, named with the range. Digits only, read
+ * character by character: no sign, fraction or exponent (main refuses those too). `edit` is null when nothing changes.
+ */
+export function limitsEdit(view: PluginLimitsView, draft: LimitsDraft): { edit: LimitsEdit | null; problems: Record<string, string> } {
+  const set: Array<[string, number]> = []
+  const reset: string[] = []
+  const problems: Record<string, string> = {}
+  for (const l of view.limits) {
+    const text = (Object.hasOwn(draft, l.key) ? (draft[l.key] as string) : String(l.value)).trim()
+    if (text === '') {
+      if (l.overridden) reset.push(l.key)
+      continue
+    }
+    const digits = text.length <= 6 && [...text].every((ch) => ch >= '0' && ch <= '9')
+    const n = digits ? Number(text) : NaN
+    if (!Number.isInteger(n) || n < 1 || n > l.ceiling) {
+      problems[l.key] = `a whole number from 1 to ${l.ceiling}`
+      continue
+    }
+    if (n !== l.value) set.push([l.key, n])
+  }
+  return { edit: set.length + reset.length > 0 ? { set, reset } : null, problems }
+}
+
+/**
+ * The draft after a "Use default" saved: the reset keys show what applies now, every other field keeps what the person
+ * typed (a reset-only save must not throw their unsaved edits away). `view` is main's reply to the save.
+ */
+export function limitsDraftAfterReset(view: PluginLimitsView, draft: LimitsDraft, reset: readonly string[]): LimitsDraft {
+  const fresh = limitsDraft(view)
+  const next: LimitsDraft = { ...draft }
+  for (const key of reset) if (Object.hasOwn(fresh, key)) next[key] = fresh[key] as string
+  return next
+}
+
+/**
+ * Whether this page may edit the caps. A browser view of a desktop cockpit is refused `plugins.limits.set` (main
+ * decides by the view it bound, router.ts); only the desktop page and a server's browsers save. A UI hint: main
+ * refuses either way.
+ */
+export function limitsEditable(webShell: boolean, serverView: boolean): boolean {
+  return !webShell || serverView
 }

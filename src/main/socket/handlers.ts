@@ -1,7 +1,9 @@
 // The user-facing `ccc` commands as socket handlers (plan: Task 21): open, session note/steps,
 // overlay, sessions, notify; the plugin commands (plan B Task 5): plugin.cli.spec, plugin.cli,
 // plugin.cli.list; and the plugin dev loop (Task 6): plugin.link, plugin.unlink, plugin.list.
-// (`hook` is sessions/hook-handler.ts.)
+// The rooms commands (design-rooms.md §4): room.status, room.join, room.leave, room.send, room.read (and its room.read.ack),
+// room.doc.ls|get|put.
+// (`hook` and `hook.ack` are sessions/hook-handler.ts.)
 //
 // Authority (CLAUDE.md: main is the only authority): the SocketServer already built `caller` from
 // the token or `--project`; nothing in `args` names a tab, window or project main would trust.
@@ -27,6 +29,9 @@
 //   - download: a Claude tab's or a window token's project and its open window only (never
 //     tokenless: a `--project` caller names no window anybody looks at); `args` names only the path,
 //     which files/downloads.ts resolves and checks.
+//   - plugin.limits / plugin.limits.set (design-rooms.md §6): the person's per-plugin caps, app-wide. The read takes
+//     any caller; the write is in HOST_ONLY_COMMANDS (the server refuses any token first) and refuses a
+//     non-anonymous caller again here.
 // Everything in `args` is untrusted JSON: each field's type is checked here, and text is passed on
 // as one value, never through a shell.
 //
@@ -46,6 +51,9 @@ import type { HostCliCall } from '../plugins/host-manager'
 import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type LinkDialogInfo } from '../plugins/link-request'
 import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
 import { rootAbsoluteUrlWarnings } from '../../shared/root-absolute-urls'
+import { PLUGIN_LIMITS_HOST_ONLY_TEXT, ROOM_READ_ACK_COMMAND } from '../../shared/protocol'
+import type { PluginLimitsView } from '../../shared/plugin-limits'
+import type { RoomService, RoomTabCaller } from '../rooms/room-service'
 import type { SessionEntry } from '../sessions/status-reducer'
 import type { Caller, Handler } from './socket-server'
 
@@ -547,6 +555,38 @@ export function registerPluginConfigHandler(server: { handle(cmd: string, handle
   server.handle('plugin.config', pluginConfigHandler(options))
 }
 
+/** What `plugin.limits` and `plugin.limits.set` need from main (index.ts binds the PluginLimitsStore). */
+export interface PluginLimitsOptions {
+  view(pluginId: unknown): PluginLimitsView
+  set(pluginId: unknown, set: unknown, reset: unknown): PluginLimitsView
+}
+
+/**
+ * `plugin.limits { id }` (`ccc plugin limits <id>`): a plugin's caps. Any caller, a tab included: reading them changes
+ * nothing, and the person reads before writing. The store checks the id.
+ */
+export function pluginLimitsHandler(options: PluginLimitsOptions): Handler {
+  return (args) => options.view(args.id)
+}
+
+/**
+ * `plugin.limits.set { id, set?, reset? }` (`ccc plugin limits <id> key=value... | --default <key>...`): a shell
+ * outside cockpit only. In HOST_ONLY_COMMANDS, so the server refuses any token before the lookup; refused again here
+ * for every caller but the anonymous one (design-rooms.md §6). The store checks the id, the keys and the values, and
+ * stores nothing when any of it is refused.
+ */
+export function pluginLimitsSetHandler(options: PluginLimitsOptions): Handler {
+  return (args, caller) => {
+    if (caller.kind !== 'anonymous') throw new Error(PLUGIN_LIMITS_HOST_ONLY_TEXT)
+    return options.set(args.id, args.set, args.reset)
+  }
+}
+
+export function registerPluginLimitsHandlers(server: { handle(cmd: string, handler: Handler): void }, options: PluginLimitsOptions): void {
+  server.handle('plugin.limits', pluginLimitsHandler(options))
+  server.handle('plugin.limits.set', pluginLimitsSetHandler(options))
+}
+
 /** What `panel.show` needs from main (index.ts binds the plugin list, the project record and the layout service). */
 export interface PanelShowOptions {
   /** Whether the plugin is installed and valid. */
@@ -620,6 +660,47 @@ export function downloadHandler(options: DownloadCliOptions): Handler {
 
 export function registerDownloadHandler(server: { handle(cmd: string, handler: Handler): void }, options: DownloadCliOptions): void {
   server.handle('download', downloadHandler(options))
+}
+
+/**
+ * What the `room.*` commands need (rooms/room-service.ts RoomService). Each takes the tab main resolved from the session
+ * token; the member's name, coordinator flag and room come from the room registry by that tab.
+ */
+export type RoomCliService = Pick<RoomService, 'status' | 'join' | 'leave' | 'send' | 'read' | 'readAck' | 'docList' | 'docGet' | 'docPut'>
+
+/**
+ * The `ccc room` commands (design-rooms.md §4): a Claude tab only. The server refuses a window token and a tokenless
+ * caller for every `room.*` name (none is in WINDOW_TOKEN_COMMANDS or TOKENLESS_COMMANDS), and roomTab refuses them
+ * again. Identity is the token's tab and project, never a field of `args`: a request naming a tab, a room, a member or
+ * a sender changes nothing, since none of those fields is read. `args` carries only the invite, the recipient, the
+ * text, the doc path and a read's ack, each checked by the room service (a RoomError's message is the answer).
+ */
+export function roomHandlers(rooms: RoomCliService): Record<string, Handler> {
+  return {
+    'room.status': (_args, caller) => rooms.status(roomTab(caller)),
+    'room.join': (args, caller) => rooms.join(roomTab(caller), args.invite),
+    'room.leave': (_args, caller) => rooms.leave(roomTab(caller)),
+    'room.send': (args, caller) => ({ delivery: rooms.send(roomTab(caller), args.to, args.text) }),
+    // Two steps (protocol.ts ROOM_READ_ACK_COMMAND): the read takes nothing; the ack `ccc` sends once it printed does.
+    'room.read': (_args, caller) => rooms.read(roomTab(caller)),
+    [ROOM_READ_ACK_COMMAND]: (args, caller) => rooms.readAck(roomTab(caller), args.ack),
+    'room.doc.ls': async (_args, caller) => ({ docs: await rooms.docList(roomTab(caller)) }),
+    'room.doc.get': async (args, caller) => ({ text: await rooms.docGet(roomTab(caller), args.path) }),
+    'room.doc.put': async (args, caller) => {
+      await rooms.docPut(roomTab(caller), args.path, args.text)
+      return null
+    }
+  }
+}
+
+/** The `ccc room` caller: a Claude tab's session token only (`room` needs a tab, design-rooms.md §4). */
+function roomTab(caller: Caller): RoomTabCaller {
+  if (caller.kind !== 'session') throw new Error('ccc room needs a Claude tab (run it inside a cockpit Claude tab)')
+  return { tabId: caller.tabId, projectId: caller.projectId }
+}
+
+export function registerRoomHandlers(server: { handle(cmd: string, handler: Handler): void }, rooms: RoomCliService): void {
+  for (const [cmd, handler] of Object.entries(roomHandlers(rooms))) server.handle(cmd, handler)
 }
 
 /** Register every user command on the server (a `handle(cmd, handler)` is all it needs). */

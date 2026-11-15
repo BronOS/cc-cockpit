@@ -34,6 +34,7 @@ import {
   type RemoteServerHandlerDeps,
   webCaller
 } from '../../src/main/ipc/router'
+import { registerRoomStripHandlers } from '../../src/main/ipc/room-handlers'
 import type { SenderContext } from '../../src/main/windows/window-manager'
 import type { OpenTarget } from '../../src/main/external/open-external'
 import { BUILTIN_THEMES } from '../../src/main/themes/theme-service'
@@ -1564,7 +1565,9 @@ describe('registerSettingsHandlers', () => {
       updateAllMarketplace: async (...args) => rec('updateAllMarketplace', { updated: [], failed: [] })(...args),
       refreshMarketplace: async (...args) => rec('refreshMarketplace', { indexes: [], entries: [], warnings: [] })(...args),
       marketplacePreview: async (...args) => rec('marketplacePreview', null)(...args),
-      setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args)
+      setMarketplaceUrls: async (...args) => rec('setMarketplaceUrls', { indexes: [], entries: [], warnings: [] })(...args),
+      pluginLimits: rec('pluginLimits', { id: 'a.one', limits: [] }),
+      setPluginLimits: rec('setPluginLimits', { id: 'a.one', limits: [] })
     }
     registerSettingsHandlers(router, deps, options)
     return { ipc, calls, router }
@@ -1584,10 +1587,31 @@ describe('registerSettingsHandlers', () => {
     expect(server.calls).toEqual([['openProject', 'p3']])
   })
 
+  // plugins.limits.set is `adapted` (design-rooms.md §6): raising a cap widens what a plugin may do on the host, so a
+  // desktop's browser is refused and a server's browser (the only screen there) may; the read is any view's.
+  it('plugin limits: any view reads; the write from the desktop and a server\'s browser, never a desktop\'s browser', async () => {
+    const desktop = settingsSetup()
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    await desktop.ipc.invoke('plugins.limits.get', 11, [{ id: 'a.one' }])
+    await desktop.router.dispatch(browser, 'plugins.limits.get', { id: 'a.two' })
+    await desktop.ipc.invoke('plugins.limits.set', 11, [{ id: 'a.one', set: [['opensPerMinute', 10]], reset: ['sendsPerMinute'] }])
+    await expect(desktop.router.dispatch(browser, 'plugins.limits.set', { id: 'a.one', set: [['opensPerMinute', 60]] })).rejects.toThrow(
+      /outside server mode/
+    )
+    expect(desktop.calls).toEqual([
+      ['pluginLimits', 'a.one'],
+      ['pluginLimits', 'a.two'],
+      ['setPluginLimits', 'a.one', [['opensPerMinute', 10]], ['sendsPerMinute']]
+    ])
+    const server = settingsSetup({ server: true })
+    await server.router.dispatch(browser, 'plugins.limits.set', { id: 'a.one', set: [['opensPerMinute', 60]] })
+    expect(server.calls).toEqual([['setPluginLimits', 'a.one', [['opensPerMinute', 60]], undefined]])
+  })
+
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = settingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(19)
+    expect(channels).toHaveLength(21)
     // Accounts left core (design §6): none of their channels is registered any more.
     expect(channels.filter((c) => /account|oauth/i.test(c))).toEqual([])
     for (const channel of channels) {
@@ -2997,5 +3021,161 @@ describe('registerGroupHandlers', () => {
     }
     for (const sender of [13, 99]) await expect(ipc.invoke('groups.get', sender)).rejects.toThrow()
     expect(calls).toEqual([])
+  })
+})
+
+describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
+  // The membership the strip showed when the person clicked (TabRoomRef).
+  const ROOM = { id: '11111111-1111-4111-8111-111111111111', name: 'bob' }
+  function roomSetup(options: { server?: boolean } = {}): {
+    ipc: FakeIpcMain
+    router: IpcRouter
+    calls: unknown[][]
+    members: Map<string, { id: string; name: string; mark: boolean }>
+  } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    // The memberships main would hold, all in ROOM as bob: t1 starts off, `marked` starts on.
+    const members = new Map<string, { id: string; name: string; mark: boolean }>(
+      ['t1', 't2', 'held', 'marked'].map((tabId) => [tabId, { ...ROOM, mark: tabId === 'marked' }])
+    )
+    registerRoomStripHandlers(router, {
+      server: options.server === true,
+      membershipOf: (_projectId, tabId) => {
+        const member = members.get(tabId)
+        return member ? { ...member } : undefined
+      },
+      roomMark: (projectId, tabId, mark) => {
+        calls.push(['roomMark', projectId, tabId, mark])
+        const member = members.get(tabId)
+        if (member) member.mark = mark
+        return mark
+      },
+      markTurnedOn: (projectId, tabId) => {
+        calls.push(['markTurnedOn', projectId, tabId])
+      },
+      deliverHeld: (projectId, tabId, overDraft) => {
+        calls.push(['deliverHeld', projectId, tabId, overDraft])
+        return tabId === 'held' ? { delivered: true } : { delivered: false, why: 'paused' }
+      }
+    })
+    return { ipc, router, calls, members }
+  }
+
+  it("acts on the sender's own project, the tab id looked up there, and answers main's result", async () => {
+    const { ipc, calls } = roomSetup()
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true, projectId: PROJECT_B }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 12, [{ tabId: 't2', room: ROOM, mark: false }])).toBe(false)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, projectId: PROJECT_B }])).toEqual({ delivered: true })
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1', room: ROOM }])).toEqual({ delivered: false, why: 'paused' })
+    expect(calls).toEqual([
+      ['roomMark', PROJECT_A, 't1', true],
+      ['markTurnedOn', PROJECT_A, 't1'],
+      ['roomMark', PROJECT_B, 't2', false],
+      ['deliverHeld', PROJECT_A, 'held', false],
+      ['deliverHeld', PROJECT_A, 't1', false]
+    ])
+  })
+
+  it('offers what waits again only when the mark goes from off to on', async () => {
+    const { ipc, calls } = roomSetup()
+    // Set again while on, cleared, cleared again: stored, nothing offered (turning delivery off must not deliver).
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: false }])).toBe(false)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: false }])).toBe(false)
+    expect(calls.filter((c) => c[0] === 'markTurnedOn')).toEqual([])
+    // Off to on: offered once; on again: not.
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: true }])).toBe(true)
+    expect(calls.filter((c) => c[0] === 'markTurnedOn')).toEqual([['markTurnedOn', PROJECT_A, 'marked']])
+  })
+
+  it('refuses a stale request: the tab left the room the strip showed and joined another (or the name changed)', async () => {
+    const { ipc, calls, members } = roomSetup()
+    // The person toggled the mark on room A's entry; before main handled it, the tab left A and joined B as bob.
+    const roomB = { id: '22222222-2222-4222-8222-222222222222', name: 'bob' }
+    members.set('t1', { ...roomB, mark: false })
+    members.set('held', { ...roomB, mark: false })
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true }])).rejects.toThrow(/stale request/)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM }])).toEqual({ delivered: false, why: 'no-room' })
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, overDraft: true }])).toEqual({
+      delivered: false,
+      why: 'no-room'
+    })
+    // Same room, another member name: a new membership too.
+    members.set('t2', { id: ROOM.id, name: 'carol', mark: false })
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't2', room: ROOM, mark: true }])).rejects.toThrow(/stale request/)
+    // In no room at all.
+    members.delete('marked')
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: false }])).rejects.toThrow(/in no room/)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'marked', room: ROOM }])).toEqual({ delivered: false, why: 'no-room' })
+    expect(calls).toEqual([])
+    expect(members.get('t1')?.mark).toBe(false)
+    // The request made against B goes through.
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: roomB, mark: true }])).toBe(true)
+    expect(calls).toEqual([
+      ['roomMark', PROJECT_A, 't1', true],
+      ['markTurnedOn', PROJECT_A, 't1']
+    ])
+  })
+
+  it('refuses a missing or malformed room before main is asked', async () => {
+    const { ipc, calls } = roomSetup()
+    const bad: unknown[] = [undefined, null, 'room', [], {}, { id: ROOM.id }, { name: 'bob' }, { id: 1, name: 'bob' }, { id: '', name: 'bob' }]
+    bad.push({ id: 'x'.repeat(65), name: 'bob' }, { id: ROOM.id, name: 'b'.repeat(65) })
+    for (const room of bad) {
+      await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room, mark: true }]), JSON.stringify(room)).rejects.toThrow(/room/)
+      await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room }]), JSON.stringify(room)).rejects.toThrow(/room/)
+    }
+    expect(calls).toEqual([])
+  })
+
+  it('"Deliver anyway": overDraft true passes through, anything but true or absent is refused', async () => {
+    const { ipc, calls } = roomSetup()
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, overDraft: true }])).toEqual({ delivered: true })
+    for (const overDraft of [false, 'true', 1, null]) {
+      await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, overDraft }])).rejects.toThrow(/overDraft must be true or absent/)
+    }
+    expect(calls).toEqual([['deliverHeld', PROJECT_A, 'held', true]])
+  })
+
+  it('refuses a mark that is not a boolean and a missing tab id before main is asked', async () => {
+    const { ipc, calls } = roomSetup()
+    for (const mark of ['true', 1, null, undefined]) {
+      await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark }])).rejects.toThrow(/mark must be true or false/)
+    }
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ room: ROOM, mark: true }])).rejects.toThrow()
+    await expect(ipc.invoke('rooms.deliverHeld', 11, [{ room: ROOM }])).rejects.toThrow()
+    expect(calls).toEqual([])
+  })
+
+  it("takes both from the shell page's top frame of a project window only (never a plugin panel or the picker)", async () => {
+    const { ipc, calls } = roomSetup()
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1', room: ROOM }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(
+      ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true }], { parent: null, url: 'cc-plugin://example.plugin/panel.html' })
+    ).rejects.toThrow()
+    await expect(ipc.invoke('tabs.roomMark', 13, [{ tabId: 't1', room: ROOM, mark: true }])).rejects.toThrow(/not a project window/)
+    await expect(ipc.invoke('rooms.deliverHeld', 13, [{ tabId: 't1', room: ROOM }])).rejects.toThrow(/not a project window/)
+    expect(calls).toEqual([])
+  })
+
+  it("adapted: a desktop's browser is refused, a server's browser counts as the person", async () => {
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const desktop = roomSetup()
+    await expect(desktop.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', room: ROOM, mark: true })).rejects.toThrow(/outside server mode/)
+    await expect(desktop.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held', room: ROOM })).rejects.toThrow(/outside server mode/)
+    expect(desktop.calls).toEqual([])
+    const server = roomSetup({ server: true })
+    expect(await server.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', room: ROOM, mark: true })).toBe(true)
+    expect(await server.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held', room: ROOM })).toEqual({ delivered: true })
+    expect(server.calls).toEqual([
+      ['roomMark', PROJECT_A, 't1', true],
+      ['markTurnedOn', PROJECT_A, 't1'],
+      ['deliverHeld', PROJECT_A, 'held', false]
+    ])
+    expect(REMOTE_CLASS['tabs.roomMark']).toBe('adapted')
+    expect(REMOTE_CLASS['rooms.deliverHeld']).toBe('adapted')
   })
 })

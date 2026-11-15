@@ -438,6 +438,17 @@ export interface SessionInfo {
    * from the status line like `costUsd` and absent in the same cases.
    */
   readonly contextPercent?: number
+  /**
+   * The tab's room: the room's title, the tab's member name in it and
+   * whether it is a coordinator. Absent for a tab in no room. Set by the app only; a change reaches
+   * `onChange`. An older app never sends it.
+   */
+  readonly room?: { readonly title: string; readonly name: string; readonly coordinator: boolean }
+  /**
+   * How many room messages wait for this member (held until its `ccc room read`); absent when none
+   * do and for a tab in no room. Never the messages themselves. An older app never sends it.
+   */
+  readonly held?: number
 }
 
 /**
@@ -528,6 +539,76 @@ export interface OpenBeside {
 export interface OpenedTab {
   tabId: string
   placed?: boolean
+}
+
+/** One of the plugin's rooms (`ctx.rooms.list`). The members' messages are never in it. */
+export interface RoomInfo {
+  /** Opaque; names the room in every other `ctx.rooms` call. */
+  readonly id: string
+  readonly title: string
+  /** Epoch ms. */
+  readonly createdAt: number
+  /** Set once the room ended (`ctx.rooms.end`, or the plugin was switched off, removed or revoked). */
+  readonly endedAt?: number
+  /** Paused by the person, by the loop guard or by a restart: nothing is delivered, sends still queue. */
+  readonly paused: boolean
+  /** How many members it has. */
+  readonly members: number
+}
+
+/** A member of a room (`ctx.rooms.members`). */
+export interface RoomMember {
+  readonly name: string
+  readonly coordinator: boolean
+  /** Its Claude tab now (a tab of this window); absent while it has none (after a quit, until a restore). */
+  readonly tabId?: string
+  /** Messages waiting for it. */
+  readonly held: number
+}
+
+/**
+ * What a room send did for one recipient: `delivered` (the pointer reached its session), `held` (queued; `why` is
+ * `paused`, `no-tab`, `typed`, `capped`, `draft` or `not-waiting`), `gone` (no member of that name: nothing queued) or
+ * `refused` (its queue is full: nothing queued for it).
+ */
+export type RoomSendAnswer =
+  | { readonly to: string; readonly path: 'delivered' }
+  | {
+      readonly to: string
+      readonly path: 'held'
+      readonly why: 'paused' | 'no-tab' | 'typed' | 'capped' | 'draft' | 'not-waiting'
+      readonly status?: SessionStatus
+    }
+  | { readonly to: string; readonly path: 'gone' }
+  | { readonly to: string; readonly path: 'refused'; readonly why: string }
+
+/** A doc of a room (`ctx.rooms.docs.list`): `shared/...` or `members/<name>/...`, and its size in bytes. */
+export interface RoomDoc {
+  readonly path: string
+  readonly size: number
+}
+
+/**
+ * One event of a room's log (`ctx.rooms.log`): `type` is `create`, `invite`, `join`, `leave`, `send`, `doc-read`,
+ * `doc-write`, `doc-refused`, `pause`, `resume`, `auto-pause`, `end` or `trimmed`; the other fields depend on it
+ * (`member`, `why`, `from`, `to`, `text`, `delivery`, `path`, ...). Message text is included.
+ */
+export interface RoomLogEntry {
+  /**
+   * The entry's number in its room, 1 up in the order logged, never reused: the cursor for `log`'s `since`. A gap
+   * means the log was trimmed (its oldest half dropped at 20 MiB, with a `trimmed` entry saying how many).
+   */
+  readonly seq: number
+  /** Epoch ms (several entries can share one: poll by `seq`, not by time). */
+  readonly at: number
+  readonly type: string
+  readonly [field: string]: unknown
+}
+
+/** One answer of `ctx.rooms.log`: `more` is true when entries were left out past `limit` (see `log`). */
+export interface RoomLogPage {
+  readonly entries: RoomLogEntry[]
+  readonly more: boolean
 }
 
 /** What a `ccc <name>` handler gets besides its arguments. */
@@ -1032,12 +1113,14 @@ export interface PluginContext {
     onRateLimits(listener: (rateLimits: RateLimits) => void): Disposer
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
-     * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute.
+     * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute (the
+     * default `sendsPerMinute`; the person can change it in Settings > Plugins > Limits, and the error names the cap).
      */
     send(tabId: string, text: string): Promise<SendResult>
     /**
      * A new Claude tab in this window; `cwd` must resolve inside the project folder, `prompt` is
-     * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute.
+     * passed as an argument, never typed (and may not start with "/", "!", "#" or "&"). At most 5 a minute (the
+     * default `opensPerMinute`, shared with openShell, openCommand and rooms.open; the person can change it).
      * `focus: true` also selects the new tab in this window (for a click the person made, such as
      * "Discuss in a new session"); without it the tab opens beside the one they are in, unselected.
      * `model` (`haiku`, `sonnet`, `opus` or `fable`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`) start
@@ -1069,6 +1152,69 @@ export interface PluginContext {
      * `beside` / `side`: see `OpenBeside`.
      */
     openCommand(options: { argv: string[]; cwd?: string; title?: string; focus?: boolean } & OpenBeside): Promise<OpenedTab>
+  }
+
+  // rooms
+  /**
+   * Rooms (`ccc guide rooms`): Claude tabs of this window that message each other and share docs through `ccc room`.
+   * Every call acts on this plugin's own rooms of this window only; any other id rejects as "no such room". The app
+   * sets every identity and rule; a refusal rejects with an Error naming the method and the rule. An older app has
+   * no `rooms`: check `typeof ctx.rooms === 'object'`.
+   */
+  readonly rooms: {
+    /**
+     * A new room: `title` is 1-60 characters on one line with no quote, bracket, control or bidi character. At most 5
+     * not ended per plugin in a project, and at most 50 ended ones kept (past that, `delete` one first).
+     */
+    create(options: { title: string }): Promise<{ id: string }>
+    /** This plugin's rooms in this window, ended ones included (they stay until `delete`). */
+    list(): Promise<RoomInfo[]>
+    /** End a room: its members leave it (their tabs stay), invites die; its record and docs stay until `delete`. */
+    end(id: string): Promise<void>
+    /** Delete an ended room with its docs and log. */
+    delete(id: string): Promise<void>
+    /**
+     * A new Claude tab of this window that is a member from the start, under `name` (`^[a-z][a-z0-9-]{0,30}$`, not
+     * `all`, `plugin`, `person`, `user` or `system`; unique in the room). `cwd`, `prompt`, `model` and `effort` are
+     * `ctx.sessions.open`'s, with its checks, and it counts against the same 5 tabs a minute; the tab opens
+     * unselected. At most 20 members a room. Seed a member's kickoff doc before opening it.
+     */
+    open(
+      id: string,
+      options: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string }
+    ): Promise<{ tabId: string }>
+    /**
+     * A one-time invite for `name`: hand `code` to an existing tab (through your own command), which joins by running
+     * `ccc room join <code>` itself. Single use, 10 minutes (`expiresAt`, epoch ms). A plugin can never pull a tab in.
+     */
+    invite(id: string, options: { name: string; coordinator?: boolean }): Promise<{ code: string; expiresAt: number }>
+    /** The room's members, with their tab now and how many messages wait for each. */
+    members(id: string): Promise<RoomMember[]>
+    /** Remove a member: its tab stays, out of the room; the messages waiting for it are dropped. */
+    remove(id: string, name: string): Promise<void>
+    /**
+     * A message `from plugin` to a member or `all` (every member): at most 20000 characters (more goes in a doc).
+     * The answer says per recipient what happened. Counts against the room's 60 sends a minute, every sender together
+     * (`all` once per recipient); a send over it rejects naming the cap. That cap and a member's 20 a minute are
+     * defaults the person can change (Settings > Plugins > Limits).
+     */
+    send(id: string, to: string, text: string): Promise<RoomSendAnswer[]>
+    /**
+     * The room's docs, every one of them (the plugin reads and writes all areas). A path is `shared/...` or
+     * `members/<name>/...` with at most four parts of `[A-Za-z0-9._-]` below the area; a doc is UTF-8 text of at most
+     * 256 KiB with no control, bidi or invisible format character but tab and line breaks; 20 MiB a room.
+     */
+    readonly docs: {
+      list(id: string): Promise<RoomDoc[]>
+      get(id: string, path: string): Promise<string>
+      put(id: string, path: string, text: string): Promise<void>
+    }
+    /**
+     * The room's events, oldest first, at most `limit` (default and most 1000). With `since` (a `seq`; 0 for the
+     * start) the OLDEST entries after it, and `more` true when newer ones remain: poll with the last `seq` you got,
+     * again at once while `more`. Without it the newest, `more` true when older ones were left out.
+     */
+    log(id: string, options?: { since?: number; limit?: number }): Promise<RoomLogPage>
   }
 
   // commands

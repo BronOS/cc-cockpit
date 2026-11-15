@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BUNDLED_PLUGINS, bundledPluginSpecs, bundledRoot, type BundledPluginSpec } from '../../src/main/plugins/bundled'
-import { enabledPluginIds, offAppWide, pluginEnabledIn, pluginOnInRecord, type EnablementPlugin } from '../../src/main/plugins/enablement'
+import { enabledPluginIds, offAppWide, pluginEnabledIn, pluginOnInRecord, roomEndReason, type EnablementPlugin } from '../../src/main/plugins/enablement'
 import { PluginInstaller, type InstalledPlugin } from '../../src/main/plugins/installer'
 import { PluginIndex } from '../../src/main/plugins/plugin-index'
 import { ProjectSettingsService, type ProjectSettingsDeps } from '../../src/main/settings/project-settings-service'
@@ -552,5 +552,33 @@ describe('replacing a bundled plugin through the picks', () => {
     expect(selectProvider('editor', plugins, { editor: EDITOR })).toEqual({ ok: true, provider: 'acme.vim', version: 1 })
     // A pick of the bundled reviewer is stale now and counts as none: the only candidate answers.
     expect(selectOpenFile(plugins, { [OPEN_FILE_PICK]: REVIEWER })).toBe('acme.diff')
+  })
+})
+
+describe('roomEndReason (design-rooms.md §1: a room ends when its plugin is switched off, removed or revoked)', () => {
+  const installed: EnablementPlugin = { id: 'x.team', source: { kind: 'git' } }
+  const bundled: EnablementPlugin = { id: 'cockpit.team', enabledByDefault: true, source: { kind: 'bundled' } }
+
+  it('keeps the rooms of a plugin that is on in the project', () => {
+    expect(roomEndReason({ enabledPlugins: ['x.team'] }, installed, false)).toBeUndefined()
+    expect(roomEndReason({}, bundled, false)).toBeUndefined()
+  })
+
+  it('names why otherwise: removed, revoked, or off here or in all projects', () => {
+    expect(roomEndReason({ enabledPlugins: ['x.team'] }, undefined, false)).toBe('plugin removed')
+    expect(roomEndReason({ enabledPlugins: ['x.team'] }, installed, true)).toBe('plugin revoked')
+    expect(roomEndReason({ enabledPlugins: [] }, installed, false)).toBe('plugin disabled')
+    expect(roomEndReason({ disabledPlugins: ['cockpit.team'] }, bundled, false)).toBe('plugin disabled')
+    expect(roomEndReason({}, bundled, false, ['cockpit.team'])).toBe('plugin disabled')
+    // A project whose record is gone (forgotten) has its own reason.
+    expect(roomEndReason(undefined, installed, false)).toBe('project removed')
+  })
+
+  it('keeps the rooms when the record cannot be read: an ended room never comes back, and the file may', () => {
+    expect(roomEndReason('unknown', installed, false)).toBeUndefined()
+    expect(roomEndReason('unknown', bundled, false, ['cockpit.team'])).toBeUndefined()
+    // Removed and revoked do not depend on the record.
+    expect(roomEndReason('unknown', undefined, false)).toBe('plugin removed')
+    expect(roomEndReason('unknown', installed, true)).toBe('plugin revoked')
   })
 })

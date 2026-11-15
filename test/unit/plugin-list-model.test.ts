@@ -2,11 +2,16 @@
 // cards, then searched (case-insensitive substring, no regex), filtered and paged 20 at a time.
 import { describe, expect, it } from 'vitest'
 import type { MarketplaceEntryView, MarketplaceView, PluginView } from '../../src/shared/ipc'
+import { limitsView } from '../../src/main/plugins/plugin-limits'
 import {
   buildCards,
   clampPage,
   filterCards,
   hasUpdate,
+  limitsDraft,
+  limitsDraftAfterReset,
+  limitsEditable,
+  limitsEdit,
   matchesSearch,
   PAGE_SIZE,
   pageCount,
@@ -175,5 +180,58 @@ describe('update all (design-next §6.4)', () => {
     expect(updateAllStillShown([up, other], viewOf([up, { ...other, commit: 'b'.repeat(40) }]))).toBe(false)
     expect(updateAllStillShown([up], viewOf([{ ...up, status: 'installed', action: null }]))).toBe(false)
     expect(updateAllStillShown([up], viewOf([]))).toBe(false)
+  })
+})
+
+// A plugin's "Limits" (design-rooms.md §6): the form starts at what applies, Save sends only what changed, an empty
+// field drops the override, and a value outside 1..ceiling keeps Save off with the range shown.
+describe('limitsEdit', () => {
+  const view = limitsView('a.one', { sendsPerMinute: 100 })
+
+  it('starts at the values in effect and changes nothing untouched', () => {
+    const draft = limitsDraft(view)
+    expect(draft).toEqual({ opensPerMinute: '5', sendsPerMinute: '100', roomSendsPerMember: '20', roomSendsPerRoom: '60' })
+    expect(limitsEdit(view, draft)).toEqual({ edit: null, problems: {} })
+    // The same number typed again, or with spaces round it, is no change either.
+    expect(limitsEdit(view, { ...draft, opensPerMinute: ' 5 ' })).toEqual({ edit: null, problems: {} })
+  })
+
+  it('sets what changed and resets an emptied override; an emptied default is no change', () => {
+    const draft = { ...limitsDraft(view), opensPerMinute: '12', sendsPerMinute: '', roomSendsPerRoom: '' }
+    expect(limitsEdit(view, draft)).toEqual({ edit: { set: [['opensPerMinute', 12]], reset: ['sendsPerMinute'] }, problems: {} })
+  })
+
+  it('names the range for a value it cannot send, and sends nothing while one is wrong', () => {
+    for (const bad of ['0', '61', '1.5', '-1', '1e1', 'ten', '+3', '1234567']) {
+      const { problems } = limitsEdit(view, { ...limitsDraft(view), opensPerMinute: bad })
+      expect(problems, bad).toEqual({ opensPerMinute: 'a whole number from 1 to 60' })
+    }
+    expect(limitsEdit(view, { ...limitsDraft(view), opensPerMinute: '60', roomSendsPerRoom: '601' }).problems).toEqual({
+      roomSendsPerRoom: 'a whole number from 1 to 600'
+    })
+  })
+})
+
+describe('limits form after a "Use default"', () => {
+  it('shows the default on the reset row and keeps the unsaved text of every other field', () => {
+    const before = limitsView('a.one', { sendsPerMinute: 100, opensPerMinute: 9 })
+    const typed = { ...limitsDraft(before), roomSendsPerMember: '25', roomSendsPerRoom: 'abc', opensPerMinute: '12' }
+    const after = limitsView('a.one', { opensPerMinute: 9 })
+    expect(limitsDraftAfterReset(after, typed, ['sendsPerMinute'])).toEqual({
+      opensPerMinute: '12',
+      sendsPerMinute: '30',
+      roomSendsPerMember: '25',
+      roomSendsPerRoom: 'abc'
+    })
+    // A key main did not name changes nothing.
+    expect(limitsDraftAfterReset(after, typed, ['nope'])).toEqual(typed)
+  })
+})
+
+describe('limitsEditable', () => {
+  it('is editable in the desktop window and a server\'s browser, read-only in a browser of a desktop', () => {
+    expect(limitsEditable(false, false)).toBe(true)
+    expect(limitsEditable(true, true)).toBe(true)
+    expect(limitsEditable(true, false)).toBe(false)
   })
 })

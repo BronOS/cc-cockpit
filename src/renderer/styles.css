@@ -618,6 +618,39 @@ iframe:focus-visible {
 .tab-unseen {
   background: var(--cc-accent);
 }
+/* A room member tab (design-rooms.md §5, tab-room.ts): the member's name as a small pill, and the held badge (a
+   count, clicked to deliver the pointer). Neither is a flag, which is the person's alone. */
+.tab-room {
+  flex: none;
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  font-size: var(--cc-text-xs);
+  line-height: 15px;
+  color: var(--cc-fg-muted);
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+}
+.tab .tab-held {
+  flex: none;
+  height: 17px;
+  min-width: 17px;
+  margin-right: 2px;
+  padding: 0 5px;
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  line-height: 15px;
+  color: var(--cc-accent);
+  background: var(--cc-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--cc-accent) 55%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.menu-check {
+  display: inline-block;
+  width: 1.2em;
+}
 .tab-close {
   flex: none;
   display: inline-flex;
@@ -984,6 +1017,11 @@ iframe:focus-visible {
   font-size: var(--cc-text-sm);
   background: var(--cc-bg-error);
   border-bottom: 1px solid var(--cc-border);
+}
+/* The one action an error may carry (the held badge's "Deliver anyway", TabsPane). */
+.tabs-error-action {
+  margin-left: 10px;
+  font: inherit;
 }
 .tabs-empty {
   margin: 0;
@@ -4845,4 +4883,155 @@ ul.settings-alert {
 .download-notice button.download-retry {
   font: inherit;
   cursor: pointer;
+}
+/* The room view (design-rooms.md §5, rooms/RoomDialog.tsx): the confirm frame, wider, its body scrolling inside so
+   a long log or doc never pushes the head off screen. */
+.room-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(640px, 94vw);
+  max-height: 70vh;
+}
+.room-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.room-dialog-head .confirm-title {
+  flex: 1;
+  margin: 0;
+}
+.room-dialog button {
+  height: 24px;
+  padding: 0 10px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+.room-dialog button:hover {
+  background: var(--cc-surface-3);
+}
+.room-dialog button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.room-dialog .room-dialog-close {
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+}
+.room-dialog-state,
+.room-dialog-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--cc-fg-muted);
+}
+.room-dialog-state span,
+.room-dialog-doc-head .room-dialog-path {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.room-dialog-note {
+  margin: 0;
+  color: var(--cc-fg-subtle);
+}
+.room-dialog-error {
+  margin: 0;
+  color: var(--cc-status-ended, #cd3131);
+}
+.room-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.room-dialog-body h3 {
+  margin: 0 0 4px;
+  font-size: var(--cc-text-md);
+  font-weight: 600;
+}
+.room-dialog-list,
+.room-dialog-log {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.room-dialog-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.room-dialog-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.room-dialog-tag,
+.room-dialog-held {
+  padding: 0 6px;
+  font-size: var(--cc-text-xs);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-accent-soft);
+}
+.room-dialog-status,
+.room-dialog-size {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-sm);
+}
+.room-dialog-list .room-dialog-remove,
+.room-dialog-confirm {
+  margin-left: auto;
+}
+.room-dialog-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.room-dialog .confirm-danger {
+  color: var(--cc-status-ended, #cd3131);
+  border-color: var(--cc-status-ended, #cd3131);
+}
+.room-dialog .room-dialog-doc-link {
+  border-color: transparent;
+  background: transparent;
+  padding: 0;
+  font-family: var(--cc-font-mono);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+.room-dialog-log li {
+  padding: 2px 0;
+  font-size: var(--cc-text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.room-dialog-time {
+  color: var(--cc-fg-subtle);
+  font-family: var(--cc-font-mono);
+}
+.room-dialog-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.room-dialog-doc-text {
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  max-height: 50vh;
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--cc-bg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
 }

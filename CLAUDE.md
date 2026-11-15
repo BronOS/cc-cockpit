@@ -41,6 +41,9 @@ are implemented; design in `docs/design-download.md`, plan in `docs/plans/comple
 `docs/features.md` ("Web access" › "Downloads", "Remote servers" › "Downloads"). Not run on a packaged Mac, iOS Safari or Firefox
 (the plan's Post-Completion list).
 
+Rooms (messages and shared docs between Claude tabs, plus the per-plugin caps the person sets) are implemented; design in
+`docs/design-rooms.md`, plan in `docs/plans/completed/20261114-rooms.md`, user docs in `docs/features.md` ("Rooms").
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
@@ -52,7 +55,7 @@ are implemented; design in `docs/design-download.md`, plan in `docs/plans/comple
   also emits `dist/lib/outside-paths.js` from `src/shared/outside-paths.ts`; deterministic, a unit test rebuilds and compares the bytes of both), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
   master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
-  pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
+  pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays, rooms and secrets; its copy of `types.ts` carries `ctx.rooms`, which the example host must not use, and the public repo needs the push before a release), `npm run build:marketplace-tools` (rebuild after
   editing `marketplace/tools/src` or the `src/shared` files it imports, `git-source.ts`, `marketplace.ts` and
   `root-absolute-urls.ts` above all;
   `marketplace/tools/dist` is committed because the index repo's CI runs it with plain node and no install, and a unit
@@ -329,6 +332,28 @@ are implemented; design in `docs/design-download.md`, plan in `docs/plans/comple
   placed, never focused; `no-plugin-group-edits.test.ts`). Every tab kind is a pane: `isPaneKind`
   (`shared/tab-groups.ts`) is the one rule, used by `TabGroups` (`not-a-pane` stays for the next kind, through its `kindOf`
   dep) and the strip; HostApi's `beside` check takes any tab of the window (`hasTab`); `joinOrder` lists terminal members only.
+- Rooms (design-rooms.md, `main/rooms/`): pull only. Hooks and the send gate carry the fixed pointer, never room text; text
+  enters a session only through its own `ccc room read`, fenced with a per-delivery nonce, and `ccc` acks the read (and a
+  Stop block) before main dequeues or counts it as printed. A hook-path function never writes anything else (grep test).
+  `ccc hook Stop` acks the block, then prints it, all inside `STOP_HOOK_BUDGET_MS` (2 s, `cli/client.ts`); a connection that
+  closes unacked means nothing was printed, so main applies the plain Stop and offers the pointer again (`RoomStop.closedUnacked`,
+  `unblocked`). The gate path honours the per-tab Stop cap too (held `why` `capped`), so a loop cannot run through pastes.
+- The room mark (`Deliver room messages automatically`) is the person's alone, like the tab flag: written only from the
+  shell page (top frame, own tabs), grep-tested, bound to (tab, room), held by the draft bit; never a host API, hook or
+  `ccc` path. Pause, Resume and Remove are the person's too. Membership and the mark live in the tab record; a restart
+  restores members as typed and rooms paused.
+- Room identity comes from the caller's tab token or the host's own plugin, never a payload; a plugin acts only on its
+  own rooms in its own window and can never pull a tab in (an invite is redeemed by the tab itself). Rooms end with
+  their plugin, and room calls are refused while the plugin is off.
+- Room tests: the fake `claude` emulates Claude Code's Stop-block cap (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, 8) and scripts a turn
+  from env: `FAKE_CLAUDE_ON_PASTE` and `FAKE_CLAUDE_ON_BLOCK` (one scripted line each, `/ccc <args>`, `/sleep <ms>`,
+  `/waitfile <path>`, `/later <ms> <line>`), with every `/ccc` run, block and unknown line in `FAKE_CLAUDE_RUN_LOG`; the
+  fixture plugins are `test/fixtures/plugins/room*` (`rooms-test` drives the e2e).
+- Room docs (`room-docs.ts`): a fixed scheme (`shared/`, `members/<name>/`), refused = missing, `O_NOFOLLOW` + `fstat`, main
+  writes only, caps in the docs; the log is capped and `seq`-cursored.
+- Per-plugin caps (`shared/plugin-limits.ts`, `main/plugins/plugin-limits.ts`): stored per plugin id in `app.json`, read
+  clamped on every call, dropped on uninstall; the write is `plugin.limits.set`, under `HOST_ONLY_FAMILIES`
+  (`plugin.limits.`) so it is shell-only like `ccc web`, and not a boundary. `room` is a reserved core command name.
 
 ## Conventions
 

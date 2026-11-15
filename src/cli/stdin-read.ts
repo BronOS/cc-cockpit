@@ -9,6 +9,8 @@ export interface StdinRead {
   text: string
   truncated: boolean
   error?: string
+  /** Only for a `strictUtf8` read: the bytes were not valid UTF-8 (`text` is then empty). */
+  invalidUtf8?: boolean
 }
 
 /**
@@ -16,9 +18,10 @@ export interface StdinRead {
  * then cut off (possibly mid-character) and is not worth parsing. Resolves on end, close or error;
  * the caller's own deadline covers a stream that never ends. On an error `error` holds its
  * message and `text` is only what arrived before it: a hook still goes out with that (it must
- * never fail), but a plugin command refuses to run on a partial payload (runPlugin).
+ * never fail), but a plugin command refuses to run on a partial payload (runPlugin). `strictUtf8` refuses bytes that
+ * are no UTF-8 instead of replacing them with U+FFFD (a truncated read is never checked: it is refused anyway).
  */
-export function readStdinCapped(stream: Readable, cap: number): Promise<StdinRead> {
+export function readStdinCapped(stream: Readable, cap: number, strictUtf8 = false): Promise<StdinRead> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = []
     let size = 0
@@ -28,7 +31,17 @@ export function readStdinCapped(stream: Readable, cap: number): Promise<StdinRea
       done = true
       stream.off('data', onData)
       stream.pause()
-      const text = Buffer.concat(chunks).subarray(0, cap).toString('utf8')
+      const bytes = Buffer.concat(chunks).subarray(0, cap)
+      if (strictUtf8 && !truncated && error === undefined) {
+        try {
+          // ignoreBOM keeps a leading BOM in the text: the bytes are passed on exactly.
+          resolve({ text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), truncated })
+        } catch {
+          resolve({ text: '', truncated, invalidUtf8: true })
+        }
+        return
+      }
+      const text = bytes.toString('utf8')
       resolve(error === undefined ? { text, truncated } : { text, truncated, error: errorText(error) })
     }
     const onData = (chunk: Buffer | string): void => {
@@ -50,10 +63,10 @@ export function readStdinCapped(stream: Readable, cap: number): Promise<StdinRea
  * `readStdinCapped` raced against `timeoutMs`: `timedOut` when the stream did not end in time. The
  * timer goes once the read is over; an abandoned read is left to the caller's exit.
  */
-export async function readStdinBounded(stream: Readable, cap: number, timeoutMs: number): Promise<StdinRead | { timedOut: true }> {
+export async function readStdinBounded(stream: Readable, cap: number, timeoutMs: number, strictUtf8 = false): Promise<StdinRead | { timedOut: true }> {
   let timer: ReturnType<typeof setTimeout> | undefined
   return await Promise.race([
-    readStdinCapped(stream, cap),
+    readStdinCapped(stream, cap, strictUtf8),
     new Promise<{ timedOut: true }>((resolve) => {
       timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs)
     })

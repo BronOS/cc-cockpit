@@ -772,3 +772,37 @@ describe('pluginMayBeEnabled', () => {
     expect(registry().pluginMayBeEnabled('other.plugin')).toBe(false)
   })
 })
+
+describe('enablementRecord (the rooms end rule: an unreadable record must not read as every plugin off)', () => {
+  it('answers the view of a readable record and undefined for one that is gone', () => {
+    const reg = registry()
+    const { id } = reg.openPath(folder('a'))
+    expect(reg.enablementRecord(id)).toMatchObject({ id })
+    reg.forget(id)
+    expect(reg.enablementRecord(id)).toBeUndefined()
+    expect(reg.enablementRecord('0123456789abcdef')).toBeUndefined()
+    expect(reg.enablementRecord('../x')).toBeUndefined()
+  })
+
+  it.each<[string, string | undefined]>([
+    ['written by a newer app', JSON.stringify({ schemaVersion: 99, enabledPlugins: [] })],
+    ['corrupt (kept for recovery: opening the folder reuses the id)', '{'],
+    ['unreadable', undefined]
+  ])('answers unknown while a record is %s', (_name, text) => {
+    const first = registry()
+    const { id } = first.openPath(folder('a'))
+    first.flushAll()
+    const file = projectFile(dataDir, id)
+    if (text !== undefined) writeFileSync(file, text)
+    const eacces = {
+      ...nodeFs,
+      readFileSync: (path: string, encoding: 'utf8') => {
+        if (path === file) throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+        return nodeFs.readFileSync(path, encoding)
+      }
+    } as unknown as FsOps
+    const reg = new ProjectRegistry({ dataDir, log: (m) => logs.push(m), now: () => ++clock, ...(text === undefined ? { fs: eacces } : {}) })
+    expect(reg.get(id)).toBeUndefined()
+    expect(reg.enablementRecord(id)).toBe('unknown')
+  })
+})

@@ -1,6 +1,6 @@
 // The `ctx` each plugin's `activate(ctx)` gets (design §5; type: src/sdk/types.ts).
 //
-// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, processes, commands, cli, files, services, themes, log, notify and openExternal; sessions, badge, overlay,
+// It holds settings, storage, appStorage, secrets, oauth, schedule, exec, processes, commands, cli, files, services, themes, log, notify and openExternal; sessions, rooms, badge, overlay,
 // panel messaging and webview panels (ctx/sessions.ts, ctx/ui.ts, ctx/webview.ts; the panel ports
 // themselves arrive from main next to the RPC, see host/index.ts).
 //
@@ -41,6 +41,7 @@ import { createFilesApi, parseOpenFile, runOpenListeners } from './files'
 import { MAX_PLUGIN_URL_LENGTH } from '../../shared/web-url'
 import { createScheduler, type Scheduler } from './schedule'
 import { createSessionsApi, SessionsHub } from './sessions'
+import { createRoomsApi } from './rooms'
 import { createSlotsApi, SlotHub, type SlotOpenTag } from './slots'
 import { SettingsHolder } from './settings'
 import { createSettingsPageApi, SettingsPageHub, type SettingsPageOpenTag } from './settings-page'
@@ -473,6 +474,8 @@ export class HostContexts {
         }
       }),
       sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions, sessionsAll: spec.sessionsAll === true }),
+      // Plain RPCs: rooms live in main (they span the tabs main owns), nothing is kept in the host.
+      rooms: createRoomsApi({ pluginId: spec.id, call, guardAsync }),
       commands: Object.freeze({ register }),
       cli: Object.freeze({ register: registerCli }),
       files: createFilesApi({

@@ -21,12 +21,17 @@ import { isPlainObject } from '../shared/guards'
 import { ADD_DEVICE_EXPIRES_TEXT } from '../shared/web-access'
 import {
   encodeRequest,
+  HOOK_ACK_COMMAND,
   LineFramer,
   MAX_LINE_BYTES,
   parseReply,
   PROTOCOL_VERSION,
+  ROOM_READ_ACK_COMMAND,
+  STOP_REPLY_ARG,
+  stopBlockOf,
   type Reply,
-  type Request
+  type Request,
+  type StopBlockReply
 } from '../shared/protocol'
 import {
   CLI_CLIENT_DEADLINE_MS,
@@ -38,12 +43,14 @@ import {
   type PluginCliSpec
 } from '../shared/plugin-cli'
 import { formatPluginConfig, formatPluginConfigSet, type PluginConfigSetResult, type PluginConfigView } from '../shared/plugin-config'
+import { formatPluginLimits } from '../shared/plugin-limits'
 import { formatUsageEntry, parseArgs, USAGE, usageFor, type Command } from './args'
 import { guideText, topicList } from './guide'
 import { hookSocketPath } from './hook-socket'
 import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
 import { runStatusLine } from './statusline'
+import { formatRoomDocs, formatRoomJoin, formatRoomLeave, formatRoomSend, formatRoomStatus } from './room-format'
 import { formatWebSaved, formatWebStatus } from './web-format'
 import { readStdinBounded, readStdinCapped } from './stdin-read'
 import { readPassword } from './web-password'
@@ -55,6 +62,18 @@ export { hookSocketPath }
 
 /** Total time `ccc hook` may take: reading stdin, connecting and writing. Then it exits 0. */
 export const HOOK_BUDGET_MS = 500
+/**
+ * `ccc hook Stop`'s total: two round trips (the Stop and its reply, the ack and its answer) on top of the above. Longer
+ * than the other events so a main whose event loop stalls for a moment (start, a pty burst) still answers in time,
+ * and well under Claude Code's hook timeout (hooks-file.ts HOOK_TIMEOUT_SECONDS, 5 s). Claude waits this long at a Stop
+ * only when main is slow; with main down the connect fails at once.
+ */
+export const STOP_HOOK_BUDGET_MS = 2000
+
+/** The budget `ccc hook <event>` runs in (index.ts adds its backstop margin to the same number). */
+export function hookBudgetMs(event: string): number {
+  return event === 'Stop' ? STOP_HOOK_BUDGET_MS : HOOK_BUDGET_MS
+}
 /** Most of the hook payload read from stdin. A Claude hook payload is far smaller than this. */
 export const STDIN_CAP_BYTES = 1024 * 1024
 
@@ -94,6 +113,8 @@ export function resolveSocketPath(env: Env, system: SystemInputs = systemInputs(
  * (`payload: null`, `truncated: true`): cut-off JSON cannot be parsed, and main still learns the
  * event happened, which is all the status needs. The same is done when the payload is under the
  * cap but its request line would exceed the server's line limit (the connection would be closed).
+ * A Stop also carries `reply: true` (protocol.ts STOP_REPLY_ARG): this `ccc` reads the reply, so
+ * main may answer it with the room pointer.
  */
 export function buildHookRequestLine(
   event: string,
@@ -109,13 +130,14 @@ export function buildHookRequestLine(
       payload = null
     }
   }
+  const reply = event === 'Stop' ? { [STOP_REPLY_ARG]: true } : {}
   const make = (): string =>
     encodeRequest({
       v: PROTOCOL_VERSION,
-      id: 1,
+      id: FIRST_REQUEST_ID,
       token,
       cmd: 'hook',
-      args: truncated ? { event, payload, truncated: true } : { event, payload }
+      args: truncated ? { event, payload, truncated: true, ...reply } : { event, payload, ...reply }
     })
   let line = make()
   // The framer's cap is on the line without its newline.
@@ -138,16 +160,99 @@ function sendAndForget(socket: Socket, line: string): Promise<void> {
 }
 
 /**
- * `ccc hook <event>`: report one Claude hook to main. Fire-and-forget within `budgetMs` in total.
- * Never rejects. Resolves (and so lets the caller exit 0) in every case, including when stdin
- * never closes or the owner of the socket accepts and never reads: whatever has not finished by
- * the deadline is abandoned.
+ * Reads the reply lines of one connection, in order: each call resolves with the next reply, or undefined once the
+ * connection is closed, ended or broken, an over-long line came (nothing after it can be framed), or the line is not a
+ * reply. Never rejects. The hook's deadline ends a wait from outside: runHook destroys the socket, which settles it
+ * through 'close'.
+ */
+function replyReader(socket: Socket): () => Promise<Reply | undefined> {
+  const framer = new LineFramer()
+  const lines: string[] = []
+  let gone = false
+  let wake: (() => void) | undefined
+  const notify = (): void => {
+    const w = wake
+    wake = undefined
+    w?.()
+  }
+  socket.on('data', (chunk: Buffer) => {
+    try {
+      lines.push(...framer.push(chunk))
+    } catch {
+      // An over-long line: not a reply this client accepts, and nothing after it can be framed.
+      gone = true
+      lines.length = 0
+    }
+    notify()
+  })
+  const end = (): void => {
+    gone = true
+    notify()
+  }
+  // `on`, not `once`: a second 'error' with no listener would throw out of the hook.
+  socket.on('error', end)
+  socket.on('close', end)
+  socket.on('end', end)
+  return async () => {
+    while (lines.length === 0 && !gone) await new Promise<void>((r) => (wake = r))
+    const line = lines.shift()
+    if (line === undefined) return undefined
+    try {
+      return parseReply(line)
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/**
+ * Request ids on a connection that carries a request and then its ack (the Stop exchange, `ccc room read`). Main
+ * answers in order, so a reply under the other id is a confused peer's and is never taken for this one.
+ */
+const FIRST_REQUEST_ID = 1
+const ACK_REQUEST_ID = 2
+
+/**
+ * The Stop hook's exchange (protocol.ts STOP_REPLY_ARG) on one connection, never half-closed until it is over: the
+ * Stop, then its reply; for a valid block, `hook.ack` and main's answer. Resolves with the block to print only when
+ * main confirmed the ack (`{ acked: true }`), else undefined (a plain Stop, garbage, an error reply, a refused ack, a
+ * closed connection). The order is the safety argument (rooms/room-stop.ts): main undoes a block whose connection
+ * closes unacked, which is right only because nothing is printed before main has the ack.
+ */
+async function stopExchange(socket: Socket, line: string, token: string): Promise<StopBlockReply | undefined> {
+  const next = replyReader(socket)
+  socket.write(line)
+  const reply = await next()
+  const block = reply?.ok === true && reply.id === FIRST_REQUEST_ID ? stopBlockOf(reply.result) : undefined
+  if (block === undefined) return undefined
+  socket.write(encodeRequest({ v: PROTOCOL_VERSION, id: ACK_REQUEST_ID, token, cmd: HOOK_ACK_COMMAND, args: { ackId: block.ackId } }))
+  const answer = await next()
+  const acked = answer?.ok === true && answer.id === ACK_REQUEST_ID && isPlainObject(answer.result) && answer.result.acked === true
+  return acked ? block : undefined
+}
+
+/** The line `ccc hook Stop` prints for a block: Claude Code's Stop hook decision, the fixed pointer as the reason. */
+export function stopBlockOutput(block: StopBlockReply): string {
+  return `${JSON.stringify({ decision: 'block', reason: block.block })}\n`
+}
+
+/**
+ * `ccc hook <event>`: report one Claude hook to main. Fire-and-forget within `budgetMs` in total,
+ * except Stop, which reads main's reply in its own budget (STOP_HOOK_BUDGET_MS): a valid block (the
+ * room pointer, design-rooms.md §2) is acked on the same connection with `hook.ack`, and printed
+ * with `write` as Claude Code's `decision: block` JSON only once main confirmed the ack (stopExchange
+ * says why the order matters). Never rejects. Resolves (and so lets the caller exit 0) in every
+ * case, including when stdin never closes or the owner of the socket accepts and never reads or
+ * never answers: whatever has not finished by the deadline is abandoned, and nothing is printed
+ * after it. A print that fails after the ack (stdout closed; EPIPE arrives later as an event)
+ * leaves main keeping the tab `working` (room-stop.ts), which the person's next prompt recovers.
  */
 export async function runHook(
   event: string,
   env: Env,
   stdin: Readable,
-  budgetMs: number = HOOK_BUDGET_MS
+  budgetMs: number = hookBudgetMs(event),
+  write: (text: string) => void = () => {}
 ): Promise<void> {
   const path = hookSocketPath(env)
   const token = env.APP_TAB_TOKEN
@@ -169,7 +274,19 @@ export async function runHook(
     })
     const [input, connected] = await Promise.all([readStdinCapped(stdin, STDIN_CAP_BYTES), connecting])
     if (over) return
-    await sendAndForget(connected, buildHookRequestLine(event, token, input))
+    const line = buildHookRequestLine(event, token, input)
+    if (event !== 'Stop') {
+      await sendAndForget(connected, line)
+      return
+    }
+    const block = await stopExchange(connected, line, token)
+    // Past the deadline main may have the ack already: printing nothing then leaves the tab `working`, the safe side.
+    if (over || block === undefined) return
+    try {
+      write(stopBlockOutput(block))
+    } catch {
+      // stdout closed: Claude gets no block; main took the ack, so the tab stays working (the safe side)
+    }
   })().catch(() => {
     // ENOENT / ECONNREFUSED / ETIMEDOUT / EPIPE: the app is not there or not listening. Silent.
   })
@@ -206,11 +323,30 @@ export const DOWNLOAD_REPLY_TIMEOUT_MS = 30_000
 export interface Output {
   stdout(text: string): void
   stderr(text: string): void
+  /**
+   * `stdout`, resolved with whether the text was written out (not merely queued), for a caller that must know before it
+   * goes on (`ccc room read`'s ack). Absent in an Output whose writes are synchronous: `stdout` is then enough.
+   */
+  stdoutFlushed?(text: string): Promise<boolean>
 }
 
 const processOutput: Output = {
   stdout: (text) => void process.stdout.write(text),
-  stderr: (text) => void process.stderr.write(text)
+  stderr: (text) => void process.stderr.write(text),
+  stdoutFlushed: (text) =>
+    new Promise<boolean>((resolve) => {
+      // A pipe's write is async: the callback runs once it is flushed, with the error when the reader went away (EPIPE).
+      // That error is also emitted as an `error` event afterwards, which with no listener would crash the process (exit
+      // 1, index.ts): so the listener stays after a failed write (a stream emits `error` once), and only a write that
+      // flushed takes it off again, so repeated calls do not pile listeners up.
+      const failed = (): void => resolve(false)
+      process.stdout.once('error', failed)
+      process.stdout.write(text, (err) => {
+        const ok = err === null || err === undefined
+        if (ok) process.stdout.off('error', failed)
+        resolve(ok)
+      })
+    })
 }
 
 /** A version as the app reports it. Anything else in a reply is not worth printing. */
@@ -243,7 +379,7 @@ function warnOnVersionMismatch(trip: RoundTrip, out: Output): void {
  */
 export type UserCommand = Exclude<
   Command,
-  { kind: 'hook' | 'statusline' | 'help' | 'guide' | 'usage' | 'none' | 'plugin' | 'plugin-new' | 'plugin-logs' }
+  { kind: 'hook' | 'statusline' | 'help' | 'guide' | 'usage' | 'none' | 'plugin' | 'plugin-new' | 'plugin-logs' | 'room-read' }
 >
 
 /**
@@ -344,6 +480,42 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       }
       routing = callerOf(env, command.project, cwd, 'plugin config')
       break
+    // `ccc plugin limits`: app-wide, so no project; the token goes along when there is one (the default routing), for
+    // the read (allowed from a tab) and so main refuses the write with the host-only text (protocol.ts HOST_ONLY_COMMANDS).
+    case 'plugin-limits':
+      args = { id: command.id }
+      if (command.set.length > 0 || command.reset.length > 0) {
+        cmd = 'plugin.limits.set'
+        if (command.set.length > 0) args.set = command.set
+        if (command.reset.length > 0) args.reset = command.reset
+      } else cmd = 'plugin.limits'
+      break
+    // `ccc room ...`: the token alone (the default routing); main takes the tab, room and name from it, never from args.
+    case 'room-status':
+      cmd = 'room.status'
+      break
+    case 'room-join':
+      cmd = 'room.join'
+      args = { invite: command.invite }
+      break
+    case 'room-leave':
+      cmd = 'room.leave'
+      break
+    case 'room-send':
+      cmd = 'room.send'
+      args = { to: command.to, text: command.text ?? '' }
+      break
+    case 'room-doc-ls':
+      cmd = 'room.doc.ls'
+      break
+    case 'room-doc-get':
+      cmd = 'room.doc.get'
+      args = { path: command.path }
+      break
+    case 'room-doc-put':
+      cmd = 'room.doc.put'
+      args = { path: command.path, text: command.text ?? '' }
+      break
     // `ccc web` never names a project; in a tab the token goes along (the default routing above)
     // only so main refuses it with the host-only text (protocol.ts HOST_ONLY_COMMANDS).
     case 'web-status':
@@ -424,14 +596,15 @@ function roundTrip(socket: Socket, line: string, timeoutMs: number | undefined):
 /** What `ccc web` prints, exit 1, when nothing answers on the socket. */
 export const NOT_RUNNING = 'cc-cockpit is not running'
 
+/** A command a person runs to see or change the app's own settings: "not running" is an answer they need. */
 function isWebCommand(command: UserCommand): boolean {
-  return command.kind.startsWith('web-')
+  return command.kind.startsWith('web-') || command.kind === 'plugin-limits'
 }
 
 /**
  * A user command (everything but `hook`): one request, one reply. Exit codes: 0 with the result
  * printed, or 0 and silent when the app is not there (not running, stale socket), because scripts and skills call `ccc` without checking that the cockpit is
- * open (`ccc web` excepted: exit 1, NOT_RUNNING); 1 with the app's error on stderr (main refused the request, or dropped the connection unanswered); 2 for a usage error.
+ * open (`ccc web` and `ccc plugin limits` excepted: exit 1, NOT_RUNNING); 1 with the app's error on stderr (main refused the request, or dropped the connection unanswered); 2 for a usage error.
  */
 export async function runCommand(
   command: UserCommand,
@@ -746,51 +919,215 @@ function field(result: unknown, key: string): unknown {
 
 /** What a command prints on success. Only `overlay` and `sessions` have a result worth showing. */
 function formatResult(command: UserCommand, result: unknown): string {
-  if (command.kind === 'overlay') return `${JSON.stringify(result)}\n`
-  if (command.kind === 'plugin-link') {
-    const r = (result ?? {}) as { id?: unknown; name?: unknown }
-    return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
+  switch (command.kind) {
+    case 'overlay':
+      return `${JSON.stringify(result)}\n`
+    case 'plugin-link': {
+      const r = (result ?? {}) as { id?: unknown; name?: unknown }
+      return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
+    }
+    case 'plugin-unlink':
+      return `unlinked ${command.id}\n`
+    case 'panel-show':
+      return `showing ${command.plugin}/${command.panel}\n`
+    case 'download':
+      return `${plainLine(field(result, 'text'))}\n`
+    case 'plugin-config':
+      if (command.json) return `${JSON.stringify(result)}\n`
+      return command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0
+        ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
+        : formatPluginConfig(result as PluginConfigView, plainLine)
+    case 'plugin-limits':
+      return formatPluginLimits(result, plainLine)
+    case 'plugin-list': {
+      const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
+      if (command.json) return `${JSON.stringify(list)}\n`
+      return list
+        .map((p) => [p.id, p.version, p.source, p.enabled === true ? 'enabled' : 'disabled', p.state].map((v) => plainLine(String(v))).join('\t'))
+        .map((row) => `${row}\n`)
+        .join('')
+    }
+    case 'room-status':
+      return command.json ? `${JSON.stringify(result)}\n` : formatRoomStatus(result, plainLine)
+    case 'room-join':
+      return formatRoomJoin(result, plainLine)
+    case 'room-leave':
+      return formatRoomLeave(result, plainLine)
+    case 'room-send':
+      return formatRoomSend(result, plainLine)
+    case 'room-doc-ls':
+      return formatRoomDocs(result, plainLine)
+    case 'room-doc-get': {
+      // A doc exactly as stored (no flattening of its lines, no added newline): it may be piped on.
+      const text = field(result, 'text')
+      return typeof text === 'string' ? text : ''
+    }
+    case 'room-doc-put':
+      return `saved ${command.path}\n`
+    case 'web-status':
+      return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
+    case 'web-revoke': {
+      const revoked = field(result, 'revoked')
+      return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
+    }
+    case 'web-stop':
+      return 'cc-cockpit is stopping\n'
+    case 'web-link':
+    case 'web-add-device':
+      return `${plainLine(field(result, 'link'))}\n`
+    case 'web-password':
+      return field(result, 'mode') === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
+    case 'web-mode':
+      return `sign-in mode: ${plainLine(field(result, 'mode'))}\n`
+    case 'web-set':
+      return formatWebSaved(result, plainLine)
+    case 'sessions': {
+      const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
+      if (command.json) return `${JSON.stringify(list)}\n`
+      return list
+        .map((s) => [s.project, s.status, s.tool ?? '', s.tabId].map((v) => String(v).replace(/[\t\n]/g, ' ')).join('\t'))
+        .map((row) => `${row}\n`)
+        .join('')
+    }
+    default:
+      return ''
   }
-  if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
-  if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`
-  if (command.kind === 'download') return `${plainLine(field(result, 'text'))}\n`
-  if (command.kind === 'plugin-config') {
-    if (command.json) return `${JSON.stringify(result)}\n`
-    return command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0
-      ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
-      : formatPluginConfig(result as PluginConfigView, plainLine)
+}
+
+/** `s` without one final line break (LF or CRLF). */
+function stripOneNewline(s: string): string {
+  if (s.endsWith('\r\n')) return s.slice(0, -2)
+  return s.endsWith('\n') ? s.slice(0, -1) : s
+}
+
+/**
+ * The text of `ccc room send <to> -` and `room doc put <path> -`: stdin, read within STDIN_READ_TIMEOUT_MS like a plugin
+ * command's (an open pipe nobody closes is exit 124 with the same advice, never a hang). Over MAX_CLI_IO_BYTES raw, or
+ * more than a socket line once JSON-encoded (a text of control characters grows to six times), is refused here, before
+ * anything is sent: main would drop such a request without an answer. Main still checks the real limits (20000
+ * characters a message, 256 KiB a doc, the characters a doc may hold) and says which one it was.
+ */
+async function readRoomStdin(stdin: Readable, what: string, out: Output): Promise<{ text: string } | { code: number }> {
+  // Strict UTF-8: a Latin-1 or binary stdin would otherwise be sent with U+FFFD in place of its bytes (a doc "exactly as
+  // given" stored changed, which main cannot tell from what was meant).
+  const read = await readStdinBounded(stdin, MAX_CLI_IO_BYTES, STDIN_READ_TIMEOUT_MS, true)
+  if ('timedOut' in read) {
+    out.stderr(`ccc: ${what}: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`)
+    return { code: CLI_TIMEOUT_CODE }
   }
-  if (command.kind === 'plugin-list') {
-    const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
-    if (command.json) return `${JSON.stringify(list)}\n`
-    return list
-      .map((p) => [p.id, p.version, p.source, p.enabled === true ? 'enabled' : 'disabled', p.state].map((v) => plainLine(String(v))).join('\t'))
-      .map((row) => `${row}\n`)
-      .join('')
+  // An EIO halfway through leaves a partial text: never sent as if it were all of it.
+  if (read.error !== undefined) {
+    out.stderr(`ccc: ${what}: reading stdin failed: ${read.error}\n`)
+    return { code: 1 }
   }
-  if (command.kind === 'web-status') return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
-  if (command.kind === 'web-revoke') {
-    const revoked = field(result, 'revoked')
-    return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
+  if (read.truncated) {
+    out.stderr(`ccc: ${what}: stdin is over ${MAX_CLI_IO_BYTES / 1024} KiB\n`)
+    return { code: 1 }
   }
-  if (command.kind === 'web-stop') return 'cc-cockpit is stopping\n'
-  if (command.kind === 'web-link' || command.kind === 'web-add-device') {
-    return `${plainLine(field(result, 'link'))}\n`
+  if (read.invalidUtf8) {
+    out.stderr(`ccc: ${what}: stdin is not valid UTF-8 text\n`)
+    return { code: 1 }
   }
-  if (command.kind === 'web-password') {
-    return field(result, 'mode') === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
+  if (encodedBytes(read.text) > MAX_LINE_BYTES - 4096) {
+    out.stderr(`ccc: ${what}: stdin is too large once encoded for the app (each control character takes up to six bytes)\n`)
+    return { code: 1 }
   }
-  if (command.kind === 'web-mode') return `sign-in mode: ${plainLine(field(result, 'mode'))}\n`
-  if (command.kind === 'web-set') return formatWebSaved(result, plainLine)
-  if (command.kind === 'sessions') {
-    const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
-    if (command.json) return `${JSON.stringify(list)}\n`
-    return list
-      .map((s) => [s.project, s.status, s.tool ?? '', s.tabId].map((v) => String(v).replace(/[\t\n]/g, ' ')).join('\t'))
-      .map((row) => `${row}\n`)
-      .join('')
+  return { text: read.text }
+}
+
+const TIMED_OUT = Symbol('timed out')
+
+/** `promise` or TIMED_OUT after `ms`: every wait on main in this file has a deadline. */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([promise, new Promise<typeof TIMED_OUT>((resolve) => (timer = setTimeout(() => resolve(TIMED_OUT), ms)))])
+  } finally {
+    clearTimeout(timer)
   }
-  return ''
+}
+
+/**
+ * `ccc room read` (protocol.ts ROOM_READ_ACK_COMMAND), two requests on one connection: `room.read` answers the batch
+ * and takes nothing off the queue; the batch's `text` is printed, and only then `room.read.ack` tells main it was
+ * printed so it can drop those messages. A `ccc` killed between the two repeats that batch at the next read (at least
+ * once, never lost), so a failed or unanswered ack is a stderr warning, not a failure: the text was printed. An empty
+ * read (`count` 0) sends no ack. Each wait for main is REPLY_TIMEOUT_MS. The app not running is a silent exit 0 like
+ * every command's (the Stop pointer is not printed then either).
+ */
+async function runRoomRead(env: Env, out: Output): Promise<number> {
+  const path = resolveSocketPath(env)
+  if (!path) return 0
+  let socket: Socket
+  try {
+    socket = await connect(path, CONNECT_TIMEOUT_MS)
+  } catch {
+    return 0
+  }
+  try {
+    const token = env.APP_TAB_TOKEN || undefined
+    const next = replyReader(socket)
+    const request = (id: number, cmd: string, args: Record<string, unknown>): string => encodeRequest({ v: PROTOCOL_VERSION, id, cmd, args, ...(token ? { token } : {}) })
+    socket.write(request(FIRST_REQUEST_ID, 'room.read', {}))
+    const reply = await within(next(), REPLY_TIMEOUT_MS)
+    if (reply === TIMED_OUT) {
+      out.stderr('ccc: the app did not answer\n')
+      return 1
+    }
+    if (reply === undefined) {
+      out.stderr('ccc: the app closed the connection without a reply\n')
+      return 1
+    }
+    warnOnVersionMismatch({ reply }, out)
+    // A reply to another request than the read (main answers in order, so only a confused peer sends one) is never
+    // taken for the batch: its text would be printed as room messages and its `ack` sent for them.
+    if (reply.id !== FIRST_REQUEST_ID) {
+      out.stderr('ccc: the app answered a room read with something this ccc does not understand\n')
+      return 1
+    }
+    if (!reply.ok) {
+      out.stderr(`ccc: ${plainError(reply.error)}\n`)
+      return 1
+    }
+    const result = reply.result
+    const batch = isPlainObject(result) && typeof result.count === 'number' && typeof result.text === 'string' ? result : undefined
+    if (batch === undefined) {
+      out.stderr('ccc: the app answered a room read with something this ccc does not understand\n')
+      return 1
+    }
+    if (batch.count === 0) {
+      out.stdout('no room messages waiting\n')
+      return 0
+    }
+    // main's fenced text as it is: its fence escapes the control characters, and flattening it would join its lines.
+    // The ack goes only once the text has left this process: `write` returns as soon as it is queued, and a reader that
+    // went away (Esc, the Bash tool's timeout) would leave messages acked and dropped that nobody saw. Not flushed in
+    // time, or a write error: no ack, so the same batch shows again at the next read.
+    const text = `${batch.text}\n`
+    let written: boolean | typeof TIMED_OUT = true
+    try {
+      if (out.stdoutFlushed) written = await within(out.stdoutFlushed(text), REPLY_TIMEOUT_MS)
+      else out.stdout(text)
+    } catch {
+      written = false
+    }
+    if (written !== true) {
+      out.stderr('ccc: could not write the room messages to stdout; they stay queued and show again at the next ccc room read\n')
+      return 0
+    }
+    const ack = typeof batch.ack === 'string' ? batch.ack : undefined
+    if (ack === undefined) {
+      out.stderr('ccc: the app sent no ack for this read; the messages may show again\n')
+      return 0
+    }
+    socket.write(request(ACK_REQUEST_ID, ROOM_READ_ACK_COMMAND, { ack }))
+    const answer = await within(next(), REPLY_TIMEOUT_MS)
+    const acked = answer !== TIMED_OUT && answer?.ok === true && answer.id === ACK_REQUEST_ID && isPlainObject(answer.result) && typeof answer.result.acked === 'number'
+    if (!acked) out.stderr('ccc: could not confirm the read with the app; these messages may show again at the next ccc room read\n')
+    return 0
+  } finally {
+    socket.destroy()
+  }
 }
 
 /**
@@ -812,9 +1149,10 @@ export async function run(
     switch (command.kind) {
       case 'hook':
         // Produced here with no socket round trip, and before delivery, so it is printed when the
-        // app is not running or delivery fails. Only SessionStart: any other event's stdout would
-        // land in Claude's context or transcript (a UserPromptSubmit hook's stdout is added to
-        // the prompt). A failing write is swallowed: the hook still delivers and exits 0.
+        // app is not running or delivery fails. Only SessionStart here, and Stop's block below:
+        // any other event's stdout would land in Claude's context or transcript (a
+        // UserPromptSubmit hook's stdout is added to the prompt). A failing write is swallowed:
+        // the hook still delivers and exits 0.
         if (command.event === 'SessionStart') {
           try {
             out.stdout(`${SESSION_START_NOTE}\n`)
@@ -822,7 +1160,8 @@ export async function run(
             // stdout closed: nothing to tell
           }
         }
-        await runHook(command.event, env, stdin)
+        // Stop may print the room pointer's block (runHook); every other event prints nothing.
+        await runHook(command.event, env, stdin, hookBudgetMs(command.event), (text) => out.stdout(text))
         return 0
       case 'statusline':
         // index.ts runs the exact call itself without this file (startup cost); this path is the
@@ -873,6 +1212,24 @@ export async function run(
       case 'usage':
         out.stderr(`ccc: ${command.message}\n${USAGE}\n`)
         return 2
+      case 'room-read':
+        return await runRoomRead(env, out)
+      case 'room-send':
+      case 'room-doc-put': {
+        if (command.text !== undefined) return await runCommand(command, env, cwd, out)
+        // Nothing to wait up to 40 s for stdin over: main refuses a tokenless caller anyway (and stays the authority).
+        // A tab's env always has the token, app running or not, so this is never the app-closed silent exit 0.
+        if (!env.APP_TAB_TOKEN) {
+          out.stderr('ccc: ccc room needs a Claude tab (run it inside a cockpit Claude tab)\n')
+          return 1
+        }
+        const what = command.kind === 'room-send' ? 'room send' : 'room doc put'
+        const read = await readRoomStdin(stdin, what, out)
+        if ('code' in read) return read.code
+        // A pipe ends its text with a newline the sender did not mean (`echo hi | ccc room send bob -`); a doc is kept exact.
+        const text = command.kind === 'room-send' ? stripOneNewline(read.text) : read.text
+        return await runCommand({ ...command, text }, env, cwd, out)
+      }
       case 'web-password': {
         // In a tab main refuses `ccc web` before any handler (HOST_ONLY_TEXT): nothing is asked or
         // read there, and the refusal comes back for a request with no password in it.

@@ -16,9 +16,12 @@ import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-bac
 import type { PageTabSpec } from './page-tabs'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
+import type { PluginLimitsView } from './plugin-limits'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
+import type { DeliverHeldAnswer, TabRoom, TabRoomRef } from './tab-room'
+import type { RoomRemoveAsk, RoomView } from './room-view'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
 import type { DownloadAccept, DownloadAnswer, DownloadFailed, DownloadOffer, DownloadSettled, DownloadStart } from './downloads'
@@ -60,6 +63,18 @@ export interface SessionDetail {
   steps?: { done: number; total: number }
   files: string[]
   queue: QueuedItem[]
+  /**
+   * The tab's room (design-rooms.md §5), as SessionInfo.room: the strip's marker and its tooltip. Absent: in no room.
+   * The tab's own mark is in TabInfo.room, which main writes only on the person's `tabs.roomMark`.
+   */
+  room?: { title: string; name: string; coordinator: boolean }
+  /** Room messages waiting for this member (above 0 only): the held badge's count. */
+  held?: number
+  /**
+   * The person typed in the tab (SessionInfo.typed): the badge says a typed tab without the mark gets no pointer of
+   * its own, so the person knows why the count waits for them.
+   */
+  typed?: true
 }
 
 /**
@@ -175,6 +190,11 @@ export interface TabInfo {
    * `tabs.toggleFlag` from this window, kept for restore. The renderer applies their replies.
    */
   flag?: TabFlag
+  /**
+   * A Claude tab's room membership and the person's mark (shared/tab-room.ts): set by main's room
+   * service, the mark only by the person from this window; kept for restore. Absent = in no room.
+   */
+  room?: TabRoom
   /**
    * A page tab's plugin, type, params, title and icon (kind `page` only, shared/page-tabs.ts), as
    * main checked them. The page itself is the manifest's for the type, never named here.
@@ -1182,6 +1202,17 @@ export interface IpcInvokeMap {
   /** The Restart of "plugin stopped: Restart": start the sender's project's plugin host again. */
   'plugins.restart': { req: void; res: void }
   /**
+   * A plugin's caps (design-rooms.md §6) for its Settings › Plugins row ("Limits"): app-wide, the id is looked up in
+   * main's plugin list. Reading changes nothing.
+   */
+  'plugins.limits.get': { req: { id: string }; res: PluginLimitsView }
+  /**
+   * Change a plugin's caps: `set` as `[key, value]` pairs, `reset` the keys whose override goes; checked whole in main
+   * (a value outside 1..ceiling or an unknown key refuses it all). From a browser only in server mode (`adapted`): a
+   * browser of a desktop must not raise what a plugin may do on the host.
+   */
+  'plugins.limits.set': { req: { id: string; set?: Array<[string, number]>; reset?: string[] }; res: PluginLimitsView }
+  /**
    * A click on a plugin panel's header action. main delivers it to the plugin's onAction only when
    * the panel is one of the sender's project and its current header has that action, not busy or
    * disabled; false when it was dropped (the header changed under the click, the host is gone).
@@ -1655,6 +1686,40 @@ export interface IpcInvokeMap {
   /** The flag command: clear the tab's flag, or flag it with the last-used colour. Answers as `tabs.flag`. */
   'tabs.toggleFlag': { req: { tabId: string }; res: TabFlag | null }
   /**
+   * The person's room mark on a member tab ("Deliver room messages automatically", design-rooms.md §2): only from the
+   * shell page of the tab's own project window, the one way the mark is ever written (TabManager.setRoomMark).
+   * Answers the mark as stored; the tab reaches every view as `tabs.added` (main emits it, the reply adds nothing).
+   * `room`: the membership the menu showed (tab-room.ts TabRoomRef); refused when the tab's current one differs (stale).
+   */
+  'tabs.roomMark': { req: { tabId: string; room: TabRoomRef; mark: boolean }; res: boolean }
+  /**
+   * The held badge's click: the room pointer through the send gate as the person's own act, or why it did not go in.
+   * `overDraft`: the person's "Deliver anyway" after a `draft` answer (the pointer is added to what is in the box).
+   * `room`: the membership the badge was drawn for; a tab now in another room (or none) answers `no-room`.
+   */
+  'rooms.deliverHeld': { req: { tabId: string; room: TabRoomRef; overDraft?: true }; res: DeliverHeldAnswer }
+  /**
+   * The room view (design-rooms.md §5, shared/room-view.ts): a room of the sender's own project (by the id in a member
+   * tab's TabInfo.room): members with status, held and coordinator, the docs list, the newest log events. Reading only;
+   * every string in it is the plugin's or a member's, shown as plain text.
+   */
+  'rooms.view': { req: { roomId: string }; res: RoomView }
+  /** One doc's text for the room view's read-only viewer (the person reads every folder; logged as a read `by person`). */
+  'rooms.doc': { req: { roomId: string; path: string }; res: string }
+  /** Pause / resume the room's delivery (the person's act: a server's browsers only, like the approvals). */
+  'rooms.pause': { req: { roomId: string }; res: void }
+  'rooms.resume': { req: { roomId: string }; res: void }
+  /**
+   * Remove a member (it leaves the room, its queue dropped; the log says `removed`). From the desktop at once; from a
+   * server's browser only after a `rooms.removeAsk` was answered Remove in some view of the window (main asks, the
+   * request waits for the answer). `removed` false: the ask was declined, timed out or reached no view.
+   */
+  'rooms.remove': { req: { roomId: string; name: string }; res: { removed: boolean } }
+  /** A view's answer to a `rooms.removeAsk` (first answer wins); false for an unknown, settled or other window's ask. */
+  'rooms.removeAnswer': { req: { requestId: string; remove: boolean }; res: boolean }
+  /** Show the room's docs folder in the host's file manager: the desktop only (never a browser, never server mode). */
+  'rooms.reveal': { req: { roomId: string }; res: void }
+  /**
    * Relaunch an exited tab (same kind and cwd; `--resume` when a session id is known; a command
    * tab runs its own copy of the command again), or start a restored command tab (`notStarted`).
    */
@@ -1821,6 +1886,18 @@ export interface IpcEventMap {
   'downloads.offer': DownloadOffer
   /** A `downloads.offer` is over (accepted or declined in some view, run out, window closed): take its dialog down. */
   'downloads.settled': DownloadSettled
+  /**
+   * Something in a room of this project changed (a member, a queue, a pause, a doc, a log event; or it was deleted):
+   * a room view showing it reads `rooms.view` again. Only the id: the view's content comes from that read.
+   */
+  'rooms.changed': { roomId: string }
+  /**
+   * A server's browser asked to remove a room member (`rooms.remove`): shown as an ApprovalDialog on every view of the
+   * window, first answer wins (`rooms.removeAnswer`), replayed in `ready` (`roomRemoveAsks`). Plain-text fields.
+   */
+  'rooms.removeAsk': RoomRemoveAsk
+  /** A `rooms.removeAsk` is over (answered in some view, timed out or dropped): a view still showing it takes it down. */
+  'rooms.removeSettled': { requestId: string }
   /**
    * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
    * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
@@ -1991,6 +2068,8 @@ export const INVOKE_CHANNELS = [
   'commands.run',
   'panels.connect',
   'plugins.restart',
+  'plugins.limits.get',
+  'plugins.limits.set',
   'panels.action',
   'slots.connect',
   'slots.disconnect',
@@ -2098,6 +2177,15 @@ export const INVOKE_CHANNELS = [
   'tabs.rename',
   'tabs.flag',
   'tabs.toggleFlag',
+  'tabs.roomMark',
+  'rooms.deliverHeld',
+  'rooms.view',
+  'rooms.doc',
+  'rooms.pause',
+  'rooms.resume',
+  'rooms.remove',
+  'rooms.removeAnswer',
+  'rooms.reveal',
   'tabs.restart',
   'tabs.input',
   'tabs.resize',
@@ -2141,6 +2229,9 @@ export const EVENT_CHANNELS = [
   'downloads.failed',
   'downloads.offer',
   'downloads.settled',
+  'rooms.changed',
+  'rooms.removeAsk',
+  'rooms.removeSettled',
   'app.linkNotice',
   'oauth.signInEnded',
   'settingsPage.held',
@@ -2309,6 +2400,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'panels.action': 'yes',
   'panels.reload': 'yes',
   'plugins.restart': 'yes',
+  // A plugin's caps (design-rooms.md §6): any view may read them; the write raises what a plugin may do on the host,
+  // so a browser counts only in server mode (where it is the only screen), decided by the handler from main's flag.
+  'plugins.limits.get': 'yes',
+  'plugins.limits.set': 'adapted',
   'slots.connect': 'yes',
   'slots.disconnect': 'yes',
   'slots.height': 'yes',
@@ -2492,6 +2587,24 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.rename': 'yes',
   'tabs.flag': 'yes',
   'tabs.toggleFlag': 'yes',
+  // The person's own acts on a room member (design-rooms.md §5): from a browser only in server mode, like the
+  // approvals; the handler decides by view.remote and `server` (ipc/room-handlers.ts registerRoomStripHandlers).
+  'tabs.roomMark': 'adapted',
+  'rooms.deliverHeld': 'adapted',
+  // The room view (design-rooms.md §5): reading is allowed to browsers (message text included, the person's record),
+  // and so is a changed room's id. Pause, Resume and Remove are the person's acts: from a browser only in server mode,
+  // Remove there only after the window's views answered a `rooms.removeAsk` (ipc/room-handlers.ts registerRoomViewHandlers). The
+  // ask, its end and its answer reach every view like the trash confirm. Reveal opens the host's file manager: `no`.
+  'rooms.view': 'yes',
+  'rooms.doc': 'yes',
+  'rooms.changed': 'yes',
+  'rooms.pause': 'adapted',
+  'rooms.resume': 'adapted',
+  'rooms.remove': 'adapted',
+  'rooms.removeAnswer': 'adapted',
+  'rooms.removeAsk': 'yes',
+  'rooms.removeSettled': 'yes',
+  'rooms.reveal': 'no',
   'tabs.restart': 'yes',
   'tabs.input': 'yes',
   'tabs.resize': 'yes',

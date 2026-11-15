@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isServerView, isWebShell } from '../shell-kind'
 import { ApprovalDialog } from './ApprovalDialog'
+import { RoomRemoveConfirm } from '../rooms/RoomDialog'
 import { ApprovalArm, approvalStack, enterArmedAtOnce } from './approval-model'
 import { MAX_OAUTH_PASTE_LENGTH, OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../shared/oauth-paste'
 import {
@@ -51,6 +52,7 @@ export function ShellNotices(): React.JSX.Element {
       <TrashConfirm />
       <DownloadOffers />
       <DownloadNotices />
+      <RoomRemoveConfirm />
       <PageNotices />
     </>
   )

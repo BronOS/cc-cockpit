@@ -8,7 +8,7 @@ import { HOOK_EVENTS, HOOK_MATCHERS, type HookEvent } from '../../shared/hooks'
 import { shellQuote } from './shell-quote'
 import { writeFileAtomic } from './write-file-atomic'
 
-/** Claude kills a hook command after this many seconds. `ccc hook` itself gives up after 500 ms. */
+/** Claude kills a hook command after this many seconds. `ccc hook` itself gives up after 500 ms (2 s for Stop). */
 export const HOOK_TIMEOUT_SECONDS = 5
 
 /*
@@ -30,7 +30,7 @@ export const HOOK_TIMEOUT_SECONDS = 5
  * to the kernel (client.ts, `socket.end(line, cb)`), so delivery order follows event order. The
  * cost is ~85-100 ms per tool call (measured in Task 13, well inside the budget). Do not turn
  * `async` back on without first giving the Task 14 reducer a reliable ordering to sort on.
- * The 500 ms cap in `ccc hook` bounds the wait either way.
+ * The 500 ms cap in `ccc hook` (2 s for Stop, which reads a reply) bounds the wait either way.
  */
 interface HookCommand {
   type: 'command'

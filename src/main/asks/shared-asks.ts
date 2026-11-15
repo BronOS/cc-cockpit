@@ -105,6 +105,14 @@ export class SharedAsks<Info extends object, Answer> {
     for (const [id, entry] of [...this.pending]) if (entry.windowId === windowId) this.settle(id, this.options.refused)
   }
 
+  /**
+   * Settle every pending ask `isGone` says is moot (what it asks about went away: a room member that left) as
+   * `refused`, so every view's dialog closes through `settled` instead of waiting out the timeout.
+   */
+  settleWhere(isGone: (info: Info & { requestId: string }) => boolean): void {
+    for (const [id, entry] of [...this.pending]) if (isGone({ ...entry.info })) this.settle(id, this.options.refused)
+  }
+
   get size(): number {
     return this.pending.size
   }

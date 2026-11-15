@@ -10,7 +10,8 @@ import { connect, listen } from '../../src/main/socket/transport'
 import { SocketServer, type Caller, type SocketServerOptions } from '../../src/main/socket/socket-server'
 import {
   HOST_ONLY_COMMANDS,
-  HOST_ONLY_TEXT,
+  hostOnlyText,
+  PLUGIN_LIMITS_HOST_ONLY_TEXT,
   LineFramer,
   MAX_LINE_BYTES,
   WINDOW_TOKEN_COMMANDS,
@@ -337,9 +338,10 @@ describe('requests', () => {
     const c = await Client.open()
     for (const cmd of HOST_ONLY_COMMANDS) {
       for (const token of [TOKEN, WINDOW_TOKEN, 'f'.repeat(64)]) {
-        expect(await c.request({ token, cmd }), `${cmd} ${token[0]}`).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
-        expect(await c.request({ token, cmd, args: { password: 'hunter2hunter2', mode: 'none' } }), cmd).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
-        expect(await c.request({ token, cmd, project: '/known' }), cmd).toEqual({ id: 1, ok: false, error: HOST_ONLY_TEXT })
+        const error = hostOnlyText(cmd)
+        expect(await c.request({ token, cmd }), `${cmd} ${token[0]}`).toEqual({ id: 1, ok: false, error })
+        expect(await c.request({ token, cmd, args: { password: 'hunter2hunter2', mode: 'none' } }), cmd).toEqual({ id: 1, ok: false, error })
+        expect(await c.request({ token, cmd, project: '/known' }), cmd).toEqual({ id: 1, ok: false, error })
       }
     }
     expect(reached).toBe(0)
@@ -358,6 +360,42 @@ describe('requests', () => {
     const s = server()
     expect(() => s.handle('web.debug', () => 1)).toThrow(/HOST_ONLY_COMMANDS/)
     expect(() => s.handle('web.status', () => 1)).not.toThrow()
+  })
+
+  // design-rooms.md §6: the guard covers every host-only family, not only `web.`. `plugin.limits` (the read) is no
+  // member of the `plugin.limits.` family; the write is listed; anything else under it is a start-up error.
+  it('refuses to register a plugin.limits.* handler that HOST_ONLY_COMMANDS lacks, and lets the read and the listed write through', () => {
+    const s = server()
+    for (const cmd of ['plugin.limits.raise', 'plugin.limits.set.all', 'plugin.limits.']) expect(() => s.handle(cmd, () => 1), cmd).toThrow(/HOST_ONLY_COMMANDS/)
+    expect(() => s.handle('plugin.limits', () => 1)).not.toThrow()
+    expect(() => s.handle('plugin.limits.set', () => 1)).not.toThrow()
+  })
+
+  it('answers the plugin limits read for a tab, a window token and a tokenless caller with no project; the write only tokenless', async () => {
+    const s = await started()
+    const callers: unknown[] = []
+    s.handle('plugin.limits', (_a, caller) => {
+      callers.push(caller)
+      return 'read'
+    })
+    s.handle('plugin.limits.set', (_a, caller) => {
+      callers.push(caller)
+      return 'written'
+    })
+    const c = await Client.open()
+    expect(await c.request({ token: TOKEN, cmd: 'plugin.limits', args: { id: 'a.one' } })).toMatchObject({ ok: true, result: 'read' })
+    expect(await c.request({ token: WINDOW_TOKEN, cmd: 'plugin.limits', args: { id: 'a.one' } })).toMatchObject({ ok: true, result: 'read' })
+    expect(await c.request({ cmd: 'plugin.limits', args: { id: 'a.one' } })).toMatchObject({ ok: true, result: 'read' })
+    for (const token of [TOKEN, WINDOW_TOKEN]) {
+      expect(await c.request({ token, cmd: 'plugin.limits.set', args: { id: 'a.one', set: [['opensPerMinute', '60']] } })).toEqual({
+        id: 1,
+        ok: false,
+        error: PLUGIN_LIMITS_HOST_ONLY_TEXT
+      })
+    }
+    expect(await c.request({ cmd: 'plugin.limits.set', args: { id: 'a.one' } })).toMatchObject({ ok: true, result: 'written' })
+    expect(callers.map((x) => (x as { kind: string }).kind)).toEqual(['session', 'window', 'anonymous', 'anonymous'])
+    c.close()
   })
 
   it('refuses a second handler for the same command', () => {

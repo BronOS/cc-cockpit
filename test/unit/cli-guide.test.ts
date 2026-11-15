@@ -3,10 +3,25 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { parseArgs, USAGE, usageFor } from '../../src/cli/args'
-import { run } from '../../src/cli/client'
+import { run, STDIN_READ_TIMEOUT_MS } from '../../src/cli/client'
 import { GUIDE_TOPICS, guideText } from '../../src/cli/guide'
 import { MAX_SKILL_BYTES, MAX_SKILL_DEPTH, MAX_SKILL_DESCRIPTION, MAX_SKILL_DIRS, MAX_SKILL_ENTRIES, MAX_SKILL_FILES } from '../../src/main/plugins/skill-files'
 import { MAX_SKILLS } from '../../src/shared/manifest'
+import { MAX_DOC_BYTES, MAX_ROOM_DOCS_BYTES } from '../../src/main/rooms/room-docs'
+import {
+  INVITE_TTL_MS,
+  MAX_ENDED_ROOMS_PER_PLUGIN,
+  MAX_MEMBERS_PER_ROOM,
+  MAX_QUEUED_PER_MEMBER,
+  MAX_ROOM_MESSAGE_CHARS,
+  MAX_ROOMS_PER_PLUGIN
+} from '../../src/main/rooms/room-registry'
+import { DEFAULT_ROOM_SEND_LIMITS } from '../../src/main/rooms/room-delivery'
+import { ROOM_LOG_MAX_BYTES } from '../../src/main/rooms/room-log'
+import { MAX_OPENS_PER_WINDOW, MAX_ROOM_LOG_ENTRIES, OPEN_WINDOW_MS } from '../../src/main/plugins/host-api'
+import { AUTO_PAUSE_DELIVERIES, MAX_STOP_BLOCKS_IN_A_ROW } from '../../src/main/rooms/room-stop'
+import { pointerText } from '../../src/shared/room-pointer'
+import { MAX_CLI_IO_BYTES } from '../../src/shared/plugin-cli'
 import { RUNNABLE_EXTENSIONS } from '../../src/shared/runnable-files'
 import { MAX_APP_VALUE_LENGTH, MAX_KEY_LENGTH, MAX_TOTAL_LENGTH, MAX_VALUE_LENGTH } from '../../src/shared/plugin-storage'
 import { MAX_FILES } from '../../src/main/sessions/status-reducer'
@@ -21,6 +36,7 @@ import {
   NOTIFY_CHIME_INTERVAL_MS
 } from '../../src/shared/notify'
 import { BUILTIN_SOUNDS, MAX_SOUND_ID_LENGTH } from '../../src/shared/notify-sound'
+import { PLUGIN_LIMIT_SPECS } from '../../src/shared/plugin-limits'
 import { DISPATCH_VIEW_MS } from '../../src/host/ctx/origin-view'
 
 function capture(): { out: { stdout: (t: string) => void; stderr: (t: string) => void }; stdout: string[]; stderr: string[] } {
@@ -43,6 +59,7 @@ describe('ccc guide', () => {
       'settings-secrets',
       'dev-loop',
       'webview',
+      'rooms',
       'types'
     ])
   })
@@ -99,7 +116,7 @@ describe('ccc guide', () => {
 })
 
 describe('ccc <command> --help', () => {
-  it.each(['open', 'session', 'overlay', 'sessions', 'notify', 'guide', 'web', 'help'])('prints the usage of %s', async (command) => {
+  it.each(['open', 'session', 'overlay', 'sessions', 'notify', 'guide', 'web', 'room', 'help'])('prints the usage of %s', async (command) => {
     expect(parseArgs([command, '--help'])).toEqual({ kind: 'help', command })
     const c = capture()
     const code = await run([command, '-h'], {}, Readable.from([]), c.out)
@@ -141,6 +158,65 @@ describe('guide drift guards', () => {
     const subs = new Set([...USAGE.matchAll(/^ {2}ccc web (\S+)/gm)].map((m) => m[1] as string))
     expect([...subs].sort()).toEqual(['add-device', 'link', 'mode', 'password', 'revoke', 'set', 'status', 'stop'])
     for (const sub of subs) expect(topic('cli'), `ccc web ${sub}`).toContain(`ccc web ${sub}`)
+  })
+
+  it('names every ccc room subcommand of USAGE in the cli topic and in the rooms topic, with the limits the code enforces', () => {
+    const lines = [...USAGE.matchAll(/^ {2}ccc (room [^\n]*?)(?= {2,}|$)/gm)].map((m) => (m[1] as string).trim())
+    expect(lines.length).toBeGreaterThanOrEqual(8)
+    const words = (s: string): string => s.replace(/\s+/g, ' ')
+    const cli = words(topic('cli'))
+    const rooms = words(topic('rooms'))
+    for (const line of lines) {
+      // The synopsis as the usage prints it (`room doc ls`), the guide's own line may fold it into a list.
+      const sub = line.split(' ').slice(0, line.startsWith('room doc') ? 3 : 2).join(' ')
+      expect(rooms, `ccc ${sub}`).toContain(`ccc ${sub}`)
+    }
+    expect(cli).toContain('ccc room read')
+    expect(cli).toContain('ccc guide rooms')
+    expect(cli).toContain(`${STDIN_READ_TIMEOUT_MS / 1000} s`)
+    expect(cli).toContain(`${MAX_CLI_IO_BYTES / 1024} KiB`)
+    expect(rooms).toContain(`${STDIN_READ_TIMEOUT_MS / 1000} seconds`)
+    expect(rooms).toContain(`${MAX_CLI_IO_BYTES / 1024} KiB`)
+    expect(rooms).toContain(`at most ${MAX_ROOM_MESSAGE_CHARS} characters`)
+    expect(rooms).toContain(`${MAX_QUEUED_PER_MEMBER} messages waiting`)
+    expect(rooms).toContain(`at most ${MAX_MEMBERS_PER_ROOM} members`)
+    expect(rooms).toContain(`At most ${MAX_STOP_BLOCKS_IN_A_ROW} stops in a row`)
+    expect(rooms).toContain(`after ${AUTO_PAUSE_DELIVERIES} deliveries`)
+    expect(rooms).toContain(`at most ${MAX_DOC_BYTES / 1024} KiB`)
+    expect(rooms).toContain(`at most ${MAX_ROOM_DOCS_BYTES / 1024 / 1024} MiB of docs`)
+    expect(rooms).toContain(pointerText(3))
+  })
+
+  it('names the ctx.rooms limits the code enforces, in the api topic and in the SDK types', () => {
+    expect(OPEN_WINDOW_MS).toBe(60_000) // "a minute" below
+    const api = topic('api')
+    const section = api.slice(api.indexOf('`ctx.rooms` puts Claude tabs'), api.indexOf('## Files'))
+    const types = readFileSync(join(__dirname, '..', '..', 'src', 'sdk', 'types.ts'), 'utf8')
+    const rooms = types.slice(types.indexOf('  // rooms\n'), types.indexOf('  // commands\n'))
+    expect(section.length).toBeGreaterThan(500)
+    expect(rooms.length).toBeGreaterThan(500)
+    // One line of prose: JSDoc's ` * ` and the guide's wrapping folded away.
+    const flat = (text: string): string => text.replace(/\n\s*\*?\s*/g, ' ').replace(/\s+/g, ' ')
+    for (const [name, text] of [
+      ['api.md', flat(section)],
+      ['types.ts', flat(rooms)]
+    ] as const) {
+      for (const want of [
+        `at most ${MAX_ROOMS_PER_PLUGIN}`,
+        `at most ${MAX_ENDED_ROOMS_PER_PLUGIN} ended ones kept`,
+        `at most ${MAX_MEMBERS_PER_ROOM} members a room`,
+        `${INVITE_TTL_MS / 60_000} minutes`,
+        `at most ${MAX_ROOM_MESSAGE_CHARS} characters`,
+        `room's ${DEFAULT_ROOM_SEND_LIMITS.roomSendsPerRoom} sends a minute`,
+        `same ${MAX_OPENS_PER_WINDOW} tabs a minute`,
+        `default and most ${MAX_ROOM_LOG_ENTRIES}`,
+        `${MAX_DOC_BYTES / 1024} KiB`,
+        `${MAX_ROOM_DOCS_BYTES / 1024 / 1024} MiB a room`,
+        `${ROOM_LOG_MAX_BYTES / 1024 / 1024} MiB`
+      ]) {
+        expect(text.toLowerCase(), `${name}: ${want}`).toContain(want.toLowerCase())
+      }
+    }
   })
 
   it('says in the cli topic where a server-mode core notice goes and that status lists it', () => {
@@ -281,6 +357,42 @@ describe('guide drift guards', () => {
       `At most ${MAX_SOUND_ID_LENGTH} characters`
     )
     expect(design).toContain(`a sound id of at most ${MAX_SOUND_ID_LENGTH} characters`)
+  })
+
+  it('states the default and the ceiling of every per-plugin cap of shared/plugin-limits.ts in cli.md, api.md and types.ts', () => {
+    const flat = (text: string): string => text.replace(/\s+/g, ' ')
+    const cli = flat(topic('cli'))
+    const api = flat(topic('api'))
+    // JSDoc line starts (` * `) are dropped so a sentence wrapped across lines reads as one.
+    const types = flat(readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8').replace(/\n\s*\* ?/g, ' '))
+    expect(PLUGIN_LIMIT_SPECS.map((s) => s.key)).toEqual(['opensPerMinute', 'sendsPerMinute', 'roomSendsPerMember', 'roomSendsPerRoom'])
+    const by = Object.fromEntries(PLUGIN_LIMIT_SPECS.map((s) => [s.key, s]))
+    for (const spec of PLUGIN_LIMIT_SPECS) {
+      // `ccc plugin limits`: the key, then its default and ceiling in the same item ("default 5, at most 60").
+      const at = cli.indexOf(`\`${spec.key}\``)
+      expect(at, `cli.md names ${spec.key}`).toBeGreaterThanOrEqual(0)
+      expect(cli.slice(at, at + 260), `cli.md ${spec.key}`).toContain(`default ${spec.default}, at most ${spec.ceiling}`)
+      expect(api, `api.md names ${spec.key}`).toContain(`\`${spec.key}\``)
+    }
+    const o = by['opensPerMinute']!
+    const s = by['sendsPerMinute']!
+    const m = by['roomSendsPerMember']!
+    const r = by['roomSendsPerRoom']!
+    // api.md: sessions.send, sessions.open and ctx.rooms.send.
+    expect(api).toContain(`At most ${s.default} texts a minute per plugin by default (\`sendsPerMinute\`)`)
+    expect(api).toContain(`\`ccc plugin limits\`, at most ${s.ceiling})`)
+    expect(api).toContain(`At most ${o.default} tabs a minute per plugin by default`)
+    expect(api).toContain(`\`ccc plugin limits\`, at most ${o.ceiling}), and a refusal`)
+    expect(api).toContain(`the room's ${r.default} sends a minute`)
+    expect(api).toContain(`a member's own ${m.default} a minute`)
+    expect(api).toContain(`at most ${r.ceiling} and ${m.ceiling})`)
+    // types.ts: the same numbers in the JSDoc of send, open and rooms.send.
+    expect(types).toContain(`over ${s.default} texts a minute`)
+    expect(types).toContain(`At most ${o.default} a minute (the default \`opensPerMinute\``)
+    expect(types).toContain(`the room's ${r.default} sends a minute`)
+    expect(types).toContain(`a member's ${m.default} a minute`)
+    // rooms.md names the room defaults.
+    expect(flat(topic('rooms'))).toContain(`by default ${m.default} and ${r.default}`)
   })
 
   it('documents the panel SDK members', () => {

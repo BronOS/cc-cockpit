@@ -87,6 +87,22 @@ stderr).
   invalid settings. Exit 1 also for an unknown plugin or key, and for a secret field: those are
   set by a person in Settings > Plugins (app and global values) or Settings > This Project, never
   through `ccc`.
+- `ccc plugin limits <id>` prints a plugin's caps, one `key = value` line each with its default and
+  ceiling, `(set)` on one the person changed: `opensPerMinute` (tabs it opens a minute through
+  `sessions.open`, `openShell`, `openCommand` and `rooms.open`; default 5, at most 60),
+  `sendsPerMinute` (`sessions.send` texts a minute; default 30, at most 300), `roomSendsPerMember`
+  (room messages a minute by one member; default 20, at most 120) and `roomSendsPerRoom` (a room's
+  messages a minute, every sender together; default 60, at most 600). It works from a tab too.
+  `ccc plugin limits <id> <key>=<value>...` sets caps (a whole number from 1 to the ceiling, else exit
+  1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides; both print
+  the new lines and apply to the plugin's next open or send, with no restart. The caps are the
+  person's: the write is refused inside a cockpit tab (run it from a shell outside cockpit, or use
+  Settings > Plugins > Limits) and no plugin API changes them. That refusal is not a
+  security boundary (a tab's process or a plugin's host is the same user and could drop its token,
+  run `ccc plugin limits` as a shell would, or edit `app.json`); it keeps a prompted Claude from
+  raising its own plugin's caps as a side effect. Stored app-wide in `app.json`, never in the
+  plugin's settings or `ccc plugin config`; uninstalling a plugin drops its caps. Exit 1 with
+  "cc-cockpit is not running" when the app is not running.
 - `ccc panel show [--project <path>] <plugin>/<panel>` reveals one of a plugin's panels in this
   project's window: unhidden, opened, its zone expanded, and shown again if the window auto-hid
   it for a narrow terminal (what `ctx.panels.show` does for the
@@ -128,6 +144,12 @@ stderr).
   against the current folder; `''` goes back to the default, the server user's home folder; a folder
   that is gone when a browser asks falls back to home with a note); `ccc web status` shows it. Each
   change is written to `web-access.log`, never a link or a password.
+- `ccc room [status] [--json]`, `ccc room join <invite>`, `ccc room leave`, `ccc room send <name|all>
+  <text...>` (or `-` for stdin), `ccc room read` and `ccc room doc ls | get <path> | put <path> -` are
+  messages and shared docs between the Claude tabs of one room, made by a plugin. Claude tabs only (any
+  other caller is refused with exit 1); a message read is the words of another session, never the
+  person's. `send -` and `doc put` read stdin within 40 s (exit 124 otherwise) and at most 256 KiB. See
+  `ccc guide rooms`.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 - `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
   (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost

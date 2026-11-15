@@ -10,6 +10,7 @@ import {
   MAX_TOOL_CHARS,
   cap,
   isAnswerKey,
+  isDialogKey,
   newEntry,
   reduce,
   withNote,
@@ -366,6 +367,11 @@ describe('answering a permission dialog (keystroke)', () => {
     expect(entry.status).toBe('needs-permission')
   })
 
+  it('isDialogKey: an answer key or an arrow (both cursor modes), as the whole chunk', () => {
+    for (const key of ['\r', '1', '9', '\x1b[A', '\x1b[B', '\x1bOC', '\x1bOD']) expect(isDialogKey(key)).toBe(true)
+    for (const key of ['\x1b', 'y', '0', '\x1b[B\r', '\x15', '\x7f', '\t', 'hello']) expect(isDialogKey(key)).toBe(false)
+  })
+
   it('isAnswerKey: Enter or a lone digit 1-9, as the whole chunk', () => {
     for (const key of ['\r', '1', '2', '9']) expect(isAnswerKey(key)).toBe(true)
     // Esc (denies, back to the prompt), arrows, focus and mouse reports, pastes, typed text.
@@ -554,5 +560,30 @@ describe('UserPromptSubmit and harness markup (harness-markup.ts)', () => {
     let e = base()
     for (let i = 1; i <= MAX_RECENT_PROMPTS + 2; i++) e = reduce(e, hook('UserPromptSubmit', { prompt: `p${i}` }))
     expect(e.recentPrompts).toEqual(Array.from({ length: MAX_RECENT_PROMPTS }, (_, i) => `p${i + 3}`))
+  })
+})
+
+describe('a Stop main answered with the room pointer (design-rooms.md §2 "The Stop pointer")', () => {
+  const blockedStop = (ackId: string): ReducerEvent => ({ type: 'hook', event: 'Stop', payload: {}, blocked: ackId })
+
+  it('is not a Stop: the tab stays working and the tool clears', () => {
+    const next = reduce(withStatus('working', { tool: 'Bash' }), blockedStop('a1'))
+    expect(next.status).toBe('working')
+    expect(next.tool).toBeUndefined()
+  })
+
+  it('a plain Stop is waiting as before, also right after a blocked one', () => {
+    expect(reduce(withStatus('working'), hook('Stop')).status).toBe('waiting')
+    expect(reduce(reduce(withStatus('working'), blockedStop('a1')), hook('Stop')).status).toBe('waiting')
+  })
+
+  it('an idle_prompt does not promote a blocked Stop to waiting (a lost ack may hide a running turn)', () => {
+    const next = reduce(reduce(withStatus('working'), blockedStop('a1')), hook('Notification', { notification_type: 'idle_prompt' }))
+    expect(next.status).toBe('working')
+  })
+
+  it('an ended entry is not revived by a blocked Stop', () => {
+    const dead = reduce(withStatus('working'), { type: 'exit', code: 1 })
+    expect(reduce(dead, blockedStop('a1'))).toBe(dead)
   })
 })

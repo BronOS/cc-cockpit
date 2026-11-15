@@ -51,8 +51,11 @@ export type { TabStatus }
  * the person's takeover of the tab (SessionEntry.typed) refuses and whose queued texts it drops.
  * `core`: main's own senders acting for the person (Discuss with Claude, the e2e test hook): the
  * person started them, so typing in the tab neither refuses nor drops them.
+ * `room`: the fixed room pointer (rooms/room-delivery.ts, design-rooms.md §2), never a message's
+ * text. It is pasted at once or not at all (send-gate.ts sendNow) and never waits in the queue:
+ * the room's own queue holds the messages, so a pointer that could not go in now is simply not sent.
  */
-export type SendOrigin = 'plugin' | 'core'
+export type SendOrigin = 'plugin' | 'core' | 'room'
 
 /** Text queued for a tab until the send gate may deliver it (send-gate.ts). */
 export interface QueuedText {
@@ -123,6 +126,36 @@ export interface SessionEntry {
    */
   costUsd?: number
   contextPercent?: number
+  /**
+   * The draft bit (design-rooms.md §2 "The mark"): the person's input reached the tab since its last
+   * UserPromptSubmit, so its input box may hold a half-typed prompt. Set by SessionRegistry.userInput
+   * (the path that sets `typed`), except for a key a permission prompt or dialog takes while one is
+   * up (isDialogKey); cleared by the reducer on UserPromptSubmit. While set, a marked member gets no
+   * room pointer pasted by the gate (the paste would be glued to the draft and submitted with it),
+   * and the badge's click delivers only on the person's "Deliver anyway". Never persisted.
+   */
+  draft?: boolean
+  /**
+   * The tab's room membership as SessionInfo.room shows it, and how many room messages wait for it
+   * (SessionInfo.held, present only when some do). Mirrored by the room delivery (SessionRegistry
+   * setRoom), which reads the room registry, the authority; the reducer never touches them.
+   */
+  room?: SessionRoom
+  held?: number
+  /**
+   * The ack id of the blocked Stop (ReducerEvent `blocked`) the tab is in, until the next event: set by that Stop,
+   * dropped by any later hook or the exit. SessionRegistry.unblockStop turns the blocked Stop into a plain one only
+   * while it is still the tab's last event (`ccc` closed without acking: it never printed the block, so Claude
+   * stopped). Never persisted, never in SessionInfo.
+   */
+  blockedStop?: string
+}
+
+/** SessionInfo.room: the room's title, the member's name and its coordinator flag. */
+export interface SessionRoom {
+  title: string
+  name: string
+  coordinator: boolean
 }
 
 /** Caps for text a hook (or a plugin) hands us: a token only proves WHICH tab sent it. */
@@ -139,7 +172,12 @@ export const MAX_STEPS = 1_000_000
 export const MAX_PATH_CHARS = 4096
 
 export type ReducerEvent =
-  | { type: 'hook'; event: HookEvent; payload: unknown }
+  /**
+   * `blocked` (Stop only): main answered this Stop with the room pointer as a `decision: block`
+   * (rooms/room-stop.ts), with this ack id. Claude Code then continues the turn, so the Stop is not
+   * a Stop: the tab stays `working` and the gate delivers nothing (send-gate.ts afterEvent).
+   */
+  | { type: 'hook'; event: HookEvent; payload: unknown; blocked?: string }
   | { type: 'exit'; code: number }
   /** The user pressed a key that answers a permission dialog (isAnswerKey). */
   | { type: 'answer' }
@@ -155,6 +193,22 @@ export type ReducerEvent =
  */
 export function isAnswerKey(data: string): boolean {
   return data === '\r' || /^[1-9]$/.test(data)
+}
+
+/** The arrow keys, in xterm's normal (CSI) and application (SS3) cursor modes: they move a dialog's highlight. */
+const ARROW_KEYS: ReadonlySet<string> = new Set(['\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D', '\x1bOA', '\x1bOB', '\x1bOC', '\x1bOD'])
+
+/**
+ * Whether one renderer input chunk, typed while the tab shows a permission prompt or a dialog tool (`needs-permission`),
+ * is a key that dialog takes and that leaves nothing in the input box: an answer key (isAnswerKey) or an arrow key
+ * moving the highlight. Such a chunk does not set the draft bit (SessionRegistry.userInput): the incident was a person
+ * who approved a tool with Enter, and the bit then held every room pointer, the badge's too, with an empty box until
+ * they typed and sent a prompt. Every other key still sets it, Esc included (it denies and gives the box back, which
+ * may still hold what was typed while Claude worked), and so does text typed into a dialog's free-text option: the
+ * rule may only ever miss a draft that cannot exist, never one that may.
+ */
+export function isDialogKey(data: string): boolean {
+  return isAnswerKey(data) || ARROW_KEYS.has(data)
 }
 
 /** A fresh entry for a tab whose process was just started. */
@@ -204,6 +258,11 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
   if (entry.status === 'ended') {
     if (entry.exitCode !== undefined || event.event !== 'SessionStart') return entry
   }
+  // Any hook after a blocked Stop ends it: the turn went on (or stopped again), so the block can no longer be undone.
+  if (entry.blockedStop !== undefined) {
+    entry = { ...entry }
+    delete entry.blockedStop
+  }
   const payload = isPlainObject(event.payload) ? event.payload : {}
 
   switch (event.event) {
@@ -240,6 +299,8 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
     }
     case 'UserPromptSubmit': {
       const next: SessionEntry = { ...entry, status: 'working', tool: undefined }
+      // The input box was just submitted, so whatever the person had typed in it is gone with it.
+      delete next.draft
       const prompt = payload.prompt
       if (typeof prompt !== 'string') return next
       // Harness markup first, then pastes, then the cap: a long paste or block would lose its
@@ -279,6 +340,12 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
       return status === undefined ? entry : { ...entry, status }
     }
     case 'Stop':
+      // A Stop main answered with the room pointer (design-rooms.md §2 "The Stop pointer") is not a
+      // Stop: Claude Code continues the turn with the block's reason, so the tab is still working.
+      // `waiting` here would let the gate (or a plugin's send) type into a turn in progress. It stays
+      // `working` even when `ccc`'s ack never comes (room-stop.ts says why): only a later hook moves it, or
+      // SessionRegistry.unblockStop when `ccc` closed the connection without acking (it never printed).
+      if (event.blocked !== undefined) return { ...entry, status: 'working', tool: undefined, blockedStop: event.blocked }
       return { ...entry, status: 'waiting', tool: undefined }
     case 'SessionEnd':
       return { ...entry, status: 'ended', tool: undefined }
@@ -291,7 +358,15 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
 
 function exited(entry: SessionEntry, code: number): SessionEntry {
   if (entry.status === 'ended' && entry.exitCode !== undefined) return entry
-  return { ...entry, status: 'ended', tool: undefined, exitCode: code, costUsd: undefined, contextPercent: undefined }
+  return {
+    ...entry,
+    status: 'ended',
+    tool: undefined,
+    exitCode: code,
+    costUsd: undefined,
+    contextPercent: undefined,
+    blockedStop: undefined
+  }
 }
 
 /**
