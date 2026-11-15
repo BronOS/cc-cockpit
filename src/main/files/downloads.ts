@@ -248,7 +248,8 @@ export class Downloads {
 
   /**
    * The GET of `/d/<token>` (the gateway's route, after its Host, method and `Sec-Fetch-Site` checks).
-   * `deviceId`: the device the request's cookie names (`none` in None mode, where the token alone
+   * `device`: the device the request's cookie names, or the gateway's rule as a predicate over the
+   * token's device (the cookie's device, or `none` while None mode is on, where the token alone
    * counts); it must be the token's. Every check runs before anything is consumed; a refusal writes
    * nothing (the gateway answers 204) and tells the token's view. `headers(name)`: the gateway's fixed
    * headers for the name (type, disposition, nosniff, CSP); a file's `Content-Length` is added here.
@@ -256,7 +257,7 @@ export class Downloads {
    */
   async serve(
     tokenText: string,
-    deviceId: string | undefined,
+    device: string | undefined | ((tokenDeviceId: string) => boolean),
     res: DownloadResponse,
     headers: (name: string) => Record<string, string>,
   ): Promise<ServeResult> {
@@ -267,7 +268,8 @@ export class Downloads {
       this.deps.hooks.failed(token.view.viewId, { requestId: token.requestId, reason })
       return { status: 'refused', reason }
     }
-    if (deviceId === undefined || deviceId !== token.view.deviceId) return refuse('the link belongs to another browser')
+    const matches = typeof device === 'function' ? device(token.view.deviceId) : device !== undefined && device === token.view.deviceId
+    if (!matches) return refuse('the link belongs to another browser')
     const limit = this.limitProblem(token)
     if (limit) return refuse(limit)
 
@@ -321,10 +323,29 @@ export class Downloads {
     }
   }
 
-  /** Every live response of `deviceId` ended, and its unused links dropped (a revoke, a disconnect, None mode ending). */
-  dropDevice(deviceId: string): void {
+  /**
+   * A GET the gateway refused before `serve` (a cross-site `Sec-Fetch-Site`): the token's view is told
+   * why, as for a refusal in `serve`, and the token stays live for a retry within its life. An unknown
+   * or expired token names no view, so nobody is told.
+   */
+  refuse(tokenText: string, reason: string): void {
+    const token = this.liveToken(tokenText)
+    if (token) this.deps.hooks.failed(token.view.viewId, { requestId: token.requestId, reason })
+  }
+
+  /**
+   * Every live response of `deviceId` ended, and its unused links dropped (a revoke, a disconnect, None
+   * mode ending); how many responses were ended (the gateway's Disconnect counts them with the sockets).
+   */
+  dropDevice(deviceId: string): number {
     for (const [text, token] of this.tokens) if (token.view.deviceId === deviceId) this.tokens.delete(text)
-    for (const live of this.live) if (live.deviceId === deviceId) this.drop(live)
+    let ended = 0
+    for (const live of this.live) {
+      if (live.deviceId !== deviceId) continue
+      this.drop(live)
+      ended++
+    }
+    return ended
   }
 
   /** Everything ended and every link dropped (the gateway stopped). */

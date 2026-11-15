@@ -6,9 +6,9 @@
 //
 // What it never holds: terminal text, prompts, panel messages, and secrets (an access token, a
 // one-time token, a device cookie or its hash, a password). The entry type only has room for ids,
-// names and a short detail, and every string is cleaned and capped here, so a caller cannot pass a
-// frame through by accident. A device name is the requester's own text: it is kept as plain text
-// (control and bidi characters dropped) and shown as such.
+// names, a short detail and a download's name and byte count, and every string is cleaned and
+// capped here, so a caller cannot pass a frame through by accident. A device name is the requester's
+// own text: it is kept as plain text (control and bidi characters dropped) and shown as such.
 //
 // Synchronous appends, like plugin-log.ts: entries are rare (a sign-in, a socket opening), and an
 // entry written just before a crash must not be lost. A recent ring stays in memory for the
@@ -56,6 +56,12 @@ export type AccessEvent =
    * token or a password. The change's own entry (`mode`, `password`, `regenerate`) follows as usual.
    */
   | 'shell'
+  /**
+   * A download through `/d/<token>` (design-download.md §3.1): the device, the name it was sent under
+   * (`file`, display-safe), the bytes written and `completed` or `cut: <why>` as the detail. Never the
+   * token or a path: the name is what the browser saved it as.
+   */
+  | 'download'
 
 /**
  * The signed-in device that did something to another (or itself) from a browser: server mode's
@@ -77,6 +83,10 @@ export interface AccessEntry {
   detail?: string
   /** The device that acted, when a browser did it (written as `by` and `byName`). */
   by?: AccessActor
+  /** A download's name as sent (`download` only). */
+  file?: string
+  /** A download's bytes written (`download` only). */
+  bytes?: number
 }
 
 export interface LoggedAccessEntry extends Omit<AccessEntry, 'by'> {
@@ -151,6 +161,9 @@ export class AccessLog {
       out.by = plainText(entry.by.device, 40)
       out.byName = plainText(entry.by.name)
     }
+    // A download's name is up to DOWNLOAD_NAME_MAX_BYTES (200) of UTF-8, so at most 200 characters.
+    if (entry.file !== undefined) out.file = plainText(entry.file, 200)
+    if (typeof entry.bytes === 'number' && Number.isSafeInteger(entry.bytes) && entry.bytes >= 0) out.bytes = entry.bytes
     if (entry.event === 'sign-in-failed') {
       const run = this.failed
       if (run && run.detail === out.detail && now - run.startedAt < FAILED_SIGN_IN_WINDOW_MS) {

@@ -34,6 +34,12 @@
 // cross-site and carry no cookie, so its path token is the credential. They get their own headers
 // (never the shell's CSP or X-Frame-Options: the shell frames them). Their tokens die with the
 // device (revoke, expiry), with None mode for the anonymous device, and when the gateway stops.
+// Downloads (`/d/<token>`, design-download.md §3.1) sit in the same place, after the Host check and
+// before the cookie-and-key check: a browser's navigation for `<a download>` carries no
+// DEVICE_KEY_HEADER, so the one-use token is the credential and the cookie alone (auth.ts
+// deviceByCookie) binds it to the browser it was minted for. downloads.ts decides everything else;
+// this routes, refuses with a bare 204 and tells it about revokes, disconnects, None mode ending and
+// its own stop, so no download outlives its device's access.
 import { open, readFile, type FileHandle } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https'
@@ -68,10 +74,12 @@ import {
   type WebSessionReply,
   type WebSignInReply
 } from '../../shared/web-protocol'
+import { contentDisposition } from '../../shared/downloads'
 import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import { FAILED_SIGN_IN_WINDOW_MS, type AccessLog } from './access-log'
-import { deviceCookie, offeredKeys, type SignInResult, type WebAuth } from './auth'
+import type { Downloads } from '../files/downloads'
+import { deviceCookie, NONE_DEVICE, offeredKeys, type SignInResult, type WebAuth } from './auth'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp, type HostRule, type OriginRule } from './checks'
 import { MAX_OFFERED_KEYS, type WebDevice } from './devices'
 import { parseFoldersBody } from './list-folders'
@@ -99,7 +107,11 @@ const HEARTBEAT_MS = 30_000
 // Listener bounds (listen below). Generous for a phone on a slow link, small next to an fd limit.
 const HEADERS_TIMEOUT_MS = 10_000
 const REQUEST_TIMEOUT_MS = 30_000
-const IDLE_SOCKET_MS = 60_000
+/**
+ * A socket with nothing read or written this long is closed: also what ends a download the browser
+ * has paused that long (design-download.md §3.1; there is no resume, Range is ignored).
+ */
+export const IDLE_SOCKET_MS = 60_000
 const MAX_CONNECTIONS = 256
 /**
  * A new connection (after its TLS handshake, which has the same bound) must send a request this soon
@@ -131,6 +143,36 @@ export { PROJECTS_PATH }
 export { FOLDERS_PATH }
 /** Server mode's Claude tab counts for the desktop app's machine chip (session-counts.ts); needs a device. */
 export { SESSIONS_PATH }
+/** Where a view's download links point (`/d/<token>`, downloads.ts mints the token). */
+export const DOWNLOAD_PATH_PREFIX = '/d/'
+/** Far above a 43-character token; a longer path segment is not one (refused unread). */
+const MAX_DOWNLOAD_TOKEN_LENGTH = 128
+
+const DOWNLOAD_BASE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'X-Content-Type-Options': 'nosniff',
+  'Cache-Control': 'no-store',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "sandbox; default-src 'none'"
+})
+
+/**
+ * A download's headers (design-download.md §3.1): bytes the browser must save, never render or sniff
+ * (`octet-stream`, `nosniff`, `attachment`, and a CSP sandbox with nothing allowed in case one renders
+ * it anyway), never cached or kept, and no referrer. Never the shell's CSP or X-Frame-Options: it is
+ * not a page. `name` is downloads.ts's display-safe name; contentDisposition makes it a header (ASCII
+ * fallback, `filename*` in UTF-8), so a hostile name cannot break out of it or make writeHead throw.
+ */
+export function downloadHeaders(name: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': contentDisposition(name),
+    ...DOWNLOAD_BASE_HEADERS
+  }
+}
+
+/** The part of downloads.ts the gateway uses (a fake in tests). */
+export type DownloadRoute = Pick<Downloads, 'serve' | 'refuse' | 'dropDevice' | 'dropAll'>
+
 /** A sign-in body is a token (or a password, or a ticket) and a device name; anything bigger is not one. */
 export const MAX_SIGN_IN_BODY = 4096
 
@@ -173,11 +215,15 @@ export interface GatewayDeps {
   server?: boolean
   /** Plugin files and inline overlays (plugin-pages.ts). Absent: `/p/` and `/o/` are 404. */
   pages?: PluginPages
+  /** Downloads (`/d/<token>`, downloads.ts). Absent: every `/d/` GET is a refusal (204). */
+  downloads?: DownloadRoute
   /** The ping interval (HEARTBEAT_MS); tests shorten it. */
   heartbeatMs?: number
   /** FIRST_REQUEST_MS and MAX_UNAUTHENTICATED; tests shorten them. */
   firstRequestMs?: number
   maxUnauthenticated?: number
+  /** IDLE_SOCKET_MS; tests shorten it (a stalled download). */
+  idleSocketMs?: number
 }
 
 /** What a browser may do with projects when there is no desktop (open-project.ts does the open). */
@@ -379,6 +425,9 @@ export class WebGateway {
       const gone = new Set(ids)
       // Its plugin paths die at once too (design-web.md §4.1): not only with its sockets' views.
       for (const id of ids) deps.pages?.tokens.dropDevice(id)
+      // And its downloads: a stream running for a revoked device is cut, its unused links dropped
+      // (an expiry comes here too).
+      for (const id of ids) deps.downloads?.dropDevice(id)
       for (const [ws, device] of this.sockets) if (gone.has(device.id)) ws.terminate()
     })
   }
@@ -390,9 +439,13 @@ export class WebGateway {
     return out
   }
 
-  /** Closes every socket of a device without revoking it (the page reconnects); how many were closed. */
+  /**
+   * Closes every socket of a device without revoking it (the page reconnects), and ends its running
+   * downloads and unused links (the person asked for that device's connections gone, and a download
+   * is one; the page asks again); how many sockets and downloads were closed.
+   */
   disconnectDevice(id: string): number {
-    let closed = 0
+    let closed = this.deps.downloads?.dropDevice(id) ?? 0
     for (const [ws, device] of this.sockets) {
       if (device.id !== id) continue
       ws.terminate()
@@ -505,8 +558,12 @@ export class WebGateway {
     if (purge && before === 'none' && mode !== 'none') {
       for (const [ws, device] of this.sockets) if (device.mode === 'none') ws.terminate()
     }
-    // The anonymous device's plugin paths go with it, so a later None starts from fresh tokens.
-    if (before === 'none' && mode !== 'none') this.deps.pages?.tokens.dropDevice('none')
+    // The anonymous device's plugin paths go with it, so a later None starts from fresh tokens; its
+    // downloads too (a None token went on the token alone, which no longer lets anyone in).
+    if (before === 'none' && mode !== 'none') {
+      this.deps.pages?.tokens.dropDevice('none')
+      this.deps.downloads?.dropDevice('none')
+    }
   }
 
   private use(plan: OkPlan): void {
@@ -548,7 +605,7 @@ export class WebGateway {
     // included; `ws` clears the idle timeout on a socket it takes over).
     server.headersTimeout = HEADERS_TIMEOUT_MS
     server.requestTimeout = REQUEST_TIMEOUT_MS
-    server.timeout = IDLE_SOCKET_MS
+    server.timeout = this.deps.idleSocketMs ?? IDLE_SOCKET_MS
     server.maxConnections = MAX_CONNECTIONS
     // The socket a request arrives on: the TLS socket for https (made after the handshake), the TCP
     // one for http. Counted from there (the handshake has its own bound above).
@@ -590,8 +647,11 @@ export class WebGateway {
     for (const timer of this.unauthenticated.values()) clearTimeout(timer)
     this.unauthenticated.clear()
     this.refusals.flush()
-    // Every plugin path dies with the listener; views coming back get fresh ones in `ready`.
+    // Every plugin path dies with the listener; views coming back get fresh ones in `ready`. Every
+    // download too (closeAllConnections below would cut the responses anyway; this also drops the
+    // unused links, which must not work on the next listener).
     this.deps.pages?.tokens.clear()
+    this.deps.downloads?.dropAll()
     if (wss) {
       const clients = [...wss.clients]
       if (notice === undefined || clients.length === 0) {
@@ -729,6 +789,15 @@ export class WebGateway {
       return this.send(res, host, 403, 'text/plain; charset=utf-8', 'origin not allowed')
     }
     const path = (req.url ?? '/').split('?')[0] ?? '/'
+    // A download: its token is the credential, the cookie alone binds it (see the header). After the
+    // Origin check, so a foreign POST learns nothing more here than anywhere.
+    if (path.startsWith(DOWNLOAD_PATH_PREFIX)) {
+      return void this.download(req, res, host, method, path.slice(DOWNLOAD_PATH_PREFIX.length)).catch((err: unknown) => {
+        this.deps.log(`web access: a download failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.noContent(res)
+        else res.destroy()
+      })
+    }
     // Open without sign-in: the page and its files (it signs in from there, shell-files.ts) and
     // the sign-in routes.
     if (safe && (path === '/' || path.startsWith('/assets/'))) {
@@ -840,6 +909,58 @@ export class WebGateway {
   private writePage(res: ServerResponse, method: string, answer: PageAnswer): void {
     res.writeHead(answer.status, { ...answer.headers, 'Content-Length': String(answer.body.length) })
     res.end(method === 'HEAD' ? undefined : answer.body)
+  }
+
+  /**
+   * `GET /d/<token>` (design-download.md §3.1). `GET` only (`HEAD` and the rest 405: a browser's
+   * download is one GET, plan Task 1, and a HEAD would only probe a token). A `Range` header is
+   * ignored: always the whole file, 200 (no resume). `Sec-Fetch-Site`, when sent, must be
+   * `same-origin`: the shell's own `<a download>` is; a leaked link opened from another site is not.
+   * The cookie must name the token's device (None mode: a None token on the token alone). Every
+   * refusal is a 204 with no body (a text body could replace the shell page in a browser that ignores
+   * `download`) and the token stays live for a retry; downloads.ts tells the token's view why. A line
+   * per download goes to the access log.
+   */
+  private async download(req: IncomingMessage, res: ServerResponse, host: string, method: string, token: string): Promise<void> {
+    if (method !== 'GET') return this.send(res, host, 405, 'text/plain; charset=utf-8', 'method not allowed', { Allow: 'GET' })
+    const downloads = this.deps.downloads
+    if (!downloads || token === '' || token.length > MAX_DOWNLOAD_TOKEN_LENGTH || token.includes('/')) return this.noContent(res)
+    const site = req.headers['sec-fetch-site']
+    if (site !== undefined && site !== 'same-origin') {
+      this.refusals.write('download-site', 'downloads refused for their site', `web access: a download was refused, Sec-Fetch-Site ${originText(String(site))}`)
+      downloads.refuse(token, 'the link was opened from another site')
+      return this.noContent(res)
+    }
+    const auth = this.deps.auth
+    const cookie = req.headers.cookie
+    // Asked by downloads.ts after its token lookup: None mode as it is then.
+    const matches = (deviceId: string): boolean =>
+      (deviceId === NONE_DEVICE.id && auth.mode === 'none') || auth.deviceByCookie(cookie, deviceId) !== undefined
+    const result = await downloads.serve(token, matches, res, (name) => {
+      // The 200 is going out: this connection is a signed-in device's (its token and cookie held), so a
+      // long download does not hold a place in MAX_UNAUTHENTICATED.
+      this.trusted(req.socket)
+      return downloadHeaders(name)
+    })
+    if (result.status === 'refused') {
+      if (!res.headersSent && !res.destroyed) this.noContent(res)
+      return
+    }
+    const name = result.deviceId === NONE_DEVICE.id ? NONE_DEVICE.name : auth.deviceByCookie(cookie, result.deviceId)?.name
+    this.deps.accessLog.write({
+      event: 'download',
+      device: result.deviceId,
+      ...(name !== undefined ? { name } : {}),
+      file: result.name,
+      bytes: result.bytes,
+      detail: result.completed ? 'completed' : `cut: ${result.cut}`
+    })
+  }
+
+  /** A refused download: 204 with no body and nothing a browser could render. */
+  private noContent(res: ServerResponse): void {
+    res.writeHead(204, { ...DOWNLOAD_BASE_HEADERS })
+    res.end()
   }
 
   /** The open project windows, plain data only; a failing source is an empty list, never a 500 with its text. */

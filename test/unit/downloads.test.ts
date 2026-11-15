@@ -322,6 +322,30 @@ describe('tokens', () => {
     expect((await get(d, token)).result).toMatchObject({ status: 'sent', completed: true })
   })
 
+  it('takes the gateway`s rule as a predicate over the token`s device', async () => {
+    write(join(proj, 'f'), 'ok')
+    const d = make()
+    await d.start(VIEW, rel('f'), false)
+    const token = lastToken()
+    const asked: string[] = []
+    expect(await d.serve(token, (id) => (asked.push(id), false), new FakeRes(), HEADERS)).toMatchObject({ status: 'refused', reason: 'the link belongs to another browser' })
+    expect(asked).toEqual(['dev-a'])
+    expect(await d.serve(token, (id) => id === 'dev-a', new FakeRes(), HEADERS)).toMatchObject({ status: 'sent', completed: true })
+  })
+
+  it('refuse tells a live token`s view and keeps the token; an unknown token tells nobody', async () => {
+    write(join(proj, 'f'), 'ok')
+    const d = make()
+    const { requestId } = await d.start(VIEW, rel('f'), false)
+    d.refuse(lastToken(), 'the link was opened from another site')
+    d.refuse('unknown', 'x')
+    expect(failures).toEqual([{ viewId: 'web:1', payload: { requestId, reason: 'the link was opened from another site' } }])
+    expect(d.tokenCount).toBe(1)
+    clock += DOWNLOAD_TOKEN_MS
+    d.refuse(lastToken(), 'late')
+    expect(failures).toHaveLength(1)
+  })
+
   it('is used once and expires after its life', async () => {
     write(join(proj, 'f'), 'ok')
     const d = make()
@@ -508,7 +532,7 @@ describe('streams', () => {
     await d.start(VIEW, rel('log'), false)
     await waitFor(() => d.liveCount === 2)
     expect(d.tokenCount).toBe(1)
-    d.dropDevice('dev-a')
+    expect(d.dropDevice('dev-a')).toBe(1)
     expect(await servingA).toMatchObject({ status: 'sent', completed: false, cut: 'dropped' })
     expect(a.destroyed).toBe(true)
     expect(d.tokenCount).toBe(0)

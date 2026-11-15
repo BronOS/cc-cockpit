@@ -109,6 +109,7 @@ import { ElectronHostProcessFactory } from './plugins/host-process'
 import { bundledPluginSpecs, bundledRoot } from './plugins/bundled'
 import { electronConfirmLink, QueuedLinkConfirm } from './plugins/link-dialog'
 import { LINK_ASK_MS, LinkAsks } from './plugins/link-asks'
+import { Downloads } from './files/downloads'
 import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
@@ -2080,11 +2081,24 @@ function start(server: boolean): void {
   }
   /** The pickers' relink of a missing project (desktop dialog, server browser): restore.ts's checks, then open it there. */
   const relinkAndOpen = (id: string, path: string): { id: string } => windows.openPath(relinkMissing(registry, id, path).path)
+  // Downloads to a browser view's device (design-download.md): the paths, the one-use tokens of
+  // `/d/<token>` and the live responses; the gateway routes `/d/` to it and drops a device's streams on
+  // revoke, disconnect, None mode ending and its stop. The hooks reach one view each; until the
+  // `downloads.start` / `downloads.failed` channels exist (plan Task 7) no link is handed out (`start`
+  // answers "gone", so nothing is minted) and a refusal is told to nobody.
+  const downloads = new Downloads({
+    hooks: { start: () => false, failed: () => undefined },
+    projectPath: (projectId) => registry.get(projectId)?.path,
+    windowOf: (projectId) => windows.windowIdOf(projectId),
+    dataDir,
+    log: warnLog
+  })
   const webGateway = new WebGateway({
     log: warnLog,
     auth: webAuth,
     accessLog: webAccessLog,
     pages: pluginPages,
+    downloads,
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
     shellDir: join(__dirname, '../renderer'),
     // The web picker lists what a remote view can bind to: projects with a window open now.

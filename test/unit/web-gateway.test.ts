@@ -7,7 +7,7 @@
 // than loopback: a network bind is only ever refused.
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { Agent, request } from 'node:http'
+import { Agent, request, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { checkServerIdentity, type PeerCertificate } from 'node:tls'
 import { connect, createServer, type AddressInfo, type Socket } from 'node:net'
@@ -26,6 +26,8 @@ import { CLOSE, DEVICE_KEY_HEADER, SESSIONS_PATH, SIGN_IN_LINK_PATH, WS_PROTOCOL
 import { countSessions } from '../../src/main/web/session-counts'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
+import { Downloads } from '../../src/main/files/downloads'
+import { contentDisposition, downloadName, type DownloadFailed, type DownloadStart } from '../../src/shared/downloads'
 
 /** A port nothing listens on right now (the OS's pick, always above 1024). */
 async function freePort(): Promise<number> {
@@ -1374,5 +1376,351 @@ describe('refused origins are logged collapsed', () => {
     log.write('k', 'things', 'a new run')
     expect(lines.at(-1)).toBe('a new run')
     log.flush()
+  })
+})
+
+// Downloads (`/d/<token>`, design-download.md §3.1, plan Task 6): the route's own checks (GET only,
+// Range ignored, Sec-Fetch-Site, the cookie alone naming the token's device), its headers, 204 for
+// every refusal with the token kept, and the drops (revoke, disconnect, None ending, stop, a stalled
+// client). A real Downloads over a temp project behind a real gateway; a real signed-in device.
+describe('downloads (/d/)', () => {
+  const WINDOW = 3
+  interface Setup {
+    gw: WebGateway
+    port: number
+    host: string
+    origin: string
+    cookie: string
+    key: string
+    deviceId: string
+    proj: string
+    downloads: Downloads
+    accessLog: AccessLog
+    auth: WebAuth
+    devices: DeviceStore
+    starts: DownloadStart[]
+    failures: DownloadFailed[]
+  }
+
+  async function setup(opts: { mode?: 'link' | 'none'; deps?: Partial<GatewayDeps> } = {}): Promise<Setup> {
+    const root = mkdtempSync(join(tmpdir(), 'ccc-gw-dl-'))
+    dirs.push(root)
+    const proj = join(root, 'proj')
+    const home = join(root, 'home')
+    const data = join(root, 'data')
+    for (const d of [proj, home, data]) mkdirSync(d)
+    const starts: DownloadStart[] = []
+    const failures: DownloadFailed[] = []
+    const downloads = new Downloads({
+      hooks: {
+        start: (_view, payload) => {
+          starts.push(payload)
+          return true
+        },
+        failed: (_view, payload) => failures.push(payload)
+      },
+      projectPath: (id) => (id === 'p1' ? proj : undefined),
+      windowOf: (id) => (id === 'p1' ? WINDOW : undefined),
+      dataDir: data,
+      env: { home, platform: 'linux' }
+    })
+    const accessLog = new AccessLog()
+    const port = await freePort()
+    const { gw, auth, devices } = make({ downloads, accessLog, ...opts.deps })
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
+    const host = `127.0.0.1:${port}`
+    const origin = `http://${host}`
+    const link = await auth.accessLink(origin)
+    if (!link.ok) throw new Error('no link')
+    const res = await new Promise<Answer>((resolve, reject) => {
+      const req = request(
+        { host: '127.0.0.1', port, method: 'POST', path: SIGN_IN_LINK_PATH, headers: { Host: host, Origin: origin, 'Content-Type': 'application/json' }, agent: false },
+        (r) => {
+          let body = ''
+          r.on('data', (d: Buffer) => (body += d.toString()))
+          r.on('end', () => resolve({ status: r.statusCode ?? 0, headers: r.headers, body }))
+        }
+      )
+      req.on('error', reject)
+      req.end(JSON.stringify({ token: link.link.split('#t=')[1], name: 'Phone' }))
+    })
+    expect(res.status).toBe(200)
+    const reply = JSON.parse(res.body) as { key: string; device: { id: string } }
+    if (opts.mode === 'none') await gw.apply(webAccessOf({ enabled: true, port, mode: 'none' }))
+    return {
+      gw,
+      port,
+      host,
+      origin,
+      cookie: String(res.headers['set-cookie']).split(';')[0] ?? '',
+      key: reply.key,
+      deviceId: reply.device.id,
+      proj,
+      downloads,
+      accessLog,
+      auth,
+      devices,
+      starts,
+      failures
+    }
+  }
+
+  /** A link for `rel` minted for the setup's device (or `deviceId`); the token. */
+  async function mint(s: Setup, rel: string, deviceId = s.deviceId): Promise<string> {
+    await s.downloads.start({ viewId: 'web:1', windowId: WINDOW, deviceId }, { projectId: 'p1', rel }, false)
+    const url = s.starts.at(-1)?.url ?? ''
+    expect(url.startsWith('/d/')).toBe(true)
+    return url.slice(3)
+  }
+
+  /** A browser's GET of the link: the cookie only (a navigation sends no key), same-origin. */
+  function get(s: Setup, token: string, over: Record<string, string> = {}, method = 'GET'): Promise<Answer> {
+    return http(s.port, { method, path: `/d/${token}`, headers: { Host: s.host, Cookie: s.cookie, 'Sec-Fetch-Site': 'same-origin', ...over } })
+  }
+
+  function downloadLines(s: Setup): Array<Record<string, unknown>> {
+    return s.accessLog.recent().filter((e) => e.event === 'download') as unknown as Array<Record<string, unknown>>
+  }
+
+  /**
+   * A GET whose body is read one chunk and then not at all, so the server's writes back up. `ended()`
+   * reads the rest and resolves with how the response ended: a paused client never reads the FIN of a
+   * closed socket (the server's unsent bytes go first), so the cut is seen only once it reads again.
+   */
+  function stalledGet(s: Setup, token: string): { started: Promise<number>; ended: () => Promise<'end' | 'cut'> } {
+    let started!: (status: number) => void
+    let response: IncomingMessage | undefined
+    const startedP = new Promise<number>((r) => (started = r))
+    const ended = new Promise<'end' | 'cut'>((resolve) => {
+      const req = request(
+        { host: '127.0.0.1', port: s.port, path: `/d/${token}`, headers: { Host: s.host, Cookie: s.cookie }, agent: false },
+        (res) => {
+          response = res
+          started(res.statusCode ?? 0)
+          res.once('data', () => res.pause())
+          res.on('end', () => resolve('end'))
+          res.on('error', () => resolve('cut'))
+          res.on('aborted', () => resolve('cut'))
+          res.on('close', () => resolve(res.complete ? 'end' : 'cut'))
+        }
+      )
+      req.on('error', () => resolve('cut'))
+      req.end()
+    })
+    return {
+      started: startedP,
+      ended: () => {
+        response?.resume()
+        return ended
+      }
+    }
+  }
+
+  const BIG = 48 * 1024 * 1024
+
+  it('serves the file once, whole, with the download headers, and logs it', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'report.pdf'), 'hello world')
+    const token = await mint(s, 'report.pdf')
+    const res = await get(s, token)
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('hello world')
+    expect(res.headers['content-type']).toBe('application/octet-stream')
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`)
+    expect(res.headers['content-length']).toBe('11')
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(res.headers['referrer-policy']).toBe('no-referrer')
+    expect(res.headers['content-security-policy']).toBe("sandbox; default-src 'none'")
+    expect(res.headers['x-frame-options']).toBeUndefined()
+    expect(res.headers['location']).toBeUndefined()
+    expect(downloadLines(s)).toEqual([
+      expect.objectContaining({ event: 'download', device: s.deviceId, name: 'Phone', file: 'report.pdf', bytes: 11, detail: 'completed' })
+    ])
+    // A second GET: the token is used up; a bare 204 and nobody told (that view is downloading).
+    const again = await get(s, token)
+    expect(again.status).toBe(204)
+    expect(again.body).toBe('')
+    expect(again.headers['content-type']).toBeUndefined()
+    expect(s.failures).toEqual([])
+  })
+
+  it('ignores Range: the whole file, 200, no Content-Range', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'f.bin'), '0123456789')
+    const res = await get(s, await mint(s, 'f.bin'), { Range: 'bytes=5-' })
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('0123456789')
+    expect(res.headers['content-range']).toBeUndefined()
+  })
+
+  it('answers HEAD and POST with 405 and keeps the token for the GET', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'f'), 'ok')
+    const token = await mint(s, 'f')
+    const head = await get(s, token, {}, 'HEAD')
+    expect(head.status).toBe(405)
+    const post = await get(s, token, { Origin: s.origin }, 'POST')
+    expect(post.status).toBe(405)
+    expect(s.failures).toEqual([])
+    expect((await get(s, token)).body).toBe('ok')
+  })
+
+  it('refuses a cross-site Sec-Fetch-Site with a 204, tells the view, and keeps the token', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'f'), 'ok')
+    const token = await mint(s, 'f')
+    for (const site of ['cross-site', 'same-site', 'none']) {
+      const res = await get(s, token, { 'Sec-Fetch-Site': site })
+      expect(res.status).toBe(204)
+      expect(res.body).toBe('')
+    }
+    expect(s.failures.map((f) => f.reason)).toEqual(Array(3).fill('the link was opened from another site'))
+    expect(s.downloads.tokenCount).toBe(1)
+    // No Sec-Fetch-Site at all (an older browser): allowed.
+    const res = await http(s.port, { path: `/d/${token}`, headers: { Host: s.host, Cookie: s.cookie } })
+    expect(res.status).toBe(200)
+  })
+
+  it('needs the token`s device`s cookie (no key needed): another device`s or none is a 204, the token kept', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'f'), 'ok')
+    const token = await mint(s, 'f')
+    const other = s.devices.add('Laptop', 'link')
+    if (!other) throw new Error('setup')
+    for (const cookie of [`ccc_device=${other.cookie}`, '', 'ccc_device=forged']) {
+      const res = await get(s, token, { Cookie: cookie })
+      expect(res.status).toBe(204)
+      expect(res.body).toBe('')
+    }
+    expect(s.failures.map((f) => f.reason)).toEqual(Array(3).fill('the link belongs to another browser'))
+    // The other device's cookie planted first in the jar does not hide this browser's own.
+    const res = await get(s, token, { Cookie: `ccc_device=${other.cookie}; ${s.cookie}` })
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('ok')
+  })
+
+  it('a refused GET (the file gone) is a 204 with the token kept; the retry works', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'f'), 'ok')
+    const token = await mint(s, 'f')
+    rmSync(join(s.proj, 'f'))
+    const refused = await get(s, token)
+    expect(refused.status).toBe(204)
+    expect(refused.body).toBe('')
+    expect(s.failures.map((f) => f.reason)).toEqual(['no such file or folder: f'])
+    writeFileSync(join(s.proj, 'f'), 'back')
+    const retry = await get(s, token)
+    expect(retry.status).toBe(200)
+    expect(retry.body).toBe('back')
+  })
+
+  it('an unknown, malformed or absent token is a bare 204; no downloads wired is a 204 too', async () => {
+    const s = await setup()
+    for (const path of ['/d/', '/d/nope', `/d/${'A'.repeat(43)}`, `/d/${'A'.repeat(500)}`, '/d/a/b']) {
+      const res = await http(s.port, { path, headers: { Host: s.host, Cookie: s.cookie } })
+      expect(res.status).toBe(204)
+      expect(res.body).toBe('')
+    }
+    await gateway?.stop()
+    const { port } = await listening()
+    const res = await http(port, { path: '/d/whatever', headers: { Host: `127.0.0.1:${port}` } })
+    expect(res.status).toBe(204)
+  })
+
+  it('a hostile name goes out as a header that cannot break: ASCII fallback escaped, UTF-8 filename*', async () => {
+    const s = await setup()
+    const raw = 'a"b\\c\u202ed\nünï.txt'
+    writeFileSync(join(s.proj, raw), 'x')
+    const res = await get(s, await mint(s, raw))
+    expect(res.status).toBe(200)
+    const sent = downloadName(raw)
+    expect(sent).toBe('a"b_cdünï.txt')
+    expect(res.headers['content-disposition']).toBe(contentDisposition(sent))
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="a\\"b_cd_n_.txt"; filename*=UTF-8''a%22b_cd%C3%BCn%C3%AF.txt`)
+    expect(downloadLines(s)[0]).toMatchObject({ file: sent })
+  })
+
+  it('a revoke mid-stream cuts the download and drops the device`s other links', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'big'), Buffer.alloc(BIG, 1))
+    writeFileSync(join(s.proj, 'small'), 'x')
+    const stalled = stalledGet(s, await mint(s, 'big'))
+    expect(await stalled.started).toBe(200)
+    await mint(s, 'small')
+    expect(s.downloads.tokenCount).toBe(1)
+    expect(s.devices.revoke(s.deviceId)).toBe(true)
+    expect(s.downloads.tokenCount).toBe(0)
+    await vi.waitFor(() => expect(downloadLines(s)).toEqual([expect.objectContaining({ device: s.deviceId, detail: 'cut: dropped' })]))
+    expect(s.downloads.liveCount).toBe(0)
+    expect(await stalled.ended()).toBe('cut')
+  })
+
+  it('Disconnect mid-stream cuts it and counts it with the sockets', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'big'), Buffer.alloc(BIG, 1))
+    const stalled = stalledGet(s, await mint(s, 'big'))
+    expect(await stalled.started).toBe(200)
+    expect(s.gw.disconnectDevice(s.deviceId)).toBe(1)
+    await vi.waitFor(() => expect(downloadLines(s)).toEqual([expect.objectContaining({ detail: 'cut: dropped' })]))
+    expect(await stalled.ended()).toBe('cut')
+    // Still signed in: a new link works.
+    writeFileSync(join(s.proj, 'f'), 'ok')
+    expect((await get(s, await mint(s, 'f'))).body).toBe('ok')
+  })
+
+  it('a client that stops reading is dropped by the idle socket timeout', async () => {
+    const s = await setup({ deps: { idleSocketMs: 300 } })
+    writeFileSync(join(s.proj, 'big'), Buffer.alloc(BIG, 1))
+    const stalled = stalledGet(s, await mint(s, 'big'))
+    expect(await stalled.started).toBe(200)
+    await vi.waitFor(() => expect(downloadLines(s)).toEqual([expect.objectContaining({ detail: 'cut: closed' })]), { timeout: 4_000 })
+    expect(s.downloads.liveCount).toBe(0)
+    expect(await stalled.ended()).toBe('cut')
+  })
+
+  it('None mode: a None link goes on the token alone; leaving None drops it', async () => {
+    const s = await setup({ mode: 'none' })
+    writeFileSync(join(s.proj, 'f'), 'ok')
+    const res = await http(s.port, { path: `/d/${await mint(s, 'f', 'none')}`, headers: { Host: s.host } })
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('ok')
+    expect(downloadLines(s)).toEqual([expect.objectContaining({ device: 'none', name: 'No sign-in', detail: 'completed' })])
+    // A signed-in device's link in None mode still needs its cookie.
+    const own = await mint(s, 'f')
+    expect((await http(s.port, { path: `/d/${own}`, headers: { Host: s.host } })).status).toBe(204)
+    expect((await get(s, own)).status).toBe(200)
+    const token = await mint(s, 'f', 'none')
+    await s.gw.apply(webAccessOf({ enabled: true, port: s.port, mode: 'link' }))
+    expect(s.downloads.tokenCount).toBe(0)
+    expect((await http(s.port, { path: `/d/${token}`, headers: { Host: s.host } })).status).toBe(204)
+  })
+
+  it('the gateway`s stop ends every download and drops every link', async () => {
+    const s = await setup()
+    writeFileSync(join(s.proj, 'big'), Buffer.alloc(BIG, 1))
+    const stalled = stalledGet(s, await mint(s, 'big'))
+    expect(await stalled.started).toBe(200)
+    await mint(s, 'big')
+    await s.gw.stop()
+    expect(await stalled.ended()).toBe('cut')
+    expect(s.downloads.tokenCount).toBe(0)
+    expect(s.downloads.liveCount).toBe(0)
+  })
+
+  it('a download`s connection leaves the sign-in budget once its 200 goes out', async () => {
+    const s = await setup({ deps: { maxUnauthenticated: 2, firstRequestMs: 60_000 } })
+    writeFileSync(join(s.proj, 'big'), Buffer.alloc(BIG, 1))
+    const stalled = stalledGet(s, await mint(s, 'big'))
+    expect(await stalled.started).toBe(200)
+    // Two places are free: two more raw connections are not dropped.
+    const held = [connect(s.port, '127.0.0.1'), connect(s.port, '127.0.0.1')]
+    for (const h of held) h.on('error', () => undefined)
+    await Promise.all(held.map((h) => new Promise((r) => h.once('connect', r))))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(held.every((h) => !h.destroyed)).toBe(true)
+    for (const h of held) h.destroy()
+    s.gw.disconnectDevice(s.deviceId)
+    expect(await stalled.ended()).toBe('cut')
   })
 })

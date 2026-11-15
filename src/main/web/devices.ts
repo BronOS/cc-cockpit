@@ -331,6 +331,25 @@ export class DeviceStore {
     return publicOf(record)
   }
 
+  /**
+   * The device a cookie value names by its secret alone, with no origin key: only for a download's GET
+   * (`/d/<token>`, auth.ts deviceByCookie), a navigation that carries no header, where the cookie only
+   * binds a one-use token to the jar of the browser it was minted for; the token, minted for a view
+   * that signed in with both, is the credential. Constant time in the secret as `check` is. Never marks
+   * the device seen and never drops an expired one (a cookie alone must not keep a device alive, and a
+   * lookup this narrow changes nothing); an expired device names nobody.
+   */
+  checkCookie(cookie: string | undefined): WebDevice | undefined {
+    if (cookie === undefined) return undefined
+    const parts = cookieParts(cookie)
+    if (!parts) return undefined
+    const record = this.file.data.devices.find((d) => d.id === parts.id)
+    const secretOk = matchesHash(parts.secret, record?.secretHash ?? DUMMY_HASH) && record !== undefined
+    if (!secretOk || !record) return undefined
+    if (this.now() - record.lastSeenAt > DEVICE_IDLE_MS && !this.open.has(record.id)) return undefined
+    return publicOf(record)
+  }
+
   /** The gateway handed a socket to this device: it is in use for as long as the socket is open. */
   socketOpened(id: string): void {
     this.open.set(id, (this.open.get(id) ?? 0) + 1)

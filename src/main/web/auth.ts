@@ -464,6 +464,25 @@ export class WebAuth {
     return this.currentMode === 'none' ? { ...NONE_DEVICE } : undefined
   }
 
+  /**
+   * The device a request's `Cookie` header names by the cookie alone (DeviceStore.checkCookie), for a
+   * download's GET only (`/d/<token>`, gateway.ts): a navigation the browser makes for `<a download>`
+   * carries no DEVICE_KEY_HEADER, so `authorize` cannot answer it. That is no sign-in: the one-use
+   * token is the credential, and this binds it to the jar it was minted for (the token's device must
+   * be this one, downloads.ts serve). A cookie leaked to another port of the host is worth nothing
+   * without a live token, which only the page under this origin ever sees. Undefined when no value
+   * names a device, None mode included: the gateway lets a None token go on the token alone.
+   * `want`: only that device, every value tried (another signed-in device's cookie planted with a
+   * narrower path, which the browser sends first, must not stand in the way of the jar's own).
+   */
+  deviceByCookie(cookieHeader: string | undefined, want?: string): WebDevice | undefined {
+    for (const value of cookieValues(cookieHeader, DEVICE_COOKIE)) {
+      const device = this.devices.checkCookie(value)
+      if (device && (want === undefined || device.id === want)) return device
+    }
+    return undefined
+  }
+
   /** A failed sign-in: logged (collapsed, access-log.ts), and counted toward the alarm. */
   private failed(detail: string): void {
     this.accessLog.write({ event: 'sign-in-failed', detail })
