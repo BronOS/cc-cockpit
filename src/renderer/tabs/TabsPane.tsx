@@ -933,6 +933,25 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (stateRef.current.tabs.find((t) => t.id === id)?.kind === 'page') pageFrames().focus(id)
     else sessions.get(id).focus()
   }, [sessions])
+  /**
+   * A press on a strip tab. On the page tab that is the focused pane already it changes no selection,
+   * so PageTabArea's select effect does not run again, and the press itself focused the strip's
+   * button: a focus within the shell, which ends the frame's own focus (PageFrames.shellFocused) and
+   * marks the press's pointer position as followed by shell input. The person's next click into the
+   * frame then had no evidence whenever the shell saw no pointer move near it (a touch tap, a pointer
+   * that jumped in), and the frame was refused (frame-focus.ts): the keys typed there went to nothing.
+   * The frame takes the keyboard here instead, the shell's own call for the person's press on that
+   * tab, as SplitArea's press on the focused page pane does. A terminal tab is left as it was.
+   */
+  const selectFromStrip = useCallback(
+    (tabId: string): void => {
+      const s = stateRef.current
+      const again = !s.keysOff && s.activeId === tabId && s.tabs.find((t) => t.id === tabId)?.kind === 'page'
+      pickTab(tabId)
+      if (again) requestAnimationFrame(focusActive)
+    },
+    [pickTab, focusActive]
+  )
   // The split menu went unpicked (Escape, a click elsewhere): the keyboard goes back to the pane.
   const closeSplitMenu = (): void => {
     setSplitMenu(null)
@@ -1420,7 +1439,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           tabs={state.tabs}
           // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
           activeId={state.keysOff ? null : state.activeId}
-          onSelect={pickTab}
+          onSelect={selectFromStrip}
           onClose={requestClose}
           onCreate={create}
           onCreateCommand={createCommand}
