@@ -322,11 +322,31 @@ export class RoomService {
     this.roomEnded(room, bound)
   }
 
-  /** End every live room of a plugin (disabled, removed or revoked: design-rooms.md §1), in every project. */
-  endAllOf(pluginId: string, why = 'plugin gone'): void {
-    const rooms = this.registry.liveRoomsOf(pluginId).map((room) => ({ room, bound: this.boundTabs(room.id) }))
-    this.registry.endAllOf(pluginId, why)
+  /**
+   * End every live room of a plugin (disabled, removed or revoked: design-rooms.md §1), in every project or, with
+   * `projectId`, in that one (the plugin switched off there).
+   */
+  endAllOf(pluginId: string, why = 'plugin gone', projectId?: string): void {
+    const rooms = this.registry.liveRoomsOf(pluginId, projectId).map((room) => ({ room, bound: this.boundTabs(room.id) }))
+    this.registry.endAllOf(pluginId, why, projectId)
     for (const { room, bound } of rooms) this.roomEnded(room, bound)
+  }
+
+  /**
+   * The plugin set changed (an install, an uninstall, a revocation, a switch in a project or for all projects; and
+   * once after the plugins load): end the live rooms whose plugin is no longer on in their project. `offWhy` is
+   * main's answer for a plugin and project (index.ts, enablement.ts roomEndReason): the reason the log records, or
+   * undefined while the plugin is on there. A throw for one pair is logged and the others are still checked.
+   */
+  endRoomsOfPluginsOff(offWhy: (owner: RoomOwner) => string | undefined): void {
+    for (const owner of this.registry.liveOwners()) {
+      try {
+        const why = offWhy(owner)
+        if (why !== undefined) this.endAllOf(owner.pluginId, why, owner.projectId)
+      } catch (err) {
+        this.warn(`rooms: could not end the rooms of ${owner.pluginId}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
   }
 
   /** Delete the owner's ended room (record, log, docs). */
@@ -335,6 +355,11 @@ export class RoomService {
     this.registry.delete(owner, room.id)
     this.delivery.forget(room.id)
     this.stop.roomGone(room.id)
+  }
+
+  /** ctx.rooms.open's check before it opens a tab: the room is the owner's and live, the name valid and free, a seat left. */
+  checkAdd(owner: RoomOwner, id: unknown, name: unknown): void {
+    this.registry.checkAdd(owner, id, name)
   }
 
   /**

@@ -35,6 +35,7 @@ import {
   OPEN_WINDOW_MS,
   MAX_OVERLAYS_PER_WINDOW,
   MAX_SENDS_PER_WINDOW,
+  MAX_ROOM_LOG_ENTRIES,
   RateWindow,
   SESSIONS_EVENT_INTERVAL_MS,
   type HostApiDeps,
@@ -49,6 +50,7 @@ import { RATE_LIMITS_EVENT_INTERVAL_MS, RateLimitsStore } from '../../src/main/s
 import { MAX_TEXT_CHARS, PASTE_END, PASTE_START } from '../../src/main/sessions/send-gate'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabManager } from '../../src/main/tabs/tab-manager'
+import { RoomService } from '../../src/main/rooms/room-service'
 import type { TabInfo } from '../../src/shared/ipc'
 import { defaultLayout } from '../../src/shared/layout'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
@@ -2497,5 +2499,191 @@ describe('beside (split groups, D4 D6 D7)', () => {
     await api.handlers['sessions.openShell']!({ pluginId: 'a.one', beside: anchor.id, focus: true }, { view: 'web:2' })
     expect(places.map((p) => p?.view)).toEqual(['web:1', undefined])
     expect(announced.slice(-2).map((a) => a.focus)).toEqual([true, true])
+  })
+})
+
+describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
+  let rooms: RoomService
+
+  beforeEach(() => {
+    rooms = new RoomService({
+      dir: join(root, 'rooms'),
+      tabs: {
+        setRoom: (p, t, r) => tabs.setRoom(p, t, r),
+        clearRoom: (p, t) => tabs.clearRoom(p, t),
+        roomOf: (p, t) => tabs.roomOf(p, t),
+        kindOf: (p, t) => tabs.kindOf(p, t)
+      },
+      sessions: registry,
+      log: () => {}
+    })
+    deps.rooms = rooms
+  })
+
+  afterEach(() => {
+    rooms.dispose()
+  })
+
+  const hostB = () =>
+    hostFor({ projectId: B, windowId: WIN_B, projectDir: projB, plugins: [{ id: 'a.one', dir: pluginOne, panels: ['board'] }] })
+
+  async function newRoom(call = hostA(), title = 'Review'): Promise<string> {
+    return ((await call('rooms.create', { pluginId: 'a.one', title })) as { id: string }).id
+  }
+
+  it('creates, lists, ends and deletes the plugin\'s own rooms, with no message text in the list', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    const tab = tabs.create(A, { kind: 'claude' })
+    rooms.addMember({ pluginId: 'a.one', projectId: A }, id, { tabId: tab.id, name: 'bob' })
+    await call('rooms.send', { pluginId: 'a.one', id, to: 'bob', text: 'secret words' })
+    const listed = (await call('rooms.list', { pluginId: 'a.one' })) as Record<string, unknown>[]
+    expect(listed).toEqual([{ id, title: 'Review', createdAt: expect.any(Number), paused: false, members: 1 }])
+    expect(JSON.stringify(listed)).not.toContain('secret words')
+    await expect(call('rooms.delete', { pluginId: 'a.one', id })).rejects.toThrow('rooms.delete: only an ended room can be deleted')
+    await expect(call('rooms.end', { pluginId: 'a.one', id })).resolves.toBeNull()
+    // The member's tab left the room with it: the tab record and SessionInfo follow.
+    expect(tabs.roomOf(A, tab.id)).toBeUndefined()
+    expect((await call('rooms.list', { pluginId: 'a.one' })) as unknown[]).toEqual([expect.objectContaining({ id, endedAt: expect.any(Number) })])
+    await expect(call('rooms.delete', { pluginId: 'a.one', id })).resolves.toBeNull()
+    await expect(call('rooms.list', { pluginId: 'a.one' })).resolves.toEqual([])
+    await expect(call('rooms.create', { pluginId: 'a.one', title: 'a "quoted" title' })).rejects.toThrow('rooms.create:')
+  })
+
+  it("refuses another plugin's room and another window's as no such room, and an unknown plugin", async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    for (const [method, extra] of [
+      ['rooms.end', {}],
+      ['rooms.delete', {}],
+      ['rooms.members', {}],
+      ['rooms.invite', { name: 'bob' }],
+      ['rooms.remove', { name: 'bob' }],
+      ['rooms.send', { to: 'all', text: 'hi' }],
+      ['rooms.docs.list', {}],
+      ['rooms.docs.get', { path: 'shared/a.md' }],
+      ['rooms.docs.put', { path: 'shared/a.md', text: 'x' }],
+      ['rooms.log', {}],
+      ['rooms.open', { name: 'bob' }]
+    ] as const) {
+      // The other plugin of the same host, and the same plugin id in another project's window.
+      await expect(call(method, { pluginId: 'a.two', id, ...extra }), `${method} a.two`).rejects.toThrow(`${method}: no such room`)
+      await expect(hostB()(method, { pluginId: 'a.one', id, ...extra }), `${method} window B`).rejects.toThrow(`${method}: no such room`)
+    }
+    expect(tabsBackend.spawned).toEqual([])
+    await expect(call('rooms.list', { pluginId: 'a.two' })).resolves.toEqual([])
+    await expect(hostB()('rooms.list', { pluginId: 'a.one' })).resolves.toEqual([])
+    await expect(call('rooms.create', { pluginId: 'nope', title: 'x' })).rejects.toThrow('rooms.create: unknown plugin')
+    // The room is untouched.
+    expect(((await call('rooms.list', { pluginId: 'a.one' })) as unknown[]).length).toBe(1)
+  })
+
+  it('opens a member tab through sessions.open: its checks, the room and name first, the shared open budget', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    const { tabId } = (await call('rooms.open', {
+      pluginId: 'a.one',
+      id,
+      name: 'lead',
+      coordinator: true,
+      prompt: 'read your kickoff',
+      model: 'sonnet',
+      effort: 'high',
+      cwd: 'sub',
+      // Never read: a room tab opens unselected and unplaced.
+      focus: true,
+      beside: 'x'
+    })) as { tabId: string }
+    expect(ptyOf(tabId).argv).toEqual([
+      'claude', '--settings', '/data/hooks.json', '--model', 'sonnet', '--effort', 'high', '--', ' read your kickoff'
+    ])
+    expect(ptyOf(tabId).options.cwd).toBe(join(projA, 'sub'))
+    expect(announced).toEqual([{ projectId: A, tab: expect.objectContaining({ id: tabId }), windowId: WIN_A }])
+    expect(tabs.roomOf(A, tabId)).toEqual(expect.objectContaining({ id, name: 'lead', coordinator: true, mark: false }))
+    expect(registry.get(tabId)?.room).toEqual(expect.objectContaining({ title: 'Review', name: 'lead', coordinator: true }))
+    expect(await call('rooms.members', { pluginId: 'a.one', id })).toEqual([{ name: 'lead', coordinator: true, tabId, held: 0 }])
+
+    // Refused before a tab starts and before the budget is spent.
+    for (const [extra, message] of [
+      [{ name: 'lead' }, 'already a member'],
+      [{ name: 'Bad Name' }, 'rooms.open:'],
+      [{ name: 'all' }, 'rooms.open:'],
+      [{ name: 'bob', coordinator: 'yes' }, 'rooms.open: coordinator must be a boolean'],
+      [{ name: 'bob', model: 'gpt' }, 'rooms.open: model must be one of'],
+      [{ name: 'bob', effort: 'extreme' }, 'rooms.open: effort must be one of'],
+      [{ name: 'bob', cwd: '../outside' }, 'outside the project'],
+      [{ name: 'bob', prompt: '/compact' }, '"/", "!", "#" or "&"']
+    ] as const) {
+      await expect(call('rooms.open', { pluginId: 'a.one', id, ...extra }), JSON.stringify(extra)).rejects.toThrow(message)
+    }
+    expect(tabsBackend.spawned).toHaveLength(1)
+
+    // One budget with sessions.open: 1 spent above, so 3 more opens and one room open reach the cap.
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW - 2; i++) await call('sessions.open', { pluginId: 'a.one' })
+    await call('rooms.open', { pluginId: 'a.one', id, name: 'bob' })
+    await expect(call('rooms.open', { pluginId: 'a.one', id, name: 'carol' })).rejects.toThrow(
+      `rooms.open: more than ${MAX_OPENS_PER_WINDOW} tabs`
+    )
+    await expect(call('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
+    expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
+    expect(((await call('rooms.members', { pluginId: 'a.one', id })) as { name: string }[]).map((m) => m.name)).toEqual(['lead', 'bob'])
+  })
+
+  it('invites, removes, sends from plugin, and reads and writes every doc of its room', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    const invite = (await call('rooms.invite', { pluginId: 'a.one', id, name: 'helper' })) as { code: string; expiresAt: number }
+    expect(Object.keys(invite).sort()).toEqual(['code', 'expiresAt'])
+    await expect(call('rooms.invite', { pluginId: 'a.one', id, name: 'x', coordinator: 1 })).rejects.toThrow(
+      'rooms.invite: coordinator must be a boolean'
+    )
+    const tab = waitingTab(A)
+    rooms.addMember({ pluginId: 'a.one', projectId: A }, id, { tabId: tab, name: 'bob' })
+    const answer = (await call('rooms.send', { pluginId: 'a.one', id, to: 'bob', text: 'start' })) as { to: string; path: string }[]
+    expect(answer).toEqual([{ to: 'bob', path: 'delivered' }])
+    await expect(call('rooms.send', { pluginId: 'a.one', id, to: 'nobody', text: 'x' })).resolves.toEqual([{ to: 'nobody', path: 'gone' }])
+    await expect(call('rooms.send', { pluginId: 'a.one', id, to: 'bob', text: '' })).rejects.toThrow('rooms.send:')
+
+    await call('rooms.docs.put', { pluginId: 'a.one', id, path: 'members/bob/kickoff.md', text: '# do it\n' })
+    await call('rooms.docs.put', { pluginId: 'a.one', id, path: 'shared/brief.md', text: 'brief' })
+    await expect(call('rooms.docs.get', { pluginId: 'a.one', id, path: 'members/bob/kickoff.md' })).resolves.toBe('# do it\n')
+    expect(await call('rooms.docs.list', { pluginId: 'a.one', id })).toEqual(
+      expect.arrayContaining([
+        { path: 'members/bob/kickoff.md', size: 8 },
+        { path: 'shared/brief.md', size: 5 }
+      ])
+    )
+    await expect(call('rooms.docs.put', { pluginId: 'a.one', id, path: 'shared/x.md', text: 'bell\x07' })).rejects.toThrow('rooms.docs.put:')
+    await expect(call('rooms.docs.get', { pluginId: 'a.one', id, path: '../room.json' })).rejects.toThrow('rooms.docs.get:')
+
+    await expect(call('rooms.remove', { pluginId: 'a.one', id, name: 'bob' })).resolves.toBeNull()
+    expect(tabs.roomOf(A, tab)).toBeUndefined()
+    await expect(call('rooms.members', { pluginId: 'a.one', id })).resolves.toEqual([])
+  })
+
+  it('answers the log with since and a capped limit', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    await call('rooms.invite', { pluginId: 'a.one', id, name: 'bob' })
+    const log = (await call('rooms.log', { pluginId: 'a.one', id })) as { type: string; at: number }[]
+    expect(log.map((e) => e.type)).toEqual(['create', 'invite'])
+    expect(await call('rooms.log', { pluginId: 'a.one', id, limit: 1 })).toEqual([expect.objectContaining({ type: 'invite' })])
+    expect(await call('rooms.log', { pluginId: 'a.one', id, since: log[1]!.at })).toEqual([])
+    await expect(call('rooms.log', { pluginId: 'a.one', id, limit: 0 })).rejects.toThrow('rooms.log: limit must be')
+    await expect(call('rooms.log', { pluginId: 'a.one', id, since: 'x' })).rejects.toThrow('rooms.log: since must be a number')
+    // More than the cap asked for is the cap.
+    const spy = vi.spyOn(rooms, 'log')
+    await call('rooms.log', { pluginId: 'a.one', id, limit: MAX_ROOM_LOG_ENTRIES * 10 })
+    expect(spy.mock.calls[0]?.[2]).toEqual({ limit: MAX_ROOM_LOG_ENTRIES })
+  })
+
+  it('refuses every rooms call once the host is revoked, and without the room service', async () => {
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    api.revoke()
+    await expect(Promise.resolve().then(() => api.handlers['rooms.list']!({ pluginId: 'a.one' }))).rejects.toThrow('stopping')
+    delete deps.rooms
+    await expect(hostA()('rooms.create', { pluginId: 'a.one', title: 'x' })).rejects.toThrow('rooms.create: rooms are not available')
+    await expect(hostA()('rooms.open', { pluginId: 'a.one', id: 'x', name: 'bob' })).rejects.toThrow('rooms.open: rooms are not available')
   })
 })

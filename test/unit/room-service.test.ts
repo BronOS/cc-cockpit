@@ -575,6 +575,64 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     expect(sessions.get(b)?.room).toBeUndefined()
   })
 
+  it('endAllOf with a project ends the plugin’s rooms there only', () => {
+    const here = room()
+    const there = service.create({ ...owner, projectId: P2 }, { title: 'There' }).id
+    const other = service.create({ pluginId: 'example.other', projectId: P1 }, { title: 'Other' }).id
+    const a = claudeTab()
+    addTo(here, a, 'alice')
+    service.endAllOf('example.team', 'plugin disabled', P1)
+    expect(tabs.roomOf(P1, a)).toBeUndefined()
+    expect(service.list(owner)[0]?.endedAt).toBeDefined()
+    expect(service.list({ ...owner, projectId: P2 }).find((r) => r.id === there)?.endedAt).toBeUndefined()
+    expect(service.list({ pluginId: 'example.other', projectId: P1 }).find((r) => r.id === other)?.endedAt).toBeUndefined()
+    expect(service.log(owner, here).at(-1)).toEqual(expect.objectContaining({ type: 'end', why: 'plugin disabled' }))
+  })
+
+  it('endRoomsOfPluginsOff ends the live rooms main says are off, with its reason, and keeps the others', () => {
+    const here = room()
+    const there = service.create({ ...owner, projectId: P2 }, { title: 'There' }).id
+    const other = service.create({ pluginId: 'example.other', projectId: P1 }, { title: 'Other' }).id
+    const gone = service.create({ pluginId: 'example.gone', projectId: P2 }, { title: 'Gone' }).id
+    const a = claudeTab()
+    const b = claudeTab(P2)
+    addTo(here, a, 'alice')
+    service.addMember({ pluginId: 'example.gone', projectId: P2 }, gone, { tabId: b, name: 'bob' })
+    const asked: string[] = []
+    service.endRoomsOfPluginsOff(({ pluginId, projectId }) => {
+      asked.push(`${pluginId}@${projectId}`)
+      if (pluginId === 'example.gone') return 'plugin removed'
+      if (pluginId === 'example.team' && projectId === P1) return 'plugin disabled'
+      if (pluginId === 'example.other') throw new Error('boom')
+      return undefined
+    })
+    // Each live pair once; a throw for one pair leaves it alone and the others are still checked.
+    expect(asked.sort()).toEqual(['example.gone@p2', 'example.other@p1', 'example.team@p1', 'example.team@p2'])
+    expect(tabs.roomOf(P1, a)).toBeUndefined()
+    expect(tabs.roomOf(P2, b)).toBeUndefined()
+    expect(sessions.get(b)?.room).toBeUndefined()
+    expect(service.log({ pluginId: 'example.gone', projectId: P2 }, gone).at(-1)).toEqual(expect.objectContaining({ type: 'end', why: 'plugin removed' }))
+    expect(service.list({ ...owner, projectId: P2 }).find((r) => r.id === there)?.endedAt).toBeUndefined()
+    expect(service.list({ pluginId: 'example.other', projectId: P1 }).find((r) => r.id === other)?.endedAt).toBeUndefined()
+    // Ended rooms are not asked about again.
+    asked.length = 0
+    service.endRoomsOfPluginsOff(({ pluginId, projectId }) => void asked.push(`${pluginId}@${projectId}`))
+    expect(asked.sort()).toEqual(['example.other@p1', 'example.team@p2'])
+  })
+
+  it('checkAdd refuses what addMember would, with no tab and nothing changed', () => {
+    const id = room()
+    service.checkAdd(owner, id, 'bob')
+    expect(service.members(owner, id)).toEqual([])
+    expect(() => service.checkAdd(owner, id, 'Bad')).toThrow()
+    expect(() => service.checkAdd(owner, id, 'plugin')).toThrow()
+    expect(() => service.checkAdd({ ...owner, projectId: P2 }, id, 'bob')).toThrow('no such room')
+    addTo(id, claudeTab(), 'bob')
+    expect(() => service.checkAdd(owner, id, 'bob')).toThrow('already a member')
+    service.end(owner, id)
+    expect(() => service.checkAdd(owner, id, 'carol')).toThrow('ended')
+  })
+
   it('delete is for an ended room only', () => {
     const id = room()
     expect(() => service.delete(owner, id)).toThrow(/only an ended room/)

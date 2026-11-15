@@ -116,6 +116,17 @@
 //                                                                refuses runnable files to openWithSystem,
 //                                                                and trash asks the person in this window
 //                                                                first (false: they said no)
+//   rooms.create    { pluginId, title }        -> { id }         ctx.rooms (design-rooms.md §4), each call on
+//   rooms.list      { pluginId }               -> RoomInfo[]      the plugin's OWN rooms of THIS project only:
+//   rooms.end|delete { pluginId, id }          -> null            the owner is main's (the plugin this host runs,
+//   rooms.open      { pluginId, id, name, coordinator?, cwd?,     the project it was spawned for), another
+//                     prompt?, model?, effort? } -> { tabId }     plugin's or window's room is "no such room";
+//   rooms.invite    { pluginId, id, name, coordinator? } -> { code, expiresAt }   open is sessions.open (its
+//   rooms.members   { pluginId, id }           -> RoomMember[]    checks and its budget) plus the membership;
+//   rooms.remove    { pluginId, id, name }     -> null            send is `from plugin` through the delivery
+//   rooms.send      { pluginId, id, to, text } -> RoomSendAnswer[] (its caps); the docs are the owner's role
+//   rooms.docs.list|get|put { pluginId, id, path?, text? }        (every doc of the room); log the room's
+//   rooms.log       { pluginId, id, since?, limit? } -> RoomLogEntry[]  events (room-service.ts does the rest)
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
 // by sessions.focus (select in that view), panels.show (reveal there), overlay.open (an html page
 // opens in that view, design-web.md §5.4), files.open and sessions.openFile (handed on to the plugin
@@ -207,7 +218,20 @@ import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler, RpcMeta } from '../../host/rpc'
 import type { ViewId } from '../../shared/views'
-import type { OAuthTokens, OverlayResult as PluginOverlayResult, PageTabInfo, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
+import type {
+  OAuthTokens,
+  OverlayResult as PluginOverlayResult,
+  PageTabInfo,
+  RateLimits,
+  RoomDoc,
+  RoomInfo,
+  RoomLogEntry,
+  RoomMember,
+  RoomSendAnswer,
+  SendResult,
+  SessionInfo,
+  SessionSummary
+} from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
 import type { PanelBadge, PanelHeaderInfo, TabInfo } from '../../shared/ipc'
@@ -243,6 +267,8 @@ import { checkSessionName } from '../../shared/session-name'
 import { checkSessionOptions } from '../../shared/session-options'
 import { checkCommandArgv, checkTabCommandLabel, defaultCommandTitle, TAB_COMMAND_LABEL_MAX } from '../../shared/tab-commands'
 import { resolveCwd } from '../tabs/tab-manager'
+import type { RoomOwner, RoomRecord } from '../rooms/room-registry'
+import type { RoomService } from '../rooms/room-service'
 import { WebviewLoadError, type WebviewManager, type WebviewOwner, type WebviewPage } from '../webview/webview-manager'
 import { pluginFileUrl } from './plugin-protocol'
 import { resolveInside } from './validate'
@@ -604,6 +630,8 @@ export interface HostApiDeps {
     openWithSystem(caller: { windowId: number; projectId: string }, path: unknown): Promise<void>
     trash(caller: { windowId: number; projectId: string }, path: unknown, pluginId: string, signal?: AbortSignal): Promise<boolean>
   }
+  /** ctx.rooms (RoomService). Without it every rooms request is refused. */
+  rooms?: HostRoomsApi
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -627,6 +655,28 @@ export interface HostApiPlugin {
   /** The types of its manifest `contributes.tabs`: the only page tabs ctx.tabs may open or list. Absent is none. */
   pageTabs?: readonly string[]
 }
+
+/**
+ * The room service as ctx.rooms reaches it (rooms/room-service.ts RoomService): the owner-side calls, each taking the
+ * owner HostApi built from the host's own plugin and project. They throw RoomError for a refusal.
+ */
+export type HostRoomsApi = Pick<
+  RoomService,
+  | 'create'
+  | 'list'
+  | 'end'
+  | 'delete'
+  | 'checkAdd'
+  | 'addMember'
+  | 'invite'
+  | 'members'
+  | 'remove'
+  | 'sendAsPlugin'
+  | 'ownerDocList'
+  | 'ownerDocGet'
+  | 'ownerDocPut'
+  | 'log'
+>
 
 /** Who is asking: fixed when main spawned the host process. */
 export interface HostScope {
@@ -952,7 +1002,61 @@ export class HostApi {
       openExternal: (params, meta) => this.openExternal(params, meta),
       'files.reveal': (params, meta) => this.filesReveal(params, meta),
       'files.openWithSystem': (params, meta) => this.filesOpenWithSystem(params, meta),
-      'files.trash': (params) => this.filesTrash(params)
+      'files.trash': (params) => this.filesTrash(params),
+      'rooms.create': (params) => this.roomsCall(params, 'rooms.create', (rooms, owner, p) => ({ id: rooms.create(owner, { title: p.title }).id })),
+      'rooms.list': (params) => this.roomsCall(params, 'rooms.list', (rooms, owner) => rooms.list(owner).map(roomInfoOf)),
+      'rooms.end': (params) =>
+        this.roomsCall(params, 'rooms.end', (rooms, owner, p) => {
+          rooms.end(owner, p.id)
+          return null
+        }),
+      'rooms.delete': (params) =>
+        this.roomsCall(params, 'rooms.delete', (rooms, owner, p) => {
+          rooms.delete(owner, p.id)
+          return null
+        }),
+      'rooms.open': (params, meta) => this.roomsOpen(params, meta),
+      'rooms.invite': (params) =>
+        this.roomsCall(params, 'rooms.invite', (rooms, owner, p) => {
+          const coordinator = optionalBoolean(p.coordinator, 'coordinator')
+          const invite = rooms.invite(owner, p.id, { name: p.name, coordinator })
+          return { code: invite.code, expiresAt: invite.expiresAt }
+        }),
+      'rooms.members': (params) =>
+        this.roomsCall(params, 'rooms.members', (rooms, owner, p) =>
+          rooms.members(owner, p.id).map(
+            (m): RoomMember => ({ name: m.name, coordinator: m.coordinator, held: m.held, ...(m.tabId !== undefined ? { tabId: m.tabId } : {}) })
+          )
+        ),
+      'rooms.remove': (params) =>
+        this.roomsCall(params, 'rooms.remove', (rooms, owner, p) => {
+          rooms.remove(owner, p.id, p.name)
+          return null
+        }),
+      'rooms.send': (params) =>
+        this.roomsCall(params, 'rooms.send', (rooms, owner, p) =>
+          rooms.sendAsPlugin(owner, p.id, p.to, p.text).map((a) => ({ ...a }) as RoomSendAnswer)
+        ),
+      'rooms.docs.list': (params) =>
+        this.roomsCall(params, 'rooms.docs.list', async (rooms, owner, p) =>
+          (await rooms.ownerDocList(owner, p.id)).map((d): RoomDoc => ({ path: d.path, size: d.size }))
+        ),
+      'rooms.docs.get': (params) => this.roomsCall(params, 'rooms.docs.get', (rooms, owner, p) => rooms.ownerDocGet(owner, p.id, p.path)),
+      'rooms.docs.put': (params) =>
+        this.roomsCall(params, 'rooms.docs.put', async (rooms, owner, p) => {
+          await rooms.ownerDocPut(owner, p.id, p.path, p.text)
+          return null
+        }),
+      'rooms.log': (params) =>
+        this.roomsCall(params, 'rooms.log', (rooms, owner, p) => {
+          if (p.since !== undefined && (typeof p.since !== 'number' || !Number.isFinite(p.since))) throw new Error('since must be a number')
+          if (p.limit !== undefined && (typeof p.limit !== 'number' || !Number.isInteger(p.limit) || p.limit < 1)) {
+            throw new Error('limit must be a positive whole number')
+          }
+          // At most MAX_ROOM_LOG_ENTRIES, the newest: a room's log may hold 20 MiB, and the answer is one message.
+          const limit = Math.min(typeof p.limit === 'number' ? p.limit : MAX_ROOM_LOG_ENTRIES, MAX_ROOM_LOG_ENTRIES)
+          return rooms.log(owner, p.id, { ...(typeof p.since === 'number' ? { since: p.since } : {}), limit }) as RoomLogEntry[]
+        })
     }
   }
 
@@ -1403,20 +1507,28 @@ export class HostApi {
 
   private async open(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, cwd, prompt, focus, model, effort, beside, side } = (params ?? {}) as Record<string, unknown>
-    const plugin = this.plugin(pluginId, 'sessions.open')
-    if (cwd !== undefined && typeof cwd !== 'string') throw new Error('sessions.open: cwd must be a string')
-    if (focus !== undefined && typeof focus !== 'boolean') throw new Error('sessions.open: focus must be a boolean')
+    const { pluginId, ...options } = (params ?? {}) as Record<string, unknown>
+    return this.openClaude('sessions.open', this.plugin(pluginId, 'sessions.open'), options, meta)
+  }
+
+  /**
+   * A new Claude tab in this project (ctx.sessions.open, and ctx.rooms.open with `what` 'rooms.open'): every check
+   * before the shared open budget is spent, then the spawn in the host's own window.
+   */
+  private async openClaude(what: string, plugin: HostApiPlugin, options: Record<string, unknown>, meta?: RpcMeta): Promise<OpenResult> {
+    const { cwd, prompt, focus, model, effort, beside, side } = options
+    if (cwd !== undefined && typeof cwd !== 'string') throw new Error(`${what}: cwd must be a string`)
+    if (focus !== undefined && typeof focus !== 'boolean') throw new Error(`${what}: focus must be a boolean`)
     // Closed lists (shared/session-options.ts), checked before the budget is spent; the values end up
     // as `--model` / `--effort` argv elements, so nothing outside the lists gets that far.
     const checked = checkSessionOptions({ model, effort })
-    if (!checked.ok) throw new Error(`sessions.open: ${checked.reason}`)
+    if (!checked.ok) throw new Error(`${what}: ${checked.reason}`)
     // Checked here too, before the budget is spent, so a bad cwd costs nothing; the tab manager
     // checks it again (same rule) when it spawns.
     try {
       resolveCwd(this.scope.projectDir, cwd || undefined)
     } catch (err) {
-      throw new Error(`sessions.open: ${errorText(err)}`, { cause: err })
+      throw new Error(`${what}: ${errorText(err)}`, { cause: err })
     }
     // The prompt is an argv element, never typed, so no paste framing is at stake; it gets the
     // gate's rules anyway: control bytes out, a size cap, and no leading "/", "!", "#" or "&" (Claude
@@ -1427,12 +1539,13 @@ export class HostApi {
       try {
         text = prepareText(prompt)
       } catch (err) {
-        throw new Error(`sessions.open: prompt: ${errorText(err)}`, { cause: err })
+        throw new Error(`${what}: prompt: ${errorText(err)}`, { cause: err })
       }
     }
-    const place = this.placement('sessions.open', beside, side, meta)
+    const place = this.placement(what, beside, side, meta)
+    // One budget for every open of the plugin (sessions.open, openShell, openCommand, rooms.open).
     if (!this.opens.take(plugin.id)) {
-      throw new Error(`sessions.open: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
+      throw new Error(`${what}: more than ${MAX_OPENS_PER_WINDOW} tabs in ${OPEN_WINDOW_MS / 1000} s`)
     }
     const tab = await this.deps.openTab(
       this.scope.projectId,
@@ -2593,6 +2706,61 @@ export class HostApi {
   }
 
   /** The plugin a request names, only if this host process runs it. */
+  /**
+   * One ctx.rooms call: the plugin is one this host runs and the owner is built here from it and the host's own
+   * project, never from the request (another plugin's or window's room answers "no such room" in the registry). A
+   * refusal comes back as an Error naming the method; the room service's messages name no other room or path.
+   */
+  private async roomsCall<T>(
+    params: unknown,
+    what: string,
+    body: (rooms: HostRoomsApi, owner: RoomOwner, p: Record<string, unknown>) => T | Promise<T>
+  ): Promise<T> {
+    this.alive()
+    const p = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(p.pluginId, what)
+    if (!this.deps.rooms) throw new Error(`${what}: rooms are not available`)
+    try {
+      return await body(this.deps.rooms, { pluginId: plugin.id, projectId: this.scope.projectId }, p)
+    } catch (err) {
+      throw withMethod(what, err)
+    }
+  }
+
+  /**
+   * ctx.rooms.open: a new Claude tab that is a member of the plugin's room from the start (design-rooms.md §1). The
+   * room and the name are checked first, then the tab opens as ctx.sessions.open would open it (its checks, the cwd
+   * inside the project, the same open budget; never focused, never placed beside a tab), then it joins. Only the
+   * documented options are read: a `focus` or `beside` riding along is never looked at.
+   */
+  private async roomsOpen(params: unknown, meta?: RpcMeta): Promise<{ tabId: string }> {
+    this.alive()
+    const { pluginId, id, name, coordinator, cwd, prompt, model, effort } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'rooms.open')
+    const rooms = this.deps.rooms
+    if (!rooms) throw new Error('rooms.open: rooms are not available')
+    const owner: RoomOwner = { pluginId: plugin.id, projectId: this.scope.projectId }
+    let asCoordinator: boolean
+    try {
+      asCoordinator = optionalBoolean(coordinator, 'coordinator')
+      // Before the budget is spent and a `claude` process starts: a tab that could not join is not opened.
+      rooms.checkAdd(owner, id, name)
+    } catch (err) {
+      throw withMethod('rooms.open', err)
+    }
+    const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort }, meta)
+    try {
+      rooms.addMember(owner, id, { tabId: tab.tabId, name, coordinator: asCoordinator })
+    } catch (err) {
+      // Only a race gets here (the room ended, or a tab redeemed an invite for the same name, while the tab was
+      // starting). The tab stays, an ordinary Claude tab of the person's (closing it could raise the close dialog);
+      // the plugin learns which one from the message.
+      this.log(`plugin ${plugin.id}: rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`)
+      throw new Error(`rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`, { cause: err })
+    }
+    return { tabId: tab.tabId }
+  }
+
   private plugin(pluginId: unknown, what: string): HostApiPlugin {
     const plugin = typeof pluginId === 'string' ? this.scope.plugins.find((p) => p.id === pluginId) : undefined
     if (!plugin) throw new Error(`${what}: unknown plugin`)
@@ -2649,6 +2817,27 @@ export class HostApi {
 
 /** What a plugin open answers: `placed` only when it asked for `beside` (absent from an older app too). */
 type OpenResult = { tabId: string; placed?: boolean }
+
+/** ctx.rooms.log answers at most this many events, the newest (a plugin polls with `since`). */
+export const MAX_ROOM_LOG_ENTRIES = 1000
+
+/** A room as its plugin sees it: no members' queues (their text reaches only `ccc room read` and the log). */
+function roomInfoOf(r: RoomRecord): RoomInfo {
+  return {
+    id: r.id,
+    title: r.title,
+    createdAt: r.createdAt,
+    paused: r.paused,
+    members: Object.keys(r.members).length,
+    ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {})
+  }
+}
+
+/** An optional boolean field of a request: absent is false, anything but a boolean is refused. */
+function optionalBoolean(value: unknown, field: string): boolean {
+  if (value !== undefined && typeof value !== 'boolean') throw new Error(`${field} must be a boolean`)
+  return value === true
+}
 
 function opened(tab: { id: string; placed?: boolean }, place: PluginPlacement | undefined): OpenResult {
   return place === undefined ? { tabId: tab.id } : { tabId: tab.id, placed: tab.placed === true }

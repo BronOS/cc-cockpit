@@ -72,3 +72,21 @@ export function enabledPluginIds(
   }
   return [...out]
 }
+
+/**
+ * Why a plugin's rooms in a project end now (design-rooms.md §1: a room ends when its plugin is disabled, removed or
+ * revoked), or undefined while the plugin is on there. `plugin` is the installed plugin (undefined once it is
+ * uninstalled), `revoked` its marketplace revocation, `record` the project's record (undefined for a project that is
+ * gone: nothing is on there). An invalid manifest is not a reason: the plugin is still the person's, as for a saved
+ * command tab (index.ts pluginAvailable), and a linked folder mid-edit must not end a room.
+ */
+export function roomEndReason(
+  record: EnablementRecord | undefined,
+  plugin: EnablementPlugin | undefined,
+  revoked: boolean,
+  disabledBundled?: unknown
+): 'plugin removed' | 'plugin revoked' | 'plugin disabled' | undefined {
+  if (plugin === undefined) return 'plugin removed'
+  if (revoked) return 'plugin revoked'
+  return pluginEnabledIn(record, plugin, disabledBundled) ? undefined : 'plugin disabled'
+}

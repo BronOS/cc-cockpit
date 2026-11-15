@@ -395,6 +395,48 @@ another window's tab reject the same way, before
   new pane is never focused, so it cannot catch keys the person types. An older app ignores `beside` and
   answers without `placed`.
 
+## Rooms
+
+`ctx.rooms` puts Claude tabs of this window in a room, where they message each other and share docs
+through `ccc room` (`ccc guide rooms` has what a member sees). The app sets every identity and enforces
+every rule; your plugin only acts on its own rooms of this window: another plugin's room, another window's
+and an unknown id all reject the same way, as "no such room". A refusal rejects with an Error naming the
+method and the rule. Rooms are kept by the app, not by your plugin: they outlive a host restart, a reload
+and an app restart (a room comes back paused then, until the person resumes it). A room ends when your
+plugin is switched off in the project (or in all projects), uninstalled or revoked; its docs stay. An older
+app has no `rooms`: check `typeof ctx.rooms === 'object'`.
+
+- `ctx.rooms.create({ title })` -> `{ id }`: a new room. The title is 1-60 characters on one line with no
+  quote, bracket, control or bidi character; at most 5 rooms not ended per plugin in a project.
+- `ctx.rooms.list()`: your rooms of this window (`RoomInfo`: `id`, `title`, `createdAt`, `endedAt` once
+  ended, `paused`, `members` as a count), ended ones included. No messages.
+- `ctx.rooms.end(id)`: its members leave it (their tabs stay), its invites die; the record and docs stay.
+  `ctx.rooms.delete(id)` removes an ended room with its docs and log.
+- `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd })` -> `{ tabId }`: a new Claude tab
+  of this window that is a member from the start. `name` matches `^[a-z][a-z0-9-]{0,30}$`, is unique in
+  the room and is not `all`, `plugin`, `person`, `user` or `system`; at most 20 members a room. `prompt`,
+  `model`, `effort` and `cwd` are `ctx.sessions.open`'s, with its checks, and the open counts against the
+  same 5 tabs a minute; the tab opens unselected. The room and the name are checked before the tab opens.
+  Seed the member's kickoff (`members/<name>/...`) first, and have the prompt tell it to read it.
+- `ctx.rooms.invite(id, { name, coordinator })` -> `{ code, expiresAt }`: a one-time invite (10 minutes)
+  for an existing tab, which joins by running `ccc room join <code>` itself; hand the code out through your
+  own command. A plugin can never pull a tab into a room.
+- `ctx.rooms.members(id)`: `RoomMember` per member (`name`, `coordinator`, `tabId` while it has a tab,
+  `held`: messages waiting). `ctx.rooms.remove(id, name)`: the member leaves (its tab stays), its waiting
+  messages are dropped.
+- `ctx.rooms.send(id, to, text)`: a message `from plugin` to a member name or `all`, at most 20000
+  characters (more goes in a doc). The answer is a `RoomSendAnswer` per recipient: `delivered`, `held`
+  with `why` (`paused`, `no-tab`, `typed`, `draft`, `not-waiting`), `gone` or `refused` (its queue is full).
+  Counts against the room's 60 sends a minute, every sender together (`all` once per recipient).
+- `ctx.rooms.docs.list(id)`, `ctx.rooms.docs.get(id, path)`, `ctx.rooms.docs.put(id, path, text)`: every
+  doc of the room, both areas (`shared/...`, `members/<name>/...`). A doc is UTF-8 text of at most 256 KiB
+  with no control, bidi or invisible format character but tab and line breaks; 20 MiB a room. To export
+  the docs at the end, read them here and write them where you like (you have Node).
+- `ctx.rooms.log(id, { since, limit })`: the room's events, oldest first, message text included: joins,
+  leaves with why, sends with what happened per recipient, doc reads, writes and refusals, pauses, the end.
+  At most `limit` (default and most 1000), the newest, with `at` after `since`; there is no event to
+  subscribe to, so poll with the last `at` you saw.
+
 ## Files
 
 - `ctx.files.onOpen(listener)`: take over a click on a changed file in the Sessions panel; returns

@@ -244,17 +244,31 @@ export class RoomRegistry {
     this.endRoom(this.owned(owner, id), 'ended')
   }
 
-  /** End every room of a plugin (disabled, removed or revoked; design-rooms.md §1). Docs stay. */
-  endAllOf(pluginId: string, why = 'plugin gone'): void {
-    for (const r of this.rooms.values()) if (r.pluginId === pluginId && r.endedAt === undefined) this.endRoom(r, why)
+  /**
+   * End every room of a plugin (disabled, removed or revoked; design-rooms.md §1), in every project or, with
+   * `projectId`, in that one only (the plugin switched off there). Docs stay.
+   */
+  endAllOf(pluginId: string, why = 'plugin gone', projectId?: string): void {
+    for (const r of this.rooms.values()) if (liveOf(r, pluginId, projectId)) this.endRoom(r, why)
   }
 
   /**
-   * Copies of a plugin's rooms that are not ended, in every project: what `endAllOf` is about to end, so the room
-   * service can release their tabs first (the registry drops the bindings without telling anyone).
+   * Copies of a plugin's rooms that are not ended, in every project (or in `projectId`): what `endAllOf` is about to
+   * end, so the room service can release their tabs first (the registry drops the bindings without telling anyone).
    */
-  liveRoomsOf(pluginId: string): RoomRecord[] {
-    return [...this.rooms.values()].filter((r) => r.pluginId === pluginId && r.endedAt === undefined).map(copy)
+  liveRoomsOf(pluginId: string, projectId?: string): RoomRecord[] {
+    return [...this.rooms.values()].filter((r) => liveOf(r, pluginId, projectId)).map(copy)
+  }
+
+  /** Each plugin and project that has a room not ended, once: what main checks when the plugin set changes. */
+  liveOwners(): RoomOwner[] {
+    const seen = new Map<string, RoomOwner>()
+    for (const r of this.rooms.values()) {
+      if (r.endedAt !== undefined) continue
+      // JSON of the pair: neither id can make two pairs collide, as a joined string with a separator could.
+      seen.set(JSON.stringify([r.pluginId, r.projectId]), { pluginId: r.pluginId, projectId: r.projectId })
+    }
+    return [...seen.values()]
   }
 
   /** Delete an ended room and everything under its directory (record, log, docs). */
@@ -266,6 +280,14 @@ export class RoomRegistry {
     rmSync(join(this.options.dir, room.id), { recursive: true, force: true })
     this.rooms.delete(room.id)
     this.logs.delete(room.id)
+  }
+
+  /**
+   * `addMember`'s refusals for the room and the name, with no tab yet: ctx.rooms.open checks them before it spends
+   * the open budget and starts a `claude` process that could not join.
+   */
+  checkAdd(owner: RoomOwner, id: unknown, name: unknown): void {
+    this.checkJoin(this.owned(owner, id), name, undefined)
   }
 
   /** A tab the plugin opened into the room (`ctx.rooms.open`): a member from the start. */
@@ -521,12 +543,12 @@ export class RoomRegistry {
     }
   }
 
-  private checkJoin(room: RoomRecord, rawName: unknown, tabId: string): string {
+  private checkJoin(room: RoomRecord, rawName: unknown, tabId: string | undefined): string {
     if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
     const name = checkRoomName(rawName)
     if (!name.ok) throw new RoomError('invalid', name.reason)
     if (Object.hasOwn(room.members, name.value)) throw new RoomError('conflict', `"${name.value}" is already a member`)
-    if (this.tabs.has(tabId)) throw new RoomError('conflict', 'the tab is already in a room')
+    if (tabId !== undefined && this.tabs.has(tabId)) throw new RoomError('conflict', 'the tab is already in a room')
     if (Object.keys(room.members).length >= MAX_MEMBERS_PER_ROOM) {
       throw new RoomError('limit', `a room may have at most ${MAX_MEMBERS_PER_ROOM} members`)
     }
@@ -593,6 +615,11 @@ export class RoomRegistry {
       this.warn(`rooms: could not save ${room.id}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
+}
+
+/** A room not ended of `pluginId`, in `projectId` when given. */
+function liveOf(room: RoomRecord, pluginId: string, projectId: string | undefined): boolean {
+  return room.pluginId === pluginId && room.endedAt === undefined && (projectId === undefined || room.projectId === projectId)
 }
 
 function owns(owner: RoomOwner, room: RoomRecord): boolean {
