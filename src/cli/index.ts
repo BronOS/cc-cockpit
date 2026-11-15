@@ -2,8 +2,8 @@
 // The invariant of this process: it never fails a Claude hook (CLAUDE.md), so `hook` always exits
 // 0, whatever happens in client.ts. The user commands (Task 21) exit 0 too when the app is not
 // there; they are non-zero only for a usage error (2), a request main refused (1) or a crash (1).
-// The hard cap below is a backstop for a bug that would hang past the 500 ms budget `runHook`
-// enforces itself.
+// The hard cap below is a backstop for a bug that would hang past the budget `runHook` enforces
+// itself (500 ms, 2 s for Stop: client.ts hookBudgetMs).
 //
 // No static imports here, on purpose (Task 13 review). The bundler hoists every chunk `require`
 // to line 1 of out/cli/index.js, and client.ts shares a hashed chunk with main
@@ -86,7 +86,8 @@ function runClient(): void {
   import('./client')
     .then((client) => {
       // The backstop is for a hook only: `ccc overlay` waits for the user for as long as it takes.
-      if (hook) setTimeout(exitQuietly, client.HOOK_BUDGET_MS + 100)
+      // Stop has a longer budget than the other events (client.ts STOP_HOOK_BUDGET_MS); argv[3] is the event.
+      if (hook) setTimeout(exitQuietly, client.hookBudgetMs(process.argv[3] ?? '') + 100)
       return client.run(process.argv.slice(2), process.env, process.stdin)
     })
     // The exit code of a user command (usage error 2, refused 1, else 0). Anything that goes wrong

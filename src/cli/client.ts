@@ -59,6 +59,18 @@ export { hookSocketPath }
 
 /** Total time `ccc hook` may take: reading stdin, connecting and writing. Then it exits 0. */
 export const HOOK_BUDGET_MS = 500
+/**
+ * `ccc hook Stop`'s total: two round trips (the Stop and its reply, the ack and its answer) on top of the above. Longer
+ * than the other events so a main whose event loop stalls for a moment (start, a pty burst) still answers in time,
+ * and well under Claude Code's hook timeout (hooks-file.ts HOOK_TIMEOUT_SECONDS, 5 s). Claude waits this long at a Stop
+ * only when main is slow; with main down the connect fails at once.
+ */
+export const STOP_HOOK_BUDGET_MS = 2000
+
+/** The budget `ccc hook <event>` runs in (index.ts adds its backstop margin to the same number). */
+export function hookBudgetMs(event: string): number {
+  return event === 'Stop' ? STOP_HOOK_BUDGET_MS : HOOK_BUDGET_MS
+}
 /** Most of the hook payload read from stdin. A Claude hook payload is far smaller than this. */
 export const STDIN_CAP_BYTES = 1024 * 1024
 
@@ -145,47 +157,68 @@ function sendAndForget(socket: Socket, line: string): Promise<void> {
 }
 
 /**
- * The Stop hook's round trip (protocol.ts STOP_REPLY_ARG): write the request without half-closing,
- * read one reply line, and resolve with its block when the reply is a valid one, else undefined.
- * Resolves undefined, never rejects, on garbage, an error reply, a closed or broken connection and
- * an over-long line. The hook's deadline ends the wait from outside: runHook destroys the socket,
- * which settles this through 'close'.
+ * Reads the reply lines of one connection, in order: each call resolves with the next reply, or undefined once the
+ * connection is closed, ended or broken, an over-long line came (nothing after it can be framed), or the line is not a
+ * reply. Never rejects. The hook's deadline ends a wait from outside: runHook destroys the socket, which settles it
+ * through 'close'.
  */
-function sendAndReadStop(socket: Socket, line: string): Promise<StopBlockReply | undefined> {
-  return new Promise((resolve) => {
-    const framer = new LineFramer()
-    let settled = false
-    const done = (block: StopBlockReply | undefined): void => {
-      if (settled) return
-      settled = true
-      socket.removeListener('data', onData)
-      resolve(block)
+function replyReader(socket: Socket): () => Promise<Reply | undefined> {
+  const framer = new LineFramer()
+  const lines: string[] = []
+  let gone = false
+  let wake: (() => void) | undefined
+  const notify = (): void => {
+    const w = wake
+    wake = undefined
+    w?.()
+  }
+  socket.on('data', (chunk: Buffer) => {
+    try {
+      lines.push(...framer.push(chunk))
+    } catch {
+      // An over-long line: not a reply this client accepts, and nothing after it can be framed.
+      gone = true
+      lines.length = 0
     }
-    const onData = (chunk: Buffer): void => {
-      let lines: string[]
-      try {
-        lines = framer.push(chunk)
-      } catch {
-        done(undefined) // an over-long line: not a reply this client accepts
-        return
-      }
-      const first = lines[0]
-      if (first === undefined) return
-      let reply: Reply
-      try {
-        reply = parseReply(first)
-      } catch {
-        done(undefined)
-        return
-      }
-      done(reply.ok && reply.id === 1 ? stopBlockOf(reply.result) : undefined)
-    }
-    socket.on('data', onData)
-    socket.once('error', () => done(undefined))
-    socket.once('close', () => done(undefined))
-    socket.once('end', () => done(undefined))
-    socket.write(line)
+    notify()
   })
+  const end = (): void => {
+    gone = true
+    notify()
+  }
+  // `on`, not `once`: a second 'error' with no listener would throw out of the hook.
+  socket.on('error', end)
+  socket.on('close', end)
+  socket.on('end', end)
+  return async () => {
+    while (lines.length === 0 && !gone) await new Promise<void>((r) => (wake = r))
+    const line = lines.shift()
+    if (line === undefined) return undefined
+    try {
+      return parseReply(line)
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/**
+ * The Stop hook's exchange (protocol.ts STOP_REPLY_ARG) on one connection, never half-closed until it is over: the
+ * Stop, then its reply; for a valid block, `hook.ack` and main's answer. Resolves with the block to print only when
+ * main confirmed the ack (`{ acked: true }`), else undefined (a plain Stop, garbage, an error reply, a refused ack, a
+ * closed connection). The order is the safety argument (rooms/room-stop.ts): main undoes a block whose connection
+ * closes unacked, which is right only because nothing is printed before main has the ack.
+ */
+async function stopExchange(socket: Socket, line: string, token: string): Promise<StopBlockReply | undefined> {
+  const next = replyReader(socket)
+  socket.write(line)
+  const reply = await next()
+  const block = reply?.ok === true && reply.id === 1 ? stopBlockOf(reply.result) : undefined
+  if (block === undefined) return undefined
+  socket.write(encodeRequest({ v: PROTOCOL_VERSION, id: 2, token, cmd: HOOK_ACK_COMMAND, args: { ackId: block.ackId } }))
+  const answer = await next()
+  const acked = answer?.ok === true && answer.id === 2 && isPlainObject(answer.result) && answer.result.acked === true
+  return acked ? block : undefined
 }
 
 /** The line `ccc hook Stop` prints for a block: Claude Code's Stop hook decision, the fixed pointer as the reason. */
@@ -195,19 +228,20 @@ export function stopBlockOutput(block: StopBlockReply): string {
 
 /**
  * `ccc hook <event>`: report one Claude hook to main. Fire-and-forget within `budgetMs` in total,
- * except Stop, which reads main's reply in the same budget: a valid block (the room pointer,
- * design-rooms.md §2) is printed with `write` as Claude Code's `decision: block` JSON, then acked
- * on the same connection with `hook.ack`. Never rejects. Resolves (and so lets the caller exit 0)
- * in every case, including when stdin never closes or the owner of the socket accepts and never
- * reads or never answers: whatever has not finished by the deadline is abandoned, and nothing is
- * printed after it. A failing write prints nothing and sends no ack: main then keeps the tab
- * `working` (room-stop.ts), which the person's next prompt recovers.
+ * except Stop, which reads main's reply in its own budget (STOP_HOOK_BUDGET_MS): a valid block (the
+ * room pointer, design-rooms.md §2) is acked on the same connection with `hook.ack`, and printed
+ * with `write` as Claude Code's `decision: block` JSON only once main confirmed the ack (stopExchange
+ * says why the order matters). Never rejects. Resolves (and so lets the caller exit 0) in every
+ * case, including when stdin never closes or the owner of the socket accepts and never reads or
+ * never answers: whatever has not finished by the deadline is abandoned, and nothing is printed
+ * after it. A print that fails after the ack (stdout closed; EPIPE arrives later as an event)
+ * leaves main keeping the tab `working` (room-stop.ts), which the person's next prompt recovers.
  */
 export async function runHook(
   event: string,
   env: Env,
   stdin: Readable,
-  budgetMs: number = HOOK_BUDGET_MS,
+  budgetMs: number = hookBudgetMs(event),
   write: (text: string) => void = () => {}
 ): Promise<void> {
   const path = hookSocketPath(env)
@@ -235,22 +269,14 @@ export async function runHook(
       await sendAndForget(connected, line)
       return
     }
-    const block = await sendAndReadStop(connected, line)
-    if (over || block === undefined) {
-      connected.end()
-      return
-    }
+    const block = await stopExchange(connected, line, token)
+    // Past the deadline main may have the ack already: printing nothing then leaves the tab `working`, the safe side.
+    if (over || block === undefined) return
     try {
       write(stopBlockOutput(block))
     } catch {
-      // stdout closed: Claude gets no block, so no ack either (main keeps the messages queued)
-      connected.end()
-      return
+      // stdout closed: Claude gets no block; main took the ack, so the tab stays working (the safe side)
     }
-    await sendAndForget(
-      connected,
-      encodeRequest({ v: PROTOCOL_VERSION, id: 2, token, cmd: HOOK_ACK_COMMAND, args: { ackId: block.ackId } })
-    )
   })().catch(() => {
     // ENOENT / ECONNREFUSED / ETIMEDOUT / EPIPE: the app is not there or not listening. Silent.
   })
@@ -889,7 +915,7 @@ export async function run(
           }
         }
         // Stop may print the room pointer's block (runHook); every other event prints nothing.
-        await runHook(command.event, env, stdin, HOOK_BUDGET_MS, (text) => out.stdout(text))
+        await runHook(command.event, env, stdin, hookBudgetMs(command.event), (text) => out.stdout(text))
         return 0
       case 'statusline':
         // index.ts runs the exact call itself without this file (startup cost); this path is the

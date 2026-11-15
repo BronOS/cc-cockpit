@@ -9,17 +9,22 @@
 //      (room-delivery.ts pointerText, the count only) and a fresh ack id; the handler applies the Stop with that id
 //      (status-reducer.ts: a blocked Stop leaves the tab `working`, send-gate.ts: the gate delivers no head) and
 //      answers `{ block, ackId }`.
-//   2. `ccc` prints the block and sends `hook.ack` with the id: `ack(tabId, ackId)` confirms it (the delivery counts).
-//   3. No ack within ACK_TIMEOUT_MS: logged, and the tab is left `working`; the block is taken as having reached
-//      Claude. A missing ack cannot tell "ccc never printed" (Claude stopped, the tab is at its prompt) from "ccc
-//      printed and the ack was lost" (Claude goes on, and a text-only continuation can run for many seconds with no
-//      hook at all). Applying a plain Stop then, as the design first had it, would set `waiting` mid-turn, and the gate
-//      (or a plugin's send) would paste into a running turn, where the Enter can answer a permission dialog: the one
-//      thing the app must never do (CLAUDE.md). Wrongly `working` only hides a tab at its prompt until the person's
-//      next prompt (UserPromptSubmit, then its Stop), the same recovery as a turn interrupted with Esc, which fires no
-//      Stop either; an idle_prompt Notification does not promote `working` (status-reducer.ts), for the same reason.
-//      The messages stay queued: nothing is lost. The block still counts toward the auto-pause once there is evidence
-//      it reached Claude: a late ack, or the next Stop saying it follows a block.
+//   2. `ccc` sends `hook.ack` with the id on the same connection: `ack(tabId, ackId)` confirms it (the delivery
+//      counts) and main answers `{ acked: true }`. Only then does `ccc` print the block (cli/client.ts runHook). The
+//      order is what makes the next step safe: an ack main never served proves the block was never printed.
+//   3. The connection closes with the block still unacked (`ccc` gave up on a slow reply, died, or got a refusal):
+//      `closedUnacked` drops it and the hook handler applies the plain Stop (SessionRegistry.unblockStop: `waiting`,
+//      the gate's head delivered), since Claude did stop. Only while the blocked Stop is still the tab's last event.
+//   4. An ack main served whose print then failed (stdout closed: EPIPE arrives after the write) or was cut by the
+//      deadline leaves the tab `working` with Claude stopped: the safe direction. `waiting` while Claude goes on would
+//      let the gate (or a plugin's send) paste into a running turn, where the Enter can answer a permission dialog:
+//      the one thing the app must never do (CLAUDE.md). Wrongly `working` only hides a tab at its prompt until the
+//      person's next prompt (UserPromptSubmit, then its Stop), the same recovery as a turn interrupted with Esc, which
+//      fires no Stop either; an idle_prompt Notification does not promote `working` (status-reducer.ts), for the
+//      same reason. The messages stay queued: nothing is lost.
+//   5. No ack within ACK_TIMEOUT_MS on a connection that stays open: logged only, the tab stays `working`. The block
+//      still counts toward the auto-pause once there is evidence it reached Claude: a late ack, or the next Stop saying
+//      it follows a block.
 //
 // Who may be continued. Only a member with messages waiting, whose tab is untyped or carries the person's mark for
 // this room and name, in a room that is neither paused nor ended. A typed tab without the mark is never blocked: a
@@ -47,10 +52,11 @@ export const MAX_STOP_BLOCKS_IN_A_ROW = 5
 /** Pointers delivered in a room with no input from the person in any member tab before the room pauses itself. */
 export const AUTO_PAUSE_DELIVERIES = 100
 /**
- * How long a block waits for `ccc`'s ack. The hook's whole budget is 500 ms (cli/client.ts HOOK_BUDGET_MS, Electron's
- * start included), so an ack later than this means `ccc` died between the reply and the ack, or never printed.
+ * How long a block waits for `ccc`'s ack before a log line. `ccc hook Stop` has 2 s in all (cli/client.ts
+ * STOP_HOOK_BUDGET_MS, after `ccc` started) and Claude Code kills the hook at 5 s (hooks-file.ts HOOK_TIMEOUT_SECONDS),
+ * so an ack later than this means a `ccc` that is stuck with its connection open; its close then undoes the block.
  */
-export const ACK_TIMEOUT_MS = 2_000
+export const ACK_TIMEOUT_MS = 5_000
 
 /** What the hook handler answers a blocked Stop with (`ccc` prints `{"decision":"block","reason":<block>}`). */
 export interface StopBlock {
@@ -161,6 +167,19 @@ export class RoomStop {
   }
 
   /**
+   * The connection `ccc hook Stop` answered on closed (main's `peerGone`), for the block `ackId`. `ccc` prints the
+   * block only after main confirmed its ack (cli/client.ts runHook), so a block still pending here was never printed:
+   * Claude stopped. Drops it (no delivery counted) and returns true, and the hook handler then applies the plain
+   * Stop (SessionRegistry.unblockStop). False for an acked block, another id, or none: the tab is left as it is.
+   */
+  closedUnacked(tabId: string, ackId: string): boolean {
+    const p = this.pending.get(tabId)
+    if (!p || p.ackId !== ackId) return false
+    this.dropPending(tabId)
+    return true
+  }
+
+  /**
    * A pointer went in (an acked Stop block, or the gate's paste: room-delivery.ts `delivered`). At
    * AUTO_PAUSE_DELIVERIES with no input from the person in the room, the room pauses itself (the registry logs the
    * auto-pause) and the count starts over for after the person's resume.
@@ -219,10 +238,10 @@ export class RoomStop {
   private timedOut(tabId: string, ackId: string): void {
     const p = this.pending.get(tabId)
     if (!p || p.ackId !== ackId) return
-    // Log only: the tab stays `working` (the header, step 3, says why a lost ack is never turned into a plain Stop).
-    // The block stays pending without its timer, so a late ack or the next Stop can still count it.
+    // Log only: the tab stays `working` (the header, step 5). The block stays pending without its timer, so a late
+    // ack or the next Stop can still count it, and the connection's close can still undo it (step 3).
     p.timer = undefined
-    this.warn(`rooms: no ack for the Stop pointer of tab ${tabId} in ${this.ackTimeout} ms; the tab stays working until its next hook`)
+    this.warn(`rooms: no ack for the Stop pointer of tab ${tabId} in ${this.ackTimeout} ms; the tab stays working until its next hook or the hook's connection closes`)
   }
 
   private dropPending(tabId: string): void {

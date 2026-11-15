@@ -10,9 +10,10 @@
 //
 // A Stop is first offered to the room stop (rooms/room-stop.ts, design-rooms.md §2 "The Stop
 // pointer"), also synchronously: a member with room messages that may be continued gets the fixed
-// pointer as the reply `{ block, ackId }` (`ccc hook Stop` prints it as `decision: block` and acks
-// with `hook.ack`, hookAckHandler below; protocol.ts STOP_REPLY_ARG), and the Stop is applied as
-// blocked, so the tab stays working and the gate delivers nothing. Only a Stop whose request says
+// pointer as the reply `{ block, ackId }` (`ccc hook Stop` acks it with `hook.ack`, hookAckHandler
+// below, and prints it as `decision: block` once main confirmed; protocol.ts STOP_REPLY_ARG), and the
+// Stop is applied as blocked, so the tab stays working and the gate delivers nothing. The connection
+// closing before the ack undoes the block (undoBlockOnClose). Only a Stop whose request says
 // `reply: true` is offered: a `ccc` from before the reply protocol closes without reading, and a
 // Stop taken as blocked there would leave the tab working with Claude stopped. Every other event,
 // and a Stop with no block, answers null as before.
@@ -24,11 +25,14 @@ import { errorText } from '../../shared/error-text'
 import { warnLog } from '../warn-log'
 import type { SessionRegistry } from './session-registry'
 
-export function hookHandler(
-  registry: Pick<SessionRegistry, 'applyHook'>,
-  rooms?: { stop(tabId: string, payload: unknown): StopBlock | undefined }
-): Handler {
-  return (args, caller) => {
+/** What the hook handler needs of the room stop (rooms/room-stop.ts RoomStop). */
+export interface HookRoomStop {
+  stop(tabId: string, payload: unknown): StopBlock | undefined
+  closedUnacked(tabId: string, ackId: string): boolean
+}
+
+export function hookHandler(registry: Pick<SessionRegistry, 'applyHook' | 'unblockStop'>, rooms?: HookRoomStop): Handler {
+  return (args, caller, peerGone) => {
     // A hook always runs inside a Claude tab. A --project caller has no business here, and
     // neither has a window token (a shell tab running `ccc hook` by hand, or a `claude` started in
     // one whose user hooks call it): applying it would create a status entry for a tab that is
@@ -40,10 +44,45 @@ export function hookHandler(
     // `payload` is null when the CLI could not parse stdin (oversized or not JSON; `truncated`
     // says which, and changes nothing here): the event still counts, with no payload to read.
     // The reducer treats any non-object payload that way, so it is passed through as is.
-    const block = event === 'Stop' && args[STOP_REPLY_ARG] === true ? roomStop(rooms, caller.tabId, args.payload) : undefined
+    //
+    // A block needs the connection it is answered on (`peerGone`): `ccc` prints only after main confirmed its ack, so
+    // the connection closing first proves the block was never printed, and the Stop is then applied as plain
+    // (undoBlockOnClose). With no signal, or a peer already gone (it gave up before main read the line), there is
+    // nobody to print it: a plain Stop.
+    const offer = event === 'Stop' && args[STOP_REPLY_ARG] === true && peerGone !== undefined && !peerGone.aborted
+    const block = offer ? roomStop(rooms, caller.tabId, args.payload) : undefined
     registry.applyHook(caller.tabId, event, args.payload, block?.ackId)
-    return block === undefined ? null : { block: block.block, ackId: block.ackId }
+    if (block === undefined) return null
+    if (rooms && peerGone) undoBlockOnClose(registry, rooms, peerGone, caller.tabId, block.ackId, args.payload)
+    return { block: block.block, ackId: block.ackId }
   }
+}
+
+/**
+ * When the Stop's connection closes (or half-closes: `ccc` never does, so either means it is gone) with the block
+ * unacked, the room stop drops it and the Stop is applied as the plain Stop it was for Claude (room-stop.ts, the
+ * header's step 3). An acked block, or a tab whose turn moved on since (SessionEntry.blockedStop), is left alone.
+ */
+function undoBlockOnClose(
+  registry: Pick<SessionRegistry, 'unblockStop'>,
+  rooms: HookRoomStop,
+  peerGone: AbortSignal,
+  tabId: string,
+  ackId: string,
+  payload: unknown
+): void {
+  peerGone.addEventListener(
+    'abort',
+    () => {
+      try {
+        if (!rooms.closedUnacked(tabId, ackId)) return
+        registry.unblockStop(tabId, ackId, payload)
+      } catch (err) {
+        warnLog(`hook: undoing the unacked Stop pointer of tab ${tabId} failed: ${errorText(err)}`)
+      }
+    },
+    { once: true }
+  )
 }
 
 /**
@@ -52,7 +91,7 @@ export function hookHandler(
  * which is what a member with no room gets anyway.
  */
 function roomStop(
-  rooms: { stop(tabId: string, payload: unknown): StopBlock | undefined } | undefined,
+  rooms: HookRoomStop | undefined,
   tabId: string,
   payload: unknown
 ): StopBlock | undefined {
@@ -66,12 +105,12 @@ function roomStop(
 }
 
 /**
- * `hook.ack` (protocol.ts HOOK_ACK_COMMAND): `ccc hook Stop` printed the block main answered with and
- * says so. A Claude tab's session token only, like `hook`; the tab is the token's, never anything in
+ * `hook.ack` (protocol.ts HOOK_ACK_COMMAND): `ccc hook Stop` got the block main answered with and will
+ * print it once this answers `{ acked: true }` (and only then). A Claude tab's session token only, like `hook`; the tab is the token's, never anything in
  * `args`, and the room stop confirms only the block it is waiting on for that tab with that id
  * (room-stop.ts `ack`), so a forged or replayed id changes nothing. Synchronous for the same reason
  * as `hook`: the ack follows its Stop on one connection and must not overtake a later hook.
- * Answers `{ acked }`; `ccc` does not read it.
+ * Answers `{ acked }`, which `ccc` reads: on false (the block was dropped, or no room stop) it prints nothing.
  */
 export function hookAckHandler(rooms?: { ack(tabId: string, ackId: unknown): boolean }): Handler {
   return (args, caller) => {

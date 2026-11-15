@@ -77,10 +77,13 @@ the badge pastes the pointer through the send gate as the person's own act. (A m
 continue the person's own turn; `typed` is the person's.)
 
 **The Stop pointer** is not a Stop: main reduces a Stop it answered with a block to `working` and does not deliver the
-gate's head (`status-reducer.ts` sets `waiting` on every Stop; `send-gate.ts` delivers at Stop). `ccc` acks after
-printing; a block main sent but never got the ack for is logged and the tab stays `working` (the 500 ms budget includes
-Electron's start): a lost ack cannot tell a `ccc` that never printed from a turn that went on, and `waiting` then could
-paste into that turn. A tab wrongly left `working` recovers at the person's next prompt, as after an interrupted turn.
+gate's head (`status-reducer.ts` sets `waiting` on every Stop; `send-gate.ts` delivers at Stop). `ccc` acks the block
+on the same connection first and prints it only once main confirmed the ack, all within its Stop budget (2 s after
+`ccc` has started; Electron's start, about 100 ms, comes before it; Claude Code's hook timeout is 5 s). So a connection
+that closes with the block unacked (a main too slow for the budget, a `ccc` that died) proves nothing was printed, and
+main applies the plain Stop then (`waiting`, the gate's head delivered). An ack main took whose print then failed
+(stdout closed) leaves the tab `working` with Claude stopped: the safe direction, since `waiting` while the turn goes
+on could paste into it. A tab wrongly left `working` recovers at the person's next prompt, as after an interrupted turn.
 The messages stay queued: nothing is lost, at worst the pointer comes again next Stop. The reply is short
 and fixed, so it cannot be cut into invalid JSON.
 
@@ -195,8 +198,8 @@ Rules (for CLAUDE.md's implementation patterns):
 - Not a boundary: tabs run as the person's OS user. The rules prevent mistakes and make an injected tab's reach through
   a room advisory text behind a pointer, not the person's voice; the docs say so.
 
-Failures: main down or a slow Stop reply means nothing printed and the messages stay queued; a block without the ack is a
-tab left working until its next hook; the person closing a member's tab removes it, its queue is dropped with a log line and the coordinator is
+Failures: main down or a slow Stop reply means nothing printed and the messages stay queued; a block whose connection
+closes unacked is applied as a plain Stop; an acked block whose print failed is a tab left working until its next hook; the person closing a member's tab removes it, its queue is dropped with a log line and the coordinator is
 told; a quit or window close keeps membership; a disabled or removed plugin ends its rooms and the docs stay; a restart
 reloads rooms paused and rematches members from the tab records.
 

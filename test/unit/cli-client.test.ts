@@ -95,8 +95,8 @@ describe('runHook: the app is not there', () => {
   it('resolves after the budget when stdin never ends', async () => {
     await fakeApp()
     const started = Date.now()
-    await runHook('Stop', env(), new PassThrough())
-    // Bounded by the budget: well below "hangs until Claude kills the hook". The headroom is for a
+    await runHook('Stop', env(), new PassThrough(), HOOK_BUDGET_MS)
+    // Bounded by the budget (passed: Stop's own default is STOP_HOOK_BUDGET_MS): well below "hangs until Claude kills the hook". The headroom is for a
     // loaded machine; vitest's 5 s test timeout is the backstop either way.
     expect(Date.now() - started).toBeLessThan(HOOK_BUDGET_MS + 1500)
   })

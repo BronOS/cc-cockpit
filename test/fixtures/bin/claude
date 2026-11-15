@@ -47,8 +47,8 @@
 // prints `FAKE-CLAUDE block <json reason>`, runs the scripted line in $FAKE_CLAUDE_ON_BLOCK (the
 // continued turn: `/ccc room read`, say) and stops again with `stop_hook_active: true`. Claude Code
 // overrides the hook after 8 blocks in a row (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, read from the 2.1.325
-// binary; the env var of that name changes it here as there): a 9th block is ignored, printed as
-// `FAKE-CLAUDE block cap`, and the turn ends. Anything else on stdout (no JSON, another decision,
+// binary; the env var of that name changes it here as there, 0 or a non-number meaning no cap): a 9th
+// block is ignored, printed as `FAKE-CLAUDE block cap`, and the turn ends. Anything else on stdout (no JSON, another decision,
 // no reason) ends the turn like a plain Stop.
 //
 // Bracketed paste (Task 15). Input from `ESC[200~` up to `ESC[201~` is one paste, even across
@@ -167,13 +167,15 @@ function blockReason(stdout) {
 
 /** A turn ends: Stop, and as long as the hook blocks (up to the cap), the turn goes on and stops again. */
 function stopTurn() {
-  const capEnv = Number(process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP)
-  const cap = Number.isInteger(capEnv) && capEnv > 0 ? capEnv : DEFAULT_STOP_BLOCK_CAP
+  // As 2.1.325 reads it (`Ht=CLAUDE_CODE_STOP_HOOK_BLOCK_CAP??8; if(Ht>0&&Ke>Ht)`): unset is 8, and a value set to 0,
+  // a negative number or anything that is not a number (NaN > 0 is false) disables the cap.
+  const capEnv = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+  const cap = capEnv === undefined ? DEFAULT_STOP_BLOCK_CAP : Number(capEnv)
   let blocks = 0
   for (;;) {
     const reason = blockReason(fireHook('Stop', { stop_hook_active: blocks > 0 }))
     if (reason === undefined) return
-    if (blocks >= cap) {
+    if (cap > 0 && blocks >= cap) {
       console.log('FAKE-CLAUDE block cap')
       return
     }

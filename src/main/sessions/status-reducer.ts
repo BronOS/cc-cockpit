@@ -141,6 +141,13 @@ export interface SessionEntry {
    */
   room?: SessionRoom
   held?: number
+  /**
+   * The ack id of the blocked Stop (ReducerEvent `blocked`) the tab is in, until the next event: set by that Stop,
+   * dropped by any later hook or the exit. SessionRegistry.unblockStop turns the blocked Stop into a plain one only
+   * while it is still the tab's last event (`ccc` closed without acking: it never printed the block, so Claude
+   * stopped). Never persisted, never in SessionInfo.
+   */
+  blockedStop?: string
 }
 
 /** SessionInfo.room: the room's title, the member's name and its coordinator flag. */
@@ -234,6 +241,11 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
   if (entry.status === 'ended') {
     if (entry.exitCode !== undefined || event.event !== 'SessionStart') return entry
   }
+  // Any hook after a blocked Stop ends it: the turn went on (or stopped again), so the block can no longer be undone.
+  if (entry.blockedStop !== undefined) {
+    entry = { ...entry }
+    delete entry.blockedStop
+  }
   const payload = isPlainObject(event.payload) ? event.payload : {}
 
   switch (event.event) {
@@ -314,8 +326,9 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
       // A Stop main answered with the room pointer (design-rooms.md §2 "The Stop pointer") is not a
       // Stop: Claude Code continues the turn with the block's reason, so the tab is still working.
       // `waiting` here would let the gate (or a plugin's send) type into a turn in progress. It stays
-      // `working` even when `ccc`'s ack never comes (room-stop.ts says why): only a later hook moves it.
-      if (event.blocked !== undefined) return { ...entry, status: 'working', tool: undefined }
+      // `working` even when `ccc`'s ack never comes (room-stop.ts says why): only a later hook moves it, or
+      // SessionRegistry.unblockStop when `ccc` closed the connection without acking (it never printed).
+      if (event.blocked !== undefined) return { ...entry, status: 'working', tool: undefined, blockedStop: event.blocked }
       return { ...entry, status: 'waiting', tool: undefined }
     case 'SessionEnd':
       return { ...entry, status: 'ended', tool: undefined }
@@ -328,7 +341,15 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
 
 function exited(entry: SessionEntry, code: number): SessionEntry {
   if (entry.status === 'ended' && entry.exitCode !== undefined) return entry
-  return { ...entry, status: 'ended', tool: undefined, exitCode: code, costUsd: undefined, contextPercent: undefined }
+  return {
+    ...entry,
+    status: 'ended',
+    tool: undefined,
+    exitCode: code,
+    costUsd: undefined,
+    contextPercent: undefined,
+    blockedStop: undefined
+  }
 }
 
 /**

@@ -111,11 +111,14 @@ export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside
  * The Stop hook's reply (design-rooms.md §2 "The Stop pointer", plan Task 7). Every hook event is fire-and-forget:
  * `ccc hook <Event>` writes `{ cmd: 'hook', token, args: { event, payload } }` and closes without reading, so a hook
  * costs one write. Only `Stop` asks for a reply, with `args.reply: true` (STOP_REPLY_ARG): `ccc` then reads one reply
- * line within its 500 ms budget. A result `{ block, ackId }` (StopBlockReply) means main answered the Stop with the room
- * pointer: `ccc` prints `{"decision":"block","reason":<block>}` for Claude Code, then sends
- *   { cmd: 'hook.ack', token, args: { ackId } }
- * on the same connection and closes. Any other result (null: a plain Stop), an error, garbage, a reason that is not
- * exactly the fixed pointer text or a slow reply prints nothing, and the hook still exits 0.
+ * line within its budget (cli/client.ts STOP_HOOK_BUDGET_MS). A result `{ block, ackId }` (StopBlockReply) means main
+ * answered the Stop with the room pointer: `ccc` then sends
+ *   { v, id: 2, cmd: 'hook.ack', token, args: { ackId } }
+ * on the same connection, reads main's answer, and only on `{ acked: true }` prints
+ * `{"decision":"block","reason":<block>}` for Claude Code. The connection is never half-closed before that. Main undoes
+ * a block whose connection closes before its ack (the Stop is applied as plain): the ack coming first is what proves
+ * an unacked block was never printed. Any other result (null: a plain Stop), an error, garbage, a reason that is not
+ * exactly the fixed pointer text, a refused ack or a slow reply prints nothing, and the hook still exits 0.
  *
  * Main blocks only a Stop that asked (`reply === true`): a `ccc` from before this change never prints the block, and a
  * Stop main took as blocked would leave that tab `working`. `hook.ack` is a session-token command like `hook` (a window

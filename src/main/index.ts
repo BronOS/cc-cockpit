@@ -2186,11 +2186,13 @@ function start(server: boolean): void {
         }
         if (event === 'UserPromptSubmit') tabs.sessionPrompted(tabId)
         return true
-      }
+      },
+      // A blocked Stop whose `ccc` closed without acking (it never printed): applied as the plain Stop it was.
+      unblockStop: (tabId, ackId, payload) => sessions.unblockStop(tabId, ackId, payload)
     })
   )
 
-  // `ccc hook Stop`'s ack of a block it printed (protocol.ts HOOK_ACK_COMMAND). No room stop is
+  // `ccc hook Stop`'s ack of a block, which it prints once this confirms (protocol.ts HOOK_ACK_COMMAND). No room stop is
   // wired yet (rooms Task 8), so no Stop is blocked and an ack confirms nothing.
   socket.handle('hook.ack', hookAckHandler())
 

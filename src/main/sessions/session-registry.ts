@@ -247,6 +247,19 @@ export class SessionRegistry {
   }
 
   /**
+   * Turn the blocked Stop `ackId` back into a plain Stop (`waiting`, the gate's head delivered): `ccc hook Stop` closed
+   * its connection without acking the block, and it prints the block only after main confirmed the ack
+   * (cli/client.ts runHook), so it never printed and Claude stopped. Only while that blocked Stop is still the tab's
+   * last event (SessionEntry.blockedStop): after any later hook the turn moved on and this is a no-op. True when the
+   * Stop was applied.
+   */
+  unblockStop(tabId: string, ackId: string, payload: unknown): boolean {
+    const entry = this.entries.get(tabId)
+    if (entry?.blockedStop === undefined || entry.blockedStop !== ackId) return false
+    return this.apply(tabId, { type: 'hook', event: 'Stop', payload })
+  }
+
+  /**
    * Listen for the person's submitted prompts in a tab (a UserPromptSubmit after their input, see
    * applyHook): the room stop ends a tab's run of Stop blocks and its cap on it (rooms/room-stop.ts,
    * design-rooms.md §2 "Loops": "until the person's next prompt"). The tab id only, after the

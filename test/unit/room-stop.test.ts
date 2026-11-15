@@ -90,8 +90,12 @@ const mark = (tabId: string, patch: Partial<TabRoom> = {}): void => {
 /** The hook handler as main runs it: the room stop decides, then the registry applies the Stop. */
 const handler = () => hookHandler(sessions, stop)
 const caller = (tabId: string): Caller => ({ kind: 'session', tabId, projectId: 'p1' })
-function hookStop(tabId: string, payload: unknown = { stop_hook_active: false }): unknown {
-  return handler()({ event: 'Stop', payload, reply: true }, caller(tabId), new AbortController().signal)
+function hookStop(
+  tabId: string,
+  payload: unknown = { stop_hook_active: false },
+  connection: AbortController = new AbortController()
+): unknown {
+  return handler()({ event: 'Stop', payload, reply: true }, caller(tabId), connection.signal)
 }
 /** A turn that goes on after a block (the continued turn runs a tool) and stops again. */
 function continued(tabId: string): void {
@@ -359,6 +363,49 @@ describe('the ack', () => {
     continued('t1')
     vi.advanceTimersByTime(ACK_TIMEOUT_MS)
     expect(sessions.get('t1')?.status).toBe('working')
+  })
+
+  it('the connection closes unacked (ccc never printed): the plain Stop is applied, waiting, the head delivered', () => {
+    member('t1', 'alpha')
+    message('alpha')
+    sessions.send('t1', 'from discuss', 'core')
+    const connection = new AbortController()
+    hookStop('t1', { stop_hook_active: false }, connection)
+    expect(sessions.get('t1')?.status).toBe('working')
+    expect(writes).toEqual([])
+    connection.abort()
+    expect(sessions.get('t1')?.status).toBe('waiting')
+    expect(writes).toEqual([{ tabId: 't1', data: paste('from discuss') }])
+    // The block is gone: a late ack confirms nothing, the messages stay held, no delivery counted.
+    expect(stop.ack('t1', 'ack-1')).toBe(false)
+    expect(rooms.held(roomId, 'alpha')).toBe(1)
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS)
+    expect(warnings).toEqual([])
+  })
+
+  it('the connection closes after the ack: Claude goes on, the tab stays working', () => {
+    member('t1', 'alpha')
+    message('alpha')
+    sessions.send('t1', 'from discuss', 'core')
+    const connection = new AbortController()
+    hookStop('t1', { stop_hook_active: false }, connection)
+    expect(stop.ack('t1', 'ack-1')).toBe(true)
+    connection.abort()
+    expect(sessions.get('t1')?.status).toBe('working')
+    expect(writes).toEqual([])
+  })
+
+  it('a later hook since the blocked Stop: the close leaves the tab as the turn left it', () => {
+    member('t1', 'alpha')
+    message('alpha')
+    sessions.send('t1', 'from discuss', 'core')
+    const connection = new AbortController()
+    hookStop('t1', { stop_hook_active: false }, connection)
+    continued('t1')
+    connection.abort()
+    expect(sessions.get('t1')?.status).toBe('working')
+    expect(sessions.get('t1')?.blockedStop).toBeUndefined()
+    expect(writes).toEqual([])
   })
 
   it('dispose and a closed tab stop the timer', () => {
