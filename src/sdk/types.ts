@@ -438,6 +438,17 @@ export interface SessionInfo {
    * from the status line like `costUsd` and absent in the same cases.
    */
   readonly contextPercent?: number
+  /**
+   * The tab's room: the room's title, the tab's member name in it and
+   * whether it is a coordinator. Absent for a tab in no room. Set by the app only; a change reaches
+   * `onChange`. An older app never sends it.
+   */
+  readonly room?: { readonly title: string; readonly name: string; readonly coordinator: boolean }
+  /**
+   * How many room messages wait for this member (held until its `ccc room read`); absent when none
+   * do and for a tab in no room. Never the messages themselves. An older app never sends it.
+   */
+  readonly held?: number
 }
 
 /**

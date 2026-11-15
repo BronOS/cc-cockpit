@@ -729,6 +729,10 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   if (e.flag !== undefined) out.flag = e.flag.note === undefined ? { color: e.flag.color } : { color: e.flag.color, note: e.flag.note }
   if (e.costUsd !== undefined) out.costUsd = e.costUsd
   if (e.contextPercent !== undefined) out.contextPercent = e.contextPercent
+  // The room's title, the member's name and flag, and the held count; never the messages, which reach
+  // only the member's own `ccc room read` (design-rooms.md §5). Summaries (scope all) get neither.
+  if (e.room !== undefined) out.room = { title: e.room.title, name: e.room.name, coordinator: e.room.coordinator }
+  if (e.held !== undefined) out.held = e.held
   if (active) out.active = true
   return out
 }

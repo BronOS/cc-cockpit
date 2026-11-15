@@ -594,7 +594,8 @@ function isSender(from: unknown): from is string {
   return from === 'plugin' || from === SYSTEM_SENDER || isRoomName(from)
 }
 
-function isMessageText(text: unknown): text is string {
+/** A message's text: a string of at most MAX_ROOM_MESSAGE_CHARS code points (the delivery checks it before counting a send). */
+export function isMessageText(text: unknown): text is string {
   if (typeof text !== 'string') return false
   if (text.length <= MAX_ROOM_MESSAGE_CHARS) return true
   if (text.length > MAX_ROOM_MESSAGE_CHARS * 2) return false // more code points than the cap even if all are pairs

@@ -310,6 +310,9 @@ with full Node access.
   come from the tab's Claude Code status line while the app setting "Rate limits from the status line" is on
   (Settings > General > Claude sessions, the default); absent before Claude's first status line and once
   the tab's process ended. A change reaches `onChange`. An older app never sends them.
+  `room` is the tab's room, `{ title, name, coordinator }` (the room's title, the tab's member name, whether it is a
+  coordinator), absent for a tab in no room; `held` is how many room messages wait for that member, absent when none do.
+  Never the messages themselves. Both are the app's to set; a change reaches `onChange`. An older app never sends them.
 - `ctx.sessions.onChange(listener)`: the whole list again on every change, a selection change
   included (at most 4 a second).
 - `ctx.sessions.rateLimits()`: the person's Claude plan usage, account-wide (the same in every window

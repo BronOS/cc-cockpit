@@ -270,6 +270,42 @@ describe('setFlag', () => {
   })
 })
 
+describe('setRoom (SessionInfo.room / held, the room delivery)', () => {
+  const ROOM = { title: 'Team', name: 'bob', coordinator: false }
+
+  it('mirrors the membership, keeps held only above 0, reports a change only when something moved, clears with null', () => {
+    start('c1')
+    const seen: unknown[] = []
+    reg.onChange((c) => seen.push([c.entry?.room, c.entry?.held]))
+    expect(reg.setRoom('c1', { ...ROOM, held: 2 })).toBe(true)
+    expect(reg.get('c1')).toMatchObject({ room: ROOM, held: 2 })
+    reg.setRoom('c1', { ...ROOM, held: 2 })
+    expect(seen).toEqual([[ROOM, 2]])
+    reg.setRoom('c1', { ...ROOM, held: 0 })
+    expect(reg.get('c1')).not.toHaveProperty('held')
+    reg.setRoom('c1', { ...ROOM, coordinator: true, held: 0 })
+    expect(reg.get('c1')!.room).toEqual({ ...ROOM, coordinator: true })
+    reg.setRoom('c1', null)
+    expect(reg.get('c1')).not.toHaveProperty('room')
+    expect(seen).toHaveLength(4)
+    expect(reg.setRoom('nope', { ...ROOM, held: 1 })).toBe(false)
+  })
+
+  it('survives a restart of the same tab (the draft bit does not); never in the summaries or the window snapshot', () => {
+    start('c1')
+    reg.setRoom('c1', { ...ROOM, held: 3 })
+    reg.userInput(P1, 'c1', 'x')
+    expect(reg.get('c1')?.draft).toBe(true)
+    reg.tabExited('c1', 0)
+    start('c1')
+    expect(reg.get('c1')).toMatchObject({ room: ROOM, held: 3, typed: true })
+    expect(reg.get('c1')?.draft).toBeUndefined()
+    const text = JSON.stringify([reg.summariesFor(P1), reg.summariesFor(P2), reg.snapshotFor(P1)])
+    expect(text).not.toContain('Team')
+    expect(text).not.toContain('held')
+  })
+})
+
 describe('summariesFor (ctx.sessions scope all, design-next §4.1)', () => {
   it('gives every tab of every project: status, tool, title, project name and colour as CSS, own for the caller', () => {
     const colored = new SessionRegistry({

@@ -3,6 +3,9 @@
 // keyboard (a signed-in device is the person, design §4), so a browser's keys set SessionInfo.typed
 // and answer a permission dialog exactly as the desktop's do, and the send gate applies unchanged:
 // a plugin's `sessions.send` to the tab is refused from then on and its queued texts are dropped.
+// The same input sets the room draft bit (SessionEntry.draft, design-rooms.md §2 "The mark"), which
+// holds a marked member's room pointer back until the prompt is submitted: one path for both, so a
+// key that counts as the person's for `typed` counts for the draft too.
 // Two views typing at once interleave, as two keyboards on one machine would.
 //
 // Kept apart from index.ts so a test drives the very wiring main uses (router -> TabManager ->
@@ -14,7 +17,7 @@ import { isPersonInput } from '../sessions/terminal-reports'
 export interface ViewInputDeps {
   /** TabManager.viewInput: strips the view's query replies, writes the rest, notes who typed. */
   viewInput(projectId: string, tabId: string, data: string, viewId: ViewId): string
-  /** SessionRegistry.userInput: `typed` (the takeover) and the answer-key step. */
+  /** SessionRegistry.userInput: `typed` (the takeover), the room draft bit and the answer-key step. */
   userInput(projectId: string, tabId: string, data: string): void
   /**
    * ViewSelections.acted: the person typed into this view's tab, so its selection is the project's

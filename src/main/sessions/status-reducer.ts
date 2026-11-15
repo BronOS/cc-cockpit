@@ -51,8 +51,11 @@ export type { TabStatus }
  * the person's takeover of the tab (SessionEntry.typed) refuses and whose queued texts it drops.
  * `core`: main's own senders acting for the person (Discuss with Claude, the e2e test hook): the
  * person started them, so typing in the tab neither refuses nor drops them.
+ * `room`: the fixed room pointer (rooms/room-delivery.ts, design-rooms.md §2), never a message's
+ * text. It is pasted at once or not at all (send-gate.ts sendNow) and never waits in the queue:
+ * the room's own queue holds the messages, so a pointer that could not go in now is simply not sent.
  */
-export type SendOrigin = 'plugin' | 'core'
+export type SendOrigin = 'plugin' | 'core' | 'room'
 
 /** Text queued for a tab until the send gate may deliver it (send-gate.ts). */
 export interface QueuedText {
@@ -123,6 +126,28 @@ export interface SessionEntry {
    */
   costUsd?: number
   contextPercent?: number
+  /**
+   * The draft bit (design-rooms.md §2 "The mark"): the person's input reached the tab since its last
+   * UserPromptSubmit, so its input box may hold a half-typed prompt. Set by SessionRegistry.userInput
+   * (the path that sets `typed`), cleared by the reducer on UserPromptSubmit. While set, a marked
+   * member gets no room pointer pasted by the gate (the paste would be glued to the draft and
+   * submitted with it). Never persisted.
+   */
+  draft?: boolean
+  /**
+   * The tab's room membership as SessionInfo.room shows it, and how many room messages wait for it
+   * (SessionInfo.held, present only when some do). Mirrored by the room delivery (SessionRegistry
+   * setRoom), which reads the room registry, the authority; the reducer never touches them.
+   */
+  room?: SessionRoom
+  held?: number
+}
+
+/** SessionInfo.room: the room's title, the member's name and its coordinator flag. */
+export interface SessionRoom {
+  title: string
+  name: string
+  coordinator: boolean
 }
 
 /** Caps for text a hook (or a plugin) hands us: a token only proves WHICH tab sent it. */
@@ -240,6 +265,8 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
     }
     case 'UserPromptSubmit': {
       const next: SessionEntry = { ...entry, status: 'working', tool: undefined }
+      // The input box was just submitted, so whatever the person had typed in it is gone with it.
+      delete next.draft
       const prompt = payload.prompt
       if (typeof prompt !== 'string') return next
       // Harness markup first, then pastes, then the cap: a long paste or block would lose its

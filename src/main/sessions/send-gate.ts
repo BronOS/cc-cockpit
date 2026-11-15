@@ -186,10 +186,28 @@ export const TYPED_ERROR = 'the person is typing in this tab'
  * person's own action, so it still goes in.
  */
 export function send(entry: SessionEntry, item: QueuedText): GateStep {
+  // A room pointer never waits in this queue (sendNow): queued, it could outlive the room's own
+  // decision (the mark, the draft bit, a pause) and be pasted at a later Stop nobody re-checked.
+  if (item.origin === 'room') throw new Error('a room pointer is never queued')
   if (entry.status === 'ended') throw new Error('the session has ended')
   if (item.origin === 'plugin' && entry.typed) throw new Error(TYPED_ERROR)
   if (entry.queue.length >= MAX_QUEUE) throw new Error(`the queue is full (${MAX_QUEUE} items)`)
   return deliverHead({ ...entry, queue: [...entry.queue, item] })
+}
+
+/**
+ * The room pointer (rooms/room-delivery.ts, design-rooms.md §2): pasted now when the tab may take
+ * text, otherwise nothing (no `write`) and the item is gone. Never queued, never put back: the
+ * room's queue is the truth, so a pointer that could not go in leaves the messages held, and the
+ * next chance (a Stop's pointer, the next send, the person's badge click) decides again. The
+ * gate's own queue is not touched either way, so an older queued text keeps its place for the
+ * next Stop. Throws for an ended session, like send.
+ */
+export function sendNow(entry: SessionEntry, item: QueuedText): GateStep {
+  if (item.origin !== 'room') throw new Error('only a room pointer is sent without the queue')
+  if (entry.status === 'ended') throw new Error('the session has ended')
+  if (!maySend(entry)) return { entry }
+  return { entry: { ...entry, delivering: true }, write: pasteBytes(item.text), delivered: item }
 }
 
 /**
@@ -206,9 +224,11 @@ export function send(entry: SessionEntry, item: QueuedText): GateStep {
  */
 export function takenOver(entry: SessionEntry): GateStep {
   if (entry.typed) return { entry }
-  const kept = entry.queue.filter((q) => q.origin !== 'plugin')
+  // Only `core` stays: a `room` item never gets queued (sendNow), but if one ever did, the
+  // takeover is exactly when it must go (design-rooms.md §2: a pointer is never kept past it).
+  const kept = entry.queue.filter((q) => q.origin === 'core')
   const step: GateStep = { entry: { ...entry, typed: true, queue: kept } }
-  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => q.origin === 'plugin')
+  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => q.origin !== 'core')
   return step
 }
 

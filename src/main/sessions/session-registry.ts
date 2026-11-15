@@ -20,7 +20,7 @@ import type { TabFlag } from '../../shared/tab-flag'
 import type { TabKind } from '../../shared/types'
 import { exitStatus } from '../pty/pty-backend'
 import * as gate from './send-gate'
-import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SendOrigin, type SessionEntry } from './status-reducer'
+import { cap, isAnswerKey, newEntry, reduce, withNote, withSteps, type QueuedText, type ReducerEvent, type SendOrigin, type SessionEntry, type SessionRoom } from './status-reducer'
 import { isPersonInput } from './terminal-reports'
 import { cleanTitle, TitleParser } from './terminal-title'
 import { warnLog } from '../warn-log'
@@ -133,7 +133,12 @@ export class SessionRegistry {
     // restart is theirs), and the flag is never cleared while the tab exists. A restored room
     // member is born typed (TabEvent.typed, design-rooms.md §1 "Restart"): `typed` is not saved,
     // and the restored session is the person's, so its room's messages wait for the person's mark.
-    this.set(prev, newEntry({ ...tab, sessionId: prev?.sessionId, typed: prev?.typed === true || tab.typed === true }))
+    const next = newEntry({ ...tab, sessionId: prev?.sessionId, typed: prev?.typed === true || tab.typed === true })
+    // A restart is the same tab in the same room: its room fields stay until the room delivery says
+    // otherwise (setRoom). The draft bit does not: the new process's input box starts empty.
+    if (prev?.room !== undefined) next.room = { ...prev.room }
+    if (prev?.held !== undefined) next.held = prev.held
+    this.set(prev, next)
   }
 
   /**
@@ -250,12 +255,23 @@ export class SessionRegistry {
   userInput(projectId: string, tabId: string, data: string): void {
     const entry = this.entries.get(tabId)
     if (!entry || entry.projectId !== projectId) return
-    if (!entry.typed && isPersonInput(data)) {
-      const step = gate.takenOver(entry)
-      if (step.dropped) {
-        this.log(`session ${tabId}: the person typed, dropped ${step.dropped.length} queued plugin text(s)`)
+    if (isPersonInput(data)) {
+      let next = entry
+      let dropped: QueuedText[] | undefined
+      if (!entry.typed) {
+        const step = gate.takenOver(entry)
+        if (step.dropped) {
+          this.log(`session ${tabId}: the person typed, dropped ${step.dropped.length} queued plugin text(s)`)
+        }
+        next = step.entry
+        dropped = step.dropped
       }
-      this.set(entry, step.entry, step.dropped)
+      // The draft bit (design-rooms.md §2), on every input of the person's, not only the first: a
+      // marked member gets no room pointer pasted on top of what they may be typing. Set on any key,
+      // an answer to a permission dialog included: a wrong guess only holds a pointer back (the
+      // Stop pointer and the badge still reach the tab), it never types anything.
+      if (next.draft !== true) next = { ...next, draft: true }
+      if (next !== entry) this.set(entry, next, dropped)
     }
     if (isAnswerKey(data)) this.apply(tabId, { type: 'answer' })
   }
@@ -305,6 +321,48 @@ export class SessionRegistry {
     const entry = this.commit(prev, step)
     // Delivered only when this very item left the queue and was not put back by a failed write.
     return { id: item.id, delivered: step.delivered === item && !entry.queue.includes(item) }
+  }
+
+  /**
+   * Paste the room pointer (rooms/room-delivery.ts) now if the tab may take text (send-gate.ts
+   * sendNow): true when it was written, false when the tab was not sendable or the write failed.
+   * Never queued, never put back. The caller (the room delivery) already decided that this tab
+   * may get it (untyped, or the person's mark with no draft, or the person's badge click); the
+   * gate only adds its own rule, waiting for input with nothing in flight. Throws for an unknown
+   * tab or an ended session, and for text prepareText refuses (the pointer is fixed text).
+   */
+  sendPointer(tabId: string, text: string): boolean {
+    const prev = this.entries.get(tabId)
+    if (!prev) throw new Error('unknown tab')
+    const item: QueuedText = { id: randomUUID(), text: gate.prepareText(text), origin: 'room' }
+    const step = gate.sendNow(prev, item)
+    if (step.delivered === undefined) return false
+    return this.commit(prev, step).delivering
+  }
+
+  /**
+   * Mirror the tab's room membership and held count (SessionInfo.room / held) from the room
+   * delivery, which reads the room registry, the authority; null removes both (the tab left, the
+   * room ended). `held` is kept only when above 0. Nothing a plugin or a hook sends reaches this.
+   * False when the tab has no entry.
+   */
+  setRoom(tabId: string, room: (SessionRoom & { held: number }) | null): boolean {
+    const prev = this.entries.get(tabId)
+    if (!prev) return false
+    const next = { ...prev }
+    delete next.room
+    delete next.held
+    if (room !== null) {
+      next.room = { title: room.title, name: room.name, coordinator: room.coordinator }
+      if (room.held > 0) next.held = room.held
+    }
+    const same =
+      prev.room?.title === next.room?.title &&
+      prev.room?.name === next.room?.name &&
+      prev.room?.coordinator === next.room?.coordinator &&
+      prev.held === next.held
+    if (!same) this.set(prev, next)
+    return true
   }
 
   /**
@@ -483,7 +541,11 @@ export class SessionRegistry {
         this.startDeliveryTimer(entry.tabId)
       } catch (err) {
         this.log(`session ${entry.tabId}: writing queued text failed: ${errorText(err)}`)
-        entry = { ...entry, queue: [step.delivered, ...entry.queue], delivering: false }
+        // A room pointer is not put back (send-gate.ts sendNow): its messages stay held in the room.
+        entry =
+          step.delivered.origin === 'room'
+            ? { ...entry, delivering: false }
+            : { ...entry, queue: [step.delivered, ...entry.queue], delivering: false }
       }
     }
     if (!entry.delivering) this.clearDeliveryTimer(entry.tabId)
