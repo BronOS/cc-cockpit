@@ -181,16 +181,11 @@ export class PointerEvidence {
     this.keyAfter = false
   }
 
-  /** A `keydown` in the shell's document. */
-  shellKey(): void {
-    this.keyAfter = true
-  }
-
   /**
-   * The focus moved to an element of the shell: whatever holds the keyboard after this was not put
-   * there by the pointer's last move.
+   * A `keydown` in the shell's document, or the focus moving to an element of the shell: whatever
+   * holds the keyboard after this was not put there by the pointer's last move.
    */
-  shellFocus(): void {
+  shellInput(): void {
     this.keyAfter = true
   }
 
@@ -208,6 +203,58 @@ export class PointerEvidence {
   keyAfterPointer(): boolean {
     return this.keyAfter
   }
+}
+
+/** What the shell's evidence listeners report to besides the pointer (PageTabArea.tsx: the pool and the check). */
+export interface EvidenceSinks {
+  /** Run the check (checkFrames) for the frame holding the keyboard, if any. */
+  check(): void
+  /** The shell sees the pointer again: a frame letting it through takes it back (PageFrames.endPassThrough). */
+  endPassThrough(): void
+  /** The focus moved within the shell (PageFrames.shellFocused). */
+  shellFocused(): void
+  /** Whether a `focusin` target is a page tab frame (the shell's iframe), or none: not a focus within the shell. */
+  isFrame(target: EventTarget | null): boolean
+  /** Run `fn` a task later (default setTimeout 0; tests inject one). */
+  later?(fn: () => void): void
+}
+
+/**
+ * The shell's listeners for the focus evidence, once for the page (PageTabArea.tsx, with the pool):
+ * `win` is the shell's window, `doc` its document. The iframe element gets no `focus` or `focusin`
+ * when the keyboard goes into it (Electron 45, the review's spike), so a `focusin` on anything else is
+ * the focus moving within the shell. A press or a key inside a frame never reaches this document.
+ */
+export function watchShellEvidence(win: EventTarget, doc: EventTarget, pointer: PointerEvidence, sinks: EvidenceSinks): void {
+  const later = sinks.later ?? ((fn: () => void) => void setTimeout(fn, 0))
+  // A task later, not in the `blur` itself: the browser is still moving the keyboard into the frame
+  // then, and a blur and refocus made during that event are undone by it (the e2e's frame kept the
+  // keyboard, its document still focused, with the shell's textarea focused too). Keys typed in that
+  // task's gap (or, for a page's hint, in the cross-process message's) land in the frame and stay
+  // there: a mount-time steal while the person types can put a character into the page (an editor's
+  // buffer, then its autosave). The gap is a few ms; nothing typed before the blur is replayed.
+  win.addEventListener('blur', () => later(() => sinks.check()))
+  const moved = (e: Event): void => {
+    const { clientX, clientY } = e as PointerEvent
+    pointer.moved(clientX, clientY)
+    // The shell sees the pointer again: a frame blurred for want of evidence takes it back (the
+    // position just recorded is the evidence for its next click).
+    sinks.endPassThrough()
+  }
+  win.addEventListener('pointermove', moved, true)
+  win.addEventListener('pointerdown', moved, true)
+  win.addEventListener('pointerout', moved, true)
+  win.addEventListener('wheel', moved, { capture: true, passive: true })
+  win.addEventListener('keydown', () => pointer.shellInput(), true)
+  doc.addEventListener(
+    'focusin',
+    (e) => {
+      if (sinks.isFrame(e.target)) return
+      pointer.shellInput()
+      sinks.shellFocused()
+    },
+    true
+  )
 }
 
 /** What the check needs of the frame pool (PageFrames; a fake in the unit tests). */

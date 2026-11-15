@@ -82,7 +82,7 @@ test('a file beside Claude: both visible, the frame inside its pane below the he
     const pane = paneOf(page, file)
     const header = pane.locator('[data-pane-header]')
     await expect(header).toContainText('notes.txt')
-    await expect(header).toContainText('Opened by cockpit.editor')
+    await expect(header).toContainText('Opened by Editor (cockpit.editor)')
     await expect
       .poll(async () => {
         const [f, p, h] = [await frameEl(page, 'notes.txt').boundingBox(), await pane.boundingBox(), await header.boundingBox()]
@@ -284,6 +284,17 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     // Back to the file for the keys-off case below (the person clicks its pane header).
     await fileHeader.click()
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+    // The frame of the focused pane loses the keyboard (as when the shell blurs it for want of
+    // evidence) while the outline stays on it: a press on its header, which changes no selection,
+    // gives the keyboard back to its frame (the recovery design-split-pages.md §4 describes).
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    await fileHeader.click()
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+    await page.keyboard.type('S')
+    await expect(editor.locator('.cm-content')).toContainText('S')
 
     // Keys off on a page pane: a change from elsewhere moves the focused file out (a raw
     // `groups.remove`, no intent of this view). The frame is blurred and no key reaches any frame or
@@ -295,11 +306,12 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await page.keyboard.type('zz')
     await page.keyboard.press('Enter')
     await page.waitForTimeout(700)
-    await expect(editor.locator('.cm-content')).not.toContainText('zz')
     await page.getByRole('tab', { name: /notes\.txt/ }).click()
     await expect.poll(() => keysInFrame(page)).toBe(true)
     await page.keyboard.type('R')
     await expect(editor.locator('.cm-content')).toContainText('R')
+    // After a later key reached the editor (keys arrive in order), so this absence is not vacuous.
+    await expect(editor.locator('.cm-content')).not.toContainText('zz')
     expect(await paneText(paneOf(page, claude))).not.toContain('FAKE-CLAUDE echo: zz')
   } finally {
     await close()

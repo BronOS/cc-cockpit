@@ -21,7 +21,7 @@ import { isPluginId, TabManager, type TabLifecycle } from '../../src/main/tabs/t
 import { TabGroups } from '../../src/main/tabs/tab-groups'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { closeQuestion } from '../../src/renderer/tabs/close-confirm'
-import { tabLabel } from '../../src/renderer/tabs/tab-label'
+import { openedByLine, tabLabel } from '../../src/renderer/tabs/tab-label'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const A = 'aaaaaaaaaaaaaaaa'
@@ -187,6 +187,33 @@ describe('TabManager page tabs', () => {
     expect(() => tabs.createPage('cccccccccccccccc', file('a'))).toThrow(/unknown project/)
     expect(() => tabs.createPage(A, { ...file('a'), title: '' })).toThrow(/title/)
     expect(tabs.createPage(A, { ...file('a'), title: 'y'.repeat(300) }).page?.title).toHaveLength(PAGE_TAB_TITLE_MAX)
+  })
+
+  it("names the page's plugin for the pane header, at open and at restore; the bare id when unknown", () => {
+    const names: Record<string, string> = { 'cockpit.editor': 'Editor', 'example.bad': 'two\nlines' }
+    const tabs = new TabManager({
+      backend,
+      projectPath: (id) => ({ [A]: projA, [B]: projB })[id],
+      loginEnv: () => ({}),
+      hooksPath: '/data/hooks.json',
+      binDir: '/data/bin',
+      sock: () => undefined,
+      emit: () => {},
+      pluginName: (id) => names[id],
+      log: () => {}
+    })
+    const opened = tabs.createPage(A, file('a'))
+    expect(opened.pluginName).toBe('Editor')
+    expect(openedByLine(opened)).toBe('Opened by Editor (cockpit.editor)')
+    expect(tabs.restoreTab(A, { kind: 'page', page: file('b') }).pluginName).toBe('Editor')
+    // Not saved: restore looks it up again.
+    expect(tabRecordsOf(tabs.list(A)).some((r) => Object.keys(r).includes('pluginName'))).toBe(false)
+    // An unknown plugin and a name that is not one line of text: the bare id.
+    const unknown = tabs.createPage(A, { ...file('c'), plugin: 'example.other' })
+    expect([unknown.pluginName, openedByLine(unknown)]).toEqual([undefined, 'Opened by example.other'])
+    expect(tabs.createPage(A, { ...file('d'), plugin: 'example.bad' }).pluginName).toBeUndefined()
+    // A person's own tab has no line.
+    expect(openedByLine(tabs.create(A, { kind: 'shell' }))).toBeUndefined()
   })
 
   it('closes, reorders and flags like any tab', () => {

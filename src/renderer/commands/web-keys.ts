@@ -67,21 +67,8 @@ export function webKeyTable(view: CommandsView, mac: boolean): CommandsView {
   const yields = (id: string): boolean => parseInGroupCommandId(id) !== undefined
   const taken = new Set<string>()
   for (const c of view.commands) if (c.key && !browserKeeps(c.key, mac) && !yields(c.id)) taken.add(c.key)
-  const moved = view.commands.map((c) => {
-    if (!c.key || !browserKeeps(c.key, mac) || yields(c.id)) return c
-    const alt = alternativeOf(c.key)
-    const out = { ...c }
-    if (taken.has(alt)) delete out.key
-    else {
-      out.key = alt
-      taken.add(alt)
-    }
-    return out
-  })
-  const commands = moved.map((c) => {
-    if (!c.key || !yields(c.id)) return c
-    // A derived chord the browser keeps (one the person gave it) moves like any other, when free.
-    const key = browserKeeps(c.key, mac) ? alternativeOf(c.key) : c.key
+  // The command with `key` when no command took it yet (which it now holds), else with no chord.
+  const assign = <C extends { key?: string }>(c: C, key: string): C => {
     const out = { ...c }
     if (taken.has(key)) delete out.key
     else {
@@ -89,6 +76,9 @@ export function webKeyTable(view: CommandsView, mac: boolean): CommandsView {
       taken.add(key)
     }
     return out
-  })
+  }
+  const moved = view.commands.map((c) => (!c.key || !browserKeeps(c.key, mac) || yields(c.id) ? c : assign(c, alternativeOf(c.key))))
+  // A derived chord the browser keeps (one the person gave it) moves like any other, when free.
+  const commands = moved.map((c) => (!c.key || !yields(c.id) ? c : assign(c, browserKeeps(c.key, mac) ? alternativeOf(c.key) : c.key)))
   return { ...view, commands }
 }

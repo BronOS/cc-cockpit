@@ -3,15 +3,6 @@ import { acquireDrag, acquireLayer } from './shell-layers'
 
 const KEY_STEP = 16
 
-/**
- * A draggable divider. `axis` is the direction it moves along ('x' for a vertical bar between
- * side-by-side things). It reports absolute sizes: the size `value` had when the drag began plus
- * the pointer's travel (negated with `invert`, for a bar on the near edge of the thing it sizes).
- * Arrow keys nudge it, so the bar is usable without a mouse.
- *
- * A drag holds a shell layer (shell-layers.ts): a webview panel's native view would take the
- * pointer from the drag wherever the bar passes over it, so views hide until the drag ends.
- */
 /** One release for two holds. */
 function both(a: () => void, b: () => void): () => void {
   return () => {
@@ -20,6 +11,17 @@ function both(a: () => void, b: () => void): () => void {
   }
 }
 
+/**
+ * A draggable divider. `axis` is the direction it moves along ('x' for a vertical bar between
+ * side-by-side things). It reports absolute sizes: the size `value` had when the drag began plus
+ * the pointer's travel (negated with `invert`, for a bar on the near edge of the thing it sizes).
+ * Arrow keys nudge it, so the bar is usable without a mouse.
+ *
+ * A drag holds a shell layer (shell-layers.ts): a webview panel's native view would take the
+ * pointer from the drag wherever the bar passes over it, so views hide until the drag ends. It
+ * holds a shell drag too (`acquireDrag`, `body.shell-dragging`): page tab frames ignore the pointer
+ * meanwhile, so one under the bar cannot take the drag's events.
+ */
 export function Splitter(props: {
   axis: 'x' | 'y'
   /** The size this bar controls now. */

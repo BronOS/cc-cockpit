@@ -250,11 +250,14 @@ describe('MachineStatus', () => {
   })
 
   it('a random default id carries nothing of the server', () => {
-    const status = new MachineStatus({ servers: () => ['s1'], name: () => 'devbox', fetch: () => new Promise(() => undefined), timers: new FakeTimers() })
+    // A server id with a character the random id's alphabet lacks: 's1' turned up in one by chance.
+    const server = 'server#1'
+    const status = new MachineStatus({ servers: () => [server], name: () => 'devbox', fetch: () => new Promise(() => undefined), timers: new FakeTimers() })
     status.sync()
     const [m] = status.machines()
     expect(m?.id).toMatch(/^m-[A-Za-z0-9_-]{12}$/)
-    expect(m?.id).not.toContain('s1')
+    expect(m?.id).not.toContain(server)
+    expect(m?.id).not.toContain('#')
     status.dispose()
   })
 })

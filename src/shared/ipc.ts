@@ -180,6 +180,11 @@ export interface TabInfo {
    */
   page?: PageTabSpec
   /**
+   * A page tab's plugin's manifest name (main looked it up by `page.plugin` when the tab opened or
+   * was restored), for the pane header's "Opened by" line; absent: show the bare id. Display only.
+   */
+  pluginName?: string
+  /**
    * The core unseen dot (design-editor.md §1): the tab was opened while another tab was selected
    * (`ccc edit` while you type in Claude), and no view has shown it yet. Cleared by the first
    * `tabs.selected` of it from any view. Never a flag (the person's alone) and never saved.

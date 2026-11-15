@@ -334,7 +334,7 @@ describe('TerminalSession takes the size on interaction', () => {
       fakeWindow.dispatchEvent(new Event('keydown'))
       expect(fits()).toBe(1)
       // The blur's own moment still saying focused, the document without it a task later: left.
-      resetWindowLeftForTest()
+      // (No reset here: the session keeps the count it saw, and the window is back already.)
       let focused = true
       Object.assign(fakeDocument, { hasFocus: () => focused })
       fakeWindow.dispatchEvent(new Event('blur'))

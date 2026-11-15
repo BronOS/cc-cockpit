@@ -369,7 +369,8 @@ project can have several, and a tab is in at most one. Groups, their layout and 
 back after a restart, like the tabs. Terminal tabs (Claude, Shell, command) and page tabs (an editor
 file tab, any plugin's page) are panes: a file can sit beside Claude, and Split right / down, Show
 beside and a drag into the area work on a page tab as on a terminal. A page pane's body is the
-plugin's page, drawn over the pane (a thin header above it has the name and marks); its text, cursor
+plugin's page, drawn over the pane (a thin header above it has the name, the marks and "Opened by Editor (cockpit.editor)", the plugin
+that opened it, which the page cannot draw); its text, cursor
 and unsaved changes stay while you move, resize or ungroup the panes. The page frames of a group's
 panes stay loaded together; more than 6 shown at once is allowed, and the rest keep the 6 most recent rule.
 
@@ -399,7 +400,7 @@ Working in a group:
 
 - Exactly one pane has the keyboard: the one you clicked or moved to, outlined while more than one
   pane shows. Each pane has a thin header with its name, its status (in words when it waits for you)
-  and "Opened by <plugin>" for a tab a plugin opened. Each window and each browser view has its own
+  and "Opened by <plugin name> (<id>)" for a tab a plugin opened. Each window and each browser view has its own
   focused pane.
 - When the pane you type in goes away because of something you did here (its ×, Cmd+W, Move Pane Out
   of Group), the pane that took its space gets the keyboard. When it goes because of anything else

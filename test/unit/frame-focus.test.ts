@@ -12,6 +12,7 @@ import {
   pointerNear,
   POINTER_FRESH_MS,
   POINTER_NEAR_PX,
+  watchShellEvidence,
   type FrameEvidence
 } from '../../src/renderer/tabs/frame-focus'
 import { TAB_FOCUS_MESSAGE } from '../../src/sdk/panel-core'
@@ -101,15 +102,57 @@ describe('pointer evidence', () => {
     expect(p.near(rect)).toBe(false)
     p.moved(150, 80)
     expect([p.near(rect), p.keyAfterPointer()]).toEqual([true, false])
-    p.shellKey()
+    p.shellInput()
     expect(p.keyAfterPointer()).toBe(true)
     p.moved(160, 90)
     expect(p.keyAfterPointer()).toBe(false)
-    p.shellFocus()
+    p.shellInput()
     expect(p.keyAfterPointer()).toBe(true)
     // A non-finite position (a synthetic event) is no position.
     p.moved(Number.NaN, 0)
     expect(p.near(rect)).toBe(true)
+  })
+
+  // PageTabArea's wiring of the evidence: a dropped listener here would pass every test above.
+  it("the shell's listeners feed the evidence: pointer events move it, a key or a shell focus voids it, a blur checks a task later", () => {
+    const win = new EventTarget()
+    const doc = new EventTarget()
+    let now = 1000
+    const p = new PointerEvidence(() => now)
+    const calls: string[] = []
+    const tasks: Array<() => void> = []
+    let frameTarget = false
+    watchShellEvidence(win, doc, p, {
+      check: () => void calls.push('check'),
+      endPassThrough: () => void calls.push('through'),
+      shellFocused: () => void calls.push('focused'),
+      isFrame: () => frameTarget,
+      later: (fn) => void tasks.push(fn)
+    })
+    const at = (type: string, x: number, y: number): Event => Object.assign(new Event(type), { clientX: x, clientY: y })
+    for (const type of ['pointermove', 'pointerdown', 'pointerout', 'wheel']) {
+      now += 10
+      win.dispatchEvent(at(type, 150, 80))
+      expect([p.near(rect), p.fresh(), p.keyAfterPointer()]).toEqual([true, true, false])
+      win.dispatchEvent(new Event('keydown'))
+      expect(p.keyAfterPointer()).toBe(true)
+    }
+    expect(calls).toEqual(['through', 'through', 'through', 'through'])
+    // A focus within the shell voids the pointer and tells the pool; one on a frame (or none) does not.
+    win.dispatchEvent(at('pointermove', 150, 80))
+    frameTarget = true
+    doc.dispatchEvent(new Event('focusin'))
+    expect(p.keyAfterPointer()).toBe(false)
+    frameTarget = false
+    doc.dispatchEvent(new Event('focusin'))
+    expect(p.keyAfterPointer()).toBe(true)
+    expect(calls.slice(5)).toEqual(['focused'])
+    // The window's blur: the check runs a task later, not in the blur itself.
+    calls.length = 0
+    win.dispatchEvent(new Event('blur'))
+    expect(calls).toEqual([])
+    for (const t of tasks.splice(0)) t()
+    expect(calls).toEqual(['check'])
   })
 
   it('the last position is fresh for POINTER_FRESH_MS', () => {
@@ -267,7 +310,7 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
 
   it('typing in Claude, a chord into A, then a hint from B within 500 ms: the keys go to nothing, never to Claude', async () => {
     const s = await setup(CLAUDE)
-    s.pointer.shellKey()
+    s.pointer.shellInput()
     // The pane chord into A: the shell's own focus call.
     s.select(TAB_A)
     s.t.frames.focus(TAB_A)
@@ -285,7 +328,7 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
 
   it("the same with A's header clicked (pointer near A, not B): B's hint gets no pick and no give-back", async () => {
     const s = await setup(CLAUDE)
-    s.pointer.shellKey()
+    s.pointer.shellInput()
     s.pointer.moved(100, 10)
     s.select(TAB_A)
     s.t.frames.focus(TAB_A)
@@ -298,7 +341,7 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
     s.select(TAB_A)
     s.t.frames.focus(TAB_A)
     for (let i = 0; i < 10; i++) {
-      s.pointer.shellKey()
+      s.pointer.shellInput()
       // The first hint moves the keyboard out of A (to B, then nothing); the rest find no frame.
       expect(checkFrames(s.t.frames, s.handler, s.pointer, TAB_B)).toBe(i === 0 ? 'blurred' : 'none')
     }
@@ -309,7 +352,7 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
   it("a frame's own focus() while the person types in Claude (a pane mounting): blurred, the keys to nothing", async () => {
     const s = await setup(CLAUDE)
     expect(s.keyboard.terminal).toBe(true)
-    s.pointer.shellKey()
+    s.pointer.shellInput()
     s.wait(50)
     // The page's script focuses its own window (the window `blur` runs the check a task later).
     s.t.el(TAB_B).focus()
@@ -320,9 +363,28 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
     expect(s.t.el(TAB_B).focused).toBe(1)
   })
 
+  // A hidden frame has no box and nothing the person sees is there: were it to hold the keyboard (its
+  // pane hidden under a zoom or another group while focused), a chord from it would name a pane not
+  // on screen. Even with every piece of evidence for it, it is blurred and nothing is picked.
+  it('a frame that is not visible holding the keyboard is blurred, whatever the evidence: no pick', async () => {
+    const s = await setup(TAB_B)
+    s.pointer.moved(500, 50)
+    s.t.frames.focus(TAB_B)
+    expect(s.t.frames.keyboardTab()).toBe(TAB_B)
+    // B's pane goes out of view (A zoomed) while its frame keeps the keyboard.
+    s.t.frames.show([TAB_A], TAB_A)
+    expect([s.t.frames.isVisible(TAB_B), s.t.el(TAB_B).focusedNow]).toEqual([false, true])
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
+    expect(s.t.el(TAB_B).blurred).toBe(1)
+    expect([s.t.frames.keyboardTab(), s.keyboard.terminal, s.picks]).toEqual([null, false, []])
+    // Its own hint after that finds no frame holding the keyboard.
+    expect(checkFrames(s.t.frames, s.handler, s.pointer, TAB_B)).toBe('none')
+    expect(s.picks).toEqual([])
+  })
+
   it('a hint while the terminal holds the keyboard moves nothing', async () => {
     const s = await setup(CLAUDE)
-    s.pointer.shellKey()
+    s.pointer.shellInput()
     expect(checkFrames(s.t.frames, s.handler, s.pointer, TAB_B)).toBe('none')
     expect([s.t.el(TAB_B).focused, s.keyboard.terminal, s.picks]).toEqual([0, true, []])
   })

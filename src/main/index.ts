@@ -1838,6 +1838,11 @@ function start(server: boolean): void {
     backend: new NodePtyBackend(),
     // A page tab opened while the window shows another tab gets the unseen dot (design-editor.md §1).
     selectedTab: (projectId) => sessions.selectedTab(projectId),
+    // A page tab's pane header names its plugin (design-split-pages.md D8), as a command tab's does.
+    pluginName: (pluginId: string): string | undefined => {
+      const name: unknown = plugins.get(pluginId)?.manifest?.name
+      return typeof name === 'string' ? name : undefined
+    },
     // Server mode: only browsers size a pty; a tab nobody sized starts at 120x40 (design-web.md §9.8).
     server,
     terminalTap: terminalMirror,

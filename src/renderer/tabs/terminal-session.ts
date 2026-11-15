@@ -89,8 +89,13 @@ function documentHasFocus(): boolean {
   return typeof document.hasFocus === 'function' && document.hasFocus()
 }
 
-/** Tests only: the page as just loaded, never left. */
+/**
+ * Tests only: the count and the away state as the page had them at load, never left. The page's
+ * own `blur` / `focus` listeners stay: they are added once per page (on its first terminal), on the
+ * `window` of that moment, so a test file keeps one window for all its sessions.
+ */
 export function resetWindowLeftForTest(): void {
+  windowLeaves = 0
   windowAway = false
 }
 

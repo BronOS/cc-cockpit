@@ -10,7 +10,7 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import type { PaneNode } from '../../shared/tab-groups'
-import { checkFrames, PointerEvidence, type FrameCheck, type FrameFocusHandler } from './frame-focus'
+import { checkFrames, PointerEvidence, watchShellEvidence, type FrameCheck, type FrameFocusHandler } from './frame-focus'
 import { frameBoxes } from './pane-layout'
 import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
@@ -80,40 +80,14 @@ function frameHasKeys(tabId: string): boolean {
   return typeof at === 'object' && at.tab === tabId
 }
 
-/**
- * The shell's listeners for the focus evidence, once for the page (with the pool). The iframe element
- * gets no `focus` or `focusin` when the keyboard goes into it (Electron 45, the review's spike), so a
- * `focusin` on anything else is the focus moving within the shell. A press or a key inside a frame
- * never reaches this document.
- */
+/** The shell's listeners for the focus evidence (frame-focus.ts watchShellEvidence), once for the page. */
 function watchFrameFocus(): void {
-  // A task later, not in the `blur` itself: the browser is still moving the keyboard into the frame
-  // then, and a blur and refocus made during that event are undone by it (the e2e's frame kept the
-  // keyboard, its document still focused, with the shell's textarea focused too). Keys typed in that
-  // task's gap (or, for a page's hint, in the cross-process message's) land in the frame and stay
-  // there: a mount-time steal while the person types can put a character into the page (an editor's
-  // buffer, then its autosave). The gap is a few ms; nothing typed before the blur is replayed.
-  window.addEventListener('blur', () => setTimeout(() => void checkFrameFocus(), 0))
-  const moved = (e: PointerEvent | WheelEvent): void => {
-    pointer.moved(e.clientX, e.clientY)
-    // The shell sees the pointer again: a frame blurred for want of evidence takes it back (the
-    // position just recorded is the evidence for its next click).
-    frames?.endPassThrough()
-  }
-  window.addEventListener('pointermove', moved, true)
-  window.addEventListener('pointerdown', moved, true)
-  window.addEventListener('pointerout', moved, true)
-  window.addEventListener('wheel', moved, { capture: true, passive: true })
-  window.addEventListener('keydown', () => pointer.shellKey(), true)
-  document.addEventListener(
-    'focusin',
-    (e) => {
-      if (e.target instanceof HTMLIFrameElement || e.target === null) return
-      pointer.shellFocus()
-      frames?.shellFocused()
-    },
-    true
-  )
+  watchShellEvidence(window, document, pointer, {
+    check: () => void checkFrameFocus(),
+    endPassThrough: () => frames?.endPassThrough(),
+    shellFocused: () => frames?.shellFocused(),
+    isFrame: (target) => target === null || target instanceof HTMLIFrameElement
+  })
 }
 
 /**
@@ -146,13 +120,19 @@ function createFrame(title: string): PageFrameElement {
   iframe.hidden = true
   layerElement().appendChild(iframe)
   const messageListeners: Array<(event: MessageEvent) => void> = []
+  // The box last applied (`place`): created hidden, so the first show always writes.
+  let placed = 'hidden'
   return {
     load: (url) => {
       iframe.src = url
     },
     // Pixels in the layer (position: absolute there, styles.css): set straight on the element,
-    // never by moving it, which would reload its page.
+    // never by moving it, which would reload its page. The pool places every live frame at each
+    // show (a title or status change re-runs it), so a box that did not change writes nothing.
     place: (box) => {
+      const key = box === null ? 'hidden' : `${box.left} ${box.top} ${box.width} ${box.height}`
+      if (key === placed) return
+      placed = key
       if (box === null) {
         iframe.hidden = true
         return

@@ -27,7 +27,8 @@ const code = (body) =>
 
 test('load() calls no view.focus(): a file that loads never takes the keyboard from the shell', () => {
   const body = code(bodyOf('load'))
-  assert.doesNotMatch(body, /\.focus\(\)/)
+  // Any call form: `.focus()`, `.focus({ preventScroll })`, `.focus?.()`, `["focus"]()`.
+  assert.doesNotMatch(body, /\.focus\s*(\?\.)?\s*\(|\[\s*["'`]focus["'`]\s*\]/)
   // What it keeps: the frame that already holds the keyboard puts it in the new buffer.
   assert.match(body, /if \(document\.hasFocus\(\)\) refocusAfterInert\(\)/)
 })

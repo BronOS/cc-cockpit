@@ -19,7 +19,7 @@ import {
   type Size
 } from './pane-layout'
 import { PageTabArea, pageFrames, usePageUnavailable } from './PageTabArea'
-import { pageTabMarks, tabLabel } from './tab-label'
+import { openedByLine, pageTabMarks, tabLabel } from './tab-label'
 import type { SessionRegistry } from './terminal-session'
 import { TerminalView } from './TerminalView'
 
@@ -238,10 +238,20 @@ export function SplitArea(props: {
             // into a pane is a pick too. The take itself is the session's (its own pointerdown).
             // A frame holding the keyboard gives it to the pressed terminal at once (the parent may
             // focus while a child frame has the keyboard; design-split-pages.md §4).
+            // A press on the header or inset band of the page pane that is focused already changes no
+            // selection, so PageTabArea's select effect does not run again: its frame takes the keyboard
+            // here, the shell's own call (a frame blurred for want of evidence gets it back from the
+            // person's press on its pane, design-split-pages.md §4). Never while inert (a dialog is up).
             onPointerDownCapture={() => {
               props.onPanePress(tab.id)
-              if (tab.kind !== 'page' && pageFrames().keyboardTab() !== null) sessions.get(tab.id).focus()
+              if (tab.kind !== 'page') {
+                if (pageFrames().keyboardTab() !== null) sessions.get(tab.id).focus()
+              } else if (focused && !props.inert) pageFrames().focus(tab.id)
             }}
+            // A page pane holds nothing focusable of the shell's: the press's default (focus to
+            // nothing, as for any press on an unfocusable element) on its header or body would take
+            // the keyboard from the frame just given it, by the press above or the select effect.
+            onMouseDown={tab.kind === 'page' ? (e) => e.preventDefault() : undefined}
           >
             {many && <PaneHeader tab={tab} label={label} detail={detail} asking={asking} focused={focused} />}
             {tab.kind === 'page' ? (
@@ -250,10 +260,9 @@ export function SplitArea(props: {
               // frame blurs its text and misplaces clicks; a page has no pty to spare a resize).
               // A press reaches this body on the inset band around the frame, or through a frame
               // blurred for want of evidence (which lets the pointer through until it moves,
-              // frame-focus.ts): the pane press above picks the pane and its
-              // frame takes the keyboard, which the press's default (focus to nothing, as for any
-              // press on an unfocusable element) would take away again.
-              <div className="pane-body pane-page-body" onMouseDown={(e) => e.preventDefault()}>
+              // frame-focus.ts): the pane press above picks the pane and its frame takes the
+              // keyboard (the section's onMouseDown keeps the press's default from undoing that).
+              <div className="pane-body pane-page-body">
                 {unavailable.has(tab.id) && <p className="pane-page-unavailable">This page is not available: its plugin is off or did not load.</p>}
               </div>
             ) : (
@@ -355,9 +364,9 @@ function PaneHeader(props: {
   focused: boolean
 }): React.JSX.Element {
   const { tab, detail } = props
-  // A page tab's plugin is named from TabInfo.page: a page can draw anything, a look-alike Claude
-  // terminal included, and this header (with the plugin's name) is the one line it cannot draw.
-  const by = tab.openedBy !== undefined ? (tab.openedByName ?? tab.openedBy) : tab.kind === 'page' ? tab.page?.plugin : undefined
+  // A page tab's plugin is named from TabInfo.page (and its name from TabInfo.pluginName): a page can
+  // draw anything, a look-alike Claude terminal included, and this header is the one line it cannot draw.
+  const by = openedByLine(tab)
   const marks = pageTabMarks(tab)
   return (
     <div className="pane-header" data-pane-header="" data-focused={props.focused || undefined}>
@@ -370,7 +379,7 @@ function PaneHeader(props: {
       </span>
       {marks.length > 0 && <span className="pane-header-marks">{marks.join(', ')}</span>}
       {props.asking && <span className="pane-header-ask">{props.asking}</span>}
-      {by !== undefined && <span className="pane-header-by">Opened by {by}</span>}
+      {by !== undefined && <span className="pane-header-by">{by}</span>}
     </div>
   )
 }

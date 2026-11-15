@@ -31,10 +31,22 @@ export function commandTooltip(tab: TabInfo): string | undefined {
   const runs = tab.argv !== undefined ? argvText(tab.argv) : tab.command
   if (runs === undefined) return undefined
   const lines = [runs, tab.cwd]
-  if (tab.openedBy !== undefined) {
-    lines.push(`Opened by ${tab.openedByName ? `${tab.openedByName} (${tab.openedBy})` : tab.openedBy}`)
-  }
+  const by = openedByLine(tab)
+  if (by !== undefined) lines.push(by)
   return lines.join('\n')
+}
+
+/**
+ * "Opened by Files (cockpit.files)" for a tab a plugin opened (a command tab's `openedBy`, a page
+ * tab's `page.plugin`), the bare id when the plugin's name is not known; undefined for a tab the
+ * person opened. The id stays beside the name: a manifest name is the plugin's own text, the id is
+ * what the Plugins page lists (and `cockpit.` ids are reserved for bundled plugins).
+ */
+export function openedByLine(tab: TabInfo): string | undefined {
+  const id = tab.openedBy ?? (tab.kind === 'page' ? tab.page?.plugin : undefined)
+  if (id === undefined) return undefined
+  const name = tab.openedBy !== undefined ? tab.openedByName : tab.pluginName
+  return `Opened by ${name ? `${name} (${id})` : id}`
 }
 
 /**

@@ -71,8 +71,9 @@ laid over the tab area while a page tab is selected and the shown frame fills it
 **The pane itself.** A page tab is a `<section className="pane">` in SplitArea's one flat list, like a terminal's:
 `data-pane`, the press capture that picks it, `hidden` when not visible, the "Starting…" stand-in while its tab is not
 listed yet. Its body is empty (the frame lies over it). Its header is the shell's: the tab's title, the strip's marks in
-words ("unsaved changes", "not seen yet", `tab-label.ts`) and "Opened by <plugin>" from `TabInfo.page.plugin` (its name
-where the page knows it, else the id). The header is why the frame's box excludes it: a page can draw anything, a
+words ("unsaved changes", "not seen yet", `tab-label.ts`) and "Opened by <name> (<id>)" from `TabInfo.page.plugin` and
+`TabInfo.pluginName` (the manifest name main looks up when the tab opens or is restored; the bare id when there is
+none), the same line a command tab's tooltip has (`tab-label.ts` `openedByLine`). The header is why the frame's box excludes it: a page can draw anything, a
 look-alike Claude terminal with a permission prompt included, and the one line it cannot draw is the shell's own
 header naming the plugin (D8's reason for command tabs, stronger here). A page pane with no page here (`pageTabs.src`
 answered null: its plugin was switched off mid-session; the pool's `none` set) shows one line in its body, "This page

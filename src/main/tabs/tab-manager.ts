@@ -137,6 +137,12 @@ export interface TabManagerOptions {
    * goes back to the next view of its lineage (views/view-sizes.ts `departed`).
    */
   lineageOf?: (viewId: ViewId) => string | undefined
+  /**
+   * A plugin's manifest name, for a page tab's "Opened by" line (TabInfo.pluginName): read when the
+   * tab is opened or restored (restore waits for the plugin, so it is loaded by then). Display only;
+   * absent, or undefined for an id, shows the bare id.
+   */
+  pluginName?(pluginId: string): string | undefined
   /** Overrides RECONNECT_GRACE_MS (views/view-sizes.ts) for tests. */
   reconnectGraceMs?: number
   /** Overrides SHELL_MIN_LIFE_MS; main sets it only under CC_COCKPIT_TEST so e2e can exit fast. */
@@ -382,6 +388,8 @@ interface Tab {
   exit?: { code: number; signal: number | null }
   /** Kind 'page' only: what it shows (checkPageTabSpec). Such a tab never has a pty, token or exit. */
   page?: PageTabSpec
+  /** Kind 'page' only: its plugin's manifest name when known (TabInfo.pluginName); never saved. */
+  pluginName?: string
   /** The core unseen dot (TabInfo.unseen): opened while another tab was selected, not shown since. */
   unseen?: true
   /**
@@ -754,6 +762,9 @@ export class TabManager {
       resumeFailed: false,
       page
     }
+    // Checked as a command tab's openedByName is (one line, clamped): a manifest name is the plugin's text.
+    const name = checkTabCommandLabel(this.options.pluginName?.(page.plugin))
+    if (name.ok) tab.pluginName = name.value
     if (unseen) tab.unseen = true
     if (flag !== undefined) tab.flag = { ...flag }
     this.byId.set(tab.id, tab)
@@ -1455,6 +1466,7 @@ function info(tab: Tab): TabInfo {
   if (tab.flag !== undefined) out.flag = { ...tab.flag }
   if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }
   if (tab.page) out.page = pageCopy(tab.page)
+  if (tab.pluginName !== undefined) out.pluginName = tab.pluginName
   if (tab.unseen) out.unseen = true
   if (tab.dirtyIn !== undefined) out.dirty = true
   if (tab.command) {

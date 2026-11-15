@@ -103,6 +103,10 @@ describe('closeGroupQuestion (Close all of a split group)', () => {
     const q = closeGroupQuestion('g', 'G', [shell, page({ dirty: true })], status, false)
     expect(q?.group).toMatchObject({ groupId: 'g', tabIds: ['s', 'p'], running: [], unsaved: ['p'] })
     expect(q?.group?.unsavedTitles).toHaveLength(1)
+    // Only the unsaved part is said: no "and", no running count.
+    expect(closeQuestionText(q!)).toBe('This closes all 2 tabs of the group; 1 has unsaved changes (closing discards them):')
+    const two = closeGroupQuestion('g', 'G', [page({ dirty: true }), page({ id: 'p2', dirty: true })], status, false)
+    expect(closeQuestionText(two!)).toBe('This closes all 2 tabs of the group; 2 have unsaved changes (closing discards them):')
   })
 
   it('counts this view’s own dirty report before main’s round trip shows it', () => {
@@ -132,6 +136,7 @@ describe('closeGroupQuestion (Close all of a split group)', () => {
     const q = closeGroupQuestion('g', 'G', [shell, page()], status, true)
     expect(q?.group?.unsaved).toEqual([])
     expect(q?.group?.running).toHaveLength(1)
+    expect(closeQuestionText(q!)).toBe('This closes all 2 tabs of the group; 1 is still running (closing ends it):')
   })
 })
 
