@@ -154,6 +154,8 @@ describe('walkFolder', () => {
     expect(skipped).toEqual({ name: 4 })
     expect(walkName(Buffer.from([0x61, 0xc3]))).toBeNull()
     expect(walkName(Buffer.from('é.txt'))).toBe('é.txt')
+    // A leading BOM must not be stripped into a twin's name.
+    expect(walkName(Buffer.from('\uFEFFfoo'))).not.toBe('foo')
   })
 
   it.runIf(process.getuid?.() !== 0)('skips unreadable folders whole', async () => {

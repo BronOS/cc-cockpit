@@ -13,11 +13,13 @@
 // exhaust the stack. Every fs call is raced against the signal: a hung `lstat` on a dead network mount
 // would otherwise hold the walk (and the 10 s bound) forever; the call itself is left to finish on the
 // thread pool. Names are read as bytes (`readdir` with `encoding: 'buffer'`): one that is not UTF-8 would
-// be decoded lossily as a string and then name a different file, or none.
+// be decoded lossily as a string and then name a different file, or none. A folder is re-`lstat`ed after
+// its listing and must be the same dev and inode, so one swapped for a link in between is skipped; a file
+// the process cannot read is still counted here (the writer's open skips it, a counted `unreadable` skip).
 //
 // Pure Node, no Electron (the plan's rule for `main/files/downloads.ts` and its helpers).
 import type { Stats } from 'node:fs'
-import { lstat as fsLstat, readdir as fsReaddir } from 'node:fs/promises'
+import { lstat as fsLstat, opendir as fsOpendir } from 'node:fs/promises'
 import path from 'node:path'
 import {
   DOWNLOAD_FALLBACK_NAME,
@@ -45,7 +47,21 @@ export interface WalkFs {
 // folder listing's, and the lstat is also the `expect` the writer's openVerified checks against.
 const nodeFs: WalkFs = {
   lstat: (p) => fsLstat(p),
-  readdir: (p) => fsReaddir(p, { encoding: 'buffer' }) as Promise<Buffer[]>,
+  // `opendir`, stopping past the entry cap: a folder with more names than a zip may hold is over the cap
+  // by itself, and `readdir` would load every name into main's memory first.
+  readdir: async (p) => {
+    const dir = await fsOpendir(p, { encoding: 'buffer' as unknown as BufferEncoding })
+    const names: Buffer[] = []
+    try {
+      for await (const d of dir) {
+        names.push(d.name as unknown as Buffer)
+        if (names.length > DOWNLOAD_ZIP_MAX_ENTRIES) break
+      }
+    } finally {
+      await dir.close().catch(() => undefined)
+    }
+    return names
+  },
 }
 
 export interface WalkOptions {
@@ -97,7 +113,7 @@ export function walkName(raw: Buffer): string | null {
   return nameAllowed(name) ? name : null
 }
 
-const UTF8 = new TextDecoder('utf-8', { fatal: true })
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 function nameAllowed(name: string): boolean {
   return name !== '' && name !== '.' && name !== '..' && !name.includes('\\') && !name.includes('/') && !CONTROL.test(name)
@@ -111,7 +127,10 @@ export function zipRootName(name: string): string {
 /** `p` rejected when `signal` aborts first, with the signal's reason; the fs call itself is not stopped. */
 function raced<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return p
-  signal.throwIfAborted()
+  if (signal.aborted) {
+    p.catch(() => undefined) // already started: its failure must not be unhandled
+    signal.throwIfAborted()
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => reject(signal.reason)
     signal.addEventListener('abort', onAbort, { once: true })
@@ -126,6 +145,12 @@ function raced<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
       },
     )
   })
+}
+
+/** Whether `p` is still the folder `before` was (not swapped for a link or another folder since). */
+async function sameFolder(fs: WalkFs, p: string, before: Stats, signal: AbortSignal | undefined): Promise<boolean> {
+  const now = await raced(fs.lstat(p), signal)
+  return now.isDirectory() && now.dev === before.dev && now.ino === before.ino
 }
 
 /** Control the walker reads between items: set by the counting pass once the "with" totals are over a cap. */
@@ -147,6 +172,7 @@ async function* walkItems(opts: WalkOptions, markWithin: boolean, steer: Steerin
   const rootStat = await raced(fs.lstat(opts.root), signal)
   if (!rootStat.isDirectory()) throw new Error('not a folder')
   const names = await raced(fs.readdir(opts.root), signal)
+  if (!(await sameFolder(fs, opts.root, rootStat, signal))) throw new Error('not a folder')
   yield { type: 'entry', entry: { kind: 'folder', path: opts.root, name: `${rootName}/`, stat: rootStat }, within: false }
   yield* walkChildren(opts.root, `${rootName}/`, names, 1, false)
 
@@ -211,6 +237,8 @@ async function* walkItems(opts: WalkOptions, markWithin: boolean, steer: Steerin
       try {
         // Listed before its entry is given: a folder that cannot be read is skipped whole, not zipped empty.
         children = await raced(fs.readdir(abs), signal)
+        // lstat then readdir is a gap: a folder swapped for a link meanwhile was listed through it.
+        if (!(await sameFolder(fs, abs, st, signal))) throw new Error('changed')
       } catch (err) {
         if (signal?.aborted) throw err
         yield { type: 'skip', reason: 'unreadable', within: childWithin }
