@@ -1,7 +1,7 @@
 // The room channels of a project window's shell page (design-rooms.md §2 "The mark", §5 "The room view"): the person's
 // acts on a member tab (the strip's mark and held badge) and on a room (the room view). Apart from router.ts so the
 // rooms' rules sit together; each register function takes only the deps its channels use, wired in index.ts.
-import type { DeliverHeldAnswer } from '../../shared/tab-room'
+import type { DeliverHeldAnswer, TabRoomRef } from '../../shared/tab-room'
 import { MAX_ID_CHARS } from '../../shared/room-names'
 import type { RoomView } from '../../shared/room-view'
 import { fields, tabIdOf, type CallView, type IpcRouter } from './router'
@@ -14,8 +14,11 @@ import { fields, tabIdOf, type CallView, type IpcRouter } from './router'
 export interface RoomStripHandlerDeps {
   /** Server mode: a browser view counts as the person (the approvals rule); outside it a browser is refused. */
   server: boolean
-  /** The tab's stored mark (TabManager.roomOf): undefined for a tab of another project or in no room. */
-  markOf(projectId: string, tabId: string): boolean | undefined
+  /**
+   * The tab's stored membership and mark (TabManager.roomOf): undefined for a tab of another project or in no room.
+   * Checked against the request's `room` (the membership the person acted on) before anything is done.
+   */
+  membershipOf(projectId: string, tabId: string): { id: string; name: string; mark: boolean } | undefined
   /** TabManager.setRoomMark (throws for a tab of another project or in no room): the mark as stored. */
   roomMark(projectId: string, tabId: string, mark: boolean): boolean
   /** The mark went from off to on (RoomService.markTurnedOn): what waits is offered again. */
@@ -34,6 +37,11 @@ export interface RoomStripHandlerDeps {
  * the person (decided by the view main bound, never the payload). Nothing is announced here: TabManager.setRoomMark
  * already tells every view (`tabs.added`), and a delivery changes the sessions snapshot. What waits is offered again
  * only when the mark goes from off to on: clearing it, or setting it again, delivers nothing.
+ *
+ * Both carry the membership the strip showed (`room`): a request that waited (a slow view, a busy main) while the tab
+ * left room A and joined room B must not mark B or paste B's pointer, since the person acted on A (design-rooms.md §2:
+ * the mark is bound to (tab, room)). Main's own lookup decides; the payload only makes a stale request fail. The
+ * check and the act run in one synchronous turn, so nothing changes the membership in between.
  */
 export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHandlerDeps): void {
   router.handleProject('tabs.roomMark', (ctx, payload, view) => {
@@ -41,7 +49,11 @@ export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHand
     const mark = fields('tabs.roomMark', payload).mark
     if (typeof mark !== 'boolean') throw new Error('tabs.roomMark: mark must be true or false')
     const tabId = tabIdOf('tabs.roomMark', payload)
-    const was = deps.markOf(ctx.projectId, tabId) === true
+    const expected = roomRefOf('tabs.roomMark', payload)
+    const current = deps.membershipOf(ctx.projectId, tabId)
+    if (current === undefined) throw new Error('tabs.roomMark: the tab is in no room')
+    if (!sameRoom(current, expected)) throw new Error('tabs.roomMark: the tab is no longer in that room (stale request)')
+    const was = current.mark
     const stored = deps.roomMark(ctx.projectId, tabId, mark)
     if (stored && !was) deps.markTurnedOn(ctx.projectId, tabId)
     return stored
@@ -50,8 +62,28 @@ export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHand
     personOnly(deps.server, 'rooms.deliverHeld', view)
     const overDraft = fields('rooms.deliverHeld', payload).overDraft
     if (overDraft !== undefined && overDraft !== true) throw new Error('rooms.deliverHeld: overDraft must be true or absent')
-    return deps.deliverHeld(ctx.projectId, tabIdOf('rooms.deliverHeld', payload), overDraft === true)
+    const tabId = tabIdOf('rooms.deliverHeld', payload)
+    const expected = roomRefOf('rooms.deliverHeld', payload)
+    // Gone or moved since the badge was drawn: the badge's room is the one the person meant, so nothing goes in.
+    const current = deps.membershipOf(ctx.projectId, tabId)
+    if (current === undefined || !sameRoom(current, expected)) return { delivered: false, why: 'no-room' }
+    return deps.deliverHeld(ctx.projectId, tabId, overDraft === true)
   })
+}
+
+/** The membership a request was made against (`room: { id, name }`): plain strings of a sane length, compared only. */
+function roomRefOf(channel: string, payload: unknown): TabRoomRef {
+  const room = fields(channel, payload).room
+  if (typeof room !== 'object' || room === null || Array.isArray(room)) throw new Error(`${channel}: room must be { id, name }`)
+  const { id, name } = room as Record<string, unknown>
+  if (typeof id !== 'string' || id.length === 0 || id.length > MAX_ID_CHARS) throw new Error(`${channel}: room.id must be a room id`)
+  if (typeof name !== 'string' || name.length === 0 || name.length > MAX_ID_CHARS) throw new Error(`${channel}: room.name must be a member name`)
+  return { id, name }
+}
+
+/** The tab's current membership is the one the request was made against. */
+function sameRoom(current: TabRoomRef, expected: TabRoomRef): boolean {
+  return current.id === expected.id && current.name === expected.name
 }
 
 /**

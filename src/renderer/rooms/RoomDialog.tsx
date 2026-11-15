@@ -84,6 +84,7 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
         // The plugin deleted the room: nothing here can act on it any more, so the last read goes too.
         if (isRoomGone(message)) {
           setView(null)
+          docSeq.current++
           setDoc(null)
           setConfirming(null)
           setGone(true)
@@ -118,9 +119,15 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
   const toDocLink = (path: string): void => {
     focusNext.current = byData('data-doc-path', path)
   }
+  // Leaving the viewer (Back, Esc, the room gone) also drops a read still on its way: bumping docSeq makes its answer
+  // stale, or a slow `rooms.doc` would land after Back and open the viewer again over the lists.
+  const closeDoc = (): void => {
+    docSeq.current++
+    setDoc(null)
+  }
   const backFromDoc = (path: string): void => {
     toDocLink(path)
-    setDoc(null)
+    closeDoc()
   }
 
   // Esc steps back out of what is open inside first (the remove question, then the doc viewer), then closes. Heard on

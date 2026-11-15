@@ -3074,7 +3074,7 @@ function start(server: boolean): void {
   // and the socket handlers reach neither TabManager.setRoomMark nor the badge (no-plugin-room-mark.test.ts).
   registerRoomStripHandlers(router, {
     server,
-    markOf: (projectId, tabId) => tabs.roomOf(projectId, tabId)?.mark,
+    membershipOf: (projectId, tabId) => tabs.roomOf(projectId, tabId),
     roomMark: (projectId, tabId, mark) => tabs.setRoomMark(projectId, tabId, mark),
     // After setRoomMark, which threw for a tab of another project: the tab is the sender's own.
     markTurnedOn: (_projectId, tabId) => rooms.markTurnedOn(tabId),

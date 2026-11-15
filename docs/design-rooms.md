@@ -108,7 +108,10 @@ member, 60 per room (configurable, §6). **Pause** in the room view holds all de
 
 **The mark** ("Deliver room messages automatically") is the person's alone: written only from the shell page (top
 frame, the sender's own tabs), like the flag; no host API, hook or `ccc` path. It is bound to (tab, room) and cleared
-when the tab leaves or the room ends, so a marked tab that joins another room is not auto-delivered. **Draft bit:** set
+when the tab leaves or the room ends, so a marked tab that joins another room is not auto-delivered. The toggle and the
+badge's click carry the room id and member name the strip showed; main refuses the toggle (and answers the click
+`no-room`) when the tab's membership differs by then, so a request that waited while the tab moved never marks or
+delivers into the other room. **Draft bit:** set
 by the person's input in the tab (`viewInput`, the path that sets `typed`), cleared by `UserPromptSubmit`; while set, a
 marked tab gets no gate paste (the Stop pointer is fine: the box is Claude's while it works). A key the prompt takes
 while a permission prompt or dialog is up (`needs-permission`: Enter, a digit, an arrow) does not set it: it leaves

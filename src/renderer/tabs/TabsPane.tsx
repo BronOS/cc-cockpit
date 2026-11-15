@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import type { CccCommandView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import { TOGGLE_FLAG_COMMAND, type FlagPatch } from '../../shared/tab-flag'
+import type { TabRoomRef } from '../../shared/tab-room'
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { CommandPalette } from '../commands/CommandPalette'
 import { commandAllowed } from '../commands/command-gate'
@@ -151,7 +152,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [error, setError] = useState<string | null>(null)
   // The tab whose badge click last answered `draft`: the strip's error then carries "Deliver anyway" for it (shown only
   // while that error is the one on screen, so a later error never inherits the button).
-  const [draftHeld, setDraftHeld] = useState<string | null>(null)
+  const [draftHeld, setDraftHeld] = useState<{ tabId: string; room: TabRoomRef } | null>(null)
   // The user entries of the [+] menu, read each time the menu opens (Settings may have changed them).
   const [menuCommands, setMenuCommands] = useState<TabCommandMenu | null>(null)
   const { own } = useSessions()
@@ -726,16 +727,19 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     )
 
   // The person's room mark (tab menu): main stores it and tells every view (`tabs.added`), so nothing is applied here.
-  const roomMark = (tabId: string, mark: boolean): void => run(window.cockpit.invoke('tabs.roomMark', { tabId, mark }))
+  // `room` is the membership the menu showed: main refuses the toggle when the tab is in another room by then.
+  const roomMark = (tabId: string, room: TabRoomRef, mark: boolean): void =>
+    run(window.cockpit.invoke('tabs.roomMark', { tabId, room, mark }))
   // The held badge: the pointer as the person's own act. A click that put nothing in says why (tab-room.ts), never
   // silence; the badge's count follows from the next sessions snapshot.
   // A `draft` answer offers "Deliver anyway": main cannot see the input box, so the person says whether to add the
   // pointer to what may be in it (overDraft, their own act; main still checks everything else again).
-  const deliverHeld = (tabId: string, overDraft = false): void =>
+  // `room` is the badge's room (kept for "Deliver anyway" too): a tab that moved to another room answers `no-room`.
+  const deliverHeld = (tabId: string, room: TabRoomRef, overDraft = false): void =>
     run(
-      window.cockpit.invoke('rooms.deliverHeld', overDraft ? { tabId, overDraft: true } : { tabId }).then((answer) => {
+      window.cockpit.invoke('rooms.deliverHeld', overDraft ? { tabId, room, overDraft: true } : { tabId, room }).then((answer) => {
         if (answer.delivered) return
-        setDraftHeld(answer.why === 'draft' ? tabId : null)
+        setDraftHeld(answer.why === 'draft' ? { tabId, room } : null)
         setError(deliverHeldText(answer.why))
       })
     )
@@ -1451,7 +1455,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           <p role="alert" className="tabs-error">
             {error}
             {draftHeld !== null && error === deliverHeldText('draft') && (
-              <button type="button" className="tabs-error-action" onClick={() => deliverHeld(draftHeld, true)}>
+              <button type="button" className="tabs-error-action" onClick={() => deliverHeld(draftHeld.tabId, draftHeld.room, true)}>
                 {DELIVER_ANYWAY_LABEL}
               </button>
             )}

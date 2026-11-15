@@ -32,6 +32,17 @@ export function tabRoomOf(raw: unknown): TabRoom | undefined {
   return { id, name, coordinator, mark: mark === true }
 }
 
+/**
+ * The membership a person's act on a member tab was made against (`tabs.roomMark`, `rooms.deliverHeld`): the room id
+ * and member name the strip showed when the person clicked. Main's own lookup stays the authority; this only lets main
+ * refuse a request that went stale meanwhile (design-rooms.md §2: the mark is bound to (tab, room)): a tab that left
+ * room A and joined room B before a mark meant for A was handled must not have B marked without the person's say.
+ */
+export interface TabRoomRef {
+  id: string
+  name: string
+}
+
 /** Two memberships (or none) say the same: what the tab manager compares before reporting a change. */
 export function sameTabRoom(a: TabRoom | undefined, b: TabRoom | undefined): boolean {
   return a?.id === b?.id && a?.name === b?.name && a?.coordinator === b?.coordinator && a?.mark === b?.mark
@@ -42,7 +53,10 @@ export function sameTabRoom(a: TabRoom | undefined, b: TabRoom | undefined): boo
  * the strip can say it instead of a click that silently did nothing.
  */
 export type DeliverHeldWhy =
-  /** The tab is in no room (it left, was removed, or the room ended since the strip drew the badge). */
+  /**
+   * The tab is no longer in the room the badge was drawn for (it left, was removed, the room ended, or it is now in
+   * another room or under another name since the strip drew the badge).
+   */
   | 'no-room'
   /** Nothing waits for the member (its own `ccc room read` took it meanwhile). */
   | 'nothing-held'

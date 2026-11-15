@@ -7,7 +7,7 @@
 // of the room registry (title, held count). The marker needs the tab record: a tab main says is in no room shows none
 // even while a late snapshot still has the room.
 import type { SessionDetail, TabInfo } from '../../shared/ipc'
-import type { DeliverHeldWhy } from '../../shared/tab-room'
+import type { DeliverHeldWhy, TabRoomRef } from '../../shared/tab-room'
 
 export interface RoomMarker {
   /** The member's name, drawn on the marker. */
@@ -23,11 +23,14 @@ export interface HeldBadge {
   tooltip: string
   /** The badge button's accessible name. */
   label: string
+  /** The membership the badge was drawn for: sent with the click, so main refuses it once the tab is elsewhere. */
+  room: TabRoomRef
 }
 
 /** One room entry of the tab's context menu. */
 export type RoomMenuItem =
-  | { id: 'mark'; label: string; checked: boolean; description: string }
+  /** `room`: the membership the entry was drawn for, sent with the toggle (main refuses it once the tab is elsewhere). */
+  | { id: 'mark'; label: string; checked: boolean; description: string; room: TabRoomRef }
   | { id: 'room'; label: string }
 
 export const MARK_LABEL = 'Deliver room messages automatically'
@@ -68,7 +71,8 @@ export function heldBadge(tab: TabInfo, detail: SessionDetail | undefined): Held
   return {
     text: held > BADGE_MAX ? `${BADGE_MAX}+` : String(held),
     tooltip: `${what}\n${why}\nClick to have Claude read them now.`,
-    label: `${what}: deliver now`
+    label: `${what}: deliver now`,
+    room: { id: tab.room.id, name: tab.room.name }
   }
 }
 
@@ -82,7 +86,8 @@ export function roomMenuItems(tab: TabInfo, options: { roomView: boolean }): Roo
       checked: tab.room.mark,
       description: tab.room.mark
         ? 'Room messages reach this tab even though you typed in it'
-        : 'Off: once you type in this tab, room messages wait behind its badge'
+        : 'Off: once you type in this tab, room messages wait behind its badge',
+      room: { id: tab.room.id, name: tab.room.name }
     }
   ]
   if (options.roomView) items.push({ id: 'room', label: ROOM_VIEW_LABEL })
@@ -96,7 +101,7 @@ export const DELIVER_ANYWAY_LABEL = 'Deliver anyway'
 export function deliverHeldText(why: DeliverHeldWhy): string {
   switch (why) {
     case 'no-room':
-      return 'This tab is no longer in a room.'
+      return 'This tab is no longer in that room.'
     case 'nothing-held':
       return 'No room messages are waiting for this tab any more.'
     case 'paused':

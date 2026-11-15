@@ -46,6 +46,8 @@ describe('heldBadge', () => {
     expect(badge?.label).toBe('3 room messages waiting: deliver now')
     expect(badge?.tooltip).toContain('Click to have Claude read them now.')
     expect(heldBadge(member(), inRoom({ held: 1 }))?.label).toBe('1 room message waiting: deliver now')
+    // The badge's room goes with the click: main answers `no-room` once the tab is in another room.
+    expect(badge?.room).toEqual({ id: ROOM_ID, name: 'bob' })
   })
 
   it('caps the drawn count at 99+', () => {
@@ -80,7 +82,14 @@ describe('heldBadge', () => {
 describe('roomMenuItems', () => {
   it('offers the mark (checked as stored) and the room view for a member tab', () => {
     expect(roomMenuItems(member(), { roomView: true })).toEqual([
-      { id: 'mark', label: MARK_LABEL, checked: false, description: expect.stringContaining('wait behind its badge') },
+      {
+        id: 'mark',
+        label: MARK_LABEL,
+        checked: false,
+        description: expect.stringContaining('wait behind its badge'),
+        // The membership the entry was drawn for, sent with the toggle (main refuses it once the tab is elsewhere).
+        room: { id: ROOM_ID, name: 'bob' }
+      },
       { id: 'room', label: ROOM_VIEW_LABEL }
     ])
     expect(roomMenuItems(member({ mark: true }), { roomView: true })[0]).toMatchObject({ id: 'mark', checked: true })

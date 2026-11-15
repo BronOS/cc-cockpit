@@ -361,6 +361,21 @@ describe('RoomDocs limits and text', () => {
     await docs.put(ROOM, plugin, 'shared/fill/f0.md', 'replaced')
   })
 
+  it('counts the folders a put makes against the entry cap, not the new file alone', async () => {
+    // shared + fill + MAX - 4 files: MAX - 2 entries, room for a doc in one new folder and nothing deeper.
+    mkdirSync(store('shared', 'fill'), { recursive: true })
+    for (let i = 0; i < MAX_ROOM_DOC_ENTRIES - 4; i++) writeFileSync(store('shared', 'fill', `f${i}.md`), '')
+    // Two folders and the file: one past the cap, refused before anything is made.
+    expect((await failure(docs.put(ROOM, plugin, 'shared/b/c/new.md', 'x')))?.code).toBe('limit')
+    expect(existsSync(store('shared', 'b'))).toBe(false)
+    // A member's first doc makes members/ and members/<name>/ too: three entries, refused alike.
+    expect((await failure(docs.put(ROOM, plugin, 'members/bob/new.md', 'x')))?.code).toBe('limit')
+    expect(existsSync(store('members'))).toBe(false)
+    // One folder and the file: exactly the cap.
+    await docs.put(ROOM, plugin, 'shared/a/new.md', 'x')
+    expect(existsSync(store('shared', 'a', 'new.md'))).toBe(true)
+  })
+
   it('removes temp files a killed write left behind, so they stop counting', async () => {
     mkdirSync(store('shared'), { recursive: true })
     writeFileSync(store('shared', 'a.md.tmp-abcdef123456'), 'x'.repeat(1000))

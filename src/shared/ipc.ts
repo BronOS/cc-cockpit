@@ -20,7 +20,7 @@ import type { PluginLimitsView } from './plugin-limits'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
-import type { DeliverHeldAnswer, TabRoom } from './tab-room'
+import type { DeliverHeldAnswer, TabRoom, TabRoomRef } from './tab-room'
 import type { RoomRemoveAsk, RoomView } from './room-view'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
@@ -1672,13 +1672,15 @@ export interface IpcInvokeMap {
    * The person's room mark on a member tab ("Deliver room messages automatically", design-rooms.md §2): only from the
    * shell page of the tab's own project window, the one way the mark is ever written (TabManager.setRoomMark).
    * Answers the mark as stored; the tab reaches every view as `tabs.added` (main emits it, the reply adds nothing).
+   * `room`: the membership the menu showed (tab-room.ts TabRoomRef); refused when the tab's current one differs (stale).
    */
-  'tabs.roomMark': { req: { tabId: string; mark: boolean }; res: boolean }
+  'tabs.roomMark': { req: { tabId: string; room: TabRoomRef; mark: boolean }; res: boolean }
   /**
    * The held badge's click: the room pointer through the send gate as the person's own act, or why it did not go in.
    * `overDraft`: the person's "Deliver anyway" after a `draft` answer (the pointer is added to what is in the box).
+   * `room`: the membership the badge was drawn for; a tab now in another room (or none) answers `no-room`.
    */
-  'rooms.deliverHeld': { req: { tabId: string; overDraft?: true }; res: DeliverHeldAnswer }
+  'rooms.deliverHeld': { req: { tabId: string; room: TabRoomRef; overDraft?: true }; res: DeliverHeldAnswer }
   /**
    * The room view (design-rooms.md §5, shared/room-view.ts): a room of the sender's own project (by the id in a member
    * tab's TabInfo.room): members with status, held and coordinator, the docs list, the newest log events. Reading only;

@@ -256,7 +256,10 @@ export class RoomDocs {
       const old = parent === null ? null : await lstatOrNull(join(parent, name))
       // A link or a folder where the doc goes is refused, never replaced: a link in the store means someone planted it.
       if (old !== null && !old.isFile()) throw new Refused(old.isSymbolicLink() ? 'symlink' : 'not-file')
-      if (old === null && store.entries >= MAX_ROOM_DOC_ENTRIES) {
+      // A new doc adds itself and every folder the put has to make (a deep path makes up to MAX_DOC_DEPTH + 1 of them,
+      // `members/<name>` included): counting the file alone let a put of a deep path pass the cap by several entries.
+      const added = old !== null ? 0 : 1 + (parent === null ? await this.missingDirs(docs, dirs) : 0)
+      if (added > 0 && store.entries + added > MAX_ROOM_DOC_ENTRIES) {
         throw new RoomError('limit', `a room's docs may be at most ${MAX_ROOM_DOC_ENTRIES} files and folders together`)
       }
       if (store.bytes - (old?.size ?? 0) + data.length > this.maxRoomBytes) {
@@ -352,6 +355,16 @@ export class RoomDocs {
       if (st === null || !st.isDirectory()) return null
     }
     return at
+  }
+
+  /** How many of `parts` below `from` a put would make: from the first missing folder on, every one of them. */
+  private async missingDirs(from: string, parts: string[]): Promise<number> {
+    let at = from
+    for (let i = 0; i < parts.length; i++) {
+      at = join(at, parts[i] as string)
+      if ((await lstatOrNull(at)) === null) return parts.length - i
+    }
+    return 0
   }
 
   /** Every regular file the caller could list, as store paths; links and odd files are skipped, never followed. */

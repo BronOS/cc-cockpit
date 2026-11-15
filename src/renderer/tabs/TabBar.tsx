@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import type { SessionDetail, TabCommandMenu, TabInfo, TabStatus } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import { splitChord } from '../../shared/keys'
+import type { TabRoomRef } from '../../shared/tab-room'
 import { FLAG_COLOR_LABEL, FLAG_COLORS, MAX_FLAG_NOTE_CHARS, type FlagColor, type FlagPatch } from '../../shared/tab-flag'
 import { chordKeys, chordOf } from '../commands/keybindings'
 import { usePrefs } from '../prefs/prefs-store'
@@ -168,10 +169,13 @@ export function TabBar(props: {
   onRename: (tabId: string, name: string | null) => void
   /** The person's flag: a colour, a note, both, or `null` to clear (main checks and stores it). */
   onFlag: (tabId: string, patch: FlagPatch | null) => void
-  /** The person's room mark on a member tab (tab-room.ts; main stores it, the tab comes back as `tabs.added`). */
-  onRoomMark: (tabId: string, mark: boolean) => void
-  /** The held badge's click: the room pointer as the person's own act. */
-  onDeliverHeld: (tabId: string) => void
+  /**
+   * The person's room mark on a member tab (tab-room.ts; main stores it, the tab comes back as `tabs.added`). `room`:
+   * the membership the entry showed, so main refuses the toggle once the tab is in another room.
+   */
+  onRoomMark: (tabId: string, room: TabRoomRef, mark: boolean) => void
+  /** The held badge's click: the room pointer as the person's own act, for the room the badge was drawn for. */
+  onDeliverHeld: (tabId: string, room: TabRoomRef) => void
   /** "Room..." in a member tab's menu; absent: the entry is not shown. */
   onOpenRoom?: (tabId: string) => void
   /**
@@ -568,7 +572,7 @@ export function TabBar(props: {
           className="tab-held"
           title={held.tooltip}
           aria-label={held.label}
-          onClick={() => props.onDeliverHeld(tab.id)}
+          onClick={() => props.onDeliverHeld(tab.id, held.room)}
         >
           {held.text}
         </button>
@@ -865,7 +869,7 @@ export function TabBar(props: {
                   aria-checked={item.checked}
                   title={item.description}
                   aria-description={item.description}
-                  onClick={() => props.onRoomMark(menu.tabId, !item.checked)}
+                  onClick={() => props.onRoomMark(menu.tabId, item.room, !item.checked)}
                 >
                   <span className="menu-check" aria-hidden="true">
                     {item.checked ? '✓' : ''}

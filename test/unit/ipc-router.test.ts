@@ -2992,21 +2992,30 @@ describe('registerGroupHandlers', () => {
 })
 
 describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
-  function roomSetup(options: { server?: boolean } = {}): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+  // The membership the strip showed when the person clicked (TabRoomRef).
+  const ROOM = { id: '11111111-1111-4111-8111-111111111111', name: 'bob' }
+  function roomSetup(options: { server?: boolean } = {}): {
+    ipc: FakeIpcMain
+    router: IpcRouter
+    calls: unknown[][]
+    members: Map<string, { id: string; name: string; mark: boolean }>
+  } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
-    // The stored marks main would hold: t1 starts off, `marked` starts on.
-    const marks = new Map<string, boolean>([
-      ['t1', false],
-      ['t2', false],
-      ['marked', true]
-    ])
+    // The memberships main would hold, all in ROOM as bob: t1 starts off, `marked` starts on.
+    const members = new Map<string, { id: string; name: string; mark: boolean }>(
+      ['t1', 't2', 'held', 'marked'].map((tabId) => [tabId, { ...ROOM, mark: tabId === 'marked' }])
+    )
     registerRoomStripHandlers(router, {
       server: options.server === true,
-      markOf: (_projectId, tabId) => marks.get(tabId),
+      membershipOf: (_projectId, tabId) => {
+        const member = members.get(tabId)
+        return member ? { ...member } : undefined
+      },
       roomMark: (projectId, tabId, mark) => {
         calls.push(['roomMark', projectId, tabId, mark])
-        marks.set(tabId, mark)
+        const member = members.get(tabId)
+        if (member) member.mark = mark
         return mark
       },
       markTurnedOn: (projectId, tabId) => {
@@ -3017,15 +3026,15 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
         return tabId === 'held' ? { delivered: true } : { delivered: false, why: 'paused' }
       }
     })
-    return { ipc, router, calls }
+    return { ipc, router, calls, members }
   }
 
   it("acts on the sender's own project, the tab id looked up there, and answers main's result", async () => {
     const { ipc, calls } = roomSetup()
-    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark: true, projectId: PROJECT_B }])).toBe(true)
-    expect(await ipc.invoke('tabs.roomMark', 12, [{ tabId: 't2', mark: false }])).toBe(false)
-    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', projectId: PROJECT_B }])).toEqual({ delivered: true })
-    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1' }])).toEqual({ delivered: false, why: 'paused' })
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true, projectId: PROJECT_B }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 12, [{ tabId: 't2', room: ROOM, mark: false }])).toBe(false)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, projectId: PROJECT_B }])).toEqual({ delivered: true })
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1', room: ROOM }])).toEqual({ delivered: false, why: 'paused' })
     expect(calls).toEqual([
       ['roomMark', PROJECT_A, 't1', true],
       ['markTurnedOn', PROJECT_A, 't1'],
@@ -3038,21 +3047,61 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
   it('offers what waits again only when the mark goes from off to on', async () => {
     const { ipc, calls } = roomSetup()
     // Set again while on, cleared, cleared again: stored, nothing offered (turning delivery off must not deliver).
-    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: true }])).toBe(true)
-    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: false }])).toBe(false)
-    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: false }])).toBe(false)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: false }])).toBe(false)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: false }])).toBe(false)
     expect(calls.filter((c) => c[0] === 'markTurnedOn')).toEqual([])
     // Off to on: offered once; on again: not.
-    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: true }])).toBe(true)
-    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: true }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: true }])).toBe(true)
     expect(calls.filter((c) => c[0] === 'markTurnedOn')).toEqual([['markTurnedOn', PROJECT_A, 'marked']])
+  })
+
+  it('refuses a stale request: the tab left the room the strip showed and joined another (or the name changed)', async () => {
+    const { ipc, calls, members } = roomSetup()
+    // The person toggled the mark on room A's entry; before main handled it, the tab left A and joined B as bob.
+    const roomB = { id: '22222222-2222-4222-8222-222222222222', name: 'bob' }
+    members.set('t1', { ...roomB, mark: false })
+    members.set('held', { ...roomB, mark: false })
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true }])).rejects.toThrow(/stale request/)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM }])).toEqual({ delivered: false, why: 'no-room' })
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, overDraft: true }])).toEqual({
+      delivered: false,
+      why: 'no-room'
+    })
+    // Same room, another member name: a new membership too.
+    members.set('t2', { id: ROOM.id, name: 'carol', mark: false })
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't2', room: ROOM, mark: true }])).rejects.toThrow(/stale request/)
+    // In no room at all.
+    members.delete('marked')
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 'marked', room: ROOM, mark: false }])).rejects.toThrow(/in no room/)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'marked', room: ROOM }])).toEqual({ delivered: false, why: 'no-room' })
+    expect(calls).toEqual([])
+    expect(members.get('t1')?.mark).toBe(false)
+    // The request made against B goes through.
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: roomB, mark: true }])).toBe(true)
+    expect(calls).toEqual([
+      ['roomMark', PROJECT_A, 't1', true],
+      ['markTurnedOn', PROJECT_A, 't1']
+    ])
+  })
+
+  it('refuses a missing or malformed room before main is asked', async () => {
+    const { ipc, calls } = roomSetup()
+    const bad: unknown[] = [undefined, null, 'room', [], {}, { id: ROOM.id }, { name: 'bob' }, { id: 1, name: 'bob' }, { id: '', name: 'bob' }]
+    bad.push({ id: 'x'.repeat(65), name: 'bob' }, { id: ROOM.id, name: 'b'.repeat(65) })
+    for (const room of bad) {
+      await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room, mark: true }]), JSON.stringify(room)).rejects.toThrow(/room/)
+      await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room }]), JSON.stringify(room)).rejects.toThrow(/room/)
+    }
+    expect(calls).toEqual([])
   })
 
   it('"Deliver anyway": overDraft true passes through, anything but true or absent is refused', async () => {
     const { ipc, calls } = roomSetup()
-    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', overDraft: true }])).toEqual({ delivered: true })
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, overDraft: true }])).toEqual({ delivered: true })
     for (const overDraft of [false, 'true', 1, null]) {
-      await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', overDraft }])).rejects.toThrow(/overDraft must be true or absent/)
+      await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', room: ROOM, overDraft }])).rejects.toThrow(/overDraft must be true or absent/)
     }
     expect(calls).toEqual([['deliverHeld', PROJECT_A, 'held', true]])
   })
@@ -3060,34 +3109,34 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
   it('refuses a mark that is not a boolean and a missing tab id before main is asked', async () => {
     const { ipc, calls } = roomSetup()
     for (const mark of ['true', 1, null, undefined]) {
-      await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark }])).rejects.toThrow(/mark must be true or false/)
+      await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark }])).rejects.toThrow(/mark must be true or false/)
     }
-    await expect(ipc.invoke('tabs.roomMark', 11, [{ mark: true }])).rejects.toThrow()
-    await expect(ipc.invoke('rooms.deliverHeld', 11, [{}])).rejects.toThrow()
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ room: ROOM, mark: true }])).rejects.toThrow()
+    await expect(ipc.invoke('rooms.deliverHeld', 11, [{ room: ROOM }])).rejects.toThrow()
     expect(calls).toEqual([])
   })
 
   it("takes both from the shell page's top frame of a project window only (never a plugin panel or the picker)", async () => {
     const { ipc, calls } = roomSetup()
-    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark: true }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
-    await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1' }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1', room: ROOM }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
     await expect(
-      ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark: true }], { parent: null, url: 'cc-plugin://example.plugin/panel.html' })
+      ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', room: ROOM, mark: true }], { parent: null, url: 'cc-plugin://example.plugin/panel.html' })
     ).rejects.toThrow()
-    await expect(ipc.invoke('tabs.roomMark', 13, [{ tabId: 't1', mark: true }])).rejects.toThrow(/not a project window/)
-    await expect(ipc.invoke('rooms.deliverHeld', 13, [{ tabId: 't1' }])).rejects.toThrow(/not a project window/)
+    await expect(ipc.invoke('tabs.roomMark', 13, [{ tabId: 't1', room: ROOM, mark: true }])).rejects.toThrow(/not a project window/)
+    await expect(ipc.invoke('rooms.deliverHeld', 13, [{ tabId: 't1', room: ROOM }])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
   })
 
   it("adapted: a desktop's browser is refused, a server's browser counts as the person", async () => {
     const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
     const desktop = roomSetup()
-    await expect(desktop.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', mark: true })).rejects.toThrow(/outside server mode/)
-    await expect(desktop.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held' })).rejects.toThrow(/outside server mode/)
+    await expect(desktop.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', room: ROOM, mark: true })).rejects.toThrow(/outside server mode/)
+    await expect(desktop.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held', room: ROOM })).rejects.toThrow(/outside server mode/)
     expect(desktop.calls).toEqual([])
     const server = roomSetup({ server: true })
-    expect(await server.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', mark: true })).toBe(true)
-    expect(await server.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held' })).toEqual({ delivered: true })
+    expect(await server.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', room: ROOM, mark: true })).toBe(true)
+    expect(await server.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held', room: ROOM })).toEqual({ delivered: true })
     expect(server.calls).toEqual([
       ['roomMark', PROJECT_A, 't1', true],
       ['markTurnedOn', PROJECT_A, 't1'],
