@@ -1,6 +1,7 @@
 // The user-facing `ccc` commands as socket handlers (plan: Task 21): open, session note/steps,
 // overlay, sessions, notify; the plugin commands (plan B Task 5): plugin.cli.spec, plugin.cli,
 // plugin.cli.list; and the plugin dev loop (Task 6): plugin.link, plugin.unlink, plugin.list.
+// The rooms Task 8 commands: room.status, room.join, room.leave, room.send, room.read, room.doc.ls|get|put.
 // (`hook` and `hook.ack` are sessions/hook-handler.ts.)
 //
 // Authority (CLAUDE.md: main is the only authority): the SocketServer already built `caller` from
@@ -43,6 +44,7 @@ import type { HostCliCall } from '../plugins/host-manager'
 import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type LinkDialogInfo } from '../plugins/link-request'
 import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
 import { rootAbsoluteUrlWarnings } from '../../shared/root-absolute-urls'
+import type { RoomService, RoomTabCaller } from '../rooms/room-service'
 import type { SessionEntry } from '../sessions/status-reducer'
 import type { Caller, Handler } from './socket-server'
 
@@ -583,6 +585,45 @@ export function panelShowHandler(options: PanelShowOptions): Handler {
 
 export function registerPanelShowHandler(server: { handle(cmd: string, handler: Handler): void }, options: PanelShowOptions): void {
   server.handle('panel.show', panelShowHandler(options))
+}
+
+/**
+ * What the `room.*` commands need (rooms/room-service.ts RoomService). Each takes the tab main resolved from the session
+ * token; the member's name, coordinator flag and room come from the room registry by that tab.
+ */
+export type RoomCliService = Pick<RoomService, 'status' | 'join' | 'leave' | 'send' | 'read' | 'docList' | 'docGet' | 'docPut'>
+
+/**
+ * The `ccc room` commands (design-rooms.md §4): a Claude tab only. The server refuses a window token and a tokenless
+ * caller for every `room.*` name (none is in WINDOW_TOKEN_COMMANDS or TOKENLESS_COMMANDS), and roomTab refuses them
+ * again. Identity is the token's tab and project, never a field of `args`: a request naming a tab, a room, a member or
+ * a sender changes nothing, since none of those fields is read. `args` carries only the invite, the recipient, the
+ * text and the doc path, each checked by the room service (a RoomError's message is the answer).
+ */
+export function roomHandlers(rooms: RoomCliService): Record<string, Handler> {
+  return {
+    'room.status': (_args, caller) => rooms.status(roomTab(caller)),
+    'room.join': (args, caller) => rooms.join(roomTab(caller), args.invite),
+    'room.leave': (_args, caller) => rooms.leave(roomTab(caller)),
+    'room.send': (args, caller) => ({ delivery: rooms.send(roomTab(caller), args.to, args.text) }),
+    'room.read': (_args, caller) => rooms.read(roomTab(caller)),
+    'room.doc.ls': async (_args, caller) => ({ docs: await rooms.docList(roomTab(caller)) }),
+    'room.doc.get': async (args, caller) => ({ text: await rooms.docGet(roomTab(caller), args.path) }),
+    'room.doc.put': async (args, caller) => {
+      await rooms.docPut(roomTab(caller), args.path, args.text)
+      return null
+    }
+  }
+}
+
+/** The `ccc room` caller: a Claude tab's session token only (`room` needs a tab, design-rooms.md §4). */
+function roomTab(caller: Caller): RoomTabCaller {
+  if (caller.kind !== 'session') throw new Error('ccc room needs a Claude tab (run it inside a cockpit Claude tab)')
+  return { tabId: caller.tabId, projectId: caller.projectId }
+}
+
+export function registerRoomHandlers(server: { handle(cmd: string, handler: Handler): void }, rooms: RoomCliService): void {
+  for (const [cmd, handler] of Object.entries(roomHandlers(rooms))) server.handle(cmd, handler)
 }
 
 /** Register every user command on the server (a `handle(cmd, handler)` is all it needs). */

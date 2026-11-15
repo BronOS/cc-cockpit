@@ -150,6 +150,7 @@ import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookAckHandler, hookHandler } from './sessions/hook-handler'
+import { RoomService } from './rooms/room-service'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
@@ -157,7 +158,7 @@ import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
-import { registerCliHandlers, registerPanelShowHandler, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
+import { registerCliHandlers, registerPanelShowHandler, registerRoomHandlers, registerPluginCliHandlers, registerPluginConfigHandler, registerPluginDevHandlers } from './socket/handlers'
 import { registerWebHandlers, webHandlerDeps } from './socket/web-handlers'
 import { pluginConfigView, setPluginConfig, useGlobalConfig, type PluginConfigDeps } from './settings/plugin-config'
 import { SocketServer, type TokenOwner } from './socket/socket-server'
@@ -1803,6 +1804,22 @@ function start(server: boolean): void {
     // delivery must not set SessionInfo.typed (the person's takeover flag).
     write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
   })
+  // Rooms (design-rooms.md, rooms/room-service.ts): messages and shared docs between Claude tabs. The service owns the
+  // room registry, the doc store, the delivery and the Stop decision; the tab manager (`tabs`, defined below, reached
+  // only once a tab exists) keeps the saved membership and the person's mark. Loaded now, before any window restores
+  // its tabs, so a restored member can rebind (each room comes back paused). The send caps are the defaults until the
+  // person's per-plugin limits exist (rooms Task 11).
+  const rooms: RoomService = new RoomService({
+    dir: join(dataDir, 'rooms'),
+    tabs: {
+      setRoom: (projectId, tabId, room) => tabs.setRoom(projectId, tabId, room),
+      clearRoom: (projectId, tabId) => tabs.clearRoom(projectId, tabId),
+      roomOf: (projectId, tabId) => tabs.roomOf(projectId, tabId),
+      kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId)
+    },
+    sessions
+  })
+  rooms.load()
   // The session gist (app setting, off by default): Haiku summarises a tab's last prompts after a
   // turn. The run gets the env a tab gets with no tab variables (no token, no socket), so `claude`
   // resolves on the same PATH as a tab's and nothing it starts can act as a tab (gist-run.ts).
@@ -1852,9 +1869,13 @@ function start(server: boolean): void {
     // hooks would hand them its token and every prompt. `socket` is defined below; this runs at
     // spawn time only.
     sock: (): string | undefined => (socket.listening ? sock : undefined),
+    // A member tab's restore (rebind), the person's close (the membership ends) and a window or quit (unbound only).
+    rooms: rooms.tabHooks,
     lifecycle: {
       started: (tab) => {
         sessions.tabStarted(tab)
+        // A member (restored and rebound, or restarted): its SessionInfo room fields, and an offer of what waits.
+        rooms.tabStarted(tab.tabId)
         // A browser that selected the tab before it had a process joins its terminal now
         // (web/view-terminals.ts `started`). Only called once a window attached, after
         // `webConnections` below is defined.
@@ -1864,6 +1885,7 @@ function start(server: boolean): void {
       exited: (tabId, code, signal) => sessions.tabExited(tabId, code, signal),
       closed: (tabId) => {
         sessions.tabClosed(tabId)
+        rooms.tabClosed(tabId)
         // A browser that selected the tab before it ever started stops waiting for it.
         webConnections.tabClosed(tabId)
         // Its pane goes (the group may dissolve); TabManager's own change right after saves it.
@@ -2175,8 +2197,10 @@ function start(server: boolean): void {
   socket.handle(
     'hook',
     hookHandler({
-      applyHook: (tabId, event, payload) => {
-        if (!sessions.applyHook(tabId, event, payload)) return false
+      // `blocked`: the ack id of the room pointer this Stop was answered with (rooms/room-stop.ts); the registry keeps
+      // the tab working for it, so it must reach applyHook (dropping it would apply the Stop as plain, then block).
+      applyHook: (tabId, event, payload, blocked) => {
+        if (!sessions.applyHook(tabId, event, payload, blocked)) return false
         const sessionId = sessions.get(tabId)?.sessionId
         if (event === 'SessionStart' && sessionId !== undefined) {
           // `source` tells an interactive `/resume` (a stored conversation, stays resumable) from
@@ -2189,12 +2213,17 @@ function start(server: boolean): void {
       },
       // A blocked Stop whose `ccc` closed without acking (it never printed): applied as the plain Stop it was.
       unblockStop: (tabId, ackId, payload) => sessions.unblockStop(tabId, ackId, payload)
-    })
+    },
+    // The room stop: a member's Stop with room messages waiting may be answered with the pointer (design-rooms.md §2).
+    rooms.stop)
   )
 
-  // `ccc hook Stop`'s ack of a block, which it prints once this confirms (protocol.ts HOOK_ACK_COMMAND). No room stop is
-  // wired yet (rooms Task 8), so no Stop is blocked and an ack confirms nothing.
-  socket.handle('hook.ack', hookAckHandler())
+  // `ccc hook Stop`'s ack of a block, which it prints once this confirms (protocol.ts HOOK_ACK_COMMAND): the room stop
+  // confirms only the block it is waiting on for the token's tab.
+  socket.handle('hook.ack', hookAckHandler(rooms.stop))
+
+  // `ccc room ...` (socket/handlers.ts roomHandlers): a Claude tab's session token only, identity from the token.
+  registerRoomHandlers(socket, rooms)
 
   // `ccc statusline` (Claude Code's status line in a Claude tab, cli/statusline.ts): the plan usage
   // goes to the store, the session's cost and context fill to its entry. A Claude tab only (the
@@ -3501,7 +3530,9 @@ function start(server: boolean): void {
     sessionGist.dispose()
     rateLimits.dispose()
     sessions.dispose()
+    // Members stay members with no tab (design-rooms.md §1 "Restart"); then the room stop's ack timers stop.
     tabs.disposeAll()
+    rooms.dispose()
     registry.flushAll()
     pluginIndex.flush()
     pluginSecrets.flush()

@@ -249,6 +249,14 @@ export class RoomRegistry {
     for (const r of this.rooms.values()) if (r.pluginId === pluginId && r.endedAt === undefined) this.endRoom(r, why)
   }
 
+  /**
+   * Copies of a plugin's rooms that are not ended, in every project: what `endAllOf` is about to end, so the room
+   * service can release their tabs first (the registry drops the bindings without telling anyone).
+   */
+  liveRoomsOf(pluginId: string): RoomRecord[] {
+    return [...this.rooms.values()].filter((r) => r.pluginId === pluginId && r.endedAt === undefined).map(copy)
+  }
+
   /** Delete an ended room and everything under its directory (record, log, docs). */
   delete(owner: RoomOwner, id: unknown): void {
     const room = this.owned(owner, id)
