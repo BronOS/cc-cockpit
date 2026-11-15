@@ -25,6 +25,10 @@ behind it are in [design.md](design.md).
   Otherwise it stays with an "exited" banner with Restart / Close (a failed Claude or command, a
   shell killed by a signal or ended within 1 s of starting). Settings > General > Tabs > "When a tab's
   process exits" can keep every exited tab instead.
+- Selecting text while a program owns the mouse (Claude Code selects and copies by itself): hold Option
+  (macOS) or Shift (Linux) while dragging for the terminal's own selection, then Cmd/Ctrl+C. Claude Code's
+  own copy goes to the clipboard of the machine it runs on, so in a remote window or a browser view this
+  is the way to your own clipboard.
 - A project that opens with no tabs (nothing restored, no plugin tab) starts one Claude tab in the
   project folder; closing the last tab later leaves the window empty. Settings > General >
   Tabs > "Open a Claude tab when a project opens with no tabs" (on by default) turns it off.
