@@ -16,8 +16,8 @@
 //    saved file has no exec bit (whatever mode it was written with), so it never runs by a double click
 //    on Linux.
 import { randomBytes } from 'node:crypto'
-import { chmod, copyFile, link, lstat, readdir, unlink } from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
+import { chmod, link, lstat, open, readdir, unlink } from 'node:fs/promises'
+import { constants as fsConstants, type Stats } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP_DOWNLOAD_MAX_BYTES, downloadSizeText } from '../../shared/downloads'
 import { codeOf, errorText } from '../../shared/error-text'
@@ -92,33 +92,64 @@ export async function sweepDownloadTemps(dir: string, now: number = Date.now()):
   )
 }
 
+/** The copy's chunk: one read and one write at a time, so a file of gigabytes never sits in memory. */
+const COPY_CHUNK_BYTES = 1024 * 1024
+
+/**
+ * `temp` copied to a new `final`: created with O_CREAT|O_EXCL|O_NOFOLLOW first (EEXIST on any entry, a
+ * dangling link included, and never followed), then filled. A copy that fails after the create (the
+ * temp unreadable, ENOSPC, EIO) removes `final` only while it is still the file this call created (same
+ * dev and inode). `copyFile` could not promise that: its error does not say whether it got as far as
+ * creating the destination (it can fail opening the source), so a file another process put at the name
+ * after the failed link would have been deleted by the cleanup.
+ */
+async function copyExclusive(temp: string, final: string, mode: number): Promise<void> {
+  const out = await open(final, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode)
+  let made: Stats | undefined
+  try {
+    made = await out.stat()
+    const src = await open(temp, 'r')
+    try {
+      const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES)
+      for (;;) {
+        const { bytesRead } = await src.read(buf, 0, buf.length, null)
+        if (bytesRead === 0) break
+        for (let at = 0; at < bytesRead; ) at += (await out.write(buf, at, bytesRead - at)).bytesWritten
+      }
+    } finally {
+      await src.close().catch(() => undefined)
+    }
+    await out.close()
+  } catch (err) {
+    await out.close().catch(() => undefined)
+    // An fstat that failed leaves no identity to check against: the file stays rather than risk another's.
+    const now = made && (await lstat(final).catch(() => undefined))
+    if (made && now && now.dev === made.dev && now.ino === made.ino) await remove(final)
+    throw err
+  }
+}
+
 /**
  * The finished temp file placed at `name` in `dir`, or the first free numbered name: hard-linked
  * (EEXIST, a link at the name included, is never overwritten and never followed), then the temp
- * removed. Its exec bits are cleared first. On a filesystem with no hard links the file is copied with
- * COPYFILE_EXCL instead (O_CREAT|O_EXCL: the same EEXIST on any entry, a dangling link included, and
- * never followed). Rejects with the reason when it is not a regular file, every name up to `(99)` is
- * taken, or the write fails.
+ * removed. Its exec bits are cleared first. On a filesystem with no hard links the file is copied
+ * instead (`copyExclusive`: the same EEXIST on any entry, never followed, and a failed copy removes
+ * only its own file). Rejects with the reason when it is not a regular file, every name up to `(99)`
+ * is taken, or the write fails.
  */
 export async function placeDownload(temp: string, dir: string, name: string): Promise<string> {
   try {
     const st = await lstat(temp)
     if (!st.isFile()) throw new PlaceError('what was saved is not a file')
     // Masked to rw for everyone at most: never an exec bit, whatever umask or mode it was written with.
-    await chmod(temp, st.mode & 0o666)
+    const mode = st.mode & 0o666
+    await chmod(temp, mode)
     for (let n = 0; n <= MAX_NAME_NUMBER; n++) {
       const final = join(dir, numberedName(name, n))
       try {
         await link(temp, final).catch(async (err: unknown) => {
           if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
-          try {
-            await copyFile(temp, final, fsConstants.COPYFILE_EXCL)
-          } catch (copyErr) {
-            // A copy that died partway (ENOSPC, EIO) left a truncated file under the real name; EEXIST
-            // created nothing, and that entry is not ours to remove.
-            if (codeOf(copyErr) !== 'EEXIST') await remove(final)
-            throw copyErr
-          }
+          await copyExclusive(temp, final, mode)
         })
         return final
       } catch (err) {

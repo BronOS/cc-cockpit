@@ -4,7 +4,9 @@
 // http's ServerResponse (the gateway's own tests drive a real one, Task 6).
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import type { Stats } from 'node:fs'
+import { lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
@@ -470,6 +472,30 @@ describe('streams', () => {
     await waitFor(() => res.chunks.length > 0)
     res.destroy()
     expect(await serving).toMatchObject({ status: 'sent', completed: false, cut: 'closed' })
+    expect(failures).toEqual([])
+  })
+
+  it('a browser that goes away stops a zip walk stalled on a hung fs call (its live slot freed)', async () => {
+    write(join(proj, 'dir/a'), 'a')
+    write(join(proj, 'dir/slow'), 's')
+    // Hung only once the count is done: the writer's walk then waits on it forever (a dead network mount).
+    let stall = false
+    const hung = new Promise<never>(() => {})
+    const walkFs = {
+      lstat: (p: string): Promise<Stats> => (stall && p.endsWith('/slow') ? hung : lstat(p)),
+      readdir: (p: string): Promise<Buffer[]> => Promise.resolve(readdirSync(p, { encoding: 'buffer' })),
+    }
+    const d = make({ walkFs })
+    await d.start(VIEW, rel('dir'), false)
+    stall = true
+    const res = new FakeRes()
+    const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+    await waitFor(() => res.status === 200)
+    await new Promise((r) => setTimeout(r, 20))
+    res.destroy()
+    const result = await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])
+    expect(result).toMatchObject({ status: 'sent', completed: false, cut: 'closed' })
+    expect(d.liveCount).toBe(0)
     expect(failures).toEqual([])
   })
 

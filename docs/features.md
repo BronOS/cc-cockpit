@@ -829,8 +829,9 @@ opened. The window's download bar shows progress, and closing the window cancels
 trusted: this app saves only after your click in that window (within 5 seconds of it; otherwise "not saved: click
 Download again"), one download at a time per server, at most 3 per 10 seconds, at most 4 GiB each (a bigger one is
 cancelled and its partial deleted), only from that server's own download address. A partial is kept under a hidden
-`.cc-download-` name until it completes; leftovers of a crash older than a day are swept before the next save. A
-Downloads folder on a file system with no hard links fails with a notice. On a Mac, check that a saved file has the
+`.cc-download-` name until it completes; leftovers of a crash older than a day are swept before the next save. On a
+Downloads folder with no hard links (exFAT, FAT32, some network mounts) the file is copied to its name instead, never over
+an existing entry. On a Mac, check that a saved file has the
 quarantine mark (`xattr -p com.apple.quarantine`): not yet verified on a packaged build.
 
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key

@@ -7,8 +7,9 @@ import { lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { DownloadSkipped } from '../../src/shared/downloads'
+import { DOWNLOAD_ZIP_MAX_ENTRIES, type DownloadSkipped } from '../../src/shared/downloads'
 import { countFolder, walkFolder, walkName, zipRootName, type WalkOptions } from '../../src/main/files/folder-walk'
+import { ZipCapError } from '../../src/main/files/zip-writer'
 
 let tmp: string
 let proj: string
@@ -239,6 +240,36 @@ describe('countFolder', () => {
     expect(r.allOver).toBe('too-large')
     expect(r.all.bytes).toBeGreaterThan(500)
     expect(r.all.files).toBeLessThan(21)
+  })
+
+  it('refuses a folder with more names than the entry cap, even when most are skipped links', async () => {
+    // The listing stops one past the cap, so the names after it were never read: zipping what was read
+    // would leave files out without counting them. 20,000 links and one file is under the cap once
+    // the links are skipped, and still refused.
+    write('a.txt')
+    mkdirSync(join(proj, 'many'))
+    for (let i = 0; i < DOWNLOAD_ZIP_MAX_ENTRIES; i++) symlinkSync('/nowhere', join(proj, 'many', `l${i}`))
+    write('many/real.txt')
+    expect(await countFolder(opts(proj))).toMatchObject({ ok: false, problem: 'too-large' })
+    await expect(names(opts(proj))).rejects.toBeInstanceOf(ZipCapError)
+  }, 30_000)
+
+  it('an over-full folder inside node_modules only makes the include choice too large', async () => {
+    write('a.txt')
+    const many = join(proj, 'node_modules', 'many')
+    const fs = {
+      lstat: (p: string): Promise<Stats> => lstat(p),
+      readdir: (p: string): Promise<Buffer[]> =>
+        Promise.resolve(p === many ? Array.from({ length: DOWNLOAD_ZIP_MAX_ENTRIES + 1 }, (_, i) => Buffer.from(`l${i}`)) : readdirSync(p, { encoding: 'buffer' })),
+    }
+    mkdirSync(many, { recursive: true })
+    const r = await countFolder({ ...opts(proj), fs })
+    if (!r.ok) throw new Error(r.problem)
+    expect(r.plain).toEqual({ files: 1, folders: 1, bytes: 1 })
+    expect(r.allOver).toBe('too-large')
+    // With them included, the writer's walk refuses instead of zipping a cut listing.
+    await expect(names(opts(proj, { fs, includeAll: true }))).rejects.toBeInstanceOf(ZipCapError)
+    expect(await names(opts(proj, { fs }))).toEqual(['proj/', 'proj/a.txt'])
   })
 
   it('gives up after the time bound ("too many files to count"), even on a hung fs call', async () => {

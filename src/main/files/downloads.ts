@@ -225,6 +225,14 @@ class Dropped extends Error {
   }
 }
 
+/** The response closed before it finished (the browser's Cancel, a closed tab): the walk is aborted with this. */
+class BrowserClosed extends Error {
+  constructor() {
+    super('the browser went away')
+    this.name = 'BrowserClosed'
+  }
+}
+
 export class Downloads {
   private readonly tokens = new Map<string, Token>()
   private readonly live = new Set<Live>()
@@ -847,7 +855,7 @@ export class Downloads {
   /** The bytes after the head: a file's exactly `size`, a folder's zip chunked; how it ended. */
   private async stream(token: Token, resolved: ResolvedDownload, live: Live, handle: FileHandle | undefined, size: number): Promise<ServeResult> {
     const signal = live.controller.signal
-    const counter = { bytes: 0 }
+    const counter = { bytes: 0, failed: false }
     const skipped: DownloadSkipped = {}
     const name = resolved.name
     const deviceId = token.view.deviceId
@@ -861,11 +869,23 @@ export class Downloads {
       const walk = walkFolder({ ...this.walkOptions(resolved, await this.dataDirReal()), includeAll: token.includeAll, signal, fs: this.deps.walkFs }, skipped)
       source = zipEntries(walk, { signal, skipped, maxBytes: this.deps.maxBytes, maxEntries: this.deps.maxEntries })
     }
+    // A browser that goes away aborts the walk too. pipeline's own cleanup destroys the source, but an
+    // async generator's `return` waits for the await it is in: a walk stalled on a hung `lstat` (a dead
+    // network mount) would hold the pipeline, and with it a live slot of the device and app-wide zip
+    // limits, forever. The walk's fs calls are raced against this signal, so the abort unwinds it. A
+    // close that pipeline made itself, for a source that threw (a read error, a cap), is that failure's.
+    const onClose = (): void => {
+      if (!live.res.writableFinished && !counter.failed) live.controller.abort(new BrowserClosed())
+    }
+    live.res.once('close', onClose)
     try {
       await pipeline(Readable.from(counted(source, counter), { objectMode: false }), live.res, { signal })
       return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: true }
     } catch (err) {
-      if (signal.aborted) return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: false, cut: 'dropped' }
+      if (signal.aborted) {
+        const cut = signal.reason instanceof BrowserClosed ? 'closed' : 'dropped'
+        return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: false, cut }
+      }
       if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
         // The browser went away (its own Cancel, a closed tab): the person knows.
         return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: false, cut: 'closed' }
@@ -878,6 +898,7 @@ export class Downloads {
       this.tellFailed(token.view.viewId, { requestId: token.requestId, reason })
       return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: false, cut: 'failed' }
     } finally {
+      live.res.removeListener('close', onClose)
       await reading.pending?.catch(() => undefined)
       await handle?.close().catch(() => undefined)
     }
@@ -911,10 +932,18 @@ async function* fileBytes(handle: FileHandle, size: number, signal: AbortSignal,
   }
 }
 
-/** `source` passed through, its bytes added up (the access log's count, a cut stream's too). */
-async function* counted(source: AsyncIterable<Buffer>, counter: { bytes: number }): AsyncGenerator<Buffer> {
-  for await (const chunk of source) {
-    counter.bytes += chunk.length
-    yield chunk
+/**
+ * `source` passed through, its bytes added up (the access log's count, a cut stream's too); `failed`
+ * set the moment it throws, before pipeline destroys the response for it.
+ */
+async function* counted(source: AsyncIterable<Buffer>, counter: { bytes: number; failed: boolean }): AsyncGenerator<Buffer> {
+  try {
+    for await (const chunk of source) {
+      counter.bytes += chunk.length
+      yield chunk
+    }
+  } catch (err) {
+    counter.failed = true
+    throw err
   }
 }

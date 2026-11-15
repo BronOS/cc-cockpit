@@ -1,29 +1,53 @@
 // placeDownload on a filesystem with no hard links (exFAT, FAT32, SMB, FUSE): `link` fails with EPERM
-// and the file is copied with COPYFILE_EXCL instead. The link itself is made to fail here, since a temp
-// dir on the test machine has hard links.
+// and the file is copied into a destination created with O_EXCL instead. The link itself is made to
+// fail here, since a temp dir on the test machine has hard links.
+import { constants as fsConstants } from 'node:fs'
 import { mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const state = vi.hoisted(() => ({ linkCode: 'EPERM' as string | undefined, copyCode: undefined as string | undefined }))
+const state = vi.hoisted(() => ({
+  linkCode: 'EPERM' as string | undefined,
+  /** The copy's write fails with this after writing two bytes (dies partway). */
+  writeCode: undefined as string | undefined,
+  /** Opening the temp for reading fails with this. */
+  sourceCode: undefined as string | undefined,
+  /** Another process's file put at this name right after the failed link (once). */
+  raceName: undefined as string | undefined,
+}))
 
 vi.mock('node:fs/promises', async (orig) => {
   const real = await orig<typeof import('node:fs/promises')>()
   return {
     ...real,
     link: async (a: string, b: string) => {
-      if (state.linkCode) throw Object.assign(new Error('no links'), { code: state.linkCode })
-      return real.link(a, b)
-    },
-    copyFile: async (a: string, b: string, mode?: number) => {
-      if (state.copyCode) {
-        // Dies partway: the destination exists, truncated.
-        await real.writeFile(b, 'tr')
-        throw Object.assign(new Error('disk full'), { code: state.copyCode })
+      if (!state.linkCode) return real.link(a, b)
+      if (state.raceName === basename(b)) {
+        state.raceName = undefined
+        await real.writeFile(b, 'theirs')
       }
-      return real.copyFile(a, b, mode)
-    }
+      throw Object.assign(new Error('no links'), { code: state.linkCode })
+    },
+    open: async (p: string, flags?: string | number, mode?: number) => {
+      if (state.sourceCode && flags === 'r') throw Object.assign(new Error('source failed'), { code: state.sourceCode })
+      const handle = await real.open(p, flags, mode)
+      const creating = typeof flags === 'number' && (flags & fsConstants.O_EXCL) !== 0
+      if (!creating || !state.writeCode) return handle
+      const code = state.writeCode
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === 'write') {
+            return async () => {
+              await target.write(Buffer.from('tr'))
+              throw Object.assign(new Error('disk full'), { code })
+            }
+          }
+          const value = Reflect.get(target, key) as unknown
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value
+        },
+      })
+    },
   }
 })
 
@@ -33,7 +57,9 @@ let dir: string
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'cc-place-'))
   state.linkCode = 'EPERM'
-  state.copyCode = undefined
+  state.writeCode = undefined
+  state.sourceCode = undefined
+  state.raceName = undefined
 })
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
@@ -65,9 +91,29 @@ describe('placeDownload without hard links', () => {
   it('removes a truncated copy and the temp when the copy fails partway', async () => {
     const temp = join(dir, '.cc-download-cc')
     await writeFile(temp, 'hello')
-    state.copyCode = 'ENOSPC'
+    state.writeCode = 'ENOSPC'
     await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('disk full')
     expect(await readdir(dir)).toEqual([])
+  })
+
+  it('never removes a file another process put at the name after the failed link', async () => {
+    const temp = join(dir, '.cc-download-ee')
+    await writeFile(temp, 'hello')
+    // The name is taken between our link and our copy, and then the copy cannot read the temp: their
+    // file stays, and only the numbered destination this call created is removed.
+    state.raceName = 'a.txt'
+    state.sourceCode = 'EMFILE'
+    await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('source failed')
+    expect(await readdir(dir)).toEqual(['a.txt'])
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('theirs')
+  })
+
+  it('copies a file larger than one chunk whole', async () => {
+    const temp = join(dir, '.cc-download-ff')
+    const data = Buffer.alloc(2.5 * 1024 * 1024, 7)
+    await writeFile(temp, data)
+    const final = await placeDownload(temp, dir, 'big.bin')
+    expect((await readFile(final)).equals(data)).toBe(true)
   })
 
   it('does not copy on a link error that is not a missing-links one', async () => {

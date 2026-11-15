@@ -96,7 +96,10 @@ separator on Windows where `a\..\..\x` leaves the folder; control or bidi charac
 
 **Caps** (`DOWNLOAD_ZIP_MAX_BYTES` 2 GiB, `DOWNLOAD_ZIP_MAX_ENTRIES` 20,000, `src/shared/downloads.ts`): checked by a walk
 before a view gets anything (bounded by the caps and 10 s: "too large" or "too many files to count"), again while
-streaming (past a cap the stream is cut, §5). They keep the archive inside zip32 (4 GiB offsets, 65,535 entries).
+streaming (past a cap the stream is cut, §5). They keep the archive inside zip32 (4 GiB offsets, 65,535 entries). One
+folder's listing stops one name past the entry cap, so a folder with more names is over the cap whatever they are (links
+and bad names included): the count says "too large" (or, inside `.git` / `node_modules`, the include choice is), and the
+writer cuts the stream; a zip never leaves out names it did not read.
 
 **Writer** (`main/files/zip-writer.ts`, about 200 lines). A file entry: flag bit 3 (sizes in a data descriptor after the
 data, nothing buffered) and bit 11 (UTF-8 name), method 8 (deflate, `zlib.createDeflateRaw` level 6 on the thread pool),
@@ -352,8 +355,11 @@ No open questions are left: the owner answered the first draft's four and the re
 - The remote window's save is in `main/remote/remote-downloads.ts` (temp name, 4 GiB cap, exclusive link, cleanup, a sweep
   of day-old `.cc-download-*` temps before the first save); the gates stay in `remote-windows.ts`. A test run saves to
   `<data>/Downloads`, never the real folder. Refusals past the origin gate show at most 3 native notices per 10 s per
-  server, the rest are only logged; origin refusals are log-only. No copy fallback when `fs.link` fails: the download
-  fails with a notice.
+  server, the rest are only logged; origin refusals are log-only. When `fs.link` fails because the filesystem has no
+  hard links (`EPERM`, `ENOTSUP`, `EOPNOTSUPP`, `ENOSYS`, `EXDEV`: exFAT, FAT32, some SMB, NFS and FUSE mounts), the temp
+  is copied into a destination created with `O_CREAT|O_EXCL|O_NOFOLLOW` instead (the same `EEXIST` rule, so the numbered
+  names still apply); a copy that fails after that create removes the destination only while it is still the file it
+  created (same dev and inode). Any other link error fails the download with a notice.
 - A folder's walk skip reason `deep` (past depth 64) was added. Folder caps are enforced again while streaming, with no
   second walk at the GET.
 - One GET per download was seen in Chromium (Task 1), so no second-GET grace exists; Electron has no Chrome download

@@ -33,6 +33,7 @@ import {
 } from '../../shared/downloads'
 import { dataDirRefused, outsideRefused, type OutsideEnv } from '../../shared/outside-paths'
 import { CONTROL } from '../../shared/session-name'
+import { ZipCapError } from './zip-writer'
 
 /** The folders a zip leaves out below its root unless the person includes them (the root itself always works). */
 export const EXCLUDED_FOLDER_NAMES: ReadonlySet<string> = new Set(['.git', 'node_modules'])
@@ -48,7 +49,9 @@ export interface WalkFs {
 const nodeFs: WalkFs = {
   lstat: (p) => fsLstat(p),
   // `opendir`, stopping past the entry cap: a folder with more names than a zip may hold is over the cap
-  // by itself, and `readdir` would load every name into main's memory first.
+  // by itself, and `readdir` would load every name into main's memory first. The listing it returns is
+  // then cut short, so the walk treats more than DOWNLOAD_ZIP_MAX_ENTRIES names as an overflow, never as
+  // the folder's contents (`overflowed`).
   readdir: async (p) => {
     const dir = await fsOpendir(p, { encoding: 'buffer' as unknown as BufferEncoding })
     const names: Buffer[] = []
@@ -96,6 +99,12 @@ type Item =
   | { type: 'skip'; reason: DownloadSkipReason; within: boolean }
   /** A `.git` / `node_modules` folder below the root, found while not walking into them (`excluded` for the plain totals). */
   | { type: 'excluded' }
+  /**
+   * A folder with more names than a zip may hold (its listing was cut there): over the entry cap. Never
+   * a skip: the names past the cut were not read, and many of the ones read may be skipped links, so a
+   * zip of what was read would leave out files without counting them.
+   */
+  | { type: 'overflow'; within: boolean }
 
 /**
  * Whether a name read from a folder is one a receiving system reads as written: valid UTF-8 (the bytes
@@ -147,6 +156,11 @@ function raced<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   })
 }
 
+/** Whether a folder's listing was cut at the cap (`nodeFs.readdir` stops one past it). */
+function overflowed(names: Buffer[]): boolean {
+  return names.length > DOWNLOAD_ZIP_MAX_ENTRIES
+}
+
 /** Whether `p` is still the folder `before` was (not swapped for a link or another folder since). */
 async function sameFolder(fs: WalkFs, p: string, before: Stats, signal: AbortSignal | undefined): Promise<boolean> {
   const now = await raced(fs.lstat(p), signal)
@@ -173,6 +187,10 @@ async function* walkItems(opts: WalkOptions, markWithin: boolean, steer: Steerin
   if (!rootStat.isDirectory()) throw new Error('not a folder')
   const names = await raced(fs.readdir(opts.root), signal)
   if (!(await sameFolder(fs, opts.root, rootStat, signal))) throw new Error('not a folder')
+  if (overflowed(names)) {
+    yield { type: 'overflow', within: false }
+    return
+  }
   yield { type: 'entry', entry: { kind: 'folder', path: opts.root, name: `${rootName}/`, stat: rootStat }, within: false }
   yield* walkChildren(opts.root, `${rootName}/`, names, 1, false)
 
@@ -244,6 +262,10 @@ async function* walkItems(opts: WalkOptions, markWithin: boolean, steer: Steerin
         yield { type: 'skip', reason: 'unreadable', within: childWithin }
         continue
       }
+      if (overflowed(children)) {
+        yield { type: 'overflow', within: childWithin }
+        continue
+      }
       yield { type: 'entry', entry: { kind: 'folder', path: abs, name: `${prefix}${name}/`, stat: st }, within: childWithin }
       yield* walkChildren(abs, `${prefix}${name}/`, children, depth + 1, childWithin)
     }
@@ -254,11 +276,14 @@ async function* walkItems(opts: WalkOptions, markWithin: boolean, steer: Steerin
  * The zip's entries, streamed (the zip writer's input): the root folder first, then depth-first in
  * sorted order. Skips are added up in `skipped` as they happen. Throws when the root cannot be listed,
  * and the signal's reason on abort (the writer's `pipeline` aborts it when the browser goes away).
- * The caps are the writer's to enforce mid-stream; the counting pass checked them before.
+ * The caps are the writer's to enforce mid-stream; the counting pass checked them before. A folder
+ * with more names than the cap (grown since the count) throws ZipCapError: the zip is cut, never sent
+ * complete without the names past the listing's cut.
  */
 export async function* walkFolder(opts: WalkOptions, skipped: DownloadSkipped = {}): AsyncGenerator<WalkEntry> {
   for await (const item of walkItems(opts, false, { pruneWithin: false })) {
     if (item.type === 'entry') yield item.entry
+    else if (item.type === 'overflow') throw new ZipCapError('entries')
     else bump(skipped, item.type === 'excluded' ? 'excluded' : item.reason)
   }
 }
@@ -316,6 +341,14 @@ export async function countFolder(opts: CountOptions): Promise<FolderCount> {
     for await (const item of walkItems({ ...opts, includeAll: true, signal }, true, steer)) {
       if (item.type === 'excluded') {
         bump(skipped.plain, 'excluded')
+        continue
+      }
+      if (item.type === 'overflow') {
+        // Over the cap whatever else the folder holds: a plain one fails the count, one inside `.git` /
+        // `node_modules` only makes the include choice too large.
+        if (!item.within) return { ok: false, problem: 'too-large', plain }
+        allOver = 'too-large'
+        steer.pruneWithin = true
         continue
       }
       if (item.type === 'skip') {
