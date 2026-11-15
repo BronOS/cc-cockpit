@@ -25,7 +25,9 @@ tested).
   Claude tab or a new session, add a note, and the item goes to Claude as a prompt.
 - **Make it yours.** Themes, editable keybindings, a command palette, terminal fonts and transparent windows.
 - **Web access.** Open a project in a browser on your phone or another computer, live on both screens: the same tabs,
-  terminals and panels. Off by default; sign in by link, password or a desktop confirm (Settings > General).
+  terminals and panels. Off by default; sign in by link, password or a desktop confirm (Settings > General). Files >
+  Download and `ccc download` send a file, or a folder as a streamed .zip, to the device you are on
+  ([docs/features.md](docs/features.md#web-access)).
 - **Server mode (Linux).** Run it on a machine with no display (`cc-cockpit --server`, or just start it with no
   `DISPLAY`) and use it only from browsers: sign-in is managed from a shell with `ccc web`, secrets live in a key file,
   and approvals happen in the browser. Not tested beyond the unpacked build; see

@@ -6,7 +6,7 @@
 // Everything the dialog shows is main's data about what Claude offered, and the person decides on it,
 // so nothing is shortened or reworded away: the path is shown whole (CSS wraps it, never an
 // ellipsis) and so is the real path when the named one is a link. A path comes from Claude and may
-// hold bidi or control characters; they are dropped for display (`displayPath`) so a reversed
+// hold bidi or control characters; they are dropped for display (`stripUnsafe`) so a reversed
 // extension cannot dress a program as a document. The dialog has no tab title: it is not the tab's
 // to name, only the project's offer.
 
@@ -16,7 +16,7 @@ import { CONTROL } from '../../shared/session-name'
 const CONTROL_ALL = new RegExp(CONTROL.source, 'g')
 
 /** A path for display: control, bidi and invisible characters dropped (never cut, never shortened). */
-export function displayPath(path: string): string {
+export function stripUnsafe(path: string): string {
   return path.replace(CONTROL_ALL, '')
 }
 
@@ -109,10 +109,10 @@ export function downloadDialogText(offer: DownloadOffer): DownloadDialogText {
   const text: DownloadDialogText = {
     title: DOWNLOAD_DIALOG_TITLE,
     kindLine: offer.kind === 'folder' ? 'Folder, sent as a .zip' : 'File',
-    path: displayPath(offer.path),
+    path: stripUnsafe(offer.path),
     sizeLine: offer.kind === 'file' ? downloadSizeText(offer.size) : totalsText(offer.counts.plain)
   }
-  if (offer.real !== undefined && offer.real !== offer.path) text.real = displayPath(offer.real)
+  if (offer.real !== undefined && offer.real !== offer.path) text.real = stripUnsafe(offer.real)
   if (offer.outside) text.outsideLine = 'This is outside the project.'
   if (offer.runnable) text.runnableLine = 'This file can run programs when opened.'
   if (offer.kind === 'folder') {

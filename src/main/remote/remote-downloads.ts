@@ -117,7 +117,14 @@ export async function placeDownload(temp: string, dir: string, name: string): Pr
       try {
         await link(temp, final).catch(async (err: unknown) => {
           if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
-          await copyFile(temp, final, fsConstants.COPYFILE_EXCL)
+          try {
+            await copyFile(temp, final, fsConstants.COPYFILE_EXCL)
+          } catch (copyErr) {
+            // A copy that died partway (ENOSPC, EIO) left a truncated file under the real name; EEXIST
+            // created nothing, and that entry is not ours to remove.
+            if (codeOf(copyErr) !== 'EEXIST') await remove(final)
+            throw copyErr
+          }
         })
         return final
       } catch (err) {

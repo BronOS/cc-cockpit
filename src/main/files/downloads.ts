@@ -149,6 +149,12 @@ interface OfferRecord {
   expiresAt: number
   /** The device whose view accepted it: the only one a Try again is taken from. */
   acceptedBy?: string
+  /**
+   * A failure was told to the accepting view (a start refused, a GET refused, a stream cut): only then
+   * is a click a Try again. Two tabs of one browser share a device (a cookie), so the device alone
+   * cannot tell the second tab's Download click (first answer wins) from a Try again.
+   */
+  retryable?: boolean
 }
 
 export interface DownloadsDeps {
@@ -364,16 +370,24 @@ export class Downloads {
       // Recorded before the answer settles it, so the ask's `then` sees an accepted offer.
       record.acceptedBy = view.deviceId
       if (!this.offerAsks.answer(view.windowId, requestId, 'accepted')) return false
-    } else if (record.acceptedBy === undefined || record.acceptedBy !== view.deviceId) {
+    } else if (record.acceptedBy === undefined || record.acceptedBy !== view.deviceId || record.retryable !== true) {
       return false
     }
+    record.retryable = false
     try {
       await this.start(view, record.target, all === true, requestId)
       return true
     } catch (err) {
-      this.deps.hooks.failed(view.viewId, { requestId, reason: errorText(err) })
+      this.tellFailed(view.viewId, { requestId, reason: errorText(err) })
       return false
     }
+  }
+
+  /** `downloads.failed` to the view, and its offer (when it has one) may be tried again. */
+  private tellFailed(viewId: ViewId, payload: DownloadFailed): void {
+    const record = this.offers.get(payload.requestId)
+    if (record) record.retryable = true
+    this.deps.hooks.failed(viewId, payload)
   }
 
   /** Cancel in a view's dialog (`downloads.answer`): settles a waiting offer for every view of the window. */
@@ -489,7 +503,7 @@ export class Downloads {
     // An unknown or expired token names no view to tell.
     if (!token) return { status: 'refused', reason: 'unknown or expired link' }
     const refuse = (reason: string): ServeResult => {
-      this.deps.hooks.failed(token.view.viewId, { requestId: token.requestId, reason })
+      this.tellFailed(token.view.viewId, { requestId: token.requestId, reason })
       return { status: 'refused', reason }
     }
     const matches = typeof device === 'function' ? device(token.view.deviceId) : device !== undefined && device === token.view.deviceId
@@ -562,7 +576,7 @@ export class Downloads {
    */
   refuse(tokenText: string, reason: string): void {
     const token = this.liveToken(tokenText)
-    if (token) this.deps.hooks.failed(token.view.viewId, { requestId: token.requestId, reason })
+    if (token) this.tellFailed(token.view.viewId, { requestId: token.requestId, reason })
   }
 
   /**
@@ -838,8 +852,10 @@ export class Downloads {
     const name = resolved.name
     const deviceId = token.view.deviceId
     let source: AsyncIterable<Buffer>
+    // The read in flight when the browser closes: awaited before the close, so it never hits a closed descriptor.
+    const reading: { pending?: Promise<unknown> } = {}
     if (handle) {
-      source = fileBytes(handle, size, signal)
+      source = fileBytes(handle, size, signal, reading)
     } else {
       // The walk's data dir must be real like its paths.
       const walk = walkFolder({ ...this.walkOptions(resolved, await this.dataDirReal()), includeAll: token.includeAll, signal, fs: this.deps.walkFs }, skipped)
@@ -859,9 +875,10 @@ export class Downloads {
       // The headers are out, so the only way to fail is to cut it short: pipeline destroyed the response
       // (a file short of its Content-Length, a zip with no end record), and the browser lists it failed.
       live.res.destroy()
-      this.deps.hooks.failed(token.view.viewId, { requestId: token.requestId, reason })
+      this.tellFailed(token.view.viewId, { requestId: token.requestId, reason })
       return { status: 'sent', deviceId, name, bytes: counter.bytes, completed: false, cut: 'failed' }
     } finally {
+      await reading.pending?.catch(() => undefined)
       await handle?.close().catch(() => undefined)
     }
   }
@@ -879,13 +896,15 @@ function offerSizeText(info: OfferInfo): string {
  * `Content-Length`): one that grew is cut there, one that shrank throws (a response short of its
  * length must fail in the browser, never look complete).
  */
-async function* fileBytes(handle: FileHandle, size: number, signal: AbortSignal): AsyncGenerator<Buffer> {
+async function* fileBytes(handle: FileHandle, size: number, signal: AbortSignal, reading: { pending?: Promise<unknown> }): AsyncGenerator<Buffer> {
   let at = 0
   while (at < size) {
     signal.throwIfAborted()
     // A fresh buffer per chunk: the response may still hold the last one.
     const buf = Buffer.allocUnsafe(Math.min(ZIP_CHUNK_BYTES, size - at))
-    const { bytesRead } = await handle.read(buf, 0, buf.length, at)
+    const read = handle.read(buf, 0, buf.length, at)
+    reading.pending = read
+    const { bytesRead } = await read
     if (bytesRead === 0) throw new Error('the file shrank while it was sent')
     at += bytesRead
     yield buf.subarray(0, bytesRead)

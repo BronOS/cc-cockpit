@@ -921,6 +921,7 @@ ccc session note <text>                  add a note to this tab's Claude session
 ccc session steps <done>/<total>         set progress, e.g. 3/5 (inside a Claude tab)
 ccc overlay [--project <path>] --terminal -- <argv...> | --url <http(s) url> | --html <file>
 ccc sessions [--json]                    the Claude tabs of every window
+ccc download <path>                      offer a file, or a folder as a .zip, to the browser views of this project (see "Web access" › "Downloads")
 ccc notify <text>                        show a system notification (server mode: an in-page notice in the browsers)
 ccc guide [topic]                        bundled docs for Claude and plugin authors (works offline)
 ccc guide types                          the plugin SDK types

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AcceptedOffers,
   DOWNLOAD_DIALOG_TITLE,
-  displayPath,
+  stripUnsafe,
   downloadDialogText,
   downloadOfferOf,
   offerAcceptPayload,
@@ -44,8 +44,8 @@ describe('download dialog text', () => {
   })
 
   it('drops bidi and control characters from a path for display', () => {
-    expect(displayPath('/a/report‮fdp.exe')).toBe('/a/reportfdp.exe')
-    expect(displayPath('/a/b\nc')).toBe('/a/bc')
+    expect(stripUnsafe('/a/report‮fdp.exe')).toBe('/a/reportfdp.exe')
+    expect(stripUnsafe('/a/b\nc')).toBe('/a/bc')
   })
 
   it('warns for outside the project and for a file that can run programs', () => {

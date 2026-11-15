@@ -283,7 +283,9 @@ describe('offers: answers', () => {
     // The accepting device can, from another of its views too (a reconnect mints a new view id).
     expect(await d.accept({ ...PHONE, viewId: 'web:9' }, r.requestId, false)).toBe(true)
     expect(starts.map((s) => [s.viewId, s.payload.requestId])).toEqual([['web:9', r.requestId]])
-    expect(await d.accept(PHONE, r.requestId, false)).toBe(true)
+    // The start went through: a second click (another tab of the same browser) is no Try again.
+    expect(await d.accept(PHONE, r.requestId, false)).toBe(false)
+    expect(starts).toHaveLength(1)
     clock += DOWNLOAD_OFFER_MS
     expect(await d.accept(PHONE, r.requestId, false)).toBe(false)
     expect(d.offerCount).toBe(0)

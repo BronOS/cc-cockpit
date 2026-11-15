@@ -143,8 +143,6 @@ export { PROJECTS_PATH }
 export { FOLDERS_PATH }
 /** Server mode's Claude tab counts for the desktop app's machine chip (session-counts.ts); needs a device. */
 export { SESSIONS_PATH }
-/** Where a view's download links point (`/d/<token>`, downloads.ts mints the token). */
-export { DOWNLOAD_PATH_PREFIX }
 /** Far above a 43-character token; a longer path segment is not one (refused unread). */
 const MAX_DOWNLOAD_TOKEN_LENGTH = 128
 
@@ -317,7 +315,6 @@ function readBody(req: IncomingMessage, max: number): Promise<string | undefined
   })
 }
 
-/** Whether two plans name the same TLS files (both none counts as the same). */
 /** `done`, or `ms` passed, whichever is first; never rejects. */
 function graceful(done: Promise<void>, ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -336,6 +333,7 @@ function graceful(done: Promise<void>, ms: number): Promise<void> {
   })
 }
 
+/** Whether two plans name the same TLS files (both none counts as the same). */
 function sameTls(a: OkPlan, b: OkPlan): boolean {
   return a.tls?.certPath === b.tls?.certPath && a.tls?.keyPath === b.tls?.keyPath
 }
