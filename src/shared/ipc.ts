@@ -16,7 +16,7 @@ import type { BlurSupport, SeeThroughArea, WindowBackground } from './window-bac
 import type { PageTabSpec } from './page-tabs'
 import type { TabCloseSide, TabCommandEntry, TabCommandLevel, TabExitBehavior, TabKind } from './types'
 import type { PluginServicesView } from './services'
-import type { PluginLimitsView } from './plugin-limits'
+import type { GlobalPluginLimitsView, PluginLimitsView } from './plugin-limits'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
@@ -1213,6 +1213,17 @@ export interface IpcInvokeMap {
    */
   'plugins.limits.set': { req: { id: string; set?: Array<[string, number]>; reset?: string[] }; res: PluginLimitsView }
   /**
+   * The global value of each cap (Settings › General, "Plugin limits"): what every plugin without its own override
+   * gets. App-wide; reading changes nothing.
+   */
+  'plugins.globalLimits.get': { req: void; res: GlobalPluginLimitsView }
+  /**
+   * Change the global values, by the rules of `plugins.limits.set` (pairs and reset keys, checked whole in main). From
+   * a browser only in server mode (`adapted`), like the per-plugin write: it raises what every plugin without an
+   * override may do on the host.
+   */
+  'plugins.globalLimits.set': { req: { set?: Array<[string, number]>; reset?: string[] }; res: GlobalPluginLimitsView }
+  /**
    * A click on a plugin panel's header action. main delivers it to the plugin's onAction only when
    * the panel is one of the sender's project and its current header has that action, not busy or
    * disabled; false when it was dropped (the header changed under the click, the host is gone).
@@ -2077,6 +2088,8 @@ export const INVOKE_CHANNELS = [
   'plugins.restart',
   'plugins.limits.get',
   'plugins.limits.set',
+  'plugins.globalLimits.get',
+  'plugins.globalLimits.set',
   'panels.action',
   'slots.connect',
   'slots.disconnect',
@@ -2412,6 +2425,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // so a browser counts only in server mode (where it is the only screen), decided by the handler from main's flag.
   'plugins.limits.get': 'yes',
   'plugins.limits.set': 'adapted',
+  // The global values (Settings › General): the same rule. A global raise widens every plugin without an override, so
+  // a desktop's browser is refused it as it is a per-plugin raise.
+  'plugins.globalLimits.get': 'yes',
+  'plugins.globalLimits.set': 'adapted',
   'slots.connect': 'yes',
   'slots.disconnect': 'yes',
   'slots.height': 'yes',

@@ -483,7 +483,8 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
     // `ccc plugin limits`: app-wide, so no project; the token goes along when there is one (the default routing), for
     // the read (allowed from a tab) and so main refuses the write with the host-only text (protocol.ts HOST_ONLY_COMMANDS).
     case 'plugin-limits':
-      args = { id: command.id }
+      // `--global` names no plugin: `global: true` instead of an id (main refuses a request with both).
+      args = command.id === null ? { global: true } : { id: command.id }
       if (command.set.length > 0 || command.reset.length > 0) {
         cmd = 'plugin.limits.set'
         if (command.set.length > 0) args.set = command.set

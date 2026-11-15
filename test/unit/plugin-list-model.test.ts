@@ -2,7 +2,7 @@
 // cards, then searched (case-insensitive substring, no regex), filtered and paged 20 at a time.
 import { describe, expect, it } from 'vitest'
 import type { MarketplaceEntryView, MarketplaceView, PluginView } from '../../src/shared/ipc'
-import { limitsView } from '../../src/main/plugins/plugin-limits'
+import { globalLimitsView, limitsView } from '../../src/main/plugins/plugin-limits'
 import {
   buildCards,
   clampPage,
@@ -12,6 +12,7 @@ import {
   limitsDraftAfterReset,
   limitsEditable,
   limitsEdit,
+  limitSourceText,
   matchesSearch,
   PAGE_SIZE,
   pageCount,
@@ -225,6 +226,36 @@ describe('limits form after a "Use default"', () => {
     })
     // A key main did not name changes nothing.
     expect(limitsDraftAfterReset(after, typed, ['nope'])).toEqual(typed)
+  })
+})
+
+// The same form for the global values (Settings › General) and a plugin's view with global values behind it.
+describe('limits forms with global values', () => {
+  it('a plugin\'s field starts at the inherited global value; typing it again pins nothing, emptying an inherited one is no change', () => {
+    const view = limitsView('a.one', { opensPerMinute: 9 }, { sendsPerMinute: 50 })
+    const draft = limitsDraft(view)
+    expect(draft).toMatchObject({ opensPerMinute: '9', sendsPerMinute: '50' })
+    expect(limitsEdit(view, { ...draft, sendsPerMinute: '50' }).edit).toBeNull()
+    expect(limitsEdit(view, { ...draft, sendsPerMinute: '' }).edit).toBeNull()
+    // Emptying the plugin's own goes back to the global value (a reset); a new number is the plugin's own.
+    expect(limitsEdit(view, { ...draft, opensPerMinute: '', sendsPerMinute: '51' }).edit).toEqual({ set: [['sendsPerMinute', 51]], reset: ['opensPerMinute'] })
+  })
+
+  it('the global form resets a set global value and sets a changed one, with the same ranges', () => {
+    const view = globalLimitsView({ roomSendsPerRoom: 100 })
+    const draft = { ...limitsDraft(view), roomSendsPerRoom: '', opensPerMinute: '7' }
+    expect(limitsEdit(view, draft)).toEqual({ edit: { set: [['opensPerMinute', 7]], reset: ['roomSendsPerRoom'] }, problems: {} })
+    expect(limitsEdit(view, { ...limitsDraft(view), sendsPerMinute: '301' }).problems).toEqual({ sendsPerMinute: 'a whole number from 1 to 300' })
+  })
+
+  it('names where each value comes from', () => {
+    const [own, fromGlobal, fromDefault] = limitsView('a.one', { opensPerMinute: 9 }, { sendsPerMinute: 50 }).limits
+    expect(limitSourceText(own!, 'plugin')).toBe('set for this plugin (global 5)')
+    expect(limitSourceText(fromGlobal!, 'plugin')).toBe('global 50')
+    expect(limitSourceText(fromDefault!, 'plugin')).toBe('global 20')
+    const [set, unset] = globalLimitsView({ opensPerMinute: 9 }).limits
+    expect(limitSourceText(set!, 'global')).toBe('set by you')
+    expect(limitSourceText(unset!, 'global')).toBe('the default')
   })
 })
 

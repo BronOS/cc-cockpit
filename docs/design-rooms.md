@@ -231,6 +231,15 @@ read-only `app.json` is refused, not reported as set. The settings channel is `n
 the cap and its value. Guide text for `sessions.open`, `sessions.send` and `ctx.rooms` names the defaults and that the
 person can change them.
 
+Global values (added after the first release): each cap also has a global value (`app.json` › `pluginLimitsGlobal`,
+Settings › General "Plugin limits", `ccc plugin limits --global [key=value... | --default <key>...]`), and the
+per-plugin value is an override of it: a plugin's cap is its override, else the global value, else the built-in default.
+The ceilings, the read-time clamping and the edit checks are the same at both levels. Counting stays per plugin (a global
+value is each plugin's own budget, not a shared one), and a global change applies live to every plugin without an
+override. The global write rides the same request names (`plugin.limits.set { global: true }`, so the host-only rule
+covers it unchanged) and its settings channel `plugins.globalLimits.set` has the per-plugin write's rule (`adapted`: a
+browser only in server mode). Uninstalling a plugin leaves the global values.
+
 ## 7. Security, failures, testing, rollout
 
 Rules (for CLAUDE.md's implementation patterns):
