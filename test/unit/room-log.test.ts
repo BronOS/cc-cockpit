@@ -1,6 +1,6 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { RoomLog } from '../../src/main/rooms/room-log'
 
@@ -65,9 +65,28 @@ describe('RoomLog', () => {
     log.append('join', { member: 'a' })
     appendFileSync(path, '{"at":5,"type":"sen')
     expect(log.read()).toHaveLength(1)
-    appendFileSync(path, '\n')
-    log.append('leave', { member: 'a' })
+    const fresh = new RoomLog(path, undefined, clock)
+    fresh.append('leave', { member: 'a' })
     expect(log.read().map((e) => e.type)).toEqual(['join', 'leave'])
+  })
+
+  it('does not lose an entry appended right after a torn line', () => {
+    mkdirSync(dirname(path), { recursive: true })
+    appendFileSync(path, '{"at":5,"type":"sen')
+    new RoomLog(path, undefined, clock).append('leave', { member: 'a' })
+    expect(new RoomLog(path).read().map((e) => e.type)).toEqual(['leave'])
+  })
+
+  it('ignores a NaN since and a negative limit', () => {
+    const log = new RoomLog(path, undefined, clock)
+    log.append('join')
+    expect(log.read({ since: NaN, limit: -1 })).toHaveLength(1)
+  })
+
+  it('trims by bytes when a few huge lines stay over the cap', () => {
+    const log = new RoomLog(path, 1000, clock)
+    for (let i = 0; i < 4; i++) log.append('send', { text: 'x'.repeat(400) })
+    expect(readFileSync(path).length).toBeLessThan(1000)
   })
 
   it('skips lines that are not log entries', () => {

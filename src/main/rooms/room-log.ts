@@ -1,5 +1,6 @@
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, openSync, closeSync, readSync, readFileSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { writeFileAtomic } from '../hooks/write-file-atomic'
 
 /** Per-room cap on `log.jsonl` (design-rooms.md §4): past it the oldest half is dropped. */
 export const ROOM_LOG_MAX_BYTES = 20 * 1024 * 1024
@@ -39,7 +40,8 @@ export interface RoomLogReadOptions {
  * a line is one `appendFileSync` so a crash leaves at most a torn last line, which `read` skips.
  */
 export class RoomLog {
-  private size: number | null = null
+  /** Set once this instance has checked the file ends in a newline (a torn last line has none). */
+  private checkedTail = false
 
   constructor(
     private readonly path: string,
@@ -49,30 +51,60 @@ export class RoomLog {
 
   append(type: RoomLogType, fields: Record<string, unknown> = {}): void {
     // `at` and `type` last so a caller's field can never override them.
-    const line = JSON.stringify({ ...fields, at: this.now(), type }) + '\n'
+    const entry = JSON.stringify({ ...fields, at: this.now(), type }) + '\n'
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
+    // A torn last line has no newline: without one first, this entry would glue onto the fragment and be lost on read.
+    const line = !this.checkedTail && !this.endsInNewline() ? '\n' + entry : entry
+    this.checkedTail = true
     appendFileSync(this.path, line, { mode: 0o600 })
-    this.size = (this.size ?? this.statSize()) + Buffer.byteLength(line)
-    if (this.size > this.maxBytes) this.trim()
+    // Stat each time: another instance or process may have appended, and a cached size would let the cap be exceeded.
+    if (this.statSize() > this.maxBytes) this.trim()
   }
 
   read(opts: RoomLogReadOptions = {}): RoomLogEntry[] {
-    let out = parseLines(this.readText()).filter((e) => opts.since === undefined || e.at > opts.since)
-    if (opts.limit !== undefined && opts.limit >= 0 && out.length > opts.limit) {
+    // A non-number or NaN `since` / a negative `limit` is treated as absent, never as "match nothing".
+    const since = typeof opts.since === 'number' && !Number.isNaN(opts.since) ? opts.since : undefined
+    let out = parseLines(this.readText()).filter((e) => since === undefined || e.at > since)
+    if (typeof opts.limit === 'number' && opts.limit >= 0 && out.length > opts.limit) {
       out = opts.limit === 0 ? [] : out.slice(-opts.limit)
     }
     return out
   }
 
-  /** Drop the oldest half of the lines (by count) and say so in a line of its own. */
+  /** Keep the newest lines that fit in half the cap (by bytes, so a few huge lines cannot stay over it) and say so in a line of its own. */
   private trim(): void {
     const lines = this.readText().split('\n').filter((l) => l !== '')
-    const dropped = Math.ceil(lines.length / 2)
+    let bytes = 0
+    let keep = 0
+    for (let i = lines.length - 1; i >= 0; i--) {
+      bytes += Buffer.byteLength(lines[i] ?? '') + 1
+      if (bytes > this.maxBytes / 2) break
+      keep++
+    }
+    // Always drop at least one line, or the log would trim on every append.
+    keep = Math.min(keep, lines.length - 1)
+    const dropped = lines.length - keep
     const kept = lines.slice(dropped)
     kept.push(JSON.stringify({ at: this.now(), type: 'trimmed', dropped }))
-    const text = kept.join('\n') + '\n'
-    writeFileSync(this.path, text, { mode: 0o600 })
-    this.size = Buffer.byteLength(text)
+    writeFileAtomic(this.path, kept.join('\n') + '\n', 0o600)
+  }
+
+  private endsInNewline(): boolean {
+    let fd: number
+    try {
+      fd = openSync(this.path, 'r')
+    } catch {
+      return true
+    }
+    try {
+      const size = statSync(this.path).size
+      if (size === 0) return true
+      const b = Buffer.alloc(1)
+      readSync(fd, b, 0, 1, size - 1)
+      return b[0] === 0x0a
+    } finally {
+      closeSync(fd)
+    }
   }
 
   private readText(): string {
