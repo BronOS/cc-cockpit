@@ -309,7 +309,7 @@ describe('room membership', () => {
     const roomsDir = join(dataDir, 'rooms')
     // What the room service wires (Task 8): the registry is the authority, matched by room id and name.
     const hooksOf = (reg: RoomRegistry): TabRoomHooks => ({
-      rebind: (tabId, r) => (reg.rebind(tabId, r.id, r.name) ? reg.memberOf(tabId) : undefined),
+      rebind: (tabId, r, projectId) => (reg.rebind(tabId, r.id, r.name, projectId) ? reg.memberOf(tabId) : undefined),
       closed: (tabId) => void reg.memberClosed(tabId),
       gone: (tabId) => reg.unbind(tabId)
     })
@@ -387,16 +387,16 @@ describe('room membership', () => {
 
   it('two saved records claiming the same member: the first is bound and typed, the second comes back in no room', () => {
     const rooms = new RoomRegistry({ dir: join(dataDir, 'rooms'), log: () => {} })
-    const owner = { pluginId: 'example.team', projectId: 'p1' }
+    const project = new ProjectRegistry({ dataDir, log: () => {} }).openPath(projectDir)
+    const owner = { pluginId: 'example.team', projectId: project.id }
     const room = rooms.create(owner, { title: 'Team' })
     rooms.addMember(owner, room.id, { tabId: 'old', name: 'lead', coordinator: true })
     rooms.unbind('old')
     const hooks: TabRoomHooks = {
-      rebind: (tabId, r) => (rooms.rebind(tabId, r.id, r.name) ? rooms.memberOf(tabId) : undefined),
+      rebind: (tabId, r, projectId) => (rooms.rebind(tabId, r.id, r.name, projectId) ? rooms.memberOf(tabId) : undefined),
       closed: (tabId) => void rooms.memberClosed(tabId),
       gone: (tabId) => rooms.unbind(tabId)
     }
-    const project = new ProjectRegistry({ dataDir, log: () => {} }).openPath(projectDir)
     const sessions = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: () => {} })
     const tabs = new TabManager({
       backend: new FakePtyBackend(),

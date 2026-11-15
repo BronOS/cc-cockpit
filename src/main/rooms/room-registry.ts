@@ -396,12 +396,15 @@ export class RoomRegistry {
   }
 
   /**
-   * A restored tab's saved membership (Task 4): bound only when the room is there and not ended, the name is still a
-   * member and no other tab holds it. False otherwise (the tab just loses its membership).
+   * A restored tab's saved membership (Task 4): bound only when the room is there, not ended and of the tab's own
+   * project (`projectId`, main's: the tab's, never the saved record's), the name is still a member and no other tab
+   * holds it. False otherwise (the tab just loses its membership). The project check is design §1's "no rooms across
+   * windows": a tab record naming another project's room (a hand edit, a copied project record) would otherwise take
+   * that room's member, steal its name from the real tab and get its pointer.
    */
-  rebind(tabId: string, roomId: string, name: string): boolean {
+  rebind(tabId: string, roomId: string, name: string, projectId: string): boolean {
     const room = this.rooms.get(roomId)
-    if (!room || room.endedAt !== undefined || !isMember(room, name)) return false
+    if (!room || room.endedAt !== undefined || room.projectId !== projectId || !isMember(room, name)) return false
     if (this.tabs.has(tabId) || this.boundTab(roomId, name) !== undefined) return false
     this.tabs.set(tabId, { roomId, name })
     return true
@@ -462,7 +465,29 @@ export class RoomRegistry {
     return room ? (queueOf(room, name)?.length ?? 0) : 0
   }
 
-  /** Dequeue every message for a member (its own `ccc room read`). */
+  /** Copies of the messages waiting for a member, oldest first; the queue is unchanged (a read's first step). */
+  waiting(roomId: string, name: string): RoomMessage[] {
+    const room = this.rooms.get(roomId)
+    return (room ? (queueOf(room, name) ?? []) : []).map((m) => ({ ...m }))
+  }
+
+  /**
+   * Dequeue a member's messages up to and including the one with id `lastId` (a read's ack, protocol.ts
+   * ROOM_READ_ACK_COMMAND): the head of the queue only, so a batch acked late never takes a message sent after it was
+   * read. 0 when no waiting message has that id (already acked, the queue dropped by a leave): nothing is taken.
+   */
+  dropThrough(roomId: string, name: string, lastId: string): number {
+    const room = this.rooms.get(roomId)
+    const queue = room ? queueOf(room, name) : undefined
+    const at = queue ? queue.findIndex((m) => m.id === lastId) : -1
+    if (!room || !queue || at < 0) return 0
+    if (at === queue.length - 1) delete room.queues[name]
+    else room.queues[name] = queue.slice(at + 1)
+    this.save(room)
+    return at + 1
+  }
+
+  /** Dequeue every message for a member at once (the one-step form; `ccc room read` uses waiting and dropThrough). */
   take(roomId: string, name: string): RoomMessage[] {
     const room = this.rooms.get(roomId)
     const queue = room ? queueOf(room, name) : undefined

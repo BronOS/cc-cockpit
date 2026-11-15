@@ -1580,8 +1580,8 @@ describe('room membership', () => {
     const logs: string[] = []
     const bound = 'bound' in opts ? opts.bound : { coordinator: false }
     const hooks: TabRoomHooks = {
-      rebind: (tabId, room) => {
-        calls.push(`rebind ${tabId} ${room.id} ${room.name}`)
+      rebind: (tabId, room, projectId) => {
+        calls.push(`rebind ${tabId} ${room.id} ${room.name} ${projectId}`)
         if (bound === 'throw') throw new Error('registry down')
         return bound
       },
@@ -1704,7 +1704,7 @@ describe('room membership', () => {
   it('a restored member is rebound under its new id before it starts, keeps its mark and is born typed', () => {
     const { tabs, calls, started } = rig({ bound: { coordinator: true } })
     const tab = tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: true } })
-    expect(calls).toEqual([`rebind ${tab.id} ${ROOM} alice`])
+    expect(calls).toEqual([`rebind ${tab.id} ${ROOM} alice ${A}`])
     // The registry's coordinator flag wins over the saved one; the mark is the saved one.
     expect(tab.room).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: true })
     expect(started).toEqual([expect.objectContaining({ tabId: tab.id, typed: true })])
@@ -1713,7 +1713,7 @@ describe('room membership', () => {
   it('a restored tab whose room no longer has the member comes back in no room and not typed', () => {
     const { tabs, calls, started } = rig({ bound: undefined })
     const tab = tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: true } })
-    expect(calls).toEqual([`rebind ${tab.id} ${ROOM} alice`])
+    expect(calls).toEqual([`rebind ${tab.id} ${ROOM} alice ${A}`])
     expect(tab.room).toBeUndefined()
     expect((started[0] as { typed?: true }).typed).toBeUndefined()
     // Closing it later tells the registry nothing.

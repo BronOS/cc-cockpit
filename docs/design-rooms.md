@@ -60,11 +60,15 @@ Not in v1: a tab in two rooms, rooms across windows, rooms made by the person.
 message is at most 20k characters (longer goes in a doc); `all` counts as one send per recipient against the caps. The
 answer says what happened: `delivered`, `held` (with why) or `gone`. `ctx.rooms.send(id, to, text)` sends `from plugin`.
 
-**One queue per member, the room's** (persisted). Messages are dequeued only by delivery through `read` or a paste; the
-send gate's own queue is never used for room messages, so its takeover drop and its plugin/core origins do not apply.
+**One queue per member, the room's** (persisted). Messages are dequeued only by the member's own acked `read` (a paste
+delivers only the pointer); the send gate's own queue is never used for room messages, so its takeover drop and its
+plugin/core origins do not apply.
 
 **Pull, not push.** A member gets messages in one of two ways, both ending in the messages being printed in its own turn:
-1. `ccc room read` prints every held message (fenced, below) and dequeues them. Always available.
+1. `ccc room read` prints the oldest held messages that fit one reply line (fenced, below; when more wait, the pointer
+   for them after the last fence) and dequeues them once `ccc` acks that it printed them (`room.read.ack`, protocol.ts
+   `ROOM_READ_ACK_COMMAND`): a read whose reply never reached Claude (Esc, the deadline, a closed socket) is read again
+   by the next one, so a message is shown at least once and never lost. Always available.
 2. A **pointer** that makes Claude run `read`: `N room messages waiting: run ccc room read`, fixed text, no message
    content. It reaches the tab by:
    - **the Stop hook**, when the tab is untyped or carries the mark: at `Stop`, `ccc hook` asks main and, if the member
@@ -107,7 +111,9 @@ marked tab gets no gate paste (the Stop pointer is fine: the box is Claude's whi
 [end <nonce>]
 ```
 
-The nonce is fresh per delivery, so a body cannot forge a header or an end line.
+The nonce is fresh per delivery, so a body cannot forge a header or an end line. Control characters (C0 but tab,
+DEL, C1) and the bidi and invisible format characters are printed as a visible `\u{..}` escape, so an escape sequence
+or a bidi override cannot hide a `| ` or an end line from the person reading the terminal.
 
 ## 3. Docs
 
@@ -122,7 +128,8 @@ puts a copy in `shared/`.
 The owning plugin reads and writes any doc of its rooms (`ctx.rooms.docs.list/get/put`): it seeds a member's kickoff into
 `members/<name>/` before opening the tab, and exports the docs itself at the end (it has Node).
 
-Limits: UTF-8 text only, 256 KiB per doc (a `ccc` reply is one socket line, `MAX_LINE_BYTES` 1 MiB, and plugin CLI I/O is
+Limits: UTF-8 text only (no control character but tab, LF and CR, so the JSON-escaped doc is at most twice its size and
+always fits a `ccc` reply), 256 KiB per doc (a `ccc` reply is one socket line, `MAX_LINE_BYTES` 1 MiB, and plugin CLI I/O is
 256 KiB for that reason), 20 MiB per room; path parts `[A-Za-z0-9._-]`, depth at most 4, no `..`; files opened with
 `O_NOFOLLOW` and checked by `fstat` on that descriptor (the key-file pattern), parent directories made by main only;
 writes are temp file plus rename, one at a time, last write wins; no versions. Docs outlive the room: an ended room's

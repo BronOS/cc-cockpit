@@ -17,13 +17,49 @@
 // `reply: true` is offered: a `ccc` from before the reply protocol closes without reading, and a
 // Stop taken as blocked there would leave the tab working with Claude stopped. Every other event,
 // and a Stop with no block, answers null as before.
-import { isHookEvent } from '../../shared/hooks'
+import { isPlainObject } from '../../shared/guards'
+import { isHookEvent, type HookEvent } from '../../shared/hooks'
 import { STOP_REPLY_ARG } from '../../shared/protocol'
 import type { StopBlock } from '../rooms/room-stop'
 import type { Handler } from '../socket/socket-server'
 import { errorText } from '../../shared/error-text'
 import { warnLog } from '../warn-log'
 import type { SessionRegistry } from './session-registry'
+
+/** The tab manager as a hook reaches it (TabManager): a session id to resume, a prompt that makes it resumable. */
+export interface HookTabs {
+  sessionStarted(tabId: string, sessionId: string, source?: string): void
+  sessionPrompted(tabId: string): void
+}
+
+/**
+ * What hookHandler applies a hook to in main (index.ts): the session registry, then the tab manager for what restart
+ * and restore resume (a SessionStart's session id once the reducer took it, a prompt making it resumable). A function
+ * rather than a closure in index.ts so a test sees that `blocked` (the ack id of the room pointer a Stop was answered
+ * with, rooms/room-stop.ts) reaches the registry: dropped, a blocked Stop would be applied as plain (`waiting`, the
+ * gate's head delivered) while Claude goes on working.
+ */
+export function hookTarget(
+  sessions: Pick<SessionRegistry, 'applyHook' | 'unblockStop' | 'get'>,
+  tabs: HookTabs
+): Pick<SessionRegistry, 'applyHook' | 'unblockStop'> {
+  return {
+    applyHook: (tabId: string, event: HookEvent, payload: unknown, blocked?: string): boolean => {
+      if (!sessions.applyHook(tabId, event, payload, blocked)) return false
+      const sessionId = sessions.get(tabId)?.sessionId
+      if (event === 'SessionStart' && sessionId !== undefined) {
+        // `source` tells an interactive `/resume` (a stored conversation, stays resumable) from
+        // `/clear` (an empty one); a non-string counts as neither.
+        const source = isPlainObject(payload) ? payload.source : undefined
+        tabs.sessionStarted(tabId, sessionId, typeof source === 'string' ? source : undefined)
+      }
+      if (event === 'UserPromptSubmit') tabs.sessionPrompted(tabId)
+      return true
+    },
+    // A blocked Stop whose `ccc` closed without acking (it never printed): applied as the plain Stop it was.
+    unblockStop: (tabId, ackId, payload) => sessions.unblockStop(tabId, ackId, payload)
+  }
+}
 
 /** What the hook handler needs of the room stop (rooms/room-stop.ts RoomStop). */
 export interface HookRoomStop {

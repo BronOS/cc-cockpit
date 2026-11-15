@@ -5,9 +5,9 @@
 //   - a join (RoomRegistry.addMember or redeem) is followed by TabManager.setRoom and the SessionInfo mirror;
 //   - a leave, a removal and a room's end by TabManager.clearRoom and the mirror, for every tab the room had bound
 //     (RoomRegistry.endRoom drops its bindings without telling anyone, so they are read first);
-//   - a read (the queue taken) and a restored member's start by the mirror; a resume and a restored member's start by
-//     an offer of the pointer (room-delivery.ts offer), and the end or delete of a room by the delivery's and the room
-//     stop's forgetting it.
+//   - a read's ack (the queue's head taken) and a restored member's start by the mirror; a resume and a restored
+//     member's start by an offer of the pointer (room-delivery.ts offer), and the end or delete of a room by the
+//     delivery's and the room stop's forgetting it.
 //
 // Identity. The tab-side calls (`ccc room ...`, socket/handlers.ts) take a RoomTabCaller: the tab and project main
 // resolved from the caller's session token (CliCall.tabId's rule: never from the payload). The member's name and
@@ -19,12 +19,13 @@
 //
 // No Electron: the tab manager and the session registry come in as the slices used, so vitest drives the decisions
 // with the real registries.
+import { MAX_LINE_BYTES, ROOM_READ_MAX_TEXT_BYTES, type RoomReadReply } from '../../shared/protocol'
 import type { TabKind } from '../../shared/types'
 import type { TabRoom } from '../../shared/tab-room'
 import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-reducer'
 import type { TabRoomHooks } from '../tabs/tab-manager'
 import { warnLog } from '../warn-log'
-import { fenceMessages, newFenceNonce } from './room-fence'
+import { fenceBatch, newFenceNonce } from './room-fence'
 import { RoomDelivery, type RecipientAnswer, type RoomSendLimits } from './room-delivery'
 import { RoomDocs, type RoomDocCaller, type RoomDocEntry } from './room-docs'
 import type { RoomLogEntry } from './room-log'
@@ -68,6 +69,8 @@ export interface RoomServiceOptions {
   random?: (bytes: number) => Buffer
   /** Tests: a fixed nonce per read. */
   nonce?: () => string
+  /** Tests: a small read budget (protocol.ts ROOM_READ_MAX_TEXT_BYTES). */
+  readMaxBytes?: number
   /** Tests: fixed ack ids and a short ack timeout (room-stop.ts). */
   newAckId?: () => string
   ackTimeoutMs?: number
@@ -96,13 +99,13 @@ export type RoomStatus =
   | { room: null }
   | { room: { title: string; paused: boolean }; name: string; coordinator: boolean; held: number; members: RoomStatusMember[] }
 
-/** `ccc room read`: how many messages were taken and the fenced text (empty for none). */
-export interface RoomReadResult {
-  count: number
-  text: string
-}
+/** `ccc room read`: protocol.ts RoomReadReply (the batch, what still waits, the ack to send once printed). */
+export type RoomReadResult = RoomReadReply
 
 const NOT_IN_ROOM = 'this tab is in no room'
+
+/** Most bytes a doc's JSON-encoded text may take in a `ccc room doc get` reply: MAX_LINE_BYTES less the envelope. */
+const ROOM_DOC_REPLY_MAX_BYTES = MAX_LINE_BYTES - 4096
 
 export class RoomService {
   readonly registry: RoomRegistry
@@ -166,8 +169,8 @@ export class RoomService {
    * window or app going away only unbinds it.
    */
   readonly tabHooks: TabRoomHooks = {
-    rebind: (tabId, room) => {
-      if (!this.registry.rebind(tabId, room.id, room.name)) return undefined
+    rebind: (tabId, room, projectId) => {
+      if (!this.registry.rebind(tabId, room.id, room.name, projectId)) return undefined
       const member = this.registry.memberOf(tabId)
       return member ? { coordinator: member.coordinator } : undefined
     },
@@ -246,12 +249,35 @@ export class RoomService {
     return this.delivery.send(room.id, member.name, to, text)
   }
 
-  /** `ccc room read`: every message waiting for the caller, fenced under a fresh nonce, and dequeued. */
+  /**
+   * `ccc room read`, step one (protocol.ts ROOM_READ_ACK_COMMAND): the oldest messages waiting for the caller that fit
+   * one reply line, fenced under a fresh nonce, with the count still waiting after them. Nothing leaves the queue
+   * here: the reply may never reach Claude (`ccc` killed by Esc or its deadline, the socket gone before the write), and
+   * the messages are taken only by the ack `ccc` sends once it printed them (readAck). Two steps rather than "take, and
+   * put back if the write fails": a write main made is no proof `ccc` printed it. So a read is at least once: a `ccc`
+   * killed between its print and its ack shows that batch again, and no batch is ever lost.
+   */
   read(caller: RoomTabCaller): RoomReadResult {
     const { member, room } = this.requireMember(caller)
-    const messages = this.registry.take(room.id, member.name)
-    this.delivery.syncTab(caller.tabId)
-    return { count: messages.length, text: messages.length === 0 ? '' : fenceMessages(room.title, messages, this.nonce()) }
+    const messages = this.registry.waiting(room.id, member.name)
+    if (messages.length === 0) return { count: 0, more: 0, text: '' }
+    const batch = fenceBatch(room.title, messages, this.nonce(), this.options.readMaxBytes ?? ROOM_READ_MAX_TEXT_BYTES)
+    // The batch's last message id: the ack takes the queue's head through it, never a message sent after this read.
+    const last = messages[batch.count - 1]
+    return last ? { ...batch, ack: last.id } : batch
+  }
+
+  /**
+   * `ccc room read`, step two: `ccc` printed the batch whose reply carried `ack`; its messages leave the caller's own
+   * queue (only the caller's: the member comes from the token's tab, the id is looked up in that queue alone).
+   */
+  readAck(caller: RoomTabCaller, ack: unknown): { acked: number } {
+    const { member, room } = this.requireMember(caller)
+    if (typeof ack !== 'string' || ack.length === 0 || ack.length > 64) throw new RoomError('invalid', 'room.read.ack needs the ack of a read')
+    const acked = this.registry.dropThrough(room.id, member.name, ack)
+    // The held count (SessionInfo and the badge) follows the queue.
+    if (acked > 0) this.delivery.syncTab(caller.tabId)
+    return { acked }
   }
 
   docList(caller: RoomTabCaller): Promise<RoomDocEntry[]> {
@@ -259,9 +285,18 @@ export class RoomService {
     return this.docs.list(roomId, doc)
   }
 
-  docGet(caller: RoomTabCaller, path: unknown): Promise<string> {
+  /**
+   * A doc's text for `ccc room doc get`. Every doc put through the store fits a reply line once JSON-escaped (put
+   * refuses the controls that escape to six bytes: room-docs.ts isDocText, so at most twice MAX_DOC_BYTES); a file
+   * that got there some other way and would not fit is refused with a reason, never sent as a line the client drops.
+   */
+  async docGet(caller: RoomTabCaller, path: unknown): Promise<string> {
     const { roomId, doc } = this.docCaller(caller)
-    return this.docs.get(roomId, doc, path)
+    const text = await this.docs.get(roomId, doc, path)
+    if (Buffer.byteLength(JSON.stringify(text)) > ROOM_DOC_REPLY_MAX_BYTES) {
+      throw new RoomError('limit', 'this doc holds control characters that make it too large for one ccc reply')
+    }
+    return text
   }
 
   docPut(caller: RoomTabCaller, path: unknown, text: unknown): Promise<void> {

@@ -236,9 +236,10 @@ export interface TabRoomHooks {
    * A restored tab's saved membership, under the tab's new id, before its process starts: the
    * member's current coordinator flag when the room still has that member free (RoomRegistry.rebind
    * then memberOf), undefined when not (the room ended or was deleted, the member was removed):
-   * the tab then comes back in no room.
+   * the tab then comes back in no room. `projectId` is the tab's own (main's), so a room of another
+   * project is refused (RoomRegistry.rebind).
    */
-  rebind(tabId: string, room: { id: string; name: string }): { coordinator: boolean } | undefined
+  rebind(tabId: string, room: { id: string; name: string }, projectId: string): { coordinator: boolean } | undefined
   /** A member tab was closed for good (TabManager.close, a clean exit closing it): its membership ends. */
   closed(tabId: string, room: TabRoom): void
   /** A member tab went with its window or the app: the member stays, unbound (RoomRegistry.unbind). */
@@ -864,7 +865,7 @@ export class TabManager {
     // Before start() too: the registry binds the new id first, and the session registry's entry is
     // born typed (a restored member is the person's; TabEvent.typed).
     if (opts.room !== undefined) {
-      const room = this.rebindRoom(tab.id, opts.room)
+      const room = this.rebindRoom(tab.id, tab.projectId, opts.room)
       if (room !== undefined) {
         tab.room = room
         tab.restoredMember = true
@@ -1034,11 +1035,11 @@ export class TabManager {
    * A saved membership asked of the registry (TabRoomHooks.rebind); dropped on a throw and with no registry: the
    * saved file is user-writable, and a mark (the person's safety switch) nobody confirmed must not come back.
    */
-  private rebindRoom(tabId: string, saved: TabRoom): TabRoom | undefined {
+  private rebindRoom(tabId: string, projectId: string, saved: TabRoom): TabRoom | undefined {
     const hooks = this.options.rooms
     if (!hooks) return undefined
     try {
-      const bound = hooks.rebind(tabId, { id: saved.id, name: saved.name })
+      const bound = hooks.rebind(tabId, { id: saved.id, name: saved.name }, projectId)
       return bound === undefined ? undefined : { ...saved, coordinator: bound.coordinator === true }
     } catch (err) {
       this.log(`room rebind failed: ${errorText(err)}`)

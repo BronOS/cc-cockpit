@@ -155,6 +155,40 @@ export function stopBlockOf(result: unknown): StopBlockReply | undefined {
   return { block, ackId }
 }
 
+/**
+ * `ccc room read` (design-rooms.md §2 "Pull, not push"), a two-step read so no message is lost to a reply that never
+ * reached Claude (a `ccc` killed by Esc or its 40 s deadline, a socket closed before main wrote, a framer refusing the
+ * line). `room.read` (session token, no args) answers RoomReadReply and takes nothing off the queue: the oldest
+ * messages that fit ROOM_READ_MAX_TEXT_BYTES, fenced, with `more` still waiting after them and, when `more` > 0, the
+ * room pointer for `more` as the text's last line (outside every fence). `ccc` prints `text` and only then sends
+ *   { v, id: 2, cmd: 'room.read.ack', token, args: { ack } }
+ * on the same connection, with the reply's `ack`, and reads main's `{ acked: n }`. Main then drops the queue's head up
+ * to and including that batch; an ack main does not know (already acked, the member left, a later batch) drops
+ * nothing. A read with no ack is delivered again by the next read: at least once, never lost; a `ccc` killed between
+ * its print and its ack repeats that batch once. `count` 0 means nothing waits (`text` empty, no `ack`).
+ */
+export const ROOM_READ_ACK_COMMAND = 'room.read.ack'
+
+/** `room.read`'s result. */
+export interface RoomReadReply {
+  /** Messages in this batch. */
+  count: number
+  /** Messages still waiting after it (the next read's). */
+  more: number
+  /** The fenced batch (and the pointer line when `more` > 0); empty for none. */
+  text: string
+  /** What `room.read.ack` carries back once `text` is printed; absent for an empty read. */
+  ack?: string
+}
+
+/**
+ * Most bytes the JSON encoding of a read's `text` may take (JSON escapes counted, not characters), so the reply line
+ * fits MAX_LINE_BYTES with room to spare for the envelope. One message always fits: 20k characters (room-registry.ts
+ * MAX_ROOM_MESSAGE_CHARS) at most 9 bytes each once fenced and encoded (an empty line's `| ` and `\n`, or a visibly
+ * escaped character: `\u{202e}` encodes as 9), so at most 180 KB.
+ */
+export const ROOM_READ_MAX_TEXT_BYTES = 768 * 1024
+
 /** Keys that reach an object's prototype when copied with Object.assign or a for...in loop. */
 const RESERVED_ARG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 

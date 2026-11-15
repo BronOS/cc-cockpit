@@ -149,7 +149,7 @@ import { migrateSessionFilesShown, needsSessionFilesMigration } from './settings
 import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
-import { hookAckHandler, hookHandler } from './sessions/hook-handler'
+import { hookAckHandler, hookHandler, hookTarget } from './sessions/hook-handler'
 import { RoomService } from './rooms/room-service'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { CloseAsks, closeWillAsk } from './sessions/close-asks'
@@ -2196,26 +2196,12 @@ function start(server: boolean): void {
   // resume, once a prompt makes it resumable (TabManager.sessionStarted / sessionPrompted).
   socket.handle(
     'hook',
-    hookHandler({
-      // `blocked`: the ack id of the room pointer this Stop was answered with (rooms/room-stop.ts); the registry keeps
-      // the tab working for it, so it must reach applyHook (dropping it would apply the Stop as plain, then block).
-      applyHook: (tabId, event, payload, blocked) => {
-        if (!sessions.applyHook(tabId, event, payload, blocked)) return false
-        const sessionId = sessions.get(tabId)?.sessionId
-        if (event === 'SessionStart' && sessionId !== undefined) {
-          // `source` tells an interactive `/resume` (a stored conversation, stays resumable) from
-          // `/clear` (an empty one); a non-string counts as neither.
-          const source = isPlainObject(payload) ? payload.source : undefined
-          tabs.sessionStarted(tabId, sessionId, typeof source === 'string' ? source : undefined)
-        }
-        if (event === 'UserPromptSubmit') tabs.sessionPrompted(tabId)
-        return true
-      },
-      // A blocked Stop whose `ccc` closed without acking (it never printed): applied as the plain Stop it was.
-      unblockStop: (tabId, ackId, payload) => sessions.unblockStop(tabId, ackId, payload)
-    },
-    // The room stop: a member's Stop with room messages waiting may be answered with the pointer (design-rooms.md §2).
-    rooms.stop)
+    // The registry, then the tab manager's resume bookkeeping; `blocked` reaches applyHook (hook-handler.ts hookTarget).
+    hookHandler(
+      hookTarget(sessions, tabs),
+      // The room stop: a member's Stop with room messages waiting may be answered with the pointer (design-rooms.md §2).
+      rooms.stop
+    )
   )
 
   // `ccc hook Stop`'s ack of a block, which it prints once this confirms (protocol.ts HOOK_ACK_COMMAND): the room stop

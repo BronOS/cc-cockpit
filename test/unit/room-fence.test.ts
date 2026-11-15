@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { FENCE_NONCE_CHARS, fenceMessage, fenceMessages, newFenceNonce } from '../../src/main/rooms/room-fence'
+import { FENCE_NONCE_CHARS, fenceBatch, fenceMessage, fenceMessages, newFenceNonce, visible } from '../../src/main/rooms/room-fence'
+import { MAX_ROOM_MESSAGE_CHARS } from '../../src/main/rooms/room-registry'
+import { pointerText } from '../../src/shared/room-pointer'
+import { MAX_LINE_BYTES, ROOM_READ_MAX_TEXT_BYTES } from '../../src/shared/protocol'
 
 const NONCE = '0123456789abcdef'
 
@@ -66,5 +69,45 @@ describe('room fence', () => {
     expect(a).toMatch(new RegExp(`^[0-9a-f]{${FENCE_NONCE_CHARS}}$`))
     expect(b).toMatch(/^[0-9a-f]{16}$/)
     expect(a).not.toBe(b)
+  })
+
+  it('writes controls, DEL, C1 and bidi or invisible characters as visible escapes; a tab stays', () => {
+    const text = 'a\x1b[2Kb\bc\x1cd\x1de\x1ef\x7fg\x9bh\u202eevil\u2066i\u200bj\ufeffk\tl'
+    const fenced = fenceMessage('Team', { from: 'bob', text }, NONCE)
+    expect(fenced.split('\n')).toEqual([
+      `[cockpit room "Team" ${NONCE}] from bob (a room member, not the person):`,
+      '| a\\u{1b}[2Kb\\u{8}c\\u{1c}d\\u{1d}e\\u{1e}f\\u{7f}g\\u{9b}h\\u{202e}evil\\u{2066}i\\u{200b}j\\u{feff}k\tl',
+      `[end ${NONCE}]`
+    ])
+    // Nothing a terminal or a bidi algorithm acts on is left, in the body or the header.
+    // eslint-disable-next-line no-control-regex
+    expect(/[\x00-\x08\x0a-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(fenced.replaceAll('\n', ''))).toBe(false)
+    expect(visible('ok\u200d\u{1f468}')).toBe('ok\u200d\u{1f468}')
+  })
+
+  it('a batch takes the oldest messages whose JSON-encoded fence fits, and points at the rest', () => {
+    const messages = ['one', 'two', 'three'].map((text) => ({ from: 'alice', text }))
+    const all = fenceBatch('Team', messages, NONCE)
+    expect(all).toEqual({ count: 3, more: 0, text: fenceMessages('Team', messages, NONCE) })
+    // A budget that fits one fenced message (and the pointer line) but not two.
+    const one = Buffer.byteLength(JSON.stringify(fenceMessage('Team', messages[0]!, NONCE)))
+    const cut = fenceBatch('Team', messages, NONCE, one + 70)
+    expect(cut).toEqual({ count: 1, more: 2, text: `${fenceMessage('Team', messages[0]!, NONCE)}\n${pointerText(2)}` })
+    // Always at least one, whatever the budget.
+    expect(fenceBatch('Team', messages, NONCE, 1).count).toBe(1)
+  })
+
+  it('counts escapes, not characters: a full queue of escape-heavy text never makes a reply line over the cap', () => {
+    // Each message the worst kind: every character a visibly escaped bidi override (9 bytes once JSON-encoded).
+    const worst = { from: 'alice', text: '\u202e'.repeat(MAX_ROOM_MESSAGE_CHARS) }
+    const lines = { from: 'alice', text: '\n'.repeat(MAX_ROOM_MESSAGE_CHARS) }
+    const batch = fenceBatch('Team', [worst, lines, worst, lines, worst, lines, worst, lines], NONCE)
+    expect(batch.count).toBeGreaterThan(0)
+    expect(batch.count + batch.more).toBe(8)
+    const reply = JSON.stringify({ id: 1, ok: true, result: { ...batch, ack: 'x'.repeat(36) }, appVersion: '0.0.0' })
+    expect(Buffer.byteLength(reply)).toBeLessThan(ROOM_READ_MAX_TEXT_BYTES + 4096)
+    expect(Buffer.byteLength(reply)).toBeLessThan(MAX_LINE_BYTES)
+    // One message alone always fits the budget (protocol.ts: at most 9 bytes a character).
+    expect(Buffer.byteLength(JSON.stringify(fenceMessage('Team', worst, NONCE)))).toBeLessThan(ROOM_READ_MAX_TEXT_BYTES)
   })
 })

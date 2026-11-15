@@ -105,12 +105,15 @@ function byOf(caller: RoomDocCaller): string {
 
 /**
  * Text a doc may hold: a well-formed string (a lone surrogate would turn into U+FFFD on the way to UTF-8, so the
- * doc read back would differ from the one written) with no NUL (a doc is text, not a binary smuggled through).
+ * doc read back would differ from the one written) with no C0 control but tab, LF and CR (a doc is text, not a
+ * binary smuggled through). The controls are also what keeps every doc readable by `ccc room doc get`: JSON writes
+ * each of them as a six-byte `\u00XX`, so a 256 KiB doc of them would be a 1.5 MiB reply, past the client's 1 MiB
+ * line; with only these left no character takes more than twice its UTF-8 size in JSON (`"`, `\`, tab, LF, CR).
  */
 function isDocText(text: string): boolean {
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i)
-    if (c === 0) return false
+    if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) return false
     if (c >= 0xd800 && c <= 0xdbff) {
       const next = text.charCodeAt(i + 1)
       if (!(next >= 0xdc00 && next <= 0xdfff)) return false
@@ -185,7 +188,7 @@ export class RoomDocs {
     // Text checks only after access: a refused caller learns nothing more than "no such doc".
     if (typeof text !== 'string' || !isDocText(text)) {
       this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op: 'put', reason: 'bad text' })
-      throw new RoomError('invalid', 'a doc must be UTF-8 text (no NUL, no lone surrogate)')
+      throw new RoomError('invalid', 'a doc must be UTF-8 text (no control character but tab and line breaks, no lone surrogate)')
     }
     const data = Buffer.from(text, 'utf8')
     if (data.length > MAX_DOC_BYTES) {
