@@ -33,7 +33,8 @@ test('the command palette runs "New Claude Tab"', async ({ cockpit }) => {
   await expect(palette).toBeVisible()
 
   await palette.getByRole('combobox').fill('new claude')
-  await expect(palette.getByRole('option')).toHaveCount(1)
+  // "New Claude Tab in Group" matches too (split view, D10); the plain one is highlighted first.
+  await expect(palette.getByRole('option', { selected: true }).locator('span')).toHaveText('New Claude Tab')
   await palette.getByRole('combobox').press('Enter')
 
   await expect(palette).toHaveCount(0)

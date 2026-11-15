@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CommandInfo } from '../../shared/ipc'
 import { displayChord, fuzzyFilter } from './keybindings'
+import type { CloseCause } from '../tabs/focus-give-back'
 
 /**
  * Cmd+Shift+P. A text field that filters command titles by fuzzy match; Enter runs the highlighted
  * one, arrows move, Escape or a click outside closes. The palette closes before the command runs,
- * so a command that focuses something (a new tab's terminal) keeps the focus.
+ * so a command that focuses something (a new tab's terminal) keeps the focus. `onClose` says who closed
+ * it: the person (Escape, a pick, a click outside) or the field's blur (`auto`), after which the
+ * keyboard must not be handed back to a terminal (focus-give-back.ts: a page tab's `focus()` is one).
  */
 export function CommandPalette(props: {
   commands: CommandInfo[]
   mac: boolean
   onRun: (id: string) => void
-  onClose: () => void
+  onClose: (cause: CloseCause) => void
   /** The dialog's name and the field's hint, for a picker built on the palette (Show Tab Beside…). */
   label?: string
   placeholder?: string
@@ -25,22 +28,22 @@ export function CommandPalette(props: {
 
   // Close once: Esc, a click outside and the blur that follows them can all land.
   const closed = useRef(false)
-  const close = (): void => {
+  const close = (cause: CloseCause): void => {
     if (closed.current) return
     closed.current = true
-    props.onClose()
+    props.onClose(cause)
   }
 
   const run = (id: string | undefined): void => {
     if (id === undefined || closed.current) return
-    close()
+    close('person')
     props.onRun(id)
   }
 
   const current = Math.min(index, Math.max(0, matches.length - 1))
 
   return (
-    <div className="palette-backdrop" onMouseDown={close}>
+    <div className="palette-backdrop" onMouseDown={() => close('person')}>
       <div
         className="palette"
         role="dialog"
@@ -63,8 +66,9 @@ export function CommandPalette(props: {
           placeholder={props.placeholder ?? 'Type a command'}
           value={query}
           // Focus left the field (Tab, another window, devtools): nothing in the palette can be
-          // typed into any more, so it must not stay open over the terminal.
-          onBlur={close}
+          // typed into any more, so it must not stay open over the terminal. Not the person's close:
+          // the keyboard stays where the blur put it (a page frame's `focus()` blurs this field too).
+          onBlur={() => close('auto')}
           onChange={(e) => {
             setQuery(e.target.value)
             setIndex(0)
@@ -72,7 +76,7 @@ export function CommandPalette(props: {
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               e.preventDefault()
-              close()
+              close('person')
             } else if (e.key === 'Enter') {
               e.preventDefault()
               run(matches[current]?.id)

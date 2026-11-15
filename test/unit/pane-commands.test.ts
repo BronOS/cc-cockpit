@@ -311,6 +311,26 @@ describe('pane commands', () => {
         h.hold('')
         expect(h.swallows(ev('Control', 'ControlLeft', true, { ctrlKey: true }))).toBe(false)
       })
+
+      it('the chord pressed twice in a frame: one fresh press ends every hold of its key (round 3)', () => {
+        const h = new HeldChordKeys()
+        // Twice in the frame, both keyups there: nothing released here.
+        h.hold('ctrl+alt+left', 'ArrowLeft')
+        h.hold('ctrl+alt+left', 'ArrowLeft')
+        // The same key held by name only (the web shell's page sent no code), also matched by the press.
+        h.hold('ctrl+alt+left')
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(true)
+        // The person clicked a terminal and presses the arrow there: a fresh press, then its repeats,
+        // all theirs. A record left behind swallowed every repeat after the first press.
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', false))).toBe(false)
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(false)
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(false)
+        // A hold of another key is untouched by that press.
+        h.hold('ctrl+alt+right', 'ArrowRight')
+        h.hold('ctrl+alt+left', 'ArrowLeft')
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', false))).toBe(false)
+        expect(h.swallows(ev('ArrowRight', 'ArrowRight', true))).toBe(true)
+      })
     })
   })
 

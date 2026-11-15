@@ -64,6 +64,7 @@ import {
 import { SessionRegistry, tabIo } from './terminal-session'
 import { checkFrameFocus, pageFrames, setFrameFocusHandler } from './PageTabArea'
 import { chordTarget, type ChordSource } from './frame-focus'
+import { FocusGiveBack, type CloseCause } from './focus-give-back'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -223,6 +224,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The plugin close ask (request id) the dialog that is up answers, with confirmDone; null for the
   // person's own close. `sessions.closeSettled` for it (another view answered first) takes it down.
   const confirmAsk = useRef<string | null>(null)
+  // Who took the close dialog away: the person's answer gives the keyboard back to the pane; a
+  // plugin's question settled in another view (or an overlay over it) took it away by itself, and the
+  // keyboard stays where it is (focus-give-back.ts). Read and reset by the give-back effect.
+  const confirmGoneBy = useRef<CloseCause>('person')
   // Plugin close asks this view has not answered yet and main has not settled (shared asks: every
   // view of the window is asked, the first answer wins). A repeat of one (the web bridge hands a
   // late subscriber the asks still pending) is ignored, and one settled meanwhile is not acted on.
@@ -241,6 +246,18 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // active one first; kept in a ref, it changes on every switch and nothing renders from it.
   const [switcher, setSwitcherState] = useState<SwitcherState | null>(null)
   const switcherRef = useRef<SwitcherState | null>(null)
+  // Every give-back of the keyboard after a popup goes runs through this one rule (focus-give-back.ts):
+  // only the person's close restores, and only while the keyboard stayed in the shell meanwhile.
+  const giveBackRule = useRef<FocusGiveBack | null>(null)
+  giveBackRule.current ??= new FocusGiveBack({
+    later: (fn) => void requestAnimationFrame(fn),
+    keyboardInFrame: () => document.activeElement instanceof HTMLIFrameElement
+  })
+  useEffect(() => {
+    const onBlur = (): void => giveBackRule.current?.windowBlurred()
+    window.addEventListener('blur', onBlur)
+    return () => window.removeEventListener('blur', onBlur)
+  }, [])
   const showTimer = useRef<number | undefined>(undefined)
   const recent = useRef<string[]>([])
   // Set while the window key handler runs a command: a switch chord typed here is held, so the
@@ -886,6 +903,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       confirmAsk.current = null
       confirmDone.current = null
       confirmFor.current = null
+      confirmGoneBy.current = 'auto'
       setConfirm(null)
     })
     return () => {
@@ -933,6 +951,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (stateRef.current.tabs.find((t) => t.id === id)?.kind === 'page') pageFrames().focus(id)
     else sessions.get(id).focus()
   }, [sessions])
+  /** A popup went: give the keyboard back (focusActive) only for the person's close (focus-give-back.ts). */
+  const giveBack = useCallback((cause: CloseCause): void => giveBackRule.current?.closed(cause, focusActive), [focusActive])
   /**
    * A press on a strip tab. On the page tab that is the focused pane already it changes no selection,
    * so PageTabArea's select effect does not run again, and the press itself focused the strip's
@@ -948,36 +968,43 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const s = stateRef.current
       const again = !s.keysOff && s.activeId === tabId && s.tabs.find((t) => t.id === tabId)?.kind === 'page'
       pickTab(tabId)
-      if (again) requestAnimationFrame(focusActive)
+      if (again) giveBack('person')
     },
-    [pickTab, focusActive]
+    [pickTab, giveBack]
   )
-  // The split menu went unpicked (Escape, a click elsewhere): the keyboard goes back to the pane.
+  // The split menu went unpicked (Escape, a click elsewhere, both the person's): the keyboard goes
+  // back to the pane.
   const closeSplitMenu = (): void => {
     setSplitMenu(null)
-    requestAnimationFrame(focusActive)
+    giveBack('person')
   }
   // The tab menu and its editors took the keyboard; give it back once they are gone. In a frame,
-  // like every other give-back here: an item's action (Close's dialog) may raise a modal first.
+  // like every other give-back here: an item's action (Close's dialog) may raise a modal first. The
+  // menus and editors close only on the person's click, Escape or Enter (TabBar), never on a blur.
   const refocusAfterMenu = useCallback((): void => {
-    requestAnimationFrame(focusActive)
-  }, [focusActive])
+    giveBack('person')
+  }, [giveBack])
   const setSwitcher = useCallback((next: SwitcherState | null): void => {
     switcherRef.current = next
     setSwitcherState(next)
   }, [])
-  /** Close the switcher, selecting `pick` when given (a release, Enter, a click) or nothing (Esc, blur). */
+  /**
+   * Close the switcher, selecting `pick` when given (a release, Enter, a click) or nothing (Esc, a
+   * blur, a modal). `cause`: the person's close gives the keyboard back to the pane; one that came by
+   * itself does not (the window's `blur`: a page tab's frame taking the keyboard with its `focus()` is
+   * one, and the give-back put the keys into the Claude pane after the check had blurred the frame).
+   */
   const endSwitcher = useCallback(
-    (pick: string | undefined): void => {
+    (pick: string | undefined, cause: CloseCause): void => {
       window.clearTimeout(showTimer.current)
       if (!switcherRef.current) return
       swallow.current = new Set(heldKeys.current)
       heldKeys.current.clear()
       setSwitcher(null)
       if (pick) pickTab(pick)
-      requestAnimationFrame(focusActive)
+      giveBack(pick ? 'person' : cause)
     },
-    [focusActive, setSwitcher, pickTab]
+    [giveBack, setSwitcher, pickTab]
   )
   /**
    * A switch chord: open the switcher one step from the current tab, or step it when it is open.
@@ -1009,7 +1036,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // on the way, the ccc offer, the settings screen): the switcher goes, or its keys would answer
   // the modal's buttons and a release would switch tabs behind it.
   useEffect(() => {
-    if (confirm !== null || cccOffer !== null || discussOpen || settingsOpen) endSwitcher(undefined)
+    if (confirm !== null || cccOffer !== null || discussOpen || settingsOpen) endSwitcher(undefined, 'auto')
   }, [confirm, cccOffer, discussOpen, settingsOpen, endSwitcher])
   // A tab closed or added while the switcher is open: keep the list to the tabs that exist, the
   // highlight on the same tab where it can be, and give up when nothing is left to switch to.
@@ -1020,17 +1047,22 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const order = open.order.filter((id) => ids.has(id))
     if (order.length === open.order.length) return
     if (order.length < 2) {
-      endSwitcher(undefined)
+      endSwitcher(undefined, 'auto')
       return
     }
     const at = order.indexOf(open.order[open.index] ?? '')
     setSwitcher({ ...open, order, index: at >= 0 ? at : Math.min(open.index, order.length - 1) })
   }, [state.tabs, endSwitcher, setSwitcher])
-  const closePalette = useCallback((): void => {
-    setPaletteCommands(null)
-    // The palette took the focus; give it back to the terminal the user was in.
-    requestAnimationFrame(focusActive)
-  }, [focusActive])
+  const closePalette = useCallback(
+    (cause: CloseCause): void => {
+      setPaletteCommands(null)
+      // The palette took the focus; give it back to the terminal the user was in, when the person
+      // closed it. Closed by its field's blur, the keyboard went somewhere else on purpose or by a
+      // page's `focus()` (focus-give-back.ts): never back into the terminal.
+      giveBack(cause)
+    },
+    [giveBack]
+  )
   const openSettings = useCallback((): void => {
     settingsShown.current = true
     setPaletteCommands(null)
@@ -1040,8 +1072,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     settingsShown.current = false
     setSettingsOpen(false)
     setSettingsTarget(null)
-    requestAnimationFrame(focusActive)
-  }, [focusActive])
+    giveBack('person')
+  }, [giveBack])
   // A panel's gear: Settings at that plugin. Nothing else can be on top (the zones are inert while
   // the screen shows), so a request while it is already open is ignored.
   useEffect(() => {
@@ -1067,11 +1099,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     // it rather than leave it under the overlay, where it would still hold Esc and the focus.
     if (count > 0) setPaletteCommands(null)
     // And the tab switcher, which would otherwise pick a tab under the overlay on release.
-    if (count > 0) endSwitcher(undefined)
+    if (count > 0) endSwitcher(undefined, 'auto')
     // Likewise the close dialog: dismissed as a Cancel (the tab stays), never answered blind. For
     // a plugin's close it is a decline, not the person's Cancel (close-asks.ts).
     if (count > 0) {
       confirmFor.current = null
+      confirmGoneBy.current = 'auto'
       setConfirm(null)
       settleClose(confirmDone, false, true)
     }
@@ -1118,14 +1151,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // give it back from an effect, after the commit that lifted `inert` (as for overlays below).
   const wasConfirming = useRef(false)
   useEffect(() => {
-    if (wasConfirming.current && confirm === null) requestAnimationFrame(focusActive)
+    if (wasConfirming.current && confirm === null) giveBack(confirmGoneBy.current)
+    confirmGoneBy.current = 'person'
     wasConfirming.current = confirm !== null
-  }, [confirm, focusActive])
+  }, [confirm, giveBack])
   const wasDiscussing = useRef(false)
   useEffect(() => {
-    if (wasDiscussing.current && !discussOpen) requestAnimationFrame(focusActive)
+    if (wasDiscussing.current && !discussOpen) giveBack('person')
     wasDiscussing.current = discussOpen
-  }, [discussOpen, focusActive])
+  }, [discussOpen, giveBack])
   // The shown page tab's page asked for Ask Claude (page-frames.ts takes it only from the frame on
   // screen with the keyboard). Not over another modal, only for the tab this view shows now, and not
   // right after the person cancelled that tab's box (a page asking on every focus would reopen it as
@@ -1161,9 +1195,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   )
   const wasOffering = useRef(false)
   useEffect(() => {
-    if (wasOffering.current && cccOffer === null) requestAnimationFrame(focusActive)
+    if (wasOffering.current && cccOffer === null) giveBack('person')
     wasOffering.current = cccOffer !== null
-  }, [cccOffer, focusActive])
+  }, [cccOffer, giveBack])
   // The last overlay went and took the focused element with it (focus is on body, where Esc
   // reaches nothing): the keyboard goes back to the settings screen when it is under it (a cli
   // login runs over it), else to the tab the user was in. Queued from an effect, after the commit
@@ -1171,9 +1205,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // from overlaysChanged the frame could fire before React re-rendered.
   const wasCovered = useRef(false)
   useEffect(() => {
-    if (wasCovered.current && !covered) requestAnimationFrame(focusActive)
+    if (wasCovered.current && !covered) giveBack('person')
     wasCovered.current = covered
-  }, [covered, focusActive])
+  }, [covered, giveBack])
   // Each of these is drawn by this page above the zones, where a webview panel's native view would
   // paint over it: the views hide while any is up (shell-layers.ts). An overlay main also hides
   // them for on its own (it knows the stack first); the palette and the dialogs only this page sees.
@@ -1248,8 +1282,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         if (!MODIFIER_KEYS.has(e.key)) heldKeys.current.add(e.code)
         const id = commandForEvent(e)
         if (id === SWITCH_NEXT || id === SWITCH_PREV) switchTabs(id === SWITCH_NEXT ? 1 : -1, false)
-        else if (e.key === 'Escape') endSwitcher(undefined)
-        else if (e.key === 'Enter') endSwitcher(open.order[open.index])
+        else if (e.key === 'Escape') endSwitcher(undefined, 'person')
+        else if (e.key === 'Enter') endSwitcher(open.order[open.index], 'person')
         else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
           setSwitcher({ ...open, index: step(open.index, open.order.length, e.key === 'ArrowDown' ? 1 : -1) })
         }
@@ -1287,13 +1321,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       swallow.current.delete(e.code)
       heldChords.current.released(e)
       const open = switcherRef.current
-      if (open && !open.sticky && released(open.mods, e)) endSwitcher(open.order[open.index])
+      if (open && !open.sticky && released(open.mods, e)) endSwitcher(open.order[open.index], 'person')
     }
     window.addEventListener('keyup', onKeyUp, true)
     // The window lost the keyboard mid-switch (Alt+Tab to another app): the release will never
     // come here, so nothing is picked.
+    // Not the person's close: the keyboard went to another app or into a frame of this page (a page
+    // tab's `focus()`), and stays there (focus-give-back.ts).
     const onBlur = (): void => {
-      endSwitcher(undefined)
+      endSwitcher(undefined, 'auto')
       // No keyup reaches a window without the keyboard: nothing is held any more.
       swallow.current.clear()
       heldChords.current.clear()
@@ -1512,9 +1548,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
             const at = stateRef.current.activeId
             if (at && !stateRef.current.keysOff) placeTab(tabId, at, besidePick.edge, false)
           }}
-          onClose={() => {
+          onClose={(cause) => {
             setBesidePick(null)
-            requestAnimationFrame(focusActive)
+            giveBack(cause)
           }}
         />
       )}
@@ -1532,13 +1568,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           tabs={switcher.order.flatMap((id) => state.tabs.find((t) => t.id === id) ?? [])}
           index={switcher.index}
           sessions={own}
-          onPick={(tabId) => endSwitcher(tabId)}
+          onPick={(tabId) => endSwitcher(tabId, 'person')}
           onHover={(index) => {
             const open = switcherRef.current
             // Reaching for a row with the mouse: a release of Ctrl no longer picks, the click does.
             if (open) setSwitcher({ ...open, index, sticky: true })
           }}
-          onCancel={() => endSwitcher(undefined)}
+          onCancel={() => endSwitcher(undefined, 'person')}
         />
       )}
       {confirm && (confirm.unsaved || (confirm.group && confirm.group.unsaved.length > 0)) && isServerView() && (

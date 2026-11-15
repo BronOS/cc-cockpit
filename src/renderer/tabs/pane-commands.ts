@@ -97,16 +97,24 @@ export class HeldChordKeys {
     const key = named ? named : undefined
     const physical = typeof code === 'string' && KEY_CODE_PATTERN.test(code) ? code : undefined
     if (key === undefined && physical === undefined) return
+    // The same chord pressed twice in a frame (its keyups went to the frame, never here) holds it once:
+    // a duplicate would outlive the fresh press that ends the hold (round 3's MAJOR, with `swallows`).
+    if (this.held.some((h) => h.key === key && h.code === physical)) return
     this.held.push({ key, code: physical })
   }
 
-  /** Whether this keydown is an auto-repeat of a held key (swallow it); a fresh press ends the hold. */
+  /**
+   * Whether this keydown is an auto-repeat of a held key (swallow it); a fresh press ends the hold,
+   * every record it matches: one left behind would swallow the repeats of the person's own press
+   * (round 3's MAJOR: the chord typed twice in a frame, then a click on a terminal and an arrow held
+   * there).
+   */
   swallows(e: KeyEventLike & { repeat: boolean }): boolean {
     if (this.held.length === 0) return false
-    const at = this.held.findIndex(this.matches(e))
-    if (at < 0) return false
+    const matches = this.matches(e)
+    if (!this.held.some(matches)) return false
     if (e.repeat) return true
-    this.held = this.held.filter((_, i) => i !== at)
+    this.held = this.held.filter((h) => !matches(h))
     return false
   }
 

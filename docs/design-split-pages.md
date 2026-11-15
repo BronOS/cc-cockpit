@@ -198,6 +198,15 @@ body and picks the pane (its `mousedown` default is prevented so the frame keeps
 gives fresh pointer evidence for a click into the frame. A click the shell could not prove costs one more click, never
 a key in the wrong pane. A pure `framePick(activeTab, activeId, evidence)` decides, unit-tested; the pool's own-focus
 record counts only while its tab stays the focused pane (`show` drops it when the selection moves on).
+
+A shell popup's give-back follows the same rule (`FocusGiveBack`, focus-give-back.ts; external review round 3). The
+palette closes when its field blurs and the tab switcher when the window does, and a page's `focus()` does both: the
+queued "back to the focused pane" used to run after the check had blurred the frame and put the keys into Claude. Every
+popup, menu and dialog in TabsPane now gives the keyboard back through one call that names who closed it: only the
+person's close (Escape, a pick, Enter, a click on the shell) restores, and only if the shell window did not blur and no
+iframe holds the keyboard when the frame fires. A close that came by itself (a blur, a modal or overlay pushing it away,
+a plugin's close question settled in another view) leaves the keys where they went, or on nothing. The cost: after
+Alt+Tab away from an open palette, the keys come back to nothing, and the person clicks.
 The editor drops its `view.focus()` on load: the shell's `wantFocus` already gives a page the keyboard on its first
 select, and a page that keeps focusing itself is now only blurred.
 

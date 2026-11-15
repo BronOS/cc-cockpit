@@ -345,6 +345,76 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
   }
 })
 
+test("a page's focus() closing the palette or the tab switcher over Claude: the keys reach no terminal (round 3's CRITICAL)", async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\nthree\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await pluginActive(c, 'cockpit.editor')
+    await paneOf(page, claude).locator('.xterm').click()
+    await cccEditFromClaude(c, claude, 'notes.txt')
+    await expect.poll(async () => (await tabsOf(page)).some((t) => t.kind === 'page' && t.page?.title === 'notes.txt')).toBe(true)
+    const file = (await tabsOf(page)).find((t) => t.kind === 'page' && t.page?.title === 'notes.txt')!.id
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
+    const editor = await pageIn(page, 'notes.txt')
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    const PALETTE_MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+
+    // The palette over the Claude pane; the page focuses itself. The palette's field blurs and the
+    // palette closes, but nothing gives the keys back to Claude: the frame is blurred for want of
+    // evidence and the keys go to nothing.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.press(`${PALETTE_MOD}+Shift+P`)
+    const palette = page.getByRole('dialog', { name: 'Command palette' })
+    await expect(palette).toBeVisible()
+    await page.keyboard.type('qz')
+    await editor.evaluate(() => (document.querySelector('.cm-content') as HTMLElement).focus())
+    await expect(palette).toHaveCount(0)
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    // Past the frames the give-back used to fire in: still no terminal holds the keys.
+    await page.waitForTimeout(300)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await page.keyboard.type('yy')
+    await page.keyboard.press('Enter')
+
+    // The tab switcher (Ctrl+Tab held) over the Claude pane; the page focuses itself. The window's
+    // blur ends the switcher, picking nothing and giving nothing back.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    const switcher = page.getByRole('dialog', { name: 'Switch tab' })
+    await page.keyboard.down('Control')
+    await page.keyboard.press('Tab')
+    await expect(switcher).toBeVisible()
+    await editor.evaluate(() => (document.querySelector('.cm-content') as HTMLElement).focus())
+    await expect(switcher).toHaveCount(0)
+    await page.keyboard.up('Control')
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    await page.waitForTimeout(300)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    await page.keyboard.type('nn')
+    await page.keyboard.press('Enter')
+
+    // The person clicks Claude: a later line lands there, and neither 'yy' nor 'nn' ever did.
+    await paneOf(page, claude).locator('.xterm').click()
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.type('ok')
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: ok')
+    const text = await paneText(paneOf(page, claude))
+    expect(text).not.toMatch(/FAKE-CLAUDE echo: \S*(yy|nn)/)
+    await expect(editor.locator('.cm-content')).not.toContainText(/yy|nn|qz/)
+  } finally {
+    await close()
+  }
+})
+
 test('unprompted focus at a relaunch: the restored group mounts the file pane while the person types in Claude, and every key lands in Claude', async () => {
   test.setTimeout(120_000)
   const first = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
