@@ -402,7 +402,12 @@ function load(text, info) {
   } finally {
     replacing = false
   }
-  view.focus()
+  // Never view.focus() here: a sandboxed frame focusing itself takes the keyboard from the shell, and a
+  // file pane that loads beside the Claude pane would pull the person's keys into the editor (the
+  // shell now blurs such a frame, design-split-pages.md §4). The shell gives a selected file the
+  // keyboard (its `wantFocus` at the frame's load); the text comes over the port after that, so a
+  // frame that already holds the keyboard puts it in the new buffer.
+  if (document.hasFocus()) refocusAfterInert()
   changesUi.recompute(view)
   notesUi.recompute(view)
   // A whole new buffer (no changes to send): the language server gets all of it again.

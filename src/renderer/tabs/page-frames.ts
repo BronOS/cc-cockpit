@@ -32,6 +32,13 @@
 // forwards them (`cc-plugin.tab-key`), and the pool hands a chord on only from the frame that has
 // the keyboard. On the desktop no list is sent: main takes the chords before the frame gets them.
 //
+// Focus (design-split-pages.md §4, frame-focus.ts): the pool records its own focus calls (`ownFocus`,
+// the shell's half of the evidence that a frame holding the keyboard was put there by the person),
+// says which frame holds the keyboard (`keyboardTab`), blurs one (`blurFrame`, `blurKeyboard`) and
+// hands on a page's `cc-plugin.tab-focus` hint (`focusHint`: only a reason for the shell to look).
+// `wantFocus` takes the keyboard at the load only for the focused pane with the keys on (`show`'s
+// `focused` is null while they are off), so a pane shown by a group change elsewhere never takes it.
+//
 // Ask Claude (design-editor.md §4): `ccPanel.tab.discuss()` (`cc-plugin.tab-discuss`) opens the
 // shell's question box, taken like a chord only from the frame on screen that has the keyboard, so a
 // page in the background cannot put a box in front of the person.
@@ -45,7 +52,7 @@
 // fakes in plain Node.
 
 import type { TabInfo } from '../../shared/ipc'
-import { TAB_DIRTY_MESSAGE, TAB_DISCUSS_MESSAGE, TAB_KEY_MESSAGE, TAB_MESSAGE } from '../../sdk/panel-core'
+import { TAB_DIRTY_MESSAGE, TAB_DISCUSS_MESSAGE, TAB_FOCUS_MESSAGE, TAB_KEY_MESSAGE, TAB_MESSAGE } from '../../sdk/panel-core'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
 
 /**
@@ -80,6 +87,10 @@ export interface PageFrameElement {
   remove(): void
   /** Give it the keyboard (the tab was selected, or a dialog over it went). */
   focus(): void
+  /** Take the keyboard from it (it took it with no evidence of the person, or the keys went off). */
+  blur(): void
+  /** Its box in viewport pixels while placed, else null (the pointer evidence, frame-focus.ts). */
+  rect(): FrameRect | null
   /** What its page posts to the shell (`event.source` is this frame's window; nothing else). */
   onMessage(listener: (data: unknown) => void): void
   /** It has the keyboard now (the document's active element). */
@@ -134,6 +145,12 @@ export interface PageFramesOptions {
   userActive?(): boolean
   /** A visible page tab whose frame has the keyboard asked for Ask Claude (`ccPanel.tab.discuss()`): the shell opens its box. */
   discuss?(tabId: string): void
+  /**
+   * A live frame's page says its window got the focus (`cc-plugin.tab-focus`): the shell reads
+   * `document.activeElement` now (frame to frame, it sees no event of its own). Never trusted for
+   * what it says: any page may post it any time, and the check only looks.
+   */
+  focusHint?(tabId: string): void
   maxLive?: number
   log?(message: string): void
 }
@@ -170,6 +187,11 @@ export class PageFrames {
   private readonly max: number
   /** Tabs whose page here said it holds unsaved changes (and has not said otherwise since). */
   private readonly dirty = new Set<string>()
+  /**
+   * The tab whose frame the shell itself last gave the keyboard (`focus`, `wantFocus` at the load);
+   * null once the focus moved within the shell (`shellFocused`) or a frame was blurred.
+   */
+  private own: string | null = null
 
   constructor(private readonly o: PageFramesOptions) {
     this.max = Math.max(1, o.maxLive ?? MAX_LIVE_PAGE_FRAMES)
@@ -194,7 +216,8 @@ export class PageFrames {
 
   /**
    * The panes this view shows now (`visible`: PaneView.visible, terminal tabs among them are
-   * skipped) and the focused one (`focused`: the view's selected tab, null for none). Each visible
+   * skipped) and the focused one (`focused`: the view's selected tab, null for none and while the
+   * keys are off, D3: then no frame takes the keyboard at its load). Each visible
    * page tab's frame mounts on its first show and moves to the front of the LRU, the focused one
    * first; every other live frame is hidden (alive), and the least recent ones past the cap
    * unmount. A visible frame keeps its last box until `place` gives a new one.
@@ -291,8 +314,56 @@ export class PageFrames {
   focus(tabId: string): void {
     const l = this.live.find((x) => x.tab.id === tabId)
     if (!l) return
-    if (l.frame) l.frame.element.focus()
-    else l.wantFocus = true
+    if (l.frame) {
+      this.own = tabId
+      // Already holding it (the person clicked into it and the shell picked the pane): focusing the
+      // frame again could only move the page's own focus.
+      if (!l.frame.element.hasFocus()) l.frame.element.focus()
+    } else l.wantFocus = true
+  }
+
+  /** The live tab whose frame holds the keyboard now (the document's active element), or null. */
+  keyboardTab(): string | null {
+    return this.live.find((l) => l.frame?.element.hasFocus() === true)?.tab.id ?? null
+  }
+
+  /** Whether the shell's own focus call put the keyboard in this visible tab's frame (frame-focus.ts). */
+  ownFocus(tabId: string): boolean {
+    return this.own === tabId && this.visible.has(tabId)
+  }
+
+  /** The tab's frame box in viewport pixels while it is placed, else null. */
+  frameRect(tabId: string): FrameRect | null {
+    if (!this.visible.has(tabId)) return null
+    return this.live.find((l) => l.tab.id === tabId)?.frame?.element.rect() ?? null
+  }
+
+  /** Every visible frame's box in viewport pixels, by tab (the pointer evidence's neighbours). */
+  frameRects(): Map<string, FrameRect> {
+    const rects = new Map<string, FrameRect>()
+    for (const id of this.visible) {
+      const rect = this.frameRect(id)
+      if (rect) rects.set(id, rect)
+    }
+    return rects
+  }
+
+  /** The focus moved to an element of the shell: what the shell focused before is no evidence any more. */
+  shellFocused(): void {
+    this.own = null
+  }
+
+  /** Take the keyboard from the tab's frame (it took it with no evidence of the person). */
+  blurFrame(tabId: string): void {
+    if (this.own === tabId) this.own = null
+    this.live.find((l) => l.tab.id === tabId)?.frame?.element.blur()
+  }
+
+  /** Take the keyboard from whichever frame holds it (D3: the keys went off); returns that tab, or null. */
+  blurKeyboard(): string | null {
+    const tab = this.keyboardTab()
+    if (tab !== null) this.blurFrame(tab)
+    return tab
   }
 
   /** The app's key table changed: every served page gets the new list with its intro. */
@@ -423,6 +494,7 @@ export class PageFrames {
       // loaded page without the keyboard).
       if (entry.wantFocus === true && entry.frame?.element === el && entry.tab.id === this.focused) {
         entry.wantFocus = false
+        this.own = entry.tab.id
         el.focus()
       }
     })
@@ -462,7 +534,11 @@ export class PageFrames {
       if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord)
       return
     }
-    if (type === TAB_DISCUSS_MESSAGE && this.visible.has(tabId) && el.hasFocus()) this.o.discuss?.(tabId)
+    if (type === TAB_DISCUSS_MESSAGE && this.visible.has(tabId) && el.hasFocus()) {
+      this.o.discuss?.(tabId)
+      return
+    }
+    if (type === TAB_FOCUS_MESSAGE) this.o.focusHint?.(tabId)
   }
 
   private report(tabId: string, dirty: boolean): void {
@@ -491,6 +567,7 @@ export class PageFrames {
 
   private unmount(entry: Live): void {
     entry.gone = true
+    if (this.own === entry.tab.id) this.own = null
     // Its page goes with whatever it had not saved; main clears this view's dirty at the disconnect.
     this.dirty.delete(entry.tab.id)
     this.live = this.live.filter((l) => l !== entry)

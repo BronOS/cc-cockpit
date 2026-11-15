@@ -77,4 +77,8 @@ window.addEventListener(
   true
 )
 
+// A page tab's window got the keyboard: the shell is told, as it sees no event when the keyboard moves
+// from frame to frame, and decides whether it may stay (design-split-pages.md §4). Before any page script.
+window.addEventListener('focus', () => client.windowFocused())
+
 Object.defineProperty(window, 'ccPanel', { value: client.api, enumerable: true })

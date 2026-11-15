@@ -78,6 +78,16 @@ const MIN_SCALED_FONT_PX = 4
 let windowLeft = false
 let watchingBlur = false
 
+/** `document.hasFocus()`; false where it is missing (a test's fake document). */
+function documentHasFocus(): boolean {
+  return typeof document.hasFocus === 'function' && document.hasFocus()
+}
+
+/** Tests only: the page as just loaded, never left. */
+export function resetWindowLeftForTest(): void {
+  windowLeft = false
+}
+
 /**
  * Whether the page has the person's transient activation now (a press or key in it within the last
  * few seconds; false where the API is missing). A focus event alone is no gesture: the window
@@ -321,7 +331,17 @@ export class TerminalSession {
     if (!watchingBlur) {
       // Once for the page, on the first terminal (no listener for a page with none).
       watchingBlur = true
-      window.addEventListener('blur', () => (windowLeft = true))
+      // Only a blur that leaves the document without the keyboard: the keyboard going into a page
+      // tab's frame blurs the shell's window too, but `document.hasFocus()` stays true then, and
+      // coming back from a file pane is no return to the window (design-split-pages.md §4). Looked
+      // at once more a task later, in case the blur's own moment still says the document has it.
+      window.addEventListener('blur', () => {
+        if (!documentHasFocus()) windowLeft = true
+        else
+          setTimeout(() => {
+            if (!documentHasFocus()) windowLeft = true
+          }, 0)
+      })
     }
     const onWindowFocus = (): void => {
       if (windowLeft) this.backArmed = true

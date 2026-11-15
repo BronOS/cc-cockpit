@@ -124,9 +124,10 @@ interface Registry {
 }
 type RegistryClass = new (ioFor: (id: string) => Io) => Registry
 const file = '../../src/renderer/tabs/terminal-session'
-const { TerminalSession, SessionRegistry } = (await import(file)) as {
+const { TerminalSession, SessionRegistry, resetWindowLeftForTest } = (await import(file)) as {
   TerminalSession: SessionClass
   SessionRegistry: RegistryClass
+  resetWindowLeftForTest(): void
 }
 const shellKind = (await import('../../src/renderer/shell-kind')) as {
   markWebShell(): void
@@ -310,6 +311,41 @@ describe('TerminalSession takes the size on interaction', () => {
     fakeWindow.dispatchEvent(new Event('focus'))
     fakeWindow.dispatchEvent(new Event('pointerdown'))
     expect(fits()).toBe(2)
+  })
+
+  // design-split-pages.md §4: the keyboard going into a page tab's frame blurs the shell's window
+  // with the document still focused; coming back from a file pane is no return to the window.
+  it('a blur with document.hasFocus() still true (the keyboard went into a frame) arms no take', async () => {
+    const aTaskLater = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+    try {
+      resetWindowLeftForTest()
+      Object.assign(fakeDocument, { hasFocus: () => true })
+      const { s, fits } = session()
+      s.write('', false, { cols: 50, rows: 30 }, false)
+      fakeWindow.dispatchEvent(new Event('blur'))
+      await aTaskLater()
+      fakeWindow.dispatchEvent(new Event('focus'))
+      fakeWindow.dispatchEvent(new Event('keydown'))
+      expect(fits()).toBe(0)
+      // Leaving the window itself (the document without the keyboard) still arms one.
+      Object.assign(fakeDocument, { hasFocus: () => false })
+      fakeWindow.dispatchEvent(new Event('blur'))
+      fakeWindow.dispatchEvent(new Event('focus'))
+      fakeWindow.dispatchEvent(new Event('keydown'))
+      expect(fits()).toBe(1)
+      // The blur's own moment still saying focused, the document without it a task later: left.
+      resetWindowLeftForTest()
+      let focused = true
+      Object.assign(fakeDocument, { hasFocus: () => focused })
+      fakeWindow.dispatchEvent(new Event('blur'))
+      focused = false
+      await aTaskLater()
+      fakeWindow.dispatchEvent(new Event('focus'))
+      fakeWindow.dispatchEvent(new Event('pointerdown'))
+      expect(fits()).toBe(2)
+    } finally {
+      delete (fakeDocument as { hasFocus?: unknown }).hasFocus
+    }
   })
 
   it('a press or key with no return before it takes nothing (outside the pane)', () => {

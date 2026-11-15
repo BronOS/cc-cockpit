@@ -62,7 +62,7 @@ import {
   type SwitcherState
 } from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
-import { pageFrames } from './PageTabArea'
+import { pageFrames, setFrameFocusHandler } from './PageTabArea'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -1105,6 +1105,18 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         setDiscussFor(lastClaude.current === undefined ? { tabId } : { tabId, preferred: lastClaude.current })
       }),
     []
+  )
+  // A frame took the keyboard (design-split-pages.md §4, checkFrameFocus): with the person's evidence
+  // its pane is picked as their own act (the outline and `tabs.selected` follow, D18's keys on);
+  // without, the keyboard goes back to the focused pane, and with the keys off to nothing.
+  useEffect(
+    () =>
+      setFrameFocusHandler({
+        activeId: () => (stateRef.current.keysOff ? null : stateRef.current.activeId),
+        pick: (tabId) => dispatch({ type: 'selected', tabId }),
+        giveBack: focusActive
+      }),
+    [focusActive]
   )
   const wasOffering = useRef(false)
   useEffect(() => {

@@ -314,6 +314,34 @@ describe('PageFrames: several visible page panes (design-split-pages.md §3)', (
   })
 })
 
+// design-split-pages.md §3, §4: a pane shown by a group change elsewhere never takes the keyboard.
+describe('PageFrames: wantFocus only for the focused pane with the keys on', () => {
+  it('a frame asked for the keyboard before its load takes nothing when its tab is no longer the focused pane', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    t.frames.focus(TAB_A)
+    // The person picked the other pane before A's page loaded.
+    t.frames.show([TAB_A, TAB_B], TAB_B)
+    await settle()
+    t.el(TAB_A).fire()
+    expect(t.el(TAB_A).focused).toBe(0)
+  })
+
+  it('with the keys off (show with no focused pane, D3) no frame takes the keyboard at its load', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A)])
+    t.frames.show([TAB_A], TAB_A)
+    t.frames.focus(TAB_A)
+    // Another view moved the focused pane: the keys went off here before the page loaded.
+    t.frames.show([TAB_A], null)
+    await settle()
+    t.el(TAB_A).fire()
+    expect(t.el(TAB_A).focused).toBe(0)
+    expect(t.frames.ownFocus(TAB_A)).toBe(false)
+  })
+})
+
 describe('PageFrames: a new port, never a reload', () => {
   async function served(t: ReturnType<typeof pool>, id: string): Promise<FakeElement> {
     t.frames.show([id], id)

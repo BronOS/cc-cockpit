@@ -15,6 +15,8 @@ import {
   SLOT_WIDTH_MESSAGE,
   SLOT_MESSAGE,
   sdkSheetsFirst,
+  TAB_FOCUS_MESSAGE,
+  TAB_MESSAGE,
   THEME_MESSAGE,
   type PortLike,
   type ThemeRoot
@@ -633,5 +635,31 @@ describe('panel SDK: ccPanel.slot', () => {
     c.api.ready()
     expect(up).toEqual([{ type: READY_MESSAGE }, { type: READY_MESSAGE }])
     expect(() => new PanelClient(fakeRoot()).api.ready()).not.toThrow()
+  })
+})
+
+// design-split-pages.md §4: frame to frame, the shell sees no event of its own, so a page tab's
+// window says it got the focus; the shell only takes it as a reason to read document.activeElement.
+describe('panel SDK: the page tab focus hint', () => {
+  it('a page tab posts cc-plugin.tab-focus when its window gets the focus; a panel or slot page posts nothing', () => {
+    const up: { type: string }[] = []
+    const c = new PanelClient(fakeRoot(), () => {}, undefined, undefined, (m) => up.push(m))
+    c.windowFocused()
+    expect(up).toEqual([])
+    c.receive({ type: TAB_MESSAGE, tab: { type: 'file' } }, [])
+    c.windowFocused()
+    c.windowFocused()
+    expect(up).toEqual([{ type: TAB_FOCUS_MESSAGE }, { type: TAB_FOCUS_MESSAGE }])
+    const slot = new PanelClient(fakeRoot(), () => {}, undefined, undefined, (m) => up.push(m))
+    slot.receive({ type: SLOT_MESSAGE, slot: { type: 'agenda' } }, [])
+    slot.windowFocused()
+    expect(up).toHaveLength(2)
+    // Not on the page's API: nothing the page calls posts it (its window's real focus does).
+    expect(Object.keys(c.api.tab ?? {})).not.toContain('windowFocused')
+  })
+
+  it("panel.ts wires it to the window's focus, before any page script", () => {
+    const panel = readFileSync(resolve(__dirname, '../../src/sdk/panel.ts'), 'utf8')
+    expect(panel).toMatch(/window\.addEventListener\('focus', \(\) => client\.windowFocused\(\)\)/)
   })
 })

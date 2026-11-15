@@ -53,6 +53,12 @@ export const READY_MESSAGE = 'cc-plugin.ready'
 export const TAB_DIRTY_MESSAGE = 'cc-plugin.tab-dirty'
 export const TAB_KEY_MESSAGE = 'cc-plugin.tab-key'
 export const TAB_DISCUSS_MESSAGE = 'cc-plugin.tab-discuss'
+/**
+ * A page tab's window got the focus (design-split-pages.md §4): a hint for the shell to read which
+ * frame holds the keyboard, since a move from frame to frame fires no event in the shell. The shell
+ * never trusts it for what it says; it only looks.
+ */
+export const TAB_FOCUS_MESSAGE = 'cc-plugin.tab-focus'
 /** At most this many chords in a `cc-plugin.tab` `keys` list, each at most this long (a sane bound on shell data). */
 const MAX_FORWARDED_KEYS = 500
 const MAX_CHORD_LENGTH = 64
@@ -426,6 +432,14 @@ export class PanelClient {
     if (chord === null || !this.forwarded.has(chord)) return false
     if (!e.repeat) this.toParent?.({ type: TAB_KEY_MESSAGE, chord })
     return true
+  }
+
+  /**
+   * The page's window got the focus (panel.ts listens on `focus`): a page tab tells the shell, which
+   * then checks whether the keyboard may stay here (design-split-pages.md §4). Nothing else posts.
+   */
+  windowFocused(): void {
+    if (this.tabApi !== undefined) this.toParent?.({ type: TAB_FOCUS_MESSAGE })
   }
 
   private connect(port: PortLike): void {

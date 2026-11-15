@@ -172,33 +172,33 @@ External review: sol / high
 - Modify: `src/shared/page-tabs.ts`, `src/sdk/panel-core.ts`, `plugins/editor/src/page/file.js`, `plugins/editor/dist/pages/file.bundle.js`
 - Create: `test/unit/frame-focus.test.ts`, `plugins/editor/test/page-focus.test.mjs`; Modify: `test/unit/page-tab-frames.test.ts`, `test/unit/terminal-session.test.ts`, `test/unit/panel-sdk.test.ts`
 
-- [ ] `framePick(activeTab, activeId, ownFocus, pointer, keyAfterPointer)`: with evidence (the shell's own
+- [x] `framePick(activeTab, activeId, ownFocus, pointer, keyAfterPointer)`: with evidence (the shell's own
   `pageFrames().focus(T)`, or the last shell pointer position inside or on the edge of T's frame box with no shell
   `keydown` after it) and T not `activeId`: pick T (keys on); without evidence: blur the iframe element, then
   `focusActive`; keys off: never a pick. The pool records its own focus calls; the shell tracks `pointermove` /
   `pointerout` and `keydown` (capture) for the evidence
-- [ ] read `document.activeElement` at the window `blur`, at a `cc-plugin.tab-focus` hint (new `TAB_FOCUS_MESSAGE` in
+- [x] read `document.activeElement` at the window `blur`, at a `cc-plugin.tab-focus` hint (new `TAB_FOCUS_MESSAGE` in
   `shared/page-tabs.ts`; panel-core posts it on its own window's `focus`; never trusted for what it says); the pick
   dispatches `selected` so the outline and `tabs.selected` follow; `panel.ts` still builds with no import or `require(`
-- [ ] `wantFocus` takes the keyboard on load only when its tab is still the focused pane and the keys are on; the
+- [x] `wantFocus` takes the keyboard on load only when its tab is still the focused pane and the keys are on; the
   PageTabArea select effect checks the keys too (a pane shown by another view's group change never takes keys, D3)
-- [ ] keys off (D3) also blurs a frame holding the keyboard (SplitArea's blur looks only inside the area); a click on a
+- [x] keys off (D3) also blurs a frame holding the keyboard (SplitArea's blur looks only inside the area); a click on a
   terminal pane takes the keys back from a frame (press capture, xterm `focus()`)
-- [ ] `terminal-session.ts`: the window `blur` sets `windowLeft` only when `document.hasFocus()` is false after it, so
+- [x] `terminal-session.ts`: the window `blur` sets `windowLeft` only when `document.hasFocus()` is false after it, so
   coming back from a file pane arms no size take
-- [ ] editor: drop `view.focus()` from `load()` in `plugins/editor/src/page/file.js` (the shell's `wantFocus` gives the
+- [x] editor: drop `view.focus()` from `load()` in `plugins/editor/src/page/file.js` (the shell's `wantFocus` gives the
   first select the keyboard); keep the focus calls that follow the person's acts; `npm run build:editor`
-- [ ] write tests: `framePick` (own focus picks, pointer evidence picks, neither blurs and gives the keys back, a shell
+- [x] write tests: `framePick` (own focus picks, pointer evidence picks, neither blurs and gives the keys back, a shell
   keydown after the pointer blurs, keys off picks nothing, T equal to `activeId` is no change); `wantFocus` does nothing
   when the tab is not the focused pane or the keys are off; the size take ignores a `blur` with `hasFocus()` true; the
   SDK posts `cc-plugin.tab-focus` on window focus; a source check `plugins/editor/test/page-focus.test.mjs` (no page test loads
   `file.js`'s DOM): `load()` calls no `view.focus()`
-- [ ] e2e: *unprompted focus* — type in the Claude pane while a file pane beside it mounts (palette Show Tab Beside via
+- [x] e2e: *unprompted focus* — type in the Claude pane while a file pane beside it mounts (palette Show Tab Beside via
   the `place` helper for now, and a relaunch that restores the group): every key lands in Claude, the frame does not
   keep the keyboard; *keys off on a page pane* — another view (or a `groups.remove` hook call) moves the focused file
   out: no key reaches any frame or terminal until a click; *`ccc edit`* of the visible file from the Claude pane: keys
   stay in Claude, the file moves to the line
-- [ ] run tests - must pass before next task (`npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`,
+- [x] run tests - must pass before next task (`npm test`, `npm run test:plugins`, `npm run typecheck`, `npm run lint`,
   `npm run build:editor`, `editor-split.spec.ts`, `editor.spec.ts`)
 
 ### Task 4: Chords and Ask Claude from a frame name their tab [model: opus]

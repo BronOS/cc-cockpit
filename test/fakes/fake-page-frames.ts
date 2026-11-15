@@ -46,6 +46,16 @@ export class FakeElement implements PageFrameElement {
   focus(): void {
     this.focused++
   }
+  /** Blurs it got (the shell took the keyboard back). */
+  blurred = 0
+  blur(): void {
+    this.blurred++
+    this.focusedNow = false
+  }
+  /** Its viewport box: the layer is at the viewport's origin here, so the placed box. */
+  rect(): FrameRect | null {
+    return this.box
+  }
   /** What its page posts to the shell, and whether it has the keyboard (page-tab-close/keys tests). */
   readonly messageListeners: Array<(data: unknown) => void> = []
   focusedNow = false

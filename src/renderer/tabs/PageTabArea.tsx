@@ -9,6 +9,7 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import type { PaneNode } from '../../shared/tab-groups'
+import { framePick, PointerEvidence } from './frame-focus'
 import { frameBoxes } from './pane-layout'
 import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
@@ -37,6 +38,84 @@ export function setPageTabDiscussHandler(fn: (tabId: string) => void): () => voi
   return () => {
     if (discussHandler === fn) discussHandler = undefined
   }
+}
+
+/**
+ * What the focus check (checkFrameFocus) needs from TabsPane, which owns the selection: the focused
+ * pane (null while the keys are off, D3), picking a pane as the person's own act, and giving the
+ * keyboard back to the focused pane (focusActive).
+ */
+export interface FrameFocusHandler {
+  activeId(): string | null
+  pick(tabId: string): void
+  giveBack(): void
+}
+let focusHandler: FrameFocusHandler | undefined
+
+/** TabsPane takes the focus check's decisions; returns the function that removes exactly this handler. */
+export function setFrameFocusHandler(handler: FrameFocusHandler): () => void {
+  focusHandler = handler
+  return () => {
+    if (focusHandler === handler) focusHandler = undefined
+  }
+}
+
+/** The pointer half of the focus evidence (frame-focus.ts), fed by the listeners `pageFrames` adds. */
+const pointer = new PointerEvidence()
+
+/**
+ * Whether the frame holding the keyboard now may keep it (design-split-pages.md §4): read at the
+ * window's `blur`, at a page's `cc-plugin.tab-focus` hint, and by TabsPane before it acts for a frame.
+ * With the person's evidence (the shell's own focus call, or their pointer going into it) the pane is
+ * picked; without, the frame is blurred and the keyboard goes back to the focused pane. Nothing here
+ * rests on what a page posts: the hint only says when to look, `document.activeElement` says what.
+ */
+export function checkFrameFocus(): void {
+  const pool = frames
+  const handler = focusHandler
+  if (!pool || !handler) return
+  const tab = pool.keyboardTab()
+  const rects = pool.frameRects()
+  const others = [...rects].filter(([id]) => id !== tab).map(([, rect]) => rect)
+  const decision = framePick(
+    tab,
+    handler.activeId(),
+    tab !== null && pool.ownFocus(tab),
+    tab !== null && pointer.near(rects.get(tab) ?? null, others),
+    pointer.keyAfterPointer()
+  )
+  if (decision === null || tab === null) return
+  if ('pick' in decision) handler.pick(decision.pick)
+  else {
+    pool.blurFrame(tab)
+    handler.giveBack()
+  }
+}
+
+/**
+ * The shell's listeners for the focus evidence, once for the page (with the pool). The iframe element
+ * gets no `focus` or `focusin` when the keyboard goes into it (Electron 45, the review's spike), so a
+ * `focusin` on anything else is the focus moving within the shell. A press or a key inside a frame
+ * never reaches this document.
+ */
+function watchFrameFocus(): void {
+  // A task later, not in the `blur` itself: the browser is still moving the keyboard into the frame
+  // then, and a blur and refocus made during that event are undone by it (the e2e's frame kept the
+  // keyboard, its document still focused, with the shell's textarea focused too).
+  window.addEventListener('blur', () => setTimeout(checkFrameFocus, 0))
+  const moved = (e: PointerEvent): void => pointer.moved(e.clientX, e.clientY)
+  window.addEventListener('pointermove', moved, true)
+  window.addEventListener('pointerout', moved, true)
+  window.addEventListener('keydown', () => pointer.shellKey(), true)
+  document.addEventListener(
+    'focusin',
+    (e) => {
+      if (e.target instanceof HTMLIFrameElement) return
+      pointer.shellKey()
+      frames?.shellFocused()
+    },
+    true
+  )
 }
 
 /**
@@ -99,6 +178,12 @@ function createFrame(title: string): PageFrameElement {
       iframe.remove()
     },
     focus: () => iframe.focus(),
+    blur: () => iframe.blur(),
+    rect: () => {
+      if (iframe.hidden) return null
+      const r = iframe.getBoundingClientRect()
+      return { left: r.left, top: r.top, width: r.width, height: r.height }
+    },
     // Only this frame's own window (a sandboxed page's origin is opaque: the source is the check).
     onMessage: (listener) => {
       const l = (event: MessageEvent): void => {
@@ -162,6 +247,7 @@ export function pageFrames(): PageFrames {
     // the chord is only lost inside page tabs).
     userActive: () => (navigator.userActivation as UserActivation | undefined)?.isActive === true,
     discuss: (tabId) => discussHandler?.(tabId),
+    focusHint: () => checkFrameFocus(),
     // Page tabs also get the terminal font (an editor draws code in it): frame-messages.ts terminalFontVars.
     theme: () => {
       const theme = currentTheme()
@@ -179,6 +265,7 @@ export function pageFrames(): PageFrames {
   })
   if (isWebShell()) onKeyTable(() => pool.keysChanged())
   frames = pool
+  watchFrameFocus()
   return pool
 }
 
@@ -208,13 +295,15 @@ export function PageTabArea(props: {
   tabs: readonly TabInfo[]
   listed: boolean
   activeId: string | null
+  /** D3: the keys are off in this view; no frame is given the keyboard (not at a select, not at a load). */
+  keysOff: boolean
   inert: boolean
   visible: readonly string[]
   zoomed: boolean
   root: PaneNode | undefined
   many: boolean
 }): React.JSX.Element {
-  const { tabs, listed, activeId, inert, visible, zoomed, root, many } = props
+  const { tabs, listed, activeId, keysOff, inert, visible, zoomed, root, many } = props
   const placeholder = useRef<HTMLDivElement>(null)
   const pageIds = new Set(tabs.filter((t) => t.kind === 'page').map((t) => t.id))
   const showsPage = visible.some((id) => pageIds.has(id))
@@ -230,19 +319,21 @@ export function PageTabArea(props: {
     pageFrames().sync(listed ? pageTabEntries(tabs) : undefined)
   }, [tabs, listed])
 
+  // With the keys off there is no focused pane: no frame takes the keyboard at its load (`wantFocus`).
   useEffect(() => {
-    pageFrames().show(visibleKey === '' ? [] : visibleKey.split(' '), activeId)
-  }, [activeId, visibleKey, tabs])
+    pageFrames().show(visibleKey === '' ? [] : visibleKey.split(' '), keysOff ? null : activeId)
+  }, [activeId, keysOff, visibleKey, tabs])
 
   // Selected: its page takes the keyboard, as a terminal tab's terminal does (TerminalView), unless
-  // a dialog or screen is over it. A frame still loading gets it from focusActive later, if at all.
+  // a dialog or screen is over it or the keys are off (D3: a pane that came into view by a group
+  // change elsewhere never takes them). A frame still loading takes it at its load (`wantFocus`).
   const inertRef = useRef(inert)
   useEffect(() => {
     inertRef.current = inert
   })
   useEffect(() => {
-    if (activeIsPage && activeId !== null && !inertRef.current) pageFrames().focus(activeId)
-  }, [activeId, activeIsPage])
+    if (activeIsPage && activeId !== null && !keysOff && !inertRef.current) pageFrames().focus(activeId)
+  }, [activeId, activeIsPage, keysOff])
 
   useEffect(() => {
     // (A web reconnect is not seen here but at the bridge's `ready`, pageTabsReady.)

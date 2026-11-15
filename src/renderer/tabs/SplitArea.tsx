@@ -18,7 +18,7 @@ import {
   withSizes,
   type Size
 } from './pane-layout'
-import { PageTabArea, usePageUnavailable } from './PageTabArea'
+import { PageTabArea, pageFrames, usePageUnavailable } from './PageTabArea'
 import { pageTabMarks, tabLabel } from './tab-label'
 import type { SessionRegistry } from './terminal-session'
 import { TerminalView } from './TerminalView'
@@ -134,10 +134,12 @@ export function SplitArea(props: {
   // D3: the keys went off (this view's focused pane was taken away from elsewhere). The terminal
   // that had them may still hold the DOM focus (a pane moved out stays mounted, hidden): drop it,
   // so nothing typed now reaches any terminal until the person clicks a pane or uses a chord.
+  // A page pane's frame is not in the area (it lives in the layer on <body>): it is blurred too.
   useEffect(() => {
     if (!keysOff) return
     const el = document.activeElement
     if (el instanceof HTMLElement && areaRef.current?.contains(el)) el.blur()
+    pageFrames().blurKeyboard()
   }, [keysOff])
 
   const bodyPx = (r: PaneRect): Size => {
@@ -232,7 +234,12 @@ export function SplitArea(props: {
             style={box(r)}
             // Capture: xterm takes the press on its own elements first. Any button: a right click
             // into a pane is a pick too. The take itself is the session's (its own pointerdown).
-            onPointerDownCapture={() => props.onPanePress(tab.id)}
+            // A frame holding the keyboard gives it to the pressed terminal at once (the parent may
+            // focus while a child frame has the keyboard; design-split-pages.md §4).
+            onPointerDownCapture={() => {
+              props.onPanePress(tab.id)
+              if (tab.kind !== 'page' && pageFrames().keyboardTab() !== null) sessions.get(tab.id).focus()
+            }}
           >
             {many && <PaneHeader tab={tab} label={label} detail={detail} asking={asking} focused={focused} />}
             {tab.kind === 'page' ? (
@@ -308,6 +315,7 @@ export function SplitArea(props: {
         tabs={tabs}
         listed={props.listed}
         activeId={activeId}
+        keysOff={keysOff}
         inert={props.inert}
         visible={view.visible}
         zoomed={view.zoomTab !== undefined}
