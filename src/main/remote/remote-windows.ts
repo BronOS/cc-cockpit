@@ -108,14 +108,47 @@
 // loaded (`recheck`): a project the server closed shows the web client's "not open" a moment, then the
 // reopened one. The key moves with nothing: a new origin (the tunnel on another port) has a storage of
 // its own, so the key is dropped with it.
+//
+// Downloads (design-download.md §3.3). The window saves what the server sends straight to the desktop's
+// Downloads folder, with no save dialog, so a compromised server's page (which runs its own client and
+// can skip every check of the web client) is held to the desktop's own gates (`download`), in order:
+//  - the item is the server's own download link: `<origin>/d/<token>` on the server's current origin,
+//    nothing redirected (`getURLChain()` one entry), started by a live window of this server. Anything
+//    else (a `blob:`, a `data:`, another origin, an unknown page) is cancelled with a log line only, as
+//    every download was before: the page can start those at will, so a notice each would be spam;
+//  - the person's pointer click in that window within DOWNLOAD_CLICK_MS (Chromium's activation span,
+//    so the shell's own check and this one agree), in its own field: a key never sets it nor takes it
+//    back (unlike the page-driven moves' `clickedAt`: a download moves no focus, so there is no Enter
+//    to misplace). One click, one download: it is used up at this gate, whatever follows;
+//  - one active download per server and DESKTOP_DOWNLOAD_BURST per DESKTOP_DOWNLOAD_BURST_MS (a
+//    `Budget`), shared by the server's windows, and a declared size within DESKTOP_DOWNLOAD_MAX_BYTES.
+// A refusal past the origin gate gets a native notice in main's own words ("not saved: click Download
+// again"), at most DESKTOP_DOWNLOAD_BURST per burst span per server, the rest logged: a page can fire
+// `/d/` links with no click, and must not fill the screen with notices. What a save then does (the
+// temp name, the byte cap, the exclusive link to the sanitised name) is remote-downloads.ts's; its
+// outcome is a notice too, the saved one with Show in Finder / Show in folder. Closing the window
+// cancels its downloads and removes their partials. Desktop only: there are no remote windows in
+// server mode.
 
+import { basename } from 'node:path'
 import { errorText } from '../../shared/error-text'
+import {
+  DESKTOP_DOWNLOAD_ACTIVE_MAX,
+  DESKTOP_DOWNLOAD_BURST,
+  DESKTOP_DOWNLOAD_BURST_MS,
+  DESKTOP_DOWNLOAD_MAX_BYTES,
+  DOWNLOAD_CLICK_MS,
+  desktopSaveName,
+  downloadSizeText,
+  isDownloadUrl
+} from '../../shared/downloads'
 import { recentEntryOf, type RemoteServerRecord } from '../../shared/remote-servers'
 import { PROJECTS_PATH, SESSION_PATH, type WebOpenProjectRequest } from '../../shared/web-protocol'
 import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
 import { warnLog } from '../warn-log'
 import { RemoteCookie, type RemoteCookieJar, type RemoteCookieStore } from './remote-cookie'
+import { startSave, type ActiveSave, type RemoteDownloadItem } from './remote-downloads'
 import { isOriginKey } from './remote-key'
 import { TUNNEL_RETRY_MS, type LoadGate } from './tunnel-probe'
 
@@ -226,6 +259,17 @@ export function allowRemoteNavigation(url: string, origin: string | undefined): 
 }
 
 /** The query parameter of the web client's "This computer" chip (renderer/web/desktop-chip.ts). */
+/**
+ * Whether a download's URL chain is the server's own download link (see "Downloads" in the header):
+ * one URL (nothing redirected), on `origin` exactly, the path `/d/<token>` as main mints it and no
+ * query or fragment. A `blob:` or `data:` URL has an opaque origin and never matches.
+ */
+export function isRemoteDownload(chain: readonly string[], origin: string | undefined): boolean {
+  if (origin === undefined || chain.length !== 1) return false
+  const u = parsed(chain[0] as string)
+  return u !== undefined && u.origin === origin && isDownloadUrl(u.pathname) && u.search === '' && u.hash === ''
+}
+
 export const DESKTOP_LOCAL_PARAM = 'cc-desktop'
 
 /**
@@ -382,6 +426,8 @@ export interface RemoteWindowView {
    * unsaved text). False for a closed window or a page that did not answer in time; never rejects.
    */
   holdsUnload(): Promise<boolean>
+  /** The window's progress bar (dock, taskbar): a fraction, unknown size, or none (cleared). */
+  setProgress(value: number | 'indeterminate' | undefined): void
   /** Close the window, with no question: main's own close is final. */
   close(): void
 }
@@ -392,6 +438,12 @@ export interface RemoteSessionHooks {
   allowRequest(url: string): boolean
   /** A GET to SESSION_PATH from the page of WebContents `webContentsId` completed (a re-pair trigger). */
   sessionRequestCompleted(webContentsId: number): void
+  /**
+   * A download started in the partition, by the page of WebContents `webContentsId` (undefined: none
+   * known). Called inside `will-download`: true means it saves (its save path was set, synchronously);
+   * false means the adapter cancels it at once.
+   */
+  download(item: RemoteDownloadItem, webContentsId: number | undefined): boolean
 }
 
 /** One server's partition. */
@@ -461,9 +513,21 @@ export interface RemoteWindowsOptions {
    * Discard (close), false is Cancel. Absent: every close goes ahead unasked (tests of other things).
    */
   askUnsaved?(windowId: number, title: string): Promise<boolean>
+  /** Downloads from a server's page (see "Downloads" in the header). Absent: every one is cancelled. */
+  downloads?: RemoteDownloadsOptions
   now?(): number
   timers?: RemoteWindowsTimers
   log?(message: string): void
+}
+
+export interface RemoteDownloadsOptions {
+  /** The desktop's Downloads folder (`app.getPath('downloads')`; a test run's own under the data dir). */
+  dir(): string
+  /**
+   * A native notice with main's own `text`; `saved`: the file it saved, which the notice's action
+   * shows in the file manager (never opens).
+   */
+  notice(text: string, saved?: string): void
 }
 
 /** How a window is opened: the server's current origin, and the project and sign-in token, if any. */
@@ -495,6 +559,11 @@ interface ServerState {
   /** The server's page-driven actions (MAX_PAGE_ACTIONS) and its windows' `window.open`s, shared by its windows. */
   readonly actions: Budget
   readonly opens: OpenBudget
+  /** Its downloads saving now (DESKTOP_DOWNLOAD_ACTIVE_MAX), each with the window it was started in. */
+  readonly saving: Set<{ rec: WindowRecord; save: ActiveSave }>
+  /** Downloads started (DESKTOP_DOWNLOAD_BURST), and refusal notices shown, shared by its windows. */
+  readonly downloadBudget: Budget
+  readonly refusalNotices: Budget
   /** The origin key main sends (see the header); undefined: none known. Memory only, never logged. */
   key: string | undefined
   /** The key a sign-in replaced: a read that still finds it is "the new one is not stored yet". */
@@ -512,6 +581,8 @@ interface WindowRecord {
   titled: string | undefined | null
   /** When the person last clicked in the window (`now()`), with no key pressed since; undefined: no such click. */
   clickedAt: number | undefined
+  /** When the person last clicked in the window, for a download (keys never touch it); used up by one. */
+  downloadClickAt: number | undefined
   closed: boolean
   /** Bumped by every main-made load: a gate answer for an older one is dropped. */
   loads: number
@@ -677,13 +748,14 @@ export class RemoteWindows {
       input: (kind) => {
         if (made.rec === undefined || made.rec.closed) return
         made.rec.clickedAt = kind === 'click' ? this.now() : undefined
+        if (kind === 'click') made.rec.downloadClickAt = this.now()
       },
       closeRequested: () => made.rec !== undefined && this.closeRequested(made.rec),
       closed: () => {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined, title: remoteTitle(server.name), closing: false }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, downloadClickAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined, title: remoteTitle(server.name), closing: false }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
@@ -787,6 +859,8 @@ export class RemoteWindows {
    * empties the partition (`clearSession` of the adapter).
    */
   forget(serverId: string): void {
+    // Its downloads first: `closed` below finds no server state to cancel them through.
+    for (const entry of this.servers.get(serverId)?.saving ?? []) entry.save.cancel('the server was forgotten')
     this.servers.get(serverId)?.cookie.dispose()
     this.servers.delete(serverId)
     for (const rec of this.windowsOf(serverId)) {
@@ -818,7 +892,8 @@ export class RemoteWindows {
         // The page asks its session after it stored a sign-in's key (sign-in.ts): read it again.
         void this.refreshKey(serverId, rec)
         this.trigger(rec)
-      }
+      },
+      download: (item, webContentsId) => this.download(serverId, item, webContentsId)
     })
     const cookie = new RemoteCookie({
       serverId,
@@ -838,6 +913,9 @@ export class RemoteWindows {
       signedIn: [],
       actions: new Budget(MAX_PAGE_ACTIONS, PAGE_ACTION_WINDOW_MS),
       opens: new OpenBudget(),
+      saving: new Set(),
+      downloadBudget: new Budget(DESKTOP_DOWNLOAD_BURST, DESKTOP_DOWNLOAD_BURST_MS),
+      refusalNotices: new Budget(DESKTOP_DOWNLOAD_BURST, DESKTOP_DOWNLOAD_BURST_MS),
       key: undefined,
       staleKey: undefined,
       keyWait: undefined
@@ -1118,10 +1196,87 @@ export class RemoteWindows {
     if (rec.closed) return
     rec.closed = true
     this.stopWaiting(rec)
+    // Its downloads go with it (design §3.3), partials removed; the save's own `done` frees the slot.
+    for (const entry of this.servers.get(rec.serverId)?.saving ?? []) {
+      if (entry.rec === rec) entry.save.cancel('its window was closed')
+    }
     this.windows.delete(rec.view.id)
     this.byWebContents.delete(rec.view.webContentsId)
     this.options.onChanged?.()
     if (this.countOf(rec.serverId) === 0) this.options.onAllClosed?.(rec.serverId)
+  }
+
+  /**
+   * A download from server `serverId`'s partition (see "Downloads" in the header): true when it saves
+   * (`startSave` set its path, inside `will-download`), false to cancel it.
+   */
+  private download(serverId: string, item: RemoteDownloadItem, webContentsId: number | undefined): boolean {
+    const downloads = this.options.downloads
+    const state = this.servers.get(serverId)
+    const rec = webContentsId === undefined ? undefined : this.byWebContents.get(webContentsId)
+    if (downloads === undefined || state === undefined || rec === undefined || rec.closed || rec.serverId !== serverId) {
+      this.log(`remote ${serverId}: cancelled a download: not from a window of this server`)
+      return false
+    }
+    if (!isRemoteDownload(item.urlChain(), state.origin)) {
+      this.log(`remote ${serverId}: cancelled a download: not the server's own download link`)
+      return false
+    }
+    const name = desktopSaveName(item.filename())
+    const now = this.now()
+    const clicked = rec.downloadClickAt
+    // One click, one download: used up here, whatever the gates below decide.
+    rec.downloadClickAt = undefined
+    if (clicked === undefined || now - clicked < 0 || now - clicked > DOWNLOAD_CLICK_MS) {
+      return this.refuseDownload(state, serverId, `${name} was not saved: click Download again`, 'no click of the person just before')
+    }
+    if (state.saving.size >= DESKTOP_DOWNLOAD_ACTIVE_MAX) {
+      return this.refuseDownload(state, serverId, `${name} was not saved: another download from this server is still saving`, 'one is saving')
+    }
+    if (!state.downloadBudget.take(now)) {
+      return this.refuseDownload(
+        state,
+        serverId,
+        `${name} was not saved: too many downloads at once; click Download again in a moment`,
+        `past ${DESKTOP_DOWNLOAD_BURST} in ${DESKTOP_DOWNLOAD_BURST_MS / 1000} s`
+      )
+    }
+    if (item.totalBytes() > DESKTOP_DOWNLOAD_MAX_BYTES) {
+      return this.refuseDownload(state, serverId, `${name} was not saved: it is larger than ${downloadSizeText(DESKTOP_DOWNLOAD_MAX_BYTES)}`, 'over the byte cap')
+    }
+    let dir: string
+    try {
+      dir = downloads.dir()
+    } catch (err) {
+      this.log(`remote ${serverId}: no Downloads folder: ${errorText(err)}`)
+      return this.refuseDownload(state, serverId, `${name} was not saved: the Downloads folder is not available`, 'no Downloads folder')
+    }
+    const entry: { rec: WindowRecord; save: ActiveSave } = {
+      rec,
+      save: startSave({
+        item,
+        dir,
+        name,
+        progress: (value) => {
+          if (!rec.closed) rec.view.setProgress(value)
+        },
+        done: (outcome) => {
+          state.saving.delete(entry)
+          if ('saved' in outcome) downloads.notice(`Saved ${basename(outcome.saved)} to Downloads`, outcome.saved)
+          else downloads.notice(`${name} was not saved: ${outcome.failed}`)
+        },
+        log: this.log
+      })
+    }
+    state.saving.add(entry)
+    return true
+  }
+
+  /** A download refused past the origin gate: a log line, and a notice within the server's notice budget. */
+  private refuseDownload(state: ServerState, serverId: string, text: string, why: string): false {
+    this.log(`remote ${serverId}: cancelled a download: ${why}`)
+    if (state.refusalNotices.take(this.now())) this.options.downloads?.notice(text)
+    return false
   }
 
   /** A re-pair trigger: a finished load, or the page's own completed SESSION_PATH request. */

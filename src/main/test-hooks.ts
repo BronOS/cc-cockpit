@@ -12,8 +12,9 @@
 // registry's entries, the send gate's send / cancelQueued, the zone layout (layout,
 // pluginPanels, panelStatus), the overlay stack (openOverlay, overlayResult, overlays, focusOverlay),
 // `ccc notify` and ctx.notify (notifications, notificationDetails, clickNotification,
-// dismissNotification, chimes, chimeSounds) and the plugin hosts (linkPlugin, enablePlugin, hostStatus,
-// savePluginProjectSettings, pluginCommands, runPluginCommand).
+// dismissNotification, chimes, chimeSounds), the plugin hosts (linkPlugin, enablePlugin, hostStatus,
+// savePluginProjectSettings, pluginCommands, runPluginCommand) and the remote windows' Downloads folder
+// (remoteDownloadsDir: a test run saves under the data dir, never to the developer's Downloads).
 
 /** Name of the global the hooks hang off; fixtures.ts reads it. */
 export const TEST_HOOKS_GLOBAL = '__ccTest'

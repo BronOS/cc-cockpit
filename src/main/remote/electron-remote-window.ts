@@ -15,8 +15,14 @@
 //   (remote-cookie.ts);
 // - the partition locked down like every non-default session (windows/permissions.ts: every
 //   permission, device and screen capture denied, notifications included; main's
-//   `web-contents-created` handler does the same, this makes it independent of that), downloads
-//   cancelled, every loopback request but the server's own origin cancelled (`onBeforeRequest`);
+//   `web-contents-created` handler does the same, this makes it independent of that), every loopback
+//   request but the server's own origin cancelled (`onBeforeRequest`);
+// - downloads (design-download.md §3.3): `will-download` hands each item to remote-windows.ts, which
+//   decides inside the call (its save path must be set there, or Electron shows its own save dialog)
+//   and saves the server's own `/d/` downloads after the person's click to the desktop's Downloads
+//   folder; anything it refuses, or a throw, is cancelled as every download was before. Downloads is
+//   `app.getPath('downloads')`, or the folder a test run passes (`downloadsDir`, never the
+//   developer's own). The window's progress bar shows a save's progress (`setProgressBar`);
 // - the webview panels' page hardening (webview-hardening.ts `hardenWebContents`): window.open
 //   denied (an http(s) link to the person's browser under the open budget), main-frame navigation
 //   and redirects pinned to the server's origin, `beforeunload` never holds a close, HTTP auth
@@ -31,7 +37,7 @@
 //   cookie: a cookie alone is signed out (design-web.md §4.1). The key is the page's, read by
 //   `readKey` in main's own isolated world (remote-key.ts) and kept by remote-windows.ts; this file only
 //   reads it and puts it on a request, never stores or logs it.
-import { app, BrowserWindow, nativeTheme, session as electronSession, type Session } from 'electron'
+import { app, BrowserWindow, nativeTheme, session as electronSession, type DownloadItem, type Session } from 'electron'
 import { hostname } from 'node:os'
 import { desktopAgentSuffix } from '../../shared/remote-agent'
 import { DEVICE_KEY_HEADER, SESSION_PATH } from '../../shared/web-protocol'
@@ -41,6 +47,7 @@ import { lockDownSession, NO_APP_PAGE } from '../windows/permissions'
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../windows/window-bounds'
 import { warnLog } from '../warn-log'
 import type { RemoteCookieJar } from './remote-cookie'
+import type { RemoteDownloadItem } from './remote-downloads'
 import { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } from './remote-key'
 import { RemoteHttpError, type RemoteSessionHooks, type RemoteSessionView, type RemoteWindowFactory, type RemoteWindowHooks, type RemoteWindowView } from './remote-windows'
 
@@ -148,9 +155,37 @@ function pathOf(url: string): string {
   }
 }
 
+/** Electron's DownloadItem as remote-windows.ts reads it (remote-downloads.ts `RemoteDownloadItem`). */
+export function downloadItemView(item: DownloadItem): RemoteDownloadItem {
+  return {
+    url: () => item.getURL(),
+    urlChain: () => item.getURLChain(),
+    filename: () => item.getFilename(),
+    totalBytes: () => item.getTotalBytes(),
+    receivedBytes: () => item.getReceivedBytes(),
+    setSavePath: (path) => item.setSavePath(path),
+    cancel: () => item.cancel(),
+    onUpdated: (listener) => {
+      item.on('updated', () => listener())
+    },
+    onDone: (listener) => {
+      item.once('done', (_event, state) => listener(state))
+    }
+  }
+}
+
+/** A progress value as `setProgressBar` takes it: -1 removes the bar, above 1 is indeterminate. */
+export function progressBarValue(value: number | 'indeterminate' | undefined): number {
+  if (value === undefined) return -1
+  if (value === 'indeterminate') return 2
+  return Math.min(1, Math.max(0, value))
+}
+
 export interface ElectronRemoteWindowOptions {
   /** This app's version, for the user agent. */
   version: string
+  /** The folder remote windows save downloads to instead of the desktop's Downloads (a test run's). */
+  downloadsDir?: string
   log?: (message: string) => void
 }
 
@@ -172,7 +207,16 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
     const ses = electronSession.fromPartition(remotePartition(serverId))
     remoteSessions.add(ses)
     lockDownSession(ses, NO_APP_PAGE)
-    ses.on('will-download', (event) => event.preventDefault())
+    ses.on('will-download', (event, item, webContents) => {
+      let saves = false
+      try {
+        const id = webContents === undefined || webContents.isDestroyed() ? undefined : webContents.id
+        saves = hooks.download(downloadItemView(item), id)
+      } catch (err) {
+        this.log(`remote ${serverId}: a download was cancelled: ${String(err)}`)
+      }
+      if (!saves) event.preventDefault()
+    })
     const userAgent = `${ses.getUserAgent()} ${desktopAgentSuffix(this.options.version, hostname())}`
     ses.setUserAgent(userAgent)
     // One listener per session (a second `onBeforeRequest` would replace it): the loopback rule.
@@ -331,12 +375,20 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
           () => false
         )
       },
+      setProgress: (value) => {
+        if (!win.isDestroyed()) win.setProgressBar(progressBarValue(value))
+      },
       close: () => {
         if (win.isDestroyed()) return
         mainClose = true
         win.close()
       }
     }
+  }
+
+  /** Where remote windows save downloads: the desktop's Downloads folder, or the test run's. */
+  downloadsDir(): string {
+    return this.options.downloadsDir ?? app.getPath('downloads')
   }
 
   /** Forget: the server's partition emptied (cookies, storage, cache). Its windows are closed first. */

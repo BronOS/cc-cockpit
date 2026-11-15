@@ -691,7 +691,13 @@ function start(server: boolean): void {
     ? undefined
     : (() => {
         const store = new RemoteServerStore({ app: registry.app, secrets: secretStore })
-        const factory = new ElectronRemoteWindowFactory({ version: app.isPackaged ? app.getVersion() : BUILD_VERSION, log: warnLog })
+        // A test run saves remote downloads under the data dir (the e2e reads them there through the
+        // `remoteDownloadsDir` hook), never to the developer's own Downloads.
+        const factory = new ElectronRemoteWindowFactory({
+          version: app.isPackaged ? app.getVersion() : BUILD_VERSION,
+          ...(testRun ? { downloadsDir: join(dataDir, 'Downloads') } : {}),
+          log: warnLog
+        })
         // `remote.changed` goes to the open picker only, through the view registry like `projects.changed`.
         const changed = (): void => {
           const picker = windows.pickerWindowId
@@ -763,6 +769,28 @@ function start(server: boolean): void {
           // The person closing a remote window whose page holds unsaved page tab text: the unsaved
           // box, naming the window (remote-windows.ts "Unsaved page tabs"); desktop only, as `remote`.
           ...(askUnsaved ? { askUnsaved: (windowId: number, title: string) => askUnsaved(windowId, [title], 'remote') } : {}),
+          // A server's download saved to the desktop's Downloads (remote-windows.ts "Downloads",
+          // design-download.md §3.3): a native notice in main's own words, whose action shows the file in
+          // the file manager (electron-shell.ts), never opens it. `notifier` is defined below; this runs
+          // only once a download ends.
+          downloads: {
+            dir: () => {
+              const dir = factory.downloadsDir()
+              // The test run's folder may not exist yet; the desktop's own always does.
+              if (testRun) mkdirSync(dir, { recursive: true })
+              return dir
+            },
+            notice: (text, saved) => {
+              if (saved === undefined) {
+                showNotification(text)
+                return
+              }
+              const actionLabel = process.platform === 'darwin' ? 'Show in Finder' : 'Show in folder'
+              void notifier.wait({ title: 'cc-cockpit', body: text, actionLabel }).then((clicked) => {
+                if (clicked) electronSystemShell.showItemInFolder(saved)
+              })
+            }
+          },
           log: warnLog
         })
         return { service, windows: remoteWindows, machines: machineStatus }
@@ -3240,6 +3268,9 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // The folder remote windows save downloads to in a test run (`<data>/Downloads`, made on the
+          // first save), never the developer's own; the remote-window e2e reads what landed there.
+          remoteDownloadsDir: () => join(dataDir, 'Downloads'),
           // How many url overlay views and webview panel views main made this run (server mode: none
           // on a screen, `offscreenWebviews` counts its off-screen pages).
           nativeViewsMade: () => ({ ...nativeViewsMade }),

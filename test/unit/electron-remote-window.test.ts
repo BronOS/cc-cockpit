@@ -2,7 +2,8 @@
 // wiring of a remote server's window and partition, asserted without launching Electron. Checked
 // here: the window's webPreferences (no bridge script, sandbox, isolation, DevTools only unpacked,
 // the server's own persist partition), the user agent suffix, the partition locked down with
-// downloads cancelled, the loopback rule and the session-path trigger on its requests, the page
+// downloads handed to the logic (cancelled unless it saves them), the progress bar, the Downloads
+// folder, the loopback rule and the session-path trigger on its requests, the page
 // hardening (window.open denied and handed on, main-frame navigation and redirects asked, unload,
 // login, certificates, WebRTC), the cookie jar, main's own requests, and isRemoteWindow.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -158,13 +159,44 @@ class FakeWindow extends FakeEmitter {
   close(): void {
     this.calls.push('close')
   }
+  setProgressBar(value: number): void {
+    this.calls.push(`progress ${value}`)
+  }
+}
+
+/** Electron's DownloadItem, as far as the adapter's wrapper reads it. */
+class FakeDownloadItem extends FakeEmitter {
+  savePath = ''
+  cancelled = 0
+  getURL(): string {
+    return 'http://127.0.0.1:4100/d/x'
+  }
+  getURLChain(): string[] {
+    return ['http://127.0.0.1:4100/d/x']
+  }
+  getFilename(): string {
+    return 'report.pdf'
+  }
+  getTotalBytes(): number {
+    return 10
+  }
+  getReceivedBytes(): number {
+    return 4
+  }
+  setSavePath(path: string): void {
+    this.savePath = path
+  }
+  cancel(): void {
+    this.cancelled++
+  }
 }
 
 vi.mock('electron', () => ({
   app: {
     get isPackaged() {
       return state.packaged
-    }
+    },
+    getPath: (name: string) => `/home/me/${name}`
   },
   nativeTheme: { shouldUseDarkColors: true },
   BrowserWindow: FakeWindow,
@@ -176,7 +208,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { ElectronRemoteWindowFactory, HOLDS_UNLOAD_SCRIPT, isRemoteWindow, readCappedText, remotePartition, UNLOAD_PROBE_TIMEOUT_MS } = await import(
+const { ElectronRemoteWindowFactory, HOLDS_UNLOAD_SCRIPT, isRemoteWindow, progressBarValue, readCappedText, remotePartition, UNLOAD_PROBE_TIMEOUT_MS } = await import(
   '../../src/main/remote/electron-remote-window'
 )
 const { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } = await import('../../src/main/remote/remote-key')
@@ -189,10 +221,15 @@ function prevented<T extends object>(fields: T = {} as T): Prevented & T {
   return e
 }
 
-function sessionHooks(log: string[], allow = (url: string) => url.startsWith('http://127.0.0.1:4100')): RemoteSessionHooks {
+function sessionHooks(
+  log: string[],
+  allow = (url: string) => url.startsWith('http://127.0.0.1:4100'),
+  download: RemoteSessionHooks['download'] = () => false
+): RemoteSessionHooks {
   return {
     allowRequest: (url) => (log.push(`req ${url}`), allow(url)),
-    sessionRequestCompleted: (id) => void log.push(`session-done ${id}`)
+    sessionRequestCompleted: (id) => void log.push(`session-done ${id}`),
+    download
   }
 }
 
@@ -356,8 +393,79 @@ describe('ElectronRemoteWindowFactory: the window', () => {
   })
 })
 
+describe('ElectronRemoteWindowFactory: downloads', () => {
+  function withDownload(download: RemoteSessionHooks['download']) {
+    const factory = new ElectronRemoteWindowFactory({ version: '1', log: () => undefined })
+    factory.session('s1', sessionHooks([], undefined, download))
+    const view = factory.create('s1', 'devbox', windowHooks([]))
+    const win = state.windows.at(-1) as FakeWindow
+    const ses = state.sessions.get(remotePartition('s1')) as FakeSession
+    return { factory, view, win, ses }
+  }
+
+  it('hands the item and its page to the logic, and cancels what it does not save (or a throw)', () => {
+    const seen: Array<{ chain: string[]; name: string; total: number; received: number; id: number | undefined }> = []
+    let answer = true
+    const { ses, win } = withDownload((item, id) => {
+      seen.push({ chain: item.urlChain(), name: item.filename(), total: item.totalBytes(), received: item.receivedBytes(), id })
+      item.setSavePath('/dl/.cc-download-x')
+      return answer
+    })
+    const item = new FakeDownloadItem()
+    const saved = prevented()
+    ses.emit('will-download', saved, item, win.webContents)
+    expect(saved.defaultPrevented).toBe(false)
+    expect(item.savePath).toBe('/dl/.cc-download-x')
+    expect(seen).toEqual([{ chain: ['http://127.0.0.1:4100/d/x'], name: 'report.pdf', total: 10, received: 4, id: win.webContents.id }])
+    answer = false
+    const refused = prevented()
+    ses.emit('will-download', refused, new FakeDownloadItem(), win.webContents)
+    expect(refused.defaultPrevented).toBe(true)
+    // A page that is gone is no page.
+    win.webContents.destroyed = true
+    ses.emit('will-download', prevented(), new FakeDownloadItem(), win.webContents)
+    expect(seen.at(-1)?.id).toBeUndefined()
+    const throws = withDownload(() => {
+      throw new Error('boom')
+    })
+    const thrown = prevented()
+    throws.ses.emit('will-download', thrown, new FakeDownloadItem(), throws.win.webContents)
+    expect(thrown.defaultPrevented).toBe(true)
+  })
+
+  it('wraps the item: updates, the end once, cancel', () => {
+    let wrapped: Parameters<RemoteSessionHooks['download']>[0] | undefined
+    const { ses, win } = withDownload((item) => {
+      wrapped = item
+      return true
+    })
+    const item = new FakeDownloadItem()
+    ses.emit('will-download', prevented(), item, win.webContents)
+    const log: string[] = []
+    wrapped?.onUpdated(() => log.push('updated'))
+    wrapped?.onDone((s) => log.push(`done ${s}`))
+    item.emit('updated', {}, 'progressing')
+    item.emit('done', {}, 'completed')
+    wrapped?.cancel()
+    expect(log).toEqual(['updated', 'done completed'])
+    expect(item.cancelled).toBe(1)
+  })
+
+  it('shows progress on the window bar, and saves to Downloads or the given folder', () => {
+    const { view, win, factory } = withDownload(() => false)
+    view.setProgress(0.5)
+    view.setProgress('indeterminate')
+    view.setProgress(undefined)
+    expect(win.calls).toEqual(['progress 0.5', 'progress 2', 'progress -1'])
+    expect(progressBarValue(7)).toBe(1)
+    expect(progressBarValue(-3)).toBe(0)
+    expect(factory.downloadsDir()).toBe('/home/me/downloads')
+    expect(new ElectronRemoteWindowFactory({ version: '1', downloadsDir: '/data/Downloads' }).downloadsDir()).toBe('/data/Downloads')
+  })
+})
+
 describe('ElectronRemoteWindowFactory: the partition', () => {
-  it('is locked down, cancels downloads, and is prepared once', () => {
+  it('is locked down, cancels downloads the logic does not save, and is prepared once', () => {
     const { ses, factory } = make()
     expect(ses.handlers.request).toBeTypeOf('function')
     const granted = vi.fn()
@@ -365,7 +473,7 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
     expect(granted).toHaveBeenCalledWith(false)
     expect(ses.handlers.check?.({}, 'clipboard-read', 'x', { isMainFrame: true, requestingUrl: 'http://127.0.0.1:4100/' })).toBe(false)
     const download = prevented()
-    ses.emit('will-download', download)
+    ses.emit('will-download', download, new FakeDownloadItem(), undefined)
     expect(download.defaultPrevented).toBe(true)
     const ua = ses.userAgent
     const again = factory.session('s1', sessionHooks([]))

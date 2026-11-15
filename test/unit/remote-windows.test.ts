@@ -3,6 +3,11 @@
 // project), titles and recent names from the server's project list, the origin moving with the
 // tunnel, and the re-pair loop (once, serialised per server, bounded, never for Direct).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import { DESKTOP_DOWNLOAD_BURST, DESKTOP_DOWNLOAD_BURST_MS, DESKTOP_DOWNLOAD_MAX_BYTES, DOWNLOAD_CLICK_MS } from '../../src/shared/downloads'
+import { MAX_NAME_NUMBER, numberedName, placeDownload, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
 import type { RemoteServer } from '../../src/shared/remote-servers'
 import { REMOTE_DEVICE_COOKIE } from '../../src/main/remote/remote-cookie'
 import {
@@ -20,6 +25,7 @@ import {
   allowRemoteNavigation,
   allowRemoteRequest,
   isLoopbackHost,
+  isRemoteDownload,
   isPickerNavigation,
   isProjectSwitch,
   projectOfUrl,
@@ -198,6 +204,11 @@ class FakeView implements RemoteWindowView {
   held: () => Promise<boolean> = async () => false
   holdsUnload(): Promise<boolean> {
     return this.held()
+  }
+  /** The progress bar values main set, in order. */
+  readonly progress: Array<number | 'indeterminate' | undefined> = []
+  setProgress(value: number | 'indeterminate' | undefined): void {
+    this.progress.push(value)
   }
   close(): void {
     if (this.closed) return
@@ -1808,5 +1819,393 @@ describe('RemoteWindows: the origin key', () => {
     await t.windows.setOrigin('d1', 'https://box2.example')
     view.current = ''
     await expect(t.windows.fetchFromServer('d1', '/api/sessions')).rejects.toBeInstanceOf(RemoteNoKeyError)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// Downloads (design-download.md §3.3): the desktop's own gates and the save into a temp Downloads.
+
+const TOKEN = 'k'.repeat(42) + '_'
+const D_URL = `${ORIGIN}/d/${TOKEN}`
+
+class FakeItem implements RemoteDownloadItem {
+  savePath: string | undefined
+  cancelled = false
+  received = 0
+  private readonly updatedListeners: Array<() => void> = []
+  private readonly doneListeners: Array<(state: 'completed' | 'cancelled' | 'interrupted') => void> = []
+  constructor(
+    readonly chain: string[],
+    readonly name: string,
+    public total = 0
+  ) {}
+  url(): string {
+    return this.chain.at(-1) ?? ''
+  }
+  urlChain(): string[] {
+    return this.chain
+  }
+  filename(): string {
+    return this.name
+  }
+  totalBytes(): number {
+    return this.total
+  }
+  receivedBytes(): number {
+    return this.received
+  }
+  setSavePath(path: string): void {
+    this.savePath = path
+  }
+  cancel(): void {
+    if (this.cancelled) return
+    this.cancelled = true
+    this.end('cancelled')
+  }
+  onUpdated(listener: () => void): void {
+    this.updatedListeners.push(listener)
+  }
+  onDone(listener: (state: 'completed' | 'cancelled' | 'interrupted') => void): void {
+    this.doneListeners.push(listener)
+  }
+  /** Bytes arrive, written to the save path as Chromium does. */
+  write(bytes: string): void {
+    appendFileSync(this.savePath as string, bytes)
+    this.received += Buffer.byteLength(bytes)
+    for (const l of this.updatedListeners) l()
+  }
+  /** Chromium reports `received` bytes (no write: a cap test cannot write 4 GiB). */
+  report(received: number): void {
+    this.received = received
+    for (const l of this.updatedListeners) l()
+  }
+  end(state: 'completed' | 'cancelled' | 'interrupted'): void {
+    for (const l of this.doneListeners) l(state)
+  }
+}
+
+describe('isRemoteDownload', () => {
+  it('takes only the server origin download link, unredirected', () => {
+    expect(isRemoteDownload([D_URL], ORIGIN)).toBe(true)
+    expect(isRemoteDownload([D_URL], undefined)).toBe(false)
+    expect(isRemoteDownload([`http://127.0.0.1:4101/d/${TOKEN}`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`https://box.example/d/${TOKEN}`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`${ORIGIN}/p/${TOKEN}`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`${ORIGIN}/d/short`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`${ORIGIN}/d/${TOKEN}/x`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`${ORIGIN}/d/${TOKEN}?a=1`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`${ORIGIN}/d/${TOKEN}#x`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`${ORIGIN}/x`, D_URL], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([], ORIGIN)).toBe(false)
+    expect(isRemoteDownload([`blob:${ORIGIN}/0b6c6a4e-1b7e-4c38-9d64-5ad3f0b2a1c3`], ORIGIN)).toBe(false)
+    expect(isRemoteDownload(['data:application/octet-stream,x'], ORIGIN)).toBe(false)
+  })
+
+  it('numbers a name before its last extension', () => {
+    expect(numberedName('report.pdf', 0)).toBe('report.pdf')
+    expect(numberedName('report.pdf', 1)).toBe('report (1).pdf')
+    expect(numberedName('a.tar.gz', 2)).toBe('a.tar (2).gz')
+    expect(numberedName('notes', 99)).toBe('notes (99)')
+  })
+})
+
+describe('RemoteWindows: downloads', () => {
+  let dir: string
+  let outside: string
+  let t: ReturnType<typeof setup>
+  let windows: RemoteWindows
+  let notices: Array<{ text: string; saved?: string }>
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cc-remote-dl-'))
+    outside = mkdtempSync(join(tmpdir(), 'cc-remote-dl-out-'))
+    t = setup()
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    // Its own array: a save still ending after a test (an async unlink) must not land in the next one.
+    const own: Array<{ text: string; saved?: string }> = []
+    notices = own
+    windows = new RemoteWindows({
+      ...t.options,
+      downloads: {
+        dir: () => dir,
+        notice: (text, saved) => void own.push(saved === undefined ? { text } : { text, saved })
+      }
+    })
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  })
+
+  async function openWindow(serverId = 's1', origin = ORIGIN, projectId = 'p1'): Promise<FakeView> {
+    await windows.open(serverId, { origin, projectId })
+    return t.factory.views.at(-1) as FakeView
+  }
+
+  /** The partition's `will-download` for `item`, from `view`'s page. */
+  function start(item: FakeItem, view: FakeView | undefined, serverId = 's1'): boolean {
+    return t.factory.session1(serverId).hooks.download(item, view?.webContentsId)
+  }
+
+  /** A click, a download started, bytes written and completed; resolves with its notice. */
+  async function saveOne(view: FakeView, name: string, bytes = 'x'): Promise<{ text: string; saved?: string }> {
+    const before = notices.length
+    view.click()
+    const item = new FakeItem([D_URL], name)
+    expect(start(item, view)).toBe(true)
+    item.write(bytes)
+    item.end('completed')
+    await vi.waitFor(() => expect(notices.map((n) => n.text).slice(before)).toEqual([expect.any(String)]))
+    return notices.at(-1) as { text: string; saved?: string }
+  }
+
+  it('saves after the click under a hidden temp name, then links it to the name and removes the temp', async () => {
+    const view = await openWindow()
+    view.click()
+    t.tick(DOWNLOAD_CLICK_MS)
+    const item = new FakeItem([D_URL], 'report.pdf', 6)
+    expect(start(item, view)).toBe(true)
+    expect(dirname(item.savePath as string)).toBe(dir)
+    expect(basename(item.savePath as string)).toMatch(/^\.cc-download-[0-9a-f]{16}$/)
+    item.write('hello ')
+    // Written with an exec bit: the saved file has none.
+    chmodSync(item.savePath as string, 0o755)
+    item.end('completed')
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({ text: 'Saved report.pdf to Downloads', saved: join(dir, 'report.pdf') })
+    expect(readdirSync(dir)).toEqual(['report.pdf'])
+    expect(readFileSync(join(dir, 'report.pdf'), 'utf8')).toBe('hello ')
+    expect(statSync(join(dir, 'report.pdf')).mode & 0o111).toBe(0)
+    expect(view.progress).toEqual([0, 1, undefined])
+  })
+
+  it('a zip of no declared size shows an indeterminate bar', async () => {
+    const view = await openWindow()
+    view.click()
+    const item = new FakeItem([D_URL], 'src.zip')
+    expect(start(item, view)).toBe(true)
+    item.write('PK')
+    item.end('completed')
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(view.progress).toEqual(['indeterminate', 'indeterminate', undefined])
+  })
+
+  it('cancels, with no notice, anything but the server own link from its own live window', async () => {
+    const view = await openWindow()
+    const other = await openWindow('d1', 'https://box.example')
+    const cases: Array<[FakeItem, FakeView | undefined]> = [
+      [new FakeItem([`blob:${ORIGIN}/0b6c6a4e-1b7e-4c38-9d64-5ad3f0b2a1c3`], 'a.txt'), view],
+      [new FakeItem(['data:application/octet-stream,x'], 'a.txt'), view],
+      [new FakeItem([`http://127.0.0.1:4101/d/${TOKEN}`], 'a.txt'), view],
+      [new FakeItem([`${ORIGIN}/files/a.txt`], 'a.txt'), view],
+      // A redirect to the link is not the link.
+      [new FakeItem([`${ORIGIN}/x`, D_URL], 'a.txt'), view],
+      // Another server's window, or no window.
+      [new FakeItem([D_URL], 'a.txt'), other],
+      [new FakeItem([D_URL], 'a.txt'), undefined]
+    ]
+    for (const [item, from] of cases) {
+      view.click()
+      other.click()
+      expect(start(item, from)).toBe(false)
+      expect(item.savePath).toBeUndefined()
+    }
+    // A window that is gone.
+    view.close()
+    expect(start(new FakeItem([D_URL], 'a.txt'), view)).toBe(false)
+    expect(notices).toEqual([])
+    expect(t.logs.filter((l) => l.includes('cancelled a download'))).toHaveLength(cases.length + 1)
+  })
+
+  it('cancels with a notice when the person did not click just before, or the click is used up', async () => {
+    const view = await openWindow()
+    // No click at all.
+    expect(start(new FakeItem([D_URL], 'a.txt'), view)).toBe(false)
+    // A stale one.
+    view.click()
+    t.tick(DOWNLOAD_CLICK_MS + 1)
+    expect(start(new FakeItem([D_URL], 'b.txt'), view)).toBe(false)
+    t.tick(DESKTOP_DOWNLOAD_BURST_MS)
+    // One click, one download.
+    expect((await saveOne(view, 'c.txt')).text).toBe('Saved c.txt to Downloads')
+    expect(start(new FakeItem([D_URL], 'd.txt'), view)).toBe(false)
+    expect(notices.map((n) => n.text)).toEqual([
+      'a.txt was not saved: click Download again',
+      'b.txt was not saved: click Download again',
+      'Saved c.txt to Downloads',
+      'd.txt was not saved: click Download again'
+    ])
+  })
+
+  it('a key press neither counts as the click nor takes one back', async () => {
+    const view = await openWindow()
+    view.key()
+    expect(start(new FakeItem([D_URL], 'a.txt'), view)).toBe(false)
+    view.click()
+    view.key()
+    const item = new FakeItem([D_URL], 'b.txt')
+    expect(start(item, view)).toBe(true)
+    item.cancel()
+  })
+
+  it('shows at most a few refusal notices per server in the burst span, the rest logged', async () => {
+    const view = await openWindow()
+    for (let i = 0; i < 6; i++) start(new FakeItem([D_URL], `n${i}.txt`), view)
+    expect(notices).toHaveLength(DESKTOP_DOWNLOAD_BURST)
+    expect(t.logs.filter((l) => l.includes('no click of the person'))).toHaveLength(6)
+    t.tick(DESKTOP_DOWNLOAD_BURST_MS)
+    start(new FakeItem([D_URL], 'later.txt'), view)
+    expect(notices).toHaveLength(DESKTOP_DOWNLOAD_BURST + 1)
+  })
+
+  it('saves one at a time per server, across its windows', async () => {
+    const a = await openWindow()
+    const b = await openWindow('s1', ORIGIN, 'p2')
+    a.click()
+    const first = new FakeItem([D_URL], 'one.txt')
+    expect(start(first, a)).toBe(true)
+    b.click()
+    expect(start(new FakeItem([D_URL], 'two.txt'), b)).toBe(false)
+    expect(notices.at(-1)?.text).toBe('two.txt was not saved: another download from this server is still saving')
+    first.write('1')
+    first.end('completed')
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe('Saved one.txt to Downloads'))
+    b.click()
+    const third = new FakeItem([D_URL], 'three.txt')
+    expect(start(third, b)).toBe(true)
+    third.cancel()
+  })
+
+  it('starts at most DESKTOP_DOWNLOAD_BURST per burst span per server', async () => {
+    const view = await openWindow()
+    for (let i = 0; i < DESKTOP_DOWNLOAD_BURST; i++) await saveOne(view, `f${i}.txt`)
+    view.click()
+    expect(start(new FakeItem([D_URL], 'more.txt'), view)).toBe(false)
+    expect(notices.at(-1)?.text).toBe('more.txt was not saved: too many downloads at once; click Download again in a moment')
+    t.tick(DESKTOP_DOWNLOAD_BURST_MS)
+    expect((await saveOne(view, 'more.txt')).text).toBe('Saved more.txt to Downloads')
+  })
+
+  it('refuses a declared size over the cap, and cancels and deletes one that receives past it', async () => {
+    const view = await openWindow()
+    view.click()
+    const big = new FakeItem([D_URL], 'big.iso', DESKTOP_DOWNLOAD_MAX_BYTES + 1)
+    expect(start(big, view)).toBe(false)
+    expect(big.savePath).toBeUndefined()
+    expect(notices.at(-1)?.text).toMatch(/^big\.iso was not saved: it is larger than /)
+    view.click()
+    const zip = new FakeItem([D_URL], 'tree.zip')
+    expect(start(zip, view)).toBe(true)
+    zip.write('PK partial')
+    zip.report(DESKTOP_DOWNLOAD_MAX_BYTES + 1)
+    expect(zip.cancelled).toBe(true)
+    await vi.waitFor(() => expect(notices).toHaveLength(2))
+    expect(notices[1]?.text).toMatch(/^tree\.zip was not saved: it is larger than /)
+    expect(notices[1]?.saved).toBeUndefined()
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it('deletes a completed download that went past the cap with no update', async () => {
+    const view = await openWindow()
+    view.click()
+    const item = new FakeItem([D_URL], 'sly.bin')
+    expect(start(item, view)).toBe(true)
+    item.write('x')
+    item.received = DESKTOP_DOWNLOAD_MAX_BYTES + 1
+    item.end('completed')
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]?.text).toMatch(/^sly\.bin was not saved: it is larger than /)
+    expect(readdirSync(dir)).toEqual([])
+  })
+
+  it('deletes the partial of an interrupted or cancelled download, with a notice', async () => {
+    const view = await openWindow()
+    for (const [state, text] of [
+      ['interrupted', 'x.bin was not saved: the download was interrupted'],
+      ['cancelled', 'x.bin was not saved: the download was cancelled']
+    ] as const) {
+      view.click()
+      const item = new FakeItem([D_URL], 'x.bin')
+      expect(start(item, view)).toBe(true)
+      item.write('part')
+      item.end(state)
+      await vi.waitFor(() => expect(notices.at(-1)?.text).toBe(text))
+      expect(readdirSync(dir)).toEqual([])
+    }
+  })
+
+  it('closing the window cancels its download and removes the partial', async () => {
+    const view = await openWindow()
+    view.click()
+    const item = new FakeItem([D_URL], 'x.bin')
+    expect(start(item, view)).toBe(true)
+    item.write('part')
+    view.close()
+    expect(item.cancelled).toBe(true)
+    await vi.waitFor(() => expect(notices.at(-1)?.text).toBe('x.bin was not saved: its window was closed'))
+    expect(readdirSync(dir)).toEqual([])
+    // The slot is free again for the server's next window.
+    const next = await openWindow()
+    expect((await saveOne(next, 'y.bin')).text).toBe('Saved y.bin to Downloads')
+  })
+
+  it('names the file from the page name with no path, no leading dot, no bidi', async () => {
+    const view = await openWindow()
+    expect((await saveOne(view, '../x')).saved).toBe(join(dir, 'x'))
+    t.tick(DESKTOP_DOWNLOAD_BURST_MS)
+    expect((await saveOne(view, '.zshrc')).saved).toBe(join(dir, 'zshrc'))
+    t.tick(DESKTOP_DOWNLOAD_BURST_MS)
+    expect((await saveOne(view, 'invoice\u202efdp.exe')).saved).toBe(join(dir, 'invoicefdp.exe'))
+    expect(readdirSync(dir).sort()).toEqual(['invoicefdp.exe', 'x', 'zshrc'])
+  })
+
+  it('never overwrites a file and never follows a link at the name: the next numbered name', async () => {
+    const view = await openWindow()
+    writeFileSync(join(dir, 'report.pdf'), 'mine')
+    const target = join(outside, 'target')
+    writeFileSync(target, 'keep')
+    symlinkSync(target, join(dir, 'report (1).pdf'))
+    const notice = await saveOne(view, 'report.pdf', 'theirs')
+    expect(notice).toEqual({ text: 'Saved report (2).pdf to Downloads', saved: join(dir, 'report (2).pdf') })
+    expect(readFileSync(join(dir, 'report.pdf'), 'utf8')).toBe('mine')
+    expect(readFileSync(target, 'utf8')).toBe('keep')
+    expect(lstatSync(join(dir, 'report (1).pdf')).isSymbolicLink()).toBe(true)
+    expect(readFileSync(join(dir, 'report (2).pdf'), 'utf8')).toBe('theirs')
+    // No temp left behind.
+    expect(readdirSync(dir).filter((n) => n.startsWith('.'))).toEqual([])
+  })
+
+  it('fails, removing the temp, when every numbered name is taken', async () => {
+    for (let n = 0; n <= MAX_NAME_NUMBER; n++) writeFileSync(join(dir, numberedName('a.txt', n)), '')
+    const temp = join(dir, '.cc-download-0000000000000000')
+    writeFileSync(temp, 'x')
+    await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('are taken in Downloads')
+    expect(existsSync(temp)).toBe(false)
+  })
+
+  it('a Downloads folder that cannot be found refuses with a notice', async () => {
+    const broken = new RemoteWindows({
+      ...t.options,
+      downloads: {
+        dir: () => {
+          throw new Error('no such folder')
+        },
+        notice: (text) => void notices.push({ text })
+      }
+    })
+    await broken.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views.at(-1) as FakeView
+    view.click()
+    expect(t.factory.session1().hooks.download(new FakeItem([D_URL], 'a.txt'), view.webContentsId)).toBe(false)
+    expect(notices.at(-1)?.text).toBe('a.txt was not saved: the Downloads folder is not available')
+  })
+
+  it('cancels every download with no downloads option (as before)', async () => {
+    await t.windows.open('s1', { origin: ORIGIN, projectId: 'p1' })
+    const view = t.factory.views.at(-1) as FakeView
+    view.click()
+    const item = new FakeItem([D_URL], 'a.txt')
+    expect(t.factory.session1().hooks.download(item, view.webContentsId)).toBe(false)
+    expect(item.savePath).toBeUndefined()
   })
 })
