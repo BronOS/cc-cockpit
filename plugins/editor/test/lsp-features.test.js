@@ -766,6 +766,9 @@ test('a disk file written after the host asked is refused; a lost concurrent wri
   const save = files.saveFile
   files.saveFile = (...args) => ({ ...save(...args), result: 'changed', written: true })
   t.after(() => (files.saveFile = save))
+  // Past the write's mtime: macOS keeps sub-millisecond file times, so a `since` taken in the same
+  // millisecond as the write reads it as newer (Linux's coarser file clock never shows it).
+  await sleep(30)
   r = await applyWorkspaceEdit(f.m, { changes: { [uriOf(f, 'src/b.ts')]: one(), [uriOf(f, 'src/a.ts')]: one() } }, { since: Date.now() })
   files.saveFile = save
   assert.deepEqual([r.applied, r.files, r.edits, r.failedChange], [false, 1, 1, 0])

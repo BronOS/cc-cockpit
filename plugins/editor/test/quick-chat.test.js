@@ -14,7 +14,8 @@ const FAKE = path.join(__dirname, 'fixtures', 'fake-claude.mjs')
 
 const tmpDirs = []
 function tmp(prefix = 'qc-') {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  // Real path: on macOS os.tmpdir() is under /var, a link to /private/var, and claude reports real paths.
+  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
   tmpDirs.push(d)
   return d
 }
