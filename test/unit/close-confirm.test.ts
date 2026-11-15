@@ -8,6 +8,7 @@ import type { TabInfo } from '../../src/shared/ipc'
 import {
   closeAnswer,
   closeGroupQuestion,
+  groupCloseTargets,
   closeQuestion,
   closeQuestionText,
   tabIsRunning
@@ -114,6 +115,17 @@ describe('closeGroupQuestion (Close all of a split group)', () => {
     expect(q?.group?.running).toHaveLength(1)
     expect(q?.group?.unsaved).toEqual(['p'])
     expect(closeQuestionText(q!)).toBe('This closes all 2 tabs of the group; 1 is still running (closing ends it) and 1 has unsaved changes (closing discards them):')
+  })
+
+  it('Close discards exactly the listed unsaved members and skips ones already gone', () => {
+    const q = closeGroupQuestion('g', 'G', [shell, page({ dirty: true }), exited], status, true)!
+    expect(groupCloseTargets(q, () => true)).toEqual([
+      { id: 's', discard: false },
+      { id: 'p', discard: true },
+      { id: 'x', discard: false }
+    ])
+    expect(groupCloseTargets(q, (id) => id !== 'p').map((t) => t.id)).toEqual(['s', 'x'])
+    expect(groupCloseTargets({ tabId: 't', title: 'T' }, () => true)).toEqual([])
   })
 
   it('a group with only running members lists none unsaved (the plain dialog)', () => {

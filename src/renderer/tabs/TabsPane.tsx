@@ -40,7 +40,7 @@ import { UpdateNotice } from '../updates/UpdateNotice'
 import { useLayout } from '../zones/use-layout'
 import { useShellLayer } from '../zones/use-shell-layer'
 import { Zones } from '../zones/Zones'
-import { closeAnswer, closeGroupQuestion, closeMayAsk, closeQuestion, tabIsRunning, unsavedQuestion, type CloseQuestion } from './close-confirm'
+import { closeAnswer, closeGroupQuestion, groupCloseTargets, closeMayAsk, closeQuestion, tabIsRunning, unsavedQuestion, type CloseQuestion } from './close-confirm'
 import { groupTitle } from './strip-groups'
 import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
@@ -1063,10 +1063,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       window.cockpit.invoke('settings.confirmTabCloseSet', { value: false }).catch((err: unknown) => setError(ipcErrorMessage(err)))
     }
     if (!doClose || !q.group) return
-    // `discard` for exactly the unsaved members the question listed; the rest close plainly, so one
-    // main still holds unsaved (dirty in another view) is refused and asked about alone.
-    const discard = new Set(q.group.unsaved)
-    for (const id of q.group.tabIds) if (stateRef.current.tabs.some((t) => t.id === id)) actions.current.closeNow(id, undefined, discard.has(id))
+    for (const { id, discard } of groupCloseTargets(q, (id) => stateRef.current.tabs.some((t) => t.id === id))) {
+      actions.current.closeNow(id, undefined, discard)
+    }
   }
   const answerClose = useCallback(
     (tabId: string, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {

@@ -148,3 +148,14 @@ export interface CloseAnswer {
 export function closeAnswer(choice: 'close' | 'cancel', dontAskAgain: boolean): CloseAnswer {
   return choice === 'close' ? { close: true, stopAsking: dontAskAgain } : { close: false, stopAsking: false }
 }
+
+/**
+ * What Close all does after a "Close": the group's members still open, each with `discard` for
+ * exactly the unsaved ones the question listed. The rest close plainly, so one main still holds
+ * unsaved (dirty in another view) is refused and asked about alone.
+ */
+export function groupCloseTargets(q: CloseQuestion, isOpen: (id: string) => boolean): { id: string; discard: boolean }[] {
+  if (!q.group) return []
+  const discard = new Set(q.group.unsaved)
+  return q.group.tabIds.filter(isOpen).map((id) => ({ id, discard: discard.has(id) }))
+}
