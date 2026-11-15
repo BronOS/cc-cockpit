@@ -295,3 +295,28 @@ test('settings: services warn about a missing provider and offer the pick betwee
     .poll(() => recorded().some((t) => t.includes('"serviceProviders"') && t.includes('test.svcprovider2')), { timeout: 5_000 })
     .toBe(true)
 })
+
+test('settings: General lists the rooms and members caps and saves both globally', async ({ cockpit }) => {
+  const { page } = cockpit
+  await page.keyboard.press('ControlOrMeta+,')
+  const settings = page.getByRole('dialog', { name: 'Settings' })
+  await settings.getByRole('navigation').getByRole('button', { name: 'General', exact: true }).click()
+  const form = settings.getByTestId('global-plugin-limits')
+  // The help text names rooms and members, not only the per-minute rates.
+  await expect(settings.getByText('how many rooms and members it may have at once')).toBeVisible()
+  const rooms = form.getByTestId('limit-roomsPerProject')
+  await expect(rooms).toContainText('rooms not ended at once in a project')
+  await expect(rooms.getByRole('textbox')).toHaveValue('5')
+  const members = form.getByTestId('limit-membersPerRoom')
+  await expect(members).toContainText('members in one room')
+  await expect(members.getByRole('textbox')).toHaveValue('20')
+  await expect(members).toContainText('at most 50')
+
+  await rooms.getByRole('textbox').fill('8')
+  await members.getByRole('textbox').fill('30')
+  await form.getByRole('button', { name: 'Save limits' }).click()
+  await expect(members.getByTestId('limit-source')).toContainText('set')
+  await expect
+    .poll(() => (JSON.parse(readFileSync(join(cockpit.dataDir, 'app.json'), 'utf8')) as { pluginLimitsGlobal?: Record<string, number> }).pluginLimitsGlobal)
+    .toMatchObject({ roomsPerProject: 8, membersPerRoom: 30 })
+})

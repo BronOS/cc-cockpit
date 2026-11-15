@@ -104,10 +104,10 @@ External review: auto
 - Modify: `src/renderer/settings/LimitsForm.tsx`, `src/renderer/settings/GeneralPage.tsx` (only if not generic)
 - Modify: `test/e2e/settings-page.spec.ts` or `settings-plugins.spec.ts` (whichever covers Plugin limits)
 
-- [ ] both pages list the two keys with the right unit wording; `ccc plugin limits [--global]` prints and sets them
-- [ ] the General page's help text mentions rooms and members, not only rates
-- [ ] write/update tests: renderer unit tests if present; the settings e2e sets `membersPerRoom` globally
-- [ ] run tests - must pass before next task
+- [x] both pages list the two keys with the right unit wording; `ccc plugin limits [--global]` prints and sets them
+- [x] the General page's help text mentions rooms and members, not only rates
+- [x] write/update tests: renderer unit tests if present; the settings e2e sets `membersPerRoom` globally
+- [x] run tests - must pass before next task
 
 ### Task 4: Docs and drift [model: sonnet]
 

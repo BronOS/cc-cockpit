@@ -262,9 +262,10 @@ export function GeneralPage(): React.JSX.Element {
             title="Plugin limits"
             description={
               <>
-                How much a plugin may do a minute: the value every plugin gets unless you set its own under Settings ›
-                Plugins › Limits. Each plugin counts on its own, so every plugin gets this many. An empty field or Use
-                default goes back to the built-in default.
+                How much a plugin may do a minute, and how many rooms and members it may have at once: the value every
+                plugin gets unless you set its own under Settings › Plugins › Limits. Each plugin counts on its own, so
+                every plugin gets this many. Lowering a rooms or members cap removes nothing; it only refuses new ones.
+                An empty field or Use default goes back to the built-in default.
               </>
             }
           >
