@@ -163,7 +163,7 @@ describe('the block decision', () => {
 })
 
 describe('blocks in a row', () => {
-  it(`at most ${MAX_STOP_BLOCKS_IN_A_ROW} in a row, then held until the person's input`, () => {
+  it(`at most ${MAX_STOP_BLOCKS_IN_A_ROW} in a row, then held until the person's next prompt`, () => {
     member('t1', 'alpha')
     message('alpha')
     for (let i = 0; i < MAX_STOP_BLOCKS_IN_A_ROW; i++) {
@@ -171,9 +171,12 @@ describe('blocks in a row', () => {
     }
     expect(stop.stop('t1', { stop_hook_active: true })).toBeUndefined()
     expect(warnings.some((w) => w.includes('in a row'))).toBe(true)
-    // Held: a fresh run (stop_hook_active false) gets nothing either, until the person types in the tab.
+    // Held: a fresh run (stop_hook_active false) gets nothing either, until the person's prompt in the tab. A
+    // keystroke is not one (an answer key, a draft typed while Claude loops).
     expect(stop.stop('t1', { stop_hook_active: false })).toBeUndefined()
     stop.personInput('t1')
+    expect(stop.stop('t1', { stop_hook_active: false })).toBeUndefined()
+    stop.personPrompt('t1')
     expect(stop.stop('t1', { stop_hook_active: false })).toBeDefined()
   })
 
@@ -193,17 +196,42 @@ describe('blocks in a row', () => {
     expect(stop.stop('t1', null)).toBeUndefined()
   })
 
-  it('the person typing mid-run resets it; through the registry, focus reports do not count', () => {
+  it("through the registry: the person's submitted prompt ends the cap; keystrokes and our own pastes do not", () => {
     member('t1', 'alpha')
     mark('t1')
     message('alpha')
-    const off = sessions.onPersonInput((tabId) => stop.personInput(tabId))
+    const offPrompt = sessions.onPersonPrompt((tabId) => stop.personPrompt(tabId))
+    const offInput = sessions.onPersonInput((tabId) => stop.personInput(tabId))
     for (let i = 0; i < MAX_STOP_BLOCKS_IN_A_ROW; i++) expect(stop.stop('t1', { stop_hook_active: i > 0 })).toBeDefined()
-    sessions.userInput('p1', 't1', `${ESC}[I`) // a focus report: not the person
     expect(stop.stop('t1', { stop_hook_active: true })).toBeUndefined()
+    // A prompt with no input of the person's in the box (a gate paste, a harness turn): still capped.
+    sessions.applyHook('t1', 'UserPromptSubmit', { prompt: 'pasted' })
+    expect(stop.stop('t1', { stop_hook_active: false })).toBeUndefined()
+    // The person types: still capped until they submit.
+    sessions.userInput('p1', 't1', `${ESC}[I`) // a focus report: not the person
     sessions.userInput('p1', 't1', 'y')
-    expect(stop.stop('t1', { stop_hook_active: true })).toBeDefined()
-    off()
+    expect(stop.stop('t1', { stop_hook_active: false })).toBeUndefined()
+    sessions.applyHook('t1', 'UserPromptSubmit', { prompt: 'y' })
+    expect(stop.stop('t1', { stop_hook_active: false })).toBeDefined()
+    offPrompt()
+    offInput()
+  })
+
+  it('a throwing person-prompt subscriber is logged and the prompt still applies', () => {
+    const logs: string[] = []
+    const reg = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: (m) => logs.push(m) })
+    reg.tabStarted({ tabId: 'x', projectId: 'p1', kind: 'claude', cwd: '/proj' })
+    const seen: string[] = []
+    reg.onPersonPrompt(() => {
+      throw new Error('boom')
+    })
+    reg.onPersonPrompt((tabId) => seen.push(tabId))
+    reg.userInput('p1', 'x', 'h')
+    reg.applyHook('x', 'UserPromptSubmit', { prompt: 'h' })
+    expect(reg.get('x')?.status).toBe('working')
+    expect(seen).toEqual(['x'])
+    expect(logs.some((l) => l.includes('person-prompt subscriber threw'))).toBe(true)
+    reg.dispose()
   })
 
   it('runs are per tab', () => {
@@ -232,7 +260,7 @@ describe('the blocked Stop through the hook handler', () => {
     // A core text queued while the turn runs: a plain Stop would deliver it.
     expect(sessions.send('t1', 'from discuss', 'core').delivered).toBe(false)
     expect(hookStop('t1')).toEqual({ block: pointerText(1), ackId: 'ack-1' })
-    expect(sessions.get('t1')).toMatchObject({ status: 'working', blockedStop: 'ack-1' })
+    expect(sessions.get('t1')?.status).toBe('working')
     expect(writes).toEqual([])
   })
 
@@ -250,6 +278,21 @@ describe('the blocked Stop through the hook handler', () => {
     const spy = vi.spyOn(stop, 'stop')
     expect(handler()({ event: 'PreToolUse', payload: { tool_name: 'Bash' } }, caller('t1'), new AbortController().signal)).toBeNull()
     expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('a room stop that throws is logged and the Stop is applied as a plain one', () => {
+    member('t1', 'alpha')
+    message('alpha')
+    sessions.send('t1', 'from discuss', 'core')
+    vi.spyOn(stop, 'stop').mockImplementation(() => {
+      throw new Error('bad room state')
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(hookStop('t1')).toBeNull()
+    expect(sessions.get('t1')?.status).toBe('waiting')
+    expect(writes).toEqual([{ tabId: 't1', data: paste('from discuss') }])
+    expect(warn.mock.calls.some(([m]) => String(m).includes('bad room state'))).toBe(true)
+    warn.mockRestore()
   })
 
   it('without a room stop the handler is as before', () => {
@@ -286,21 +329,27 @@ describe('the ack', () => {
     expect(stop.ack('t1', 'ack-2')).toBe(true)
   })
 
-  it('no ack in time: applied as a plain Stop, waiting, and the gate delivers its head', () => {
+  it('no ack in time: logged, the tab stays working and nothing is typed (the turn may have gone on)', () => {
     member('t1', 'alpha')
     message('alpha')
     sessions.send('t1', 'from discuss', 'core')
     hookStop('t1')
-    vi.advanceTimersByTime(ACK_TIMEOUT_MS - 1)
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS * 10)
     expect(sessions.get('t1')?.status).toBe('working')
-    vi.advanceTimersByTime(1)
-    expect(sessions.get('t1')?.status).toBe('waiting')
-    expect(sessions.get('t1')?.blockedStop).toBeUndefined()
-    expect(writes).toEqual([{ tabId: 't1', data: paste('from discuss') }])
-    expect(warnings.some((w) => w.includes('applied as a plain Stop'))).toBe(true)
-    // Too late now; the messages are still queued for the next chance.
-    expect(stop.ack('t1', 'ack-1')).toBe(false)
+    expect(writes).toEqual([])
+    expect(warnings.some((w) => w.includes('no ack') && w.includes('stays working'))).toBe(true)
+    // A send finds the tab not sendable either: it queues.
+    expect(sessions.send('t1', 'later', 'core').delivered).toBe(false)
+    expect(writes).toEqual([])
+    // A late ack still confirms the block; the messages stay queued for `ccc room read`.
+    expect(stop.ack('t1', 'ack-1')).toBe(true)
     expect(rooms.held(roomId, 'alpha')).toBe(1)
+    // The next real Stop is a plain one and delivers the head as usual.
+    stop.personPrompt('t1')
+    rooms.pause(roomId)
+    expect(hookStop('t1', { stop_hook_active: true })).toBeNull()
+    expect(sessions.get('t1')?.status).toBe('waiting')
+    expect(writes).toEqual([{ tabId: 't1', data: paste('from discuss') }])
   })
 
   it('no ack but the turn went on: the timeout leaves the tab alone', () => {
@@ -310,17 +359,6 @@ describe('the ack', () => {
     continued('t1')
     vi.advanceTimersByTime(ACK_TIMEOUT_MS)
     expect(sessions.get('t1')?.status).toBe('working')
-  })
-
-  it('unblockStop needs the very block', () => {
-    member('t1', 'alpha')
-    message('alpha')
-    hookStop('t1')
-    expect(sessions.unblockStop('t1', 'ack-2')).toBe(false)
-    expect(sessions.unblockStop('nobody', 'ack-1')).toBe(false)
-    expect(sessions.unblockStop('t1', 'ack-1')).toBe(true)
-    expect(sessions.get('t1')?.status).toBe('waiting')
-    expect(sessions.unblockStop('t1', 'ack-1')).toBe(false)
   })
 
   it('dispose and a closed tab stop the timer', () => {
@@ -363,6 +401,29 @@ describe('auto-pause', () => {
     expect(rooms.peek(roomId)?.paused).toBe(false)
     stop.delivered(roomId)
     expect(rooms.peek(roomId)?.paused).toBe(true)
+  })
+
+  it('a timed-out block counts once, at a late ack or at the next Stop that follows it', () => {
+    member('t1', 'alpha')
+    message('alpha')
+    for (let i = 0; i < AUTO_PAUSE_DELIVERIES - 1; i++) stop.delivered(roomId)
+    hookStop('t1')
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS)
+    // The timeout alone is no evidence the block reached Claude: no count.
+    expect(rooms.peek(roomId)?.paused).toBe(false)
+    hookStop('t1', { stop_hook_active: true })
+    expect(rooms.peek(roomId)?.paused).toBe(true)
+  })
+
+  it('a timed-out block whose next Stop does not follow a block is not counted', () => {
+    member('t1', 'alpha')
+    message('alpha')
+    for (let i = 0; i < AUTO_PAUSE_DELIVERIES - 1; i++) stop.delivered(roomId)
+    hookStop('t1')
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS)
+    hookStop('t1', { stop_hook_active: false })
+    expect(stop.ack('t1', 'ack-1')).toBe(false)
+    expect(rooms.peek(roomId)?.paused).toBe(false)
   })
 
   it('an unacked block whose next Stop follows a block still counts', () => {

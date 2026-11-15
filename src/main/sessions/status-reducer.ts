@@ -141,14 +141,6 @@ export interface SessionEntry {
    */
   room?: SessionRoom
   held?: number
-  /**
-   * The ack id of a Stop main answered with a room block (rooms/room-stop.ts, design-rooms.md §2
-   * "The Stop pointer"): the reducer made that Stop `working`, and `ccc` has not acked it yet or the
-   * turn has not moved on. Set only by a blocked Stop, cleared by any later hook event or the exit.
-   * The ack timeout reads it: a block whose ack never came is applied as a plain Stop only while it
-   * is still this id (SessionRegistry.unblockStop), so a turn that already went on is left alone.
-   */
-  blockedStop?: string
 }
 
 /** SessionInfo.room: the room's title, the member's name and its coordinator flag. */
@@ -227,13 +219,6 @@ export function newEntry(init: {
 }
 
 export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
-  // A blocked Stop waits for its ack only until the session says anything else: any later hook (the
-  // continued turn's PreToolUse, the next Stop) or the exit means the turn is past it, and the ack
-  // timeout must then not turn it into a plain Stop. An answer key is the person's, not Claude's.
-  if (entry.blockedStop !== undefined && event.type !== 'answer') {
-    entry = { ...entry }
-    delete entry.blockedStop
-  }
   if (event.type === 'exit') return exited(entry, event.code)
   // Only out of needs-permission: from any other status the key was ordinary typing (a prompt's
   // Enter is followed by UserPromptSubmit anyway), and an ended entry stays ended. Not out of a
@@ -328,8 +313,9 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
     case 'Stop':
       // A Stop main answered with the room pointer (design-rooms.md §2 "The Stop pointer") is not a
       // Stop: Claude Code continues the turn with the block's reason, so the tab is still working.
-      // `waiting` here would let the gate (or a plugin's send) type into a turn in progress.
-      if (event.blocked !== undefined) return { ...entry, status: 'working', tool: undefined, blockedStop: event.blocked }
+      // `waiting` here would let the gate (or a plugin's send) type into a turn in progress. It stays
+      // `working` even when `ccc`'s ack never comes (room-stop.ts says why): only a later hook moves it.
+      if (event.blocked !== undefined) return { ...entry, status: 'working', tool: undefined }
       return { ...entry, status: 'waiting', tool: undefined }
     case 'SessionEnd':
       return { ...entry, status: 'ended', tool: undefined }

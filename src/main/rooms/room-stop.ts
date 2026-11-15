@@ -10,9 +10,16 @@
 //      (status-reducer.ts: a blocked Stop leaves the tab `working`, send-gate.ts: the gate delivers no head) and
 //      answers `{ block, ackId }`.
 //   2. `ccc` prints the block and sends `hook.ack` with the id: `ack(tabId, ackId)` confirms it (the delivery counts).
-//   3. No ack within ACK_TIMEOUT_MS: the block counts as never sent. The Stop is applied as a plain one
-//      (SessionRegistry.unblockStop: `waiting`, the gate delivers its head), unless the turn already went on (a later
-//      hook cleared the entry's block). The messages stay queued: at worst the pointer comes again at the next Stop.
+//   3. No ack within ACK_TIMEOUT_MS: logged, and the tab is left `working`; the block is taken as having reached
+//      Claude. A missing ack cannot tell "ccc never printed" (Claude stopped, the tab is at its prompt) from "ccc
+//      printed and the ack was lost" (Claude goes on, and a text-only continuation can run for many seconds with no
+//      hook at all). Applying a plain Stop then, as the design first had it, would set `waiting` mid-turn, and the gate
+//      (or a plugin's send) would paste into a running turn, where the Enter can answer a permission dialog: the one
+//      thing the app must never do (CLAUDE.md). Wrongly `working` only hides a tab at its prompt until the person's
+//      next prompt (UserPromptSubmit, then its Stop), the same recovery as a turn interrupted with Esc, which fires no
+//      Stop either; an idle_prompt Notification does not promote `working` (status-reducer.ts), for the same reason.
+//      The messages stay queued: nothing is lost. The block still counts toward the auto-pause once there is evidence
+//      it reached Claude: a late ack, or the next Stop saying it follows a block.
 //
 // Who may be continued. Only a member with messages waiting, whose tab is untyped or carries the person's mark for
 // this room and name, in a room that is neither paused nor ended. A typed tab without the mark is never blocked: a
@@ -22,9 +29,11 @@
 // Loops. Claude Code overrides a Stop hook after 8 consecutive blocks (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, read from the
 // 2.1.325 binary). Main stays under it: at most MAX_STOP_BLOCKS_IN_A_ROW blocks in a row per tab, counted while the
 // payload's `stop_hook_active` says the Stop follows a block. At the cap the tab is held behind the badge until the
-// person's next input in it: no Stop pointer at all until then, whatever `stop_hook_active` says. And a room pauses
+// person's next prompt in it (SessionRegistry.onPersonPrompt: a UserPromptSubmit with the person's input in the box,
+// not a mere keystroke: a key that answers a permission dialog, or a draft typed while Claude loops, does not mean the
+// person looked at the loop): no Stop pointer at all until then, whatever `stop_hook_active` says. And a room pauses
 // itself after AUTO_PAUSE_DELIVERIES pointers (acked Stop blocks and the gate's pastes) with no input from the person
-// in any member tab; the person resumes it.
+// in any member tab (any keystroke of theirs: the design's "input"); the person resumes it.
 import { randomBytes } from 'node:crypto'
 import { isPlainObject } from '../../shared/guards'
 import type { TabRoom } from '../../shared/tab-room'
@@ -55,8 +64,6 @@ export interface RoomStopDeps {
   rooms: Pick<RoomRegistry, 'memberOf' | 'peek' | 'held' | 'pause'>
   sessions: {
     get(tabId: string): SessionEntry | undefined
-    /** SessionRegistry.unblockStop: the plain Stop for a block that got no ack, if the turn did not go on. */
-    unblockStop(tabId: string, ackId: string): boolean
   }
   /** The tab's membership and the person's mark as the tab manager keeps it (TabManager.roomOf). */
   tabRoom(tabId: string): TabRoom | undefined
@@ -70,13 +77,14 @@ export interface RoomStopDeps {
 interface PendingBlock {
   ackId: string
   roomId: string
-  timer: ReturnType<typeof setTimeout>
+  /** Undefined once the ack timeout fired: the block stays pending, so a late ack or the next Stop can count it. */
+  timer: ReturnType<typeof setTimeout> | undefined
 }
 
 export class RoomStop {
-  /** Blocks in a row per tab (reset when a Stop does not follow a block, and on the person's input). */
+  /** Blocks in a row per tab (reset when a Stop does not follow a block, and on the person's prompt). */
   private readonly streaks = new Map<string, number>()
-  /** Tabs that reached the cap: no Stop pointer until the person's next input in the tab. */
+  /** Tabs that reached the cap: no Stop pointer until the person's next prompt in the tab. */
   private readonly capped = new Set<string>()
   /** The block each tab waits to have acked (at most one: a new Stop replaces it). */
   private readonly pending = new Map<string, PendingBlock>()
@@ -123,10 +131,10 @@ export class RoomStop {
     if (this.capped.has(tabId)) return undefined
     const streak = this.streaks.get(tabId) ?? 0
     if (streak >= MAX_STOP_BLOCKS_IN_A_ROW) {
-      // Held behind the badge until the person's next input (personInput): not even a fresh run gets a block.
+      // Held behind the badge until the person's next prompt (personPrompt): not even a fresh run gets a block.
       this.capped.add(tabId)
       this.streaks.delete(tabId)
-      this.warn(`rooms: tab ${tabId} had ${MAX_STOP_BLOCKS_IN_A_ROW} Stop pointers in a row; held until the person's input`)
+      this.warn(`rooms: tab ${tabId} had ${MAX_STOP_BLOCKS_IN_A_ROW} Stop pointers in a row; held until the person's next prompt`)
       return undefined
     }
     this.streaks.set(tabId, streak + 1)
@@ -139,13 +147,14 @@ export class RoomStop {
 
   /**
    * `hook.ack` from `tabId` (the token's tab, Task 7): confirms only the block this tab is waiting on, with its id.
-   * True when it did; false for no pending block, another id, or one that already timed out. The delivery counts
-   * toward the room's auto-pause.
+   * True when it did; false for no pending block (a later Stop ended the wait), another id, or one already acked. A
+   * late ack (after the timeout's log line) still confirms: the block is pending until the next Stop. The delivery
+   * counts toward the room's auto-pause.
    */
   ack(tabId: string, ackId: unknown): boolean {
     const p = this.pending.get(tabId)
     if (!p || typeof ackId !== 'string' || p.ackId !== ackId) return false
-    clearTimeout(p.timer)
+    if (p.timer !== undefined) clearTimeout(p.timer)
     this.pending.delete(tabId)
     this.delivered(p.roomId)
     return true
@@ -172,14 +181,21 @@ export class RoomStop {
   }
 
   /**
-   * The person's input in a tab (SessionRegistry.onPersonInput): the tab's run of blocks and its cap end, and its
-   * room's auto-pause count starts over.
+   * The person's input in a tab (SessionRegistry.onPersonInput, any keystroke of theirs): its room's auto-pause count
+   * starts over. The tab's run of blocks and its cap stay: those end only at the person's prompt (personPrompt).
    */
   personInput(tabId: string): void {
-    this.streaks.delete(tabId)
-    this.capped.delete(tabId)
     const member = this.deps.rooms.memberOf(tabId)
     if (member) this.deliveries.delete(member.roomId)
+  }
+
+  /**
+   * The person submitted a prompt in a tab (SessionRegistry.onPersonPrompt): the tab's run of blocks and its cap end
+   * (design-rooms.md §2 "Loops": held "until the person's next prompt").
+   */
+  personPrompt(tabId: string): void {
+    this.streaks.delete(tabId)
+    this.capped.delete(tabId)
   }
 
   /** The tab closed: forget its run, cap and pending block. */
@@ -196,24 +212,23 @@ export class RoomStop {
 
   /** App quit: every ack timer stops. */
   dispose(): void {
-    for (const p of this.pending.values()) clearTimeout(p.timer)
+    for (const p of this.pending.values()) if (p.timer !== undefined) clearTimeout(p.timer)
     this.pending.clear()
   }
 
   private timedOut(tabId: string, ackId: string): void {
     const p = this.pending.get(tabId)
     if (!p || p.ackId !== ackId) return
-    this.pending.delete(tabId)
-    // Never acked: the block counts as not sent. A Stop that leaves the turn running would hide a tab waiting at its
-    // prompt, so the plain Stop is applied now, unless the session has said something since (the turn did go on).
-    const applied = this.deps.sessions.unblockStop(tabId, ackId)
-    this.warn(`rooms: no ack for the Stop pointer of tab ${tabId} in ${this.ackTimeout} ms${applied ? '; applied as a plain Stop' : ''}`)
+    // Log only: the tab stays `working` (the header, step 3, says why a lost ack is never turned into a plain Stop).
+    // The block stays pending without its timer, so a late ack or the next Stop can still count it.
+    p.timer = undefined
+    this.warn(`rooms: no ack for the Stop pointer of tab ${tabId} in ${this.ackTimeout} ms; the tab stays working until its next hook`)
   }
 
   private dropPending(tabId: string): void {
     const p = this.pending.get(tabId)
     if (!p) return
-    clearTimeout(p.timer)
+    if (p.timer !== undefined) clearTimeout(p.timer)
     this.pending.delete(tabId)
   }
 

@@ -78,8 +78,10 @@ continue the person's own turn; `typed` is the person's.)
 
 **The Stop pointer** is not a Stop: main reduces a Stop it answered with a block to `working` and does not deliver the
 gate's head (`status-reducer.ts` sets `waiting` on every Stop; `send-gate.ts` delivers at Stop). `ccc` acks after
-printing; a block main sent but never got the ack for counts as a plain Stop (the 500 ms budget includes Electron's
-start), and the messages stay queued: nothing is lost, at worst the pointer comes again next Stop. The reply is short
+printing; a block main sent but never got the ack for is logged and the tab stays `working` (the 500 ms budget includes
+Electron's start): a lost ack cannot tell a `ccc` that never printed from a turn that went on, and `waiting` then could
+paste into that turn. A tab wrongly left `working` recovers at the person's next prompt, as after an interrupted turn.
+The messages stay queued: nothing is lost, at worst the pointer comes again next Stop. The reply is short
 and fixed, so it cannot be cut into invalid JSON.
 
 **Loops.** Claude Code overrides a Stop hook after 8 consecutive blocks (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, read from
@@ -194,7 +196,7 @@ Rules (for CLAUDE.md's implementation patterns):
   a room advisory text behind a pointer, not the person's voice; the docs say so.
 
 Failures: main down or a slow Stop reply means nothing printed and the messages stay queued; a block without the ack is a
-plain Stop; the person closing a member's tab removes it, its queue is dropped with a log line and the coordinator is
+tab left working until its next hook; the person closing a member's tab removes it, its queue is dropped with a log line and the coordinator is
 told; a quit or window close keeps membership; a disabled or removed plugin ends its rooms and the docs stay; a restart
 reloads rooms paused and rematches members from the tab records.
 

@@ -16,6 +16,8 @@
 import { isHookEvent } from '../../shared/hooks'
 import type { StopBlock } from '../rooms/room-stop'
 import type { Handler } from '../socket/socket-server'
+import { errorText } from '../../shared/error-text'
+import { warnLog } from '../warn-log'
 import type { SessionRegistry } from './session-registry'
 
 export function hookHandler(
@@ -34,8 +36,27 @@ export function hookHandler(
     // `payload` is null when the CLI could not parse stdin (oversized or not JSON; `truncated`
     // says which, and changes nothing here): the event still counts, with no payload to read.
     // The reducer treats any non-object payload that way, so it is passed through as is.
-    const block = event === 'Stop' ? rooms?.stop(caller.tabId, args.payload) : undefined
+    const block = event === 'Stop' ? roomStop(rooms, caller.tabId, args.payload) : undefined
     registry.applyHook(caller.tabId, event, args.payload, block?.ackId)
     return block === undefined ? null : { block: block.block, ackId: block.ackId }
+  }
+}
+
+/**
+ * The room stop's decision, never a throw: a bad room state must not cost the plain Stop (the
+ * registry would never see it and the tab would stay `working` for good). A throw is a plain Stop,
+ * which is what a member with no room gets anyway.
+ */
+function roomStop(
+  rooms: { stop(tabId: string, payload: unknown): StopBlock | undefined } | undefined,
+  tabId: string,
+  payload: unknown
+): StopBlock | undefined {
+  if (!rooms) return undefined
+  try {
+    return rooms.stop(tabId, payload)
+  } catch (err) {
+    warnLog(`hook: the room stop threw for tab ${tabId}, applied as a plain Stop: ${errorText(err)}`)
+    return undefined
   }
 }

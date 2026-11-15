@@ -84,6 +84,7 @@ export class SessionRegistry {
   private readonly entries = new Map<string, SessionEntry>()
   private readonly listeners = new Set<(change: SessionChange) => void>()
   private readonly inputListeners = new Set<(tabId: string) => void>()
+  private readonly promptListeners = new Set<(tabId: string) => void>()
   private readonly interval: number
   private readonly log: (message: string) => void
   private lastSent = -Infinity
@@ -235,26 +236,33 @@ export class SessionRegistry {
     // `blocked` is the ack id of the room block main answered this Stop with (rooms/room-stop.ts);
     // only a Stop can be blocked, so it is dropped for any other event.
     const ev: ReducerEvent = event === 'Stop' && blocked !== undefined ? { type: 'hook', event, payload, blocked } : { type: 'hook', event, payload }
-    return this.apply(tabId, ev)
+    // The person's prompt: a UserPromptSubmit while the draft bit is set, i.e. the person's own input
+    // reached the box since the last submit and was now sent. Not our gate's paste (it never lands on
+    // a draft of a marked tab, and an untyped tab has no draft); a badge click or Discuss on top of a
+    // draft counts, which is the person's act anyway. Read before apply: the submit clears the bit.
+    const personPrompt = event === 'UserPromptSubmit' && this.entries.get(tabId)?.draft === true
+    const applied = this.apply(tabId, ev)
+    if (applied && personPrompt) this.notify(this.promptListeners, tabId, 'person-prompt')
+    return applied
   }
 
   /**
-   * A Stop main answered with a room block got no ack from `ccc` in time (rooms/room-stop.ts,
-   * design-rooms.md §2): it is applied as the plain Stop it then was (`waiting`, the gate delivers
-   * its head), but only while the entry still holds that very block (SessionEntry.blockedStop). A
-   * later hook cleared it, so a turn that went on is never set waiting by a late timer. True when
-   * the Stop was applied.
+   * Listen for the person's submitted prompts in a tab (a UserPromptSubmit after their input, see
+   * applyHook): the room stop ends a tab's run of Stop blocks and its cap on it (rooms/room-stop.ts,
+   * design-rooms.md §2 "Loops": "until the person's next prompt"). The tab id only, after the
+   * prompt's own change was applied.
    */
-  unblockStop(tabId: string, ackId: string): boolean {
-    const prev = this.entries.get(tabId)
-    if (prev?.blockedStop === undefined || prev.blockedStop !== ackId) return false
-    return this.apply(tabId, { type: 'hook', event: 'Stop', payload: null })
+  onPersonPrompt(listener: (tabId: string) => void): () => void {
+    this.promptListeners.add(listener)
+    return () => {
+      this.promptListeners.delete(listener)
+    }
   }
 
   /**
    * Listen for the person's input in a tab (every chunk userInput counts as the person's, not only
-   * the first): the room stop resets a tab's run of Stop blocks and its room's auto-pause count on
-   * it (rooms/room-stop.ts). The tab id only, after the input's own change was applied.
+   * the first): the room stop resets its room's auto-pause count on it (rooms/room-stop.ts). The
+   * tab id only, after the input's own change was applied.
    */
   onPersonInput(listener: (tabId: string) => void): () => void {
     this.inputListeners.add(listener)
@@ -301,13 +309,7 @@ export class SessionRegistry {
       // Stop pointer and the badge still reach the tab), it never types anything.
       if (next.draft !== true) next = { ...next, draft: true }
       if (next !== entry) this.set(entry, next, dropped)
-      for (const listener of [...this.inputListeners]) {
-        try {
-          listener(tabId)
-        } catch (err) {
-          this.log(`session registry: a person-input subscriber threw: ${errorText(err)}`)
-        }
-      }
+      this.notify(this.inputListeners, tabId, 'person-input')
     }
     if (isAnswerKey(data)) this.apply(tabId, { type: 'answer' })
   }
@@ -552,6 +554,18 @@ export class SessionRegistry {
     this.settleTimers.clear()
     this.listeners.clear()
     this.inputListeners.clear()
+    this.promptListeners.clear()
+  }
+
+  /** Tell one set of tab-id listeners; one that throws is logged and the others still run. */
+  private notify(listeners: Set<(tabId: string) => void>, tabId: string, what: string): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener(tabId)
+      } catch (err) {
+        this.log(`session registry: a ${what} subscriber threw: ${errorText(err)}`)
+      }
+    }
   }
 
   private apply(tabId: string, event: ReducerEvent): boolean {

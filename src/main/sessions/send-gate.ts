@@ -13,8 +13,8 @@
 //     `Stop` (one queue item per Stop; the rest wait for later Stops), and the end of the settle
 //     window (`settled`, one item: text sent while the tab was starting). A Stop main answered with
 //     the room pointer as a block (rooms/room-stop.ts) is not one: Claude goes on working, so the
-//     head waits; if `ccc` never acks that block, the room stop applies a plain Stop later
-//     (SessionRegistry.unblockStop), and that one delivers;
+//     head waits for the next Stop. Not even a block `ccc` never acked delivers later: a lost ack may
+//     hide a turn that went on, so nothing is typed on a timer;
 //   - nothing else delivers: not an idle Notification that promotes a tab to waiting, not the
 //     `delivering` timeout, not a restart (a restart's SessionStart only opens a settle window).
 //
