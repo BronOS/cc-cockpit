@@ -3,15 +3,18 @@ import type { IpcEventMap } from '../../shared/ipc'
 import type { RoomView } from '../../shared/room-view'
 import { ipcErrorMessage } from '../ipc-error'
 import { ApprovalDialog } from '../notices/ApprovalDialog'
+import { allowClickCounts, ApprovalArm, approvalStack } from '../notices/approval-model'
 import { addSharedAsk, dropSharedAsk } from '../notices/notice-state'
 import { isServerView, isWebShell } from '../shell-kind'
 import {
   docRows,
+  isRoomGone,
   logRows,
   memberRows,
   NO_DOCS,
   NO_LOG,
   NO_MEMBERS,
+  ROOM_GONE_TEXT,
   roomControls,
   type LiveStatuses
 } from './room-view-model'
@@ -48,7 +51,18 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
   // The member whose Remove the desktop is confirming on screen, or waiting on (a server browser's approval).
   const [confirming, setConfirming] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [gone, setGone] = useState(false)
   const closeButton = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // The element to focus once the next render has put it in place: a button that unmounts (Remove turning into the
+  // question, a doc button, Back) drops the focus to <body>, so the one that should have it is found after the render.
+  const focusNext = useRef<((root: HTMLElement) => HTMLElement | null) | null>(null)
+  useEffect(() => {
+    const find = focusNext.current
+    if (!find) return
+    focusNext.current = null
+    if (dialogRef.current) find(dialogRef.current)?.focus()
+  })
   const titleId = useId()
   // Only the newest read lands: two `rooms.changed` close together start two reads, which may answer out of order.
   const readSeq = useRef(0)
@@ -61,11 +75,22 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
       (next) => {
         if (!mounted.current || seq !== readSeq.current) return
         setView(next)
+        setGone(false)
         setLoadError(null)
       },
       (err: unknown) => {
         if (!mounted.current || seq !== readSeq.current) return
-        setLoadError(ipcErrorMessage(err))
+        const message = ipcErrorMessage(err)
+        // The plugin deleted the room: nothing here can act on it any more, so the last read goes too.
+        if (isRoomGone(message)) {
+          setView(null)
+          setDoc(null)
+          setConfirming(null)
+          setGone(true)
+          setLoadError(null)
+          return
+        }
+        setLoadError(message)
       }
     )
   }, [roomId])
@@ -85,6 +110,19 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
   // Take the keyboard from the terminal behind (inert now, but it held the focus).
   useEffect(() => closeButton.current?.focus(), [])
 
+  const byData = (attr: string, value: string) => (root: HTMLElement): HTMLElement | null =>
+    [...root.querySelectorAll<HTMLElement>(`[${attr}]`)].find((el) => el.getAttribute(attr) === value) ?? null
+  const toRemoveButton = (name: string): void => {
+    focusNext.current = byData('data-remove-for', name)
+  }
+  const toDocLink = (path: string): void => {
+    focusNext.current = byData('data-doc-path', path)
+  }
+  const backFromDoc = (path: string): void => {
+    toDocLink(path)
+    setDoc(null)
+  }
+
   // Esc steps back out of what is open inside first (the remove question, then the doc viewer), then closes. Heard on
   // the document, not the dialog: a button that went away with its row (Remove) leaves the focus on <body>, where a
   // keydown on the dialog would never fire. Not for an Esc an approval took (the window's ApprovalDialog, portalled
@@ -92,8 +130,10 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
   const escape = useRef<() => void>(onClose)
   useEffect(() => {
     escape.current = () => {
-      if (confirming !== null) setConfirming(null)
-      else if (doc !== null) setDoc(null)
+      if (confirming !== null) {
+        toRemoveButton(confirming)
+        setConfirming(null)
+      } else if (doc !== null) backFromDoc(doc.path)
       else onClose()
     }
   })
@@ -101,6 +141,9 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
       if (e.target instanceof Element && e.target.closest('[role="alertdialog"]')) return
+      // An approval is up over this dialog (a server browser's remove ask takes no focus, so the focus is still here):
+      // an Esc is meant for it, which answers only from a click or its own focus. It must not also close this one.
+      if (approvalStack.size > 0 || document.querySelector('[role="alertdialog"]')) return
       e.preventDefault()
       escape.current()
     }
@@ -108,7 +151,8 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
-  const openDoc = (path: string): void => {
+  const openDoc = (path: string, fromList = false): void => {
+    if (fromList) focusNext.current = (root) => root.querySelector<HTMLElement>('[data-doc-back]')
     const seq = ++docSeq.current
     setDoc((prev) => ({ path, loading: true, ...(prev?.path === path && prev.text !== undefined ? { text: prev.text } : {}) }))
     window.cockpit.invoke('rooms.doc', { roomId, path }).then(
@@ -129,6 +173,8 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
   }
 
   const remove = (name: string): void => {
+    // The question and the clicked button are about to go: the dialog's Close is the one steady stop.
+    focusNext.current = () => closeButton.current
     setConfirming(null)
     setRemoving(name)
     setActionError(null)
@@ -153,6 +199,7 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
   return (
     <div className="confirm-backdrop" onMouseDown={onClose}>
       <div
+        ref={dialogRef}
         className="confirm-dialog room-dialog"
         data-testid="room-dialog"
         role="dialog"
@@ -194,7 +241,8 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
             {loadError ?? actionError}
           </p>
         )}
-        {!view && !loadError && <p className="room-dialog-note">Loading…</p>}
+        {gone && <p className="room-dialog-note">{ROOM_GONE_TEXT}</p>}
+        {!view && !loadError && !gone && <p className="room-dialog-note">Loading…</p>}
         {view && doc && (
           <section className="room-dialog-doc" aria-label={`Doc ${doc.path}`}>
             <div className="room-dialog-doc-head">
@@ -202,7 +250,7 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
               <button type="button" disabled={doc.loading} onClick={() => openDoc(doc.path)}>
                 Reload
               </button>
-              <button type="button" onClick={() => setDoc(null)}>
+              <button type="button" data-doc-back="" onClick={() => backFromDoc(doc.path)}>
                 Back
               </button>
             </div>
@@ -229,23 +277,23 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
                     <li key={m.name} className="room-dialog-member" data-testid="room-member">
                       <span className="room-dialog-name">{m.name}</span>
                       {m.coordinator && <span className="room-dialog-tag">coordinator</span>}
-                      <span className={`room-dialog-status status-${m.status}`}>{m.statusText}</span>
+                      <span className={`room-dialog-status room-dialog-status-${m.status}`}>{m.statusText}</span>
                       {m.heldText && <span className="room-dialog-held">{m.heldText}</span>}
                       {controls?.canRemove &&
                         (confirming === m.name ? (
-                          <span className="room-dialog-confirm" role="group" aria-label={`Remove ${m.name}?`}>
-                            Remove {m.name}? Their tab stays open.
-                            <button type="button" onClick={() => setConfirming(null)}>
-                              Cancel
-                            </button>
-                            <button type="button" className="confirm-danger" onClick={() => remove(m.name)}>
-                              Remove
-                            </button>
-                          </span>
+                          <RemoveQuestion
+                            name={m.name}
+                            onCancel={() => {
+                              toRemoveButton(m.name)
+                              setConfirming(null)
+                            }}
+                            onRemove={() => remove(m.name)}
+                          />
                         ) : (
                           <button
                             type="button"
                             className="room-dialog-remove"
+                            data-remove-for={m.name}
                             aria-label={`Remove ${m.name}`}
                             disabled={removing !== null}
                             onClick={() => (controls.confirmRemove ? setConfirming(m.name) : remove(m.name))}
@@ -266,7 +314,12 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
                 <ul className="room-dialog-list">
                   {docs.map((d) => (
                     <li key={d.path}>
-                      <button type="button" className="room-dialog-doc-link" onClick={() => openDoc(d.path)}>
+                      <button
+                        type="button"
+                        className="room-dialog-doc-link"
+                        data-doc-path={d.path}
+                        onClick={() => openDoc(d.path, true)}
+                      >
                         {d.path}
                       </button>
                       <span className="room-dialog-size">{d.sizeText}</span>
@@ -294,6 +347,51 @@ export function RoomDialog(props: { roomId: string; live?: LiveStatuses; onClose
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * The desktop's own question after Remove (main asks nothing for the desktop, so this is its only guard). It is
+ * built so a double click on Remove cannot answer it: Cancel sits where the row's Remove was (the right edge), the
+ * question's Remove comes first, looks like a danger button, and takes no click for about a second after the question
+ * appears (ApprovalArm, as the approval dialogs; a press that began before arming does not count either). Cancel gets
+ * the focus.
+ */
+function RemoveQuestion(props: { name: string; onCancel: () => void; onRemove: () => void }): React.JSX.Element {
+  const [armed, setArmed] = useState(false)
+  const cancel = useRef<HTMLButtonElement>(null)
+  // How the last press began: armed or not (undefined: no press seen).
+  const pressArmed = useRef<boolean | undefined>(undefined)
+  useEffect(() => {
+    const arm = new ApprovalArm(setArmed)
+    arm.visible(true)
+    cancel.current?.focus()
+    return () => arm.dispose()
+  }, [])
+  return (
+    <span
+      className="room-dialog-confirm"
+      role="group"
+      aria-label={`Remove ${props.name}?`}
+      onPointerDownCapture={() => {
+        pressArmed.current = armed
+      }}
+    >
+      Remove {props.name}? Their tab stays open.
+      <button
+        type="button"
+        className="confirm-danger"
+        disabled={!armed}
+        onClick={() => {
+          if (allowClickCounts(armed, pressArmed.current)) props.onRemove()
+        }}
+      >
+        Remove
+      </button>
+      <button type="button" ref={cancel} onClick={props.onCancel}>
+        Cancel
+      </button>
+    </span>
   )
 }
 

@@ -70,11 +70,14 @@ test('the room dialog opens from the tab menu: members, a doc read-only, the liv
 
   // A doc opens read-only in the dialog's own viewer; Back returns to the lists. The read is the person's.
   await dialog.getByRole('button', { name: 'shared/plan.md' }).click()
+  await expect(dialog.getByRole('button', { name: 'Back' })).toBeFocused()
   await expect(dialog.getByTestId('room-doc-text')).toHaveText('kickoff plan\nstep two\n')
   await expect(dialog.locator('textarea, [contenteditable="true"]')).toHaveCount(0)
   await dialog.getByRole('button', { name: 'Reload' }).click()
   await expect(dialog.getByTestId('room-doc-text')).toHaveText('kickoff plan\nstep two\n')
   await dialog.getByRole('button', { name: 'Back' }).click()
+  // Back puts the focus on the doc's own button, not on <body>.
+  await expect(dialog.getByRole('button', { name: 'shared/plan.md' })).toBeFocused()
   // Reveal is offered on the desktop.
   await expect(dialog.getByRole('button', { name: 'Reveal folder' })).toBeVisible()
 
@@ -89,10 +92,20 @@ test('the room dialog opens from the tab menu: members, a doc read-only, the liv
   await expect(log.locator('li').first()).toContainText('Resumed')
 
   // Remove asks on screen first; Cancel keeps bob, Remove takes him out (his tab stays, in no room).
-  await dialog.getByRole('button', { name: 'Remove bob' }).click()
   const question = dialog.getByRole('group', { name: 'Remove bob?' })
+  // A double click on Remove cannot answer the question: its Remove is disarmed for a second (and Cancel, not
+  // Remove, sits where the row's button was).
+  await dialog.getByRole('button', { name: 'Remove bob' }).dblclick()
+  await page.waitForTimeout(300)
+  await expect(members).toHaveCount(2)
+  if ((await question.count()) > 0) await question.getByRole('button', { name: 'Cancel' }).click()
+  await expect(question).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Remove bob' }).click()
+  await expect(question.getByRole('button', { name: 'Remove' })).toBeDisabled()
+  await expect(question.getByRole('button', { name: 'Cancel' })).toBeFocused()
   await question.getByRole('button', { name: 'Cancel' }).click()
   await expect(members).toHaveCount(2)
+  await expect(dialog.getByRole('button', { name: 'Remove bob' })).toBeFocused()
   await dialog.getByRole('button', { name: 'Remove bob' }).click()
   await question.getByRole('button', { name: 'Remove' }).click()
   await expect(members).toHaveCount(1)
@@ -136,11 +149,30 @@ test.describe('server mode', () => {
       const allow = ask.getByRole('button', { name: 'Remove' })
       await expect(allow).toBeDisabled()
       await expect(allow).toBeEnabled({ timeout: 5_000 })
-      // Enter on the focused Remove does nothing (the ApprovalDialog's rule).
+      // Enter on the focused Remove does nothing (the ApprovalDialog's rule): the ask stays and bob stays, over a
+      // while (the removal would be async).
       await allow.focus()
       await page.keyboard.press('Enter')
+      await page.waitForTimeout(1_000)
       await expect(ask).toBeVisible()
       expect((await roomsOf(cockpit)).map((r) => r?.name)).toEqual(['alice', 'bob'])
+
+      // Esc with the ask up does not close the room dialog under it.
+      await dialog.getByRole('button', { name: 'Close' }).focus()
+      await page.keyboard.press('Escape')
+      await expect(dialog).toBeVisible()
+      await expect(ask).toBeVisible()
+
+      // The ask is on top of the room dialog and answered with that dialog still open: Cancel keeps bob, and the
+      // dialog's Remove comes back (not stuck on "Waiting…").
+      await ask.getByRole('button', { name: 'Cancel' }).click()
+      await expect(ask).toHaveCount(0)
+      await expect(dialog).toBeVisible()
+      await expect(dialog.getByRole('button', { name: 'Remove bob' })).toBeEnabled()
+      await expect(dialog.getByTestId('room-member')).toHaveCount(2)
+      await dialog.getByRole('button', { name: 'Remove bob' }).click()
+      await expect(ask).toBeVisible()
+      await expect(allow).toBeDisabled()
 
       // A reload mid-ask finds it again in ready, disarmed again; its Remove removes bob (main still waits on the ask).
       await page.reload()

@@ -4920,6 +4920,10 @@ ul.settings-alert {
   align-items: center;
   gap: 6px;
 }
+.room-dialog .confirm-danger {
+  color: var(--cc-status-ended, #cd3131);
+  border-color: var(--cc-status-ended, #cd3131);
+}
 .room-dialog .room-dialog-doc-link {
   border-color: transparent;
   background: transparent;

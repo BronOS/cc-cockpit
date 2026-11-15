@@ -199,3 +199,11 @@ export function roomControls(view: RoomView, viewer: RoomViewer): RoomControls {
 export const NO_MEMBERS = 'No members'
 export const NO_DOCS = 'No docs'
 export const NO_LOG = 'No events yet'
+
+/** Shown when a re-read finds the room deleted (the plugin ended it): the dialog keeps nothing to act on. */
+export const ROOM_GONE_TEXT = 'This room no longer exists.'
+
+/** Whether a `rooms.view` error means the room is gone (main answers an unknown or deleted room "no such room"). */
+export function isRoomGone(message: string): boolean {
+  return message.includes('no such room')
+}

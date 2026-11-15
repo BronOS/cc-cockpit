@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { RoomView } from '../../src/shared/room-view'
 import {
   docRows,
+  isRoomGone,
   LOG_TEXT_MAX,
   logRows,
   logText,
@@ -168,5 +169,13 @@ describe('roomControls', () => {
     expect(docRows(v)).toEqual([])
     expect(logRows(v)).toEqual([])
     expect(roomControls(v, desktop).canRemove).toBe(true)
+  })
+})
+
+describe('isRoomGone', () => {
+  it('reads main\'s "no such room" and nothing else', () => {
+    expect(isRoomGone('no such room')).toBe(true)
+    expect(isRoomGone('no such member')).toBe(false)
+    expect(isRoomGone('timed out')).toBe(false)
   })
 })
