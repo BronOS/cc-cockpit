@@ -353,7 +353,8 @@ test('the Files menu in the browser has no Reveal nor Open with default app; the
     expect(await (await files(browser.page)).locator('body').evaluate(() => location.protocol)).toBe('http:')
     expect(await (await files(browser.page)).locator('body').evaluate(() => (window as unknown as { ccPanel: { view: { remote: boolean } } }).ccPanel.view.remote)).toBe(true)
     const webFile = await menuOf(browser.page, 'notes.md')
-    expect(webFile).toEqual(['Open', 'Ask Claude about this file', 'Copy path', 'Copy relative path', 'Rename…', 'Move to Trash'])
+    // Download is this branch's addition: a browser view is where it exists (the desktop page has none, below).
+    expect(webFile).toEqual(['Open', 'Ask Claude about this file', 'Download', 'Copy path', 'Copy relative path', 'Rename…', 'Move to Trash'])
     const webDir = await menuOf(browser.page, 'src')
     expect(webDir).not.toContain(reveal)
     expect(webDir).toContain('Open terminal here')
