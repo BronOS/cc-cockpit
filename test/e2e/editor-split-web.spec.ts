@@ -5,7 +5,7 @@
 // Close all with a dirty file asks in the browser (ApprovalDialog).
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Page, WebSocketRoute } from "@playwright/test";
 import type { HostStatus } from "../../src/main/plugins/host-manager";
 import { expect, launchCockpit, test, type Cockpit } from "./fixtures";
 import { launchServer, type Server } from "./server-fixtures";
@@ -17,7 +17,6 @@ import {
 } from "./web-fixtures";
 import {
   groupFor,
-  invoke,
   MOD,
   paneOf,
   place,
@@ -140,6 +139,12 @@ test("web view: a file beside Claude is two panes in the browser, its frame in t
       BrowserWindow.getAllWindows()[0]?.setSize(1900, 1000),
     );
     await roomyDesktop(c);
+    // Keep a handle on every socket the page opens (passed through), to drop them later.
+    const sockets: WebSocketRoute[] = [];
+    await w.routeWebSocket(/.*/, (ws) => {
+      ws.connectToServer();
+      sockets.push(ws);
+    });
     const projects = w
       .getByRole("list", { name: "Open projects" })
       .getByRole("link");
@@ -160,25 +165,35 @@ test("web view: a file beside Claude is two panes in the browser, its frame in t
     await expect.poll(() => inBox(w, "other.txt", other)).toBe(true);
     await setMark(otherFrame, "web-other");
 
-    // A web reconnect: the shell's socket drops and comes back; the frames take a new port, both marks stay.
-    await w.evaluate(() => {
-      const Native = window.WebSocket;
-      const open: WebSocket[] = ((
-        window as unknown as { __sockets?: WebSocket[] }
-      ).__sockets = []);
-      window.WebSocket = class extends Native {
-        constructor(url: string | URL, protocols?: string | string[]) {
-          super(url, protocols);
-          open.push(this);
-        }
-      } as typeof WebSocket;
-    });
-    // The patch only sees sockets made after it, so a reload-free drop is not possible; go offline
-    // for a moment instead: the shell's own socket errors and its reconnect path runs.
-    await w.context().setOffline(true);
-    await w.waitForTimeout(500);
-    await w.context().setOffline(false);
+    // A web reconnect: the shell's sockets are closed from the routed handle (a real drop, unlike
+    // going offline) and come back; the frames take a new port and both marks stay (no reload).
+    for (const f of [webFrame, otherFrame])
+      await f.evaluate(() => {
+        const w = window as unknown as { __ports?: number };
+        w.__ports = 0;
+        window.addEventListener("message", (e) => {
+          if (e.ports.length > 0) w.__ports = (w.__ports ?? 0) + 1;
+        });
+      });
+    const before = sockets.length;
+    expect(before).toBeGreaterThan(0);
+    for (const s of [...sockets]) await s.close();
+    await expect
+      .poll(() => sockets.length, { timeout: 30_000 })
+      .toBeGreaterThan(before);
     await expect(visiblePanes(w)).toHaveCount(3, { timeout: 30_000 });
+    for (const f of [webFrame, otherFrame])
+      await expect
+        .poll(
+          () =>
+            f.evaluate(
+              () => (window as unknown as { __ports?: number }).__ports,
+            ),
+          {
+            timeout: 30_000,
+          },
+        )
+        .toBeGreaterThan(0);
     expect(await markOf(webFrame)).toBe("web");
     expect(await markOf(otherFrame)).toBe("web-other");
     expect(await markOf(desktopFrame)).toBe("desktop");
@@ -228,8 +243,13 @@ test("server mode: a file pane in a group mounts no frame in the hidden page; Cl
     await browser.app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.setSize(1900, 1000),
     );
+    await expect.poll(() => w.evaluate(() => innerWidth)).toBeGreaterThan(1500);
     await openProjectInBrowser(browser, server.origin, server.projectId);
-    await invoke(w, "tabs.create", { kind: "claude" });
+    const hiddenFrames = cockpit.page.locator("iframe.page-tab-frame");
+    await expect(hiddenFrames).toHaveCount(0);
+    // Through the page's own menu: a page adds its own tab from the reply (a raw invoke leaves it out).
+    await w.getByRole("button", { name: "New tab" }).click();
+    await w.getByRole("menuitem", { name: "Claude" }).click();
     await expect
       .poll(async () => (await tabsOf(w)).some((t) => t.kind === "claude"), {
         timeout: 20_000,
@@ -237,15 +257,14 @@ test("server mode: a file pane in a group mounts no frame in the hidden page; Cl
       .toBe(true);
     const claude = (await tabsOf(w)).find((t) => t.kind === "claude")!.id;
     const file = await openFile(w, "a.txt");
+    // The file tab is selected in the hidden page too (opening selects it): still no frame there.
+    await expect(hiddenFrames).toHaveCount(0);
     expect((await place(w, file, claude, "right")).ok).toBe(true);
-    // A fresh join of the browser: it draws the group from the first snapshot (groups.get after tabs.list).
-    await w.reload();
-    await expect(w.locator(".tabs-pane")).toBeVisible({ timeout: 20_000 });
     await w.getByRole("tab", { name: /a\.txt/ }).click();
     await expect(visiblePanes(w)).toHaveCount(2, { timeout: 20_000 });
     const frame = await pageIn(w, "a.txt");
     // The hidden page draws the sections and mounts no page frame.
-    await expect(cockpit.page.locator("iframe.page-tab-frame")).toHaveCount(0);
+    await expect(hiddenFrames).toHaveCount(0);
     await paneOf(w, file).locator("[data-pane-header]").hover();
     await frame.locator(".cm-line", { hasText: "alpha" }).click();
     await w.keyboard.type("Q");
