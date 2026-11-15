@@ -765,3 +765,43 @@ test('Close all with a dirty file: the dialog names it even with the setting off
     await close()
   }
 })
+
+test('Ask Claude beside Claude: the box starts on the Claude pane of the group; the same file as a plain tab starts on New session', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'a.txt'), 'alpha\n')
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    await expect.poll(async () => (await c.hook<Array<{ tabId: string; status: string }>>('sessions', projectDir)).find((s) => s.tabId === claude)?.status).toBe('waiting')
+    await pluginActive(c, 'cockpit.editor')
+    const a = await openFile(c, 'a.txt')
+    expect((await place(page, a, claude, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const fa = await pageIn(page, 'a.txt')
+    await clickInto(page, a, fa, 'alpha')
+
+    await page.keyboard.press(`${MOD}+l`)
+    const discuss = page.getByRole('dialog', { name: 'Ask Claude about “a.txt”' })
+    await expect(discuss).toBeVisible()
+    await expect(discuss.locator('select')).toHaveValue(claude)
+    await page.keyboard.press('Escape')
+    await expect(discuss).toHaveCount(0)
+
+    // The same file as a plain tab: New session.
+    const group = (await groupFor(page, a))!
+    expect((await invoke<{ ok: boolean }>(page, 'groups.dissolve', { groupId: group.id })).ok).toBe(true)
+    await expect(frameEl(page, 'a.txt')).toBeVisible()
+    await page.getByRole('tab', { name: /a\.txt/ }).click()
+    await (await pageIn(page, 'a.txt')).locator('.cm-line', { hasText: 'alpha' }).click()
+    await page.waitForTimeout(2200) // the cancel cooldown
+    await page.keyboard.press(`${MOD}+l`)
+    await expect(discuss).toBeVisible()
+    await expect(discuss.locator('select')).toHaveValue('new')
+  } finally {
+    await close()
+  }
+})

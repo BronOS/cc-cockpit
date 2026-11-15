@@ -309,19 +309,19 @@ External review: sol / high
 - Modify: `src/renderer/tabs/page-tab-discuss-model.ts`, `src/renderer/tabs/PageTabDiscussDialog.tsx`, `src/renderer/tabs/TabsPane.tsx`
 - Modify: `test/unit/page-tab-discuss-box.test.ts`, `test/e2e/editor-split.spec.ts`
 
-- [ ] `groupDiscussPreselect(root, claudeTabs, lastClaude)`: the group's Claude panes in reading order, `not-ready`
+- [x] `groupDiscussPreselect(root, claudeTabs, lastClaude)`: the group's Claude panes in reading order, `not-ready`
   (`discussReadiness`) skipped; `lastClaude` when it is in the group, else the first; none outside a group or with none left
-- [ ] TabsPane's discuss handler calls it with the page's group and passes `preselect` to `PageTabDiscussDialog`; the
+- [x] TabsPane's discuss handler calls it with the page's group and passes `preselect` to `PageTabDiscussDialog`; the
   dialog starts `target` there instead of `NEW_SESSION` (`orderDiscussTabs` lists it first) and falls back to New session
   when that tab closes; a plain page tab keeps New session with `lastClaude` first in the list
-- [ ] main unchanged (`pageTabs.discuss` checks the target; Send armed after about a second); after a send the target
+- [x] main unchanged (`pageTabs.discuss` checks the target; Send armed after about a second); after a send the target
   Claude pane takes the focus and the file stays beside it
-- [ ] write tests: plain page tab → none; one ready Claude pane → it; two → `lastClaude` when in the group, else first in
+- [x] write tests: plain page tab → none; one ready Claude pane → it; two → `lastClaude` when in the group, else first in
   reading order; `not-ready` skipped, all `not-ready` → none; a Claude tab outside the group never; the dialog starts on
   `preselect` and falls back when it closes
-- [ ] e2e: *Ask Claude beside Claude* — with the file beside a Claude pane that has run a prompt (fake `claude`), the
+- [x] e2e: *Ask Claude beside Claude* — with the file beside a Claude pane that has run a prompt (fake `claude`), the
   editor's Ctrl+L opens the box with that tab selected; the same file as a plain tab opens it on New session
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
 
 ### Task 9: Browser views, remote windows and server mode [model: sonnet]
 

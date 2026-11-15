@@ -38,6 +38,8 @@ export function PageTabDiscussDialog(props: {
   claudeTabs: readonly DiscussTab[]
   /** The Claude tab this view showed last, when the box opened. */
   lastClaudeTabId?: string
+  /** The Claude pane of the page's group (groupDiscussPreselect): the box starts on it, not on New session. */
+  preselect?: string
   /** The box goes: `sent` after a send main accepted, false for a cancel (Esc, Cancel, a click outside). */
   onClose: (sent: boolean) => void
 }): React.JSX.Element {
@@ -45,9 +47,9 @@ export function PageTabDiscussDialog(props: {
   // wants a fresh context, not the middle of another task's conversation). The Claude tab this view
   // used last still leads the list of tabs, so picking it is one step.
   const pre = preselectDiscussTarget(props.claudeTabs, props.lastClaudeTabId, undefined)
-  const lastUsed = pre.kind === 'tab' ? pre.tabId : undefined
+  const lastUsed = props.preselect ?? (pre.kind === 'tab' ? pre.tabId : undefined)
   const [question, setQuestion] = useState('')
-  const [target, setTarget] = useState(NEW_SESSION)
+  const [target, setTarget] = useState(props.preselect ?? NEW_SESSION)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const field = useRef<HTMLTextAreaElement>(null)

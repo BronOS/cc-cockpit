@@ -12,10 +12,12 @@ import {
   DiscussCooldown,
   DiscussKeys,
   discussMayOpen,
+  groupDiscussPreselect,
   type DiscussKeyEvent,
   type DiscussOpenState
 } from '../../src/renderer/tabs/page-tab-discuss-model'
 import type { TabInfo } from '../../src/shared/ipc'
+import type { PaneNode } from '../../src/shared/tab-groups'
 
 const down = (key: string, mods: Partial<Omit<DiscussKeyEvent, 'key'>> = {}): DiscussKeyEvent => ({
   key,
@@ -109,13 +111,17 @@ describe('DiscussCooldown and discussMayOpen (TabsPane gates)', () => {
 
 describe('PageTabDiscussDialog markup', () => {
   const tab = { id: 'p1', kind: 'page', cwd: '/x', gen: 1, page: { plugin: 'p.editor', type: 'file', title: 'x.ts' } } as TabInfo
-  async function render(claudeTabs: { tabId: string; label: string; status: 'waiting' | 'idle' | 'busy' }[], last?: string): Promise<string> {
+  async function render(
+    claudeTabs: { tabId: string; label: string; status: 'waiting' | 'idle' | 'busy' }[],
+    last?: string,
+    preselect?: string
+  ): Promise<string> {
     // A .tsx module, loaded by a path the node typecheck does not follow (it has no JSX or DOM lib);
     // vitest transforms it like any other.
     const file = '../../src/renderer/tabs/PageTabDiscussDialog.tsx'
     const { PageTabDiscussDialog } = (await import(file)) as { PageTabDiscussDialog: FunctionComponent<Record<string, unknown>> }
     return renderToStaticMarkup(
-      createElement(PageTabDiscussDialog, { tab, claudeTabs, ...(last !== undefined ? { lastClaudeTabId: last } : {}), onClose: () => {} })
+      createElement(PageTabDiscussDialog, { tab, claudeTabs, ...(last !== undefined ? { lastClaudeTabId: last } : {}), ...(preselect !== undefined ? { preselect } : {}), onClose: () => {} })
     )
   }
 
@@ -132,5 +138,49 @@ describe('PageTabDiscussDialog markup', () => {
     const html = await render([{ tabId: 'c1', label: 'Claude', status: 'idle' }], 'c1')
     expect(html).toMatch(/<option value="c1">/)
     expect(html).toMatch(/<option value="new" selected="">/)
+  })
+
+  it('starts on the preselected Claude pane, listed first; a preselect that is not listed (closed) falls back to New session', async () => {
+    const tabs = [
+      { tabId: 'c1', label: 'One', status: 'waiting' as const },
+      { tabId: 'c2', label: 'Two', status: 'waiting' as const }
+    ]
+    const html = await render(tabs, 'c1', 'c2')
+    expect(html).toMatch(/<select[^>]*><option value="c2"[^>]*>/)
+    expect(html).toMatch(/<option value="c2" selected="">/)
+    const gone = await render([tabs[0]!], undefined, 'c2')
+    expect(gone).toMatch(/<option value="new" selected="">/)
+  })
+})
+
+describe('groupDiscussPreselect', () => {
+  const leaf = (tab: string): PaneNode => ({ tab })
+  const row = (...tabs: string[]): PaneNode => ({ id: 's', dir: 'row', sizes: tabs.map(() => 1), children: tabs.map(leaf) }) as PaneNode
+  const c = (tabId: string, status: 'waiting' | 'idle' | 'working' = 'waiting') => ({ tabId, label: tabId, status })
+
+  it('a plain page tab (no group) gets none', () => {
+    expect(groupDiscussPreselect(undefined, [c('c1')], 'c1')).toBeUndefined()
+  })
+
+  it('one ready Claude pane is it', () => {
+    expect(groupDiscussPreselect(row('p', 'c1'), [c('c1')], undefined)).toBe('c1')
+  })
+
+  it('two: lastClaude when in the group, else the first in reading order', () => {
+    const root = row('c2', 'p', 'c1')
+    const tabs = [c('c1'), c('c2'), c('c3')]
+    expect(groupDiscussPreselect(root, tabs, 'c1')).toBe('c1')
+    expect(groupDiscussPreselect(root, tabs, 'c3')).toBe('c2')
+    expect(groupDiscussPreselect(root, tabs, undefined)).toBe('c2')
+  })
+
+  it('a not-ready pane is skipped, even as lastClaude; all not-ready gives none', () => {
+    const root = row('c1', 'p', 'c2')
+    expect(groupDiscussPreselect(root, [c('c1', 'idle'), c('c2')], 'c1')).toBe('c2')
+    expect(groupDiscussPreselect(root, [c('c1', 'idle'), c('c2', 'idle')], undefined)).toBeUndefined()
+  })
+
+  it('a Claude tab outside the group is never chosen', () => {
+    expect(groupDiscussPreselect(row('p', 's1'), [c('c9')], 'c9')).toBeUndefined()
   })
 })

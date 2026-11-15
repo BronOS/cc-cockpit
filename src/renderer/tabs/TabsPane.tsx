@@ -46,7 +46,7 @@ import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
 import { PageTabDiscussDialog } from './PageTabDiscussDialog'
-import { DiscussCooldown, discussMayOpen } from './page-tab-discuss-model'
+import { DiscussCooldown, discussMayOpen, groupDiscussPreselect } from './page-tab-discuss-model'
 import { setPageTabDiscussHandler } from './PageTabArea'
 import { TabBar } from './TabBar'
 import { TabSwitcher } from './TabSwitcher'
@@ -185,6 +185,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The tab the box asks about; it closing (here or in another view) takes the box down with it.
   const discussTab = discussFor === null ? undefined : state.tabs.find((t) => t.id === discussFor.tabId)
   const discussOpen = discussTab !== undefined
+  // A page beside Claude asks that Claude pane first (design-split-pages.md §8); a plain page tab keeps New session.
+  const discussPreselect = discussFor === null ? undefined : groupDiscussPreselect(groupOf(state.groups, discussFor.tabId)?.root, discussTabs, discussFor.preferred)
   const discussShown = useRef(false)
   useEffect(() => {
     discussShown.current = discussOpen
@@ -1526,6 +1528,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           tab={discussTab}
           claudeTabs={discussTabs}
           {...(discussFor.preferred !== undefined ? { lastClaudeTabId: discussFor.preferred } : {})}
+          {...(discussPreselect !== undefined ? { preselect: discussPreselect } : {})}
           onClose={(sent) => {
             if (!sent) discussCooldown.current.cancelled(discussFor.tabId)
             discussShown.current = false

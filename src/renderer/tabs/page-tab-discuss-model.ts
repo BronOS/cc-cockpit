@@ -14,6 +14,9 @@
 // - A page that reopens the box as soon as it gets the keyboard back (on focus: a bug is enough) would
 //   lock the window behind its backdrop, so a cancelled box does not reopen for its tab for a while.
 
+import { leavesOf, type PaneNode } from '../../shared/tab-groups'
+import { discussReadiness, type DiscussTab } from '../overlays/discuss-tabs'
+
 /** What a key pressed in the question field does. */
 export type DiscussKeyAction = 'send' | 'block' | 'pass'
 
@@ -110,4 +113,25 @@ export interface DiscussOpenState {
 export function discussMayOpen(tabId: string, state: DiscussOpenState, cooldown: DiscussCooldown): boolean {
   if (state.modalUp || state.switcherUp || state.activeId !== tabId) return false
   return cooldown.allows(tabId)
+}
+
+/**
+ * The Claude pane Ask Claude preselects for a page tab in a group (design-split-pages.md §8): the
+ * group's Claude panes in reading order, a `not-ready` one skipped; the one this view focused last
+ * when it is among them, else the first. None for a plain page tab (`root` undefined) or when no
+ * pane is left: the box then keeps New session. A Claude tab outside the group is never offered.
+ */
+export function groupDiscussPreselect(
+  root: PaneNode | undefined,
+  claudeTabs: readonly DiscussTab[],
+  lastClaude: string | undefined
+): string | undefined {
+  if (!root) return undefined
+  const byId = new Map(claudeTabs.map((t) => [t.tabId, t]))
+  const ready = leavesOf(root).filter((id) => {
+    const t = byId.get(id)
+    return t !== undefined && discussReadiness(t) !== 'not-ready'
+  })
+  if (lastClaude !== undefined && ready.includes(lastClaude)) return lastClaude
+  return ready[0]
 }
