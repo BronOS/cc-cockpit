@@ -111,6 +111,12 @@ stderr).
   against the current folder; `''` goes back to the default, the server user's home folder; a folder
   that is gone when a browser asks falls back to home with a note); `ccc web status` shows it. Each
   change is written to `web-access.log`, never a link or a password.
+- `ccc room [status] [--json]`, `ccc room join <invite>`, `ccc room leave`, `ccc room send <name|all>
+  <text...>` (or `-` for stdin), `ccc room read` and `ccc room doc ls | get <path> | put <path> -` are
+  messages and shared docs between the Claude tabs of one room, made by a plugin. Claude tabs only (any
+  other caller is refused with exit 1); a message read is the words of another session, never the
+  person's. `send -` and `doc put` read stdin within 40 s (exit 124 otherwise) and at most 256 KiB. See
+  `ccc guide rooms`.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 - `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
   (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost

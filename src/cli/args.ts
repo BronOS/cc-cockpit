@@ -104,6 +104,18 @@ export type Command =
       /** As typed ('' clears it); the client makes it absolute against its cwd. */
       startFolder?: string
     }
+  /**
+   * `ccc room …` (design-rooms.md §4): a Claude tab only, identity from its token (main decides). `send` and `doc put`
+   * carry no `text` when it comes from stdin (`-`): client.ts reads it, bounded, and fills it in before the request.
+   */
+  | { kind: 'room-status'; json: boolean }
+  | { kind: 'room-join'; invite: string }
+  | { kind: 'room-leave' }
+  | { kind: 'room-send'; to: string; text?: string }
+  | { kind: 'room-read' }
+  | { kind: 'room-doc-ls' }
+  | { kind: 'room-doc-get'; path: string }
+  | { kind: 'room-doc-put'; path: string; text?: string }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -274,6 +286,22 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       {
         synopsis: ['web set --start-folder <path>'],
         text: ["where the browser's folder browser starts (server mode);", "'' for the home folder (the default)"]
+      }
+    ]
+  },
+  room: {
+    parse: (rest) => parseRoom(rest),
+    usage: [
+      { synopsis: ['room [status] [--json]'], text: ['my room: its title, my name, the members and their status (in a Claude tab)'] },
+      { synopsis: ['room join <invite>', 'room leave'], text: ['join the room an invite names, or leave my room'] },
+      {
+        synopsis: ['room send <name|all> <text...>', 'room send <name|all> -'],
+        text: ['send a message to a member or to all (- reads stdin);', 'the answer says delivered, held or gone per recipient']
+      },
+      { synopsis: ['room read'], text: ['print the room messages waiting for me, fenced'] },
+      {
+        synopsis: ['room doc ls', 'room doc get <path>', 'room doc put <path> -'],
+        text: ['the room docs I may read; print one; write one from stdin']
       }
     ]
   },
@@ -571,6 +599,62 @@ function parseWebMode(args: readonly string[]): Command {
   // `confirm` goes on to main, which refuses it with its reason (WEB_SHELL_MODES says why).
   if (mode === undefined || (mode !== 'confirm' && !WEB_SHELL_MODES.some((m) => m === mode))) return usage(`web mode takes ${WEB_MODES_TEXT}`)
   return { kind: 'web-mode', mode, confirm }
+}
+
+/**
+ * `ccc room [status] [--json] | join <invite> | leave | send <to> <text...>|- | read | doc ls|get <path>|put <path> -`.
+ * Each takes a fixed shape; anything else is a usage error. Nothing here checks a name, an invite or a path: main does
+ * (a refused doc and a missing one answer the same, so a typo here saves nothing but a round trip). `-` as the whole
+ * text is stdin; a message that is literally `-` is `send <to> -- -` (`--` ends the options, as in `session note`).
+ */
+function parseRoom(rest: readonly string[]): Command {
+  const [sub, ...args] = rest
+  if (sub === undefined) return { kind: 'room-status', json: false }
+  if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'room' }
+  switch (sub) {
+    case '--json':
+      return args.length === 0 ? { kind: 'room-status', json: true } : usage('room takes only --json')
+    case 'status':
+      if (args.length === 0) return { kind: 'room-status', json: false }
+      if (args.length === 1 && args[0] === '--json') return { kind: 'room-status', json: true }
+      return usage('room status takes only --json')
+    case 'join':
+      return args.length === 1 && args[0] !== '' ? { kind: 'room-join', invite: args[0] as string } : usage('room join takes one invite')
+    case 'leave':
+      return args.length === 0 ? { kind: 'room-leave' } : usage('room leave takes no arguments')
+    case 'read':
+      return args.length === 0 ? { kind: 'room-read' } : usage('room read takes no arguments')
+    case 'send': {
+      const [to, ...body] = args
+      if (to === undefined || to === '' || to.startsWith('-')) return usage('room send takes a member name or all, then the text (or - for stdin)')
+      if (body.length === 1 && body[0] === '-') return { kind: 'room-send', to }
+      const text = words(body)
+      return text === undefined ? usage('room send needs some text (or - to read it from stdin)') : { kind: 'room-send', to, text }
+    }
+    case 'doc':
+      return parseRoomDoc(args)
+    default:
+      return usage(`unknown room command: ${sub}`)
+  }
+}
+
+function parseRoomDoc(args: readonly string[]): Command {
+  const [sub, ...rest] = args
+  if (sub === undefined) return usage('room doc needs ls, get or put')
+  if (rest[0] === '--help' || rest[0] === '-h') return { kind: 'help', command: 'room' }
+  switch (sub) {
+    case 'ls':
+      return rest.length === 0 ? { kind: 'room-doc-ls' } : usage('room doc ls takes no arguments')
+    case 'get':
+      return rest.length === 1 && rest[0] !== '' ? { kind: 'room-doc-get', path: rest[0] as string } : usage('room doc get takes one path')
+    case 'put':
+      // The text is always stdin: a doc is too big and too exact (no trimming) for an argument.
+      return rest.length === 2 && rest[0] !== '' && rest[1] === '-'
+        ? { kind: 'room-doc-put', path: rest[0] as string }
+        : usage('room doc put takes a path and - (the doc is read from stdin)')
+    default:
+      return usage(`unknown room doc command: ${sub}`)
+  }
 }
 
 /** A port as typed: digits only (no sign, no exponent, no spaces), checked against the range by main. */

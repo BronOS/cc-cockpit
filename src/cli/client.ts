@@ -26,6 +26,7 @@ import {
   MAX_LINE_BYTES,
   parseReply,
   PROTOCOL_VERSION,
+  ROOM_READ_ACK_COMMAND,
   STOP_REPLY_ARG,
   stopBlockOf,
   type Reply,
@@ -48,6 +49,7 @@ import { hookSocketPath } from './hook-socket'
 import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
 import { runStatusLine } from './statusline'
+import { formatRoomDocs, formatRoomJoin, formatRoomLeave, formatRoomSend, formatRoomStatus } from './room-format'
 import { formatWebSaved, formatWebStatus } from './web-format'
 import { readStdinBounded, readStdinCapped } from './stdin-read'
 import { readPassword } from './web-password'
@@ -344,7 +346,7 @@ function warnOnVersionMismatch(trip: RoundTrip, out: Output): void {
  */
 export type UserCommand = Exclude<
   Command,
-  { kind: 'hook' | 'statusline' | 'help' | 'guide' | 'usage' | 'none' | 'plugin' | 'plugin-new' | 'plugin-logs' }
+  { kind: 'hook' | 'statusline' | 'help' | 'guide' | 'usage' | 'none' | 'plugin' | 'plugin-new' | 'plugin-logs' | 'room-read' }
 >
 
 /**
@@ -437,6 +439,32 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
         if (command.scope !== undefined) args.scope = command.scope
       }
       routing = callerOf(env, command.project, cwd, 'plugin config')
+      break
+    // `ccc room ...`: the token alone (the default routing); main takes the tab, room and name from it, never from args.
+    case 'room-status':
+      cmd = 'room.status'
+      break
+    case 'room-join':
+      cmd = 'room.join'
+      args = { invite: command.invite }
+      break
+    case 'room-leave':
+      cmd = 'room.leave'
+      break
+    case 'room-send':
+      cmd = 'room.send'
+      args = { to: command.to, text: command.text ?? '' }
+      break
+    case 'room-doc-ls':
+      cmd = 'room.doc.ls'
+      break
+    case 'room-doc-get':
+      cmd = 'room.doc.get'
+      args = { path: command.path }
+      break
+    case 'room-doc-put':
+      cmd = 'room.doc.put'
+      args = { path: command.path, text: command.text ?? '' }
       break
     // `ccc web` never names a project; in a tab the token goes along (the default routing above)
     // only so main refuses it with the host-only text (protocol.ts HOST_ONLY_COMMANDS).
@@ -859,6 +887,14 @@ function formatResult(command: UserCommand, result: unknown): string {
       .map((row) => `${row}\n`)
       .join('')
   }
+  if (command.kind === 'room-status') return command.json ? `${JSON.stringify(result)}\n` : formatRoomStatus(result, plainLine)
+  if (command.kind === 'room-join') return formatRoomJoin(result, plainLine)
+  if (command.kind === 'room-leave') return formatRoomLeave(result, plainLine)
+  if (command.kind === 'room-send') return formatRoomSend(result, plainLine)
+  if (command.kind === 'room-doc-ls') return formatRoomDocs(result, plainLine)
+  // A doc exactly as stored (no flattening of its lines, no added newline): it may be piped on.
+  if (command.kind === 'room-doc-get') return typeof field(result, 'text') === 'string' ? (field(result, 'text') as string) : ''
+  if (command.kind === 'room-doc-put') return `saved ${command.path}\n`
   if (command.kind === 'web-status') return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
   if (command.kind === 'web-revoke') {
     const revoked = field(result, 'revoked')
@@ -882,6 +918,112 @@ function formatResult(command: UserCommand, result: unknown): string {
       .join('')
   }
   return ''
+}
+
+/** `s` without one final line break (LF or CRLF). */
+function stripOneNewline(s: string): string {
+  if (s.endsWith('\r\n')) return s.slice(0, -2)
+  return s.endsWith('\n') ? s.slice(0, -1) : s
+}
+
+/**
+ * The text of `ccc room send <to> -` and `room doc put <path> -`: stdin, read within STDIN_READ_TIMEOUT_MS like a plugin
+ * command's (an open pipe nobody closes is exit 124 with the same advice, never a hang). Over MAX_CLI_IO_BYTES raw, or
+ * more than a socket line once JSON-encoded (a text of control characters grows to six times), is refused here, before
+ * anything is sent: main would drop such a request without an answer. Main still checks the real limits (20000
+ * characters a message, 256 KiB a doc, the characters a doc may hold) and says which one it was.
+ */
+async function readRoomStdin(stdin: Readable, what: string, out: Output): Promise<{ text: string } | { code: number }> {
+  const read = await readStdinBounded(stdin, MAX_CLI_IO_BYTES, STDIN_READ_TIMEOUT_MS)
+  if ('timedOut' in read) {
+    out.stderr(`ccc: ${what}: stdin was not closed within ${STDIN_READ_TIMEOUT_MS / 1000} s; pipe input or redirect </dev/null\n`)
+    return { code: CLI_TIMEOUT_CODE }
+  }
+  // An EIO halfway through leaves a partial text: never sent as if it were all of it.
+  if (read.error !== undefined) {
+    out.stderr(`ccc: ${what}: reading stdin failed: ${read.error}\n`)
+    return { code: 1 }
+  }
+  if (read.truncated || encodedBytes(read.text) > MAX_LINE_BYTES - 4096) {
+    out.stderr(`ccc: ${what}: stdin is over ${MAX_CLI_IO_BYTES / 1024} KiB\n`)
+    return { code: 1 }
+  }
+  return { text: read.text }
+}
+
+const TIMED_OUT = Symbol('timed out')
+
+/** `promise` or TIMED_OUT after `ms`: every wait on main in this file has a deadline. */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([promise, new Promise<typeof TIMED_OUT>((resolve) => (timer = setTimeout(() => resolve(TIMED_OUT), ms)))])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * `ccc room read` (protocol.ts ROOM_READ_ACK_COMMAND), two requests on one connection: `room.read` answers the batch
+ * and takes nothing off the queue; the batch's `text` is printed, and only then `room.read.ack` tells main it was
+ * printed so it can drop those messages. A `ccc` killed between the two repeats that batch at the next read (at least
+ * once, never lost), so a failed or unanswered ack is a stderr warning, not a failure: the text was printed. An empty
+ * read (`count` 0) sends no ack. Each wait for main is REPLY_TIMEOUT_MS. The app not running is a silent exit 0 like
+ * every command's (the Stop pointer is not printed then either).
+ */
+async function runRoomRead(env: Env, out: Output): Promise<number> {
+  const path = resolveSocketPath(env)
+  if (!path) return 0
+  let socket: Socket
+  try {
+    socket = await connect(path, CONNECT_TIMEOUT_MS)
+  } catch {
+    return 0
+  }
+  try {
+    const token = env.APP_TAB_TOKEN || undefined
+    const next = replyReader(socket)
+    const request = (id: number, cmd: string, args: Record<string, unknown>): string => encodeRequest({ v: PROTOCOL_VERSION, id, cmd, args, ...(token ? { token } : {}) })
+    socket.write(request(1, 'room.read', {}))
+    const reply = await within(next(), REPLY_TIMEOUT_MS)
+    if (reply === TIMED_OUT) {
+      out.stderr('ccc: the app did not answer\n')
+      return 1
+    }
+    if (reply === undefined) {
+      out.stderr('ccc: the app closed the connection without a reply\n')
+      return 1
+    }
+    warnOnVersionMismatch({ reply }, out)
+    if (!reply.ok) {
+      out.stderr(`ccc: ${plainError(reply.error)}\n`)
+      return 1
+    }
+    const result = reply.result
+    const batch = isPlainObject(result) && typeof result.count === 'number' && typeof result.text === 'string' ? result : undefined
+    if (batch === undefined) {
+      out.stderr('ccc: the app answered a room read with something this ccc does not understand\n')
+      return 1
+    }
+    if (batch.count === 0) {
+      out.stdout('no room messages waiting\n')
+      return 0
+    }
+    // main's fenced text as it is: its fence escapes the control characters, and flattening it would join its lines.
+    out.stdout(`${batch.text}\n`)
+    const ack = typeof batch.ack === 'string' ? batch.ack : undefined
+    if (ack === undefined) {
+      out.stderr('ccc: the app sent no ack for this read; the messages may show again\n')
+      return 0
+    }
+    socket.write(request(2, ROOM_READ_ACK_COMMAND, { ack }))
+    const answer = await within(next(), REPLY_TIMEOUT_MS)
+    const acked = answer !== TIMED_OUT && answer?.ok === true && answer.id === 2 && isPlainObject(answer.result) && typeof answer.result.acked === 'number'
+    if (!acked) out.stderr('ccc: could not confirm the read with the app; these messages may show again at the next ccc room read\n')
+    return 0
+  } finally {
+    socket.destroy()
+  }
 }
 
 /**
@@ -966,6 +1108,18 @@ export async function run(
       case 'usage':
         out.stderr(`ccc: ${command.message}\n${USAGE}\n`)
         return 2
+      case 'room-read':
+        return await runRoomRead(env, out)
+      case 'room-send':
+      case 'room-doc-put': {
+        if (command.text !== undefined) return await runCommand(command, env, cwd, out)
+        const what = command.kind === 'room-send' ? 'room send' : 'room doc put'
+        const read = await readRoomStdin(stdin, what, out)
+        if ('code' in read) return read.code
+        // A pipe ends its text with a newline the sender did not mean (`echo hi | ccc room send bob -`); a doc is kept exact.
+        const text = command.kind === 'room-send' ? stripOneNewline(read.text) : read.text
+        return await runCommand({ ...command, text }, env, cwd, out)
+      }
       case 'web-password': {
         // In a tab main refuses `ccc web` before any handler (HOST_ONLY_TEXT): nothing is asked or
         // read there, and the refusal comes back for a request with no password in it.
