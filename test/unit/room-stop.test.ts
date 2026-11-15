@@ -255,6 +255,60 @@ describe('blocks in a row', () => {
     stop.tabGone('t1')
     expect(stop.stop('t1', { stop_hook_active: false })).toBeDefined()
   })
+
+  /** The delivery as the room service wires it to the room stop (room-service.ts). */
+  const wiredDelivery = (): RoomDelivery =>
+    new RoomDelivery({
+      rooms,
+      sessions,
+      tabRoom: (tabId) => tabRooms.get(tabId),
+      capped: (tabId) => stop.isCapped(tabId),
+      personDelivered: (tabId) => stop.personPrompt(tabId),
+      now: () => t,
+      log: () => {}
+    })
+
+  it("at the cap the gate holds the pointer too (capped), marked or not; the person's badge click delivers and ends it", () => {
+    const delivery = wiredDelivery()
+    member('t1', 'alpha')
+    member('t2', 'beta', { typed: true })
+    mark('t2')
+    message('alpha')
+    message('beta')
+    for (const tabId of ['t1', 't2']) {
+      for (let i = 0; i <= MAX_STOP_BLOCKS_IN_A_ROW; i++) stop.stop(tabId, { stop_hook_active: i > 0 })
+      expect(stop.isCapped(tabId)).toBe(true)
+      // Claude stopped (the plain Stop): the tab waits for input, where the gate would paste.
+      sessions.applyHook(tabId, 'Stop', {})
+    }
+    expect(delivery.offer(roomId, 'alpha')).toEqual({ to: 'alpha', path: 'held', why: 'capped' })
+    expect(delivery.send(roomId, 'plugin', 'all', 'more')).toEqual([
+      { to: 'alpha', path: 'held', why: 'capped' },
+      { to: 'beta', path: 'held', why: 'capped' }
+    ])
+    expect(writes).toEqual([])
+    // The badge click is the person's own act: it goes in, and the loop may go on from there.
+    expect(delivery.deliverHeld('t1')).toEqual({ delivered: true })
+    expect(writes).toEqual([{ tabId: 't1', data: paste(pointerText(2)) }])
+    expect(stop.isCapped('t1')).toBe(false)
+    expect(stop.isCapped('t2')).toBe(true)
+  })
+
+  it("the person's Resume of the room ends its member tabs' runs and caps, and only that room's", () => {
+    member('t1', 'alpha')
+    message('alpha')
+    const other = rooms.create(owner, { title: 'Other' }).id
+    sessions.tabStarted({ tabId: 't9', projectId: 'p1', kind: 'claude', cwd: '/proj' })
+    sessions.applyHook('t9', 'UserPromptSubmit', { prompt: 'go' })
+    rooms.addMember(owner, other, { tabId: 't9', name: 'zeta' })
+    tabRooms.set('t9', { id: other, name: 'zeta', coordinator: false, mark: false })
+    rooms.enqueue(other, 'zeta', { from: 'plugin', text: 'hi' })
+    for (const tabId of ['t1', 't9']) for (let i = 0; i <= MAX_STOP_BLOCKS_IN_A_ROW; i++) stop.stop(tabId, { stop_hook_active: i > 0 })
+    stop.roomResumed(roomId)
+    expect(stop.isCapped('t1')).toBe(false)
+    expect(stop.isCapped('t9')).toBe(true)
+    expect(stop.stop('t1', { stop_hook_active: true })).toBeDefined()
+  })
 })
 
 describe('the blocked Stop through the hook handler', () => {
@@ -383,6 +437,34 @@ describe('the ack', () => {
     expect(warnings).toEqual([])
   })
 
+  it('the connection closes unacked with nothing else queued: the room pointer is offered through the gate', () => {
+    stop.dispose()
+    const wired: { delivery?: RoomDelivery } = {}
+    const unblocked: string[] = []
+    stop = new RoomStop({
+      rooms,
+      sessions,
+      tabRoom: (tabId) => tabRooms.get(tabId),
+      newAckId: () => `ack-${++acks}`,
+      log: (m) => warnings.push(m),
+      // As the room service wires it: the member is offered what waits.
+      unblocked: (tabId) => {
+        unblocked.push(tabId)
+        const m = rooms.memberOf(tabId)
+        if (m) wired.delivery?.offer(m.roomId, m.name)
+      }
+    })
+    wired.delivery = new RoomDelivery({ rooms, sessions, tabRoom: (tabId) => tabRooms.get(tabId), now: () => t, log: () => {} })
+    member('t1', 'alpha')
+    message('alpha')
+    const connection = new AbortController()
+    hookStop('t1', { stop_hook_active: false }, connection)
+    expect(writes).toEqual([])
+    connection.abort()
+    expect(unblocked).toEqual(['t1'])
+    expect(writes).toEqual([{ tabId: 't1', data: paste(pointerText(1)) }])
+  })
+
   it('the connection closes after the ack: Claude goes on, the tab stays working', () => {
     member('t1', 'alpha')
     message('alpha')
@@ -402,7 +484,10 @@ describe('the ack', () => {
     const connection = new AbortController()
     hookStop('t1', { stop_hook_active: false }, connection)
     continued('t1')
+    const unblocked = vi.spyOn(stop, 'unblocked')
     connection.abort()
+    // Nothing undone, so nothing offered either: the turn goes on.
+    expect(unblocked).not.toHaveBeenCalled()
     expect(sessions.get('t1')?.status).toBe('working')
     expect(sessions.get('t1')?.blockedStop).toBeUndefined()
     expect(writes).toEqual([])
@@ -504,11 +589,13 @@ describe('auto-pause', () => {
     expect(delivery.send(roomId, 'plugin', 'alpha', 'again')).toEqual([{ to: 'alpha', path: 'held', why: 'paused' }])
   })
 
-  it('a room gone meanwhile is a warning, not a throw', () => {
+  it('a room that ended or was deleted counts nothing (a late ack after roomGone): no pause, no throw', () => {
     rooms.end(owner, roomId)
+    for (let i = 0; i < AUTO_PAUSE_DELIVERIES; i++) stop.delivered(roomId)
+    expect(rooms.peek(roomId)?.paused).toBe(false)
     rooms.delete(owner, roomId)
     for (let i = 0; i < AUTO_PAUSE_DELIVERIES; i++) stop.delivered(roomId)
-    expect(warnings.some((w) => w.includes('could not auto-pause'))).toBe(true)
+    expect(warnings.some((w) => w.includes('could not auto-pause'))).toBe(false)
   })
 
   it('roomGone forgets the count', () => {

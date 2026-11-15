@@ -184,13 +184,16 @@ export class RoomService {
         }
       },
       log: this.warn,
-      ...(options.random ? { random: options.random } : {})
+      ...(options.random ? { random: options.random } : {}),
+      ...(options.now ? { now: options.now } : {})
     })
     const tabRoom = (tabId: string): TabRoom | undefined => this.tabRoom(tabId)
     this.stop = new RoomStop({
       rooms: this.registry,
       sessions: options.sessions,
       tabRoom,
+      // An unacked block undone (the tab waiting, no Stop to come): what waits is offered through the gate.
+      unblocked: (tabId) => this.offerTab(tabId),
       ...(options.newAckId ? { newAckId: options.newAckId } : {}),
       ...(options.ackTimeoutMs !== undefined ? { ackTimeoutMs: options.ackTimeoutMs } : {}),
       log: this.warn
@@ -199,6 +202,9 @@ export class RoomService {
       rooms: this.registry,
       sessions: options.sessions,
       tabRoom,
+      // The per-tab Stop cap holds the gate's paste too; the person's badge click ends it (design §2 "Loops").
+      capped: (tabId) => this.stop.isCapped(tabId),
+      personDelivered: (tabId) => this.stop.personPrompt(tabId),
       ...(options.limits ? { limits: (pluginId: string) => options.limits!(pluginId) } : {}),
       // A pointer main pasted on its own decision counts toward the room's auto-pause (room-stop.ts delivered).
       delivered: (roomId) => this.stop.delivered(roomId),
@@ -222,6 +228,11 @@ export class RoomService {
   /** A tab's settle window ended: a member is offered what waits for it (the delivery decides, paused and typed included). */
   private settled(tabId: string): void {
     if (this.disposed) return
+    this.offerTab(tabId)
+  }
+
+  /** Offer a member tab what waits for it; a no-op for a tab in no room. */
+  private offerTab(tabId: string): void {
     const member = this.registry.memberOf(tabId)
     if (member) this.delivery.offer(member.roomId, member.name)
   }
@@ -480,12 +491,16 @@ export class RoomService {
     return this.docs.put(this.registry.get(owner, id).id, 'plugin', path, text)
   }
 
-  /** ctx.rooms.log: the owner's room's events, the oldest after the `since` cursor (a `seq`) when given, else the newest. */
-  log(owner: RoomOwner, id: unknown, opts: { since?: unknown; limit?: unknown } = {}): RoomLogPage {
+  /**
+   * ctx.rooms.log: the owner's room's events, the oldest after the `since` cursor (a `seq`) when given, else the newest.
+   * `maxBytes` bounds the page by its JSON lines (at least one entry; `more` says to page on).
+   */
+  log(owner: RoomOwner, id: unknown, opts: { since?: unknown; limit?: unknown; maxBytes?: number } = {}): RoomLogPage {
     const room = this.registry.get(owner, id)
     return this.registry.logOf(room.id).page({
       ...(typeof opts.since === 'number' ? { since: opts.since } : {}),
-      ...(typeof opts.limit === 'number' ? { limit: opts.limit } : {})
+      ...(typeof opts.limit === 'number' ? { limit: opts.limit } : {}),
+      ...(opts.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {})
     })
   }
 
@@ -495,9 +510,13 @@ export class RoomService {
     this.registry.pause(roomId)
   }
 
-  /** Resume a room and offer every member what waits for it. */
+  /**
+   * Resume a room and offer every member what waits for it. The person's Resume also ends its tabs' runs of Stop
+   * blocks and their caps (room-stop.ts roomResumed): for an untyped member it is one of the person's ways past the cap.
+   */
   resume(roomId: string): void {
     this.registry.resume(roomId)
+    this.stop.roomResumed(roomId)
     for (const m of this.registry.memberInfos(roomId)) this.delivery.offer(roomId, m.name)
   }
 
@@ -512,13 +531,12 @@ export class RoomService {
   /**
    * The person turned the mark on for a member tab (tabs.roomMark, after TabManager.setRoomMark stored it, only when it
    * was off before: the strip handlers decide): what waits is offered again, so a marked typed tab waiting for input
-   * gets the pointer now instead of at its next Stop. Never on clearing the mark or setting it again: an untyped member
-   * held at the per-tab Stop cap waits for the person's next prompt (design §2 "Loops"), and turning delivery off must
-   * not deliver. A no-op for a tab in no room.
+   * gets the pointer now instead of at its next Stop. A tab at the per-tab Stop cap stays held (the offer answers
+   * `capped`: design §2 "Loops"). Never on clearing the mark or setting it again: turning delivery off must not
+   * deliver. A no-op for a tab in no room.
    */
   markTurnedOn(tabId: string): void {
-    const member = this.registry.memberOf(tabId)
-    if (member) this.delivery.offer(member.roomId, member.name)
+    this.offerTab(tabId)
   }
 
   // --- the room view (rooms.view and the rest, Task 14): `projectId` is main's, the sender's window's project ---
@@ -576,6 +594,8 @@ export class RoomService {
    */
   removeTarget(projectId: string, id: unknown, name: unknown): { roomId: string; title: string; name: string } {
     const room = this.personRoom(projectId, id)
+    // Checked before the ask as the removal itself checks it (room-registry.ts remove): an ended room keeps its members.
+    if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
     if (typeof name !== 'string' || !Object.hasOwn(room.members, name)) throw new RoomError('not-found', 'no such member')
     return { roomId: room.id, title: room.title, name }
   }

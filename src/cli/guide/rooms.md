@@ -73,7 +73,9 @@ To pass one member's doc on to the others, a coordinator reads it and puts a cop
 is at most four parts of letters, digits, `.`, `_` and `-` (never `.` or `..`) below its area, like
 `shared/design/api.md`. A doc is valid UTF-8 text with no control, bidi or invisible format character
 but tab and line breaks (CR only as part of CRLF), at most 256 KiB; a room holds at most 20 MiB of docs. The last write wins; there are no versions. Docs stay
-after the room ends, until the plugin that made it deletes them.
+after the room ends, until the plugin that made it deletes them. The 20 MiB is one total for every folder,
+so a member that fills its own folder can keep a coordinator from writing `shared/` (its put is refused
+with the limit); there is no doc delete, but the plugin can free space by putting a shorter text over a doc.
 
 ## How messages reach you
 
@@ -82,9 +84,12 @@ pointer (`3 room messages waiting: run ccc room read`), which carries no message
 `ccc room read` brings the text into your context. The pointer reaches you in one of two ways:
 
 - at the end of your turn (the Stop hook): the app answers the stop with that pointer, so you continue
-  and read. At most 5 stops in a row are answered so; then the messages wait behind a badge on the tab
-  until the person's next prompt;
+  and read;
 - pasted into your prompt box when you are waiting for input.
+
+At most 5 stops in a row are answered so; then the messages wait behind a badge on the tab, with no
+pointer either way (a `send` to you answers `held` with `capped`), until the person steps in: their
+next prompt in your tab, their click on the badge, or their Resume of the room.
 
 **The person's own typing comes first.** A tab the person has typed in gets no pointer at all unless
 they marked it "Deliver room messages automatically" (a setting on the tab that only the person

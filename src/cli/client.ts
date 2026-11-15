@@ -1031,6 +1031,12 @@ async function runRoomRead(env: Env, out: Output): Promise<number> {
       return 1
     }
     warnOnVersionMismatch({ reply }, out)
+    // A reply to another request than the read (main answers in order, so only a confused peer sends one) is never
+    // taken for the batch: its text would be printed as room messages and its `ack` sent for them.
+    if (reply.id !== 1) {
+      out.stderr('ccc: the app answered a room read with something this ccc does not understand\n')
+      return 1
+    }
     if (!reply.ok) {
       out.stderr(`ccc: ${plainError(reply.error)}\n`)
       return 1

@@ -7,12 +7,12 @@
 // in the tab record (Task 4) and is rebound here with `rebind`. A member whose tab is gone for a quit or a window
 // close stays a member with no tab.
 import { randomBytes, randomUUID } from 'node:crypto'
-import { closeSync, fstatSync, mkdirSync, openSync, readSync, readdirSync, rmSync, type Dirent } from 'node:fs'
+import { closeSync, fstatSync, openSync, readSync, readdirSync, rmSync, type Dirent } from 'node:fs'
 import { join } from 'node:path'
 import { writeFileAtomic } from '../hooks/write-file-atomic'
 import { VERIFIED_OPEN_FLAGS } from '../verified-read'
 import { warnLog } from '../warn-log'
-import { RoomLog, type RoomLogType } from './room-log'
+import { RoomLog, ensureRoomDir, type RoomLogType } from './room-log'
 import { checkRoomName, checkRoomTitle, isRoomId, isRoomName } from '../../shared/room-names'
 
 /**
@@ -40,8 +40,8 @@ export const MAX_ROOM_MESSAGE_CHARS = 20_000
 /** Messages one member may have waiting: a member that never reads (or a paused room) cannot grow without bound. */
 export const MAX_QUEUED_PER_MEMBER = 100
 /**
- * Queued text a room may hold, in UTF-16 units, across its members: every enqueue rewrites the whole room.json, so
- * the record stays small enough to rewrite on each send.
+ * Queued text a room may hold, in UTF-16 units, across its members: a send (one save for all its recipients, `batch`)
+ * and a read's ack rewrite the whole room.json, so the record stays small enough to rewrite on each.
  */
 export const MAX_QUEUED_CHARS_PER_ROOM = 1_000_000
 /** The largest room.json read at start: the queued-text cap with JSON's worst escaping (`\uXXXX`, 6 bytes) and room to spare. */
@@ -173,6 +173,9 @@ export class RoomRegistry {
   private readonly newId: () => string
   private readonly random: (bytes: number) => Buffer
   private readonly warn: (message: string) => void
+  /** Open `batch` calls: while above 0, a save only marks its room in `unsaved`. */
+  private batchDepth = 0
+  private readonly unsaved = new Set<string>()
 
   constructor(private readonly options: RoomRegistryOptions) {
     this.now = options.now ?? Date.now
@@ -260,6 +263,12 @@ export class RoomRegistry {
     return r ? copy(r) : undefined
   }
 
+  /** Whether the room exists and has not ended (cheap: no copy). */
+  isLive(id: string): boolean {
+    const r = this.rooms.get(id)
+    return r !== undefined && r.endedAt === undefined
+  }
+
   /** End a room: its tabs are released and its invites dropped; the record, queues and docs stay until `delete`. */
   end(owner: RoomOwner, id: unknown): void {
     this.endRoom(this.owned(owner, id), 'ended')
@@ -299,6 +308,8 @@ export class RoomRegistry {
     // The directory first: a failed rm (EACCES, EBUSY) throws with the room still here, rather than gone from this run
     // and back at the next start.
     rmSync(join(this.options.dir, room.id), { recursive: true, force: true })
+    // A save still owed by an open batch must not bring the folder back.
+    this.unsaved.delete(room.id)
     this.rooms.delete(room.id)
     this.logs.delete(room.id)
     this.touch(room)
@@ -388,6 +399,11 @@ export class RoomRegistry {
    * Undefined for a tab in no room.
    */
   memberClosed(tabId: string): RoomMembership | undefined {
+    // The leave and every notice: one room.json save.
+    return this.batch(() => this.closeMember(tabId))
+  }
+
+  private closeMember(tabId: string): RoomMembership | undefined {
     const left = this.leave(tabId, 'closed')
     if (!left) return undefined
     const room = this.rooms.get(left.roomId)
@@ -406,6 +422,8 @@ export class RoomRegistry {
   /** The owner (`ctx.rooms.remove`) or the person (`'person'`, the room view: main checked the window) removes a member. */
   remove(owner: RoomOwner | 'person', id: unknown, name: unknown): RoomMembership {
     const room = owner === 'person' ? this.byId(id) : this.owned(owner, id)
+    // An ended room's members are its record of who took part: a leave logged after the end would rewrite it.
+    if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
     if (!isMember(room, name)) throw new RoomError('not-found', 'no such member')
     return this.dropMember(room, name, 'removed')
   }
@@ -505,6 +523,28 @@ export class RoomRegistry {
     room.queues[to] = queue
     this.save(room)
     return { ...message }
+  }
+
+  /**
+   * Run `fn` with the room.json saves it causes put off to its end: each changed room is written once, after `fn`
+   * (also when it throws). A send to `all` queues for up to 19 members, and each enqueue alone would rewrite the whole
+   * record, queues and all. Synchronous like every save: nothing is left unsaved past the call, so a crash loses no
+   * more than it would without the batch. Nests: the outermost call writes.
+   */
+  batch<T>(fn: () => T): T {
+    this.batchDepth++
+    try {
+      return fn()
+    } finally {
+      this.batchDepth--
+      if (this.batchDepth === 0) {
+        for (const id of [...this.unsaved]) {
+          this.unsaved.delete(id)
+          const room = this.rooms.get(id)
+          if (room) this.write(room)
+        }
+      }
+    }
   }
 
   /** How many messages wait for a member. */
@@ -640,18 +680,26 @@ export class RoomRegistry {
   }
 
   /**
-   * Write the record. A failed write is a warning, not a refusal: the change already happened in memory and is what
-   * this run delivers by; the next change writes the whole record again.
+   * Write the record (inside a `batch`, once at its end). A failed write is a warning, not a refusal: the change already
+   * happened in memory and is what this run delivers by; the next change writes the whole record again. The change is
+   * told at once either way.
    */
   private save(room: RoomRecord): void {
+    if (this.batchDepth > 0) this.unsaved.add(room.id)
+    else this.write(room)
+    this.touch(room)
+  }
+
+  private write(room: RoomRecord): void {
     const dir = join(this.options.dir, room.id)
     try {
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      // A plain folder directly under the rooms dir, as the log checks it: room.json must not go through a link
+      // planted after the load (which skips only the links there were at the start).
+      ensureRoomDir(dir)
       writeFileAtomic(join(dir, 'room.json'), JSON.stringify(room) + '\n', 0o600)
     } catch (err) {
       this.warn(`rooms: could not save ${room.id}: ${err instanceof Error ? err.message : String(err)}`)
     }
-    this.touch(room)
   }
 }
 

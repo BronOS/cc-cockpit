@@ -227,6 +227,18 @@ describe('RoomService: the room view', () => {
     expect(() => service.personRemove(P1, id, 'bob')).toThrow('no such member')
   })
 
+  it('an ended room keeps its members: Remove is refused before the ask and at the removal, nothing logged', async () => {
+    const { id } = team()
+    service.end(owner, id)
+    const before = (await service.view(P1, id)).log.length
+    expect(() => service.removeTarget(P1, id, 'bob')).toThrow('the room has ended')
+    expect(() => service.personRemove(P1, id, 'bob')).toThrow('the room has ended')
+    expect(() => service.remove(owner, id, 'bob')).toThrow('the room has ended')
+    const view = await service.view(P1, id)
+    expect(view.members.map((m) => m.name)).toEqual(['alice', 'bob'])
+    expect(view.log).toHaveLength(before)
+  })
+
   it("reveals the room's docs folder, its own folder before any doc, never a link", async () => {
     const { id } = team()
     const roomDir = join(realpathSync(dir), 'rooms', id)
@@ -336,8 +348,9 @@ describe('RoomService: the room view', () => {
     await flush()
     vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 2)
     expect(changes).toEqual([])
-    // Still logged, and the next change carries it.
-    expect((await service.view(P1, id)).log.filter((e) => e.type === 'doc-read' && e.by === 'person')).toHaveLength(3)
+    // Still logged (once: a person's reads of one doc are logged at most once a minute, room-docs.ts
+    // PERSON_READ_LOG_MS), and the next change carries it.
+    expect((await service.view(P1, id)).log.filter((e) => e.type === 'doc-read' && e.by === 'person')).toHaveLength(1)
     await service.docGet({ tabId: alice, projectId: P1 }, 'shared/a.md')
     await flush()
     expect(changes).toEqual([{ id, projectId: P1 }])

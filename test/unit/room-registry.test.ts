@@ -299,6 +299,17 @@ describe('RoomRegistry', () => {
     expect(reg.addMember(owner, room.id, { tabId: 't2', name: 'dev' }).name).toBe('dev')
   })
 
+  it("an ended room's members stay: neither the owner nor the person removes one, and no leave is logged after the end", () => {
+    const reg = make()
+    const room = reg.create(owner, { title: 'Team' })
+    reg.addMember(owner, room.id, { tabId: 't1', name: 'dev' })
+    reg.end(owner, room.id)
+    expect(code(() => reg.remove(owner, room.id, 'dev'))).toBe('ended')
+    expect(code(() => reg.remove('person', room.id, 'dev'))).toBe('ended')
+    expect(Object.keys(reg.get(owner, room.id).members)).toEqual(['dev'])
+    expect(reg.logOf(room.id).page().entries.map((e) => e.type)).toEqual(['create', 'join', 'end'])
+  })
+
   it('queues messages per member and dequeues them on take', () => {
     const reg = make()
     const room = reg.create(owner, { title: 'Team' })
@@ -447,6 +458,62 @@ describe('RoomRegistry', () => {
   })
 
   describe('persistence', () => {
+    const savedQueue = (id: string, name: string): unknown =>
+      (JSON.parse(readFileSync(join(dir, id, 'room.json'), 'utf8')) as { queues: Record<string, unknown> }).queues[name]
+
+    it('batch: the saves inside it are one write at its end (also on a throw); the change is told at once', () => {
+      const changed: string[] = []
+      const reg = new RoomRegistry({ dir, now: () => t, newId: nextId, log: (m) => warnings.push(m), changed: (r) => changed.push(r.id) })
+      const room = reg.create(owner, { title: 'Team' })
+      reg.addMember(owner, room.id, { tabId: 't1', name: 'a' })
+      reg.addMember(owner, room.id, { tabId: 't2', name: 'b' })
+      changed.length = 0
+      reg.batch(() => {
+        reg.enqueue(room.id, 'a', { from: 'plugin', text: 'one' })
+        reg.batch(() => reg.enqueue(room.id, 'b', { from: 'plugin', text: 'two' }))
+        // Nested: still nothing written, but both changes told.
+        expect(savedQueue(room.id, 'a')).toBeUndefined()
+        expect(changed).toEqual([room.id, room.id])
+      })
+      expect(savedQueue(room.id, 'a')).toHaveLength(1)
+      expect(savedQueue(room.id, 'b')).toHaveLength(1)
+      expect(() =>
+        reg.batch(() => {
+          reg.enqueue(room.id, 'a', { from: 'plugin', text: 'three' })
+          throw new Error('boom')
+        })
+      ).toThrow('boom')
+      expect(savedQueue(room.id, 'a')).toHaveLength(2)
+      expect(warnings).toEqual([])
+    })
+
+    it('a delete inside a batch is not undone by the save the batch still owed', () => {
+      const reg = make()
+      const room = reg.create(owner, { title: 'Team' })
+      reg.addMember(owner, room.id, { tabId: 't1', name: 'a' })
+      const msg = reg.enqueue(room.id, 'a', { from: 'plugin', text: 'one' })
+      reg.end(owner, room.id)
+      reg.batch(() => {
+        expect(reg.dropThrough(room.id, 'a', msg.id)).toBe(1) // a save owed
+        reg.delete(owner, room.id)
+      })
+      expect(existsSync(join(dir, room.id))).toBe(false)
+      expect(warnings).toEqual([])
+    })
+
+    it('a room folder swapped for a link after the load is never written through', () => {
+      const reg = make()
+      const room = reg.create(owner, { title: 'Team' })
+      reg.addMember(owner, room.id, { tabId: 't1', name: 'a' })
+      const outside = join(dir, '..', 'outside')
+      mkdirSync(outside)
+      rmSync(join(dir, room.id), { recursive: true })
+      symlinkSync(outside, join(dir, room.id))
+      reg.enqueue(room.id, 'a', { from: 'plugin', text: 'secret' })
+      expect(existsSync(join(outside, 'room.json'))).toBe(false)
+      expect(warnings.some((w) => w.includes(`could not save ${room.id}`) && w.includes('not a plain directory'))).toBe(true)
+    })
+
     it('saves each room and reloads every room paused with no tab bound', () => {
       const reg = make()
       const room = reg.create(owner, { title: 'Team' })

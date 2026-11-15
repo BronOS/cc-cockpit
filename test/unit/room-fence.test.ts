@@ -85,6 +85,14 @@ describe('room fence', () => {
     expect(visible('ok\u200d\u{1f468}')).toBe('ok\u200d\u{1f468}')
   })
 
+  it('escapes the other invisible format characters too: tag characters (ASCII smuggling), soft hyphen, U+180E, U+FFF9-FFFB', () => {
+    // "hi" spelled in tag characters draws nothing in a terminal, but a model reads it.
+    expect(visible('a\u{e0068}\u{e0069}b')).toBe('a\\u{e0068}\\u{e0069}b')
+    expect(visible('x\u00ady\u180ez\ufff9w\ufffb')).toBe('x\\u{ad}y\\u{180e}z\\u{fff9}w\\u{fffb}')
+    // ZWNJ and ZWJ stay: words and emoji need them.
+    expect(visible('\u200c\u200d')).toBe('\u200c\u200d')
+  })
+
   it('a batch takes the oldest messages whose JSON-encoded fence fits, and points at the rest', () => {
     const messages = ['one', 'two', 'three'].map((text) => ({ from: 'alice', text }))
     const all = fenceBatch('Team', messages, NONCE)

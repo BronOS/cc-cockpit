@@ -36,6 +36,7 @@ import {
   MAX_OVERLAYS_PER_WINDOW,
   MAX_SENDS_PER_WINDOW,
   MAX_ROOM_LOG_ENTRIES,
+  MAX_ROOM_LOG_PAGE_BYTES,
   RateWindow,
   SESSIONS_EVENT_INTERVAL_MS,
   type HostApiDeps,
@@ -2678,10 +2679,10 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     for (const since of ['x', 1.5, -1]) {
       await expect(call('rooms.log', { pluginId: 'a.one', id, since }), String(since)).rejects.toThrow('rooms.log: since must be a seq')
     }
-    // More than the cap asked for is the cap.
+    // More than the cap asked for is the cap, and a page is bounded by bytes too (it is one RPC message).
     const spy = vi.spyOn(rooms, 'log')
     await call('rooms.log', { pluginId: 'a.one', id, limit: MAX_ROOM_LOG_ENTRIES * 10 })
-    expect(spy.mock.calls[0]?.[2]).toEqual({ limit: MAX_ROOM_LOG_ENTRIES })
+    expect(spy.mock.calls[0]?.[2]).toEqual({ limit: MAX_ROOM_LOG_ENTRIES, maxBytes: MAX_ROOM_LOG_PAGE_BYTES })
   })
 
   it('refuses every rooms call while main says the plugin is off in the project, checked at call time (review M1)', async () => {

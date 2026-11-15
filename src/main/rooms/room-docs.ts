@@ -20,7 +20,7 @@ import { readVerified } from '../verified-read'
 import { warnLog } from '../warn-log'
 import type { RoomLogType } from './room-log'
 import { isPathPart, isRoomName } from '../../shared/room-names'
-import { CONTROL } from '../../shared/session-name'
+import { HIDDEN_TEXT } from '../../shared/session-name'
 import { RoomError, isUuid } from './room-registry'
 
 /** Per doc, in UTF-8 bytes: a `ccc` reply is one socket line (1 MiB) and plugin CLI I/O is 256 KiB (design §3). */
@@ -31,6 +31,11 @@ export const MAX_ROOM_DOCS_BYTES = 20 * 1024 * 1024
 export const MAX_DOC_DEPTH = 4
 /** Per room, files and folders together: logical bytes alone let empty docs and folders pile up, and every put walks them all. */
 export const MAX_ROOM_DOC_ENTRIES = 1000
+/**
+ * A person's read of one doc is logged at most once in this window: the room view opens docs as often as the person
+ * clicks (and any paired browser may), and a log line per click would fill the 20 MiB log and trim the real record.
+ */
+export const PERSON_READ_LOG_MS = 60_000
 /** The temp-file marker: a part containing it is refused, so a doc can never be confused with a write in flight. */
 const TMP_MARK = '.tmp-'
 
@@ -63,6 +68,7 @@ export interface RoomDocsOptions {
   random?: (bytes: number) => Buffer
   /** The room total (default MAX_ROOM_DOCS_BYTES); tests use a small one, 20 MiB in a quota'd temp dir fails with EDQUOT. */
   maxRoomBytes?: number
+  now?: () => number
 }
 
 /** Parse `shared/a/b.md` or `members/<name>/a.md`; null when anything is off (a `..`, a bad character, too deep). */
@@ -112,7 +118,7 @@ function byOf(caller: RoomDocCaller): string {
 /**
  * Text a doc may hold: a well-formed string (a lone surrogate would turn into U+FFFD on the way to UTF-8, so the
  * doc read back would differ from the one written) with no control, bidi or invisible format character but tab, LF
- * and CRLF (and a leading BOM): the one character test of a fence and a session name (session-name.ts CONTROL), minus what a text
+ * and CRLF (and a leading BOM): the one character test of a fence (session-name.ts HIDDEN_TEXT), minus what a text
  * needs. `ccc room doc get` prints a doc exactly (it is piped on, so no fence) into a terminal: DEL, a C1 control
  * (U+009B is a CSI in xterm.js), a bidi override or isolate (Trojan Source) and a lone CR (it overwrites the line)
  * would let a member hide what it wrote from the person watching the tab, so they never get in. The controls are
@@ -121,10 +127,10 @@ function byOf(caller: RoomDocCaller): string {
  * its UTF-8 size in JSON (`"`, `\`, tab, LF, CR).
  */
 function isDocText(text: string): boolean {
-  // CRLF is the one place a CR may be; what is left of CONTROL after tab and LF are taken out is refused.
+  // CRLF is the one place a CR may be; what is left of HIDDEN_TEXT after tab and LF are taken out is refused.
   // A leading BOM stays (a file from a Windows editor round-trips exactly; at the start it hides nothing).
   const body = text.startsWith('\ufeff') ? text.slice(1) : text
-  if (CONTROL.test(body.replace(/\r\n/g, '\n').replace(/[\t\n]/g, ''))) return false
+  if (HIDDEN_TEXT.test(body.replace(/\r\n/g, '\n').replace(/[\t\n]/g, ''))) return false
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i)
     if (c >= 0xd800 && c <= 0xdbff) {
@@ -147,8 +153,12 @@ export class RoomDocs {
   private readonly warn: (message: string) => void
   private readonly random: (bytes: number) => Buffer
   private readonly maxRoomBytes: number
+  private readonly now: () => number
+  /** When each doc (room id and path) was last logged as read by the person (PERSON_READ_LOG_MS). */
+  private readonly personReads = new Map<string, number>()
 
   constructor(private readonly options: RoomDocsOptions) {
+    this.now = options.now ?? Date.now
     this.warn = options.log ?? warnLog
     this.random = options.random ?? randomBytes
     this.maxRoomBytes = options.maxRoomBytes ?? MAX_ROOM_DOCS_BYTES
@@ -202,7 +212,7 @@ export class RoomDocs {
       } catch {
         throw new Refused('not UTF-8')
       }
-      this.logEvent(roomId, 'doc-read', { by: byOf(caller), path, bytes: read.data.length })
+      if (caller !== 'person' || this.personReadDue(roomId, path)) this.logEvent(roomId, 'doc-read', { by: byOf(caller), path, bytes: read.data.length })
       return text
     } catch (err) {
       throw this.refusal(err, roomId, caller, path, 'get')
@@ -304,12 +314,15 @@ export class RoomDocs {
   }
 
   /**
-   * `<real rooms dir>/<id>/docs`, every level checked to be a real folder (not a link); made when `create`.
-   * Null when a level is missing (and not made) or is not a plain folder.
+   * `<real rooms dir>/<id>/docs`, every level checked to be a real folder (not a link); `docs` made when `create`.
+   * Null when a level is missing (and not made) or is not a plain folder. The room's own folder is never made here:
+   * the registry made it with the room, and a put still in the room's write chain when the room is deleted (its
+   * folder removed) must find it gone, not bring back a `docs` folder with no room.json (every start would warn).
+   * Each folder below it is made one level at a time (no `recursive`), so a delete between two awaits fails the
+   * next mkdir instead.
    */
   private async docsDir(roomId: string, create: boolean): Promise<string | null> {
     if (!isUuid(roomId)) throw new RoomError('not-found', 'no such room')
-    if (create) await mkdir(this.options.dir, { recursive: true, mode: 0o700 })
     let base: string
     try {
       // The data dir itself may sit behind a link (a moved home); everything below it may not.
@@ -317,7 +330,8 @@ export class RoomDocs {
     } catch {
       return null
     }
-    return this.walkDirs(base, [roomId, 'docs'], create)
+    const room = await this.walkDirs(base, [roomId], false)
+    return room === null ? null : this.walkDirs(room, ['docs'], create)
   }
 
   /** Walk `parts` below `from`, each a plain folder (lstat: a link is refused), made (0700) when `create`. */
@@ -389,6 +403,18 @@ export class RoomDocs {
       }
     }
     return out
+  }
+
+  /** Whether a person's read of this doc is to be logged now (none of it in the last PERSON_READ_LOG_MS). */
+  private personReadDue(roomId: string, path: string): boolean {
+    const now = this.now()
+    const key = `${roomId}/${path}`
+    const last = this.personReads.get(key)
+    if (last !== undefined && now - last < PERSON_READ_LOG_MS) return false
+    // Bounded: old marks are dropped once there are many (each is at most one doc of one room).
+    if (this.personReads.size >= 1000) for (const [k, at] of this.personReads) if (now - at >= PERSON_READ_LOG_MS) this.personReads.delete(k)
+    this.personReads.set(key, now)
+    return true
   }
 
   private logEvent(roomId: string, type: RoomLogType, fields: Record<string, unknown>): void {

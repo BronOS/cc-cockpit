@@ -13,8 +13,9 @@
 // What the person sees is guarded too: `ccc room read`'s output is shown in the terminal (the Bash tool's output), where
 // an ESC sequence (cursor moves, `\x1b[2K`), a backspace or a bidi override (U+202E) could hide a line's `| ` or the
 // `[end <nonce>]` line and fake an unfenced line, and `\x1c`-`\x1e` are line breaks to Python's `splitlines`. So every
-// C0 control but tab, DEL, every C1 control and the bidi and invisible format characters (session-name.ts CONTROL) are
-// written as a visible `\u{..}` escape, in the body and the sender alike; the text stays readable and nothing is lost.
+// C0 control but tab, DEL, every C1 control and the bidi and invisible format characters, the tag characters included
+// (session-name.ts HIDDEN_TEXT), are written as a visible `\u{..}` escape, in the body and the sender alike; the text
+// stays readable and nothing is lost.
 //
 // The title passed the registry's title rule (no control, quote, bracket or bidi characters: room-names.ts), so it cannot
 // close the quotes. The sender is a member name (`^[a-z][a-z0-9-]{0,30}$`), or one of the two reserved senders that are
@@ -23,7 +24,7 @@
 import { randomBytes } from 'node:crypto'
 import { ROOM_READ_MAX_TEXT_BYTES } from '../../shared/protocol'
 import { pointerText } from '../../shared/room-pointer'
-import { CONTROL } from '../../shared/session-name'
+import { HIDDEN_TEXT } from '../../shared/session-name'
 import { SYSTEM_SENDER, type RoomMessage } from './room-registry'
 
 /** Hex characters in a fence nonce. */
@@ -52,10 +53,10 @@ function lines(text: string): string[] {
   return out
 }
 
-/** CONTROL, every match: built from its source so the one rule stays in session-name.ts. */
-const UNSAFE = new RegExp(CONTROL.source, 'gu')
+/** HIDDEN_TEXT, every match: built from its source so the one rule stays in session-name.ts. */
+const UNSAFE = new RegExp(HIDDEN_TEXT.source, 'gu')
 
-/** `text` with every CONTROL character but tab written as `\u{hex}` (the line breaks were split off before). */
+/** `text` with every HIDDEN_TEXT character but tab written as `\u{hex}` (the line breaks were split off before). */
 export function visible(text: string): string {
   return text.replace(UNSAFE, (c) => (c === '\t' ? c : `\\u{${(c.codePointAt(0) as number).toString(16)}}`))
 }

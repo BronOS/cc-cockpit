@@ -139,6 +139,55 @@ describe('RoomLog', () => {
     expect(log.read({ since: NaN, limit: -1 })).toHaveLength(1)
   })
 
+  it('maxBytes bounds a page by its JSON lines, never below one entry, and says there is more', () => {
+    const log = new RoomLog(path, undefined, clock)
+    for (let i = 0; i < 6; i++) log.append('send', { i, text: 'x'.repeat(1000) })
+    const line = readFileSync(path, 'utf8').split('\n')[0]!.length + 1
+    // The newest: as many as fit, oldest first.
+    const newest = log.page({ maxBytes: line * 2 + 10 })
+    expect(newest.entries.map((e) => e.i)).toEqual([4, 5])
+    expect(newest.more).toBe(true)
+    // After a cursor: the oldest that fit, and `more` to page on.
+    const after = log.page({ since: 1, maxBytes: line * 3 + 10 })
+    expect(after.entries.map((e) => e.i)).toEqual([1, 2, 3])
+    expect(after.more).toBe(true)
+    // One entry bigger than the budget still comes (a poller must move on), with `more` while others remain.
+    expect(log.page({ since: 0, maxBytes: 1 })).toEqual({ entries: [expect.objectContaining({ i: 0 })], more: true })
+    expect(log.page({ maxBytes: 1 })).toEqual({ entries: [expect.objectContaining({ i: 5 })], more: true })
+    // A budget that takes everything: no `more`; with a limit too, the smaller bound wins.
+    expect(log.page({ since: 0, maxBytes: line * 100 }).more).toBe(false)
+    expect(log.page({ limit: 1, maxBytes: line * 100 })).toEqual({ entries: [expect.objectContaining({ i: 5 })], more: true })
+  })
+
+  it('an append reads back only the last line for its seq, however large the ones before it', () => {
+    const log = new RoomLog(path, undefined, clock)
+    log.append('send', { text: 'x'.repeat(200_000) })
+    log.append('send', { text: 'y' })
+    // A second large line before the last: the seq still comes from the last whole line.
+    log.append('end')
+    expect(log.read().map((e) => e.seq)).toEqual([1, 2, 3])
+  })
+
+  it('a trim keeps whole lines only and counts the dropped ones exactly', () => {
+    const log = new RoomLog(path, 1000, clock)
+    let sends = 0
+    while (!log.read().some((e) => e.type === 'trimmed')) {
+      log.append('send', { i: sends, text: 'z'.repeat(40) })
+      sends++
+    }
+    const raw = readFileSync(path, 'utf8')
+    expect(raw.endsWith('\n')).toBe(true)
+    // Every line parses: the cut fell on a line boundary.
+    for (const l of raw.trim().split('\n')) expect(() => JSON.parse(l)).not.toThrow()
+    expect(raw.length).toBeLessThanOrEqual(500 + 100)
+    const entries = log.read()
+    const trimmed = entries.at(-1)!
+    expect(trimmed.type).toBe('trimmed')
+    // The one trim: what it dropped and what it kept are every send there was, the newest kept.
+    expect((trimmed.dropped as number) + entries.length - 1).toBe(sends)
+    expect(entries.at(-2)?.i).toBe(sends - 1)
+  })
+
   it('trims by bytes when a few huge lines stay over the cap', () => {
     const log = new RoomLog(path, 1000, clock)
     for (let i = 0; i < 4; i++) log.append('send', { text: 'x'.repeat(400) })

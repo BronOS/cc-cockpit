@@ -32,6 +32,7 @@ const HELD_WHY: Readonly<Record<string, string>> = {
   paused: 'the room is paused',
   'no-tab': 'it has no tab right now',
   typed: 'the person is typing in its tab',
+  capped: 'it had 5 room pointers in a row; it waits for the person',
   draft: 'there is a draft in its prompt box',
   'not-waiting': 'it is busy'
 }

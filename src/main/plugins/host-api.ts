@@ -216,7 +216,7 @@
 // functions (index.ts), unit tests pass the real pure ones with fakes underneath.
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
-import type { RpcHandler, RpcMeta } from '../../host/rpc'
+import { MAX_RPC_MESSAGE_LENGTH, type RpcHandler, type RpcMeta } from '../../host/rpc'
 import type { ViewId } from '../../shared/views'
 import type {
   OAuthTokens,
@@ -1093,10 +1093,12 @@ export class HostApi {
           if (p.limit !== undefined && (typeof p.limit !== 'number' || !Number.isInteger(p.limit) || p.limit < 1)) {
             throw new Error('limit must be a positive whole number')
           }
-          // At most MAX_ROOM_LOG_ENTRIES: a room's log may hold 20 MiB, and the answer is one message. With `since`
-          // they are the oldest after it and `more` says to poll again, so a poller that fell behind loses nothing.
+          // At most MAX_ROOM_LOG_ENTRIES and MAX_ROOM_LOG_PAGE_BYTES: a room's log may hold 20 MiB, and the answer is
+          // one message (a page past the RPC cap would fail to encode, and a `since` poller would ask for it forever).
+          // With `since` they are the oldest after it and `more` says to poll again, so a poller that fell behind loses
+          // nothing.
           const limit = Math.min(typeof p.limit === 'number' ? p.limit : MAX_ROOM_LOG_ENTRIES, MAX_ROOM_LOG_ENTRIES)
-          const page = rooms.log(owner, p.id, { ...(typeof p.since === 'number' ? { since: p.since } : {}), limit })
+          const page = rooms.log(owner, p.id, { ...(typeof p.since === 'number' ? { since: p.since } : {}), limit, maxBytes: MAX_ROOM_LOG_PAGE_BYTES })
           return { entries: page.entries as RoomLogEntry[], more: page.more } satisfies RoomLogPage
         })
     }
@@ -2886,6 +2888,12 @@ type OpenResult = { tabId: string; placed?: boolean }
 
 /** ctx.rooms.log answers at most this many events (a plugin polls with the `since` cursor and pages on `more`). */
 export const MAX_ROOM_LOG_ENTRIES = 1000
+/**
+ * ...and at most this many bytes of them (their JSON lines, never fewer than one entry): the RPC cap less room for
+ * the envelope. A UTF-8 byte count is never below the UTF-16 length the cap is counted in, so a page under it fits.
+ * One entry is far below it (a 20,000-character message, escaped, and a delivery line per member).
+ */
+export const MAX_ROOM_LOG_PAGE_BYTES = MAX_RPC_MESSAGE_LENGTH - 64 * 1024
 
 /** A room as its plugin sees it: no members' queues (their text reaches only `ccc room read` and the log). */
 function roomInfoOf(r: RoomRecord): RoomInfo {

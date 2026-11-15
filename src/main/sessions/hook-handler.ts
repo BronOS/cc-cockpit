@@ -65,6 +65,11 @@ export function hookTarget(
 export interface HookRoomStop {
   stop(tabId: string, payload: unknown): StopBlock | undefined
   closedUnacked(tabId: string, ackId: string): boolean
+  /**
+   * The plain Stop of an unacked block was applied (the tab is waiting now): what waits for the member is offered
+   * through the gate, since no Stop is coming to carry the pointer.
+   */
+  unblocked?(tabId: string): void
 }
 
 export function hookHandler(registry: Pick<SessionRegistry, 'applyHook' | 'unblockStop'>, rooms?: HookRoomStop): Handler {
@@ -112,7 +117,7 @@ function undoBlockOnClose(
     () => {
       try {
         if (!rooms.closedUnacked(tabId, ackId)) return
-        registry.unblockStop(tabId, ackId, payload)
+        if (registry.unblockStop(tabId, ackId, payload)) rooms.unblocked?.(tabId)
       } catch (err) {
         warnLog(`hook: undoing the unacked Stop pointer of tab ${tabId} failed: ${errorText(err)}`)
       }

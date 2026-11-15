@@ -10,7 +10,10 @@
 //   - an untyped member, or one with the person's mark and no draft, waiting for input: the pointer is pasted;
 //   - a typed member without the mark gets nothing from here or from the Stop hook: its messages are held and the
 //     badge shows the count; the person's click on it (deliverHeld) pastes the pointer as their own act;
-//   - a paused room, a member with no tab (after a quit, until restore) or a tab that is not waiting: held.
+//   - a paused room, a member with no tab (after a quit, until restore) or a tab that is not waiting: held;
+//   - a tab at the per-tab Stop cap (room-stop.ts `capped`, design §2 "Loops"): held too, here as at the Stop, until
+//     the person's next prompt in it, their badge click or their Resume of the room: otherwise the loop the cap
+//     stopped would go on through the gate at message rate.
 // Delivered means the pointer went in; the messages leave the queue only through the member's own `ccc room read`.
 import { maySend } from '../sessions/send-gate'
 import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-reducer'
@@ -53,6 +56,11 @@ export type HeldWhy =
   | 'no-tab'
   /** The person typed in the tab and gave it no mark: the badge shows the count, their click delivers. */
   | 'typed'
+  /**
+   * The tab had MAX_STOP_BLOCKS_IN_A_ROW Stop pointers in a row (room-stop.ts): held behind the badge until the
+   * person's next prompt in it, their badge click or their Resume of the room.
+   */
+  | 'capped'
   /** The person's mark, but they have input in the box since the last prompt (the draft bit). */
   | 'draft'
   /** The tab is not waiting for input (working, a permission dialog, starting, a paste in flight, ended). */
@@ -75,12 +83,14 @@ export type DeliveryDecision = { pointer: true } | { pointer: false; why: HeldWh
  * no tab); `mark` is the person's mark for THIS room and name (the caller matched them). Pure, so the rule is tested
  * on its own; the gate still has the last word (maySend again at the paste).
  */
-export function decide(input: { paused: boolean; entry: SessionEntry | undefined; mark: boolean }): DeliveryDecision {
+export function decide(input: { paused: boolean; entry: SessionEntry | undefined; mark: boolean; capped?: boolean }): DeliveryDecision {
   const { paused, entry, mark } = input
   if (paused) return { pointer: false, why: 'paused' }
   if (entry === undefined) return { pointer: false, why: 'no-tab' }
   // `typed` is the person's: without their mark a room member that read a hostile page must not continue their turn.
   if (entry.typed && !mark) return { pointer: false, why: 'typed' }
+  // The Stop cap holds the gate's paste as well: a paste starts a turn as surely as a Stop block continues one.
+  if (input.capped === true) return { pointer: false, why: 'capped' }
   // Untyped means no input from the person ever, so no draft either; a restored member is typed with no draft.
   if (entry.typed && entry.draft === true) return { pointer: false, why: 'draft' }
   if (!maySend(entry)) return { pointer: false, why: 'not-waiting', status: entry.status }
@@ -88,7 +98,7 @@ export function decide(input: { paused: boolean; entry: SessionEntry | undefined
 }
 
 export interface RoomDeliveryDeps {
-  rooms: Pick<RoomRegistry, 'peek' | 'held' | 'boundTab' | 'enqueue' | 'logOf' | 'memberOf'>
+  rooms: Pick<RoomRegistry, 'peek' | 'held' | 'boundTab' | 'enqueue' | 'logOf' | 'memberOf' | 'batch'>
   sessions: {
     get(tabId: string): SessionEntry | undefined
     /** SessionRegistry.sendPointer: pasted now or not at all (send-gate.ts sendNow). */
@@ -98,6 +108,10 @@ export interface RoomDeliveryDeps {
   }
   /** The tab's membership and the person's mark as the tab manager keeps it (TabManager.roomOf, the tab's own project). */
   tabRoom(tabId: string): TabRoom | undefined
+  /** Whether the tab is held at the per-tab Stop cap (RoomStop.isCapped); never capped when absent. */
+  capped?(tabId: string): boolean
+  /** The person's badge click delivered: the tab's run of Stop blocks and its cap end (RoomStop.personPrompt). */
+  personDelivered?(tabId: string): void
   /** The plugin's room send caps, read on every send (PluginLimitsStore.limits: the person's override). Defaults when absent. */
   limits?(pluginId: string): RoomSendLimits
   /**
@@ -126,13 +140,13 @@ export class RoomDelivery {
    * then each is offered the pointer. One answer per recipient; one log line for the send, its text and every
    * recipient's path. Throws a RoomError for an unknown or ended room, a sender that is not a member, a bad name or
    * text, a send to oneself, and a send cap (naming the cap and its value); nothing is queued then. Any other failure
-   * to queue (a failed room.json save) is rethrown after the recipients before it were queued and offered: the log
-   * line then names them and the one that failed.
+   * to queue (the room gone between the checks and the queue) is rethrown after the recipients before it were queued
+   * and offered: the log line then names them and the one that failed.
    *
    * The caps are checked for every recipient up front (a send that could go over is refused whole) and charged for
-   * the recipients actually queued, at least one per logged send: a send to a gone name or to full queues queues
-   * nothing but still writes a log line with its text, so it must count, or a member could loop it and push the
-   * room's real record out through the log's trim.
+   * the recipients actually queued, at least one per logged send: a send to a gone name, to `all` with no other
+   * member or to full queues queues nothing but still writes a log line with its text, so it must count, or a member
+   * could loop it and push the room's real record out through the log's trim.
    */
   send(roomId: string, from: string, to: unknown, text: unknown): RecipientAnswer[] {
     const room = this.deps.rooms.peek(roomId)
@@ -151,30 +165,48 @@ export class RoomDelivery {
       return answer
     }
     const recipients = to === 'all' ? Object.keys(room.members).filter((name) => name !== from) : [to]
-    if (recipients.length === 0) return []
+    if (recipients.length === 0) {
+      // `all` from a member alone in the room: nobody to queue for, but logged and counted like a send to a gone name.
+      this.charge(this.window(room, from, 1), 1)
+      this.logSend(room.id, from, to, text, [])
+      return []
+    }
     const window = this.window(room, from, recipients.length)
 
-    const answers: RecipientAnswer[] = []
-    let queued = 0
-    for (const name of recipients) {
-      try {
-        this.deps.rooms.enqueue(room.id, name, { from, text })
-      } catch (err) {
-        // A full queue is the recipient's (it is not reading); the others still get the message.
-        if (err instanceof RoomError && err.code === 'limit') {
-          answers.push({ to: name, path: 'refused', why: err.message })
-          continue
+    // Every recipient is queued first, under one room.json save (a send to `all` would otherwise rewrite the whole
+    // record once per member, queues included), and only then offered the pointer: what an offer pastes is on disk.
+    const slots: Array<{ name: string; refused?: string }> = []
+    let failed: { name: string; err: unknown } | undefined
+    this.deps.rooms.batch(() => {
+      for (const name of recipients) {
+        try {
+          this.deps.rooms.enqueue(room.id, name, { from, text })
+        } catch (err) {
+          // A full queue is the recipient's (it is not reading); the others still get the message.
+          if (err instanceof RoomError && err.code === 'limit') {
+            slots.push({ name, refused: err.message })
+            continue
+          }
+          failed = { name, err }
+          return
         }
-        // The ones before it are queued and were offered the pointer: count and record them before giving up.
-        this.charge(window, Math.max(queued, 1))
-        this.log(room.id, 'send', { from, to, text, delivery: answers, failed: name })
-        throw err
+        slots.push({ name })
       }
-      queued++
-      // Just queued, so something waits: offer answers for it.
-      answers.push(this.offer(room.id, name) ?? { to: name, path: 'held', why: 'not-waiting' })
-    }
+    })
+    const answers = slots.map(
+      (slot): RecipientAnswer =>
+        slot.refused !== undefined
+          ? { to: slot.name, path: 'refused', why: slot.refused }
+          : // Just queued, so something waits: offer answers for it.
+            (this.offer(room.id, slot.name) ?? { to: slot.name, path: 'held', why: 'not-waiting' })
+    )
+    const queued = slots.filter((slot) => slot.refused === undefined).length
     this.charge(window, Math.max(queued, 1))
+    if (failed !== undefined) {
+      // The ones before it are queued and were offered the pointer: counted and recorded before giving up.
+      this.log(room.id, 'send', { from, to, text, delivery: answers, failed: failed.name })
+      throw failed.err
+    }
     this.logSend(room.id, from, to, text, answers)
     return answers
   }
@@ -192,7 +224,12 @@ export class RoomDelivery {
     if (tabId !== undefined) this.mirror(tabId, room, name, held)
     if (held === 0) return undefined
     const entry = tabId === undefined ? undefined : this.deps.sessions.get(tabId)
-    const decision = decide({ paused: room.paused, entry, mark: tabId !== undefined && this.marked(tabId, room.id, name) })
+    const decision = decide({
+      paused: room.paused,
+      entry,
+      mark: tabId !== undefined && this.marked(tabId, room.id, name),
+      capped: tabId !== undefined && this.deps.capped?.(tabId) === true
+    })
     if (!decision.pointer || tabId === undefined) {
       return decision.pointer ? heldAnswer(name, 'no-tab', undefined) : heldAnswer(name, decision.why, decision.status)
     }
@@ -211,7 +248,8 @@ export class RoomDelivery {
    * anyway" sends `overDraft`, their choice to add the pointer to whatever is in the box. The caller checked the click
    * came from the shell page for its own tab. Answers `delivered`, or why not (no room, nothing held, paused, ended, a
    * permission prompt, busy, a draft) so the strip can tell the person instead of a click that silently did nothing.
-   * The state reasons come before the draft, so "Deliver anyway" is offered only when it would go in.
+   * The state reasons come before the draft, so "Deliver anyway" is offered only when it would go in. The per-tab Stop
+   * cap does not hold it (the person looked), and a delivery ends the cap: the person let the loop go on.
    */
   deliverHeld(tabId: string, options: { overDraft?: boolean } = {}): DeliverHeldAnswer {
     const member = this.deps.rooms.memberOf(tabId)
@@ -228,6 +266,7 @@ export class RoomDelivery {
     const overDraft = entry.draft === true && options.overDraft === true
     if (entry.draft === true && !overDraft) return { delivered: false, why: 'draft' }
     const ok = this.paste(tabId, held)
+    if (ok) this.deps.personDelivered?.(tabId)
     // The pointer only (no message moved): logged as the person's delivery, so the record shows why the member read.
     const fields = { from: 'person', to: member.name, via: 'badge', pointer: held, delivered: ok }
     this.log(room.id, 'send', overDraft ? { ...fields, overDraft: true } : fields)

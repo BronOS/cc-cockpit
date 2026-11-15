@@ -886,6 +886,24 @@ describe('the Stop decision through the hook handlers', () => {
     expect(hook(t, { stop_hook_active: false })).not.toBeNull()
   })
 
+  it('a capped untyped member is held on the gate path too, until the person resumes the room (the wiring)', () => {
+    const id = room()
+    const t = claudeTab()
+    working(t)
+    addTo(id, t, 'alice')
+    service.sendAsPlugin(owner, id, 'alice', 'x')
+    for (let i = 0; i < MAX_STOP_BLOCKS_IN_A_ROW; i++) expect(hook(t, { stop_hook_active: i > 0 })).not.toBeNull()
+    // The capped Stop is plain: the tab waits for input, where only the gate could go on with the loop.
+    expect(hook(t, { stop_hook_active: true })).toBeNull()
+    expect(sessions.get(t)?.status).toBe('waiting')
+    writes.length = 0
+    expect(service.sendAsPlugin(owner, id, 'alice', 'y')).toEqual([{ to: 'alice', path: 'held', why: 'capped' }])
+    service.markTurnedOn(t)
+    expect(writes).toEqual([])
+    service.resume(id)
+    expect(writes).toEqual([{ tabId: t, data: paste(pointerText(2)) }])
+  })
+
   it('the person’s input resets the room’s auto-pause count (onPersonInput is wired)', () => {
     const spy = vi.spyOn(service.stop, 'personInput')
     const t = claudeTab()

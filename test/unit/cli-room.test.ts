@@ -133,6 +133,7 @@ describe('ccc room: one request per command, from the token alone', () => {
       delivery: [
         { to: 'bob', path: 'delivered' },
         { to: 'cy', path: 'held', why: 'typed' },
+        { to: 'cz', path: 'held', why: 'capped' },
         { to: 'dee', path: 'gone' },
         { to: 'eve', path: 'refused', why: 'a member may have at most 100 messages waiting' }
       ]
@@ -143,6 +144,7 @@ describe('ccc room: one request per command, from the token alone', () => {
       [
         'bob: delivered',
         'cy: held (the person is typing in its tab); it reads the message with ccc room read',
+        'cz: held (it had 5 room pointers in a row; it waits for the person); it reads the message with ccc room read',
         'dee: gone (no member by that name; nothing sent)',
         'eve: refused (a member may have at most 100 messages waiting)',
         ''
@@ -319,6 +321,16 @@ describe('ccc room read: print, then ack on the same connection', () => {
     const c = capture()
     expect(await run(['room', 'read'], env(), stdinOf(''), c.out, root)).toBe(0)
     expect(c.stdout()).toBe('no room messages waiting\n')
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a reply with another id than the read is refused: nothing printed, no ack', async () => {
+    const seen: Request[] = []
+    await fakeApp(seen, [ok({ count: 1, more: 0, text: BATCH, ack: 'm-1' }, 7), ok({ acked: 1 }, 2)])
+    const c = capture()
+    expect(await run(['room', 'read'], env(), stdinOf(''), c.out, root)).toBe(1)
+    expect(c.stdout()).toBe('')
+    expect(c.stderr()).toContain('does not understand')
     expect(seen).toHaveLength(1)
   })
 

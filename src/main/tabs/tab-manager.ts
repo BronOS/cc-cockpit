@@ -1033,7 +1033,10 @@ export class TabManager {
 
   /**
    * A saved membership asked of the registry (TabRoomHooks.rebind); dropped on a throw and with no registry: the
-   * saved file is user-writable, and a mark (the person's safety switch) nobody confirmed must not come back.
+   * saved file is user-writable, so the membership comes back only when the registry still has that member free in
+   * this project, and the mark with it, never on its own. The mark itself is read back as saved (design-rooms.md §1:
+   * membership and the mark are saved in the tab record): whoever can write that file is the person's own account,
+   * which could set it in the app as well.
    */
   private rebindRoom(tabId: string, projectId: string, saved: TabRoom): TabRoom | undefined {
     const hooks = this.options.rooms

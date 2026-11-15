@@ -43,6 +43,11 @@ export interface RoomLogReadOptions {
   since?: number
   /** At most this many. */
   limit?: number
+  /**
+   * At most about this many bytes of entries (their JSON lines), never fewer than one entry: `more` says the rest was
+   * left out. A message may be 20,000 characters, so `limit` alone does not bound an answer that must fit one message.
+   */
+  maxBytes?: number
 }
 
 /** A read's answer: `more` says entries were left out past `limit` (newer ones with `since`, older ones without). */
@@ -71,7 +76,7 @@ export class RoomLog {
   ) {}
 
   append(type: RoomLogType, fields: Record<string, unknown> = {}): void {
-    this.ensureDir()
+    ensureRoomDir(dirname(this.path))
     // The log carries text members choose, so a planted link must never turn an append into a write elsewhere:
     // O_NOFOLLOW refuses a linked log.jsonl and fstat refuses anything but a regular file. Read and write on one
     // descriptor: the next `seq` comes from the file's own last entry (another instance or process may have
@@ -82,7 +87,7 @@ export class RoomLog {
     try {
       const st = fstatSync(fd)
       if (!st.isFile()) throw new Error('room log is not a regular file')
-      seq = (newest(fd, st.size, 1).entries[0]?.seq ?? 0) + 1
+      seq = lastSeq(fd, st.size) + 1
       // `seq`, `at` and `type` last so a caller's field can never override them.
       const entry = JSON.stringify({ ...fields, seq, at: this.now(), type }) + '\n'
       // A torn last line has no newline: without one first, this entry would glue onto the fragment and be lost on read.
@@ -104,10 +109,11 @@ export class RoomLog {
     // A non-number or NaN `since` / a negative `limit` is treated as absent, never as "match nothing".
     const since = typeof opts.since === 'number' && !Number.isNaN(opts.since) ? opts.since : undefined
     const limit = typeof opts.limit === 'number' && opts.limit >= 0 ? Math.floor(opts.limit) : undefined
+    const maxBytes = typeof opts.maxBytes === 'number' && opts.maxBytes > 0 ? opts.maxBytes : undefined
     const f = this.openRead()
     if (f === null) return { entries: [], more: false }
     try {
-      return since === undefined ? newest(f.fd, f.size, limit) : after(f.fd, f.size, since, limit)
+      return since === undefined ? newest(f.fd, f.size, limit, maxBytes) : after(f.fd, f.size, since, limit, maxBytes)
     } catch {
       return { entries: [], more: false }
     } finally {
@@ -115,41 +121,35 @@ export class RoomLog {
     }
   }
 
-  /** Keep the newest lines that fit in half the cap (by bytes, so a few huge lines cannot stay over it) and say so in a line of its own. */
-  private trim(seq: number): void {
-    const lines = this.readText().split('\n').filter((l) => l !== '')
-    let bytes = 0
-    let keep = 0
-    for (let i = lines.length - 1; i >= 0; i--) {
-      bytes += Buffer.byteLength(lines[i] ?? '') + 1
-      if (bytes > this.maxBytes / 2) break
-      keep++
-    }
-    // Always drop at least one line, or the log would trim on every append.
-    keep = Math.min(keep, lines.length - 1)
-    const dropped = lines.length - keep
-    const kept = lines.slice(dropped)
-    kept.push(JSON.stringify({ dropped, seq, at: this.now(), type: 'trimmed' }))
-    writeFileAtomic(this.path, kept.join('\n') + '\n', 0o600)
-  }
-
   /**
-   * The room folder must be a real directory directly under the real rooms dir: `mkdirSync` recursive would follow
-   * a folder replaced by a link after the registry loaded (it skips linked folders only at load).
+   * Keep the newest lines that fit in half the cap (by bytes, so a few huge lines cannot stay over it) and say so in a
+   * line of its own. Still synchronous, inside the append (an append from elsewhere must not land between the read and
+   * the rename, or it would be lost), but on the bytes: the cut is one search for a newline and the dropped lines are
+   * counted by their newlines, with no decode and no split of the whole file into strings. It runs once per half cap
+   * appended, so its cost spreads to about two bytes read per byte logged.
    */
-  private ensureDir(): void {
-    const room = dirname(this.path)
-    const rooms = dirname(room)
-    mkdirSync(rooms, { recursive: true, mode: 0o700 })
-    try {
-      mkdirSync(room, { mode: 0o700 })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  private trim(seq: number): void {
+    const data = this.readBytes()
+    const half = Math.floor(this.maxBytes / 2)
+    // The kept part starts right after a newline, at most `half` bytes before the end (none: everything goes).
+    const lineAfter = (from: number): number => {
+      const nl = data.indexOf(0x0a, from)
+      return nl === -1 ? data.length : nl + 1
     }
-    // The data dir itself may sit behind a link (a moved home); the room folder may not.
-    if (!lstatSync(room).isDirectory() || realpathSync(room) !== join(realpathSync(rooms), basename(room))) {
-      throw new Error('room folder is not a plain directory')
+    let start = data.length > half ? lineAfter(data.length - half - 1) : 0
+    // Always drop at least one line, or the log would trim on every append.
+    if (start === 0) start = lineAfter(0)
+    let dropped = 0
+    let from = 0
+    for (let nl = data.indexOf(0x0a); nl !== -1 && nl < start; nl = data.indexOf(0x0a, from)) {
+      if (nl > from) dropped++
+      from = nl + 1
     }
+    if (from < start) dropped++ // the part with no newline (only when `start` is the end)
+    const kept = data.subarray(start)
+    const tail = JSON.stringify({ dropped, seq, at: this.now(), type: 'trimmed' }) + '\n'
+    const glue = kept.length > 0 && kept[kept.length - 1] !== 0x0a ? '\n' : ''
+    writeFileAtomic(this.path, Buffer.concat([kept, Buffer.from(glue + tail)]), 0o600)
   }
 
   /** Open for reading without following a link or blocking on a FIFO; null when missing or not a regular file. */
@@ -170,16 +170,35 @@ export class RoomLog {
     return null
   }
 
-  private readText(): string {
+  private readBytes(): Buffer {
     const f = this.openRead()
-    if (f === null) return ''
+    if (f === null) return Buffer.alloc(0)
     try {
-      return readFileSync(f.fd, 'utf8')
+      return readFileSync(f.fd)
     } catch {
-      return ''
+      return Buffer.alloc(0)
     } finally {
       closeSync(f.fd)
     }
+  }
+}
+
+/**
+ * Make (0700) or check `<rooms>/<id>`: it must be a real directory directly under the real rooms dir. `mkdirSync`
+ * recursive would follow a folder replaced by a link after the registry loaded (it skips linked folders only at load),
+ * so the log's append and the registry's room.json save both come through here before they write.
+ */
+export function ensureRoomDir(room: string): void {
+  const rooms = dirname(room)
+  mkdirSync(rooms, { recursive: true, mode: 0o700 })
+  try {
+    mkdirSync(room, { mode: 0o700 })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  }
+  // The data dir itself may sit behind a link (a moved home); the room folder may not.
+  if (!lstatSync(room).isDirectory() || realpathSync(room) !== join(realpathSync(rooms), basename(room))) {
+    throw new Error('room folder is not a plain directory')
   }
 }
 
@@ -232,10 +251,26 @@ function* linesFrom(fd: number, size: number, start: number): Generator<{ line: 
   if (carry.length > 0) yield { line: carry, start: carryAt, end: carryAt + carry.length }
 }
 
-/** The newest `limit` entries (all without one), oldest first, read backwards from the end. */
-function newest(fd: number, size: number, limit: number | undefined): RoomLogPage {
+/**
+ * The newest `limit` entries (all without one) within `maxBytes` (at least one), oldest first, read backwards from the
+ * end.
+ */
+function newest(fd: number, size: number, limit: number | undefined, maxBytes?: number): RoomLogPage {
   const out: RoomLogEntry[] = [] // newest first while reading
-  const full = (): boolean => limit !== undefined && out.length > limit
+  let bytes = 0
+  let cut = false
+  // One past `limit` is read to know there is more.
+  const full = (): boolean => cut || (limit !== undefined && out.length > limit)
+  const take = (line: Buffer): void => {
+    const e = parseLine(line)
+    if (!e) return
+    if (maxBytes !== undefined && out.length > 0 && bytes + line.length + 1 > maxBytes) {
+      cut = true
+      return
+    }
+    bytes += line.length + 1
+    out.push(e)
+  }
   let pos = size
   let carry: Buffer = Buffer.alloc(0)
   while (pos > 0 && !full()) {
@@ -245,27 +280,45 @@ function newest(fd: number, size: number, limit: number | undefined): RoomLogPag
     // Everything after the first newline of `data` is whole lines; the part before it may continue further back.
     let end = data.length
     for (let nl = data.lastIndexOf(0x0a, end - 1); nl !== -1 && !full(); nl = end > 0 ? data.lastIndexOf(0x0a, end - 1) : -1) {
-      const e = parseLine(data.subarray(nl + 1, end))
-      if (e) out.push(e)
+      take(data.subarray(nl + 1, end))
       end = nl
     }
     carry = data.subarray(0, end)
   }
-  if (pos === 0 && !full()) {
-    const e = parseLine(carry)
-    if (e) out.push(e)
-  }
+  if (pos === 0 && !full()) take(carry)
   const more = full()
-  if (more) out.length = limit as number
+  if (limit !== undefined && out.length > limit) out.length = limit
   return { entries: out.reverse(), more }
 }
 
 /**
- * The oldest `limit` entries with `seq` after `since`. Lines are in `seq` order, so a binary search over byte offsets
+ * The `seq` of the file's last whole entry, 0 for none: read backwards only as far as that one line (an append needs
+ * no more, and a line may be a 20,000-character message).
+ */
+function lastSeq(fd: number, size: number): number {
+  let pos = size
+  let carry: Buffer = Buffer.alloc(0)
+  while (pos > 0) {
+    const len = Math.min(CHUNK, pos)
+    pos -= len
+    const data = carry.length > 0 ? Buffer.concat([readAt(fd, pos, len), carry]) : readAt(fd, pos, len)
+    let end = data.length
+    for (let nl = data.lastIndexOf(0x0a, end - 1); nl !== -1; nl = end > 0 ? data.lastIndexOf(0x0a, end - 1) : -1) {
+      const e = parseLine(data.subarray(nl + 1, end))
+      if (e) return e.seq
+      end = nl
+    }
+    carry = data.subarray(0, end)
+  }
+  return parseLine(carry)?.seq ?? 0
+}
+
+/**
+ * The oldest `limit` entries with `seq` after `since`, within `maxBytes` (at least one). Lines are in `seq` order, so a binary search over byte offsets
  * narrows to the first line past the cursor (`lo` only ever moves past a line known to be at or before it), and only
  * the last stretch is read line by line.
  */
-function after(fd: number, size: number, since: number, limit: number | undefined): RoomLogPage {
+function after(fd: number, size: number, since: number, limit: number | undefined, maxBytes?: number): RoomLogPage {
   let lo = 0
   let hi = size
   while (hi - lo > CHUNK) {
@@ -290,10 +343,13 @@ function after(fd: number, size: number, since: number, limit: number | undefine
     else lo = found.end
   }
   const out: RoomLogEntry[] = []
+  let bytes = 0
   for (const l of linesFrom(fd, size, lo)) {
     const e = parseLine(l.line)
     if (!e || e.seq <= since) continue
     if (limit !== undefined && out.length >= limit) return { entries: out, more: true }
+    if (maxBytes !== undefined && out.length > 0 && bytes + l.line.length + 1 > maxBytes) return { entries: out, more: true }
+    bytes += l.line.length + 1
     out.push(e)
   }
   return { entries: out, more: false }

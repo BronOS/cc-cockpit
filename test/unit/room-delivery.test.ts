@@ -393,13 +393,33 @@ describe('send refusals', () => {
     expect(codeOf(() => delivery.send(roomId, 'plugin', 'bob', 'x'))).toBe('ended')
   })
 
-  it('`all` from the only member reaches nobody and queues nothing', () => {
+  it('`all` from the only member reaches nobody and queues nothing, but is logged and counted like a gone name', () => {
     member('a', 'alice')
+    limits = { roomSendsPerMember: 1, roomSendsPerRoom: 60 }
     expect(delivery.send(roomId, 'alice', 'all', 'anyone?')).toEqual([])
+    expect(logged()).toEqual([expect.objectContaining({ from: 'alice', to: 'all', text: 'anyone?', delivery: [] })])
+    expect(codeOf(() => delivery.send(roomId, 'alice', 'all', 'again?'))).toBe('limit')
   })
 })
 
 describe('the log', () => {
+  it('a send to `all` queues every recipient under one room.json save, before any pointer is offered', () => {
+    member('a', 'alice')
+    member('b', 'bob')
+    member('c', 'carol')
+    const batch = vi.spyOn(rooms, 'batch')
+    const offered: number[] = []
+    const offer = vi.spyOn(delivery, 'offer').mockImplementation((id, name) => {
+      // Both queued by the time the first is offered.
+      offered.push(rooms.held(id, 'bob') + rooms.held(id, 'carol'))
+      return { to: name, path: 'delivered' }
+    })
+    delivery.send(roomId, 'alice', 'all', 'hi')
+    expect(batch).toHaveBeenCalledTimes(1)
+    expect(offered).toEqual([2, 2])
+    offer.mockRestore()
+  })
+
   it('every send is one line with its text and each recipient path', () => {
     member('a', 'alice')
     member('b', 'bob')

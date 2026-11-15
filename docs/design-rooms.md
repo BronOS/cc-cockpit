@@ -95,7 +95,9 @@ and fixed, so it cannot be cut into invalid JSON.
 
 **Loops.** Claude Code overrides a Stop hook after 8 consecutive blocks (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, read from
 the 2.1.325 binary; the fake `claude` emulates it, pinned to that version). Main reads `stop_hook_active` and blocks at
-most 5 consecutive Stops per tab, then holds behind the badge until the person's next prompt. A room **auto-pauses**
+most 5 consecutive Stops per tab, then holds behind the badge (no Stop pointer and no gate paste: a held `why` of
+`capped`) until the person's next prompt in the tab, their badge click (it delivers and ends the cap) or their Resume
+of the room; an untyped member gets no prompt from the person, so for it the badge or Resume is the way. A room **auto-pauses**
 after 100 deliveries with no input from the person in any member tab; the person resumes it. Send caps: 20 a minute per
 member, 60 per room (configurable, §6). **Pause** in the room view holds all delivery.
 

@@ -7,6 +7,7 @@ import {
   MAX_DOC_BYTES,
   MAX_DOC_DEPTH,
   MAX_ROOM_DOC_ENTRIES,
+  PERSON_READ_LOG_MS,
   RoomDocs,
   parseDocPath,
   type RoomDocCaller
@@ -57,6 +58,8 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'room-docs-'))
   dir = join(root, 'rooms')
   warnings = []
+  // The room's own folder is the registry's (made with the room): the store makes only `docs` and below.
+  mkdirSync(join(dir, ROOM), { recursive: true, mode: 0o700 })
   docs = new RoomDocs({ dir, logOf: (id) => new RoomLog(logPath(id)), log: (m) => warnings.push(m) })
 })
 
@@ -290,12 +293,18 @@ describe('RoomDocs limits and text', () => {
     expect(await docs.get(ROOM, alice, 'members/alice/u.md')).toBe(text)
     // C0 controls other than tab, LF and CR are refused: ESC, BEL, a form feed each JSON-escape to six bytes, which
     // would let a doc under the cap outgrow a `ccc` reply line.
-    for (const bad of ['lone \ud800 surrogate', 'trail \udc00 first', 'nul \0 byte', 'esc \x1b[2K', 'bell \x07', 'ff \f', 'del \x7f', 'c1 \u009b2K', 'rlo \u202e', 'isolate \u2066x\u2069', 'zwsp \u200b', 'lone cr \rx', 'ls \u2028', 'bom \ufeff mid', 42, undefined]) {
+    for (const bad of ['lone \ud800 surrogate', 'trail \udc00 first', 'nul \0 byte', 'esc \x1b[2K', 'bell \x07', 'ff \f', 'del \x7f', 'c1 \u009b2K', 'rlo \u202e', 'isolate \u2066x\u2069', 'zwsp \u200b', 'lone cr \rx', 'ls \u2028', 'bom \ufeff mid', 'tags \u{e0068}\u{e0069}', 'shy \u00ad', 'mvs \u180e', 'ann \ufff9x\ufffb', 42, undefined]) {
       expect((await failure(docs.put(ROOM, plugin, 'shared/bad.md', bad)))?.code).toBe('invalid')
     }
     mkdirSync(store('shared'), { recursive: true })
     writeFileSync(store('shared', 'bin.md'), Buffer.from([0xff, 0xfe, 0x00, 0xc3]))
     expect(await failure(docs.get(ROOM, plugin, 'shared/bin.md'))).toEqual(NOT_FOUND)
+  })
+
+  it('keeps ZWNJ and ZWJ (words and emoji need them)', async () => {
+    const text = 'می\u200cخواهم \u{1f468}\u200d\u{1f469}'
+    await docs.put(ROOM, plugin, 'shared/zw.md', text)
+    expect(await docs.get(ROOM, plugin, 'shared/zw.md')).toBe(text)
   })
 
   it('keeps a leading BOM and logs refusals for bad text and a too large doc', async () => {
@@ -305,6 +314,43 @@ describe('RoomDocs limits and text', () => {
     await failure(docs.put(ROOM, plugin, 'shared/big.md', 'a'.repeat(MAX_DOC_BYTES + 1)))
     const reasons = logEntries().filter((e) => e.type === 'doc-refused').map((e) => e.reason)
     expect(reasons).toEqual(['bad text', 'too large'])
+  })
+
+  it('a put still queued when the room is deleted (its folder removed) makes no folder again', async () => {
+    let deleted = false
+    // As the registry's logOf: a deleted room has no log (a RoomLog would make the folder again for its line).
+    const gated = new RoomDocs({
+      dir,
+      logOf: (id) => {
+        if (deleted) throw new Error('no such room')
+        return new RoomLog(logPath(id))
+      },
+      log: (m) => warnings.push(m)
+    })
+    await gated.put(ROOM, plugin, 'shared/a.md', 'a')
+    const first = gated.put(ROOM, plugin, 'shared/b.md', 'b')
+    const queued = gated.put(ROOM, plugin, 'members/alice/c.md', 'c')
+    // The registry's delete: the whole folder, synchronously, while both puts wait in the room's chain.
+    rmSync(join(dir, ROOM), { recursive: true, force: true })
+    deleted = true
+    expect(await failure(first)).toEqual(NOT_FOUND)
+    expect(await failure(queued)).toEqual(NOT_FOUND)
+    expect(existsSync(join(dir, ROOM))).toBe(false)
+  })
+
+  it("a person's reads of one doc are logged at most once a minute; a member's every time", async () => {
+    let now = 1_000_000
+    const timed = new RoomDocs({ dir, logOf: (id) => new RoomLog(logPath(id)), log: (m) => warnings.push(m), now: () => now })
+    await timed.put(ROOM, plugin, 'shared/a.md', 'a')
+    const reads = (by: string): number => logEntries().filter((e) => e.type === 'doc-read' && e.by === by).length
+    for (let i = 0; i < 3; i++) await timed.get(ROOM, 'person', 'shared/a.md')
+    expect(reads('person')).toBe(1)
+    await timed.get(ROOM, 'person', 'members/alice/none.md').catch(() => {})
+    now += PERSON_READ_LOG_MS
+    await timed.get(ROOM, 'person', 'shared/a.md')
+    expect(reads('person')).toBe(2)
+    for (let i = 0; i < 3; i++) await timed.get(ROOM, alice, 'shared/a.md')
+    expect(reads('alice')).toBe(3)
   })
 
   it('caps the files and folders in a room, still allowing a replace', async () => {

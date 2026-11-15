@@ -36,7 +36,9 @@
 // payload's `stop_hook_active` says the Stop follows a block. At the cap the tab is held behind the badge until the
 // person's next prompt in it (SessionRegistry.onPersonPrompt: a UserPromptSubmit with the person's input in the box,
 // not a mere keystroke: a key that answers a permission dialog, or a draft typed while Claude loops, does not mean the
-// person looked at the loop): no Stop pointer at all until then, whatever `stop_hook_active` says. And a room pauses
+// person looked at the loop): no Stop pointer at all until then, whatever `stop_hook_active` says, and no gate paste
+// either (room-delivery.ts decide, `capped`). The person's badge click (it delivers, and ends the cap) and their
+// Resume of the room end it too: an untyped member never gets a prompt from the person. And a room pauses
 // itself after AUTO_PAUSE_DELIVERIES pointers (acked Stop blocks and the gate's pastes) with no input from the person
 // in any member tab (any keystroke of theirs: the design's "input"); the person resumes it.
 import { randomBytes } from 'node:crypto'
@@ -67,12 +69,14 @@ export interface StopBlock {
 }
 
 export interface RoomStopDeps {
-  rooms: Pick<RoomRegistry, 'memberOf' | 'peek' | 'held' | 'pause'>
+  rooms: Pick<RoomRegistry, 'memberOf' | 'peek' | 'held' | 'pause' | 'isLive'>
   sessions: {
     get(tabId: string): SessionEntry | undefined
   }
   /** The tab's membership and the person's mark as the tab manager keeps it (TabManager.roomOf). */
   tabRoom(tabId: string): TabRoom | undefined
+  /** The plain Stop of an unacked block was applied: the room service offers the tab what waits (room-delivery.ts offer). */
+  unblocked?(tabId: string): void
   /** Tests: a short timeout. */
   ackTimeoutMs?: number
   /** Tests: fixed ack ids. */
@@ -180,11 +184,26 @@ export class RoomStop {
   }
 
   /**
+   * The hook handler applied the plain Stop of a block `closedUnacked` dropped (hook-handler.ts): the tab is waiting
+   * with its messages still queued and no Stop to come, so the room service offers it the pointer through the gate.
+   */
+  unblocked(tabId: string): void {
+    this.deps.unblocked?.(tabId)
+  }
+
+  /** Whether the tab is held at the cap (the gate's paste holds it too: room-delivery.ts decide). */
+  isCapped(tabId: string): boolean {
+    return this.capped.has(tabId)
+  }
+
+  /**
    * A pointer went in (an acked Stop block, or the gate's paste: room-delivery.ts `delivered`). At
    * AUTO_PAUSE_DELIVERIES with no input from the person in the room, the room pauses itself (the registry logs the
-   * auto-pause) and the count starts over for after the person's resume.
+   * auto-pause) and the count starts over for after the person's resume. Nothing for a room that ended or was deleted
+   * (a late ack, or the next Stop after the end): its count was forgotten at `roomGone` and must not come back.
    */
   delivered(roomId: string): void {
+    if (!this.deps.rooms.isLive(roomId)) return
     const n = (this.deliveries.get(roomId) ?? 0) + 1
     if (n < AUTO_PAUSE_DELIVERIES) {
       this.deliveries.set(roomId, n)
@@ -215,6 +234,18 @@ export class RoomStop {
   personPrompt(tabId: string): void {
     this.streaks.delete(tabId)
     this.capped.delete(tabId)
+  }
+
+  /**
+   * The person resumed the room: its member tabs' runs and caps end with it (design-rooms.md §2 "Loops"). For a member
+   * no person ever prompts (an untyped tab) this and the badge click are the person's ways past the cap.
+   */
+  roomResumed(roomId: string): void {
+    for (const tabId of [...this.capped, ...this.streaks.keys()]) {
+      if (this.deps.rooms.memberOf(tabId)?.roomId !== roomId) continue
+      this.capped.delete(tabId)
+      this.streaks.delete(tabId)
+    }
   }
 
   /** The tab closed: forget its run, cap and pending block. */
