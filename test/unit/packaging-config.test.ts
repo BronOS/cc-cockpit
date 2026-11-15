@@ -1,5 +1,6 @@
 // Task 35: the packaging config keeps the layout main relies on (the plan's smoke is manual, this
 // guards the pieces that break silently). Reads electron-builder.yml, package.json and scripts only.
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -176,5 +177,91 @@ describe('electron-builder.yml', () => {
     expect(linux).toMatch(/^ {2}artifactName: cc-cockpit-\$\{version\}-linux-x64\.\$\{ext\}$/m)
     // The placeholder address is deliberate.
     expect(linux).toMatch(/^ {2}maintainer: .*<noreply@cc-cockpit\.invalid>$/m)
+  })
+})
+
+// The deb's Depends (electron-builder.yml `deb.depends`): a bare Debian server failed its first start with
+// "libasound.so.2: cannot open shared object file" because electron-builder's default list has no libasound2.
+// Each library the Electron binary links directly maps to the Debian package that ships it; libraries the
+// binary carries or every system has are left out.
+const DEB_PACKAGE_OF: Record<string, string> = {
+  'libglib-2.0.so.0': 'libglib2.0-0',
+  'libgobject-2.0.so.0': 'libglib2.0-0',
+  'libgio-2.0.so.0': 'libglib2.0-0',
+  'libnspr4.so': 'libnspr4',
+  'libnss3.so': 'libnss3',
+  'libnssutil3.so': 'libnss3',
+  'libsmime3.so': 'libnss3',
+  'libatk-1.0.so.0': 'libatk1.0-0',
+  'libatk-bridge-2.0.so.0': 'libatk-bridge2.0-0',
+  'libcups.so.2': 'libcups2',
+  'libdbus-1.so.3': 'libdbus-1-3',
+  'libcairo.so.2': 'libcairo2',
+  'libgtk-3.so.0': 'libgtk-3-0',
+  'libpango-1.0.so.0': 'libpango-1.0-0',
+  'libX11.so.6': 'libx11-6',
+  'libXcomposite.so.1': 'libxcomposite1',
+  'libXdamage.so.1': 'libxdamage1',
+  'libXext.so.6': 'libxext6',
+  'libXfixes.so.3': 'libxfixes3',
+  'libXrandr.so.2': 'libxrandr2',
+  'libgbm.so.1': 'libgbm1',
+  'libexpat.so.1': 'libexpat1',
+  'libxcb.so.1': 'libxcb1',
+  'libxkbcommon.so.0': 'libxkbcommon0',
+  'libudev.so.1': 'libudev1',
+  'libasound.so.2': 'libasound2',
+  'libatspi.so.0': 'libatspi2.0-0'
+}
+// Shipped next to the binary (libffmpeg) or part of libc6 and libgcc-s1, which every system has.
+const ALWAYS_THERE = new Set(['libffmpeg.so', 'libdl.so.2', 'libpthread.so.0', 'libm.so.6', 'libgcc_s.so.1', 'libc.so.6', 'ld-linux-x86-64.so.2'])
+
+/** The `deb.depends` entries, each split into its alternatives ("libasound2 | libasound2t64"). */
+function debDepends(): string[][] {
+  const deb = yml.slice(yml.indexOf('\ndeb:\n'))
+  const block = deb.slice(deb.indexOf('  depends:\n') + '  depends:\n'.length)
+  const entries: string[][] = []
+  for (const line of block.split('\n')) {
+    if (!line.startsWith('    - ')) break
+    entries.push(line.slice('    - '.length).split('|').map((alt) => alt.trim()))
+  }
+  return entries
+}
+
+describe('electron-builder.yml deb depends', () => {
+  it('lists every library the Electron binary links, libasound2 and libgbm1 among them', () => {
+    const firsts = new Set(debDepends().map((alts) => alts[0]))
+    for (const pkgName of new Set(Object.values(DEB_PACKAGE_OF))) expect(firsts, pkgName).toContain(pkgName)
+    // The rest of electron-builder's default list, which `depends` replaces.
+    for (const pkgName of ['libnotify4', 'libxss1', 'libxtst6', 'xdg-utils', 'libuuid1', 'libsecret-1-0']) {
+      expect(firsts, pkgName).toContain(pkgName)
+    }
+  })
+
+  it('offers the t64 name for the packages Debian renamed in its time_t transition', () => {
+    const alternatives = new Map(debDepends().map((alts) => [alts[0], alts.slice(1)]))
+    for (const pkgName of ['libasound2', 'libgtk-3-0', 'libatspi2.0-0', 'libcups2', 'libatk1.0-0', 'libatk-bridge2.0-0', 'libglib2.0-0']) {
+      expect(alternatives.get(pkgName), pkgName).toEqual([`${pkgName}t64`])
+    }
+  })
+
+  // Catches an Electron upgrade that links a new library: on Linux with binutils (CI's ubuntu runner), the
+  // binary's NEEDED entries must all be known above. Elsewhere there is no ELF binary to read.
+  const electronBinary = join(root, 'node_modules', 'electron', 'dist', 'electron')
+  const canRead = process.platform === 'linux' && existsSync(electronBinary) && (() => {
+    try {
+      execFileSync('readelf', ['--version'], { stdio: 'ignore' })
+      return true
+    } catch {
+      return false
+    }
+  })()
+  it.skipIf(!canRead)('knows every library in the Electron binary', () => {
+    const dynamic = execFileSync('readelf', ['-d', electronBinary], { encoding: 'utf8' })
+    const needed = [...dynamic.matchAll(/\(NEEDED\)\s+Shared library: \[([^\]]+)\]/g)].map((m) => m[1] ?? '')
+    expect(needed).toContain('libasound.so.2')
+    for (const lib of needed) {
+      if (!ALWAYS_THERE.has(lib)) expect(Object.keys(DEB_PACKAGE_OF), lib).toContain(lib)
+    }
   })
 })
