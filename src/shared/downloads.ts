@@ -212,12 +212,13 @@ function cleanText(name: string): string {
  * The name a download is sent under (`downloads.start`, the `<a download>`, `Content-Disposition`,
  * the access log): display-safe (control, bidi and invisible characters dropped), no `/` or `\` (each
  * made `_`: a browser would take what follows as the name, or a folder), cut past 200 bytes keeping
- * the last extension; nothing left → `download`. Leading dots are kept (`.env` downloads as `.env`:
+ * the last extension; nothing left, or only dots (`.`, `..`) → `download`. Leading dots are kept (`.env` downloads as `.env`:
  * the browser decides how it saves one). Idempotent, so applying it again changes nothing.
  */
 export function downloadName(name: string): string {
   const cleaned = cleanText(String(name)).replace(/[/\\]/g, '_')
-  return cleaned === '' ? DOWNLOAD_FALLBACK_NAME : cutName(cleaned)
+  // An all-dots name (`.`, `..`) is a folder reference, not a file: left to each browser's own sanitising otherwise.
+  return cleaned === '' || /^\.+$/.test(cleaned) ? DOWNLOAD_FALLBACK_NAME : cutName(cleaned)
 }
 
 // RFC 5987 attr-char is ALPHA / DIGIT / "!#$&+-.^_`|~"; encodeURIComponent also leaves "'()*" alone,

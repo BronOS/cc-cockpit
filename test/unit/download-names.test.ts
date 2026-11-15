@@ -14,6 +14,11 @@ describe('downloadName', () => {
     expect(downloadName('Отчёт 2026.pdf')).toBe('Отчёт 2026.pdf')
   })
 
+  it('maps an all-dots name to the fallback', () => {
+    expect(downloadName('.')).toBe('download')
+    expect(downloadName('..')).toBe('download')
+  })
+
   it('makes / and \\ into _ and drops control, bidi and invisible characters', () => {
     expect(downloadName('../x')).toBe('.._x')
     expect(downloadName('a\\..\\..\\x')).toBe('a_.._.._x')

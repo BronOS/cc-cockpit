@@ -124,7 +124,9 @@ export function outsideRefused(abs: unknown, env: OutsideEnv): boolean {
  * CC_COCKPIT_DATA_DIR or Electron's `userData` puts it, inside a project as much as outside one. It
  * holds `secret.key`, the device records and the plugins' secrets, so neither the Files panel nor
  * Claude may hand it to a browser; under `~/.config` the outside rule already refuses it, but a data
- * dir set to `/srv/cockpit` or `<project>/.data` is not under a dot folder of the home. A missing
+ * dir set to `/srv/cockpit` or `<project>/.data` is not under a dot folder of the home. Paths are compared
+ * as given: the caller passes the realpath of the candidate and the realpath of the data dir (macOS `/var`
+ * is `/private/var`; a linked data dir would slip past a lexical compare). A missing
  * or relative `dataDir` refuses everything (the caller always has one; this fails closed).
  */
 export function dataDirRefused(abs: unknown, dataDir: string, platform: string): boolean {
