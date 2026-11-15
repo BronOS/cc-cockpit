@@ -903,7 +903,7 @@ that project.
 | slots | `ctx.slots.onOpen(type, fn)` → disposer (provider side; the type must be in `contributes.slots`), a `SlotInstance` `{id, type, host, params, post, onMessage, onClose}`, `ctx.slots.available(type)` → `Promise<boolean>` (Slots, below) |
 | tabs | `ctx.tabs.onOpen(type, fn)` (the page's backend: a `PageTabInstance` with `id`, `type`, `params`, `view`, `post`, `onMessage`, `onClose`, `onDiscuss`, `setTitle(title, icon?)`), `openPage(type, params, {title, icon?, focus?})` → tab id, `list(type)`, `focus(id)`, `markUnseen(id)`, `close(id)` (§4 "Page tabs"; every call throws for a type not in `contributes.tabs`) |
 | processes | `ctx.processes.spawn(argv, {cwd})` → handle `pid`, `write(bytes)`, `end()`, `onData(bytes)`, `onStderr`, `onExit`, `kill` (long-running child, byte stdio, argv only; not a capability; §4 "Processes") |
-| files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration), `ctx.files.reveal(path)`, `ctx.files.openWithSystem(path)`, `ctx.files.trash(path)` (the system's file manager, default app and Trash; below) |
+| files | `ctx.files.onOpen(({path, tabId?}) => …)` → disposer (needs `contributes.openFile`), `ctx.files.open(path, {tabId?})` → `{via: 'plugin' \| 'builtin'}` (no declaration), `ctx.files.reveal(path)`, `ctx.files.openWithSystem(path)`, `ctx.files.trash(path)` (the system's file manager, default app and Trash; below), `ctx.files.download(path, {includeGitAndNodeModules?})` (a project file or folder as .zip to the browser view that clicked; below) |
 | web view | `ctx.webview.navigate(panelId, urlOrAbsolutePath)`, `back`, `forward`, `reload`, `current` → `{url, title}`, `onNavigate` (webview panels only) |
 | cli | `ctx.cli.register(name, (argv, {stdin, cwd}) => {stdout?, stderr?, code?})` for a command declared in `contributes.cli` |
 | services | `ctx.services.available(name)` (host-local, same `serviceStatus` rule as a call, never cached, false for an unknown name) |
@@ -1039,6 +1039,20 @@ per window, closed when the host goes; after a yes the path is resolved again an
 answer `{ trashed: false }`, which the host turns into a rejection named `AbortError`. Limits per plugin and window:
 reveal 3 and openWithSystem 3 per 10 s (another app's window in front of the person, as with `openExternal`),
 trash 10 a minute. There is no permanent delete. No manifest declaration.
+
+**Downloads to the person's device** (`ctx.files.download(path, { includeGitAndNodeModules? })`, host API `files.download`;
+`ccc download <path>`; design in `docs/design-download.md`, user docs in features.md). With web access, in server mode and
+in a remote window the files are the server's and Reveal acts on the wrong screen, so main can hand a file, or a folder as
+a `.zip` built by our own writer (`main/files/zip-writer.ts`, caps 2 GiB of file bytes and 20,000 entries), to a browser
+view over a one-use per-view token on the gateway route `/d/<token>` (`main/files/downloads.ts`; design-web.md §6.1). The
+plugin call works from a click (the host's origin view) inside the project, 10 per 60 s per plugin, and rejects with a
+message the plugin shows when no browser view clicked ("a download needs a click in a browser view"), on the desktop page
+("the file is already on this computer") or when a cap or limit refuses. `ccc download` (a core command, tab or window
+token only, a reserved name) takes a path made absolute in the caller's folder, allows outside paths under the editor's
+outside-file rule (one shared source, `src/shared/outside-paths.ts`, emitted to the editor host by `build:editor`; core
+to plugin, never back) and offers it to every browser view of the window through `SharedAsks` with `hold`; the person's
+click in an armed `DownloadDialog` takes it (first answer wins, Claude is not told which) and main then runs the Files
+path. The `ccc` call waits at most 30 s for main's reply (a folder count may walk for 10 s).
 
 **Opening a web page outside the app** (`ctx.openExternal(url)`, host API `openExternal`). Main is where a link
 leaves the app: the plugin host's env is an allow-list (`hostEnv`, no `DISPLAY`, `WAYLAND_DISPLAY`, D-Bus or desktop

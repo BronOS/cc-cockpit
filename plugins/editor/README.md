@@ -25,7 +25,8 @@ await editor.open('src/app.ts', { line: 42 })  // path relative to the project f
   outside the project (`node_modules`, the module cache) opens read-only, only for a location the server returned,
   and never under `/proc`, `/sys`, `/dev`, `/run` or a hidden (dot) folder or file of the home (`.ssh`, `.config`,
   `.claude`, a project's `.env`...) other than `node_modules` and the toolchain folders the servers use (`.nvm`,
-  `.pyenv`, `.local/lib/python*`, `.cache/typescript`, `.composer/vendor`... listed in docs/design-editor.md). A file of over 2 million characters gets no server; at most 256
+  `.pyenv`, `.local/lib/python*`, `.cache/typescript`, `.composer/vendor`... listed in docs/design-editor.md). The rule is core's one shared source (`src/shared/outside-paths.ts`, which `ccc download` uses too), emitted
+  into `dist/lib/outside-paths.js` by `npm run build:editor`: edit it there, never in the plugin (core to plugin, never back). A file of over 2 million characters gets no server; at most 256
   files are open in the servers per project, 16 per tab.
   Rename, format and code actions are applied by the host: an open file in its tab (undo works, autosave saves it),
   any other file by the same compare-and-swap save; an edit that would create, rename or delete a file, or change one

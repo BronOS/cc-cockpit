@@ -462,6 +462,7 @@ defer to (§9.7, §9.9).
 | Link-confirm dialog (`socket/handlers.ts:404`) | native dialog | an in-page dialog, shown while any browser view is attached on every view of the window (desktop included), first answer wins (`LinkAsks`, `links.ask` / `links.answer` / `links.settled`, pending ones in `ready.linkAsks`); with no browser attached the native dialog as before. A remote view may only Deny: main refuses its Allow (by `view.remote`, never the payload) and its dialog says "Approve on the desktop", so the ask waits for the desktop or runs out (5 min), as plugin linking stays off remote views (the row below) |
 | `ctx.files.reveal`, `openWithSystem` | file manager, default app | refused with a message; a plugin page reads `ccPanel.view.remote` (the shell's `cc-plugin.port` message, from `isWebShell`, never the page or host) to hide such items, a UI hint only (cockpit.files leaves them out of its menu) |
 | `ctx.files.trash` | host trash | unchanged |
+| `ctx.files.download`, `ccc download` | refused ("the file is already on this computer") | a Files click starts a download in the clicking view at once; `ccc download` is an armed in-page dialog on every browser view, first answer wins. Route `GET /d/<token>` on the gateway: a one-use token (32 random bytes, 60 s) bound to device, view, window and path, checked against the device's cookie (None mode: the token alone) and `Sec-Fetch-Site` same-origin, 2 streams per device and 3 zips app-wide; a refusal is a 204 with no body plus `downloads.failed` to the token's view; revoke, disconnect, leaving None mode and gateway stop cut live streams. `docs/design-download.md` |
 | Folder dialogs, plugin link | native | `no` (do it on the desktop); a `ccc plugin link` typed in a tab from a browser can be denied there but only approved on the desktop |
 | OAuth sign-in | loopback redirect | "sign in on the desktop" |
 | Browser panel, URL overlays (`WebContentsView`) | embedded browser | "available on the desktop" placeholder; in server mode the panel is streamed instead (§9.9) |
@@ -793,6 +794,10 @@ stays: a remote view may only Deny.
   "not moved". The shared-ask core moves out of `LinkAsks` into one class both use. The desktop takes it too while a
   browser is attached, by the same `chooseAsk`, so a trash started from a browser no longer waits on a native box
   nobody there can see; with no browser, its native confirm.
+- **Download offers** (`ccc download`, `docs/design-download.md`). Another shared ask, through `SharedAsks` with `hold`
+  (a browser view that joins later finds the offer in `ready.downloadOffers`; in server mode with no browser attached the
+  offer waits 10 min instead of being refused). The Download button (`downloads.accept`, `adapted`: a remote view of the
+  offer's window only, the view taken from the connection) is armed after about a second, like every approval here.
 - **Devices.** A browser may Revoke and Disconnect devices: a signed-in device already has a shell, so neither adds
   power, and a lost phone is the case where no SSH is at hand. `settings.webDeviceRevoke`, `webDevicesRevokeAll` and
   `webDeviceDisconnect` become `adapted`, allowed for a remote view only in server mode (main's `server`, never the
@@ -1072,8 +1077,7 @@ What server mode gives up, and what stands in:
 
 ### 9.14 Out of scope
 
-macOS and Windows; relink and forget from the browser; `ccc web` writes on the desktop; a Files "Download" item (a
-later idea); more than one person (§10).
+macOS and Windows; relink and forget from the browser; `ccc web` writes on the desktop (a Files "Download" item is built, `docs/design-download.md`); more than one person (§10).
 
 ## 10. Toward pair development (after v1)
 

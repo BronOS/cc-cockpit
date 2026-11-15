@@ -339,7 +339,9 @@ behind it are in [design.md](design.md).
   the path), Open terminal here (a folder's: a selected shell tab in that folder), Copy path, Copy relative path,
   Rename…, New file…, New folder… and Move to Trash. Move to Trash asks in the
   app's own dialog and is recoverable; Open with default app refuses folders, executables, app bundles and script or
-  program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...).
+  program types (`.sh`, `.command`, `.exe`, `.js`, `.jar`...). In a browser view of the project (web access, server mode, a
+  remote window) the menu also has Download on a file and, on a folder and the project folder, Download as .zip and
+  Download as .zip with .git and node_modules (both always listed); see "Downloads" under Web access.
 - Usage (`cockpit.usage`, on by default, ships with the app): a meter at the end of the top bar (today's API-equivalent
   spend and the plan's rate-limit use) and a Usage panel with Today / 7 days / 30 days totals, tokens by kind, the plan's
   5-hour and weekly windows (as Claude Code reports them through the status line; a window past its reset is hidden),
@@ -530,6 +532,32 @@ the `view` the listener was given answers only the page that asked, and your cal
 Do not depend on URL overlays, on file-manager calls or on native dialogs working for a person in a browser, nor on
 `ctx.webview` when the project is open on a desktop (the browser shows a placeholder); in server mode a webview panel works. `ccc guide panels` and `ccc guide api` carry the same text.
 
+**Downloads.** With web access on, a file or folder of the project can go to the device you are looking at. Right-click it
+in the Files panel in a browser view (a plain browser, server mode's browsers, or a remote server's window) and choose
+Download: a file downloads as itself, a folder as a `.zip` built on the server and streamed (nothing is stored). The
+download starts at once in the view you clicked, with no question; your browser shows its progress and where it saved
+(on a phone, in the Files app). If the browser did not count your click as a gesture (a slow folder count), the page shows
+"report.pdf is ready - Download" to click instead; a refusal shows as a notice in the page with the reason.
+- *Zips:* "Download as .zip" leaves out `.git` and `node_modules` below the folder, "Download as .zip with .git and
+  node_modules" keeps them. Symbolic links, sockets and other special files are left out and counted, as is anything the
+  walk cannot read. The limit is 2 GiB of file bytes and 20,000 entries (counted first, in at most 10 seconds: "too large"
+  or "too many files to count"); past a cap while streaming, the transfer is cut, never a zip that looks whole.
+- *Claude can offer one:* `ccc download <path>` (Claude or a shell tab of the project) opens a dialog in every browser
+  view of the project with the full path (and the real path of a link), the size, "outside the project" and "this file can
+  run programs when opened" warnings, and, for a folder, a checkbox for `.git` and `node_modules` (never ticked for you).
+  Download and Cancel work after about a second; the first answer wins and Claude is not told which. With no browser
+  attached in server mode the offer waits 10 minutes; on a desktop with no browser it fails, "this project is on this
+  computer". At most 3 offers wait and 10 are made per 10 minutes per project window.
+- *What is never downloaded:* a file the outside rule refuses (the home's hidden folders except the usual toolchains,
+  `/proc`, `/sys`, `/dev`, `/run`, the Library keychain, cookie and application-support folders on macOS), the app's own
+  data folder anywhere, `/` or the home as a zip, a FIFO, socket or device. The Files panel only reaches the project;
+  outside paths come only from `ccc download`, behind the dialog. Dot files inside the project (`.env`) can be downloaded.
+- *Limits and safety:* a download link works once, for 60 seconds, only for the view and signed-in device it was made for;
+  2 downloads at a time per device and 3 zips at once. Revoking or disconnecting a device, leaving None mode and stopping
+  the gateway cut running downloads. A browser's own pause of more than a minute ends one (no resume). Nothing is opened
+  after it is saved, and the browser's and the OS's warnings about program files still apply.
+- *The desktop:* a local project's own window has no Download (the file is on that computer; Reveal is there).
+
 ## Server mode
 
 Run cc-cockpit on a machine with no display (a home server, a VM) and use it only from browsers, over web access. The
@@ -706,8 +734,9 @@ No install is called supported beyond what was run.
 - A notice that needs a person reaches only open browsers.
 - A first start killed between creating `secret.key` and writing it leaves a file the app refuses (wrong length): delete
   it and enter the secrets again.
-- Relink and forget of a project, and a Files "Download", are not available from the browser; open the folder by its new
-  path instead.
+- Relink and forget of a project are not available from the browser; open the folder by its new path instead.
+- Downloads: no upload, no several files at once, no resume or ranges, no `.tar.gz`, no `.gitignore`-aware zips and no
+  in-page progress; a streamed webview page's own downloads are still cancelled.
 - A start link read by someone else, a lost device that was unlocked, and a shared server's other users are exposures
   Revoke does not undo (above).
 
@@ -792,11 +821,23 @@ starts with **This computer**: a click brings forward the local project window y
 is open. The chips need the bundled Sessions plugin; plugins can read the same list with `ctx.sessions.machines()`, where
 a server you did not name is `Server 1`, `Server 2` and so on (never its address).
 
+**Downloads.** The remote window runs the server's page, so Files › Download and `ccc download` work as in a browser
+(see "Web access" › "Downloads"); this app saves the result straight into your Downloads folder, with no save dialog. A
+name already there gets " (1)", " (2)"; a leading dot and control characters are dropped from the name (a server cannot
+save `.zshrc`). A native notice says "Saved report.pdf to Downloads" with Show in Finder / Show in folder; nothing is ever
+opened. The window's download bar shows progress, and closing the window cancels what is running. The server's page is not
+trusted: this app saves only after your click in that window (within 5 seconds of it; otherwise "not saved: click
+Download again"), one download at a time per server, at most 3 per 10 seconds, at most 4 GiB each (a bigger one is
+cancelled and its partial deleted), only from that server's own download address. A partial is kept under a hidden
+`.cc-download-` name until it completes; leftovers of a crash older than a day are swept before the next save. A
+Downloads folder on a file system with no hard links fails with a notice. On a Mac, check that a saved file has the
+quarantine mark (`xattr -p com.apple.quarantine`): not yet verified on a packaged build.
+
 **Forget vs revoke.** **Forget** removes the server from this app and drops its cookie, secrets and trusted host key
 here; the device stays listed on the server until `ccc web revoke <device id>` (or Revoke in the browsers' card) there.
 
 **Known limitations (remote servers)**
-- Files are the server's: no Reveal in folder, Open with the system, upload or download.
+- Files are the server's: no Reveal in folder, Open with the system or upload; Download works (see "Remote servers" › "Downloads").
 - A server with TLS on is refused over SSH and My own tunnel (the tunnel encrypts already); connect Direct with its address.
 - No system notifications from remote sessions.
 - The server's sshd must allow TCP forwarding (`AllowTcpForwarding`); the app says so when it does not.

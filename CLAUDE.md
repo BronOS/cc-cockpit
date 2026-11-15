@@ -35,6 +35,12 @@ Split groups (tabs side by side, tmux-like: `shared/tab-groups.ts`, main's `TabG
 are implemented; design in `docs/design.md` §3 "Split groups", user docs in `docs/features.md` ("Split view"). Page tabs
 are panes too (a file beside Claude); design in `docs/design-split-pages.md`.
 
+Downloads to the person's device (Files menu Download and `ccc download`, a file or a folder as a streamed `.zip`, to a browser view
+or the desktop's remote window: `main/files/downloads.ts`, `zip-writer.ts`, the gateway's `/d/<token>`, `main/remote/remote-downloads.ts`)
+are implemented; design in `docs/design-download.md`, plan in `docs/plans/completed/20261114-download.md`, user docs in
+`docs/features.md` ("Web access" › "Downloads", "Remote servers" › "Downloads"). Not run on a packaged Mac, iOS Safari or Firefox
+(the plan's Post-Completion list).
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
@@ -43,7 +49,7 @@ are panes too (a file beside Claude); design in `docs/design-split-pages.md`.
 - `npm run build` (runs `build:hello`, `build:browser`, `build:reviewer` and `build:editor` first), `npm run build:hello` (rebuild after editing
   `plugins/hello`; the dist is committed), `npm run build:reviewer` (bundles the overlay page of `plugins/reviewer` into the committed `overlay/review.bundle.js`; the reviewer, editor, files and sessions hosts are plain JS, with no build), `npm run build:editor` (bundles the editor's page
   sources, plain JS in `plugins/editor/src/page` and eslint-ignored, into the committed `dist/pages/file.bundle.js`;
-  deterministic, a unit test rebuilds and compares the bytes), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
+  also emits `dist/lib/outside-paths.js` from `src/shared/outside-paths.ts`; deterministic, a unit test rebuilds and compares the bytes of both), `npm run test:plugins` (`node:test` suites of `plugins/*/test`; CI runs it), `npm run build:browser` (same for `plugins/browser`; its
   `dist/host.js` is committed and shipped through extraResources), `npm run build:example` (same for `examples/plugin`, the
   master copy of the public repo `BronOS/cc-cockpit-plugin-example`; a change here, or to `src/sdk/types.ts`, must also be
   pushed there; `build:example` only bundles `src/host.ts`, so copy the types by hand: `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; the example is listed, so it stays free of exec, sessions, overlays and secrets), `npm run build:marketplace-tools` (rebuild after
@@ -248,6 +254,20 @@ are panes too (a file beside Claude); design in `docs/design-split-pages.md`.
   per shown page pane over the bodies (`frameBoxes`; placing never reloads). A frame takes the keys only with shell-side
   evidence (its own focus or the pointer seen near it, never a page's hint alone), and a chord or Ask Claude from a frame
   carries that frame's tab id, never `activeId`.
+- Downloads (design-download.md, `main/files/downloads.ts`): the outside-file rule is one source, `src/shared/outside-paths.ts`,
+  that main imports and `build:editor` emits into the editor host (`dist/lib/outside-paths.js`); core to plugin, never back, so a
+  plugin edit cannot widen what main hands out. `/d/<token>` (gateway, after the Host check, before the cookie-and-key check):
+  one-use, 60 s, 32 random bytes in main's memory, bound to device, view, window and path, cookie-bound (None mode: the token
+  alone); every refusal is a 204 with no body plus `downloads.failed` to the token's view; the token is consumed in the same
+  synchronous step as the 200 head; revoke, disconnect, leaving None mode and gateway stop drop live streams. Never a token for
+  the desktop page or the hidden page. `ccc download` offers go through `SharedAsks` with `hold` (a browser joining later finds
+  them in `ready.downloadOffers`); `downloads.accept` is `adapted` (a remote view of the offer's window, taken from the
+  connection) and the accept runs the Files path; the `ccc` call waits at most 30 s (`DOWNLOAD_REPLY_TIMEOUT_MS`) for main. The
+  Files menu always shows both zip items on a folder (the page cannot know whether `.git` or `node_modules` would be left out).
+  The remote window's `will-download` is the desktop's own gate set (`remote-windows.ts`; the save in `remote-downloads.ts`): own
+  server's `/d/` origin only, a click within 5 s, one at a time and 3 per 10 s per server, 4 GiB cap, sanitised name, a hidden
+  `.cc-download-*` temp then an exclusive `fs.link` (never overwrite or follow), never opened. Its `setSavePath` must be called
+  inside the event (else Electron shows a dialog), and nothing there may call `dialog`.
 - `ctx.processes` (host-local, design.md §4 "Processes"): argv only, bytes not text, 16 live children per plugin, process
   groups SIGKILLed on `kill`, when the leader exits, on plugin dispose and on host stop; not a capability (the host could `ctx.exec` anyway), so the cap and the kill are the control.
 - Editor host rules (`plugins/editor`): saves are compare-and-swap against what was last read, so a write Claude made

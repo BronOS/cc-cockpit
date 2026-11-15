@@ -1,7 +1,7 @@
 # Downloads to the person's device — design
 
-Status: draft revision 3 (2026-11-14): revision 2 after a Fable review, all findings applied, and the owner's answer on
-the remote window. Extends `docs/design-web.md` (web access, §9 server mode) and `docs/design-remote-desktop.md` (remote
+Status: implemented (2026-11-15, branch `download`, plan `docs/plans/20261114-download.md`; revision 3 of the design: revision 2
+after a Fable review, all findings applied, and the owner's answer on the remote window). Extends `docs/design-web.md` (web access, §9 server mode) and `docs/design-remote-desktop.md` (remote
 windows); read those first.
 
 **Problem.** With web access, in server mode and in a remote window, cockpit runs on the server. Claude makes an
@@ -37,7 +37,7 @@ a checkbox in Claude's dialog (§1.4); the local desktop has no Download (§3.4)
 - **`ccc download <path>`** (core command, in `CORE_CLI_COMMANDS`; a plugin CLI named `download` is demoted by the existing
   reconciliation). From a Claude tab token or a window token (a shell tab); refused tokenless ("run it in a tab of the
   project"): a tokenless caller names no window anybody looks at. The CLI sends the path made absolute against its cwd.
-  Answers at once (§2.2), never waits for the click, so the 40 s client deadline is never in play. No include flag: that
+  Answers at once (§2.2) and never waits for the click; it waits for main's reply up to `DOWNLOAD_REPLY_TIMEOUT_MS` (30 s, a folder count may walk for 10 s), still under the 40 s client deadline. No include flag: that
   choice is the person's, in the dialog.
 
 Both land in `main/files/downloads.ts` (no Electron; gateway and views through hooks), beside `system-files.ts`.
@@ -89,7 +89,7 @@ separator on Windows where `a\..\..\x` leaves the folder; control or bidi charac
 - *Files click:* two items on a folder row and the project folder, "Download as .zip" and "Download as .zip with .git and
   node_modules". The click has no dialog to hold a checkbox, a dialog only for folders would bring back the confirm the
   owner removed, the menu is a flat list (`panels/tree.js`, no submenus), and a setting would hide a per-download choice.
-  Both always show: the page cannot tell whether they differ (the listing never shows `.git`, holds direct children
+  Both always show (the page-side `heavy` rule of the first build was dropped): the page cannot tell whether they differ (the listing never shows `.git`, holds direct children
   only, can be filtered or capped, while the walk drops both names at any depth).
 - *`ccc download`:* a checkbox in the dialog, unchecked whatever Claude asked; the offer's walk counts both totals, so the
   dialog shows both sizes. The state travels in the accept (§2.2).
@@ -346,3 +346,19 @@ a download link with another person (guest access is its own design); telling Cl
 from a server shell; "Save a copy…" on the desktop; choosing the remote window's save folder.
 
 No open questions are left: the owner answered the first draft's four and the remote window's save dialog (above).
+
+## 10. As built (deviations from the text above)
+
+- The remote window's save is in `main/remote/remote-downloads.ts` (temp name, 4 GiB cap, exclusive link, cleanup, a sweep
+  of day-old `.cc-download-*` temps before the first save); the gates stay in `remote-windows.ts`. A test run saves to
+  `<data>/Downloads`, never the real folder. Refusals past the origin gate show at most 3 native notices per 10 s per
+  server, the rest are only logged; origin refusals are log-only. No copy fallback when `fs.link` fails: the download
+  fails with a notice.
+- A folder's walk skip reason `deep` (past depth 64) was added. Folder caps are enforced again while streaming, with no
+  second walk at the GET.
+- One GET per download was seen in Chromium (Task 1), so no second-GET grace exists; Electron has no Chrome download
+  throttling. Firefox and iOS Safari are still to verify by hand.
+- The token is consumed in the same synchronous step as the 200 head. In None mode the token alone authorizes, in a
+  signed-in mode the cookie of the token's device too.
+- `ccc download` is refused before connecting when it has no token (exit 2); a plugin declaring a CLI named `download`
+  fails manifest validation (reserved) rather than being demoted.
