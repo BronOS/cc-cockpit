@@ -11,12 +11,12 @@ import { FrameLoads, PortRelay as BrowserPortRelay, type FrameTarget } from '../
 import { ReadyReconnects, layerBox, pageTabEntries } from '../../src/renderer/tabs/page-frames'
 import { pageTabMarks } from '../../src/renderer/tabs/tab-label'
 import type { TabInfo } from '../../src/shared/ipc'
-import { PanelClient, PORT_MESSAGE, TAB_MESSAGE, type PortLike, type ThemeRoot } from '../../src/sdk/panel-core'
+import { PanelClient, PORT_MESSAGE, TAB_DIRTY_MESSAGE, TAB_DISCUSS_MESSAGE, TAB_MESSAGE, type PortLike, type ThemeRoot } from '../../src/sdk/panel-core'
 import { isPageTabPortKey, pageTabPortKey } from '../../src/shared/page-tabs'
 import { PANEL_PORT_CHANNEL } from '../../src/shared/ipc'
 import { channel, FakePort } from '../fakes/fake-main-port'
 
-import { entry, FakeElement, pool, settle, TAB_A, TAB_B, TAB_C, TAB_D } from '../fakes/fake-page-frames'
+import { boxOf, entry, FakeElement, pool, settle, TAB_A, TAB_B, TAB_C, TAB_D } from '../fakes/fake-page-frames'
 
 describe('PageFrames: mount on first select', () => {
   it('mounts nothing at restore; the first select asks for the page, loads it, and hands theme, intro and port', async () => {
@@ -24,13 +24,16 @@ describe('PageFrames: mount on first select', () => {
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
     expect(t.srcAsked).toEqual([])
     expect(t.elements).toHaveLength(0)
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
+    // Placed (the layout effect) before its page was looked up: the element takes the box when made.
+    t.frames.place([boxOf(TAB_A, 10)])
     await settle()
     expect(t.srcAsked).toEqual([TAB_A])
     expect(t.elements).toHaveLength(1)
     const a = t.el(TAB_A)
     expect(a.loads).toEqual(['cc-plugin://a.one/tab.html'])
     expect(a.hidden).toBe(false)
+    expect(a.box).toEqual({ left: 10, top: 22, width: 400, height: 300 })
     // Desktop: the port is asked at the load, after the theme; the intro goes right before it.
     expect(t.connects).toHaveLength(0)
     a.fire()
@@ -39,7 +42,7 @@ describe('PageFrames: mount on first select', () => {
     expect(a.types()).toEqual(['cc-plugin.theme', TAB_MESSAGE, PORT_MESSAGE])
     expect(a.posts.at(-1)?.ports).toBe(1)
     // A terminal tab shown: the frame hides, alive.
-    t.frames.show(null)
+    t.frames.show([], null)
     expect(a.hidden).toBe(true)
     expect(a.removed).toBe(false)
   })
@@ -48,12 +51,12 @@ describe('PageFrames: mount on first select', () => {
     const t = pool()
     t.pages[TAB_A] = null
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     expect(t.elements).toHaveLength(0)
     expect(t.frames.isLive(TAB_A)).toBe(false)
     // The same selection again asks nothing more.
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     expect(t.srcAsked).toEqual([TAB_A])
     // Its plugin's host came up: asked again, and mounted since it is the one shown.
@@ -67,7 +70,7 @@ describe('PageFrames: mount on first select', () => {
   it('a tab closed while its page was looked up mounts nothing', async () => {
     const t = pool()
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     t.frames.sync([])
     await settle()
     expect(t.elements).toHaveLength(0)
@@ -77,7 +80,7 @@ describe('PageFrames: mount on first select', () => {
     const t = pool()
     t.frames.sync([entry(TAB_A)])
     t.frames.focus(TAB_A)
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     t.frames.focus(TAB_A)
     expect(t.el(TAB_A).focused).toBe(1)
@@ -86,7 +89,7 @@ describe('PageFrames: mount on first select', () => {
   it('a first select asks for focus while the page is looked up: the frame takes it once loaded, unless another tab is shown by then', async () => {
     const t = pool()
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     t.frames.focus(TAB_A)
     await settle()
     // Not before its page is there (a frame focused before its load leaves the page without the keyboard).
@@ -96,9 +99,9 @@ describe('PageFrames: mount on first select', () => {
     // Once: a later load (a reload of the page) takes nothing by itself.
     t.el(TAB_A).fire()
     expect(t.el(TAB_A).focused).toBe(1)
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     t.frames.focus(TAB_B)
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     t.el(TAB_B).fire()
     expect(t.el(TAB_B).focused).toBe(0)
@@ -119,15 +122,15 @@ describe('PageFrames: mount on first select', () => {
         log: (m) => logs.push(m)
       })
       t.frames.sync([entry(TAB_A)])
-      t.frames.show(TAB_A)
+      t.frames.show([TAB_A], TAB_A)
       await settle()
       await new Promise((r) => setTimeout(r, 0))
       expect(unhandled).toEqual([])
       expect(logs.join('\n')).toMatch(/could not be made: Error: bad url/)
       expect(t.frames.isLive(TAB_A)).toBe(false)
       fail = false
-      t.frames.show(null)
-      t.frames.show(TAB_A)
+      t.frames.show([], null)
+      t.frames.show([TAB_A], TAB_A)
       await settle()
       expect(t.elements).toHaveLength(1)
     } finally {
@@ -140,23 +143,23 @@ describe('PageFrames: LRU of live frames', () => {
   it('keeps the most recent ones alive and hidden, unmounting the least recent past the cap', async () => {
     const t = pool({ maxLive: 2 })
     t.frames.sync([entry(TAB_A), entry(TAB_B), entry(TAB_C)])
-    t.frames.show(TAB_A)
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_A], TAB_A)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
     expect(t.frames.liveIds()).toEqual([TAB_B, TAB_A])
     expect(t.el(TAB_A).hidden).toBe(true)
     // Back to A: no new frame, no new load.
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     expect(t.elements).toHaveLength(2)
     expect(t.el(TAB_A).loads).toHaveLength(1)
     // C pushes out B (the least recent), never the shown one.
-    t.frames.show(TAB_C)
+    t.frames.show([TAB_C], TAB_C)
     await settle()
     expect(t.frames.liveIds()).toEqual([TAB_C, TAB_A])
     expect(t.el(TAB_B).removed).toBe(true)
     expect(t.disconnects).toEqual([TAB_B])
     // B again loads afresh in a new element.
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
     expect(t.el(TAB_B).removed).toBe(false)
     expect(t.elements).toHaveLength(4)
@@ -165,7 +168,7 @@ describe('PageFrames: LRU of live frames', () => {
   it('never unmounts a frame `keep` holds (a page with unsaved text)', async () => {
     const t = pool({ maxLive: 2, keep: (id) => id === TAB_A })
     t.frames.sync([entry(TAB_A), entry(TAB_B), entry(TAB_C), entry(TAB_D)])
-    for (const id of [TAB_A, TAB_B, TAB_C, TAB_D]) t.frames.show(id)
+    for (const id of [TAB_A, TAB_B, TAB_C, TAB_D]) t.frames.show([id], id)
     await settle()
     expect(t.frames.liveIds()).toEqual([TAB_D, TAB_A])
     expect(t.el(TAB_A).removed).toBe(false)
@@ -174,7 +177,7 @@ describe('PageFrames: LRU of live frames', () => {
   it("unmounts the frame of a tab that left the list, and tells main", async () => {
     const t = pool()
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     t.frames.sync([entry(TAB_B)])
     expect(t.el(TAB_A).removed).toBe(true)
@@ -183,9 +186,137 @@ describe('PageFrames: LRU of live frames', () => {
   })
 })
 
+describe('PageFrames: several visible page panes (design-split-pages.md §3)', () => {
+  /** Page tab ids whose last characters differ (the fake's titles end with it). */
+  const many = (n: number): string[] => Array.from({ length: n }, (_, i) => `0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c${'0123456789'[i]}`)
+  const TERMINAL = '11111111-1d3a-4e5b-8c7d-9e0f1a2b3c4f'
+
+  it('show mounts each visible page pane once, the focused one first in the LRU; terminal panes are skipped', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A), entry(TAB_B), entry(TAB_C)])
+    t.frames.show([TAB_A, TERMINAL, TAB_B], TAB_B)
+    t.frames.place([boxOf(TAB_A, 0), boxOf(TAB_B, 400)])
+    await settle()
+    expect(t.srcAsked).toEqual([TAB_B, TAB_A])
+    expect(t.frames.liveIds()).toEqual([TAB_B, TAB_A])
+    expect(t.el(TAB_A).box?.left).toBe(0)
+    expect(t.el(TAB_B).box?.left).toBe(400)
+    // The same view again (a render): nothing more is asked, made or loaded.
+    t.frames.show([TAB_A, TERMINAL, TAB_B], TAB_A)
+    await settle()
+    expect(t.srcAsked).toEqual([TAB_B, TAB_A])
+    expect(t.elements).toHaveLength(2)
+    expect(t.frames.liveIds()).toEqual([TAB_A, TAB_B])
+    expect(t.el(TAB_A).loads).toHaveLength(1)
+  })
+
+  it('8 visible page panes keep all 8 alive; hidden again, the least recent go down to 6, never a dirty one', async () => {
+    const ids = many(8)
+    const t = pool()
+    t.frames.sync(ids.map((id) => entry(id)))
+    t.frames.show(ids, ids[0]!)
+    await settle()
+    for (const el of t.elements) el.fire()
+    expect(t.frames.liveIds()).toHaveLength(8)
+    expect(t.elements.some((e) => e.removed)).toBe(false)
+    // The last in the LRU holds unsaved text; then a terminal tab is shown and the group hides.
+    const last = t.frames.liveIds().at(-1)!
+    t.el(last).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
+    t.frames.show([TERMINAL], TERMINAL)
+    const live = t.frames.liveIds()
+    expect(live).toHaveLength(6)
+    expect(live).toContain(last)
+    expect(t.elements.filter((e) => e.removed)).toHaveLength(2)
+    expect(t.elements.filter((e) => !e.removed).every((e) => e.hidden)).toBe(true)
+  })
+
+  it('placing, moving out, moving between groups and ungrouping only change boxes: no frame is removed or reloaded', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    // A file beside a file.
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    t.frames.place([boxOf(TAB_A, 0), boxOf(TAB_B, 400)])
+    await settle()
+    const [a, b] = [t.el(TAB_A), t.el(TAB_B)]
+    a.fire()
+    b.fire()
+    // B moved out: this view shows A alone, B hidden (alive).
+    t.frames.show([TAB_A], TAB_A)
+    t.frames.place([{ tab: TAB_A, left: 0, top: 0, width: 800, height: 600 }])
+    expect(a.box).toEqual({ left: 0, top: 0, width: 800, height: 600 })
+    expect(b.hidden).toBe(true)
+    // B placed into another group beside a terminal, and shown there.
+    t.frames.show([TERMINAL, TAB_B], TAB_B)
+    t.frames.place([boxOf(TAB_B, 400)])
+    expect(a.hidden).toBe(true)
+    expect(b.hidden).toBe(false)
+    expect(b.box?.left).toBe(400)
+    // A box for a tab not visible is ignored.
+    t.frames.place([boxOf(TAB_A, 0), boxOf(TAB_B, 400)])
+    expect(a.hidden).toBe(true)
+    // Ungrouped: B plain again, the whole area.
+    t.frames.show([TAB_B], TAB_B)
+    t.frames.place([{ tab: TAB_B, left: 0, top: 0, width: 800, height: 600 }])
+    expect(b.box?.width).toBe(800)
+    expect(t.elements).toHaveLength(2)
+    expect([a.removed, b.removed]).toEqual([false, false])
+    expect([a.loads.length, b.loads.length]).toEqual([1, 1])
+    expect(t.disconnects).toEqual([])
+  })
+
+  it('a visible pane asked for the keyboard before its page loaded takes it only while it is the focused pane', async () => {
+    const t = pool()
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    t.frames.focus(TAB_A)
+    t.frames.focus(TAB_B)
+    await settle()
+    t.el(TAB_A).fire()
+    t.el(TAB_B).fire()
+    expect(t.el(TAB_A).focused).toBe(1)
+    expect(t.el(TAB_B).focused).toBe(0)
+  })
+
+  it('Ask Claude and chords are taken from a visible frame with the keyboard, never a hidden one', async () => {
+    const asked: string[] = []
+    const t = pool({ discuss: (id) => void asked.push(id) })
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    await settle()
+    t.el(TAB_B).focusedNow = true
+    t.el(TAB_B).fromPage({ type: TAB_DISCUSS_MESSAGE })
+    expect(asked).toEqual([TAB_B])
+    t.frames.show([TAB_A], TAB_A)
+    t.el(TAB_B).fromPage({ type: TAB_DISCUSS_MESSAGE })
+    expect(asked).toEqual([TAB_B])
+  })
+
+  it('a page main names none for is listed as unavailable (its pane says so) until it is shown again', async () => {
+    const t = pool()
+    const changes: number[] = []
+    t.frames.onUnavailable(() => changes.push(t.frames.unavailable().size))
+    t.pages[TAB_A] = null
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show([TAB_A, TAB_B], TAB_B)
+    await settle()
+    expect([...t.frames.unavailable()]).toEqual([TAB_A])
+    expect(changes).toEqual([1])
+    // Still visible: not asked again. Hidden and shown again: one more look.
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    await settle()
+    expect(t.srcAsked.filter((id) => id === TAB_A)).toHaveLength(1)
+    t.pages[TAB_A] = 'cc-plugin://a.one/tab.html'
+    t.frames.show([TAB_B], TAB_B)
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    expect(t.frames.unavailable().size).toBe(0)
+    await settle()
+    expect(t.frames.isLive(TAB_A)).toBe(true)
+  })
+})
+
 describe('PageFrames: a new port, never a reload', () => {
   async function served(t: ReturnType<typeof pool>, id: string): Promise<FakeElement> {
-    t.frames.show(id)
+    t.frames.show([id], id)
     await settle()
     const el = t.el(id)
     el.fire()
@@ -216,9 +347,9 @@ describe('PageFrames: a new port, never a reload', () => {
     t.frames.sync([entry(TAB_A)])
     const a = await served(t, TAB_A)
     // The shell remounts: a fresh tab list (same tabs), the same selection, then reconnect all.
-    t.frames.show(null)
+    t.frames.show([], null)
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     t.frames.reconnect()
     t.connects.at(-1)!.deliver(t.port())
     expect(t.elements).toHaveLength(1)
@@ -237,14 +368,15 @@ describe('PageFrames: a new port, never a reload', () => {
     readies.ready(2)
     expect(t.connects.slice(before).map((c) => c.tabId)).toEqual([TAB_A])
     // The old shell went (its tab area hid the layer); the new pane mounts with no list yet.
-    t.frames.show(null)
+    t.frames.show([], null)
     t.frames.sync(undefined)
     expect(t.frames.liveIds()).toEqual([TAB_A])
     expect(a.removed).toBe(false)
     expect(t.disconnects).toEqual([])
     // tabs.list answers: the same tabs, the same selection.
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
+    t.frames.place([boxOf(TAB_A)])
     t.connects.at(-1)!.deliver(t.port())
     expect(t.elements).toHaveLength(1)
     expect(a.loads).toHaveLength(1)

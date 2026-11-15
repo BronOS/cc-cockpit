@@ -1,6 +1,6 @@
 // A page tab frame pool with fake frame elements (renderer/tabs/page-frames.ts), for the frame,
 // close and key tests: what each frame loaded, was posted, and what its page posts back.
-import { PageFrames, type PageFrameElement, type PageFramesOptions, type PageTabEntry } from '../../src/renderer/tabs/page-frames'
+import { PageFrames, type FrameRect, type PageFrameElement, type PageFramesOptions, type PageTabEntry } from '../../src/renderer/tabs/page-frames'
 import { PORT_MESSAGE } from '../../src/sdk/panel-core'
 
 export const TAB_A = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4a'
@@ -12,7 +12,7 @@ export const settle = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve))
 }
 
-/** A frame element as the pool drives it: what it loaded, whether it is hidden, gone, focused, what was posted. */
+/** A frame element as the pool drives it: what it loaded, where it is placed (hidden: none), gone, focused, what was posted. */
 export class FakeElement implements PageFrameElement {
   readonly loads: string[] = []
   readonly posts: Array<{ type: unknown; ports: number }> = []
@@ -24,8 +24,13 @@ export class FakeElement implements PageFrameElement {
   load(url: string): void {
     this.loads.push(url)
   }
-  setHidden(hidden: boolean): void {
-    this.hidden = hidden
+  /** Where it was placed last (null: hidden), and how many placements it got. */
+  box: FrameRect | null = null
+  placed = 0
+  place(box: FrameRect | null): void {
+    this.box = box
+    this.hidden = box === null
+    this.placed++
   }
   post(message: unknown, transfer?: MessagePort[]): boolean {
     this.posts.push({ type: (message as { type?: unknown }).type, ports: transfer?.length ?? 0 })
@@ -63,6 +68,9 @@ export class FakeElement implements PageFrameElement {
     return this.posts.map((p) => p.type)
   }
 }
+
+/** A box for `tab` in the layer, for `place` (any numbers: the pool only hands them on). */
+export const boxOf = (tab: string, left = 0, width = 400): FrameRect & { tab: string } => ({ tab, left, top: 22, width, height: 300 })
 
 export const entry = (id: string, plugin = 'a.one'): PageTabEntry => ({ id, plugin, type: 'file', title: `t-${id.slice(-1)}` })
 

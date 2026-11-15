@@ -372,7 +372,7 @@ describe('the page reports, the pool keeps', () => {
     const reports: Array<[string, boolean]> = []
     const t = pool({ maxLive: 1, reportDirty: (tabId, dirty) => reports.push([tabId, dirty]) })
     t.frames.sync([entry(TAB_A), entry(TAB_B), entry(TAB_C)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     // The web shell's unload guard (web/main.tsx beforeunload) holds only while a frame is dirty.
     expect(t.frames.hasDirty()).toBe(false)
@@ -383,9 +383,9 @@ describe('the page reports, the pool keeps', () => {
     expect(t.frames.isDirty(TAB_A)).toBe(true)
     expect(t.frames.hasDirty()).toBe(true)
     // Past the cap of 1: the clean B goes when C shows, the dirty A stays.
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
-    t.frames.show(TAB_C)
+    t.frames.show([TAB_C], TAB_C)
     await settle()
     expect(t.frames.isLive(TAB_A)).toBe(true)
     expect(t.frames.isLive(TAB_B)).toBe(false)
@@ -399,7 +399,7 @@ describe('the page reports, the pool keeps', () => {
   it('a closed dirty tab unmounts (main clears at the disconnect) and is no longer dirty here', async () => {
     const t = pool()
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
     t.frames.sync([])
@@ -412,11 +412,11 @@ describe('the page reports, the pool keeps', () => {
     const reports: Array<[string, boolean]> = []
     const t = pool({ guard: true, maxLive: 1, reportDirty: (tabId, dirty) => reports.push([tabId, dirty]) })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     t.el(TAB_A).fire()
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
     expect(t.frames.isLive(TAB_A)).toBe(true)
     // A load the shell did not start: a fresh element, whose page has nothing unsaved.
@@ -431,9 +431,9 @@ describe('the page reports, the pool keeps', () => {
     const reports: Array<[string, boolean]> = []
     const t = pool({ reportDirty: (tabId, dirty) => reports.push([tabId, dirty]) })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
     t.el(TAB_A).fromPage({ type: TAB_DIRTY_MESSAGE, dirty: true })
     reports.length = 0
@@ -447,7 +447,7 @@ describe('the page reports, the pool keeps', () => {
     const reports: Array<[string, boolean]> = []
     const t = pool({ reportDirty: (tabId, dirty) => reports.push([tabId, dirty]) })
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     const old = t.el(TAB_A)
     t.frames.sync([])

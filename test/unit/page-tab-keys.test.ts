@@ -145,7 +145,7 @@ describe('web shell: the pool and the key table', () => {
     let keys: string[] | undefined = ['ctrl+alt+w']
     const t = pool({ keys: () => keys })
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     t.el(TAB_A).fire()
     t.connects.at(-1)!.deliver(t.port())
@@ -156,7 +156,7 @@ describe('web shell: the pool and the key table', () => {
     // The desktop lists none: the intro has no keys.
     const d = pool()
     d.frames.sync([entry(TAB_A)])
-    d.frames.show(TAB_A)
+    d.frames.show([TAB_A], TAB_A)
     await settle()
     d.el(TAB_A).fire()
     d.connects.at(-1)!.deliver(d.port())
@@ -167,9 +167,9 @@ describe('web shell: the pool and the key table', () => {
     const chords: string[] = []
     const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => chords.push(c), userActive: () => true })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
     const a = t.el(TAB_A)
     const b = t.el(TAB_B)
@@ -188,7 +188,7 @@ describe('web shell: the pool and the key table', () => {
     let active = false
     const t = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => chords.push(c), userActive: () => active })
     t.frames.sync([entry(TAB_A)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
     const a = t.el(TAB_A)
     a.focusedNow = true
@@ -202,7 +202,7 @@ describe('web shell: the pool and the key table', () => {
     const none: string[] = []
     const u = pool({ keys: () => ['ctrl+alt+w'], chord: (c) => none.push(c) })
     u.frames.sync([entry(TAB_A)])
-    u.frames.show(TAB_A)
+    u.frames.show([TAB_A], TAB_A)
     await settle()
     u.el(TAB_A).focusedNow = true
     u.el(TAB_A).fromPage({ type: TAB_KEY_MESSAGE, chord: 'ctrl+alt+w' })

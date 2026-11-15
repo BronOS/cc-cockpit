@@ -2,10 +2,14 @@
 // one place their lifetime is decided. A page tab holds unsaved text (the editor's buffers), so its
 // frame must outlive everything that reloads plugin pages today:
 //
-// - Mount on first select, never at restore: a window that comes back with thirty file tabs loads
-//   the one it shows. A small LRU (MAX_LIVE_PAGE_FRAMES) keeps the recently used frames alive and
-//   hidden; the least recent one past it is unmounted (its page loads afresh when selected again),
-//   never the shown one and never one `keep` holds (a dirty page, Task 3).
+// - Mount on first show, never at restore: a window that comes back with thirty file tabs loads
+//   the ones it shows (every visible page pane of a split group, design-split-pages.md §3). A small
+//   LRU (MAX_LIVE_PAGE_FRAMES, or the visible count when larger) keeps the recently used frames
+//   alive and hidden; the least recent one past it is unmounted (its page loads afresh when shown
+//   again), never a visible one and never one `keep` holds or that is dirty.
+// - Placement: each visible frame is placed at its pane's body box (`place`, from pane-layout.ts
+//   frameBoxes); placing, moving a pane out, between groups or ungrouping only changes a box, so no
+//   page reloads for a group change.
 // - Host restart (`panels.reload` for the tab's plugin): the frame stays and its page is handed a
 //   NEW port with no load (FrameLoads.reconnect); the page re-sends what it holds (`ccPanel.onConnect`).
 // - Web reconnect: the web shell remounts its whole React tree (`<App key>` in web/main.tsx), so the
@@ -51,12 +55,23 @@ import { FrameLoads, type FrameTarget } from '../web/port-relay'
  */
 export const MAX_LIVE_PAGE_FRAMES = 6
 
+/** A frame's box in pixels relative to the layer. */
+export interface FrameRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 /** One frame element as the pool drives it (an iframe in the app, a fake in tests). */
 export interface PageFrameElement {
   /** Navigate it (set `src`). */
   load(url: string): void
-  /** Show or hide it (`hidden`: display none keeps the page alive). */
-  setHidden(hidden: boolean): void
+  /**
+   * Place it at `box` (pixels in the layer) and show it, or hide it (null: `hidden`, display none,
+   * which keeps the page alive). Never moved in the document: an iframe moved there reloads.
+   */
+  place(box: FrameRect | null): void
   /** Post into its page; false when it has no window. */
   post(message: unknown, transfer?: MessagePort[]): boolean
   /** Its `load` events. */
@@ -117,7 +132,7 @@ export interface PageFramesOptions {
    * taken (the desktop needs none: main reads the real input in before-input-event).
    */
   userActive?(): boolean
-  /** The shown, focused page tab asked for Ask Claude (`ccPanel.tab.discuss()`): the shell opens its box. */
+  /** A visible page tab whose frame has the keyboard asked for Ask Claude (`ccPanel.tab.discuss()`): the shell opens its box. */
   discuss?(tabId: string): void
   maxLive?: number
   log?(message: string): void
@@ -141,9 +156,17 @@ export class PageFrames {
   /** Live (or looking up) frames, most recently shown first. */
   private live: Live[] = []
   private readonly tabs = new Map<string, PageTabEntry>()
-  /** Tabs whose page main named none for: not asked again until reselected or their host restarts. */
-  private readonly none = new Set<string>()
-  private shown: string | null = null
+  /**
+   * Tabs whose page main named none for: not asked again until shown again or their host restarts.
+   * Replaced (never mutated) on each change, so a React view can hold it as a snapshot (`unavailable`).
+   */
+  private none: ReadonlySet<string> = new Set<string>()
+  private readonly noneListeners = new Set<() => void>()
+  /** The page tabs this view shows now (every visible page pane), and the focused one among them. */
+  private visible: ReadonlySet<string> = new Set<string>()
+  private focused: string | null = null
+  /** Each visible frame's box in the layer, as last placed. */
+  private boxes = new Map<string, FrameRect>()
   private readonly max: number
   /** Tabs whose page here said it holds unsaved changes (and has not said otherwise since). */
   private readonly dirty = new Set<string>()
@@ -164,57 +187,105 @@ export class PageFrames {
     this.tabs.clear()
     for (const t of tabs) this.tabs.set(t.id, t)
     for (const l of [...this.live]) if (!ids.has(l.tab.id)) this.unmount(l)
-    for (const id of [...this.none]) if (!ids.has(id)) this.none.delete(id)
-    if (this.shown !== null && !ids.has(this.shown)) this.shown = null
+    this.setNone([...this.none].filter((id) => ids.has(id)))
+    if ([...this.visible].some((id) => !ids.has(id))) this.visible = new Set([...this.visible].filter((id) => ids.has(id)))
+    if (this.focused !== null && !ids.has(this.focused)) this.focused = null
   }
 
   /**
-   * The tab shown now (null: a terminal tab, or none). A page tab's frame mounts on its first show
-   * and moves to the front of the LRU; every other live frame is hidden, and the least recent ones
-   * past the cap unmount.
+   * The panes this view shows now (`visible`: PaneView.visible, terminal tabs among them are
+   * skipped) and the focused one (`focused`: the view's selected tab, null for none). Each visible
+   * page tab's frame mounts on its first show and moves to the front of the LRU, the focused one
+   * first; every other live frame is hidden (alive), and the least recent ones past the cap
+   * unmount. A visible frame keeps its last box until `place` gives a new one.
    */
-  show(tabId: string | null): void {
-    const changed = tabId !== this.shown
-    this.shown = tabId
-    const tab = tabId === null ? undefined : this.tabs.get(tabId)
-    if (tab) {
-      // Selected again after main had no page for it: worth one more look (the plugin may be on now).
-      if (changed) this.none.delete(tab.id)
-      let entry = this.live.find((l) => l.tab.id === tab.id)
-      if (!entry && !this.none.has(tab.id)) entry = this.mount(tab)
-      if (entry) this.live = [entry, ...this.live.filter((l) => l !== entry)]
+  show(visible: readonly string[], focused: string | null): void {
+    const before = this.visible
+    const pages = visible.filter((id) => this.tabs.has(id))
+    this.visible = new Set(pages)
+    this.focused = focused !== null && this.visible.has(focused) ? focused : null
+    // Shown again after main had no page for it: worth one more look (the plugin may be on now).
+    const again = pages.filter((id) => !before.has(id) && this.none.has(id))
+    if (again.length > 0) this.setNone([...this.none].filter((id) => !again.includes(id)))
+    // The focused one is looked up first and ends at the front, the other visible ones right behind it.
+    const order = this.focused === null ? pages : [this.focused, ...pages.filter((id) => id !== this.focused)]
+    const front: Live[] = []
+    for (const id of order) {
+      let entry = this.live.find((l) => l.tab.id === id)
+      if (!entry && !this.none.has(id)) {
+        entry = this.mount(this.tabs.get(id)!)
+        this.live.push(entry)
+      }
+      if (entry) front.push(entry)
     }
+    this.live = [...front, ...this.live.filter((l) => !front.includes(l))]
     for (const l of this.live) {
-      l.frame?.element.setHidden(l.tab.id !== this.shown)
-      if (l.tab.id !== this.shown) l.wantFocus = false
+      this.placeOne(l)
+      if (l.tab.id !== this.focused) l.wantFocus = false
     }
     this.trim()
   }
 
   /**
+   * Each visible frame's box in the layer (pane-layout.ts frameBoxes, in pixels of the layer's
+   * measured box). A visible frame with no box here is hidden (alive); a box for a tab not visible
+   * is ignored. Only boxes change: no frame is mounted, unmounted or reloaded by a placement.
+   */
+  place(boxes: ReadonlyArray<FrameRect & { tab: string }>): void {
+    this.boxes = new Map(boxes.map((b) => [b.tab, { left: b.left, top: b.top, width: b.width, height: b.height }]))
+    for (const l of this.live) this.placeOne(l)
+  }
+
+  /** Whether main named no page for the tab here (its plugin is off or did not load): the pane says so. */
+  unavailable(): ReadonlySet<string> {
+    return this.none
+  }
+
+  /** Called when `unavailable()` changes; returns the unsubscribe. */
+  onUnavailable(listener: () => void): () => void {
+    this.noneListeners.add(listener)
+    return () => this.noneListeners.delete(listener)
+  }
+
+  private setNone(ids: readonly string[]): void {
+    const next = new Set(ids)
+    if (next.size === this.none.size && [...next].every((id) => this.none.has(id))) return
+    this.none = next
+    for (const l of [...this.noneListeners]) l()
+  }
+
+  /** The box a live frame gets now: its pane's while visible, else none (hidden). */
+  private boxFor(tabId: string): FrameRect | null {
+    return this.visible.has(tabId) ? (this.boxes.get(tabId) ?? null) : null
+  }
+
+  private placeOne(l: Live): void {
+    l.frame?.element.place(this.boxFor(l.tab.id))
+  }
+
+  /**
    * A new port, no reload, for every live frame of these plugins (`panels.reload`: their host
    * restarted or the plugin reloaded), or of all (undefined: a web reconnect). A tab main had no page
-   * for is asked again, and mounted now when it is the one shown.
+   * for is asked again, and mounted now when it is visible.
    */
   reconnect(pluginIds?: readonly string[]): void {
     const of = (plugin: string): boolean => pluginIds === undefined || pluginIds.includes(plugin)
     for (const l of this.live) if (of(l.tab.plugin)) l.frame?.loads.reconnect()
     // A web reconnect is a new view to main, which dropped what the old one said: say it again.
     if (pluginIds === undefined) for (const id of this.dirty) this.report(id, true)
-    let retry = false
-    for (const id of [...this.none]) {
+    const again = [...this.none].filter((id) => {
       const tab = this.tabs.get(id)
-      if (!tab || !of(tab.plugin)) continue
-      this.none.delete(id)
-      if (id === this.shown) retry = true
-    }
-    if (retry) this.show(this.shown)
+      return tab !== undefined && of(tab.plugin)
+    })
+    if (again.length === 0) return
+    this.setNone([...this.none].filter((id) => !again.includes(id)))
+    if (again.some((id) => this.visible.has(id))) this.show([...this.visible], this.focused)
   }
 
   /**
-   * The tab's frame takes the keyboard (TabsPane's focusActive, a select). On a first select its page
+   * The tab's frame takes the keyboard (TabsPane's focusActive, a select). On a first show its page
    * is still being looked up (`src`), so there is no frame yet: it takes the keyboard once its page
-   * loaded, if its tab is still the one shown, or the keyboard stayed wherever it was until the
+   * loaded, if its tab is still the focused one, or the keyboard stayed wherever it was until the
    * person clicked.
    */
   focus(tabId: string): void {
@@ -257,17 +328,18 @@ export class PageFrames {
   /** Every frame unmounts (the window's page goes). */
   disposeAll(): void {
     for (const l of [...this.live]) this.unmount(l)
-    this.shown = null
+    this.visible = new Set()
+    this.focused = null
   }
 
   private mount(tab: PageTabEntry): Live {
     const entry: Live = { tab }
     // No page here, or none could be made: out of the live set (its frame, if one was made, goes)
-    // until it is selected again or its host restarts, so a later select tries again rather than
-    // leaving a blank placeholder for good.
+    // until it is shown again or its host restarts, so a later show tries again rather than
+    // leaving a blank placeholder for good (its pane says the page is not available meanwhile).
     const none = (): void => {
       this.unmount(entry)
-      this.none.add(tab.id)
+      this.setNone([...this.none, tab.id])
     }
     let asked: Promise<string | null>
     try {
@@ -340,16 +412,16 @@ export class PageFrames {
     loads.started(url)
   }
 
-  /** A frame element for `entry` whose loads report generation `gen`, shown when its tab is. */
+  /** A frame element for `entry` whose loads report generation `gen`, placed at its pane's box while visible. */
   private element(entry: Live, gen: number): PageFrameElement {
     const el = this.o.createFrame(entry.tab.title)
-    el.setHidden(entry.tab.id !== this.shown)
+    el.place(this.boxFor(entry.tab.id))
     el.onLoad(() => {
       entry.frame?.loads.loaded(gen)
       // Asked for the keyboard before it existed (a first select): taken once its page is there, if
-      // its tab is still the one shown (a frame focused before its document loads leaves the loaded
-      // page without the keyboard).
-      if (entry.wantFocus === true && entry.frame?.element === el && entry.tab.id === this.shown) {
+      // its tab is still the focused pane (a frame focused before its document loads leaves the
+      // loaded page without the keyboard).
+      if (entry.wantFocus === true && entry.frame?.element === el && entry.tab.id === this.focused) {
         entry.wantFocus = false
         el.focus()
       }
@@ -381,16 +453,16 @@ export class PageFrames {
       if (!dirty) this.trim()
       return
     }
-    // A chord only from the page that has the keyboard, only one the shell listed, and only while the
+    // A chord only from a visible page whose frame has the keyboard, only one the shell listed, and only while the
     // browser says the person gave real input a moment ago (`userActive`): a page cannot run the
     // app's commands from the background, nor any the person could not have typed here, nor any
     // while nobody uses it. Transient activation lasts seconds and is not tied to one key, so a page
     // the person is typing in can still post a listed chord they did not press (a known limit).
-    if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && tabId === this.shown && el.hasFocus()) {
+    if (type === TAB_KEY_MESSAGE && typeof chord === 'string' && this.visible.has(tabId) && el.hasFocus()) {
       if (this.o.keys?.()?.includes(chord) === true && this.o.userActive?.() === true) this.o.chord?.(chord)
       return
     }
-    if (type === TAB_DISCUSS_MESSAGE && tabId === this.shown && el.hasFocus()) this.o.discuss?.(tabId)
+    if (type === TAB_DISCUSS_MESSAGE && this.visible.has(tabId) && el.hasFocus()) this.o.discuss?.(tabId)
   }
 
   private report(tabId: string, dirty: boolean): void {
@@ -401,12 +473,17 @@ export class PageFrames {
     }
   }
 
-  /** Unmount the least recent frames past the cap, never the shown one nor one `keep` holds. */
+  /**
+   * Unmount the least recent frames past the cap, never a visible one, a dirty one nor one `keep`
+   * holds. The cap is the visible count when that is larger (a group of 8 page panes keeps all 8
+   * while shown; hidden again, the least recent go down to the cap).
+   */
   private trim(): void {
+    const cap = Math.max(this.max, this.visible.size)
     let count = this.live.length
-    for (let i = this.live.length - 1; i >= 0 && count > this.max; i--) {
+    for (let i = this.live.length - 1; i >= 0 && count > cap; i--) {
       const l = this.live[i]!
-      if (l.tab.id === this.shown || this.dirty.has(l.tab.id) || this.o.keep?.(l.tab.id) === true) continue
+      if (this.visible.has(l.tab.id) || this.dirty.has(l.tab.id) || this.o.keep?.(l.tab.id) === true) continue
       this.unmount(l)
       count--
     }

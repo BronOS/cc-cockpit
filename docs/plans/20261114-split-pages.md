@@ -138,30 +138,30 @@ External review: sol / high
 - Modify: `src/renderer/tabs/SplitArea.tsx`, `src/renderer/tabs/TabsPane.tsx`, `src/renderer/styles.css`
 - Modify: `test/unit/pane-layout.test.ts`, `test/unit/page-tab-frames.test.ts`, `test/e2e/editor-split.spec.ts`
 
-- [ ] `frameBoxes(view, root, area, many)` in `pane-layout.ts`: each visible page pane's `rectsOf` rect, less
+- [x] `frameBoxes(view, root, area, many)` in `pane-layout.ts`: each visible page pane's `rectsOf` rect, less
   `PANE_CHROME.header` and inset 3 px per side only while several panes show; zoomed / auto-zoomed / plain: whole area;
   terminal panes yield nothing; 0x0 area yields nothing. DOM-free (area size is an argument)
-- [ ] `PageFrames`: `show(visible, focused)` mounts each visible page pane on its first show and moves it to the LRU front
+- [x] `PageFrames`: `show(visible, focused)` mounts each visible page pane on its first show and moves it to the LRU front
   (focused first); `place(boxes)`; `PageFrameElement.place(box | null)` replaces `setHidden`; `trim` never unmounts a
   visible, dirty or `keep` frame, cap `max(MAX_LIVE_PAGE_FRAMES, visible count)`; `shown` becomes the visible set
-- [ ] `SplitArea` draws a page tab as a `<section className="pane">` (`data-pane`, press capture, `hidden`, "Starting…"
+- [x] `SplitArea` draws a page tab as a `<section className="pane">` (`data-pane`, press capture, `hidden`, "Starting…"
   stand-in) with the shell's header (title, "unsaved changes" / "not seen yet" from `tab-label.ts`, "Opened by
   <plugin>" from `TabInfo.page.plugin`) and an empty body; with `pageTabs.src` null (the pool's `none` set) the body says
   "This page is not available: its plugin is off or did not load."
-- [ ] `SplitArea` renders `PageTabArea` itself (TabsPane passes `tabs`, `listed`, `inert` instead of `children`) and hands
+- [x] `SplitArea` renders `PageTabArea` itself (TabsPane passes `tabs`, `listed`, `inert` instead of `children`) and hands
   it the fractions from `frameBoxes` with the live divider-drag sizes; PageTabArea turns them into pixels against the
   layer box in the same layout effect that places the layer (`layerBox`, `observeAround` unchanged; never SplitArea's
   lagging `area` state); the layer covers `.terminals` while any page pane shows
-- [ ] CSS: `.page-tab-layer` `overflow: hidden`, `pointer-events: none`, frames `position: absolute; pointer-events: auto`;
+- [x] CSS: `.page-tab-layer` `overflow: hidden`, `pointer-events: none`, frames `position: absolute; pointer-events: auto`;
   `z-index: 1` kept so menus and dialogs stay above; divider drags move frames live (no CSS scaling of a frame)
-- [ ] write tests: `frameBoxes` (two-pane row, column, nested splits, header and inset only with several panes, zoom and
+- [x] write tests: `frameBoxes` (two-pane row, column, nested splits, header and inset only with several panes, zoom and
   automatic zoom, a live drag's sizes, terminal panes, 0x0); pool with fake elements (`show` mounts each visible pane
   once; 8 visible keep 8 and hidden ones past 6 unmount, never a dirty one; placing, moving out and between groups never
   calls `remove` or `load`)
-- [ ] e2e (`editor-split.spec.ts`, rewritten; `CC_COCKPIT_NO_BUNDLED: ''`): *file beside Claude* placed with the
+- [x] e2e (`editor-split.spec.ts`, rewritten; `CC_COCKPIT_NO_BUNDLED: ''`): *file beside Claude* placed with the
   `place` helper: both visible, the frame's box inside the right pane below its header, a page marker survives Move out
   and Ungroup; *two visible frames survive a host restart* (`panels.reload` for the editor): both markers stay
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
 
 ### Task 3: Focus model: the shell decides which frame has the keys [model: opus]
 

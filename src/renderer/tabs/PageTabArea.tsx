@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import type { TabInfo } from '../../shared/ipc'
 import { PAGE_TAB_FRAME_NAME } from '../../shared/page-tabs'
 import { forwardedChords, onKeyTable, runForwardedChord } from '../commands/keybindings'
@@ -8,6 +8,8 @@ import { currentPrefs, onPrefs } from '../prefs/prefs-store'
 import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
+import type { PaneNode } from '../../shared/tab-groups'
+import { frameBoxes } from './pane-layout'
 import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
 
@@ -71,8 +73,18 @@ function createFrame(title: string): PageFrameElement {
     load: (url) => {
       iframe.src = url
     },
-    setHidden: (hidden) => {
-      iframe.hidden = hidden
+    // Pixels in the layer (position: absolute there, styles.css): set straight on the element,
+    // never by moving it, which would reload its page.
+    place: (box) => {
+      if (box === null) {
+        iframe.hidden = true
+        return
+      }
+      iframe.style.left = `${box.left}px`
+      iframe.style.top = `${box.top}px`
+      iframe.style.width = `${box.width}px`
+      iframe.style.height = `${box.height}px`
+      iframe.hidden = false
     },
     post: (message, transfer) => {
       const target = iframe.contentWindow
@@ -170,26 +182,57 @@ export function pageFrames(): PageFrames {
   return pool
 }
 
-/**
- * The tab area's part for page tabs (in `.terminals`, beside the terminal views): a placeholder the
- * layer is laid over while a page tab is the selected one, and the pool told which tabs exist,
- * which one shows, and when to hand frames a new port. Unmounting (a web reconnect's remount) only
- * hides the layer: the frames stay for the next tab area. `listed`: the pane's first `tabs.list`
- * answered; until then its empty list says nothing about which tabs exist (page-frames.ts `sync`).
- */
-export function PageTabArea(props: { tabs: readonly TabInfo[]; listed: boolean; activeId: string | null; inert: boolean }): React.JSX.Element {
-  const { tabs, listed, activeId, inert } = props
-  const placeholder = useRef<HTMLDivElement>(null)
-  const active = tabs.find((t) => t.id === activeId)
-  const showsPage = active?.kind === 'page'
+const subscribeUnavailable = (listener: () => void): (() => void) => pageFrames().onUnavailable(listener)
+const unavailableNow = (): ReadonlySet<string> => pageFrames().unavailable()
 
+/**
+ * The page tabs main named no page for in this view (`pageTabs.src` answered null: the plugin is off
+ * or did not load), for SplitArea's "This page is not available" line in such a pane's body.
+ */
+export function usePageUnavailable(): ReadonlySet<string> {
+  return useSyncExternalStore(subscribeUnavailable, unavailableNow)
+}
+
+/**
+ * The split area's part for page tabs (in `.terminals`, rendered by SplitArea): a placeholder the
+ * layer is laid over while any page pane shows in this view, and the pool told which tabs exist,
+ * which are visible, which one is focused, where each frame goes, and when to hand frames a new port.
+ * Unmounting (a web reconnect's remount) only hides the layer: the frames stay for the next area.
+ * `listed`: the pane's first `tabs.list` answered; until then its empty list says nothing about
+ * which tabs exist (page-frames.ts `sync`). `visible`, `zoomed`, `root` and `many` are SplitArea's
+ * view of the group as drawn now (a live divider drag's sizes included), for `frameBoxes`; the
+ * pixels come from the layer's own measure in the same layout effect, never from SplitArea's `area`
+ * state, which a ResizeObserver sets one render late.
+ */
+export function PageTabArea(props: {
+  tabs: readonly TabInfo[]
+  listed: boolean
+  activeId: string | null
+  inert: boolean
+  visible: readonly string[]
+  zoomed: boolean
+  root: PaneNode | undefined
+  many: boolean
+}): React.JSX.Element {
+  const { tabs, listed, activeId, inert, visible, zoomed, root, many } = props
+  const placeholder = useRef<HTMLDivElement>(null)
+  const pageIds = new Set(tabs.filter((t) => t.kind === 'page').map((t) => t.id))
+  const showsPage = visible.some((id) => pageIds.has(id))
+  const activeIsPage = activeId !== null && pageIds.has(activeId)
+  const visibleKey = visible.join(' ')
+
+  // Passive effects, as before split panes: run as layout effects (in the commit that selects a new
+  // file tab), hiding the focused frame of the tab left made the desktop window's document lose
+  // focus for good (`document.hasFocus()` false with the new frame active, so its Ask Claude was
+  // refused; editor.spec.ts Ctrl+L). The measure's `place` can run first in a commit: a frame that
+  // just became visible keeps no box until this `show` re-applies the stored ones, a frame later.
   useEffect(() => {
     pageFrames().sync(listed ? pageTabEntries(tabs) : undefined)
   }, [tabs, listed])
 
   useEffect(() => {
-    pageFrames().show(showsPage && activeId !== null ? activeId : null)
-  }, [activeId, showsPage, tabs])
+    pageFrames().show(visibleKey === '' ? [] : visibleKey.split(' '), activeId)
+  }, [activeId, visibleKey, tabs])
 
   // Selected: its page takes the keyboard, as a terminal tab's terminal does (TerminalView), unless
   // a dialog or screen is over it. A frame still loading gets it from focusActive later, if at all.
@@ -198,8 +241,8 @@ export function PageTabArea(props: { tabs: readonly TabInfo[]; listed: boolean; 
     inertRef.current = inert
   })
   useEffect(() => {
-    if (showsPage && activeId !== null && !inertRef.current) pageFrames().focus(activeId)
-  }, [activeId, showsPage])
+    if (activeIsPage && activeId !== null && !inertRef.current) pageFrames().focus(activeId)
+  }, [activeId, activeIsPage])
 
   useEffect(() => {
     // (A web reconnect is not seen here but at the bridge's `ready`, pageTabsReady.)
@@ -230,6 +273,8 @@ export function PageTabArea(props: { tabs: readonly TabInfo[]; listed: boolean; 
     el.style.width = `${box.width}px`
     el.style.height = `${box.height}px`
     el.hidden = false
+    // The frames from the same measure as the layer, so the two never disagree for a frame.
+    pageFrames().place(frameBoxes({ visible, zoomed, isPage: (id) => pageIds.has(id) }, root, { width: box.width, height: box.height }, many))
   }
   const latest = useRef(measure)
   const observer = useRef<ResizeObserver | null>(null)

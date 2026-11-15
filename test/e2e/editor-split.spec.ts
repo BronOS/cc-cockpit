@@ -1,15 +1,13 @@
-// Page tabs and split groups together (design.md §3 "Split groups", §4 "Page tabs"): a page tab is never
-// a pane. Main refuses it in a placement, its tab menu has no split entries, a split chord on it says why
-// and makes nothing, and its frame's fixed layer covers the whole split area while a group exists.
+// Page tabs as split panes (docs/design-split-pages.md §2, §3; plan Task 2): a file pane beside a
+// Claude pane, its frame placed at the pane's body box below the shell's header, and the page alive
+// through every group change (a frame is never moved in the DOM, only placed); two visible frames
+// keep their pages through a plugin host restart (a new port each, no reload).
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Frame, Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
-import { PAGE_TAB_FRAME_NAME } from '../../src/shared/page-tabs'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
-import { groupOfShells, groupsOf, place, splitArea, tabsOf, visiblePanes } from './split-fixtures'
-
-const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
-const NATIVE_MOD = process.platform === 'darwin' ? 'meta' : 'control'
+import { groupFor, invoke, paneOf, place, roomyDesktop, tabsOf, visiblePanes } from './split-fixtures'
 
 async function pluginActive(c: Cockpit, id: string): Promise<void> {
   await expect
@@ -28,81 +26,137 @@ async function editFromFiles(c: Cockpit, name: string): Promise<void> {
   await row.getByRole('button', { name: 'Edit' }).click()
 }
 
-/** A native chord into the window, which main's before-input-event sees first (editor.spec.ts nativeChord). */
-async function nativeChord(c: Cockpit, keyCode: string, modifiers: Array<'control' | 'meta' | 'shift' | 'alt'>): Promise<void> {
-  await c.app.evaluate(
-    ({ BrowserWindow }, { keyCode, modifiers }) => {
-      const wc = BrowserWindow.getAllWindows()[0]!.webContents
-      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
-      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
-    },
-    { keyCode, modifiers }
-  )
+/** The frame element of the page tab titled `title` (the iframe's title is the tab's). */
+const frameEl = (page: Page, title: string) => page.locator(`iframe.page-tab-frame[title="${title}"]`)
+
+/** The page inside that frame, once it has the editor. */
+async function pageIn(page: Page, title: string): Promise<Frame> {
+  const handle = await frameEl(page, title).elementHandle()
+  const frame = await handle?.contentFrame()
+  if (!frame) throw new Error(`no frame for ${title}`)
+  await expect(frame.locator('.cm-content')).toBeVisible()
+  return frame
 }
 
-test('a page tab is never a split pane: refused by main, no split entries or chord, its frame covers the split area', async () => {
+/** A mark set in the page's own window: still there means the page never reloaded. */
+async function mark(frame: Frame, value: string): Promise<void> {
+  await frame.evaluate((v) => {
+    ;(window as unknown as { __splitMark?: string }).__splitMark = v
+  }, value)
+}
+const markOf = (frame: Frame): Promise<string | undefined> => frame.evaluate(() => (window as unknown as { __splitMark?: string }).__splitMark)
+
+/** Opens `name` from the Files panel and returns its page tab's id once it is listed. */
+async function openFile(c: Cockpit, name: string): Promise<string> {
+  await editFromFiles(c, name)
+  await expect(c.page.getByRole('tab', { name: new RegExp(name.replace('.', '\\.')) })).toHaveAttribute('aria-selected', 'true')
+  await expect.poll(async () => (await tabsOf(c.page)).find((t) => t.kind === 'page' && t.page?.title === name)?.id).toBeTruthy()
+  return (await tabsOf(c.page)).find((t) => t.kind === 'page' && t.page?.title === name)!.id
+}
+
+test('a file beside Claude: both visible, the frame inside its pane below the header, the page alive through Move out and Ungroup', async () => {
   const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
   try {
     const { page, projectDir } = c
+    await roomyDesktop(c)
     writeFileSync(join(projectDir, 'notes.txt'), 'one\ntwo\n')
-    const [a, b] = await groupOfShells(c, ['pa', 'pb'])
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
     await pluginActive(c, 'cockpit.editor')
-    await editFromFiles(c, 'notes.txt')
-    const fileTab = page.getByRole('tab', { name: /notes\.txt/ })
-    await expect(fileTab).toHaveAttribute('aria-selected', 'true')
-    const frame = page.frameLocator('iframe.page-tab-frame:not([hidden])')
-    await expect(frame.locator('.cm-content')).toContainText('two')
-    const pageTab = (await tabsOf(page)).find((t) => t.kind === 'page')
-    if (!pageTab) throw new Error('no page tab')
+    const file = await openFile(c, 'notes.txt')
+    const editor = await pageIn(page, 'notes.txt')
+    await expect(editor.locator('.cm-content')).toContainText('two')
+    await mark(editor, 'kept')
 
-    // Main is the authority: a page tab is refused as the tab placed and as the anchor; nothing changes.
-    const before = await groupsOf(page)
-    expect(await place(page, pageTab.id, a, 'right')).toEqual({ ok: false, reason: 'not-a-pane' })
-    expect(await place(page, b, pageTab.id, 'down')).toEqual({ ok: false, reason: 'not-a-pane' })
-    expect((await groupsOf(page)).groups).toEqual(before.groups)
-
-    // No pane is drawn for it, and its frame's fixed layer lies over the whole split area.
-    await expect(page.locator(`[data-pane="${pageTab.id}"]`)).toHaveCount(0)
-    await expect(visiblePanes(page)).toHaveCount(0)
-    const area = await splitArea(page).boundingBox()
-    const layer = await page.locator('.page-tab-layer').boundingBox()
-    if (!area || !layer) throw new Error('no split area or page layer box')
-    for (const k of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(layer[k] - area[k])).toBeLessThanOrEqual(1)
-
-    // Its tab menu has no split entries (a terminal tab's has them).
-    await fileTab.click({ button: 'right' })
-    const menu = page.getByRole('menu', { name: 'Tab' })
-    await expect(menu.getByRole('menuitem', { name: 'Close' })).toBeVisible()
-    await expect(menu.getByRole('menuitem', { name: /^Split (right|down)$/ })).toHaveCount(0)
-    await expect(menu.getByRole('menuitem', { name: /Show beside/ })).toHaveCount(0)
-    await page.keyboard.press('Escape')
-    await expect(menu).toHaveCount(0)
-
-    // Split Right typed in the file tab reaches the shell (an app chord) and says why nothing happens.
-    const tabCount = (await tabsOf(page)).length
-    await frame.locator('.cm-content').click()
-    await page.keyboard.press(`${MOD}+Home`)
-    await nativeChord(c, 'D', [NATIVE_MOD, 'shift'])
-    await expect(page.getByRole('alert')).toContainText('terminal tabs only')
-    await expect(page.getByRole('menu')).toHaveCount(0)
-    expect((await tabsOf(page)).length).toBe(tabCount)
-    expect(page.frame({ name: PAGE_TAB_FRAME_NAME })).toBeTruthy()
-
-    // Back to the group: both panes drawn again, the page layer hidden.
-    await page.locator('[data-group-handle]').click()
+    // Placed right of the Claude pane: main takes a page tab as a pane now.
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
     await expect(visiblePanes(page)).toHaveCount(2)
-    await expect(page.locator('.page-tab-layer')).toBeHidden()
-    // And the file tab again: the layer comes back over the area as it is now (the error line above it
-    // changed its height meanwhile, which the layer follows).
-    await fileTab.click()
-    await expect(page.locator('.page-tab-layer')).toBeVisible()
+    await expect(frameEl(page, 'notes.txt')).toBeVisible()
+    // The frame lies inside the right pane, below its header (the shell's, naming the plugin).
+    const pane = paneOf(page, file)
+    const header = pane.locator('[data-pane-header]')
+    await expect(header).toContainText('notes.txt')
+    await expect(header).toContainText('Opened by cockpit.editor')
     await expect
       .poll(async () => {
-        const [l, a] = [await page.locator('.page-tab-layer').boundingBox(), await splitArea(page).boundingBox()]
-        if (!l || !a) return Infinity
-        return Math.max(...(['x', 'y', 'width', 'height'] as const).map((k) => Math.abs(l[k] - a[k])))
+        const [f, p, h] = [await frameEl(page, 'notes.txt').boundingBox(), await pane.boundingBox(), await header.boundingBox()]
+        if (!f || !p || !h) return false
+        return f.x >= p.x && f.x + f.width <= p.x + p.width + 0.5 && f.y >= h.y + h.height - 0.5 && f.y + f.height <= p.y + p.height + 0.5
       })
-      .toBeLessThanOrEqual(1)
+      .toBe(true)
+    // The Claude pane's terminal is still on screen, left of the frame.
+    await expect(paneOf(page, claude).locator('.xterm')).toBeVisible()
+    expect(await markOf(editor)).toBe('kept')
+
+    // Move out: the file is a plain tab again, the same page.
+    expect((await invoke<{ ok: boolean }>(page, 'groups.remove', { tabId: file })).ok).toBe(true)
+    await expect.poll(async () => (await groupFor(page, file)) === undefined).toBe(true)
+    await page.getByRole('tab', { name: /notes\.txt/ }).click()
+    await expect(frameEl(page, 'notes.txt')).toBeVisible()
+    expect(await markOf(editor)).toBe('kept')
+
+    // Placed again and the group ungrouped: still the same page.
+    expect((await place(page, file, claude, 'right')).ok).toBe(true)
+    const group = await groupFor(page, file)
+    if (!group) throw new Error('no group')
+    await expect(visiblePanes(page)).toHaveCount(2)
+    expect((await invoke<{ ok: boolean }>(page, 'groups.dissolve', { groupId: group.id })).ok).toBe(true)
+    await expect.poll(async () => (await groupFor(page, file)) === undefined).toBe(true)
+    await page.getByRole('tab', { name: /notes\.txt/ }).click()
+    await expect(frameEl(page, 'notes.txt')).toBeVisible()
+    expect(await markOf(editor)).toBe('kept')
+    await expect(page.locator('iframe.page-tab-frame')).toHaveCount(1)
+  } finally {
+    await close()
+  }
+})
+
+test('two visible file frames side by side keep their pages through a plugin host restart', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'a.txt'), 'alpha\n')
+    writeFileSync(join(projectDir, 'b.txt'), 'beta\n')
+    await pluginActive(c, 'cockpit.editor')
+    const a = await openFile(c, 'a.txt')
+    const b = await openFile(c, 'b.txt')
+    expect((await place(page, b, a, 'right')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    await expect(frameEl(page, 'a.txt')).toBeVisible()
+    await expect(frameEl(page, 'b.txt')).toBeVisible()
+    const [fa, fb] = [await pageIn(page, 'a.txt'), await pageIn(page, 'b.txt')]
+    await expect(fa.locator('.cm-content')).toContainText('alpha')
+    await expect(fb.locator('.cm-content')).toContainText('beta')
+    await mark(fa, 'a-kept')
+    await mark(fb, 'b-kept')
+    // Side by side, never overlapping.
+    const [ba, bb] = [await frameEl(page, 'a.txt').boundingBox(), await frameEl(page, 'b.txt').boundingBox()]
+    if (!ba || !bb) throw new Error('no frame boxes')
+    expect(ba.x + ba.width).toBeLessThanOrEqual(bb.x)
+
+    // The project's plugin host dies; main starts a new one (panels.reload): each frame takes a new
+    // port with no reload.
+    const hostPids = () =>
+      c.app.evaluate(({ app }) =>
+        app
+          .getAppMetrics()
+          .filter((m) => m.type === 'Utility' && (m.name ?? '').startsWith('cc-cockpit plugin host'))
+          .map((m) => m.pid)
+      )
+    const [before] = await hostPids()
+    if (before === undefined) throw new Error('no plugin host process')
+    await c.app.evaluate((_, pid) => process.kill(pid, 'SIGKILL'), before)
+    await expect.poll(async () => (await hostPids()).filter((p) => p !== before).length, { timeout: 15_000 }).toBe(1)
+    await pluginActive(c, 'cockpit.editor')
+
+    expect(await markOf(fa)).toBe('a-kept')
+    expect(await markOf(fb)).toBe('b-kept')
+    await expect(frameEl(page, 'a.txt')).toBeVisible()
+    await expect(frameEl(page, 'b.txt')).toBeVisible()
+    await expect(page.locator('iframe.page-tab-frame')).toHaveCount(2)
   } finally {
     await close()
   }

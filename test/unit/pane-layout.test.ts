@@ -6,13 +6,17 @@ import {
   edgePreview,
   edgeZone,
   equalizeSplits,
+  FRAME_INSET_PX,
+  frameBoxes,
   holdsCells,
   moveDivider,
   needsAutoZoom,
   nudgePane,
+  PANE_CHROME,
   splitFits,
   successorInGroup,
-  tookItsSpace
+  tookItsSpace,
+  withSizes
 } from '../../src/renderer/tabs/pane-layout'
 import { GROUP_CAPS, type PaneNode, type PaneSplit, type TabGroup } from '../../src/shared/tab-groups'
 
@@ -168,5 +172,63 @@ describe('pane-layout', () => {
     expect(edgeZone({ x: 0, y: 0, w: 0, h: 0 }, { x: 0, y: 0 })).toBeNull()
     expect(edgePreview(pane, 'right')).toEqual({ x: 300, y: 100, w: 200, h: 200 })
     expect(edgePreview(pane, 'up')).toEqual({ x: 100, y: 100, w: 400, h: 100 })
+  })
+})
+
+describe('frameBoxes: where page frames go (design-split-pages.md §2)', () => {
+  const area = { width: 1000, height: 600 }
+  const H = PANE_CHROME.header
+  const I = FRAME_INSET_PX
+  const pages = (...ids: string[]) => (id: string): boolean => ids.includes(id)
+  const view = (visible: string[], isPage: (id: string) => boolean, zoomed = false) => ({ visible, zoomed, isPage })
+
+  it('a two-pane row: the page pane only, below its header and inset on each side', () => {
+    const root = split('r', 'row', [leaf('T'), leaf('P')])
+    expect(frameBoxes(view(['T', 'P'], pages('P')), root, area, true)).toEqual([
+      { tab: 'P', left: 500 + I, top: H + I, width: 500 - 2 * I, height: 600 - H - 2 * I }
+    ])
+  })
+
+  it('a column and two page panes side by side', () => {
+    const col = split('c', 'column', [leaf('P'), leaf('Q')])
+    expect(frameBoxes(view(['P', 'Q'], pages('P', 'Q')), col, area, true)).toEqual([
+      { tab: 'P', left: I, top: H + I, width: 1000 - 2 * I, height: 300 - H - 2 * I },
+      { tab: 'Q', left: I, top: 300 + H + I, width: 1000 - 2 * I, height: 300 - H - 2 * I }
+    ])
+    const row = split('r', 'row', [leaf('P'), leaf('Q')])
+    const [p, q] = frameBoxes(view(['P', 'Q'], pages('P', 'Q')), row, area, true)
+    // Never overlapping, the dividers' grab zone left between them.
+    expect(p!.left + p!.width).toBeLessThan(q!.left)
+  })
+
+  it('nested splits: each page pane at its own rect', () => {
+    // row[ A | column[ B / C ] ], B and C pages
+    const boxes = frameBoxes(view(['A', 'B', 'C'], pages('B', 'C')), tree, area, true)
+    expect(boxes.map((b) => b.tab)).toEqual(['B', 'C'])
+    expect(boxes[0]).toEqual({ tab: 'B', left: 500 + I, top: H + I, width: 500 - 2 * I, height: 300 - H - 2 * I })
+    expect(boxes[1]!.top).toBe(300 + H + I)
+  })
+
+  it('a plain or zoomed page tab gets the whole area: no header, no inset', () => {
+    const whole = [{ tab: 'P', left: 0, top: 0, width: 1000, height: 600 }]
+    expect(frameBoxes(view(['P'], pages('P')), undefined, area, false)).toEqual(whole)
+    // Zoomed by the person or by D5 (PaneView.visible holds the zoomed pane alone).
+    const root = split('r', 'row', [leaf('T'), leaf('P')])
+    expect(frameBoxes(view(['P'], pages('P'), true), root, area, false)).toEqual(whole)
+  })
+
+  it("a live divider drag's sizes move the frame", () => {
+    const root = split('r', 'row', [leaf('T'), leaf('P')])
+    const dragged = withSizes(root, 'r', [0.3, 0.7])
+    expect(frameBoxes(view(['T', 'P'], pages('P')), dragged, area, true)[0]).toMatchObject({ left: 300 + I, width: 700 - 2 * I })
+  })
+
+  it('terminal panes and an area not measured yet yield nothing; edges are whole pixels', () => {
+    const root = split('r', 'row', [leaf('T'), leaf('U')])
+    expect(frameBoxes(view(['T', 'U'], pages()), root, area, true)).toEqual([])
+    expect(frameBoxes(view(['P'], pages('P')), undefined, { width: 0, height: 0 }, false)).toEqual([])
+    const three = split('r', 'row', [leaf('A'), leaf('P'), leaf('B')])
+    const [p] = frameBoxes(view(['A', 'P', 'B'], pages('P')), three, { width: 1001, height: 601 }, true)
+    for (const v of [p!.left, p!.top, p!.width, p!.height]) expect(Number.isInteger(v)).toBe(true)
   })
 })

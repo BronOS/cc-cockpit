@@ -62,7 +62,7 @@ import {
   type SwitcherState
 } from './tab-switcher'
 import { SessionRegistry, tabIo } from './terminal-session'
-import { PageTabArea, pageFrames } from './PageTabArea'
+import { pageFrames } from './PageTabArea'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -1416,11 +1416,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onRestart={restart}
           onClose={requestClose}
           drop={splitMenu ? { at: splitMenu.anchor, edge: splitMenu.edge, label: labelOf(splitMenu.anchor) } : paneDrop}
-        >
-          {/* A page tab has no terminal and is never a pane: its frame is drawn by PageTabArea, in a
-              layer of its own laid over this placeholder, which fills the whole split area. */}
-          <PageTabArea tabs={state.tabs} listed={state.listed} activeId={state.activeId} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen} />
-        </SplitArea>
+          // SplitArea renders the page tabs' PageTabArea itself: it holds the tree and a live
+          // divider drag's sizes, which place the frames (design-split-pages.md §2).
+          listed={state.listed}
+          inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen}
+        />
       </Zones>
       {paletteCommands && (
         <CommandPalette

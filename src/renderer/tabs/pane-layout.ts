@@ -307,3 +307,61 @@ export function sizesOf(root: PaneNode, splitId: string): number[] | undefined {
   }
   return undefined
 }
+
+/** A frame's box in pixels, relative to the split area (the page tab layer's box). */
+export interface FrameBox {
+  tab: string
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/** What `frameBoxes` reads of the view: the panes drawn now, whether zoomed, which of them are page tabs. */
+export interface FrameView {
+  /** The panes drawn now (PaneView.visible): the plain tab, the zoomed pane or every pane of the group. */
+  visible: readonly string[]
+  /** Zoomed by the person or by D5's automatic zoom: the one visible pane fills the area. */
+  zoomed: boolean
+  /** Whether a tab is a page tab (the only panes with a frame). */
+  isPage(tabId: string): boolean
+}
+
+/**
+ * Pixels a frame leaves uncovered on each side of its pane while several panes show
+ * (design-split-pages.md §2): the splitter's grab zone (`::before`, 3px into each neighbour) and the
+ * focused pane's 2px outline (`.pane[data-focused-pane]::after`) are drawn in `.terminals`, under the
+ * frame layer, so whatever a frame covered could be neither seen nor grabbed.
+ */
+export const FRAME_INSET_PX = 3
+
+/**
+ * Where each visible page pane's frame goes (design-split-pages.md §2): its `rectsOf` rect in pixels
+ * of `area`, less the pane header (the one line a page cannot draw: the shell's own, naming the
+ * plugin) and FRAME_INSET_PX on each side while `many` panes show. A plain or zoomed page tab gets
+ * the whole area, no inset. Terminal panes yield nothing (they draw themselves); an area not
+ * measured yet (0x0) yields nothing. `root` is the arrangement as drawn now, a live divider drag's
+ * sizes included (SplitArea's `withSizes`), so frames move with the divider. Pure and DOM-free: the
+ * area is the layer's measured box (PageTabArea), never SplitArea's lagging `area` state. Edges are
+ * rounded to whole pixels, so neighbouring frames never overlap and their text is not blurred.
+ */
+export function frameBoxes(view: FrameView, root: PaneNode | undefined, area: Size, many: boolean): FrameBox[] {
+  if (!(area.width > 0) || !(area.height > 0)) return []
+  const pages = view.visible.filter((id) => view.isPage(id))
+  if (pages.length === 0) return []
+  const rects = root !== undefined && !view.zoomed ? rectsOf(root).panes : undefined
+  const inset = many ? FRAME_INSET_PX : 0
+  const header = many ? PANE_CHROME.header : 0
+  const out: FrameBox[] = []
+  for (const tab of pages) {
+    const frac = rects ? rects.find((p) => p.tab === tab) : { x: 0, y: 0, w: 1, h: 1 }
+    if (!frac) continue
+    const px = toPx(frac, area)
+    const left = Math.round(px.x + inset)
+    const top = Math.round(px.y + header + inset)
+    const right = Math.round(px.x + px.w - inset)
+    const bottom = Math.round(px.y + px.h - inset)
+    out.push({ tab, left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) })
+  }
+  return out
+}

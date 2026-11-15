@@ -18,7 +18,8 @@ import {
   withSizes,
   type Size
 } from './pane-layout'
-import { tabLabel } from './tab-label'
+import { PageTabArea, usePageUnavailable } from './PageTabArea'
+import { pageTabMarks, tabLabel } from './tab-label'
 import type { SessionRegistry } from './terminal-session'
 import { TerminalView } from './TerminalView'
 
@@ -89,8 +90,10 @@ export function SplitArea(props: {
   onRestart: (tabId: string) => void
   onClose: (tabId: string) => void
   drop: PaneDrop | null
-  /** Drawn inside the area after the panes: the page tabs' placeholder (PageTabArea), which fills it. */
-  children?: React.ReactNode
+  /** The pane's first `tabs.list` answered (PageTabArea's `sync`). */
+  listed: boolean
+  /** The zones are inert (a dialog, the settings screen, an overlay): so is the page tab layer. */
+  inert: boolean
 }): React.JSX.Element {
   const { tabs, activeId, view, keysOff, sessions, details } = props
   const areaRef = useRef<HTMLDivElement>(null)
@@ -126,6 +129,7 @@ export function SplitArea(props: {
   const layout = useMemo(() => (tiled && root ? rectsOf(root) : undefined), [tiled, root])
   const rectOf = (tabId: string): PaneRect => layout?.panes.find((p) => p.tab === tabId) ?? { x: 0, y: 0, w: 1, h: 1 }
   const many = view.visible.length > 1
+  const unavailable = usePageUnavailable()
 
   // D3: the keys went off (this view's focused pane was taken away from elsewhere). The terminal
   // that had them may still hold the DOM focus (a pane moved out stays mounted, hidden): drop it,
@@ -196,9 +200,6 @@ export function SplitArea(props: {
     >
       {tabs.length === 0 && <p className="tabs-empty">No tabs yet. Use + to start Claude or a shell.</p>}
       {tabs.map((tab) => {
-        // A page tab is never a pane (design.md §3 "Split groups": terminal tabs only): no terminal
-        // here, its frame is PageTabArea's, laid over the whole area while it is the selected tab.
-        if (tab.kind === 'page') return null
         const shown = view.visible.includes(tab.id)
         const r = shown && tiled ? rectOf(tab.id) : { x: 0, y: 0, w: 1, h: 1 }
         const focused = tab.id === activeId && !keysOff
@@ -206,7 +207,7 @@ export function SplitArea(props: {
         const label = tabLabel(tab, detail?.title, detail?.name)
         const asking = detail && ASKS.has(detail.status) ? statusText(detail.status, detail.tool) : undefined
         // While live, the body keeps its size from the drag's start and is scaled into the new box.
-        const start = drag?.live ? drag.startPx[tab.id] : undefined
+        const start = drag?.live && tab.kind !== 'page' ? drag.startPx[tab.id] : undefined
         let bodyStyle: React.CSSProperties | undefined
         if (start && start.width > 0 && start.height > 0) {
           const now = bodyPx(r)
@@ -234,16 +235,25 @@ export function SplitArea(props: {
             onPointerDownCapture={() => props.onPanePress(tab.id)}
           >
             {many && <PaneHeader tab={tab} label={label} detail={detail} asking={asking} focused={focused} />}
-            <div className="pane-body" style={bodyStyle}>
-              <TerminalView
-                tab={tab}
-                shown={shown}
-                focused={focused}
-                sessions={sessions}
-                onRestart={() => props.onRestart(tab.id)}
-                onClose={() => props.onClose(tab.id)}
-              />
-            </div>
+            {tab.kind === 'page' ? (
+              // A page pane's body is empty: its frame lies over it, in PageTabArea's layer
+              // (design-split-pages.md §2), and moves live with a divider (no CSS scaling: a scaled
+              // frame blurs its text and misplaces clicks; a page has no pty to spare a resize).
+              <div className="pane-body pane-page-body">
+                {unavailable.has(tab.id) && <p className="pane-page-unavailable">This page is not available: its plugin is off or did not load.</p>}
+              </div>
+            ) : (
+              <div className="pane-body" style={bodyStyle}>
+                <TerminalView
+                  tab={tab}
+                  shown={shown}
+                  focused={focused}
+                  sessions={sessions}
+                  onRestart={() => props.onRestart(tab.id)}
+                  onClose={() => props.onClose(tab.id)}
+                />
+              </div>
+            )}
           </section>
         )
       })}
@@ -292,7 +302,18 @@ export function SplitArea(props: {
             </div>
           )
         })}
-      {props.children}
+      {/* Page tabs' frames live in a layer outside the React root, laid over this placeholder while
+          any page pane shows here; each frame placed at its pane's body box (frameBoxes). */}
+      <PageTabArea
+        tabs={tabs}
+        listed={props.listed}
+        activeId={activeId}
+        inert={props.inert}
+        visible={view.visible}
+        zoomed={view.zoomTab !== undefined}
+        root={root}
+        many={many}
+      />
       {props.drop && dropRect && (
         <div className="pane-drop-preview" style={box(dropRect)} aria-hidden="true">
           <span className="pane-drop-label">
@@ -317,7 +338,10 @@ function PaneHeader(props: {
   focused: boolean
 }): React.JSX.Element {
   const { tab, detail } = props
-  const by = tab.openedBy !== undefined ? (tab.openedByName ?? tab.openedBy) : undefined
+  // A page tab's plugin is named from TabInfo.page: a page can draw anything, a look-alike Claude
+  // terminal included, and this header (with the plugin's name) is the one line it cannot draw.
+  const by = tab.openedBy !== undefined ? (tab.openedByName ?? tab.openedBy) : tab.kind === 'page' ? tab.page?.plugin : undefined
+  const marks = pageTabMarks(tab)
   return (
     <div className="pane-header" data-pane-header="" data-focused={props.focused || undefined}>
       {detail && <StatusDot status={detail.status} {...(detail.tool ? { tool: detail.tool } : {})} />}
@@ -327,6 +351,7 @@ function PaneHeader(props: {
         {props.label}
         {tab.notStarted ? ' (not started)' : tab.exit ? ' (exited)' : ''}
       </span>
+      {marks.length > 0 && <span className="pane-header-marks">{marks.join(', ')}</span>}
       {props.asking && <span className="pane-header-ask">{props.asking}</span>}
       {by !== undefined && <span className="pane-header-by">Opened by {by}</span>}
     </div>

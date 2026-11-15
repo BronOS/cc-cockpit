@@ -268,9 +268,9 @@ describe('the page asks: ccPanel.tab.discuss() and the shell pool', () => {
     const asks: string[] = []
     const t = pool({ discuss: (tabId) => asks.push(tabId) })
     t.frames.sync([entry(TAB_A), entry(TAB_B)])
-    t.frames.show(TAB_A)
+    t.frames.show([TAB_A], TAB_A)
     await settle()
-    t.frames.show(TAB_B)
+    t.frames.show([TAB_B], TAB_B)
     await settle()
     const a = t.el(TAB_A)
     const b = t.el(TAB_B)

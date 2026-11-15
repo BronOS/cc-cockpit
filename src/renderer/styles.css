@@ -1008,13 +1008,19 @@ iframe:focus-visible {
 .terminal-view[hidden] {
   display: none;
 }
-/* Page tabs (design-editor.md §1, PageTabArea.tsx): the placeholder fills the tab area; the frames
-   are in a layer of their own outside the React root (so a web reconnect's remount keeps them), laid
-   over the placeholder at its measured box. z-index 1 keeps it under every floating thing of the
-   shell (menus 30, the palette, dialogs, the settings screen, overlays), which all have more. */
+/* Page tabs (design-editor.md §1, design-split-pages.md §2, PageTabArea.tsx): the placeholder fills
+   the split area; the frames are in a layer of their own outside the React root (so a web
+   reconnect's remount keeps them), laid over the placeholder at its measured box while any page pane
+   shows, each frame placed at its pane's body box in pixels (frameBoxes). z-index 1 keeps it under
+   every floating thing of the shell (menus 30, the palette, dialogs, the settings screen, overlays),
+   which all have more. The layer itself takes no events, so the pane headers and dividers under its
+   empty parts stay reachable; only the frames do. `overflow: hidden`: a box never paints outside the
+   area. A divider drag moves frames live (never CSS-scaled: that would blur text and misplace clicks). */
 .page-tab-area {
   position: absolute;
   inset: 0;
+  /* Only a box to measure: a terminal pane beside a page pane, and every header, stays clickable. */
+  pointer-events: none;
 }
 .page-tab-area[hidden],
 .page-tab-layer[hidden],
@@ -1024,13 +1030,25 @@ iframe:focus-visible {
 .page-tab-layer {
   position: fixed;
   z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
 }
 .page-tab-frame {
+  position: absolute;
   display: block;
-  width: 100%;
-  height: 100%;
+  box-sizing: border-box;
   border: 0;
   background: var(--cc-bg);
+  pointer-events: auto;
+}
+/* A page pane's body: empty, its frame lies over it; the one line when the page is not available. */
+.pane-page-body {
+  background: var(--cc-bg);
+}
+.pane-page-unavailable {
+  margin: 0;
+  padding: 16px;
+  color: var(--cc-fg-muted);
 }
 /* The fit addon measures the host's content box, so this padding is room around the text, not
    cells lost off the edge. Less on the right: xterm's scrollbar sits there. */
@@ -2026,6 +2044,10 @@ iframe:focus-visible {
 }
 .pane-header-by {
   margin-left: auto;
+  color: var(--cc-fg-subtle);
+}
+/* A page pane's core marks in words (tab-label.ts pageTabMarks): unsaved changes, not seen yet. */
+.pane-header-marks {
   color: var(--cc-fg-subtle);
 }
 .pane-starting {
