@@ -119,14 +119,14 @@ External review: auto
       limits and a plugin's Limits; the caps described as defaults the person can change
 - [x] guide and features: the two new keys with defaults and ceilings; design-rooms §1 and §6 a short note
 - [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; drift tests pass
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 5: Verify acceptance criteria [model: sonnet]
 
-- [ ] verify both caps configurable globally and per plugin, enforced on create/open/join, never evicting
-- [ ] full suite once at the end: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`
-- [ ] `npm run build` leaves no diff in committed dist files
-- [ ] run the e2e specs listed in Testing Strategy
+- [x] verify both caps configurable globally and per plugin, enforced on create/open/join, never evicting
+- [x] full suite once at the end: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`
+- [x] `npm run build` leaves no diff in committed dist files
+- [x] run the e2e specs listed in Testing Strategy
 
 ### Task 6: [Final] Update documentation [model: sonnet]
 
