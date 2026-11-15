@@ -381,6 +381,49 @@ describe('zipEntries', () => {
     expect(reads).toBe(2)
   })
 
+  it('an abort ends a zip whose file close is stalled after its last byte; the descriptor closes later', async () => {
+    // A close hung on a dead network mount: before the race, the generator's return (the browser
+    // closing the response, a drop) waited on it, and with it the download's live slot.
+    write('a.txt', 'a')
+    write('b.txt', 'b')
+    let release: (() => void) | undefined
+    let closed = false
+    let opens = 0
+    const open: typeof openVerified = async (path, expect) => {
+      opens++
+      const v = await openVerified(path, expect)
+      if (v.ok && path.endsWith('a.txt')) {
+        const realClose = v.handle.close.bind(v.handle)
+        v.handle.close = async () => {
+          await new Promise<void>((r) => (release = r))
+          await realClose()
+          closed = true
+        }
+      }
+      return v
+    }
+    const waitFor = async (cond: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5))
+      expect(cond()).toBe(true)
+    }
+    const ac = new AbortController()
+    const sink = new Writable({
+      write(_c, _e, cb) {
+        cb()
+      },
+    })
+    const zipping = pipeline(Readable.from(zipEntries(walkFolder(walkOpts(proj, { signal: ac.signal })), { signal: ac.signal, open })), sink)
+    await waitFor(() => release !== undefined)
+    ac.abort(new Error('gone'))
+    const outcome = await Promise.race([zipping.then(() => 'ended', (e: Error) => e.message), new Promise((r) => setTimeout(() => r('still held'), 2000))])
+    expect(outcome).toBe('gone')
+    // The next file is never opened, and the stalled close finishes in the background.
+    expect(opens).toBe(1)
+    expect(closed).toBe(false)
+    release?.()
+    await waitFor(() => closed)
+  })
+
   it('on a write error destroys the source mid-entry, closing the descriptor and the walk', async () => {
     write('a.bin', randomBytes(8 * ZIP_CHUNK_BYTES))
     for (let i = 0; i < 5; i++) write(`b${i}.txt`)

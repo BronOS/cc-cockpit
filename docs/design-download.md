@@ -371,8 +371,9 @@ No open questions are left: the owner answered the first draft's four and the re
 - A browser close or a drop frees a stream's live slot at once even when a file read is stalled (a dead network mount):
   the read and the zip's feed are awaited only until the abort, no read starts after it, and the descriptor is closed in
   the background when the stalled read returns. The same holds for every other await once the slot is taken: the close
-  handling is installed before the zip's data dir lookup, which is raced against the abort, and a file's close after the
-  last byte is raced against a drop.
+  handling is installed before the zip's data dir lookup, which is raced against the abort, the walk's `lstat` and
+  listing are raced, each zip entry's open and its close after the entry's last byte are raced against the abort, and a
+  single file's close after the last byte is raced against a drop.
 - A folder's walk skip reason `deep` (past depth 64) was added. Folder caps are enforced again while streaming, with no
   second walk at the GET.
 - One GET per download was seen in Chromium (Task 1), so no second-GET grace exists; Electron has no Chrome download

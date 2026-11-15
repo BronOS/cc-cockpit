@@ -504,29 +504,35 @@ describe('streams', () => {
     expect(failures).toEqual([])
   })
 
-  it('a browser that goes away stops a zip walk stalled on a hung fs call (its live slot freed)', async () => {
-    write(join(proj, 'dir/a'), 'a')
-    write(join(proj, 'dir/slow'), 's')
-    // Hung only once the count is done: the writer's walk then waits on it forever (a dead network mount).
-    let stall = false
-    const hung = new Promise<never>(() => {})
-    const walkFs = {
-      lstat: (p: string): Promise<Stats> => (stall && p.endsWith('/slow') ? hung : lstat(p)),
-      readdir: (p: string): Promise<Buffer[]> => Promise.resolve(readdirSync(p, { encoding: 'buffer' })),
+  for (const call of ['lstat', 'readdir'] as const) {
+    for (const how of ['browser close', 'dropAll'] as const) {
+      it(`a ${how} stops a zip walk stalled on a hung ${call} (its live slot freed)`, async () => {
+        write(join(proj, 'dir/a'), 'a')
+        write(join(proj, 'dir/slow/x'), 's')
+        // Hung only once the count is done: the writer's walk then waits on it forever (a dead network mount).
+        let stall = false
+        const hung = new Promise<never>(() => {})
+        const walkFs = {
+          lstat: (p: string): Promise<Stats> => (stall && call === 'lstat' && p.endsWith('/slow') ? hung : lstat(p)),
+          readdir: (p: string): Promise<Buffer[]> =>
+            stall && call === 'readdir' && p.endsWith('/slow') ? hung : Promise.resolve(readdirSync(p, { encoding: 'buffer' })),
+        }
+        const d = make({ walkFs })
+        await d.start(VIEW, rel('dir'), false)
+        stall = true
+        const res = new FakeRes()
+        const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+        await waitFor(() => res.status === 200)
+        await new Promise((r) => setTimeout(r, 20))
+        const dropped = how === 'dropAll' ? d.dropAll() : (res.destroy(), Promise.resolve())
+        const result = await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])
+        expect(result).toMatchObject({ status: 'sent', completed: false, cut: how === 'dropAll' ? 'dropped' : 'closed' })
+        expect(await Promise.race([dropped.then(() => 'settled'), new Promise((r) => setTimeout(() => r('still held'), 2000))])).toBe('settled')
+        expect(d.liveCount).toBe(0)
+        expect(failures).toEqual([])
+      })
     }
-    const d = make({ walkFs })
-    await d.start(VIEW, rel('dir'), false)
-    stall = true
-    const res = new FakeRes()
-    const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
-    await waitFor(() => res.status === 200)
-    await new Promise((r) => setTimeout(r, 20))
-    res.destroy()
-    const result = await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])
-    expect(result).toMatchObject({ status: 'sent', completed: false, cut: 'closed' })
-    expect(d.liveCount).toBe(0)
-    expect(failures).toEqual([])
-  })
+  }
 
   for (const how of ['browser close', 'dropAll'] as const) {
     it(`a ${how} frees the live slot of a zip whose data dir lookup stalls after the head`, async () => {
@@ -577,6 +583,42 @@ describe('streams', () => {
     release?.()
     await waitFor(() => closed)
   })
+
+  for (const how of ['browser close', 'dropAll'] as const) {
+    it(`a ${how} frees the live slot of a zip whose file close stalls after its last byte (it closes later)`, async () => {
+      write(join(proj, 'dir/a'), 'a')
+      write(join(proj, 'dir/b'), 'b')
+      let release: (() => void) | undefined
+      let closed = false
+      const open: typeof openVerified = async (path, expect) => {
+        const v = await openVerified(path, expect)
+        if (v.ok && path.endsWith('/a')) {
+          const realClose = v.handle.close.bind(v.handle)
+          v.handle.close = async () => {
+            await new Promise<void>((r) => (release = r))
+            await realClose()
+            closed = true
+          }
+        }
+        return v
+      }
+      const d = make({ open })
+      await d.start(VIEW, rel('dir'), false)
+      const res = new FakeRes()
+      const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+      await waitFor(() => release !== undefined)
+      expect(d.liveCount).toBe(1)
+      const dropped = how === 'dropAll' ? d.dropAll() : (res.destroy(), Promise.resolve())
+      const result = await Promise.race([serving, new Promise((r) => setTimeout(() => r('still held'), 2000))])
+      expect(result).toMatchObject({ status: 'sent', completed: false, cut: how === 'dropAll' ? 'dropped' : 'closed' })
+      expect(await Promise.race([dropped.then(() => 'settled'), new Promise((r) => setTimeout(() => r('still held'), 2000))])).toBe('settled')
+      expect(d.liveCount).toBe(0)
+      expect(closed).toBe(false)
+      release?.()
+      await waitFor(() => closed)
+      expect(failures).toEqual([])
+    })
+  }
 
   for (const kind of ['file', 'folder'] as const) {
     it(`a browser that goes away frees the live slot of a ${kind} whose read is stalled (the descriptor closes later)`, async () => {

@@ -32,8 +32,8 @@
 // The writer is an async generator: the response pulls it through `pipeline(Readable.from(zip), res)`,
 // so back-pressure reaches the deflate stream and the file reads, and a closed socket returns the
 // generator, which closes the open descriptor and returns the walk (its own `signal` stops it too).
-// Nothing a dead mount can stall (an open, a read) is awaited past the abort: the slot is freed at
-// once, and a stalled read's descriptor is closed in the background when that read returns.
+// Nothing a dead mount can stall (an open, a read, a close) is awaited past the abort: the slot is
+// freed at once, and a stalled read's descriptor is closed in the background when that read returns.
 //
 // Pure Node, no Electron (the plan's rule for `main/files/downloads.ts` and its helpers).
 import type { Stats } from 'node:fs'
@@ -201,10 +201,15 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
       const close = (): Promise<void> => handle.close().catch(() => undefined)
       // Aborted: the descriptor is closed in the background once the feed's last read returns (a
       // FileHandle's close waits for it anyway), and no read starts after the abort (`fileChunks`
-      // checks the signal before each). Otherwise it closes here, before the next entry opens.
+      // checks the signal before each). Otherwise it closes here, before the next entry opens, raced
+      // against the abort all the same: a close stalled on a dead network mount after the entry's
+      // last byte must not hold the generator's `return` (and the live slot, and `dropAll`) once the
+      // browser goes away or a drop comes; it goes on in the background then.
       if (signal?.aborted) void (fed ?? Promise.resolve()).catch(() => undefined).then(close)
-      else await close()
+      else await untilAborted(close(), signal).catch(() => undefined)
     }
+    // A close cut short by the abort above ends the zip here, not at the walk's next call.
+    signal?.throwIfAborted()
   }
 
   signal?.throwIfAborted()
