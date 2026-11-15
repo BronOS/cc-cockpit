@@ -149,10 +149,18 @@ describe('walkFolder', () => {
     write('back\\slash')
     write('ctl\u0001x')
     write('bidi‮txt.exe')
-    writeFileSync(Buffer.concat([Buffer.from(proj + '/bad'), Buffer.from([0xff, 0xfe])]), 'x')
+    // APFS refuses a name that is not UTF-8 (EILSEQ) on the macOS runner; walkName's byte checks
+    // below still cover it there.
+    let badBytes = true
+    try {
+      writeFileSync(Buffer.concat([Buffer.from(proj + '/bad'), Buffer.from([0xff, 0xfe])]), 'x')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EILSEQ') throw err
+      badBytes = false
+    }
     const skipped: DownloadSkipped = {}
     expect(await names(opts(proj), skipped)).toEqual(['proj/', 'proj/ok.txt'])
-    expect(skipped).toEqual({ name: 4 })
+    expect(skipped).toEqual({ name: badBytes ? 4 : 3 })
     expect(walkName(Buffer.from([0x61, 0xc3]))).toBeNull()
     expect(walkName(Buffer.from('é.txt'))).toBe('é.txt')
     // A leading BOM must not be stripped into a twin's name.

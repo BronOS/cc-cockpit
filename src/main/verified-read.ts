@@ -58,6 +58,11 @@ export function sameFile(a: Pick<Stats, 'dev' | 'ino'>, b: Pick<Stats, 'dev' | '
   return a.dev === b.dev && a.ino === b.ino
 }
 
+/** macOS's EOPNOTSUPP (102), which libuv leaves unnamed. Only on darwin: 102 is another errno on Linux. */
+function isDarwinEopnotsupp(err: unknown): boolean {
+  return process.platform === 'darwin' && (err as NodeJS.ErrnoException).errno === -102
+}
+
 export type VerifiedOpen = { ok: true; handle: FileHandle; stat: Stats } | { ok: false; problem: Exclude<VerifiedProblem, 'too-large'> }
 
 /**
@@ -79,7 +84,9 @@ export async function openVerified(real: string, expect?: Pick<Stats, 'dev' | 'i
     if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, problem: 'missing' }
     if (code === 'ELOOP') return { ok: false, problem: 'symlink' }
     // A Unix socket cannot be opened as a file (Linux ENXIO, macOS EOPNOTSUPP): not a file, not an error.
-    if (code === 'ENXIO' || code === 'EOPNOTSUPP') return { ok: false, problem: 'not-file' }
+    // On macOS libuv has no name for that errno (102, not its ENOTSUP 45), so Node reports
+    // "Unknown system error -102" with no usable `code` (seen on the macos-15 CI runner).
+    if (code === 'ENXIO' || code === 'EOPNOTSUPP' || isDarwinEopnotsupp(err)) return { ok: false, problem: 'not-file' }
     throw err
   }
   try {

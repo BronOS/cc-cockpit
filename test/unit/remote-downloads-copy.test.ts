@@ -104,7 +104,7 @@ describe('placeDownload without hard links', () => {
   it('copies the file and removes the temp', async () => {
     const temp = join(dir, '.cc-download-aa')
     await writeFile(temp, 'hello')
-    const final = await placeDownload(temp, dir, 'a.txt')
+    const final = await placeDownload(temp, dir, 'a.txt', { platform: 'linux' })
     expect(final).toBe(join(dir, 'a.txt'))
     expect(await readFile(final, 'utf8')).toBe('hello')
     expect(await readdir(dir)).toEqual(['a.txt'])
@@ -115,7 +115,7 @@ describe('placeDownload without hard links', () => {
     await writeFile(temp, 'new')
     await writeFile(join(dir, 'a.txt'), 'old')
     await symlink(join(dir, 'nowhere'), join(dir, 'a (1).txt'))
-    const final = await placeDownload(temp, dir, 'a.txt')
+    const final = await placeDownload(temp, dir, 'a.txt', { platform: 'linux' })
     expect(final).toBe(join(dir, 'a (2).txt'))
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('old')
     const names = await readdir(dir)
@@ -127,7 +127,7 @@ describe('placeDownload without hard links', () => {
     const temp = join(dir, '.cc-download-cc')
     await writeFile(temp, 'hello')
     state.writeCode = 'ENOSPC'
-    await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('disk full')
+    await expect(placeDownload(temp, dir, 'a.txt', { platform: 'linux' })).rejects.toThrow('disk full')
     expect(await readdir(dir)).toEqual([])
   })
 
@@ -138,7 +138,7 @@ describe('placeDownload without hard links', () => {
     // file stays, and only the numbered destination this call created is removed.
     state.raceName = 'a.txt'
     state.sourceCode = 'EMFILE'
-    await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('source failed')
+    await expect(placeDownload(temp, dir, 'a.txt', { platform: 'linux' })).rejects.toThrow('source failed')
     expect(await readdir(dir)).toEqual(['a.txt'])
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('theirs')
   })
@@ -147,7 +147,7 @@ describe('placeDownload without hard links', () => {
     const temp = join(dir, '.cc-download-ff')
     const data = Buffer.alloc(2.5 * 1024 * 1024, 7)
     await writeFile(temp, data)
-    const final = await placeDownload(temp, dir, 'big.bin')
+    const final = await placeDownload(temp, dir, 'big.bin', { platform: 'linux' })
     expect((await readFile(final)).equals(data)).toBe(true)
   })
 
@@ -171,7 +171,7 @@ describe('placeDownload without hard links', () => {
     const temp = join(dir, '.cc-download-dd')
     await writeFile(temp, 'hello')
     state.linkCode = 'EACCES'
-    await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('no links')
+    await expect(placeDownload(temp, dir, 'a.txt', { platform: 'linux' })).rejects.toThrow('no links')
     expect(await readdir(dir)).toEqual([])
   })
 })
@@ -202,14 +202,14 @@ describe('a placement cancelled mid-copy', () => {
     await writeFile(temp, big)
     const ac = new AbortController()
     state.onWrite = () => ac.abort(new Error('its window was closed'))
-    await expect(placeDownload(temp, dir, 'big.bin', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    await expect(placeDownload(temp, dir, 'big.bin', { signal: ac.signal, platform: 'linux' })).rejects.toThrow('its window was closed')
     expect(await readdir(dir)).toEqual([])
   })
 
   it('a window closed during the copy saves nothing, and says why', async () => {
     const f = fakeItem()
     const outcomes: DownloadOutcome[] = []
-    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined, platform: 'linux' })
     await writeFile(f.path(), big)
     state.onWrite = () => save.cancel('its window was closed')
     f.complete()
@@ -223,14 +223,14 @@ describe('a placement cancelled mid-copy', () => {
     await writeFile(temp, big)
     const ac = new AbortController()
     state.onClose = () => ac.abort(new Error('its window was closed'))
-    await expect(placeDownload(temp, dir, 'big.bin', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    await expect(placeDownload(temp, dir, 'big.bin', { signal: ac.signal, platform: 'linux' })).rejects.toThrow('its window was closed')
     expect(await readdir(dir)).toEqual([])
   })
 
   it('a window closed during the copy\'s close saves nothing, and says why', async () => {
     const f = fakeItem()
     const outcomes: DownloadOutcome[] = []
-    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined, platform: 'linux' })
     await writeFile(f.path(), big)
     state.onClose = () => save.cancel('its window was closed')
     f.complete()
@@ -253,7 +253,7 @@ describe('a placement cancelled mid-copy', () => {
   it('a cancel after the placement finished keeps the saved file', async () => {
     const f = fakeItem()
     const outcomes: DownloadOutcome[] = []
-    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined, platform: 'linux' })
     await writeFile(f.path(), big)
     f.complete()
     await vi.waitFor(() => expect(outcomes).toHaveLength(1))
@@ -273,7 +273,7 @@ describe('a placement cancelled while a filesystem call ran', () => {
     await writeFile(temp, 'hello')
     const ac = new AbortController()
     state.onLink = abortWith(ac)
-    await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal, platform: 'linux' })).rejects.toThrow('its window was closed')
     expect(await readdir(dir)).toEqual([])
   })
 
@@ -287,7 +287,7 @@ describe('a placement cancelled while a filesystem call ran', () => {
       await writeFile(final, 'theirs')
       ac.abort(new Error('its window was closed'))
     }
-    await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal })).rejects.toThrow('its window was closed')
+    await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal, platform: 'linux' })).rejects.toThrow('its window was closed')
     expect(await readdir(dir)).toEqual(['a.txt'])
     expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('theirs')
   })
@@ -296,7 +296,7 @@ describe('a placement cancelled while a filesystem call ran', () => {
     state.linkCode = undefined
     const f = fakeItem()
     const outcomes: DownloadOutcome[] = []
-    const save = startSave({ item: f.item, dir, name: 'a.txt', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    const save = startSave({ item: f.item, dir, name: 'a.txt', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined, platform: 'linux' })
     await writeFile(f.path(), 'hello')
     state.onLink = () => save.cancel('its window was closed')
     f.complete()
@@ -312,7 +312,7 @@ describe('a placement cancelled while a filesystem call ran', () => {
       const ac = new AbortController()
       if (at === 'create') state.onCreate = abortWith(ac)
       else state.onSourceOpen = abortWith(ac)
-      await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal })).rejects.toThrow('its window was closed')
+      await expect(placeDownload(temp, dir, 'a.txt', { signal: ac.signal, platform: 'linux' })).rejects.toThrow('its window was closed')
       expect(await readdir(dir)).toEqual([])
     })
   }

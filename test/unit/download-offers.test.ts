@@ -154,7 +154,9 @@ describe('offers: a stalled check never holds a place', () => {
     const d = make({ ...stallingDeps('lstat', { on: false }), walkTimeoutMs: 50 })
     mkdirSync(join(proj, 'stalled'))
     const stuck = Array.from({ length: DOWNLOAD_OFFERS_WAITING_MAX }, () => d.offer(CALLER, join(proj, 'stalled'), new AbortController().signal))
-    for (const p of stuck) await expect(p).rejects.toThrow('stalled has too many files to count')
+    // All at once: awaited one by one, the later ones can reject before anything listens (an
+    // unhandled rejection on the slower macOS runner).
+    await Promise.all(stuck.map((p) => expect(p).rejects.toThrow('stalled has too many files to count')))
     await expect(d.offer(CALLER, write(join(proj, 'ok.txt')))).resolves.toMatchObject({ waiting: false })
   })
 
