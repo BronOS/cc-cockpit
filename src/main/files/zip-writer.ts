@@ -39,7 +39,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { crc32, createDeflateRaw } from 'node:zlib'
 import { DOWNLOAD_ZIP_MAX_BYTES, DOWNLOAD_ZIP_MAX_ENTRIES, type DownloadSkipped, type DownloadSkipReason } from '../../shared/downloads'
-import { openVerified, type VerifiedProblem } from '../verified-read'
+import { openVerified, type VerifiedOpen, type VerifiedProblem } from '../verified-read'
 import type { WalkEntry } from './folder-walk'
 
 /** Bytes read from a file per chunk (and the CRC's step); also the batch size of the central directory. */
@@ -85,6 +85,8 @@ export interface ZipOptions {
   maxEntries?: number
   /** Tests only: called after each chunk of a file is read, with the bytes read so far (a file changed mid-read). */
   onChunk?: (entry: WalkEntry, read: number) => void | Promise<void>
+  /** Tests only: the open instead of `openVerified` (one that stalls, as on a dead network mount). */
+  open?: typeof openVerified
 }
 
 interface Central {
@@ -139,7 +141,7 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
 
     let opened: Awaited<ReturnType<typeof openVerified>>
     try {
-      opened = await openVerified(entry.path, entry.stat)
+      opened = await openRaced((opts.open ?? openVerified)(entry.path, entry.stat), signal)
     } catch {
       // EACCES, EIO at the open: nothing written for it yet, so the zip goes on without it.
       if (signal?.aborted) signal.throwIfAborted()
@@ -210,6 +212,36 @@ export async function* zipEntries(entries: AsyncIterable<WalkEntry>, opts: ZipOp
   const cdSize = offset + batchBytes - cdOffset
   batch.push(endRecord(central.length, cdSize, cdOffset))
   yield emit(Buffer.concat(batch))
+}
+
+/**
+ * `opening` rejected with the signal's reason when it aborts first. An open stalled on a dead network
+ * mount would otherwise hold the generator (and with it the response's `pipeline` and the download's
+ * live slot) past a browser close or a revoke, since a generator's `return` waits for its pending
+ * await. The open itself runs on; a descriptor it returns after the abort is closed then.
+ */
+function openRaced(opening: Promise<VerifiedOpen>, signal: AbortSignal | undefined): Promise<VerifiedOpen> {
+  if (!signal) return opening
+  return new Promise<VerifiedOpen>((resolve, reject) => {
+    let late = false
+    const onAbort = (): void => {
+      late = true
+      reject(signal.reason)
+    }
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+    opening.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        if (late && v.ok) void v.handle.close().catch(() => undefined)
+        else resolve(v)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
 }
 
 /**

@@ -77,7 +77,7 @@ import { within } from '../path-within'
 import { displayPath } from '../plugins/link-request'
 import { MAX_OPEN_PATH_LENGTH } from '../sessions/open-file'
 import { openVerified, verifiedProblemText } from '../verified-read'
-import { countFolder, walkFolder, zipRootName, type FolderCount, type WalkFs } from './folder-walk'
+import { countFolder, walkFolder, zipRootName, type CountCap, type FolderCount, type WalkFs } from './folder-walk'
 import { resolveProjectEntry } from './system-files'
 import { zipEntries, ZipCapError, ZIP_CHUNK_BYTES } from './zip-writer'
 
@@ -738,7 +738,7 @@ export class Downloads {
     const shown = 'rel' in target ? (target.rel === '' ? 'the project folder' : displayPath(target.rel)) : displayPath(resolved.named)
     const count = await this.countChecked(resolved, shown)
     if (includeAll && count.allOver !== undefined) {
-      throw new Error(`${shown} with .git and node_modules is too large to download: ${this.overText(count.all)}`)
+      throw new Error(`${shown} with .git and node_modules is too large to download: ${this.overText(count.allCap)}`)
     }
   }
 
@@ -758,7 +758,7 @@ export class Downloads {
     }
     if (!count.ok) {
       if (count.problem === 'timeout') throw new Error(`${shown} has too many files to count`)
-      throw new Error(`${shown} is too large to download: ${this.overText(count.plain)}`)
+      throw new Error(`${shown} is too large to download: ${this.overText(count.cap)}`)
     }
     return count
   }
@@ -788,11 +788,14 @@ export class Downloads {
     }
   }
 
-  /** "more than 20,000 files and folders" or "more than 2.1 GB", from the totals the count stopped at. */
-  private overText(t: { files: number; folders: number; bytes: number }): string {
+  /**
+   * "more than 20,000 files and folders" or "more than 2.1 GB", for the cap the count says it passed
+   * (never guessed from its totals: a listing overflow stops them far under both).
+   */
+  private overText(cap: CountCap | undefined): string {
     const maxEntries = this.deps.maxEntries ?? DOWNLOAD_ZIP_MAX_ENTRIES
     const maxBytes = this.deps.maxBytes ?? DOWNLOAD_ZIP_MAX_BYTES
-    if (t.files + t.folders > maxEntries) return `more than ${maxEntries.toLocaleString('en-US')} files and folders (the limit)`
+    if (cap === 'entries') return `more than ${maxEntries.toLocaleString('en-US')} files and folders (the limit)`
     return `more than ${downloadSizeText(maxBytes)} of files (the limit)`
   }
 

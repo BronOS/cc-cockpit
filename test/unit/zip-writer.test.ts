@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DownloadSkipped } from '../../src/shared/downloads'
 import { walkFolder, type WalkEntry, type WalkOptions } from '../../src/main/files/folder-walk'
 import { dosTime, ZipCapError, zipEntries, ZIP_CHUNK_BYTES, type ZipOptions } from '../../src/main/files/zip-writer'
+import { openVerified } from '../../src/main/verified-read'
 import { readZip } from '../fakes/zip-reader'
 
 let tmp: string
@@ -291,6 +292,46 @@ describe('zipEntries', () => {
     expect(Buffer.concat(got).includes(Buffer.from('504b0506', 'hex'))).toBe(false)
     expect(chunks).toBeLessThan(40)
     expect(fds()).toBe(before)
+  })
+
+  it('an abort ends a zip whose file open is stalled, and the descriptor that comes late is closed', async () => {
+    // An open hung on a dead network mount: before the race, the generator's return (the browser
+    // closing the response) waited on it, and with it the download's live slot.
+    write('a.txt', 'a')
+    let release: (() => void) | undefined
+    let closed = false
+    const open: typeof openVerified = async (path, expect) => {
+      const v = await openVerified(path, expect)
+      if (v.ok) {
+        const close = v.handle.close.bind(v.handle)
+        v.handle.close = async () => {
+          closed = true
+          await close()
+        }
+      }
+      await new Promise<void>((r) => (release = r))
+      return v
+    }
+    const waitFor = async (cond: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5))
+      expect(cond()).toBe(true)
+    }
+    const ac = new AbortController()
+    const sink = new Writable({
+      write(_c, _e, cb) {
+        cb()
+      },
+    })
+    const zipping = pipeline(Readable.from(zipEntries(walkFolder(walkOpts(proj, { signal: ac.signal })), { signal: ac.signal, open })), sink)
+    // Opened for real and then held: the descriptor exists, the zip is waiting on it.
+    await waitFor(() => release !== undefined)
+    ac.abort(new Error('gone'))
+    const outcome = await Promise.race([zipping.then(() => 'ended', (e: Error) => e.message), new Promise((r) => setTimeout(() => r('still held'), 2000))])
+    expect(outcome).toBe('gone')
+    // The open finishes after the abort: its descriptor is closed, never leaked.
+    expect(closed).toBe(false)
+    release?.()
+    await waitFor(() => closed)
   })
 
   it('on a write error destroys the source mid-entry, closing the descriptor and the walk', async () => {

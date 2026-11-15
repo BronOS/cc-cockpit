@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DOWNLOAD_TOKEN_MS, downloadSizeText, type DownloadFailed, type DownloadStart } from '../../src/shared/downloads'
+import { DOWNLOAD_TOKEN_MS, DOWNLOAD_ZIP_MAX_ENTRIES, downloadSizeText, type DownloadFailed, type DownloadStart } from '../../src/shared/downloads'
 import {
   DOWNLOAD_DESKTOP_TEXT,
   Downloads,
@@ -291,6 +291,34 @@ describe('start: which paths', () => {
     expect(starts).toHaveLength(1)
     const many = make({ maxEntries: 2 })
     await expect(many.start(VIEW, rel('big'), false)).rejects.toThrow('more than 2 files and folders')
+  })
+
+  it('names the entry limit for a folder whose listing overflowed, though its totals are tiny', async () => {
+    // 20,001 empty names: the count stops at the listing with no bytes and no entries added, so the
+    // totals alone would have read as the size limit.
+    const full = join(proj, 'full')
+    mkdirSync(full)
+    const walkFs = {
+      lstat: (p: string): Promise<Stats> => lstat(p),
+      readdir: (p: string): Promise<Buffer[]> =>
+        Promise.resolve(p === full ? Array.from({ length: DOWNLOAD_ZIP_MAX_ENTRIES + 1 }, (_, i) => Buffer.from(`e${i}`)) : readdirSync(p, { encoding: 'buffer' })),
+    }
+    const d = make({ walkFs })
+    await expect(d.start(VIEW, rel('full'), false)).rejects.toThrow(
+      `full is too large to download: more than ${DOWNLOAD_ZIP_MAX_ENTRIES.toLocaleString('en-US')} files and folders (the limit)`,
+    )
+    // Inside node_modules, the include choice names it the same way.
+    const inner = join(proj, 'mods/node_modules/full')
+    mkdirSync(inner, { recursive: true })
+    write(join(proj, 'mods/a'), 'x')
+    const inside = make({
+      walkFs: {
+        lstat: (p: string): Promise<Stats> => lstat(p),
+        readdir: (p: string): Promise<Buffer[]> =>
+          Promise.resolve(p === inner ? Array.from({ length: DOWNLOAD_ZIP_MAX_ENTRIES + 1 }, (_, i) => Buffer.from(`e${i}`)) : readdirSync(p, { encoding: 'buffer' })),
+      },
+    })
+    await expect(inside.start(VIEW, rel('mods'), true)).rejects.toThrow('mods with .git and node_modules is too large to download: more than 20,000 files and folders')
   })
 })
 

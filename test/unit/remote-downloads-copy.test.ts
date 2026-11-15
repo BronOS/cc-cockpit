@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   sourceCode: undefined as string | undefined,
   /** Another process's file put at this name right after the failed link (once). */
   raceName: undefined as string | undefined,
+  /** Called after each chunk the copy writes (a cancel arriving mid-copy). */
+  onWrite: undefined as (() => void) | undefined,
 }))
 
 vi.mock('node:fs/promises', async (orig) => {
@@ -33,14 +35,21 @@ vi.mock('node:fs/promises', async (orig) => {
       if (state.sourceCode && flags === 'r') throw Object.assign(new Error('source failed'), { code: state.sourceCode })
       const handle = await real.open(p, flags, mode)
       const creating = typeof flags === 'number' && (flags & fsConstants.O_EXCL) !== 0
-      if (!creating || !state.writeCode) return handle
+      if (!creating || (!state.writeCode && !state.onWrite)) return handle
       const code = state.writeCode
       return new Proxy(handle, {
         get(target, key) {
-          if (key === 'write') {
+          if (key === 'write' && code) {
             return async () => {
               await target.write(Buffer.from('tr'))
               throw Object.assign(new Error('disk full'), { code })
+            }
+          }
+          if (key === 'write') {
+            return async (buf: Buffer, offset: number, length: number) => {
+              const r = await target.write(buf, offset, length)
+              state.onWrite?.()
+              return r
             }
           }
           const value = Reflect.get(target, key) as unknown
@@ -51,7 +60,7 @@ vi.mock('node:fs/promises', async (orig) => {
   }
 })
 
-import { placeDownload } from '../../src/main/remote/remote-downloads'
+import { placeDownload, startSave, type DownloadOutcome, type RemoteDownloadItem } from '../../src/main/remote/remote-downloads'
 
 let dir: string
 beforeEach(async () => {
@@ -60,6 +69,7 @@ beforeEach(async () => {
   state.writeCode = undefined
   state.sourceCode = undefined
   state.raceName = undefined
+  state.onWrite = undefined
 })
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
@@ -122,5 +132,61 @@ describe('placeDownload without hard links', () => {
     state.linkCode = 'EACCES'
     await expect(placeDownload(temp, dir, 'a.txt')).rejects.toThrow('no links')
     expect(await readdir(dir)).toEqual([])
+  })
+})
+
+/** A download item that completes when told to, after the test wrote its bytes at the save path. */
+function fakeItem(): { item: RemoteDownloadItem; path(): string; complete(): void } {
+  let savePath = ''
+  let onDone: ((state: 'completed' | 'cancelled' | 'interrupted') => void) | undefined
+  const item: RemoteDownloadItem = {
+    url: () => 'http://server/d/x',
+    urlChain: () => ['http://server/d/x'],
+    filename: () => 'big.bin',
+    totalBytes: () => 0,
+    receivedBytes: () => 0,
+    setSavePath: (p) => (savePath = p),
+    cancel: () => undefined,
+    onUpdated: () => undefined,
+    onDone: (l) => (onDone = l),
+  }
+  return { item, path: () => savePath, complete: () => onDone?.('completed') }
+}
+
+describe('a placement cancelled mid-copy', () => {
+  const big = Buffer.alloc(3 * 1024 * 1024, 7)
+
+  it('placeDownload stops between chunks and leaves neither the temp nor the copy', async () => {
+    const temp = join(dir, '.cc-download-gg')
+    await writeFile(temp, big)
+    const ac = new AbortController()
+    state.onWrite = () => ac.abort(new Error('its window was closed'))
+    await expect(placeDownload(temp, dir, 'big.bin', ac.signal)).rejects.toThrow('its window was closed')
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('a window closed during the copy saves nothing, and says why', async () => {
+    const f = fakeItem()
+    const outcomes: DownloadOutcome[] = []
+    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    await writeFile(f.path(), big)
+    state.onWrite = () => save.cancel('its window was closed')
+    f.complete()
+    await vi.waitFor(() => expect(outcomes).toHaveLength(1))
+    expect(outcomes[0]).toEqual({ failed: 'its window was closed' })
+    expect(await readdir(dir)).toEqual([])
+  })
+
+  it('a cancel after the placement finished keeps the saved file', async () => {
+    const f = fakeItem()
+    const outcomes: DownloadOutcome[] = []
+    const save = startSave({ item: f.item, dir, name: 'big.bin', progress: () => undefined, done: (o) => outcomes.push(o), log: () => undefined })
+    await writeFile(f.path(), big)
+    f.complete()
+    await vi.waitFor(() => expect(outcomes).toHaveLength(1))
+    save.cancel('its window was closed')
+    expect(outcomes).toEqual([{ saved: join(dir, 'big.bin') }])
+    expect(await readdir(dir)).toEqual(['big.bin'])
+    expect((await readFile(join(dir, 'big.bin'))).equals(big)).toBe(true)
   })
 })

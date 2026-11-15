@@ -294,6 +294,13 @@ export type CountProblem =
   /** The walk did not finish in DOWNLOAD_WALK_MS ("too many files to count"). */
   | 'timeout'
 
+/**
+ * Which cap a too-large count passed. Carried, not re-derived from the totals: a folder whose listing
+ * overflowed stops the count with totals far under both caps (20,001 empty names, never added), and
+ * the refusal must still name the entry limit.
+ */
+export type CountCap = ZipCapError['cap']
+
 export type FolderCount =
   | {
       ok: true
@@ -301,13 +308,15 @@ export type FolderCount =
       plain: DownloadTotals
       /**
        * With them; equal to `plain` when the tree holds neither. When `allOver` is set the walk stopped
-       * counting them past a cap, so these are a lower bound and the include choice is too large.
+       * counting them past a cap (`allCap`), so these are a lower bound and the include choice is too large.
        */
       all: DownloadTotals
       allOver?: CountProblem
+      allCap?: CountCap
       skipped: { plain: DownloadSkipped; all: DownloadSkipped }
     }
-  | { ok: false; problem: CountProblem; plain: DownloadTotals }
+  /** `cap` is set with `too-large`. */
+  | { ok: false; problem: CountProblem; cap?: CountCap; plain: DownloadTotals }
 
 export interface CountOptions extends Omit<WalkOptions, 'includeAll'> {
   /** Tests only: the bound instead of DOWNLOAD_WALK_MS. */
@@ -336,7 +345,9 @@ export async function countFolder(opts: CountOptions): Promise<FolderCount> {
   const skipped = { plain: {} as DownloadSkipped, all: {} as DownloadSkipped }
   const steer: Steering = { pruneWithin: false }
   let allOver: CountProblem | undefined
-  const over = (t: DownloadTotals): boolean => t.bytes > maxBytes || t.files + t.folders > maxEntries
+  let allCap: CountCap | undefined
+  const over = (t: DownloadTotals): CountCap | undefined =>
+    t.files + t.folders > maxEntries ? 'entries' : t.bytes > maxBytes ? 'bytes' : undefined
   try {
     for await (const item of walkItems({ ...opts, includeAll: true, signal }, true, steer)) {
       if (item.type === 'excluded') {
@@ -346,8 +357,9 @@ export async function countFolder(opts: CountOptions): Promise<FolderCount> {
       if (item.type === 'overflow') {
         // Over the cap whatever else the folder holds: a plain one fails the count, one inside `.git` /
         // `node_modules` only makes the include choice too large.
-        if (!item.within) return { ok: false, problem: 'too-large', plain }
+        if (!item.within) return { ok: false, problem: 'too-large', cap: 'entries', plain }
         allOver = 'too-large'
+        allCap = 'entries'
         steer.pruneWithin = true
         continue
       }
@@ -364,9 +376,12 @@ export async function countFolder(opts: CountOptions): Promise<FolderCount> {
       }
       if (allOver === undefined) add(all)
       if (!item.within) add(plain)
-      if (over(plain)) return { ok: false, problem: 'too-large', plain }
-      if (allOver === undefined && over(all)) {
+      const plainCap = over(plain)
+      if (plainCap) return { ok: false, problem: 'too-large', cap: plainCap, plain }
+      const cap = allOver === undefined ? over(all) : undefined
+      if (cap) {
         allOver = 'too-large'
+        allCap = cap
         steer.pruneWithin = true
       }
     }
@@ -377,7 +392,7 @@ export async function countFolder(opts: CountOptions): Promise<FolderCount> {
   } finally {
     clearTimeout(timeout)
   }
-  return allOver === undefined ? { ok: true, plain, all, skipped } : { ok: true, plain, all, allOver, skipped }
+  return allOver === undefined ? { ok: true, plain, all, skipped } : { ok: true, plain, all, allOver, allCap, skipped }
 }
 
 class CountTimeout extends Error {

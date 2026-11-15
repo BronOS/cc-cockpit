@@ -12,7 +12,9 @@
 //    server (or anything else) left at the name is never followed. Then `name (1).ext`, up to `(99)`;
 //  - the bytes are capped (DESKTOP_DOWNLOAD_MAX_BYTES), declared and received: a file has no cap on
 //    the server and a zip is chunked with no length, so the received count is checked on every update;
-//  - a cancel, an interrupt, a cap, a failed link and the window closing all delete the partial; the
+//  - a cancel, an interrupt, a cap, a failed link and the window closing all delete the partial (the
+//    window closing or the server forgotten during the placement too: a copy is checked between chunks
+//    and removed, and only a placement that already finished stays); the
 //    saved file has no exec bit (whatever mode it was written with), so it never runs by a double click
 //    on Linux.
 import { randomBytes } from 'node:crypto'
@@ -103,7 +105,7 @@ const COPY_CHUNK_BYTES = 1024 * 1024
  * creating the destination (it can fail opening the source), so a file another process put at the name
  * after the failed link would have been deleted by the cleanup.
  */
-async function copyExclusive(temp: string, final: string, mode: number): Promise<void> {
+async function copyExclusive(temp: string, final: string, mode: number, signal: AbortSignal | undefined): Promise<void> {
   const out = await open(final, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, mode)
   let made: Stats | undefined
   try {
@@ -112,6 +114,9 @@ async function copyExclusive(temp: string, final: string, mode: number): Promise
     try {
       const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES)
       for (;;) {
+        // A cancel (the window closed, the server forgotten) between chunks: a copy of gigabytes on a
+        // slow mount must not finish into a saved file after it.
+        signal?.throwIfAborted()
         const { bytesRead } = await src.read(buf, 0, buf.length, null)
         if (bytesRead === 0) break
         for (let at = 0; at < bytesRead; ) at += (await out.write(buf, at, bytesRead - at)).bytesWritten
@@ -119,6 +124,8 @@ async function copyExclusive(temp: string, final: string, mode: number): Promise
     } finally {
       await src.close().catch(() => undefined)
     }
+    // The last chunk written and then a cancel: still not placed, so removed like a partial.
+    signal?.throwIfAborted()
     await out.close()
   } catch (err) {
     await out.close().catch(() => undefined)
@@ -135,9 +142,11 @@ async function copyExclusive(temp: string, final: string, mode: number): Promise
  * removed. Its exec bits are cleared first. On a filesystem with no hard links the file is copied
  * instead (`copyExclusive`: the same EEXIST on any entry, never followed, and a failed copy removes
  * only its own file). Rejects with the reason when it is not a regular file, every name up to `(99)`
- * is taken, or the write fails.
+ * is taken, or the write fails, and with `signal`'s reason when it aborts first (checked before each
+ * name and between a copy's chunks): the temp and any partial copy are removed; a link or copy that
+ * already finished is the placed file and stays.
  */
-export async function placeDownload(temp: string, dir: string, name: string): Promise<string> {
+export async function placeDownload(temp: string, dir: string, name: string, signal?: AbortSignal): Promise<string> {
   try {
     const st = await lstat(temp)
     if (!st.isFile()) throw new PlaceError('what was saved is not a file')
@@ -145,11 +154,12 @@ export async function placeDownload(temp: string, dir: string, name: string): Pr
     const mode = st.mode & 0o666
     await chmod(temp, mode)
     for (let n = 0; n <= MAX_NAME_NUMBER; n++) {
+      signal?.throwIfAborted()
       const final = join(dir, numberedName(name, n))
       try {
         await link(temp, final).catch(async (err: unknown) => {
           if (!NO_HARD_LINKS.has(codeOf(err) ?? '')) throw err
-          await copyExclusive(temp, final, mode)
+          await copyExclusive(temp, final, mode, signal)
         })
         return final
       } catch (err) {
@@ -195,10 +205,23 @@ export function startSave(options: SaveOptions): ActiveSave {
   /** Why we cancelled it, when we did: the outcome names it instead of "cancelled". */
   let stopped: string | undefined
   let ended = false
+  /**
+   * The placement after the item completed (a link, or on a filesystem with no hard links a copy of up
+   * to the cap): `stop` aborts it, so the window closing during a copy of gigabytes saves nothing.
+   */
+  let placing: AbortController | undefined
   const cap = (): boolean => item.receivedBytes() > DESKTOP_DOWNLOAD_MAX_BYTES || item.totalBytes() > DESKTOP_DOWNLOAD_MAX_BYTES
   const overText = `it is larger than ${downloadSizeText(DESKTOP_DOWNLOAD_MAX_BYTES)}`
   const stop = (reason: string): void => {
-    if (ended || stopped !== undefined) return
+    if (stopped !== undefined) return
+    if (ended) {
+      // Done already: only a placement still running can be stopped (a finished one, or a failed
+      // item's cleanup, has nothing left to cancel).
+      if (!placing) return
+      stopped = reason
+      placing.abort(new PlaceError(reason))
+      return
+    }
     stopped = reason
     item.cancel()
   }
@@ -234,9 +257,20 @@ export function startSave(options: SaveOptions): ActiveSave {
       void Promise.all([remove(temp), remove(`${temp}.crdownload`)]).then(() => finish({ failed: reason }))
       return
     }
-    placeDownload(temp, dir, name).then(
-      (saved) => finish({ saved }),
+    const placement = new AbortController()
+    placing = placement
+    placeDownload(temp, dir, name, placement.signal).then(
+      // Placed before the cancel could stop it: the file is there, and saved is the truth.
+      (saved) => {
+        placing = undefined
+        finish({ saved })
+      },
       (err: unknown) => {
+        placing = undefined
+        if (placement.signal.aborted && stopped !== undefined) {
+          finish({ failed: stopped })
+          return
+        }
         options.log(`remote download: could not place ${name}: ${errorText(err)}`)
         finish({ failed: err instanceof PlaceError ? err.message : 'it could not be written to Downloads' })
       }

@@ -226,8 +226,8 @@ describe('countFolder', () => {
   it('fails past a cap on the plain totals, by bytes and by entries', async () => {
     write('a.txt', 'a'.repeat(10))
     write('b.txt', 'b'.repeat(10))
-    expect(await countFolder({ ...opts(proj), maxBytes: 15 })).toMatchObject({ ok: false, problem: 'too-large' })
-    expect(await countFolder({ ...opts(proj), maxEntries: 2 })).toMatchObject({ ok: false, problem: 'too-large' })
+    expect(await countFolder({ ...opts(proj), maxBytes: 15 })).toMatchObject({ ok: false, problem: 'too-large', cap: 'bytes' })
+    expect(await countFolder({ ...opts(proj), maxEntries: 2 })).toMatchObject({ ok: false, problem: 'too-large', cap: 'entries' })
     expect(await countFolder({ ...opts(proj), maxEntries: 3, maxBytes: 20 })).toMatchObject({ ok: true })
   })
 
@@ -238,6 +238,7 @@ describe('countFolder', () => {
     if (!r.ok) throw new Error(r.problem)
     expect(r.plain).toEqual({ files: 1, folders: 1, bytes: 1 })
     expect(r.allOver).toBe('too-large')
+    expect(r.allCap).toBe('bytes')
     expect(r.all.bytes).toBeGreaterThan(500)
     expect(r.all.files).toBeLessThan(21)
   })
@@ -250,7 +251,8 @@ describe('countFolder', () => {
     mkdirSync(join(proj, 'many'))
     for (let i = 0; i < DOWNLOAD_ZIP_MAX_ENTRIES; i++) symlinkSync('/nowhere', join(proj, 'many', `l${i}`))
     write('many/real.txt')
-    expect(await countFolder(opts(proj))).toMatchObject({ ok: false, problem: 'too-large' })
+    // The entry cap, not guessed from the totals (which stopped far under both caps).
+    expect(await countFolder(opts(proj))).toMatchObject({ ok: false, problem: 'too-large', cap: 'entries' })
     await expect(names(opts(proj))).rejects.toBeInstanceOf(ZipCapError)
   }, 30_000)
 
@@ -267,6 +269,7 @@ describe('countFolder', () => {
     if (!r.ok) throw new Error(r.problem)
     expect(r.plain).toEqual({ files: 1, folders: 1, bytes: 1 })
     expect(r.allOver).toBe('too-large')
+    expect(r.allCap).toBe('entries')
     // With them included, the writer's walk refuses instead of zipping a cut listing.
     await expect(names(opts(proj, { fs, includeAll: true }))).rejects.toBeInstanceOf(ZipCapError)
     expect(await names(opts(proj, { fs }))).toEqual(['proj/', 'proj/a.txt'])
