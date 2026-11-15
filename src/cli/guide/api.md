@@ -444,6 +444,22 @@ with full Node access.
   `openWithSystem` 3 per 10 s, `trash` 10 a minute. The host has no desktop session in its env, so
   `ctx.exec(['open', ...])` or `xdg-open` fail on Linux: use these. Call them on the person's click.
   An older app has none of them: check `typeof ctx.files.reveal === 'function'`.
+- `ctx.files.download(path, { includeGitAndNodeModules }?)`: download a project file or folder to the
+  device of the web access browser view the person clicked in (a phone, a laptop's browser, the
+  desktop's remote window of a server). A file goes as itself, under its own name (a symlink's
+  name, with its target's bytes); a folder goes as `<name>.zip` (`''` is the project folder),
+  without the `.git` and `node_modules` folders below it unless `includeGitAndNodeModules` is
+  `true` (offer that as a second menu item, "Download as .zip with .git and node_modules"); links,
+  special files and unreadable entries are left out. Call it from the person's click in a panel,
+  slot, overlay or settings page: the click's browser view is where it goes, and only that one. It
+  rejects with no such view (a timer, a plugin command, more than 10 s after the click: "a download
+  needs a click in a browser view"), from the desktop's own window ("the file is already on this
+  computer"), for a path whose real path is outside the project, a missing one, one that is not a
+  file or folder, and a folder past 2 GiB of files or 20,000 entries. It resolves once the browser
+  view was handed the download (the browser shows its progress) and rejects with a message to show
+  the person (in the panel, not a log). At most 10 per minute per plugin and window. Show the menu
+  items only where they work: in a browser view (`ccPanel.view.remote`, a UI hint only) and when
+  `typeof ctx.files.download === 'function'` (an older app has none).
 - With web access, `reveal` and `openWithSystem` reject when the click came from a browser view: they
   act on the host's screen. A panel, slot, overlay or settings page reads `ccPanel.view.remote`
   (`true` in a browser view, set by the app's shell, `ccc guide panels`) to leave such items out of

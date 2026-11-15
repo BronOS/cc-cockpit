@@ -109,6 +109,11 @@ describe('REMOTE_CLASS drift', () => {
   it.each(['trash.ask', 'trash.settled', 'trash.answer'])('%s is yes', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
   })
+
+  // Downloads (design-download.md §6): sent to one browser view only, the one the link is for.
+  it.each(['downloads.start', 'downloads.failed'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
 })
 
 // Every channel whose name says it manages web access is `no`, but for the six server mode opens to

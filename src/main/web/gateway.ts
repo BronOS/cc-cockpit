@@ -74,7 +74,7 @@ import {
   type WebSessionReply,
   type WebSignInReply
 } from '../../shared/web-protocol'
-import { contentDisposition } from '../../shared/downloads'
+import { contentDisposition, DOWNLOAD_PATH_PREFIX } from '../../shared/downloads'
 import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import { FAILED_SIGN_IN_WINDOW_MS, type AccessLog } from './access-log'
@@ -144,7 +144,7 @@ export { FOLDERS_PATH }
 /** Server mode's Claude tab counts for the desktop app's machine chip (session-counts.ts); needs a device. */
 export { SESSIONS_PATH }
 /** Where a view's download links point (`/d/<token>`, downloads.ts mints the token). */
-export const DOWNLOAD_PATH_PREFIX = '/d/'
+export { DOWNLOAD_PATH_PREFIX }
 /** Far above a 43-character token; a longer path segment is not one (refused unread). */
 const MAX_DOWNLOAD_TOKEN_LENGTH = 128
 

@@ -1137,6 +1137,19 @@ export interface PluginContext {
      * minute. A symlink is trashed as the link, never what it points to.
      */
     trash(path: string): Promise<void>
+    /**
+     * Download a project file or folder to the device of the web access browser view the person
+     * clicked in (a phone, a laptop's browser, the desktop's remote window). A file goes as itself, a
+     * folder as a `.zip` (`''` is the project folder), without its `.git` and `node_modules` folders
+     * unless `includeGitAndNodeModules` is true. Call it from the person's click in a panel, slot,
+     * overlay or settings page: it needs that browser view as the origin, and rejects with no origin
+     * (a timer, a plugin command, more than 10 s after the click) and from the desktop's own window
+     * (the file is already there). `path` as for `open`; a path whose real path is outside the project
+     * is refused, and so is a folder past 2 GiB of files or 20,000 entries. Resolves once the browser
+     * was handed the download (it shows the progress), rejects with a message to show the person.
+     * At most 10 per minute. Check `typeof ctx.files.download === 'function'`: an older app has none.
+     */
+    download(path: string, options?: { includeGitAndNodeModules?: boolean }): Promise<void>
   }
 
   /**

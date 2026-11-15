@@ -1739,6 +1739,18 @@ function start(server: boolean): void {
       // ctx.files.reveal / openWithSystem / trash: HostApi checked the plugin and its budget and
       // passes its own scope as the caller; SystemFiles checks the path (files/system-files.ts).
       systemFiles,
+      // ctx.files.download: HostApi checked the plugin, the origin view (a live browser view of its
+      // window) and the budget. The view's device is main's own (the connection's sign-in), so the
+      // token's GET must come with that device's cookie. `downloads` is defined below; these run only
+      // once a host exists.
+      downloads: {
+        hasBrowserView: (windowId) => views.viewsOf(windowId).some((v) => isRemoteViewId(v)),
+        start: async (caller, viewId, path, includeAll) => {
+          const deviceId = webConnections.deviceIdOf(viewId, caller.windowId)
+          if (deviceId === undefined) throw new Error('the browser view is gone')
+          await downloads.start({ viewId, windowId: caller.windowId, deviceId }, { projectId: caller.projectId, rel: path }, includeAll)
+        }
+      },
       // In server mode reveal and openWithSystem are refused whatever the origin (design-web.md §9.9).
       server
     }
@@ -2083,11 +2095,16 @@ function start(server: boolean): void {
   const relinkAndOpen = (id: string, path: string): { id: string } => windows.openPath(relinkMissing(registry, id, path).path)
   // Downloads to a browser view's device (design-download.md): the paths, the one-use tokens of
   // `/d/<token>` and the live responses; the gateway routes `/d/` to it and drops a device's streams on
-  // revoke, disconnect, None mode ending and its stop. The hooks reach one view each; until the
-  // `downloads.start` / `downloads.failed` channels exist (plan Task 7) no link is handed out (`start`
-  // answers "gone", so nothing is minted) and a refusal is told to nobody.
+  // revoke, disconnect, None mode ending and its stop. The hooks reach one browser view each
+  // (ViewRegistry.toView), never the desktop page or the hidden page: a link is for the device that
+  // view is on, and `toView` false (the view went meanwhile) drops the token unused.
   const downloads = new Downloads({
-    hooks: { start: () => false, failed: () => undefined },
+    hooks: {
+      start: (viewId, payload) => isRemoteViewId(viewId) && views.toView(viewId, 'downloads.start', payload),
+      failed: (viewId, payload) => {
+        if (isRemoteViewId(viewId)) views.toView(viewId, 'downloads.failed', payload)
+      }
+    },
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     dataDir,

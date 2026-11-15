@@ -302,6 +302,16 @@ export class WebConnections {
   }
 
   /**
+   * The signed-in device behind an open view bound to `windowId` (`none` for None's anonymous caller),
+   * for a download's token (files/downloads.ts: the GET's cookie must name the same device); undefined
+   * for a view that is gone, not bound yet or bound elsewhere. The id is main's own, never the page's.
+   */
+  deviceIdOf(viewId: ViewId, windowId: number): string | undefined {
+    const conn = this.open.get(viewId)
+    return conn?.binding()?.windowId === windowId ? conn.deviceId : undefined
+  }
+
+  /**
    * What ties an open view to the views of the same screen before and after a reconnect (the size
    * a dropped view held goes back to it, views/view-sizes.ts `departed`): its signed-in device's id.
    * Undefined for None's anonymous caller (every browser is that one "device") and a view that is

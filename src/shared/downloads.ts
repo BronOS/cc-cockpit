@@ -89,6 +89,18 @@ export interface DownloadTotals {
   bytes: number
 }
 
+/** Where a view's download links point (`/d/<token>`): the gateway's route, the shell's check of a `downloads.start`. */
+export const DOWNLOAD_PATH_PREFIX = '/d/'
+
+/**
+ * A `downloads.start` url as main mints it: the route and a token of 32 random bytes base64url (43
+ * characters, no padding), nothing else. The shell clicks or shows only such a url, so a malformed
+ * event can never point the `<a download>` anywhere else (another origin, a `javascript:` URL).
+ */
+export function isDownloadUrl(url: unknown): url is string {
+  return typeof url === 'string' && /^\/d\/[A-Za-z0-9_-]{43}$/.test(url)
+}
+
 /** main → the one view that gets it: click this same-origin link now (`<a href={url} download={name}>`). */
 export interface DownloadStart {
   requestId: string

@@ -21,6 +21,10 @@
 // session in its env (host-manager.ts hostEnv), so `open` / `xdg-open` / `gio trash` from ctx.exec
 // fail on Linux, and the env stays narrow: main is where files leave for the system, with its path
 // checks, its refusal of runnable files and the person's confirmation for the Trash.
+//
+// `download` hands a project file or folder to the browser view the person clicked in (design-download.md
+// §2.1): the request carries that view (origin-view.ts, as every request from a listener does), and main
+// checks the path and the view, mints the link and sends it to that view alone. Here only the shapes.
 import type { Disposer, OpenFileRequest, PluginContext } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { viewIdOf, type ViewId } from '../../shared/views'
@@ -99,6 +103,21 @@ export function createFilesApi(deps: FilesApiDeps): PluginContext['files'] {
         if (answer?.trashed === true) return
         if (answer?.trashed === false) throw cancelledError()
         throw new Error('files.trash: unexpected answer from the app')
+      }),
+    download: (path: string, options?: { includeGitAndNodeModules?: boolean }): Promise<void> =>
+      deps.guardAsync(async () => {
+        // '' is the project folder (a zip of it), as for reveal.
+        checkSystemPath('files.download', path, true)
+        if (options !== undefined && (options === null || typeof options !== 'object')) {
+          throw new TypeError('files.download: options must be an object')
+        }
+        const include: unknown = options?.includeGitAndNodeModules
+        if (include !== undefined && typeof include !== 'boolean') {
+          throw new TypeError('files.download: includeGitAndNodeModules must be a boolean')
+        }
+        // The default timeout covers main's folder count (10 s at most, DOWNLOAD_WALK_MS): main answers
+        // once the view has the link, never after the person's download ends.
+        await deps.call('files.download', { pluginId: deps.pluginId, path, includeAll: include === true })
       })
   })
 }

@@ -116,6 +116,11 @@
 //                                                                refuses runnable files to openWithSystem,
 //                                                                and trash asks the person in this window
 //                                                                first (false: they said no)
+//   files.download  { pluginId, path, includeAll } -> null    a project file or folder ('' the project
+//                                                                folder, a zip) to the browser view the
+//                                                                request came from (originOf), only that
+//                                                                one: main/files/downloads.ts checks the
+//                                                                path and mints the view's link
 // Every request may carry the remote view it acts for (rpc.ts `view`, host/ctx/origin-view.ts): used
 // by sessions.focus (select in that view), panels.show (reveal there), overlay.open (an html page
 // opens in that view, design-web.md §5.4), files.open and sessions.openFile (handed on to the plugin
@@ -206,7 +211,9 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import type { RpcHandler, RpcMeta } from '../../host/rpc'
-import type { ViewId } from '../../shared/views'
+import { isRemoteViewId, type ViewId } from '../../shared/views'
+import { DOWNLOAD_PLUGIN_MAX, DOWNLOAD_PLUGIN_WINDOW_MS } from '../../shared/downloads'
+import { DOWNLOAD_DESKTOP_TEXT, DOWNLOAD_NO_ORIGIN_TEXT } from '../files/downloads'
 import type { OAuthTokens, OverlayResult as PluginOverlayResult, PageTabInfo, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { DISCUSS_ASK_MS } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
@@ -604,6 +611,17 @@ export interface HostApiDeps {
     openWithSystem(caller: { windowId: number; projectId: string }, path: unknown): Promise<void>
     trash(caller: { windowId: number; projectId: string }, path: unknown, pluginId: string, signal?: AbortSignal): Promise<boolean>
   }
+  /**
+   * ctx.files.download (main/files/downloads.ts, design-download.md §2.1): `start` hands the path to
+   * Downloads for `view`, a live remote view of this host's window (originOf; HostApi refused every
+   * other origin first), and resolves once that view was sent its link; it throws the text the plugin
+   * shows. `hasBrowserView`: whether the window has a live browser view now, which tells the two
+   * no-origin answers apart (see filesDownload). Without it files.download is refused.
+   */
+  downloads?: {
+    hasBrowserView(windowId: number): boolean
+    start(caller: { windowId: number; projectId: string }, view: ViewId, path: string, includeAll: boolean): Promise<void>
+  }
   log?: (message: string) => void
   /** Test knob (default SESSIONS_EVENT_INTERVAL_MS). */
   sessionsIntervalMs?: number
@@ -807,6 +825,7 @@ export class HostApi {
   private readonly reveals = new RateWindow(MAX_REVEALS_PER_WINDOW, SYSTEM_OPEN_WINDOW_MS)
   private readonly systemOpens = new RateWindow(MAX_SYSTEM_OPENS_PER_WINDOW, SYSTEM_OPEN_WINDOW_MS)
   private readonly trashes = new RateWindow(MAX_TRASHES_PER_WINDOW, TRASH_WINDOW_MS)
+  private readonly downloadStarts = new RateWindow(DOWNLOAD_PLUGIN_MAX, DOWNLOAD_PLUGIN_WINDOW_MS)
   private readonly themeSets = new RateWindow(MAX_THEME_SETS_PER_WINDOW, THEME_SET_WINDOW_MS)
   /**
    * A ctx.files.trash dialog of this host is up: a second request is refused, not queued, so no
@@ -948,7 +967,8 @@ export class HostApi {
       openExternal: (params, meta) => this.openExternal(params, meta),
       'files.reveal': (params, meta) => this.filesReveal(params, meta),
       'files.openWithSystem': (params, meta) => this.filesOpenWithSystem(params, meta),
-      'files.trash': (params) => this.filesTrash(params)
+      'files.trash': (params) => this.filesTrash(params),
+      'files.download': (params, meta) => this.filesDownload(params, meta)
     }
   }
 
@@ -1965,6 +1985,51 @@ export class HostApi {
     } finally {
       this.trashing = false
     }
+  }
+
+  /**
+   * ctx.files.download (design-download.md §2.1): a project file or folder to the browser view the
+   * person clicked in. The view is the request's origin as main knows it (originOf: a live view of THIS
+   * host's window, read before any await), never a payload field. It is a hint, not identity: a plugin
+   * can name any live view of its window, so a download it starts without a click lands, unopened, in a
+   * browser of the owner's own devices, at this budget (accepted in the design, §2.1). Refused:
+   * - no origin at all (a timer, a plugin command, the 10 s lapse, a view of another window or one that
+   *   is gone): "needs a click in a browser view". The desktop page's click carries no view either (the
+   *   host carries remote ids only, shared/views.ts), so on the desktop with no browser view of the
+   *   window attached the answer is the desktop's, "already on this computer" (design §3.4); with one
+   *   attached, or in server mode (no desktop page anyone clicks), it is the click's.
+   * - a path outside the project: Downloads takes a relative path only and resolves it inside
+   *   (resolveProjectEntry), so the outside rule of `ccc download` is never reached from here.
+   * The budget (10 a minute per plugin) is spent after the origin checks and before the path is
+   * resolved: a refused path costs fs lookups and a folder count in main, so a loop of them stays bounded.
+   */
+  private async filesDownload(params: unknown, meta?: RpcMeta): Promise<null> {
+    this.alive()
+    const view = this.originOf(meta)
+    const { pluginId, path, includeAll } = (params ?? {}) as Record<string, unknown>
+    const plugin = this.plugin(pluginId, 'files.download')
+    if (typeof path !== 'string') throw new Error('files.download: path must be a string')
+    if (includeAll !== undefined && typeof includeAll !== 'boolean') throw new Error('files.download: includeAll must be a boolean')
+    const api = this.deps.downloads
+    if (!api) throw new Error('files.download: downloads are not available')
+    if (view === undefined) {
+      const desktop = this.deps.server !== true && !api.hasBrowserView(this.scope.windowId)
+      throw new Error(`files.download: ${desktop ? DOWNLOAD_DESKTOP_TEXT : DOWNLOAD_NO_ORIGIN_TEXT}`)
+    }
+    // originOf keeps only views main knows in this window; a desktop id never travels (viewIdOf), but
+    // Downloads refuses one too, so both ends hold.
+    if (!isRemoteViewId(view)) throw new Error(`files.download: ${DOWNLOAD_DESKTOP_TEXT}`)
+    if (!this.downloadStarts.take(plugin.id)) {
+      throw new Error(
+        `files.download: more than ${DOWNLOAD_PLUGIN_MAX} in ${DOWNLOAD_PLUGIN_WINDOW_MS / 1000} s; try again in a moment`
+      )
+    }
+    try {
+      await api.start(this.caller, view, path, includeAll === true)
+    } catch (err) {
+      throw withMethod('files.download', err)
+    }
+    return null
   }
 
   private async overlay(params: unknown, meta?: RpcMeta): Promise<PluginOverlayResult> {

@@ -21,6 +21,7 @@ import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
+import type { DownloadFailed, DownloadStart } from './downloads'
 import type { SettingsPageScope } from './manifest'
 import type { MarketplaceCategory } from './marketplace'
 import type { PageNotice } from './notify'
@@ -1789,6 +1790,19 @@ export interface IpcEventMap {
   /** A `trash.ask` is over (answered in some view, timed out or dropped): a view still showing it takes it down. */
   'trash.settled': { requestId: string }
   /**
+   * A download for this view (design-download.md §2.1): ctx.files.download from a click in it, checked
+   * by main (main/files/downloads.ts), with a one-use token for this view only. The web shell clicks a
+   * same-origin `<a href={url} download={name}>` while it still holds the click's activation, else it
+   * shows "<name> is ready — Download" with that link. Sent only to the one browser view
+   * (`ViewRegistry.toView`), never to the desktop page or server mode's hidden page.
+   */
+  'downloads.start': DownloadStart
+  /**
+   * A download of this view failed (a GET refused, a stream cut, a cap): an in-page notice with the
+   * reason, since the browser's own list says only "Failed". Sent only to the token's browser view.
+   */
+  'downloads.failed': DownloadFailed
+  /**
    * A link a remote view's page or plugin asked to open (`app.openExternal`, `ctx.openExternal`, the release page):
    * the host's browser is not the person's screen, so the view shows a clickable notice (design-web.md §6.1).
    * Sent only to the view that asked; `url` is http(s), checked by main. In server mode a link with no
@@ -2102,6 +2116,8 @@ export const EVENT_CHANNELS = [
   'links.settled',
   'trash.ask',
   'trash.settled',
+  'downloads.start',
+  'downloads.failed',
   'app.linkNotice',
   'oauth.signInEnded',
   'settingsPage.held',
@@ -2232,6 +2248,11 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'trash.answer': 'yes',
   'trash.ask': 'yes',
   'trash.settled': 'yes',
+  // Downloads (design-download.md §6): events main sends to one browser view only (the view that
+  // clicked, the token's view); a browser is where they are for, and they carry nothing but a link
+  // that view may use and a reason. The desktop page never gets one (main's toView to a remote id).
+  'downloads.start': 'yes',
+  'downloads.failed': 'yes',
   'app.linkNotice': 'yes',
   'oauth.signInEnded': 'yes',
   'project.updated': 'yes',

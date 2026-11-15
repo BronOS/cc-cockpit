@@ -4685,6 +4685,34 @@ ul.settings-alert {
   font-size: 16px;
   line-height: 1;
 }
+/* Downloads in a browser view (ShellNotices DownloadNotices): "<name> is ready — Download" and failures,
+   stacked above the plain link notice's place (the oauth notices' column; both are rare at once). */
+.download-notices {
+  position: fixed;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  width: min(640px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 119;
+}
+.download-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface, #222);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #444);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.download-notice .link-notice-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 /* A server's in-page notifications (ShellNotices PageNotices), newest last, over the content. */
 .page-notices {
   position: fixed;

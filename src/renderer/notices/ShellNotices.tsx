@@ -21,6 +21,16 @@ import {
   type TitleMark,
   type TrashAsk
 } from './notice-state'
+import {
+  addDownloadNotice,
+  clickDownload,
+  downloadFailedOf,
+  downloadFailedText,
+  downloadStartAction,
+  dropDownloadNotice,
+  READY_NOTICE_MS,
+  type DownloadNotice
+} from './download-start'
 
 /**
  * What the shell shows for things only the desktop can do, or that need the person's own screen
@@ -35,6 +45,7 @@ export function ShellNotices(): React.JSX.Element {
       <LinkNotice />
       <LinkConfirm />
       <TrashConfirm />
+      <DownloadNotices />
       <PageNotices />
     </>
   )
@@ -105,6 +116,84 @@ function PageNotices(): React.JSX.Element | null {
             </button>
           ) : null}
           <button type="button" className="page-notice-close" aria-label="Dismiss notification" onClick={() => end(notice, 'notices.dismiss')}>
+            ×
+          </button>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+/**
+ * Downloads to this browser's device (design-download.md §2.1, §3.2; download-start.ts decides).
+ * `downloads.start`: the link is clicked at once while the click that asked for it still counts as the
+ * person's (transient activation), else "<name> is ready — Download" with the real link to click, kept
+ * for the token's life. `downloads.failed`: an in-page notice with main's reason (the browser's own list
+ * says only "Failed"), named by the start this view saw. Nothing here takes the keyboard focus: a key
+ * typed for Claude stays in the terminal. The desktop page never gets either event.
+ */
+function DownloadNotices(): React.JSX.Element | null {
+  const [notices, setNotices] = useState<readonly DownloadNotice[]>([])
+  // The names of this view's recent starts, for a later failure's text (main's event has the id only).
+  const names = useRef(new Map<string, string>())
+  useEffect(() => {
+    const timers = new Set<ReturnType<typeof setTimeout>>()
+    const offStart = window.cockpit.on('downloads.start', (p) => {
+      const action = downloadStartAction(p, {
+        webShell: isWebShell(),
+        activationActive: navigator.userActivation?.isActive === true
+      })
+      if (action.kind === 'none') return
+      const { start } = action
+      names.current.set(start.requestId, start.name)
+      // Bounded: the oldest name goes past 32 (a failure that late reads "The download failed").
+      if (names.current.size > 32) names.current.delete(names.current.keys().next().value!)
+      if (action.kind === 'click') {
+        try {
+          clickDownload(document, start)
+          return
+        } catch {
+          // Fall through to the notice: the link is there to click.
+        }
+      }
+      setNotices((prev) => addDownloadNotice(prev, { kind: 'ready', requestId: start.requestId, url: start.url, name: start.name }))
+      const timer = setTimeout(() => {
+        timers.delete(timer)
+        setNotices((prev) => (prev.some((n) => n.requestId === start.requestId && n.kind === 'ready') ? dropDownloadNotice(prev, start.requestId) : prev))
+      }, READY_NOTICE_MS)
+      timers.add(timer)
+    })
+    const offFailed = window.cockpit.on('downloads.failed', (p) => {
+      const failed = downloadFailedOf(p)
+      if (failed === undefined) return
+      const name = names.current.get(failed.requestId)
+      setNotices((prev) =>
+        addDownloadNotice(prev, { kind: 'failed', requestId: failed.requestId, reason: failed.reason, ...(name !== undefined ? { name } : {}) })
+      )
+    })
+    return () => {
+      offStart()
+      offFailed()
+      for (const t of timers) clearTimeout(t)
+    }
+  }, [])
+  if (notices.length === 0) return null
+  const drop = (requestId: string): void => setNotices((prev) => dropDownloadNotice(prev, requestId))
+  return (
+    <section className="download-notices" aria-label="Downloads">
+      {notices.map((n) => (
+        <div key={n.requestId} className="download-notice" role="status" data-testid={n.kind === 'ready' ? 'download-ready' : 'download-failed'}>
+          {n.kind === 'ready' ? (
+            <>
+              <span className="link-notice-text">{n.name} is ready —</span>
+              <a href={n.url} download={n.name} rel="noreferrer" className="link-notice-link" onClick={() => drop(n.requestId)}>
+                Download
+              </a>
+            </>
+          ) : (
+            <span className="link-notice-text">{downloadFailedText(n)}</span>
+          )}
+          <button type="button" className="link-notice-close" aria-label="Dismiss" onClick={() => drop(n.requestId)}>
             ×
           </button>
         </div>
