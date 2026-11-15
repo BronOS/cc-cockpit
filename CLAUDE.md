@@ -34,6 +34,8 @@ Its language servers were only run against fakes.
 Split groups (terminal tabs side by side, tmux-like: `shared/tab-groups.ts`, main's `TabGroups`, the `groups.*` channels)
 are implemented; design in `docs/design.md` §3 "Split groups", user docs in `docs/features.md` ("Split view"). They hold
 terminal tabs only: a page tab is never a pane.
+Rooms (messages and shared docs between Claude tabs, plus the per-plugin caps the person sets) are implemented; design in
+`docs/design-rooms.md`, plan in `docs/plans/completed/20261114-rooms.md`, user docs in `docs/features.md` ("Rooms").
 
 ## Commands
 
@@ -307,6 +309,21 @@ terminal tabs only: a page tab is never a pane.
   placed, never focused; `no-plugin-group-edits.test.ts`). Only terminal tabs are panes: `isPaneKind`
   (`shared/tab-groups.ts`) is the one rule, used by `TabGroups` (`not-a-pane`, a page tab pruned from a loaded group,
   through its `kindOf` dep), HostApi's `beside` check and the strip; a page tab never joins a group.
+- Rooms (design-rooms.md, `main/rooms/`): pull only. Hooks and the send gate carry the fixed pointer, never room text; text
+  enters a session only through its own `ccc room read`, fenced with a per-delivery nonce, and `ccc` acks the read (and a
+  Stop block) before main dequeues or counts it as printed. A hook-path function never writes anything else (grep test).
+- The room mark (`Deliver room messages automatically`) is the person's alone, like the tab flag: written only from the
+  shell page (top frame, own tabs), grep-tested, bound to (tab, room), held by the draft bit; never a host API, hook or
+  `ccc` path. Pause, Resume and Remove are the person's too. Membership and the mark live in the tab record; a restart
+  restores members as typed and rooms paused.
+- Room identity comes from the caller's tab token or the host's own plugin, never a payload; a plugin acts only on its
+  own rooms in its own window and can never pull a tab in (an invite is redeemed by the tab itself). Rooms end with
+  their plugin, and room calls are refused while the plugin is off.
+- Room docs (`room-docs.ts`): a fixed scheme (`shared/`, `members/<name>/`), refused = missing, `O_NOFOLLOW` + `fstat`, main
+  writes only, caps in the docs; the log is capped and `seq`-cursored.
+- Per-plugin caps (`shared/plugin-limits.ts`, `main/plugins/plugin-limits.ts`): stored per plugin id in `app.json`, read
+  clamped on every call, dropped on uninstall; the write is `plugin.limits.set`, under `HOST_ONLY_FAMILIES`
+  (`plugin.limits.`) so it is shell-only like `ccc web`, and not a boundary. `room` is a reserved core command name.
 
 ## Conventions
 
