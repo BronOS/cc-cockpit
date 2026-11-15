@@ -169,7 +169,6 @@ import { commandOverlaySpec, loginShellOf } from './tabs/claude-argv'
 import { menuWithKeys, openTabCommand, tabCommandsOf, TabCommandsService } from './tabs/tab-commands'
 import { TabManager } from './tabs/tab-manager'
 import { TabGroups } from './tabs/tab-groups'
-import { isPaneKind } from '../shared/tab-groups'
 import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
@@ -1659,9 +1658,9 @@ function start(server: boolean): void {
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
       openTab: (projectId, options, windowId, focus, place) => openClaudeTab(projectId, options, windowId, focus === true, place),
-      // A `beside` anchor: a terminal tab of that project by TabManager's table (an overlay is never
-      // one, nor is a page tab: it never joins a split group, so it reads as no such tab).
-      hasTab: (projectId, tabId) => isPaneKind(tabs.kindOf(projectId, tabId)),
+      // A `beside` anchor: any tab of that project by TabManager's table (an overlay is never one). A
+      // page anchor has no `sizeOf`, so the halves check is skipped as for any anchor of unknown size.
+      hasTab: (projectId, tabId) => tabs.kindOf(projectId, tabId) !== undefined,
       // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
       openShellTab: (projectId, options, windowId, focus, place) => openShellTab(projectId, options, windowId, focus === true, place),
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
@@ -1931,7 +1930,7 @@ function start(server: boolean): void {
   // snapshots go to every view of the project, browsers re-join the panes of their selected group.
   const tabGroups = new TabGroups({
     order: (projectId) => tabs.list(projectId).map((t) => t.id),
-    // Only terminal tabs become panes: a page tab is refused and pruned (shared/tab-groups.ts isPaneKind).
+    // Every tab kind may be a pane (shared/tab-groups.ts isPaneKind); a kind outside it is refused and pruned.
     kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId),
     setOrder: (projectId, ids) => tabs.setOrder(projectId, ids),
     publish: (projectId, snapshot) => sendToProject(projectId, 'groups.changed', snapshot),

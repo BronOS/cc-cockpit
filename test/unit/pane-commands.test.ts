@@ -159,8 +159,8 @@ describe('pane commands', () => {
   })
 
   it('only terminal kinds may be panes: a page tab never is', () => {
-    expect(['claude', 'shell', 'command'].map(isPaneKind)).toEqual([true, true, true])
-    expect(isPaneKind('page')).toBe(false)
+    expect(['claude', 'shell', 'command', 'page'].map(isPaneKind)).toEqual([true, true, true, true])
+    expect(isPaneKind('overlay')).toBe(false)
     expect(isPaneKind(undefined)).toBe(false)
   })
 })

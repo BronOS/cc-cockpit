@@ -29,12 +29,13 @@ export type PaneEdge = 'left' | 'right' | 'up' | 'down'
 export const PANE_EDGES: readonly PaneEdge[] = ['left', 'right', 'up', 'down']
 
 /**
- * The tab kinds a pane may hold: terminal tabs only (Claude, Shell, command). A page tab (a plugin's
- * page, design.md §4 "Page tabs") never joins a group: its frame lives in one fixed layer outside the
- * React root, laid over the whole tab area, and it has no terminal to fit into a pane. Main refuses a
- * placement naming one (`not-a-pane`) and prunes one from a loaded group; the page never offers it.
+ * The tab kinds a pane may hold: every kind (Claude, Shell, command, and a plugin's page tab,
+ * design-split-pages.md). An explicit list, not `true`: a new `TabKind` becomes a pane only by a
+ * decision here. `undefined` (an unknown tab) is no pane; `not-a-pane` stays as the refusal for the
+ * next kind that is not one.
  */
-export const isPaneKind = (kind: string | undefined): boolean => kind === 'claude' || kind === 'shell' || kind === 'command'
+export const isPaneKind = (kind: string | undefined): boolean =>
+  kind === 'claude' || kind === 'shell' || kind === 'command' || kind === 'page'
 
 export interface PaneLeaf {
   tab: string
@@ -99,7 +100,7 @@ export const checkGroupName = checkSessionName
 
 export type GroupRefusalReason =
   | 'unknown-tab' // a tab id that is not a live tab of the project
-  | 'not-a-pane' // a live tab of the project that is not a terminal tab (a page tab: isPaneKind)
+  | 'not-a-pane' // a live tab of the project whose kind is not in isPaneKind (none today: every kind is a pane)
   | 'same-tab' // a tab placed beside itself
   | 'bad-edge'
   | 'not-grouped' // removeLeaf of a plain tab

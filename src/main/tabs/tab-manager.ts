@@ -1049,7 +1049,7 @@ export class TabManager {
 
   /**
    * A tab's kind, undefined for an unknown id or another project's: TabGroups' check that only
-   * terminal tabs become panes (a page tab never does, shared/tab-groups.ts isPaneKind).
+   * kinds in shared/tab-groups.ts isPaneKind become panes (every kind today).
    */
   kindOf(projectId: string, tabId: string): TabKind | undefined {
     return this.find(projectId, tabId)?.kind

@@ -152,6 +152,9 @@ export function buildRestorePlan(
       if (count >= MAX_PAGE_TABS_PER_PLUGIN) continue
       pagesOf.set(page.plugin, count + 1)
       const tab: RestoredTab = { kind, page }
+      // A page leaf of a saved group maps through the id map like any tab (design-split-pages.md).
+      const pid = (raw as Record<string, unknown>).id
+      if (typeof pid === 'string' && pid.length > 0 && pid.length <= MAX_SAVED_ID) tab.savedId = pid
       const f = tabFlagOf(flag)
       if (f !== undefined) tab.flag = f
       plan.push(tab)

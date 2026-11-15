@@ -116,20 +116,20 @@ External review: sol / high
 - Modify: `src/shared/tab-groups.ts`, `src/main/tabs/tab-groups.ts`, `src/main/index.ts`, `src/main/tabs/tab-manager.ts` (comment)
 - Modify: `test/unit/tab-groups.test.ts`, `test/unit/tab-groups-service.test.ts`
 
-- [ ] `isPaneKind` true for `claude`, `shell`, `command`, `page` (an explicit list, not `true`: a new `TabKind` must be
+- [x] `isPaneKind` true for `claude`, `shell`, `command`, `page` (an explicit list, not `true`: a new `TabKind` must be
   added by decision); keep `not-a-pane` in `GroupRefusalReason` with a comment saying why
-- [ ] `TabGroups`: `mayBePane` / `panesOf` keep the `kindOf` dep and now pass page tabs; `joinOrder` lists the selected
+- [x] `TabGroups`: `mayBePane` / `panesOf` keep the `kindOf` dep and now pass page tabs; `joinOrder` lists the selected
   tab and the group's terminal members only (`kindOf`), so a page member never waits in `ViewTerminals`' set
-- [ ] HostApi's `hasTab` (`main/index.ts`, the `openTab` deps) is any tab of the project (`tabs.kindOf(...) !== undefined`);
+- [x] HostApi's `hasTab` (`main/index.ts`, the `openTab` deps) is any tab of the project (`tabs.kindOf(...) !== undefined`);
   a page anchor has no `sizeOf`, so the halves check is skipped as for any anchor of unknown size (D4, D7, the 4-pane
   cap unchanged); rewrite the comments that say a page tab is never a pane (index.ts TabGroups deps, tab-manager.ts)
-- [ ] restore: page leaves map through the restore's id map like any tab; a dropped or `'later'` page tab prunes its
+- [x] restore: page leaves map through the restore's id map like any tab; a dropped or `'later'` page tab prunes its
   leaf and a one-pane group dissolves (check `restore.ts` passes page ids into `idMap`)
-- [ ] write tests: a page tab placed as tab and as anchor; `tabs.create` beside a page tab places; restore maps page
+- [x] write tests: a page tab placed as tab and as anchor; `tabs.create` beside a page tab places; restore maps page
   leaves; `'later'` and dropped page tabs prune (a two-pane group dissolves); `joinOrder` skips page members; the
   refusal tests flip; a plugin `beside` naming a page tab places with the halves check skipped
-- [ ] `no-plugin-group-edits.test.ts` still passes (host-api gains no group op)
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`)
+- [x] `no-plugin-group-edits.test.ts` still passes (host-api gains no group op)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`)
 
 ### Task 2: Renderer: page panes drawn, several frames placed [model: opus]
 

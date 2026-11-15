@@ -340,7 +340,7 @@ describe('page tab restore', () => {
       { id: page.id, kind: 'page', cwd: projA, plugin: 'cockpit.editor', type: 'file', params: { path: 'src/a.ts' }, title: 'a.ts', icon: 'ts', flag: { color: 'orange' } }
     ])
     expect(buildRestorePlan({ path: projA, tabs: records })).toEqual<RestoredTab[]>([
-      { kind: 'page', page: { plugin: 'cockpit.editor', type: 'file', params: { path: 'src/a.ts' }, title: 'a.ts', icon: 'ts' }, flag: { color: 'orange' } }
+      { savedId: page.id, kind: 'page', page: { plugin: 'cockpit.editor', type: 'file', params: { path: 'src/a.ts' }, title: 'a.ts', icon: 'ts' }, flag: { color: 'orange' } }
     ])
   })
 
@@ -452,8 +452,8 @@ describe('renderer: a page tab in the strip', () => {
   })
 })
 
-describe('split groups over TabManager: a page tab is never a pane', () => {
-  it('TabManager.kindOf names a page tab; TabGroups refuses it and keeps grouping the terminals', () => {
+describe('split groups over TabManager: a page tab is a pane', () => {
+  it('TabManager.kindOf names a page tab; TabGroups places it and keeps grouping the terminals', () => {
     const tabs = manager()
     const a = tabs.create(A, { kind: 'shell' })
     const page = tabs.createPage(A, file('src/a.ts'))
@@ -468,11 +468,10 @@ describe('split groups over TabManager: a page tab is never a pane', () => {
       changed: () => {},
       log: () => {}
     })
-    expect(groups.place(A, { tabId: page.id, at: a.id, edge: 'right' })).toEqual({ ok: false, reason: 'not-a-pane' })
-    expect(groups.place(A, { tabId: b.id, at: page.id, edge: 'down' })).toEqual({ ok: false, reason: 'not-a-pane' })
-    expect(groups.place(A, { tabId: b.id, at: a.id, edge: 'right' }).ok).toBe(true)
-    expect(tabs.list(A).map((t) => t.id)).toEqual([a.id, b.id, page.id])
-    // A page tab saved with a group around it comes back plain: its plan has no saved id to map.
-    expect(buildRestorePlan({ path: projA, tabs: tabRecordsOf(tabs.list(A)) }).find((t) => t.kind === 'page')).not.toHaveProperty('savedId')
+    expect(groups.place(A, { tabId: page.id, at: a.id, edge: 'right' }).ok).toBe(true)
+    expect(groups.place(A, { tabId: b.id, at: page.id, edge: 'down' }).ok).toBe(true)
+    expect(tabs.list(A).map((t) => t.id)).toEqual([a.id, page.id, b.id])
+    // A page tab's saved id reaches the plan, so a saved group's leaf for it is remapped.
+    expect(buildRestorePlan({ path: projA, tabs: tabRecordsOf(tabs.list(A)) }).find((t) => t.kind === 'page')).toHaveProperty('savedId', page.id)
   })
 })

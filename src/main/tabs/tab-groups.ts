@@ -41,12 +41,12 @@ import { warnLog } from '../warn-log'
 export interface TabGroupsDeps {
   /**
    * The project's live tab ids in TabManager's order (overlay entries are never in it; page tabs
-   * are, as they are in the strip, which is why `kindOf` decides which may be panes).
+   * are, as they are in the strip; `kindOf` decides which kinds may be panes and which join a terminal mirror).
    */
   order(projectId: string): string[]
   /**
    * A live tab's kind (TabManager's table), undefined for an unknown or another project's id. Only
-   * terminal kinds may be panes (isPaneKind): a page tab named in a placement is refused
+   * kinds in isPaneKind may be panes (every kind today): a placement naming another is refused
    * (`not-a-pane`) and a group loaded or synced with one prunes it. Absent: every tab may (tests that
    * do not care).
    */
@@ -128,11 +128,13 @@ export class TabGroups {
    * A browser view's terminals (design §1 "Web and cost"): the tabs to join for a view that selected
    * `tabId`, the selected one first, then the rest of its group in reading order. Just `[tabId]` for
    * a plain tab or one not of this project (the caller checks the tab against the view's window).
+   * Terminal members only: a page member has no mirror to join, so it never waits in the view's set.
    */
   joinOrder(projectId: string, tabId: string): string[] {
     const group = groupOf(this.groupsOf(projectId), tabId)
     if (!group) return [tabId]
-    return [tabId, ...leavesOf(group.root).filter((t) => t !== tabId)]
+    const k = this.deps.kindOf
+    return [tabId, ...leavesOf(group.root).filter((t) => t !== tabId && (!k || k(projectId, t) !== 'page'))]
   }
 
   /**
@@ -141,8 +143,8 @@ export class TabGroups {
    * the same `unknown-tab` refusal, and a refusal changes nothing and publishes nothing.
    */
   place(projectId: string, intent: PlaceIntent, opts: { plugin?: boolean } = {}): GroupsReply {
-    // A page tab is never a pane, as the tab placed or as the anchor (a drag, Show beside, a
-    // `tabs.create` or a plugin's `beside` naming one). An unknown id goes on to `unknown-tab`.
+    // A kind outside isPaneKind is refused, as the tab placed or as the anchor. An unknown id goes
+    // on to `unknown-tab`.
     if (!this.mayBePane(projectId, intent.tabId) || !this.mayBePane(projectId, intent.at)) {
       return { ok: false, reason: 'not-a-pane' }
     }
