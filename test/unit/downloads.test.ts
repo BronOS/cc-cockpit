@@ -359,6 +359,31 @@ describe('tokens', () => {
     expect((await get(d, token)).result).toMatchObject({ status: 'sent', completed: true })
   })
 
+  it('a revoke landing while the GET is still in its awaits refuses it and says nothing', async () => {
+    write(join(proj, 'f'), 'ok')
+    const d = make()
+    await d.start(VIEW, rel('f'), false)
+    const res = new FakeRes()
+    const serving = d.serve(lastToken(), 'dev-a', res, HEADERS)
+    d.dropDevice('dev-a')
+    expect(await serving).toMatchObject({ status: 'refused' })
+    expect(res.status).toBeUndefined()
+    expect(failures).toEqual([])
+    expect(d.tokenCount).toBe(0)
+  })
+
+  it('refuses at the GET when the project window closed after the start', async () => {
+    write(join(proj, 'f'), 'ok')
+    let open = true
+    const d = make({ windowOf: (id) => (id === 'p1' && open ? WINDOW : undefined) })
+    await d.start(VIEW, rel('f'), false)
+    open = false
+    const { result, res } = await get(d)
+    expect(result).toEqual({ status: 'refused', reason: 'the project window is gone' })
+    expect(res.status).toBeUndefined()
+    expect(failures).toHaveLength(1)
+  })
+
   it('refuses a file that became a folder', async () => {
     write(join(proj, 'f'), 'ok')
     const d = make()
