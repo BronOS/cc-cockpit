@@ -66,6 +66,7 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
+  registerRoomStripHandlers,
   registerGroupHandlers,
   registerWebviewHandlers,
   summary
@@ -3059,6 +3060,19 @@ function start(server: boolean): void {
       requireWindow(projectId, windowId)
       return tabs.restart(projectId, tabId)
     }
+  })
+  // The person's room acts on a member tab (design-rooms.md §2, §5). Wired here and nowhere else: host-api, the hooks
+  // and the socket handlers reach neither TabManager.setRoomMark nor the badge (no-plugin-room-mark.test.ts).
+  registerRoomStripHandlers(router, {
+    server,
+    roomMark: (projectId, tabId, mark) => {
+      const stored = tabs.setRoomMark(projectId, tabId, mark)
+      rooms.markChanged(tabId)
+      return stored
+    },
+    // roomOf looks the tab up in the sender's own project only: another project's tab answers as in no room.
+    deliverHeld: (projectId, tabId) =>
+      tabs.roomOf(projectId, tabId) === undefined ? { delivered: false, why: 'no-room' } : rooms.deliverHeld(tabId)
   })
   registerGroupHandlers(router, {
     get: (projectId) => tabGroups.get(projectId),

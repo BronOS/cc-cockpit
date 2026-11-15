@@ -431,7 +431,7 @@ describe("deliverHeld (the person's badge click)", () => {
     typedBob()
     delivery.send(roomId, 'plugin', 'bob', 'one')
     delivery.send(roomId, 'plugin', 'bob', 'two')
-    expect(delivery.deliverHeld('b')).toBe(true)
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: true })
     expect(pasted('b')).toEqual([paste(pointerText(2))])
     expect(logged().at(-1)).toMatchObject({ from: 'person', to: 'bob', via: 'badge', pointer: 2, delivered: true })
   })
@@ -440,25 +440,25 @@ describe("deliverHeld (the person's badge click)", () => {
     typedBob()
     delivery.send(roomId, 'plugin', 'bob', 'one')
     rooms.pause(roomId)
-    expect(delivery.deliverHeld('b')).toBe(false)
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'paused' })
     rooms.resume(roomId)
     sessions.userInput('p1', 'b', 'half a prompt')
-    expect(delivery.deliverHeld('b')).toBe(false)
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'draft' })
     expect(writes).toEqual([])
     // Submitting the draft clears the bit; once the turn stops the click delivers.
     sessions.applyHook('b', 'UserPromptSubmit', { prompt: 'half a prompt' })
     sessions.applyHook('b', 'Stop', {})
-    expect(delivery.deliverHeld('b')).toBe(true)
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: true })
     expect(pasted('b')).toEqual([paste(pointerText(1))])
   })
 
   it('does nothing for a tab not waiting, with nothing held, or in no room', () => {
     typedBob()
-    expect(delivery.deliverHeld('b')).toBe(false) // nothing held
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'nothing-held' })
     delivery.send(roomId, 'plugin', 'bob', 'one')
     sessions.applyHook('b', 'UserPromptSubmit', { prompt: 'y' })
-    expect(delivery.deliverHeld('b')).toBe(false) // working
-    expect(delivery.deliverHeld('nope')).toBe(false)
+    expect(delivery.deliverHeld('b')).toEqual({ delivered: false, why: 'not-waiting' }) // working
+    expect(delivery.deliverHeld('nope')).toEqual({ delivered: false, why: 'no-room' })
     expect(writes).toEqual([])
   })
 })

@@ -663,6 +663,30 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     expect(writes).toEqual([{ tabId: t, data: paste(pointerText(1)) }])
   })
 
+  it('the person’s mark on a typed waiting member delivers what is held at once; the badge says why it did not', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    // The person types and submits: typed, no draft, waiting again.
+    sessions.userInput(P1, t, 'x')
+    sessions.applyHook(t, 'UserPromptSubmit', { prompt: 'x' })
+    sessions.applyHook(t, 'Stop', {})
+    service.sendAsPlugin(owner, id, 'alice', 'x')
+    expect(writes).toEqual([])
+    // Cleared or never set, the offer still holds it.
+    service.markChanged(t)
+    expect(writes).toEqual([])
+    service.pause(id)
+    expect(service.deliverHeld(t)).toEqual({ delivered: false, why: 'paused' })
+    service.resume(id)
+    tabs.setRoomMark(P1, t, true)
+    service.markChanged(t)
+    expect(writes).toEqual([{ tabId: t, data: paste(pointerText(1)) }])
+    // A tab in no room: a no-op.
+    service.markChanged(claudeTab())
+    expect(writes).toHaveLength(1)
+  })
+
   it('the owner’s log is its own room’s only', () => {
     const id = room()
     expect(service.log(owner, id).entries.map((e) => e.type)).toEqual(['create'])

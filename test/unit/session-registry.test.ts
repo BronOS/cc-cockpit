@@ -291,7 +291,7 @@ describe('setRoom (SessionInfo.room / held, the room delivery)', () => {
     expect(reg.setRoom('nope', { ...ROOM, held: 1 })).toBe(false)
   })
 
-  it('survives a restart of the same tab (the draft bit does not); never in the summaries or the window snapshot', () => {
+  it('survives a restart of the same tab (the draft bit does not); never in the summaries, in the own window snapshot', () => {
     start('c1')
     reg.setRoom('c1', { ...ROOM, held: 3 })
     reg.userInput(P1, 'c1', 'x')
@@ -300,9 +300,13 @@ describe('setRoom (SessionInfo.room / held, the room delivery)', () => {
     start('c1')
     expect(reg.get('c1')).toMatchObject({ room: ROOM, held: 3, typed: true })
     expect(reg.get('c1')?.draft).toBeUndefined()
-    const text = JSON.stringify([reg.summariesFor(P1), reg.summariesFor(P2), reg.snapshotFor(P1)])
+    const text = JSON.stringify([reg.summariesFor(P1), reg.summariesFor(P2), reg.snapshotFor(P2)])
     expect(text).not.toContain('Team')
     expect(text).not.toContain('held')
+    // The tab's own window draws the strip's marker and held badge from its snapshot (design-rooms.md §5); the draft
+    // bit stays main's.
+    expect(reg.snapshotFor(P1).own[0]).toMatchObject({ room: ROOM, held: 3, typed: true })
+    expect(reg.snapshotFor(P1).own[0]).not.toHaveProperty('draft')
   })
 })
 

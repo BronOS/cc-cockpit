@@ -729,5 +729,8 @@ function detailOf(e: SessionEntry): SessionDetail {
   if (e.name !== undefined) out.name = e.name
   if (e.gist !== undefined) out.gist = e.gist
   if (e.steps !== undefined) out.steps = { ...e.steps }
+  if (e.room !== undefined) out.room = { ...e.room }
+  if (e.held !== undefined && e.held > 0) out.held = e.held
+  if (e.typed) out.typed = true
   return out
 }

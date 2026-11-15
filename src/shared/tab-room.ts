@@ -36,3 +36,22 @@ export function tabRoomOf(raw: unknown): TabRoom | undefined {
 export function sameTabRoom(a: TabRoom | undefined, b: TabRoom | undefined): boolean {
   return a?.id === b?.id && a?.name === b?.name && a?.coordinator === b?.coordinator && a?.mark === b?.mark
 }
+
+/**
+ * Why the person's click on the held badge (`rooms.deliverHeld`) put no pointer in (room-delivery.ts deliverHeld), so
+ * the strip can say it instead of a click that silently did nothing.
+ */
+export type DeliverHeldWhy =
+  /** The tab is in no room (it left, was removed, or the room ended since the strip drew the badge). */
+  | 'no-room'
+  /** Nothing waits for the member (its own `ccc room read` took it meanwhile). */
+  | 'nothing-held'
+  /** The room is paused: Pause holds every delivery, the badge's too, until the person resumes it. */
+  | 'paused'
+  /** The person has unsent input in the box: a paste plus Enter would submit it glued to the pointer. */
+  | 'draft'
+  /** The tab is not waiting for input (Claude is working, a permission prompt, starting, a paste in flight). */
+  | 'not-waiting'
+
+/** The `rooms.deliverHeld` reply: the pointer went in, or why not. */
+export type DeliverHeldAnswer = { delivered: true } | { delivered: false; why: DeliverHeldWhy }

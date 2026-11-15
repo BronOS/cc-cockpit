@@ -21,7 +21,7 @@
 // with the real registries.
 import { MAX_LINE_BYTES, ROOM_READ_MAX_TEXT_BYTES, type RoomReadReply } from '../../shared/protocol'
 import type { TabKind } from '../../shared/types'
-import type { TabRoom } from '../../shared/tab-room'
+import type { DeliverHeldAnswer, TabRoom } from '../../shared/tab-room'
 import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-reducer'
 import type { TabRoomHooks } from '../tabs/tab-manager'
 import { warnLog } from '../warn-log'
@@ -431,9 +431,19 @@ export class RoomService {
     for (const m of this.registry.memberInfos(roomId)) this.delivery.offer(roomId, m.name)
   }
 
-  /** The held badge's click (rooms.deliverHeld, Task 13): the pointer as the person's own act. */
-  deliverHeld(tabId: string): boolean {
+  /** The held badge's click (rooms.deliverHeld): the pointer as the person's own act, or why it did not go in. */
+  deliverHeld(tabId: string): DeliverHeldAnswer {
     return this.delivery.deliverHeld(tabId)
+  }
+
+  /**
+   * The person set or cleared the mark on a member tab (tabs.roomMark, after TabManager.setRoomMark stored it): what
+   * waits is offered again, so a marked typed tab waiting for input gets the pointer now instead of at its next Stop.
+   * Cleared, the offer holds it behind the badge as before. A no-op for a tab in no room.
+   */
+  markChanged(tabId: string): void {
+    const member = this.registry.memberOf(tabId)
+    if (member) this.delivery.offer(member.roomId, member.name)
   }
 
   /** App quit: the room stop's ack timers stop and the listeners go. */

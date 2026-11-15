@@ -97,7 +97,11 @@ describe('REMOTE_CLASS drift', () => {
     // Opening a known project makes a window on the host's screen: a server's browsers only.
     'settings.projectOpen',
     // Raising a plugin's caps widens what it may do on the host (design-rooms.md §6): a server's browsers only.
-    'plugins.limits.set'
+    'plugins.limits.set',
+    // The person's room mark and the held badge (design-rooms.md §5): let room text into a typed tab, so a server's
+    // browsers only, like the approvals.
+    'tabs.roomMark',
+    'rooms.deliverHeld'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })

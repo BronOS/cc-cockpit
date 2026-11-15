@@ -15,7 +15,7 @@
 import { maySend } from '../sessions/send-gate'
 import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-reducer'
 import { warnLog } from '../warn-log'
-import type { TabRoom } from '../../shared/tab-room'
+import type { DeliverHeldAnswer, TabRoom } from '../../shared/tab-room'
 import { isRoomName } from '../../shared/room-names'
 import { pointerText } from '../../shared/room-pointer'
 import { DEFAULT_PLUGIN_LIMITS } from '../../shared/plugin-limits'
@@ -207,21 +207,26 @@ export class RoomDelivery {
    * act, so `typed` and the mark do not hold it back; the gate's own rule does (waiting for input, nothing in flight).
    * A pause and the draft bit still do: Pause holds all delivery (design §2), and a paste plus Enter on a half-typed
    * prompt would submit both as one prompt, the gluing the draft bit exists to prevent. The caller checked the click
-   * came from the shell page for its own tab. True when the pointer went in; false for a tab in no room, with nothing
-   * held, in a paused room, with a draft, or not waiting.
+   * came from the shell page for its own tab. Answers `delivered`, or why not (no room, nothing held, paused, a draft,
+   * not waiting) so the strip can tell the person instead of a click that silently did nothing.
    */
-  deliverHeld(tabId: string): boolean {
+  deliverHeld(tabId: string): DeliverHeldAnswer {
     const member = this.deps.rooms.memberOf(tabId)
-    if (!member) return false
+    if (!member) return { delivered: false, why: 'no-room' }
     const room = this.deps.rooms.peek(member.roomId)
-    if (!room || room.endedAt !== undefined || room.paused) return false
+    if (!room || room.endedAt !== undefined) return { delivered: false, why: 'no-room' }
     const held = this.deps.rooms.held(room.id, member.name)
+    if (held === 0) return { delivered: false, why: 'nothing-held' }
+    if (room.paused) return { delivered: false, why: 'paused' }
     const entry = this.deps.sessions.get(tabId)
-    if (held === 0 || !entry || entry.draft === true || !maySend(entry)) return false
+    if (!entry) return { delivered: false, why: 'not-waiting' }
+    if (entry.draft === true) return { delivered: false, why: 'draft' }
+    if (!maySend(entry)) return { delivered: false, why: 'not-waiting' }
     const ok = this.paste(tabId, held)
     // The pointer only (no message moved): logged as the person's delivery, so the record shows why the member read.
     this.log(room.id, 'send', { from: 'person', to: member.name, via: 'badge', pointer: held, delivered: ok })
-    return ok
+    // The gate re-checks at the paste (a failed PTY write too): not waiting after all.
+    return ok ? { delivered: true } : { delivered: false, why: 'not-waiting' }
   }
 
   /**

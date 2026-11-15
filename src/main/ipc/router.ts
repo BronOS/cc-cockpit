@@ -49,6 +49,7 @@ import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
 import type { PluginLimitsView } from '../../shared/plugin-limits'
 import type { TabFlag } from '../../shared/tab-flag'
+import type { DeliverHeldAnswer } from '../../shared/tab-room'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
 import type { ProjectView, TabCommandEntry } from '../../shared/types'
 import { checkWebUrl, MAX_EXTERNAL_URL_LENGTH } from '../../shared/web-url'
@@ -1629,6 +1630,43 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const tabId = tabIdOf('tabs.selected', payload)
     tabs.select(ctx.projectId, tabId, view.viewId)
     if (view.remote) tabs.viewSelect(view.viewId, tabId)
+  })
+}
+
+/**
+ * What the tab strip's room parts need from main (design-rooms.md §2 "The mark", §5): the person's acts on a member tab
+ * of the sender's own project. Wired in index.ts and nowhere else; host-api, hooks and the socket have no path to them
+ * (no-plugin-room-mark.test.ts).
+ */
+export interface RoomStripHandlerDeps {
+  /** Server mode: a browser view counts as the person (the approvals rule); outside it a browser is refused. */
+  server: boolean
+  /** TabManager.setRoomMark (throws for a tab of another project or in no room), then what waits is offered again. */
+  roomMark(projectId: string, tabId: string, mark: boolean): boolean
+  /** The badge's click on a tab of `projectId`: the pointer, or why not (RoomService.deliverHeld). */
+  deliverHeld(projectId: string, tabId: string): DeliverHeldAnswer
+}
+
+/**
+ * `tabs.roomMark` and `rooms.deliverHeld`: only from the shell page's top frame of the tab's own project window
+ * (handleProject), the tab id looked up inside that project. Both are `adapted`: a mark lets room text into a tab the
+ * person typed in, and the badge pastes into it, so a browser view counts only in server mode, where the browsers are
+ * the person (decided by the view main bound, never the payload). Nothing is announced here: TabManager.setRoomMark
+ * already tells every view (`tabs.added`), and a delivery changes the sessions snapshot.
+ */
+export function registerRoomStripHandlers(router: IpcRouter, deps: RoomStripHandlerDeps): void {
+  const personOnly = (channel: string, view: CallView): void => {
+    if (view.remote && !deps.server) throw new Error(`${channel}: refused for a browser view outside server mode`)
+  }
+  router.handleProject('tabs.roomMark', (ctx, payload, view) => {
+    personOnly('tabs.roomMark', view)
+    const mark = fields('tabs.roomMark', payload).mark
+    if (typeof mark !== 'boolean') throw new Error('tabs.roomMark: mark must be true or false')
+    return deps.roomMark(ctx.projectId, tabIdOf('tabs.roomMark', payload), mark)
+  })
+  router.handleProject('rooms.deliverHeld', (ctx, payload, view) => {
+    personOnly('rooms.deliverHeld', view)
+    return deps.deliverHeld(ctx.projectId, tabIdOf('rooms.deliverHeld', payload))
   })
 }
 

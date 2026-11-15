@@ -1,0 +1,13 @@
+{
+  "id": "test.roomstrip",
+  "name": "Room strip",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "commands": [
+      { "id": "open", "title": "Room strip: make a room and open its member bob" },
+      { "id": "send", "title": "Room strip: send bob a message" }
+    ]
+  }
+}

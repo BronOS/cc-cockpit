@@ -20,6 +20,7 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
+  registerRoomStripHandlers,
   registerGroupHandlers,
   type GroupHandlerDeps,
   registerWebviewHandlers,
@@ -2987,5 +2988,77 @@ describe('registerGroupHandlers', () => {
     }
     for (const sender of [13, 99]) await expect(ipc.invoke('groups.get', sender)).rejects.toThrow()
     expect(calls).toEqual([])
+  })
+})
+
+describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
+  function roomSetup(options: { server?: boolean } = {}): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerRoomStripHandlers(router, {
+      server: options.server === true,
+      roomMark: (projectId, tabId, mark) => {
+        calls.push(['roomMark', projectId, tabId, mark])
+        return mark
+      },
+      deliverHeld: (projectId, tabId) => {
+        calls.push(['deliverHeld', projectId, tabId])
+        return tabId === 'held' ? { delivered: true } : { delivered: false, why: 'paused' }
+      }
+    })
+    return { ipc, router, calls }
+  }
+
+  it("acts on the sender's own project, the tab id looked up there, and answers main's result", async () => {
+    const { ipc, calls } = roomSetup()
+    expect(await ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark: true, projectId: PROJECT_B }])).toBe(true)
+    expect(await ipc.invoke('tabs.roomMark', 12, [{ tabId: 't2', mark: false }])).toBe(false)
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 'held', projectId: PROJECT_B }])).toEqual({ delivered: true })
+    expect(await ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1' }])).toEqual({ delivered: false, why: 'paused' })
+    expect(calls).toEqual([
+      ['roomMark', PROJECT_A, 't1', true],
+      ['roomMark', PROJECT_B, 't2', false],
+      ['deliverHeld', PROJECT_A, 'held'],
+      ['deliverHeld', PROJECT_A, 't1']
+    ])
+  })
+
+  it('refuses a mark that is not a boolean and a missing tab id before main is asked', async () => {
+    const { ipc, calls } = roomSetup()
+    for (const mark of ['true', 1, null, undefined]) {
+      await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark }])).rejects.toThrow(/mark must be true or false/)
+    }
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ mark: true }])).rejects.toThrow()
+    await expect(ipc.invoke('rooms.deliverHeld', 11, [{}])).rejects.toThrow()
+    expect(calls).toEqual([])
+  })
+
+  it("takes both from the shell page's top frame of a project window only (never a plugin panel or the picker)", async () => {
+    const { ipc, calls } = roomSetup()
+    await expect(ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark: true }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(ipc.invoke('rooms.deliverHeld', 11, [{ tabId: 't1' }], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
+    await expect(
+      ipc.invoke('tabs.roomMark', 11, [{ tabId: 't1', mark: true }], { parent: null, url: 'cc-plugin://example.plugin/panel.html' })
+    ).rejects.toThrow()
+    await expect(ipc.invoke('tabs.roomMark', 13, [{ tabId: 't1', mark: true }])).rejects.toThrow(/not a project window/)
+    await expect(ipc.invoke('rooms.deliverHeld', 13, [{ tabId: 't1' }])).rejects.toThrow(/not a project window/)
+    expect(calls).toEqual([])
+  })
+
+  it("adapted: a desktop's browser is refused, a server's browser counts as the person", async () => {
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const desktop = roomSetup()
+    await expect(desktop.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', mark: true })).rejects.toThrow(/outside server mode/)
+    await expect(desktop.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held' })).rejects.toThrow(/outside server mode/)
+    expect(desktop.calls).toEqual([])
+    const server = roomSetup({ server: true })
+    expect(await server.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', mark: true })).toBe(true)
+    expect(await server.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held' })).toEqual({ delivered: true })
+    expect(server.calls).toEqual([
+      ['roomMark', PROJECT_A, 't1', true],
+      ['deliverHeld', PROJECT_A, 'held']
+    ])
+    expect(REMOTE_CLASS['tabs.roomMark']).toBe('adapted')
+    expect(REMOTE_CLASS['rooms.deliverHeld']).toBe('adapted')
   })
 })

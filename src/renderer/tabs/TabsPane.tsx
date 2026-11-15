@@ -33,6 +33,7 @@ import { PAGE_TAB_NOT_SPLIT, paneCommandHandlers, refusalText } from './pane-com
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
+import { deliverHeldText } from './tab-room'
 import { TopStrip } from '../status/TopStrip'
 import { useSessions } from '../status/use-sessions'
 import { isSeeThrough } from '../theme/see-through'
@@ -709,6 +710,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       })
     )
 
+  // The person's room mark (tab menu): main stores it and tells every view (`tabs.added`), so nothing is applied here.
+  const roomMark = (tabId: string, mark: boolean): void => run(window.cockpit.invoke('tabs.roomMark', { tabId, mark }))
+  // The held badge: the pointer as the person's own act. A click that put nothing in says why (tab-room.ts), never
+  // silence; the badge's count follows from the next sessions snapshot.
+  const deliverHeld = (tabId: string): void =>
+    run(
+      window.cockpit.invoke('rooms.deliverHeld', { tabId }).then((answer) => {
+        if (!answer.delivered) setError(deliverHeldText(answer.why))
+      })
+    )
+
   const move = (tabId: string, delta: -1 | 1): void => {
     const from = state.tabs.findIndex((t) => t.id === tabId)
     if (from < 0) return
@@ -1376,6 +1388,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onMove={move}
           onRename={rename}
           onFlag={flag}
+          onRoomMark={roomMark}
+          onDeliverHeld={deliverHeld}
           onMenuClosed={refocusAfterMenu}
           onReorder={reorder}
           sessions={own}

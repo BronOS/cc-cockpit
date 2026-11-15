@@ -20,7 +20,7 @@ import type { PluginLimitsView } from './plugin-limits'
 import type { PanelHeaderIconName } from './panel-header'
 import type { SlotPosition } from './slots'
 import type { FlagPatch, TabFlag } from './tab-flag'
-import type { TabRoom } from './tab-room'
+import type { DeliverHeldAnswer, TabRoom } from './tab-room'
 import type { GroupRefusalReason, GroupsSnapshot, PaneEdge, PlaceIntent } from './tab-groups'
 import type { DiscussTarget } from './discuss'
 import type { SettingsPageScope } from './manifest'
@@ -61,6 +61,18 @@ export interface SessionDetail {
   steps?: { done: number; total: number }
   files: string[]
   queue: QueuedItem[]
+  /**
+   * The tab's room (design-rooms.md §5), as SessionInfo.room: the strip's marker and its tooltip. Absent: in no room.
+   * The tab's own mark is in TabInfo.room, which main writes only on the person's `tabs.roomMark`.
+   */
+  room?: { title: string; name: string; coordinator: boolean }
+  /** Room messages waiting for this member (above 0 only): the held badge's count. */
+  held?: number
+  /**
+   * The person typed in the tab (SessionInfo.typed): the badge says a typed tab without the mark gets no pointer of
+   * its own, so the person knows why the count waits for them.
+   */
+  typed?: true
 }
 
 /**
@@ -1656,6 +1668,14 @@ export interface IpcInvokeMap {
   /** The flag command: clear the tab's flag, or flag it with the last-used colour. Answers as `tabs.flag`. */
   'tabs.toggleFlag': { req: { tabId: string }; res: TabFlag | null }
   /**
+   * The person's room mark on a member tab ("Deliver room messages automatically", design-rooms.md §2): only from the
+   * shell page of the tab's own project window, the one way the mark is ever written (TabManager.setRoomMark).
+   * Answers the mark as stored; the tab reaches every view as `tabs.added` (main emits it, the reply adds nothing).
+   */
+  'tabs.roomMark': { req: { tabId: string; mark: boolean }; res: boolean }
+  /** The held badge's click: the room pointer through the send gate as the person's own act, or why it did not go in. */
+  'rooms.deliverHeld': { req: { tabId: string }; res: DeliverHeldAnswer }
+  /**
    * Relaunch an exited tab (same kind and cwd; `--resume` when a session id is known; a command
    * tab runs its own copy of the command again), or start a restored command tab (`notStarted`).
    */
@@ -2071,6 +2091,8 @@ export const INVOKE_CHANNELS = [
   'tabs.rename',
   'tabs.flag',
   'tabs.toggleFlag',
+  'tabs.roomMark',
+  'rooms.deliverHeld',
   'tabs.restart',
   'tabs.input',
   'tabs.resize',
@@ -2451,6 +2473,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.rename': 'yes',
   'tabs.flag': 'yes',
   'tabs.toggleFlag': 'yes',
+  // The person's own acts on a room member (design-rooms.md §5): from a browser only in server mode, like the
+  // approvals; the handler decides by view.remote and `server` (router.ts registerRoomStripHandlers).
+  'tabs.roomMark': 'adapted',
+  'rooms.deliverHeld': 'adapted',
   'tabs.restart': 'yes',
   'tabs.input': 'yes',
   'tabs.resize': 'yes',

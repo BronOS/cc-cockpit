@@ -618,6 +618,39 @@ iframe:focus-visible {
 .tab-unseen {
   background: var(--cc-accent);
 }
+/* A room member tab (design-rooms.md §5, tab-room.ts): the member's name as a small pill, and the held badge (a
+   count, clicked to deliver the pointer). Neither is a flag, which is the person's alone. */
+.tab-room {
+  flex: none;
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  font-size: var(--cc-text-xs);
+  line-height: 15px;
+  color: var(--cc-fg-muted);
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+}
+.tab .tab-held {
+  flex: none;
+  height: 17px;
+  min-width: 17px;
+  margin-right: 2px;
+  padding: 0 5px;
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  line-height: 15px;
+  color: var(--cc-accent);
+  background: var(--cc-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--cc-accent) 55%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.menu-check {
+  display: inline-block;
+  width: 1.2em;
+}
 .tab-close {
   flex: none;
   display: inline-flex;
