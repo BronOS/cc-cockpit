@@ -169,7 +169,7 @@ export class RoomService {
     this.nonce = options.nonce ?? newFenceNonce
     this.registry = new RoomRegistry({
       dir: options.dir,
-      ...(options.limits ? { limits: (pluginId: string) => options.limits!(pluginId) } : {}),
+      ...(options.limits ? { limits: options.limits } : {}),
       ...(options.now ? { now: options.now } : {}),
       ...(options.newId ? { newId: options.newId } : {}),
       ...(options.random ? { random: options.random } : {}),
@@ -216,7 +216,7 @@ export class RoomService {
       // The per-tab Stop cap holds the gate's paste too; the person's badge click ends it (design §2 "Loops").
       capped: (tabId) => this.stop.isCapped(tabId),
       personDelivered: (tabId) => this.stop.personPrompt(tabId),
-      ...(options.limits ? { limits: (pluginId: string) => options.limits!(pluginId) } : {}),
+      ...(options.limits ? { limits: options.limits } : {}),
       // A pointer main pasted on its own decision counts toward the room's auto-pause (room-stop.ts delivered).
       delivered: (roomId) => this.stop.delivered(roomId),
       ...(options.now ? { now: options.now } : {}),

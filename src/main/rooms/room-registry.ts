@@ -23,7 +23,7 @@ import { limitSpec, type PluginLimits } from '../../shared/plugin-limits'
  * project, not app-wide: a host sees, ends and deletes only its own project's rooms, so rooms left live in another
  * project (whose window may be closed) must not block this one.
  */
-export const MAX_ROOMS_PER_PLUGIN = 5
+export const MAX_ROOMS_PER_PLUGIN = limitSpec('roomsPerProject').default
 /**
  * Ended rooms a plugin may keep in one project before `create` refuses ("delete an ended room first"): an ended room
  * stays until `delete` (its log and docs are the person's record), so without a bound a create/end loop would grow
@@ -33,16 +33,23 @@ export const MAX_ROOMS_PER_PLUGIN = 5
  */
 export const MAX_ENDED_ROOMS_PER_PLUGIN = 50
 /** The default of members a room may have: the person's `membersPerRoom` limit replaces it, read on every join. */
-export const MAX_MEMBERS_PER_ROOM = 20
+export const MAX_MEMBERS_PER_ROOM = limitSpec('membersPerRoom').default
 /**
  * The most members a saved room may have to be restored: the `membersPerRoom` ceiling, never the cap in effect. A room
  * grown to 30 under a raised cap must survive a restart after the person lowered it again (lowering removes nobody).
  */
 export const MEMBERS_PER_ROOM_CEILING = limitSpec('membersPerRoom').ceiling
+/** The two room caps the person sets per plugin (design-rooms.md §6): a subset of PluginLimits. */
+export type RoomCaps = Pick<PluginLimits, 'roomsPerProject' | 'membersPerRoom'>
+
 /** Where the person changes a room cap, for the refusal texts. */
-const CAP_WHERE = "Settings > General > Plugin limits, the plugin's Limits page or `ccc plugin limits`; lowering it removes nothing"
+const CAP_WHERE =
+  "Settings > General > Plugin limits, the plugin's Limits page or `ccc plugin limits`; lowering it removes nothing"
 /** The room caps without the person's limits (tests, a registry built with no lookup). */
-const DEFAULT_ROOM_CAPS: Readonly<RoomCaps> = Object.freeze({ roomsPerProject: MAX_ROOMS_PER_PLUGIN, membersPerRoom: MAX_MEMBERS_PER_ROOM })
+const DEFAULT_ROOM_CAPS: Readonly<RoomCaps> = Object.freeze({
+  roomsPerProject: MAX_ROOMS_PER_PLUGIN,
+  membersPerRoom: MAX_MEMBERS_PER_ROOM
+})
 /** How long an invite can be redeemed. */
 export const INVITE_TTL_MS = 10 * 60 * 1000
 /** Invites a room may have waiting at once: each is an in-memory entry for ten minutes and a log line. */
@@ -111,9 +118,6 @@ export interface RoomInvite {
 
 /** Why a member left, as the log says it (design-rooms.md §4). */
 export type LeaveWhy = 'left' | 'removed' | 'closed'
-
-/** The two room caps the person sets per plugin (design-rooms.md §6): a subset of PluginLimits. */
-export type RoomCaps = Pick<PluginLimits, 'roomsPerProject' | 'membersPerRoom'>
 
 export interface RoomRegistryOptions {
   /** `<data>/rooms`. */
@@ -571,7 +575,7 @@ export class RoomRegistry {
 
   /**
    * Run `fn` with the room.json saves it causes put off to its end: each changed room is written once, after `fn`
-   * (also when it throws). A send to `all` queues for up to 19 members, and each enqueue alone would rewrite the whole
+   * (also when it throws). A send to `all` queues for every other member (up to the room's configured member cap minus one, 49 at the largest), and each enqueue alone would rewrite the whole
    * record, queues and all. Synchronous like every save: nothing is left unsaved past the call, so a crash loses no
    * more than it would without the batch. Nests: the outermost call writes.
    */
@@ -666,7 +670,20 @@ export class RoomRegistry {
 
   /** The plugin's room caps now (the store clamps each value to 1..ceiling); the defaults without a lookup. */
   private caps(pluginId: string): RoomCaps {
-    return this.options.limits?.(pluginId) ?? DEFAULT_ROOM_CAPS
+    const got = this.options.limits?.(pluginId)
+    if (!got) return DEFAULT_ROOM_CAPS
+    // Defensive: the store clamps, but a NaN, 0 or fraction from another lookup would make `>= cap` false and lift
+    // the cap.
+    const fit = (v: unknown, fallback: number, ceiling: number): number =>
+      typeof v === 'number' && Number.isInteger(v) && v >= 1 ? Math.min(v, ceiling) : fallback
+    return {
+      roomsPerProject: fit(
+        got.roomsPerProject,
+        DEFAULT_ROOM_CAPS.roomsPerProject,
+        limitSpec('roomsPerProject').ceiling
+      ),
+      membersPerRoom: fit(got.membersPerRoom, DEFAULT_ROOM_CAPS.membersPerRoom, MEMBERS_PER_ROOM_CEILING)
+    }
   }
 
   private checkJoin(room: RoomRecord, rawName: unknown, tabId: string | undefined): string {

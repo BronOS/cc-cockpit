@@ -1931,7 +1931,8 @@ function start(server: boolean): void {
   })
   // The person's per-plugin caps (design-rooms.md §6, plugins/plugin-limits.ts): `app.json` › `pluginLimits[id]` over
   // the global values in `pluginLimitsGlobal`, read with every value clamped on each open and send (HostApi, the room
-  // delivery) and each room create and join (the room registry), written only by Settings › Plugins and › General and the shell-only `ccc plugin limits` write.
+  // delivery) and each room create and join (the room registry), written only by Settings › Plugins and › General and
+  // the shell-only `ccc plugin limits` write.
   const pluginLimits: PluginLimitsStore = new PluginLimitsStore({
     storage: appJsonLimitsStorage(registry.app),
     known: (pluginId) => plugins.get(pluginId) !== undefined

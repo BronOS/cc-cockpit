@@ -178,13 +178,17 @@ describe('RoomRegistry', () => {
       reg.enqueue(first, 'm1', { from: 'm0', text: 'still here' })
       expect(reg.take(first, 'm1').map((m) => m.text)).toEqual(['still here'])
       // Ending rooms frees places only down to the new cap: 8 live, 3 allowed, so 5 ends before a create.
-      for (let i = 0; i < 5; i++) reg.end(owner, rooms[i]!.id)
+      // `first` (rooms[0]) stays live for the leave check below.
+      for (let i = 1; i <= 5; i++) reg.end(owner, rooms[i]!.id)
       expect(code(() => reg.create(owner, { title: 'over' }))).toBe('limit')
-      reg.end(owner, rooms[5]!.id)
+      reg.end(owner, rooms[6]!.id)
       expect(reg.create(owner, { title: 'under' }).title).toBe('under')
       // Members leave below the cap before a join is taken again.
+      // `first` holds t0..t29 (cap 10): refused until it is below 10.
       for (let i = 0; i < 20; i++) reg.leave(`t${i}`)
-      expect(code(() => reg.addMember(owner, rooms[6]!.id, { tabId: 'y', name: 'y' }))).toBeUndefined()
+      expect(code(() => reg.addMember(owner, first, { tabId: 'y', name: 'y' }))).toBe('limit')
+      reg.leave('t20')
+      expect(code(() => reg.addMember(owner, first, { tabId: 'y', name: 'y' }))).toBeUndefined()
     })
 
     it('an invite redeemed over the cap is refused and kept; it works once the cap allows it', () => {

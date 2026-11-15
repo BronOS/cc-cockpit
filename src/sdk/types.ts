@@ -1114,7 +1114,8 @@ export interface PluginContext {
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
      * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute (the
-     * default `sendsPerMinute`; the person can change it in Settings > General > Plugin limits or a plugin's Limits, and the error names the cap).
+     * default `sendsPerMinute`; the person can change it in Settings > General > Plugin limits or a plugin's Limits,
+     * and the error names the cap).
      */
     send(tabId: string, text: string): Promise<SendResult>
     /**
@@ -1180,7 +1181,8 @@ export interface PluginContext {
      * `all`, `plugin`, `person`, `user` or `system`; unique in the room). `cwd`, `prompt`, `model` and `effort` are
      * `ctx.sessions.open`'s, with its checks, and it counts against the same 5 tabs a minute; the tab opens
      * unselected. At most 20 members a room (the default `membersPerRoom`, at most 50; the person can change it in
-     * Settings > General > Plugin limits or a plugin's Limits, and the error names the cap). Seed a member's kickoff doc before opening it.
+     * Settings > General > Plugin limits or a plugin's Limits, and the error names the cap). Seed a member's kickoff
+     * doc before opening it.
      */
     open(
       id: string,
