@@ -10,7 +10,7 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import type { PaneNode } from '../../shared/tab-groups'
-import { checkFrames, PointerEvidence, watchShellEvidence, type FrameCheck, type FrameFocusHandler } from './frame-focus'
+import { checkFrames, PointerEvidence, viewportRect, watchShellEvidence, type FrameCheck, type FrameFocusHandler } from './frame-focus'
 import { frameBoxes } from './pane-layout'
 import { sameFont } from './terminal-font'
 import { PageFrames, ReadyReconnects, layerBox, pageTabEntries, type PageFrameElement } from './page-frames'
@@ -165,8 +165,7 @@ function createFrame(title: string, tabId: string): PageFrameElement {
     },
     rect: () => {
       if (iframe.hidden) return null
-      const r = iframe.getBoundingClientRect()
-      return { left: r.left, top: r.top, width: r.width, height: r.height }
+      return viewportRect(iframe.getBoundingClientRect())
     },
     // Only this frame's own window (a sandboxed page's origin is opaque: the source is the check).
     onMessage: (listener) => {

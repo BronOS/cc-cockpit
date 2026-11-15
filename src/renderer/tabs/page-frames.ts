@@ -55,6 +55,7 @@
 import type { TabInfo } from '../../shared/ipc'
 import { TAB_DIRTY_MESSAGE, TAB_DISCUSS_MESSAGE, TAB_FOCUS_MESSAGE, TAB_KEY_MESSAGE, TAB_MESSAGE } from '../../sdk/panel-core'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
+import type { ViewportRect } from './frame-focus'
 
 /**
  * Frames kept alive at most (shown plus hidden). Each is a page with its own scripts (CodeMirror,
@@ -63,7 +64,10 @@ import { FrameLoads, type FrameTarget } from '../web/port-relay'
  */
 export const MAX_LIVE_PAGE_FRAMES = 6
 
-/** A frame's box in pixels relative to the layer. */
+/**
+ * A frame's box in pixels relative to the layer, which sits at the page area's left and top, not at
+ * the viewport's origin: a box in viewport pixels is a ViewportRect (frame-focus.ts).
+ */
 export interface FrameRect {
   left: number
   top: number
@@ -96,7 +100,7 @@ export interface PageFrameElement {
    */
   passThrough(on: boolean): void
   /** Its box in viewport pixels while placed, else null (the pointer evidence, frame-focus.ts). */
-  rect(): FrameRect | null
+  rect(): ViewportRect | null
   /** What its page posts to the shell (`event.source` is this frame's window; nothing else). */
   onMessage(listener: (data: unknown) => void): void
   /** It has the keyboard now (the document's active element). */
@@ -367,14 +371,14 @@ export class PageFrames {
   }
 
   /** The tab's frame box in viewport pixels while it is placed, else null. */
-  frameRect(tabId: string): FrameRect | null {
+  frameRect(tabId: string): ViewportRect | null {
     if (!this.visible.has(tabId)) return null
     return this.live.find((l) => l.tab.id === tabId)?.frame?.element.rect() ?? null
   }
 
   /** Every visible frame's box in viewport pixels, by tab (the pointer evidence's neighbours). */
-  frameRects(): Map<string, FrameRect> {
-    const rects = new Map<string, FrameRect>()
+  frameRects(): Map<string, ViewportRect> {
+    const rects = new Map<string, ViewportRect>()
     for (const id of this.visible) {
       const rect = this.frameRect(id)
       if (rect) rects.set(id, rect)

@@ -58,10 +58,27 @@
 // fresh pointer evidence, so a click the shell could not prove costs one more click, never a key in
 // the wrong pane.
 
-import type { FrameRect } from './page-frames'
+declare const viewportSpace: unique symbol
 
-/** A box in viewport pixels; the frame layer sits at the viewport's origin, so this is a FrameRect. */
-export type ViewportRect = FrameRect
+/**
+ * A box in viewport pixels: an element's `getBoundingClientRect()`, the space of a pointer event's
+ * `clientX`/`clientY`. Not a FrameRect (page-frames.ts): that is relative to the frame layer, which
+ * PageTabArea places at the page area's left and top (below the tab strip, beside the side panels),
+ * so a layer box fed to the pointer check would put the evidence region that far up and to the left
+ * of the frame. The brand keeps the two apart for the compiler: only `viewportRect` makes one.
+ */
+export interface ViewportRect {
+  readonly left: number
+  readonly top: number
+  readonly width: number
+  readonly height: number
+  readonly [viewportSpace]: true
+}
+
+/** A box measured in viewport pixels (a `getBoundingClientRect()`, or a test's stand-in for one). */
+export function viewportRect(r: { left: number; top: number; width: number; height: number }): ViewportRect {
+  return { left: r.left, top: r.top, width: r.width, height: r.height } as ViewportRect
+}
 
 /**
  * How far outside a frame's box the last pointer position may be and still count as "went into it":

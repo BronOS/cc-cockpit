@@ -1,7 +1,14 @@
 // A page tab frame pool with fake frame elements (renderer/tabs/page-frames.ts), for the frame,
 // close and key tests: what each frame loaded, was posted, and what its page posts back.
+import { viewportRect, type ViewportRect } from '../../src/renderer/tabs/frame-focus'
 import { PageFrames, type FrameRect, type PageFrameElement, type PageFramesOptions, type PageTabEntry } from '../../src/renderer/tabs/page-frames'
 import { PORT_MESSAGE } from '../../src/sdk/panel-core'
+
+/** Where the frame layer sits in the viewport (PageTabArea: the page area's left and top); a pool's elements read it at `rect()`. */
+export interface LayerOrigin {
+  left: number
+  top: number
+}
 
 export const TAB_A = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4a'
 export const TAB_B = '0b4f6c2e-1d3a-4e5b-8c7d-9e0f1a2b3c4b'
@@ -20,7 +27,10 @@ export class FakeElement implements PageFrameElement {
   removed = false
   focused = 0
   private listener: (() => void) | undefined
-  constructor(readonly title: string) {}
+  constructor(
+    readonly title: string,
+    private readonly layer: LayerOrigin = { left: 0, top: 0 }
+  ) {}
   load(url: string): void {
     this.loads.push(url)
   }
@@ -57,9 +67,10 @@ export class FakeElement implements PageFrameElement {
   passThrough(on: boolean): void {
     this.through = on
   }
-  /** Its viewport box: the layer is at the viewport's origin here, so the placed box. */
-  rect(): FrameRect | null {
-    return this.box
+  /** Its viewport box: the placed box (layer pixels) moved by the layer's origin, as getBoundingClientRect gives it. */
+  rect(): ViewportRect | null {
+    if (this.box === null) return null
+    return viewportRect({ ...this.box, left: this.box.left + this.layer.left, top: this.box.top + this.layer.top })
   }
   /** What its page posts to the shell, and whether it has the keyboard (page-tab-close/keys tests). */
   readonly messageListeners: Array<(data: unknown) => void> = []
@@ -89,7 +100,7 @@ export const boxOf = (tab: string, left = 0, width = 400): FrameRect & { tab: st
 
 export const entry = (id: string, plugin = 'a.one'): PageTabEntry => ({ id, plugin, type: 'file', title: `t-${id.slice(-1)}` })
 
-export function pool(over: Partial<PageFramesOptions> = {}) {
+export function pool(over: Partial<PageFramesOptions> = {}, layer: LayerOrigin = { left: 0, top: 0 }) {
   const elements: FakeElement[] = []
   const srcAsked: string[] = []
   const connects: Array<{ tabId: string; deliver: (port: MessagePort) => void; cancelled: boolean }> = []
@@ -97,7 +108,7 @@ export function pool(over: Partial<PageFramesOptions> = {}) {
   const pages: Record<string, string | null> = {}
   const frames = new PageFrames({
     createFrame: (title) => {
-      const el = new FakeElement(title)
+      const el = new FakeElement(title, layer)
       elements.push(el)
       return el
     },

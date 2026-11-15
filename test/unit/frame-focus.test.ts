@@ -12,6 +12,7 @@ import {
   pointerNear,
   POINTER_FRESH_MS,
   POINTER_NEAR_PX,
+  viewportRect,
   watchShellEvidence,
   type FrameEvidence
 } from '../../src/renderer/tabs/frame-focus'
@@ -80,7 +81,7 @@ describe('framePick', () => {
 })
 
 describe('pointer evidence', () => {
-  const rect = { left: 100, top: 50, width: 200, height: 100 }
+  const rect = viewportRect({ left: 100, top: 50, width: 200, height: 100 })
 
   it('inside the box or within POINTER_NEAR_PX of it counts (the last shell event before the frame); farther, a zero box or no position does not', () => {
     expect(pointerNear({ x: 150, y: 80 }, rect)).toBe(true)
@@ -94,12 +95,12 @@ describe('pointer evidence', () => {
     expect(distanceTo({ x: 303, y: 154 }, rect)).toBe(5)
     expect(pointerNear(null, rect)).toBe(false)
     expect(pointerNear({ x: 150, y: 80 }, null)).toBe(false)
-    expect(pointerNear({ x: 0, y: 0 }, { left: 0, top: 0, width: 0, height: 0 })).toBe(false)
+    expect(pointerNear({ x: 0, y: 0 }, viewportRect({ left: 0, top: 0, width: 0, height: 0 }))).toBe(false)
   })
 
   it('two frames across a divider (3 px inset each side): a position between them is evidence for the nearer one only, a tie for none', () => {
-    const left = { left: 0, top: 0, width: 400, height: 300 }
-    const right = { left: 406, top: 0, width: 400, height: 300 }
+    const left = viewportRect({ left: 0, top: 0, width: 400, height: 300 })
+    const right = viewportRect({ left: 406, top: 0, width: 400, height: 300 })
     for (let x = 390; x <= 416; x++) expect(pointerNear({ x, y: 10 }, left, [right]) && pointerNear({ x, y: 10 }, right, [left])).toBe(false)
     expect(pointerNear({ x: 401, y: 10 }, left, [right])).toBe(true)
     expect(pointerNear({ x: 401, y: 10 }, right, [left])).toBe(false)
@@ -451,5 +452,45 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
     s.pointer.moved(500, 10)
     expect(checkFrames(s.t.frames, s.handler, s.pointer, TAB_B)).toEqual({ tab: TAB_B })
     expect([s.t.frames.keyboardTab(), s.keyboard.terminal, s.picks]).toEqual([TAB_B, false, [TAB_B]])
+  })
+})
+
+// The external review's MINOR, checked as a bug: the frame layer sits at the page area's left and top
+// (below the tab strip, beside the side panels), not at the viewport's origin. The pointer evidence is
+// in viewport pixels (clientX/clientY), so the boxes it is measured against must be the frames' viewport
+// boxes (getBoundingClientRect), never their layer boxes: those would put the 24 px evidence region up
+// and to the left of the frame, over the tab strip and the side panel.
+describe('checkFrames: the pointer evidence is measured in viewport pixels', () => {
+  async function offsetLayer() {
+    const t = pool({}, { left: 240, top: 64 })
+    t.frames.sync([entry(TAB_A), entry(TAB_B)])
+    t.frames.show([TAB_A, TAB_B], TAB_A)
+    t.frames.place([boxOf(TAB_A, 0), boxOf(TAB_B, 406)])
+    await settle()
+    t.el(TAB_A).fire()
+    t.el(TAB_B).fire()
+    const picks: string[] = []
+    const handler = { activeId: () => TAB_A, pick: (id: string) => void picks.push(id) }
+    return { t, picks, handler, pointer: new PointerEvidence(() => 1000) }
+  }
+
+  it("names each frame's viewport box: its layer box moved by the layer's origin", async () => {
+    const { t } = await offsetLayer()
+    expect(t.frames.frameRect(TAB_A)).toEqual({ left: 240, top: 86, width: 400, height: 300 })
+    expect(t.frames.frameRect(TAB_B)).toEqual({ left: 646, top: 86, width: 400, height: 300 })
+  })
+
+  it("a pointer at B's layer position (over A's pane header in the viewport) is no evidence for B; one inside B's viewport box is", async () => {
+    const { t, picks, handler, pointer } = await offsetLayer()
+    // Inside B's layer box (406, 22, 400, 300), but in the viewport 46 px above A's frame and far from B's.
+    pointer.moved(416, 40)
+    t.el(TAB_B).focusedNow = true
+    expect(checkFrames(t.frames, handler, pointer)).toBe('blurred')
+    expect(picks).toEqual([])
+    // Inside B's viewport box (646, 86, 400, 300).
+    pointer.moved(660, 100)
+    t.el(TAB_B).focusedNow = true
+    expect(checkFrames(t.frames, handler, pointer)).toEqual({ tab: TAB_B })
+    expect(picks).toEqual([TAB_B])
   })
 })
