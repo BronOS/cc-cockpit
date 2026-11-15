@@ -748,7 +748,7 @@ test('Close all with a dirty file: the dialog names it even with the setting off
     await expect(dialog).toBeVisible()
     await expect(dialog).toContainText('a.txt')
     await expect(dialog).toContainText('unsaved changes')
-    await expect(dialog.getByRole('button', { name: 'Close all' })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: 'Discard and Close all', exact: true })).toBeVisible()
     await expect(dialog.getByText("Don't ask again")).toHaveCount(0)
     await dialog.getByRole('button', { name: 'Cancel' }).click()
     await expect(dialog).toHaveCount(0)
@@ -758,7 +758,7 @@ test('Close all with a dirty file: the dialog names it even with the setting off
 
     await closeAll()
     await expect(dialog).toBeVisible()
-    await dialog.getByRole('button', { name: 'Close all' }).click()
+    await dialog.getByRole('button', { name: 'Discard and Close all', exact: true }).click()
     await expect.poll(async () => (await tabsOf(page)).filter((t) => t.id === a || t.id === b).length).toBe(0)
     expect(readFileSync(join(projectDir, 'a.txt'), 'utf8')).not.toContain('Q')
   } finally {

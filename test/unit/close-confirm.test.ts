@@ -150,7 +150,32 @@ describe('server view: a group question with unsaved members is an approval', ()
     const html = renderToStaticMarkup(createElement(CloseTabApproval, { question: q, onAnswer: () => {} }))
     expect(html).toContain('Discard and Close all')
     expect(html).toContain('unsaved changes')
-    expect(html).not.toContain("Don't ask again")
+    expect(html).not.toContain('ask again')
     expect(html).toContain('role="alertdialog"')
+  })
+})
+
+describe('desktop view: the group dialog names the discard', () => {
+  // A .tsx module loaded by a path the node typecheck does not follow (as approval-dialog.test.ts does).
+  const file = '../../src/renderer/tabs/CloseTabDialog.tsx'
+  type Dialog = FunctionComponent<{ question: unknown; onAnswer(c: string, d: boolean): void }>
+  const render = async (q: unknown): Promise<string> => {
+    const { CloseTabDialog } = (await import(file)) as { CloseTabDialog: Dialog }
+    return renderToStaticMarkup(createElement(CloseTabDialog, { question: q, onAnswer: () => {} }))
+  }
+
+  it('says "Discard and Close all" with no "Don\'t ask again" when a member has unsaved changes', async () => {
+    const q = closeGroupQuestion('g', 'G', [tab({ id: 'p', kind: 'page', dirty: true, page: { title: 'notes.txt' } as TabInfo['page'] })], () => undefined, false)
+    const html = await render(q)
+    expect(html).toContain('>Discard and Close all</button>')
+    expect(html).toContain('notes.txt (unsaved changes)')
+    expect(html).not.toContain('ask again')
+  })
+
+  it('says plain "Close all" and offers "Don\'t ask again" when members only run', async () => {
+    const html = await render(closeGroupQuestion('g', 'G', [tab({ id: 's' })], () => undefined, true))
+    expect(html).toContain('>Close all</button>')
+    expect(html).not.toContain('Discard')
+    expect(html).toContain('ask again')
   })
 })

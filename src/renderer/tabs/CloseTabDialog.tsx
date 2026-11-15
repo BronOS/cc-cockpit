@@ -21,6 +21,7 @@ export function CloseTabDialog(props: {
   const cancel = useRef<HTMLButtonElement>(null)
   const titleId = useId()
   const textId = useId()
+  const groupUnsaved = (props.question.group?.unsaved.length ?? 0) > 0
 
   // Take the keyboard from the terminal behind (it is inert now, but it held the focus).
   useEffect(() => cancel.current?.focus(), [])
@@ -68,7 +69,7 @@ export function CloseTabDialog(props: {
         )}
         {/* The setting is about running processes; unsaved text always asks (close-confirm.ts). A group
             question with unsaved members has no "Don't ask again" either: it would not stop that ask. */}
-        {!props.question.unsaved && !(props.question.group && props.question.group.unsaved.length > 0) && (
+        {!props.question.unsaved && !groupUnsaved && (
           <label className="confirm-check">
             <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
             {" Don't ask again"}
@@ -79,7 +80,14 @@ export function CloseTabDialog(props: {
             Cancel
           </button>
           <button type="button" className="confirm-danger" onClick={() => answer('close')}>
-            {props.question.unsaved ? 'Discard and Close' : props.question.group ? 'Close all' : 'Close'}
+            {/* Close all discards a group's unsaved members too, so it says so (as CloseTabApproval does). */}
+            {props.question.unsaved
+              ? 'Discard and Close'
+              : props.question.group
+                ? groupUnsaved
+                  ? 'Discard and Close all'
+                  : 'Close all'
+                : 'Close'}
           </button>
         </div>
       </div>
