@@ -10,6 +10,7 @@ import type { DownloadOffer } from '../../shared/downloads'
  * The path is shown whole and wrapped (monospace, never cut), the real path beside it when the named
  * one is a link, and the include checkbox starts unchecked whatever Claude asked. The tab title is
  * not shown: the offer is the project's. `key` the dialog by request id so the checkbox resets.
+ * Known limit: ApprovalDialog blocks Space, so the checkbox toggles by click only; the unchecked default is the safe one.
  */
 export function DownloadDialog(props: { offer: DownloadOffer; onAnswer(accept: { all: boolean } | undefined): void }): React.JSX.Element {
   const { offer } = props

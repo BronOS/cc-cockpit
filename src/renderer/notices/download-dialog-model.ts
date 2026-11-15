@@ -44,7 +44,7 @@ export function downloadOfferOf(payload: unknown): DownloadOffer | undefined {
   if (typeof v.skipped !== 'object' || v.skipped === null) return undefined
   const skipped: DownloadSkipped = {}
   for (const [k, n] of Object.entries(v.skipped as Record<string, unknown>)) {
-    if (k in SKIP_TEXT && typeof n === 'number' && Number.isFinite(n) && n > 0) skipped[k as DownloadSkipReason] = n
+    if (Object.hasOwn(SKIP_TEXT, k) && typeof n === 'number' && Number.isFinite(n) && n > 0) skipped[k as DownloadSkipReason] = n
   }
   return { ...base, kind: 'folder', counts: { plain, all }, ...(v.allTooLarge === true ? { allTooLarge: true as const } : {}), skipped }
 }
