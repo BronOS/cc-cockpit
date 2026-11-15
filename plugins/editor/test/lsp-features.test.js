@@ -926,6 +926,7 @@ test("commands: a cancel stops the server's edits before their next file and cou
   a.open()
   await ready(f)
   fs.writeFileSync(path.join(f.root, 'src/c.ts'), 'const c = 3\n')
+  await sleep(30) // past c.ts's mtime: the command's `since` must not land in the same millisecond (macOS)
   const c = commands(f)
   // The page gives up while a's part of the server's edit is applied: b and c are not touched.
   const ctl = new AbortController()
@@ -1002,6 +1003,7 @@ test("commands: a cancel while the first page applies an applyEdit that came wit
   a.open()
   await ready(f)
   fs.writeFileSync(path.join(f.root, 'src/c.ts'), 'const c = 3\n')
+  await sleep(30) // past c.ts's mtime: the command's `since` must not land in the same millisecond (macOS)
   const c = commands(f)
   // The answer is in before a's part is applied: the page gives up while a's page applies it.
   const ctl = new AbortController()
