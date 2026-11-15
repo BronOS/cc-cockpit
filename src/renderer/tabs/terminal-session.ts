@@ -183,6 +183,11 @@ export class TerminalSession {
       allowProposedApi: true,
       scrollback: 10_000,
       cursorBlink: true,
+      // Option+drag selects text while a program owns the mouse (Claude Code's own selection and
+      // copy-on-select). Off by default in xterm, so on a Mac nothing could force a selection (Shift
+      // does it only elsewhere) and Cmd+C had nothing to copy; in a remote window Claude Code's own
+      // copy goes to the server's clipboard, so this is the only way to the Mac's.
+      macOptionClickForcesSelection: true,
       // Settings › Appearance › Terminal; loaded before the first window rendered
       // (startPrefs), so the first cell measurement uses it.
       ...xtermFontOptions(currentPrefs().terminalFont),
