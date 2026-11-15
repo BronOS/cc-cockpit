@@ -329,18 +329,18 @@ External review: sol / high
 - Modify: `src/renderer/tabs/PageTabArea.tsx`, `src/renderer/tabs/SplitArea.tsx` (only for what the specs find)
 - Create: `test/e2e/editor-split-web.spec.ts`
 
-- [ ] a browser view draws a group with a page pane once `groups.get` answers after `tabs.list` (the selected page tab
+- [x] a browser view draws a group with a page pane once `groups.get` answers after `tabs.list` (the selected page tab
   fills the area until then, then moves into its pane: a box change, no reload); a web reconnect re-applies the boxes
   from the new tree and frames take a new port at `ready`
-- [ ] server mode's hidden page: SplitArea draws the page pane sections with empty bodies, no frame mounts
+- [x] server mode's hidden page: SplitArea draws the page pane sections with empty bodies, no frame mounts
   (`pageTabs.src` null), `ViewSizes` never measures it
-- [ ] e2e (`enableWebAccess`, `openBrowser`; `CC_COCKPIT_NO_BUNDLED: ''`): *web view* — the desktop places a file beside
+- [x] e2e (`enableWebAccess`, `openBrowser`; `CC_COCKPIT_NO_BUNDLED: ''`): *web view* — the desktop places a file beside
   Claude; the browser shows both panes with its own frame at the pane's box; a forwarded Ctrl+W from the browser's
   focused frame closes the file; the desktop's frame untouched until then; *two visible frames survive a web reconnect*
   (both markers stay)
-- [ ] e2e (`launchServer`): a file pane in a group mounts no frame in the hidden page; Close all with a dirty file shows the
+- [x] e2e (`launchServer`): a file pane in a group mounts no frame in the hidden page; Close all with a dirty file shows the
   approval in the browser and Discard and Close all closes the group
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split-web.spec.ts`,
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split-web.spec.ts`,
   `editor-web.spec.ts`, `split-views.spec.ts`)
 
 ### Task 10: Verify acceptance criteria [model: sonnet]
