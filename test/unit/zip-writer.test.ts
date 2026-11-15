@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DownloadSkipped } from '../../src/shared/downloads'
 import { walkFolder, type WalkEntry, type WalkOptions } from '../../src/main/files/folder-walk'
 import { dosTime, ZipCapError, zipEntries, ZIP_CHUNK_BYTES, type ZipOptions } from '../../src/main/files/zip-writer'
@@ -291,7 +291,8 @@ describe('zipEntries', () => {
     expect(() => readZip(Buffer.concat(got))).toThrow()
     expect(Buffer.concat(got).includes(Buffer.from('504b0506', 'hex'))).toBe(false)
     expect(chunks).toBeLessThan(40)
-    expect(fds()).toBe(before)
+    // The close after cancellation is a background step: wait for it, never assert at once.
+    await vi.waitFor(() => expect(fds()).toBe(before))
   })
 
   it('an abort ends a zip whose file open is stalled, and the descriptor that comes late is closed', async () => {
@@ -448,7 +449,8 @@ describe('zipEntries', () => {
     expect(opened).toBeLessThan(4)
     expect(() => readZip(Buffer.concat(got))).toThrow()
     expect(Buffer.concat(got).includes(Buffer.from('504b0506', 'hex'))).toBe(false)
-    expect(fds()).toBe(before)
+    // The close after cancellation is a background step: wait for it, never assert at once.
+    await vi.waitFor(() => expect(fds()).toBe(before))
     expect((await walk.next()).done).toBe(true) // returned, not left suspended
   })
 
