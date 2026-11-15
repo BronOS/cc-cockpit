@@ -296,6 +296,33 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await page.keyboard.type('S')
     await expect(editor.locator('.cm-content')).toContainText('S')
 
+    // The external review's MAJOR: the file pane focused, the person types in a field of the shell
+    // (the focus moved within the shell), and the page focuses itself. The selection is no evidence:
+    // the frame is blurred and the keys go to nothing, not into the page.
+    await page.evaluate(() => {
+      const field = document.createElement('input')
+      field.id = 'e2e-shell-field'
+      document.body.appendChild(field)
+      field.focus()
+    })
+    await page.keyboard.type('ab')
+    await expect(page.locator('#e2e-shell-field')).toHaveValue('ab')
+    await editor.evaluate(() => (document.querySelector('.cm-content') as HTMLElement).focus())
+    await expect.poll(() => keysInFrame(page)).toBe(false)
+    expect(await domFocusInTerminal(page)).toBe(false)
+    await page.keyboard.type('qq')
+    await expect(page.locator('#e2e-shell-field')).toHaveValue('ab')
+    await page.evaluate(() => document.getElementById('e2e-shell-field')?.remove())
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+    // The 'qq' typed after the page took the keys from the shell field reached nothing: the person
+    // clicks into the file again and a later key lands there first.
+    await fileHeader.hover()
+    await editor.locator('.cm-line', { hasText: 'two' }).click()
+    await expect.poll(() => keysInFrame(page)).toBe(true)
+    await page.keyboard.type('T')
+    await expect(editor.locator('.cm-content')).toContainText('T')
+    await expect(editor.locator('.cm-content')).not.toContainText(/qq|ab/)
+
     // Keys off on a page pane: a change from elsewhere moves the focused file out (a raw
     // `groups.remove`, no intent of this view). The frame is blurred and no key reaches any frame or
     // terminal until the person picks a tab.
@@ -382,6 +409,16 @@ async function nativeChord(c: Cockpit, keyCode: string, modifiers: Array<'contro
     },
     { keyCode, modifiers }
   )
+}
+/** Native key events in order, as main's before-input-event sees them (a key held on, its auto-repeats). */
+async function nativeKeys(
+  c: Cockpit,
+  events: Array<{ type: 'keyDown' | 'keyUp'; keyCode: string; modifiers: Array<'control' | 'meta' | 'shift' | 'alt' | 'isautorepeat'> }>
+): Promise<void> {
+  await c.app.evaluate(({ BrowserWindow }, events) => {
+    const wc = BrowserWindow.getAllWindows()[0]!.webContents
+    for (const e of events) wc.sendInputEvent(e)
+  }, events)
 }
 const NATIVE_MOD = process.platform === 'darwin' ? 'meta' : 'control'
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
@@ -472,16 +509,25 @@ test('keys to the focused pane: Cmd+W in the file beside Claude closes the file,
     await expect(editor.locator('#palette')).toBeHidden()
     expect(await keysInFrame(page)).toBe(false)
 
-    // A pane focus chord typed in the frame (Cmd+Alt+Left): the keys go to the Claude terminal.
+    // A pane focus chord typed in the frame (Cmd+Alt+Left): the keys go to the Claude terminal. The
+    // external review's MAJOR: the arrow is held on after Cmd and Alt came up, and its auto-repeats
+    // now reach the shell, where the terminal has the keys; they are swallowed (HeldChordKeys), so
+    // not one arrow reaches Claude (one would move its cursor, and the echo below would not read so).
     await clickInto(page, file, editor, 'two')
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
-    await nativeChord(c, 'Left', [NATIVE_MOD, 'alt'])
+    await nativeKeys(c, [{ type: 'keyDown', keyCode: 'Left', modifiers: [NATIVE_MOD, 'alt'] }])
     await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
     await expect.poll(() => domFocusInTerminal(page)).toBe(true)
-    await page.keyboard.type('hey')
+    await page.keyboard.type('he')
+    await nativeKeys(c, [
+      ...Array.from({ length: 4 }, () => ({ type: 'keyDown' as const, keyCode: 'Left', modifiers: ['isautorepeat' as const] })),
+      { type: 'keyUp', keyCode: 'Left', modifiers: [] }
+    ])
+    await page.keyboard.type('y')
     await page.keyboard.press('Enter')
     await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: hey')
     await expect(editor.locator('.cm-content')).not.toContainText('hey')
+
 
     // Back into the file and Cmd+W there: the file tab closes, the Claude tab stays (its pane was the
     // one the state ref still called active a moment before the chord ran).

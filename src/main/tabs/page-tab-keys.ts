@@ -38,8 +38,13 @@ export function isPageTabFrame(frame: FrameLike | null | undefined): boolean {
 export interface PageTabChordDeps {
   /** The window's key table: the command bound to `chord`, if any. */
   commandFor(windowId: number, chord: string): string | undefined
-  /** Send `commands.trigger` to the window's own shell page; false when the window is gone. */
-  trigger(windowId: number, id: string): boolean
+  /**
+   * Send `commands.trigger` to the window's own shell page, with the chord (the shell holds its key
+   * after a pane chord, so an auto-repeat does not reach the terminal it moved to) and `from:
+   * 'page-tab'` (a chord whose frame lost the keyboard before it got there is dropped, never run for
+   * the active tab: frame-focus.ts chordTarget); false when the window is gone.
+   */
+  trigger(windowId: number, id: string, chord: string): boolean
 }
 
 /**
@@ -54,5 +59,5 @@ export function pageTabChord(deps: PageTabChordDeps, windowId: number, chord: st
   // An auto-repeat of an app chord is swallowed without running it again (the web SDK does the same):
   // holding Ctrl+W must not type or act in the page after the first press went to the shell.
   if (repeat) return true
-  return deps.trigger(windowId, id)
+  return deps.trigger(windowId, id, chord)
 }

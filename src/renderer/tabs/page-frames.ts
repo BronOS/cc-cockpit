@@ -200,8 +200,9 @@ export class PageFrames {
   /** Tabs whose page here said it holds unsaved changes (and has not said otherwise since). */
   private readonly dirty = new Set<string>()
   /**
-   * The tab whose frame the shell itself last gave the keyboard (`focus`, `wantFocus` at the load);
-   * null once the focus moved within the shell (`shellFocused`) or a frame was blurred.
+   * The tab whose frame the shell itself last gave the keyboard (`focus`, `wantFocus` at the load) or
+   * a check accepted on the person's evidence (`proven`); null once the focus moved within the shell
+   * (`shellFocused`), a frame was blurred or the selection moved on (`show`).
    */
   private own: string | null = null
   /** Tabs whose frame lets the pointer through to its pane now (`passThrough`), until it moves. */
@@ -354,6 +355,15 @@ export class PageFrames {
   /** Whether the shell's own focus call put the keyboard in this visible tab's frame (frame-focus.ts). */
   ownFocus(tabId: string): boolean {
     return this.own === tabId && this.visible.has(tabId)
+  }
+
+  /**
+   * A focus check kept or picked this visible tab's frame on the person's evidence (frame-focus.ts
+   * checkFrames): from now on it holds the keyboard as if the shell had put it there (`ownFocus`), so
+   * a later check (a chord typed in it once the pointer evidence is stale) still names it.
+   */
+  proven(tabId: string): void {
+    if (this.visible.has(tabId)) this.own = tabId
   }
 
   /** The tab's frame box in viewport pixels while it is placed, else null. */

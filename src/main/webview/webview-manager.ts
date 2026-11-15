@@ -1024,7 +1024,7 @@ export interface WebviewChordDeps {
   /** The window's key table: the command bound to `chord`, if any. */
   commandFor(windowId: number, chord: string): string | undefined
   /** The window's shell page, or undefined when the window is gone. */
-  shell(windowId: number): { focus(): void; trigger(id: string): void } | undefined
+  shell(windowId: number): { focus(): void; trigger(id: string, chord: string): void } | undefined
 }
 
 /**
@@ -1041,6 +1041,6 @@ export function webviewChord(deps: WebviewChordDeps, windowId: number, chord: st
   const shell = deps.shell(windowId)
   if (!shell) return false
   shell.focus()
-  shell.trigger(id)
+  shell.trigger(id, chord)
   return true
 }

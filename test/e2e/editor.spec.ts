@@ -53,9 +53,16 @@ async function editFromFiles(c: Cockpit, name: string): Promise<void> {
   await row.getByRole('button', { name: 'Edit' }).click()
 }
 
-/** Focus the buffer and put the cursor at the very start. */
+/**
+ * Focus the buffer and put the cursor at the very start. The pointer comes in over the shell just
+ * above the frame, as a person's does: a click whose pointer jumped into the frame leaves the shell no
+ * evidence (frame-focus.ts), and once the focus moved within the shell (a button focused) even the
+ * focused tab's own frame is refused then.
+ */
 async function toStart(c: Cockpit): Promise<void> {
   const content = editorFrame(c.page).locator('.cm-content')
+  const box = await c.page.locator('iframe.page-tab-frame:visible').boundingBox()
+  if (box) await c.page.mouse.move(box.x + 40, box.y - 8)
   await content.click()
   await c.page.keyboard.press(`${MOD}+Home`)
 }

@@ -84,7 +84,8 @@ External review: sol / high
   frame.
 - Focus: the shell reads `document.activeElement` at window `blur`, at a `cc-plugin.tab-focus` hint, before each chord
   from a frame and before Ask Claude. A frame holding the keys counts only with evidence (the shell's own focus call, or
-  the pointer entering it with no shell keydown after); otherwise it is blurred and `focusActive` runs.
+  the pointer entering it with no shell keydown after), the focused pane's own frame included; otherwise it is blurred
+  and the keyboard goes to nothing (never `focusActive`, never a give-back).
 - Commands from a frame run with an explicit target: `runCommand(id, { tabId })`, every active-tab handler reading
   `target ?? stateRef.current.activeId`.
 
@@ -174,10 +175,10 @@ External review: sol / high
 
 - [x] `framePick(activeTab, activeId, ownFocus, pointer, keyAfterPointer)`: with evidence (the shell's own
   `pageFrames().focus(T)`, or the last shell pointer position inside or on the edge of T's frame box with no shell
-  `keydown` after it) and T not `activeId`: pick T (keys on); without evidence: blur the iframe element and leave the
-  keyboard on nothing (review fix: not `focusActive`, which handed it to a Claude terminal), except back to the element
-  of a shell key within 500 ms with the pointer not near the frame; the blurred frame passes the pointer to its pane
-  until it moves; keys off: never a pick. The pool records its own focus calls; the shell tracks `pointermove` /
+  `keydown` after it) and T not `activeId`: pick T (keys on); T the `activeId` needs the same evidence to keep the keys;
+  without evidence: blur the iframe element and leave the keyboard on nothing (review fix: not `focusActive`, which
+  handed it to a Claude terminal; no give-back to the element of a recent shell key either, Task 4's review); the
+  blurred frame passes the pointer to its pane until it moves; keys off: never a pick. The pool records its own focus calls; the shell tracks `pointermove` /
   `pointerout` and `keydown` (capture) for the evidence
 - [x] read `document.activeElement` at the window `blur`, at a `cc-plugin.tab-focus` hint (new `TAB_FOCUS_MESSAGE` in
   `sdk/panel-core.ts`, beside the other page-tab message constants; panel-core posts it on its own window's `focus`; never trusted for what it says); the pick

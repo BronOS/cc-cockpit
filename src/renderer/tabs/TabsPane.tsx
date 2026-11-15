@@ -29,7 +29,7 @@ import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, isPaneKind, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
 import { paneAtPoint } from './SplitArea'
-import { activeTabHandlers, inGroupHandlers, paneCommandHandlers, refusalText, TOO_SMALL_TO_SPLIT, type NewTabKind } from './pane-commands'
+import { activeTabHandlers, HeldChordKeys, inGroupHandlers, paneCommandHandlers, refusalText, TOO_SMALL_TO_SPLIT, type NewTabKind } from './pane-commands'
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
@@ -253,6 +253,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // the terminal that just got the focus, where a repeated Enter could answer a Claude prompt.
   const heldKeys = useRef(new Set<string>())
   const swallow = useRef(new Set<string>())
+  // The keys of pane chords forwarded from a frame or a webview panel: their auto-repeats are swallowed.
+  const heldChords = useRef(new HeldChordKeys())
   useEffect(() => {
     if (state.activeId) recent.current = touchRecent(recent.current, state.activeId)
   }, [state.activeId])
@@ -1214,7 +1216,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const onKey = (e: KeyboardEvent): void => {
       // While the switcher is open every key is its own: none may reach the terminal under it (an
       // Enter meant to pick a tab must not answer a Claude prompt), nor fire another command.
-      if (swallow.current.has(e.code)) {
+      // Likewise the auto-repeat of a pane chord's key forwarded from a frame (HeldChordKeys).
+      if (swallow.current.has(e.code) || heldChords.current.swallows(e)) {
         e.preventDefault()
         e.stopPropagation()
         return
@@ -1263,6 +1266,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const onKeyUp = (e: KeyboardEvent): void => {
       heldKeys.current.delete(e.code)
       swallow.current.delete(e.code)
+      heldChords.current.released(e)
       const open = switcherRef.current
       if (open && !open.sticky && released(open.mods, e)) endSwitcher(open.order[open.index])
     }
@@ -1273,25 +1277,34 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       endSwitcher(undefined)
       // No keyup reaches a window without the keyboard: nothing is held any more.
       swallow.current.clear()
+      heldChords.current.clear()
     }
     window.addEventListener('blur', onBlur)
     // A chord typed into a webview panel's page or a page tab's frame, resolved by main (auto-repeats
     // never come). main names no tab, so the shell reads which frame has the keyboard now
     // (checkFrameFocus, design-split-pages.md §4): a page frame of a visible pane holding it is the
     // chord's target, picked as the focused pane when it was not; one holding it with no evidence of
-    // the person is blurred and the chord dropped (frame-focus.ts chordTarget). A webview panel's page
-    // holds the keyboard outside the shell's document (`document.hasFocus()` false): no frame, no target.
-    const offTrigger = window.cockpit.on('commands.trigger', ({ id }) => {
+    // the person is blurred and the chord dropped (frame-focus.ts chordTarget), and so is one main saw
+    // in a page tab's frame when no frame holds the keyboard by the time it got here (the window
+    // `blur`'s check may have blurred it in between: never run for the active tab). A webview panel's
+    // page holds the keyboard outside the shell's document (`document.hasFocus()` false): no frame, the
+    // active tab. A pane chord's key is held (HeldChordKeys): its auto-repeat goes nowhere.
+    const offTrigger = window.cockpit.on('commands.trigger', ({ id, chord, from }) => {
       // Not fromKey: a switch chord from a web panel's page opens the switcher sticky, since the
       // modifier may be up before the chord got here.
       if (typeof id !== 'string' || !allowed(id)) return
-      const target = chordTarget(checkFrameFocus())
-      if (target) runCommand(id, target)
+      const target = chordTarget(checkFrameFocus(), from === 'webview' ? 'webview' : 'page-tab')
+      if (!target) return
+      runCommand(id, target)
+      if (id.startsWith('pane.') && typeof chord === 'string') heldChords.current.hold(chord)
     })
     // The web shell's page tabs forward the app's chords themselves (page-frames.ts, PageTabArea.tsx:
-    // already checked to come from the frame with the keyboard, which names its tab): the same gate.
-    const offForwarded = setForwardedRunner((id, ctx) => {
-      if (allowed(id)) runCommand(id, ctx)
+    // already checked to come from the frame with the keyboard, which names its tab): the same gate,
+    // and the same hold of a pane chord's key.
+    const offForwarded = setForwardedRunner((id, ctx, chord) => {
+      if (!allowed(id)) return
+      runCommand(id, ctx)
+      if (id.startsWith('pane.')) heldChords.current.hold(chord)
     })
     // Plugin commands run in this window's plugin host, through main; they come and go with the
     // plugins (registered after the host activates, gone when it stops): `commands.updated`. The

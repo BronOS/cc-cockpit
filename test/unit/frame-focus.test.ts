@@ -61,11 +61,21 @@ describe('framePick', () => {
     expect(framePick(TAB_A, null, ev())).toEqual({ blur: true })
   })
 
-  it("the focused pane's own frame, or no frame with the keyboard, is no change", () => {
-    expect(framePick(TAB_A, TAB_A, ev({ keyAfterPointer: true }))).toBeNull()
+  it("the focused pane's own frame with evidence, or no frame with the keyboard, is no change", () => {
     expect(framePick(TAB_A, TAB_A, ev({ own: true, pointerNear: true }))).toBeNull()
+    expect(framePick(TAB_A, TAB_A, ev({ own: true, keyAfterPointer: true }))).toBeNull()
+    expect(framePick(TAB_A, TAB_A, ev({ pointerNear: true }))).toBeNull()
     expect(framePick(null, CLAUDE, ev())).toBeNull()
     expect(framePick(null, null, ev())).toBeNull()
+  })
+
+  // The external review's MAJOR: the selection alone is no evidence. With the file pane focused and
+  // the person typing in a shell field (the palette, a search box), the page's own focus() must not
+  // take their keys.
+  it("the focused pane's own frame needs evidence too: without, it is blurred", () => {
+    expect(framePick(TAB_A, TAB_A, ev({ keyAfterPointer: true }))).toEqual({ blur: true })
+    expect(framePick(TAB_A, TAB_A, ev())).toEqual({ blur: true })
+    expect(framePick(TAB_A, TAB_A, ev({ pointerNear: true, pointerFresh: false }))).toEqual({ blur: true })
   })
 })
 
@@ -387,6 +397,51 @@ describe('checkFrames: a check a page triggered never gives the keyboard to a te
     s.pointer.shellInput()
     expect(checkFrames(s.t.frames, s.handler, s.pointer, TAB_B)).toBe('none')
     expect([s.t.el(TAB_B).focused, s.keyboard.terminal, s.picks]).toEqual([0, true, []])
+  })
+
+  it("the focused file's frame focusing itself while the person types in a shell field is blurred: the keys go to nothing", async () => {
+    const s = await setup(TAB_A)
+    // The shell's own focus put the keys in A (a select), then the person clicked a shell field and typed.
+    s.t.frames.focus(TAB_A)
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_A })
+    s.pointer.moved(900, 5)
+    s.t.el(TAB_A).blur()
+    s.t.frames.shellFocused()
+    s.pointer.shellInput()
+    expect(s.t.frames.ownFocus(TAB_A)).toBe(false)
+    // A's page calls focus() (the window `blur` runs the check): the selection is no evidence.
+    s.t.el(TAB_A).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
+    expect([s.t.frames.keyboardTab(), s.keyboard.terminal, s.picks]).toEqual([null, false, []])
+    expect(s.t.frames.passesThrough(TAB_A)).toBe(true)
+    // Its hint after that finds no frame with the keys.
+    expect(checkFrames(s.t.frames, s.handler, s.pointer, TAB_A)).toBe('none')
+  })
+
+  it('a frame kept or picked on pointer evidence stays proven: a chord from it long after still names it, until a shell focus', async () => {
+    const s = await setup(CLAUDE)
+    // The person comes in over B's header and clicks into it: picked on the pointer evidence.
+    s.pointer.moved(500, 10)
+    s.t.el(TAB_B).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_B })
+    expect(s.picks).toEqual([TAB_B])
+    s.select(TAB_B)
+    // They type in it for a while (keys in a frame never reach the shell): the pointer is stale.
+    s.wait(POINTER_FRESH_MS + 1000)
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_B })
+    // The same for the focused pane's own frame clicked into again (no pick, kept).
+    s.t.el(TAB_B).blur()
+    s.pointer.moved(500, 10)
+    s.t.el(TAB_B).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_B })
+    s.wait(POINTER_FRESH_MS + 1000)
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toEqual({ tab: TAB_B })
+    expect(s.picks).toEqual([TAB_B])
+    // A focus within the shell ends it: the frame focusing itself after that is blurred.
+    s.t.el(TAB_B).blur()
+    s.t.frames.shellFocused()
+    s.t.el(TAB_B).focus()
+    expect(checkFrames(s.t.frames, s.handler, s.pointer)).toBe('blurred')
   })
 
   it('with fresh pointer evidence for B, its hint picks B (page to page, the outline follows): only ever a page tab', async () => {

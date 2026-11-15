@@ -171,7 +171,11 @@ that crosses from one frame straight into another with no event over the shell b
 consent for ever: a page focusing itself later (a host message, a loop) is not picked because the pointer stopped beside
 its frame a minute ago.
 
-With evidence, and T not `activeId`, the shell picks T as the person's own act (keys on). Without evidence the shell
+With evidence, and T not `activeId`, the shell picks T as the person's own act (keys on); T being `activeId` needs the
+same evidence to keep the keys (the selection says nothing about where the person types now: with a file pane focused
+and the person in a shell field, the palette or a search box, the page's own `focus()` would take their keys). A frame
+kept or picked on the pointer evidence goes on the pool's own-focus record (`PageFrames.proven`), so a chord typed in it
+minutes later, the pointer evidence long stale, still names it until the focus moves within the shell. Without evidence the shell
 fails safe: it calls the iframe element's `blur()` and the keyboard goes to *nothing* (the shell's body), never to "the
 focused pane". That pane is often a Claude terminal, and an unproven frame focus is as often a real click into the file
 (the cases above), after which a stray Enter, digit or "y" would answer a permission prompt.
@@ -222,7 +226,14 @@ app while a frame holds the keyboard fires no shell `blur`, so that return arms 
 frame (`isPageTabFrame`, `page-tab-keys.ts`, unchanged) as `commands.trigger`, which names no tab. The shell resolves
 the target from `document.activeElement` at that moment (a live frame of a visible pane, with `document.hasFocus()`
 true). A webview panel's chord also arrives as `commands.trigger`, but its WebContentsView holds the keyboard then and
-the shell document has no focus, so no target is resolved. Web shell: `chord(chord)` carries the tab `fromPage` knows,
+the shell document has no focus, so no target is resolved and it runs for `activeId`. Main says which it was (`from:
+'page-tab' | 'webview'`): a page tab's chord that finds no frame holding the keyboard is dropped, never run for
+`activeId`. The chord crosses processes, and the window `blur`'s check may have blurred its frame in between (a page's
+`focus()` with no evidence, then Cmd+W typed into it at once would have closed the Claude pane the outline shows).
+`commands.trigger` also carries the chord: after a `pane.*` chord from a frame or a webview (or the web shell's
+forwarded one), the shell holds the chord's key and swallows its auto-repeats (`HeldChordKeys`, `pane-commands.ts`),
+as its own keydown path does with `swallow`, so an arrow held on after the modifiers came up never reaches the terminal
+the chord moved to; a fresh press, a keyup or a window `blur` ends the hold. Web shell: `chord(chord)` carries the tab `fromPage` knows,
 under the gate "listed chord, frame visible in this view, frame has the keyboard, `userActive`". In both shells the
 command runs with that target, `runCommand(id, { tabId })`. Every handler that acts on "the active tab" (`tab.close`,
 the flag, `pane.*`, split right / down, the in-Group commands) reads `target ?? stateRef.current.activeId`. When the

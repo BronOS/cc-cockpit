@@ -14,11 +14,16 @@
 // and `document.activeElement` changes silently. So the shell reads `activeElement` at the window's
 // `blur`, at a page's `cc-plugin.tab-focus` hint and before a chord or Ask Claude from a frame, and a
 // frame holding the keyboard counts only with evidence of the person:
-// - the shell's own focus call put it there (focusActive, a pane chord, a select, `wantFocus`), or
+// - the shell's own focus call put it there (focusActive, a pane chord, a select, `wantFocus`), or a
+//   check accepted it on the pointer evidence below, and the focus has not moved within the shell
+//   since (PageFrames.ownFocus), or
 // - the person's pointer went into it: the last pointer position the shell saw is inside or on the
 //   edge of the frame's box, no more than POINTER_FRESH_MS ago, with no shell `keydown` (and no focus
 //   moving within the shell) after it. Typing in the Claude pane while the pointer rests over the
 //   file beside it is no evidence: the keys went to the shell after the pointer stopped.
+// The focused pane's own frame needs it too (the external review's MAJOR): with a file pane focused
+// and the person typing in a shell field (the palette, a search box), the page's `focus()` would
+// otherwise take their keys, since the selection alone says nothing about where they type now.
 //
 // The hint is more than a reason to look, measured: frame to frame (two frames of one plugin) the
 // shell's `activeElement` can stay on the frame the person left, so at a hint from another frame
@@ -92,20 +97,20 @@ export interface FrameEvidence {
  * The decision (pure). `activeTab`: the tab whose frame holds the keyboard now (null: none does);
  * `activeId`: the view's focused pane, null while the keys are off (D3).
  *
- * - No frame holds the keyboard, or the focused pane's frame does: nothing to do (null).
+ * - No frame holds the keyboard: nothing to do (null).
  * - Keys off: the frame is blurred, whatever the evidence; nothing is picked and nothing gets the
  *   keyboard until the person picks a pane the shell sees (a header or pane press, which the blurred
  *   frame's pass-through lets reach the shell, a terminal click, a chord).
  * - With evidence: the person moved into that pane; the shell picks it (dispatches the selection,
- *   so the outline and `tabs.selected` follow).
- * - Without: the shell blurs the frame and the keyboard goes to nothing (the header's fail-safe).
+ *   so the outline and `tabs.selected` follow), or keeps it (null) when it is the focused pane.
+ * - Without: the shell blurs the frame and the keyboard goes to nothing (the header's fail-safe),
+ *   the focused pane's own frame included (the header: a shell field may have had the keys).
  */
 export function framePick(activeTab: string | null, activeId: string | null, e: FrameEvidence): FramePick | null {
   if (activeTab === null) return null
   if (activeId === null) return { blur: true }
-  if (activeTab === activeId) return null
-  if (e.own || (e.pointerNear && e.pointerFresh && !e.keyAfterPointer)) return { pick: activeTab }
-  return { blur: true }
+  if (!(e.own || (e.pointerNear && e.pointerFresh && !e.keyAfterPointer))) return { blur: true }
+  return activeTab === activeId ? null : { pick: activeTab }
 }
 
 /**
@@ -116,17 +121,25 @@ export function framePick(activeTab: string | null, activeId: string | null, e: 
  */
 export type FrameCheck = 'none' | 'blurred' | { tab: string }
 
+/** Where main saw a chord it sent as `commands.trigger`: a page tab's frame, or a webview panel's view. */
+export type ChordSource = 'page-tab' | 'webview'
+
 /**
  * Whom a chord main sent (`commands.trigger`, which names no tab) runs for, after the check: the
  * frame's tab when a frame has the keys (design-split-pages.md §4 "Chords from a frame name their
- * tab"), the view's active tab when none does (`{}`: a chord from a webview panel, or from a frame
- * that lost the keyboard before it arrived), and nobody (null, dropped) when the frame held them with no
- * evidence: the person typed it where the shell says no keys belong, and the pane the outline shows
- * is not where they typed it (Cmd+W there would close the file they did not click into).
+ * tab"), and nobody (null, dropped) when the frame held them with no evidence: the person typed it
+ * where the shell says no keys belong, and the pane the outline shows is not where they typed it
+ * (Cmd+W there would close the file they did not click into). With no frame holding the keys, only a
+ * webview panel's chord runs for the view's active tab (`{}`); one main saw in a page tab's frame is
+ * dropped: that frame lost the keyboard before the chord got here (the external review's CRITICAL:
+ * the window `blur`'s check blurred it in between, so Cmd+W typed into a file the shell had just
+ * refused would have closed the Claude tab the outline shows). The source is unknown in the shell
+ * otherwise, so anything but `webview` counts as a frame's.
  */
-export function chordTarget(at: FrameCheck): { tabId?: string } | null {
+export function chordTarget(at: FrameCheck, from: ChordSource): { tabId?: string } | null {
   if (at === 'blurred') return null
-  return at === 'none' ? {} : { tabId: at.tab }
+  if (at === 'none') return from === 'webview' ? {} : null
+  return { tabId: at.tab }
 }
 
 /** How far `at` is from `rect` in px (0 inside it); Infinity for an empty box. */
@@ -257,6 +270,7 @@ export interface FrameCheckPool {
   isVisible(tabId: string): boolean
   frameRects(): ReadonlyMap<string, ViewportRect>
   ownFocus(tabId: string): boolean
+  proven(tabId: string): void
   blurFrame(tabId: string): void
   passThrough(tabId: string): void
 }
@@ -275,8 +289,10 @@ export interface FrameFocusHandler {
  * window's `blur`, at a page's `cc-plugin.tab-focus` hint (`hinted`: its frame's tab) and before a
  * chord or Ask Claude from a frame (PageTabArea.tsx checkFrameFocus), whose target it names. With
  * the person's evidence the pane is picked; without, the frame is blurred and lets the pointer
- * through to its pane until the pointer moves (so the next press on it is one the shell sees). Its
- * effects are only `resync`, `blurFrame`, `passThrough` and `pick`: never a terminal (header).
+ * through to its pane until the pointer moves (so the next press on it is one the shell sees). A frame
+ * kept or picked is `proven`: it counts as the shell's own focus until the focus moves within the
+ * shell, so a chord typed in it minutes later (the pointer evidence long stale) still names it. Its
+ * effects are only `resync`, `blurFrame`, `passThrough`, `proven` and `pick`: never a terminal (header).
  */
 export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, pointer: PointerEvidence, hinted?: string): FrameCheck {
   // Frame to frame, the shell's `activeElement` can stay on the frame the person left (measured:
@@ -299,9 +315,9 @@ export function checkFrames(pool: FrameCheckPool, handler: FrameFocusHandler, po
     pointerFresh: pointer.fresh(),
     keyAfterPointer: pointer.keyAfterPointer()
   })
-  if (decision === null) return { tab }
-  if ('pick' in decision) {
-    handler.pick(decision.pick)
+  if (decision === null || 'pick' in decision) {
+    if (decision !== null) handler.pick(decision.pick)
+    pool.proven(tab)
     return { tab }
   }
   pool.blurFrame(tab)

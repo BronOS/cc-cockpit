@@ -246,7 +246,7 @@ describe('webviewChord (main\'s routing of a chord typed into a view)', () => {
       shell: (w) =>
         opts.closed?.includes(w)
           ? undefined
-          : { focus: () => void log.push(`focus ${w}`), trigger: (id) => void log.push(`trigger ${w} ${id}`) }
+          : { focus: () => void log.push(`focus ${w}`), trigger: (id, chord) => void log.push(`trigger ${w} ${id} ${chord}`) }
     }
     return { log, route: (w: number, c: string) => webviewChord(deps, w, c) }
   }
@@ -260,12 +260,12 @@ describe('webviewChord (main\'s routing of a chord typed into a view)', () => {
   it('a forwarded command focuses and triggers in the owning window only, focus first', () => {
     const { log, route } = setup()
     expect(route(1, 'meta+t')).toBe(true)
-    expect(log).toEqual(['overlay 1 meta+t', 'focus 1', 'trigger 1 tab.newClaude'])
+    expect(log).toEqual(['overlay 1 meta+t', 'focus 1', 'trigger 1 tab.newClaude meta+t'])
     log.length = 0
     // Window 2's table is used for window 2's view: meta+t is unbound there, the page keeps it.
     expect(route(2, 'meta+t')).toBe(false)
     expect(route(2, 'meta+j')).toBe(true)
-    expect(log).toEqual(['overlay 2 meta+t', 'overlay 2 meta+j', 'focus 2', 'trigger 2 zone.toggleBottom'])
+    expect(log).toEqual(['overlay 2 meta+t', 'overlay 2 meta+j', 'focus 2', 'trigger 2 zone.toggleBottom meta+j'])
   })
 
   it('leaves the key to the page when nothing takes it or the window is gone', () => {

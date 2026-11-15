@@ -36,7 +36,7 @@ let captures = 0
 // Told whenever the table changes (setCommands): page tabs in the web shell get the new chord list.
 const tableListeners = new Set<() => void>()
 // Runs a command for a chord a page tab forwarded (TabsPane: through its modal gate).
-let forwardedRunner: ((id: string, ctx?: CommandContext) => void) | undefined
+let forwardedRunner: ((id: string, ctx: CommandContext | undefined, chord: string) => void) | undefined
 
 /** Stop keys from firing commands until the returned function is called (once; further calls do nothing). */
 export function captureKeys(): () => void {
@@ -91,8 +91,11 @@ export function forwardedChords(): string[] {
   return out
 }
 
-/** Set who runs a forwarded chord's command (TabsPane); returns the function that removes it. */
-export function setForwardedRunner(fn: (id: string, ctx?: CommandContext) => void): () => void {
+/**
+ * Set who runs a forwarded chord's command (TabsPane), given the chord too (a pane chord's key is held
+ * so its auto-repeat does not reach the terminal it moved to); returns the function that removes it.
+ */
+export function setForwardedRunner(fn: (id: string, ctx: CommandContext | undefined, chord: string) => void): () => void {
   forwardedRunner = fn
   return () => {
     if (forwardedRunner === fn) forwardedRunner = undefined
@@ -108,7 +111,7 @@ export function runForwardedChord(chord: string, tabId: string): boolean {
   if (captures > 0 || !forwardedRunner) return false
   const id = chords.get(chord)
   if (id === undefined || !handlers.has(id)) return false
-  forwardedRunner(id, { tabId })
+  forwardedRunner(id, { tabId }, chord)
   return true
 }
 

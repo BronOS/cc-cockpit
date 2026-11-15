@@ -47,11 +47,11 @@ describe('desktop: before-input-event on a page tab frame', () => {
 
   it('the app table wins: its chords go to the shell, the rest (declared keys, typing, Escape) to the page', () => {
     const table: Record<string, string> = { 'ctrl+w': 'tab.close', 'ctrl+tab': 'tab.switchNext', escape: 'overlay.pop', 'ctrl+shift+w': 'overlay.closeTop' }
-    const triggered: Array<[number, string]> = []
+    const triggered: Array<[number, string, string]> = []
     const deps = {
       commandFor: (_w: number, c: string) => table[c],
-      trigger: (w: number, id: string) => {
-        triggered.push([w, id])
+      trigger: (w: number, id: string, chord: string) => {
+        triggered.push([w, id, chord])
         return true
       }
     }
@@ -67,9 +67,10 @@ describe('desktop: before-input-event on a page tab frame', () => {
     expect(pageTabChord(deps, 3, 'ctrl+w', true)).toBe(true)
     expect(pageTabChord(deps, 3, 'ctrl+s', true)).toBe(false)
     expect(triggered).toHaveLength(before)
+    // The chord goes with the command (the shell holds a pane chord's key against its auto-repeat).
     expect(triggered).toEqual([
-      [3, 'tab.close'],
-      [3, 'tab.switchNext']
+      [3, 'tab.close', 'ctrl+w'],
+      [3, 'tab.switchNext', 'ctrl+tab']
     ])
   })
 
@@ -238,7 +239,11 @@ describe('web shell: the pool and the key table', () => {
     const ran: Array<[string, string | undefined]> = []
     // No runner, or no handler for the command: nothing runs.
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
-    const off = setForwardedRunner((id, ctx) => ran.push([id, ctx?.tabId]))
+    const chords: string[] = []
+    const off = setForwardedRunner((id, ctx, chord) => {
+      ran.push([id, ctx?.tabId])
+      chords.push(chord)
+    })
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     registerHandlers({ 'tab.close': () => {} })
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(true)
@@ -251,6 +256,7 @@ describe('web shell: the pool and the key table', () => {
     expect(runForwardedChord('ctrl+w', 'page-1')).toBe(false)
     // The command runs for the frame's own tab (design-split-pages.md §4), never "the active tab".
     expect(ran).toEqual([['tab.close', 'page-1']])
+    expect(chords).toEqual(['ctrl+w'])
   })
 
   it('a new key table is told to its listeners', () => {

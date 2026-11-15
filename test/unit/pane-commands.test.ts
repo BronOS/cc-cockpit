@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CommandsView, GroupsReply, TabInfo } from '../../src/shared/ipc'
 import { paneView } from '../../src/renderer/state/groups-state'
 import { initialTabsState, tabsReducer, type TabsAction, type TabsState } from '../../src/renderer/state/tabs-store'
-import { activeTabHandlers, inGroupEdge, inGroupHandlers, paneCommandHandlers, refusalText, TOO_SMALL_TO_SPLIT } from '../../src/renderer/tabs/pane-commands'
+import { activeTabHandlers, HeldChordKeys, inGroupEdge, inGroupHandlers, paneCommandHandlers, refusalText, TOO_SMALL_TO_SPLIT } from '../../src/renderer/tabs/pane-commands'
 import { chordTarget } from '../../src/renderer/tabs/frame-focus'
 import { TOGGLE_FLAG_COMMAND } from '../../src/shared/tab-flag'
 import { groupTitle, handleWords, leftSegment, stripRuns } from '../../src/renderer/tabs/strip-groups'
@@ -231,10 +231,57 @@ describe('pane commands', () => {
       expect(off.log).toEqual([])
     })
 
-    it("main's chord runs for the frame with the keys, for activeId with no frame, and not at all for a blurred one", () => {
-      expect(chordTarget({ tab: 'page-1' })).toEqual({ tabId: 'page-1' })
-      expect(chordTarget('none')).toEqual({})
-      expect(chordTarget('blurred')).toBeNull()
+    it("main's chord runs for the frame with the keys, for activeId with no frame only from a webview panel, and not at all for a blurred one", () => {
+      expect(chordTarget({ tab: 'page-1' }, 'page-tab')).toEqual({ tabId: 'page-1' })
+      expect(chordTarget({ tab: 'page-1' }, 'webview')).toEqual({ tabId: 'page-1' })
+      expect(chordTarget('none', 'webview')).toEqual({})
+      expect(chordTarget('blurred', 'page-tab')).toBeNull()
+      expect(chordTarget('blurred', 'webview')).toBeNull()
+      // The external review's CRITICAL: Cmd+W typed in a file frame the window blur's check refused
+      // before the chord arrived finds no frame with the keys; it is dropped, never run for the
+      // active tab (the Claude pane the outline shows).
+      expect(chordTarget('none', 'page-tab')).toBeNull()
+    })
+
+    describe('HeldChordKeys: a forwarded pane chord\'s key held on never reaches the terminal it moved to', () => {
+      const ev = (key: string, code: string, repeat: boolean, mods: Partial<{ ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean }> = {}) => ({
+        key,
+        code,
+        repeat,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+        ...mods
+      })
+
+      it("swallows the held key's auto-repeats, modifiers up or still down, until its keyup", () => {
+        const h = new HeldChordKeys()
+        h.hold('ctrl+alt+left')
+        // Ctrl and Alt let go first, the arrow still down: its repeats are the chord's, not typing.
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(true)
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true, { ctrlKey: true, altKey: true }))).toBe(true)
+        // Another key is the person's.
+        expect(h.swallows(ev('ArrowRight', 'ArrowRight', true))).toBe(false)
+        expect(h.swallows(ev('a', 'KeyA', false))).toBe(false)
+        h.released(ev('ArrowLeft', 'ArrowLeft', false))
+        expect(h.swallows(ev('ArrowLeft', 'ArrowLeft', true))).toBe(false)
+      })
+
+      it('a fresh press (its keyup went to the frame) or a window blur ends the hold', () => {
+        const h = new HeldChordKeys()
+        h.hold('meta+alt+h')
+        // macOS: Alt+H types a symbol, the chord names the key by its code.
+        expect(h.swallows(ev('˙', 'KeyH', true, { altKey: true }))).toBe(true)
+        expect(h.swallows(ev('h', 'KeyH', false))).toBe(false)
+        expect(h.swallows(ev('h', 'KeyH', true))).toBe(false)
+        h.hold('ctrl+alt+down')
+        h.clear()
+        expect(h.swallows(ev('ArrowDown', 'ArrowDown', true))).toBe(false)
+        // Nothing to hold in a chord that cannot be taken apart; a lone modifier is no key.
+        h.hold('')
+        expect(h.swallows(ev('Control', 'ControlLeft', true, { ctrlKey: true }))).toBe(false)
+      })
     })
   })
 

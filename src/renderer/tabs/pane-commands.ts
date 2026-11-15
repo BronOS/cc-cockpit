@@ -4,6 +4,7 @@
 import type { CommandsView, GroupsReply } from '../../shared/ipc'
 import { parseInGroupCommandId, parseTabCommandId } from '../../shared/tab-commands'
 import { TOGGLE_FLAG_COMMAND } from '../../shared/tab-flag'
+import { chordFromEvent, splitChord, type KeyEventLike } from '../../shared/keys'
 import type { CommandContext, CommandHandler } from '../commands/keybindings'
 import { GROUP_CAPS, groupOf, leavesOf, neighbour, type GroupRefusalReason, type PaneEdge, type PlaceIntent } from '../../shared/tab-groups'
 import type { PaneView } from '../state/groups-state'
@@ -58,6 +59,55 @@ export function activeTabHandlers(ctx: ActiveTabContext): Record<string, Command
       if (id && !s.keysOff) act(id)
     }
   return { 'tab.close': onTab(ctx.close), [TOGGLE_FLAG_COMMAND]: onTab(ctx.toggleFlag) }
+}
+
+/** The key of a key event without its modifiers, spelled as a chord names it (`left`, `h`), or null for a lone modifier. */
+function keyOfEvent(e: KeyEventLike): string | null {
+  const chord = chordFromEvent(e)
+  return chord === null ? null : (splitChord(chord)?.key ?? null)
+}
+
+/**
+ * The keys of pane chords that came from outside the shell's document (main's `commands.trigger`
+ * from a page tab's frame or a webview panel, the web shell's forwarded chords), held so their
+ * auto-repeat is swallowed (the external review's MAJOR). The shell's own keydown path holds the
+ * chord's `code` until its keyup (TabsPane `swallow`); a forwarded chord has no event here, only its
+ * canonical text, so this holds its key: Ctrl+Alt+Left held in a file pane moves the keys to the
+ * terminal, the person lets go of Ctrl and Alt first, and the arrow's repeats now reach the shell's
+ * document, where without this they would go into the terminal (a Claude prompt's cursor, its
+ * choices). Only repeats are swallowed: the keyup may have gone to the frame, never to the shell, so a
+ * fresh press of the key (no repeat) ends the hold and is the person's, as is a keyup or a window blur.
+ */
+export class HeldChordKeys {
+  private readonly keys = new Set<string>()
+
+  /** A pane chord forwarded to the shell ran: hold its key (`ctrl+alt+left` holds `left`). */
+  hold(chord: string): void {
+    const key = splitChord(chord)?.key
+    if (key) this.keys.add(key)
+  }
+
+  /** Whether this keydown is an auto-repeat of a held key (swallow it); a fresh press ends the hold. */
+  swallows(e: KeyEventLike & { repeat: boolean }): boolean {
+    if (this.keys.size === 0) return false
+    const key = keyOfEvent(e)
+    if (key === null || !this.keys.has(key)) return false
+    if (e.repeat) return true
+    this.keys.delete(key)
+    return false
+  }
+
+  /** A keyup in the shell's document: that key is no longer held. */
+  released(e: KeyEventLike): void {
+    if (this.keys.size === 0) return
+    const key = keyOfEvent(e)
+    if (key !== null) this.keys.delete(key)
+  }
+
+  /** The window lost the keyboard: no keyup will come here, nothing is held. */
+  clear(): void {
+    this.keys.clear()
+  }
 }
 
 /** What a new-tab command opens, as `tabs.create` takes it (without `beside`). */

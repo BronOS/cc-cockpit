@@ -1280,7 +1280,10 @@ function start(server: boolean): void {
                 shell: (w) => {
                   const win = BrowserWindow.fromId(w)
                   if (!win || win.isDestroyed()) return undefined
-                  return { focus: () => win.webContents.focus(), trigger: (id) => sendToWindow(w, 'commands.trigger', { id }) }
+                  return {
+                    focus: () => win.webContents.focus(),
+                    trigger: (id, chord) => sendToWindow(w, 'commands.trigger', { id, chord, from: 'webview' })
+                  }
                 }
               },
               windowId,
@@ -1378,7 +1381,7 @@ function start(server: boolean): void {
       const handled = pageTabChord(
         {
           commandFor: (w, c) => commandForChord(w, c),
-          trigger: (w, id) => views.toWindow(w, 'commands.trigger', { id })
+          trigger: (w, id, chord) => views.toWindow(w, 'commands.trigger', { id, chord, from: 'page-tab' })
         },
         windowId,
         chordOfInput(input.type === 'keyDown' && input.isAutoRepeat ? { ...input, isAutoRepeat: false } : input),
