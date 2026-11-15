@@ -13,7 +13,9 @@ import {
   MAX_ROOM_FILE_BYTES,
   MAX_ROOM_MESSAGE_CHARS,
   MAX_ROOMS_PER_PLUGIN,
+  MEMBERS_PER_ROOM_CEILING,
   RoomRegistry,
+  type RoomCaps,
   type RoomOwner
 } from '../../src/main/rooms/room-registry'
 import { RoomError } from '../../src/main/rooms/room-error'
@@ -34,10 +36,11 @@ function nextId(): string {
   return `00000000-0000-4000-8000-${String(ids).padStart(12, '0')}`
 }
 
-function make(): RoomRegistry {
+function make(limits?: (pluginId: string) => RoomCaps): RoomRegistry {
   let n = 0
   return new RoomRegistry({
     dir,
+    ...(limits ? { limits } : {}),
     now: () => t,
     newId: nextId,
     random: (bytes) => Buffer.alloc(bytes, ++n),
@@ -109,6 +112,137 @@ describe('RoomRegistry', () => {
     expect(reg.create(otherProject, { title: 'elsewhere' }).projectId).toBe('p2')
     reg.end(owner, made[0]?.id)
     expect(reg.create(owner, { title: 'after an end' }).title).toBe('after an end')
+  })
+
+  describe("the person's room caps (roomsPerProject, membersPerRoom)", () => {
+    /** The lookup the store answers: a plugin's override over the global value, read on every call. */
+    let global: RoomCaps
+    let overrides: Record<string, Partial<RoomCaps>>
+    const lookup = (pluginId: string): RoomCaps => ({ ...global, ...overrides[pluginId] })
+    beforeEach(() => {
+      global = { roomsPerProject: MAX_ROOMS_PER_PLUGIN, membersPerRoom: MAX_MEMBERS_PER_ROOM }
+      overrides = {}
+    })
+
+    function refusal(fn: () => unknown): RoomError | undefined {
+      try {
+        fn()
+      } catch (err) {
+        return err as RoomError
+      }
+      return undefined
+    }
+
+    it('a raised cap allows more rooms and members; a per-plugin override beats the global value', () => {
+      global = { roomsPerProject: 7, membersPerRoom: 25 }
+      overrides[other.pluginId] = { roomsPerProject: 2 }
+      const reg = make(lookup)
+      for (let i = 0; i < 7; i++) reg.create(owner, { title: `Room ${i}` })
+      const refused = refusal(() => reg.create(owner, { title: 'one more' }))
+      expect(refused?.code).toBe('limit')
+      expect(refused?.message).toContain('at most 7 rooms')
+      expect(refused?.message).toContain('roomsPerProject')
+      expect(refused?.message).toContain('Settings > General > Plugin limits')
+      expect(refused?.message).toContain("the plugin's Limits")
+      expect(refused?.message).toContain('ccc plugin limits')
+      expect(refused?.message).toContain('lowering it removes nothing')
+      // The other plugin's own override: 2, not the global 7.
+      reg.create(other, { title: 'a' })
+      reg.create(other, { title: 'b' })
+      expect(code(() => reg.create(other, { title: 'c' }))).toBe('limit')
+
+      const room = reg.list(owner)[0] as { id: string }
+      for (let i = 0; i < 25; i++) reg.addMember(owner, room.id, { tabId: `t${i}`, name: `m${i}` })
+      const full = refusal(() => reg.addMember(owner, room.id, { tabId: 'late', name: 'late' }))
+      expect(full?.code).toBe('limit')
+      expect(full?.message).toContain('at most 25 members (membersPerRoom:')
+      expect(code(() => reg.checkAdd(owner, room.id, 'late'))).toBe('limit')
+    })
+
+    it('a lowered cap refuses new creates and joins and keeps every room and member', () => {
+      global = { roomsPerProject: 8, membersPerRoom: 30 }
+      const reg = make(lookup)
+      const rooms = Array.from({ length: 8 }, (_, i) => reg.create(owner, { title: `Room ${i}` }))
+      const first = rooms[0]!.id
+      for (let i = 0; i < 30; i++) reg.addMember(owner, first, { tabId: `t${i}`, name: `m${i}` })
+      // Read on every call: the person's edit applies at once, with no restart.
+      global = { roomsPerProject: 3, membersPerRoom: 10 }
+      expect(code(() => reg.create(owner, { title: 'over' }))).toBe('limit')
+      expect(code(() => reg.addMember(owner, first, { tabId: 'x', name: 'x' }))).toBe('limit')
+      // Nothing was ended, removed or evicted.
+      expect(reg.list(owner).filter((r) => r.endedAt === undefined)).toHaveLength(8)
+      expect(reg.members(owner, first)).toHaveLength(30)
+      expect(reg.memberOf('t29')).toEqual({ roomId: first, name: 'm29', coordinator: false })
+      // A room under the new cap still takes members; the rooms over it work as before (a send, a leave).
+      expect(reg.addMember(owner, rooms[1]!.id, { tabId: 'x', name: 'x' }).name).toBe('x')
+      reg.enqueue(first, 'm1', { from: 'm0', text: 'still here' })
+      expect(reg.take(first, 'm1').map((m) => m.text)).toEqual(['still here'])
+      // Ending rooms frees places only down to the new cap: 8 live, 3 allowed, so 5 ends before a create.
+      for (let i = 0; i < 5; i++) reg.end(owner, rooms[i]!.id)
+      expect(code(() => reg.create(owner, { title: 'over' }))).toBe('limit')
+      reg.end(owner, rooms[5]!.id)
+      expect(reg.create(owner, { title: 'under' }).title).toBe('under')
+      // Members leave below the cap before a join is taken again.
+      for (let i = 0; i < 20; i++) reg.leave(`t${i}`)
+      expect(code(() => reg.addMember(owner, rooms[6]!.id, { tabId: 'y', name: 'y' }))).toBeUndefined()
+    })
+
+    it('an invite redeemed over the cap is refused and kept; it works once the cap allows it', () => {
+      const reg = make(lookup)
+      const room = reg.create(owner, { title: 'Team' })
+      for (let i = 0; i < MAX_MEMBERS_PER_ROOM; i++) reg.addMember(owner, room.id, { tabId: `t${i}`, name: `m${i}` })
+      // invite() checks no seats: the refusal comes at redeem.
+      const inv = reg.invite(owner, room.id, { name: 'late' })
+      const refused = refusal(() => reg.redeem(inv.code, 'late-tab', 'p1'))
+      expect(refused?.code).toBe('limit')
+      expect(refused?.message).toContain(`at most ${MAX_MEMBERS_PER_ROOM} members (membersPerRoom:`)
+      expect(reg.memberOf('late-tab')).toBeUndefined()
+      overrides[owner.pluginId] = { membersPerRoom: MAX_MEMBERS_PER_ROOM + 1 }
+      expect(reg.redeem(inv.code, 'late-tab', 'p1')).toEqual({ roomId: room.id, name: 'late', coordinator: false })
+    })
+
+    it('restores a room with more members than the cap (grown under a raised one), and rebinds them', () => {
+      global = { ...global, membersPerRoom: 30 }
+      const reg = make(lookup)
+      const room = reg.create(owner, { title: 'Big' })
+      for (let i = 0; i < 30; i++) reg.addMember(owner, room.id, { tabId: `t${i}`, name: `m${i}` })
+      // The person lowered it again, then restarted: restore never reads the cap.
+      global = { ...global, membersPerRoom: 5 }
+      const again = make(lookup)
+      again.load()
+      expect(again.members(owner, room.id)).toHaveLength(30)
+      for (let i = 0; i < 30; i++) expect(again.rebind(`new-${i}`, room.id, `m${i}`, 'p1')).toBe(true)
+      expect(code(() => again.addMember(owner, room.id, { tabId: 'x', name: 'x' }))).toBe('limit')
+      expect(warnings).toEqual([])
+    })
+
+    it('restores up to the ceiling only: a hand-edited record over it is dropped with a warning', () => {
+      const reg = make(lookup)
+      const room = reg.create(owner, { title: 'Big' })
+      const base = JSON.parse(readFileSync(join(dir, room.id, 'room.json'), 'utf8'))
+      const members = (n: number): Record<string, { coordinator: boolean }> =>
+        Object.fromEntries(Array.from({ length: n }, (_, i) => [`m${i}`, { coordinator: false }]))
+      writeFileSync(join(dir, room.id, 'room.json'), JSON.stringify({ ...base, members: members(MEMBERS_PER_ROOM_CEILING) }))
+      const atCeiling = make(lookup)
+      atCeiling.load()
+      expect(atCeiling.members(owner, room.id)).toHaveLength(MEMBERS_PER_ROOM_CEILING)
+      writeFileSync(join(dir, room.id, 'room.json'), JSON.stringify({ ...base, members: members(MEMBERS_PER_ROOM_CEILING + 1) }))
+      const over = make(lookup)
+      over.load()
+      expect(over.list(owner)).toEqual([])
+      expect(warnings.some((w) => w.includes('not a valid room record'))).toBe(true)
+    })
+
+    it('restores more live rooms than a lowered roomsPerProject', () => {
+      global = { ...global, roomsPerProject: 6 }
+      const reg = make(lookup)
+      for (let i = 0; i < 6; i++) reg.create(owner, { title: `Room ${i}` })
+      global = { ...global, roomsPerProject: 2 }
+      const again = make(lookup)
+      again.load()
+      expect(again.list(owner).filter((r) => r.endedAt === undefined)).toHaveLength(6)
+      expect(code(() => again.create(owner, { title: 'over' }))).toBe('limit')
+    })
   })
 
   it('caps the ended rooms a plugin keeps in a project: create refuses until one is deleted (review m3)', () => {

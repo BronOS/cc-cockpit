@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { pointerText } from '../../src/shared/room-pointer'
+import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../src/shared/plugin-limits'
 import { MAX_LINE_BYTES } from '../../src/shared/protocol'
 import type { RoomOwner } from '../../src/main/rooms/room-registry'
 import { RoomService, type RoomStatus } from '../../src/main/rooms/room-service'
@@ -64,8 +65,9 @@ afterEach(() => {
   rmSync(projectDir, { recursive: true, force: true })
 })
 
-function makeService(): RoomService {
+function makeService(limits?: (pluginId: string) => PluginLimits): RoomService {
   return new RoomService({
+    ...(limits ? { limits } : {}),
     dir: join(dir, 'rooms'),
     tabs: {
       setRoom: (p, t, r) => tabs.setRoom(p, t, r),
@@ -273,6 +275,29 @@ describe('room.join and room.leave', () => {
     expect(sessions.get(t)?.held).toBeUndefined()
     expect(service.registry.memberInfos(id)).toEqual([])
     await expect(call('room.leave', session(t))).rejects.toThrow('this tab is in no room')
+  })
+})
+
+describe("the person's room caps through the service", () => {
+  it('reads roomsPerProject and membersPerRoom from the limits on every create and join', async () => {
+    // A service with a limits lookup (the shared one has none, so the defaults): its own tab manager on its hooks.
+    tabs.disposeAll()
+    service.dispose()
+    let caps: PluginLimits = { ...DEFAULT_PLUGIN_LIMITS, roomsPerProject: 1, membersPerRoom: 1 }
+    service = makeService(() => caps)
+    tabs = makeTabs()
+    handlers = roomHandlers(service)
+    const id = room()
+    expect(() => room('Second')).toThrow(/at most 1 rooms .*roomsPerProject/)
+    const a = claudeTab()
+    const b = claudeTab()
+    addTo(id, a, 'alice')
+    const { code } = service.invite(owner, id, { name: 'scout' })
+    await expect(call('room.join', session(b), { invite: code })).rejects.toThrow(/at most 1 members \(membersPerRoom:/)
+    // Raised: the same invite works now, and a second room can be made; nothing restarted.
+    caps = { ...caps, roomsPerProject: 2, membersPerRoom: 2 }
+    await expect(call('room.join', session(b), { invite: code })).resolves.toMatchObject({ name: 'scout' })
+    expect(room('Second')).toEqual(expect.any(String))
   })
 })
 

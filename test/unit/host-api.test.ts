@@ -2632,6 +2632,39 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     expect(((await call('rooms.members', { pluginId: 'a.one', id })) as { name: string }[]).map((m) => m.name)).toEqual(['lead', 'bob'])
   })
 
+  it('refuses rooms.open over membersPerRoom before a tab starts, and when the cap drops while the tab starts', async () => {
+    let cap = 1
+    let spawnedAtDrop = Infinity
+    rooms.dispose()
+    rooms = new RoomService({
+      dir: join(root, 'rooms-caps'),
+      tabs: {
+        setRoom: (p, t, r) => tabs.setRoom(p, t, r),
+        clearRoom: (p, t) => tabs.clearRoom(p, t),
+        roomOf: (p, t) => tabs.roomOf(p, t),
+        kindOf: (p, t) => tabs.kindOf(p, t)
+      },
+      sessions: registry,
+      limits: () => ({ ...DEFAULT_PLUGIN_LIMITS, membersPerRoom: tabsBackend.spawned.length >= spawnedAtDrop ? 1 : cap }),
+      log: () => {}
+    })
+    deps.rooms = rooms
+    const call = hostA()
+    const id = await newRoom(call)
+    await call('rooms.open', { pluginId: 'a.one', id, name: 'lead' })
+    const spawned = tabsBackend.spawned.length
+    // Over the cap: refused before the open budget is spent and no tab starts.
+    await expect(call('rooms.open', { pluginId: 'a.one', id, name: 'bob' })).rejects.toThrow('rooms.open:')
+    expect(tabsBackend.spawned).toHaveLength(spawned)
+    // The cap drops while the tab starts: the pre-check passed, the join is refused, the tab stays.
+    cap = 2
+    spawnedAtDrop = spawned + 1
+    const open = call('rooms.open', { pluginId: 'a.one', id, name: 'bob' })
+    await expect(open).rejects.toThrow('opened but did not join')
+    expect(tabsBackend.spawned).toHaveLength(spawned + 1)
+    expect(((await call('rooms.members', { pluginId: 'a.one', id })) as { name: string }[]).map((m) => m.name)).toEqual(['lead'])
+  })
+
   it('invites, removes, sends from plugin, and reads and writes every doc of its room', async () => {
     const call = hostA()
     const id = await newRoom(call)

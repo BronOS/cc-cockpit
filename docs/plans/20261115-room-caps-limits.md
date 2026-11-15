@@ -87,16 +87,16 @@ External review: auto
 - Modify: `src/main/rooms/room-registry.ts`, `src/main/rooms/room-service.ts`, `src/main/index.ts` (wiring)
 - Modify: `test/unit/room-registry.test.ts`, `test/unit/room-service.test.ts`
 
-- [ ] widen the limits lookup type from `RoomSendLimits` to `PluginLimits`; `create` and `checkJoin` read it on every
+- [x] widen the limits lookup type from `RoomSendLimits` to `PluginLimits`; `create` and `checkJoin` read it on every
       call (checkJoin covers addMember, checkAdd and redeem)
-- [ ] `parseRoom` checks members against the ceiling (50), never the current cap, so a room grown under a raised cap
+- [x] `parseRoom` checks members against the ceiling (50), never the current cap, so a room grown under a raised cap
       survives a restart; update the `MAX_ENDED_ROOMS_PER_PLUGIN` comment
-- [ ] lowering a cap never evicts or ends anything; new creates/joins over it are refused naming the cap and where to
+- [x] lowering a cap never evicts or ends anything; new creates/joins over it are refused naming the cap and where to
       change it (Settings > General > Plugin limits, a plugin's Limits, `ccc plugin limits`)
-- [ ] restored rooms and members over a lowered cap restore as before (no refusal on restore)
-- [ ] write tests: raised cap allows more, lowered cap refuses new but keeps existing, restore of a room with more than
+- [x] restored rooms and members over a lowered cap restore as before (no refusal on restore)
+- [x] write tests: raised cap allows more, lowered cap refuses new but keeps existing, restore of a room with more than
       20 members, an invite redeemed over the cap refused, per-plugin override vs global
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 3: Settings pages and CLI show the new keys [model: sonnet]
 

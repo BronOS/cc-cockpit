@@ -15,23 +15,34 @@ import { warnLog } from '../warn-log'
 import { RoomError, SYSTEM_SENDER } from './room-error'
 import { RoomLog, ensureRoomDir, type RoomLogType } from './room-log'
 import { checkRoomName, checkRoomTitle, isRoomId, isRoomName } from '../../shared/room-names'
+import { limitSpec, type PluginLimits } from '../../shared/plugin-limits'
 
 /**
- * Rooms a plugin may have that are not ended, in one project (design-rooms.md §1). Counted per project, not app-wide:
- * a host sees, ends and deletes only its own project's rooms, so rooms left live in another project (whose window may
- * be closed) must not block this one.
+ * The default of rooms a plugin may have that are not ended, in one project (design-rooms.md §1): the person's
+ * `roomsPerProject` limit (shared/plugin-limits.ts, up to its ceiling) replaces it, read on every create. Counted per
+ * project, not app-wide: a host sees, ends and deletes only its own project's rooms, so rooms left live in another
+ * project (whose window may be closed) must not block this one.
  */
 export const MAX_ROOMS_PER_PLUGIN = 5
 /**
  * Ended rooms a plugin may keep in one project before `create` refuses ("delete an ended room first"): an ended room
  * stays until `delete` (its log and docs are the person's record), so without a bound a create/end loop would grow
  * main's registry, the start-up load and the `list` answer without end. Refused, never dropped: deleting the oldest
- * by itself would throw away a record. Live rooms end only into this count, so it stays under this plus
- * MAX_ROOMS_PER_PLUGIN.
+ * by itself would throw away a record. Live rooms end only into this count, so it stays under this plus the
+ * `roomsPerProject` ceiling (lowering the cap ends nothing, so rooms live under a higher one stay live).
  */
 export const MAX_ENDED_ROOMS_PER_PLUGIN = 50
-/** Members a room may have. */
+/** The default of members a room may have: the person's `membersPerRoom` limit replaces it, read on every join. */
 export const MAX_MEMBERS_PER_ROOM = 20
+/**
+ * The most members a saved room may have to be restored: the `membersPerRoom` ceiling, never the cap in effect. A room
+ * grown to 30 under a raised cap must survive a restart after the person lowered it again (lowering removes nobody).
+ */
+export const MEMBERS_PER_ROOM_CEILING = limitSpec('membersPerRoom').ceiling
+/** Where the person changes a room cap, for the refusal texts. */
+const CAP_WHERE = "Settings > General > Plugin limits, the plugin's Limits page or `ccc plugin limits`; lowering it removes nothing"
+/** The room caps without the person's limits (tests, a registry built with no lookup). */
+const DEFAULT_ROOM_CAPS: Readonly<RoomCaps> = Object.freeze({ roomsPerProject: MAX_ROOMS_PER_PLUGIN, membersPerRoom: MAX_MEMBERS_PER_ROOM })
 /** How long an invite can be redeemed. */
 export const INVITE_TTL_MS = 10 * 60 * 1000
 /** Invites a room may have waiting at once: each is an in-memory entry for ten minutes and a log line. */
@@ -101,9 +112,18 @@ export interface RoomInvite {
 /** Why a member left, as the log says it (design-rooms.md §4). */
 export type LeaveWhy = 'left' | 'removed' | 'closed'
 
+/** The two room caps the person sets per plugin (design-rooms.md §6): a subset of PluginLimits. */
+export type RoomCaps = Pick<PluginLimits, 'roomsPerProject' | 'membersPerRoom'>
+
 export interface RoomRegistryOptions {
   /** `<data>/rooms`. */
   dir: string
+  /**
+   * The plugin's caps (PluginLimitsStore.limits: its override, else the global value, else the default), read on every
+   * create and join, so an edit applies at once; the defaults when absent. Never read on restore: a saved room keeps
+   * every member it had (parseRoom checks only the ceiling).
+   */
+  limits?(pluginId: string): RoomCaps
   now?: () => number
   newId?: () => string
   /** Random bytes for invite codes (tests pin them). */
@@ -207,8 +227,9 @@ export class RoomRegistry {
       if (r.endedAt === undefined) live++
       else ended++
     }
-    if (live >= MAX_ROOMS_PER_PLUGIN) {
-      throw new RoomError('limit', `a plugin may have at most ${MAX_ROOMS_PER_PLUGIN} rooms that are not ended in a project`)
+    const cap = this.caps(owner.pluginId).roomsPerProject
+    if (live >= cap) {
+      throw new RoomError('limit', `a plugin may have at most ${cap} rooms that are not ended in a project (roomsPerProject: ${CAP_WHERE})`)
     }
     if (ended >= MAX_ENDED_ROOMS_PER_PLUGIN) {
       throw new RoomError('limit', `a plugin may keep at most ${MAX_ENDED_ROOMS_PER_PLUGIN} ended rooms in a project: delete an ended room first`)
@@ -643,14 +664,22 @@ export class RoomRegistry {
     }
   }
 
+  /** The plugin's room caps now (the store clamps each value to 1..ceiling); the defaults without a lookup. */
+  private caps(pluginId: string): RoomCaps {
+    return this.options.limits?.(pluginId) ?? DEFAULT_ROOM_CAPS
+  }
+
   private checkJoin(room: RoomRecord, rawName: unknown, tabId: string | undefined): string {
     if (room.endedAt !== undefined) throw new RoomError('ended', 'the room has ended')
     const name = checkRoomName(rawName)
     if (!name.ok) throw new RoomError('invalid', name.reason)
     if (Object.hasOwn(room.members, name.value)) throw new RoomError('conflict', `"${name.value}" is already a member`)
     if (tabId !== undefined && this.tabs.has(tabId)) throw new RoomError('conflict', 'the tab is already in a room')
-    if (Object.keys(room.members).length >= MAX_MEMBERS_PER_ROOM) {
-      throw new RoomError('limit', `a room may have at most ${MAX_MEMBERS_PER_ROOM} members`)
+    // The owner plugin's cap now (checkAdd, addMember and redeem all come here). Lowered below the members a room has,
+    // it refuses new joins and removes nobody.
+    const cap = this.caps(room.pluginId).membersPerRoom
+    if (Object.keys(room.members).length >= cap) {
+      throw new RoomError('limit', `a room may have at most ${cap} members (membersPerRoom: ${CAP_WHERE})`)
     }
     return name.value
   }
@@ -840,7 +869,8 @@ function parseRoom(v: unknown, dirName: string): RoomRecord | null {
     if (!isRoomName(name) || !isObject(m) || typeof m.coordinator !== 'boolean') return null
     outMembers[name] = { coordinator: m.coordinator }
   }
-  if (Object.keys(outMembers).length > MAX_MEMBERS_PER_ROOM) return null
+  // The ceiling, never the cap in effect: a room grown under a raised cap restores whole after the person lowered it.
+  if (Object.keys(outMembers).length > MEMBERS_PER_ROOM_CEILING) return null
   const outQueues = record<RoomMessage[]>()
   let chars = 0
   for (const [name, q] of Object.entries(queues)) {
