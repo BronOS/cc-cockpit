@@ -92,8 +92,10 @@ stderr).
   default and ceiling: `opensPerMinute` (tabs it opens a minute through
   `sessions.open`, `openShell`, `openCommand` and `rooms.open`; default 5, at most 60),
   `sendsPerMinute` (`sessions.send` texts a minute; default 30, at most 300), `roomSendsPerMember`
-  (room messages a minute by one member; default 20, at most 120) and `roomSendsPerRoom` (a room's
-  messages a minute, every sender together; default 60, at most 600). It works from a tab too.
+  (room messages a minute by one member; default 20, at most 120), `roomSendsPerRoom` (a room's
+  messages a minute, every sender together; default 60, at most 600), `roomsPerProject` (rooms not ended
+  at once in a project; default 5, at most 20) and `membersPerRoom` (members in one room; default 20,
+  at most 50). It works from a tab too.
   `ccc plugin limits <id> <key>=<value>...` sets caps (a whole number from 1 to the ceiling, else exit
   1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides (the plugin
   then gets the global value); both print the new lines and apply to the plugin's next open or send,

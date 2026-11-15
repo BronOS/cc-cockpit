@@ -778,7 +778,7 @@ function PluginLimits(props: { id: string; name: string; busy: string | null; ru
       testId="plugin-limits"
       intro={
         <>
-          How much this plugin may do a minute, counted for this plugin alone. A value marked global comes from Settings ›
+          How much this plugin may do (a minute, or at once for rooms and members), counted for this plugin alone. A value marked global comes from Settings ›
           General; set one here only for a plugin you trust to use it. An empty field goes back to the global value.
         </>
       }

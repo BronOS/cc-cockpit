@@ -414,16 +414,17 @@ plugin is switched off in the project (or in all projects), uninstalled or revok
 app has no `rooms`: check `typeof ctx.rooms === 'object'`.
 
 - `ctx.rooms.create({ title })` -> `{ id }`: a new room. The title is 1-60 characters on one line with no
-  quote, bracket, control or bidi character; at most 5 rooms not ended per plugin in a project, and at most
-  50 ended ones kept (past that, `create` refuses until you `delete` one).
+  quote, bracket, control or bidi character; at most 5 rooms not ended per plugin in a project (`roomsPerProject`: default 5, at most 20; the person
+  can change it like the send caps), and at most 50 ended ones kept (past that, `create` refuses until you
+  `delete` one).
 - `ctx.rooms.list()`: your rooms of this window (`RoomInfo`: `id`, `title`, `createdAt`, `endedAt` once
   ended, `paused`, `members` as a count), ended ones included. No messages.
 - `ctx.rooms.end(id)`: its members leave it (their tabs stay), its invites die; the record and docs stay.
   `ctx.rooms.delete(id)` removes an ended room with its docs and log.
 - `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd })` -> `{ tabId }`: a new Claude tab
   of this window that is a member from the start. `name` matches `^[a-z][a-z0-9-]{0,30}$`, is unique in
-  the room and is not `all`, `plugin`, `person`, `user` or `system`; at most 20 members a room. `prompt`,
-  `model`, `effort` and `cwd` are `ctx.sessions.open`'s, with its checks, and the open counts against the
+  the room and is not `all`, `plugin`, `person`, `user` or `system`; at most 20 members a room (`membersPerRoom`: default 20, at most 50; the person can change it).
+  `prompt`, `model`, `effort` and `cwd` are `ctx.sessions.open`'s, with its checks, and the open counts against the
   same 5 tabs a minute; the tab opens unselected. The room and the name are checked before the tab opens.
   Seed the member's kickoff (`members/<name>/...`) first, and have the prompt tell it to read it.
 - `ctx.rooms.invite(id, { name, coordinator })` -> `{ code, expiresAt }`: a one-time invite (10 minutes)

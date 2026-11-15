@@ -31,7 +31,7 @@ a Settings › Rooms page, `onEvent` (`log` with `since` covers it), a cap on op
 
 A **room** is created by a plugin in its own project window: `ctx.rooms.create({ title })` returns an opaque id. The
 title is one line, at most 60 characters, no control, quote or bracket characters. A room belongs to that plugin and
-window. Caps (constants): 5 rooms per plugin in a project, 20 members per room, 50 ended rooms kept per plugin in a project
+window. Caps: 5 rooms per plugin in a project, 20 members per room (both defaults the person can change, §6), 50 ended rooms kept per plugin in a project
 (an ended room stays until `delete`; past 50, `create` refuses until one is deleted, never dropping one by itself), 20 one-time invites waiting per room, 100 messages waiting per member and 1,000,000 characters of waiting messages per room (a send past the last two is `refused`), 1000 files and folders in a room's docs. It ends with `ctx.rooms.end(id)` or when its plugin
 is disabled, removed or revoked. A room's record (members, queue, paused) and docs are kept on disk.
 
@@ -213,10 +213,11 @@ Core draws no session list (the Sessions panel is `cockpit.sessions`), so core g
 Folded in from the backlog (the experiment's sixth hire waited a minute on the 5-a-minute open cap). The per-plugin caps
 on tabs and texts become the person's per-plugin override: `sessions.open` opens a minute (default 5), `sessions.send`
 texts a minute (default 30), room sends a minute per member (default 20) and per room (default 60). Each has a hard
-ceiling in main (opens 60, sends 300, room sends 120 / 600) so a typo cannot unbound it; the rooms and members caps
-stay constants.
+ceiling in main (opens 60, sends 300, room sends 120 / 600) so a typo cannot unbound it. Later `roomsPerProject` (default 5,
+ceiling 20) and `membersPerRoom` (default 20, ceiling 50) joined them; lowering one never evicts, it only refuses new
+creates and joins. The storage caps stay constants.
 
-Set in Settings › Plugins (the plugin's row, "Limits") or from a shell outside cockpit with
+Set globally in Settings › General ("Plugin limits", or `ccc plugin limits --global`) and per plugin in Settings › Plugins (the plugin's row, "Limits") or from a shell outside cockpit with
 `ccc plugin limits <id> key=value...` / `--default <key>...`; stored app-wide in `app.json` per plugin id; never in
 plugin.json, the plugin's settings or `ccc plugin config`. The write is `plugin.limits.set` in `HOST_ONLY_COMMANDS`, refused for any caller with a token before lookup, and
 its handler refuses a non-anonymous caller again. The prefix `plugin.limits.` is a `HOST_ONLY_FAMILIES` entry (`protocol.ts`,

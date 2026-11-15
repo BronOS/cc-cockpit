@@ -28,7 +28,8 @@ import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-re
 import type { TabRoomHooks } from '../tabs/tab-manager'
 import { warnLog } from '../warn-log'
 import { fenceBatch, newFenceNonce } from './room-fence'
-import { RoomDelivery, type RecipientAnswer, type RoomSendLimits } from './room-delivery'
+import { RoomDelivery, type RecipientAnswer } from './room-delivery'
+import type { PluginLimits } from '../../shared/plugin-limits'
 import { RoomDocs, type RoomDocCaller, type RoomDocEntry } from './room-docs'
 import type { RoomLogEntry, RoomLogPage } from './room-log'
 import { RoomError } from './room-error'
@@ -65,8 +66,11 @@ export interface RoomServiceOptions {
   dir: string
   tabs: RoomServiceTabs
   sessions: RoomServiceSessions
-  /** The plugin's room send caps (PluginLimitsStore.limits: the person's override, read on every send); the defaults when absent. */
-  limits?(pluginId: string): RoomSendLimits
+  /**
+   * The plugin's limits (PluginLimitsStore.limits: its override, else the global value, else the default): the send
+   * caps read on every send, the room and member caps on every create and join. The defaults when absent.
+   */
+  limits?(pluginId: string): PluginLimits
   now?: () => number
   newId?: () => string
   random?: (bytes: number) => Buffer
@@ -165,6 +169,7 @@ export class RoomService {
     this.nonce = options.nonce ?? newFenceNonce
     this.registry = new RoomRegistry({
       dir: options.dir,
+      ...(options.limits ? { limits: options.limits } : {}),
       ...(options.now ? { now: options.now } : {}),
       ...(options.newId ? { newId: options.newId } : {}),
       ...(options.random ? { random: options.random } : {}),
@@ -211,7 +216,7 @@ export class RoomService {
       // The per-tab Stop cap holds the gate's paste too; the person's badge click ends it (design §2 "Loops").
       capped: (tabId) => this.stop.isCapped(tabId),
       personDelivered: (tabId) => this.stop.personPrompt(tabId),
-      ...(options.limits ? { limits: (pluginId: string) => options.limits!(pluginId) } : {}),
+      ...(options.limits ? { limits: options.limits } : {}),
       // A pointer main pasted on its own decision counts toward the room's auto-pause (room-stop.ts delivered).
       delivered: (roomId) => this.stop.delivered(roomId),
       ...(options.now ? { now: options.now } : {}),

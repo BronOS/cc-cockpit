@@ -13,7 +13,7 @@
 // before main checked it, as in shared/plugin-config.ts); `reset` lists keys whose value is dropped (`--default`,
 // "Use global" on a plugin, "Use default" on the global values).
 
-export type PluginLimitKey = 'opensPerMinute' | 'sendsPerMinute' | 'roomSendsPerMember' | 'roomSendsPerRoom'
+export type PluginLimitKey = 'opensPerMinute' | 'sendsPerMinute' | 'roomSendsPerMember' | 'roomSendsPerRoom' | 'roomsPerProject' | 'membersPerRoom'
 
 /** The caps in effect for one plugin: its override where the person set one, else the global value, else the default. */
 export type PluginLimits = Record<PluginLimitKey, number>
@@ -27,12 +27,14 @@ export interface PluginLimitSpec {
   ceiling: number
 }
 
-/** In display order. Every cap counts over one minute. */
+/** In display order. The first four count over one minute; the last two are standing counts (rooms not ended, members in a room). The unit is in the label. */
 export const PLUGIN_LIMIT_SPECS: readonly PluginLimitSpec[] = Object.freeze([
   { key: 'opensPerMinute', label: 'tabs opened a minute (sessions.open, openShell, openCommand, rooms.open)', default: 5, ceiling: 60 },
   { key: 'sendsPerMinute', label: 'texts sent a minute (sessions.send)', default: 30, ceiling: 300 },
   { key: 'roomSendsPerMember', label: 'room messages a minute by one member', default: 20, ceiling: 120 },
-  { key: 'roomSendsPerRoom', label: 'room messages a minute in one room, every sender together', default: 60, ceiling: 600 }
+  { key: 'roomSendsPerRoom', label: 'room messages a minute in one room, every sender together', default: 60, ceiling: 600 },
+  { key: 'roomsPerProject', label: 'rooms not ended at once in a project (rooms.create)', default: 5, ceiling: 20 },
+  { key: 'membersPerRoom', label: 'members in one room (rooms.open, ccc room join)', default: 20, ceiling: 50 }
 ])
 
 export const PLUGIN_LIMIT_KEYS: readonly PluginLimitKey[] = PLUGIN_LIMIT_SPECS.map((s) => s.key)
@@ -76,7 +78,7 @@ export interface GlobalPluginLimitsView {
   limits: PluginLimitView[]
 }
 
-/** Most `key=value` pairs plus `--default` keys one edit takes (there are four caps). */
+/** Most `key=value` pairs plus `--default` keys one edit takes (there are six caps). */
 export const MAX_PLUGIN_LIMIT_EDITS = 16
 
 const SOURCES: readonly string[] = ['plugin', 'global', 'default'] satisfies readonly PluginLimitSource[]

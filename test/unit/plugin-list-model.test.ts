@@ -191,7 +191,7 @@ describe('limitsEdit', () => {
 
   it('starts at the values in effect and changes nothing untouched', () => {
     const draft = limitsDraft(view)
-    expect(draft).toEqual({ opensPerMinute: '5', sendsPerMinute: '100', roomSendsPerMember: '20', roomSendsPerRoom: '60' })
+    expect(draft).toEqual({ opensPerMinute: '5', sendsPerMinute: '100', roomSendsPerMember: '20', roomSendsPerRoom: '60', roomsPerProject: '5', membersPerRoom: '20' })
     expect(limitsEdit(view, draft)).toEqual({ edit: null, problems: {} })
     // The same number typed again, or with spaces round it, is no change either.
     expect(limitsEdit(view, { ...draft, opensPerMinute: ' 5 ' })).toEqual({ edit: null, problems: {} })
@@ -222,7 +222,9 @@ describe('limits form after a "Use default"', () => {
       opensPerMinute: '12',
       sendsPerMinute: '30',
       roomSendsPerMember: '25',
-      roomSendsPerRoom: 'abc'
+      roomSendsPerRoom: 'abc',
+      roomsPerProject: '5',
+      membersPerRoom: '20'
     })
     // A key main did not name changes nothing.
     expect(limitsDraftAfterReset(after, typed, ['nope'])).toEqual(typed)

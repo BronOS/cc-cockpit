@@ -365,7 +365,14 @@ describe('guide drift guards', () => {
     const api = flat(topic('api'))
     // JSDoc line starts (` * `) are dropped so a sentence wrapped across lines reads as one.
     const types = flat(readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8').replace(/\n\s*\* ?/g, ' '))
-    expect(PLUGIN_LIMIT_SPECS.map((s) => s.key)).toEqual(['opensPerMinute', 'sendsPerMinute', 'roomSendsPerMember', 'roomSendsPerRoom'])
+    expect(PLUGIN_LIMIT_SPECS.map((s) => s.key)).toEqual([
+      'opensPerMinute',
+      'sendsPerMinute',
+      'roomSendsPerMember',
+      'roomSendsPerRoom',
+      'roomsPerProject',
+      'membersPerRoom'
+    ])
     const by = Object.fromEntries(PLUGIN_LIMIT_SPECS.map((s) => [s.key, s]))
     for (const spec of PLUGIN_LIMIT_SPECS) {
       // `ccc plugin limits`: the key, then its default and ceiling in the same item ("default 5, at most 60").

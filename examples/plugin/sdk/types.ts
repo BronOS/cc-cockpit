@@ -1114,7 +1114,8 @@ export interface PluginContext {
     /**
      * Typed only while the tab is waiting for input; queued otherwise (delivered at a later Stop).
      * Rejects for a tab of another window, text starting with "/", "!", "#" or "&", and over 30 texts a minute (the
-     * default `sendsPerMinute`; the person can change it in Settings > Plugins > Limits, and the error names the cap).
+     * default `sendsPerMinute`; the person can change it in Settings > General > Plugin limits or a plugin's Limits,
+     * and the error names the cap).
      */
     send(tabId: string, text: string): Promise<SendResult>
     /**
@@ -1164,7 +1165,9 @@ export interface PluginContext {
   readonly rooms: {
     /**
      * A new room: `title` is 1-60 characters on one line with no quote, bracket, control or bidi character. At most 5
-     * not ended per plugin in a project, and at most 50 ended ones kept (past that, `delete` one first).
+     * not ended per plugin in a project (the default `roomsPerProject`, at most 20; the person can change it in
+     * Settings > General > Plugin limits or a plugin's Limits; lowering it ends nothing), and at most 50 ended ones
+     * kept (past that, `delete` one first).
      */
     create(options: { title: string }): Promise<{ id: string }>
     /** This plugin's rooms in this window, ended ones included (they stay until `delete`). */
@@ -1177,7 +1180,9 @@ export interface PluginContext {
      * A new Claude tab of this window that is a member from the start, under `name` (`^[a-z][a-z0-9-]{0,30}$`, not
      * `all`, `plugin`, `person`, `user` or `system`; unique in the room). `cwd`, `prompt`, `model` and `effort` are
      * `ctx.sessions.open`'s, with its checks, and it counts against the same 5 tabs a minute; the tab opens
-     * unselected. At most 20 members a room. Seed a member's kickoff doc before opening it.
+     * unselected. At most 20 members a room (the default `membersPerRoom`, at most 50; the person can change it in
+     * Settings > General > Plugin limits or a plugin's Limits, and the error names the cap). Seed a member's kickoff
+     * doc before opening it.
      */
     open(
       id: string,
@@ -1196,7 +1201,7 @@ export interface PluginContext {
      * A message `from plugin` to a member or `all` (every member): at most 20000 characters (more goes in a doc).
      * The answer says per recipient what happened. Counts against the room's 60 sends a minute, every sender together
      * (`all` once per recipient); a send over it rejects naming the cap. That cap and a member's 20 a minute are
-     * defaults the person can change (Settings > Plugins > Limits).
+     * defaults the person can change (Settings > General > Plugin limits or a plugin's Limits).
      */
     send(id: string, to: string, text: string): Promise<RoomSendAnswer[]>
     /**
