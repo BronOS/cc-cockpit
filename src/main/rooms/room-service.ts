@@ -79,9 +79,32 @@ export interface RoomServiceOptions {
   /**
    * A room of `projectId` changed (record, queue, binding, doc, log; or it was deleted): index.ts tells the project's
    * views (`rooms.changed`) so an open room view reads it again. Coalesced per room to one call per burst (a send to
-   * `all` saves and logs once per member), after the change.
+   * `all` saves and logs once per member), after the change, and throttled per room (`changedThrottleMs`): a busy room
+   * would otherwise make every open dialog (desktop and each browser) read the log, the docs tree and up to 1 MiB of
+   * reply again many times a second. Leading and trailing, so the last change is always told.
    */
   changed?(room: { id: string; projectId: string }): void
+  /**
+   * A room changed in some way, told at once (not throttled, not coalesced) before `changed`: index.ts settles the
+   * Remove asks whose member went away (`hasLiveMember`). Cheap by contract: it runs on every log event.
+   */
+  anyChange?(roomId: string): void
+  /** Tests: the window of the `changed` throttle, 250 ms by default. */
+  changedThrottleMs?: number
+}
+
+/** The default window of the `rooms.changed` throttle per room. */
+export const ROOM_CHANGED_THROTTLE_MS = 250
+
+/** One room's `rooms.changed` state: a change waiting to be told, the leading microtask, the window's timer. */
+interface ChangeState {
+  projectId: string
+  dirty: boolean
+  /** The leading call is still waiting for its microtask (a burst in one tick is one call). */
+  queued: boolean
+  /** The room ended or was deleted: the window's timer is gone, and this state goes after its last call. */
+  ended: boolean
+  timer?: ReturnType<typeof setTimeout>
 }
 
 /** How long a server's browser's Remove waits for the window's answer (`rooms.removeAsk`); past it nothing is removed. */
@@ -126,8 +149,8 @@ export class RoomService {
   private readonly nonce: () => string
   private readonly warn: (message: string) => void
   private readonly unsubscribe: Array<() => void> = []
-  /** Rooms changed in this burst, by id (their project): told once, on the next microtask. */
-  private readonly changedRooms = new Map<string, string>()
+  /** The `rooms.changed` throttle, by room id (`roomChanged`). */
+  private readonly changeStates = new Map<string, ChangeState>()
 
   constructor(private readonly options: RoomServiceOptions) {
     this.warn = options.log ?? warnLog
@@ -148,6 +171,11 @@ export class RoomService {
         return {
           append: (type, fields) => {
             log.append(type, fields)
+            // The person's own read (the room view opening a doc) is logged but changes nothing the dialog shows
+            // except that log line, and the dialog opening a doc must not make itself read again: an open doc that
+            // refreshed on `rooms.changed` would loop (read, log, changed, read), a throttle only slowing the loop.
+            // So it is the one log event that tells nobody; the line shows with the next change or a re-open.
+            if (type === 'doc-read' && fields?.by === 'person') return
             const room = this.registry.peek(roomId)
             if (room) this.roomChanged(room)
           }
@@ -378,6 +406,7 @@ export class RoomService {
     this.registry.delete(owner, room.id)
     this.delivery.forget(room.id)
     this.stop.roomGone(room.id)
+    this.endChangeWindow(room.id)
   }
 
   /** ctx.rooms.open's check before it opens a tab: the room is the owner's and live, the name valid and free, a seat left. */
@@ -545,8 +574,16 @@ export class RoomService {
     return folder
   }
 
+  /** Whether `name` is a member of the live (not ended, not deleted) room: a Remove ask for it still means something. */
+  hasLiveMember(roomId: string, name: string): boolean {
+    const room = this.registry.peek(roomId)
+    return room !== undefined && room.endedAt === undefined && Object.hasOwn(room.members, name)
+  }
+
   /** App quit: the room stop's ack timers stop and the listeners go. */
   dispose(): void {
+    for (const state of this.changeStates.values()) clearTimeout(state.timer)
+    this.changeStates.clear()
     this.stop.dispose()
     for (const off of this.unsubscribe.splice(0)) off()
   }
@@ -604,29 +641,80 @@ export class RoomService {
     return this.registry.memberInfos(roomId).flatMap((m) => (m.tabId === undefined ? [] : [m.tabId]))
   }
 
-  /** Collect a change; the burst is told on the next microtask, once per room. */
+  /**
+   * A change to a room. Told to `changed` once per burst on the next microtask (the leading call), then at most once
+   * per throttle window with whatever came in during it (the trailing call, so the last change is never lost).
+   */
   private roomChanged(room: { id: string; projectId: string }): void {
+    try {
+      this.options.anyChange?.(room.id)
+    } catch (err) {
+      this.warn(`rooms: change listener failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
     if (!this.options.changed) return
-    const first = this.changedRooms.size === 0
-    this.changedRooms.set(room.id, room.projectId)
-    if (!first) return
+    const state = this.changeStates.get(room.id)
+    if (state) {
+      state.dirty = true
+      return
+    }
+    const fresh: ChangeState = { projectId: room.projectId, dirty: true, queued: true, ended: false }
+    this.changeStates.set(room.id, fresh)
     queueMicrotask(() => {
-      const rooms = [...this.changedRooms]
-      this.changedRooms.clear()
-      for (const [id, projectId] of rooms) {
-        try {
-          this.options.changed?.({ id, projectId })
-        } catch (err) {
-          this.warn(`rooms: change listener failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
+      fresh.queued = false
+      this.tellChanged(room.id, fresh)
+      if (fresh.ended && this.changeStates.get(room.id) === fresh) this.changeStates.delete(room.id)
     })
+    this.startChangeWindow(room.id, fresh)
+  }
+
+  private startChangeWindow(id: string, state: ChangeState): void {
+    const ms = this.options.changedThrottleMs ?? ROOM_CHANGED_THROTTLE_MS
+    state.timer = setTimeout(() => {
+      state.timer = undefined
+      if (this.changeStates.get(id) !== state) return
+      if (!state.dirty) {
+        this.changeStates.delete(id)
+        return
+      }
+      this.tellChanged(id, state)
+      this.startChangeWindow(id, state)
+    }, ms)
+    state.timer.unref?.()
+  }
+
+  private tellChanged(id: string, state: ChangeState): void {
+    if (!state.dirty) return
+    state.dirty = false
+    try {
+      this.options.changed?.({ id, projectId: state.projectId })
+    } catch (err) {
+      this.warn(`rooms: change listener failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /**
+   * The room ended or was deleted: its throttle timer stops now (a deleted room must not keep a timer, nor tell a
+   * trailing change after its own delete event). A change still waiting is told at once, unless the leading microtask
+   * has not run yet (it tells it, so an end and a delete in one tick are one call).
+   */
+  private endChangeWindow(id: string): void {
+    const state = this.changeStates.get(id)
+    if (!state) return
+    clearTimeout(state.timer)
+    state.timer = undefined
+    if (state.queued) {
+      state.ended = true
+      return
+    }
+    this.tellChanged(id, state)
+    this.changeStates.delete(id)
   }
 
   private roomEnded(room: RoomRecord, bound: string[]): void {
     for (const tabId of bound) this.releaseTab(room.projectId, tabId)
     this.delivery.forget(room.id)
     this.stop.roomGone(room.id)
+    this.endChangeWindow(room.id)
   }
 }
 

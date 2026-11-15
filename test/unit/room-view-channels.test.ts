@@ -5,8 +5,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SharedAsks } from '../../src/main/asks/shared-asks'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   appPageMatcher,
   IpcRouter,
@@ -16,7 +15,8 @@ import {
   type IpcMainLike
 } from '../../src/main/ipc/router'
 import type { RoomOwner } from '../../src/main/rooms/room-registry'
-import { ROOM_REMOVE_ASK_MS, RoomService } from '../../src/main/rooms/room-service'
+import { createRoomRemoveAsks, settleGoneRemoveAsks } from '../../src/main/rooms/room-remove-asks'
+import { ROOM_CHANGED_THROTTLE_MS, ROOM_REMOVE_ASK_MS, RoomService } from '../../src/main/rooms/room-service'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { TabManager } from '../../src/main/tabs/tab-manager'
 import { windowSnapshot } from '../../src/main/web/connection'
@@ -38,6 +38,8 @@ let tabs: TabManager
 let service: RoomService
 let changes: Array<{ id: string; projectId: string }>
 let ids: number
+/** The `anyChange` hook the router tests put in place (settles the Remove asks, as index.ts does). */
+let anyChangeHook: ((roomId: string) => void) | undefined
 
 function nextId(): string {
   ids++
@@ -49,6 +51,7 @@ beforeEach(() => {
   projectDir = mkdtempSync(join(tmpdir(), 'cc-room-view-proj-'))
   ids = 0
   changes = []
+  anyChangeHook = undefined
   sessions = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: () => {} })
   service = new RoomService({
     dir: join(dir, 'rooms'),
@@ -61,7 +64,8 @@ beforeEach(() => {
     sessions,
     newId: nextId,
     log: () => {},
-    changed: (room) => changes.push(room)
+    changed: (room) => changes.push(room),
+    anyChange: (roomId) => anyChangeHook?.(roomId)
   })
   tabs = new TabManager({
     backend: new FakePtyBackend(),
@@ -87,6 +91,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   service.dispose()
   sessions.dispose()
   tabs.disposeAll()
@@ -237,17 +242,22 @@ describe('RoomService: the room view', () => {
   })
 
   it('tells each changed room once per burst, with its project, a delete included', async () => {
+    vi.useFakeTimers()
     const { id } = team()
     await flush()
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS)
     changes.length = 0
     // A send to all saves and logs per member: one change.
     service.sendAsPlugin(owner, id, 'all', 'hi all')
     await flush()
     expect(changes).toEqual([{ id, projectId: P1 }])
     changes.length = 0
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS)
     await service.ownerDocPut(owner, id, 'shared/a.md', 'a')
     await flush()
     expect(changes).toEqual([{ id, projectId: P1 }])
+    changes.length = 0
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 2)
     changes.length = 0
     const other = service.create(owner2, { title: 'Other' }).id
     service.end(owner2, other)
@@ -258,6 +268,79 @@ describe('RoomService: the room view', () => {
       { id: other, projectId: P2 },
       { id, projectId: P1 }
     ])
+  })
+
+  it('throttles a busy room: the first change at once, the rest as one trailing call, the last never lost', async () => {
+    vi.useFakeTimers()
+    const { id } = team()
+    await flush()
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 2)
+    changes.length = 0
+    service.sendAsPlugin(owner, id, 'all', 'one')
+    await flush()
+    expect(changes).toHaveLength(1)
+    // Many bursts inside the window: nothing yet.
+    for (let i = 0; i < 20; i++) {
+      service.sendAsPlugin(owner, id, 'all', `m${i}`)
+      await flush()
+    }
+    expect(changes).toHaveLength(1)
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS)
+    expect(changes).toHaveLength(2)
+    // A quiet window ends the throttle; the next change is leading again.
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS)
+    expect(changes).toHaveLength(2)
+    service.sendAsPlugin(owner, id, 'all', 'later')
+    await flush()
+    expect(changes).toHaveLength(3)
+  })
+
+  it('stops the throttle timer when the room is deleted (and tells the delete), and on dispose', async () => {
+    vi.useFakeTimers()
+    const { id } = team()
+    await flush()
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 2)
+    changes.length = 0
+    service.sendAsPlugin(owner, id, 'all', 'x')
+    await flush()
+    service.sendAsPlugin(owner, id, 'all', 'y')
+    await flush()
+    expect(changes).toHaveLength(1)
+    service.end(owner, id)
+    // The end tells what waited at once; no trailing call comes after it or after the delete.
+    expect(changes).toHaveLength(2)
+    service.delete(owner, id)
+    await flush()
+    expect(changes).toHaveLength(3)
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 4)
+    expect(changes).toHaveLength(3)
+    // A change waiting in a running window when the app quits is not told afterwards.
+    const next = service.create(owner, { title: 'Next' }).id
+    await flush()
+    service.personPause(P1, next)
+    await flush()
+    const before = changes.length
+    service.dispose()
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 4)
+    expect(changes).toHaveLength(before)
+  })
+
+  it("the person's own doc read tells nobody (a viewer refreshing on rooms.changed would loop); a member's read does", async () => {
+    vi.useFakeTimers()
+    const { id, alice } = team()
+    await service.ownerDocPut(owner, id, 'shared/a.md', 'a')
+    await flush()
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 2)
+    changes.length = 0
+    for (let i = 0; i < 3; i++) expect(await service.personDoc(P1, id, 'shared/a.md')).toBe('a')
+    await flush()
+    vi.advanceTimersByTime(ROOM_CHANGED_THROTTLE_MS * 2)
+    expect(changes).toEqual([])
+    // Still logged, and the next change carries it.
+    expect((await service.view(P1, id)).log.filter((e) => e.type === 'doc-read' && e.by === 'person')).toHaveLength(3)
+    await service.docGet({ tabId: alice, projectId: P1 }, 'shared/a.md')
+    await flush()
+    expect(changes).toEqual([{ id, projectId: P1 }])
   })
 })
 
@@ -299,18 +382,15 @@ function routerSetup(options: { server?: boolean } = {}) {
   )
   const posted: Array<{ windowId: number; ask: RoomRemoveAsk }> = []
   const settled: Array<{ windowId: number; requestId: string }> = []
-  const asks = new SharedAsks<Omit<RoomRemoveAsk, 'requestId'>, boolean>({
-    hooks: {
-      send: (windowId, ask) => {
-        posted.push({ windowId, ask })
-        return true
-      },
-      settled: (windowId, requestId) => void settled.push({ windowId, requestId })
-    },
-    prefix: 'room-remove',
-    refused: false,
-    timeoutMs: ROOM_REMOVE_ASK_MS
+  // The real factory (main/index.ts uses it): its channels land here, and a view that takes the ask is simulated.
+  const asks = createRoomRemoveAsks({
+    toWindow: (windowId, channel, payload) => {
+      if (channel === 'rooms.removeAsk') posted.push({ windowId, ask: payload as RoomRemoveAsk })
+      else settled.push({ windowId, requestId: (payload as { requestId: string }).requestId })
+      return true
+    }
   })
+  anyChangeHook = (roomId) => settleGoneRemoveAsks(asks, roomId, (name) => service.hasLiveMember(roomId, name))
   const revealed: string[] = []
   registerRoomViewHandlers(router, {
     server: options.server === true,
@@ -458,16 +538,56 @@ describe('registerRoomViewHandlers', () => {
     expect(posted).toHaveLength(1)
   })
 
-  it('a member that left while the ask was up is not there to remove: the Remove answer fails, nothing else changes', async () => {
+  /** Put a Remove ask for bob from a server's browser and wait until it is up. */
+  async function askForBob(id: string) {
+    const setup = routerSetup({ server: true })
+    const pending = setup.router.dispatch(browser(), 'rooms.remove', { roomId: id, name: 'bob' })
+    await flush()
+    await flush()
+    expect(setup.posted).toHaveLength(1)
+    return { ...setup, pending }
+  }
+
+  it('settles a pending ask as declined when its member is removed by the plugin, leaves, or its tab closes', async () => {
+    for (const how of ['plugin removes', 'leaves', 'tab closes'] as const) {
+      const { id, bob } = team()
+      const { asks, posted, settled, pending } = await askForBob(id)
+      if (how === 'plugin removes') service.remove(owner, id, 'bob')
+      else if (how === 'leaves') service.leave({ tabId: bob, projectId: P1 })
+      else tabs.close(P1, bob)
+      // Every view's dialog closes through settled; the requester's invoke answers declined, not a failure.
+      expect(settled).toEqual([{ windowId: 1, requestId: posted[0]!.ask.requestId }])
+      expect(asks.size).toBe(0)
+      expect(await pending).toEqual({ removed: false })
+      service.end(owner, id)
+    }
+  })
+
+  it('settles a pending ask as declined when its room ends or is deleted, and leaves another member\'s ask alone', async () => {
     const { id } = team()
-    const { router, posted } = routerSetup({ server: true })
-    const pending = router.dispatch(browser(), 'rooms.remove', { roomId: id, name: 'bob' })
-    await flush()
-    await flush()
-    service.remove(owner, id, 'bob')
-    expect(await router.dispatch(browser(), 'rooms.removeAnswer', { requestId: posted[0]!.ask.requestId, remove: true })).toBe(true)
-    await expect(pending).rejects.toThrow('no such member')
-    expect(await memberNames(id)).toEqual(['alice'])
+    const { asks, settled, pending } = await askForBob(id)
+    // Alice leaving does not touch the ask about bob.
+    service.remove(owner, id, 'alice')
+    expect(settled).toEqual([])
+    expect(asks.size).toBe(1)
+    service.end(owner, id)
+    expect(await pending).toEqual({ removed: false })
+    expect(settled).toHaveLength(1)
+    service.delete(owner, id)
+    expect(asks.size).toBe(0)
+  })
+
+  it('a pending ask runs out after ROOM_REMOVE_ASK_MS: not removed, every view told', async () => {
+    vi.useFakeTimers()
+    const { id } = team()
+    const { asks, posted, settled, pending } = await askForBob(id)
+    vi.advanceTimersByTime(ROOM_REMOVE_ASK_MS - 1)
+    expect(settled).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(await pending).toEqual({ removed: false })
+    expect(settled).toEqual([{ windowId: 1, requestId: posted[0]!.ask.requestId }])
+    expect(asks.size).toBe(0)
+    expect(await memberNames(id)).toEqual(['alice', 'bob'])
   })
 
   it('the pending ask is in the window snapshot a joining browser gets (ready), and leaves it when settled', async () => {

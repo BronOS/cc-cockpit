@@ -142,8 +142,8 @@ reply), 256 KiB per doc (a `ccc` reply is one socket line, `MAX_LINE_BYTES` 1 Mi
 256 KiB for that reason), 20 MiB per room; path parts `[A-Za-z0-9._-]`, depth at most 4, no `..`; files opened with
 `O_NOFOLLOW` and checked by `fstat` on that descriptor (the key-file pattern), parent directories made by main only;
 writes are temp file plus rename, one at a time, last write wins; no versions. Docs outlive the room: an ended room's
-docs stay until its plugin calls `ctx.rooms.delete(id)`. The person sees an active room's docs read-only in the room view
-and on the desktop can reveal the folder.
+docs stay until its plugin calls `ctx.rooms.delete(id)`. The person sees a room's docs read-only in the room view, an
+ended room's too (an ended room stays viewable, docs and log, until its plugin deletes it), and on the desktop can reveal the folder.
 
 ## 4. `ccc room`, the host API, the log
 

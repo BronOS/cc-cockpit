@@ -115,8 +115,6 @@ import { electronSystemShell } from './files/electron-shell'
 import { SystemFiles } from './files/system-files'
 import { electronConfirmTrash, QueuedTrashConfirm } from './files/trash-dialog'
 import { TrashAsks } from './files/trash-asks'
-import { SharedAsks } from './asks/shared-asks'
-import type { RoomRemoveAsk } from '../shared/room-view'
 import { chooseAsk } from './asks/shared-asks'
 import { enabledPluginIds, pluginOnInRecord } from './plugins/enablement'
 import { RoomsPluginGate } from './rooms/rooms-plugin-gate'
@@ -155,7 +153,8 @@ import { migrateProjectDefaults } from './settings/project-defaults-migration'
 import { windowBackgroundOf } from './settings/window-background'
 import { NodePtyBackend } from './pty/node-pty-backend'
 import { hookAckHandler, hookHandler, hookTarget } from './sessions/hook-handler'
-import { ROOM_REMOVE_ASK_MS, RoomService } from './rooms/room-service'
+import { createRoomRemoveAsks, settleGoneRemoveAsks } from './rooms/room-remove-asks'
+import { RoomService } from './rooms/room-service'
 import { execLsFiles, openDiff, openProjectFileDiff, type OpenDiffOptions } from './sessions/open-diff'
 import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
@@ -674,15 +673,7 @@ function start(server: boolean): void {
   })
   // A server's browser asking to remove a room member (design-rooms.md §5): the same shared ask on every view of the
   // window (first answer wins, `rooms.removeSettled` to the others, replayed in `ready`, 5 min then not removed).
-  const roomRemoveAsks = new SharedAsks<Omit<RoomRemoveAsk, 'requestId'>, boolean>({
-    hooks: {
-      send: (windowId, ask) => views.toWindow(windowId, 'rooms.removeAsk', ask),
-      settled: (windowId, requestId) => views.toWindow(windowId, 'rooms.removeSettled', { requestId })
-    },
-    prefix: 'room-remove',
-    refused: false,
-    timeoutMs: ROOM_REMOVE_ASK_MS
-  })
+  const roomRemoveAsks = createRoomRemoveAsks(views)
   const systemFiles = new SystemFiles({
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
@@ -1882,7 +1873,9 @@ function start(server: boolean): void {
     sessions,
     limits: (pluginId) => pluginLimits.limits(pluginId),
     // An open room view (any view of the project's window) reads the room again.
-    changed: (room) => views.toProject(room.projectId, 'rooms.changed', { roomId: room.id })
+    changed: (room) => views.toProject(room.projectId, 'rooms.changed', { roomId: room.id }),
+    // A Remove ask whose member left, was removed, or whose room ended or was deleted is over: the dialogs close now.
+    anyChange: (roomId) => settleGoneRemoveAsks(roomRemoveAsks, roomId, (name) => rooms.hasLiveMember(roomId, name))
   })
   rooms.load()
   // Never before the load finished, nor after a failed one: every plugin would look removed then and every room would end.
