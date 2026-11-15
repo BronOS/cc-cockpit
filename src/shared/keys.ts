@@ -14,7 +14,7 @@ import { own } from './guards'
 export type KeyPlatform = 'darwin' | 'linux' | 'win32'
 
 const MODIFIER_ORDER = ['ctrl', 'alt', 'shift', 'meta'] as const
-type Modifier = (typeof MODIFIER_ORDER)[number]
+export type Modifier = (typeof MODIFIER_ORDER)[number]
 
 const MODIFIER_ALIASES: Record<string, Modifier | 'cmd'> = {
   ctrl: 'ctrl',
@@ -179,6 +179,18 @@ export function chordFromEvent(e: KeyEventLike): string | null {
   if (e.shiftKey) mods.push('shift')
   if (e.metaKey) mods.push('meta')
   return [...mods, key].join('+')
+}
+
+/**
+ * A canonical chord with one more modifier, in canonical order (`ctrl+shift+w` + alt ->
+ * `ctrl+alt+shift+w`); the chord itself when it has that modifier already or cannot be taken apart.
+ * The web shell's Alt alternatives (web-keys.ts) and the "in Group" defaults (CommandRegistry) use it.
+ */
+export function chordWith(chord: string, mod: Modifier): string {
+  const parts = splitChord(chord)
+  if (!parts || parts.mods.includes(mod)) return chord
+  const mods = [...parts.mods, mod].sort((a, b) => MODIFIER_ORDER.indexOf(a as Modifier) - MODIFIER_ORDER.indexOf(b as Modifier))
+  return [...mods, parts.key].join('+')
 }
 
 /** A command as far as key resolution cares. `key` is its default chord (any accepted spelling). */

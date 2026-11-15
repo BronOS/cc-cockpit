@@ -21,7 +21,8 @@ const find = (view: ReturnType<CommandRegistry['view']>, id: string) =>
 describe('CommandRegistry', () => {
   it('lists the core commands with the default keys', () => {
     const view = new CommandRegistry('darwin', () => ({})).view('p1')
-    expect(view.commands).toHaveLength(CORE_COMMANDS.length)
+    // Plus New Claude Tab in Group and New Shell Tab in Group (design-split-pages.md §4).
+    expect(view.commands).toHaveLength(CORE_COMMANDS.length + 2)
     expect(find(view, 'tab.newClaude')).toMatchObject({ key: 'meta+t', source: 'core' })
     expect(find(view, 'tab.newShell')?.key).toBe('shift+meta+t')
     expect(find(view, 'tab.select.9')?.key).toBe('meta+9')
@@ -311,5 +312,68 @@ describe('displayChord', () => {
       expect(() => displayChord(odd, true), odd).not.toThrow()
       expect(() => displayChord(odd, false), odd).not.toThrow()
     }
+  })
+})
+
+describe('New tab in Group commands (design-split-pages.md §4)', () => {
+  const NC = 'tab.inGroup.tab.newClaude'
+  const NS = 'tab.inGroup.tab.newShell'
+  const keyOf = (r: CommandRegistry, id: string): string | undefined => find(r.view('p'), id)?.key
+
+  it('derives New Claude / Shell Tab in Group on the base chord plus Alt, with rows of their own', () => {
+    const mac = new CommandRegistry('darwin', () => ({}))
+    const linux = new CommandRegistry('linux', () => ({}))
+    expect(find(mac.view('p'), NC)).toEqual({ id: NC, title: 'New Claude Tab in Group', key: 'alt+meta+t', source: 'core' })
+    expect(find(mac.view('p'), NS)).toMatchObject({ title: 'New Shell Tab in Group', key: 'alt+shift+meta+t' })
+    expect(keyOf(linux, NC)).toBe('ctrl+alt+t')
+    expect(keyOf(linux, NS)).toBe('ctrl+alt+shift+t')
+    const row = mac.bindings('p').find((r) => r.id === NC)
+    expect(row).toMatchObject({ defaultKey: 'alt+meta+t', key: 'alt+meta+t', overridden: false, inactive: false, conflictsWith: [] })
+    expect(mac.has('p', NC)).toBe(true)
+    expect(mac.has('p', NS)).toBe(true)
+    expect(mac.has('p', 'tab.inGroup.tab.close')).toBe(false)
+    expect(mac.view('p').conflicts).toEqual([])
+  })
+
+  it('follows a rebound base at the next view; none when the base is unbound or already has Alt', () => {
+    const overrides: Record<string, string> = { 'tab.newClaude': 'Cmd+K' }
+    const r = new CommandRegistry('darwin', () => overrides)
+    expect(keyOf(r, NC)).toBe('alt+meta+k')
+    // Cmd+Alt+T is nobody's now.
+    expect(r.view('p').commands.some((c) => c.key === 'alt+meta+t')).toBe(false)
+    overrides['tab.newClaude'] = ''
+    expect(keyOf(r, NC)).toBeUndefined()
+    expect(r.bindings('p').find((row) => row.id === NC)?.defaultKey).toBeUndefined()
+    overrides['tab.newClaude'] = 'Cmd+Alt+K'
+    expect(keyOf(r, NC)).toBeUndefined()
+    expect(keyOf(r, 'tab.newClaude')).toBe('alt+meta+k')
+  })
+
+  it('takes no chord another command holds: an override, a plugin default, or a base in an unresolved conflict', () => {
+    const taken = new CommandRegistry('darwin', () => ({ 'zone.toggleLeft': 'Cmd+Alt+T' }))
+    expect(keyOf(taken, NC)).toBeUndefined()
+    expect(keyOf(taken, 'zone.toggleLeft')).toBe('alt+meta+t')
+    expect(taken.view('p').conflicts).toEqual([])
+
+    const plugin = new CommandRegistry('darwin', () => ({}))
+    plugin.registerPlugin('p', 'x.y', [{ id: 'go', title: 'Go', key: 'Cmd+Alt+T' }])
+    expect(keyOf(plugin, NC)).toBeUndefined()
+    expect(keyOf(plugin, 'x.y/go')).toBe('alt+meta+t')
+
+    // Two user chords on Cmd+K tie: the base fires nothing, so its derived command gets nothing either.
+    const tie = new CommandRegistry('darwin', () => ({ 'tab.newClaude': 'Cmd+K', 'zone.toggleLeft': 'Cmd+K' }))
+    expect(keyOf(tie, NC)).toBeUndefined()
+    expect(tie.view('p').conflicts.map((c) => c.chord)).toEqual(['meta+k'])
+  })
+
+  it("the person's override of a derived command wins, and clearing it leaves it unbound", () => {
+    const overrides: Record<string, string> = { [NC]: 'Cmd+Shift+K' }
+    const r = new CommandRegistry('darwin', () => overrides)
+    expect(keyOf(r, NC)).toBe('shift+meta+k')
+    expect(r.bindings('p').find((row) => row.id === NC)).toMatchObject({ overridden: true, defaultKey: 'alt+meta+t', key: 'shift+meta+k' })
+    overrides[NC] = ''
+    expect(keyOf(r, NC)).toBeUndefined()
+    // bindings() judges a change before it is stored: the given overrides, not the stored ones.
+    expect(r.bindings('p', {}).find((row) => row.id === NC)?.key).toBe('alt+meta+t')
   })
 })

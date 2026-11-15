@@ -15,7 +15,7 @@ import {
   setCommands,
   tabCommandHandlers
 } from '../../src/renderer/commands/keybindings'
-import { parseTabCommandId, tabCommandId, tabCommandTitle } from '../../src/shared/tab-commands'
+import { inGroupCommandId, parseInGroupCommandId, parseTabCommandId, tabCommandId, tabCommandTitle } from '../../src/shared/tab-commands'
 import type { TabCommandEntry } from '../../src/shared/types'
 
 const A = 'aaaaaaaaaaaaaaaa'
@@ -34,10 +34,11 @@ function rig(overrides: Record<string, string> = {}) {
   return { state, registry }
 }
 
+/** The entries' own commands (not their "in Group" ones, which are listed further down). */
 const ids = (r: CommandRegistry, projectId: string): string[] =>
   r
     .view(projectId)
-    .commands.filter((c) => c.source === 'tabCommand')
+    .commands.filter((c) => c.source === 'tabCommand' && parseTabCommandId(c.id) !== undefined)
     .map((c) => c.id)
 
 describe('tab command ids', () => {
@@ -215,7 +216,8 @@ describe('live updates through TabCommandsService', () => {
     )
     service.set(A, 'project', [{ label: 'dev', command: 'npm run dev' }])
     expect(registry.view(A).commands.filter((c) => c.source === 'tabCommand').map((c) => [c.id, c.title])).toEqual([
-      ['tab.newCommand.project.id1', 'New tab: dev']
+      ['tab.newCommand.project.id1', 'New tab: dev'],
+      ['tab.inGroup.tab.newCommand.project.id1', 'New tab: dev in Group']
     ])
     service.set(A, 'project', [{ id: 'id1', label: 'serve', command: 'npm run serve' }])
     expect(registry.view(A).commands.find((c) => c.id === 'tab.newCommand.project.id1')?.title).toBe('New tab: serve')
@@ -258,5 +260,41 @@ describe('renderer dispatch (tabCommandHandlers)', () => {
     const press = { key: 'L', code: 'KeyL', metaKey: true, shiftKey: true, ctrlKey: false, altKey: false }
     expect(commandForEvent(press)).toBeUndefined()
     expect(runCommand('tab.newCommand.app.lg')).toBe(false)
+  })
+})
+
+describe('"in Group" commands of the entries (design-split-pages.md §4)', () => {
+  it('derive tab.inGroup.<base id> and parse back only a base that opens a tab; no id reads as both', () => {
+    expect(inGroupCommandId('tab.newClaude')).toBe('tab.inGroup.tab.newClaude')
+    expect(inGroupCommandId(tabCommandId('app', 'lg'))).toBe('tab.inGroup.tab.newCommand.app.lg')
+    expect(parseInGroupCommandId('tab.inGroup.tab.newClaude')).toBe('tab.newClaude')
+    expect(parseInGroupCommandId('tab.inGroup.tab.newShell')).toBe('tab.newShell')
+    expect(parseInGroupCommandId('tab.inGroup.tab.newCommand.project.dev')).toBe('tab.newCommand.project.dev')
+    for (const id of ['tab.newClaude', 'tab.inGroup.tab.close', 'tab.inGroup.', 'tab.inGroup.tab.newCommand.app.a.b', 'tab.inGroup.tab.inGroup.tab.newClaude']) {
+      expect(parseInGroupCommandId(id), id).toBeUndefined()
+    }
+    expect(parseTabCommandId('tab.inGroup.tab.newCommand.app.lg')).toBeUndefined()
+    expect(parseInGroupCommandId('tab.newCommand.app.lg')).toBeUndefined()
+  })
+
+  it('one per tab entry, titled "<entry title> in Group", none for an overlay entry; default = the entry chord + Alt', () => {
+    const { state, registry } = rig({ 'tab.newCommand.app.lg': 'Cmd+Shift+L' })
+    state.projects[A] = [entry('dev', 'npm run dev'), { ...entry('ov', 'htop'), open: 'overlay' }]
+    const derived = registry.view(A).commands.filter((c) => parseInGroupCommandId(c.id)?.startsWith('tab.newCommand.'))
+    expect(derived).toEqual([
+      { id: 'tab.inGroup.tab.newCommand.app.lg', title: 'New tab: lazygit in Group', key: 'alt+shift+meta+l', source: 'tabCommand' },
+      { id: 'tab.inGroup.tab.newCommand.project.dev', title: 'New tab: npm run dev in Group', source: 'tabCommand' }
+    ])
+    expect(registry.has(A, 'tab.inGroup.tab.newCommand.project.dev')).toBe(true)
+    expect(registry.has(A, 'tab.inGroup.tab.newCommand.project.ov')).toBe(false)
+    expect(registry.has(B, 'tab.inGroup.tab.newCommand.project.dev')).toBe(false)
+    // The entry's own command still says Overlay and is listed.
+    expect(registry.view(A).commands.find((c) => c.id === 'tab.newCommand.project.ov')?.title).toBe('Overlay: htop')
+    // tabCommandHandlers gives the derived ones no handler (inGroupHandlers does).
+    expect(Object.keys(tabCommandHandlers(registry.view(A), () => {}))).toEqual([
+      'tab.newCommand.app.lg',
+      'tab.newCommand.project.dev',
+      'tab.newCommand.project.ov'
+    ])
   })
 })

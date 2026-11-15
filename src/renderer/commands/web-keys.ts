@@ -15,13 +15,11 @@
 // chords, and a chord rebound in Settings to one the browser does not keep is used as it is.
 // DOM-free, so unit tests load it.
 import type { CommandsView } from '../../shared/ipc'
-import { splitChord } from '../../shared/keys'
+import { chordWith, splitChord } from '../../shared/keys'
+import { parseInGroupCommandId } from '../../shared/tab-commands'
 
 /** The letters whose primary-modifier chords (with or without Shift) the browser keeps. */
 const KEPT_LETTERS = new Set(['w', 't', 'n'])
-
-/** Canonical modifier order (shared/keys.ts): `ctrl+alt+shift+meta+key`. */
-const ORDER = ['ctrl', 'alt', 'shift', 'meta']
 
 /**
  * Whether a browser on this platform keeps `chord` (canonical) for itself: the primary modifier
@@ -41,14 +39,7 @@ export function browserKeeps(chord: string, mac: boolean): boolean {
 
 /** `chord` with Alt added, in canonical order (`ctrl+shift+w` -> `ctrl+alt+shift+w`). */
 export function withAlt(chord: string): string {
-  return withMod(chord, 'alt')
-}
-
-function withMod(chord: string, mod: string): string {
-  const parts = splitChord(chord)
-  if (!parts || parts.mods.includes(mod)) return chord
-  const mods = [...parts.mods, mod].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b))
-  return [...mods, parts.key].join('+')
+  return chordWith(chord, 'alt')
 }
 
 /**
@@ -57,24 +48,45 @@ function withMod(chord: string, mod: string): string {
  */
 export function alternativeOf(chord: string): string {
   const parts = splitChord(chord)
-  return parts?.mods.includes('alt') ? withMod(chord, 'ctrl') : withAlt(chord)
+  return parts?.mods.includes('alt') ? chordWith(chord, 'ctrl') : withAlt(chord)
 }
 
 /**
  * The key table for the web shell: every chord the browser keeps moved to its Alt alternative, or
  * dropped when another command already has that alternative. A new view object; `view` is untouched.
+ *
+ * The "… in Group" commands (design-split-pages.md §4) yield instead: their default is their base's
+ * chord plus Alt, which is exactly where a browser's New Claude Tab (Cmd+T kept) and New Shell Tab
+ * (Cmd+Shift+T kept) move. Decided by the person (2026-11-14): in a browser New Claude Tab keeps
+ * Ctrl+Alt+T and New Shell Tab Ctrl+Alt+Shift+T, and the derived commands lose a chord a moved one
+ * takes (no chord in a browser by default; the palette runs them, Split Right / Down still open the
+ * New tab menu, and a chord the person gives them elsewhere is kept). The desktop and the Mac remote
+ * window (the desktop table, keybindings.ts) keep Cmd/Ctrl+Alt+T for "… in Group".
  */
 export function webKeyTable(view: CommandsView, mac: boolean): CommandsView {
+  const yields = (id: string): boolean => parseInGroupCommandId(id) !== undefined
   const taken = new Set<string>()
-  for (const c of view.commands) if (c.key && !browserKeeps(c.key, mac)) taken.add(c.key)
-  const commands = view.commands.map((c) => {
-    if (!c.key || !browserKeeps(c.key, mac)) return c
+  for (const c of view.commands) if (c.key && !browserKeeps(c.key, mac) && !yields(c.id)) taken.add(c.key)
+  const moved = view.commands.map((c) => {
+    if (!c.key || !browserKeeps(c.key, mac) || yields(c.id)) return c
     const alt = alternativeOf(c.key)
     const out = { ...c }
     if (taken.has(alt)) delete out.key
     else {
       out.key = alt
       taken.add(alt)
+    }
+    return out
+  })
+  const commands = moved.map((c) => {
+    if (!c.key || !yields(c.id)) return c
+    // A derived chord the browser keeps (one the person gave it) moves like any other, when free.
+    const key = browserKeeps(c.key, mac) ? alternativeOf(c.key) : c.key
+    const out = { ...c }
+    if (taken.has(key)) delete out.key
+    else {
+      out.key = key
+      taken.add(key)
     }
     return out
   })

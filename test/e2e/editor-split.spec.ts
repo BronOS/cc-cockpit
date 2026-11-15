@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import type { Frame, Page } from '@playwright/test'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
-import { domFocusInTerminal, focusedPanes, groupFor, invoke, paneOf, paneText, place, roomyDesktop, tabsOf, visiblePanes, waitPaneText } from './split-fixtures'
+import { domFocusInTerminal, focusedPanes, groupFor, invoke, leaves, paneOf, paneText, place, roomyDesktop, tabsOf, visiblePanes, waitPaneText } from './split-fixtures'
 
 async function pluginActive(c: Cockpit, id: string): Promise<void> {
   await expect
@@ -666,6 +666,51 @@ test('menus over a file pane: the New tab menu of a split is on top of the frame
     expect(pb.x < fb.x + fb.width && fb.x < pb.x + pb.width && pb.y < fb.y + fb.height && fb.y < pb.y + pb.height).toBe(true)
     await menu.getByRole('menuitem').first().click()
     await expect(visiblePanes(page)).toHaveCount(3)
+  } finally {
+    await close()
+  }
+})
+
+// New tab in Group (design-split-pages.md §4, plan Task 6): the chord plus Alt of New Claude Tab,
+// typed in a file frame, opens Claude beside that file with no menu, on the side the pane is longer.
+test('New Claude Tab in Group (Cmd+Alt+T) typed in a wide file pane opens Claude to its right, focused', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  try {
+    const { page, projectDir } = c
+    await roomyDesktop(c)
+    writeFileSync(join(projectDir, 'wide.txt'), 'first\nsecond\n')
+    await c.newTab('shell')
+    await c.waitForTerminalText('FAKE-SHELL ready')
+    const shell = (await tabsOf(page)).find((t) => t.kind === 'shell')!.id
+    await pluginActive(c, 'cockpit.editor')
+    const file = await openFile(c, 'wide.txt')
+    // Below the shell: the file pane spans the whole width at half the height, wider than tall.
+    expect((await place(page, file, shell, 'down')).ok).toBe(true)
+    await expect(visiblePanes(page)).toHaveCount(2)
+    const editor = await pageIn(page, 'wide.txt')
+    await clickInto(page, file, editor, 'second')
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', file)
+
+    await nativeChord(c, 'T', [NATIVE_MOD, 'alt'])
+    await expect.poll(async () => (await tabsOf(page)).filter((t) => t.kind === 'claude').length).toBe(1)
+    const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
+    // In the file's group, right of the file on the same row (no New tab menu was shown).
+    await expect.poll(async () => leaves((await groupFor(page, file))?.root ?? { tab: '' })).toEqual([shell, file, claude])
+    await expect(visiblePanes(page)).toHaveCount(3)
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    const [fileBox, claudeBox] = [await paneOf(page, file).boundingBox(), await paneOf(page, claude).boundingBox()]
+    expect(claudeBox!.x).toBeGreaterThan(fileBox!.x + fileBox!.width / 2)
+    expect(Math.abs(claudeBox!.y - fileBox!.y)).toBeLessThan(4)
+
+    // Focused: the outline on Claude's pane and the keys in its terminal, not in the frame.
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', claude)
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE banner')
+    await expect.poll(() => domFocusInTerminal(page)).toBe(true)
+    await page.keyboard.type('hi')
+    await page.keyboard.press('Enter')
+    await waitPaneText(paneOf(page, claude), 'FAKE-CLAUDE echo: hi')
+    await expect(editor.locator('.cm-content')).not.toContainText('hi')
   } finally {
     await close()
   }

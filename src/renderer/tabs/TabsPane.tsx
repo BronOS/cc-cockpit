@@ -29,7 +29,7 @@ import type { GroupsReply } from '../../shared/ipc'
 import { groupOf, isPaneKind, leavesOf, rectsOf, type GroupsSnapshot, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { autoZoomed, cellEstimate, dragMinShare, edgePreview, edgeZone, equalizeSplits, splitFits, type Size } from './pane-layout'
 import { paneAtPoint } from './SplitArea'
-import { activeTabHandlers, paneCommandHandlers, refusalText } from './pane-commands'
+import { activeTabHandlers, inGroupHandlers, paneCommandHandlers, refusalText, TOO_SMALL_TO_SPLIT, type NewTabKind } from './pane-commands'
 import { SplitArea, type PaneDrop } from './SplitArea'
 import { lastSplitChoice, NewPaneMenu, rememberSplitChoice, type NewPaneChoice, type SplitMenu } from './NewPaneMenu'
 import { tabLabel } from './tab-label'
@@ -624,7 +624,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const splitBlocked = useCallback(
     (tabId: string, edge: PaneEdge): string | undefined => {
       if (area.width === 0) return undefined
-      return splitFits(paneSize(tabId), edge, cellNow()) ? undefined : 'Too small to split: each pane needs at least 20 columns and 5 rows.'
+      return splitFits(paneSize(tabId), edge, cellNow()) ? undefined : TOO_SMALL_TO_SPLIT
     },
     [area, cellNow, paneSize]
   )
@@ -662,6 +662,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       })
     )
   }
+  // New tab in Group (design-split-pages.md §4): the tab opens beside the focused pane with no menu,
+  // placed by main in the same step as the menu choice of Split Right / Down; plain with no `beside`.
+  const createBeside = (what: NewTabKind, beside?: { tabId: string; edge: 'right' | 'down' }): void =>
+    run(
+      window.cockpit.invoke('tabs.create', beside ? { ...what, beside } : what).then((tab) => {
+        // null: a command entry that opens as an overlay after all (main decides); nothing to place.
+        if (tab) addPicked(tab)
+      })
+    )
   // Show Tab Beside… (palette): pick a tab; it goes beside the focused pane.
   const [besidePick, setBesidePick] = useState<{ edge: 'right' | 'down' } | null>(null)
   const besideItems = useMemo((): CommandInfo[] => {
@@ -809,10 +818,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     sessions.dispose(tabId)
     dispatch({ type: 'closed', tabId })
   }
-  const actions = useRef({ create, createCommand, close: requestClose, closeNow: close, toggleFlag, dropClosed })
+  const actions = useRef({ create, createCommand, createBeside, paneSize, splitBlocked, close: requestClose, closeNow: close, toggleFlag, dropClosed })
   useEffect(() => {
     ownRef.current = own
-    actions.current = { create, createCommand, close: requestClose, closeNow: close, toggleFlag, dropClosed }
+    actions.current = { create, createCommand, createBeside, paneSize, splitBlocked, close: requestClose, closeNow: close, toggleFlag, dropClosed }
     paletteOpen.current = paletteCommands !== null || besidePick !== null || splitMenu !== null
     settingsShown.current = settingsOpen
   })
@@ -1295,7 +1304,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         ...pluginCommandHandlers(view, (id) => {
           window.cockpit.invoke('commands.run', { id }).catch((err: unknown) => console.warn(`command ${id} failed`, err))
         }),
-        ...tabCommandHandlers(view, (level, entryId) => actions.current.createCommand(level, entryId))
+        ...tabCommandHandlers(view, (level, entryId) => actions.current.createCommand(level, entryId)),
+        ...inGroupHandlers(view, {
+          state: () => stateRef.current,
+          paneSize: (tabId) => actions.current.paneSize(tabId),
+          fits: (tabId, edge) => actions.current.splitBlocked(tabId, edge) === undefined,
+          create: (what, beside) => actions.current.createBeside(what, beside),
+          report: setError
+        })
       })
     }
     const offUpdated = window.cockpit.on('commands.updated', (view) => {

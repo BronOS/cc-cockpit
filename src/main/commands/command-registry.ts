@@ -6,8 +6,8 @@
 // (Task 26) and run in that host. Main resolves the keys so the renderer, the palette and the
 // settings screen all see one table.
 import type { CommandInfo, CommandSource, CommandsView, KeyBindingRow } from '../../shared/ipc'
-import { normalizeChord, resolveKeys, type KeyPlatform } from '../../shared/keys'
-import { tabCommandId, tabCommandTitle } from '../../shared/tab-commands'
+import { chordWith, normalizeChord, resolveKeys, splitChord, type KeyPlatform, type ResolvedKeys } from '../../shared/keys'
+import { IN_GROUP_CORE_BASES, inGroupCommandId, tabCommandId, tabCommandTitle } from '../../shared/tab-commands'
 import { TOGGLE_FLAG_COMMAND } from '../../shared/tab-flag'
 import type { TabCommandEntry } from '../../shared/types'
 
@@ -99,6 +99,33 @@ export function tabCommandDefs(entries: TabCommandEntries): CommandDef[] {
   return [...defs('app', entries.app), ...defs('project', entries.project)]
 }
 
+/**
+ * The "… in Group" commands (design-split-pages.md §4 "New tab in Group"): one per core new-tab
+ * command and per menu entry that opens a tab (an overlay is never a pane, so an overlay entry gets
+ * none). No `key` here: the default is derived at resolve time from the base's resolved chord
+ * (CommandRegistry.resolve), so a rebound base moves it.
+ */
+export function inGroupDefs(entries: TabCommandEntries): Array<CommandDef & { base: string }> {
+  const titles: Record<(typeof IN_GROUP_CORE_BASES)[number], string> = {
+    'tab.newClaude': 'New Claude Tab in Group',
+    'tab.newShell': 'New Shell Tab in Group'
+  }
+  const out: Array<CommandDef & { base: string }> = IN_GROUP_CORE_BASES.map((base) => ({
+    id: inGroupCommandId(base),
+    title: titles[base],
+    source: 'core' as const,
+    base
+  }))
+  for (const level of ['app', 'project'] as const) {
+    for (const e of entries[level]) {
+      if (e.open === 'overlay') continue
+      const base = tabCommandId(level, e.id)
+      out.push({ id: inGroupCommandId(base), title: `${tabCommandTitle(e.label, e.open)} in Group`, source: 'tabCommand', base })
+    }
+  }
+  return out
+}
+
 export interface PluginCommandDef {
   /** The id the manifest declares; registered as `<pluginId>/<id>`. */
   id: string
@@ -138,9 +165,32 @@ export class CommandRegistry {
     private readonly pageTabKeys: (projectId: string) => readonly PageTabKeys[] = () => []
   ) {}
 
-  /** Everything this project's table holds: core, the menu entries, the plugins' commands. */
-  private defs(projectId: string): CommandDef[] {
-    return [...CORE_COMMANDS, ...tabCommandDefs(this.tabCommands(projectId)), ...(this.plugin.get(projectId)?.values() ?? [])]
+  /**
+   * Everything this project's table holds (core, the menu entries, their "in Group" commands, the
+   * plugins' commands), with the "in Group" defaults filled in, and the table resolved.
+   *
+   * `resolveKeys` runs twice (design-split-pages.md §4). Pass 1 resolves every other command with
+   * the overrides. Each derived default is then its base's resolved chord plus Alt, and none when
+   * the base has no chord, does not fire it (an unresolved conflict), already carries Alt, or when
+   * any command claims that chord in pass 1: a derived command never takes a chord from another one
+   * (two bases never hold one chord, so two derived defaults never meet either). Pass 2 resolves it
+   * all, so the person's override of a derived command wins like any override.
+   */
+  private resolve(projectId: string, overrides: Readonly<Record<string, string>>): { defs: CommandDef[]; resolved: ResolvedKeys } {
+    const entries = this.tabCommands(projectId)
+    const head = [...CORE_COMMANDS, ...tabCommandDefs(entries)]
+    const plugins = [...(this.plugin.get(projectId)?.values() ?? [])]
+    const first = resolveKeys(keyed([...head, ...plugins]), overrides, this.platform)
+    const claimed = new Set(first.keys.values())
+    const derived = inGroupDefs(entries).map(({ base, ...d }): CommandDef => {
+      const chord = first.keys.get(base)
+      if (chord === undefined || first.bindings.get(chord) !== base) return d
+      if (splitChord(chord)?.mods.includes('alt') !== false) return d
+      const key = chordWith(chord, 'alt')
+      return claimed.has(key) ? d : { ...d, key }
+    })
+    const defs = [...head, ...derived, ...plugins]
+    return { defs, resolved: resolveKeys(keyed(defs), overrides, this.platform) }
   }
 
   /**
@@ -193,8 +243,7 @@ export class CommandRegistry {
    * fires this command; a chord in an unresolved conflict is left off and listed in `conflicts`.
    */
   view(projectId: string): CommandsView {
-    const defs = this.defs(projectId)
-    const resolved = resolveKeys(keyed(defs), this.overrides(), this.platform)
+    const { defs, resolved } = this.resolve(projectId, this.overrides())
     const commands: CommandInfo[] = defs.map((d) => {
       const key = resolved.keys.get(d.id)
       const bound = key !== undefined && resolved.bindings.get(key) === d.id
@@ -203,13 +252,11 @@ export class CommandRegistry {
     return { commands, conflicts: resolved.conflicts }
   }
 
-  /** Is `id` a command of this project (core, a menu entry it lists, or a plugin command it has registered)? */
+  /** Is `id` a command of this project (core, a menu entry it lists or its "in Group" command, or a plugin command it has registered)? */
   has(projectId: string, id: string): boolean {
-    return (
-      CORE_COMMANDS.some((c) => c.id === id) ||
-      this.plugin.get(projectId)?.has(id) === true ||
-      tabCommandDefs(this.tabCommands(projectId)).some((c) => c.id === id)
-    )
+    if (CORE_COMMANDS.some((c) => c.id === id) || this.plugin.get(projectId)?.has(id) === true) return true
+    const entries = this.tabCommands(projectId)
+    return tabCommandDefs(entries).some((c) => c.id === id) || inGroupDefs(entries).some((c) => c.id === id)
   }
 
   /**
@@ -219,8 +266,7 @@ export class CommandRegistry {
    * replaces the stored ones, so the settings screen can judge a change before it stores it.
    */
   bindings(projectId: string, overrides: Readonly<Record<string, string>> = this.overrides()): KeyBindingRow[] {
-    const defs = this.defs(projectId)
-    const resolved = resolveKeys(keyed(defs), overrides, this.platform)
+    const { defs, resolved } = this.resolve(projectId, overrides)
     const titles = new Map(defs.map((d) => [d.id, d.title]))
     // chord -> the page tab kinds that declare it (written for macOS like every manifest chord).
     const pageKeys = new Map<string, string[]>()

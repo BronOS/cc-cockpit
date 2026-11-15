@@ -258,29 +258,29 @@ External review: sol / high
 - Modify: `src/renderer/tabs/TabsPane.tsx`, `src/renderer/commands/web-keys.ts` (only if the decision below needs it)
 - Modify: `test/unit/command-registry.test.ts`, `test/unit/tab-command-keys.test.ts`, `test/unit/web-keys.test.ts`, `test/e2e/editor-split.spec.ts`
 
-- [ ] `inGroupCommandId(baseId)` / `parseInGroupCommandId(id)` beside `tabCommandId` (`tab.inGroup.<base id>`; the entry
+- [x] `inGroupCommandId(baseId)` / `parseInGroupCommandId(id)` beside `tabCommandId` (`tab.inGroup.<base id>`; the entry
   pattern has no dot, so no id reads as both)
-- [ ] `CommandRegistry.defs` adds derived defs after core and entry ones: New Claude Tab in Group, New Shell Tab in Group,
+- [x] `CommandRegistry.defs` adds derived defs after core and entry ones: New Claude Tab in Group, New Shell Tab in Group,
   "New tab: <label> in Group" for each entry (none for an entry that opens as an overlay); `has`, `view`, `bindings`
   treat them as any command (own rows in Settings › Keybindings and the palette, rebindable, clearable)
-- [ ] `resolveKeys` twice: pass 1 resolves everything else with overrides; each derived default is its base's resolved
+- [x] `resolveKeys` twice: pass 1 resolves everything else with overrides; each derived default is its base's resolved
   chord plus Alt, none when the base has no chord, is in an unresolved conflict, already has Alt, or that chord is bound
   in pass 1; pass 2 resolves all; a rebound base moves the derived default at the next `view`; the person's override
   of a derived command wins
-- [ ] browser chords (decided by Oleg 2026-11-14): in a browser, `web-keys.ts` keeps New Claude Tab on Ctrl+Alt+T and
+- [x] browser chords (decided by Oleg 2026-11-14): in a browser, `web-keys.ts` keeps New Claude Tab on Ctrl+Alt+T and
   New Shell Tab on Ctrl+Alt+Shift+T; the derived "… in Group" commands get **no chord in a browser** (the clash rule,
   rebindable there; Split Right/Down still open the New tab menu). The desktop and the Mac remote window keep
   Cmd/Ctrl+Alt+T and Cmd/Ctrl+Alt+Shift+T for "… in Group". Pin it in `web-keys.test.ts`
-- [ ] renderer handlers (beside `tab.newClaude` and in `tabCommandHandlers`): `tabs.create` with `beside: { tabId:
+- [x] renderer handlers (beside `tab.newClaude` and in `tabCommandHandlers`): `tabs.create` with `beside: { tabId:
   target, edge }`; `right` when `paneSize(target)` is wider than tall, else `down`; the other edge when `splitFits`
   fails; neither, or the group full: the strip's error line, nothing opens; a plain tab forms a group; the new pane takes
   the focus (`addPicked`); keys off: nothing
-- [ ] write tests: derived ids and titles, none for an overlay entry; default = base + Alt; none when the base has Alt, has
+- [x] write tests: derived ids and titles, none for an overlay entry; default = base + Alt; none when the base has Alt, has
   no chord or the chord is taken; follows a rebound base; the derived override wins; the handler picks right or down by
   pane shape and refuses when neither fits
-- [ ] e2e: *New Claude Tab in Group* (Cmd+Alt+T, `nativeChord` from the frame) on a wide file pane opens Claude to its
+- [x] e2e: *New Claude Tab in Group* (Cmd+Alt+T, `nativeChord` from the frame) on a wide file pane opens Claude to its
   right, focused
-- [ ] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
+- [x] run tests - must pass before next task (`npm test`, `npm run typecheck`, `npm run lint`, `editor-split.spec.ts`)
 
 ### Task 7: Close all of a group asks about unsaved pages [model: sonnet]
 

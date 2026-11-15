@@ -5,6 +5,7 @@ import { chordOf, commandForEvent, registerHandlers, resetKeybindings, setComman
 import { alternativeOf, browserKeeps, webKeyTable, withAlt } from '../../src/renderer/commands/web-keys'
 import { holdsPage, isOwnView, markWebShell, resetShellKindForTest, setOwnView } from '../../src/renderer/shell-kind'
 import type { CommandsView } from '../../src/shared/ipc'
+import { CommandRegistry } from '../../src/main/commands/command-registry'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -183,5 +184,46 @@ describe('split view chords in a browser (D10)', () => {
     // A Linux host's table in a Linux browser: nothing kept.
     const linux = view({ 'pane.focusLeft': 'ctrl+alt+left', 'pane.splitRight': 'ctrl+shift+d', 'pane.zoom': 'ctrl+shift+enter' })
     expect(keysOf(webKeyTable(linux, false))).toEqual(keysOf(linux))
+  })
+})
+
+describe('New tab in Group in a browser (decided 2026-11-14, design-split-pages.md §4)', () => {
+  const registry = (platform: 'darwin' | 'linux', overrides: Record<string, string> = {}) =>
+    new CommandRegistry(platform, () => overrides).view('p')
+  const NC = 'tab.inGroup.tab.newClaude'
+  const NS = 'tab.inGroup.tab.newShell'
+
+  it('New Claude / Shell Tab keep Ctrl+Alt+T / Ctrl+Alt+Shift+T; the "in Group" commands get no chord', () => {
+    const linux = keysOf(webKeyTable(registry('linux'), false))
+    expect(linux['tab.newClaude']).toBe('ctrl+alt+t')
+    expect(linux['tab.newShell']).toBe('ctrl+alt+shift+t')
+    expect(linux[NC]).toBeUndefined()
+    expect(linux[NS]).toBeUndefined()
+    // A Mac host in a Mac browser: ⌥⌘T for New Claude Tab, nothing for in Group.
+    const mac = keysOf(webKeyTable(registry('darwin'), true))
+    expect(mac['tab.newClaude']).toBe('alt+meta+t')
+    expect(mac['tab.newShell']).toBe('alt+shift+meta+t')
+    expect(mac[NC]).toBeUndefined()
+    expect(mac[NS]).toBeUndefined()
+  })
+
+  it('the desktop table (and so the Mac remote window, which uses it) keeps Cmd/Ctrl+Alt+T for in Group', () => {
+    expect(keysOf(registry('linux'))[NC]).toBe('ctrl+alt+t')
+    expect(keysOf(registry('darwin'))[NS]).toBe('alt+shift+meta+t')
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 Chrome/130.0 cc-cockpit-desktop/0.17.0 (laptop)', platform: 'MacIntel' })
+    markWebShell()
+    setCommands(registry('darwin'))
+    expect(chordOf(NC)).toBe('alt+meta+t')
+    expect(chordOf('tab.newClaude')).toBe('meta+t')
+  })
+
+  it('rebindable there: a chord the person gives an in Group command is kept when nothing moved onto it', () => {
+    const v = keysOf(webKeyTable(registry('linux', { [NC]: 'Ctrl+Shift+K' }), false))
+    expect(v[NC]).toBe('ctrl+shift+k')
+    expect(v['tab.newClaude']).toBe('ctrl+alt+t')
+    // Where a rebound base leaves its derived default free, it keeps that too.
+    const moved = keysOf(webKeyTable(registry('linux', { 'tab.newClaude': 'Ctrl+K' }), false))
+    expect(moved['tab.newClaude']).toBe('ctrl+k')
+    expect(moved[NC]).toBe('ctrl+alt+k')
   })
 })

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { GroupsReply, TabInfo } from '../../src/shared/ipc'
+import type { CommandsView, GroupsReply, TabInfo } from '../../src/shared/ipc'
 import { paneView } from '../../src/renderer/state/groups-state'
 import { initialTabsState, tabsReducer, type TabsAction, type TabsState } from '../../src/renderer/state/tabs-store'
-import { activeTabHandlers, paneCommandHandlers, refusalText } from '../../src/renderer/tabs/pane-commands'
+import { activeTabHandlers, inGroupEdge, inGroupHandlers, paneCommandHandlers, refusalText, TOO_SMALL_TO_SPLIT } from '../../src/renderer/tabs/pane-commands'
 import { chordTarget } from '../../src/renderer/tabs/frame-focus'
 import { TOGGLE_FLAG_COMMAND } from '../../src/shared/tab-flag'
 import { groupTitle, handleWords, leftSegment, stripRuns } from '../../src/renderer/tabs/strip-groups'
-import { isPaneKind, type PaneNode, type PaneSplit, type PlaceIntent, type TabGroup } from '../../src/shared/tab-groups'
+import { GROUP_CAPS, isPaneKind, type PaneNode, type PaneSplit, type PlaceIntent, type TabGroup } from '../../src/shared/tab-groups'
 
 const tab = (id: string): TabInfo => ({ id, kind: 'shell', cwd: '/w', gen: 1 })
 const leaf = (t: string): PaneNode => ({ tab: t })
@@ -278,5 +278,96 @@ describe('strip groups', () => {
     expect(leftSegment({ left: 100, right: 300 }, 50)).toBe(true)
     expect(leftSegment({ left: 100, right: 300 }, 200)).toBe(false)
     expect(leftSegment({ left: 100, right: 300 }, 301)).toBe(true)
+  })
+})
+
+describe('New tab in Group (inGroupHandlers, design-split-pages.md §4)', () => {
+  const table: CommandsView = {
+    commands: [
+      { id: 'tab.newClaude', title: 'New Claude Tab', source: 'core' },
+      { id: 'tab.inGroup.tab.newClaude', title: 'New Claude Tab in Group', source: 'core' },
+      { id: 'tab.inGroup.tab.newShell', title: 'New Shell Tab in Group', source: 'core' },
+      { id: 'tab.inGroup.tab.newCommand.app.lg', title: 'New tab: lazygit in Group', source: 'tabCommand' },
+      { id: 'tab.inGroup.bogus', title: 'junk', source: 'core' }
+    ],
+    conflicts: []
+  }
+
+  /** Panes sized by tab; `fits` says which edges fit for which tab. */
+  function rig(
+    selected: string,
+    sizes: Record<string, { w: number; h: number }>,
+    fits: (tabId: string, edge: string) => boolean = () => true,
+    extra: TabsAction[] = []
+  ) {
+    const h = harness(selected, extra)
+    const created: Array<[unknown, unknown]> = []
+    const reports: string[] = []
+    const handlers = inGroupHandlers(table, {
+      state: h.state,
+      paneSize: (id) => sizes[id] ?? { w: 0, h: 0 },
+      fits,
+      create: (what, beside) => created.push([what, beside]),
+      report: (m) => reports.push(m)
+    })
+    return { handlers, created, reports }
+  }
+
+  it('has one handler per derived command whose base opens a tab, none for anything else', () => {
+    const r = rig('a', {})
+    expect(Object.keys(r.handlers)).toEqual(['tab.inGroup.tab.newClaude', 'tab.inGroup.tab.newShell', 'tab.inGroup.tab.newCommand.app.lg'])
+  })
+
+  it('opens beside the focused pane (the frame tab a chord names, else the active one): right when wider than tall, else down', () => {
+    const r = rig('b', { b: { w: 800, h: 400 }, c: { w: 400, h: 300 }, d: { w: 300, h: 400 } })
+    r.handlers['tab.inGroup.tab.newClaude']!()
+    r.handlers['tab.inGroup.tab.newShell']!({ tabId: 'd' })
+    r.handlers['tab.inGroup.tab.newCommand.app.lg']!({ tabId: 'c' })
+    expect(r.created).toEqual([
+      [{ kind: 'claude' }, { tabId: 'b', edge: 'right' }],
+      [{ kind: 'shell' }, { tabId: 'd', edge: 'down' }],
+      [{ kind: 'command', level: 'app', entryId: 'lg' }, { tabId: 'c', edge: 'right' }]
+    ])
+    expect(r.reports).toEqual([])
+  })
+
+  it('a square pane goes down: right only when strictly wider than tall', () => {
+    expect(inGroupEdge({ w: 500, h: 500 }, () => true)).toBe('down')
+    expect(inGroupEdge({ w: 501, h: 500 }, () => true)).toBe('right')
+  })
+
+  it('a plain tab forms a group beside it', () => {
+    const r = rig('a', { a: { w: 1200, h: 800 } })
+    r.handlers['tab.inGroup.tab.newClaude']!()
+    expect(r.created).toEqual([[{ kind: 'claude' }, { tabId: 'a', edge: 'right' }]])
+  })
+
+  it('tries the other edge when the first does not fit, and refuses when neither does', () => {
+    const r = rig('b', { b: { w: 800, h: 400 } }, (_id, edge) => edge === 'down')
+    r.handlers['tab.inGroup.tab.newClaude']!()
+    expect(r.created).toEqual([[{ kind: 'claude' }, { tabId: 'b', edge: 'down' }]])
+    const none = rig('b', { b: { w: 800, h: 400 } }, () => false)
+    none.handlers['tab.inGroup.tab.newClaude']!()
+    expect(none.created).toEqual([])
+    expect(none.reports).toEqual([TOO_SMALL_TO_SPLIT])
+  })
+
+  it('refuses when the group is full, opening nothing (main would open the tab plain)', () => {
+    const ids = Array.from({ length: GROUP_CAPS.maxPanes }, (_, i) => `p${i}`)
+    const full: TabGroup = { id: 'f', root: row('sf', ...ids.map(leaf)) }
+    const r = rig('b', { p0: { w: 800, h: 400 } }, () => true, [
+      { type: 'loaded', tabs: [...['a', 'b', 'c', 'd'], ...ids].map(tab) } as TabsAction,
+      { type: 'groups', snapshot: { seq: 2, order: ['a', 'b', 'c', 'd', ...ids], groups: [G, full] } } as TabsAction
+    ])
+    r.handlers['tab.inGroup.tab.newClaude']!({ tabId: 'p0' })
+    expect(r.created).toEqual([])
+    expect(r.reports).toEqual([refusalText('full')])
+  })
+
+  it('does nothing with the keys off', () => {
+    const r = rig('c', { c: { w: 800, h: 400 } }, () => true, [{ type: 'removed', tabId: 'c', gen: 1 } as TabsAction])
+    r.handlers['tab.inGroup.tab.newClaude']!()
+    r.handlers['tab.inGroup.tab.newClaude']!({ tabId: 'b' })
+    expect(r.created).toEqual([])
   })
 })

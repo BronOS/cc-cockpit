@@ -46,6 +46,34 @@ export function parseTabCommandId(id: string): { level: 'app' | 'project'; entry
   return { level, entryId }
 }
 
+const IN_GROUP_PREFIX = 'tab.inGroup.'
+
+/** The core new-tab commands that get an "in Group" command (design-split-pages.md §4 "New tab in Group"). */
+export const IN_GROUP_CORE_BASES = ['tab.newClaude', 'tab.newShell'] as const
+
+/**
+ * The "… in Group" command of a new-tab command (`tab.inGroup.<base id>`): New Claude Tab in Group
+ * is `tab.inGroup.tab.newClaude`, an entry's is `tab.inGroup.tab.newCommand.app.<entryId>`. A
+ * different prefix from `tab.newCommand.`, and an entry id has no dot, so no id reads as both an
+ * entry's command and a derived one (parseTabCommandId refuses every derived id).
+ */
+export function inGroupCommandId(baseId: string): string {
+  return `${IN_GROUP_PREFIX}${baseId}`
+}
+
+/**
+ * The new-tab command a derived "in Group" id was made from, or undefined for any other id. Only a
+ * base that can have one: New Claude Tab, New Shell Tab, an entry's command (shape only; whether
+ * the entry exists, and opens as a tab, is the table's: CommandRegistry lists derived commands for
+ * tab entries only, and main resolves the entry at create).
+ */
+export function parseInGroupCommandId(id: string): string | undefined {
+  if (!id.startsWith(IN_GROUP_PREFIX)) return undefined
+  const base = id.slice(IN_GROUP_PREFIX.length)
+  if ((IN_GROUP_CORE_BASES as readonly string[]).includes(base)) return base
+  return parseTabCommandId(base) ? base : undefined
+}
+
 /**
  * The title of an entry's command, in the keybinding list and the palette. An overlay entry says
  * so: "New tab:" would promise a tab it does not open. The command id stays `tab.newCommand.*`

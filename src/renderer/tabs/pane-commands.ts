@@ -1,10 +1,11 @@
 // The split view's commands (D10 chords and the palette; ids in main/commands/command-registry.ts),
 // as handlers over a small context, so the rules (what a chord does in a zoomed group, with the keys
 // off, at the group's edge) are unit-tested without a window. TabsPane gives the context.
-import type { GroupsReply } from '../../shared/ipc'
+import type { CommandsView, GroupsReply } from '../../shared/ipc'
+import { parseInGroupCommandId, parseTabCommandId } from '../../shared/tab-commands'
 import { TOGGLE_FLAG_COMMAND } from '../../shared/tab-flag'
 import type { CommandContext, CommandHandler } from '../commands/keybindings'
-import { GROUP_CAPS, neighbour, type GroupRefusalReason, type PaneEdge, type PlaceIntent } from '../../shared/tab-groups'
+import { GROUP_CAPS, groupOf, leavesOf, neighbour, type GroupRefusalReason, type PaneEdge, type PlaceIntent } from '../../shared/tab-groups'
 import type { PaneView } from '../state/groups-state'
 import type { TabsAction, TabsState } from '../state/tabs-store'
 import { equalizeSplits, nudgePane } from './pane-layout'
@@ -57,6 +58,83 @@ export function activeTabHandlers(ctx: ActiveTabContext): Record<string, Command
       if (id && !s.keysOff) act(id)
     }
   return { 'tab.close': onTab(ctx.close), [TOGGLE_FLAG_COMMAND]: onTab(ctx.toggleFlag) }
+}
+
+/** What a new-tab command opens, as `tabs.create` takes it (without `beside`). */
+export type NewTabKind = { kind: 'claude' } | { kind: 'shell' } | { kind: 'command'; level: 'app' | 'project'; entryId: string }
+
+/** The tab a new-tab command id opens: New Claude Tab, New Shell Tab, a menu entry's command; else undefined. */
+export function newTabOfCommand(id: string): NewTabKind | undefined {
+  if (id === 'tab.newClaude') return { kind: 'claude' }
+  if (id === 'tab.newShell') return { kind: 'shell' }
+  const entry = parseTabCommandId(id)
+  return entry ? { kind: 'command', level: entry.level, entryId: entry.entryId } : undefined
+}
+
+/** What New tab in Group acts through (TabsPane). */
+export interface InGroupContext {
+  state(): TabsState
+  /** The pane's rect in pixels as this view draws it (TabsPane's paneSize). */
+  paneSize(tabId: string): { w: number; h: number }
+  /** Whether splitting `tabId` on `edge` leaves both halves big enough here (splitFits, D5). */
+  fits(tabId: string, edge: 'right' | 'down'): boolean
+  /** Open the tab; with `beside`, placed there by main in the same step (Split Right / Down's menu path). */
+  create(what: NewTabKind, beside?: { tabId: string; edge: 'right' | 'down' }): void
+  /** Tell the person why nothing happened (the strip's error line). */
+  report(message: string): void
+}
+
+/**
+ * Where New tab in Group puts the new pane beside a pane of `size` (pixels): to the right when it is
+ * wider than tall, since cells are about twice as tall as wide and pixels are what the person sees;
+ * else below. The other edge when that one does not fit; undefined when neither does.
+ */
+export function inGroupEdge(size: { w: number; h: number }, fits: (edge: 'right' | 'down') => boolean): 'right' | 'down' | undefined {
+  const first = size.w > size.h ? 'right' : 'down'
+  const second = first === 'right' ? 'down' : 'right'
+  if (fits(first)) return first
+  return fits(second) ? second : undefined
+}
+
+export const TOO_SMALL_TO_SPLIT = 'Too small to split: each pane needs at least 20 columns and 5 rows.'
+
+/**
+ * The "… in Group" commands of the table (`tab.inGroup.<base>`, design-split-pages.md §4 "New tab in
+ * Group"): open the base's tab beside the focused pane (the frame's tab a chord names, else
+ * `activeId`) with no menu. A plain focused tab forms a new group. Refused on the strip's error line,
+ * with nothing opened, when the group is full or neither edge fits (main would otherwise open the
+ * tab plain). With the keys off (D18, D23 R1) nothing, like every command on the active tab. With no
+ * tab at all there is nothing to be beside, so the tab opens plain, as its base would.
+ * Rebuilt from each table like tabCommandHandlers, so a removed entry's derived command goes too.
+ */
+export function inGroupHandlers(view: CommandsView, ctx: InGroupContext): Record<string, CommandHandler> {
+  const out: Record<string, CommandHandler> = {}
+  for (const c of view.commands) {
+    const base = parseInGroupCommandId(c.id)
+    const what = base === undefined ? undefined : newTabOfCommand(base)
+    if (!what) continue
+    out[c.id] = (run?: CommandContext): void => {
+      const s = ctx.state()
+      if (s.keysOff) return
+      const target = run?.tabId ?? s.activeId
+      if (target === null) {
+        ctx.create(what)
+        return
+      }
+      const g = groupOf(s.groups, target)
+      if (g && leavesOf(g.root).length >= GROUP_CAPS.maxPanes) {
+        ctx.report(refusalText('full'))
+        return
+      }
+      const edge = inGroupEdge(ctx.paneSize(target), (e) => ctx.fits(target, e))
+      if (!edge) {
+        ctx.report(TOO_SMALL_TO_SPLIT)
+        return
+      }
+      ctx.create(what, { tabId: target, edge })
+    }
+  }
+  return out
 }
 
 const ARROWS: ReadonlyArray<[string, PaneEdge]> = [
