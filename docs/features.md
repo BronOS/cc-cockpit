@@ -364,7 +364,8 @@ behind it are in [design.md](design.md).
   a plugin's settings (never a secret field), `ccc panel show <plugin>/<panel>` reveals a panel, and `ccc guide types`
   prints the SDK types.
 - Per-plugin limits: a plugin may open 5 tabs a minute and send 30 texts a minute through `ctx.sessions`, and a room
-  member sends 20 room messages a minute (60 in one room). Each limit has a global value, set in Settings > General
+  member sends 20 room messages a minute (60 in one room); `roomsPerProject` (5 rooms open at once in a project, at
+  most 20) and `membersPerRoom` (20 members in one room, at most 50) are limits too. Each limit has a global value, set in Settings > General
   ("Plugin limits") for every plugin, and a per-plugin override in Settings > Plugins (the plugin's "Limits"): a
   plugin gets its override, else the global value, else the built-in default. The plugin's Limits view marks each
   value "global" (with the value) or "set for this plugin", and "Use global" drops the override; on the General page
@@ -420,7 +421,7 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   refused document answers like a missing one. UTF-8 text, 256 KiB each, 20 MiB per room (one total for all folders: a
   member that fills its own can keep a coordinator from writing `shared/`) and at most 1000 files and folders. The plugin
   reads and writes all of them and exports when it wants.
-- **Limits:** a plugin has at most 5 rooms in a project, a room 20 members; sending is capped per member and per room (see
+- **Limits:** a plugin has at most 5 rooms in a project, a room 20 members (defaults: `roomsPerProject` up to 20, `membersPerRoom` up to 50, set like the other plugin limits; lowering one removes nothing); sending is capped per member and per room (see
   the plugin limits above); a member may have 100 messages waiting and a room 1,000,000 characters of them, and at most 20
   invites wait. A room ends when its plugin ends it or is disabled, removed or revoked; room calls of a
   plugin that is off are refused. The log (`rooms/<id>/log.jsonl`, message text included) is capped at 20 MiB.

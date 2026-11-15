@@ -115,10 +115,10 @@ External review: auto
 - Modify: `src/sdk/types.ts`, `examples/plugin/sdk/types.ts` (copy), `src/cli/guide/api.md`, `src/cli/guide/cli.md`,
   `docs/features.md`, `docs/design-rooms.md`
 
-- [ ] SDK comments for `rooms.create`, `rooms.open`, `sessions.send` and `rooms.send` name Settings > General > Plugin
+- [x] SDK comments for `rooms.create`, `rooms.open`, `sessions.send` and `rooms.send` name Settings > General > Plugin
       limits and a plugin's Limits; the caps described as defaults the person can change
-- [ ] guide and features: the two new keys with defaults and ceilings; design-rooms §1 and §6 a short note
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; drift tests pass
+- [x] guide and features: the two new keys with defaults and ceilings; design-rooms §1 and §6 a short note
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; drift tests pass
 - [ ] run tests - must pass before next task
 
 ### Task 5: Verify acceptance criteria [model: sonnet]

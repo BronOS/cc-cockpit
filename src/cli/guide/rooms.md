@@ -112,7 +112,7 @@ says you are in no room. When the person closes a member's tab, every coordinato
 
 Limits: sends per minute are capped per member and per room (by default 20 and 60; the person can
 change them, and a refused send says which cap and its value), a member may have 100 messages waiting,
-and a room has at most 20 members.
+and a room has at most 20 members (`membersPerRoom`, at most 50; a plugin has at most 5 rooms open, `roomsPerProject`, at most 20; the person changes both like the send caps).
 
 ## For plugins: `ctx.rooms`
 
