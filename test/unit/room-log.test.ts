@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { appendFileSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -94,5 +94,22 @@ describe('RoomLog', () => {
     log.append('join')
     appendFileSync(path, '[1,2]\n{"at":"x","type":"join"}\n42\n')
     expect(log.read()).toHaveLength(1)
+  })
+
+  it('never follows a link: a linked log file or room folder refuses the append and leaves the target alone', () => {
+    const target = join(dir, 'target.txt')
+    writeFileSync(target, 'keep')
+    mkdirSync(join(dir, 'r1'))
+    symlinkSync(target, path)
+    const log = new RoomLog(path, undefined, clock)
+    expect(() => log.append('join')).toThrow()
+    expect(log.read()).toEqual([])
+    expect(readFileSync(target, 'utf8')).toBe('keep')
+    const outside = join(dir, 'outside')
+    mkdirSync(outside)
+    const linked = join(dir, 'r2')
+    symlinkSync(outside, linked)
+    expect(() => new RoomLog(join(linked, 'log.jsonl'), undefined, clock).append('join')).toThrow()
+    expect(readdirSync(outside)).toEqual([])
   })
 })

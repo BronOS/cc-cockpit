@@ -8,6 +8,9 @@
 // the name still naming that file) and written to a temp file next to the target, then renamed.
 // A refused doc answers exactly like a missing one ("blind work stays blind"): a member must not be
 // able to learn what another member's private folder holds by the error it gets.
+// Known limit (design §3): the 20 MiB cap is one total for the whole room, member folders included, so a member can
+// fill the room until a coordinator cannot write `shared/`, and can estimate what others hold privately from where
+// `limit` starts. Per-area quotas would fix both and are not in v1.
 // Pure Node, no Electron.
 import { randomBytes } from 'node:crypto'
 import { constants, type Stats } from 'node:fs'
@@ -25,6 +28,8 @@ export const MAX_DOC_BYTES = 256 * 1024
 export const MAX_ROOM_DOCS_BYTES = 20 * 1024 * 1024
 /** Parts below an area's root (`shared/` or `members/<name>/`), the file's own name included. */
 export const MAX_DOC_DEPTH = 4
+/** Per room, files and folders together: logical bytes alone let empty docs and folders pile up, and every put walks them all. */
+export const MAX_ROOM_DOC_ENTRIES = 1000
 /** The temp-file marker: a part containing it is refused, so a doc can never be confused with a write in flight. */
 const TMP_MARK = '.tmp-'
 
@@ -157,7 +162,7 @@ export class RoomDocs {
       if (!read.ok) throw new Refused(read.problem)
       let text: string
       try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(read.data)
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.data)
       } catch {
         throw new Refused('not UTF-8')
       }
@@ -175,10 +180,14 @@ export class RoomDocs {
     if (!mayWrite(caller, p)) throw this.refusal(new Refused('not allowed'), roomId, caller, path, 'put')
     // Text checks only after access: a refused caller learns nothing more than "no such doc".
     if (typeof text !== 'string' || !isDocText(text)) {
+      this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op: 'put', reason: 'bad text' })
       throw new RoomError('invalid', 'a doc must be UTF-8 text (no NUL, no lone surrogate)')
     }
     const data = Buffer.from(text, 'utf8')
-    if (data.length > MAX_DOC_BYTES) throw new RoomError('limit', `a doc may be at most ${MAX_DOC_BYTES} bytes`)
+    if (data.length > MAX_DOC_BYTES) {
+      this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op: 'put', reason: 'too large' })
+      throw new RoomError('limit', `a doc may be at most ${MAX_DOC_BYTES} bytes`)
+    }
     const run = (this.writes.get(roomId) ?? Promise.resolve()).then(() => this.write(roomId, caller, p, path, data))
     // The chain must survive a failed write, and is dropped once it is idle.
     const tail = run.catch(() => {})
@@ -194,16 +203,24 @@ export class RoomDocs {
       const docs = await this.docsDir(roomId, true)
       if (docs === null) throw new Refused('missing')
       const dirs = dirParts(p)
-      const parent = await this.walkDirs(docs, dirs, true)
-      if (parent === null) throw new Refused('missing')
-      const target = join(parent, last(p.parts))
-      const old = await lstatOrNull(target)
+      // Totals first (and leftover temp files swept), so nothing is made on disk for a put that will be refused.
+      const store = await this.storeStats(docs)
+      let parent = await this.walkDirs(docs, dirs, false)
+      const name = last(p.parts)
+      const old = parent === null ? null : await lstatOrNull(join(parent, name))
       // A link or a folder where the doc goes is refused, never replaced: a link in the store means someone planted it.
       if (old !== null && !old.isFile()) throw new Refused(old.isSymbolicLink() ? 'symlink' : 'not-file')
-      const total = await this.storeBytes(docs)
-      if (total - (old?.size ?? 0) + data.length > MAX_ROOM_DOCS_BYTES) {
+      if (old === null && store.entries >= MAX_ROOM_DOC_ENTRIES) {
+        throw new RoomError('limit', `a room's docs may be at most ${MAX_ROOM_DOC_ENTRIES} files and folders together`)
+      }
+      if (store.bytes - (old?.size ?? 0) + data.length > MAX_ROOM_DOCS_BYTES) {
         throw new RoomError('limit', `a room's docs may be at most ${MAX_ROOM_DOCS_BYTES} bytes together`)
       }
+      parent ??= await this.walkDirs(docs, dirs, true)
+      if (parent === null) throw new Refused('missing')
+      const target = join(parent, name)
+      // No ancestor swapped for a link since the walk, before anything is created (and again after the write).
+      if ((await realpath(parent)) !== parent) throw new Refused('changed')
       const tmp = `${target}${TMP_MARK}${this.random(6).toString('hex')}`
       const fh = await open(tmp, WRITE_FLAGS, 0o600)
       try {
@@ -244,10 +261,10 @@ export class RoomDocs {
     const reason = err instanceof Refused ? err.message : err instanceof RoomError ? err.code : 'error'
     this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op, reason })
     if (err instanceof Refused) return new RoomError('not-found', NO_DOC)
-    if (!(err instanceof RoomError)) {
-      this.warn(`rooms: doc ${op} ${path} in ${roomId} failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    return err
+    if (err instanceof RoomError) return err
+    // An fs error carries the data dir's absolute path: log it, answer with words that name nothing.
+    this.warn(`rooms: doc ${op} ${path} in ${roomId} failed: ${err instanceof Error ? err.message : String(err)}`)
+    return new RoomError('error', `could not ${op === 'get' ? 'read' : 'write'} the doc`)
   }
 
   /**
@@ -307,21 +324,35 @@ export class RoomDocs {
     }
   }
 
-  /** Bytes of every regular file under the store (temp leftovers too: they take the space as well). */
-  private async storeBytes(dir: string, depth = 0): Promise<number> {
-    let total = 0
+  /**
+   * Bytes of every regular file under the store and the count of files and folders. A `.tmp-` file is a leftover of a
+   * write that never finished (writes are serialized per room, so none is in flight when this runs inside the chain):
+   * it is removed, not counted.
+   */
+  private async storeStats(dir: string, depth = 0): Promise<{ bytes: number; entries: number }> {
+    const out = { bytes: 0, entries: 0 }
     let entries
     try {
       entries = await readdir(dir, { withFileTypes: true })
     } catch {
-      return 0
+      return out
     }
     for (const e of entries) {
       const at = join(dir, e.name)
-      if (e.isDirectory() && depth < MAX_DOC_DEPTH + 2) total += await this.storeBytes(at, depth + 1)
-      else if (e.isFile()) total += (await lstatOrNull(at))?.size ?? 0
+      if (e.isDirectory() && depth < MAX_DOC_DEPTH + 2) {
+        const sub = await this.storeStats(at, depth + 1)
+        out.bytes += sub.bytes
+        out.entries += sub.entries + 1
+      } else if (e.isFile()) {
+        if (e.name.includes(TMP_MARK)) {
+          await unlink(at).catch(() => {})
+          continue
+        }
+        out.bytes += (await lstatOrNull(at))?.size ?? 0
+        out.entries++
+      }
     }
-    return total
+    return out
   }
 
   private logEvent(roomId: string, type: RoomLogType, fields: Record<string, unknown>): void {

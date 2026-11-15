@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import {
   MAX_DOC_BYTES,
   MAX_DOC_DEPTH,
   MAX_ROOM_DOCS_BYTES,
+  MAX_ROOM_DOC_ENTRIES,
   RoomDocs,
   parseDocPath,
   type RoomDocCaller
@@ -199,6 +200,7 @@ describe('RoomDocs paths and links', () => {
     writeFileSync(join(outside, 'x.md'), 'outside')
     const levels: Array<{ link: string; path: string }> = [
       { link: store('shared'), path: 'shared/x.md' },
+      { link: store('members'), path: 'members/alice/x.md' },
       { link: store('members', 'alice'), path: 'members/alice/x.md' },
       { link: store('shared', 'sub'), path: 'shared/sub/x.md' }
     ]
@@ -218,9 +220,31 @@ describe('RoomDocs paths and links', () => {
     symlinkSync(outside, join(dir, ROOM))
     expect(await failure(docs.put(ROOM, plugin, 'shared/x.md', 'in'))).toEqual(NOT_FOUND)
     expect(readFileSync(join(outside, 'x.md'), 'utf8')).toBe('outside')
-    // The test's own log follows the linked room dir (log.jsonl lands outside); the registry never has such a room
-    // (its load skips a linked room dir), so only the docs store's writes matter here: none.
-    expect(readdirSync(outside).filter((n) => n !== 'log.jsonl')).toEqual(['x.md'])
+    // The room log refuses a linked room folder too, so nothing at all landed outside.
+    expect(readdirSync(outside)).toEqual(['x.md'])
+  })
+
+  it('refuses an ancestor swapped for a link after the walk, creating nothing outside', async () => {
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    await docs.put(ROOM, plugin, 'shared/sub/seed.md', 'seed')
+    // The temp-name callback runs between the walk and the open: swap the folder there.
+    docs = new RoomDocs({
+      dir,
+      logOf: (id) => new RoomLog(logPath(id)),
+      log: (m) => warnings.push(m),
+      random: () => {
+        renameSync(store('shared', 'sub'), store('shared', 'sub-moved'))
+        symlinkSync(outside, store('shared', 'sub'))
+        return Buffer.from('abcdef', 'hex')
+      }
+    })
+    expect(await failure(docs.put(ROOM, plugin, 'shared/sub/x.md', 'in'))).toEqual(NOT_FOUND)
+    expect(readdirSync(outside)).toEqual([])
+  })
+
+  it('answers not-found for a list of a bad room id', async () => {
+    expect((await failure(docs.list('../x', plugin)))?.code).toBe('not-found')
   })
 
   it('refuses a folder where a doc goes and a doc where a folder goes', async () => {
@@ -267,6 +291,41 @@ describe('RoomDocs limits and text', () => {
     expect(await failure(docs.get(ROOM, plugin, 'shared/bin.md'))).toEqual(NOT_FOUND)
   })
 
+  it('keeps a leading BOM and logs refusals for bad text and a too large doc', async () => {
+    await docs.put(ROOM, plugin, 'shared/bom.md', '\ufeffhi')
+    expect(await docs.get(ROOM, plugin, 'shared/bom.md')).toBe('\ufeffhi')
+    await failure(docs.put(ROOM, plugin, 'shared/bad.md', 'nul \0'))
+    await failure(docs.put(ROOM, plugin, 'shared/big.md', 'a'.repeat(MAX_DOC_BYTES + 1)))
+    const reasons = logEntries().filter((e) => e.type === 'doc-refused').map((e) => e.reason)
+    expect(reasons).toEqual(['bad text', 'too large'])
+  })
+
+  it('caps the files and folders in a room, still allowing a replace', async () => {
+    mkdirSync(store('shared', 'fill'), { recursive: true })
+    for (let i = 0; i < MAX_ROOM_DOC_ENTRIES - 1; i++) writeFileSync(store('shared', 'fill', `f${i}.md`), '')
+    expect((await failure(docs.put(ROOM, plugin, 'shared/new.md', 'x')))?.code).toBe('limit')
+    expect(existsSync(store('shared', 'new.md'))).toBe(false)
+    await docs.put(ROOM, plugin, 'shared/fill/f0.md', 'replaced')
+  })
+
+  it('removes temp files a killed write left behind, so they stop counting', async () => {
+    mkdirSync(store('shared'), { recursive: true })
+    writeFileSync(store('shared', 'a.md.tmp-abcdef123456'), 'x'.repeat(1000))
+    await docs.put(ROOM, plugin, 'shared/b.md', 'b')
+    expect(readdirSync(store('shared'))).toEqual(['b.md'])
+  })
+
+  it('answers an fs failure with words that name no path', async () => {
+    mkdirSync(store('shared'), { recursive: true })
+    // A folder the process cannot write to (skipped when running as root, which ignores modes).
+    if (process.getuid?.() === 0) return
+    chmodSync(store('shared'), 0o500)
+    const err = await failure(docs.put(ROOM, plugin, 'shared/x.md', 'x'))
+    chmodSync(store('shared'), 0o700)
+    expect(err).toEqual({ code: 'error', message: 'could not write the doc' })
+    expect(warnings.some((w) => w.includes('failed'))).toBe(true)
+  })
+
   it('checks the text only after access, so a refused caller learns only "no such doc"', async () => {
     expect(await failure(docs.put(ROOM, alice, 'shared/x.md', 'a'.repeat(MAX_DOC_BYTES + 1)))).toEqual(NOT_FOUND)
     expect(await failure(docs.put(ROOM, alice, 'shared/x.md', 'nul \0'))).toEqual(NOT_FOUND)
@@ -302,7 +361,7 @@ describe('RoomDocs concurrent writes', () => {
 
   it('a failed write does not stop the ones after it', async () => {
     const a = docs.put(ROOM, plugin, 'shared/a.md', 'a')
-    // A full room fails inside the chain (the size check runs there), unlike an oversized doc refused up front.
+    // A write that fails inside the chain (a folder where the doc goes), unlike an oversized doc refused up front.
     mkdirSync(store('shared', 'fill'), { recursive: true })
     const bad = failure(docs.put(ROOM, plugin, 'shared/fill', 'a folder is there'))
     const c = docs.put(ROOM, plugin, 'shared/c.md', 'c')

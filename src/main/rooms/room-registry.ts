@@ -92,7 +92,7 @@ export interface RoomInvite {
 /** Why a member left, as the log says it (design-rooms.md §4). */
 export type LeaveWhy = 'left' | 'removed' | 'closed'
 
-export type RoomErrorCode = 'not-found' | 'invalid' | 'limit' | 'conflict' | 'ended'
+export type RoomErrorCode = 'not-found' | 'invalid' | 'limit' | 'conflict' | 'ended' | 'error'
 
 /** A refusal with a stable code; `not-found` is also the answer for another plugin's room (no way to probe ids). */
 export class RoomError extends Error {
