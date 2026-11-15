@@ -33,12 +33,20 @@ describe('plugins/reviewer build', () => {
 })
 
 describe('plugins/editor build', () => {
-  it('dist/pages/file.bundle.js is what a fresh build of src/page produces, with no absolute path', () => {
+  // One build writes both: the page bundle and the outside-path rule emitted from src/shared (design-download.md
+  // §1.2), which the editor host requires; a stale rule would let the editor and `ccc download` disagree.
+  it.each(['pages/file.bundle.js', 'lib/outside-paths.js'])('dist/%s is what a fresh build produces, with no absolute path', (rel) => {
     execFileSync(process.execPath, [join(REPO, 'scripts/build-editor.mjs'), tmp], { cwd: '/', stdio: 'pipe', timeout: 55_000 })
-    const fresh = readFileSync(join(tmp, 'file.bundle.js'))
-    expect(fresh.equals(readFileSync(join(EDITOR, 'dist/pages/file.bundle.js'))), 'stale plugins/editor/dist/pages/file.bundle.js: run `npm run build:editor`').toBe(true)
+    const fresh = readFileSync(join(tmp, rel))
+    expect(fresh.equals(readFileSync(join(EDITOR, 'dist', rel))), `stale plugins/editor/dist/${rel}: run \`npm run build:editor\``).toBe(true)
     expect(fresh.toString('utf8')).not.toContain(REPO)
   }, 60_000)
+
+  it('the editor host requires the emitted rule and keeps no list of its own', () => {
+    const files = readFileSync(join(EDITOR, 'dist/lib/files.js'), 'utf8')
+    expect(files).toContain("require('./outside-paths')")
+    expect(files).not.toMatch(/REFUSED_OUTSIDE_|ALLOWED_HIDDEN_HOME\s*=/)
+  })
 
   it('the file tab page loads the SDK and its bundle by relative URLs only (web access serves it under a prefix)', () => {
     const html = readFileSync(join(EDITOR, 'dist/pages/file.html'), 'utf8')
