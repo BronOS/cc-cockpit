@@ -10,6 +10,19 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { createSession, chunkText, CHUNK_CHARS, NOTICE_MS, LOST_NOT_TEXT, DIRTY_CHECK_MS } from '../src/page/session.mjs'
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 const require = createRequire(import.meta.url)
 const files = require('../dist/lib/files.js')
 
@@ -471,7 +484,7 @@ test('a missing file opens as a new one: clean until typed in, created by its fi
 // ---- against the real host line ----
 
 function project() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edpage-')))
+  const root = fs.realpathSync(tempDir('edpage-'))
   fs.writeFileSync(path.join(root, 'a.txt'), 'one\r\ntwo\r\n')
   return root
 }

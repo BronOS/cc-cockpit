@@ -7,9 +7,22 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const tree = require('../dist/lib/tree')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 // A temp project (a git repo when `git` is true), and an exec that runs argv there like ctx.exec.
 function project({ git = true } = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'files-')))
+  const root = fs.realpathSync(tempDir('files-'))
   const run = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' })
   const write = (rel, text = 'x\n') => {
     fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true })
@@ -86,7 +99,7 @@ test('listDir: outside git nothing is ignored', async () => {
 
 test('listDir: links are marked, a folder link leaving the project is blocked', async () => {
   const p = project()
-  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'out-')))
+  const outside = fs.realpathSync(tempDir('out-'))
   p.write('real/f')
   fs.symlinkSync(path.join(p.root, 'real'), path.join(p.root, 'inner'))
   fs.symlinkSync(outside, path.join(p.root, 'outer'))

@@ -6,6 +6,19 @@ const os = require('node:os')
 const path = require('node:path')
 const { execFile } = require('node:child_process')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 // The host against a fake ctx over a temp folder: only what the per-page replies need. `posts`
 // records every ctx.panels.post (panel, message, options); `listeners` holds the panel's onMessage.
 function fakeCtx(root) {
@@ -44,7 +57,7 @@ function load() {
 }
 
 test('a search answers only the page that asked; the error goes to it too', async () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'files-host-')))
+  const root = fs.realpathSync(tempDir('files-host-'))
   fs.writeFileSync(path.join(root, 'needle.txt'), 'x\n')
   const host = load()
   const { ctx, posts, listeners } = fakeCtx(root)
@@ -65,7 +78,7 @@ test('a search answers only the page that asked; the error goes to it too', asyn
 })
 
 test('tree state stays a broadcast, and an old caller with no second argument still works', async () => {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'files-host-')))
+  const root = fs.realpathSync(tempDir('files-host-'))
   fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
   const host = load()
   const { ctx, posts, listeners } = fakeCtx(root)

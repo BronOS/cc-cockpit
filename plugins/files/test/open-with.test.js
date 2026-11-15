@@ -7,6 +7,19 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const ow = require('../dist/lib/open-with')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 test('parseExtensions: separators, dots, case, multi-part, junk dropped', () => {
   assert.deepEqual(ow.parseExtensions('pdf'), ['pdf'])
   assert.deepEqual(ow.parseExtensions(' .JSON, jsonl;  *.Tar.GZ '), ['json', 'jsonl', 'tar.gz'])
@@ -65,7 +78,7 @@ test('buildArgv: {file} as one element, ./ before a leading dash, the wait wrapp
 })
 
 test('injection: a file named like a command substitution, through sh -c and the wrapper, runs nothing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ow-'))
+  const dir = tempDir('ow-')
   const name = '$(touch pwned)`touch pwned2`;touch pwned3.md'
   fs.writeFileSync(path.join(dir, name), 'hello\n')
   for (const waitForKey of [false, true]) {

@@ -5,9 +5,26 @@
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const test = require('node:test')
+
+/**
+ * Every temp folder made here goes after the last test of the file that required this one (the
+ * hook registers in that file's run): /tmp is often RAM, and runs add up.
+ */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
 
 function tempConfig() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-usage-test-'))
+  const dir = tempDir('cc-usage-test-')
   fs.mkdirSync(path.join(dir, 'projects'), { recursive: true })
   return dir
 }

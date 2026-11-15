@@ -348,7 +348,8 @@ External review: sol / high
 - [x] edge cases: 8 page panes in one group (all live while shown, trimmed to 6 when hidden), a `'later'` page tab on
   relaunch (plain tab at the strip's end, group dissolved), a plugin `beside` naming a page tab (placed, never focused)
 - [x] `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:plugins`, `npm run build:editor` (bundle unchanged)
-- [x] `npm run test:e2e`
+- [x] `npm run test:e2e` (window-bounds and tab-command-overlays fail under Hyprland tiling at scale 1.875,
+  environment only)
 
 ### Task 11: [Final] Update documentation [model: sonnet]
 - [ ] `docs/features.md`: Split view (page tabs as panes, file beside Claude, Close all asks about unsaved files, Ask

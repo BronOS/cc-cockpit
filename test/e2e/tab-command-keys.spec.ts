@@ -111,12 +111,21 @@ test('a chord bound to a new-tab menu entry opens its tab, shows in the [+] menu
   await page.keyboard.press('ControlOrMeta+Shift+P')
   const palette = page.getByRole('dialog', { name: 'Command palette' })
   await palette.getByRole('combobox', { name: 'Command' }).fill('New tab:')
-  // Each entry and its derived "… in Group" command (design-split-pages.md §4).
+  // Each entry and its derived "… in Group" command (design-split-pages.md §4), named: a count alone
+  // would pass with an entry gone and some other row in its place.
   await expect(palette.getByRole('option')).toHaveCount(4)
+  expect((await palette.getByRole('option').locator('span').allTextContents()).sort()).toEqual([
+    'New tab: App keyed',
+    'New tab: App keyed in Group',
+    'New tab: Proj keyed',
+    'New tab: Proj keyed in Group'
+  ])
   await page.keyboard.press('Escape')
   await expect(palette).toHaveCount(0)
 
-  // Remove the entry: its row leaves the keybinding list (the window got the new key table) ...
+  // Remove the entry: its row and its "in Group" row leave the keybinding list (the window got the
+  // new key table) ...
+  const projInGroupRow = settings.locator('[data-command^="tab.inGroup.tab.newCommand.project."]')
   await page.keyboard.press('ControlOrMeta+,')
   await settings.getByRole('button', { name: 'This Project' }).click()
   await settings.getByRole('button', { name: 'Remove Proj keyed' }).click()
@@ -125,6 +134,7 @@ test('a chord bound to a new-tab menu entry opens its tab, shows in the [+] menu
   await settings.getByLabel('Filter commands').fill('New tab:')
   await expect(appRow).toHaveCount(1)
   await expect(projRow).toHaveCount(0)
+  await expect(projInGroupRow).toHaveCount(0)
   await page.keyboard.press('Escape')
   await expect(settings).toBeHidden()
 

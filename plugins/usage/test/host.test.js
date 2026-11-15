@@ -7,6 +7,19 @@ const path = require('node:path')
 const host = require('../dist/host')
 const f = require('./fixtures')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** ctx.appStorage as main keeps it: one store shared by every host. */
@@ -82,7 +95,7 @@ const lastPost = (calls) => calls.filter((c) => c[0] === 'post').at(-1)[2]
 
 function world() {
   const config = f.tempConfig()
-  const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-usage-appdata-'))
+  const appDataDir = tempDir('cc-usage-appdata-')
   const appStorage = fakeAppStorage()
   const now = Date.now()
   f.append(f.transcriptPath(config, '-work-alpha', 's1'), f.userPrompt('Ship it', { sessionId: 's1' }) + f.assistant({ id: 'm1', req: 'r1', ts: now, u: { input_tokens: 1e6, output_tokens: 0, cache_read_input_tokens: 0 } }))

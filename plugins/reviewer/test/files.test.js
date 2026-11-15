@@ -7,9 +7,22 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const files = require('../dist/lib/files')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 // A real git repo in a temp dir, and an exec that runs argv there (like ctx.exec, no shell).
 function repo() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rev-')))
+  const root = fs.realpathSync(tempDir('rev-'))
   const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' })
   git('init', '-q')
   git('config', 'user.email', 't@t')
@@ -77,7 +90,7 @@ test('readSides: binary, too big and symlink escapes', async () => {
 })
 
 test('readSides: no git, and a project inside a bigger repo', async () => {
-  const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rev-plain-')))
+  const plain = fs.realpathSync(tempDir('rev-plain-'))
   fs.writeFileSync(path.join(plain, 'x.txt'), 'x\n')
   const exec = async (argv) => {
     try {
@@ -153,7 +166,7 @@ test('readPreview: bytes and mime; caps, folders, missing files and escapes', ()
   assert.throws(() => files.readPreview(root, 'dir.png'), (e) => e.fallback === true)
   assert.throws(() => files.readPreview(root, 'src/a.js'), /has no preview/)
   assert.throws(() => files.readPreview(root, '../x.png'), /leaves the project/)
-  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rev-out-')))
+  const outside = fs.realpathSync(tempDir('rev-out-'))
   fs.writeFileSync(path.join(outside, 'o.png'), 'x')
   fs.symlinkSync(path.join(outside, 'o.png'), path.join(root, 'link.png'))
   assert.throws(() => files.readPreview(root, 'link.png'), /through a symlink/)
@@ -171,7 +184,7 @@ test('previewGit: a PDF not in the last commit is added; a committed one is not;
   // Staged but not committed: still new.
   git('add', 'new.pdf')
   assert.deepEqual(await files.previewGit(exec, 'new.pdf'), { head, added: true })
-  const plain = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rev-plain-')))
+  const plain = fs.realpathSync(tempDir('rev-plain-'))
   const execPlain = async () => ({ code: 128, stdout: '', stderr: 'not a git repository' })
   assert.deepEqual(await files.previewGit(execPlain, 'x.pdf'), { head: null, added: false })
   fs.rmSync(plain, { recursive: true })

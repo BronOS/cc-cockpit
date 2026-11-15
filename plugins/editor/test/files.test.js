@@ -7,11 +7,24 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const files = require('../dist/lib/files.js')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex')
 
-/** A temp project folder; with the test's `t`, removed after it. */
+/** A temp project folder; with the test's `t`, removed after it, else after the last test. */
 function project(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-files-'))
+  const root = tempDir('cc-editor-files-')
   if (t) t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   return root
 }
@@ -50,7 +63,7 @@ test('read gives the text, its hash and an editable file', () => {
 
 test('paths: escapes, absolute paths and links out of the project are refused', () => {
   const root = project()
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-out-'))
+  const outside = tempDir('cc-editor-out-')
   fs.writeFileSync(path.join(outside, 'secret'), 'x')
   fs.symlinkSync(path.join(outside, 'secret'), path.join(root, 'link'))
   fs.symlinkSync(path.join(root, 'missing'), path.join(root, 'dangling'))
@@ -516,7 +529,7 @@ test('a FIFO and a folder are not opened as files', (t) => {
  * `{ out, home, lib }`: `lib` is a library folder outside any project (a node_modules package).
  */
 function outsideTree(t) {
-  const out = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-outside-')))
+  const out = fs.realpathSync(tempDir('cc-editor-outside-'))
   const savedHome = process.env.HOME
   t.after(() => {
     if (savedHome === undefined) delete process.env.HOME
@@ -619,7 +632,7 @@ test('a file without write permission is read-only, not replaced by rename', { s
 
 test('a parent folder swapped for a link while the file opens is refused', () => {
   const root = project()
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-editor-out-'))
+  const outside = tempDir('cc-editor-out-')
   fs.writeFileSync(path.join(outside, 'a.txt'), 'secret\n')
   fs.mkdirSync(path.join(root, 'sub'))
   fs.writeFileSync(path.join(root, 'sub', 'a.txt'), 'mine\n')

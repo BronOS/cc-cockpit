@@ -10,6 +10,19 @@ const path = require('node:path')
 const cp = require('node:child_process')
 const search = require('../dist/lib/search.js')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 const hasRg = cp.spawnSync('rg', ['--version']).status === 0
 
 /** ctx.processes.spawn's shape over node's spawn (argv only, never a shell). */
@@ -56,7 +69,7 @@ function fakeSpawn() {
 }
 
 function project() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-')))
+  const root = fs.realpathSync(tempDir('edsearch-'))
   fs.mkdirSync(path.join(root, 'src'))
   fs.writeFileSync(path.join(root, 'src/a.ts'), 'const needle = 1\nconst other = 2 // Needle again\n')
   fs.writeFileSync(path.join(root, 'b.md'), 'run with --pre=evil here\nand -f too\n')
@@ -376,8 +389,8 @@ test('serveSearch: answers by req, a new search kills the old one and only the n
 })
 
 test('serveSearch runs rg by its absolute path from absolute PATH entries only: a project\'s own rg is never run', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-path-'))
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-bin-'))
+  const root = tempDir('edsearch-path-')
+  const bin = tempDir('edsearch-bin-')
   const savedPath = process.env.PATH
   t.after(() => {
     process.env.PATH = savedPath
@@ -441,7 +454,7 @@ test('real rg: a query that looks like an option stays a pattern; ignore rules h
 
 test('real rg: a symlink to a folder or file outside the project is neither listed nor searched', { skip: !hasRg && 'rg not installed' }, async () => {
   const root = project()
-  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edsearch-out-')))
+  const outside = fs.realpathSync(tempDir('edsearch-out-'))
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'needle outside\n')
   fs.symlinkSync(outside, path.join(root, 'linkdir'))
   fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))

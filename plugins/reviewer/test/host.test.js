@@ -8,9 +8,22 @@ const { execFileSync } = require('node:child_process')
 const host = require('../dist/host.js')
 const review = require('../dist/lib/review')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 // A project folder with one changed file, and a fake ctx around it.
 function setup({ editorAvailable }) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'revhost-')))
+  const root = fs.realpathSync(tempDir('revhost-'))
   const git = (...a) => execFileSync('git', a, { cwd: root, stdio: 'pipe' })
   git('init', '-q')
   git('config', 'user.email', 't@t')
@@ -1464,7 +1477,7 @@ test("addNote is refused while the file's review is open, and for a bad path or 
 
 test('addNote refuses a path that leaves the project through a symlink, and a full draft', async () => {
   const { f, store, svc } = notesSetup()
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'revout-'))
+  const outside = tempDir('revout-')
   fs.symlinkSync(outside, path.join(f.ctx.projectDir, 'link'))
   await assert.rejects(svc.addNote('link/x.js', { from: 1, text: 'x' }), /through a symlink/)
   await assert.rejects(svc.notes('link/x.js'), /through a symlink/)

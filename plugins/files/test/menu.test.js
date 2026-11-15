@@ -9,9 +9,22 @@ const os = require('node:os')
 const path = require('node:path')
 const ops = require('../dist/lib/ops')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 function project() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'files-menu-')))
-  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'files-out-')))
+  const root = fs.realpathSync(tempDir('files-menu-'))
+  const outside = fs.realpathSync(tempDir('files-out-'))
   fs.mkdirSync(path.join(root, 'src'))
   fs.writeFileSync(path.join(root, 'src', 'a.js'), 'a\n')
   fs.writeFileSync(path.join(root, 'notes.txt'), 'n\n')

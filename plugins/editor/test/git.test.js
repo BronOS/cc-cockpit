@@ -11,6 +11,19 @@ const path = require('node:path')
 const cp = require('node:child_process')
 const git = require('../dist/lib/git.js')
 
+/** Every temp folder of this file goes after its last test: /tmp is often RAM, and runs add up. */
+const made = []
+test.after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+/** A new temp folder named `prefix` plus a random suffix, removed after the last test. */
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+
 const hasGit = cp.spawnSync('git', ['--version']).status === 0
 
 /** ctx.processes.spawn's shape over node's spawn (argv only, never a shell). */
@@ -59,7 +72,7 @@ const GIT_ENV = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null'
 const run = (cwd, ...args) => cp.execFileSync('git', args, { cwd, env: { ...process.env, ...GIT_ENV }, stdio: 'pipe' })
 
 function tmp() {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'edgit-')))
+  return fs.realpathSync(tempDir('edgit-'))
 }
 
 /** A repository with one commit of `files` ({ rel: text }). */

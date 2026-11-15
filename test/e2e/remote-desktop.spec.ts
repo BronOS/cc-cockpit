@@ -164,8 +164,10 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     await expect.poll(() => titles(app)).toEqual([`Test server — ${projectName}`])
     await expect(remote.getByRole('tab')).toHaveCount(0)
 
-    // (b) The desktop key table: Ctrl+T (Cmd on a Mac) is New Claude Tab in a remote window. (The
-    // browser's Alt variant is no longer a probe: Ctrl+Alt+T is the desktop's New Claude Tab in Group.)
+    // (b) The desktop key table: Ctrl+T (Cmd on a Mac) is New Claude Tab in a remote window; the web
+    // table leaves it unbound. (Ctrl+Alt+T no longer tells the tables apart: it is New Claude Tab in
+    // Group in the desktop table and New Claude Tab in the web table, and with no tabs both open one.
+    // The desktop's in-Group chord is unit-tested in web-keys.test.ts.)
     await remote.locator('.tabs-pane').click()
     await remote.keyboard.press('Control+T')
     await expect(remote.getByRole('tab')).toHaveCount(1)
