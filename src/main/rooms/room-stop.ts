@@ -6,7 +6,7 @@
 //
 // The flow, all on main's side:
 //   1. `ccc hook Stop` reaches the hook handler; `stop(tabId, payload)` decides. A block carries the fixed pointer
-//      (room-delivery.ts pointerText, the count only) and a fresh ack id; the handler applies the Stop with that id
+//      (shared/room-pointer.ts pointerText, the count only) and a fresh ack id; the handler applies the Stop with that id
 //      (status-reducer.ts: a blocked Stop leaves the tab `working`, send-gate.ts: the gate delivers no head) and
 //      answers `{ block, ackId }`.
 //   2. `ccc` sends `hook.ack` with the id on the same connection: `ack(tabId, ackId)` confirms it (the delivery
@@ -46,7 +46,7 @@ import { isPlainObject } from '../../shared/guards'
 import type { TabRoom } from '../../shared/tab-room'
 import type { SessionEntry } from '../sessions/status-reducer'
 import { warnLog } from '../warn-log'
-import { pointerText } from './room-delivery'
+import { pointerText } from '../../shared/room-pointer'
 import type { RoomRegistry } from './room-registry'
 
 /** Blocks in a row per tab (design-rooms.md §2 "Loops"): under Claude Code's own cap of 8. */

@@ -1,8 +1,8 @@
 // Rooms Task 17: a plugin's room end to end, through the real built `ccc` and the fake `claude`'s hooks (design-rooms.md
 // §1-§4). A fixture plugin (rooms-test) makes a room, seeds bob's kickoff doc and opens alice (coordinator), bob and
 // carol. The fake plays Claude: after a paste it runs `ccc room read` and ends its turn a moment later
-// (FAKE_CLAUDE_ON_PASTE), and a Stop the hook blocks continues with a read and a busy stretch (FAKE_CLAUDE_ON_BLOCK);
-// every `/ccc` run and every block is a line in FAKE_CLAUDE_RUN_LOG, so the spec tells the tabs apart by session id.
+// (FAKE_CLAUDE_ON_PASTE), and a Stop the hook blocks continues with a read and a busy stretch (FAKE_CLAUDE_ON_BLOCK,
+// held until the spec releases it); every `/ccc` run and every block is a line in FAKE_CLAUDE_RUN_LOG, so the spec tells the tabs apart by session id.
 // The person types only into alice and bob, which makes them typed; carol stays untouched until the restart.
 //
 //   1. alice sends bob a message: bob, waiting and untyped, gets the fixed pointer pasted by the gate and reads the
@@ -13,7 +13,7 @@
 //   3. bob sends alice (typed, no mark) a message: only the badge, no paste and no Stop block; the person's mark on
 //      her tab delivers the pointer and she reads.
 //   4. restart: the members come back on their new tab ids, typed, and the room comes back paused.
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -25,8 +25,6 @@ const PLUGIN = 'test.rooms'
 const FIXTURE = join(__dirname, '..', 'fixtures', 'plugins', 'rooms-test')
 /** How long a turn started by a paste lasts before the fake ends it: room for a send to land while carol works. */
 const PASTE_TURN_MS = 4000
-/** The continued turn after a blocked Stop stays busy this long, so the spec can see it `working`. */
-const BLOCK_TURN_MS = 2500
 
 interface Entry {
   tabId: string
@@ -44,6 +42,7 @@ interface Run {
   stdout?: string
   stderr?: string
   block?: string
+  unknown?: string
 }
 interface Seen {
   error?: string
@@ -112,10 +111,12 @@ test('a plugin room through the real ccc: gate pointer, Stop pointer, typed tab 
   test.setTimeout(180_000)
   const logDir = mkdtempSync(join(tmpdir(), 'ccc-rooms-e2e-'))
   const runLog = join(logDir, 'runs.jsonl')
+  const release = join(logDir, 'release-block-turn')
   const env = {
     FAKE_CLAUDE_RUN_LOG: runLog,
     FAKE_CLAUDE_ON_PASTE: `/ccc room read\n/later ${PASTE_TURN_MS} /stop`,
-    FAKE_CLAUDE_ON_BLOCK: `/ccc room read\n/sleep ${BLOCK_TURN_MS}`
+    // The continued turn stays busy until the spec has seen it `working` and creates the release file.
+    FAKE_CLAUDE_ON_BLOCK: `/ccc room read\n/waitfile ${release}`
   }
   const first = await launchCockpit({ env })
   const root = first.cockpit.root
@@ -196,8 +197,11 @@ test('a plugin room through the real ccc: gate pointer, Stop pointer, typed tab 
     )
     expect(await statusOf(c, 'carol')).toBe('working')
     expect((await entryOf(c, 'carol')).held).toBeUndefined()
-    // The busy stretch over, the next Stop has nothing to say: waiting, one block in all, no paste of the pointer.
-    await expect.poll(() => statusOf(c, 'carol'), { timeout: BLOCK_TURN_MS + 10_000 }).toBe('waiting')
+    // The busy stretch over (the spec ends it), the next Stop has nothing to say: waiting, one block in all, no paste of
+    // the pointer.
+    writeFileSync(release, '')
+    expect(runsIn(runLog).filter((r) => r.unknown !== undefined)).toEqual([]) // no scripted line the fake did not know
+    await expect.poll(() => statusOf(c, 'carol'), { timeout: 10_000 }).toBe('waiting')
     expect(blocksOf(runLog, carol)).toHaveLength(1)
     expect(c.pastes()).toEqual([paste(pointerText(1)), paste('start on the task')])
     expect((await entryOf(c, 'carol')).typed).toBe(false)

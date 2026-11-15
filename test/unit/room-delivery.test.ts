@@ -7,13 +7,13 @@ import {
   ROOM_SEND_WINDOW_MS,
   RoomDelivery,
   decide,
-  pointerText,
   type RoomSendLimits
 } from '../../src/main/rooms/room-delivery'
 import { MAX_QUEUED_PER_MEMBER, RoomError, RoomRegistry, type RoomOwner } from '../../src/main/rooms/room-registry'
 import { sessionInfoOf } from '../../src/main/plugins/host-api'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { newEntry, type SessionEntry, type TabStatus } from '../../src/main/sessions/status-reducer'
+import { pointerText } from '../../src/shared/room-pointer'
 import type { TabRoom } from '../../src/shared/tab-room'
 
 const ESC = '\x1b'
@@ -93,7 +93,7 @@ const mark = (tabId: string, on = true): void => {
   const r = tabRooms.get(tabId)!
   tabRooms.set(tabId, { ...r, mark: on })
 }
-const logged = () => rooms.logOf(roomId).read().filter((e) => e.type === 'send')
+const logged = () => rooms.logOf(roomId).page().entries.filter((e) => e.type === 'send')
 
 function codeOf(fn: () => unknown): string | undefined {
   try {

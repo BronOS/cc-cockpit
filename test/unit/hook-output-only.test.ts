@@ -9,6 +9,8 @@
 // brace matching, checks each of them for every way of writing (`out`, `process.stdout`, a bare `write(`, `console`...),
 // and pins the two allowed writes to their exact shape and guard. The behaviour layer runs the real `run()` for every hook
 // event against a fake app that answers anything, however hostile, and compares what was printed with what is allowed.
+// The source layer's blind spot: it matches written forms, so an alias (`const w = process.stdout.write.bind(...)`, then
+// `w(...)`) slips past it; the behaviour layer is what catches a write through one.
 // Against real Unix sockets in a temp dir under /tmp (macOS's /var/folders pushes a socket path past sun_path).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'

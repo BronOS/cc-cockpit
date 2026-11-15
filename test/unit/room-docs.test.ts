@@ -31,7 +31,7 @@ function logPath(roomId = ROOM): string {
 }
 
 function logEntries(): RoomLogEntry[] {
-  return new RoomLog(logPath()).read()
+  return new RoomLog(logPath()).page().entries
 }
 
 function store(...parts: string[]): string {
@@ -368,13 +368,16 @@ describe('RoomDocs limits and text', () => {
     expect(readdirSync(store('shared'))).toEqual(['b.md'])
   })
 
-  it('answers an fs failure with words that name no path', async () => {
+  // A folder the process cannot write to (skipped as root, which ignores modes).
+  it.skipIf(process.getuid?.() === 0)('answers an fs failure with words that name no path', async () => {
     mkdirSync(store('shared'), { recursive: true })
-    // A folder the process cannot write to (skipped when running as root, which ignores modes).
-    if (process.getuid?.() === 0) return
     chmodSync(store('shared'), 0o500)
-    const err = await failure(docs.put(ROOM, plugin, 'shared/x.md', 'x'))
-    chmodSync(store('shared'), 0o700)
+    let err: unknown
+    try {
+      err = await failure(docs.put(ROOM, plugin, 'shared/x.md', 'x'))
+    } finally {
+      chmodSync(store('shared'), 0o700)
+    }
     expect(err).toEqual({ code: 'error', message: 'could not write the doc' })
     expect(warnings.some((w) => w.includes('failed'))).toBe(true)
   })

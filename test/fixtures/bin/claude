@@ -42,6 +42,7 @@
 //                         `FAKE-CLAUDE ccc exit=<code> out=<json stdout> err=<json stderr, cut at 300 characters>`.
 //                         `/ccc <args...> <<< <text>` passes <text> (the rest of the line) on stdin.
 //     /sleep <ms>         block for <ms> milliseconds, as a turn that is busy (Claude working): nothing else runs
+//     /waitfile <path>    the same until <path> exists (at most 60 s): a busy turn the spec ends itself
 // Each prints `FAKE-CLAUDE hook <Event>` once the hook command has returned.
 //
 // Stop blocks (rooms, Task 7), as Claude Code 2.1.325 does them: a Stop hook that exits 0 and prints
@@ -66,7 +67,8 @@
 //
 // $FAKE_CLAUDE_RUN_LOG, when set, gets one JSON line per `/ccc` run, `{ session, args, status, stdout,
 // stderr }` (whole, not cut), and per Stop block, `{ session, block: <reason> }`; `session` is the id the
-// fake reports in its hooks (`fake-session-<pid>`), so a spec can tell the tabs apart (the rooms e2e).
+// fake reports in its hooks (`fake-session-<pid>`), so a spec can tell the tabs apart (the rooms e2e). A line of
+// $FAKE_CLAUDE_ON_BLOCK or $FAKE_CLAUDE_ON_PASTE the interpreter does not know is logged as `{ session, unknown: <line> }`.
 'use strict'
 const fs = require('node:fs')
 const { spawnSync } = require('node:child_process')
@@ -203,8 +205,14 @@ function runLog(record) {
 /** Every line of an env value as a scripted line, in order (FAKE_CLAUDE_ON_BLOCK, FAKE_CLAUDE_ON_PASTE). */
 function scriptedLines(value) {
   if (!value) return
-  for (const line of value.split('\n')) if (line.trim() !== '') scripted(line)
+  for (const line of value.split('\n')) {
+    // A line the interpreter does not know (a typo in a spec's script) is a log line, not a silent no-op.
+    if (line.trim() !== '' && !scripted(line)) runLog({ unknown: line })
+  }
 }
+
+/** The longest `/waitfile` blocks. */
+const MAX_WAITFILE_MS = 60000
 
 /** The longest stderr the `/ccc` echo prints; longer is cut with `...`. */
 const MAX_ECHOED_ERR = 300
@@ -219,6 +227,14 @@ function scripted(line) {
   const sleep = /^\/sleep\s+(\d+)$/.exec(line)
   if (sleep) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(sleep[1]))
+    return true
+  }
+  const waitFile = /^\/waitfile\s+(\S+)$/.exec(line)
+  if (waitFile) {
+    // A busy turn that lasts until the spec says so (a file appears), capped so a lost spec cannot hang the tab.
+    for (let waited = 0; waited < MAX_WAITFILE_MS && !fs.existsSync(waitFile[1]); waited += 50) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    }
     return true
   }
   const c = /^\/ccc(?:\s+(.*))?$/.exec(line)

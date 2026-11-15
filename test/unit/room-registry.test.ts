@@ -342,7 +342,7 @@ describe('RoomRegistry', () => {
       expect(reg.held(room.id, name)).toBe(0)
       expect(reg.take(room.id, name)).toEqual([])
     }
-    expect(reg.logOf(room.id).read().map((e) => e.type)).toEqual(['create'])
+    expect(reg.logOf(room.id).page().entries.map((e) => e.type)).toEqual(['create'])
     // `constructor` passes the name rule, so it is a name a member can have.
     const inv = reg.invite(owner, room.id, { name: 'constructor' })
     expect(reg.redeem(inv.code, 't1', 'p1').name).toBe('constructor')
@@ -386,8 +386,8 @@ describe('RoomRegistry', () => {
     expect(existsSync(join(dir, '..', 'escape'))).toBe(false)
   })
 
-  it('keeps a room whose directory could not be removed', () => {
-    if (process.getuid?.() === 0) return // root removes it anyway
+  // Root removes the directory anyway.
+  it.skipIf(process.getuid?.() === 0)('keeps a room whose directory could not be removed', () => {
     const reg = make()
     const room = reg.create(owner, { title: 'Team' })
     reg.end(owner, room.id)
@@ -413,8 +413,8 @@ describe('RoomRegistry', () => {
     reg.end(owner, other2.id)
     reg.pause(other2.id, { auto: true })
     expect(reg.peek(other2.id)?.paused).toBe(false)
-    expect(reg.logOf(room.id).read().map((e) => e.type)).toEqual(['create', 'pause', 'end'])
-    expect(reg.logOf(other2.id).read().map((e) => e.type)).toEqual(['create', 'end'])
+    expect(reg.logOf(room.id).page().entries.map((e) => e.type)).toEqual(['create', 'pause', 'end'])
+    expect(reg.logOf(other2.id).page().entries.map((e) => e.type)).toEqual(['create', 'end'])
   })
 
   it('returns copies, never the live record', () => {
@@ -435,7 +435,7 @@ describe('RoomRegistry', () => {
     reg.resume(room.id)
     expect(reg.peek(room.id)?.paused).toBe(false)
     reg.pause(room.id, { auto: true })
-    expect(reg.logOf(room.id).read().map((e) => e.type)).toEqual(['create', 'pause', 'resume', 'auto-pause'])
+    expect(reg.logOf(room.id).page().entries.map((e) => e.type)).toEqual(['create', 'pause', 'resume', 'auto-pause'])
     expect(code(() => reg.pause('nope'))).toBe('not-found')
   })
 
@@ -448,7 +448,7 @@ describe('RoomRegistry', () => {
     reg.enqueue(room.id, 'dev', { from: 'lead', text: 'hi' })
     reg.leave('t2', 'closed')
     reg.end(owner, room.id)
-    const log = reg.logOf(room.id).read()
+    const log = reg.logOf(room.id).page().entries
     expect(log.map((e) => e.type)).toEqual(['create', 'join', 'invite', 'join', 'leave', 'end'])
     expect(log[1]).toMatchObject({ member: 'lead', coordinator: true, via: 'open' })
     expect(log[3]).toMatchObject({ member: 'dev', via: 'invite' })
@@ -643,7 +643,7 @@ describe('RoomRegistry', () => {
       expect(reg.take(room.id, name).map((m) => [m.from, m.text])).toEqual([['system', 'dev left: tab closed']])
     }
     expect(reg.held(room.id, 'ops')).toBe(0)
-    const leave = reg.logOf(room.id).read().find((e) => e.type === 'leave')
+    const leave = reg.logOf(room.id).page().entries.find((e) => e.type === 'leave')
     expect(leave).toMatchObject({ member: 'dev', why: 'closed', dropped: 1 })
     // A coordinator closing is told to the other coordinators, never to itself.
     reg.memberClosed('t1')

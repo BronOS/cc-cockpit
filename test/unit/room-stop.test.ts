@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_ROOM_SEND_LIMITS, RoomDelivery, pointerText } from '../../src/main/rooms/room-delivery'
+import { DEFAULT_ROOM_SEND_LIMITS, RoomDelivery } from '../../src/main/rooms/room-delivery'
+import { pointerText } from '../../src/shared/room-pointer'
 import { RoomRegistry, type RoomOwner } from '../../src/main/rooms/room-registry'
 import {
   ACK_TIMEOUT_MS,
@@ -504,7 +505,7 @@ describe('the ack', () => {
 })
 
 describe('auto-pause', () => {
-  const autoPaused = () => rooms.logOf(roomId).read().filter((e) => e.type === 'auto-pause')
+  const autoPaused = () => rooms.logOf(roomId).page().entries.filter((e) => e.type === 'auto-pause')
 
   it(`pauses the room after ${AUTO_PAUSE_DELIVERIES} deliveries with no person input (logged)`, () => {
     member('t1', 'alpha')

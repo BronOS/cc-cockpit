@@ -44,10 +44,6 @@ export const DEFAULT_ROOM_SEND_LIMITS: Readonly<RoomSendLimits> = Object.freeze(
 /** The window both caps count over. */
 export const ROOM_SEND_WINDOW_MS = 60_000
 
-// The pointer (design-rooms.md §2): fixed text, the count only. The Stop hook's block reason is the same text (Task 6);
-// it lives in src/shared because `ccc hook Stop` checks a reply against it (Task 7).
-export { pointerText }
-
 /** Why a message waits in the room's queue instead of a pointer going in now. */
 export type HeldWhy =
   /** The room is paused (the person in the room view, the auto-pause, or a restore). */

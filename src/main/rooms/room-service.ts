@@ -475,20 +475,24 @@ export class RoomService {
 
   /** ctx.rooms.send: a message `from plugin` (the owner's own room only). */
   sendAsPlugin(owner: RoomOwner, id: unknown, to: unknown, text: unknown): RecipientAnswer[] {
-    const room = this.registry.get(owner, id)
-    return this.delivery.send(room.id, 'plugin', to, text)
+    return this.delivery.send(this.ownerRoomId(owner, id), 'plugin', to, text)
   }
 
   ownerDocList(owner: RoomOwner, id: unknown): Promise<RoomDocEntry[]> {
-    return this.docs.list(this.registry.get(owner, id).id, 'plugin')
+    return this.docs.list(this.ownerRoomId(owner, id), 'plugin')
   }
 
   ownerDocGet(owner: RoomOwner, id: unknown, path: unknown): Promise<string> {
-    return this.docs.get(this.registry.get(owner, id).id, 'plugin', path)
+    return this.docs.get(this.ownerRoomId(owner, id), 'plugin', path)
   }
 
   ownerDocPut(owner: RoomOwner, id: unknown, path: unknown, text: unknown): Promise<void> {
-    return this.docs.put(this.registry.get(owner, id).id, 'plugin', path, text)
+    return this.docs.put(this.ownerRoomId(owner, id), 'plugin', path, text)
+  }
+
+  /** The id of the owner's room (a refusal for another owner's or a missing one: every ctx.rooms call checks it first). */
+  private ownerRoomId(owner: RoomOwner, id: unknown): string {
+    return this.registry.get(owner, id).id
   }
 
   /**

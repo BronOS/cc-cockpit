@@ -269,7 +269,7 @@ touched; Claude outside the app is never seen.
 | `Notification` (permission) | needs permission |
 | Enter or a digit typed into a needs-permission tab | working (the dialog was answered); not for a dialog tool |
 | `PostToolUse` | working (a dialog tool's: the dialog was answered, its tool name cleared) |
-| `Stop`, `Notification` (idle) | waiting for input |
+| `Stop`, `Notification` (idle) | waiting for input (a `Stop` main answered with a room block stays `working`: the turn goes on, see `design-rooms.md` §2) |
 | `SessionEnd` / PTY exit | ended |
 
 `PostToolUse` for Edit / Write / MultiEdit / NotebookEdit adds `file_path` to the tab's

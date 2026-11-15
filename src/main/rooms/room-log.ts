@@ -100,11 +100,6 @@ export class RoomLog {
     if (size > this.maxBytes) this.trim(seq + 1)
   }
 
-  /** The entries a read answers (`page` without the flag). */
-  read(opts: RoomLogReadOptions = {}): RoomLogEntry[] {
-    return this.page(opts).entries
-  }
-
   page(opts: RoomLogReadOptions = {}): RoomLogPage {
     // A non-number or NaN `since` / a negative `limit` is treated as absent, never as "match nothing".
     const since = typeof opts.since === 'number' && !Number.isNaN(opts.since) ? opts.since : undefined

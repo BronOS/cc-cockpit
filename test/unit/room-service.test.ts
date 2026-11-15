@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { pointerText } from '../../src/main/rooms/room-delivery'
+import { pointerText } from '../../src/shared/room-pointer'
 import { MAX_LINE_BYTES } from '../../src/shared/protocol'
 import type { RoomOwner } from '../../src/main/rooms/room-registry'
 import { RoomService, type RoomStatus } from '../../src/main/rooms/room-service'
@@ -320,8 +320,30 @@ describe('room.send', () => {
         delivery: [{ to: 'bob', path: 'held', why: 'not-waiting', status: 'waiting' }]
       })
       expect(writes).toEqual([])
-      await vi.advanceTimersByTimeAsync(1_000)
+      // Not a millisecond early: the window is 1 s from SessionStart.
+      await vi.advanceTimersByTimeAsync(999)
+      expect(writes).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
       expect(writes).toEqual([{ tabId: b, data: paste(pointerText(1)) }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a member that starts working inside the settle window is not pasted into when it ends', async () => {
+    vi.useFakeTimers()
+    try {
+      const id = room()
+      const a = claudeTab()
+      const b = tabs.create(P1, { kind: 'claude' }).id
+      addTo(id, a, 'alice')
+      addTo(id, b, 'bob')
+      sessions.applyHook(b, 'SessionStart', { source: 'startup' })
+      await call('room.send', session(a), { to: 'bob', text: 'kickoff' })
+      working(b)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(writes).toEqual([])
+      expect(sessions.get(b)?.held).toBe(1)
     } finally {
       vi.useRealTimers()
     }

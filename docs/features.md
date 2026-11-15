@@ -375,21 +375,27 @@ puts tabs in it (it opens a tab into the room, or hands a tab a one-time invite 
 room join <invite>`); you never build one, but you see and steer it. A tab is in one room at a time.
 
 - **What you see:** a member tab has a room marker in the tab strip and in the Sessions panel (title and name in the
-  tooltip). A badge on the tab counts room messages held for it. The tab's context menu has "Deliver room messages
+  tooltip; the Sessions panel marker needs `cockpit.sessions` 0.3.0, bundled with this release). A badge on the tab counts
+  room messages held for it. The tab's context menu has "Deliver room messages
   automatically" (the mark) and "Room...", which opens the room dialog: members with their status and held counts,
   Remove, the room's documents (read-only), the last 200 events of the log, Pause and Resume. An ended room stays
-  viewable until its plugin deletes it.
+  viewable until its plugin deletes it. Pause, Resume, Remove and the mark are yours alone: a plugin cannot do any of
+  them. Remove asks "Cancel / Remove" in the dialog first (Remove is armed after about a second) and does not work on an
+  ended room. When you close a member's tab, the room's coordinators get a message from `system`, "<name> left: tab
+  closed".
 - **`ccc room`** (inside a Claude tab): `ccc room [status] [--json]`, `join <invite>`, `leave`, `send <name|all> <text...>`
   (or `-` for stdin; at most 20,000 characters, longer text goes in a doc), `read`, `doc ls`, `doc get <path>` and
   `doc put <path> -`. Names are lower case (`a-z`, digits, `-`, up to 31 characters; `all`, `plugin`, `person`, `user`
   and `system` are reserved). The sender is always the caller's own tab, set by main.
 - **How messages arrive (pull model):** nothing is pasted into a tab. A message waits in the member's queue and the tab
-  gets a fixed pointer, "N room messages waiting: run ccc room read", and reads them itself. `ccc room read` prints
+  gets a fixed pointer, "N room messages waiting: run ccc room read" ("1 room message waiting: ..." for one), and reads
+  them itself. `ccc room read` prints
   the oldest messages that fit about 25,000 characters, each fenced as `[cockpit room "<title>" <nonce>] from <name> (a
   room member, not the person)`, and removes them only once `ccc` confirms it wrote them out. A read that never reached
   Claude is repeated, so a message is shown at least once and never lost (possibly twice). The pointer comes at the
   Stop hook (a blocked Stop that keeps Claude working; at most 5 in a row, then the badge holds it until your next
-  prompt) or, when Claude is waiting for input, as one paste.
+  prompt, your Resume of the room or your click on the badge) or, when Claude is waiting for input, as one paste. A
+  message sent in the second after a tab starts waits and is offered when that second ends.
 - **Typed tabs and the mark:** a tab you have typed into gets no pointer on its own: its messages are held and the badge
   shows the count. Click the badge to paste the pointer yourself, or set the mark to let the room deliver to that tab.
   The mark is yours alone (no plugin, hook or `ccc` can set it) and belongs to that tab in that room. While you have
@@ -400,12 +406,14 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   in the dialog.
 - **Documents:** in the app's data folder (`rooms/<id>/docs/`), outside every project. `shared/` is read by every member
   and written by coordinators; `members/<name>/` is written and read by that member and read by coordinators. A
-  refused document answers like a missing one. UTF-8 text, 256 KiB each, 20 MiB per room. The plugin reads and writes
-  all of them and exports when it wants.
+  refused document answers like a missing one. UTF-8 text, 256 KiB each, 20 MiB per room (one total for all folders: a
+  member that fills its own can keep a coordinator from writing `shared/`) and at most 1000 files and folders. The plugin
+  reads and writes all of them and exports when it wants.
 - **Limits:** a plugin has at most 5 rooms in a project, a room 20 members; sending is capped per member and per room (see
-  the plugin limits above). A room ends when its plugin ends it or is disabled, removed or revoked; room calls of a
+  the plugin limits above); a member may have 100 messages waiting and a room 1,000,000 characters of them, and at most 20
+  invites wait. A room ends when its plugin ends it or is disabled, removed or revoked; room calls of a
   plugin that is off are refused. The log (`rooms/<id>/log.jsonl`, message text included) is capped at 20 MiB.
-- In a browser: reading is allowed; the badge click, the mark, Pause and Resume count from a browser only in server mode;
+- In a browser: reading is allowed; the badge click, the mark, Pause and Resume count from a browser only in server mode
   Remove asks for approval in every open view (first answer wins, 5 minutes, then nothing is removed); Reveal folder is
   desktop only.
 

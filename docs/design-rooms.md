@@ -5,7 +5,7 @@ taken to Oleg). A core communication layer for Claude tabs: a plugin puts tabs i
 share docs through `ccc room`, with main setting every identity and enforcing every rule. Plus the per-plugin caps as the
 person's setting. Comes from the team-workflow experiment (`~/Projects/team-experiment`, plugin `bronos.team`), whose
 mailbox files, background waiter and run-dir doc layer it replaces; that plugin keeps only the workflow policy. Backlog
-items folded in: `docs/backlog/core-tab-message-bus.md` and `docs/backlog/plugin-session-open-limit-for-teams.md`.
+items folded in (and deleted): the core tab message bus and the plugin `sessions.open` limit for teams.
 
 Decisions taken in the brainstorm:
 - **Who makes rooms:** plugins only (host API). The person sees rooms and can remove members, never builds one.
@@ -25,14 +25,14 @@ by a per-delivery nonce, reserved names; docs capped at 256 KiB (the socket line
 log capped; renamed from "groups" (taken by split-terminal tab groups, `src/shared/tab-groups.ts`). Oleg's answers: the
 typed-tab rule above accepted; the `ccc plugin limits` write kept, shell-only and documented as not a boundary; the
 name "rooms". Cut from v1 (YAGNI): `doc share` (a coordinator reads a private doc and puts it in `shared/`), the
-Settings › Rooms page and the ended-room UI, `onEvent` (`log` with `since` covers it), a cap on open tabs at once.
+a Settings › Rooms page, `onEvent` (`log` with `since` covers it), a cap on open tabs at once.
 
 ## 1. Model and membership
 
 A **room** is created by a plugin in its own project window: `ctx.rooms.create({ title })` returns an opaque id. The
 title is one line, at most 60 characters, no control, quote or bracket characters. A room belongs to that plugin and
 window. Caps (constants): 5 rooms per plugin in a project, 20 members per room, 50 ended rooms kept per plugin in a project
-(an ended room stays until `delete`; past 50, `create` refuses until one is deleted, never dropping one by itself). It ends with `ctx.rooms.end(id)` or when its plugin
+(an ended room stays until `delete`; past 50, `create` refuses until one is deleted, never dropping one by itself), 20 one-time invites waiting per room, 100 messages waiting per member and 1,000,000 characters of waiting messages per room (a send past the last two is `refused`), 1000 files and folders in a room's docs. It ends with `ctx.rooms.end(id)` or when its plugin
 is disabled, removed or revoked. A room's record (members, queue, paused) and docs are kept on disk.
 
 A **member** is one Claude tab with a name unique in the room (`^[a-z][a-z0-9-]{0,30}$`, reserved: `all`, `plugin`,
@@ -45,7 +45,7 @@ member's private folder). A tab is in at most one room.
 - an existing tab joins only by itself: the plugin mints a one-time invite (`ctx.rooms.invite`, 10 minutes) and hands
   it out through its own command; the tab runs `ccc room join <invite>`, and main sees that tab's own token. A plugin
   can never pull a tab into a room;
-- the person removes any member in the room view; the person closing the tab removes it (the coordinator is told).
+- the person removes any member in the room view; the person closing the tab removes it (every coordinator gets a `system` message, `<name> left: tab closed`).
 
 **Restart.** Restored tabs get new ids (`tab-manager.ts`, `randomUUID`), so membership is saved in the tab record, like
 the flag: `{ room, name, coordinator, mark }` (`shared/tab-flag.ts` is the pattern). A tab that goes away because the
@@ -76,7 +76,9 @@ plugin/core origins do not apply.
    - **the Stop hook**, when the tab is untyped or carries the mark: at `Stop`, `ccc hook` asks main and, if the member
      has messages and may be continued, prints `{"decision":"block","reason":"<pointer>"}`;
    - **the send gate**, when the tab is waiting for input and is untyped, or marked with no draft: the pointer is
-     pasted as one item (one paste for any number of messages).
+     pasted as one item (one paste for any number of messages). A message that arrives while the tab is still in the
+     1 s settle window after its `SessionStart` is held as `not-waiting` and offered again when the window ends, under
+     the same rules (a paused room, a typed tab without the mark and a draft still hold it).
 
 A **typed tab without the mark** gets neither: its messages are held and a badge shows the count on the tab. A click on
 the badge pastes the pointer through the send gate as the person's own act. (A member that read a hostile page must not
@@ -89,7 +91,10 @@ on the same connection first and prints it only once main confirmed the ack, all
 that closes with the block unacked (a main too slow for the budget, a `ccc` that died) proves nothing was printed, and
 main applies the plain Stop then (`waiting`, the gate's head delivered). An ack main took whose print then failed
 (stdout closed) leaves the tab `working` with Claude stopped: the safe direction, since `waiting` while the turn goes
-on could paste into it. A tab wrongly left `working` recovers at the person's next prompt, as after an interrupted turn.
+on could paste into it. A tab wrongly left `working` recovers at the person's next prompt, as after an interrupted turn. When the connection
+closes unacked, main also offers the member's pointer again once the plain Stop is applied. A `ccc` that holds its
+connection open without acking is waited for 5 s (`ACK_TIMEOUT_MS`), then a log line; the block stays as it is (the
+tab `working`) until its next hook or the connection's close undoes it.
 The messages stay queued: nothing is lost, at worst the pointer comes again next Stop. The reply is short
 and fixed, so it cannot be cut into invalid JSON.
 
@@ -120,6 +125,9 @@ setting it again, delivers nothing.
 | <text, every line prefixed>
 [end <nonce>]
 ```
+
+A message from the owning plugin has the header `from plugin (the plugin running this room, not the person)` and one
+from cockpit itself (a member's tab closed) `from system (cockpit itself, not the person)`.
 
 The nonce is fresh per delivery, so a body cannot forge a header or an end line. Control characters (C0 but tab,
 DEL, C1) and the bidi and invisible format characters are printed as a visible `\u{..}` escape, so an escape sequence
@@ -201,9 +209,10 @@ stay constants.
 
 Set in Settings › Plugins (the plugin's row, "Limits") or from a shell outside cockpit with
 `ccc plugin limits <id> key=value...` / `--default <key>...`; stored app-wide in `app.json` per plugin id; never in
-plugin.json, the plugin's settings or `ccc plugin config`. The write is its own request name in `HOST_ONLY_COMMANDS`,
-refused for any caller with a token, and its handler refuses a non-anonymous caller again (the `web.*` guard in
-`socket-server.ts` covers only `web.` names, so the new name gets the same check). Like `ccc web`, it is not a boundary:
+plugin.json, the plugin's settings or `ccc plugin config`. The write is `plugin.limits.set` in `HOST_ONLY_COMMANDS`, refused for any caller with a token before lookup, and
+its handler refuses a non-anonymous caller again. The prefix `plugin.limits.` is a `HOST_ONLY_FAMILIES` entry (`protocol.ts`,
+with `web.`): a handler registered under it and missing from the list is a start-up error, so a later write cannot
+forget the guard. Like `ccc web`, it is not a boundary:
 a tab can drop its token (`env -u APP_TAB_TOKEN`) and look like the person's shell, and a plugin host (full Node, the
 same OS user, no token) can run `ccc plugin limits` the same way or edit `app.json`; it keeps a prompted Claude from
 raising its own caps as a side effect, and the docs say so. Reading is a separate request name (`ccc plugin limits <id>`

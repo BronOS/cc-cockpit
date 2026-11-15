@@ -429,7 +429,7 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   own command. A plugin can never pull a tab into a room.
 - `ctx.rooms.members(id)`: `RoomMember` per member (`name`, `coordinator`, `tabId` while it has a tab,
   `held`: messages waiting). `ctx.rooms.remove(id, name)`: the member leaves (its tab stays), its waiting
-  messages are dropped.
+  messages are dropped and no coordinator is told (only the person closing a tab tells them); refused on an ended room.
 - `ctx.rooms.send(id, to, text)`: a message `from plugin` to a member name or `all`, at most 20000
   characters (more goes in a doc). The answer is a `RoomSendAnswer` per recipient: `delivered`, `held`
   with `why` (`paused`, `no-tab`, `typed`, `capped`: 5 pointers in a row, held until the person steps in, `draft`,
