@@ -352,20 +352,20 @@ External review: sol / high
   environment only)
 
 ### Task 11: [Final] Update documentation [model: sonnet]
-- [ ] `docs/features.md`: Split view (page tabs as panes, file beside Claude, Close all asks about unsaved files, Ask
+- [x] `docs/features.md`: Split view (page tabs as panes, file beside Claude, Close all asks about unsaved files, Ask
   Claude's preselect), the editor entry (drop "A page tab is never a split pane"), the keybinding table with the
   New Claude Tab in Group / New Shell Tab in Group / "New tab: <label> in Group" rows (Cmd+Alt+T, Cmd+Alt+Shift+T; the
   GNOME / Ubuntu Ctrl+Alt+T note) and the browser chord outcome decided in Task 6; known limits (Firefox / Safari focus)
-- [ ] `docs/design.md` §3 "Split groups" (every kind; `not-a-pane` kept for the next kind; `joinOrder` terminal members)
+- [x] `docs/design.md` §3 "Split groups" (every kind; `not-a-pane` kept for the next kind; `joinOrder` terminal members)
   and §4 "Page tabs" (frames placed per pane, the cap, the focus rule, chords naming their tab); `docs/design-editor.md` §1
-- [ ] CLAUDE.md: the State paragraph on split groups (page tabs are panes, design in `docs/design-split-pages.md`), the
+- [x] CLAUDE.md: the State paragraph on split groups (page tabs are panes, design in `docs/design-split-pages.md`), the
   "Split groups" pattern line (`isPaneKind` covers every kind; HostApi's `hasTab` any tab; `joinOrder` terminal only), the
   "Page tabs" pattern line (several frames placed, a frame takes the keys only with shell-side evidence, chords and Ask
   Claude carry the frame's tab)
-- [ ] guide: `src/cli/guide/api.md` (a page tab may be a `beside` anchor; drop "never a split pane"), `plugins.md` where it
+- [x] guide: `src/cli/guide/api.md` (a page tab may be a `beside` anchor; drop "never a split pane"), `plugins.md` where it
   says so; `src/sdk/types.ts` `OpenBeside` comment, then `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; drift tests pass
-- [ ] mark `docs/design-split-pages.md` status as implemented
-- [ ] move this plan to `docs/plans/completed/` (done by the harness at the end)
+- [x] mark `docs/design-split-pages.md` status as implemented
+- [x] move this plan to `docs/plans/completed/` (done by the harness at the end)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

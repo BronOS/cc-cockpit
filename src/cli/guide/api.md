@@ -180,8 +180,8 @@ with full Node access.
   Claude: when the page calls `ccPanel.tab.discuss()` the app draws its question box over the tab, asks THIS
   view's handlers for the context (5 s; the first `{ text }` wins, null passes on, a throw sends nothing) and
   sends `About: <title>`, your text and the person's question to the Claude tab they pick, as their own text
-  through the send gate (so it reaches a tab they typed in, where `ctx.sessions.send` is refused). A page tab is
-  never a split pane: selected, it fills the whole tab area, and it cannot be a `beside` anchor.
+  through the send gate (so it reaches a tab they typed in, where `ctx.sessions.send` is refused). A page tab can
+  be a split pane (and a `beside` anchor); alone it fills the whole tab area.
 - `ctx.settingsPage` (an older app has none, so check `typeof ctx.settingsPage === 'object'`):
   `onOpen((page) => …)` is the backend of your html settings page (manifest
   `contributes.settings.page`, `ccc guide settings-secrets`); it throws when the manifest declares

@@ -1,6 +1,6 @@
 # Split groups for every tab kind (design)
 
-Status: design, not built (2026-11-14). Ships in the release that brings the code editor (`docs/design-editor.md`) and
+Status: implemented (2026-11-14). Ships in the release that brings the code editor (`docs/design-editor.md`) and
 split groups (design.md §3 "Split groups"). It replaces the rule "a page tab is never a pane" (design.md §3, §4 "Page
 tabs"; design-editor.md §1) and changes nothing else about groups or page tabs.
 

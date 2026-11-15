@@ -31,9 +31,9 @@ Claude's writes, Ask Claude, quick chat, `ccc edit`, `ctx.processes`) is impleme
 `docs/plans/completed/20261112-code-editor.md`, user docs in `docs/features.md` (the editor entry under the bundled plugins).
 Its language servers were only run against fakes.
 
-Split groups (terminal tabs side by side, tmux-like: `shared/tab-groups.ts`, main's `TabGroups`, the `groups.*` channels)
-are implemented; design in `docs/design.md` §3 "Split groups", user docs in `docs/features.md` ("Split view"). They hold
-terminal tabs only: a page tab is never a pane.
+Split groups (tabs side by side, tmux-like: `shared/tab-groups.ts`, main's `TabGroups`, the `groups.*` channels)
+are implemented; design in `docs/design.md` §3 "Split groups", user docs in `docs/features.md` ("Split view"). Page tabs
+are panes too (a file beside Claude); design in `docs/design-split-pages.md`.
 
 ## Commands
 
@@ -244,8 +244,10 @@ terminal tabs only: a page tab is never a pane.
   view asks in core's dialog (`ApprovalDialog` in server mode) and the page cannot block it. Page keys: the app table and
   `keyOverrides` win, a manifest's declared chords go to the page while it has focus. The unseen dot (`ccc edit`) is core's,
   never a flag. A page tab is never typed into: no send gate, `typed` or Claude status; Discuss asks the page's `onDiscuss`.
-  It is never a split pane either (see Split groups): `SplitArea` draws no pane for it and holds `PageTabArea`'s
-  placeholder over the whole area, so the fixed layer lines up whatever the groups.
+  It can be a split pane (see Split groups): `SplitArea` draws its header and an empty body, and `PageTabArea` places one frame
+  per shown page pane over the bodies (`frameBoxes`; placing never reloads). A frame takes the keys only with shell-side
+  evidence (its own focus or the pointer seen near it, never a page's hint alone), and a chord or Ask Claude from a frame
+  carries that frame's tab id, never `activeId`.
 - `ctx.processes` (host-local, design.md §4 "Processes"): argv only, bytes not text, 16 live children per plugin, process
   groups SIGKILLed on `kill`, when the leader exits, on plugin dispose and on host stop; not a capability (the host could `ctx.exec` anyway), so the cap and the kill are the control.
 - Editor host rules (`plugins/editor`): saves are compare-and-swap against what was last read, so a write Claude made
@@ -304,9 +306,9 @@ terminal tabs only: a page tab is never a pane.
   zoom and focus are per view. Nothing done elsewhere (another view, a plugin, an exit) moves a view's keys to another
   terminal: that view goes keys-off, and while keys-off no command acts on the active tab and a `tabs.select` naming a
   visible pane is ignored. Plugins reach groups only through `beside` on `ctx.sessions.open*` (only the new tab is
-  placed, never focused; `no-plugin-group-edits.test.ts`). Only terminal tabs are panes: `isPaneKind`
-  (`shared/tab-groups.ts`) is the one rule, used by `TabGroups` (`not-a-pane`, a page tab pruned from a loaded group,
-  through its `kindOf` dep), HostApi's `beside` check and the strip; a page tab never joins a group.
+  placed, never focused; `no-plugin-group-edits.test.ts`). Every tab kind is a pane: `isPaneKind`
+  (`shared/tab-groups.ts`) is the one rule, used by `TabGroups` (`not-a-pane` stays for the next kind, through its `kindOf`
+  dep) and the strip; HostApi's `beside` check takes any tab of the window (`hasTab`); `joinOrder` lists terminal members only.
 
 ## Conventions
 

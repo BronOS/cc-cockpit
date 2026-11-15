@@ -437,20 +437,18 @@ or command no longer validates is skipped. A running tool call does not survive.
 *reopen* (§4 Window background) goes through the same path without a quit: the tabs are saved and
 queued from the live ones as the window closes (`TabRestorer.requeue`), overlays are not restored.
 
-**Split groups.** Terminal tabs (Claude, Shell, command tabs; never an overlay entry nor a page tab,
-§4 "Page tabs") can be shown
+**Split groups.** Tabs (Claude, Shell, command tabs and page tabs, §4 "Page tabs"; never an overlay entry) can be shown
 side by side as a *group*: a tree of panes (`shared/tab-groups.ts`: N-ary, same-direction splits
 flattened, sizes as shares with a 10% minimum, a group always ≥ 2 panes; caps 8 panes, depth 4, 32
 groups per project). Every pane is still its own tab with its dot, status, flag and session rules; a
 plain tab has no group, and a project without groups behaves as before.
-- *Page tabs are never panes.* A page tab's frame lives in one fixed layer outside the React root, laid
-  over the whole tab area, and it has no terminal to fit into a pane, so `isPaneKind`
-  (`shared/tab-groups.ts`: `claude`, `shell`, `command`) is the one rule: `TabGroups` refuses a
-  placement naming a page tab as the tab or the anchor (`not-a-pane`; a `tabs.create` or plugin
-  `beside` on one opens the new tab plain), and a restored or synced group naming one loses that leaf.
-  HostApi's `beside` check reads a page tab as no such tab. The page offers nothing for one: no split
-  entries in its menu, no pane mode for its drag, not listed in Show beside. In the strip it is a
-  plain tab; dropped on a group's segment it lands after the group.
+- *Every kind is a pane.* `isPaneKind` (`shared/tab-groups.ts`: `claude`, `shell`, `command`, `page`) is the one rule.
+  `not-a-pane` stays in `TabGroups` for the next kind that is not one, and a loaded group naming such a tab loses
+  that leaf. A page pane draws a header and an empty body; its frame lives in the fixed layer outside the React
+  root and is placed over the body (`frameBoxes`, pixels from one measure), so a move, resize or ungroup changes a
+  box and never reloads it. `joinOrder` lists the selected tab and the group's terminal members only: a page has no
+  mirror to join. HostApi's `beside` check accepts any tab of the window as the anchor. Design and reasons:
+  `design-split-pages.md`.
 - *State.* Main is the one writer (`main/tabs/tab-groups.ts` `TabGroups`, beside `TabManager`).
   `TabManager` keeps the one tab order, and every group is contiguous in it, in pane reading order
   (`contiguousOrder`, rewritten through `TabManager.setOrder` after a group op), so the strip, tab
@@ -660,8 +658,10 @@ loading…" after 10 s; ✕ and Esc work throughout. A renderer reload brings an
 `command`: a tab of the main tab bar whose content is a plugin page, drawn in its own sandboxed frame with its own
 `MessagePort` to the plugin's backend (`ctx.tabs.onOpen`, a `PageTabInstance` with `id`, `type`, `params`, `view`,
 `post`, `onMessage`, `onClose`, `onDiscuss` and `setTitle(title, icon?)`), as a slot is; the frames sit outside the React root. A page
-tab is never a terminal: the send gate, `typed` and Claude status do not apply, and it is never a split pane (§3 "Split
-groups": selected, its frame's layer covers the whole split area, which holds the layer's placeholder); a saved tab keeps `type` and params and
+tab is never a terminal: the send gate, `typed` and Claude status do not apply, and it can be a split pane (§3 "Split
+groups"): the layer holds one frame per shown page pane, placed over the pane's body, at least the 6 most recent kept mounted and more when
+more are shown. A frame takes the keyboard only with shell-side evidence (its own focus, or the pointer seen within 24 px
+just before), never a page's say-so, and a chord or Ask Claude from a frame carries that frame's tab; a saved tab keeps `type` and params and
 is asked of its plugin again on restore (a gone or revoked plugin drops it). Title and icon come from the plugin's
 request, clamped by main. The frame is mounted on first select (not at restore), the 6 most recently used stay
 mounted, a plugin has at most 64 page tabs per project, and server mode's hidden page never mounts one. A plugin host

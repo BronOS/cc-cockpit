@@ -322,7 +322,7 @@ behind it are in [design.md](design.md).
   is the first. Such a tab holds unsaved text, so its page stays loaded while you switch (the 6 most recent; a tab
   without unsaved text that left them loads afresh when selected), survives a plugin restart and a browser reconnect,
   and closing a tab with unsaved text asks (see closing a tab above). A plugin has at most 64 page tabs per project.
-  A page tab is never a split pane (Split view): selected, it fills the whole tab area.
+  A page tab can be a split pane (Split view), for example a file beside Claude; alone it fills the whole tab area.
   Unsaved text is counted per view: a browser that has the project open can make the desktop's close ask about a tab
   until that browser disconnects. Plugins can also run long-running
   child processes with `ctx.processes` (argv only, 16 per plugin, killed with the plugin).
@@ -363,12 +363,15 @@ behind it are in [design.md](design.md).
 
 ## Split view
 
-Several terminal tabs side by side in one window, like tmux panes, while each stays its own tab
+Several tabs side by side in one window, like tmux panes, while each stays its own tab
 (dot, status, flag, ×, Claude session). A **split group** is a set of tabs drawn together; a
 project can have several, and a tab is in at most one. Groups, their layout and their names come
-back after a restart, like the tabs. Only terminal tabs (Claude, Shell, command) are panes: a page
-tab (an editor file tab, any plugin's page) has no split entries in its menu, its drag stays on the
-strip, it is not offered in Show beside, and it always fills the whole tab area when selected.
+back after a restart, like the tabs. Terminal tabs (Claude, Shell, command) and page tabs (an editor
+file tab, any plugin's page) are panes: a file can sit beside Claude, and Split right / down, Show
+beside and a drag into the area work on a page tab as on a terminal. A page pane's body is the
+plugin's page, drawn over the pane (a thin header above it has the name and marks); its text, cursor
+and unsaved changes stay while you move, resize or ungroup the panes. The page frames of a group's
+panes stay loaded together; more than 6 shown at once is allowed, and the rest keep the 6 most recent rule.
 
 How to make one:
 
@@ -411,6 +414,19 @@ Working in a group:
   on release), move with the arrow keys when focused, and a double-click makes that split even.
   Divider sizes are the group's, the same in every view. A pane never gets smaller than 20 columns by
   5 rows (a split that would go below is disabled in the menu with the reason) or a tenth of its split.
+- A page pane takes the keyboard only when you click into it or use a pane chord, never when it
+  loads. Which pane has the keyboard is decided by the cockpit's own page, not by the plugin's page:
+  a click inside a page frame counts when the pointer was seen next to the frame just before. A chord
+  typed in a page pane (Cmd+W, Ask Claude, Split) acts on that pane's tab, and a chord from a pane
+  the cockpit cannot place is dropped, not run on another pane. Known limits: a plugin page that does
+  not use the SDK and focuses itself can steal the keys from another pane; with the keys off, a click
+  in a page pane needs one more click to take them. Firefox and Safari may give the cockpit no
+  focus signal for a click into a frame, so there a page pane takes the keys from its header or a chord.
+- **Close all** on a group's handle also asks when a page member has unsaved changes, listing those
+  files separately; the button then says "Discard and Close all" and there is no "Don't ask again".
+- **Ask Claude** from a page pane beside a Claude pane preselects that Claude pane (the one you used
+  last in the group, else the first); a Claude tab that never ran a prompt is skipped. Outside a
+  group it still preselects New session.
 - A view too small for a group (under about 40x10 per pane even with even splits, say a phone) shows
   only the focused pane, automatically; the handle then says "zoomed (n hidden)".
 
@@ -418,11 +434,21 @@ Working in a group:
 |---|---|---|
 | Split Right | ⌘⇧D | Ctrl+Shift+D |
 | Split Down | ⌥⇧⌘D | Ctrl+Alt+Shift+D |
+| New Claude Tab in Group | ⌥⌘T | Ctrl+Alt+T |
+| New Shell Tab in Group | ⌥⇧⌘T | Ctrl+Alt+Shift+T |
+| New tab: <label> in Group (each of your tab commands with a key) | none until you give one | none until you give one |
 | Move Pane Out of Group | ⌘⇧X | Ctrl+Shift+X |
 | Focus Pane Left / Right / Above / Below | ⌥⌘ + arrow | Ctrl+Alt + arrow |
 | Resize Pane (moves the focused pane's divider) | ⌥⇧⌘ + arrow | Ctrl+Alt+Shift + arrow |
 | Zoom Pane (again: back) | ⌘⇧Enter | Ctrl+Shift+Enter |
 | Move Pane Left / Right / Up / Down, Show Tab Beside…, Equalize Panes, Ungroup Panes | palette | palette |
+
+The "in Group" commands open the new tab beside the focused pane with no menu (to its right when the
+pane is wider than tall as drawn, else below), or as a new group beside a plain tab. Their default is
+the new-tab chord plus Alt, so they have none when that chord is taken. On GNOME and Ubuntu desktops
+Ctrl+Alt+T opens a terminal: rebind it in Settings > Keybindings. In a browser they have no chord by
+default (New Claude Tab keeps Ctrl+Alt+T and New Shell Tab Ctrl+Alt+Shift+T there, see Web access);
+the palette runs them.
 
 All of them can be rebound in Settings > Keybindings. Zoom is per view and never saved; zooming
 again, selecting a hidden member or a focus chord brings the panes back. In a browser on a Mac,
@@ -434,8 +460,9 @@ Selecting a group sizes every pane it shows to this screen (as selecting a tab d
 hides does not take part. A plugin can open a tab beside another (`beside` on `ctx.sessions.open`,
 see `ccc guide`); such a pane never takes the keyboard.
 
-Limits: at most 8 panes per group, splits 4 deep, 32 groups per project. Only terminal tabs are panes
-(not overlays or plugin panels). Groups come back after a restart; a tab that failed to restore (and is
+Limits: at most 8 panes per group, splits 4 deep, 32 groups per project. Terminal tabs and page tabs
+are panes (not overlays or plugin panels). A plugin can open only terminal tabs beside another tab;
+a page tab can be the anchor. Groups come back after a restart; a tab that failed to restore (and is
 tried again next time) comes back without its group.
 
 ## Web access
@@ -1015,7 +1042,7 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
 - A browser keeps some chords for itself and never passes them to the page: Ctrl+W, Ctrl+T, Ctrl+N (Cmd on a Mac),
   with or without Shift, and Ctrl+Tab / Ctrl+Shift+Tab. In a browser the cockpit's commands bound to one of them use
   the same chord with Alt (Option) added: New Claude Tab Ctrl+Alt+T (⌥⌘T on a Mac), New Shell Tab Ctrl+Alt+Shift+T,
-  Close Tab Ctrl+Alt+W, Close Top Overlay Ctrl+Alt+Shift+W, the tab switcher Ctrl+Alt+Tab. The menus and the palette
+  Close Tab Ctrl+Alt+W, Close Top Overlay Ctrl+Alt+Shift+W, the tab switcher Ctrl+Alt+Tab. The "in Group" commands (Split view) have no chord there, since New Claude Tab and New Shell Tab take theirs; the palette runs them. The menus and the palette
   show the chord that works there; Settings > Keys shows and edits the desktop's. A command whose Alt chord belongs to
   another command has no chord in the browser (the palette still runs it), and a chord rebound to one the browser
   leaves alone works as it is. Which chords count follows the browser's system while the table is the host's: a Mac

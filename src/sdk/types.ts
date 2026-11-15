@@ -510,8 +510,8 @@ export type SendResult = { readonly delivered: true } | { readonly queued: true;
  * Open a new tab as a split pane beside a tab of this window (`ctx.sessions.open`, `openShell`,
  * `openCommand`): `beside` is that tab's id, `side` puts the new pane to its right (the default) or
  * below it. Only the new tab is placed; a plugin never moves, resizes or closes the person's panes. A
- * plain tab becomes a group of the two; the anchor stays visible and keeps focus. Only terminal tabs
- * are panes: a page tab (`ctx.tabs`), an unknown id and a tab of another window reject the same way,
+ * plain tab becomes a group of the two; the anchor stays visible and keeps focus. Any tab of this
+ * window may be the anchor, a page tab (`ctx.tabs`) included; an unknown id and a tab of another window reject the same way,
  * before the open counts against the 5 a minute. The open
  * still succeeds as an ordinary tab (`placed: false`) when the anchor closed meanwhile, its group
  * already has 4 panes, or its pane is too small to halve. `focus: true` shows the anchor's group in
