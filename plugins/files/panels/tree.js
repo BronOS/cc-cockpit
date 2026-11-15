@@ -23,7 +23,7 @@ let rows = [] // the visible rows, in order: { rel, kind, el }
  * From the host's `reset`: the project folder's absolute path and separator, the OS, and whether
  * ctx.files.reveal (`system`) and ctx.sessions.openShell (`shell`) exist.
  */
-let env = { root: '', sep: '/', platform: '', system: false, shell: false }
+let env = { root: '', sep: '/', platform: '', system: false, shell: false, download: false }
 // The "Open with" rules as the host summarised them ({ index, extensions, label, error? }): the menu
 // lists the ones matching a file. The host re-matches whatever index the page sends.
 let openWithRules = []
@@ -374,7 +374,11 @@ function menuItems(target) {
   const { rel, kind } = target
   const post = (type, extra = {}) => () => ccPanel.post({ type, path: rel, ...extra })
   const remote = ccPanel.view?.remote === true
-  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote })
+  // "Download as .zip with .git and node_modules" only where the zip could differ: the row is
+  // collapsed (its listing is not shown, so unknown) or the open listing holds either folder.
+  const listing = kind !== 'file' && expanded.has(rel) ? dirs.get(rel) : null
+  const heavy = !listing || listing.entries.some((e) => e.name === '.git' || e.name === 'node_modules')
+  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download, heavy })
   const items = []
   for (const e of entries) {
     if (e === 'sep') items.push('sep')
@@ -384,6 +388,9 @@ function menuItems(target) {
     else if (e === 'open-viewer') items.push(['Open in file viewer', post('open', { rule: -1 })])
     else if (e === 'open-system') items.push(['Open with default app', post('open-system')])
     else if (e === 'reveal') items.push([revealLabel(), post('reveal')])
+    else if (e === 'download') items.push(['Download', post('download')])
+    else if (e === 'download-zip') items.push(['Download as .zip', post('download')])
+    else if (e === 'download-zip-all') items.push(['Download as .zip with .git and node_modules', post('download', { all: true })])
     else if (e === 'ask') items.push(['Ask Claude about this file', post('ask')])
     else if (e === 'terminal') items.push(['Open terminal here', post('terminal')])
     else if (e === 'new-file') items.push(['New file…', () => askName({ action: 'create', kind: 'file', rel })])

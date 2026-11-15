@@ -91,3 +91,39 @@ test('tree state stays a broadcast, and an old caller with no second argument st
   assert.equal(posts.filter((p) => p[1].type === 'results').at(-1)[2], undefined)
   host.deactivate()
 })
+
+test('download: the host calls ctx.files.download in the click, with the include flag, and shows a rejection', async () => {
+  const root = fs.realpathSync(tempDir('files-host-'))
+  const host = load()
+  const { ctx, posts, listeners } = fakeCtx(root)
+  const calls = []
+  let fail = null
+  ctx.files.download = async (...args) => {
+    calls.push(args)
+    if (fail) throw fail
+  }
+  host.activate(ctx)
+  await listeners[0]({ type: 'hello' }, { view: 'web:7' })
+  assert.equal(posts.find((p) => p[1].type === 'reset')[1].env.download, true)
+  await listeners[0]({ type: 'download', path: 'a/b.txt' }, { view: 'web:7' })
+  await listeners[0]({ type: 'download', path: 'a', all: true }, { view: 'web:7' })
+  await listeners[0]({ type: 'download', path: '' }, { view: 'web:7' })
+  assert.deepEqual(calls, [['a/b.txt', undefined], ['a', { includeGitAndNodeModules: true }], ['', undefined]])
+  // A refusal reaches the page that clicked.
+  fail = new Error('Too big to download.')
+  await listeners[0]({ type: 'download', path: 'a' }, { view: 'web:7' })
+  const err = posts.filter((p) => p[1].type === 'error').at(-1)
+  assert.equal(err[1].message, 'Too big to download.')
+  assert.deepEqual(err[2], { view: 'web:7' })
+  host.deactivate()
+})
+
+test('download: an app without ctx.files.download says so in the env', async () => {
+  const root = fs.realpathSync(tempDir('files-host-'))
+  const host = load()
+  const { ctx, posts, listeners } = fakeCtx(root)
+  host.activate(ctx)
+  await listeners[0]({ type: 'hello' }, { view: 'web:7' })
+  assert.equal(posts.find((p) => p[1].type === 'reset')[1].env.download, false)
+  host.deactivate()
+})

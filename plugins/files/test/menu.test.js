@@ -301,7 +301,7 @@ test('host: the reset tells the page the root, separator, platform and that the 
   try {
     await h.send({ type: 'hello' })
     const reset = h.posts.find((m) => m.type === 'reset')
-    assert.deepEqual(reset.env, { root, sep: path.sep, platform: process.platform, system: true, shell: true })
+    assert.deepEqual(reset.env, { root, sep: path.sep, platform: process.platform, system: true, shell: true, download: false })
     assert.deepEqual(reset.openWith, [])
   } finally {
     h.done()
@@ -381,4 +381,31 @@ test('host: Open with a tab on an app without openCommand uses an overlay; a ref
   } finally {
     h.done()
   }
+})
+
+test('menuEntries: Download items only in a browser view of an app with ctx.files.download', () => {
+  const base = { system: true, shell: true }
+  for (const kind of ['file', 'dir', 'root']) {
+    for (const opts of [{ remote: false, download: true }, { remote: true, download: false }, { remote: false, download: false }, {}]) {
+      const ids = menuEntries({ kind, ...base, ...opts })
+      assert.ok(!ids.some((i) => typeof i === 'string' && i.startsWith('download')), `${kind} ${JSON.stringify(opts)}`)
+    }
+  }
+  const on = { ...base, remote: true, download: true }
+  assert.ok(menuEntries({ kind: 'file', ...on }).includes('download'))
+  assert.ok(!menuEntries({ kind: 'file', ...on }).includes('download-zip'))
+  for (const kind of ['dir', 'root']) {
+    const ids = menuEntries({ kind, ...on })
+    assert.ok(ids.includes('download-zip') && ids.includes('download-zip-all'), kind)
+    assert.ok(!ids.includes('download'))
+  }
+})
+
+test('menuEntries: the include item shows unless the open listing holds neither .git nor node_modules', () => {
+  const on = { system: true, shell: true, remote: true, download: true }
+  assert.ok(menuEntries({ kind: 'dir', ...on, heavy: true }).includes('download-zip-all'))
+  assert.ok(menuEntries({ kind: 'dir', ...on }).includes('download-zip-all'))
+  const ids = menuEntries({ kind: 'root', ...on, heavy: false })
+  assert.ok(ids.includes('download-zip'))
+  assert.ok(!ids.includes('download-zip-all'))
 })

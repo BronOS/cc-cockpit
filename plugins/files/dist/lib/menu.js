@@ -14,8 +14,13 @@
    * `{ rule }` for an "Open with" rule matching the file; `'sep'` divides groups.
    * `system`: ctx.files.reveal and its siblings exist (the host's `reset` env); `shell`:
    * ctx.sessions.openShell exists; `rules`: the "Open with" rules matching a file.
+   * `download`: ctx.files.download exists (the host's `reset` env); the Download items are for a
+   * browser view only (`remote`), since on the host's screen the file is already there.
+   * `heavy`: the folder's `.git` or `node_modules` may be in the zip: true when its listing is not
+   * known (collapsed row) or holds either name; false hides "with .git and node_modules", which
+   * would then give the same zip as the plain item.
    */
-  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false }) {
+  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false, heavy = true }) {
     // On the host's screen only: hidden in a browser view.
     const desktop = system && !remote
     const ids = []
@@ -28,10 +33,15 @@
       if (desktop) ids.push('open-system')
       if (desktop) ids.push('reveal')
       ids.push('ask')
+      if (remote && download) ids.push('download')
     } else {
       if (desktop) ids.push('reveal')
       if (kind === 'dir' && shell) ids.push('terminal')
       ids.push('new-file', 'new-folder')
+      if (remote && download) {
+        ids.push('download-zip')
+        if (heavy) ids.push('download-zip-all')
+      }
     }
     ids.push('sep', 'copy-path')
     if (kind !== 'root') {

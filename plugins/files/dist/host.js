@@ -128,6 +128,8 @@ exports.activate = (ctx) => {
         platform: process.platform,
         system: typeof ctx.files.reveal === 'function',
         shell: typeof ctx.sessions.openShell === 'function',
+        // Older apps have no ctx.files.download: no Download items (and only a browser view gets them).
+        download: typeof ctx.files.download === 'function',
       },
       // The rules as the menu needs them (labels, extensions to match, why one cannot run); the
       // commands stay here.
@@ -299,6 +301,11 @@ exports.activate = (ctx) => {
           await ctx.files.reveal(tree.normalizeRelative(m.path))
         } else if (m.type === 'open-system') {
           await ctx.files.openWithSystem(tree.normalizeRelative(m.path))
+        } else if (m.type === 'download') {
+          // Called inside this click's listener: main takes the browser view the person clicked in as
+          // the origin (it is kept until the listener returns), so no await comes before it. A refusal
+          // (no origin, too big, rate limit) goes to the panel as an error line below.
+          await ctx.files.download(tree.normalizeRelative(m.path), m.all === true ? { includeGitAndNodeModules: true } : undefined)
         } else if (m.type === 'trash') {
           await trash(tree.normalizeRelative(m.path))
         } else if (m.type === 'ask') {
