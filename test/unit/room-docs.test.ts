@@ -12,7 +12,7 @@ import {
   parseDocPath,
   type RoomDocCaller
 } from '../../src/main/rooms/room-docs'
-import { RoomError } from '../../src/main/rooms/room-registry'
+import { RoomError } from '../../src/main/rooms/room-error'
 
 const ROOM = '00000000-0000-4000-8000-000000000001'
 

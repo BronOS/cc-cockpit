@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 // The room mark ("Deliver room messages automatically", design-rooms.md §2) is the person's alone, like the tab flag:
 // it lets room messages into a tab the person typed in, so a plugin, hook or `ccc` path that could set it would make
 // it worthless. Its one writer is TabManager.setRoomMark, reached only from the shell page's `tabs.roomMark` (the
-// router's registerRoomStripHandlers, wired in index.ts). The held badge's click (`rooms.deliverHeld`) pastes into a
+// registerRoomStripHandlers in ipc/room-handlers.ts, wired in index.ts). The held badge's click (`rooms.deliverHeld`) pastes into a
 // typed tab as the person's act, so it gets the same rule. Checked on code lines (a comment may name them).
 
 const ROOT = join(__dirname, '..', '..')
@@ -59,14 +59,14 @@ describe('the room mark and the badge are reached only from the shell page', () 
       // The renderer names the channel and its own handler; a page reaches main only over IPC (the channel test below).
       files: [
         'src/main/index.ts',
-        'src/main/ipc/router.ts',
+        'src/main/ipc/room-handlers.ts',
         'src/main/rooms/room-delivery.ts',
         'src/main/rooms/room-service.ts',
         'src/renderer/tabs/TabsPane.tsx',
         'src/shared/ipc.ts'
       ]
     },
-    markTurnedOn: { re: /\bmarkTurnedOn\b/, files: ['src/main/index.ts', 'src/main/ipc/router.ts', 'src/main/rooms/room-service.ts'] }
+    markTurnedOn: { re: /\bmarkTurnedOn\b/, files: ['src/main/index.ts', 'src/main/ipc/room-handlers.ts', 'src/main/rooms/room-service.ts'] }
   }
 
   for (const [name, { re, files }] of Object.entries(GUARDED)) {
@@ -87,12 +87,12 @@ describe('the room mark and the badge are reached only from the shell page', () 
     expect(count(code, /\brooms\.markTurnedOn\(/)).toBe(1)
   })
 
-  it('the channels are named only by the shared channel list, the router and the shell renderer', () => {
+  it('the channels are named only by the shared channel list, the room handlers and the shell renderer', () => {
     const found = sites(/(['"`])(tabs\.roomMark|rooms\.deliverHeld)\1/)
     for (const file of filesOf(found)) {
-      expect(['src/shared/ipc.ts', 'src/main/ipc/router.ts'].includes(file) || file.startsWith('src/renderer/'), file).toBe(true)
+      expect(['src/shared/ipc.ts', 'src/main/ipc/room-handlers.ts'].includes(file) || file.startsWith('src/renderer/'), file).toBe(true)
     }
-    expect(filesOf(found)).toContain('src/main/ipc/router.ts')
+    expect(filesOf(found)).toContain('src/main/ipc/room-handlers.ts')
   })
 
   it('no plugin, host, hook, socket or CLI code names the mark writer, the badge or their channels', () => {

@@ -1,4 +1,4 @@
-// The Stop hook's reply protocol (rooms Task 7, design-rooms.md §2 "The Stop pointer"): `ccc hook Stop` asks for a
+// The Stop hook's reply protocol (design-rooms.md §2 "The Stop pointer"): `ccc hook Stop` asks for a
 // reply, prints Claude Code's `decision: block` JSON only for a valid block within its budget, then acks it once on the
 // same connection; every failure prints nothing and the hook still exits 0. Against real Unix sockets in a temp dir
 // under /tmp (macOS's /var/folders pushes a socket path past sun_path): a plain `net` fake app where a test controls

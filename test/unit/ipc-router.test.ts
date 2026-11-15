@@ -20,7 +20,6 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
-  registerRoomStripHandlers,
   registerGroupHandlers,
   type GroupHandlerDeps,
   registerWebviewHandlers,
@@ -35,6 +34,7 @@ import {
   type RemoteServerHandlerDeps,
   webCaller
 } from '../../src/main/ipc/router'
+import { registerRoomStripHandlers } from '../../src/main/ipc/room-handlers'
 import type { SenderContext } from '../../src/main/windows/window-manager'
 import type { OpenTarget } from '../../src/main/external/open-external'
 import { BUILTIN_THEMES } from '../../src/main/themes/theme-service'

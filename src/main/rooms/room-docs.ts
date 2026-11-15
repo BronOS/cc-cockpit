@@ -1,6 +1,6 @@
 // The doc store of a room (design-rooms.md §3): `<data>/rooms/<id>/docs/{shared,members/<name>}/...`,
 // written only by main. Members reach it through `ccc room doc ...` and the owning plugin through
-// `ctx.rooms.docs`; both arrive here with the caller already resolved by main (Task 8): a member's
+// `ctx.rooms.docs`; both arrive here with the caller already resolved by main (room-service.ts): a member's
 // name and coordinator flag from its tab token, `'plugin'` for the owner. Nothing in a path is
 // trusted: every part is checked against room-names.ts's character set, no `.` or `..`, a bounded
 // depth, and every directory on the way is lstat'd (a planted link anywhere is refused, not
@@ -19,9 +19,9 @@ import { join } from 'node:path'
 import { readVerified } from '../verified-read'
 import { warnLog } from '../warn-log'
 import type { RoomLogType } from './room-log'
-import { isPathPart, isRoomName } from '../../shared/room-names'
+import { isPathPart, isRoomId, isRoomName } from '../../shared/room-names'
 import { HIDDEN_TEXT } from '../../shared/session-name'
-import { RoomError, isUuid } from './room-registry'
+import { RoomError } from './room-error'
 
 /** Per doc, in UTF-8 bytes: a `ccc` reply is one socket line (1 MiB) and plugin CLI I/O is 256 KiB (design §3). */
 export const MAX_DOC_BYTES = 256 * 1024
@@ -290,7 +290,7 @@ export class RoomDocs {
 
   /** A checked path, or `invalid` (logged): the path's shape says nothing about what the store holds. */
   private parse(roomId: string, caller: RoomDocCaller, rawPath: unknown, op: 'get' | 'put'): DocPath {
-    if (!isUuid(roomId)) throw new RoomError('not-found', 'no such room')
+    if (!isRoomId(roomId)) throw new RoomError('not-found', 'no such room')
     const p = parseDocPath(rawPath)
     if (p === null) {
       this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path: String(rawPath).slice(0, 300), op, reason: 'bad path' })
@@ -322,7 +322,7 @@ export class RoomDocs {
    * next mkdir instead.
    */
   private async docsDir(roomId: string, create: boolean): Promise<string | null> {
-    if (!isUuid(roomId)) throw new RoomError('not-found', 'no such room')
+    if (!isRoomId(roomId)) throw new RoomError('not-found', 'no such room')
     let base: string
     try {
       // The data dir itself may sit behind a link (a moved home); everything below it may not.

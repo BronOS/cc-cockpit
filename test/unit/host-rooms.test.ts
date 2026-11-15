@@ -1,4 +1,4 @@
-// ctx.rooms on the host side (rooms Task 10): each method is one RPC to main with this plugin's own id and plain
+// ctx.rooms on the host side (design-rooms.md §4): each method is one RPC to main with this plugin's own id and plain
 // data, only the documented fields; a bad argument fails at the call site with no round trip, and a deactivated
 // plugin's call rejects. Main's side (the owner, the checks, the open budget) is in host-api.test.ts.
 import { describe, expect, it } from 'vitest'

@@ -33,7 +33,7 @@
 //   view joining mid-ask would never show the dialog. The `ccc plugin link` confirm (`links.ask` /
 //   `links.settled`, `ready`'s `linkAsks`, main/plugins/link-asks.ts) and the Move to Trash confirm
 //   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) and a room member's Remove confirm
-//   (`rooms.removeAsk` / `rooms.removeSettled`, `roomRemoveAsks`, router.ts registerRoomViewHandlers) are the same (SHARED_ASKS),
+//   (`rooms.removeAsk` / `rooms.removeSettled`, `roomRemoveAsks`, ipc/room-handlers.ts registerRoomViewHandlers) are the same (SHARED_ASKS),
 //   and so are a server's in-page notices (`notices.show` / `notices.gone`, `notices`,
 //   main/notifications/notifier.ts PageNoticeBackend): one shown before the shell mounted still shows.
 //   A plugin's pending OAuth sign-in in server mode is held the same way (`app.linkNotice` with

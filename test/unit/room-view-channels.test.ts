@@ -1,4 +1,4 @@
-// The room view's channels (rooms Task 14, design-rooms.md §5): rooms.view, rooms.doc, rooms.pause / resume,
+// The room view's channels (design-rooms.md §5): rooms.view, rooms.doc, rooms.pause / resume,
 // rooms.remove with its answer, rooms.reveal. The real RoomService (registry, docs, delivery) over a real TabManager
 // (fake PTYs) and SessionRegistry, behind the real router handlers and, for a server's browser, the real SharedAsks
 // core, wired as index.ts wires them.
@@ -9,11 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   appPageMatcher,
   IpcRouter,
-  registerRoomViewHandlers,
   webCaller,
   type IpcEventLike,
   type IpcMainLike
 } from '../../src/main/ipc/router'
+import { registerRoomViewHandlers } from '../../src/main/ipc/room-handlers'
 import type { RoomOwner } from '../../src/main/rooms/room-registry'
 import { createRoomRemoveAsks, settleGoneRemoveAsks } from '../../src/main/rooms/room-remove-asks'
 import { ROOM_CHANGED_THROTTLE_MS, ROOM_REMOVE_ASK_MS, RoomService } from '../../src/main/rooms/room-service'

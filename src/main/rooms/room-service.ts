@@ -1,4 +1,4 @@
-// The room service (design-rooms.md, plan Task 8): one object that owns the room registry, the doc store, the delivery
+// The room service (design-rooms.md): one object that owns the room registry, the doc store, the delivery
 // and the Stop decision, and wires them to the tab manager (the saved membership and the person's mark) and the session
 // registry (status, the send gate, the person's input). Everything that changes a membership goes through here, so the
 // three places that record one (the registry, the tab record, SessionInfo) never drift apart:
@@ -12,10 +12,10 @@
 // Identity. The tab-side calls (`ccc room ...`, socket/handlers.ts) take a RoomTabCaller: the tab and project main
 // resolved from the caller's session token (CliCall.tabId's rule: never from the payload). The member's name and
 // coordinator flag come from the registry by that tab, never from the request. A tab whose room is in another project
-// than the token's answers as a tab in no room. The owner-side calls (ctx.rooms, Task 10) take a RoomOwner built by main
+// than the token's answers as a tab in no room. The owner-side calls (ctx.rooms, §4) take a RoomOwner built by main
 // from the calling host's own plugin and window; every one of them looks the room up through the registry first (a
-// foreign room is "no such room") before it touches the docs or the log. The person's calls (the room view, Tasks 13
-// and 14) are main's after its own window check.
+// foreign room is "no such room") before it touches the docs or the log. The person's calls (the tab strip and the room
+// view, §5) are main's after its own window check.
 //
 // No Electron: the tab manager and the session registry come in as the slices used, so vitest drives the decisions
 // with the real registries.
@@ -23,6 +23,7 @@ import { MAX_LINE_BYTES, ROOM_READ_MAX_TEXT_BYTES, type RoomReadReply } from '..
 import type { TabKind } from '../../shared/types'
 import type { DeliverHeldAnswer, TabRoom } from '../../shared/tab-room'
 import { ROOM_VIEW_LOG_LIMIT, ROOM_VIEW_LOG_MAX_BYTES, type RoomView, type RoomViewLogEntry, type RoomViewMember } from '../../shared/room-view'
+import { MAX_ID_CHARS } from '../../shared/room-names'
 import type { SessionEntry, SessionRoom, TabStatus } from '../sessions/status-reducer'
 import type { TabRoomHooks } from '../tabs/tab-manager'
 import { warnLog } from '../warn-log'
@@ -30,8 +31,8 @@ import { fenceBatch, newFenceNonce } from './room-fence'
 import { RoomDelivery, type RecipientAnswer, type RoomSendLimits } from './room-delivery'
 import { RoomDocs, type RoomDocCaller, type RoomDocEntry } from './room-docs'
 import type { RoomLogEntry, RoomLogPage } from './room-log'
+import { RoomError } from './room-error'
 import {
-  RoomError,
   RoomRegistry,
   type RoomInvite,
   type RoomMemberInfo,
@@ -138,8 +139,13 @@ export type RoomReadResult = RoomReadReply
 
 const NOT_IN_ROOM = 'this tab is in no room'
 
+/**
+ * Room left in a reply line for everything around a doc's text: the envelope (`v`, `id`, `ok`, `appVersion`) and the
+ * result's other fields are a few hundred bytes, so 4 KiB is a margin, not a measure.
+ */
+const REPLY_ENVELOPE_BYTES = 4096
 /** Most bytes a doc's JSON-encoded text may take in a `ccc room doc get` reply: MAX_LINE_BYTES less the envelope. */
-const ROOM_DOC_REPLY_MAX_BYTES = MAX_LINE_BYTES - 4096
+const ROOM_DOC_REPLY_MAX_BYTES = MAX_LINE_BYTES - REPLY_ENVELOPE_BYTES
 
 export class RoomService {
   readonly registry: RoomRegistry
@@ -353,7 +359,7 @@ export class RoomService {
    */
   readAck(caller: RoomTabCaller, ack: unknown): { acked: number } {
     const { member, room } = this.requireMember(caller)
-    if (typeof ack !== 'string' || ack.length === 0 || ack.length > 64) throw new RoomError('invalid', 'room.read.ack needs the ack of a read')
+    if (typeof ack !== 'string' || ack.length === 0 || ack.length > MAX_ID_CHARS) throw new RoomError('invalid', 'room.read.ack needs the ack of a read')
     const acked = this.registry.dropThrough(room.id, member.name, ack)
     // The held count (SessionInfo and the badge) follows the queue.
     if (acked > 0) this.delivery.syncTab(caller.tabId)
@@ -384,7 +390,7 @@ export class RoomService {
     return this.docs.put(roomId, doc, path, text)
   }
 
-  // --- the owner (ctx.rooms, Task 10): main built `owner` from the calling host ---
+  // --- the owner (ctx.rooms, design-rooms.md §4): main built `owner` from the calling host ---
 
   create(owner: RoomOwner, opts: { title: unknown }): RoomRecord {
     return this.registry.create(owner, opts)
@@ -444,7 +450,7 @@ export class RoomService {
   }
 
   /**
-   * A tab the owner's host opened into the room (ctx.rooms.open, Task 10, after it created the tab in its own window):
+   * A tab the owner's host opened into the room (ctx.rooms.open, design-rooms.md §1, after it created the tab in its own window):
    * a member from the start. Only a Claude tab of the owner's project.
    */
   addMember(owner: RoomOwner, id: unknown, member: { tabId: string; name: unknown; coordinator?: unknown }): RoomMembership {
@@ -508,7 +514,7 @@ export class RoomService {
     })
   }
 
-  // --- the person (the room view and the tab strip, Tasks 13 and 14; main checked the window) ---
+  // --- the person (the room view and the tab strip, design-rooms.md §5; main checked the window) ---
 
   pause(roomId: string): void {
     this.registry.pause(roomId)
@@ -543,7 +549,7 @@ export class RoomService {
     this.offerTab(tabId)
   }
 
-  // --- the room view (rooms.view and the rest, Task 14): `projectId` is main's, the sender's window's project ---
+  // --- the room view (rooms.view and the rest, design-rooms.md §5): `projectId` is main's, the sender's window's project ---
 
   /**
    * The room of the person's window: one of `projectId`'s rooms, live or ended. Another project's room, an unknown id

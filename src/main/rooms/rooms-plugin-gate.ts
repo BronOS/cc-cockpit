@@ -8,7 +8,7 @@
 // - the refusal (`offWhy`, HostApi's `roomsOff`): every ctx.rooms call is checked at call time. Hosts restart one
 //   after another after a switch, and an uninstall awaits the other hosts' settings before any restart, so a host can
 //   still run the old plugin seconds after the sweep. Without the refusal it could create a room, mint an invite or
-//   open a member then, and nothing would end it until the next change (review finding M1, task 10).
+//   open a member then, and nothing would end it until the next change (a review finding on ctx.rooms).
 import { roomEndReason, type EnablementPlugin, type EnablementRecord } from '../plugins/enablement'
 import type { RoomOwner } from './room-registry'
 

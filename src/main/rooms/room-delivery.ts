@@ -1,6 +1,6 @@
 // Room message delivery (design-rooms.md §2 "Pull, not push", "The mark"): who gets the fixed pointer through the send
 // gate, who is held behind the badge, the send caps, and the room fields of SessionInfo. Pure logic over injected
-// parts (the room registry, the session registry, the tab manager's mark), no Electron: the room service (Task 8)
+// parts (the room registry, the session registry, the tab manager's mark), no Electron: the room service (room-service.ts)
 // wires it. Every identity arrives resolved by main: the sender's name from its tab token or `plugin` for the owner.
 //
 // The room's queue (RoomRegistry) is the only queue for room messages. The gate never holds one: it gets one pointer
@@ -22,7 +22,8 @@ import type { DeliverHeldAnswer, TabRoom } from '../../shared/tab-room'
 import { isRoomName } from '../../shared/room-names'
 import { pointerText } from '../../shared/room-pointer'
 import { DEFAULT_PLUGIN_LIMITS } from '../../shared/plugin-limits'
-import { RoomError, isMessageText, type RoomRecord, type RoomRegistry } from './room-registry'
+import { RoomError } from './room-error'
+import { isMessageText, type RoomRecord, type RoomRegistry } from './room-registry'
 
 /**
  * The person-settable room send caps (design-rooms.md §6), per plugin. `all` counts one send per recipient queued
@@ -273,7 +274,7 @@ export class RoomDelivery {
   /**
    * Mirror one tab's room fields into the session registry (SessionInfo.room and held) from the room registry, the
    * authority: none when the tab is in no room. The room service calls it after a join, a leave, a read, an end and a
-   * restore (Task 8).
+   * restore (room-service.ts).
    */
   syncTab(tabId: string): void {
     const member = this.deps.rooms.memberOf(tabId)

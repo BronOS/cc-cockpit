@@ -1,4 +1,4 @@
-// Rooms Task 13: the tab strip's room parts (design-rooms.md §5). A fixture plugin (room-strip) makes a room and opens
+// Rooms: the tab strip's room parts (design-rooms.md §5). A fixture plugin (room-strip) makes a room and opens
 // its member bob; the strip shows the marker, a message held for a typed tab shows the badge, its click pastes the
 // fixed pointer as the person's act (and says why when it cannot, with "Deliver anyway" for a possible draft), and the
 // person's mark is set and cleared from the tab's context menu, stored on the tab by main; setting it delivers at once.

@@ -1,7 +1,7 @@
 // The user-facing `ccc` commands as socket handlers (plan: Task 21): open, session note/steps,
 // overlay, sessions, notify; the plugin commands (plan B Task 5): plugin.cli.spec, plugin.cli,
 // plugin.cli.list; and the plugin dev loop (Task 6): plugin.link, plugin.unlink, plugin.list.
-// The rooms Task 8 commands: room.status, room.join, room.leave, room.send, room.read (and its room.read.ack),
+// The rooms commands (design-rooms.md §4): room.status, room.join, room.leave, room.send, room.read (and its room.read.ack),
 // room.doc.ls|get|put.
 // (`hook` and `hook.ack` are sessions/hook-handler.ts.)
 //

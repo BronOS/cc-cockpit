@@ -2772,7 +2772,7 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
   })
 })
 
-// The person's per-plugin caps (rooms Task 11, design-rooms.md §6): HostApi asks `limits(pluginId)` on every open and
+// The person's per-plugin caps (design-rooms.md §6): HostApi asks `limits(pluginId)` on every open and
 // send, so an override applies to the next call, per plugin, and a cap hit names the cap and its value.
 describe('the person\'s per-plugin limits', () => {
   it('an override replaces the open cap for every open kind, read on every call, per plugin', async () => {

@@ -1,4 +1,4 @@
-// Rooms Task 15: the room dialog (design-rooms.md §5 "The room view"). A fixture plugin (room-view) makes a room with
+// Rooms: the room dialog (design-rooms.md §5 "The room view"). A fixture plugin (room-view) makes a room with
 // alice (coordinator) and bob, writes a doc and sends bob messages. On the desktop the dialog opens from a member tab's
 // "Room...", shows the members, the doc read-only and the log, follows a new message live (`rooms.changed` reaching
 // the project's views), pauses and resumes, and removes a member after its own on-screen question. In server mode a

@@ -1002,7 +1002,7 @@ describe('pending trash asks', () => {
   })
 })
 
-// rooms Task 14: a room member's Remove confirm (a server's browser asked), the same way.
+// Rooms (design-rooms.md §5): a room member's Remove confirm (a server's browser asked), the same way.
 describe('pending room Remove asks', () => {
   const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
   const ask = (n: number): Record<string, unknown> => ({ requestId: `room-remove-${n}`, roomId: 'r1', title: 'Team', name: `m${n}` })

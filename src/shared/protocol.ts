@@ -109,13 +109,6 @@ export const HOST_ONLY_COMMANDS: readonly string[] = [
   'plugin.limits.set'
 ]
 
-/**
- * Name prefixes that belong to host-only commands: a handler registered under one of these whose name is not in
- * HOST_ONLY_COMMANDS is a start-up error (SocketServer.handle), since identify would let a session token reach it.
- * `plugin.limits` itself (the read) is no member: the family is the dot after it.
- */
-export const HOST_ONLY_FAMILIES: readonly string[] = ['web.', 'plugin.limits.']
-
 /** What a tab (any token) is told for a `ccc web` request, whatever the request and whether it has a handler. */
 export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside cc-cockpit'
 
@@ -123,9 +116,23 @@ export const HOST_ONLY_TEXT = 'run `ccc web` from a shell on the server, outside
 export const PLUGIN_LIMITS_HOST_ONLY_TEXT =
   'the limits are the person\'s: change them in Settings › Plugins or with `ccc plugin limits` from a shell outside cc-cockpit'
 
+/** Each host-only family's name prefix and what a tab is told for any command in it: one table, so a new family has its text. */
+const HOST_ONLY_FAMILY_TEXTS: Readonly<Record<string, string>> = {
+  'web.': HOST_ONLY_TEXT,
+  'plugin.limits.': PLUGIN_LIMITS_HOST_ONLY_TEXT
+}
+
+/**
+ * Name prefixes that belong to host-only commands: a handler registered under one of these whose name is not in
+ * HOST_ONLY_COMMANDS is a start-up error (SocketServer.handle), since identify would let a session token reach it.
+ * `plugin.limits` itself (the read) is no member: the family is the dot after it.
+ */
+export const HOST_ONLY_FAMILIES: readonly string[] = Object.keys(HOST_ONLY_FAMILY_TEXTS)
+
 /** The refusal of a HOST_ONLY_COMMANDS request from any caller but a tokenless, projectless one. */
 export function hostOnlyText(cmd: string): string {
-  return cmd.startsWith('plugin.limits.') ? PLUGIN_LIMITS_HOST_ONLY_TEXT : HOST_ONLY_TEXT
+  const family = HOST_ONLY_FAMILIES.find((prefix) => cmd.startsWith(prefix))
+  return family === undefined ? HOST_ONLY_TEXT : (HOST_ONLY_FAMILY_TEXTS[family] ?? HOST_ONLY_TEXT)
 }
 
 /** A name a handler may be registered under only when HOST_ONLY_COMMANDS lists it. */
@@ -134,7 +141,7 @@ export function inHostOnlyFamily(cmd: string): boolean {
 }
 
 /**
- * The Stop hook's reply (design-rooms.md §2 "The Stop pointer", plan Task 7). Every hook event is fire-and-forget:
+ * The Stop hook's reply (design-rooms.md §2 "The Stop pointer"). Every hook event is fire-and-forget:
  * `ccc hook <Event>` writes `{ cmd: 'hook', token, args: { event, payload } }` and closes without reading, so a hook
  * costs one write. Only `Stop` asks for a reply, with `args.reply: true` (STOP_REPLY_ARG): `ccc` then reads one reply
  * line within its budget (cli/client.ts STOP_HOOK_BUDGET_MS). A result `{ block, ackId }` (StopBlockReply) means main

@@ -5,7 +5,7 @@
 import { CONTROL } from './session-name'
 
 /** Names a member may not take: `all` is the send-to-everyone word, the rest would read as someone other than a member in a fence header. */
-export const RESERVED_ROOM_NAMES: readonly string[] = Object.freeze(['all', 'plugin', 'person', 'user', 'system'])
+const RESERVED_ROOM_NAMES: readonly string[] = Object.freeze(['all', 'plugin', 'person', 'user', 'system'])
 
 /**
  * A member name: a lower-case letter then up to 30 of `[a-z0-9-]`, and none of the reserved names. One anchored
@@ -15,7 +15,7 @@ export const RESERVED_ROOM_NAMES: readonly string[] = Object.freeze(['all', 'plu
 export const ROOM_NAME = /^(?!(?:all|plugin|person|user|system)$)[a-z][a-z0-9-]{0,30}$/
 
 /** The longest title, in characters (code points): one line in the room view and in every fence header. */
-export const MAX_ROOM_TITLE_CHARS = 60
+const MAX_ROOM_TITLE_CHARS = 60
 
 /**
  * Characters a title may not hold besides CONTROL's (control, bidi, invisible): quotes, because the fence puts the
@@ -25,7 +25,7 @@ export const MAX_ROOM_TITLE_CHARS = 60
 const TITLE_FORBIDDEN = new Set([...'"\'`“”„‟‘’‚‛«»‹›()[]{}<>'])
 
 /** The longest doc path part, in characters: under NAME_MAX (255) with room for the store's `.tmp-<rand>` suffix. */
-export const MAX_PATH_PART_CHARS = 128
+const MAX_PATH_PART_CHARS = 128
 
 export type RoomWordCheck = { ok: true; value: string } | { ok: false; reason: string }
 
@@ -79,6 +79,12 @@ export function isPathPart(part: unknown): part is string {
   for (const ch of part) if (!isPathPartChar(ch)) return false
   return true
 }
+
+/**
+ * The most characters an id a caller hands in may have (a room id, a read's ack, a tab id) before it is junk rather than
+ * an id to look up: a cut-off before any lookup or error text, not the id's shape (isRoomId is that, for a room id).
+ */
+export const MAX_ID_CHARS = 64
 
 /**
  * A room id's shape (`randomUUID`, lower case): the registry checks it before joining an id into a path, and the saved

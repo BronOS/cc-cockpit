@@ -1,8 +1,8 @@
 // The Stop pointer (design-rooms.md §2 "The Stop pointer", "Loops"): whether main answers a member tab's Stop hook
 // with `{"decision":"block","reason":"<pointer>"}`, the ack that confirms `ccc` printed it, the per-tab cap on blocks
 // in a row and the room's auto-pause. Pure logic over injected parts (the room registry, the session registry, the
-// tab manager's mark) plus one timer per pending block; no Electron. The room service (Task 8) wires it; the hook
-// reply and the ack travel over the socket (Task 7).
+// tab manager's mark) plus one timer per pending block; no Electron. The room service (room-service.ts) wires it; the hook
+// reply and the ack travel over the socket (protocol.ts STOP_REPLY_ARG, HOOK_ACK_COMMAND).
 //
 // The flow, all on main's side:
 //   1. `ccc hook Stop` reaches the hook handler; `stop(tabId, payload)` decides. A block carries the fixed pointer
@@ -156,7 +156,7 @@ export class RoomStop {
   }
 
   /**
-   * `hook.ack` from `tabId` (the token's tab, Task 7): confirms only the block this tab is waiting on, with its id.
+   * `hook.ack` from `tabId` (the token's tab, sessions/hook-handler.ts): confirms only the block this tab is waiting on, with its id.
    * True when it did; false for no pending block (a later Stop ended the wait), another id, or one already acked. A
    * late ack (after the timeout's log line) still confirms: the block is pending until the next Stop. The delivery
    * counts toward the room's auto-pause.

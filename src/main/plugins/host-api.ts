@@ -1042,15 +1042,9 @@ export class HostApi {
       'rooms.create': (params) => this.roomsCall(params, 'rooms.create', (rooms, owner, p) => ({ id: rooms.create(owner, { title: p.title }).id })),
       'rooms.list': (params) => this.roomsCall(params, 'rooms.list', (rooms, owner) => rooms.list(owner).map(roomInfoOf)),
       'rooms.end': (params) =>
-        this.roomsCall(params, 'rooms.end', (rooms, owner, p) => {
-          rooms.end(owner, p.id)
-          return null
-        }),
+        this.roomsVoid(params, 'rooms.end', (rooms, owner, p) => rooms.end(owner, p.id)),
       'rooms.delete': (params) =>
-        this.roomsCall(params, 'rooms.delete', (rooms, owner, p) => {
-          rooms.delete(owner, p.id)
-          return null
-        }),
+        this.roomsVoid(params, 'rooms.delete', (rooms, owner, p) => rooms.delete(owner, p.id)),
       'rooms.open': (params, meta) => this.roomsOpen(params, meta),
       'rooms.invite': (params) =>
         this.roomsCall(params, 'rooms.invite', (rooms, owner, p) => {
@@ -1065,10 +1059,7 @@ export class HostApi {
           )
         ),
       'rooms.remove': (params) =>
-        this.roomsCall(params, 'rooms.remove', (rooms, owner, p) => {
-          rooms.remove(owner, p.id, p.name)
-          return null
-        }),
+        this.roomsVoid(params, 'rooms.remove', (rooms, owner, p) => rooms.remove(owner, p.id, p.name)),
       'rooms.send': (params) =>
         this.roomsCall(params, 'rooms.send', (rooms, owner, p) =>
           rooms.sendAsPlugin(owner, p.id, p.to, p.text).map((a) => ({ ...a }) as RoomSendAnswer)
@@ -1079,10 +1070,7 @@ export class HostApi {
         ),
       'rooms.docs.get': (params) => this.roomsCall(params, 'rooms.docs.get', (rooms, owner, p) => rooms.ownerDocGet(owner, p.id, p.path)),
       'rooms.docs.put': (params) =>
-        this.roomsCall(params, 'rooms.docs.put', async (rooms, owner, p) => {
-          await rooms.ownerDocPut(owner, p.id, p.path, p.text)
-          return null
-        }),
+        this.roomsVoid(params, 'rooms.docs.put', (rooms, owner, p) => rooms.ownerDocPut(owner, p.id, p.path, p.text)),
       'rooms.log': (params) =>
         this.roomsCall(params, 'rooms.log', (rooms, owner, p) => {
           // `since` is a cursor, the `seq` of the last entry seen (0 for the start), never a time: several entries
@@ -2770,6 +2758,16 @@ export class HostApi {
     } catch (err) {
       throw withMethod(what, err)
     }
+  }
+
+  /** roomsCall for a method that answers nothing: the RPC reply is `null`, whatever the room service returned. */
+  private async roomsVoid(
+    params: unknown,
+    what: string,
+    body: (rooms: HostRoomsApi, owner: RoomOwner, p: Record<string, unknown>) => unknown
+  ): Promise<null> {
+    await this.roomsCall(params, what, body)
+    return null
   }
 
   /**

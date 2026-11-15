@@ -1,4 +1,4 @@
-// `ccc room ...` (rooms Task 9, design-rooms.md §4): the requests each command sends, what it prints, the two-step read
+// `ccc room ...` (design-rooms.md §4): the requests each command sends, what it prints, the two-step read
 // (print, then ack on the same connection), the bounded stdin of `send -` and `doc put`, and the real SocketServer with
 // the room handlers answering the real client. Real Unix sockets in a temp dir under /tmp (macOS's /var/folders pushes a
 // socket path past sun_path), a plain `net` fake app where a test controls each reply.

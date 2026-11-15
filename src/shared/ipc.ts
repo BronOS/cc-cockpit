@@ -2521,12 +2521,12 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.flag': 'yes',
   'tabs.toggleFlag': 'yes',
   // The person's own acts on a room member (design-rooms.md §5): from a browser only in server mode, like the
-  // approvals; the handler decides by view.remote and `server` (router.ts registerRoomStripHandlers).
+  // approvals; the handler decides by view.remote and `server` (ipc/room-handlers.ts registerRoomStripHandlers).
   'tabs.roomMark': 'adapted',
   'rooms.deliverHeld': 'adapted',
   // The room view (design-rooms.md §5): reading is allowed to browsers (message text included, the person's record),
   // and so is a changed room's id. Pause, Resume and Remove are the person's acts: from a browser only in server mode,
-  // Remove there only after the window's views answered a `rooms.removeAsk` (router.ts registerRoomViewHandlers). The
+  // Remove there only after the window's views answered a `rooms.removeAsk` (ipc/room-handlers.ts registerRoomViewHandlers). The
   // ask, its end and its answer reach every view like the trash confirm. Reveal opens the host's file manager: `no`.
   'rooms.view': 'yes',
   'rooms.doc': 'yes',

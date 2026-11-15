@@ -134,7 +134,7 @@ export function buildHookRequestLine(
   const make = (): string =>
     encodeRequest({
       v: PROTOCOL_VERSION,
-      id: 1,
+      id: FIRST_REQUEST_ID,
       token,
       cmd: 'hook',
       args: truncated ? { event, payload, truncated: true, ...reply } : { event, payload, ...reply }
@@ -206,6 +206,13 @@ function replyReader(socket: Socket): () => Promise<Reply | undefined> {
 }
 
 /**
+ * Request ids on a connection that carries a request and then its ack (the Stop exchange, `ccc room read`). Main
+ * answers in order, so a reply under the other id is a confused peer's and is never taken for this one.
+ */
+const FIRST_REQUEST_ID = 1
+const ACK_REQUEST_ID = 2
+
+/**
  * The Stop hook's exchange (protocol.ts STOP_REPLY_ARG) on one connection, never half-closed until it is over: the
  * Stop, then its reply; for a valid block, `hook.ack` and main's answer. Resolves with the block to print only when
  * main confirmed the ack (`{ acked: true }`), else undefined (a plain Stop, garbage, an error reply, a refused ack, a
@@ -216,11 +223,11 @@ async function stopExchange(socket: Socket, line: string, token: string): Promis
   const next = replyReader(socket)
   socket.write(line)
   const reply = await next()
-  const block = reply?.ok === true && reply.id === 1 ? stopBlockOf(reply.result) : undefined
+  const block = reply?.ok === true && reply.id === FIRST_REQUEST_ID ? stopBlockOf(reply.result) : undefined
   if (block === undefined) return undefined
-  socket.write(encodeRequest({ v: PROTOCOL_VERSION, id: 2, token, cmd: HOOK_ACK_COMMAND, args: { ackId: block.ackId } }))
+  socket.write(encodeRequest({ v: PROTOCOL_VERSION, id: ACK_REQUEST_ID, token, cmd: HOOK_ACK_COMMAND, args: { ackId: block.ackId } }))
   const answer = await next()
-  const acked = answer?.ok === true && answer.id === 2 && isPlainObject(answer.result) && answer.result.acked === true
+  const acked = answer?.ok === true && answer.id === ACK_REQUEST_ID && isPlainObject(answer.result) && answer.result.acked === true
   return acked ? block : undefined
 }
 
@@ -324,9 +331,15 @@ const processOutput: Output = {
     new Promise<boolean>((resolve) => {
       // A pipe's write is async: the callback runs once it is flushed, with the error when the reader went away (EPIPE).
       // That error is also emitted as an `error` event afterwards, which with no listener would crash the process (exit
-      // 1, index.ts): the listener stays on purpose, this caller has already answered it through `resolve(false)`.
-      process.stdout.on('error', () => resolve(false))
-      process.stdout.write(text, (err) => resolve(err === null || err === undefined))
+      // 1, index.ts): so the listener stays after a failed write (a stream emits `error` once), and only a write that
+      // flushed takes it off again, so repeated calls do not pile listeners up.
+      const failed = (): void => resolve(false)
+      process.stdout.once('error', failed)
+      process.stdout.write(text, (err) => {
+        const ok = err === null || err === undefined
+        if (ok) process.stdout.off('error', failed)
+        resolve(ok)
+      })
     })
 }
 
@@ -891,59 +904,77 @@ function field(result: unknown, key: string): unknown {
 
 /** What a command prints on success. Only `overlay` and `sessions` have a result worth showing. */
 function formatResult(command: UserCommand, result: unknown): string {
-  if (command.kind === 'overlay') return `${JSON.stringify(result)}\n`
-  if (command.kind === 'plugin-link') {
-    const r = (result ?? {}) as { id?: unknown; name?: unknown }
-    return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
+  switch (command.kind) {
+    case 'overlay':
+      return `${JSON.stringify(result)}\n`
+    case 'plugin-link': {
+      const r = (result ?? {}) as { id?: unknown; name?: unknown }
+      return `linked ${plainLine(r.id)} (${plainLine(r.name)}) and enabled it in this project\n`
+    }
+    case 'plugin-unlink':
+      return `unlinked ${command.id}\n`
+    case 'panel-show':
+      return `showing ${command.plugin}/${command.panel}\n`
+    case 'plugin-config':
+      if (command.json) return `${JSON.stringify(result)}\n`
+      return command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0
+        ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
+        : formatPluginConfig(result as PluginConfigView, plainLine)
+    case 'plugin-limits':
+      return formatPluginLimits(result, plainLine)
+    case 'plugin-list': {
+      const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
+      if (command.json) return `${JSON.stringify(list)}\n`
+      return list
+        .map((p) => [p.id, p.version, p.source, p.enabled === true ? 'enabled' : 'disabled', p.state].map((v) => plainLine(String(v))).join('\t'))
+        .map((row) => `${row}\n`)
+        .join('')
+    }
+    case 'room-status':
+      return command.json ? `${JSON.stringify(result)}\n` : formatRoomStatus(result, plainLine)
+    case 'room-join':
+      return formatRoomJoin(result, plainLine)
+    case 'room-leave':
+      return formatRoomLeave(result, plainLine)
+    case 'room-send':
+      return formatRoomSend(result, plainLine)
+    case 'room-doc-ls':
+      return formatRoomDocs(result, plainLine)
+    case 'room-doc-get': {
+      // A doc exactly as stored (no flattening of its lines, no added newline): it may be piped on.
+      const text = field(result, 'text')
+      return typeof text === 'string' ? text : ''
+    }
+    case 'room-doc-put':
+      return `saved ${command.path}\n`
+    case 'web-status':
+      return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
+    case 'web-revoke': {
+      const revoked = field(result, 'revoked')
+      return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
+    }
+    case 'web-stop':
+      return 'cc-cockpit is stopping\n'
+    case 'web-link':
+    case 'web-add-device':
+      return `${plainLine(field(result, 'link'))}\n`
+    case 'web-password':
+      return field(result, 'mode') === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
+    case 'web-mode':
+      return `sign-in mode: ${plainLine(field(result, 'mode'))}\n`
+    case 'web-set':
+      return formatWebSaved(result, plainLine)
+    case 'sessions': {
+      const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
+      if (command.json) return `${JSON.stringify(list)}\n`
+      return list
+        .map((s) => [s.project, s.status, s.tool ?? '', s.tabId].map((v) => String(v).replace(/[\t\n]/g, ' ')).join('\t'))
+        .map((row) => `${row}\n`)
+        .join('')
+    }
+    default:
+      return ''
   }
-  if (command.kind === 'plugin-unlink') return `unlinked ${command.id}\n`
-  if (command.kind === 'panel-show') return `showing ${command.plugin}/${command.panel}\n`
-  if (command.kind === 'plugin-config') {
-    if (command.json) return `${JSON.stringify(result)}\n`
-    return command.set.length > 0 || (command.useGlobal?.length ?? 0) > 0
-      ? formatPluginConfigSet(result as PluginConfigSetResult, plainLine)
-      : formatPluginConfig(result as PluginConfigView, plainLine)
-  }
-  if (command.kind === 'plugin-limits') return formatPluginLimits(result, plainLine)
-  if (command.kind === 'plugin-list') {
-    const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
-    if (command.json) return `${JSON.stringify(list)}\n`
-    return list
-      .map((p) => [p.id, p.version, p.source, p.enabled === true ? 'enabled' : 'disabled', p.state].map((v) => plainLine(String(v))).join('\t'))
-      .map((row) => `${row}\n`)
-      .join('')
-  }
-  if (command.kind === 'room-status') return command.json ? `${JSON.stringify(result)}\n` : formatRoomStatus(result, plainLine)
-  if (command.kind === 'room-join') return formatRoomJoin(result, plainLine)
-  if (command.kind === 'room-leave') return formatRoomLeave(result, plainLine)
-  if (command.kind === 'room-send') return formatRoomSend(result, plainLine)
-  if (command.kind === 'room-doc-ls') return formatRoomDocs(result, plainLine)
-  // A doc exactly as stored (no flattening of its lines, no added newline): it may be piped on.
-  if (command.kind === 'room-doc-get') return typeof field(result, 'text') === 'string' ? (field(result, 'text') as string) : ''
-  if (command.kind === 'room-doc-put') return `saved ${command.path}\n`
-  if (command.kind === 'web-status') return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
-  if (command.kind === 'web-revoke') {
-    const revoked = field(result, 'revoked')
-    return `revoked ${typeof revoked === 'number' ? revoked : 0} device(s)\n`
-  }
-  if (command.kind === 'web-stop') return 'cc-cockpit is stopping\n'
-  if (command.kind === 'web-link' || command.kind === 'web-add-device') {
-    return `${plainLine(field(result, 'link'))}\n`
-  }
-  if (command.kind === 'web-password') {
-    return field(result, 'mode') === 'password' ? 'password set\n' : 'password set; sign-in is not by password yet: ccc web mode password switches to it\n'
-  }
-  if (command.kind === 'web-mode') return `sign-in mode: ${plainLine(field(result, 'mode'))}\n`
-  if (command.kind === 'web-set') return formatWebSaved(result, plainLine)
-  if (command.kind === 'sessions') {
-    const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
-    if (command.json) return `${JSON.stringify(list)}\n`
-    return list
-      .map((s) => [s.project, s.status, s.tool ?? '', s.tabId].map((v) => String(v).replace(/[\t\n]/g, ' ')).join('\t'))
-      .map((row) => `${row}\n`)
-      .join('')
-  }
-  return ''
 }
 
 /** `s` without one final line break (LF or CRLF). */
@@ -1020,7 +1051,7 @@ async function runRoomRead(env: Env, out: Output): Promise<number> {
     const token = env.APP_TAB_TOKEN || undefined
     const next = replyReader(socket)
     const request = (id: number, cmd: string, args: Record<string, unknown>): string => encodeRequest({ v: PROTOCOL_VERSION, id, cmd, args, ...(token ? { token } : {}) })
-    socket.write(request(1, 'room.read', {}))
+    socket.write(request(FIRST_REQUEST_ID, 'room.read', {}))
     const reply = await within(next(), REPLY_TIMEOUT_MS)
     if (reply === TIMED_OUT) {
       out.stderr('ccc: the app did not answer\n')
@@ -1033,7 +1064,7 @@ async function runRoomRead(env: Env, out: Output): Promise<number> {
     warnOnVersionMismatch({ reply }, out)
     // A reply to another request than the read (main answers in order, so only a confused peer sends one) is never
     // taken for the batch: its text would be printed as room messages and its `ack` sent for them.
-    if (reply.id !== 1) {
+    if (reply.id !== FIRST_REQUEST_ID) {
       out.stderr('ccc: the app answered a room read with something this ccc does not understand\n')
       return 1
     }
@@ -1072,9 +1103,9 @@ async function runRoomRead(env: Env, out: Output): Promise<number> {
       out.stderr('ccc: the app sent no ack for this read; the messages may show again\n')
       return 0
     }
-    socket.write(request(2, ROOM_READ_ACK_COMMAND, { ack }))
+    socket.write(request(ACK_REQUEST_ID, ROOM_READ_ACK_COMMAND, { ack }))
     const answer = await within(next(), REPLY_TIMEOUT_MS)
-    const acked = answer !== TIMED_OUT && answer?.ok === true && answer.id === 2 && isPlainObject(answer.result) && typeof answer.result.acked === 'number'
+    const acked = answer !== TIMED_OUT && answer?.ok === true && answer.id === ACK_REQUEST_ID && isPlainObject(answer.result) && typeof answer.result.acked === 'number'
     if (!acked) out.stderr('ccc: could not confirm the read with the app; these messages may show again at the next ccc room read\n')
     return 0
   } finally {

@@ -45,7 +45,7 @@
 //     /waitfile <path>    the same until <path> exists (at most 60 s): a busy turn the spec ends itself
 // Each prints `FAKE-CLAUDE hook <Event>` once the hook command has returned.
 //
-// Stop blocks (rooms, Task 7), as Claude Code 2.1.325 does them: a Stop hook that exits 0 and prints
+// Stop blocks (rooms, design-rooms.md §2), as Claude Code 2.1.325 does them: a Stop hook that exits 0 and prints
 // `{"decision":"block","reason":<text>}` on stdout continues the turn instead of ending it. The fake
 // prints `FAKE-CLAUDE block <json reason>`, runs the scripted lines in $FAKE_CLAUDE_ON_BLOCK (one per line of
 // the value; the continued turn: `/ccc room read`, say) and stops again with `stop_hook_active: true`. Claude Code

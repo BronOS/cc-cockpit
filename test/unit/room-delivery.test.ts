@@ -9,7 +9,8 @@ import {
   decide,
   type RoomSendLimits
 } from '../../src/main/rooms/room-delivery'
-import { MAX_QUEUED_PER_MEMBER, RoomError, RoomRegistry, type RoomOwner } from '../../src/main/rooms/room-registry'
+import { RoomError } from '../../src/main/rooms/room-error'
+import { MAX_QUEUED_PER_MEMBER, RoomRegistry, type RoomOwner } from '../../src/main/rooms/room-registry'
 import { sessionInfoOf } from '../../src/main/plugins/host-api'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { newEntry, type SessionEntry, type TabStatus } from '../../src/main/sessions/status-reducer'

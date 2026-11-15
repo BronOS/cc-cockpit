@@ -25,7 +25,8 @@ import { randomBytes } from 'node:crypto'
 import { ROOM_READ_MAX_TEXT_BYTES } from '../../shared/protocol'
 import { pointerText } from '../../shared/room-pointer'
 import { HIDDEN_TEXT } from '../../shared/session-name'
-import { SYSTEM_SENDER, type RoomMessage } from './room-registry'
+import { SYSTEM_SENDER } from './room-error'
+import type { RoomMessage } from './room-registry'
 
 /** Hex characters in a fence nonce. */
 export const FENCE_NONCE_CHARS = 16

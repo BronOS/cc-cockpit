@@ -1,4 +1,4 @@
-// Rooms Task 17: a plugin's room end to end, through the real built `ccc` and the fake `claude`'s hooks (design-rooms.md
+// Rooms: a plugin's room end to end, through the real built `ccc` and the fake `claude`'s hooks (design-rooms.md
 // §1-§4). A fixture plugin (rooms-test) makes a room, seeds bob's kickoff doc and opens alice (coordinator), bob and
 // carol. The fake plays Claude: after a paste it runs `ccc room read` and ends its turn a moment later
 // (FAKE_CLAUDE_ON_PASTE), and a Stop the hook blocks continues with a read and a busy stretch (FAKE_CLAUDE_ON_BLOCK,

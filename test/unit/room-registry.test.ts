@@ -13,10 +13,10 @@ import {
   MAX_ROOM_FILE_BYTES,
   MAX_ROOM_MESSAGE_CHARS,
   MAX_ROOMS_PER_PLUGIN,
-  RoomError,
   RoomRegistry,
   type RoomOwner
 } from '../../src/main/rooms/room-registry'
+import { RoomError } from '../../src/main/rooms/room-error'
 import { checkRoomName, checkRoomTitle, isPathPart, isPathPartChar, ROOM_NAME } from '../../src/shared/room-names'
 
 let dir: string

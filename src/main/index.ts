@@ -66,12 +66,11 @@ import {
   registerSettingsHandlers,
   registerServiceHandlers,
   registerTabHandlers,
-  registerRoomStripHandlers,
-  registerRoomViewHandlers,
   registerGroupHandlers,
   registerWebviewHandlers,
   summary
 } from './ipc/router'
+import { registerRoomStripHandlers, registerRoomViewHandlers } from './ipc/room-handlers'
 import { LayoutService, type PanelStatus, type PluginPanelDef, type SlotProviderInfo } from './layout/layout-service'
 import { AppMenu, focusedProjectIdOf, openFolderKey } from './menu'
 import { ElectronNoticeBackend } from './notifications/electron-notification'

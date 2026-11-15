@@ -1,4 +1,4 @@
-// The room service (rooms Task 8): the real room registry, doc store, delivery and Stop decision wired to a real
+// The room service (design-rooms.md): the real room registry, doc store, delivery and Stop decision wired to a real
 // TabManager (fake PTYs) and a real SessionRegistry, as index.ts wires them, plus the `ccc room` socket handlers on top.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

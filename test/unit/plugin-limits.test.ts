@@ -1,4 +1,4 @@
-// The per-plugin caps the person sets (rooms Task 11, design-rooms.md §6): the defaults and ceilings, a stored
+// The per-plugin caps the person sets (design-rooms.md §6): the defaults and ceilings, a stored
 // override clamped on every read (app.json is user-writable), an edit checked whole, the round trip through the real
 // app.json, the socket handlers (the write host-only, refused again by the handler), and the real `ccc plugin limits`
 // against the real SocketServer: read from a tab, write refused in a tab, written from a shell.

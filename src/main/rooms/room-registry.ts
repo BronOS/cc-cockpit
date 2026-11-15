@@ -1,10 +1,10 @@
 // Rooms, their members, invites and per-member queues (design-rooms.md §1, §2), persisted one file per room under
-// `<data>/rooms/<id>/room.json`. Pure logic plus node:fs, no Electron: the room service (Task 8) wires it to tabs,
+// `<data>/rooms/<id>/room.json`. Pure logic plus node:fs, no Electron: the room service (room-service.ts) wires it to tabs,
 // the send gate and the socket. Every identity comes from the caller main resolved (the host's own plugin and
 // project, the tab id the token named); nothing here reads an id from a payload.
 //
 // Tab binding is memory only: restored tabs get new ids (tab-manager.ts, randomUUID), so the saved membership lives
-// in the tab record (Task 4) and is rebound here with `rebind`. A member whose tab is gone for a quit or a window
+// in the tab record (shared/tab-room.ts) and is rebound here with `rebind`. A member whose tab is gone for a quit or a window
 // close stays a member with no tab.
 import { randomBytes, randomUUID } from 'node:crypto'
 import { closeSync, fstatSync, openSync, readSync, readdirSync, rmSync, type Dirent } from 'node:fs'
@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { writeFileAtomic } from '../hooks/write-file-atomic'
 import { VERIFIED_OPEN_FLAGS } from '../verified-read'
 import { warnLog } from '../warn-log'
+import { RoomError, SYSTEM_SENDER } from './room-error'
 import { RoomLog, ensureRoomDir, type RoomLogType } from './room-log'
 import { checkRoomName, checkRoomTitle, isRoomId, isRoomName } from '../../shared/room-names'
 
@@ -46,12 +47,6 @@ export const MAX_QUEUED_PER_MEMBER = 100
 export const MAX_QUEUED_CHARS_PER_ROOM = 1_000_000
 /** The largest room.json read at start: the queued-text cap with JSON's worst escaping (`\uXXXX`, 6 bytes) and room to spare. */
 export const MAX_ROOM_FILE_BYTES = 8 * 1024 * 1024
-
-/**
- * The sender of main's own notices to a room (a member's tab closed, design-rooms.md §7 "Failures"). A reserved name,
- * so no member can take it; never the person.
- */
-export const SYSTEM_SENDER = 'system'
 
 export interface RoomMessage {
   id: string
@@ -105,19 +100,6 @@ export interface RoomInvite {
 
 /** Why a member left, as the log says it (design-rooms.md §4). */
 export type LeaveWhy = 'left' | 'removed' | 'closed'
-
-export type RoomErrorCode = 'not-found' | 'invalid' | 'limit' | 'conflict' | 'ended' | 'error'
-
-/** A refusal with a stable code; `not-found` is also the answer for another plugin's room (no way to probe ids). */
-export class RoomError extends Error {
-  constructor(
-    readonly code: RoomErrorCode,
-    message: string
-  ) {
-    super(message)
-    this.name = 'RoomError'
-  }
-}
 
 export interface RoomRegistryOptions {
   /** `<data>/rooms`. */
@@ -458,7 +440,7 @@ export class RoomRegistry {
   }
 
   /**
-   * A restored tab's saved membership (Task 4): bound only when the room is there, not ended and of the tab's own
+   * A restored tab's saved membership (shared/tab-room.ts, design-rooms.md §1): bound only when the room is there, not ended and of the tab's own
    * project (`projectId`, main's: the tab's, never the saved record's), the name is still a member and no other tab
    * holds it. False otherwise (the tab just loses its membership). The project check is design §1's "no rooms across
    * windows": a tab record naming another project's room (a hand edit, a copied project record) would otherwise take
@@ -500,7 +482,7 @@ export class RoomRegistry {
   }
 
   /**
-   * Queue a message for one member. The send itself (and its delivery path) is logged by the delivery (Task 5). `from`
+   * Queue a message for one member. The send itself (and its delivery path) is logged by the delivery (room-delivery.ts). `from`
    * is a member name, `plugin` or `system`, checked here too: it goes into the fence header a member reads.
    */
   enqueue(roomId: string, to: unknown, msg: { from: string; text: string }): RoomMessage {
@@ -793,8 +775,6 @@ function readRoomFile(path: string): string {
   }
 }
 
-/** A room id's shape (one rule with the saved tab record, shared/room-names.ts isRoomId); the doc store checks it too. */
-export const isUuid = isRoomId
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -807,7 +787,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 function parseRoom(v: unknown, dirName: string): RoomRecord | null {
   if (!isObject(v)) return null
   const { id, pluginId, projectId, title, createdAt, endedAt, members, queues } = v
-  if (typeof id !== 'string' || id !== dirName || !isUuid(id)) return null
+  if (typeof id !== 'string' || id !== dirName || !isRoomId(id)) return null
   if (typeof pluginId !== 'string' || pluginId === '' || typeof projectId !== 'string' || projectId === '') return null
   const t = checkRoomTitle(title)
   if (!t.ok || t.value !== title) return null
