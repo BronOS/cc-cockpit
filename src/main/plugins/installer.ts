@@ -220,6 +220,8 @@ export interface InstallerOptions {
   onRevoked?: (plugins: { id: string; revoked: PluginRevocation }[]) => void
   /** The plugin's `ctx.secrets` store (plugin-secrets.ts), emptied on uninstall. */
   secrets?: { removePlugin(pluginId: string): void }
+  /** The person's caps for the plugin (plugin-limits.ts), dropped on uninstall so they never carry over to another plugin with the id. */
+  limits?: { forget(pluginId: string): void }
   log?: (message: string) => void
 }
 
@@ -500,7 +502,7 @@ export class PluginInstaller {
   }
 
   /**
-   * Remove the index entry, the themes, the secrets and (for a git install) the folder. Plugin data
+   * Remove the index entry, the themes, the secrets, the person's caps and (for a git install) the folder. Plugin data
    * stays. `beforeRemove` runs in the queue while the record still says what was installed; when it
    * throws nothing is removed.
    */
@@ -531,6 +533,11 @@ export class PluginInstaller {
         this.options.secrets?.removePlugin(id)
       } catch (err) {
         this.log(`uninstall ${id}: removing its secrets failed: ${errorText(err)}`)
+      }
+      try {
+        this.options.limits?.forget(id)
+      } catch (err) {
+        this.log(`uninstall ${id}: dropping its limits failed: ${errorText(err)}`)
       }
       if (entry.source.kind === 'git') await this.removeInstallDir(id, entry.version)
     })

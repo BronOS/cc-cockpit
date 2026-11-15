@@ -199,3 +199,23 @@ export function limitsEdit(view: PluginLimitsView, draft: LimitsDraft): { edit: 
   }
   return { edit: set.length + reset.length > 0 ? { set, reset } : null, problems }
 }
+
+/**
+ * The draft after a "Use default" saved: the reset keys show what applies now, every other field keeps what the person
+ * typed (a reset-only save must not throw their unsaved edits away). `view` is main's reply to the save.
+ */
+export function limitsDraftAfterReset(view: PluginLimitsView, draft: LimitsDraft, reset: readonly string[]): LimitsDraft {
+  const fresh = limitsDraft(view)
+  const next: LimitsDraft = { ...draft }
+  for (const key of reset) if (Object.hasOwn(fresh, key)) next[key] = fresh[key] as string
+  return next
+}
+
+/**
+ * Whether this page may edit the caps. A browser view of a desktop cockpit is refused `plugins.limits.set` (main
+ * decides by the view it bound, router.ts); only the desktop page and a server's browsers save. A UI hint: main
+ * refuses either way.
+ */
+export function limitsEditable(webShell: boolean, serverView: boolean): boolean {
+  return !webShell || serverView
+}

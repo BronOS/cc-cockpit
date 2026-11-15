@@ -36,6 +36,7 @@ import {
   NOTIFY_CHIME_INTERVAL_MS
 } from '../../src/shared/notify'
 import { BUILTIN_SOUNDS, MAX_SOUND_ID_LENGTH } from '../../src/shared/notify-sound'
+import { PLUGIN_LIMIT_SPECS } from '../../src/shared/plugin-limits'
 import { DISPATCH_VIEW_MS } from '../../src/host/ctx/origin-view'
 
 function capture(): { out: { stdout: (t: string) => void; stderr: (t: string) => void }; stdout: string[]; stderr: string[] } {
@@ -356,6 +357,42 @@ describe('guide drift guards', () => {
       `At most ${MAX_SOUND_ID_LENGTH} characters`
     )
     expect(design).toContain(`a sound id of at most ${MAX_SOUND_ID_LENGTH} characters`)
+  })
+
+  it('states the default and the ceiling of every per-plugin cap of shared/plugin-limits.ts in cli.md, api.md and types.ts', () => {
+    const flat = (text: string): string => text.replace(/\s+/g, ' ')
+    const cli = flat(topic('cli'))
+    const api = flat(topic('api'))
+    // JSDoc line starts (` * `) are dropped so a sentence wrapped across lines reads as one.
+    const types = flat(readFileSync(new URL('../../src/sdk/types.ts', import.meta.url), 'utf8').replace(/\n\s*\* ?/g, ' '))
+    expect(PLUGIN_LIMIT_SPECS.map((s) => s.key)).toEqual(['opensPerMinute', 'sendsPerMinute', 'roomSendsPerMember', 'roomSendsPerRoom'])
+    const by = Object.fromEntries(PLUGIN_LIMIT_SPECS.map((s) => [s.key, s]))
+    for (const spec of PLUGIN_LIMIT_SPECS) {
+      // `ccc plugin limits`: the key, then its default and ceiling in the same item ("default 5, at most 60").
+      const at = cli.indexOf(`\`${spec.key}\``)
+      expect(at, `cli.md names ${spec.key}`).toBeGreaterThanOrEqual(0)
+      expect(cli.slice(at, at + 260), `cli.md ${spec.key}`).toContain(`default ${spec.default}, at most ${spec.ceiling}`)
+      expect(api, `api.md names ${spec.key}`).toContain(`\`${spec.key}\``)
+    }
+    const o = by['opensPerMinute']!
+    const s = by['sendsPerMinute']!
+    const m = by['roomSendsPerMember']!
+    const r = by['roomSendsPerRoom']!
+    // api.md: sessions.send, sessions.open and ctx.rooms.send.
+    expect(api).toContain(`At most ${s.default} texts a minute per plugin by default (\`sendsPerMinute\`)`)
+    expect(api).toContain(`\`ccc plugin limits\`, at most ${s.ceiling})`)
+    expect(api).toContain(`At most ${o.default} tabs a minute per plugin by default`)
+    expect(api).toContain(`\`ccc plugin limits\`, at most ${o.ceiling}), and a refusal`)
+    expect(api).toContain(`the room's ${r.default} sends a minute`)
+    expect(api).toContain(`a member's own ${m.default} a minute`)
+    expect(api).toContain(`at most ${r.ceiling} and ${m.ceiling})`)
+    // types.ts: the same numbers in the JSDoc of send, open and rooms.send.
+    expect(types).toContain(`over ${s.default} texts a minute`)
+    expect(types).toContain(`At most ${o.default} a minute (the default \`opensPerMinute\``)
+    expect(types).toContain(`the room's ${r.default} sends a minute`)
+    expect(types).toContain(`a member's ${m.default} a minute`)
+    // rooms.md names the room defaults.
+    expect(flat(topic('rooms'))).toContain(`by default ${m.default} and ${r.default}`)
   })
 
   it('documents the panel SDK members', () => {

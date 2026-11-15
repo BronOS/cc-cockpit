@@ -80,10 +80,11 @@ stderr).
   1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides; both print
   the new lines and apply to the plugin's next open or send, with no restart. The caps are the
   person's: the write is refused inside a cockpit tab (run it from a shell outside cockpit, or use
-  Settings > Plugins > Limits) and nothing a plugin can call changes them. That refusal is not a
-  security boundary (a tab's process is the same user and could drop its token or edit `app.json`);
-  it keeps a prompted Claude from raising its own plugin's caps as a side effect. Stored app-wide in
-  `app.json`, never in the plugin's settings or `ccc plugin config`. Exit 1 with
+  Settings > Plugins > Limits) and no plugin API changes them. That refusal is not a
+  security boundary (a tab's process or a plugin's host is the same user and could drop its token,
+  run `ccc plugin limits` as a shell would, or edit `app.json`); it keeps a prompted Claude from
+  raising its own plugin's caps as a side effect. Stored app-wide in `app.json`, never in the
+  plugin's settings or `ccc plugin config`; uninstalling a plugin drops its caps. Exit 1 with
   "cc-cockpit is not running" when the app is not running.
 - `ccc panel show [--project <path>] <plugin>/<panel>` reveals one of a plugin's panels in this
   project's window: unhidden, opened, its zone expanded, and shown again if the window auto-hid

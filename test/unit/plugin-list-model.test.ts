@@ -9,6 +9,8 @@ import {
   filterCards,
   hasUpdate,
   limitsDraft,
+  limitsDraftAfterReset,
+  limitsEditable,
   limitsEdit,
   matchesSearch,
   PAGE_SIZE,
@@ -207,5 +209,29 @@ describe('limitsEdit', () => {
     expect(limitsEdit(view, { ...limitsDraft(view), opensPerMinute: '60', roomSendsPerRoom: '601' }).problems).toEqual({
       roomSendsPerRoom: 'a whole number from 1 to 600'
     })
+  })
+})
+
+describe('limits form after a "Use default"', () => {
+  it('shows the default on the reset row and keeps the unsaved text of every other field', () => {
+    const before = limitsView('a.one', { sendsPerMinute: 100, opensPerMinute: 9 })
+    const typed = { ...limitsDraft(before), roomSendsPerMember: '25', roomSendsPerRoom: 'abc', opensPerMinute: '12' }
+    const after = limitsView('a.one', { opensPerMinute: 9 })
+    expect(limitsDraftAfterReset(after, typed, ['sendsPerMinute'])).toEqual({
+      opensPerMinute: '12',
+      sendsPerMinute: '30',
+      roomSendsPerMember: '25',
+      roomSendsPerRoom: 'abc'
+    })
+    // A key main did not name changes nothing.
+    expect(limitsDraftAfterReset(after, typed, ['nope'])).toEqual(typed)
+  })
+})
+
+describe('limitsEditable', () => {
+  it('is editable in the desktop window and a server\'s browser, read-only in a browser of a desktop', () => {
+    expect(limitsEditable(false, false)).toBe(true)
+    expect(limitsEditable(true, true)).toBe(true)
+    expect(limitsEditable(true, false)).toBe(false)
   })
 })

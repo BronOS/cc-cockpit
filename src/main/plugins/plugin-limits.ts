@@ -6,12 +6,17 @@
 // Who writes: only the person, through Settings › Plugins (`plugins.limits.set`, router.ts; a browser only in server
 // mode) and `ccc plugin limits <id> key=value...` from a shell outside cockpit (`plugin.limits.set`, in
 // HOST_ONLY_COMMANDS). Never plugin.json, the plugin's own settings, `ccc plugin config` or anything a plugin host can
-// reach. Not a boundary: a tab's process is the same OS user and can drop its token or edit app.json; it keeps a
-// prompted Claude from raising its own plugin's caps as a side effect.
+// reach through the API. Not a boundary: a tab's process or a plugin host is the same OS user and can drop its token,
+// run `ccc plugin limits` as a shell would, or edit app.json; it keeps a prompted Claude from raising its own
+// plugin's caps as a side effect, and a plugin that is honest about the API from finding a setter.
 //
 // The file is user-writable, so a read never trusts it: an override that is not a whole number from 1 up is ignored
 // (the default applies) and one above the ceiling reads as the ceiling, so a typo in app.json cannot unbound a cap. An
 // edit is stricter: a value outside 1..ceiling is refused, naming the range, so the person sees the typo.
+//
+// Uninstalling a plugin drops its overrides (`forget`, called by the installer beside its secrets): raised caps must
+// not carry over to a different plugin that later takes the id (a link of another folder). A reinstall starts at the
+// defaults.
 import {
   DEFAULT_PLUGIN_LIMITS,
   isPluginLimitKey,
@@ -29,13 +34,18 @@ import { isPlainObject } from '../../shared/guards'
 export interface PluginLimitsStorage {
   /** As stored (user-writable, so anything); undefined when the plugin has none. */
   get(pluginId: string): unknown
-  /** Store the cleaned overrides; undefined (no override left) removes the plugin's entry. On disk when it returns, or throws. */
+  /**
+   * Store the cleaned overrides; undefined (no override left) removes the plugin's entry. Throws when app.json cannot
+   * be written at all (read-only); otherwise it is queued like every app.json write (debounced, flushed on quit).
+   */
   set(pluginId: string, overrides: Partial<PluginLimits> | undefined): void
 }
 
 /** The slice of the app.json file (ProjectRegistry.app, a JsonFile) the overrides live in. */
 export interface AppLimitsFile {
   readonly data: { pluginLimits?: Record<string, unknown> }
+  /** The file loaded read-only (EACCES, or a newer schemaVersion): a write would be lost, so a set refuses. */
+  readonly readOnly?: boolean
   update(mutate: (app: { pluginLimits?: Record<string, unknown> }) => void): void
 }
 
@@ -47,6 +57,8 @@ export function appJsonLimitsStorage(app: AppLimitsFile): PluginLimitsStorage {
       return isPlainObject(all) && Object.hasOwn(all, pluginId) ? all[pluginId] : undefined
     },
     set: (pluginId, overrides) => {
+      // Like forgetPluginRepo: a value that would only be lost at restart is refused now, not reported as set.
+      if (app.readOnly === true) throw new Error('the limits cannot be saved: app.json cannot be written (see the log)')
       app.update((a) => {
         // app.json is user-writable: a damaged top level is replaced rather than written into.
         if (!isPlainObject(a.pluginLimits)) a.pluginLimits = {}
@@ -163,7 +175,8 @@ export class PluginLimitsStore {
   constructor(private readonly deps: PluginLimitsDeps) {}
 
   /**
-   * The caps in effect for a plugin, read from the file on every call (an edit applies to the next open or send).
+   * The caps in effect for a plugin, read from the in-memory app.json on every call (an edit made here applies to the
+   * next open or send; a hand edit of the file while the app runs is not seen, and the next save overwrites it).
    * Never throws: an unknown id or a damaged entry gets the defaults.
    */
   limits(pluginId: string): PluginLimits {
@@ -172,6 +185,16 @@ export class PluginLimitsStore {
     } catch {
       return { ...DEFAULT_PLUGIN_LIMITS }
     }
+  }
+
+  /**
+   * Drop a plugin's overrides (it was uninstalled). Takes any id, installed or not, and does nothing when there is no
+   * entry, so an uninstall never needs a writable app.json for a plugin that had no caps set.
+   */
+  forget(pluginId: string): void {
+    const stored: unknown = this.deps.storage.get(pluginId)
+    if (stored === undefined) return
+    this.deps.storage.set(pluginId, undefined)
   }
 
   view(pluginId: unknown): PluginLimitsView {

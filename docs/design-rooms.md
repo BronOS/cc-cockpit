@@ -192,9 +192,12 @@ Set in Settings › Plugins (the plugin's row, "Limits") or from a shell outside
 plugin.json, the plugin's settings or `ccc plugin config`. The write is its own request name in `HOST_ONLY_COMMANDS`,
 refused for any caller with a token, and its handler refuses a non-anonymous caller again (the `web.*` guard in
 `socket-server.ts` covers only `web.` names, so the new name gets the same check). Like `ccc web`, it is not a boundary:
-a tab can drop its token (`env -u APP_TAB_TOKEN`) and look like the person's shell; it keeps a prompted Claude from
+a tab can drop its token (`env -u APP_TAB_TOKEN`) and look like the person's shell, and a plugin host (full Node, the
+same OS user, no token) can run `ccc plugin limits` the same way or edit `app.json`; it keeps a prompted Claude from
 raising its own caps as a side effect, and the docs say so. Reading is a separate request name (`ccc plugin limits <id>`
-with no values), allowed from a tab. The settings channel is `no` for browsers except in server mode. A cap hit names
+with no values), allowed from a tab. A plugin's entry is dropped when the plugin is uninstalled (the installer, beside its
+secrets), so raised caps never carry over to a different plugin that later takes the id; a write that cannot reach a
+read-only `app.json` is refused, not reported as set. The settings channel is `no` for browsers except in server mode. A cap hit names
 the cap and its value. Guide text for `sessions.open`, `sessions.send` and `ctx.rooms` names the defaults and that the
 person can change them.
 

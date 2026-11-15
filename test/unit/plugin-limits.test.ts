@@ -215,6 +215,35 @@ describe('app.json round trip', () => {
   })
 })
 
+describe('uninstall and an unwritable app.json', () => {
+  it('forget drops the overrides of an id that is not installed (and does nothing when there are none)', () => {
+    const storage = memory({ 'gone.plugin': { opensPerMinute: 60 }, 'a.one': { sendsPerMinute: 100 } })
+    const s = store(storage, (id): id is 'a.one' => id === 'x')
+    s.forget('gone.plugin')
+    s.forget('never.had')
+    expect(storage.data).toEqual({ 'a.one': { sendsPerMinute: 100 } })
+    // Not installed, so no caps apply: the id gets the defaults, as a later plugin with this id would.
+    expect(s.limits('gone.plugin')).toEqual(DEFAULT_PLUGIN_LIMITS)
+  })
+
+  it('forget on the real app.json removes the entry and the emptied map', () => {
+    const registry = new ProjectRegistry({ dataDir: join(root, 'data'), debounceMs: 60_000, log: () => {} })
+    const s = new PluginLimitsStore({ storage: appJsonLimitsStorage(registry.app), known: () => true })
+    s.set('a.one', [['opensPerMinute', 6]], [])
+    expect(registry.app.data.pluginLimits).toEqual({ 'a.one': { opensPerMinute: 6 } })
+    s.forget('a.one')
+    expect(registry.app.data.pluginLimits).toBeUndefined()
+  })
+
+  it('refuses an edit while app.json cannot be written, instead of reporting it as set', () => {
+    const updates: unknown[] = []
+    const app = { data: {}, readOnly: true, update: (m: unknown) => void updates.push(m) }
+    const s = new PluginLimitsStore({ storage: appJsonLimitsStorage(app), known: () => true })
+    expect(() => s.set('a.one', [['opensPerMinute', 6]], [])).toThrow(/app\.json cannot be written/)
+    expect(updates).toEqual([])
+  })
+})
+
 describe('the socket handlers', () => {
   const callers: Caller[] = [
     { kind: 'session', tabId: 't1', projectId: 'p1' },

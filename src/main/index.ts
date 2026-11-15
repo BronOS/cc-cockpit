@@ -563,6 +563,8 @@ function start(server: boolean): void {
     reloadHosts: (id) => hosts.reloadPlugin(id),
     beforeLink: (id) => registry.forgetPluginRepo(id),
     secrets: pluginSecrets,
+    // `pluginLimits` is defined further down: this only runs on an uninstall, long after.
+    limits: { forget: (pluginId) => pluginLimits.forget(pluginId) },
     revocation: (plugin) => marketplace.revocationFor(plugin),
     // A plugin revoked at load is seen before `ready`, when a Notification cannot be shown yet.
     // `coreNotices` is declared further down: this only runs after load() has started, i.e. after it exists.

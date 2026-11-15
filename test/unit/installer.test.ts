@@ -735,6 +735,26 @@ describe('uninstall', () => {
     expect(await secrets.get('test.other', 'token')).toBe('w')
   })
 
+  it('drops the person’s caps for the plugin once it is uninstalled, and still uninstalls when that fails', async () => {
+    const forgotten: string[] = []
+    const { installer } = setup({ limits: { forget: (id) => void forgotten.push(id) } })
+    await installer.install(repoUrl, 'v1.0.0')
+    await installer.uninstall('test.good')
+    expect(forgotten).toEqual(['test.good'])
+
+    const failing = setup({
+      limits: {
+        forget: () => {
+          throw new Error('read-only')
+        }
+      }
+    })
+    await failing.installer.install(repoUrl, 'v1.0.0')
+    await failing.installer.uninstall('test.good')
+    expect(onDisk().list()).toEqual([])
+    expect(logs.join('\n')).toMatch(/dropping its limits failed: read-only/)
+  })
+
   it('still uninstalls when removing the secrets fails', async () => {
     const { installer } = setup({
       secrets: {
