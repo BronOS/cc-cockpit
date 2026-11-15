@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import { expect, test, type Cockpit } from './fixtures'
-import { focusedPanes, groupsOf, leaves, newTaggedShell, paneShowing, paneText, tabsOf, typeInPane, visiblePanes, waitPaneText } from './split-fixtures'
+import { focusedPanes, groupsOf, leaves, newTaggedShell, paneShowing, paneText, roomyDesktop, tabsOf, typeInPane, visiblePanes, waitPaneText } from './split-fixtures'
 
 const PLUGIN = 'test.splitbeside'
 const FIXTURE = join(__dirname, '..', 'fixtures', 'plugins', 'split-beside')
@@ -41,6 +41,9 @@ async function run(c: Cockpit, command: string): Promise<Logged> {
 test('a plugin `beside` opens a pane next to the anchor, marked "Opened by", and takes no focus (D4, D7, D8)', async ({ cockpit }) => {
   test.setTimeout(120_000)
   const { page } = cockpit
+  // Both panes drawn: on a window a tiling window manager halved, two panes side by side fall under
+  // the auto-zoom size (D5) and only the focused one shows.
+  await roomyDesktop(cockpit)
   await enable(cockpit)
   const anchor = await newTaggedShell(cockpit, 'pa')
   writeFileSync(join(cockpit.root, 'home', 'anchor.txt'), anchor.id)

@@ -6,7 +6,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } 
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
-import { groupOfShells, groupsOf, invoke, leaves, newTaggedShell, paneShowing, tabsOf, visiblePanes, waitPaneText } from './split-fixtures'
+import { groupOfShells, groupsOf, invoke, leaves, newTaggedShell, paneShowing, roomyDesktop, tabsOf, visiblePanes, waitPaneText } from './split-fixtures'
 
 interface SavedRecord {
   path: string
@@ -56,6 +56,9 @@ test('two groups come back after a quit and relaunch, with their sizes and the t
   const second = await launchCockpit({ root, folderArg: false })
   try {
     const c = second.cockpit
+    // The relaunched window is resizable again, so a tiling window manager halves it, and the 0.3
+    // share then falls under the 20-column minimum: the group would auto-zoom (D5) to one pane.
+    await roomyDesktop(c)
     await expect(c.page.getByRole('tab')).toHaveCount(4)
     const snap = await groupsOf(c.page)
     expect(snap.groups).toHaveLength(2)

@@ -445,6 +445,9 @@ test('unprompted focus at a relaunch: the restored group mounts the file pane wh
   const second = await launchCockpit({ root, folderArg: false, env: { CC_COCKPIT_NO_BUNDLED: '' } })
   try {
     const { page } = second.cockpit
+    // The relaunched window is resizable again: a tiling window manager would halve it and the group
+    // auto-zoom (D5) once the window is re-tiled, which leaves no pane marked focused.
+    await roomyDesktop(second.cockpit)
     await expect(visiblePanes(page)).toHaveCount(2, { timeout: 15_000 })
     const claude = (await tabsOf(page)).find((t) => t.kind === 'claude')!.id
     await expect.poll(() => domFocusInTerminal(page), { timeout: 15_000 }).toBe(true)
