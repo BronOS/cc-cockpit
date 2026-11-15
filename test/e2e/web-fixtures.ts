@@ -75,6 +75,16 @@ export async function openProjectInBrowser(browser: WebBrowser, origin: string, 
   await page.locator('.tabs-pane').waitFor()
 }
 
+/** One download the browser saved: `state` is Electron's (`progressing` until it ends, then `completed`, `cancelled`, `interrupted`). */
+export interface BrowserDownload {
+  url: string
+  /** The name the browser chose (the link's `download` attribute or the header's). */
+  name: string
+  state: string
+  /** Where the bytes are (inside the browser's temp profile; removed at `close`). */
+  path: string
+}
+
 export interface WebBrowser {
   app: ElectronApplication
   /** The browser's one page (the web shell, once the URL loads). */
@@ -85,6 +95,8 @@ export interface WebBrowser {
   waitForTerminalText(text: string | RegExp, timeout?: number): Promise<void>
   /** URLs the page asked to open in a new tab or window, in order (the fixture records and denies them). */
   opened(): Promise<string[]>
+  /** The downloads the page started, in order (the fixture saves each under its profile and records the end state). */
+  downloads(): Promise<BrowserDownload[]>
   close(): Promise<void>
 }
 
@@ -137,6 +149,7 @@ export async function openBrowser(url: string): Promise<WebBrowser> {
       }
     },
     opened: () => app.evaluate(() => [...((globalThis as { __opened?: string[] }).__opened ?? [])]),
+    downloads: () => app.evaluate(() => [...((globalThis as { __downloads?: unknown[] }).__downloads ?? [])]) as Promise<BrowserDownload[]>,
     close: async () => {
       await app.close().catch(() => {})
       rmSync(profile, { recursive: true, force: true })

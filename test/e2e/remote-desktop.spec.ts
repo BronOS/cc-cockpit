@@ -915,6 +915,76 @@ test('My own tunnel: the waiting page shows the command, a relay to the gateway 
   }
 })
 
+test('Direct: a click on Download saves to the desktop Downloads with a notice; a page-driven /d/ GET with no click and a blob: download save nothing', async () => {
+  test.setTimeout(180_000)
+  // The bundled plugins on in the server: the Files panel is cockpit.files'.
+  const server = await launchServer({ mode: 'link', env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  let desktop: { cockpit: Cockpit; close(options?: { keepFiles?: boolean }): Promise<void> } | undefined
+  try {
+    const bytes = Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 13 + 1) % 256))
+    writeFileSync(join(server.cockpit.projectDir, 'fetched.bin'), bytes)
+    const link = await addDeviceLink(server)
+    desktop = await launchCockpit({ folderArg: false, ready: 'picker' })
+    const { app } = desktop.cockpit
+    const downloads = await desktop.cockpit.hook<string>('remoteDownloadsDir')
+    const notices = (): Promise<string[]> => desktop!.cockpit.hook<string[]>('notifications')
+    const picker = desktop.cockpit.page
+    await picker.getByRole('button', { name: 'Connect to server…' }).click()
+    const dialog = picker.getByRole('dialog', { name: 'Connect to server' })
+    await dialog.getByRole('tab', { name: 'Link' }).click()
+    await dialog.getByRole('textbox', { name: 'Link' }).fill(link)
+    await dialog.getByRole('button', { name: 'Connect' }).click()
+    const remote = await remoteWindow(app, server.origin)
+    const href = `?project=${encodeURIComponent(server.projectId)}`
+    await remote.getByRole('list', { name: 'Open projects' }).locator(`a[href="${href}"]`).click()
+    await expect(remote).toHaveURL(`${server.origin}/${href}`)
+    await remote.locator('.tabs-pane').waitFor()
+
+    // The Files panel in the remote window, with its Download item (the page is a browser view).
+    await remote.locator('.zone-left').getByRole('button', { name: /^Files/ }).click()
+    const tree = remote.frameLocator('section.panel[aria-label="Files"] iframe')
+    const row = tree.locator('.row', { has: tree.locator('.name', { hasText: /^fetched\.bin$/ }) })
+    await expect(row).toBeVisible({ timeout: 20_000 })
+    const menu = tree.getByRole('menu')
+    await row.click({ button: 'right' })
+    await menu.getByRole('menuitem', { name: 'Download', exact: true }).click()
+
+    // Saved straight to Downloads (the test hook's folder under the data dir) with a notice in main's
+    // words: no native save dialog (one would hold the download until someone answered it).
+    await expect.poll(() => existsSync(join(downloads, 'fetched.bin')), { timeout: 20_000 }).toBe(true)
+    expect(readFileSync(join(downloads, 'fetched.bin')).equals(bytes)).toBe(true)
+    await expect.poll(notices, { timeout: 10_000 }).toContain('Saved fetched.bin to Downloads')
+    // The hidden temp name of the save is gone: the file is the only entry.
+    expect(readdirSync(downloads)).toEqual(['fetched.bin'])
+
+    // A /d/ download the page starts with no click of the person just before: the click of the one
+    // above is used up and past its few seconds. The menu is driven by synthetic DOM events (no input
+    // reaches main), so the server makes a real token and the window's own gate must refuse it.
+    await new Promise((r) => setTimeout(r, 6_000))
+    await row.dispatchEvent('contextmenu')
+    await menu.getByRole('menuitem', { name: 'Download', exact: true }).dispatchEvent('click')
+    await expect.poll(notices, { timeout: 15_000 }).toContain('fetched.bin was not saved: click Download again')
+    expect(readdirSync(downloads)).toEqual(['fetched.bin'])
+
+    // A blob: download is cancelled (not the server's own /d/ link), even right after a real click.
+    await remote.locator('.tabs-pane').click()
+    await remote.evaluate(() => {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob(['from a blob']))
+      a.download = 'blob.txt'
+      document.body.append(a)
+      a.click()
+    })
+    await new Promise((r) => setTimeout(r, 2_000))
+    expect(readdirSync(downloads)).toEqual(['fetched.bin'])
+    expect(await notices()).not.toContain('Saved blob.txt to Downloads')
+    await expectMainAlive(server)
+  } finally {
+    if (desktop !== undefined) await desktop.close()
+    await server.close()
+  }
+})
+
 /** A loopback port nothing listens on now. */
 function freePort(): Promise<number> {
   return new Promise((ok, fail) => {

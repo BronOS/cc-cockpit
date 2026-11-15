@@ -70,7 +70,8 @@ test('right-click menu: items per kind, rename, new folder, Move to Trash with t
   const row = (name: string) => tree.locator('.row', { has: tree.locator('.name', { hasText: new RegExp(`^${name}$`) }) })
   await expect(row('notes.md')).toBeVisible()
 
-  // A file's menu, on a right click.
+  // A file's menu, on a right click. The exact lists below also say the desktop page has no Download
+  // items (the file is already on this screen; web-download.spec.ts shows them in a browser view).
   await row('notes.md').click({ button: 'right' })
   const menu = tree.getByRole('menu')
   await expect(menu).toBeVisible()

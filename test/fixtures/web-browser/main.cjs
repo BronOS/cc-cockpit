@@ -15,6 +15,7 @@
 //
 // argv (after the script): <profile dir> <url>.
 const { app, BrowserWindow } = require('electron')
+const { join } = require('node:path')
 
 const [profile, url] = process.argv.slice(-2)
 if (!profile || !url) throw new Error('usage: electron main.cjs <profile dir> <url>')
@@ -45,5 +46,19 @@ void app.whenReady().then(() => {
   // Electron would cancel the close silently and the spec's teardown would wait for ever, so this
   // test browser always lets the page go; specs check the hold with a dispatched event instead.
   win.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+  // A download the page starts (the download specs): saved under <profile>/downloads/<n>/<name> and
+  // recorded for the spec (`app.evaluate(() => globalThis.__downloads)`), never to a dialog. Playwright
+  // does not report an Electron session's downloads, so this is the fixture's own record: the url, the
+  // name the browser chose, the end state and where the bytes are.
+  globalThis.__downloads = []
+  win.webContents.session.on('will-download', (_event, item) => {
+    const rec = { url: item.getURL(), name: item.getFilename(), state: 'progressing', path: '' }
+    rec.path = join(profile, 'downloads', String(globalThis.__downloads.length), rec.name)
+    globalThis.__downloads.push(rec)
+    item.setSavePath(rec.path)
+    item.once('done', (_e, state) => {
+      rec.state = state
+    })
+  })
   void win.loadURL(url)
 })
