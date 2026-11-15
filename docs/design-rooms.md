@@ -206,6 +206,6 @@ shell page; hook output only from the Stop pointer and the existing SessionStart
 `decision: block`, `stop_hook_active` and the cap of 8; e2e: a plugin opens two tabs that exchange a message and a doc,
 and one Stop pointer through the real `ccc` start (the budget); drift tests for the guide and the core skill.
 
-Rollout: branch `feat/groups` (worktree `.claude/worktrees/groups`, based on `integration/editor-split`), a plan in
+Rollout: branch `feat/rooms` (worktree `.claude/worktrees/groups`, based on `integration/editor-split`), a plan in
 `docs/plans/`, run with `planning:exec`, reviewed, merged into the release branch. `bronos.team` is rebuilt on
 `ctx.rooms` afterwards, outside the app release.
