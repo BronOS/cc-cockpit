@@ -240,6 +240,24 @@ function waitFor(cond, ms = 3000) {
   })
 }
 
+/**
+ * Runs `action` until `cond` holds, up to `ms`: a folder watch on macOS is FSEvents, which starts reporting a
+ * moment after fs.watch returns and can miss a change made before that (the release run failed twice on
+ * macos-15 waiting 3 s for the first rename). Only for actions that are safe to repeat: a replace with the same
+ * text leaves the same file and the same expected hash.
+ */
+async function eventually(action, cond, ms = 10000) {
+  const start = Date.now()
+  for (;;) {
+    action()
+    try {
+      return await waitFor(cond, 500)
+    } catch (err) {
+      if (Date.now() - start > ms) throw err
+    }
+  }
+}
+
 /** Counts the watcher's checks of a file from now on (`.n`): what a "no event" assertion waits for. */
 function countChecks(watcher) {
   const count = { n: 0 }
@@ -265,23 +283,20 @@ test('the folder watch sees a rename-replace, again after it, and a delete', asy
       fs.writeFileSync(tmp, text)
       fs.renameSync(tmp, f)
     }
-    replace('two\n')
-    await waitFor(() => events.length >= 1)
+    await eventually(() => replace('two\n'), () => events.length >= 1)
     assert.deepEqual(events[0], { real, change: 'changed', hash: sha('two\n') })
     // A file watch would have ended with the first rename; the folder watch sees the second.
-    replace('three\n')
-    await waitFor(() => events.length >= 2)
+    await eventually(() => replace('three\n'), () => events.length >= 2)
     assert.equal(events[1].hash, sha('three\n'))
     // Our own save, recorded with seen(), is no event. Waited for by the check the rename starts, not
     // a fixed sleep (on a slow machine one could end before the check ran and pass with nothing
     // tested): check() notifies synchronously, and any check after the replace reads 'four'.
     const checks = countChecks(w)
     stop.seen(sha('four\n'))
-    replace('four\n')
-    await waitFor(() => checks.n >= 1)
+    await eventually(() => replace('four\n'), () => checks.n >= 1)
     assert.equal(events.length, 2)
     fs.unlinkSync(f)
-    await waitFor(() => events.length >= 3)
+    await waitFor(() => events.length >= 3, 10000)
     assert.deepEqual(events[2], { real, change: 'deleted', hash: null })
   } finally {
     stop()
