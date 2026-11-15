@@ -20,9 +20,10 @@ export interface ViewInputDeps {
   /** SessionRegistry.userInput: `typed` (the takeover), the room draft bit and the answer-key step. */
   userInput(projectId: string, tabId: string, data: string): void
   /**
-   * ViewSelections.acted: the person typed into this view's tab, so its selection is the project's
-   * active tab now (design-web.md §5.1, the view that acted last). A focus or mouse report, which a
-   * view sends just by being clicked into, does not count.
+   * ViewSelections.typed: the person typed into this view's tab, so its selection is the project's
+   * active tab now (design-web.md §5.1, the view that acted last), and the time is kept for the exit
+   * focus (a pane the person ended with Ctrl+D hands the view's keys on). A focus or mouse report,
+   * which a view sends just by being clicked into, does not count.
    */
   acted(projectId: string, tabId: string, viewId: ViewId): void
 }

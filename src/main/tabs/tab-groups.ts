@@ -107,6 +107,8 @@ export class TabGroups {
   /** Held projects whose save waits for the end of the step (`atomic`). */
   private readonly saveOwed = new Set<string>()
   private readonly log: (message: string) => void
+  /** The last pane `tabClosed` removed and what was left of its group (`departedPanes`). */
+  private departed: { tabId: string; panes: string[] } | undefined
 
   constructor(private readonly deps: TabGroupsDeps) {
     this.log = deps.log ?? warnLog
@@ -307,16 +309,36 @@ export class TabGroups {
    * contiguous, so the order is not rewritten.
    */
   tabClosed(tabId: string): void {
+    this.departed = undefined
     for (const [projectId, state] of this.projects) {
-      if (!groupOf(state.groups, tabId)) continue
+      const group = groupOf(state.groups, tabId)
+      if (!group) continue
       const order = this.deps.order(projectId).filter((t) => t !== tabId)
       const result = removeLeaf(state.groups, order, tabId)
       if (!result.ok) return
+      // What took the closed pane's place, for an exit's focus (`departedPanes`): what is left of the
+      // group in reading order, or the one tab a dissolve left plain.
+      const now = result.groups.find((g) => g.id === group.id)
+      const panes = now ? leavesOf(now.root) : leavesOf(group.root).filter((t) => t !== tabId && order.includes(t))
+      this.departed = { tabId, panes }
       state.groups = result.groups
       this.publish(projectId, order)
       this.told(projectId)
       return
     }
+  }
+
+  /**
+   * The panes the closed `tabId` left behind (reading order; one tab when its group dissolved), when
+   * it was the last tab `tabClosed` removed from a group; undefined otherwise (a plain tab, or another
+   * close since). Read right after the close by main's exit focus (TabManagerOptions.exitClosed,
+   * which runs synchronously after the lifecycle's `closed`), so one slot is enough. Cleared on read.
+   */
+  departedPanes(tabId: string): string[] | undefined {
+    const d = this.departed
+    if (d?.tabId !== tabId) return undefined
+    this.departed = undefined
+    return d.panes
   }
 
   /**

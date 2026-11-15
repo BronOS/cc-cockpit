@@ -2039,6 +2039,17 @@ function start(server: boolean): void {
       flagged: (tabId, flag) => void sessions.setFlag(tabId, flag),
       output: (tabId, chunk) => sessions.tabOutput(tabId, chunk)
     },
+    // A pane ended by the person's own keys in a view (Ctrl+D, `exit`) hands that view's keys to its
+    // most recently used remaining pane of the group (design.md §3 "Split groups", the D3 exception);
+    // after the group's snapshot and `tabs.removed`, so the page has already dropped the pane.
+    // `tabGroups` is defined below; this runs only at an exit.
+    exitClosed: (projectId, tabId) => {
+      const panes = tabGroups.departedPanes(tabId)
+      if (!panes) return
+      for (const to of selections.exitFocus(projectId, tabId, panes)) {
+        views.toView(to.viewId, 'tabs.exitFocus', { tabId: to.tabId, closed: tabId })
+      }
+    },
     // Every create / close / reorder / restart / new session id: save the project's tabs.
     // The split groups first: a changed order is published, a dead leaf pruned, before the save.
     onTabsChanged: (projectId) => {
@@ -3137,7 +3148,7 @@ function start(server: boolean): void {
     input: viewInputHandler({
       viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
       userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
-      acted: (projectId, tabId, viewId) => selections.acted(projectId, viewId, tabId)
+      acted: (projectId, tabId, viewId) => selections.typed(projectId, viewId, tabId)
     }),
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),

@@ -462,8 +462,11 @@ Working in a group:
   and "Opened by <plugin name> (<id>)" for a tab a plugin opened. Each window and each browser view has its own
   focused pane.
 - When the pane you type in goes away because of something you did here (its ×, Cmd+W, Move Pane Out
-  of Group), the pane that took its space gets the keyboard. When it goes because of anything else
-  (another view, a plugin), no pane has the keyboard until you click one or use a pane chord:
+  of Group), the pane that took its space gets the keyboard. When you end it with your own keys
+  (Ctrl+D or `exit` in a shell, within about a second and a half of your last key in that window or
+  browser), the pane you used last in the group gets the keyboard (the group's first pane if you used
+  none, the remaining tab when the group ends). When it goes because of anything else
+  (another view, a plugin, a process ending on its own), no pane has the keyboard until you click one or use a pane chord:
   nothing you type meanwhile reaches a terminal you did not pick, and the chords that act on the
   focused pane (Close Tab, the flag, split, move, resize, zoom) do nothing until then. A view never
   follows its tab into an arrangement made elsewhere: a pane you type in that another view moves

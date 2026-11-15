@@ -17,13 +17,32 @@ export interface ViewSelectionsDeps {
   isTab(projectId: string, tabId: string): boolean
   /** SessionRegistry.setActive: the project's active tab. */
   setActive(projectId: string, tabId: string | undefined): void
+  /** Clock for the exit focus's "typed just now" (EXIT_FOCUS_TYPED_MS); tests inject one. Default Date.now. */
+  now?: () => number
 }
+
+/**
+ * How recently the person's own keys must have gone into a pane, in the same view, for its exit to
+ * count as their act (`exitFocus`): Ctrl+D ends a shell within milliseconds, `exit` + Enter within a
+ * few hundred; a command that ends seconds after the last key did so on its own.
+ */
+export const EXIT_FOCUS_TYPED_MS = 1500
+
+/** Tabs remembered per view for the exit focus's most recently used order (more than a group's 8 panes). */
+const RECENT_CAP = 32
 
 export class ViewSelections {
   /** viewId -> its project and the tab it shows. Map order: least to most recently acting. */
   private readonly byView = new Map<ViewId, { projectId: string; tabId: string }>()
+  /** viewId -> the tabs it selected or typed into, most recent first (capped; stale ids are harmless). */
+  private readonly recent = new Map<ViewId, string[]>()
+  /** viewId -> the tab the person last typed into there, and when (main's clock). */
+  private readonly typedAt = new Map<ViewId, { tabId: string; at: number }>()
+  private readonly now: () => number
 
-  constructor(private readonly deps: ViewSelectionsDeps) {}
+  constructor(private readonly deps: ViewSelectionsDeps) {
+    this.now = deps.now ?? Date.now
+  }
 
   /**
    * `viewId` selected `tabId` or typed into it: remembered as its selection, and the project's active
@@ -33,7 +52,43 @@ export class ViewSelections {
     if (!this.deps.isTab(projectId, tabId)) return
     this.byView.delete(viewId)
     this.byView.set(viewId, { projectId, tabId })
+    const recent = this.recent.get(viewId) ?? []
+    if (recent[0] !== tabId) this.recent.set(viewId, [tabId, ...recent.filter((t) => t !== tabId)].slice(0, RECENT_CAP))
     this.deps.setActive(projectId, tabId)
+  }
+
+  /**
+   * The person typed into `tabId` in `viewId` (view-input.ts, only for input that counts as theirs:
+   * isPersonInput, the same signal as SessionInfo.typed). Acting, as `acted`, and remembered with
+   * the time for the exit focus.
+   */
+  typed(projectId: string, viewId: ViewId, tabId: string): void {
+    if (!this.deps.isTab(projectId, tabId)) return
+    this.acted(projectId, viewId, tabId)
+    this.typedAt.set(viewId, { tabId, at: this.now() })
+  }
+
+  /**
+   * A pane's process exited and closed it (TabManagerOptions.exitClosed), leaving `panes` (what is
+   * left of its group in reading order, or the one tab a dissolve left plain; TabGroups.departedPanes).
+   * The exception to D3 (design.md §3 "Split groups"): a view that had the closed pane selected AND
+   * sent it the person's own keys within EXIT_FOCUS_TYPED_MS ended it itself (Ctrl+D, `exit`), so its
+   * focus goes to its most recently used remaining pane, else the group's first. Every other view,
+   * and every other close, is left keys-off as before. Decided from main's own record of who typed
+   * where and when, never from anything a page says. Returns the selects to send, one per view.
+   */
+  exitFocus(projectId: string, closedTabId: string, panes: readonly string[]): Array<{ viewId: ViewId; tabId: string }> {
+    const out: Array<{ viewId: ViewId; tabId: string }> = []
+    if (panes.length === 0) return out
+    const now = this.now()
+    for (const [viewId, sel] of this.byView) {
+      if (sel.projectId !== projectId || sel.tabId !== closedTabId) continue
+      const typed = this.typedAt.get(viewId)
+      if (typed?.tabId !== closedTabId || now - typed.at > EXIT_FOCUS_TYPED_MS || now < typed.at) continue
+      const tabId = (this.recent.get(viewId) ?? []).find((t) => panes.includes(t)) ?? panes[0]!
+      out.push({ viewId, tabId })
+    }
+    return out
   }
 
   /** The tab `viewId` last selected (or typed into), if any. */
@@ -57,6 +112,8 @@ export class ViewSelections {
    * is the active tab already and nothing changes.
    */
   viewGone(viewId: ViewId): void {
+    this.recent.delete(viewId)
+    this.typedAt.delete(viewId)
     const gone = this.byView.get(viewId)
     if (!gone) return
     this.byView.delete(viewId)
@@ -69,7 +126,12 @@ export class ViewSelections {
 
   /** The project's window closed: every view's selection of it goes (its caller clears the active tab). */
   closeProject(projectId: string): void {
-    for (const [viewId, s] of [...this.byView]) if (s.projectId === projectId) this.byView.delete(viewId)
+    for (const [viewId, s] of [...this.byView]) {
+      if (s.projectId !== projectId) continue
+      this.byView.delete(viewId)
+      this.recent.delete(viewId)
+      this.typedAt.delete(viewId)
+    }
   }
 }
 

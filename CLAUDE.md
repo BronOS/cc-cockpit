@@ -327,7 +327,8 @@ Rooms (messages and shared docs between Claude tabs, plus the per-plugin caps th
   never a tree, and get a whole `groups.changed` snapshot ordered by `seq`. A group's members are contiguous in the one
   tab order; saved leaves name `TabRecord.id` and are remapped on restore. A view's focused pane is its selected tab;
   zoom and focus are per view. Nothing done elsewhere (another view, a plugin, an exit) moves a view's keys to another
-  terminal: that view goes keys-off, and while keys-off no command acts on the active tab and a `tabs.select` naming a
+  terminal: that view goes keys-off (one exception, decided by main: a pane that exits within 1.5 s of the person's own
+  keys in that view hands that view the keys to its last used pane of the group, `ViewSelections.exitFocus`), and while keys-off no command acts on the active tab and a `tabs.select` naming a
   visible pane is ignored. Plugins reach groups only through `beside` on `ctx.sessions.open*` (only the new tab is
   placed, never focused; `no-plugin-group-edits.test.ts`). Every tab kind is a pane: `isPaneKind`
   (`shared/tab-groups.ts`) is the one rule, used by `TabGroups` (`not-a-pane` stays for the next kind, through its `kindOf`

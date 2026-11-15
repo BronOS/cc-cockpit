@@ -550,3 +550,32 @@ test('a group name is plain text and never stands in for a member\'s status or l
     await browser.close()
   }
 })
+
+test('the D3 exception: a pane the person ends with Ctrl+D hands the keys to their last used pane of the group; an exit on its own leaves them off', async ({ cockpit }) => {
+  test.setTimeout(120_000)
+  const { page } = cockpit
+  const [a, b, c, d] = await groupOfShells(cockpit, ['pa', 'pb', 'pc', 'pd'])
+  // Used B, then A, then C: A is the most recent of what stays, never the pane that takes C's space.
+  for (const id of [b, a, c]) {
+    await paneOf(page, id).locator('.xterm').click()
+    await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', id)
+  }
+  await page.keyboard.press('Control+D')
+  await expect(paneOf(page, c)).toHaveCount(0)
+  await expect(visiblePanes(page)).toHaveCount(3)
+  await expect(focusedPanes(page)).toHaveAttribute('data-focused-pane', a)
+  expect(await domFocusInTerminal(page)).toBe(true)
+  // The keys are in A: a line typed now lands there and nowhere else.
+  await page.keyboard.type('echo next-$((2+2))')
+  await page.keyboard.press('Enter')
+  await waitPaneText(paneOf(page, a), 'next-4')
+  for (const id of [b, d]) expect(await paneText(paneOf(page, id))).not.toContain('next-')
+
+  // A exits seconds after the last key: not the person's act, so D3's keys off as before.
+  await page.keyboard.type('sleep 2; exit')
+  await page.keyboard.press('Enter')
+  await expect(paneOf(page, a)).toHaveCount(0, { timeout: 10_000 })
+  await expect(visiblePanes(page)).toHaveCount(2)
+  await expect(focusedPanes(page)).toHaveCount(0)
+  expect(await domFocusInTerminal(page)).toBe(false)
+})

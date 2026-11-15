@@ -116,6 +116,36 @@ describe('tabs store: groups', () => {
       expect(run([{ type: 'focusRefused' }], initialTabsState)).toBe(initialTabsState)
     })
 
+    // The D3 exception: main's `tabs.exitFocus` (the person ended the pane with their own keys here).
+    it('exitFocus after the pane went: the named pane of the shown group, keys on', () => {
+      const s = run([{ type: 'selected', tabId: 'c' }, { type: 'removed', tabId: 'c', gen: 1 }], base())
+      expect([s.activeId, s.keysOff]).toEqual(['d', true])
+      expect(run([{ type: 'exitFocus', tabId: 'b', closed: 'c' }], s)).toMatchObject({ activeId: 'b', keysOff: false })
+      // The pane that took its space is named: keys on there.
+      expect(run([{ type: 'exitFocus', tabId: 'd', closed: 'c' }], s)).toMatchObject({ activeId: 'd', keysOff: false })
+      // Not of the shown group, unknown, or the closed tab still held: nothing.
+      expect(run([{ type: 'exitFocus', tabId: 'a', closed: 'c' }], s)).toBe(s)
+      expect(run([{ type: 'exitFocus', tabId: 'zz', closed: 'c' }], s)).toBe(s)
+      const held = run([{ type: 'selected', tabId: 'c' }], base())
+      expect(run([{ type: 'exitFocus', tabId: 'b', closed: 'c' }], held)).toBe(held)
+      // The person acted since (keys on): theirs stays.
+      const acted = run([{ type: 'keysOn' }], s)
+      expect(run([{ type: 'exitFocus', tabId: 'b', closed: 'c' }], acted)).toBe(acted)
+    })
+
+    it('exitFocus after a dissolve: the tab left plain', () => {
+      const two = run([
+        { type: 'loaded', tabs: ['a', 'b', 'c'].map(tab) },
+        { type: 'groups', snapshot: snap(1, ['a', 'b', 'c'], [{ id: 'g', root: row('s1', leaf('b'), leaf('c')) }]) },
+        { type: 'selected', tabId: 'c' },
+        { type: 'groups', snapshot: snap(2, ['a', 'b'], []) },
+        { type: 'removed', tabId: 'c', gen: 1 }
+      ])
+      expect([two.activeId, two.keysOff]).toEqual(['b', true])
+      expect(run([{ type: 'exitFocus', tabId: 'b', closed: 'c' }], two)).toMatchObject({ activeId: 'b', keysOff: false })
+      expect(run([{ type: 'exitFocus', tabId: 'a', closed: 'c' }], two)).toBe(two)
+    })
+
     it('a plain tab closed elsewhere keeps the strip rule', () => {
       const s = run([{ type: 'removed', tabId: 'a', gen: 1 }], base())
       expect(s.activeId).toBe('b')

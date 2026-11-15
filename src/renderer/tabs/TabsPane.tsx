@@ -334,6 +334,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       if (ignoresMainSelect(stateRef.current.keysOff, viewRef.current.visible, tabId)) return
       dispatch({ type: 'selected', tabId })
     })
+    // The pane the person just ended here (Ctrl+D) hands the keys to their last used pane of the
+    // group: main decided from its own record of this view's keys; the reducer applies it only while
+    // that close left the view keys off.
+    const offExitFocus = window.cockpit.on('tabs.exitFocus', ({ tabId, closed }) => {
+      dispatch({ type: 'exitFocus', tabId, closed })
+    })
     // A tab main started on its own (a plugin's ctx.sessions.open). One that arrives before the
     // list answered may or may not be in it (main takes the list after it awaits the restore):
     // 'loaded' merges by id and generation, so it is neither duplicated nor dropped.
@@ -373,6 +379,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       offExit()
       offRemoved()
       offSelect()
+      offExitFocus()
       offAdded()
       offMoved()
       offGroups()

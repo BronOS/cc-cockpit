@@ -498,7 +498,16 @@ plain tab has no group, and a project without groups behaves as before.
   `keysOff` in `renderer/state/groups-state.ts`): a focused tab closed shows the pane that took its
   space; one now plain (moved out, its group ungrouped or dissolved) stays shown; one moved into
   another group shows what is left of its old group (or that group's remaining plain tab). The
-  person's own close or move out moves the focus to the pane that took the space, keys on; their own
+  person's own close or move out moves the focus to the pane that took the space, keys on. The one
+  exception to "an exit is elsewhere": a pane whose process exits and closes it (`tabExit`) while it
+  was a view's selection and that view sent it the person's own keys (isPersonInput, the `typed`
+  signal through `ViewSelections.typed`) within `EXIT_FOCUS_TYPED_MS` (1.5 s) was ended by the person
+  there (Ctrl+D, `exit`): main (`TabManagerOptions.exitClosed`, `TabGroups.departedPanes`,
+  `ViewSelections.exitFocus`, from its own record of who typed where and when, never a page's hint)
+  sends that view alone `tabs.exitFocus` naming its most recently selected or typed-into remaining
+  pane of the group (else the group's first, or the tab a dissolve left plain), and the page takes
+  it, keys on, only while that close left it keys off. Every other view, an exit typed into longer
+  ago or in another view, and every close that is not an exit stay keys off. Their own
   placement or Ungroup, or moving the other of two panes out, keeps it on the same terminal, keys on
   (the page knows the edits it sent). A plain tab closed elsewhere keeps the strip's rule. While the
   keys are off, commands on the active tab (`tab.close`, the flag, `pane.*` split, show beside, move

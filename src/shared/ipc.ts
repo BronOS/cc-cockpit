@@ -1948,6 +1948,13 @@ export interface IpcEventMap {
    */
   'tabs.select': { tabId: string }
   /**
+   * To one view: the pane `closed` exited on the person's own keys in this view (Ctrl+D, `exit`), so
+   * its focus goes to `tabId`, a remaining pane of the same group (or the tab its dissolve left plain),
+   * keys on (design.md §3 "Split groups", the D3 exception; main decides, ViewSelections.exitFocus).
+   * The page applies it only while that close left it keys-off and `tabId` is still what is left.
+   */
+  'tabs.exitFocus': { tabId: string; closed: string }
+  /**
    * main started a tab the page did not ask for (a plugin's ctx.sessions.open): add it to the
    * bar. Not selected: it starts in `starting`, where a key the user meant for the tab they are
    * typing in could answer Claude's trust dialog. Only `ctx.sessions.open({ focus: true })`, a
@@ -2240,6 +2247,7 @@ export const EVENT_CHANNELS = [
   'projects.changed',
   'remote.changed',
   'tabs.select',
+  'tabs.exitFocus',
   'tabs.added',
   'window.state',
   'layout.updated',
@@ -2624,6 +2632,9 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'tabs.removed': 'yes',
   'tabs.moved': 'yes',
   'tabs.select': 'yes',
+  // Where a pane the person ended in this view hands the keys: a selection within their own group, as
+  // tabs.select is, sent only to the view main saw type.
+  'tabs.exitFocus': 'yes',
   'tabs.added': 'yes',
 
   // Split terminal view: the person's arrangement, no host screen and no wider access, the same

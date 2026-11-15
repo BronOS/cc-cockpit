@@ -118,6 +118,12 @@ export interface TabManagerOptions {
    */
   closeOnCleanExit?(): boolean
   /**
+   * A clean exit just closed the tab (closeOnCleanExit), after its lifecycle `closed` and its
+   * `tabs.removed` went out, in that order. Only this close: never the person's, a plugin's or a
+   * window's. Main's exit focus (design.md §3 "Split groups", the D3 exception) hangs off it.
+   */
+  exitClosed?(projectId: string, tabId: string): void
+  /**
    * The room registry's side of a member tab (design-rooms.md §1; RoomService wires it to
    * RoomRegistry). Absent = no registry to ask (tests): a restored membership is dropped.
    */
@@ -1587,6 +1593,11 @@ export class TabManager {
       // for the renderer, whose banner would flash for one frame: `tabs.removed` instead.
       this.closeTab(tab)
       this.options.emit(tab.projectId, 'tabs.removed', { tabId: id, gen: tab.gen })
+      try {
+        this.options.exitClosed?.(tab.projectId, id)
+      } catch (err) {
+        this.log(`exit close listener failed: ${errorText(err)}`)
+      }
       return
     }
     this.options.emit(tab.projectId, 'tabs.exit', { tabId: id, code, signal, gen: tab.gen })

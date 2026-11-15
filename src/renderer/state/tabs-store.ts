@@ -112,6 +112,13 @@ export type TabsAction =
   | { type: 'groups'; snapshot: GroupsSnapshot; intent?: Readonly<Record<string, 'leave' | 'stay'>> }
   /** This view zooms `tabId` in its group (⌘⇧Enter), or unzooms the group (`null`). Per view, never sent. */
   | { type: 'zoom'; groupId: string; tabId: string | null }
+  /**
+   * main's `tabs.exitFocus`: the pane `closed` ended on the person's own keys in this view (Ctrl+D),
+   * so the focus goes to `tabId`, keys on (the D3 exception, ViewSelections.exitFocus). Applied only
+   * while this view is keys off after that pane went (dropped here, `tabId` held and in the group the
+   * view shows, or the tab its dissolve left plain): a view the person has acted in since keeps theirs.
+   */
+  | { type: 'exitFocus'; tabId: string; closed: string }
   /** The person clicked a pane or used a chord: the keys are on again after D3 took them off. */
   | { type: 'keysOn' }
   /**
@@ -298,6 +305,13 @@ function step(state: TabsState, action: TabsAction): TabsState {
       if (action.tabId === null) return state.zoomed[g.id] === undefined ? state : { ...state, zoomed: omit(state.zoomed, g.id) }
       if (!leavesOf(g.root).includes(action.tabId)) return state
       return { ...state, zoomed: { ...state.zoomed, [g.id]: action.tabId } }
+    }
+    case 'exitFocus': {
+      if (!state.keysOff || state.activeId === null) return state
+      if (state.tabs.some((t) => t.id === action.closed) || !state.tabs.some((t) => t.id === action.tabId)) return state
+      const shown = groupOf(state.groups, state.activeId)
+      const same = action.tabId === state.activeId || (shown !== undefined && groupOf(state.groups, action.tabId)?.id === shown.id)
+      return same ? step(state, { type: 'selected', tabId: action.tabId }) : state
     }
     case 'keysOn':
       return state.keysOff ? { ...state, keysOff: false } : state
