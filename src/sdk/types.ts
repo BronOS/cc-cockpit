@@ -1144,7 +1144,7 @@ export interface PluginContext {
      * unless `includeGitAndNodeModules` is true. Call it from the person's click in a panel, slot,
      * overlay or settings page: it needs that browser view as the origin, and rejects with no origin
      * (a timer, a plugin command, more than 10 s after the click) and from the desktop's own window
-     * (the file is already there). `path` as for `open`; a path whose real path is outside the project
+     * (the file is already there, or a download needs a click in a browser view when one is attached). `path` as for `open`; a path whose real path is outside the project
      * is refused, and so is a folder past 2 GiB of files or 20,000 entries. Resolves once the browser
      * was handed the download (it shows the progress), rejects with a message to show the person.
      * At most 10 per minute. Check `typeof ctx.files.download === 'function'`: an older app has none.

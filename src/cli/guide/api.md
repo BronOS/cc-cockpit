@@ -454,7 +454,7 @@ with full Node access.
   slot, overlay or settings page: the click's browser view is where it goes, and only that one. It
   rejects with no such view (a timer, a plugin command, more than 10 s after the click: "a download
   needs a click in a browser view"), from the desktop's own window ("the file is already on this
-  computer"), for a path whose real path is outside the project, a missing one, one that is not a
+  computer", or "a download needs a click in a browser view" when a browser view is attached), for a path whose real path is outside the project, a missing one, one that is not a
   file or folder, and a folder past 2 GiB of files or 20,000 entries. It resolves once the browser
   view was handed the download (the browser shows its progress) and rejects with a message to show
   the person (in the panel, not a log). At most 10 per minute per plugin and window. Show the menu

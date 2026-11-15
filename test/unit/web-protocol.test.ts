@@ -338,6 +338,21 @@ describe('handshake', () => {
     expect(conns.deviceName('web:1')).toBeUndefined()
   })
 
+  it('deviceIdOf names the device of an open view bound to that window; undefined when gone, unbound or bound elsewhere', () => {
+    const { connect, conns } = setup()
+    const ws = connect('p1')
+    connect('p2')
+    const unbound = connect()
+    expect(unbound.sent).toEqual([])
+    expect(conns.deviceIdOf('web:1', 1)).toBe('dev1')
+    expect(conns.deviceIdOf('web:1', 2)).toBeUndefined()
+    expect(conns.deviceIdOf('web:3', 1)).toBeUndefined()
+    expect(conns.deviceIdOf('web:9', 1)).toBeUndefined()
+    ws.drop()
+    ws.close()
+    expect(conns.deviceIdOf('web:1', 1)).toBeUndefined()
+  })
+
   it("lineageOf ties a view to its signed-in device (a reconnect's next view); none for None's anonymous caller or a gone view", () => {
     const { connect, conns } = setup()
     const ws = connect('p1')

@@ -159,7 +159,12 @@ function DownloadNotices(): React.JSX.Element | null {
       setNotices((prev) => addDownloadNotice(prev, { kind: 'ready', requestId: start.requestId, url: start.url, name: start.name }))
       const timer = setTimeout(() => {
         timers.delete(timer)
-        setNotices((prev) => (prev.some((n) => n.requestId === start.requestId && n.kind === 'ready') ? dropDownloadNotice(prev, start.requestId) : prev))
+        // Keyed on the token's url, not the request id: a retry reuses the id with a new token, and this
+        // timer must not drop that newer link early.
+        setNotices((prev) => {
+          const old = prev.find((n) => n.kind === 'ready' && n.url === start.url)
+          return old !== undefined ? dropDownloadNotice(prev, old.requestId) : prev
+        })
       }, READY_NOTICE_MS)
       timers.add(timer)
     })

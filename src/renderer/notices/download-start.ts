@@ -65,7 +65,8 @@ export const READY_NOTICE_MS = 60_000
 
 /**
  * A notice joins the list. One per request id: a failure replaces the ready link of the same request
- * (that link will not work), a second event of the same kind replaces the first. Past the cap the
+ * (the shell drops the link on a click anyway, and the failure notice holds none: the token's retry window
+ * after a refusal is not reachable from here), a second event of the same kind replaces the first. Past the cap the
  * oldest go.
  */
 export function addDownloadNotice(list: readonly DownloadNotice[], n: DownloadNotice): readonly DownloadNotice[] {
