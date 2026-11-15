@@ -87,22 +87,29 @@ stderr).
   invalid settings. Exit 1 also for an unknown plugin or key, and for a secret field: those are
   set by a person in Settings > Plugins (app and global values) or Settings > This Project, never
   through `ccc`.
-- `ccc plugin limits <id>` prints a plugin's caps, one `key = value` line each with its default and
-  ceiling, `(set)` on one the person changed: `opensPerMinute` (tabs it opens a minute through
+- `ccc plugin limits <id>` prints a plugin's caps, one `key = value` line each marked where the value
+  comes from (`(plugin)`: set for this plugin, `(global)`: the global value, `(default)`), then its
+  default and ceiling: `opensPerMinute` (tabs it opens a minute through
   `sessions.open`, `openShell`, `openCommand` and `rooms.open`; default 5, at most 60),
   `sendsPerMinute` (`sessions.send` texts a minute; default 30, at most 300), `roomSendsPerMember`
   (room messages a minute by one member; default 20, at most 120) and `roomSendsPerRoom` (a room's
   messages a minute, every sender together; default 60, at most 600). It works from a tab too.
   `ccc plugin limits <id> <key>=<value>...` sets caps (a whole number from 1 to the ceiling, else exit
-  1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides; both print
-  the new lines and apply to the plugin's next open or send, with no restart. The caps are the
+  1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides (the plugin
+  then gets the global value); both print the new lines and apply to the plugin's next open or send,
+  with no restart. `ccc plugin limits --global` prints the global values, the ones every plugin
+  without its own override gets (`(global)` when set, else `(default)`), and `--global
+  <key>=<value>...` / `--global --default <key>...` change them the same way, with the same ceilings;
+  a change applies to every plugin without an override at its next open or send. Each plugin still
+  counts on its own: a global 10 means 10 for every plugin, not 10 shared. The caps are the
   person's: the write is refused inside a cockpit tab (run it from a shell outside cockpit, or use
-  Settings > Plugins > Limits) and no plugin API changes them. That refusal is not a
-  security boundary (a tab's process or a plugin's host is the same user and could drop its token,
-  run `ccc plugin limits` as a shell would, or edit `app.json`); it keeps a prompted Claude from
-  raising its own plugin's caps as a side effect. Stored app-wide in `app.json`, never in the
-  plugin's settings or `ccc plugin config`; uninstalling a plugin drops its caps. Exit 1 with
-  "cc-cockpit is not running" when the app is not running.
+  Settings > Plugins > Limits and Settings > General > Plugin limits) and no plugin API changes
+  them. That refusal is not a security boundary (a tab's process or a plugin's host is the same
+  user and could drop its token, run `ccc plugin limits` as a shell would, or edit `app.json`); it
+  keeps a prompted Claude from raising its own plugin's caps as a side effect. Stored app-wide in
+  `app.json`, never in the plugin's settings or `ccc plugin config`; uninstalling a plugin drops its
+  own caps (the global values stay). Exit 1 with "cc-cockpit is not running" when the app is not
+  running.
 - `ccc panel show [--project <path>] <plugin>/<panel>` reveals one of a plugin's panels in this
   project's window: unhidden, opened, its zone expanded, and shown again if the window auto-hid
   it for a narrow terminal (what `ctx.panels.show` does for the

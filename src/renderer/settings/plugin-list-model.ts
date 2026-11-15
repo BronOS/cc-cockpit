@@ -3,7 +3,7 @@
 // search rules are unit-tested without a page. Nothing here fetches: the page has the whole index
 // already (main caps it at 5 MiB and 2000 entries), so a new page or a new search is no new request.
 import type { MarketplaceEntryView, MarketplaceView, PluginView } from '../../shared/ipc'
-import type { PluginLimitsView } from '../../shared/plugin-limits'
+import type { PluginLimitView } from '../../shared/plugin-limits'
 import type { MarketplaceCategory } from '../../shared/marketplace'
 
 export const PAGE_SIZE = 20
@@ -158,28 +158,34 @@ export function updateAllStillShown(shown: MarketplaceEntryView[], view: Marketp
 }
 
 /**
- * A plugin's "Limits" section (design-rooms.md §6): the text in each cap's field, keyed by cap. Starts as the value
- * in effect, so an untouched form changes nothing.
+ * A plugin's "Limits" section and the global "Plugin limits" of Settings › General (design-rooms.md §6): the text in
+ * each cap's field, keyed by cap. Starts as the value in effect, so an untouched form changes nothing.
  */
 export type LimitsDraft = Record<string, string>
 
-export function limitsDraft(view: PluginLimitsView): LimitsDraft {
+/** What the limits forms read: a plugin's view (`plugins.limits.get`) or the global one (`plugins.globalLimits.get`). */
+export interface LimitsViewLike {
+  limits: readonly PluginLimitView[]
+}
+
+export function limitsDraft(view: LimitsViewLike): LimitsDraft {
   return Object.fromEntries(view.limits.map((l) => [l.key, String(l.value)]))
 }
 
-/** What Save sends (`plugins.limits.set`); main checks it all again. */
+/** What Save sends (`plugins.limits.set`, `plugins.globalLimits.set`); main checks it all again. */
 export interface LimitsEdit {
   set: Array<[string, number]>
   reset: string[]
 }
 
 /**
- * The edit a draft makes, and the field problems that keep Save off. A field left empty drops its override (the
- * default applies); a whole number from 1 to the ceiling is set unless it is already what applies (the default with
- * no override, or the override itself); anything else is a problem, named with the range. Digits only, read
- * character by character: no sign, fraction or exponent (main refuses those too). `edit` is null when nothing changes.
+ * The edit a draft makes, and the field problems that keep Save off. A field left empty drops the view's own value
+ * (a plugin's override, so the global value applies; a global value, so the default applies); a whole number from 1
+ * to the ceiling is set unless it is already what applies (an inherited value is not pinned by typing it again); anything
+ * else is a problem, named with the range. Digits only, read character by character: no sign, fraction or exponent
+ * (main refuses those too). `edit` is null when nothing changes.
  */
-export function limitsEdit(view: PluginLimitsView, draft: LimitsDraft): { edit: LimitsEdit | null; problems: Record<string, string> } {
+export function limitsEdit(view: LimitsViewLike, draft: LimitsDraft): { edit: LimitsEdit | null; problems: Record<string, string> } {
   const set: Array<[string, number]> = []
   const reset: string[] = []
   const problems: Record<string, string> = {}
@@ -201,10 +207,10 @@ export function limitsEdit(view: PluginLimitsView, draft: LimitsDraft): { edit: 
 }
 
 /**
- * The draft after a "Use default" saved: the reset keys show what applies now, every other field keeps what the person
- * typed (a reset-only save must not throw their unsaved edits away). `view` is main's reply to the save.
+ * The draft after a "Use global" / "Use default" saved: the reset keys show what applies now, every other field keeps
+ * what the person typed (a reset-only save must not throw their unsaved edits away). `view` is main's reply to the save.
  */
-export function limitsDraftAfterReset(view: PluginLimitsView, draft: LimitsDraft, reset: readonly string[]): LimitsDraft {
+export function limitsDraftAfterReset(view: LimitsViewLike, draft: LimitsDraft, reset: readonly string[]): LimitsDraft {
   const fresh = limitsDraft(view)
   const next: LimitsDraft = { ...draft }
   for (const key of reset) if (Object.hasOwn(fresh, key)) next[key] = fresh[key] as string
@@ -212,9 +218,19 @@ export function limitsDraftAfterReset(view: PluginLimitsView, draft: LimitsDraft
 }
 
 /**
- * Whether this page may edit the caps. A browser view of a desktop cockpit is refused `plugins.limits.set` (main
- * decides by the view it bound, router.ts); only the desktop page and a server's browsers save. A UI hint: main
- * refuses either way.
+ * Where a cap's value comes from, under its field. A plugin's: its own ("set for this plugin", with the global value
+ * it would get otherwise) or inherited ("global", with the value, which is the default when no global value is set).
+ * A global one's: "set by you" or "the default".
+ */
+export function limitSourceText(l: PluginLimitView, level: 'plugin' | 'global'): string {
+  if (level === 'global') return l.overridden ? 'set by you' : 'the default'
+  return l.source === 'plugin' ? `set for this plugin (global ${l.inherited})` : `global ${l.value}`
+}
+
+/**
+ * Whether this page may edit the caps. A browser view of a desktop cockpit is refused `plugins.limits.set` and
+ * `plugins.globalLimits.set` (main decides by the view it bound, router.ts); only the desktop page and a server's
+ * browsers save. A UI hint: main refuses either way.
  */
 export function limitsEditable(webShell: boolean, serverView: boolean): boolean {
   return !webShell || serverView

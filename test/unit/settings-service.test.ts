@@ -342,7 +342,12 @@ describe('plugin limits', () => {
     const r = rig()
     const stored = new Map<string, unknown>()
     r.deps.limits = new PluginLimitsStore({
-      storage: { get: (id) => stored.get(id), set: (id, v) => (v === undefined ? stored.delete(id) : stored.set(id, v)) },
+      storage: {
+        get: (id) => stored.get(id),
+        set: (id, v) => (v === undefined ? stored.delete(id) : stored.set(id, v)),
+        getGlobal: () => stored.get('@global'),
+        setGlobal: (v) => (v === undefined ? stored.delete('@global') : stored.set('@global', v))
+      },
       known: (id) => r.plugins.some((p) => p.id === id)
     })
     const service = new SettingsService(r.deps)
@@ -352,10 +357,22 @@ describe('plugin limits', () => {
     expect(stored.get('test.mail')).toEqual({ opensPerMinute: 20 })
     expect(() => service.setPluginLimits('nobody.here', [['opensPerMinute', 20]], undefined)).toThrow('not installed')
     expect(() => service.setPluginLimits('test.mail', [['opensPerMinute', 61]], undefined)).toThrow('from 1 to 60')
+    // The global values: read and changed through the same store; a plugin without an override shows them as global.
+    expect(service.globalPluginLimits().limits.every((l) => l.source === 'default')).toBe(true)
+    const global = service.setGlobalPluginLimits([['sendsPerMinute', 90]], undefined)
+    expect(global.limits.find((l) => l.key === 'sendsPerMinute')).toMatchObject({ value: 90, source: 'global' })
+    expect(stored.get('@global')).toEqual({ sendsPerMinute: 90 })
+    const mail = service.pluginLimits('test.mail').limits
+    expect(mail.find((l) => l.key === 'sendsPerMinute')).toMatchObject({ value: 90, source: 'global', overridden: false })
+    expect(mail.find((l) => l.key === 'opensPerMinute')).toMatchObject({ value: 20, source: 'plugin' })
+    expect(() => service.setGlobalPluginLimits([['sendsPerMinute', 301]], undefined)).toThrow('from 1 to 300')
+    expect(service.setGlobalPluginLimits(undefined, ['sendsPerMinute']).limits.every((l) => l.source === 'default')).toBe(true)
     expect(r.calls).toEqual([])
   })
 
-  it('refuses both calls when main gave it no store', () => {
+  it('refuses every call when main gave it no store', () => {
     expect(() => rig().service.pluginLimits('test.mail')).toThrow('not available')
+    expect(() => rig().service.globalPluginLimits()).toThrow('not available')
+    expect(() => rig().service.setGlobalPluginLimits([['sendsPerMinute', 9]], undefined)).toThrow('not available')
   })
 })

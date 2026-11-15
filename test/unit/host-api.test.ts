@@ -58,6 +58,7 @@ import { FakePtyBackend } from '../fakes/fake-pty-backend'
 import { unusedOAuth, unusedSecrets } from '../fakes/unused-host-services'
 import type { RpcMeta } from '../../src/host/rpc'
 import { DEFAULT_PLUGIN_LIMITS, type PluginLimits } from '../../src/shared/plugin-limits'
+import { PluginLimitsStore } from '../../src/main/plugins/plugin-limits'
 
 const A = 'aaaaaaaaaaaaaaaa'
 const B = 'bbbbbbbbbbbbbbbb'
@@ -2814,6 +2815,47 @@ describe('the person\'s per-plugin limits', () => {
     await send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'three' })
     sends = 1
     await expect(send('sessions.send', { pluginId: 'a.one', tabId: tab, text: 'four' })).rejects.toThrow('more than 1 texts a minute')
+  })
+
+  // The global values (design-rooms.md §6): through the real store, a global change reaches the next open of every
+  // plugin without an override, an override keeps its own, and each plugin counts against its own budget.
+  it('a global value is each plugin\'s own budget, applies live, and yields to an override', async () => {
+    let global: unknown = { opensPerMinute: 2 }
+    const overrides: Record<string, unknown> = {}
+    const store = new PluginLimitsStore({
+      storage: {
+        get: (id) => overrides[id],
+        set: (id, v) => {
+          overrides[id] = v
+        },
+        getGlobal: () => global,
+        setGlobal: (v) => {
+          global = v
+        }
+      },
+      known: () => true
+    })
+    deps.limits = (pluginId) => store.limits(pluginId)
+    const open = hostA()
+    // a.one and a.two each get 2: one plugin's opens do not spend the other's.
+    for (const id of ['a.one', 'a.two']) {
+      for (let i = 0; i < 2; i++) await open('sessions.open', { pluginId: id })
+      await expect(open('sessions.open', { pluginId: id })).rejects.toThrow('more than 2 tabs a minute')
+    }
+    // a.two gets its own 4; a.one still has the global 2.
+    store.set('a.two', [['opensPerMinute', 4]], [])
+    await open('sessions.open', { pluginId: 'a.two' })
+    await open('sessions.openShell', { pluginId: 'a.two' })
+    await expect(open('sessions.open', { pluginId: 'a.two' })).rejects.toThrow('more than 4 tabs a minute')
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow('more than 2 tabs a minute')
+    // Raised globally to 3: the next open of a.one fits, with no host restart; a.two keeps its override.
+    store.setGlobal([['opensPerMinute', 3]], [])
+    await open('sessions.openShell', { pluginId: 'a.one' })
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow('more than 3 tabs a minute')
+    await expect(open('sessions.open', { pluginId: 'a.two' })).rejects.toThrow('more than 4 tabs a minute')
+    // Reset: the default (5) for a plugin without an override.
+    store.setGlobal([], ['opensPerMinute'])
+    await open('sessions.open', { pluginId: 'a.one' })
   })
 
   it('a failing limits store gives the defaults rather than refusing every open', async () => {

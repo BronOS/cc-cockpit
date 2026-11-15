@@ -1,10 +1,9 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MarketplaceEntryView, MarketplaceIndexView, MarketplaceView, PluginView } from '../../shared/ipc'
-import type { PluginLimitsView } from '../../shared/plugin-limits'
 import { MARKETPLACE_CATEGORIES, STALE_AFTER_MS, type MarketplaceCategory } from '../../shared/marketplace'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
-import { isServerView, isWebShell } from '../shell-kind'
 import { GearIcon } from './icons'
+import { LimitsForm, type LimitsSave } from './LimitsForm'
 import { IndexesSection, MarketplaceNotices } from './MarketplaceIndexes'
 import {
   buildCards,
@@ -12,11 +11,6 @@ import {
   clampPage,
   FILTER_LABELS,
   filterCards,
-  limitsDraft,
-  limitsDraftAfterReset,
-  limitsEditable,
-  limitsEdit,
-  type LimitsDraft,
   pageCount,
   pageOf,
   pageSlice,
@@ -762,117 +756,32 @@ function PluginSettings(props: { plugin: PluginView; shown: boolean; reload: () 
 
 /**
  * A plugin's "Limits" (design-rooms.md §6): the caps on the tabs it opens and the texts and room messages it sends a
- * minute, the person's to raise or lower within main's ceilings. Read from main when shown (`plugins.limits.get`) and
- * saved whole (`plugins.limits.set`, which checks every value again); an empty field goes back to the default. They are
- * the person's alone: no plugin API and no Claude tab can change them (`ccc plugin limits` writes only from a shell
- * outside cockpit).
+ * minute, the person's to raise or lower within main's ceilings. Each is the plugin's own value or the global one
+ * (Settings › General, "Plugin limits"); an empty field or "Use global" drops the plugin's own. Read from main when
+ * shown (`plugins.limits.get`) and saved whole (`plugins.limits.set`, which checks every value again). They are the
+ * person's alone: no plugin API and no Claude tab can change them (`ccc plugin limits` writes only from a shell outside
+ * cockpit).
  */
 function PluginLimits(props: { id: string; name: string; busy: string | null; run: Action['run'] }): React.JSX.Element {
-  const { id, busy, run } = props
-  const [view, setView] = useState<PluginLimitsView | null>(null)
-  const [draft, setDraft] = useState<LimitsDraft>({})
-  const [failed, setFailed] = useState(false)
-  const baseId = useId()
-  // A browser view of a desktop cockpit is refused the save (main decides; this only spares it the dead end).
-  const editable = limitsEditable(isWebShell(), isServerView())
-  const apply = (v: PluginLimitsView): void => {
-    setView(v)
-    setDraft(limitsDraft(v))
-  }
-  useEffect(() => {
-    let live = true
-    window.cockpit.invoke('plugins.limits.get', { id }).then(
-      (v) => {
-        if (live) apply(v)
-      },
-      () => {
-        if (live) setFailed(true)
-      }
-    )
-    return () => {
-      live = false
-    }
-  }, [id])
-  if (failed) return <p className="settings-error">The limits could not be read.</p>
-  if (view === null) return <p className="settings-item-meta">Loading limits…</p>
-  const { edit, problems } = limitsEdit(view, draft)
-  const save = (payload: { set?: Array<[string, number]>; reset?: string[] }): void => {
-    void run(`limits ${id}`, () => window.cockpit.invoke('plugins.limits.set', { id, ...payload })).then((v) => {
-      if (!v) return
-      // A reset-only save ("Use default" on one row) keeps what was typed in the other fields.
-      if (payload.set === undefined || payload.set.length === 0) {
-        setView(v)
-        setDraft((d) => limitsDraftAfterReset(v, d, payload.reset ?? []))
-      } else apply(v)
-    })
-  }
+  const { id } = props
+  const load = useCallback(() => window.cockpit.invoke('plugins.limits.get', { id }), [id])
+  const save = useCallback((payload: LimitsSave) => window.cockpit.invoke('plugins.limits.set', { id, ...payload }), [id])
   return (
-    <form
-      className="settings-subpanel"
-      aria-label={`Limits of ${props.name}`}
-      data-testid="plugin-limits"
-      onSubmit={(ev) => {
-        ev.preventDefault()
-        if (editable && edit !== null && Object.keys(problems).length === 0) save(edit)
-      }}
-    >
-      <p className="settings-item-meta">
-        How much this plugin may do a minute. Raise a cap only for a plugin you trust to use it; an empty field goes back to the
-        default.
-      </p>
-      {!editable && (
-        <p className="settings-item-meta" data-testid="plugin-limits-readonly">
-          Read-only here: change these in the cc-cockpit app on the computer it runs on, or with <span className="mono">ccc plugin limits</span> in
-          a shell there.
-        </p>
-      )}
-      {view.limits.map((l) => {
-        const inputId = `${baseId}-${l.key}`
-        const problem = problems[l.key]
-        return (
-          <div className="settings-row" key={l.key}>
-            <div className="settings-row-text">
-              <label className="settings-row-label" htmlFor={inputId}>
-                {l.label}
-              </label>
-              <div className="settings-row-help">
-                <span className="mono">{l.key}</span> · default {l.default}, at most {l.ceiling}
-                {l.overridden && ' · set by you'}
-              </div>
-              {problem !== undefined && (
-                <div role="alert" className="settings-error">
-                  {problem}
-                </div>
-              )}
-            </div>
-            <div className="settings-row-control">
-              <input
-                id={inputId}
-                type="text"
-                inputMode="numeric"
-                className="settings-tag mono"
-                value={draft[l.key] ?? ''}
-                readOnly={!editable}
-                aria-invalid={problem !== undefined}
-                onChange={(ev) => setDraft((d) => ({ ...d, [l.key]: ev.target.value }))}
-                spellCheck={false}
-              />
-              {editable && l.overridden && (
-                <button type="button" className="quiet" disabled={busy !== null} onClick={() => save({ reset: [l.key] })}>
-                  Use default
-                </button>
-              )}
-            </div>
-          </div>
-        )
-      })}
-      {editable && (
-        <div className="settings-row-control">
-          <button type="submit" className="primary" disabled={busy !== null || edit === null || Object.keys(problems).length > 0}>
-            Save limits
-          </button>
-        </div>
-      )}
-    </form>
+    <LimitsForm
+      level="plugin"
+      load={load}
+      save={save}
+      runLabel={`limits ${id}`}
+      busy={props.busy}
+      run={props.run}
+      ariaLabel={`Limits of ${props.name}`}
+      testId="plugin-limits"
+      intro={
+        <>
+          How much this plugin may do a minute, counted for this plugin alone. A value marked global comes from Settings ›
+          General; set one here only for a plugin you trust to use it. An empty field goes back to the global value.
+        </>
+      }
+    />
   )
 }

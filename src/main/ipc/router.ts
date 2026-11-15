@@ -47,7 +47,7 @@ import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from 
 import { isSettingsPageScope } from '../../shared/settings-page'
 import type { Theme } from '../../shared/theme'
 import type { PluginServicesView } from '../../shared/services'
-import type { PluginLimitsView } from '../../shared/plugin-limits'
+import type { GlobalPluginLimitsView, PluginLimitsView } from '../../shared/plugin-limits'
 import type { TabFlag } from '../../shared/tab-flag'
 import { MAX_ID_CHARS } from '../../shared/room-names'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
@@ -767,6 +767,10 @@ export interface SettingsHandlerDeps {
   pluginLimits(id: unknown): PluginLimitsView
   /** Change a plugin's caps (SettingsService.setPluginLimits); the store checks everything. */
   setPluginLimits(id: unknown, set: unknown, reset: unknown): PluginLimitsView
+  /** The global value of each cap (SettingsService.globalPluginLimits). */
+  globalPluginLimits(): GlobalPluginLimitsView
+  /** Change the global values (SettingsService.setGlobalPluginLimits); the store checks everything. */
+  setGlobalPluginLimits(set: unknown, reset: unknown): GlobalPluginLimitsView
 }
 
 /**
@@ -854,6 +858,13 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
     if (view.remote && options.server !== true) throw new Error('plugins.limits.set: refused for a browser view outside server mode')
     const p = fields('plugins.limits.set', payload)
     return deps.setPluginLimits(p.id, p.set, p.reset)
+  })
+  // The global values (Settings › General): the same rule, since a global raise widens every plugin without an override.
+  router.handleProject('plugins.globalLimits.get', () => deps.globalPluginLimits())
+  router.handleProject('plugins.globalLimits.set', (_ctx, payload, view) => {
+    if (view.remote && options.server !== true) throw new Error('plugins.globalLimits.set: refused for a browser view outside server mode')
+    const p = fields('plugins.globalLimits.set', payload)
+    return deps.setGlobalPluginLimits(p.set, p.reset)
   })
 }
 
