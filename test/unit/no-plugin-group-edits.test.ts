@@ -5,8 +5,9 @@ import { describe, expect, it } from 'vitest'
 // Split groups and plugins (team run 001 design §1 "Plugin API", decisions D4, D7; security review
 // of task 02): a plugin reaches the person's arrangement in exactly one way, the `beside` of its own
 // open, which main applies through TabGroups.createBeside with `{ plugin: true }` (only the new tab,
-// fewer than 4 panes, never focused). No plugin path may move, remove, resize, reorder, dissolve or
-// rename a group. Checked on the code of the plugin side of main (src/main/plugins) and of the plugin
+// fewer panes than the person's `panesPerGroup` limit, never focused; its siblings in a split running
+// the side's way share it evenly, the one resize `beside` makes). No other plugin path may move,
+// remove, resize, reorder, dissolve or rename a group. Checked on the code of the plugin side of main (src/main/plugins) and of the plugin
 // host (src/host): neither imports the groups model or service, nor names a groups channel; and the
 // one plugin open path in index.ts passes `{ plugin: true }`.
 
@@ -46,7 +47,8 @@ describe('plugins reach split groups only through beside', () => {
     const start = index.indexOf('const announcePluginTab = (')
     expect(start).toBeGreaterThan(0)
     const body = index.slice(start, index.indexOf('\n  }\n', start))
-    expect(body).toContain('tabGroups.createBeside(projectId, beside, create, { plugin: true })')
+    // The plugin id is HostApi's own host plugin (its `panesPerGroup` limit applies), never a payload's.
+    expect(body).toContain('tabGroups.createBeside(projectId, beside, create, { plugin: true, pluginId: place?.pluginId })')
     // Two calls in all: this one and the person's `tabs.create` (no plugin flag, the page's own split).
     expect(index.match(/tabGroups\.createBeside\(/g)).toHaveLength(2)
   })

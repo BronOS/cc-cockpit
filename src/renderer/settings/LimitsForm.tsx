@@ -86,6 +86,7 @@ export function LimitsForm<V extends LimitsViewLike>(props: {
           <div className="settings-row-help">
             <span className="mono">{l.key}</span> · <span data-testid="limit-source">{limitSourceText(l, level)}</span> · default {l.default}, at most{' '}
             {l.ceiling}
+            {typeof l.min === 'number' && l.min !== 1 ? `, at least ${l.min}` : ''}
           </div>
           {problem !== undefined && (
             <div role="alert" className="settings-error">

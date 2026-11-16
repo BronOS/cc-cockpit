@@ -191,7 +191,7 @@ describe('limitsEdit', () => {
 
   it('starts at the values in effect and changes nothing untouched', () => {
     const draft = limitsDraft(view)
-    expect(draft).toEqual({ opensPerMinute: '5', sendsPerMinute: '100', roomSendsPerMember: '20', roomSendsPerRoom: '60', roomsPerProject: '5', membersPerRoom: '20' })
+    expect(draft).toEqual({ opensPerMinute: '5', sendsPerMinute: '100', roomSendsPerMember: '20', roomSendsPerRoom: '60', roomsPerProject: '5', membersPerRoom: '20', panesPerGroup: '4' })
     expect(limitsEdit(view, draft)).toEqual({ edit: null, problems: {} })
     // The same number typed again, or with spaces round it, is no change either.
     expect(limitsEdit(view, { ...draft, opensPerMinute: ' 5 ' })).toEqual({ edit: null, problems: {} })
@@ -211,6 +211,22 @@ describe('limitsEdit', () => {
       roomSendsPerRoom: 'a whole number from 1 to 600'
     })
   })
+
+  it('takes panesPerGroup from 2 to 8 only (its least value is 2, not 1)', () => {
+    for (const bad of ['1', '0', '9']) {
+      expect(limitsEdit(view, { ...limitsDraft(view), panesPerGroup: bad }).problems, bad).toEqual({ panesPerGroup: 'a whole number from 2 to 8' })
+    }
+    expect(limitsEdit(view, { ...limitsDraft(view), panesPerGroup: '2' }).edit).toEqual({ set: [['panesPerGroup', 2]], reset: [] })
+    // A view from an older main has no `min`: 1 applies.
+    const old = {
+      limits: view.limits.map((l) => {
+        const rest: Partial<typeof l> = { ...l }
+        delete rest.min
+        return rest
+      })
+    } as unknown as Parameters<typeof limitsEdit>[0]
+    expect(limitsEdit(old, { ...limitsDraft(view), panesPerGroup: '1' }).edit).toEqual({ set: [['panesPerGroup', 1]], reset: [] })
+  })
 })
 
 describe('limits form after a "Use default"', () => {
@@ -224,7 +240,8 @@ describe('limits form after a "Use default"', () => {
       roomSendsPerMember: '25',
       roomSendsPerRoom: 'abc',
       roomsPerProject: '5',
-      membersPerRoom: '20'
+      membersPerRoom: '20',
+      panesPerGroup: '4'
     })
     // A key main did not name changes nothing.
     expect(limitsDraftAfterReset(after, typed, ['nope'])).toEqual(typed)

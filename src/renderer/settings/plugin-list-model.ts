@@ -180,8 +180,8 @@ export interface LimitsEdit {
 
 /**
  * The edit a draft makes, and the field problems that keep Save off. A field left empty drops the view's own value
- * (a plugin's override, so the global value applies; a global value, so the default applies); a whole number from 1
- * to the ceiling is set unless it is already what applies (an inherited value is not pinned by typing it again); anything
+ * (a plugin's override, so the global value applies; a global value, so the default applies); a whole number from the
+ * cap's min (1, or 2 for panesPerGroup) to the ceiling is set unless it is already what applies (an inherited value is not pinned by typing it again); anything
  * else is a problem, named with the range. Digits only, read character by character: no sign, fraction or exponent
  * (main refuses those too). `edit` is null when nothing changes.
  */
@@ -197,8 +197,10 @@ export function limitsEdit(view: LimitsViewLike, draft: LimitsDraft): { edit: Li
     }
     const digits = text.length <= 6 && [...text].every((ch) => ch >= '0' && ch <= '9')
     const n = digits ? Number(text) : NaN
-    if (!Number.isInteger(n) || n < 1 || n > l.ceiling) {
-      problems[l.key] = `a whole number from 1 to ${l.ceiling}`
+    // `min` is 1 for every cap but panesPerGroup (2); a view from an older main has none, so 1.
+    const min = typeof l.min === 'number' ? l.min : 1
+    if (!Number.isInteger(n) || n < min || n > l.ceiling) {
+      problems[l.key] = `a whole number from ${min} to ${l.ceiling}`
       continue
     }
     if (n !== l.value) set.push([l.key, n])

@@ -369,7 +369,9 @@ behind it are in [design.md](design.md).
   prints the SDK types.
 - Per-plugin limits: a plugin may open 5 tabs a minute and send 30 texts a minute through `ctx.sessions`, and a room
   member sends 20 room messages a minute (60 in one room); `roomsPerProject` (5 rooms open at once in a project, at
-  most 20) and `membersPerRoom` (20 members in one room, at most 50) are limits too. Each limit has a global value, set in Settings > General
+  most 20), `membersPerRoom` (20 members in one room, at most 50) and `panesPerGroup` ("Panes a plugin may fill in a
+  group": a plugin's `beside` places a split pane only while the group has fewer, 4 by default, from 2 to 8) are
+  limits too. Each limit has a global value, set in Settings > General
   ("Plugin limits") for every plugin, and a per-plugin override in Settings > Plugins (the plugin's "Limits"): a
   plugin gets its override, else the global value, else the built-in default. The plugin's Limits view marks each
   value "global" (with the value) or "set for this plugin", and "Use global" drops the override; on the General page
@@ -379,7 +381,7 @@ behind it are in [design.md](design.md).
   one and `--default <key>` drops an override; `ccc plugin limits --global` prints the global values and takes the
   same `key=value` and `--default <key>`. Keys, defaults and ceilings (for a global value and an override alike):
   `opensPerMinute` 5 (at most 60), `sendsPerMinute` 30 (300), `roomSendsPerMember` 20 (120), `roomSendsPerRoom` 60
-  (600). They are stored app-wide in `app.json` (`pluginLimitsGlobal`, `pluginLimits`), never in the plugin; the
+  (600), `roomsPerProject` 5 (20), `membersPerRoom` 20 (50), `panesPerGroup` 4 (8, and at least 2). They are stored app-wide in `app.json` (`pluginLimitsGlobal`, `pluginLimits`), never in the plugin; the
   write is refused for a caller with a tab token (shell only), reading is allowed. Uninstalling a plugin drops its own
   limits; the global values stay.
 
@@ -534,7 +536,12 @@ rebind Focus Pane there.
 
 Selecting a group sizes every pane it shows to this screen (as selecting a tab does); a pane a zoom
 hides does not take part. A plugin can open a tab beside another (`beside` on `ctx.sessions.open`,
-see `ccc guide`); such a pane never takes the keyboard.
+see `ccc guide`); such a pane never takes the keyboard. A plugin's panes stack evenly: one it opens below
+a pane that is already in a column (or right of one in a row) joins that column, and every pane there gets
+an equal share, so a Team room's members down the right side stay the same height. Your own Split right /
+down halves the pane you split and leaves the others at the sizes you gave them. A plugin fills a group
+only up to `panesPerGroup` panes (4 by default; see Plugin limits) and never makes a pane smaller than
+20x5 cells: past either, its tab opens as an ordinary tab instead.
 
 Limits: at most 8 panes per group, splits 4 deep, 32 groups per project. Terminal tabs and page tabs
 are panes (not overlays or plugin panels). A plugin can open only terminal tabs beside another tab;

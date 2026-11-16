@@ -484,9 +484,17 @@ plain tab has no group, and a project without groups behaves as before.
   re-runs it) replaces the queue but never forgets a join whose snapshot is still out (D23 R4).
 - *Plugins.* `ctx.sessions.open` / `openShell` / `openCommand` take `beside` (a tab of the host's own
   window, looked up in host-api before the open budget is spent; unknown and foreign are one error) and
-  `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin`), and
-  it opens plain with `placed: false` when the anchor is gone, its group has 4 panes or the anchor's
-  halves would fall under 20x5 cells. No other plugin path reaches groups: host-api has no place,
+  `side` (`right` or `down`); only the new tab is placed (`TabGroups.createBeside` with `plugin` and
+  the host's plugin id), and it opens plain with `placed: false` when the anchor is gone, its group
+  already has the plugin's `panesPerGroup` panes (a person's plugin limit, design-rooms.md §6: default
+  4 = `GROUP_CAPS.pluginBelow`, 2 to `maxPanes` 8, read by main at each placement) or a pane it leaves
+  would fall under 20x5 cells. A plugin's pane is placed evenly (`place` with `plugin`): beside an
+  anchor whose parent split already runs the side's way (`down` in a column, `right` in a row) it joins
+  that split after the anchor and every child gets an equal share, so a column of room members stays
+  1/n each instead of 1/2, 1/4, 1/8; the size check is then made on that equal share (`besideSpan`),
+  which every child of the split gets. Any other anchor is halved, as before. The person's own splits
+  keep halving the pane they split: they act on that one pane and must not undo the sizes they dragged
+  the siblings to, while a plugin cannot drag at all, so its stack would otherwise only shrink. No other plugin path reaches groups: host-api has no place,
   remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups
   or names a `groups.*` channel (`no-plugin-group-edits.test.ts`). `SessionInfo` has no group (D11),
   and there is no `ccc` command.

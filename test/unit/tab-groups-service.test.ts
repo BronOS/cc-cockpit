@@ -429,6 +429,94 @@ describe('a plugin’s beside (D4 D5 D7)', () => {
   })
 })
 
+// The person's `panesPerGroup` limit (shared/plugin-limits.ts), read by main at each placement through
+// TabGroupsDeps.pluginPanes with the plugin id HostApi put in the placement; and the size check on the equal share.
+describe('a plugin’s panesPerGroup and even stacks', () => {
+  const make = (opts: { panes?: (id: string) => number; sizes?: Record<string, { cols: number; rows: number }> } = {}) => {
+    const orders = new Map([['p', ['co', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8']]])
+    const asked: string[] = []
+    const groups = new TabGroups({
+      order: (p) => [...(orders.get(p) ?? [])],
+      setOrder: (p, ids) => void orders.set(p, [...ids]),
+      publish: () => {},
+      changed: () => {},
+      sizeOf: (_p, t) => opts.sizes?.[t],
+      ...(opts.panes
+        ? {
+            pluginPanes: (id: string) => {
+              asked.push(id)
+              return opts.panes!(id)
+            }
+          }
+        : {}),
+      log: () => {}
+    })
+    return { groups, asked }
+  }
+  /** The Team plugin's stack: m1 right of the coordinator, each next member down beside the previous one. */
+  const stack = (g: TabGroups, n: number, pluginId = 'a.one'): boolean[] =>
+    Array.from({ length: n }, (_, i) =>
+      g.place('p', { tabId: `m${i + 1}`, at: i === 0 ? 'co' : `m${i}`, edge: i === 0 ? 'right' : 'down' }, { plugin: true, pluginId }).ok
+    )
+
+  it('defaults to 4 panes; the plugin’s limit is read at every placement, so a change applies to the next one', () => {
+    expect(stack(make().groups, 4)).toEqual([true, true, true, false])
+    let limit = 3
+    const { groups, asked } = make({ panes: () => limit })
+    expect(stack(groups, 3)).toEqual([true, true, false])
+    limit = 8
+    expect(groups.place('p', { tabId: 'm3', at: 'm2', edge: 'down' }, { plugin: true, pluginId: 'a.one' }).ok).toBe(true)
+    expect(asked.every((id) => id === 'a.one')).toBe(true)
+    expect(asked).toHaveLength(4)
+  })
+
+  it('a column of 7 members fills a group of 8 with the limit at 8, every member the same height', () => {
+    const { groups } = make({ panes: () => 8 })
+    expect(stack(groups, 8)).toEqual([true, true, true, true, true, true, true, false])
+    const root = groups.groupsOf('p')[0]!.root
+    expect(leavesOf(root)).toHaveLength(8)
+    const column = (root as { children: Array<{ sizes?: number[] }> }).children[1]!
+    for (const v of column.sizes!) expect(v).toBeCloseTo(1 / 7, 5)
+  })
+
+  it('clamps what it reads to 2..8 and takes the default for junk, a throw or no plugin id', () => {
+    expect(stack(make({ panes: () => 1 }).groups, 2)).toEqual([true, false])
+    expect(stack(make({ panes: () => 99 }).groups, 8)).toEqual([true, true, true, true, true, true, true, false])
+    expect(stack(make({ panes: () => Number.NaN }).groups, 4)).toEqual([true, true, true, false])
+    const throws = make({
+      panes: () => {
+        throw new Error('disk')
+      }
+    })
+    expect(stack(throws.groups, 4)).toEqual([true, true, true, false])
+    const noId = make({ panes: () => 8 })
+    const placed = Array.from({ length: 4 }, (_, i) =>
+      noId.groups.place('p', { tabId: `m${i + 1}`, at: i === 0 ? 'co' : `m${i}`, edge: i === 0 ? 'right' : 'down' }, { plugin: true }).ok
+    )
+    expect(placed).toEqual([true, true, true, false])
+    expect(noId.asked).toEqual([])
+  })
+
+  it('a person’s placement is not bound by the plugin limit and never asks for it', () => {
+    const { groups, asked } = make({ panes: () => 2 })
+    for (let i = 1; i <= 7; i++) expect(groups.place('p', { tabId: `m${i}`, at: i === 1 ? 'co' : `m${i - 1}`, edge: i === 1 ? 'right' : 'down' }).ok).toBe(true)
+    expect(asked).toEqual([])
+  })
+
+  it('checks the size on the equal share of the column, not on half the anchor', () => {
+    // Three members of 6 rows each: 18 rows of panes in the column (+2 dividers). Halving m3 would leave 2 rows each;
+    // the even stack gives 4 equal panes of (18 - 1) / 4 = 4 rows: under 5, so not placed.
+    const short = { cols: 80, rows: 6 }
+    const g = make({ panes: () => 8, sizes: { m3: short } })
+    expect(stack(g.groups, 3)).toEqual([true, true, true])
+    expect(g.groups.createBeside('p', { tabId: 'm3', edge: 'down' }, () => ({ id: 'm4' }), { plugin: true, pluginId: 'a.one' }).placed).toBe(false)
+    // 8 rows each: (24 - 1) / 4 = 5 rows, placed (halving m3 alone would have given 3 and refused it).
+    const tall = make({ panes: () => 8, sizes: { m3: { cols: 80, rows: 8 } } })
+    expect(stack(tall.groups, 3)).toEqual([true, true, true])
+    expect(tall.groups.createBeside('p', { tabId: 'm3', edge: 'down' }, () => ({ id: 'm4' }), { plugin: true, pluginId: 'a.one' }).placed).toBe(true)
+  })
+})
+
 describe('page tabs are panes (design-split-pages.md)', () => {
   /** A TabGroups with TabManager's kinds: `pg` is a plugin's page tab, the rest terminal tabs. */
   function withPage(initial: Record<string, string[]> = { p: ['a', 'pg', 'b'] }) {

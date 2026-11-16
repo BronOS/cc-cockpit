@@ -15,9 +15,9 @@
 // is honest about the API from finding a setter.
 //
 // The file is user-writable, so a read never trusts it: a value (global or override) that is not a whole number from
-// 1 up is ignored (the next level applies) and one above the ceiling reads as the ceiling, so a typo in app.json cannot
-// unbound a cap. An edit is stricter: a value outside 1..ceiling is refused, naming the range, so the person sees the
-// typo.
+// 1 up is ignored (the next level applies), one below the cap's least value (`min`: 2 for panesPerGroup, else 1) reads
+// as that value and one above the ceiling reads as the ceiling, so a typo in app.json cannot unbound a cap. An edit is
+// stricter: a value outside min..ceiling is refused, naming the range, so the person sees the typo.
 //
 // Uninstalling a plugin drops its overrides (`forget`, called by the installer beside its secrets): raised caps must
 // not carry over to a different plugin that later takes the id (a link of another folder). A reinstall starts at the
@@ -107,10 +107,11 @@ export interface PluginLimitsDeps {
   known(pluginId: string): boolean
 }
 
-/** A stored value (global or override) as it applies: a whole number from 1 up, at most the ceiling; anything else is none. */
+/** A stored value (global or override) as it applies: a whole number from 1 up, raised to the cap's min, at most the ceiling; anything else is none. */
 function clampStored(key: PluginLimitKey, value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) return undefined
-  return Math.min(value, limitSpec(key).ceiling)
+  const { min, ceiling } = limitSpec(key)
+  return Math.min(Math.max(value, min), ceiling)
 }
 
 /** The values that apply from what is stored, global or a plugin's (own properties of the known keys only, each clamped). */
@@ -176,12 +177,13 @@ function keyOf(key: unknown): PluginLimitKey {
 
 /**
  * A value of an edit: a number (the settings page) or the decimal text of `key=value` (the CLI), a whole number from
- * 1 to the ceiling. Digits only, read character by character: no sign, exponent, fraction or spaces.
+ * the cap's min (1, or 2 for panesPerGroup) to the ceiling. Digits only, read character by character: no sign,
+ * exponent, fraction or spaces.
  */
 export function parseLimitValue(key: PluginLimitKey, value: unknown): number {
-  const { ceiling } = limitSpec(key)
+  const { min, ceiling } = limitSpec(key)
   const refuse = (): never => {
-    throw new Error(`${key} must be a whole number from 1 to ${ceiling}`)
+    throw new Error(`${key} must be a whole number from ${min} to ${ceiling}`)
   }
   let n: number
   if (typeof value === 'number') n = value
@@ -189,7 +191,7 @@ export function parseLimitValue(key: PluginLimitKey, value: unknown): number {
     for (const ch of value) if (ch < '0' || ch > '9') refuse()
     n = Number(value)
   } else return refuse()
-  if (!Number.isInteger(n) || n < 1 || n > ceiling) refuse()
+  if (!Number.isInteger(n) || n < min || n > ceiling) refuse()
   return n
 }
 

@@ -94,10 +94,11 @@ stderr).
   `sendsPerMinute` (`sessions.send` texts a minute; default 30, at most 300), `roomSendsPerMember`
   (room messages a minute by one member; default 20, at most 120), `roomSendsPerRoom` (a room's
   messages a minute, every sender together; default 60, at most 600), `roomsPerProject` (rooms not ended
-  at once in a project; default 5, at most 20) and `membersPerRoom` (members in one room; default 20,
-  at most 50). It works from a tab too.
-  `ccc plugin limits <id> <key>=<value>...` sets caps (a whole number from 1 to the ceiling, else exit
-  1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides (the plugin
+  at once in a project; default 5, at most 20), `membersPerRoom` (members in one room; default 20,
+  at most 50) and `panesPerGroup` (the panes a plugin's `beside` may fill in one split group: it places
+  only while the group has fewer; default 4, at most 8, at least 2). It works from a tab too.
+  `ccc plugin limits <id> <key>=<value>...` sets caps (a whole number from 1, 2 for `panesPerGroup`, to
+  the ceiling, else exit 1 and nothing stored) and `ccc plugin limits <id> --default <key>...` drops overrides (the plugin
   then gets the global value); both print the new lines and apply to the plugin's next open or send,
   with no restart. `ccc plugin limits --global` prints the global values, the ones every plugin
   without its own override gets (`(global)` when set, else `(default)`), and `--global

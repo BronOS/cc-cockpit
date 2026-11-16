@@ -25,6 +25,7 @@ import { pluginLimitsHandler, pluginLimitsSetHandler, registerPluginLimitsHandle
 import { SocketServer, type Caller } from '../../src/main/socket/socket-server'
 import { MAX_MEMBERS_PER_ROOM, MAX_ROOMS_PER_PLUGIN } from '../../src/main/rooms/room-registry'
 import { DEFAULT_PLUGIN_LIMITS, formatPluginLimits, PLUGIN_LIMIT_SPECS } from '../../src/shared/plugin-limits'
+import { GROUP_CAPS } from '../../src/shared/tab-groups'
 import { PLUGIN_LIMITS_HOST_ONLY_TEXT } from '../../src/shared/protocol'
 
 const POSIX = process.platform !== 'win32'
@@ -74,7 +75,8 @@ describe('defaults and ceilings (design-rooms.md §6)', () => {
     expect(DEFAULT_PLUGIN_LIMITS).toEqual({ opensPerMinute: 5, sendsPerMinute: 30, roomSendsPerMember: 20,
       roomSendsPerRoom: 60,
       roomsPerProject: 5,
-      membersPerRoom: 20
+      membersPerRoom: 20,
+      panesPerGroup: 4
     })
     expect(Object.fromEntries(PLUGIN_LIMIT_SPECS.map((s) => [s.key, s.ceiling]))).toEqual({
       opensPerMinute: 60,
@@ -82,8 +84,11 @@ describe('defaults and ceilings (design-rooms.md §6)', () => {
       roomSendsPerMember: 120,
       roomSendsPerRoom: 600,
       roomsPerProject: 20,
-      membersPerRoom: 50
+      membersPerRoom: 50,
+      panesPerGroup: 8
     })
+    // Every cap's least value is 1 but panesPerGroup's: a group is two panes.
+    expect(PLUGIN_LIMIT_SPECS.filter((s) => s.min !== 1).map((s) => [s.key, s.min])).toEqual([['panesPerGroup', 2]])
   })
 
   it('apply with nothing stored, for an unknown plugin too', () => {
@@ -119,15 +124,58 @@ describe('the room caps (roomsPerProject, membersPerRoom)', () => {
   })
 })
 
+// The panes a plugin's `beside` may fill in one split group (shared/tab-groups.ts GROUP_CAPS.pluginBelow by default),
+// read by main's TabGroups at each placement (TabGroupsDeps.pluginPanes; tab-groups-service.test.ts).
+describe('panesPerGroup', () => {
+  it('defaults to GROUP_CAPS.pluginBelow and is at most a group\'s GROUP_CAPS.maxPanes', () => {
+    expect(DEFAULT_PLUGIN_LIMITS.panesPerGroup).toBe(GROUP_CAPS.pluginBelow)
+    expect(PLUGIN_LIMIT_SPECS.find((s) => s.key === 'panesPerGroup')).toMatchObject({ default: 4, min: 2, ceiling: GROUP_CAPS.maxPanes })
+  })
+
+  it('resolves per plugin over the global value, like every cap', () => {
+    const s = store()
+    expect(s.limits('a.one').panesPerGroup).toBe(4)
+    s.setGlobal([['panesPerGroup', 6]], [])
+    s.set('a.one', [['panesPerGroup', '8']], [])
+    expect(s.limits('a.one').panesPerGroup).toBe(8)
+    expect(s.limits('b.two').panesPerGroup).toBe(6)
+    s.set('a.one', [], ['panesPerGroup'])
+    expect(s.limits('a.one').panesPerGroup).toBe(6)
+  })
+
+  it('refuses an edit under 2 or over 8, naming the range; 2 and 8 are allowed', () => {
+    for (const bad of [1, '1', 0, 9, '9']) {
+      expect(() => parseLimitValue('panesPerGroup', bad), String(bad)).toThrow('panesPerGroup must be a whole number from 2 to 8')
+    }
+    expect(applyLimitsEdit({}, [['panesPerGroup', 2]], [])).toEqual({ panesPerGroup: 2 })
+    expect(applyLimitsEdit({}, [['panesPerGroup', '8']], [])).toEqual({ panesPerGroup: 8 })
+  })
+
+  it('reads a stored 1 as 2 and above 8 as 8; junk falls through to the next level', () => {
+    expect(effectiveLimits({ panesPerGroup: 1 }).panesPerGroup).toBe(2)
+    expect(effectiveLimits({ panesPerGroup: 50 }).panesPerGroup).toBe(8)
+    expect(effectiveLimits({ panesPerGroup: 0 }, { panesPerGroup: 6 }).panesPerGroup).toBe(6)
+    expect(effectiveLimits({ panesPerGroup: 2.5 }).panesPerGroup).toBe(4)
+    expect(globalLimits({ panesPerGroup: 1 }).panesPerGroup).toBe(2)
+  })
+
+  it('prints its least value in the CLI text, and no other cap does', () => {
+    const text = formatPluginLimits(limitsView('a.one', {}), (t) => String(t))
+    expect(text).toContain('panesPerGroup      = 4 (default)  default 4, at most 8, at least 2: panes a plugin may fill in a split group')
+    expect(text.match(/at least/g)).toHaveLength(1)
+  })
+})
+
 describe('a stored override, as read (the file is user-writable)', () => {
   it('is clamped to the ceiling; a value that is no whole number from 1 is ignored', () => {
-    expect(effectiveLimits({ opensPerMinute: 1000, sendsPerMinute: 300, roomSendsPerMember: 1, roomSendsPerRoom: 61, roomsPerProject: 99, membersPerRoom: 100 })).toEqual({
+    expect(effectiveLimits({ opensPerMinute: 1000, sendsPerMinute: 300, roomSendsPerMember: 1, roomSendsPerRoom: 61, roomsPerProject: 99, membersPerRoom: 100, panesPerGroup: 9 })).toEqual({
       opensPerMinute: 60,
       sendsPerMinute: 300,
       roomSendsPerMember: 1,
       roomSendsPerRoom: 61,
       roomsPerProject: 20,
-      membersPerRoom: 50
+      membersPerRoom: 50,
+      panesPerGroup: 8
     })
     for (const bad of [0, -3, 1.5, '7', null, true, Number.NaN, Number.POSITIVE_INFINITY, [9], { v: 9 }]) {
       expect(effectiveLimits({ opensPerMinute: bad }).opensPerMinute, String(bad)).toBe(5)
@@ -172,7 +220,8 @@ describe('a stored override, as read (the file is user-writable)', () => {
       ['roomSendsPerMember', 20, false, 'default', 20, 20, 120],
       ['roomSendsPerRoom', 60, false, 'default', 60, 60, 600],
       ['roomsPerProject', 5, false, 'default', 5, 5, 20],
-      ['membersPerRoom', 20, false, 'default', 20, 20, 50]
+      ['membersPerRoom', 20, false, 'default', 20, 20, 50],
+      ['panesPerGroup', 4, false, 'default', 4, 4, 8]
     ])
   })
 })
@@ -198,7 +247,7 @@ describe('an edit', () => {
 
   it('refuses an unknown key naming the known ones, a key named twice, and an empty or malformed edit, storing nothing', () => {
     expect(() => applyLimitsEdit({}, [['maxTabs', 3]], [])).toThrow(
-      'unknown limit: maxTabs (the limits are opensPerMinute, sendsPerMinute, roomSendsPerMember, roomSendsPerRoom, roomsPerProject, membersPerRoom)'
+      'unknown limit: maxTabs (the limits are opensPerMinute, sendsPerMinute, roomSendsPerMember, roomSendsPerRoom, roomsPerProject, membersPerRoom, panesPerGroup)'
     )
     expect(() => applyLimitsEdit({}, [['__proto__', 3]], [])).toThrow('unknown limit: __proto__')
     expect(() => applyLimitsEdit({}, [['opensPerMinute', 3]], ['opensPerMinute'])).toThrow('opensPerMinute is named twice')
@@ -239,7 +288,7 @@ describe('an edit', () => {
 describe('global values', () => {
   it('resolve override > global > default, key by key', () => {
     const global = { opensPerMinute: 12, sendsPerMinute: 50 }
-    expect(effectiveLimits({ opensPerMinute: 7 }, global)).toEqual({ opensPerMinute: 7, sendsPerMinute: 50, roomSendsPerMember: 20, roomSendsPerRoom: 60, roomsPerProject: 5, membersPerRoom: 20 })
+    expect(effectiveLimits({ opensPerMinute: 7 }, global)).toEqual({ opensPerMinute: 7, sendsPerMinute: 50, roomSendsPerMember: 20, roomSendsPerRoom: 60, roomsPerProject: 5, membersPerRoom: 20, panesPerGroup: 4 })
     expect(effectiveLimits(undefined, global)).toEqual({ ...DEFAULT_PLUGIN_LIMITS, opensPerMinute: 12, sendsPerMinute: 50 })
     expect(globalLimits(global)).toEqual({ ...DEFAULT_PLUGIN_LIMITS, opensPerMinute: 12, sendsPerMinute: 50 })
     const s = store(memory({ 'a.one': { opensPerMinute: 7 } }, global))
@@ -274,7 +323,8 @@ describe('global values', () => {
       ['roomSendsPerMember', 20, 'default', false, 20],
       ['roomSendsPerRoom', 60, 'default', false, 60],
       ['roomsPerProject', 5, 'default', false, 5],
-      ['membersPerRoom', 20, 'default', false, 20]
+      ['membersPerRoom', 20, 'default', false, 20],
+      ['panesPerGroup', 4, 'default', false, 4]
     ])
   })
 
@@ -287,7 +337,8 @@ describe('global values', () => {
       ['roomSendsPerMember', 20, 'default', false, 20, 120],
       ['roomSendsPerRoom', 60, 'default', false, 60, 600],
       ['roomsPerProject', 5, 'default', false, 5, 20],
-      ['membersPerRoom', 20, 'default', false, 20, 50]
+      ['membersPerRoom', 20, 'default', false, 20, 50],
+      ['panesPerGroup', 4, 'default', false, 4, 8]
     ])
   })
 

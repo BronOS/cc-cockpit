@@ -2395,6 +2395,8 @@ describe('beside (split groups, D4 D6 D7)', () => {
       publish: () => {},
       changed: () => {},
       sizeOf: (p, t) => forced.get(t) ?? tabs.sizeOf(p, t),
+      // As index.ts: the person's panesPerGroup for the plugin the placement names (deps.limits stands in for the store).
+      pluginPanes: (id) => (deps.limits?.(id) ?? DEFAULT_PLUGIN_LIMITS).panesPerGroup,
       log: () => {}
     })
     deps.hasTab = (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId)
@@ -2404,7 +2406,10 @@ describe('beside (split groups, D4 D6 D7)', () => {
       async (projectId: string, options: object, windowId: number, focus?: boolean, place?: PluginPlacement) => {
         places.push(place)
         const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
-        const { tab, placed } = groups.createBeside(projectId, beside, () => create(projectId, options as Record<string, unknown>), { plugin: true })
+        const { tab, placed } = groups.createBeside(projectId, beside, () => create(projectId, options as Record<string, unknown>), {
+          plugin: true,
+          pluginId: place?.pluginId
+        })
         announced.push({ projectId, tab, windowId, ...(focus ? { focus } : {}) })
         return { ...tab, placed }
       }
@@ -2434,6 +2439,8 @@ describe('beside (split groups, D4 D6 D7)', () => {
       { beside: anchor.id, side: 'right' },
       { beside: right.tabId, side: 'down' }
     ])
+    // The placement names the host's own plugin, whose panesPerGroup main reads when it places.
+    expect(places.map((p) => p?.pluginId)).toEqual(['a.one', 'a.one'])
     // Without `beside`: the answer is as before, with no `placed`.
     expect(await open('sessions.open', { pluginId: 'a.one' })).toEqual({ tabId: expect.any(String) })
   })
@@ -2491,6 +2498,19 @@ describe('beside (split groups, D4 D6 D7)', () => {
     const short = tabs.create(A, { kind: 'shell' })
     forced.set(short.id, { cols: 200, rows: 10 })
     expect(((await more('sessions.openShell', { pluginId: 'a.one', beside: short.id, side: 'down' })) as { placed?: boolean }).placed).toBe(false)
+  })
+
+  it('places only up to the person’s panesPerGroup for the plugin, read at each placement', async () => {
+    let panes = 3
+    deps.limits = (pluginId) => ({ ...DEFAULT_PLUGIN_LIMITS, opensPerMinute: 60, panesPerGroup: pluginId === 'a.one' ? panes : 4 })
+    const open = hostA()
+    const anchor = tabs.create(A, { kind: 'shell' })
+    const placed = async (side?: 'down'): Promise<boolean | undefined> =>
+      ((await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id, ...(side ? { side } : {}) })) as { placed?: boolean }).placed
+    expect([await placed(), await placed(), await placed()]).toEqual([true, true, false])
+    panes = 5
+    expect([await placed('down'), await placed('down'), await placed('down')]).toEqual([true, true, false])
+    expect(members(A)[0]).toHaveLength(5)
   })
 
   it('passes the origin view only when it is a view of this host’s window', async () => {

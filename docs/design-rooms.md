@@ -216,7 +216,12 @@ on tabs and texts become the person's per-plugin override: `sessions.open` opens
 texts a minute (default 30), room sends a minute per member (default 20) and per room (default 60). Each has a hard
 ceiling in main (opens 60, sends 300, room sends 120 / 600) so a typo cannot unbound it. Later `roomsPerProject` (default 5,
 ceiling 20) and `membersPerRoom` (default 20, ceiling 50) joined them; lowering one never evicts, it only refuses new
-creates and joins. The storage caps stay constants.
+creates and joins. Then `panesPerGroup` (default 4, the old fixed `GROUP_CAPS.pluginBelow`; least 2, ceiling
+`GROUP_CAPS.maxPanes` 8): a plugin's `beside` places a split pane only while the target group has fewer panes, read by
+main's TabGroups at each placement (`TabGroupsDeps.pluginPanes`, with the plugin id HostApi put in the placement, never a
+payload's); lowering it never ungroups, it only opens later tabs plain. It is the one cap with a least value above 1
+(`PluginLimitSpec.min`): an edit under it is refused, a stored value from 1 up but under it reads as it. The storage caps
+stay constants.
 
 Set globally in Settings › General ("Plugin limits", or `ccc plugin limits --global`) and per plugin in Settings › Plugins (the plugin's row, "Limits") or from a shell outside cockpit with
 `ccc plugin limits <id> key=value...` / `--default <key>...`; stored app-wide in `app.json` per plugin id; never in

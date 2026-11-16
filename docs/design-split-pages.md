@@ -339,9 +339,10 @@ Dirty stays per (tab, view), from each page's report, kept by main; nothing abou
   refusal). Caps are unchanged and page panes count in them: 8 panes, depth 4, 32 groups per project, the 10% share; the
   64 page tabs per plugin per project are unchanged.
 - **Plugins.** `ctx.sessions.open` / `openShell` / `openCommand` `beside` may name a page tab (HostApi's `hasTab` is any
-  tab of the host's window's project). D4 and D7 stay: the new tab is placed, never focused, only below 4 panes. Main
-  knows no cell size of a page pane (`TabManager.sizeOf` has none: no pty, no size report), so the halves check is
-  skipped for a page anchor, as for any anchor of unknown size; the 4-pane cap and each view's automatic zoom bound it.
+  tab of the host's window's project). D4 and D7 stay: the new tab is placed, never focused, only below the plugin's
+  `panesPerGroup` panes (4 by default; design.md §3 "Split groups"). Main knows no cell size of a page pane
+  (`TabManager.sizeOf` has none: no pty, no size report), so the size check is skipped for a page anchor, as for any
+  anchor of unknown size; the pane cap and each view's automatic zoom bound it.
   `ctx.tabs.openPage` gets no `beside` (§9), and host-api still has no group op (`no-plugin-group-edits.test.ts`).
 - **What stays refused.** Overlay entries (a `tabs.create` of a command entry that opens as an overlay returns null and
   places nothing), unknown and foreign ids, everything over the caps.

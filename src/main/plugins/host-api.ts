@@ -299,6 +299,8 @@ export const MAX_SENDS_PER_WINDOW = DEFAULT_PLUGIN_LIMITS.sendsPerMinute
 export interface PluginPlacement {
   beside: string
   side: 'right' | 'down'
+  /** The host's own plugin the open is for (checked by HostApi.plugin), whose `panesPerGroup` limit main applies. */
+  pluginId: string
   view?: ViewId
 }
 
@@ -1595,7 +1597,7 @@ export class HostApi {
         throw new Error(`${what}: prompt: ${errorText(err)}`, { cause: err })
       }
     }
-    const place = this.placement(what, beside, side, meta)
+    const place = this.placement(what, plugin, beside, side, meta)
     // One budget for every open of the plugin (sessions.open, openShell, openCommand, rooms.open).
     if (!this.opens.take(plugin.id)) {
       throw new Error(`${what}: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
@@ -1638,7 +1640,7 @@ export class HostApi {
     } catch (err) {
       throw new Error(`sessions.openShell: ${errorText(err)}`, { cause: err })
     }
-    const place = this.placement('sessions.openShell', beside, side, meta)
+    const place = this.placement('sessions.openShell', plugin, beside, side, meta)
     if (!this.opens.take(plugin.id)) {
       throw new Error(`sessions.openShell: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }
@@ -1657,10 +1659,11 @@ export class HostApi {
    * A plugin open's `beside` / `side` (split groups, design §1 "Plugin API", D6, D7), checked before
    * the open budget is spent: the anchor must be a terminal tab of the host's own window by main's
    * table, and an unknown id and another window's give the same error. Only the shape is settled
-   * here; whether the new tab is placed (anchor gone meanwhile, group at 4 panes, pane too small)
-   * is TabGroups' call when the tab exists, and a refusal there opens a plain tab (`placed: false`).
+   * here; whether the new tab is placed (anchor gone meanwhile, group at the plugin's `panesPerGroup`
+   * limit, a pane too small) is TabGroups' call when the tab exists, and a refusal there opens a plain
+   * tab (`placed: false`). `pluginId` is the host's own plugin, so main reads that plugin's limit.
    */
-  private placement(method: string, beside: unknown, side: unknown, meta: RpcMeta | undefined): PluginPlacement | undefined {
+  private placement(method: string, plugin: HostApiPlugin, beside: unknown, side: unknown, meta: RpcMeta | undefined): PluginPlacement | undefined {
     if (beside === undefined) {
       if (side !== undefined) throw new Error(`${method}: side needs beside`)
       return undefined
@@ -1670,7 +1673,7 @@ export class HostApi {
     if (!this.deps.hasTab) throw new Error(`${method}: beside is not available`)
     if (!this.deps.hasTab(this.scope.projectId, beside)) throw new Error(`${method}: beside: no such tab in this window`)
     const view = this.originOf(meta)
-    return { beside, side: side ?? 'right', ...(view === undefined ? {} : { view }) }
+    return { beside, side: side ?? 'right', pluginId: plugin.id, ...(view === undefined ? {} : { view }) }
   }
 
   /**
@@ -1859,7 +1862,7 @@ export class HostApi {
     } catch (err) {
       throw new Error(`sessions.openCommand: ${errorText(err)}`, { cause: err })
     }
-    const place = this.placement('sessions.openCommand', beside, side, meta)
+    const place = this.placement('sessions.openCommand', plugin, beside, side, meta)
     if (!this.opens.take(plugin.id)) {
       throw new Error(`sessions.openCommand: ${capHit(this.opens.limit(plugin.id), 'tabs', 'opensPerMinute')}`)
     }

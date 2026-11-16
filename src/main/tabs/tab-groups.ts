@@ -17,7 +17,9 @@
 import { errorText } from '../../shared/error-text'
 import type { GroupsReply } from '../../shared/ipc'
 import {
+  GROUP_CAPS,
   PANE_MIN_CELLS,
+  besideSpan,
   contiguousOrder,
   dissolve,
   groupOf,
@@ -74,7 +76,20 @@ export interface TabGroupsDeps {
    * when both halves of the anchor's pane would keep PANE_MIN_CELLS (D5). Absent or unknown: no check.
    */
   sizeOf?(projectId: string, tabId: string): { cols: number; rows: number } | undefined
+  /**
+   * The person's `panesPerGroup` limit for a plugin (PluginLimitsStore.limits): its `beside` places only while the
+   * target group has fewer panes. Read at each placement, so a change applies to the next open; clamped again here
+   * (2..GROUP_CAPS.maxPanes). Absent, throwing or not a number: GROUP_CAPS.pluginBelow.
+   */
+  pluginPanes?(pluginId: string): number
   log?: (message: string) => void
+}
+
+/** A placement's options: the person's own (none), or a plugin's `beside` with the plugin main opened the tab for. */
+export interface PlaceOpts {
+  plugin?: boolean
+  /** The plugin the open is for (HostApi's checked host plugin, never a payload's), whose `panesPerGroup` applies. */
+  pluginId?: string
 }
 
 interface ProjectGroups {
@@ -144,7 +159,7 @@ export class TabGroups {
    * Both ids are looked up in the project's own live tabs: an unknown and another project's id are
    * the same `unknown-tab` refusal, and a refusal changes nothing and publishes nothing.
    */
-  place(projectId: string, intent: PlaceIntent, opts: { plugin?: boolean } = {}): GroupsReply {
+  place(projectId: string, intent: PlaceIntent, opts: PlaceOpts = {}): GroupsReply {
     // A kind outside isPaneKind is refused, as the tab placed or as the anchor. An unknown id goes
     // on to `unknown-tab`.
     if (!this.mayBePane(projectId, intent.tabId) || !this.mayBePane(projectId, intent.at)) {
@@ -153,7 +168,7 @@ export class TabGroups {
     const order = this.deps.order(projectId)
     const result = place(this.groupsOf(projectId), order, intent, {
       mint: this.mint,
-      ...(opts.plugin === true ? { plugin: true } : {})
+      ...(opts.plugin === true ? { plugin: true, caps: { ...GROUP_CAPS, pluginBelow: this.pluginPanes(opts.pluginId) } } : {})
     })
     if (!result.ok) return result
     return this.apply(projectId, result.groups, order, result.order)
@@ -253,21 +268,27 @@ export class TabGroups {
     projectId: string,
     beside: BesideRequest | undefined,
     create: () => T,
-    opts: { plugin?: boolean } = {}
+    opts: PlaceOpts = {}
   ): { tab: T; placed: boolean } {
     return this.atomic(projectId, () => {
       const tab = create()
       if (!tab || !beside) return { tab, placed: false }
       // A plugin never squeezes a pane below the minimum (D5, D7): its tab opens plain instead. Asked
       // after the create (the anchor may have closed or been resized while the login env was awaited).
-      if (opts.plugin === true && !this.halvesFit(projectId, beside)) return { tab, placed: false }
+      if (opts.plugin === true && !this.panesFit(projectId, beside)) return { tab, placed: false }
       const reply = this.place(projectId, { tabId: tab.id, at: beside.tabId, edge: beside.edge }, opts)
       return { tab, placed: reply.ok }
     })
   }
 
-  /** Whether both halves of the anchor's pane split on `edge` keep PANE_MIN_CELLS (a 1-cell divider between). */
-  private halvesFit(projectId: string, beside: BesideRequest): boolean {
+  /**
+   * Whether every pane a plugin's placement leaves along the edge's axis keeps PANE_MIN_CELLS (a 1-cell divider after
+   * each pane but the last). Measured on what the placement gives the new pane (besideSpan): half the anchor when it is
+   * halved; the equal share of the parent split when it joins one running its way (the anchor's span over its share is
+   * the split's: a column of 3 members of 24 rows gets a 4th of 17 rows). Every pane
+   * of an even split gets that same share, so checking the new one checks them all.
+   */
+  private panesFit(projectId: string, beside: BesideRequest): boolean {
     let size: { cols: number; rows: number } | undefined
     try {
       size = this.deps.sizeOf?.(projectId, beside.tabId)
@@ -275,10 +296,26 @@ export class TabGroups {
       this.log(`tab groups size failed: ${errorText(err)}`)
     }
     if (!size) return true
+    const { share, panes } = besideSpan(this.groupsOf(projectId), beside.tabId, beside.edge, true)
+    // The anchor is `share` of the split's cells after its dividers, so those are cells / share; with the new pane the
+    // split has one divider more, and `panes` panes share the rest. Halving (share 1, 2 panes) is (cells - 1) / 2.
+    const each = (cells: number): number => Math.floor((cells / share - 1) / panes)
     const across = beside.edge === 'left' || beside.edge === 'right'
     return across
-      ? Math.floor((size.cols - 1) / 2) >= PANE_MIN_CELLS.cols && size.rows >= PANE_MIN_CELLS.rows
-      : Math.floor((size.rows - 1) / 2) >= PANE_MIN_CELLS.rows && size.cols >= PANE_MIN_CELLS.cols
+      ? each(size.cols) >= PANE_MIN_CELLS.cols && size.rows >= PANE_MIN_CELLS.rows
+      : each(size.rows) >= PANE_MIN_CELLS.rows && size.cols >= PANE_MIN_CELLS.cols
+  }
+
+  /** A plugin's `panesPerGroup` now (TabGroupsDeps.pluginPanes), clamped to 2..GROUP_CAPS.maxPanes; the default when unknown. */
+  private pluginPanes(pluginId: string | undefined): number {
+    let n: unknown
+    try {
+      n = pluginId === undefined ? undefined : this.deps.pluginPanes?.(pluginId)
+    } catch (err) {
+      this.log(`tab groups plugin limit failed: ${errorText(err)}`)
+    }
+    if (typeof n !== 'number' || !Number.isInteger(n)) return GROUP_CAPS.pluginBelow
+    return Math.min(Math.max(n, 2), GROUP_CAPS.maxPanes)
   }
 
   /**

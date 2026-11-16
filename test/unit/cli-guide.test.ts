@@ -371,7 +371,8 @@ describe('guide drift guards', () => {
       'roomSendsPerMember',
       'roomSendsPerRoom',
       'roomsPerProject',
-      'membersPerRoom'
+      'membersPerRoom',
+      'panesPerGroup'
     ])
     const by = Object.fromEntries(PLUGIN_LIMIT_SPECS.map((s) => [s.key, s]))
     for (const spec of PLUGIN_LIMIT_SPECS) {
@@ -400,6 +401,12 @@ describe('guide drift guards', () => {
     expect(types).toContain(`a member's ${m.default} a minute`)
     // rooms.md names the room defaults.
     expect(flat(topic('rooms'))).toContain(`by default ${m.default} and ${r.default}`)
+    // panesPerGroup: its least value in cli.md, its default and ceiling where api.md, rooms.md and types.ts explain `beside`.
+    const p = by['panesPerGroup']!
+    expect(cli).toContain(`default ${p.default}, at most ${p.ceiling}, at least ${p.min}`)
+    expect(api).toContain(`has ${p.default} panes (\`panesPerGroup\`: default ${p.default}, at most ${p.ceiling};`)
+    expect(flat(topic('rooms'))).toContain(`up to ${p.default} by default, \`panesPerGroup\`, at most ${p.ceiling})`)
+    expect(types).toContain(`${p.default} panes (the default \`panesPerGroup\`, at most ${p.ceiling};`)
   })
 
   it('documents the panel SDK members', () => {

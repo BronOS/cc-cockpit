@@ -77,7 +77,10 @@ export interface GroupCaps {
   maxGroups: number
   /** The smallest share a child may have in its split (main's clamp; D5). */
   minShare: number
-  /** A plugin's `beside` places only while the target group has fewer panes than this (D6). */
+  /**
+   * A plugin's `beside` places only while the target group has fewer panes than this (D6). The default; main passes
+   * the person's `panesPerGroup` plugin limit (shared/plugin-limits.ts) in its place, read at each placement.
+   */
   pluginBelow: number
 }
 
@@ -108,7 +111,7 @@ export type GroupRefusalReason =
   | 'unknown-split'
   | 'bad-sizes' // not one finite positive number per child
   | 'bad-name'
-  | 'full' // the group already has GROUP_CAPS.maxPanes panes (or pluginBelow, for a plugin)
+  | 'full' // the group already has GROUP_CAPS.maxPanes panes (or pluginBelow, the person's panesPerGroup, for a plugin)
   | 'too-deep' // the placement would nest splits deeper than maxDepth
   | 'too-many-groups'
 
@@ -139,7 +142,12 @@ export interface PlaceIntent {
 export interface PlaceOptions {
   mint: MintId
   caps?: GroupCaps
-  /** A plugin's `beside`: placed only while the target group has fewer than `caps.pluginBelow` panes. */
+  /**
+   * A plugin's `beside`: placed only while the target group has fewer than `caps.pluginBelow` panes (main passes the
+   * person's `panesPerGroup` limit there), and placed evenly: beside an anchor whose parent split already runs the
+   * edge's way the new pane joins that split and every child gets an equal share (withLeafBeside), so a stack of
+   * room members stays 1/n each instead of 1/2, 1/4, 1/8.
+   */
   plugin?: boolean
 }
 
@@ -650,11 +658,15 @@ function withoutLeaf(node: PaneNode, tabId: string): PaneNode | null {
 }
 
 /**
- * A copy of `node` with `tabId` beside the leaf `at` on `edge`: a sibling (the anchor's share
- * halved) when the parent runs in the edge's direction, else the anchor leaf becomes a new split of
- * the two. Not yet canonical (canonGroup fits the shares and lifts a lone child).
+ * A copy of `node` with `tabId` beside the leaf `at` on `edge`: a sibling when the parent runs in the
+ * edge's direction, else the anchor leaf becomes a new split of the two (halves). As a sibling the
+ * anchor's share is halved (the person's split: only the pane they split gives room, the others keep
+ * the sizes they dragged), or with `even` (a plugin's `beside`) every child of that split gets an
+ * equal share: a plugin stacking panes down one column (the Team plugin's room members) would
+ * otherwise give them 1/2, 1/4, 1/8 and soon fall under PANE_MIN_CELLS. Not yet canonical
+ * (canonGroup fits the shares and lifts a lone child).
  */
-function withLeafBeside(node: PaneNode, at: string, tabId: string, edge: PaneEdge, mint: MintId): PaneNode {
+function withLeafBeside(node: PaneNode, at: string, tabId: string, edge: PaneEdge, mint: MintId, even = false): PaneNode {
   const dir: SplitDir = edge === 'left' || edge === 'right' ? 'row' : 'column'
   const before = edge === 'left' || edge === 'up'
   const pair = (anchor: PaneLeaf): PaneSplit => ({
@@ -666,14 +678,46 @@ function withLeafBeside(node: PaneNode, at: string, tabId: string, edge: PaneEdg
   if (isLeaf(node)) return node.tab === at ? pair(node) : node
   const i = node.children.findIndex((c) => isLeaf(c) && c.tab === at)
   if (i >= 0 && node.dir === dir) {
-    const half = node.sizes[i]! / 2
     const children = [...node.children]
-    const sizes = [...node.sizes]
     children.splice(before ? i : i + 1, 0, { tab: tabId })
+    if (even) return { ...node, children, sizes: children.map(() => 1 / children.length) }
+    const half = node.sizes[i]! / 2
+    const sizes = [...node.sizes]
     sizes.splice(i, 1, half, half)
     return { ...node, children, sizes }
   }
-  return { ...node, children: node.children.map((c) => withLeafBeside(c, at, tabId, edge, mint)) }
+  return { ...node, children: node.children.map((c) => withLeafBeside(c, at, tabId, edge, mint, even)) }
+}
+
+/**
+ * How a placement beside `at` on `edge` splits room along the edge's axis, for main's "too small"
+ * check before a plugin's `beside` (TabGroups.createBeside): the new pane and its siblings share the
+ * span of `share` times the anchor's own size, `panes` ways. `{ share: 1, panes: 2 }` when the anchor
+ * is halved (a plain anchor, a parent of the other direction, or `even` off); with `even` and a parent
+ * split running the edge's way, `share` is the anchor's share of that split and `panes` its children
+ * plus the new one (each gets 1/panes of the split, the equal share withLeafBeside gives).
+ */
+export function besideSpan(
+  groups: readonly TabGroup[],
+  at: string,
+  edge: PaneEdge,
+  even: boolean
+): { share: number; panes: number } {
+  const halves = { share: 1, panes: 2 }
+  const group = even && isPaneEdge(edge) ? groupOf(groups, at) : undefined
+  if (!group) return halves
+  const dir: SplitDir = edge === 'left' || edge === 'right' ? 'row' : 'column'
+  const find = (node: PaneNode): { share: number; panes: number } | undefined => {
+    if (isLeaf(node)) return undefined
+    const i = node.children.findIndex((c) => isLeaf(c) && c.tab === at)
+    if (i >= 0) return node.dir === dir ? { share: node.sizes[i]!, panes: node.children.length + 1 } : halves
+    for (const c of node.children) {
+      const got = find(c)
+      if (got) return got
+    }
+    return undefined
+  }
+  return find(group.root) ?? halves
 }
 
 /**
@@ -710,7 +754,7 @@ export function place(
     if (!sameGroup && opts.plugin && panes >= caps.pluginBelow) return refuse('full')
     const stripped = sameGroup ? withoutLeaf(target.root, tabId) : target.root
     if (!stripped) return refuse('unknown-tab') // cannot happen: `at` is still in it
-    const root = withLeafBeside(stripped, at, tabId, edge, opts.mint)
+    const root = withLeafBeside(stripped, at, tabId, edge, opts.mint, opts.plugin === true)
     next = groups.map((g) => (g === target ? { ...g, root } : g === source ? shrunk(g, tabId) : g))
   } else {
     const fresh = { id: opts.mint(), root: withLeafBeside({ tab: at }, at, tabId, edge, opts.mint) }

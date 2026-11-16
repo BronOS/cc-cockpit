@@ -520,13 +520,16 @@ export type SendResult = { readonly delivered: true } | { readonly queued: true;
 /**
  * Open a new tab as a split pane beside a tab of this window (`ctx.sessions.open`, `openShell`,
  * `openCommand`): `beside` is that tab's id, `side` puts the new pane to its right (the default) or
- * below it. Only the new tab is placed; a plugin never moves, resizes or closes the person's panes. A
- * plain tab becomes a group of the two; the anchor stays visible and keeps focus. Any tab of this
- * window may be the anchor, a page tab (`ctx.tabs`) included; an unknown id and a tab of another
- * window reject the same way, before the open counts against the 5 a minute. The open still succeeds
- * as an ordinary tab (`placed: false`) when the anchor closed meanwhile, its group already has 4
- * panes, or its terminal pane is too small to halve (a page anchor's size is not known to the app, so
- * a small page pane is halved anyway). `focus: true` shows the anchor's group in
+ * below it. Only the new tab is placed; a plugin never moves or closes the person's panes. A
+ * plain tab becomes a group of the two; the anchor stays visible and keeps focus. Panes stack evenly:
+ * beside an anchor already in a column with `side: 'down'` (or in a row with `'right'`) the new pane
+ * joins that column after the anchor and every pane in it gets an equal share; otherwise the anchor
+ * is halved. Any tab of this window may be the anchor, a page tab (`ctx.tabs`) included; an unknown
+ * id and a tab of another window reject the same way, before the open counts against the 5 a minute.
+ * The open still succeeds as an ordinary tab (`placed: false`) when the anchor closed meanwhile, its
+ * group already has 4 panes (the default `panesPerGroup`, at most 8; the person can change it), or a
+ * pane would get under 20x5 cells (a page anchor's size is not known to the app, so a small page pane
+ * is split anyway). `focus: true` shows the anchor's group in
  * the window the call came from; the new pane is never focused (it must not catch the person's keys).
  * An older app ignores both and answers without `placed`.
  */

@@ -1203,8 +1203,8 @@ function start(server: boolean): void {
   }
   /**
    * A tab main opened for a plugin (or Discuss), told to its window, which did not ask for it: create
-   * it (placed beside `place.beside` under one groups snapshot when asked, as a plugin may: at most 3
-   * panes already, the anchor's halves above the minimum, else plain), then `tabs.added`, then the
+   * it (placed beside `place.beside` under one groups snapshot when asked, as a plugin may: fewer panes than the
+   * plugin's `panesPerGroup` limit already, every pane it leaves above the minimum, else plain), then `tabs.added`, then the
    * focus. A plugin-opened pane never takes focus (D4): with `focus` and a placed tab, the origin view
    * (else the desktop page) selects the anchor, unless it shows that group already; a plain tab is
    * selected in the window as before groups.
@@ -1217,7 +1217,7 @@ function start(server: boolean): void {
     create: () => TabInfo
   ): TabInfo & { placed?: boolean } => {
     const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
-    const { tab, placed } = tabGroups.createBeside(projectId, beside, create, { plugin: true })
+    const { tab, placed } = tabGroups.createBeside(projectId, beside, create, { plugin: true, pluginId: place?.pluginId })
     // The window did not ask for it: tell it, or the tab gets no view and no output acks.
     sendToProject(projectId, 'tabs.added', tab)
     // Sent after `tabs.added` on the same webContents, so the page already has the tab when it
@@ -2117,7 +2117,10 @@ function start(server: boolean): void {
     // `webConnections` is defined below; a group can change only once a window has attached.
     groupsChanged: (projectId) => webConnections.groupsChanged(projectId),
     // A plugin's `beside` never makes a pane smaller than the minimum (D5).
-    sizeOf: (projectId, tabId) => tabs.sizeOf(projectId, tabId)
+    sizeOf: (projectId, tabId) => tabs.sizeOf(projectId, tabId),
+    // The person's `panesPerGroup` limit, read at each placement (`pluginLimits` is defined above; only a plugin open
+    // places with a plugin id, and the id is HostApi's own host plugin, never a payload's).
+    pluginPanes: (pluginId) => pluginLimits.limits(pluginId).panesPerGroup
   })
   // A project window that opens with nothing to restore gets one Claude tab when its renderer
   // first attaches (first-tab.ts; the attach handler below). The setting is read then.

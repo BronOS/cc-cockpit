@@ -13,7 +13,16 @@
 // before main checked it, as in shared/plugin-config.ts); `reset` lists keys whose value is dropped (`--default`,
 // "Use global" on a plugin, "Use default" on the global values).
 
-export type PluginLimitKey = 'opensPerMinute' | 'sendsPerMinute' | 'roomSendsPerMember' | 'roomSendsPerRoom' | 'roomsPerProject' | 'membersPerRoom'
+import { GROUP_CAPS } from './tab-groups'
+
+export type PluginLimitKey =
+  | 'opensPerMinute'
+  | 'sendsPerMinute'
+  | 'roomSendsPerMember'
+  | 'roomSendsPerRoom'
+  | 'roomsPerProject'
+  | 'membersPerRoom'
+  | 'panesPerGroup'
 
 /** The caps in effect for one plugin: its override where the person set one, else the global value, else the default. */
 export type PluginLimits = Record<PluginLimitKey, number>
@@ -23,18 +32,34 @@ export interface PluginLimitSpec {
   /** What one unit counts, for the page and `ccc plugin limits` ("tabs opened a minute"). */
   label: string
   default: number
+  /**
+   * The least value main accepts: 1 for every cap but `panesPerGroup` (2: a group is two panes, so under 2 a plugin's
+   * `beside` could never place). An edit below it is refused; a stored value from 1 up but below it reads as it.
+   */
+  min: number
   /** The hard ceiling in main, for a global value and an override alike: above it is refused (a hand-edited app.json is clamped to it). */
   ceiling: number
 }
 
-/** In display order. The first four count over one minute; the last two are standing counts (rooms not ended, members in a room). The unit is in the label. */
+/**
+ * In display order. The first four count over one minute; the next two are standing counts (rooms not ended, members in
+ * a room); `panesPerGroup` is the split-group size up to which a plugin's `beside` places a pane (GROUP_CAPS.pluginBelow
+ * by default, at most a group's GROUP_CAPS.maxPanes; read by main's TabGroups at placement). The unit is in the label.
+ */
 export const PLUGIN_LIMIT_SPECS: readonly PluginLimitSpec[] = Object.freeze([
-  { key: 'opensPerMinute', label: 'tabs opened a minute (sessions.open, openShell, openCommand, rooms.open)', default: 5, ceiling: 60 },
-  { key: 'sendsPerMinute', label: 'texts sent a minute (sessions.send)', default: 30, ceiling: 300 },
-  { key: 'roomSendsPerMember', label: 'room messages a minute by one member', default: 20, ceiling: 120 },
-  { key: 'roomSendsPerRoom', label: 'room messages a minute in one room, every sender together', default: 60, ceiling: 600 },
-  { key: 'roomsPerProject', label: 'rooms not ended at once in a project (rooms.create)', default: 5, ceiling: 20 },
-  { key: 'membersPerRoom', label: 'members in one room (rooms.open, ccc room join)', default: 20, ceiling: 50 }
+  { key: 'opensPerMinute', label: 'tabs opened a minute (sessions.open, openShell, openCommand, rooms.open)', default: 5, min: 1, ceiling: 60 },
+  { key: 'sendsPerMinute', label: 'texts sent a minute (sessions.send)', default: 30, min: 1, ceiling: 300 },
+  { key: 'roomSendsPerMember', label: 'room messages a minute by one member', default: 20, min: 1, ceiling: 120 },
+  { key: 'roomSendsPerRoom', label: 'room messages a minute in one room, every sender together', default: 60, min: 1, ceiling: 600 },
+  { key: 'roomsPerProject', label: 'rooms not ended at once in a project (rooms.create)', default: 5, min: 1, ceiling: 20 },
+  { key: 'membersPerRoom', label: 'members in one room (rooms.open, ccc room join)', default: 20, min: 1, ceiling: 50 },
+  {
+    key: 'panesPerGroup',
+    label: 'panes a plugin may fill in a split group (beside on sessions.open, openShell, openCommand, rooms.open)',
+    default: GROUP_CAPS.pluginBelow,
+    min: 2,
+    ceiling: GROUP_CAPS.maxPanes
+  }
 ])
 
 export const PLUGIN_LIMIT_KEYS: readonly PluginLimitKey[] = PLUGIN_LIMIT_SPECS.map((s) => s.key)
@@ -78,7 +103,7 @@ export interface GlobalPluginLimitsView {
   limits: PluginLimitView[]
 }
 
-/** Most `key=value` pairs plus `--default` keys one edit takes (there are six caps). */
+/** Most `key=value` pairs plus `--default` keys one edit takes (there are seven caps). */
 export const MAX_PLUGIN_LIMIT_EDITS = 16
 
 const SOURCES: readonly string[] = ['plugin', 'global', 'default'] satisfies readonly PluginLimitSource[]
@@ -99,7 +124,9 @@ export function formatPluginLimits(view: unknown, plain: (text: unknown) => stri
   const lines = rows.map((l, i) => {
     const source = typeof l.source === 'string' && SOURCES.includes(l.source) ? l.source : undefined
     const mark = source !== undefined ? ` (${source})` : l.overridden === true ? ' (set)' : ''
-    return `${(keys[i] as string).padEnd(width)} = ${num(l.value)}${mark}  default ${num(l.default)}, at most ${num(l.ceiling)}: ${plain(l.label)}\n`
+    // `at least` only for a cap whose least value is not 1 (panesPerGroup), so the other lines read as before.
+    const least = typeof l.min === 'number' && l.min !== 1 ? `, at least ${num(l.min)}` : ''
+    return `${(keys[i] as string).padEnd(width)} = ${num(l.value)}${mark}  default ${num(l.default)}, at most ${num(l.ceiling)}${least}: ${plain(l.label)}\n`
   })
   const heading = v.global === true ? 'global (every plugin without its own value)' : plain(v.id)
   return `# ${heading}\n${lines.join('')}`

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AUTO_ZOOM_CELLS,
   GROUP_CAPS,
+  besideSpan,
   contiguousOrder,
   depthOf,
   dissolve,
@@ -234,6 +235,101 @@ describe('place', () => {
     place([g], order, { tabId: 'a', at: 'b', edge: 'down' }, { mint: minter() })
     expect(JSON.stringify(g)).toBe(before)
     expect(order).toEqual(['a', 'b', 'c'])
+  })
+})
+
+// A plugin's `beside` places evenly (the Team plugin stacks room members down a column to the right of the
+// coordinator): beside an anchor whose parent split already runs the side's way the new pane joins it and every child
+// gets an equal share; a cross split still nests (halves), and the person's own split still halves only the anchor.
+describe('place: a plugin stacks evenly', () => {
+  const caps = { ...GROUP_CAPS, pluginBelow: GROUP_CAPS.maxPanes }
+  const shares = (r: GroupsResult, splitOf: string): number[] => {
+    if (!r.ok) throw new Error(r.reason)
+    const g = groupOf(r.groups, splitOf)!
+    const find = (n: PaneNode): PaneSplit | undefined =>
+      isLeaf(n) ? undefined : n.children.some((c) => isLeaf(c) && c.tab === splitOf) ? n : n.children.map(find).find(Boolean)
+    return find(g.root)!.sizes
+  }
+
+  it('a column of 1..7 members beside a coordinator: every member gets the same height', () => {
+    const order = ['co', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7']
+    const mint = minter()
+    // The Team plugin's way: the first member right of the coordinator, each next one down beside the previous.
+    let r = place([], order, { tabId: 'm1', at: 'co', edge: 'right' }, { mint, caps, plugin: true })
+    expect(r.ok && rectsOf(r.groups[0]!.root).panes.map((p) => p.w)).toEqual([0.5, 0.5])
+    for (let k = 2; k <= 7; k++) {
+      if (!r.ok) throw new Error(r.reason)
+      r = place(r.groups, r.order, { tabId: `m${k}`, at: `m${k - 1}`, edge: 'down' }, { mint, caps, plugin: true })
+      if (!r.ok) throw new Error(r.reason)
+      const { panes } = rectsOf(r.groups[0]!.root)
+      const column = panes.filter((p) => p.tab !== 'co')
+      expect(column.map((p) => p.tab)).toEqual(order.slice(1, k + 1))
+      // Equal within the 1e-6 share grid; the coordinator keeps its half and the column stays one split (depth 2).
+      for (const p of column) expect(p.h).toBeCloseTo(1 / k, 5)
+      expect(panes.find((p) => p.tab === 'co')!.w).toBe(0.5)
+      expect(depthOf(r.groups[0]!.root)).toBe(2)
+    }
+    expect(r.ok && leavesOf(r.groups[0]!.root)).toHaveLength(GROUP_CAPS.maxPanes)
+  })
+
+  it('a row: a pane right of an anchor in a row evens the row, whatever its sizes were', () => {
+    const order = ['a', 'b', 'x', 'y']
+    const row = group('g', split('s', 'row', [leaf('a'), leaf('b')], [0.7, 0.3]))
+    const r = place([row], order, { tabId: 'x', at: 'b', edge: 'right' }, { mint: minter(), plugin: true })
+    expect(r.ok && leavesOf(r.groups[0]!.root)).toEqual(['a', 'b', 'x'])
+    for (const v of shares(r, 'x')) expect(v).toBeCloseTo(1 / 3, 5)
+    // Placed after the anchor, not at the end: beside the first pane it goes second.
+    const r2 = place([row], order, { tabId: 'y', at: 'a', edge: 'right' }, { mint: minter(), plugin: true })
+    expect(r2.ok && leavesOf(r2.groups[0]!.root)).toEqual(['a', 'y', 'b'])
+  })
+
+  it('mixed directions still nest: down beside a pane of a row halves that pane in a new column', () => {
+    const order = ['a', 'b', 'x']
+    const row = group('g', split('s', 'row', [leaf('a'), leaf('b')], [0.7, 0.3]))
+    const r = place([row], order, { tabId: 'x', at: 'b', edge: 'down' }, { mint: minter(), plugin: true })
+    if (!r.ok) throw new Error(r.reason)
+    const root = r.groups[0]!.root as PaneSplit
+    expect(root.sizes).toEqual([0.7, 0.3])
+    expect(root.children[1]).toMatchObject({ dir: 'column', children: [{ tab: 'b' }, { tab: 'x' }], sizes: [0.5, 0.5] })
+    // A plain anchor is a pair of halves, as before.
+    const plain = place([], ['a', 'x'], { tabId: 'x', at: 'a', edge: 'down' }, { mint: minter(), plugin: true })
+    expect(plain.ok && (plain.groups[0]!.root as PaneSplit).sizes).toEqual([0.5, 0.5])
+  })
+
+  it('the person’s own split is unchanged: only the anchor is halved, the others keep their sizes', () => {
+    const order = ['a', 'b', 'x']
+    const row = group('g', split('s', 'row', [leaf('a'), leaf('b')], [0.7, 0.3]))
+    const r = place([row], order, { tabId: 'x', at: 'b', edge: 'right' }, { mint: minter() })
+    expect(shares(r, 'x')).toEqual([0.7, 0.15, 0.15])
+  })
+
+  it('still respects the plugin cap and the depth cap', () => {
+    const tabs = ['t1', 't2', 't3', 't4', 'x']
+    const three = group('g', split('s', 'column', tabs.slice(0, 3).map(leaf)))
+    expect(place([three], tabs, { tabId: 'x', at: 't3', edge: 'down' }, { mint: minter(), plugin: true, caps: { ...GROUP_CAPS, pluginBelow: 3 } })).toEqual({
+      ok: false,
+      reason: 'full'
+    })
+    const deep = group(
+      'g',
+      split('s1', 'row', [leaf('a'), split('s2', 'column', [leaf('b'), split('s3', 'row', [leaf('c'), split('s4', 'column', [leaf('d'), leaf('e')])])])])
+    )
+    const order = ['a', 'b', 'c', 'd', 'e', 'x']
+    const opts = { mint: minter(), plugin: true, caps }
+    expect(place([deep], order, { tabId: 'x', at: 'e', edge: 'right' }, opts)).toEqual({ ok: false, reason: 'too-deep' })
+    // Into the deepest column: a sibling, no new level, and the column's three panes even.
+    const r = place([deep], order, { tabId: 'x', at: 'e', edge: 'down' }, opts)
+    for (const v of shares(r, 'x')) expect(v).toBeCloseTo(1 / 3, 5)
+  })
+
+  it('besideSpan: the anchor’s share and the pane count of an even placement, else halves', () => {
+    const col = group('g', split('s', 'row', [leaf('co'), split('c', 'column', [leaf('m1'), leaf('m2'), leaf('m3')])]))
+    expect(besideSpan([col], 'm2', 'down', true)).toEqual({ share: 1 / 3, panes: 4 })
+    expect(besideSpan([col], 'm2', 'right', true)).toEqual({ share: 1, panes: 2 })
+    expect(besideSpan([col], 'co', 'right', true)).toEqual({ share: 0.5, panes: 3 })
+    expect(besideSpan([col], 'm2', 'down', false)).toEqual({ share: 1, panes: 2 })
+    expect(besideSpan([col], 'plain', 'down', true)).toEqual({ share: 1, panes: 2 })
+    expect(besideSpan([col], 'm2', 'diagonal' as never, true)).toEqual({ share: 1, panes: 2 })
   })
 })
 
