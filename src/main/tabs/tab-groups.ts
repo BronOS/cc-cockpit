@@ -125,6 +125,9 @@ interface Seen {
 /** The most places `Seen.since` keeps (a tab's place changes; its size follows within a round trip). */
 const SEEN_PLACES = 8
 
+/** Float noise in cellsOf's arithmetic, below which a pane's cells did not change (a placement moves whole fractions). */
+const SHRINK_EPS = 1e-9
+
 /** A `tabs.create` `beside`, already shape-checked by the router. */
 export interface BesideRequest {
   tabId: string
@@ -340,12 +343,14 @@ export class TabGroups {
     // Sizes whose layout cannot be told apart any more (see Seen.since): a pane that may not fit is not placed.
     if (!extent) return false
     const old = was ? cellsOf(was, extent) : new Map([[anchor, extent]])
+    // Shrinking is decided on the unrounded cells: floored, 19.43 to 19.23 columns are both 19 and would hide a pane
+    // that (the extent being a low estimate) really goes from 20.08 to 19.88. A shrunk or new pane then needs the
+    // minimum in whole cells.
+    const tooSmall = (now: number, was: number | undefined, min: number): boolean =>
+      (was === undefined || now < was - SHRINK_EPS) && Math.floor(now) < min
     for (const [t, c] of cellsOf(now, extent)) {
       const o = old.get(t)
-      const cols = Math.floor(c.cols)
-      const rows = Math.floor(c.rows)
-      if (cols < PANE_MIN_CELLS.cols && (!o || cols < Math.floor(o.cols))) return false
-      if (rows < PANE_MIN_CELLS.rows && (!o || rows < Math.floor(o.rows))) return false
+      if (tooSmall(c.cols, o?.cols, PANE_MIN_CELLS.cols) || tooSmall(c.rows, o?.rows, PANE_MIN_CELLS.rows)) return false
     }
     return true
   }

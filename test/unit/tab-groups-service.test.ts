@@ -574,6 +574,26 @@ describe('a plugin’s beside: every pane it shrinks, from a size and the layout
     expect(nested(0.5).beside('a', 'x')).toBe(true)
   })
 
+  it('a pane that shrinks by less than a cell still counts as shrunk when it is under 20 columns', () => {
+    // A 131 x 50 group: a at 66.5% of the row, then a column of b over a row of c (46%) and d. a reports 86 columns
+    // (130 x 0.665 = 86.45), which reads as a 130.3-column row. Thirds beside a take c from 19.47 to 19.21 columns:
+    // both floor to 19, but c gets narrower under the minimum, so the placement is refused.
+    const t = make(['a', 'b', 'c', 'd', 'x'])
+    const root = {
+      id: 's',
+      dir: 'row' as const,
+      children: [
+        { tab: 'a' },
+        { id: 'c1', dir: 'column' as const, children: [{ tab: 'b' }, { id: 'r1', dir: 'row' as const, children: [{ tab: 'c' }, { tab: 'd' }], sizes: [0.46, 0.54] }], sizes: [0.5, 0.5] }
+      ],
+      sizes: [0.665, 0.335]
+    }
+    t.groups.restore('p', [{ id: 'g', root }], new Map(['a', 'b', 'c', 'd'].map((k) => [k, k])))
+    t.sizes.set('a', { cols: 86, rows: 50 })
+    expect(t.beside('a', 'x')).toBe(false)
+    expect(leavesOf(t.groups.groupsOf('p')[0]!.root)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
   it('reads a stale size against the layout it was measured under: a grown anchor places, a shrunk one does not', () => {
     // A 91-column row of halves: a reports 45. The person drags a to 75%; its new size is not reported yet.
     const grown = make(['a', 'b', 'x'])
