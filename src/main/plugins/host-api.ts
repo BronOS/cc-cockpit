@@ -125,7 +125,8 @@
 //   rooms.list      { pluginId }               -> RoomInfo[]      the plugin's OWN rooms of THIS project only:
 //   rooms.end|delete { pluginId, id }          -> null            the owner is main's (the plugin this host runs,
 //   rooms.open      { pluginId, id, name, coordinator?, cwd?,     the project it was spawned for), another
-//                     prompt?, model?, effort? } -> { tabId }     plugin's or window's room is "no such room";
+//                     prompt?, model?, effort?, beside?, side? }  plugin's or window's room is "no such room";
+//                     -> { tabId, placed? }
 //   rooms.invite    { pluginId, id, name, coordinator? } -> { code, expiresAt }   open is sessions.open (its
 //   rooms.members   { pluginId, id }           -> RoomMember[]    checks and its budget) plus the membership;
 //   rooms.remove    { pluginId, id, name }     -> null            send is `from plugin` through the delivery
@@ -2847,12 +2848,13 @@ export class HostApi {
   /**
    * ctx.rooms.open: a new Claude tab that is a member of the plugin's room from the start (design-rooms.md §1). The
    * room and the name are checked first, then the tab opens as ctx.sessions.open would open it (its checks, the cwd
-   * inside the project, the same open budget; never focused, never placed beside a tab), then it joins. Only the
-   * documented options are read: a `focus` or `beside` riding along is never looked at.
+   * inside the project, the same open budget, and `beside` / `side` with sessions.open's placement and its checks
+   * before the budget is spent; never focused), then it joins. Only the documented options are read: a `focus`
+   * riding along is never looked at, so the new pane never takes the person's keys.
    */
-  private async roomsOpen(params: unknown, meta?: RpcMeta): Promise<{ tabId: string }> {
+  private async roomsOpen(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, id, name, coordinator, cwd, prompt, model, effort } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, id, name, coordinator, cwd, prompt, model, effort, beside, side } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'rooms.open')
     const rooms = this.deps.rooms
     if (!rooms) throw new Error('rooms.open: rooms are not available')
@@ -2866,7 +2868,7 @@ export class HostApi {
     } catch (err) {
       throw withMethod('rooms.open', err)
     }
-    const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort }, meta)
+    const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort, beside, side }, meta)
     try {
       // Again: the plugin may have been switched off while the tab was starting, and the sweep then found no member.
       const why = this.deps.roomsOff?.(owner)
@@ -2879,7 +2881,8 @@ export class HostApi {
       this.log(`plugin ${plugin.id}: rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`)
       throw new Error(`rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`, { cause: err })
     }
-    return { tabId: tab.tabId }
+    // sessions.open's answer: `placed` only when `beside` was asked.
+    return tab
   }
 
   /** The plugin a request names, only if this host process runs it. */

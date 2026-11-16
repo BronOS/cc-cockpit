@@ -41,7 +41,8 @@ member's private folder). A tab is in at most one room.
 
 **Joining** (membership means a room's messages reach that session):
 - a tab the plugin opens into the room (`ctx.rooms.open`) is a member from the start; it counts against the
-  `sessions.open` cap;
+  `sessions.open` cap, and takes `sessions.open`'s `beside` / `side` (a split pane beside a tab of the host's window,
+  checked by main the same way before the cap is spent, answered with `placed`, never focused);
 - an existing tab joins only by itself: the plugin mints a one-time invite (`ctx.rooms.invite`, 10 minutes) and hands
   it out through its own command; the tab runs `ccc room join <invite>`, and main sees that tab's own token. A plugin
   can never pull a tab into a room;

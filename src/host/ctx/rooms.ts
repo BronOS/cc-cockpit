@@ -3,7 +3,8 @@
 // decided there (src/main/plugins/host-api.ts roomsCall, src/main/rooms/room-service.ts). Each method is one RPC
 // carrying this plugin's own id and plain data; the type checks here only give a bad call a fast error at its call
 // site, and main checks everything again. No events: a plugin that follows a room polls `log` with the `since` cursor (a `seq`).
-import type { PluginContext, RoomDoc, RoomInfo, RoomLogPage, RoomMember, RoomSendAnswer } from '../../sdk/types'
+import type { OpenBeside, OpenedTab, PluginContext, RoomDoc, RoomInfo, RoomLogPage, RoomMember, RoomSendAnswer } from '../../sdk/types'
+import { besideOf } from './sessions'
 
 export interface RoomsApiDeps {
   pluginId: string
@@ -81,12 +82,12 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
       guardAsync(async () => {
         await ask<null>('rooms.delete', { id: text(id, 'rooms.delete', 'id') })
       }),
-    open: (id: string, opts: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string }) =>
+    open: (id: string, opts: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string } & OpenBeside) =>
       guardAsync(() => {
         const w = 'rooms.open'
         const o = options(opts, w)
-        // Only the documented options go to main (no focus, no beside): the tab opens unselected.
-        return ask<{ tabId: string }>(w, {
+        // Only the documented options go to main (no focus): the tab opens unselected, a split pane when `beside`.
+        return ask<OpenedTab>(w, {
           id: text(id, w, 'id'),
           ...defined({
             name: text(o.name, w, 'name'),
@@ -95,7 +96,8 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
             model: optionalString(o.model, w, 'model'),
             effort: optionalString(o.effort, w, 'effort'),
             cwd: optionalString(o.cwd, w, 'cwd')
-          })
+          }),
+          ...besideOf(w, o)
         })
       }),
     invite: (id: string, opts: { name: string; coordinator?: boolean }) =>

@@ -334,7 +334,7 @@ type OpenResult = { tabId: string; placed?: boolean }
  * (an unknown and another window's tab are the same error). Sent only when asked for: a request
  * without them is the same as before groups existed.
  */
-function besideOf(method: string, options: unknown): { beside?: string; side?: 'right' | 'down' } {
+export function besideOf(method: string, options: unknown): { beside?: string; side?: 'right' | 'down' } {
   const { beside, side } = (options ?? {}) as { beside?: unknown; side?: unknown }
   if (beside === undefined) {
     if (side !== undefined) throw new TypeError(`${method}: side needs beside`)

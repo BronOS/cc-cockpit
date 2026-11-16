@@ -118,8 +118,9 @@ and a room has at most 20 members (`membersPerRoom`, at most 50; a plugin has at
 ## For plugins: `ctx.rooms`
 
 A plugin makes a room with `ctx.rooms.create({ title })`, opens member tabs into it with
-`ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd })` (counted against the
-`ctx.sessions.open` cap, 5 tabs a minute by default, which the person can change) or hands an existing tab an invite from
+`ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd, beside, side })` (counted against the
+`ctx.sessions.open` cap, 5 tabs a minute by default, which the person can change; `beside` opens it as a split
+pane beside a tab of the window, as `ctx.sessions.open` does) or hands an existing tab an invite from
 `ctx.rooms.invite(id, { name, coordinator })`, and seeds and collects the docs with
 `ctx.rooms.docs.list / get / put` (it reads and writes every area). It sends `from plugin` with
 `ctx.rooms.send(id, to, text)`, reads the room's record with `ctx.rooms.log(id, { since })` (`since`

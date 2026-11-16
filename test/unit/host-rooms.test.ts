@@ -74,12 +74,21 @@ describe('ctx.rooms (host side)', () => {
 
   it('never sends a field it does not document, nor a pluginId the caller passes', async () => {
     const { rooms, calls } = harness()
-    await rooms.open('r1', { name: 'bob', focus: true, beside: 't1', pluginId: 'other.plugin' } as never)
+    await rooms.open('r1', { name: 'bob', focus: true, pluginId: 'other.plugin' } as never)
     await rooms.create({ title: 'x', pluginId: 'other.plugin' } as never)
     expect(calls).toEqual([
       { method: 'rooms.open', params: { pluginId: 'example.team', id: 'r1', name: 'bob' } },
       { method: 'rooms.create', params: { pluginId: 'example.team', title: 'x' } }
     ])
+  })
+
+  it('sends beside and side as sessions.open does, with its fast errors', async () => {
+    const { rooms, calls } = harness()
+    await rooms.open('r1', { name: 'bob', beside: 't1', side: 'down' })
+    expect(calls).toEqual([{ method: 'rooms.open', params: { pluginId: 'example.team', id: 'r1', name: 'bob', beside: 't1', side: 'down' } }])
+    await expect(rooms.open('r1', { name: 'b', side: 'down' })).rejects.toThrow('rooms.open: side needs beside')
+    await expect(rooms.open('r1', { name: 'b', beside: '' })).rejects.toThrow('rooms.open: beside must be a tab id')
+    await expect(rooms.open('r1', { name: 'b', beside: 't1', side: 'left' } as never)).rejects.toThrow("rooms.open: side must be 'right' or 'down'")
   })
 
   it('answers what main answered, and void for the calls that return nothing', async () => {

@@ -2503,6 +2503,86 @@ describe('beside (split groups, D4 D6 D7)', () => {
     expect(places.map((p) => p?.view)).toEqual(['web:1', undefined])
     expect(announced.slice(-2).map((a) => a.focus)).toEqual([true, true])
   })
+  describe('rooms.open beside', () => {
+    let rooms: RoomService
+    beforeEach(() => {
+      rooms = new RoomService({
+        dir: join(root, 'rooms-beside'),
+        tabs: {
+          setRoom: (p, t, r) => tabs.setRoom(p, t, r),
+          clearRoom: (p, t) => tabs.clearRoom(p, t),
+          roomOf: (p, t) => tabs.roomOf(p, t),
+          kindOf: (p, t) => tabs.kindOf(p, t)
+        },
+        sessions: registry,
+        log: () => {}
+      })
+      deps.rooms = rooms
+    })
+    afterEach(() => {
+      rooms.dispose()
+      delete deps.rooms
+    })
+    const newRoom = async (open: ReturnType<typeof hostA>): Promise<string> =>
+      ((await open('rooms.create', { pluginId: 'a.one', title: 'Review' })) as { id: string }).id
+
+    it('opens a member as a split pane beside a tab of this window, never focused, and answers placed', async () => {
+      const open = hostA()
+      const id = await newRoom(open)
+      const anchor = tabs.create(A, { kind: 'claude' })
+      const r = (await open('rooms.open', { pluginId: 'a.one', id, name: 'bob', beside: anchor.id, side: 'down', focus: true })) as {
+        tabId: string
+        placed?: boolean
+      }
+      expect(r).toEqual({ tabId: expect.any(String), placed: true })
+      expect(members(A)).toEqual([[anchor.id, r.tabId]])
+      expect(groups.groupsOf(A)[0]!.root.dir).toBe('column')
+      expect(places.map((p) => p && { beside: p.beside, side: p.side })).toEqual([{ beside: anchor.id, side: 'down' }])
+      // `focus` is never read for a room tab.
+      expect(announced.at(-1)).not.toHaveProperty('focus')
+      expect(tabs.roomOf(A, r.tabId)).toEqual(expect.objectContaining({ id, name: 'bob' }))
+      // Without `beside`: no `placed`.
+      expect(await open('rooms.open', { pluginId: 'a.one', id, name: 'carol' })).toEqual({ tabId: expect.any(String) })
+    })
+
+    it('fails soft to a plain tab when the group has 4 panes, still a member', async () => {
+      const open = hostA()
+      const id = await newRoom(open)
+      const anchor = tabs.create(A, { kind: 'claude' })
+      for (const name of ['m1', 'm2', 'm3']) {
+        expect(((await open('rooms.open', { pluginId: 'a.one', id, name, beside: anchor.id })) as { placed?: boolean }).placed).toBe(true)
+      }
+      const full = (await open('rooms.open', { pluginId: 'a.one', id, name: 'm4', beside: anchor.id })) as { tabId: string; placed?: boolean }
+      expect(full.placed).toBe(false)
+      expect(members(A)[0]).toHaveLength(4)
+      expect(tabs.roomOf(A, full.tabId)).toEqual(expect.objectContaining({ id, name: 'm4' }))
+    })
+
+    it('an unknown anchor and another window’s tab are the same error, before the budget is spent and before a tab starts', async () => {
+      const open = hostA()
+      const id = await newRoom(open)
+      const foreign = tabs.create(B, { kind: 'shell' })
+      const errors: string[] = []
+      for (let i = 0; i < MAX_OPENS_PER_WINDOW; i++) {
+        for (const beside of [foreign.id, 'no-such-tab']) {
+          await open('rooms.open', { pluginId: 'a.one', id, name: 'bob', beside }).catch((err: Error) => errors.push(err.message))
+        }
+      }
+      expect(new Set(errors)).toEqual(new Set(['rooms.open: beside: no such tab in this window']))
+      expect(errors).toHaveLength(2 * MAX_OPENS_PER_WINDOW)
+      expect(tabs.list(A)).toHaveLength(0)
+      expect(await open('rooms.members', { pluginId: 'a.one', id })).toEqual([])
+      await expect(open('rooms.open', { pluginId: 'a.one', id, name: 'bob', side: 'left', beside: foreign.id })).rejects.toThrow('rooms.open:')
+      // The whole budget is still there.
+      const anchor = tabs.create(A, { kind: 'shell' })
+      for (let i = 0; i < MAX_OPENS_PER_WINDOW; i++) await open('rooms.open', { pluginId: 'a.one', id, name: `m${i}`, beside: anchor.id })
+      await expect(open('rooms.open', { pluginId: 'a.one', id, name: 'late', beside: anchor.id })).rejects.toThrow(
+        `rooms.open: more than ${MAX_OPENS_PER_WINDOW} tabs`
+      )
+      expect(tabs.list(B)).toHaveLength(1)
+      expect(groups.groupsOf(B)).toEqual([])
+    })
+  })
 })
 
 describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
@@ -2593,9 +2673,8 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
       model: 'sonnet',
       effort: 'high',
       cwd: 'sub',
-      // Never read: a room tab opens unselected and unplaced.
-      focus: true,
-      beside: 'x'
+      // Never read: a room tab opens unselected.
+      focus: true
     })) as { tabId: string }
     expect(ptyOf(tabId).argv).toEqual([
       'claude', '--settings', '/data/hooks.json', '--model', 'sonnet', '--effort', 'high', '--', ' read your kickoff'

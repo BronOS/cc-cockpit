@@ -1180,14 +1180,15 @@ export interface PluginContext {
      * A new Claude tab of this window that is a member from the start, under `name` (`^[a-z][a-z0-9-]{0,30}$`, not
      * `all`, `plugin`, `person`, `user` or `system`; unique in the room). `cwd`, `prompt`, `model` and `effort` are
      * `ctx.sessions.open`'s, with its checks, and it counts against the same 5 tabs a minute; the tab opens
-     * unselected. At most 20 members a room (the default `membersPerRoom`, at most 50; the person can change it in
+     * unselected. `beside` / `side`: see `OpenBeside` (the same checks; the new pane is never focused), and the
+     * answer then has `placed`. At most 20 members a room (the default `membersPerRoom`, at most 50; the person can change it in
      * Settings > General > Plugin limits or a plugin's Limits, and the error names the cap). Seed a member's kickoff
      * doc before opening it.
      */
     open(
       id: string,
-      options: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string }
-    ): Promise<{ tabId: string }>
+      options: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string } & OpenBeside
+    ): Promise<OpenedTab>
     /**
      * A one-time invite for `name`: hand `code` to an existing tab (through your own command), which joins by running
      * `ccc room join <code>` itself. Single use, 10 minutes (`expiresAt`, epoch ms). A plugin can never pull a tab in.

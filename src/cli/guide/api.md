@@ -389,7 +389,7 @@ with full Node access.
   so output the person should read must wait: `['sh', '-c', '"$@"; read -r _', 'sh', ...argv]`.
   Unselected unless `focus: true`. It shares the 5 a minute of `open` and `openShell`. An older app has
   no `openCommand`: check `typeof ctx.sessions.openCommand === 'function'`.
-- `beside` and `side` on all three opens (`{ ..., beside: tabId, side: 'right' | 'down' }`, right by
+- `beside` and `side` on all three opens and on `ctx.rooms.open` (`{ ..., beside: tabId, side: 'right' | 'down' }`, right by
   default): the new tab opens as a split pane beside that tab of this window, for a command next to the
   Claude tab that asked for it. Only the new tab is placed: no plugin call moves, resizes, closes or ungroups
   the person's panes, and none reads which group a tab is in. A plain anchor becomes a group of the two; the
@@ -421,11 +421,13 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   ended, `paused`, `members` as a count), ended ones included. No messages.
 - `ctx.rooms.end(id)`: its members leave it (their tabs stay), its invites die; the record and docs stay.
   `ctx.rooms.delete(id)` removes an ended room with its docs and log.
-- `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd })` -> `{ tabId }`: a new Claude tab
+- `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd, beside, side })` -> `{ tabId, placed }`: a new Claude tab
   of this window that is a member from the start. `name` matches `^[a-z][a-z0-9-]{0,30}$`, is unique in
   the room and is not `all`, `plugin`, `person`, `user` or `system`; at most 20 members a room (`membersPerRoom`: default 20, at most 50; the person can change it).
   `prompt`, `model`, `effort` and `cwd` are `ctx.sessions.open`'s, with its checks, and the open counts against the
-  same 5 tabs a minute; the tab opens unselected. The room and the name are checked before the tab opens.
+  same 5 tabs a minute; the tab opens unselected. `beside` and `side` are the opens' above, with the same checks
+  and the same `placed` (only when `beside` is given): a member can open as a split pane beside its coordinator.
+  The room and the name are checked before the tab opens.
   Seed the member's kickoff (`members/<name>/...`) first, and have the prompt tell it to read it.
 - `ctx.rooms.invite(id, { name, coordinator })` -> `{ code, expiresAt }`: a one-time invite (10 minutes)
   for an existing tab, which joins by running `ccc room join <code>` itself; hand the code out through your
