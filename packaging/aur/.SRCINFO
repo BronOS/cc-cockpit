@@ -1,6 +1,6 @@
 pkgbase = cc-cockpit-bin
 	pkgdesc = Desktop cockpit for Claude Code: terminal tabs, session status and plugin panels
-	pkgver = 0.19.3
+	pkgver = 0.20.0
 	pkgrel = 1
 	url = https://github.com/BronOS/cc-cockpit
 	arch = x86_64
@@ -19,12 +19,12 @@ pkgbase = cc-cockpit-bin
 	optdepends = libappindicator-gtk3: tray support
 	optdepends = micro: editor plugin (Open in micro)
 	optdepends = wl-clipboard: copy and paste in micro on Wayland
-	noextract = cc-cockpit-0.19.3.deb
+	noextract = cc-cockpit-0.20.0.deb
 	options = !strip
 	options = !debug
-	source = cc-cockpit-0.19.3.deb::https://github.com/BronOS/cc-cockpit/releases/download/v0.19.3/cc-cockpit-0.19.3-linux-x64.deb
-	source = LICENSE-0.19.3::https://raw.githubusercontent.com/BronOS/cc-cockpit/v0.19.3/LICENSE
-	sha256sums = b9263318641fdf6a6b48e028d1032b56168da8c74c9899cb47040509d6f7c6d8
+	source = cc-cockpit-0.20.0.deb::https://github.com/BronOS/cc-cockpit/releases/download/v0.20.0/cc-cockpit-0.20.0-linux-x64.deb
+	source = LICENSE-0.20.0::https://raw.githubusercontent.com/BronOS/cc-cockpit/v0.20.0/LICENSE
+	sha256sums = 54c9f6b13828e01441f5b559cfceb491c278d649e58fd7a8d0d95f0cc9b8b0b4
 	sha256sums = SKIP
 
 pkgname = cc-cockpit-bin
