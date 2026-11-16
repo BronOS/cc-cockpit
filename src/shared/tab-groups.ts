@@ -689,35 +689,65 @@ function withLeafBeside(node: PaneNode, at: string, tabId: string, edge: PaneEdg
   return { ...node, children: node.children.map((c) => withLeafBeside(c, at, tabId, edge, mint, even)) }
 }
 
+/** A size in terminal cells (floats in the model below; a pane gets whole cells only when drawn). */
+export interface CellSize {
+  cols: number
+  rows: number
+}
+
+/** One split on the way from a group's root down to a pane: its direction, its child count, the share of the child taken. */
+export interface PaneStep {
+  dir: SplitDir
+  n: number
+  share: number
+}
+
 /**
- * How a placement beside `at` on `edge` splits room along the edge's axis, for main's "too small"
- * check before a plugin's `beside` (TabGroups.createBeside): the new pane and its siblings share the
- * span of `share` times the anchor's own size, `panes` ways. `{ share: 1, panes: 2 }` when the anchor
- * is halved (a plain anchor, a parent of the other direction, or `even` off); with `even` and a parent
- * split running the edge's way, `share` is the anchor's share of that split and `panes` its children
- * plus the new one (each gets 1/panes of the split, the equal share withLeafBeside gives).
+ * The splits from `root` down to the leaf `tabId`, outermost first; undefined when the tab is not in the tree. A plain
+ * tab's path is `[]` (its pane is the whole area). With extentFrom and cellsOf, main's "too small" check for a plugin's
+ * `beside` (TabGroups.createBeside).
  */
-export function besideSpan(
-  groups: readonly TabGroup[],
-  at: string,
-  edge: PaneEdge,
-  even: boolean
-): { share: number; panes: number } {
-  const halves = { share: 1, panes: 2 }
-  const group = even && isPaneEdge(edge) ? groupOf(groups, at) : undefined
-  if (!group) return halves
-  const dir: SplitDir = edge === 'left' || edge === 'right' ? 'row' : 'column'
-  const find = (node: PaneNode): { share: number; panes: number } | undefined => {
-    if (isLeaf(node)) return undefined
-    const i = node.children.findIndex((c) => isLeaf(c) && c.tab === at)
-    if (i >= 0) return node.dir === dir ? { share: node.sizes[i]!, panes: node.children.length + 1 } : halves
-    for (const c of node.children) {
-      const got = find(c)
-      if (got) return got
-    }
-    return undefined
+export function pathTo(root: PaneNode, tabId: string): PaneStep[] | undefined {
+  if (isLeaf(root)) return root.tab === tabId ? [] : undefined
+  for (let i = 0; i < root.children.length; i++) {
+    const below = pathTo(root.children[i]!, tabId)
+    if (below) return [{ dir: root.dir, n: root.children.length, share: root.sizes[i]! }, ...below]
   }
-  return find(group.root) ?? halves
+  return undefined
+}
+
+/**
+ * The cells of every pane of `root` drawn in a group of `extent` cells. The model: a split of L cells along its axis has
+ * a 1-cell divider between two children and gives each child its share of the rest, (L - (n - 1)) * share; the other
+ * axis is the split's own. Floats: the caller floors (a view draws whole cells, and its pixels round a little apart).
+ */
+export function cellsOf(root: PaneNode, extent: CellSize): Map<string, CellSize> {
+  const out = new Map<string, CellSize>()
+  const walk = (node: PaneNode, size: CellSize): void => {
+    if (isLeaf(node)) {
+      out.set(node.tab, size)
+      return
+    }
+    const along = node.dir === 'row' ? size.cols : size.rows
+    const inner = along - (node.children.length - 1)
+    node.children.forEach((c, i) => {
+      const part = inner * node.sizes[i]!
+      walk(c, node.dir === 'row' ? { cols: part, rows: size.rows } : { cols: size.cols, rows: part })
+    })
+  }
+  walk(root, extent)
+  return out
+}
+
+/** cellsOf backwards: the group's extent from one pane's `size` and its `path` (outermost first). */
+export function extentFrom(path: readonly PaneStep[], size: CellSize): CellSize {
+  let { cols, rows } = size
+  for (let i = path.length - 1; i >= 0; i--) {
+    const s = path[i]!
+    if (s.dir === 'row') cols = cols / s.share + (s.n - 1)
+    else rows = rows / s.share + (s.n - 1)
+  }
+  return { cols, rows }
 }
 
 /**

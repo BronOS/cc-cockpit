@@ -504,16 +504,100 @@ describe('a plugin’s panesPerGroup and even stacks', () => {
   })
 
   it('checks the size on the equal share of the column, not on half the anchor', () => {
-    // Three members of 6 rows each: 18 rows of panes in the column (+2 dividers). Halving m3 would leave 2 rows each;
-    // the even stack gives 4 equal panes of (18 - 1) / 4 = 4 rows: under 5, so not placed.
-    const short = { cols: 80, rows: 6 }
-    const g = make({ panes: () => 8, sizes: { m3: short } })
+    // Three members of 6 rows each, as m3 reports once the stack is drawn: 18 rows of panes in the column (+2 dividers).
+    // Halving m3 would leave 2 rows each; the even stack gives 4 equal panes of (20 - 3) / 4 = 4 rows: under 5, not placed.
+    const sizes: Record<string, { cols: number; rows: number }> = {}
+    const g = make({ panes: () => 8, sizes })
     expect(stack(g.groups, 3)).toEqual([true, true, true])
+    sizes.m3 = { cols: 80, rows: 6 }
     expect(g.groups.createBeside('p', { tabId: 'm3', edge: 'down' }, () => ({ id: 'm4' }), { plugin: true, pluginId: 'a.one' }).placed).toBe(false)
-    // 8 rows each: (24 - 1) / 4 = 5 rows, placed (halving m3 alone would have given 3 and refused it).
-    const tall = make({ panes: () => 8, sizes: { m3: { cols: 80, rows: 8 } } })
+    // 8 rows each: (26 - 3) / 4 = 5 rows, placed (halving m3 alone would have given 3 and refused it).
+    const tallSizes: Record<string, { cols: number; rows: number }> = {}
+    const tall = make({ panes: () => 8, sizes: tallSizes })
     expect(stack(tall.groups, 3)).toEqual([true, true, true])
+    tallSizes.m3 = { cols: 80, rows: 8 }
     expect(tall.groups.createBeside('p', { tabId: 'm3', edge: 'down' }, () => ({ id: 'm4' }), { plugin: true, pluginId: 'a.one' }).placed).toBe(true)
+  })
+})
+
+// The size check of a plugin's beside: every pane the placement shrinks keeps PANE_MIN_CELLS, not only the anchor and
+// the new one; and the anchor's size is read against the layout it was measured under, never the one main has now
+// (a view reports a pane's new size a round trip after the layout changed).
+describe('a plugin’s beside: every pane it shrinks, from a size and the layout it was measured under', () => {
+  const make = (order: string[]) => {
+    const orders = new Map([['p', order]])
+    const sizes = new Map<string, { cols: number; rows: number }>()
+    const groups = new TabGroups({
+      order: (p) => [...(orders.get(p) ?? [])],
+      setOrder: (p, ids) => void orders.set(p, [...ids]),
+      publish: () => {},
+      changed: () => {},
+      sizeOf: (_p, t) => sizes.get(t),
+      pluginPanes: () => 8,
+      log: () => {}
+    })
+    const beside = (at: string, id: string, edge: 'right' | 'down' = 'right'): boolean =>
+      groups.createBeside('p', { tabId: at, edge }, () => ({ id }), { plugin: true, pluginId: 'a.one' }).placed
+    const ids = (g: TabGroups) => {
+      const group = g.groupsOf('p')[0]!
+      return { group: group.id, split: group.root.id }
+    }
+    return { groups, sizes, beside, ids }
+  }
+  /** a at 20% of a row, then a column of b over a row of c and d, c taking `c` of that row; every pane reported under it. */
+  const nested = (c: number) => {
+    const t = make(['a', 'b', 'c', 'd', 'x'])
+    const root = {
+      id: 's',
+      dir: 'row' as const,
+      children: [
+        { tab: 'a' },
+        { id: 'c1', dir: 'column' as const, children: [{ tab: 'b' }, { id: 'r1', dir: 'row' as const, children: [{ tab: 'c' }, { tab: 'd' }], sizes: [c, 1 - c] }], sizes: [0.5, 0.5] }
+      ],
+      sizes: [0.2, 0.8]
+    }
+    t.groups.restore('p', [{ id: 'g', root }], new Map(['a', 'b', 'c', 'd'].map((k) => [k, k])))
+    // A 200 x 50 group: a is (200 - 1) * 0.2 wide, c (159 - 1) * c.
+    t.sizes.set('a', { cols: 39, rows: 50 })
+    t.sizes.set('b', { cols: 159, rows: 24 })
+    t.sizes.set('c', { cols: Math.floor(158 * c), rows: 25 })
+    t.sizes.set('d', { cols: Math.floor(158 * (1 - c)), rows: 25 })
+    return t
+  }
+
+  it('refuses a placement whose equal shares squeeze a nested pane under 20 columns', () => {
+    // Beside a: the row becomes three thirds of 66 columns, so c (20% of the 65 left in its row) falls from 31 to 13.
+    const narrow = nested(0.2)
+    expect(narrow.beside('a', 'x')).toBe(false)
+    expect(leavesOf(narrow.groups.groupsOf('p')[0]!.root)).toEqual(['a', 'b', 'c', 'd'])
+    // c at half its row keeps 32 of them: placed.
+    expect(nested(0.5).beside('a', 'x')).toBe(true)
+  })
+
+  it('reads a stale size against the layout it was measured under: a grown anchor places, a shrunk one does not', () => {
+    // A 91-column row of halves: a reports 45. The person drags a to 75%; its new size is not reported yet.
+    const grown = make(['a', 'b', 'x'])
+    grown.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
+    grown.sizes.set('a', { cols: 45, rows: 24 })
+    const g = grown.ids(grown.groups)
+    expect(grown.groups.resize('p', g.group, g.split, [0.75, 0.25]).ok).toBe(true)
+    // Thirds of the 91 columns are 29 each (45 read as 75% would make 19 and refuse).
+    expect(grown.beside('a', 'x')).toBe(true)
+
+    // A 61-column row with a at 75%: a reports 45. Dragged back to halves, before the new report: thirds are 19.
+    const shrunk = make(['a', 'b', 'x'])
+    shrunk.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
+    const s = shrunk.ids(shrunk.groups)
+    shrunk.groups.resize('p', s.group, s.split, [0.75, 0.25])
+    shrunk.sizes.set('a', { cols: 45, rows: 24 })
+    shrunk.groups.resize('p', s.group, s.split, [0.5, 0.5])
+    expect(shrunk.beside('a', 'x')).toBe(false)
+    // The report for the halves comes (30 columns): the same 61 columns, still no room.
+    shrunk.sizes.set('a', { cols: 30, rows: 24 })
+    expect(shrunk.beside('a', 'x')).toBe(false)
+    // A wider window (a reports 40 of 81 columns): thirds of 26, placed.
+    shrunk.sizes.set('a', { cols: 40, rows: 24 })
+    expect(shrunk.beside('a', 'x')).toBe(true)
   })
 })
 

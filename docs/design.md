@@ -491,8 +491,13 @@ plain tab has no group, and a project without groups behaves as before.
   would fall under 20x5 cells. A plugin's pane is placed evenly (`place` with `plugin`): beside an
   anchor whose parent split already runs the side's way (`down` in a column, `right` in a row) it joins
   that split after the anchor and every child gets an equal share, so a column of room members stays
-  1/n each instead of 1/2, 1/4, 1/8; the size check is then made on that equal share (`besideSpan`),
-  which every child of the split gets. Any other anchor is halved, as before. The person's own splits
+  1/n each instead of 1/2, 1/4, 1/8. Any other anchor is halved, as before. The size check draws the
+  group before and after in cells (`cellsOf`) and refuses when the new pane, or any pane the placement
+  shrinks (nested splits inside a sibling too), falls under 20x5. The group's extent comes from the
+  anchor's size read against the layout it was measured in, never the shares main has now: a view
+  reports a pane's new size a round trip after a move, so TabGroups notes each tab's size and places at
+  every layout change (`moved`), takes the place before the move for a size unchanged since, and the
+  smallest extent of the places since for a newer one. The person's own splits
   keep halving the pane they split: they act on that one pane and must not undo the sizes they dragged
   the siblings to, while a plugin cannot drag at all, so its stack would otherwise only shrink. No other plugin path reaches groups: host-api has no place,
   remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups

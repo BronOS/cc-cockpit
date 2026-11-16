@@ -401,7 +401,7 @@ with full Node access.
   reject the same way, before the open counts against the 5 a minute. The answer is `{ tabId, placed }`:
   `placed: false` means an ordinary tab opened instead, because the anchor closed meanwhile, its group already
   has 4 panes (`panesPerGroup`: default 4, at most 8; the person can change it like the other limits), or a
-  pane would get under 20x5 cells (the half, or the equal share of the column; a page anchor's size is not
+  pane would get under 20x5 cells (the new one, or any pane the even shares shrink; a page anchor's size is not
   known to the app, so it is not checked there and a small page pane is split anyway). `focus: true` shows the anchor's group in the window the call came from; the
   new pane is never focused, so it cannot catch keys the person types. An older app ignores `beside` and
   answers without `placed`.

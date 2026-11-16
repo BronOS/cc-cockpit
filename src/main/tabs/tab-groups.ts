@@ -19,21 +19,25 @@ import type { GroupsReply } from '../../shared/ipc'
 import {
   GROUP_CAPS,
   PANE_MIN_CELLS,
-  besideSpan,
+  cellsOf,
   contiguousOrder,
   dissolve,
+  extentFrom,
   groupOf,
   leavesOf,
   normalizeGroups,
+  pathTo,
   place,
   removeLeaf,
   rename,
   restoreGroups,
   setSizes,
   isPaneKind,
+  type CellSize,
   type GroupRefusalReason,
   type GroupsSnapshot,
   type PaneEdge,
+  type PaneStep,
   type PlaceIntent,
   type TabGroup
 } from '../../shared/tab-groups'
@@ -72,8 +76,9 @@ export interface TabGroupsDeps {
    */
   groupsChanged?(projectId: string): void
   /**
-   * The anchor's terminal size in cells now (TabManager.sizeOf): a plugin's `beside` is placed only
-   * when both halves of the anchor's pane would keep PANE_MIN_CELLS (D5). Absent or unknown: no check.
+   * A tab's terminal size in cells now (TabManager.sizeOf): a plugin's `beside` is placed only when every pane it
+   * shrinks keeps PANE_MIN_CELLS (D5). Read at each placement and at each layout change (`moved`), so a size is known
+   * with the layout it was measured under. Absent or unknown: no check.
    */
   sizeOf?(projectId: string, tabId: string): { cols: number; rows: number } | undefined
   /**
@@ -96,7 +101,29 @@ interface ProjectGroups {
   groups: TabGroup[]
   /** What the last snapshot said, to publish only a real change (`sync`). */
   published: { seq: number; order: string[]; groups: string } | undefined
+  /** Each tab's size as of its last move in the layout, for a plugin's size check (`moved`, `extentAt`). */
+  seen: Map<string, Seen>
 }
+
+/**
+ * A tab's size against the layouts it can have been measured under. A view measures a pane after it drew the layout
+ * main published, so its report lands a round trip after the layout changed: a size main reads right after a move is
+ * still the old place's, and only a size that changed since was measured in a place the tab has had since.
+ */
+interface Seen {
+  /** The tab's size when its place last changed (undefined: none known then). */
+  size: CellSize | undefined
+  /** The group extent that size gives under the place(s) it was measured in; undefined: unknown. */
+  extent: CellSize | undefined
+  /**
+   * The tab's places since then, the current one among them: a size other than `size` was measured in one of them. Undefined
+   * once more than SEEN_PLACES different ones piled up with no new size: unknown, and a plugin's check then refuses.
+   */
+  since: PaneStep[][] | undefined
+}
+
+/** The most places `Seen.since` keeps (a tab's place changes; its size follows within a round trip). */
+const SEEN_PLACES = 8
 
 /** A `tabs.create` `beside`, already shape-checked by the router. */
 export interface BesideRequest {
@@ -160,6 +187,16 @@ export class TabGroups {
    * the same `unknown-tab` refusal, and a refusal changes nothing and publishes nothing.
    */
   place(projectId: string, intent: PlaceIntent, opts: PlaceOpts = {}): GroupsReply {
+    return this.placeIf(projectId, intent, opts) ?? { ok: false, reason: 'full' }
+  }
+
+  /** `place`, applied only when `fits` (if given) accepts the groups before and after; undefined when it did not. */
+  private placeIf(
+    projectId: string,
+    intent: PlaceIntent,
+    opts: PlaceOpts,
+    fits?: (before: readonly TabGroup[], after: readonly TabGroup[]) => boolean
+  ): GroupsReply | undefined {
     // A kind outside isPaneKind is refused, as the tab placed or as the anchor. An unknown id goes
     // on to `unknown-tab`.
     if (!this.mayBePane(projectId, intent.tabId) || !this.mayBePane(projectId, intent.at)) {
@@ -171,6 +208,7 @@ export class TabGroups {
       ...(opts.plugin === true ? { plugin: true, caps: { ...GROUP_CAPS, pluginBelow: this.pluginPanes(opts.pluginId) } } : {})
     })
     if (!result.ok) return result
+    if (fits && !fits(this.groupsOf(projectId), result.groups)) return undefined
     return this.apply(projectId, result.groups, order, result.order)
   }
 
@@ -273,37 +311,96 @@ export class TabGroups {
     return this.atomic(projectId, () => {
       const tab = create()
       if (!tab || !beside) return { tab, placed: false }
-      // A plugin never squeezes a pane below the minimum (D5, D7): its tab opens plain instead. Asked
-      // after the create (the anchor may have closed or been resized while the login env was awaited).
-      if (opts.plugin === true && !this.panesFit(projectId, beside)) return { tab, placed: false }
-      const reply = this.place(projectId, { tabId: tab.id, at: beside.tabId, edge: beside.edge }, opts)
-      return { tab, placed: reply.ok }
+      // A plugin never squeezes a pane below the minimum (D5, D7): its tab opens plain instead. Checked
+      // after the create (the anchor may have closed or been resized while the login env was awaited), on
+      // the very groups the placement makes.
+      const fits =
+        opts.plugin === true
+          ? (before: readonly TabGroup[], after: readonly TabGroup[]) => this.panesFit(projectId, beside.tabId, tab.id, before, after)
+          : undefined
+      const reply = this.placeIf(projectId, { tabId: tab.id, at: beside.tabId, edge: beside.edge }, opts, fits)
+      return { tab, placed: reply?.ok === true }
     })
   }
 
   /**
-   * Whether every pane a plugin's placement leaves along the edge's axis keeps PANE_MIN_CELLS (a 1-cell divider after
-   * each pane but the last). Measured on what the placement gives the new pane (besideSpan): half the anchor when it is
-   * halved; the equal share of the parent split when it joins one running its way (the anchor's span over its share is
-   * the split's: a column of 3 members of 24 rows gets a 4th of 17 rows). Every pane
-   * of an even split gets that same share, so checking the new one checks them all.
+   * Whether a plugin's placement of `tabId` beside `anchor` (`before` to `after`) leaves PANE_MIN_CELLS to the new pane
+   * and to every pane it shrinks: an even join of a split shrinks all its children, nested splits included (a pane at
+   * 20% of a row inside a sibling can fall from 31 columns to 13). Both layouts are drawn in cells (cellsOf) in the
+   * group's extent, which the anchor's size gives under the layout it was measured in (`extentAt`, never the share main
+   * has now). A pane already under the minimum that the placement does not shrink is no reason to refuse.
    */
-  private panesFit(projectId: string, beside: BesideRequest): boolean {
-    let size: { cols: number; rows: number } | undefined
+  private panesFit(projectId: string, anchor: string, tabId: string, before: readonly TabGroup[], after: readonly TabGroup[]): boolean {
+    const size = this.sizeOf(projectId, anchor)
+    if (!size) return true
+    const was = groupOf(before, anchor)?.root
+    const now = groupOf(after, tabId)?.root
+    if (!now) return true // cannot happen: the placement put the tab in the anchor's group
+    const extent = this.extentAt(projectId, anchor, size, was ? pathTo(was, anchor) : [])
+    // Sizes whose layout cannot be told apart any more (see Seen.since): a pane that may not fit is not placed.
+    if (!extent) return false
+    const old = was ? cellsOf(was, extent) : new Map([[anchor, extent]])
+    for (const [t, c] of cellsOf(now, extent)) {
+      const o = old.get(t)
+      const cols = Math.floor(c.cols)
+      const rows = Math.floor(c.rows)
+      if (cols < PANE_MIN_CELLS.cols && (!o || cols < Math.floor(o.cols))) return false
+      if (rows < PANE_MIN_CELLS.rows && (!o || rows < Math.floor(o.rows))) return false
+    }
+    return true
+  }
+
+  /**
+   * The group extent the anchor's `size` gives, read against the place it was measured in (Seen): its size unchanged
+   * since its last move, the place it had before that move; a size reported since, the places it has had since (the
+   * smallest extent of them, as a view can still be one move behind). A tab never moved has always had `path`.
+   */
+  private extentAt(projectId: string, anchor: string, size: CellSize, path: PaneStep[] | undefined): CellSize | undefined {
+    const rec = this.stateOf(projectId).seen.get(anchor)
+    if (!rec) return path ? extentFrom(path, size) : undefined
+    if (sameSize(rec.size, size)) return rec.extent
+    return rec.since ? smallestExtent(rec.since, size) : undefined
+  }
+
+  /**
+   * The layout changes from `before` to `after`: note, for every tab whose place in it changes, its size now and what it
+   * was measured under (Seen). Run before each change is stored, so a size read here is never the new layout's.
+   */
+  private moved(projectId: string, before: readonly TabGroup[], after: readonly TabGroup[]): void {
+    if (!this.deps.sizeOf) return
+    const seen = this.stateOf(projectId).seen
+    const placeIn = (groups: readonly TabGroup[], t: string): PaneStep[] => {
+      const g = groupOf(groups, t)
+      return (g && pathTo(g.root, t)) ?? []
+    }
+    const tabs = new Set([...before, ...after].flatMap((g) => leavesOf(g.root)))
+    for (const t of tabs) {
+      const was = placeIn(before, t)
+      const now = placeIn(after, t)
+      if (samePlace(was, now)) continue
+      const size = this.sizeOf(projectId, t)
+      const rec = seen.get(t)
+      if (rec && sameSize(rec.size, size)) {
+        // Still the size of the place before the last move: one more place a new size may come from.
+        if (rec.since && !rec.since.some((p) => samePlace(p, now))) {
+          rec.since = rec.since.length < SEEN_PLACES ? [...rec.since, now] : undefined
+        }
+        continue
+      }
+      // A new size (or the first move): measured in a place the tab had since its last move, or `was` for a first one.
+      const extent = !size ? undefined : !rec ? extentFrom(was, size) : rec.since ? smallestExtent(rec.since, size) : undefined
+      seen.set(t, { size, extent, since: [now] })
+    }
+  }
+
+  /** TabGroupsDeps.sizeOf, undefined when absent, unknown or throwing. */
+  private sizeOf(projectId: string, tabId: string): CellSize | undefined {
     try {
-      size = this.deps.sizeOf?.(projectId, beside.tabId)
+      return this.deps.sizeOf?.(projectId, tabId)
     } catch (err) {
       this.log(`tab groups size failed: ${errorText(err)}`)
+      return undefined
     }
-    if (!size) return true
-    const { share, panes } = besideSpan(this.groupsOf(projectId), beside.tabId, beside.edge, true)
-    // The anchor is `share` of the split's cells after its dividers, so those are cells / share; with the new pane the
-    // split has one divider more, and `panes` panes share the rest. Halving (share 1, 2 panes) is (cells - 1) / 2.
-    const each = (cells: number): number => Math.floor((cells / share - 1) / panes)
-    const across = beside.edge === 'left' || beside.edge === 'right'
-    return across
-      ? each(size.cols) >= PANE_MIN_CELLS.cols && size.rows >= PANE_MIN_CELLS.rows
-      : each(size.rows) >= PANE_MIN_CELLS.rows && size.cols >= PANE_MIN_CELLS.cols
   }
 
   /** A plugin's `panesPerGroup` now (TabGroupsDeps.pluginPanes), clamped to 2..GROUP_CAPS.maxPanes; the default when unknown. */
@@ -347,6 +444,7 @@ export class TabGroups {
    */
   tabClosed(tabId: string): void {
     this.departed = undefined
+    for (const state of this.projects.values()) state.seen.delete(tabId)
     for (const [projectId, state] of this.projects) {
       const group = groupOf(state.groups, tabId)
       if (!group) continue
@@ -358,6 +456,8 @@ export class TabGroups {
       const now = result.groups.find((g) => g.id === group.id)
       const panes = now ? leavesOf(now.root) : leavesOf(group.root).filter((t) => t !== tabId && order.includes(t))
       this.departed = { tabId, panes }
+      this.moved(projectId, state.groups, result.groups)
+      state.seen.delete(tabId)
       state.groups = result.groups
       this.publish(projectId, order)
       this.told(projectId)
@@ -390,6 +490,7 @@ export class TabGroups {
     if (state && state.groups.length > 0) {
       const live = normalizeGroups(state.groups, this.panesOf(projectId, order), undefined, this.mint)
       if (JSON.stringify(live) !== JSON.stringify(state.groups)) {
+        this.moved(projectId, state.groups, live)
         state.groups = live
         this.told(projectId)
       }
@@ -456,6 +557,7 @@ export class TabGroups {
     const state = this.stateOf(projectId)
     const groupsMoved = JSON.stringify(groups) !== JSON.stringify(state.groups)
     const orderMoved = !sameList(before, order)
+    if (groupsMoved) this.moved(projectId, state.groups, groups)
     state.groups = groups
     if (orderMoved) this.deps.setOrder(projectId, order)
     if (groupsMoved || orderMoved || always) {
@@ -504,7 +606,7 @@ export class TabGroups {
   private stateOf(projectId: string): ProjectGroups {
     let state = this.projects.get(projectId)
     if (!state) {
-      state = { groups: [], published: undefined }
+      state = { groups: [], published: undefined, seen: new Map() }
       this.projects.set(projectId, state)
     }
     return state
@@ -517,6 +619,20 @@ export function refusalOf(reply: GroupsReply): GroupRefusalReason | undefined {
 }
 
 const clamp = (i: number, length: number): number => Math.min(Math.max(i, 0), length)
+
+function sameSize(a: CellSize | undefined, b: CellSize | undefined): boolean {
+  return a === undefined || b === undefined ? a === b : a.cols === b.cols && a.rows === b.rows
+}
+
+function samePlace(a: readonly PaneStep[], b: readonly PaneStep[]): boolean {
+  return a.length === b.length && a.every((s, i) => s.dir === b[i]!.dir && s.n === b[i]!.n && s.share === b[i]!.share)
+}
+
+/** The smallest group extent `size` gives in any of `places`, per axis: the one that cannot overstate the room. */
+function smallestExtent(places: readonly PaneStep[][], size: CellSize): CellSize {
+  const all = places.map((p) => extentFrom(p, size))
+  return { cols: Math.min(...all.map((e) => e.cols)), rows: Math.min(...all.map((e) => e.rows)) }
+}
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i])

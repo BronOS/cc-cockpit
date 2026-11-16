@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   AUTO_ZOOM_CELLS,
   GROUP_CAPS,
-  besideSpan,
+  cellsOf,
   contiguousOrder,
   depthOf,
   dissolve,
+  extentFrom,
   fitShares,
   fitsMinimum,
   groupOf,
@@ -13,6 +14,7 @@ import {
   leavesOf,
   neighbour,
   normalizeGroups,
+  pathTo,
   place,
   rectsOf,
   removeLeaf,
@@ -322,14 +324,22 @@ describe('place: a plugin stacks evenly', () => {
     for (const v of shares(r, 'x')) expect(v).toBeCloseTo(1 / 3, 5)
   })
 
-  it('besideSpan: the anchor’s share and the pane count of an even placement, else halves', () => {
+  it('cellsOf, pathTo and extentFrom: a pane’s cells in a group and the group’s extent back from one pane', () => {
     const col = group('g', split('s', 'row', [leaf('co'), split('c', 'column', [leaf('m1'), leaf('m2'), leaf('m3')])]))
-    expect(besideSpan([col], 'm2', 'down', true)).toEqual({ share: 1 / 3, panes: 4 })
-    expect(besideSpan([col], 'm2', 'right', true)).toEqual({ share: 1, panes: 2 })
-    expect(besideSpan([col], 'co', 'right', true)).toEqual({ share: 0.5, panes: 3 })
-    expect(besideSpan([col], 'm2', 'down', false)).toEqual({ share: 1, panes: 2 })
-    expect(besideSpan([col], 'plain', 'down', true)).toEqual({ share: 1, panes: 2 })
-    expect(besideSpan([col], 'm2', 'diagonal' as never, true)).toEqual({ share: 1, panes: 2 })
+    // 101 x 26: a 1-cell divider between two children, the rest shared.
+    const cells = cellsOf(col.root, { cols: 101, rows: 26 })
+    expect(cells.get('co')).toEqual({ cols: 50, rows: 26 })
+    expect(cells.get('m2')).toEqual({ cols: 50, rows: 8 })
+    const path = pathTo(col.root, 'm2')!
+    expect(path).toEqual([
+      { dir: 'row', n: 2, share: 0.5 },
+      { dir: 'column', n: 3, share: 1 / 3 }
+    ])
+    const back = extentFrom(path, cells.get('m2')!)
+    expect(back.cols).toBeCloseTo(101, 9)
+    expect(back.rows).toBeCloseTo(26, 9)
+    expect(pathTo(col.root, 'plain')).toBeUndefined()
+    expect(extentFrom([], { cols: 80, rows: 24 })).toEqual({ cols: 80, rows: 24 })
   })
 })
 

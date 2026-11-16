@@ -2480,6 +2480,8 @@ describe('beside (split groups, D4 D6 D7)', () => {
   it('fails soft to a plain tab: a group of 4 panes, an anchor too small to halve', async () => {
     const open = hostA()
     const anchor = tabs.create(A, { kind: 'shell' })
+    // Wide enough for four panes of 20 columns in a row (a pty's 80 x 24 start size gives 19 each).
+    forced.set(anchor.id, { cols: 200, rows: 24 })
     for (let i = 0; i < 3; i++) {
       const r = (await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })) as { placed?: boolean }
       expect(r.placed).toBe(true)
@@ -2569,6 +2571,7 @@ describe('beside (split groups, D4 D6 D7)', () => {
       const open = hostA()
       const id = await newRoom(open)
       const anchor = tabs.create(A, { kind: 'claude' })
+      forced.set(anchor.id, { cols: 200, rows: 24 }) // room for four panes in a row: the count is what refuses
       for (const name of ['m1', 'm2', 'm3']) {
         expect(((await open('rooms.open', { pluginId: 'a.one', id, name, beside: anchor.id })) as { placed?: boolean }).placed).toBe(true)
       }
