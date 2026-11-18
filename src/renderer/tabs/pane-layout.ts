@@ -5,6 +5,7 @@
 // trees and turns pixels into the shares main is asked for.
 import {
   AUTO_ZOOM_CELLS,
+  evenRoot,
   GROUP_CAPS,
   PANE_MIN_CELLS,
   isLeaf,
@@ -35,7 +36,7 @@ export const PANE_CHROME = Object.freeze({ width: 18 + 14, height: 16, header: 2
 /**
  * About one cell of the terminal font, for the D5 thresholds only (never for sizing a pty: the
  * terminal measures itself). Monospace advance is close to 0.6 em and xterm's row about 1.2 em
- * times the line height; "about 40x10" does not need better.
+ * times the line height; "about 40x6" does not need better.
  */
 export function cellEstimate(font: { size: number; lineHeight?: number; letterSpacing?: number }): Size {
   const size = Number.isFinite(font.size) && font.size > 0 ? font.size : 13
@@ -72,7 +73,7 @@ export function holdsCells(
 
 /**
  * D5's automatic zoom: a view whose group, drawn at `area`, would give some pane fewer than about
- * 40x10 cells (a phone, a narrow window) shows only the focused pane. Decided per view and never
+ * 40x6 cells (a phone, a narrow window) shows only the focused pane. Decided per view and never
  * saved; an area not measured yet (0x0) zooms nothing.
  */
 export function needsAutoZoom(root: PaneNode, area: Size, cell: Size, min: { cols: number; rows: number } = AUTO_ZOOM_CELLS): boolean {
@@ -80,22 +81,17 @@ export function needsAutoZoom(root: PaneNode, area: Size, cell: Size, min: { col
   return rectsOf(root).panes.some((p) => !holdsCells(toPx(p, area), cell, min, true))
 }
 
-/** `root` with every split's children equal. */
-function evened(root: PaneNode): PaneNode {
-  if (isLeaf(root)) return root
-  return { ...root, children: root.children.map(evened), sizes: root.children.map(() => 1 / root.children.length) }
-}
 
 /**
  * The view shows the group zoomed to its focused pane (D5), for either of two reasons:
  * - the view is narrow for this arrangement: even with every split equal, some pane would get
- *   under about 40x10 (a phone, a small window). Judged on equal shares, not the shared ones, so a
+ *   under about 40x6 (a phone, a small window). Judged on equal shares, not the shared ones, so a
  *   divider the person dragged on a large screen (down to the 20x5 minimum) does not zoom it there;
  * - or a pane at the shared sizes falls under the 20x5 minimum here (sizes set on a wide screen,
  *   seen on a narrow one), where its terminal would be unusable.
  */
 export function autoZoomed(root: PaneNode, area: Size, cell: Size): boolean {
-  return needsAutoZoom(evened(root), area, cell) || needsAutoZoom(root, area, cell, PANE_MIN_CELLS)
+  return needsAutoZoom(evenRoot(root), area, cell) || needsAutoZoom(root, area, cell, PANE_MIN_CELLS)
 }
 
 /**

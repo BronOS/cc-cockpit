@@ -17,11 +17,14 @@
 import { errorText } from '../../shared/error-text'
 import type { GroupsReply } from '../../shared/ipc'
 import {
+  AUTO_ZOOM_CELLS,
   GROUP_CAPS,
+  PANE_CHROME_CELLS,
   PANE_MIN_CELLS,
   cellsOf,
   contiguousOrder,
   dissolve,
+  evenRoot,
   extentFrom,
   groupOf,
   leavesOf,
@@ -353,6 +356,13 @@ export class TabGroups {
       const o = old.get(t)
       if (tooSmall(c.cols, o?.cols, PANE_MIN_CELLS.cols) || tooSmall(c.rows, o?.rows, PANE_MIN_CELLS.rows)) return false
     }
+    // The view's automatic zoom (D5, `autoZoomed` in the renderer): a group whose evened arrangement gives some pane
+    // under AUTO_ZOOM_CELLS is shown as its focused pane only. A plugin's pane that tips the group over it would hide
+    // every pane but one (a Team column of five on a 1080p screen collapsed to the lead's pane), so it opens as a plain
+    // tab instead. A group already over it before the placement is left to the 20x5 rule above: it is zoomed either way.
+    if (showsSideBySide(was ? cellsOf(evenRoot(was), extent) : new Map([[anchor, extent]]))) {
+      if (!showsSideBySide(cellsOf(evenRoot(now), extent))) return false
+    }
     return true
   }
 
@@ -673,6 +683,18 @@ export function refusalOf(reply: GroupsReply): GroupRefusalReason | undefined {
 }
 
 const clamp = (i: number, length: number): number => Math.min(Math.max(i, 0), length)
+
+/**
+ * Whether every pane of an evened group (cellsOf over evenRoot) holds AUTO_ZOOM_CELLS plus its chrome (PANE_CHROME_CELLS:
+ * main's cells count no frame or header, the view's pixels do), so a view of this size shows the panes side by side.
+ */
+function showsSideBySide(cells: ReadonlyMap<string, CellSize>): boolean {
+  for (const c of cells.values()) {
+    if (Math.floor(c.cols) < AUTO_ZOOM_CELLS.cols + PANE_CHROME_CELLS.cols) return false
+    if (Math.floor(c.rows) < AUTO_ZOOM_CELLS.rows + PANE_CHROME_CELLS.rows) return false
+  }
+  return true
+}
 
 function sameSize(a: CellSize | undefined, b: CellSize | undefined): boolean {
   return a === undefined || b === undefined ? a === b : a.cols === b.cols && a.rows === b.rows

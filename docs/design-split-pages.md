@@ -88,7 +88,7 @@ chords and `groups.resize` once on release are unchanged.
 **Zoom.** Per view, as for terminals: a zoomed page pane gets the whole area; the group's other frames are placed `null`
 (hidden, alive). D5's automatic zoom applies unchanged.
 
-**Minimum sizes.** One rule for every kind: `PANE_MIN_CELLS` (20x5) and `AUTO_ZOOM_CELLS` (40x10) in cells of the
+**Minimum sizes.** One rule for every kind: `PANE_MIN_CELLS` (20x5) and `AUTO_ZOOM_CELLS` (40x6) in cells of the
 terminal font (`cellEstimate`), through the same `holdsCells`, `splitFits` and `dragMinShare`. The editor draws code in
 the terminal font, so "20 columns" means the same thing in both panes, and a second unit (pixels for pages) would make a
 divider stop at different places depending on which side holds a page.

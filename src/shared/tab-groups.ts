@@ -95,8 +95,25 @@ export const GROUP_CAPS: Readonly<GroupCaps> = Object.freeze({
 
 /** The smallest pane in terminal cells: a split or a divider drag below it is refused (D5). */
 export const PANE_MIN_CELLS = Object.freeze({ cols: 20, rows: 5 })
-/** A view whose panes would fall below this shows the group zoomed to the focused pane (D5, tunable). */
-export const AUTO_ZOOM_CELLS = Object.freeze({ cols: 40, rows: 10 })
+/**
+ * A view whose panes would fall below this shows the group zoomed to the focused pane (D5, tunable). 6 rows, not 10:
+ * a Team column of five members on a 1080p screen gets about 8 rows a pane, easy to follow, and at 10 the whole group
+ * collapsed to one pane on a screen with room for all of it. The width stays 40 for phones and narrow windows.
+ */
+export const AUTO_ZOOM_CELLS = Object.freeze({ cols: 40, rows: 6 })
+/**
+ * A pane's chrome (its frame and header, PANE_CHROME in the renderer: 32 px wide, 38 px tall) in cells of a 13-14 px
+ * terminal font, rounded up. Main's cell model (cellsOf) counts one cell per divider and nothing else, so a plugin's
+ * placement checked against AUTO_ZOOM_CELLS adds this to stay at or above what the view's check (in pixels, chrome
+ * taken off) will find.
+ */
+export const PANE_CHROME_CELLS = Object.freeze({ cols: 4, rows: 2 })
+
+/** `root` with every split's children equal: what the view's automatic zoom (D5) judges a group's arrangement by. */
+export function evenRoot(root: PaneNode): PaneNode {
+  if (isLeaf(root)) return root
+  return { ...root, children: root.children.map(evenRoot), sizes: root.children.map(() => 1 / root.children.length) }
+}
 
 /** A group name follows the tab name rule (1-60 characters, no control, bidi or invisible characters). */
 export const checkGroupName = checkSessionName

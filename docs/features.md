@@ -505,8 +505,9 @@ Working in a group:
 - **Ask Claude** from a page pane beside a Claude pane preselects that Claude pane (the one you used
   last in the group, else the first); a Claude tab that never ran a prompt is skipped. Outside a
   group it still preselects New session.
-- A view too small for a group (under about 40x10 per pane even with even splits, say a phone) shows
-  only the focused pane, automatically; the handle then says "zoomed (n hidden)".
+- A view too small for a group (under about 40x6 per pane even with even splits, say a phone) shows
+  only the focused pane, automatically; the handle then says "zoomed (n hidden)". A plugin's pane
+  (a Team member, say) that would make a group zoom like that opens as a plain tab instead.
 
 | Command | macOS | Linux |
 |---|---|---|

@@ -493,7 +493,11 @@ plain tab has no group, and a project without groups behaves as before.
   that split after the anchor and every child gets an equal share, so a column of room members stays
   1/n each instead of 1/2, 1/4, 1/8. Any other anchor is halved, as before. The size check draws the
   group before and after in cells (`cellsOf`) and refuses when the new pane, or any pane the placement
-  shrinks (nested splits inside a sibling too), falls under 20x5. The group's extent comes from the
+  shrinks (nested splits inside a sibling too), falls under 20x5, and when the evened group (`evenRoot`)
+  was shown side by side before but would not be after: some pane under `AUTO_ZOOM_CELLS` (40x6) plus
+  `PANE_CHROME_CELLS` (4x2, the frame and header main's cells do not count), where every view of that
+  size zooms the group to one pane (D5). A placement that hides every pane but one is no placement; a
+  group already zoomed is left to the 20x5 rule. The group's extent comes from the
   anchor's size read against the layout it was measured in, never the shares main has now: a view
   reports a pane's new size a round trip after a move, so TabGroups notes each tab's size and places at
   every layout change (`moved`), takes the place before the move for a size unchanged since, and the

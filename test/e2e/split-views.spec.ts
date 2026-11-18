@@ -452,7 +452,7 @@ test('D5: a browser view too narrow for its panes shows the group zoomed on the 
     await expect(splitArea(web)).not.toHaveAttribute('data-zoom', 'auto')
     await paneOf(web, b).locator('.xterm').click()
 
-    // A phone-sized viewport: panes would fall under about 40x10 cells.
+    // A phone-sized viewport: panes would fall under about 40x6 cells.
     await web.setViewportSize({ width: 420, height: 700 })
     await expect(splitArea(web)).toHaveAttribute('data-zoom', 'auto')
     await expect(visiblePanes(web)).toHaveCount(1)

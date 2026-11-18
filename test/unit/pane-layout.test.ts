@@ -55,8 +55,10 @@ describe('pane-layout', () => {
     expect(needsAutoZoom(tree, { width: 1400, height: 800 }, cell)).toBe(false)
     // A phone: 400px wide gives A 200px, under 40 columns.
     expect(needsAutoZoom(tree, { width: 400, height: 800 }, cell)).toBe(true)
-    // Short: B and C get 150px each, under 10 rows with the header.
-    expect(needsAutoZoom(tree, { width: 1400, height: 300 }, cell)).toBe(true)
+    // Short: B and C get 120px each, 5 rows with the header taken off: under 6.
+    expect(needsAutoZoom(tree, { width: 1400, height: 240 }, cell)).toBe(true)
+    // 150px each is 6 rows: shown side by side (it zoomed while the minimum was 10 rows).
+    expect(needsAutoZoom(tree, { width: 1400, height: 300 }, cell)).toBe(false)
     // Not measured yet: nothing zooms.
     expect(needsAutoZoom(tree, { width: 0, height: 0 }, cell)).toBe(false)
   })

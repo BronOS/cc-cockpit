@@ -511,11 +511,12 @@ describe('a plugin’s panesPerGroup and even stacks', () => {
     expect(stack(g.groups, 3)).toEqual([true, true, true])
     sizes.m3 = { cols: 80, rows: 6 }
     expect(g.groups.createBeside('p', { tabId: 'm3', edge: 'down' }, () => ({ id: 'm4' }), { plugin: true, pluginId: 'a.one' }).placed).toBe(false)
-    // 8 rows each: (26 - 3) / 4 = 5 rows, placed (halving m3 alone would have given 3 and refused it).
+    // 11 rows each: (35 - 3) / 4 = 8 rows, placed, enough to be shown side by side (AUTO_ZOOM_CELLS 6 rows plus 2 of
+    // chrome); halving m3 alone would have given 5 and refused it.
     const tallSizes: Record<string, { cols: number; rows: number }> = {}
     const tall = make({ panes: () => 8, sizes: tallSizes })
     expect(stack(tall.groups, 3)).toEqual([true, true, true])
-    tallSizes.m3 = { cols: 80, rows: 8 }
+    tallSizes.m3 = { cols: 80, rows: 11 }
     expect(tall.groups.createBeside('p', { tabId: 'm3', edge: 'down' }, () => ({ id: 'm4' }), { plugin: true, pluginId: 'a.one' }).placed).toBe(true)
   })
 })
@@ -557,20 +558,21 @@ describe('a plugin’s beside: every pane it shrinks, from a size and the layout
       sizes: [0.2, 0.8]
     }
     t.groups.restore('p', [{ id: 'g', root }], new Map(['a', 'b', 'c', 'd'].map((k) => [k, k])))
-    // A 200 x 50 group: a is (200 - 1) * 0.2 wide, c (159 - 1) * c.
-    t.sizes.set('a', { cols: 39, rows: 50 })
-    t.sizes.set('b', { cols: 159, rows: 24 })
-    t.sizes.set('c', { cols: Math.floor(158 * c), rows: 25 })
-    t.sizes.set('d', { cols: Math.floor(158 * (1 - c)), rows: 25 })
+    // A 300 x 50 group (wide enough that the evened group is shown side by side, so only the 20x5 rule decides): a is
+    // (300 - 1) * 0.2 wide (59, read back as 296 columns), c (239 - 1) * c.
+    t.sizes.set('a', { cols: 59, rows: 50 })
+    t.sizes.set('b', { cols: 239, rows: 24 })
+    t.sizes.set('c', { cols: Math.floor(238 * c), rows: 25 })
+    t.sizes.set('d', { cols: Math.floor(238 * (1 - c)), rows: 25 })
     return t
   }
 
   it('refuses a placement whose equal shares squeeze a nested pane under 20 columns', () => {
-    // Beside a: the row becomes three thirds of 66 columns, so c (20% of the 65 left in its row) falls from 31 to 13.
+    // Beside a: the row becomes three thirds of 98 columns, so c (20% of the 97 left in its row) falls from 47 to 19.
     const narrow = nested(0.2)
     expect(narrow.beside('a', 'x')).toBe(false)
     expect(leavesOf(narrow.groups.groupsOf('p')[0]!.root)).toEqual(['a', 'b', 'c', 'd'])
-    // c at half its row keeps 32 of them: placed.
+    // c at half its row keeps 48 of them: placed.
     expect(nested(0.5).beside('a', 'x')).toBe(true)
   })
 
@@ -595,28 +597,28 @@ describe('a plugin’s beside: every pane it shrinks, from a size and the layout
   })
 
   it('reads a stale size against the layout it was measured under: a grown anchor places, a shrunk one does not', () => {
-    // A 91-column row of halves: a reports 45. The person drags a to 75%; its new size is not reported yet.
+    // A 181-column row of halves: a reports 90. The person drags a to 75%; its new size is not reported yet.
     const grown = make(['a', 'b', 'x'])
     grown.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
-    grown.sizes.set('a', { cols: 45, rows: 24 })
+    grown.sizes.set('a', { cols: 90, rows: 24 })
     const g = grown.ids(grown.groups)
     expect(grown.groups.resize('p', g.group, g.split, [0.75, 0.25]).ok).toBe(true)
-    // Thirds of the 91 columns are 29 each (45 read as 75% would make 19 and refuse).
+    // Thirds of the 181 columns are 59 each (90 read as 75% would make 39, too narrow to be shown side by side, and refuse).
     expect(grown.beside('a', 'x')).toBe(true)
 
-    // A 61-column row with a at 75%: a reports 45. Dragged back to halves, before the new report: thirds are 19.
+    // A 121-column row with a at 75%: a reports 90. Dragged back to halves, before the new report: thirds are 39.
     const shrunk = make(['a', 'b', 'x'])
     shrunk.groups.place('p', { tabId: 'b', at: 'a', edge: 'right' })
     const s = shrunk.ids(shrunk.groups)
     shrunk.groups.resize('p', s.group, s.split, [0.75, 0.25])
-    shrunk.sizes.set('a', { cols: 45, rows: 24 })
+    shrunk.sizes.set('a', { cols: 90, rows: 24 })
     shrunk.groups.resize('p', s.group, s.split, [0.5, 0.5])
     expect(shrunk.beside('a', 'x')).toBe(false)
-    // The report for the halves comes (30 columns): the same 61 columns, still no room.
-    shrunk.sizes.set('a', { cols: 30, rows: 24 })
+    // The report for the halves comes (60 columns): the same 121 columns, still no room.
+    shrunk.sizes.set('a', { cols: 60, rows: 24 })
     expect(shrunk.beside('a', 'x')).toBe(false)
-    // A wider window (a reports 40 of 81 columns): thirds of 26, placed.
-    shrunk.sizes.set('a', { cols: 40, rows: 24 })
+    // A wider window (a reports 80 of 161 columns): thirds of 53, placed.
+    shrunk.sizes.set('a', { cols: 80, rows: 24 })
     expect(shrunk.beside('a', 'x')).toBe(true)
   })
 })
@@ -689,26 +691,52 @@ describe('a plugin’s beside, back to back: panes no view has sized yet', () =>
   })
 
   it('reads the area from a group mate measured in its place when the anchor’s own size may come from an older place', () => {
-    // A 120-column window. A plugin opens m1 right of L, then m2 beside m1, back to back: m1 moves (a half, then a
-    // third) before any view sized it. The view then reports the thirds: 39 columns each.
+    // A 240-column window. A plugin opens m1 right of L, then m2 beside m1, back to back: m1 moves (a half, then a
+    // third) before any view sized it. The view then reports the thirds: 79 columns each.
     const t = make(['L'])
-    t.sizes.set('L', { cols: 120, rows: 40 })
+    t.sizes.set('L', { cols: 240, rows: 40 })
     expect(t.open('m1', 'L', 'right')).toBe(true)
     expect(t.open('m2', 'm1', 'right')).toBe(true)
-    for (const tab of ['L', 'm1', 'm2']) t.sizes.set(tab, { cols: 39, rows: 40 })
-    // m1's 39 columns may have been measured at a half (79 columns) or a third (119): read alone, the smaller made
-    // quarters of 19 and refused. m2 has had one place since it was sized, so its 39 columns are a third of 119:
-    // quarters of 29, placed.
+    for (const tab of ['L', 'm1', 'm2']) t.sizes.set(tab, { cols: 79, rows: 40 })
+    // m1's 79 columns may have been measured at a half (159 columns) or a third (239): read alone, the smaller made
+    // quarters of 39, too narrow to be shown side by side, and refused. m2 has had one place since it was sized, so its
+    // 79 columns are a third of 239: quarters of 59, placed.
     expect(t.open('m3', 'm1', 'right')).toBe(true)
     expect(t.shape()).toEqual([['L', 'm1', 'm3', 'm2']])
   })
 
-  it('an anchor with no size is checked against a group mate’s older size rather than not at all', () => {
-    // A short window (14 rows), L sized. B opens below L and C below B before any view reports: B has no size, and
-    // L's 14 rows are from before it moved (not where it is now), but they still tell the group: halves of 14 rows
-    // fit, thirds (4 rows) do not.
+  it('the Column test 7 run: five members stack beside the lead in a 1080p window, a sixth would zoom the view and opens plain', () => {
+    // About 200 x 52 cells of terminal: L left, the members in a column on the right. Five members get (52 - 4) / 5 = 9
+    // rows, shown side by side (AUTO_ZOOM_CELLS' 6 rows plus 2 of chrome); while the view's minimum was 10 rows, it
+    // zoomed this group to the lead's pane. A sixth would get 7 rows: the view would zoom, so it opens as a plain tab.
     const t = make(['L'])
-    t.sizes.set('L', { cols: 100, rows: 14 })
+    t.sizes.set('L', { cols: 200, rows: 52 })
+    const placed = [t.open('m1', 'L', 'right')]
+    for (let i = 2; i <= 6; i++) placed.push(t.open(`m${i}`, `m${i - 1}`, 'down'))
+    expect(placed).toEqual([true, true, true, true, true, false])
+    expect(t.shape()).toEqual([['L', 'm1', 'm2', 'm3', 'm4', 'm5']])
+  })
+
+  it('a group the view already zooms is left to the 20x5 rule: a pane that keeps it is still placed', () => {
+    // A short window (14 rows) the person split themselves: halves of 6 rows, already zoomed in a view this size.
+    const t = make(['L', 'B'])
+    t.groups.place('p', { tabId: 'B', at: 'L', edge: 'down' })
+    t.sizes.set('L', { cols: 100, rows: 6 })
+    t.sizes.set('B', { cols: 100, rows: 6 })
+    // C right of B: two panes of 49 x 6, over 20 x 5. The group was not shown side by side before either.
+    expect(t.open('C', 'B', 'right')).toBe(true)
+    // In a group still shown side by side, the same short panes would tip it over: refused.
+    const tall = make(['L'])
+    tall.sizes.set('L', { cols: 100, rows: 14 })
+    expect(tall.open('B', 'L', 'down')).toBe(false)
+  })
+
+  it('an anchor with no size is checked against a group mate’s older size rather than not at all', () => {
+    // A short window (20 rows), L sized. B opens below L and C below B before any view reports: B has no size, and
+    // L's 20 rows are from before it moved (not where it is now), but they still tell the group: halves (9 rows) are
+    // shown side by side, thirds (6 rows, under AUTO_ZOOM_CELLS' 6 plus 2 of chrome) would zoom the view.
+    const t = make(['L'])
+    t.sizes.set('L', { cols: 100, rows: 20 })
     expect(t.open('B', 'L', 'down')).toBe(true)
     expect(t.open('C', 'B', 'down')).toBe(false)
     expect(t.shape()).toEqual([['L', 'B']])
