@@ -493,11 +493,16 @@ plain tab has no group, and a project without groups behaves as before.
   that split after the anchor and every child gets an equal share, so a column of room members stays
   1/n each instead of 1/2, 1/4, 1/8. Any other anchor is halved, as before. The size check draws the
   group before and after in cells (`cellsOf`) and refuses when the new pane, or any pane the placement
-  shrinks (nested splits inside a sibling too), falls under 20x5, and when the evened group (`evenRoot`)
-  was shown side by side before but would not be after: some pane under `AUTO_ZOOM_CELLS` (40x6) plus
-  `PANE_CHROME_CELLS` (4x2, the frame and header main's cells do not count), where every view of that
-  size zooms the group to one pane (D5). A placement that hides every pane but one is no placement; a
-  group already zoomed is left to the 20x5 rule. The group's extent comes from the
+  shrinks (nested splits inside a sibling too), falls under 20x5. It also refuses when some view of the
+  project would start zooming the group to one pane (D5): each view reports its split area in pixels and
+  its cell (`groups.area`, coalesced, kept per view and dropped when the view goes; server mode's hidden
+  page does not count), and main runs the view's own rule (`autoZoomed`, `src/shared/pane-zoom.ts`, the
+  code the page draws by) on the group before (the plain anchor for a plain tab) and after. A view zoomed
+  before is zoomed either way and no reason. While no view has reported, main falls back to an
+  approximation in its cells: the evened group (`evenRoot`) shown side by side before but not after, some
+  pane under `AUTO_ZOOM_CELLS` (40x6) plus `PANE_CHROME_CELLS` (4x2); it can disagree with a view (tiny
+  fonts, the 40-column boundary, dragged shares), which is why the geometry wins. A placement that hides
+  every pane but one is no placement. The group's extent comes from the
   anchor's size read against the layout it was measured in, never the shares main has now: a view
   reports a pane's new size a round trip after a move, so TabGroups notes each tab's size and places at
   every layout change (`moved`), takes the place before the move for a size unchanged since, and the

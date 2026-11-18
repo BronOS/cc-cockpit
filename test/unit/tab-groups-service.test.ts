@@ -832,3 +832,113 @@ describe('page tabs are panes (design-split-pages.md)', () => {
   })
 
 })
+
+describe('a plugin’s beside judged by each view’s own zoom rule (groups.area, shared/pane-zoom.ts)', () => {
+  const make = (order: string[]) => {
+    const orders = new Map([['p', [...order]]])
+    const sizes = new Map<string, { cols: number; rows: number }>()
+    const groups = new TabGroups({
+      order: (p) => [...(orders.get(p) ?? [])],
+      setOrder: (p, ids) => void orders.set(p, [...ids]),
+      publish: () => {},
+      changed: () => {},
+      sizeOf: (_p, t) => sizes.get(t),
+      pluginPanes: () => 8,
+      // As server mode: the hidden page (a desktop view id) never counts.
+      measured: (viewId) => viewId.startsWith('web:'),
+      log: () => {}
+    })
+    const open = (id: string, at: string, edge: 'right' | 'down'): boolean =>
+      groups.createBeside(
+        'p',
+        { tabId: at, edge },
+        () => {
+          orders.get('p')!.push(id)
+          return { id }
+        },
+        { plugin: true, pluginId: 'bronos.team' }
+      ).placed
+    const area = (viewId: string, width: number, height: number, cw: number, ch: number): void =>
+      groups.viewArea('p', viewId as never, { area: { width, height }, cell: { width: cw, height: ch } })
+    const shape = () => groups.groupsOf('p').map((g) => leavesOf(g.root))
+    return { groups, sizes, open, area, shape }
+  }
+
+  it('near the 40-column boundary: a third pane that zooms is refused, a plain tab’s first split that shows is placed', () => {
+    // 720 x 400 px, 8 x 16 cells: halves hold 40 columns (shown), thirds 25 (zoomed). The anchor reports 41 columns.
+    const t = make(['L', 'B'])
+    t.groups.place('p', { tabId: 'B', at: 'L', edge: 'right' })
+    t.sizes.set('L', { cols: 41, rows: 22 })
+    t.sizes.set('B', { cols: 41, rows: 22 })
+    t.area('web:1', 720, 400, 8, 16)
+    expect(t.open('C', 'B', 'right')).toBe(false)
+    // A plain tab in the same area (85 columns): halves of 40 show, placed. The cell model refused it (42 < 40 + 4).
+    const plain = make(['L'])
+    plain.sizes.set('L', { cols: 85, rows: 22 })
+    plain.area('web:1', 720, 400, 8, 16)
+    expect(plain.open('N', 'L', 'right')).toBe(true)
+    // The view gone, no geometry left: the cell model's fallback decides again, and refuses it.
+    const gone = make(['L'])
+    gone.sizes.set('L', { cols: 85, rows: 22 })
+    gone.area('web:1', 720, 400, 8, 16)
+    gone.groups.viewGone('web:1' as never)
+    expect(gone.open('N', 'L', 'right')).toBe(false)
+  })
+
+  it('tiny fonts: a split down that leaves 5 rows in the view is refused', () => {
+    // 1000 x 160 px with 4 x 8 cells: the halves hold (80 - 39) / 8 = 5 rows, under 6.
+    const t = make(['L'])
+    t.sizes.set('L', { cols: 241, rows: 15 })
+    t.area('web:1', 1000, 160, 4, 8)
+    expect(t.open('N', 'L', 'down')).toBe(false)
+    expect(t.shape()).toEqual([])
+  })
+
+  it('dragged shares: a pane under 20x5 at the shared sizes zooms the view, refused', () => {
+    // 1840 x 800 px, 8 x 16 cells: L | [X over Y] at [0.8, 0.2]. X is 368 px wide (41 columns); split right, its halves
+    // get 18 columns at these shares, and the view zooms on the 20x5 branch although evened it would show.
+    const t = make(['L', 'X', 'Y'])
+    t.groups.place('p', { tabId: 'X', at: 'L', edge: 'right' })
+    t.groups.place('p', { tabId: 'Y', at: 'X', edge: 'down' })
+    const g = t.groups.groupsOf('p')[0]!
+    expect(refusalOf(t.groups.resize('p', g.id, (g.root as { id: string }).id, [0.8, 0.2]))).toBeUndefined()
+    t.sizes.set('L', { cols: 179, rows: 46 })
+    t.sizes.set('X', { cols: 41, rows: 22 })
+    t.sizes.set('Y', { cols: 41, rows: 22 })
+    t.area('web:1', 1840, 800, 8, 16)
+    expect(t.open('N', 'X', 'right')).toBe(false)
+  })
+
+  it('a view already zoomed before is no reason; any other view that would start zooming is', () => {
+    // A phone (300 px: 33 columns) zooms even the plain tab; the desk shows the halves. Placed.
+    const t = make(['L'])
+    t.sizes.set('L', { cols: 195, rows: 52 })
+    t.area('web:phone', 300, 500, 8, 16)
+    t.area('web:desk', 1600, 900, 8, 16)
+    expect(t.open('N', 'L', 'right')).toBe(true)
+    // A third view that shows the halves but would zoom the thirds (720 px): refused.
+    t.sizes.set('N', { cols: 97, rows: 52 })
+    t.area('web:mid', 720, 400, 8, 16)
+    expect(t.open('M', 'N', 'right')).toBe(false)
+    expect(t.shape()).toEqual([['L', 'N']])
+  })
+
+  it('ignores geometry of a view that does not count (the server’s hidden page) and drops a malformed report', () => {
+    // 720 x 200 px would zoom halves; reported by the hidden page, it does not count and the cell model places them.
+    const hidden = make(['L'])
+    hidden.sizes.set('L', { cols: 85, rows: 40 })
+    hidden.area('desktop:1', 720, 200, 8, 16)
+    expect(hidden.open('N', 'L', 'down')).toBe(true)
+    // A malformed report forgets what the view said before.
+    const m = make(['L'])
+    m.sizes.set('L', { cols: 85, rows: 40 })
+    m.area('web:1', 720, 200, 8, 16)
+    m.groups.viewArea('p', 'web:1' as never, undefined)
+    expect(m.open('N', 'L', 'down')).toBe(true)
+    // Kept, it refuses.
+    const k = make(['L'])
+    k.sizes.set('L', { cols: 85, rows: 40 })
+    k.area('web:1', 720, 200, 8, 16)
+    expect(k.open('N', 'L', 'down')).toBe(false)
+  })
+})

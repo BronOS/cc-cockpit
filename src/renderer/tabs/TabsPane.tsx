@@ -141,6 +141,20 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // Read when the view is worked out (a snapshot, a selection, the area or the font changing), so a
   // drag's release judges the new sizes with the same cell its stop used.
   const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cellNow()), [area, cellNow])
+  // Main places a plugin's `beside` by this view's own zoom rule (tab-groups.ts panesFit): it gets the area and cell
+  // autoZoom runs with, coalesced (a window drag fires many area changes) and only when they changed.
+  const sentGeometry = useRef('')
+  useEffect(() => {
+    if (!(area.width > 0) || !(area.height > 0)) return undefined
+    const timer = setTimeout(() => {
+      const geometry = { area: { width: area.width, height: area.height }, cell: cellNow() }
+      const key = JSON.stringify(geometry)
+      if (key === sentGeometry.current) return
+      sentGeometry.current = key
+      window.cockpit.invoke('groups.area', geometry).catch(() => {})
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [area, cellNow])
   const view = useMemo(() => paneView(state.groups, state.activeId, state.zoomed, autoZoom), [state.groups, state.activeId, state.zoomed, autoZoom])
   const viewRef = useRef<PaneView>(view)
   const autoZoomRef = useRef(autoZoom)

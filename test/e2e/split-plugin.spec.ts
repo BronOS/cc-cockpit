@@ -149,6 +149,7 @@ test("keys typed while a plugin opens a pane beside a tab the person is not on n
   await waitPaneText(paneShowing(page, 'pa-2'), 'click-3')
 })
 
+// eslint-disable-next-line no-empty-pattern
 test('a column of plugin panes opened back to back is never auto-zoomed on the desktop', async ({}, testInfo) => {
   test.setTimeout(180_000)
   // Raise the plugin's pane cap to 8 (the range's top) so the cell math, not the cap, decides.
@@ -172,8 +173,9 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     await expect(visiblePanes(page)).toHaveCount(1 + placedCount)
     await expect(splitArea(page)).not.toHaveAttribute('data-zoom', 'auto')
     await expect(page.getByText(/zoomed \(\d+ hidden\)/)).toHaveCount(0)
-    // Five fit and the sixth is refused (a 1900x1000 window), so the refusal is main's cell check.
-    expect(entry.placed).toEqual([true, true, true, true, true, false])
+    // All six fit a 1900x1000 window by the view's own rule (main judges with the geometry the page reported, not its
+    // cell approximation, which refused the sixth: 8 rows a pane against its 6 + 2 of chrome).
+    expect(entry.placed).toEqual([true, true, true, true, true, true])
     const shot = await page.screenshot({ path: testInfo.outputPath('column.png') })
     if (process.env.SAVE_SHOT) writeFileSync(process.env.SAVE_SHOT, shot)
   } finally {

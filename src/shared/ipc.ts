@@ -1683,6 +1683,11 @@ export interface IpcInvokeMap {
   'groups.dissolve': { req: { groupId: string }; res: GroupsReply }
   /** A divider drag's result, sent once on release: one share per child of split `splitId`. Shared by every view (D1). */
   'groups.resize': { req: { groupId: string; splitId: string; sizes: number[] }; res: GroupsReply }
+  /**
+   * This view's split view geometry (shared/pane-zoom.ts SplitGeometry): the tab area in px and its cell, coalesced on
+   * change. Main keeps it per view, only to refuse a plugin's `beside` that would make this view auto-zoom (D5).
+   */
+  'groups.area': { req: { area: { width: number; height: number }; cell: { width: number; height: number } }; res: void }
   /** Name a group (1-60 characters, shared/session-name.ts rule), or clear it with `null`. */
   'groups.rename': { req: { groupId: string; name: string | null }; res: GroupsReply }
   /** Give a Claude tab a name (1-60 characters, shared/session-name.ts), or `null` for Claude's own title. */
@@ -2219,6 +2224,7 @@ export const INVOKE_CHANNELS = [
   'groups.remove',
   'groups.dissolve',
   'groups.resize',
+  'groups.area',
   'groups.rename'
 ] as const satisfies readonly InvokeChannel[]
 
@@ -2662,6 +2668,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'groups.remove': 'yes',
   'groups.dissolve': 'yes',
   'groups.resize': 'yes',
+  // A view's own geometry, kept under the id main bound to it: a browser may report, since all it can change is
+  // whether a plugin's pane opens beside another or plain (at worst a plugin's tab opens plain); it reaches no host
+  // screen and widens no access.
+  'groups.area': 'yes',
   'groups.rename': 'yes',
   'groups.changed': 'yes'
 })

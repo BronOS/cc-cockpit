@@ -76,6 +76,7 @@ import { warnLog } from '../warn-log'
 import { OAUTH_PASTE_REFUSED, type OAuthPasteAnswer } from '../../shared/oauth-paste'
 import { isPlainObject } from '../../shared/guards'
 import { isPaneEdge, type GroupsSnapshot, type PlaceIntent } from '../../shared/tab-groups'
+import { splitGeometryOf, type SplitGeometry } from '../../shared/pane-zoom'
 
 /** The parts of an Electron `IpcMainInvokeEvent` the router reads. */
 export interface IpcEventLike {
@@ -1652,6 +1653,8 @@ export interface GroupHandlerDeps {
   dissolve(projectId: string, groupId: string): GroupsReply
   resize(projectId: string, groupId: string, splitId: string, sizes: readonly number[]): GroupsReply
   rename(projectId: string, groupId: string, name: string | null): GroupsReply
+  /** A view's split geometry (`groups.area`), already checked; undefined: the report was malformed, forget it. */
+  area?(projectId: string, viewId: ViewId, geometry: SplitGeometry | undefined): void
 }
 
 /**
@@ -1686,6 +1689,12 @@ export function registerGroupHandlers(router: IpcRouter, groups: GroupHandlerDep
       throw new Error('groups.resize: sizes must be a list of numbers')
     }
     return groups.resize(ctx.projectId, groupIdOf('groups.resize', payload), splitId, sizes as number[])
+  })
+
+  // Keyed by the view main bound to the caller, never a payload's; bad numbers are dropped, not thrown on (a report
+  // is advisory: it only makes a plugin's pane open plain).
+  router.handleProject('groups.area', (ctx, payload, view) => {
+    groups.area?.(ctx.projectId, view.viewId, splitGeometryOf(payload))
   })
 
   router.handleProject('groups.rename', (ctx, payload) => {

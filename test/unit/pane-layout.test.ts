@@ -234,3 +234,26 @@ describe('frameBoxes: where page frames go (design-split-pages.md §2)', () => {
     for (const v of [p!.left, p!.top, p!.width, p!.height]) expect(Number.isInteger(v)).toBe(true)
   })
 })
+
+describe('splitGeometryOf (groups.area payload)', () => {
+  it('keeps finite positive sizes under the caps and refuses anything else', async () => {
+    const { splitGeometryOf } = await import('../../src/shared/pane-zoom')
+    const ok = { area: { width: 720, height: 400 }, cell: { width: 8, height: 16 } }
+    expect(splitGeometryOf(ok)).toEqual(ok)
+    expect(splitGeometryOf({ ...ok, extra: 1 })).toEqual(ok)
+    for (const bad of [
+      null,
+      'x',
+      { area: ok.area },
+      { area: { width: 0, height: 400 }, cell: ok.cell },
+      { area: { width: -1, height: 400 }, cell: ok.cell },
+      { area: { width: Infinity, height: 400 }, cell: ok.cell },
+      { area: { width: NaN, height: 400 }, cell: ok.cell },
+      { area: { width: '720', height: 400 }, cell: ok.cell },
+      { area: { width: 40000, height: 400 }, cell: ok.cell },
+      { area: ok.area, cell: { width: 8, height: 500 } }
+    ]) {
+      expect(splitGeometryOf(bad)).toBeUndefined()
+    }
+  })
+})

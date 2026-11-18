@@ -929,6 +929,7 @@ function start(server: boolean): void {
       // Its view's hidden mark (terminal sizes) goes with it; its tabs' sizes went with the tabs.
       // So do the desktop page's slot instances and the settings page it held (panel-ports.ts).
       tabs.viewGone(desktopViewId(windowId))
+      tabGroups.viewGone(desktopViewId(windowId))
       panelPorts.viewGone(desktopViewId(windowId))
       hiddenDesktopViews.delete(desktopViewId(windowId))
       overlays.viewGone(desktopViewId(windowId))
@@ -2120,7 +2121,9 @@ function start(server: boolean): void {
     sizeOf: (projectId, tabId) => tabs.sizeOf(projectId, tabId),
     // The person's `panesPerGroup` limit, read at each placement (`pluginLimits` is defined above; only a plugin open
     // places with a plugin id, and the id is HostApi's own host plugin, never a payload's).
-    pluginPanes: (pluginId) => pluginLimits.limits(pluginId).panesPerGroup
+    pluginPanes: (pluginId) => pluginLimits.limits(pluginId).panesPerGroup,
+    // Server mode's hidden page reports no geometry that counts (nobody looks at it), as with terminal sizes.
+    ...(server ? { measured: (viewId: ViewId) => isRemoteViewId(viewId) } : {})
   })
   // A project window that opens with nothing to restore gets one Claude tab when its renderer
   // first attaches (first-tab.ts; the attach handler below). The setting is read then.
@@ -3234,7 +3237,8 @@ function start(server: boolean): void {
     remove: (projectId, tabId) => tabGroups.remove(projectId, tabId),
     dissolve: (projectId, groupId) => tabGroups.dissolve(projectId, groupId),
     resize: (projectId, groupId, splitId, sizes) => tabGroups.resize(projectId, groupId, splitId, sizes),
-    rename: (projectId, groupId, name) => tabGroups.rename(projectId, groupId, name)
+    rename: (projectId, groupId, name) => tabGroups.rename(projectId, groupId, name),
+    area: (projectId, viewId, geometry) => tabGroups.viewArea(projectId, viewId, geometry)
   })
   /** A tab the person asked for (`tabs.create`), after the login env and the window check. */
   function createTab(projectId: string, options: TabCreateRequest, windowId: number): TabInfo | null {
@@ -3315,6 +3319,8 @@ function start(server: boolean): void {
     viewScheme: (viewId, dark) => themes.viewJoined(viewId, dark),
     viewGone: (viewId) => {
       tabs.viewGone(viewId)
+      // Its split geometry no longer stands for a screen (tab-groups.ts panesFit).
+      tabGroups.viewGone(viewId)
       panelPorts.viewGone(viewId)
       themes.viewGone(viewId)
       // The html overlay pages it held go back to the desktop view (overlay-manager.ts).
