@@ -142,19 +142,48 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // drag's release judges the new sizes with the same cell its stop used.
   const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cellNow()), [area, cellNow])
   // Main places a plugin's `beside` by this view's own zoom rule (tab-groups.ts panesFit): it gets the area and cell
-  // autoZoom runs with, coalesced (a window drag fires many area changes) and only when they changed.
-  const sentGeometry = useRef('')
+  // autoZoom runs with, only when they changed. Sent on the leading edge, then at most once per animation frame: a
+  // trailing debounce kept the old area through a window drag, and a placement then (1600 to 1000 px) was judged on a
+  // screen that no longer existed. Each send reads cellNow() afresh.
+  const geometry = useRef<{ area: Size; sent: string; frame: number }>({ area, sent: '', frame: 0 })
+  const reportGeometry = useCallback((): void => {
+    const g = geometry.current
+    const send = (): void => {
+      const a = g.area
+      if (!(a.width > 0) || !(a.height > 0)) return
+      const payload = { area: { width: a.width, height: a.height }, cell: cellNow() }
+      const key = JSON.stringify(payload)
+      if (key === g.sent) return
+      g.sent = key
+      window.cockpit.invoke('groups.area', payload).catch(() => {})
+    }
+    if (g.frame !== 0) return // a send is due on the next frame already, and reads the values then
+    send()
+    g.frame = requestAnimationFrame(() => {
+      g.frame = 0
+      send()
+    })
+  }, [cellNow])
   useEffect(() => {
-    if (!(area.width > 0) || !(area.height > 0)) return undefined
-    const timer = setTimeout(() => {
-      const geometry = { area: { width: area.width, height: area.height }, cell: cellNow() }
-      const key = JSON.stringify(geometry)
-      if (key === sentGeometry.current) return
-      sentGeometry.current = key
-      window.cockpit.invoke('groups.area', geometry).catch(() => {})
-    }, 250)
-    return () => clearTimeout(timer)
-  }, [area, cellNow])
+    geometry.current.area = area
+    reportGeometry()
+  }, [area, reportGeometry])
+  // The cell can change without the area or the font settings changing: xterm re-measures once a web font loads, and
+  // cellNow() then reads its measured cell rather than the estimate. Nothing announces the re-measure, so the fonts'
+  // events and a cheap 1 s sample (a string compare; it sends only on a change) catch it; main never keeps a stale cell.
+  useEffect(() => {
+    const g = geometry.current
+    const fonts = document.fonts as FontFaceSet | undefined
+    fonts?.addEventListener('loadingdone', reportGeometry)
+    void fonts?.ready.then(reportGeometry)
+    const timer = setInterval(reportGeometry, 1000)
+    return () => {
+      fonts?.removeEventListener('loadingdone', reportGeometry)
+      clearInterval(timer)
+      if (g.frame !== 0) cancelAnimationFrame(g.frame)
+      g.frame = 0
+    }
+  }, [reportGeometry])
   const view = useMemo(() => paneView(state.groups, state.activeId, state.zoomed, autoZoom), [state.groups, state.activeId, state.zoomed, autoZoom])
   const viewRef = useRef<PaneView>(view)
   const autoZoomRef = useRef(autoZoom)

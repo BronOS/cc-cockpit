@@ -46,7 +46,7 @@ import {
 } from '../../shared/tab-groups'
 import type { TabKind } from '../../shared/types'
 import { autoZoomed, type SplitGeometry } from '../../shared/pane-zoom'
-import type { ViewId } from '../../shared/views'
+import { isRemoteViewId, type ViewId } from '../../shared/views'
 import { warnLog } from '../warn-log'
 
 export interface TabGroupsDeps {
@@ -170,7 +170,7 @@ export class TabGroups {
    * Each view's split geometry by project (`groups.area`): the area and cell its autoZoomed runs with, so a plugin's
    * placement is judged by the view's own rule (`panesFit`). A view's entry goes with the view (`viewGone`).
    */
-  private readonly areas = new Map<string, Map<ViewId, SplitGeometry>>()
+  private readonly areas = new Map<string, Map<ViewId, SplitGeometry & { remote: boolean }>>()
 
   constructor(private readonly deps: TabGroupsDeps) {
     this.log = deps.log ?? warnLog
@@ -361,8 +361,18 @@ export class TabGroups {
     const views = this.areas.get(projectId)
     const geometry = views && views.size > 0 ? [...views.values()] : undefined
     if (geometry) {
-      const plain = was ?? { tab: anchor }
-      if (geometry.some((g) => !autoZoomed(plain, g.area, g.cell) && autoZoomed(now, g.area, g.cell))) return false
+      for (const g of geometry) {
+        if (!autoZoomed(now, g.area, g.cell)) continue
+        if (!was) {
+          // A plain anchor: the page never zooms a plain tab, so every view "shows" it. A local (desktop) view is strict:
+          // a placement it would zoom is refused. A remote view that zooms even this two-pane split is too small for any
+          // split (a phone): counting it would block every plugin split while it is open, so it is ignored.
+          if (g.remote) continue
+          return false
+        }
+        // In a group: a view zoomed before is zoomed either way and no reason; one that starts zooming is.
+        if (!autoZoomed(was, g.area, g.cell)) return false
+      }
     }
     const extent = this.extentFor(projectId, anchor, before)
     // No tab of the project has a size a view gave it (a page anchor, a window no view has measured yet): no check.
@@ -611,7 +621,8 @@ export class TabGroups {
       return
     }
     if (!views) this.areas.set(projectId, (views = new Map()))
-    views.set(viewId, { area: { ...geometry.area }, cell: { ...geometry.cell } })
+    // `remote` from the id main bound to the view (router CallView), never from the payload.
+    views.set(viewId, { area: { ...geometry.area }, cell: { ...geometry.cell }, remote: isRemoteViewId(viewId) })
   }
 
   /** The view is gone (its socket or window closed): its geometry no longer stands for a screen anyone looks at. */

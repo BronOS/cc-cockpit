@@ -834,7 +834,7 @@ describe('page tabs are panes (design-split-pages.md)', () => {
 })
 
 describe('a plugin’s beside judged by each view’s own zoom rule (groups.area, shared/pane-zoom.ts)', () => {
-  const make = (order: string[]) => {
+  const make = (order: string[], server = false) => {
     const orders = new Map([['p', [...order]]])
     const sizes = new Map<string, { cols: number; rows: number }>()
     const groups = new TabGroups({
@@ -844,8 +844,8 @@ describe('a plugin’s beside judged by each view’s own zoom rule (groups.area
       changed: () => {},
       sizeOf: (_p, t) => sizes.get(t),
       pluginPanes: () => 8,
-      // As server mode: the hidden page (a desktop view id) never counts.
-      measured: (viewId) => viewId.startsWith('web:'),
+      // Server mode: the hidden page (a desktop view id) never counts.
+      ...(server ? { measured: (viewId: string) => viewId.startsWith('web:') } : {}),
       log: () => {}
     })
     const open = (id: string, at: string, edge: 'right' | 'down'): boolean =>
@@ -875,13 +875,13 @@ describe('a plugin’s beside judged by each view’s own zoom rule (groups.area
     // A plain tab in the same area (85 columns): halves of 40 show, placed. The cell model refused it (42 < 40 + 4).
     const plain = make(['L'])
     plain.sizes.set('L', { cols: 85, rows: 22 })
-    plain.area('web:1', 720, 400, 8, 16)
+    plain.area('desktop:1', 720, 400, 8, 16)
     expect(plain.open('N', 'L', 'right')).toBe(true)
     // The view gone, no geometry left: the cell model's fallback decides again, and refuses it.
     const gone = make(['L'])
     gone.sizes.set('L', { cols: 85, rows: 22 })
-    gone.area('web:1', 720, 400, 8, 16)
-    gone.groups.viewGone('web:1' as never)
+    gone.area('desktop:1', 720, 400, 8, 16)
+    gone.groups.viewGone('desktop:1' as never)
     expect(gone.open('N', 'L', 'right')).toBe(false)
   })
 
@@ -889,7 +889,7 @@ describe('a plugin’s beside judged by each view’s own zoom rule (groups.area
     // 1000 x 160 px with 4 x 8 cells: the halves hold (80 - 39) / 8 = 5 rows, under 6.
     const t = make(['L'])
     t.sizes.set('L', { cols: 241, rows: 15 })
-    t.area('web:1', 1000, 160, 4, 8)
+    t.area('desktop:1', 1000, 160, 4, 8)
     expect(t.open('N', 'L', 'down')).toBe(false)
     expect(t.shape()).toEqual([])
   })
@@ -910,35 +910,57 @@ describe('a plugin’s beside judged by each view’s own zoom rule (groups.area
   })
 
   it('a view already zoomed before is no reason; any other view that would start zooming is', () => {
-    // A phone (300 px: 33 columns) zooms even the plain tab; the desk shows the halves. Placed.
+    // A remote phone (300 px: 33 columns) is too small for any split: it does not count for a plain anchor. The
+    // desktop shows the halves. Placed.
     const t = make(['L'])
     t.sizes.set('L', { cols: 195, rows: 52 })
-    t.area('web:phone', 300, 500, 8, 16)
-    t.area('web:desk', 1600, 900, 8, 16)
+    t.area('web:8', 300, 500, 8, 16)
+    t.area('desktop:1', 1600, 900, 8, 16)
     expect(t.open('N', 'L', 'right')).toBe(true)
     // A third view that shows the halves but would zoom the thirds (720 px): refused.
     t.sizes.set('N', { cols: 97, rows: 52 })
-    t.area('web:mid', 720, 400, 8, 16)
+    t.area('web:9', 720, 400, 8, 16)
     expect(t.open('M', 'N', 'right')).toBe(false)
     expect(t.shape()).toEqual([['L', 'N']])
   })
 
   it('ignores geometry of a view that does not count (the server’s hidden page) and drops a malformed report', () => {
     // 720 x 200 px would zoom halves; reported by the hidden page, it does not count and the cell model places them.
-    const hidden = make(['L'])
+    const hidden = make(['L'], true)
     hidden.sizes.set('L', { cols: 85, rows: 40 })
     hidden.area('desktop:1', 720, 200, 8, 16)
     expect(hidden.open('N', 'L', 'down')).toBe(true)
     // A malformed report forgets what the view said before.
     const m = make(['L'])
     m.sizes.set('L', { cols: 85, rows: 40 })
-    m.area('web:1', 720, 200, 8, 16)
-    m.groups.viewArea('p', 'web:1' as never, undefined)
+    m.area('desktop:1', 720, 200, 8, 16)
+    m.groups.viewArea('p', 'desktop:1' as never, undefined)
     expect(m.open('N', 'L', 'down')).toBe(true)
     // Kept, it refuses.
     const k = make(['L'])
     k.sizes.set('L', { cols: 85, rows: 40 })
-    k.area('web:1', 720, 200, 8, 16)
+    k.area('desktop:1', 720, 200, 8, 16)
     expect(k.open('N', 'L', 'down')).toBe(false)
+  })
+
+  it('a plain anchor: a local view is strict (the page never zooms a plain tab), a remote one counts only if it can show a split', () => {
+    // The desktop at 300 px shows the plain tab whole (no zoom for a plain tab) and would zoom the halves: refused.
+    const narrow = make(['L'])
+    narrow.area('desktop:1', 300, 500, 8, 16)
+    expect(narrow.open('N', 'L', 'right')).toBe(false)
+    // A remote phone that would zoom any split, beside a wide desktop: the desktop decides, placed.
+    const phone = make(['L'])
+    phone.area('web:7', 300, 500, 8, 16)
+    phone.area('desktop:1', 1600, 900, 8, 16)
+    expect(phone.open('N', 'L', 'right')).toBe(true)
+    // The same phone with a desktop that would zoom the halves (600 px: 33 columns each): refused by the desktop.
+    const both = make(['L'])
+    both.area('web:7', 300, 500, 8, 16)
+    both.area('desktop:1', 600, 900, 8, 16)
+    expect(both.open('N', 'L', 'right')).toBe(false)
+    // A remote view alone that shows the plain tab and would zoom the halves is ignored for a plain anchor.
+    const remote = make(['L'])
+    remote.area('web:7', 600, 900, 8, 16)
+    expect(remote.open('N', 'L', 'right')).toBe(true)
   })
 })
