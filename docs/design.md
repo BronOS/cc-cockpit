@@ -497,7 +497,12 @@ plain tab has no group, and a project without groups behaves as before.
   anchor's size read against the layout it was measured in, never the shares main has now: a view
   reports a pane's new size a round trip after a move, so TabGroups notes each tab's size and places at
   every layout change (`moved`), takes the place before the move for a size unchanged since, and the
-  smallest extent of the places since for a newer one. The person's own splits
+  smallest extent of the places since for a newer one. A tab no view has sized yet has no size (its pty's
+  spawn size, 80x24, is no pane's), and a size measured where the tab is now beats one that may come from
+  an older place: when the anchor's is not such a size (a plugin opening panes back to back, each asked
+  beside the last before any view reported it), the area comes from a group mate's, else from any tab of
+  the window (they all fill the same terminal area), the smallest of them; with no size anywhere, no
+  check. The person's own splits
   keep halving the pane they split: they act on that one pane and must not undo the sizes they dragged
   the siblings to, while a plugin cannot drag at all, so its stack would otherwise only shrink. No other plugin path reaches groups: host-api has no place,
   remove, resize, reorder, dissolve or rename, and neither it nor the plugin host imports the groups

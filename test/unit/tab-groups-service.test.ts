@@ -621,6 +621,109 @@ describe('a plugin’s beside: every pane it shrinks, from a size and the layout
   })
 })
 
+// A plugin opening panes back to back (the Team plugin's room members): each new tab is placed, and the next one asked
+// beside it, before any view has sized it. TabManager.sizeOf knows no size for such a tab (its spawn size is no pane's),
+// so the check reads the area from a tab whose size was measured where it is now: the anchor, a group mate, any tab.
+describe('a plugin’s beside, back to back: panes no view has sized yet', () => {
+  const make = (order: string[], panes = 8) => {
+    const orders = new Map([['p', [...order]]])
+    // Only tabs a view has sized: a new tab has no entry, as TabManager.sizeOf answers for it.
+    const sizes = new Map<string, { cols: number; rows: number }>()
+    const groups = new TabGroups({
+      order: (p) => [...(orders.get(p) ?? [])],
+      setOrder: (p, ids) => void orders.set(p, [...ids]),
+      publish: () => {},
+      changed: () => {},
+      sizeOf: (_p, t) => sizes.get(t),
+      pluginPanes: () => panes,
+      log: () => {}
+    })
+    /** A new tab created and placed under one snapshot, as index.ts announcePluginTab does for `rooms.open`. */
+    const open = (id: string, at: string, edge: 'right' | 'down'): boolean =>
+      groups.createBeside(
+        'p',
+        { tabId: at, edge },
+        () => {
+          orders.get('p')!.push(id)
+          return { id }
+        },
+        { plugin: true, pluginId: 'bronos.team' }
+      ).placed
+    const shape = () => groups.groupsOf('p').map((g) => leavesOf(g.root))
+    return { groups, sizes, open, shape }
+  }
+
+  it('the live Team run: m3 is refused because the lead’s group already holds 6 panes (the person’s column of 3), not by size', () => {
+    // As the saved record after the run: the lead L had the person's own column of x, y, z beside it (their splits:
+    // 1/2, 1/4, 1/4) before Team opened anything, in a window of about 180 x 48 cells.
+    const run = (panes: number) => {
+      const t = make(['L', 'x', 'y', 'z'], panes)
+      t.groups.place('p', { tabId: 'x', at: 'L', edge: 'right' })
+      t.groups.place('p', { tabId: 'y', at: 'x', edge: 'down' })
+      t.groups.place('p', { tabId: 'z', at: 'y', edge: 'down' })
+      for (const [tab, size] of [
+        ['L', { cols: 89, rows: 48 }],
+        ['x', { cols: 90, rows: 23 }],
+        ['y', { cols: 90, rows: 11 }],
+        ['z', { cols: 90, rows: 11 }]
+      ] as const) {
+        t.sizes.set(tab, size)
+      }
+      // Five hires within a second: no view reports any member's size in between.
+      const placed = [t.open('m1', 'L', 'right'), t.open('m2', 'm1', 'down'), t.open('m3', 'm2', 'down')]
+      placed.push(t.open('m4', 'm3', 'down'), t.open('m5', 'm4', 'down'))
+      return { t, placed }
+    }
+    const live = run(6)
+    expect(live.placed).toEqual([true, true, false, true, true])
+    // m1 joined the lead's row evenly (thirds), m2 halved m1: 6 panes, the person's panesPerGroup for Team.
+    expect(live.t.shape()).toEqual([
+      ['L', 'm1', 'm2', 'x', 'y', 'z'],
+      ['m3', 'm4', 'm5']
+    ])
+    const lead = live.t.groups.groupsOf('p')[0]!.root
+    expect(lead.dir === 'row' && lead.sizes.map((s) => s.toFixed(3))).toEqual(['0.333', '0.333', '0.333'])
+    // The count is what refused: the size check leaves m3 a third of the middle column, and a limit of 7 places it.
+    expect(refusalOf(live.t.groups.place('p', { tabId: 'm5', at: 'm2', edge: 'down' }, { plugin: true, pluginId: 'bronos.team' }))).toBe('full')
+    expect(run(7).placed.slice(0, 3)).toEqual([true, true, true])
+  })
+
+  it('reads the area from a group mate measured in its place when the anchor’s own size may come from an older place', () => {
+    // A 120-column window. A plugin opens m1 right of L, then m2 beside m1, back to back: m1 moves (a half, then a
+    // third) before any view sized it. The view then reports the thirds: 39 columns each.
+    const t = make(['L'])
+    t.sizes.set('L', { cols: 120, rows: 40 })
+    expect(t.open('m1', 'L', 'right')).toBe(true)
+    expect(t.open('m2', 'm1', 'right')).toBe(true)
+    for (const tab of ['L', 'm1', 'm2']) t.sizes.set(tab, { cols: 39, rows: 40 })
+    // m1's 39 columns may have been measured at a half (79 columns) or a third (119): read alone, the smaller made
+    // quarters of 19 and refused. m2 has had one place since it was sized, so its 39 columns are a third of 119:
+    // quarters of 29, placed.
+    expect(t.open('m3', 'm1', 'right')).toBe(true)
+    expect(t.shape()).toEqual([['L', 'm1', 'm3', 'm2']])
+  })
+
+  it('checks a plain anchor no view has sized yet against the area another tab of the window was measured in', () => {
+    // A short window (14 rows): L and the person's m beside it, L sized since. A plugin opens beside the plain tab p
+    // (Team's m4 beside m3), which no view has shown: halves of 14 rows fit, thirds (4 rows) do not.
+    const t = make(['L', 'm', 'p'])
+    t.sizes.set('L', { cols: 100, rows: 14 })
+    t.groups.place('p', { tabId: 'm', at: 'L', edge: 'right' })
+    t.sizes.set('L', { cols: 49, rows: 14 })
+    expect(t.open('q', 'p', 'down')).toBe(true)
+    // Before, an anchor with no size was not checked at all, and the third pane got 4 rows.
+    expect(t.open('r', 'q', 'down')).toBe(false)
+    expect(t.shape()).toEqual([
+      ['L', 'm'],
+      ['p', 'q']
+    ])
+    // No tab of the project has a size (a window no view has measured): nothing to check against, placed.
+    const blind = make(['a'])
+    expect(blind.open('b', 'a', 'down')).toBe(true)
+    expect(blind.open('c', 'b', 'down')).toBe(true)
+  })
+})
+
 describe('page tabs are panes (design-split-pages.md)', () => {
   /** A TabGroups with TabManager's kinds: `pg` is a plugin's page tab, the rest terminal tabs. */
   function withPage(initial: Record<string, string[]> = { p: ['a', 'pg', 'b'] }) {

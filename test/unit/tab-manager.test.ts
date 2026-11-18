@@ -267,6 +267,16 @@ describe('input, resize', () => {
     expect(backend.last.resizes).toEqual([[120, 40]])
   })
 
+  it('sizeOf knows no size until a view sized the tab: the spawn size is no pane’s (TabGroups’ check for a plugin’s beside)', () => {
+    const tabs = manager()
+    const tab = tabs.create(A, { kind: 'shell' })
+    // The pty runs at the spawn size, 80 x 24, which no view measured: read as a pane, it was the whole group's "area".
+    expect(tabs.sizeOf(A, tab.id)).toBeUndefined()
+    tabs.resize(A, tab.id, 120, 40)
+    expect(tabs.sizeOf(A, tab.id)).toEqual({ cols: 120, rows: 40 })
+    expect(tabs.sizeOf(B, tab.id)).toBeUndefined()
+  })
+
   it('flow control: pauses on unacked output, resumes on ack, resets on attach', () => {
     const tabs = manager()
     const tab = tabs.create(A, { kind: 'shell' })

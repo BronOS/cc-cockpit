@@ -2383,7 +2383,7 @@ describe('sessions.machines, focusMachine, the sessions.machines event', () => {
 describe('beside (split groups, D4 D6 D7)', () => {
   let groups: TabGroups
   let places: Array<PluginPlacement | undefined>
-  /** Sizes a test forces on an anchor (else the tab's pty: 80 x 24). */
+  /** Sizes a test forces on an anchor (else TabManager.sizeOf: none, as no view sizes a tab here). */
   let forced: Map<string, { cols: number; rows: number }>
 
   beforeEach(() => {
@@ -2480,7 +2480,7 @@ describe('beside (split groups, D4 D6 D7)', () => {
   it('fails soft to a plain tab: a group of 4 panes, an anchor too small to halve', async () => {
     const open = hostA()
     const anchor = tabs.create(A, { kind: 'shell' })
-    // Wide enough for four panes of 20 columns in a row (a pty's 80 x 24 start size gives 19 each).
+    // Wide enough for four panes of 20 columns in a row (80 columns would give 19 each).
     forced.set(anchor.id, { cols: 200, rows: 24 })
     for (let i = 0; i < 3; i++) {
       const r = (await open('sessions.openShell', { pluginId: 'a.one', beside: anchor.id })) as { placed?: boolean }

@@ -493,6 +493,12 @@ export class TabManager {
    * where the page starts (it fits its pane until main says otherwise).
    */
   private readonly desktopLocal = new Map<string, boolean>()
+  /**
+   * Tabs a view's size has reached (`applySize`), for `sizeOf`: until then the pty has the spawn size (80 x 24, or
+   * server mode's 120 x 40), which no pane was measured at. TabGroups read it as a pane measured in the tab's place, so a
+   * plugin's `beside` was checked against an "area" of 80 x 24 cells: too small for a wide window, too large for a short one.
+   */
+  private readonly fitted = new Set<string>()
 
   constructor(options: TabManagerOptions) {
     this.options = options
@@ -1226,10 +1232,11 @@ export class TabManager {
   /**
    * The tab's terminal size in cells now: its pty's, else the size its sizing view reported (an exited
    * tab), else undefined. Only a tab of `projectId` (TabGroups' minimum check for a plugin's `beside`).
+   * Undefined too until a view's size has reached the tab (`fitted`): the spawn size describes no pane.
    */
   sizeOf(projectId: string, tabId: string): { cols: number; rows: number } | undefined {
     const tab = this.find(projectId, tabId)
-    if (!tab) return undefined
+    if (!tab || !this.fitted.has(tab.id)) return undefined
     const size = this.pty.sizeOf(tab.id) ?? this.sizes.sizeOf(tab.id)
     return size ? { cols: size.cols, rows: size.rows } : undefined
   }
@@ -1266,6 +1273,8 @@ export class TabManager {
   private applySize(id: string, cols: number, rows: number): void {
     const tab = this.byId.get(id)
     if (!tab) return
+    // A view sized the tab: from now on its size (the pty's, or this one for an exited tab) is a pane's (`sizeOf`).
+    this.fitted.add(id)
     const before = this.pty.sizeOf(id)
     if (!before) {
       // An exited tab has no pty to resize, but a desktop following the pty's size still draws it
@@ -1526,6 +1535,7 @@ export class TabManager {
     this.pendingTake.delete(tab.id)
     this.sizes.tabGone(tab.id)
     this.desktopLocal.delete(tab.id)
+    this.fitted.delete(tab.id)
     // Terminal tap: the tab's stream ends here (close, a window closing, a clean exit closing it).
     // A page tab never had one.
     if (tab.kind !== 'page') this.tap((t) => t.closed(tab.id))

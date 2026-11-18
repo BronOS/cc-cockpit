@@ -78,7 +78,8 @@ export interface TabGroupsDeps {
   /**
    * A tab's terminal size in cells now (TabManager.sizeOf): a plugin's `beside` is placed only when every pane it
    * shrinks keeps PANE_MIN_CELLS (D5). Read at each placement and at each layout change (`moved`), so a size is known
-   * with the layout it was measured under. Absent or unknown: no check.
+   * with the layout it was measured under. Undefined for a tab no view has sized yet (its spawn size is no pane's).
+   * Absent, or unknown for every tab of the project: no check.
    */
   sizeOf?(projectId: string, tabId: string): { cols: number; rows: number } | undefined
   /**
@@ -330,16 +331,16 @@ export class TabGroups {
    * Whether a plugin's placement of `tabId` beside `anchor` (`before` to `after`) leaves PANE_MIN_CELLS to the new pane
    * and to every pane it shrinks: an even join of a split shrinks all its children, nested splits included (a pane at
    * 20% of a row inside a sibling can fall from 31 columns to 13). Both layouts are drawn in cells (cellsOf) in the
-   * group's extent, which the anchor's size gives under the layout it was measured in (`extentAt`, never the share main
-   * has now). A pane already under the minimum that the placement does not shrink is no reason to refuse.
+   * group's extent, which a size gives under the layout it was measured in (`extentFor`, never the share main has now).
+   * A pane already under the minimum that the placement does not shrink is no reason to refuse.
    */
   private panesFit(projectId: string, anchor: string, tabId: string, before: readonly TabGroup[], after: readonly TabGroup[]): boolean {
-    const size = this.sizeOf(projectId, anchor)
-    if (!size) return true
     const was = groupOf(before, anchor)?.root
     const now = groupOf(after, tabId)?.root
     if (!now) return true // cannot happen: the placement put the tab in the anchor's group
-    const extent = this.extentAt(projectId, anchor, size, was ? pathTo(was, anchor) : [])
+    const extent = this.extentFor(projectId, anchor, before)
+    // No tab of the project has a size a view gave it (a page anchor, a window no view has measured yet): no check.
+    if (extent === 'unknown') return true
     // Sizes whose layout cannot be told apart any more (see Seen.since): a pane that may not fit is not placed.
     if (!extent) return false
     const old = was ? cellsOf(was, extent) : new Map([[anchor, extent]])
@@ -353,6 +354,49 @@ export class TabGroups {
       if (tooSmall(c.cols, o?.cols, PANE_MIN_CELLS.cols) || tooSmall(c.rows, o?.rows, PANE_MIN_CELLS.rows)) return false
     }
     return true
+  }
+
+  /**
+   * The group extent a plugin's placement beside `anchor` is checked in (`groups`: the layout before it). First the
+   * anchor's own size when it was measured in the place the anchor has now (`exactExtent`). Else a size measured in its
+   * current place by another tab: a group mate's, then any other tab of the project's (a window's groups and plain tabs
+   * all fill the same terminal area), the smallest of a tier, as two views can size different tabs. Only then the
+   * anchor's own size read against the places it may have been measured in (`extentAt`, undefined when they cannot be
+   * told apart any more). 'unknown': no tab of the project has a size at all.
+   *
+   * Why a current size beats the anchor's own: a pane is placed and the next one asked beside it before any view
+   * reported the first one's size (a plugin opening a column of panes back to back). The anchor then has no size, or a
+   * size from before its last move, read against the smallest of the places it may have come from: a pane at a third
+   * of a row read as if it were at a half gives half the real width, and a fourth pane that fits in a wide window was
+   * refused. The lead beside it, measured since, knows the area.
+   */
+  private extentFor(projectId: string, anchor: string, groups: readonly TabGroup[]): CellSize | undefined | 'unknown' {
+    const own = this.exactExtent(projectId, anchor, groups)
+    if (own) return own
+    const group = groupOf(groups, anchor)
+    const mates = group ? leavesOf(group.root).filter((t) => t !== anchor) : []
+    const others = this.deps.order(projectId).filter((t) => t !== anchor && !mates.includes(t))
+    for (const tier of [mates, others]) {
+      const known = tier.flatMap((t) => this.exactExtent(projectId, t, groups) ?? [])
+      if (known.length > 0) return { cols: Math.min(...known.map((e) => e.cols)), rows: Math.min(...known.map((e) => e.rows)) }
+    }
+    const size = this.sizeOf(projectId, anchor)
+    if (!size) return 'unknown'
+    return this.extentAt(projectId, anchor, size, group ? pathTo(group.root, anchor) : [])
+  }
+
+  /**
+   * The group extent `tabId`'s size gives when that size was measured in the place the tab has in `groups`: it has not
+   * moved since the tracking began (no Seen), or its size changed after its last move and it has had only that place
+   * since. Undefined otherwise (no size, a size from before the last move, or several places it may come from).
+   */
+  private exactExtent(projectId: string, tabId: string, groups: readonly TabGroup[]): CellSize | undefined {
+    const size = this.sizeOf(projectId, tabId)
+    if (!size) return undefined
+    const rec = this.stateOf(projectId).seen.get(tabId)
+    if (!rec) return extentFrom(placeIn(groups, tabId), size)
+    if (sameSize(rec.size, size) || rec.since?.length !== 1) return undefined
+    return extentFrom(rec.since[0]!, size)
   }
 
   /**
@@ -374,10 +418,6 @@ export class TabGroups {
   private moved(projectId: string, before: readonly TabGroup[], after: readonly TabGroup[]): void {
     if (!this.deps.sizeOf) return
     const seen = this.stateOf(projectId).seen
-    const placeIn = (groups: readonly TabGroup[], t: string): PaneStep[] => {
-      const g = groupOf(groups, t)
-      return (g && pathTo(g.root, t)) ?? []
-    }
     const tabs = new Set([...before, ...after].flatMap((g) => leavesOf(g.root)))
     for (const t of tabs) {
       const was = placeIn(before, t)
@@ -627,6 +667,12 @@ const clamp = (i: number, length: number): number => Math.min(Math.max(i, 0), le
 
 function sameSize(a: CellSize | undefined, b: CellSize | undefined): boolean {
   return a === undefined || b === undefined ? a === b : a.cols === b.cols && a.rows === b.rows
+}
+
+/** The tab's place in `groups`: its path in its group, `[]` for a plain tab (its pane is the whole area). */
+function placeIn(groups: readonly TabGroup[], tabId: string): PaneStep[] {
+  const g = groupOf(groups, tabId)
+  return (g && pathTo(g.root, tabId)) ?? []
 }
 
 function samePlace(a: readonly PaneStep[], b: readonly PaneStep[]): boolean {
