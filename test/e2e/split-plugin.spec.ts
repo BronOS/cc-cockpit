@@ -160,7 +160,7 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     await enable(cockpit)
     const anchor = await newTaggedShell(cockpit, 'pa')
     writeFileSync(join(cockpit.root, 'home', 'anchor.txt'), anchor.id)
-    writeFileSync(join(cockpit.root, 'home', 'column-count.txt'), '6')
+    writeFileSync(join(cockpit.root, 'home', 'column-count.txt'), '7')
     const n = logged(cockpit).length
     await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/open-column`)
     await expect.poll(() => logged(cockpit).length, { timeout: 30_000 }).toBe(n + 1)
@@ -173,9 +173,10 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     await expect(visiblePanes(page)).toHaveCount(1 + placedCount)
     await expect(splitArea(page)).not.toHaveAttribute('data-zoom', 'auto')
     await expect(page.getByText(/zoomed \(\d+ hidden\)/)).toHaveCount(0)
-    // All six fit a 1900x1000 window by the view's own rule (main judges with the geometry the page reported, not its
-    // cell approximation, which refused the sixth: 8 rows a pane against its 6 + 2 of chrome).
-    expect(entry.placed).toEqual([true, true, true, true, true, true])
+    // Six fit a 1900x1000 window by the view's own rule (main judges with the geometry the page reported, not its
+    // cell approximation, which refused the sixth: 8 rows a pane against its 6 + 2 of chrome). A seventh would leave
+    // each pane under AUTO_ZOOM_CELLS' 6 rows, so the view would zoom: it opens plain (and the cap of 8 is not why).
+    expect(entry.placed).toEqual([true, true, true, true, true, true, false])
     const shot = await page.screenshot({ path: testInfo.outputPath('column.png') })
     if (process.env.SAVE_SHOT) writeFileSync(process.env.SAVE_SHOT, shot)
   } finally {
