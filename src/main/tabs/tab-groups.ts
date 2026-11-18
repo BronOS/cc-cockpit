@@ -358,31 +358,40 @@ export class TabGroups {
 
   /**
    * The group extent a plugin's placement beside `anchor` is checked in (`groups`: the layout before it). First the
-   * anchor's own size when it was measured in the place the anchor has now (`exactExtent`). Else a size measured in its
-   * current place by another tab: a group mate's, then any other tab of the project's (a window's groups and plain tabs
-   * all fill the same terminal area), the smallest of a tier, as two views can size different tabs. Only then the
-   * anchor's own size read against the places it may have been measured in (`extentAt`, undefined when they cannot be
-   * told apart any more). 'unknown': no tab of the project has a size at all.
+   * anchor's own size when it was measured in the place the anchor has now (`exactExtent`). Else a group mate's size
+   * measured where it is now, the smallest of them (two views can size different panes). Else the sizes of the anchor
+   * and its mates read against the places they may have been measured in (`extentAt`), the smallest; undefined when
+   * some of them have a size but none can be told any more (refused). 'unknown' only when none of them has a size.
    *
-   * Why a current size beats the anchor's own: a pane is placed and the next one asked beside it before any view
-   * reported the first one's size (a plugin opening a column of panes back to back). The anchor then has no size, or a
-   * size from before its last move, read against the smallest of the places it may have come from: a pane at a third
-   * of a row read as if it were at a half gives half the real width, and a fourth pane that fits in a wide window was
-   * refused. The lead beside it, measured since, knows the area.
+   * Why a mate's current size beats the anchor's own: a pane is placed and the next one asked beside it before any
+   * view reported the first one's size (a plugin opening a column of panes back to back). The anchor then has no size,
+   * or a size from before its last move, read against the smallest of the places it may have come from: a pane at a
+   * third of a row read as if it were at a half gives half the real width, and a fourth pane that fits in a wide window
+   * was refused. The lead beside it, measured since, knows the area. An anchor with no size is still checked against a
+   * mate's older size: 'unknown' there let three 4-row panes into a 14-row window.
+   *
+   * Only the group: its panes are shown together, so their sizes are as fresh as the anchor's. A tab outside it (a
+   * plain tab, another group) may be hidden, and a hidden tab keeps its size after the window was resized while its
+   * place never changed, so nothing would mark that size old: it would refuse a pane that fits, or pass one that does not.
    */
   private extentFor(projectId: string, anchor: string, groups: readonly TabGroup[]): CellSize | undefined | 'unknown' {
     const own = this.exactExtent(projectId, anchor, groups)
     if (own) return own
     const group = groupOf(groups, anchor)
     const mates = group ? leavesOf(group.root).filter((t) => t !== anchor) : []
-    const others = this.deps.order(projectId).filter((t) => t !== anchor && !mates.includes(t))
-    for (const tier of [mates, others]) {
-      const known = tier.flatMap((t) => this.exactExtent(projectId, t, groups) ?? [])
-      if (known.length > 0) return { cols: Math.min(...known.map((e) => e.cols)), rows: Math.min(...known.map((e) => e.rows)) }
+    const exact = mates.flatMap((t) => this.exactExtent(projectId, t, groups) ?? [])
+    if (exact.length > 0) return smallestOf(exact)
+    let sized = false
+    const estimates: CellSize[] = []
+    for (const t of [anchor, ...mates]) {
+      const size = this.sizeOf(projectId, t)
+      if (!size) continue
+      sized = true
+      const e = this.extentAt(projectId, t, size, placeIn(groups, t))
+      if (e) estimates.push(e)
     }
-    const size = this.sizeOf(projectId, anchor)
-    if (!size) return 'unknown'
-    return this.extentAt(projectId, anchor, size, group ? pathTo(group.root, anchor) : [])
+    if (!sized) return 'unknown'
+    return estimates.length > 0 ? smallestOf(estimates) : undefined
   }
 
   /**
@@ -400,12 +409,12 @@ export class TabGroups {
   }
 
   /**
-   * The group extent the anchor's `size` gives, read against the place it was measured in (Seen): its size unchanged
+   * The group extent the tab's `size` gives, read against the place it was measured in (Seen): its size unchanged
    * since its last move, the place it had before that move; a size reported since, the places it has had since (the
    * smallest extent of them, as a view can still be one move behind). A tab never moved has always had `path`.
    */
-  private extentAt(projectId: string, anchor: string, size: CellSize, path: PaneStep[] | undefined): CellSize | undefined {
-    const rec = this.stateOf(projectId).seen.get(anchor)
+  private extentAt(projectId: string, tabId: string, size: CellSize, path: PaneStep[] | undefined): CellSize | undefined {
+    const rec = this.stateOf(projectId).seen.get(tabId)
     if (!rec) return path ? extentFrom(path, size) : undefined
     if (sameSize(rec.size, size)) return rec.extent
     return rec.since ? smallestExtent(rec.since, size) : undefined
@@ -669,6 +678,11 @@ function sameSize(a: CellSize | undefined, b: CellSize | undefined): boolean {
   return a === undefined || b === undefined ? a === b : a.cols === b.cols && a.rows === b.rows
 }
 
+/** The smallest of `extents` per axis: the one that cannot overstate the room. */
+function smallestOf(extents: readonly CellSize[]): CellSize {
+  return { cols: Math.min(...extents.map((e) => e.cols)), rows: Math.min(...extents.map((e) => e.rows)) }
+}
+
 /** The tab's place in `groups`: its path in its group, `[]` for a plain tab (its pane is the whole area). */
 function placeIn(groups: readonly TabGroup[], tabId: string): PaneStep[] {
   const g = groupOf(groups, tabId)
@@ -681,8 +695,7 @@ function samePlace(a: readonly PaneStep[], b: readonly PaneStep[]): boolean {
 
 /** The smallest group extent `size` gives in any of `places`, per axis: the one that cannot overstate the room. */
 function smallestExtent(places: readonly PaneStep[][], size: CellSize): CellSize {
-  const all = places.map((p) => extentFrom(p, size))
-  return { cols: Math.min(...all.map((e) => e.cols)), rows: Math.min(...all.map((e) => e.rows)) }
+  return smallestOf(places.map((p) => extentFrom(p, size)))
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {

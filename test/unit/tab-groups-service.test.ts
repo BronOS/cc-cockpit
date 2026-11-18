@@ -623,7 +623,7 @@ describe('a plugin’s beside: every pane it shrinks, from a size and the layout
 
 // A plugin opening panes back to back (the Team plugin's room members): each new tab is placed, and the next one asked
 // beside it, before any view has sized it. TabManager.sizeOf knows no size for such a tab (its spawn size is no pane's),
-// so the check reads the area from a tab whose size was measured where it is now: the anchor, a group mate, any tab.
+// so the check reads the area from the anchor or a group mate, a size measured where it is now first.
 describe('a plugin’s beside, back to back: panes no view has sized yet', () => {
   const make = (order: string[], panes = 8) => {
     const orders = new Map([['p', [...order]]])
@@ -703,24 +703,29 @@ describe('a plugin’s beside, back to back: panes no view has sized yet', () =>
     expect(t.shape()).toEqual([['L', 'm1', 'm3', 'm2']])
   })
 
-  it('checks a plain anchor no view has sized yet against the area another tab of the window was measured in', () => {
-    // A short window (14 rows): L and the person's m beside it, L sized since. A plugin opens beside the plain tab p
-    // (Team's m4 beside m3), which no view has shown: halves of 14 rows fit, thirds (4 rows) do not.
-    const t = make(['L', 'm', 'p'])
+  it('an anchor with no size is checked against a group mate’s older size rather than not at all', () => {
+    // A short window (14 rows), L sized. B opens below L and C below B before any view reports: B has no size, and
+    // L's 14 rows are from before it moved (not where it is now), but they still tell the group: halves of 14 rows
+    // fit, thirds (4 rows) do not.
+    const t = make(['L'])
     t.sizes.set('L', { cols: 100, rows: 14 })
-    t.groups.place('p', { tabId: 'm', at: 'L', edge: 'right' })
-    t.sizes.set('L', { cols: 49, rows: 14 })
-    expect(t.open('q', 'p', 'down')).toBe(true)
-    // Before, an anchor with no size was not checked at all, and the third pane got 4 rows.
-    expect(t.open('r', 'q', 'down')).toBe(false)
-    expect(t.shape()).toEqual([
-      ['L', 'm'],
-      ['p', 'q']
-    ])
-    // No tab of the project has a size (a window no view has measured): nothing to check against, placed.
+    expect(t.open('B', 'L', 'down')).toBe(true)
+    expect(t.open('C', 'B', 'down')).toBe(false)
+    expect(t.shape()).toEqual([['L', 'B']])
+    // No tab of the group has a size (a window no view has measured): nothing to check against, placed.
     const blind = make(['a'])
     expect(blind.open('b', 'a', 'down')).toBe(true)
     expect(blind.open('c', 'b', 'down')).toBe(true)
+  })
+
+  it('never reads a tab outside the anchor’s group: a hidden tab keeps its size after the window changed', () => {
+    // H is a plain tab the view does not show: it kept 100 x 8 from before the window grew, and its place never
+    // changed, so nothing marks the size old. The plain anchor p has no size yet: no check, placed (H's 8 rows would
+    // have refused halves that fit), and the same in the other direction (H's 40 rows would have passed a short window).
+    const t = make(['H', 'p'])
+    t.sizes.set('H', { cols: 100, rows: 8 })
+    expect(t.open('q', 'p', 'down')).toBe(true)
+    expect(t.shape()).toEqual([['p', 'q']])
   })
 })
 
