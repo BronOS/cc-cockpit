@@ -962,5 +962,14 @@ describe('a plugin’s beside judged by each view’s own zoom rule (groups.area
     const remote = make(['L'])
     remote.area('web:7', 600, 900, 8, 16)
     expect(remote.open('N', 'L', 'right')).toBe(true)
+    // Only an ignored phone has reported (the desktop not yet): nothing judged by geometry, so the cell model still
+    // checks the desktop's 70 columns, whose halves (34) it would zoom: refused, as with no report at all.
+    const early = make(['L'])
+    early.sizes.set('L', { cols: 70, rows: 30 })
+    expect(early.open('N', 'L', 'right')).toBe(false)
+    const early2 = make(['L'])
+    early2.sizes.set('L', { cols: 70, rows: 30 })
+    early2.area('web:7', 300, 500, 8, 16)
+    expect(early2.open('N', 'L', 'right')).toBe(false)
   })
 })

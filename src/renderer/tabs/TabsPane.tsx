@@ -142,7 +142,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // drag's release judges the new sizes with the same cell its stop used.
   const autoZoom = useCallback((g: TabGroup): boolean => autoZoomed(g.root, area, cellNow()), [area, cellNow])
   // Main places a plugin's `beside` by this view's own zoom rule (tab-groups.ts panesFit): it gets the area and cell
-  // autoZoom runs with, only when they changed. Sent on the leading edge, then at most once per animation frame: a
+  // autoZoom runs with, only when they changed. Sent on the leading edge, then at most once per 16 ms: a
   // trailing debounce kept the old area through a window drag, and a placement then (1600 to 1000 px) was judged on a
   // screen that no longer existed. Each send reads cellNow() afresh.
   const geometry = useRef<{ area: Size; sent: string; frame: number }>({ area, sent: '', frame: 0 })
@@ -157,12 +157,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       g.sent = key
       window.cockpit.invoke('groups.area', payload).catch(() => {})
     }
-    if (g.frame !== 0) return // a send is due on the next frame already, and reads the values then
+    if (g.frame !== 0) return // a send is due shortly already, and reads the values then
     send()
-    g.frame = requestAnimationFrame(() => {
+    // A timer, not requestAnimationFrame: a hidden window or browser tab suspends animation frames, and a pending frame
+    // then blocked every later report (the font events and the 1 s sample) until the page was shown again.
+    g.frame = window.setTimeout(() => {
       g.frame = 0
       send()
-    })
+    }, 16)
   }, [cellNow])
   useEffect(() => {
     geometry.current.area = area
@@ -180,7 +182,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     return () => {
       fonts?.removeEventListener('loadingdone', reportGeometry)
       clearInterval(timer)
-      if (g.frame !== 0) cancelAnimationFrame(g.frame)
+      if (g.frame !== 0) clearTimeout(g.frame)
       g.frame = 0
     }
   }, [reportGeometry])

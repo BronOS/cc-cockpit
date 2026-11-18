@@ -359,20 +359,21 @@ export class TabGroups {
     // lead's pane), so it opens as a plain tab instead. Judged per view with the view's own rule (shared/pane-zoom.ts
     // autoZoomed) on the geometry it reported; a view zoomed before the placement is zoomed either way and no reason.
     const views = this.areas.get(projectId)
-    const geometry = views && views.size > 0 ? [...views.values()] : undefined
-    if (geometry) {
-      for (const g of geometry) {
-        if (!autoZoomed(now, g.area, g.cell)) continue
-        if (!was) {
-          // A plain anchor: the page never zooms a plain tab, so every view "shows" it. A local (desktop) view is strict:
-          // a placement it would zoom is refused. A remote view that zooms even this two-pane split is too small for any
-          // split (a phone): counting it would block every plugin split while it is open, so it is ignored.
-          if (g.remote) continue
-          return false
-        }
-        // In a group: a view zoomed before is zoomed either way and no reason; one that starts zooming is.
-        if (!autoZoomed(was, g.area, g.cell)) return false
-      }
+    const geometry = views && views.size > 0 ? [...views.values()] : []
+    // Views whose own rule judged this placement: a remote view skipped below did not, so with only such views (a phone
+    // reported, the desktop not yet) the cell-model fallback still runs rather than nothing checking the desktop.
+    let judged = 0
+    for (const g of geometry) {
+      const zoomsAfter = autoZoomed(now, g.area, g.cell)
+      // A plain anchor: the page never zooms a plain tab, so every view "shows" it. A local (desktop) view is strict: a
+      // placement it would zoom is refused. A remote view that zooms even this two-pane split is too small for any split
+      // (a phone): counting it would block every plugin split while it is open, so it is ignored (and judges nothing).
+      if (!was && zoomsAfter && g.remote) continue
+      judged++
+      if (!zoomsAfter) continue
+      if (!was) return false
+      // In a group: a view zoomed before is zoomed either way and no reason; one that starts zooming is.
+      if (!autoZoomed(was, g.area, g.cell)) return false
     }
     const extent = this.extentFor(projectId, anchor, before)
     // No tab of the project has a size a view gave it (a page anchor, a window no view has measured yet): no check.
@@ -389,10 +390,11 @@ export class TabGroups {
       const o = old.get(t)
       if (tooSmall(c.cols, o?.cols, PANE_MIN_CELLS.cols) || tooSmall(c.rows, o?.rows, PANE_MIN_CELLS.rows)) return false
     }
-    // The fallback while no view has reported its geometry (a page not loaded yet, an older client): the same zoom
+    // The fallback while no view has judged the placement by its geometry (a page not loaded yet, an older client, or
+    // only a phone that is too small for any split): the same zoom
     // approximated in main's cell model, with a fixed chrome allowance. It can disagree with the view (tiny fonts, near
     // the 40-column boundary, dragged shares), which is why the geometry above wins whenever there is any.
-    if (!geometry && showsSideBySide(was ? cellsOf(evenRoot(was), extent) : new Map([[anchor, extent]]))) {
+    if (judged === 0 && showsSideBySide(was ? cellsOf(evenRoot(was), extent) : new Map([[anchor, extent]]))) {
       if (!showsSideBySide(cellsOf(evenRoot(now), extent))) return false
     }
     return true
