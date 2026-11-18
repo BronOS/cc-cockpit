@@ -8,6 +8,7 @@
     "commands": [
       { "id": "open-command", "title": "Split beside: open a command tab beside the anchor" },
       { "id": "open-shell-down", "title": "Split beside: open a shell below the anchor" },
+      { "id": "open-column", "title": "Split beside: open a column of shells back to back" },
       { "id": "open-unknown", "title": "Split beside: open beside a tab id that does not exist" }
     ]
   }

@@ -27,5 +27,22 @@ exports.activate = (ctx) => {
     })
   )
   run('open-shell-down', () => ctx.sessions.openShell({ focus: true, beside: anchor(), side: 'down' }))
+  // A column opened back to back (no wait between calls): the first pane right of the anchor, each next one
+  // below the previous new pane. `count` comes from $HOME/column-count.txt. Logs one line with every `placed`.
+  ctx.commands.register('open-column', async () => {
+    const count = Number(fs.readFileSync(path.join(home, 'column-count.txt'), 'utf8').trim())
+    const placed = []
+    let beside = anchor()
+    try {
+      for (let i = 0; i < count; i++) {
+        const r = await ctx.sessions.openShell({ beside, side: i === 0 ? 'right' : 'down' })
+        placed.push(r.placed)
+        beside = r.tabId
+      }
+      log({ command: 'open-column', placed })
+    } catch (err) {
+      log({ command: 'open-column', placed, error: String(err && err.message) })
+    }
+  })
   run('open-unknown', () => ctx.sessions.openShell({ beside: 'no-such-tab-id' }))
 }

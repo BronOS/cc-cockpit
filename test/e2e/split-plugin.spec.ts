@@ -4,8 +4,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
-import { expect, test, type Cockpit } from './fixtures'
-import { focusedPanes, groupsOf, leaves, newTaggedShell, paneShowing, paneText, roomyDesktop, tabsOf, typeInPane, visiblePanes, waitPaneText } from './split-fixtures'
+import { expect, launchCockpit, test, type Cockpit } from './fixtures'
+import { focusedPanes, splitArea, groupsOf, leaves, newTaggedShell, paneShowing, paneText, roomyDesktop, tabsOf, typeInPane, visiblePanes, waitPaneText } from './split-fixtures'
 
 const PLUGIN = 'test.splitbeside'
 const FIXTURE = join(__dirname, '..', 'fixtures', 'plugins', 'split-beside')
@@ -77,6 +77,9 @@ test('a plugin `beside` opens a pane next to the anchor, marked "Opened by", and
 test('a plugin\'s `beside` places only below 4 panes, then opens a plain tab with placed: false (D6)', async ({ cockpit }) => {
   test.setTimeout(120_000)
   const { page } = cockpit
+  // Roomy: main refuses a placement that would leave panes under the auto-zoom size, so the default window
+  // (a tiling window manager may halve it) would refuse before the pane cap does.
+  await roomyDesktop(cockpit)
   await enable(cockpit)
   const anchor = await newTaggedShell(cockpit, 'pa')
   writeFileSync(join(cockpit.root, 'home', 'anchor.txt'), anchor.id)
@@ -144,4 +147,36 @@ test("keys typed while a plugin opens a pane beside a tab the person is not on n
   expect(await paneText(paneShowing(page, 'plug-7'))).not.toContain('stray-18')
   await typeInPane(page, paneShowing(page, 'pa-2'), 'echo click-$((1+2))')
   await waitPaneText(paneShowing(page, 'pa-2'), 'click-3')
+})
+
+test('a column of plugin panes opened back to back is never auto-zoomed on the desktop', async ({}, testInfo) => {
+  test.setTimeout(180_000)
+  // Raise the plugin's pane cap to 8 (the range's top) so the cell math, not the cap, decides.
+  const { cockpit, close } = await launchCockpit({ settings: { pluginLimits: { [PLUGIN]: { panesPerGroup: 8, opensPerMinute: 20 } } } })
+  try {
+    const { page } = cockpit
+    await roomyDesktop(cockpit)
+    await enable(cockpit)
+    const anchor = await newTaggedShell(cockpit, 'pa')
+    writeFileSync(join(cockpit.root, 'home', 'anchor.txt'), anchor.id)
+    writeFileSync(join(cockpit.root, 'home', 'column-count.txt'), '6')
+    const n = logged(cockpit).length
+    await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/open-column`)
+    await expect.poll(() => logged(cockpit).length, { timeout: 30_000 }).toBe(n + 1)
+    const entry = logged(cockpit)[n] as unknown as { placed: boolean[]; error?: string }
+    expect(entry.error).toBeUndefined()
+    const placedCount = entry.placed.filter(Boolean).length
+    console.log('column placed:', JSON.stringify(entry.placed), 'window:', JSON.stringify(await page.evaluate(() => [innerWidth, innerHeight])))
+    expect(placedCount).toBeGreaterThanOrEqual(1)
+    // The invariant: whatever main placed, the desktop draws every pane and does not zoom the group.
+    await expect(visiblePanes(page)).toHaveCount(1 + placedCount)
+    await expect(splitArea(page)).not.toHaveAttribute('data-zoom', 'auto')
+    await expect(page.getByText(/zoomed \(\d+ hidden\)/)).toHaveCount(0)
+    // Five fit and the sixth is refused (a 1900x1000 window), so the refusal is main's cell check.
+    expect(entry.placed).toEqual([true, true, true, true, true, false])
+    const shot = await page.screenshot({ path: testInfo.outputPath('column.png') })
+    if (process.env.SAVE_SHOT) writeFileSync(process.env.SAVE_SHOT, shot)
+  } finally {
+    await close()
+  }
 })
