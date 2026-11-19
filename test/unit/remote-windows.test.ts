@@ -24,6 +24,7 @@ import {
   RemoteWindows,
   allowRemoteNavigation,
   allowRemoteRequest,
+  checkRemoteRequest,
   isLoopbackHost,
   isRemoteDownload,
   isPickerNavigation,
@@ -39,10 +40,31 @@ import {
   type RemoteWindowView
 } from '../../src/main/remote/remote-windows'
 import { TUNNEL_RETRY_MS, type LoadGate } from '../../src/main/remote/tunnel-probe'
+import { LocalAddressCheck } from '../../src/main/remote/local-address'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS } from '../../src/main/webview/open-budget'
 import { FakeCookieStore, FakeJar } from '../fakes/fake-cookie-jar'
 
 const ORIGIN = 'http://127.0.0.1:4100'
+
+/** This machine's fake interfaces and resolver (never real DNS): a name not listed fails to resolve. */
+const OWN_LAN = '10.0.10.91'
+const NAMES: Record<string, string[]> = {
+  'evil.localtest.me': ['127.0.0.1'],
+  'zero.example': ['0.0.0.0'],
+  'mylan.example': [OWN_LAN],
+  'example.com': ['93.184.216.34'],
+  'box.example': ['10.0.20.115']
+}
+function fakeLocalAddresses(lookups: string[] = []): LocalAddressCheck {
+  return new LocalAddressCheck({
+    lookup: (host) => {
+      lookups.push(host)
+      const list = NAMES[host]
+      return list === undefined ? Promise.reject(new Error(`ENOTFOUND ${host}`)) : Promise.resolve(list.map((address) => ({ address })))
+    },
+    interfaceAddresses: () => ['127.0.0.1', '::1', OWN_LAN]
+  })
+}
 
 describe('the rules', () => {
   it('knows the loopback hosts', () => {
@@ -90,6 +112,68 @@ describe('the rules', () => {
     expect(allowRemoteRequest('http://localhost/', direct)).toBe(false)
     expect(allowRemoteRequest('http://127.0.0.1:4100/', undefined)).toBe(false)
     expect(allowRemoteRequest('https://example.com/', undefined)).toBe(true)
+  })
+
+  it('refuses a name or address that reaches this machine, keeping the server own origin with no lookup', async () => {
+    const lookups: string[] = []
+    const local = fakeLocalAddresses(lookups)
+    // The tunnel origin IS 127.0.0.1:<L>: allowed, synchronously, no lookup (its ws: too).
+    expect(checkRemoteRequest(`${ORIGIN}/api/projects`, ORIGIN, local)).toBe(true)
+    expect(checkRemoteRequest('ws://127.0.0.1:4100/ws', ORIGIN, local)).toBe(true)
+    // The name rule still answers first, synchronously.
+    expect(checkRemoteRequest('http://127.0.0.1:3000/', ORIGIN, local)).toBe(false)
+    expect(checkRemoteRequest('http://localhost:4100/', ORIGIN, local)).toBe(false)
+    expect(checkRemoteRequest('data:text/plain,x', ORIGIN, local)).toBe(true)
+    expect(checkRemoteRequest('not a url', ORIGIN, local)).toBe(false)
+    expect(lookups).toEqual([])
+    // Names resolving to loopback, unspecified or this machine's LAN address; the LAN literal too.
+    expect(await checkRemoteRequest('http://evil.localtest.me:3000/', ORIGIN, local)).toBe(false)
+    expect(await checkRemoteRequest('ws://zero.example:3000/', ORIGIN, local)).toBe(false)
+    expect(await checkRemoteRequest('http://mylan.example:3000/', ORIGIN, local)).toBe(false)
+    expect(checkRemoteRequest(`http://${OWN_LAN}:3000/`, ORIGIN, local)).toBe(false)
+    // A public name passes; one that does not resolve is refused (fail closed).
+    expect(await checkRemoteRequest('https://example.com/x.png', ORIGIN, local)).toBe(true)
+    expect(await checkRemoteRequest('https://nowhere.example/', ORIGIN, local)).toBe(false)
+    // No origin (the tunnel is down): names are still judged by address.
+    expect(await checkRemoteRequest('https://example.com/', undefined, local)).toBe(true)
+    expect(await checkRemoteRequest('http://evil.localtest.me/', undefined, local)).toBe(false)
+  })
+
+  it('keeps a Direct server on another machine and on this machine own LAN address', async () => {
+    const lookups: string[] = []
+    const local = fakeLocalAddresses(lookups)
+    const lan = 'http://10.0.20.115:7330'
+    expect(checkRemoteRequest(`${lan}/auth/session`, lan, local)).toBe(true)
+    expect(checkRemoteRequest('ws://10.0.20.115:7330/ws', lan, local)).toBe(true)
+    // Its own name is not looked up; another port of that machine is, and passes (not this machine).
+    expect(checkRemoteRequest('https://box.example/auth/session', 'https://box.example', local)).toBe(true)
+    expect(lookups).toEqual([])
+    expect(await checkRemoteRequest('https://box.example:8443/', 'https://box.example', local)).toBe(true)
+    // A Direct server on this machine's own LAN address keeps its own origin; its other ports do not.
+    const own = `http://${OWN_LAN}:7330`
+    expect(checkRemoteRequest(`${own}/`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`http://${OWN_LAN}:3000/`, own, local)).toBe(false)
+    expect(checkRemoteRequest('http://127.0.0.1:7330/', lan, local)).toBe(false)
+  })
+
+  it('exempts only the server own scheme pair on its effective port (default ports filled in)', async () => {
+    const local = fakeLocalAddresses()
+    // `URL.host` drops a default port: http://<ip> (80) and https://<ip> (443) both have host `<ip>`.
+    const own = `http://${OWN_LAN}`
+    expect(checkRemoteRequest(`${own}/`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`ws://${OWN_LAN}/ws`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`http://${OWN_LAN}:80/`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`https://${OWN_LAN}/`, own, local)).toBe(false)
+    expect(checkRemoteRequest(`wss://${OWN_LAN}/ws`, own, local)).toBe(false)
+    // The same for a name resolving to this machine: port 443 of it is checked, and refused.
+    const named = 'http://mylan.example'
+    expect(checkRemoteRequest(`${named}/`, named, local)).toBe(true)
+    expect(await checkRemoteRequest('https://mylan.example/', named, local)).toBe(false)
+    expect(await checkRemoteRequest('wss://mylan.example/ws', named, local)).toBe(false)
+    // An https server: its wss socket is exempt, plain http on 443 is not.
+    const secure = `https://${OWN_LAN}`
+    expect(checkRemoteRequest(`wss://${OWN_LAN}/ws`, secure, local)).toBe(true)
+    expect(checkRemoteRequest(`http://${OWN_LAN}:443/`, secure, local)).toBe(false)
   })
 
   it('pins navigation to the server origin', () => {
@@ -328,6 +412,7 @@ function setup() {
   const options = {
     factory,
     store,
+    localAddresses: fakeLocalAddresses(),
     showPicker: () => void pickers++,
     openExternal: (url: string) => void external.push(url),
     mintToken: vi.fn(async (server: Omit<RemoteServer, 'cookie'>) => {
@@ -523,6 +608,9 @@ describe('RemoteWindows: windows', () => {
     // The rules follow the new origin.
     expect(t.factory.session1().hooks.allowRequest('http://127.0.0.1:4200/ws')).toBe(true)
     expect(t.factory.session1().hooks.allowRequest('http://127.0.0.1:4100/ws')).toBe(false)
+    // The address half applies through the hook too.
+    expect(await t.factory.session1().hooks.allowRequest('http://evil.localtest.me:4200/')).toBe(false)
+    expect(await t.factory.session1().hooks.allowRequest('https://example.com/')).toBe(true)
     expect(t.factory.views[0]?.hooks.allowNavigation('http://127.0.0.1:4100/')).toBe(false)
     // The same origin again: nothing.
     await t.windows.setOrigin('s1', 'http://127.0.0.1:4200')

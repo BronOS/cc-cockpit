@@ -16,7 +16,8 @@
 // - the partition locked down like every non-default session (windows/permissions.ts: every
 //   permission, device and screen capture denied, notifications included; main's
 //   `web-contents-created` handler does the same, this makes it independent of that), every loopback
-//   request but the server's own origin cancelled (`onBeforeRequest`);
+//   request but the server's own origin cancelled (`onBeforeRequest`), by name and by the address main
+//   resolves the host to (`checkRemoteRequest`: the callback may come after a lookup);
 // - downloads (design-download.md §3.3): `will-download` hands each item to remote-windows.ts, which
 //   decides inside the call (its save path must be set there, or Electron shows its own save dialog)
 //   and saves the server's own `/d/` downloads after the person's click to the desktop's Downloads
@@ -291,9 +292,29 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
     verify()
     const userAgent = `${ses.getUserAgent()} ${desktopAgentSuffix(this.options.version, hostname())}`
     ses.setUserAgent(userAgent)
-    // One listener per session (a second `onBeforeRequest` would replace it): the loopback rule.
+    // One listener per session (a second `onBeforeRequest` would replace it): the loopback rule. Its
+    // answer may wait on a DNS lookup (the request is held meanwhile); the callback runs exactly once,
+    // and anything but a plain `true` (a throw, a rejection) cancels.
     ses.webRequest.onBeforeRequest((details, callback) => {
-      callback({ cancel: !hooks.allowRequest(details.url) })
+      let verdict: boolean | Promise<boolean>
+      try {
+        verdict = hooks.allowRequest(details.url)
+      } catch (err) {
+        this.log(`remote ${serverId}: a request was cancelled: ${String(err)}`)
+        callback({ cancel: true })
+        return
+      }
+      if (typeof verdict === 'boolean') {
+        callback({ cancel: !verdict })
+        return
+      }
+      verdict.then(
+        (ok) => callback({ cancel: ok !== true }),
+        (err: unknown) => {
+          this.log(`remote ${serverId}: a request was cancelled: ${String(err)}`)
+          callback({ cancel: true })
+        }
+      )
     })
     // The page's own sign-in check finished: a re-pair trigger. Only a page's request (main's own
     // fetchJson has no WebContents, so its check cannot trigger itself).

@@ -86,6 +86,7 @@ import { isOffscreenWindow, OffscreenWebviewFactory } from './webview/electron-o
 import { ElectronRemoteWindowFactory, isRemoteWindow } from './remote/electron-remote-window'
 import { RemoteServerStore } from './remote/remote-servers'
 import { RemoteWindows } from './remote/remote-windows'
+import { LocalAddressCheck, systemInterfaceAddresses, systemLookup } from './remote/local-address'
 import { MachineStatus, type MachineInfo } from './remote/machine-status'
 import { notifyingStore, RemoteService } from './remote/remote-service'
 import { SshLink } from './remote/ssh-link'
@@ -834,6 +835,8 @@ function start(server: boolean): void {
         const remoteWindows: RemoteWindows = new RemoteWindows({
           factory,
           store: notifyingStore(store, changed),
+          // The loopback block by address: a name a server's page names is resolved here first.
+          localAddresses: new LocalAddressCheck({ lookup: systemLookup, interfaceAddresses: systemInterfaceAddresses }),
           // A link the server's page opens: the person's own browser, for no window of ours ('app').
           openExternal: (url) => openExternal(url, 'app'),
           mintToken: (record) => service.mintToken(record),

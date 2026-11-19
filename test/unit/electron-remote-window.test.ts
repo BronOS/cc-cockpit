@@ -240,7 +240,7 @@ function prevented<T extends object>(fields: T = {} as T): Prevented & T {
 
 function sessionHooks(
   log: string[],
-  allow = (url: string) => url.startsWith('http://127.0.0.1:4100'),
+  allow: (url: string) => boolean | Promise<boolean> = (url) => url.startsWith('http://127.0.0.1:4100'),
   download: RemoteSessionHooks['download'] = () => false
 ): RemoteSessionHooks {
   return {
@@ -507,6 +507,37 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
     ses.handlers.before?.({ url: 'http://127.0.0.1:4100/ws' }, (r: unknown) => answers.push(r))
     expect(answers).toEqual([{ cancel: true }, { cancel: false }])
     expect(log).toContain('req http://127.0.0.1:3000/')
+  })
+
+  it('answers once a lookup settles, and cancels on a throw or a rejection', async () => {
+    const log: string[] = []
+    const verdicts: Record<string, () => boolean | Promise<boolean>> = {
+      'http://ok.example/': () => Promise.resolve(true),
+      'http://local.example/': () => Promise.resolve(false),
+      'http://reject.example/': () => Promise.reject(new Error('lookup broke')),
+      'http://throw.example/': () => {
+        throw new Error('rule broke')
+      }
+    }
+    const factory = new ElectronRemoteWindowFactory({ version: '0.17.0', log: (m) => void log.push(`log ${m}`) })
+    factory.session('s9', sessionHooks(log, (url) => (verdicts[url] as () => boolean | Promise<boolean>)()))
+    const ses = state.sessions.get(remotePartition('s9')) as FakeSession
+    const answers = new Map<string, unknown[]>()
+    for (const url of Object.keys(verdicts)) {
+      answers.set(url, [])
+      ses.handlers.before?.({ url }, (r: unknown) => answers.get(url)?.push(r))
+    }
+    // The throw is answered at once; the lookups once they settle.
+    expect(answers.get('http://throw.example/')).toEqual([{ cancel: true }])
+    expect(answers.get('http://ok.example/')).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(Object.fromEntries(answers)).toEqual({
+      'http://ok.example/': [{ cancel: false }],
+      'http://local.example/': [{ cancel: true }],
+      'http://reject.example/': [{ cancel: true }],
+      'http://throw.example/': [{ cancel: true }]
+    })
+    expect(log.filter((l) => l.startsWith('log ') && l.includes('a request was cancelled'))).toHaveLength(2)
   })
 
   it('reports a page own completed session check, not main own nor other paths', () => {
