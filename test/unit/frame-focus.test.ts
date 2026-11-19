@@ -154,9 +154,9 @@ describe('pointer evidence', () => {
       later: (fn) => void tasks.push(fn)
     })
     const at = (type: string, x: number, y: number): Event => Object.assign(new Event(type), { clientX: x, clientY: y })
-    for (const type of ['pointermove', 'pointerdown', 'pointerout', 'wheel']) {
+    for (const [i, type] of ['pointermove', 'pointerdown', 'pointerout', 'wheel'].entries()) {
       now += 10
-      win.dispatchEvent(at(type, 150, 80))
+      win.dispatchEvent(at(type, 150 + i, 80))
       expect([p.near(rect), p.fresh(), p.keyAfterPointer()]).toEqual([true, true, false])
       win.dispatchEvent(new Event('keydown'))
       expect(p.keyAfterPointer()).toBe(true)
@@ -164,6 +164,7 @@ describe('pointer evidence', () => {
     expect(calls).toEqual(['through', 'through', 'through', 'through'])
     // A focus within the shell voids the pointer and tells the pool; one on a frame (or none) does not.
     win.dispatchEvent(at('pointermove', 150, 80))
+    expect(p.keyAfterPointer()).toBe(false)
     frameTarget = true
     doc.dispatchEvent(new Event('focusin'))
     expect(p.keyAfterPointer()).toBe(false)
@@ -177,6 +178,37 @@ describe('pointer evidence', () => {
     expect(calls).toEqual([])
     for (const t of tasks.splice(0)) t()
     expect(calls).toEqual(['check'])
+  })
+
+  it('a pointerout where the pointer already was (a re-render under a resting pointer) is no move; a press there is', () => {
+    const win = new EventTarget()
+    let now = 1000
+    const p = new PointerEvidence(() => now)
+    const calls: string[] = []
+    watchShellEvidence(win, new EventTarget(), p, {
+      check: () => void calls.push('check'),
+      endPassThrough: () => void calls.push('through'),
+      shellFocused: () => void calls.push('focused'),
+      isFrame: () => false,
+      later: (fn) => fn()
+    })
+    const at = (type: string, x: number, y: number): Event => Object.assign(new Event(type), { clientX: x, clientY: y })
+    // The pointer rests over the file pane's header; the person then types in a shell field.
+    win.dispatchEvent(at('pointermove', 150, 80))
+    now += POINTER_FRESH_MS - 100
+    win.dispatchEvent(new Event('keydown'))
+    calls.length = 0
+    // The panes re-render under it: boundary events at the same place revive nothing, end no passThrough.
+    win.dispatchEvent(at('pointerout', 150, 80))
+    expect([p.keyAfterPointer(), calls]).toEqual([true, []])
+    now += 200
+    expect(p.fresh()).toBe(false)
+    // A pointerout elsewhere is the pointer moving (out of the window, say), and a press in place is the person's act.
+    win.dispatchEvent(at('pointerout', 151, 80))
+    expect([p.keyAfterPointer(), p.fresh(), calls]).toEqual([false, true, ['through']])
+    win.dispatchEvent(new Event('keydown'))
+    win.dispatchEvent(at('pointerdown', 151, 80))
+    expect([p.keyAfterPointer(), calls]).toEqual([false, ['through', 'through']])
   })
 
   it('the last position is fresh for POINTER_FRESH_MS', () => {

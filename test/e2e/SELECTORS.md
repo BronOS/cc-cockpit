@@ -70,6 +70,9 @@ panes on the default window fall under the auto-zoom size and only one is drawn.
 - With one pane shown, `cockpit.terminalText()`, `waitForTerminalText()` and `typeLine()` (`fixtures.ts`)
   and the browser's `terminalText()` / `waitForTerminalText()` (`web-fixtures.ts`) read
   `.terminal-view:not([hidden])`. Use them only then.
+- Right after a new tab, those helpers can still read the tab before it: a second shell's
+  `FAKE-SHELL ready` is on the first one's screen too, so waiting for it proves nothing. Take the new
+  tab's id (`tabsOf` before and after) and wait on `paneOf(page, id)`, as `newTaggedShell` does.
 - With a split shown, several `.terminal-view`s are visible at once and those helpers read or click
   the wrong one. Address the pane instead: `const id = await page.locator('.tab.active').getAttribute('data-tab-id')`,
   then `paneOf(page, id)`, and `paneText`, `waitPaneText`, `typeInPane`, `tagPane` (`split-fixtures.ts`).

@@ -219,6 +219,11 @@ export class PointerEvidence {
     this.keyAfter = false
   }
 
+  /** Whether `(x, y)` is the last position recorded: an event there is no move of the pointer. */
+  isAt(x: number, y: number): boolean {
+    return this.at !== null && this.at.x === x && this.at.y === y
+  }
+
   /**
    * A `keydown` in the shell's document, or the focus moving to an element of the shell: whatever
    * holds the keyboard after this was not put there by the pointer's last move.
@@ -279,9 +284,23 @@ export function watchShellEvidence(win: EventTarget, doc: EventTarget, pointer: 
     // position just recorded is the evidence for its next click).
     sinks.endPassThrough()
   }
+  // A `pointerout` where the pointer already was is no move: Chromium sends boundary events when the
+  // element under a resting pointer changes (the shell scrolled or laid out again under it). Counted,
+  // one revived stale evidence after the person's keys: in the e2e on macOS, focusing a shell field
+  // scrolled the document 21 px, the pane header under the resting pointer gave way to the frame's
+  // pane, and a page's `focus()` then kept the keyboard while they typed in that field. Only the last
+  // position the shell recorded is known: a pointer resting where the shell never saw it (inside a
+  // frame) still counts such an event as a move. A press or a wheel in place is the person's act and counts.
   win.addEventListener('pointermove', moved, true)
   win.addEventListener('pointerdown', moved, true)
-  win.addEventListener('pointerout', moved, true)
+  win.addEventListener(
+    'pointerout',
+    (e) => {
+      const { clientX, clientY } = e as PointerEvent
+      if (!pointer.isAt(clientX, clientY)) moved(e)
+    },
+    true
+  )
   win.addEventListener('wheel', moved, { capture: true, passive: true })
   win.addEventListener('keydown', () => pointer.shellInput(), true)
   doc.addEventListener(

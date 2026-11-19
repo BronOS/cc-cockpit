@@ -188,6 +188,10 @@ test('a plugin room through the real ccc: gate pointer, Stop pointer, typed tab 
     // 2. carol works on a prompt (a plugin's ctx.sessions.send); a message for her now is held, not waiting.
     await command(c, 'work')
     await expect.poll(() => statusOf(c, 'carol')).toBe('working')
+    // Her paste turn's own `ccc room read` (FAKE_CLAUDE_ON_PASTE) has run, with nothing to read: sent before it
+    // finished (each hook and `ccc` is a node start), the message was read in that turn and her Stop had nothing to
+    // block with (seen on macOS).
+    await expect.poll(() => cccRuns(runLog, carol, 'room', 'read').length).toBe(1)
     const toCarol = (await command(c, 'to-carol')).toCarol
     expect(toCarol).toEqual([expect.objectContaining({ to: 'carol', path: 'held', why: 'not-waiting' })])
     expect((await entryOf(c, 'carol')).held).toBe(1)

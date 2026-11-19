@@ -379,6 +379,10 @@ test('focus() brings a lower html overlay to the top and keeps its page as it wa
   expect(await cockpit.hook<Outcome>('overlayResult', upper)).toEqual({})
   await page.keyboard.press('Escape')
   expect(await outcome(cockpit, lower)).toEqual({ result: { kind: 'dismissed' } })
+  // Main has dismissed Lower; the page makes Upper the top (its Esc handler and the focus, one layout
+  // effect) once the new stack reaches it. A key pressed before that went to Lower's old handler and
+  // was lost (seen on macOS, where the next press came sooner).
+  await expect(page.getByRole('dialog', { name: 'Upper' })).toBeFocused()
   await page.keyboard.press('Escape')
   expect(await outcome(cockpit, upper)).toEqual({ result: { kind: 'dismissed' } })
 })

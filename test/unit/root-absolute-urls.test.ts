@@ -67,9 +67,11 @@ describe('rootAbsoluteUrls', () => {
     expect(rootAbsoluteUrls('html', '<script>'.repeat(256 * 1024))).toEqual([])
     expect(rootAbsoluteUrls('html', '<script '.repeat(256 * 1024))).toEqual([])
     expect(rootAbsoluteUrls('html', '<scripts>'.repeat(64 * 1024) + '<script>"/a.js"</script>')).toEqual(['"/a.js" (script string)'])
-    expect(Date.now() - started).toBeLessThan(2000)
+    // The old regex took a minute: 5 s still tells them apart, and a loaded machine (a full suite
+    // beside e2e runs) went past 2 s.
+    expect(Date.now() - started).toBeLessThan(5000)
     expect(rootAbsoluteUrls('html', `<SCRIPT type="module">import '/m.js'</Script><script>'/n.js'`)).toEqual(['"/m.js" (script string)'])
-  })
+  }, 20_000)
 
   it('reports at most five per file', () => {
     expect(rootAbsoluteUrls('html', Array.from({ length: 9 }, (_, i) => `<img src="/i${i}.png">`).join(''))).toHaveLength(5)
@@ -140,7 +142,8 @@ describe('rootAbsoluteUrlWarnings', () => {
     // Stops before it reaches every entry; what it saw it still reports, and it never throws.
     const warnings = await rootAbsoluteUrlWarnings(dir)
     expect(warnings.length).toBeLessThanOrEqual(1)
-  })
+    // 10,050 mkdirs: over 13 s on macOS (APFS) under load, far past vitest's 5 s default.
+  }, 60_000)
 
   it('never throws on a missing folder', async () => {
     expect(await rootAbsoluteUrlWarnings('/nonexistent/plugin-dir')).toEqual([])

@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { OverlayInfo } from '../../src/shared/ipc'
 import type { FrameLocator, Page } from '@playwright/test'
+import { pluginActive } from './download-fixtures'
 import { expect, launchCockpit, test as base, type Cockpit } from './fixtures'
 
 // LESS=FRX is what git puts in its pager's env when LESS is unset, and F quits at once on a
@@ -291,7 +292,9 @@ test('past the plugin\'s "Changed files shown per session" setting the rest are 
   const { page, projectDir } = cockpit
   const files = ['a.txt', 'b.txt', 'c.txt'].map((n) => join(projectDir, n))
   for (const f of files) writeFileSync(f, lines(f))
-  // The plugin's own app setting (Settings › Plugins › Sessions), saved the way its form saves it.
+  // The plugin's own app setting (Settings › Plugins › Sessions), saved the way its form saves it,
+  // once main has loaded it: right after start the save can still be "unknown plugin".
+  await pluginActive(cockpit, 'cockpit.sessions')
   await invoke(page, 'settings.pluginSettingsSave', { id: 'cockpit.sessions', values: { filesShown: 2 } })
   await openPanel(cockpit)
   await cockpit.newTab('claude')

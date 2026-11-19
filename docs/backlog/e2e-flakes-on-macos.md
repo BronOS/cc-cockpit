@@ -1,28 +1,32 @@
 ---
 worth: yes
+where: src/main/plugins/validate.ts:105
 added: 2026-11-19
 ---
-# the e2e suite has about 22 failing or flaky specs on macOS, master included
+# what is left of the macOS e2e and unit flakes after the 2026-11-19 sweep
 
-The guest-invite team run (2026-11-19) moved e2e from the Linux VM to this Mac. A full `npm run test:e2e` on master
-5100660 fails about 22 specs. On the guest branch it was 279 passed, 28 failed and 43 skipped; every failure there also
-fails on master, or depends on load and run order (each was checked alone on both sides). The failures seen:
-- split-views :267 and :297, plus split-plugin :132, split-resize and split-restore. In setup, `typeLine`'s click on
-  `.terminal-view:not([hidden]) .xterm` (`test/e2e/fixtures.ts:236`) times out with "element is not visible". This
-  comes right after `waitForTerminalText` read the shell's ready line, on the second new shell tab after `setSize`.
-  Measured alone under load: master 5/28, guest branch 7/28. Likely cause (dev-alice's diagnosis): with two shell
-  tabs, `.terminal-view:not([hidden]) .xterm` can resolve to the other tab's terminal, which is not visible, so the
-  fixture should target the selected pane's terminal rather than wait longer.
-- overlay-toolbar :125 and :196, and overlays:345 (focus).
-- rooms:110 (Stop poll).
-- marketplace-revoked:35 (launch EPERM).
-- the Sessions panel spec (flaky).
-- editor-split:181 (flaky).
-- web-access-terminal:224, which has its own item: `refocus-takes-terminal-size-on-macos.md`.
+The sweep (branch `backlog/e2e-mac`) fixed the specs that failed on this Mac: test timing in overlay-toolbar,
+overlays, sessions-panel, files-menu, rooms, guest-views and the split fixture (`newTaggedShell`), the refocus
+emulation in web-access-terminal, a short screen in split-plugin, and one product hole (frame-focus: a `pointerout`
+at the recorded position revived pointer evidence). Left open:
 
-Unit load flakes seen in the same run (all pass alone): root-absolute-urls, folder-walk, room-log, terminal-mirror,
-web-gateway "a socket that stops answering pings", web-guest-pages one-way port; editor lsp-host "initialize never
-answered".
-
-First step: run the suite once on an idle Mac with `--workers=1`, then sort the failures into macOS timing in the test
-versus real behaviour differences.
+- **A bundled plugin is refused at start, about 1 start in 110.** Main logs `plugin cockpit.editor disabled: invalid
+  plugin: plugin.json: is not a file`, so the plugin is missing from `hostStatus` and a spec waiting 15 s for it
+  fails (seen as bundled-plugins:129 with cockpit.sessions missing, editor:379 with cockpit.editor, and in a loop of
+  110 bare starts with cockpit.files and cockpit.editor). The file is a plain regular file. `readInside` returns
+  `root` or `not-file` (`resolveInside`'s stat, or `openVerified`'s open or fstat: an `ENXIO`/`EOPNOTSUPP`/-102
+  open maps to `not-file` too). A loop of realpath, stat, and the verified open plus fstat on the six manifests,
+  18,000 times in Node and in Electron 45 as Node, never failed. Next step: log which of the three paths answered
+  (and the errno) when a manifest is refused, then loop bare starts (`launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })`
+  and a poll on `hostStatus`) until it shows.
+- **macOS `win.blur()` moves the page's focus.** In the desktop page, `BrowserWindow.blur()` moves DOM focus from the
+  terminal's textarea to the top strip's `Open project…` button, and `focus()` does not put it back. Whether a real app
+  switch (Cmd+Tab) does the same was not checked; if it does, a person coming back to the desktop finds the keys on
+  that button, not in the terminal.
+- **The frame-focus rule's blind spot.** A `pointerout` is ignored only at the last position the shell recorded; a
+  pointer resting where the shell never saw it (inside a frame) still turns a re-layout's boundary event into a move.
+- **lsp-host "initialize never answered"** (`plugins/editor/test/lsp-host.test.js`, a 150 ms initialize timeout):
+  seen once under load in the guest-invite run, passed in every run since; cause unknown.
+- **Checks skipped off Linux, for the macOS server-mode task to restore:** `marketplace-revoked.spec.ts` returns before
+  its server-mode half when the platform is not Linux; `split-plugin.spec.ts` "a column of plugin panes" checks the
+  exact six-pane column only when the window got about 1000 px of height (a 14" MacBook gives 865, and five fit).

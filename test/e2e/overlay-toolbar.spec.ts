@@ -131,6 +131,9 @@ test('Discuss to an existing tab: delivered to a waiting tab, queued for a worki
     .toBe('waiting')
   await cockpit.typeLine('/prompt first')
   await cockpit.typeLine('/stop')
+  // The Stop hook ran: the status was "waiting" before the prompt too, so the poll alone could pass
+  // before the fake read the two lines and catch the tab working (the Discuss then queued).
+  await cockpit.waitForTerminalText('FAKE-CLAUDE hook Stop')
   await expect
     .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
     .toBe('waiting')
@@ -202,6 +205,9 @@ test('Discuss menu keys: Alt+ArrowDown opens it, Esc closes it and gives focus b
     .toBe('waiting')
   await cockpit.typeLine('/prompt first')
   await cockpit.typeLine('/stop')
+  // The Stop hook ran: the status was "waiting" before the prompt too, so the poll alone could pass
+  // before the fake read the two lines and catch the tab working (the Discuss then queued).
+  await cockpit.waitForTerminalText('FAKE-CLAUDE hook Stop')
   await expect
     .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
     .toBe('waiting')
@@ -252,6 +258,9 @@ test('Discuss prompt: a global one ends both messages, a project override of "" 
     .toBe('waiting')
   await cockpit.typeLine('/prompt first')
   await cockpit.typeLine('/stop')
+  // The Stop hook ran: the status was "waiting" before the prompt too, so the poll alone could pass
+  // before the fake read the two lines and catch the tab working (the Discuss then queued).
+  await cockpit.waitForTerminalText('FAKE-CLAUDE hook Stop')
   await expect
     .poll(async () => (await cockpit.hook<Array<{ status: string }>>('sessions', cockpit.projectDir))[0]?.status)
     .toBe('waiting')
