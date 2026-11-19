@@ -137,9 +137,19 @@ behind it are in [design.md](design.md).
 - Keep the computer awake while Claude is working (on by default; Settings > General > Claude sessions): while any
   Claude tab in any window is working, the computer does not idle-sleep; it may sleep again a minute after the last one
   stops. A tab waiting for your permission does not count. The display can still sleep, and closing a laptop's lid or
-  choosing Sleep still sleeps it. macOS shows the hold in `pmset -g assertions`; Windows uses `SetThreadExecutionState`;
-  Linux asks logind or the desktop's screensaver service over the session bus, so on a server with no session bus it
-  may do nothing. A browser of a desktop shows the switch but cannot change it; a server's browsers can.
+  choosing Sleep still sleeps it (on Linux, see below). macOS shows the hold in `pmset -g assertions`; Windows uses
+  `SetThreadExecutionState`. Linux needs systemd: the app takes a logind sleep lock (`systemd-inhibit --what=sleep
+  --mode=block`, listed as `cc-cockpit` / "Claude is working" by `systemd-inhibit --list`) over the system bus, so it
+  works on any desktop (Hyprland included) and on a server with no session bus; with no `systemd-inhibit` on PATH only
+  Electron's own request is made, which only GNOME-style desktops answer. On Linux the lock blocks only system sleep:
+  the screen still dims, locks and turns off, and closing the lid still sleeps the computer (logind's default), but a
+  Sleep you pick from a menu (`systemctl suspend`) is refused while the lock stands (`systemctl suspend -i` overrides
+  it, asking for your password). polkit allows the lock to a desktop session and to a systemd user unit (measured
+  with the user also logged in at the desktop; a lingering user unit with nobody logged in was not run); a process
+  outside any login session (started with `su` or `runuser` over ssh, a system service) is refused, which the app logs
+  once ("keep awake: systemd-inhibit exited before the release ... Access denied"); the setting still shows on. The
+  lock goes away with the app, even when it crashes. A browser of a desktop shows the switch but cannot change it; a
+  server's browsers can.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Typing in a Claude tab takes it over from plugins: once you type or paste there, plugins can no longer send text into it and their queued texts are dropped (clicks, focus and terminal replies do not count; Discuss with Claude still works).
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a

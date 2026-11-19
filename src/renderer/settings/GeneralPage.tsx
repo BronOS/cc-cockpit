@@ -188,7 +188,7 @@ export function GeneralPage(): React.JSX.Element {
               <Row
                 label="Keep the computer awake while Claude is working"
                 htmlFor={`${id}-keep-awake`}
-                help={`While any Claude tab in any window is working, the computer does not go to sleep on its own; it may sleep again a minute after the last one stops. The display can still sleep, and closing a laptop's lid or choosing Sleep still sleeps it. A tab waiting for your permission does not count.${
+                help={`While any Claude tab in any window is working, the computer does not go to sleep on its own; it may sleep again a minute after the last one stops. The display can still sleep, and closing a laptop's lid still sleeps it; so does choosing Sleep, except on Linux, where it is refused until then. A tab waiting for your permission does not count.${
                   isWebShell() && !isServerView() ? ' Change it on the computer itself.' : ''
                 }`}
               >

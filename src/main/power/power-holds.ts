@@ -11,15 +11,17 @@
 // session owner starting and stopping all day never touches it.
 //
 // What the request is, per platform (Electron's `prevent-app-suspension`): an IOPM no-idle-sleep
-// assertion on macOS (`pmset -g assertions` lists it), SetThreadExecutionState on Windows, an
-// inhibitor over the session bus on Linux (logind or the desktop's screensaver service; on a server
-// with no session bus it may do nothing). It keeps the system from idle sleep and lets the display
-// sleep; it does not stop a lid close or a Sleep the person picks.
+// assertion on macOS (`pmset -g assertions` lists it), SetThreadExecutionState on Windows. On Linux
+// Electron only asks the desktop's session manager over the session bus (nothing on Hyprland or a
+// server), so with `systemd-inhibit` on PATH each hold also takes a logind sleep block lock
+// (logind-inhibit.ts, `systemd-inhibit --list` shows it; system bus, no session bus needed). It keeps
+// the system from idle sleep and lets the display sleep; it does not stop a lid close, nor on macOS
+// and Windows a Sleep the person picks (on Linux logind refuses that one while the lock stands).
 
-/** The Electron side (electron-power.ts): one `prevent-app-suspension` blocker per start. */
+/** The OS side (electron-power.ts, logind-inhibit.ts): one blocker per start. */
 export interface PowerSaveBackend {
-  /** Start one blocker; returns its id. */
-  start(): number
+  /** Start one blocker for `owner` (a backend may show it as the reason); returns its id. */
+  start(owner: string): number
   /** Stop that blocker; an id already stopped is ignored. */
   stop(id: number): void
 }
@@ -48,7 +50,7 @@ export class PowerHolds {
   hold(owner: string): PowerHold {
     let id: number | undefined
     try {
-      id = this.backend.start()
+      id = this.backend.start(owner)
     } catch (err) {
       this.log(`keep awake: could not start the power save blocker for ${owner}: ${err instanceof Error ? err.message : String(err)}`)
     }

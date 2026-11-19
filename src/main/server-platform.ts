@@ -11,8 +11,8 @@
 //   power hold for the whole run: a sleeping Mac serves nothing (idle sleep only; the display may sleep).
 // - darwin desktop: nothing. A mock keychain there would break the desktop's safeStorage secrets.
 // - Linux server: nothing here. The re-exec already put `--disable-gpu` and `--password-store=basic`
-//   on argv, a never-shown window is all Ozone headless has anyway, and no hold is planned (a server
-//   with no session bus may have no power service to ask).
+//   on argv, a never-shown window is all Ozone headless has anyway, and no whole-run hold is planned;
+//   keep awake while Claude works applies there too (logind over the system bus, logind-inhibit.ts).
 // The window side (never shown, `backgroundThrottling: false`) is the same on both server platforms
 // and lives in the window factory, given `server` at construction (windows/create-window.ts).
 
