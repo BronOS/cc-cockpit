@@ -79,12 +79,31 @@
 // until its promise settles (PAGE_WAIT_MS at most: a hung page must not hold the person's input
 // forever), so nothing sent later can pass it either.
 //
-// Pure: no Electron (the view's sendInput, insertText, readSelection, hitSelect and chooseSelect
-// are injected), clock, timers and popup ids injected.
+// Edit chords (plan 20261119-server-mode-mac, decision 7; design-web.md §9.15 S6): the key down of
+// Ctrl or Cmd alone with A, Z, Shift+Z or Ctrl+Y (shared/webview-keys.ts editCommandOf) goes as one
+// `editCommand` item instead of a sendInputEvent key down: the view sends it as the protocol's
+// `Input.dispatchKeyEvent` carrying `selectAll`, `undo` or `redo` (editKeyEvent). On a macOS server
+// a key event alone runs none of them (Chromium takes them from the menu and the responder chain,
+// which an off-screen page has not), so before this a browser's Cmd+A selected nothing. The page
+// still sees the key down, and preventing it keeps the page's own undo (the command does not run);
+// the key down travels the input pipe like the rest; and, like a text, the lane holds what follows
+// until the command's promise settles. Its key up is a plain key up. A target with no `editCommand`
+// gets the plain key down, as before.
+//
+// Pure: no Electron (the view's sendInput, insertText, editCommand, readSelection, hitSelect and
+// chooseSelect are injected), clock, timers and popup ids injected.
 
 import { isPlainObject } from '../../shared/guards'
 import type { IpcEventMap, WebviewInputModifier } from '../../shared/ipc'
-import { isClipboardChord, MAX_KEY_NAME_LENGTH, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../shared/webview-keys'
+import {
+  editCommandOf,
+  isClipboardChord,
+  MAX_KEY_NAME_LENGTH,
+  webviewCursor,
+  webviewKeyChar,
+  webviewKeyCode,
+  type WebviewEditCommand
+} from '../../shared/webview-keys'
 import type { ViewId } from '../../shared/views'
 import type { PlaceSize, WebviewPanelOf } from './webview-viewers'
 import { HIT_TIMEOUT_MS, MAX_HELD_EVENTS, MAX_SELECT_OPTIONS, newSelectId, parseHitResult, SelectPopups } from './select-hit'
@@ -122,8 +141,9 @@ export const SELECTION_DEBOUNCE_MS = 100
  */
 export const WEBVIEW_WORLD_ID = 1717
 /**
- * The longest the lane holds later input behind a text or a select choice the page has not
- * confirmed yet (usually a few ms): after that the rest goes, so a hung page costs order, not input.
+ * The longest the lane holds later input behind a text, a select choice or an edit command the page
+ * has not confirmed yet (usually a few ms): after that the rest goes, so a hung page costs order,
+ * not input.
  */
 export const PAGE_WAIT_MS = 500
 
@@ -260,6 +280,57 @@ export function isClipboardKeyEvent(event: WebviewInputEvent): boolean {
   })
 }
 
+/** The editing command a checked event carries (a key down only; editCommandOf), or undefined. */
+export function editCommandOfEvent(event: WebviewInputEvent): WebviewEditCommand | undefined {
+  if (event.kind !== 'key' || event.type !== 'down') return undefined
+  const m = event.modifiers
+  return editCommandOf(event.key, {
+    control: m.includes('control'),
+    meta: m.includes('meta'),
+    alt: m.includes('alt'),
+    shift: m.includes('shift')
+  })
+}
+
+/** An edit chord's key down, as the lane carries it to the view (InputTarget.editCommand). */
+export interface EditCommandInput {
+  type: 'editCommand'
+  command: WebviewEditCommand
+  /** The DOM key the browser named (`a`, `Z`, `y`): a letter, editCommandOf checked it. */
+  key: string
+  modifiers: InputModifier[]
+}
+
+/** The protocol's modifier bits (`Input.dispatchKeyEvent`): Alt 1, Ctrl 2, Meta/Cmd 4, Shift 8. */
+const PROTOCOL_MODIFIER_BITS: ReadonlyMap<InputModifier, number> = new Map([
+  ['alt', 1],
+  ['control', 2],
+  ['meta', 4],
+  ['shift', 8]
+])
+
+/**
+ * The `Input.dispatchKeyEvent` params for an edit chord's key down: a `rawKeyDown` (no text: the
+ * chord types nothing) with the letter's US `code` and Windows key code, the modifiers as bits, and
+ * the one command. The letter's case follows Shift, as a real keyboard's `key` does. S6 (design-web.md
+ * §9.15) checked exactly this shape on an unfocused off-screen page.
+ */
+export function editKeyEvent(input: EditCommandInput): Record<string, unknown> {
+  const shift = input.modifiers.includes('shift')
+  const upper = input.key.toUpperCase()
+  let modifiers = 0
+  for (const m of input.modifiers) modifiers |= PROTOCOL_MODIFIER_BITS.get(m) ?? 0
+  return {
+    type: 'rawKeyDown',
+    key: shift ? upper : input.key.toLowerCase(),
+    code: `Key${upper}`,
+    windowsVirtualKeyCode: upper.charCodeAt(0),
+    modifiers,
+    autoRepeat: input.modifiers.includes('isautorepeat'),
+    commands: [input.command]
+  }
+}
+
 /** Whether the event makes its sender the size owner: a press, a key or a wheel, never a move or a release. */
 export function claimsOwner(event: WebviewInputEvent): boolean {
   if (event.kind === 'pointer') return event.type === 'down'
@@ -360,6 +431,11 @@ export interface InputTarget {
   hitSelect?(x: number, y: number, id: string): Promise<unknown>
   /** select-hit.ts chooseScript for popup `id` in WEBVIEW_WORLD_ID (null: forget it). */
   chooseSelect?(id: string, index: number | null): Promise<unknown>
+  /**
+   * An edit chord's key down with its command (editKeyEvent; absent: the chord goes as a plain key
+   * down). A promise that settles once the page has it: the lane holds later input until then.
+   */
+  editCommand?(input: EditCommandInput): Promise<unknown> | void
 }
 
 /** Timers for the selection debounce (tests drive them by hand). */
@@ -394,14 +470,14 @@ export interface WebviewInputDeps {
 }
 
 type PressEvent = Extract<ElectronInputEvent, { type: 'mouseDown' | 'mouseUp' }>
-/** One item of a lane: an input event, a committed text or a select choice, in the order they came. */
-type QueuedInput = ElectronInputEvent | { type: 'insertText'; text: string } | { type: 'choose'; id: string; index: number | null }
+/** One item of a lane: an input event, an edit command, a committed text or a select choice, in the order they came. */
+type QueuedInput = ElectronInputEvent | EditCommandInput | { type: 'insertText'; text: string } | { type: 'choose'; id: string; index: number | null }
 
 /** What a lane waits for before the rest of its input goes. */
 type LaneWait =
   /** A left press's hit-test: its press (held), its popup id. */
   | { kind: 'hit'; seq: number; timer: unknown; press: PressEvent; selectId: string }
-  /** A text or a choice the page has not confirmed yet. */
+  /** A text, a choice or an edit command the page has not confirmed yet. */
   | { kind: 'page'; seq: number; timer: unknown }
 
 /** One view's input path for one panel (kept while something waits or a release is to be dropped). */
@@ -488,13 +564,15 @@ export class WebviewInput {
     const target = this.deps.target(panel)
     if (!target) return 0
     const size = target.size()
-    const out: ElectronInputEvent[] = []
+    const out: QueuedInput[] = []
     let claim = false
     let sent = 0
     for (const event of events.slice(0, allowed)) {
       if (!inPage(event, size) || isClipboardKeyEvent(event)) continue
       if (claimsOwner(event)) claim = true
-      out.push(...toElectronEvents(event, size))
+      const command = target.editCommand ? editCommandOfEvent(event) : undefined
+      if (command && event.kind === 'key') out.push({ type: 'editCommand', command, key: event.key, modifiers: event.modifiers })
+      else out.push(...toElectronEvents(event, size))
       sent++
     }
     // Claimed before the page gets them, so the size the press asks for is already on its way;
@@ -581,25 +659,31 @@ export class WebviewInput {
 
   /**
    * Send `events` in order, up to a left press that needs a hit-test (the target can hit-test and
-   * a popup can be sent): it and the rest wait (startHit). A text or a choice goes after the events
-   * before it, and the rest waits for the page to confirm it (startPageWait). A release owed to a
-   * popup is dropped.
+   * a popup can be sent): it and the rest wait (startHit). A text, a choice or an edit command goes
+   * after the events before it, and the rest waits for the page to confirm it (startPageWait). A
+   * release owed to a popup is dropped.
    */
   private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly QueuedInput[], lane: PressLane | undefined): void {
     let out: ElectronInputEvent[] = []
     const canHit = target.hitSelect !== undefined && this.deps.pushSelect !== undefined
     for (let i = 0; i < events.length; i++) {
       const event = events[i] as QueuedInput
-      if (event.type === 'insertText' || event.type === 'choose') {
+      if (event.type === 'insertText' || event.type === 'choose' || event.type === 'editCommand') {
         this.send(panel, viewId, target, out)
         out = []
         let pending: Promise<unknown> | void
         try {
-          pending = event.type === 'insertText' ? target.insertText?.(event.text) : target.chooseSelect?.(event.id, event.index)
+          pending =
+            event.type === 'insertText'
+              ? target.insertText?.(event.text)
+              : event.type === 'editCommand'
+                ? target.editCommand?.(event)
+                : target.chooseSelect?.(event.id, event.index)
         } catch {
           pending = undefined
         }
-        if (event.type === 'insertText') this.selectionMayChange(panel, viewId)
+        // Text, select all, undo and redo all change what is selected (a key down through send does too).
+        if (event.type !== 'choose') this.selectionMayChange(panel, viewId)
         if (pending && typeof pending.then === 'function') {
           this.startPageWait(panel, viewId, pending, events.slice(i + 1))
           return
@@ -649,7 +733,7 @@ export class WebviewInput {
     return lane
   }
 
-  /** Hold `rest` until the page has the text or choice `pending` is for (or PAGE_WAIT_MS passes). */
+  /** Hold `rest` until the page has the text, choice or edit command `pending` is for (or PAGE_WAIT_MS passes). */
   private startPageWait(panel: WebviewPanelOf, viewId: ViewId, pending: Promise<unknown>, rest: readonly QueuedInput[]): void {
     const lane = this.lane(panel, viewId)
     const seq = ++this.waitSeq

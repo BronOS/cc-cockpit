@@ -209,7 +209,10 @@ coalesced and wheels summed; click counts are its own (`ClickCounter`: a Pointer
 held keys, a pointercancel held buttons. Modifiers are Electron's lower-case names (`shift`, `control`, `alt`, `meta`,
 `leftbuttondown`, ..., `isautorepeat`); held buttons travel on moves (without them a page's `buttons` reads 0); wheel
 deltas are negated for Chromium. Main maps the events to `sendInputEvent` (`mouseMove`, `mouseDown`, `mouseUp`,
-`mouseWheel`, `keyDown`, `keyUp`, `char`), accepts them only from a current viewer (`server && view.remote`, the panel
+`mouseWheel`, `keyDown`, `keyUp`, `char`), except the key down of an edit chord (Ctrl or Cmd alone with A, Z, Shift+Z,
+or Ctrl+Y: `editCommandOf`), which goes as the page protocol's `Input.dispatchKeyEvent` carrying `selectAll`, `undo` or
+`redo` (a key event alone runs none of them on a macOS server; the page still sees the key down and can prevent it;
+plan 20261119-server-mode-mac, decision 7). It accepts them only from a current viewer (`server && view.remote`, the panel
 resolved through the caller's layout), allows 600 events per second per view (a token bucket; over-rate input is
 dropped silently) and key names only from the fixed allow-list in `src/shared/webview-keys.ts`. A press, a key or text
 makes the sender the size owner. The page's cursor (`cursor-changed`) goes to the viewers as `webviews.cursor` (a name

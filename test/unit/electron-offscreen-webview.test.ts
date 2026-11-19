@@ -8,7 +8,7 @@
 // a gone window, a closed project window, destroy twice) do what the manager expects.
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebviewEvents } from '../../src/main/webview/webview-manager'
-import { WEBVIEW_WORLD_ID } from '../../src/main/webview/webview-input'
+import { editKeyEvent, WEBVIEW_WORLD_ID, type EditCommandInput } from '../../src/main/webview/webview-input'
 
 type Listener = (...args: unknown[]) => unknown
 
@@ -118,6 +118,15 @@ class FakeWebContents extends FakeEmitter {
   insertText(text: string): Promise<void> {
     this.calls.push(`text ${text}`)
     return Promise.resolve()
+  }
+  selectAll(): void {
+    this.calls.push('selectAll')
+  }
+  undo(): void {
+    this.calls.push('undo')
+  }
+  redo(): void {
+    this.calls.push('redo')
   }
   selection: unknown = 'picked'
   executeJavaScriptInIsolatedWorld(world: number, scripts: Array<{ code: string }>): Promise<unknown> {
@@ -662,6 +671,45 @@ describe('OffscreenWebviewFactory', () => {
     view.insertText?.('x')
     await expect(view.readSelection?.()).resolves.toBeUndefined()
     expect(wc.calls).toEqual([])
+  })
+
+  // Plan 20261119-server-mode-mac, decision 7: an edit chord's key down with its command goes on the
+  // page's protocol (the input pipe, where the page sees the key down and can prevent it); the
+  // webContents commands are only the fallback for a protocol that detached.
+  it('sends an edit chord through the page protocol while attached, webContents commands only once detached', async () => {
+    const { view, wc, win } = make()
+    wc.calls.length = 0
+    const commands = wc.debugger.commands.length
+    const selectAll: EditCommandInput = { type: 'editCommand', command: 'selectAll', key: 'a', modifiers: ['meta'] }
+    const undo: EditCommandInput = { type: 'editCommand', command: 'undo', key: 'z', modifiers: ['control'] }
+    const redo: EditCommandInput = { type: 'editCommand', command: 'redo', key: 'Z', modifiers: ['meta', 'shift'] }
+    // Settled once the protocol answers: the lane waits on it.
+    await expect(view.editCommand?.(selectAll)).resolves.toBeDefined()
+    await view.editCommand?.(redo)
+    expect(wc.debugger.commands.slice(commands)).toEqual([
+      { method: 'Input.dispatchKeyEvent', params: editKeyEvent(selectAll) },
+      { method: 'Input.dispatchKeyEvent', params: editKeyEvent(redo) }
+    ])
+    expect(wc.calls).toEqual([])
+    // A protocol refusing the command: the rejection is the lane's (it lets the rest go), not thrown here.
+    state.refuse = true
+    await expect(view.editCommand?.(undo)).rejects.toThrow(/refused/)
+    state.refuse = false
+    // Detached: the webContents commands, no key event, settled at once.
+    wc.debugger.attachedWith = undefined
+    const before = wc.debugger.commands.length
+    await expect(view.editCommand?.(selectAll)).resolves.toBeUndefined()
+    await view.editCommand?.(undo)
+    await view.editCommand?.(redo)
+    expect(wc.calls).toEqual(['selectAll', 'undo', 'redo'])
+    expect(wc.debugger.commands.length).toBe(before)
+    expect(win.forbidden).toEqual([])
+    // Gone: nothing either way.
+    view.destroy()
+    wc.calls.length = 0
+    await expect(view.editCommand?.(undo)).resolves.toBeUndefined()
+    expect(wc.calls).toEqual([])
+    expect(wc.debugger.commands.length).toBe(before)
   })
 
   // Task 9: a select's hit-test and the browser's answer run in the same isolated world.

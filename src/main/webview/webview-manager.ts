@@ -67,7 +67,7 @@ import { splitChord } from '../../shared/keys'
 import { MAX_URL_LENGTH, overlayUrlOf, type ViewBounds } from '../overlays/overlay-manager'
 import { PREVIEW_SCHEME, PREVIEW_TOKEN_PATTERN } from './preview-protocol'
 import { defaultTempRoots, resolveWebviewTarget, type WebviewTarget } from './webview-target'
-import type { ElectronInputEvent, InputTarget } from './webview-input'
+import type { EditCommandInput, ElectronInputEvent, InputTarget } from './webview-input'
 import { warnLog } from '../warn-log'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from './open-budget'
 
@@ -187,6 +187,8 @@ export interface WebviewView {
   hitSelect?(x: number, y: number, id: string): Promise<unknown>
   /** Server mode's off-screen view only: a browser's answer to a select popup (select-hit.ts chooseScript). */
   chooseSelect?(id: string, index: number | null): Promise<unknown>
+  /** Server mode's off-screen view only: an edit chord's key down with its command (webview-input.ts editKeyEvent). */
+  editCommand?(input: EditCommandInput): Promise<unknown> | void
 }
 
 export interface WebviewViewFactory {
@@ -518,6 +520,7 @@ export class WebviewManager {
     const readSelection = view.readSelection
     const hitSelect = view.hitSelect
     const chooseSelect = view.chooseSelect
+    const editCommand = view.editCommand
     return {
       size: () => size(),
       // Looked up again per call: the record may have gone in between (a crash, the plugin off).
@@ -538,7 +541,8 @@ export class WebviewManager {
         : {}),
       ...(chooseSelect
         ? { chooseSelect: (id: string, index: number | null) => (this.isLive(rec) ? chooseSelect(id, index) : Promise.resolve(false)) }
-        : {})
+        : {}),
+      ...(editCommand ? { editCommand: (input: EditCommandInput) => (this.isLive(rec) ? editCommand(input) : undefined) } : {})
     }
   }
 
