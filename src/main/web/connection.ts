@@ -307,7 +307,12 @@ export class WebConnections {
     let n = 0
     for (const conn of [...this.open.values()]) {
       if (conn.guestId !== guestId) continue
-      conn.end(code, reason)
+      // One socket's failure must not leave the guest's other views open: a kick or an end closes them all.
+      try {
+        conn.end(code, reason)
+      } catch (err) {
+        this.deps.log(`web access: closing a guest view failed: ${errorText(err)}`)
+      }
       n++
     }
     return n

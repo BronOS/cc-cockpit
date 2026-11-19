@@ -781,6 +781,18 @@ describe('guest views', () => {
     expect(owner.closedWith).toBeUndefined()
   })
 
+  it("closeGuest goes on past a view whose close throws: the guest's other views still close", () => {
+    const { connect, conns } = guestSetup()
+    const first = connect('p1', GUEST)
+    const second = connect('p1', GUEST)
+    first.close = () => {
+      throw new Error('socket gone wrong')
+    }
+    expect(conns.closeGuest('g1', CLOSE.kicked, 'kicked')).toBe(2)
+    expect(second.closedWith?.code).toBe(CLOSE.kicked)
+    expect(conns.guestLive('g1')).toBe(false)
+  })
+
   it('the window closing is 4462 for a guest, windowClosed for the owner', () => {
     const { connect, views } = guestSetup()
     const guest = connect('p1', GUEST)
