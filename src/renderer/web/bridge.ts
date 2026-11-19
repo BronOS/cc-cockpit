@@ -371,11 +371,16 @@ const GUEST_FINAL_CLOSES: ReadonlySet<number> = new Set([CLOSE.guestProject, CLO
 /** A guest's closes that reconnect at once to a fresh `ready` (a role or scope change, D-30). */
 const GUEST_IMMEDIATE_CLOSES: ReadonlySet<number> = new Set([CLOSE.roleChanged, CLOSE.accessChanged])
 /**
- * Immediate reconnects in a row (no connection stable for STABLE_MS between them) before the bridge
- * falls back to the backoff: a host that closed every fresh view with 4461 would otherwise have the
- * page reconnect and remount the shell in a tight loop (the `tooLarge` reason of STABLE_MS).
+ * A 4461 or 4464 is main asking for a reconnect, not a failure, so it reconnects at once and counts no
+ * attempt. Only a sanity bound stays: more than MAX_IMMEDIATE_RECONNECTS of them within
+ * IMMEDIATE_WINDOW_MS fall back to the normal backoff, so a host that closed every fresh view with 4461
+ * cannot have the page reconnect and remount the shell in a tight loop (the `tooLarge` reason of
+ * STABLE_MS). A streak reset only by a stable connection was too tight (S6): an owner sharing tabs one
+ * by one from the tab menu, 1 to 2 s apart, sends one 4464 per share (main coalesces only within
+ * 500 ms), and the 4th share put the guest's page into "Retrying in Ns".
  */
-export const MAX_IMMEDIATE_RECONNECTS = 3
+export const MAX_IMMEDIATE_RECONNECTS = 10
+export const IMMEDIATE_WINDOW_MS = 30_000
 
 /** Why a page can stop retrying after `code`, as the person is told; undefined: retried. */
 function finalReason(code: number, guest: BridgeGuest | undefined, isGuest: boolean): string | undefined {
@@ -491,7 +496,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   // A guest close (4461, 4464) since the last ready, and the one the current ready came after.
   let pendingAfter: number | undefined
   let readyAfter: number | undefined
-  let immediateStreak = 0
+  // When each immediate reconnect of the last IMMEDIATE_WINDOW_MS happened (the sanity bound).
+  let immediateAt: number[] = []
   let generation = 0
   let attempt = 0
   let socket: SocketLike | undefined
@@ -553,10 +559,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     for (const m of sharedAsks.values()) m.clear()
     epoch += 1
     const wasReady = readyAt !== undefined
-    if (readyAt !== undefined && timers.now() - readyAt >= stableMs) {
-      attempt = 0
-      immediateStreak = 0
-    }
+    if (readyAt !== undefined && timers.now() - readyAt >= stableMs) attempt = 0
     readyAt = undefined
     if (closed) return
     const final = finalReason(code, lastGuest, isGuest())
@@ -567,8 +570,10 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     if (GUEST_IMMEDIATE_CLOSES.has(code)) {
       pendingAfter = code
       // Only a socket that had reached `ready`: main closes a view it bound, never a bare hello so.
-      if (wasReady && immediateStreak < MAX_IMMEDIATE_RECONNECTS) {
-        immediateStreak += 1
+      const now = timers.now()
+      immediateAt = immediateAt.filter((t) => now - t < IMMEDIATE_WINDOW_MS)
+      if (wasReady && immediateAt.length < MAX_IMMEDIATE_RECONNECTS) {
+        immediateAt.push(now)
         // Not `away`: no "host unreachable" flash, and not a failed attempt. The last shell stays
         // drawn (shellToDraw) and its calls reject until the new `ready`.
         setStatus({ state: 'connecting' })
@@ -577,7 +582,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       }
     }
     // The away bar shows a guest close's text (the project closed; a role or scope change past the
-    // immediate cap) instead of "host unreachable".
+    // immediate bound) instead of "host unreachable".
     scheduleRetry(code === CLOSE.projectClosed || GUEST_IMMEDIATE_CLOSES.has(code) ? code : undefined)
     askSession()
   }

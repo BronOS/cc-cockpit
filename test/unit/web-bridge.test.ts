@@ -28,6 +28,7 @@ import {
   shellToDraw,
   socketUrl,
   UNREACHABLE,
+  IMMEDIATE_WINDOW_MS,
   MAX_IMMEDIATE_RECONNECTS,
   type BridgeStatus,
   type SessionCheck,
@@ -1269,6 +1270,42 @@ describe('guest closes (design-guests §16.4, spec-review 22)', () => {
     never.last().open()
     never.last().serverClose(CLOSE.roleChanged)
     expect(never.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+  })
+
+  it('four shares at a person\'s pace (a 4464 every 1.5 s) each reconnect at once (S6)', () => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    for (let i = 0; i < 4; i++) {
+      r.timers.advance(1_500)
+      r.last().serverClose(CLOSE.accessChanged)
+      expect(r.bridge.status()).toEqual({ state: 'connecting' })
+      expect(r.sockets).toHaveLength(i + 2)
+      guestReady(r, `web:${i + 2}`)
+    }
+    expect(r.statuses.some((s) => s.state === 'away')).toBe(false)
+  })
+
+  it('a 4464 loop past the bound in the window falls back to the backoff; once the window passes, at once again', () => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    for (let i = 0; i < MAX_IMMEDIATE_RECONNECTS; i++) {
+      r.timers.advance(100)
+      r.last().serverClose(CLOSE.accessChanged)
+      expect(r.bridge.status()).toEqual({ state: 'connecting' })
+      guestReady(r, `web:${i + 2}`)
+    }
+    r.timers.advance(100)
+    r.last().serverClose(CLOSE.accessChanged)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1, code: CLOSE.accessChanged })
+    r.timers.advance(reconnectDelay(1))
+    guestReady(r, 'web:x')
+    // Still inside the window: the bound holds, and the backoff grows.
+    r.last().serverClose(CLOSE.accessChanged)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 2 })
+    r.timers.advance(IMMEDIATE_WINDOW_MS)
+    guestReady(r, 'web:y')
+    r.last().serverClose(CLOSE.roleChanged)
+    expect(r.bridge.status()).toEqual({ state: 'connecting' })
   })
 
   it('a stable connection starts the immediate count over', () => {
