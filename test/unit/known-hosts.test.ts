@@ -2,9 +2,9 @@
 // hashed lines were made once with OpenSSH (`ssh-keygen -t ed25519`, `ssh-keygen -l`, `ssh-keygen -H`)
 // and are hard-coded, so the format is checked against ssh's own output, not against this code.
 import { createHmac, randomBytes } from 'node:crypto'
-import { utils } from 'ssh2'
 import { describe, expect, it } from 'vitest'
 import { checkKnownHost, fingerprint, keyBlobType, knownHostKeys, knownHostKeyTypes, knownHostName } from '../../src/main/remote/known-hosts'
+import { sshKeyPair } from '../fakes/ssh-keys'
 
 const ED25519 = 'AAAAC3NzaC1lZDI1NTE5AAAAIGnCThfVfTI+1kHah/aiO67IJnI08AQdHg8Amr4kODi7'
 /** `ssh-keygen -l -f fixture.pub` for the ed25519 key above. */
@@ -21,7 +21,7 @@ const SSH_KEYGEN_HASHED = [
 const ed = Buffer.from(ED25519, 'base64')
 const ec = Buffer.from(ECDSA, 'base64')
 /** Another ed25519 key: "the server was reinstalled", or a man in the middle. */
-const otherEd = Buffer.from(utils.generateKeyPairSync('ed25519').public.split(' ')[1]!, 'base64')
+const otherEd = Buffer.from(sshKeyPair('ed25519').public.split(' ')[1]!, 'base64')
 
 /** A hashed entry made here the way ssh does: HMAC-SHA1 of the host field, keyed by a random 20-byte salt. */
 function hashed(name: string): string {
@@ -122,7 +122,7 @@ describe('knownHostKeys and checkKnownHost', () => {
   })
 
   it('knownHostKeyTypes lists the types in file order, for the dial to prefer', () => {
-    const rsa = Buffer.from(utils.generateKeyPairSync('rsa', { bits: 2048 }).public.split(' ')[1]!, 'base64')
+    const rsa = Buffer.from(sshKeyPair('rsa', { bits: 2048 }).public.split(' ')[1]!, 'base64')
     const text = [
       `devbox ecdsa-sha2-nistp256 ${ECDSA}`,
       `other ssh-ed25519 ${ED25519}`,

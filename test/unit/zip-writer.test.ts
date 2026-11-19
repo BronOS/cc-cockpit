@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -234,8 +235,11 @@ describe('zipEntries', () => {
     symlinkSync(join(proj, 'a.txt'), linked)
     unlinkSync(fifo)
     expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
-    unlinkSync(swapped)
-    writeFileSync(swapped, 'another file, another inode')
+    // The replacement is made before the old file goes and renamed over it, so both inodes exist at once and
+    // differ. An unlink and then a write under the same name often got the freed inode number back on CI's
+    // ext4, and the zip then rightly kept the file (CI run 43736897700: 'proj/swapped.txt' in the zip).
+    writeFileSync(`${swapped}.new`, 'another file, another inode')
+    renameSync(`${swapped}.new`, swapped)
     const skipped: DownloadSkipped = {}
     const zip = await collect(zipEntries(each(entries), { skipped }))
     expect(readZip(zip).map((e) => e.name)).toEqual(['proj/', 'proj/a.txt', 'proj/z.txt'])

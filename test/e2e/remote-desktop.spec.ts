@@ -22,11 +22,11 @@ import { connect as netConnect, createServer as createNetServer, type AddressInf
 import { hostname, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import type { ElectronApplication, Locator, Page } from '@playwright/test'
-import { utils } from 'ssh2'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { DEVICE_KEY_STORAGE } from '../../src/shared/web-protocol'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
+import { sshKeyPair } from '../fakes/ssh-keys'
 
 test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
 
@@ -549,7 +549,7 @@ interface HostKey {
 }
 
 function makeHostKey(dir: string, name: string): HostKey {
-  const pair = utils.generateKeyPairSync('ed25519')
+  const pair = sshKeyPair('ed25519')
   const file = join(dir, name)
   writeFileSync(file, pair.private, { mode: 0o600 })
   const blob = Buffer.from(pair.public.split(' ')[1] ?? '', 'base64')

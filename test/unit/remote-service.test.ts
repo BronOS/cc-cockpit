@@ -10,7 +10,7 @@ import { createServer as createHttpServer, request as httpRequest, type Server a
 import { connect as netConnect, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Server, utils, type Connection } from 'ssh2'
+import { Server, type Connection } from 'ssh2'
 import { afterEach, describe, expect, it } from 'vitest'
 import { fingerprint, keyBlobType } from '../../src/main/remote/known-hosts'
 import { RemoteServerStore, type RemoteServersApp } from '../../src/main/remote/remote-servers'
@@ -22,6 +22,7 @@ import type { TunnelProbeResult } from '../../src/main/remote/tunnel-probe'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import type { RemoteHostKey } from '../../src/shared/remote-servers'
 import type { AppSettings, WebAccessMode } from '../../src/shared/types'
+import { sshKeyPair } from '../fakes/ssh-keys'
 
 const HOST_KEY: RemoteHostKey = { type: 'ssh-ed25519', sha256: `SHA256:${'K'.repeat(43)}` }
 const PASSWORD = 'correct horse'
@@ -743,7 +744,7 @@ describe('RemoteService: list, rename, forget, pickKey', () => {
 // trusts yet, `ccc web` answered from the test, forwarding to a local HTTP gateway.
 
 describe('RemoteService with the real SshLink', () => {
-  const hostPair = utils.generateKeyPairSync('ed25519')
+  const hostPair = sshKeyPair('ed25519')
   const blob = Buffer.from(hostPair.public.split(' ')[1] ?? '', 'base64')
   const realKey: RemoteHostKey = { type: keyBlobType(blob) as string, sha256: fingerprint(blob) }
   const cleanups: Array<() => Promise<void> | void> = []

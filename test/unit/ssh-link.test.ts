@@ -10,6 +10,7 @@ import { connect as netConnect, createServer as createNetServer, type AddressInf
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentProtocol, Server, utils, type AuthContext, type Connection, type ParsedKey } from 'ssh2'
+import { sshKeyPair } from '../fakes/ssh-keys'
 import { afterEach, describe, expect, it } from 'vitest'
 import { fingerprint, keyBlobType } from '../../src/main/remote/known-hosts'
 import { REMOTE_CCC_MISSING, type RemoteHostKey, type RemoteSecretName, type RemoteServerRecord, type SshAuth } from '../../src/shared/remote-servers'
@@ -28,11 +29,11 @@ import {
 
 const USER = 'alice'
 const PASSWORD = 'correct horse'
-const ed25519Host = utils.generateKeyPairSync('ed25519')
-const otherHost = utils.generateKeyPairSync('ed25519')
-const ecdsaHost = utils.generateKeyPairSync('ecdsa', { bits: 256 })
-const clientKey = utils.generateKeyPairSync('ed25519', { comment: 'test@client' })
-const lockedKey = utils.generateKeyPairSync('ed25519', { passphrase: 'open sesame', cipher: 'aes256-ctr', rounds: 2 })
+const ed25519Host = sshKeyPair('ed25519')
+const otherHost = sshKeyPair('ed25519')
+const ecdsaHost = sshKeyPair('ecdsa', { bits: 256 })
+const clientKey = sshKeyPair('ed25519', { comment: 'test@client' })
+const lockedKey = sshKeyPair('ed25519', { passphrase: 'open sesame', cipher: 'aes256-ctr', rounds: 2 })
 const lockedPublic = utils.parseKey(lockedKey.private, 'open sesame') as ParsedKey
 
 /** The raw public blob of an OpenSSH public key line. */
@@ -488,7 +489,7 @@ describe('sign-in', () => {
   it('auto: an agent that cannot be reached and no key say both', async () => {
     const s = await startServer({ gateway: 1, methods: ['publickey'] })
     const home = tempHome()
-    writeFileSync(join(home, '.ssh', 'id_rsa'), utils.generateKeyPairSync('ed25519').private, { mode: 0o600 })
+    writeFileSync(join(home, '.ssh', 'id_rsa'), sshKeyPair('ed25519').private, { mode: 0o600 })
     const r = await makeLink(s, { home, auth: { kind: 'auto' }, env: { SSH_AUTH_SOCK: join(home, 'gone.sock') } }).link.status()
     expect(r.ok === false && 'error' in r && r.error).toMatch(/^127\.0\.0\.1 accepted none of your keys\. the SSH agent could not be used/)
   })

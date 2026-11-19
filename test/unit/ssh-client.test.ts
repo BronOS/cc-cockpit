@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { Server, utils, type AuthContext, type Connection, type ServerChannel, type ServerConfig } from 'ssh2'
+import { sshKeyPair } from '../fakes/ssh-keys'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   dial,
@@ -21,9 +22,9 @@ import {
 
 const USER = 'alice'
 const PASSWORD = 'correct horse'
-const ed25519Host = utils.generateKeyPairSync('ed25519')
-const ecdsaHost = utils.generateKeyPairSync('ecdsa', { bits: 256 })
-const clientKey = utils.generateKeyPairSync('ed25519', { comment: 'test@client' })
+const ed25519Host = sshKeyPair('ed25519')
+const ecdsaHost = sshKeyPair('ecdsa', { bits: 256 })
+const clientKey = sshKeyPair('ed25519', { comment: 'test@client' })
 
 /** The raw public key blob (what a host verifier gets) of an OpenSSH public key line. */
 function blobOf(publicLine: string): Buffer {
@@ -353,7 +354,7 @@ describe('dial', () => {
   })
 
   it('refuses a server whose only host key algorithm is ssh-rsa (SHA-1)', async () => {
-    const rsa = utils.generateKeyPairSync('rsa', { bits: 2048 })
+    const rsa = sshKeyPair('rsa', { bits: 2048 })
     const s = await startServer({ hostKeys: [rsa.private], algorithms: { serverHostKey: ['ssh-rsa'] } })
     let verified = false
     const e = await rejection(
@@ -513,7 +514,7 @@ describe('parseKey', () => {
   })
 
   it('tells an encrypted key without a passphrase from a wrong one and opens it with the right one', () => {
-    const enc = utils.generateKeyPairSync('ed25519', { passphrase: 'open sesame', cipher: 'aes256-ctr', rounds: 2 })
+    const enc = sshKeyPair('ed25519', { passphrase: 'open sesame', cipher: 'aes256-ctr', rounds: 2 })
     expect(parseKey(enc.private)).toEqual({ kind: 'needs-passphrase' })
     expect(parseKey(enc.private, '')).toEqual({ kind: 'needs-passphrase' })
     expect(parseKey(enc.private, 'nope')).toEqual({ kind: 'wrong-passphrase' })
