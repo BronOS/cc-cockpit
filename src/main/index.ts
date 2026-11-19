@@ -217,7 +217,8 @@ import { serverDialogs, type Dialogs } from './dialogs/dialogs'
 import { systemOpenExternal } from './external/electron-open-external'
 import { createOpenExternal, type OpenExternal, type OpenTarget } from './external/open-external'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
-import { handleSecondInstance, launchHasDisplay, loseLaunch } from './second-launch'
+import { handleSecondInstance, launchHasDisplay, loseLaunch, serverAddress, testBoxAnswer } from './second-launch'
+import { createReopenNotice, type ReopenNotice } from './reopen-notice'
 import { runStartOrder } from './server-start'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
 import { selectOpenFile } from '../shared/services'
@@ -3773,6 +3774,8 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // How many reopen notices main showed (reopen-notice.ts); 0 off macOS server mode.
+          reopenNotices: () => reopenNotice?.count() ?? 0,
           // Guests (design-guests §3, spec-review 29): an invite through the invite dialog's own service
           // (GuestStore.invite, what guests.invite calls, with its checks), the guest list and a kick, so a
           // spec can make a guest without driving the dialog (only the hand-test spec drives it).
@@ -4135,6 +4138,23 @@ function start(server: boolean): void {
     if (startFailed) app.exit(1)
   })
   app.on('activate', () => windows.activate())
+  let reopenNotice: ReopenNotice | undefined
+  // Reopening a macOS server shows the notice (reopen-notice.ts): the one `serverDialogs` exception,
+  // reached only from here. Nothing is wired off server mode or off darwin.
+  if (server && process.platform === 'darwin') {
+    reopenNotice = createReopenNotice({
+      enabled: true,
+      address: async () =>
+        serverAddress(await webAccess.cliStatus(await webSecretsStatus(), coreNotices.list())) ?? 'an unknown address',
+      testAnswer: testBoxAnswer(process.env, testRun),
+      focus: () => app.focus({ steal: true }),
+      showBox: async (options) => (await electronDialogs().showMessageBox(undefined, options)).response,
+      accessory: () => app.setActivationPolicy('accessory'),
+      quit: quitLikeSigterm,
+      log: warnLog
+    })
+    app.on('activate', () => reopenNotice?.onActivate())
+  }
   // The menu's accelerator is the focused project's (AppMenu). A blur passes the window that is
   // leaving, so blur-then-focus and focus-then-blur both end on the right table, and a last
   // window closing (or the app going to the background) falls back to the core one.
