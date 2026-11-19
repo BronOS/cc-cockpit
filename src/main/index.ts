@@ -302,7 +302,14 @@ const decision = decideServerMode({
   execPath: process.execPath
 })
 const launchDisplay = launchHasDisplay(decision)
-const launch: SecondInstanceData = { argv: process.argv, cwd: process.cwd(), display: launchDisplay }
+// A darwin `--server` that loses the lock exits 1 itself (decision 2 of the macOS plan); the flag
+// tells a desktop primary to ignore its argv rather than open a window for a launch that asked for a server.
+const launch: SecondInstanceData = {
+  argv: process.argv,
+  cwd: process.cwd(),
+  display: launchDisplay,
+  ...('server' in decision && decision.server && decision.refuseWhenHeld ? { serverLaunch: true } : {})
+}
 const serverRun = serverStart({
   decision,
   lock: () => app.requestSingleInstanceLock(launch),
@@ -360,6 +367,9 @@ if (serverRun.run) {
       quit: quitLikeSigterm
     })
   }
+  // A darwin server draws nothing on screen (design-web.md §9.15: the spike ran GPU-off); this must
+  // come before `ready`, which start() only waits for.
+  if (serverRun.server && process.platform === 'darwin') app.disableHardwareAcceleration()
   start(serverRun.server)
 }
 
@@ -4025,7 +4035,7 @@ function start(server: boolean): void {
     // window, BrowserWindow.focus() alone does not.
     handleSecondInstance(
       data
-        ? { server, display: data.display, argv: data.argv, cwd: data.cwd }
+        ? { server, display: data.display, serverLaunch: data.serverLaunch, argv: data.argv, cwd: data.cwd }
         : { server, display: undefined, argv, cwd: workingDirectory },
       { open: openFromArgv, focusAny: () => windows.focusAny(), log: (line) => console.log(line) }
     )

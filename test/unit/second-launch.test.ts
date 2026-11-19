@@ -7,6 +7,7 @@ import {
   boxAnswerOf,
   handleSecondInstance,
   IGNORED_LINE,
+  IGNORED_SERVER_LINE,
   LAUNCH_PROFILE_PREFIX,
   launchHasDisplay,
   launchSocketPath,
@@ -46,6 +47,10 @@ describe('the decision table', () => {
     // `--server` from an `ssh -X` shell is the server's own shell asking.
     expect(linux({ DISPLAY: ':0' }, ['/bin/cc', '--server'])).toBe(false)
     expect(launchHasDisplay(decideServerMode({ platform: 'darwin', env: {}, argv: ['/bin/cc'], execPath: '/bin/cc' }))).toBe(true)
+    // A darwin `--server` is a server launch: no display, as on Linux.
+    expect(
+      launchHasDisplay(decideServerMode({ platform: 'darwin', env: {}, argv: ['/bin/cc', '--server'], execPath: '/bin/cc' }))
+    ).toBe(false)
   })
 
   it('a server primary ignores only a launch with a display; a desktop primary opens every one', () => {
@@ -61,10 +66,18 @@ describe('the decision table', () => {
     for (const [server, display, want] of rows) expect(secondInstanceAction({ server, display }), `${server} ${display}`).toBe(want)
   })
 
-  it('a losing launch asks the socket only with a display, on Linux, with web access on in the data dir', () => {
+  it('a desktop primary ignores a darwin `--server` launch; a server primary reads its display as before', () => {
+    expect(secondInstanceAction({ server: false, display: false, serverLaunch: true })).toBe('ignore')
+    expect(secondInstanceAction({ server: false, display: false, serverLaunch: false })).toBe('open')
+    expect(secondInstanceAction({ server: true, display: false, serverLaunch: true })).toBe('open')
+  })
+
+  it('a losing launch asks the socket only with a display, on Linux or macOS, with web access on in the data dir', () => {
     expect(losingLaunchAsks({ platform: 'linux', display: true, webAccessOn: true })).toBe(true)
     expect(losingLaunchAsks({ platform: 'linux', display: false, webAccessOn: true })).toBe(false)
-    expect(losingLaunchAsks({ platform: 'darwin', display: true, webAccessOn: true })).toBe(false)
+    expect(losingLaunchAsks({ platform: 'darwin', display: true, webAccessOn: true })).toBe(true)
+    expect(losingLaunchAsks({ platform: 'darwin', display: false, webAccessOn: true })).toBe(false)
+    expect(losingLaunchAsks({ platform: 'darwin', display: true, webAccessOn: false })).toBe(false)
     expect(losingLaunchAsks({ platform: 'win32', display: true, webAccessOn: true })).toBe(false)
     // Off: no server can hold the dir (a server run writes it on), so the launch quits at once.
     expect(losingLaunchAsks({ platform: 'linux', display: true, webAccessOn: false })).toBe(false)
@@ -85,10 +98,10 @@ describe('the decision table', () => {
 })
 
 describe('handleSecondInstance (the primary)', () => {
-  function run(server: boolean, display: boolean | undefined, opens: boolean) {
+  function run(server: boolean, display: boolean | undefined, opens: boolean, serverLaunch?: boolean) {
     const calls = { open: [] as string[][], focusAny: 0, logs: [] as string[] }
     handleSecondInstance(
-      { server, display, argv: ['/bin/cc', '/work/a'], cwd: '/home/me' },
+      { server, display, serverLaunch, argv: ['/bin/cc', '/work/a'], cwd: '/home/me' },
       {
         open: (argv) => {
           calls.open.push([...argv])
@@ -112,6 +125,13 @@ describe('handleSecondInstance (the primary)', () => {
     const calls = run(true, false, true)
     expect(calls.open).toEqual([['/bin/cc', '/work/a']])
     expect(calls.logs).toEqual([])
+  })
+
+  it('a desktop primary ignores a darwin server launch: opens and focuses nothing, logs a line', () => {
+    const calls = run(false, false, true, true)
+    expect(calls.open).toEqual([])
+    expect(calls.focusAny).toBe(0)
+    expect(calls.logs).toEqual([IGNORED_SERVER_LINE])
   })
 
   it('desktop meets desktop is unchanged: open, else focusAny', () => {
@@ -469,10 +489,10 @@ describe('loseLaunch (the losing launch, as index.ts wires it)', () => {
     expect(readdirSync(tmp)).toEqual([])
   })
 
-  it('no display, or not Linux: quits at once even with web access on', () => {
+  it('no display, or not Linux or macOS: quits at once even with web access on', () => {
     webAccessOn()
     expect(run({ display: false }).calls).toEqual(['quit'])
-    expect(run({ platform: 'darwin' }).calls).toEqual(['quit'])
+    expect(run({ platform: 'win32' }).calls).toEqual(['quit'])
   })
 
   it('sweeps gone launches, moves to a private profile, asks the socket, quits; the profile goes at exit', async () => {

@@ -5,14 +5,15 @@
 //    person typing `cc-cockpit` on their own desktop while a server run holds the data dir must not
 //    get a project opened on a page nobody sees), and opens the path of one that has none
 //    (`cc-cockpit <path>` from a server shell), as any second launch does; the window manager shows
-//    and focuses nothing in server mode. A desktop primary is unchanged.
+//    and focuses nothing in server mode. A desktop primary opens as always, except a darwin `--server`
+//    launch (`serverLaunch`): that one exits 1 itself, so the desktop opens and focuses nothing.
 //  - the losing launch, when it has a display and the data dir's `app.json` has web access on (a
 //    server run always writes it on at start, §9.2, so with it off no server holds the dir and the
 //    launch quits at once as before): it asks the socket for `web.status` (2 s, no token)
 //    and, when the answer says server mode, shows a native box (it has a screen) offering Stop
 //    (`web.stop`) or Cancel, then exits. Without it, that launch would seem to do nothing. Any other
-//    answer, or none, exits as before. Only on Linux: server mode runs nowhere else, so a desktop
-//    launch elsewhere never waits on the socket.
+//    answer, or none, exits as before. Only on Linux and macOS: server mode runs nowhere else, so a
+//    desktop launch on Windows never waits on the socket.
 //
 // The losing launch is an Electron process speaking the CLI protocol, and main may not import the
 // CLI (shared/manifest.ts): this file uses shared/protocol.ts's request and reply types and
@@ -39,6 +40,9 @@ export const SECOND_LAUNCH_ASK_MS = 2000
  */
 export const SECOND_LAUNCH_ANSWER_ENV = 'CC_COCKPIT_TEST_SERVER_BOX'
 
+/** What a desktop primary logs when it ignores a darwin `--server` launch (that launch exits 1 itself). */
+export const IGNORED_SERVER_LINE = 'cc-cockpit: a server-mode launch on this data dir was ignored (the desktop app runs here)'
+
 /** What the primary logs when a server ignores a launch from a screen. */
 export const IGNORED_LINE = 'server mode: a launch from a desktop asked to open something; ignored (open projects from a browser)'
 
@@ -58,8 +62,13 @@ export function launchHasDisplay(decision: ServerDecision): boolean {
  * The primary's choice for a second launch. `display` undefined is data from another build holding
  * the same lock (or none at all): it reads as before server mode, so the path is opened.
  */
-export function secondInstanceAction(input: { server: boolean; display: boolean | undefined }): 'open' | 'ignore' {
-  return input.server && input.display === true ? 'ignore' : 'open'
+export function secondInstanceAction(input: {
+  server: boolean
+  display: boolean | undefined
+  serverLaunch?: boolean
+}): 'open' | 'ignore' {
+  if (!input.server) return input.serverLaunch === true ? 'ignore' : 'open'
+  return input.display === true ? 'ignore' : 'open'
 }
 
 export interface SecondInstanceDeps {
@@ -72,11 +81,11 @@ export interface SecondInstanceDeps {
 
 /** `second-instance` in the primary: ignore (a server, a launch with a display), else open as always. */
 export function handleSecondInstance(
-  input: { server: boolean; display: boolean | undefined; argv: readonly string[]; cwd: string },
+  input: { server: boolean; display: boolean | undefined; serverLaunch?: boolean; argv: readonly string[]; cwd: string },
   deps: SecondInstanceDeps
 ): void {
   if (secondInstanceAction(input) === 'ignore') {
-    deps.log(IGNORED_LINE)
+    deps.log(input.server ? IGNORED_LINE : IGNORED_SERVER_LINE)
     return
   }
   // A bare re-launch (no folder) must still surface the app rather than do nothing (the desktop).
@@ -84,13 +93,13 @@ export function handleSecondInstance(
 }
 
 /**
- * Whether a losing launch asks the socket at all: one with a display, on Linux only, and only when
+ * Whether a losing launch asks the socket at all: one with a display, on Linux or macOS, and only when
  * the data dir's web access is on. A server run always writes it on (design-web.md §9.2) and refuses
  * turning it off, so a holder of a dir where it is off is a desktop: that launch quits at once, with
  * no private profile and no wait on the socket, as before server mode.
  */
 export function losingLaunchAsks(input: { platform: string; display: boolean; webAccessOn: boolean }): boolean {
-  return input.display && input.platform === 'linux' && input.webAccessOn
+  return input.display && (input.platform === 'linux' || input.platform === 'darwin') && input.webAccessOn
 }
 
 /** `app.json`'s `webAccess.enabled`, from its text; a missing, damaged or other value reads as off. */
@@ -349,7 +358,7 @@ export interface LoseLaunchDeps {
 
 /**
  * The whole of a launch that lost the single-instance lock (index.ts `serverStart`'s `quit`). With no
- * display, off Linux, or with web access off in `app.json` it quits at once, as before server mode.
+ * display, off Linux and macOS, or with web access off in `app.json` it quits at once, as before server mode.
  * Otherwise it sweeps earlier launches' profiles, moves off the holder's profile before anything is
  * awaited (`privateLaunchProfile`; with no private dir it quits at once), asks the holder's socket
  * (`runSecondLaunch`) and quits when that is over, whatever happened. Never throws.

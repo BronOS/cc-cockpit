@@ -1346,6 +1346,13 @@ describe('asSecondInstanceData', () => {
     expect(asSecondInstanceData({ ...base, display: 'yes' })).toEqual(base)
   })
 
+  it('carries a darwin server launch only as `serverLaunch: true`; anything else is absent', () => {
+    const base = { argv: ['/bin/cc-cockpit', '--server'], cwd: '/home/me', display: false }
+    expect(asSecondInstanceData({ ...base, serverLaunch: true })).toEqual({ ...base, serverLaunch: true })
+    expect(asSecondInstanceData({ ...base, serverLaunch: false })).toEqual(base)
+    expect(asSecondInstanceData({ ...base, serverLaunch: 'yes' })).toEqual(base)
+  })
+
   it('rejects anything else, so the caller falls back to Electron argv', () => {
     for (const bad of [
       undefined,

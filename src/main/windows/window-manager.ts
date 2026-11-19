@@ -956,6 +956,12 @@ export interface SecondInstanceData {
    * build holding the same lock: that reads as before, the path is opened.
    */
   display?: boolean
+  /**
+   * The launch is a darwin `--server` (`refuseWhenHeld`): it lost the lock and exits 1 itself, so a
+   * desktop primary ignores its argv (design-web.md §9.15, desktop and server one at a time on a Mac).
+   * Set only then: a Linux `--server` launch keeps its old handling. Absent reads as false.
+   */
+  serverLaunch?: boolean
 }
 
 /**
@@ -971,8 +977,10 @@ export function asSecondInstanceData(data: unknown): SecondInstanceData | undefi
     return undefined
   }
   // Anything but a boolean is taken as absent (reads as before), never as "has a display".
-  const { display } = data as Record<string, unknown>
-  return typeof display === 'boolean' ? { argv, cwd, display } : { argv, cwd }
+  const { display, serverLaunch } = data as Record<string, unknown>
+  const out: SecondInstanceData = typeof display === 'boolean' ? { argv, cwd, display } : { argv, cwd }
+  if (serverLaunch === true) out.serverLaunch = true
+  return out
 }
 
 function defaultTimer(fn: () => void, ms: number): () => void {

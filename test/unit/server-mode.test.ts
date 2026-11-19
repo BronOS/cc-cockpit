@@ -5,7 +5,8 @@ import {
   decideServerMode,
   DETECTED_LINE,
   NOT_STARTED_LINE,
-  LINUX_ONLY,
+  UNSUPPORTED_PLATFORM,
+  HELD_LINE,
   parentMarker,
   serverStart,
   type ServerDecision,
@@ -85,9 +86,16 @@ describe('decideServerMode', () => {
     expect(d.exec.exe).toBe(EXE)
   })
 
-  it('refuses `--server` off Linux, and detects nothing there', () => {
-    expect(decide({ platform: 'darwin', argv: [EXE, '--server'] })).toEqual({ refuse: LINUX_ONLY })
-    expect(decide({ platform: 'win32', argv: [EXE, '--server'] })).toEqual({ refuse: LINUX_ONLY })
+  it('darwin: `--server` is a server with no exec that refuses a held lock, whatever the env or test run', () => {
+    const want = { server: true, detected: false, refuseWhenHeld: true }
+    expect(decide({ platform: 'darwin', argv: [EXE, '--server'] })).toEqual(want)
+    expect(decide({ platform: 'darwin', env: { DISPLAY: ':0' }, argv: [EXE, '--server', '/repo'] })).toEqual(want)
+    expect(decide({ platform: 'darwin', env: { CC_COCKPIT_TEST: '1' }, argv: [EXE, '--server'] })).toEqual(want)
+  })
+
+  it('refuses `--server` on Windows, and detects nothing off Linux', () => {
+    expect(UNSUPPORTED_PLATFORM).toBe('server mode runs on Linux and macOS only')
+    expect(decide({ platform: 'win32', argv: [EXE, '--server'] })).toEqual({ refuse: UNSUPPORTED_PLATFORM })
     // No DISPLAY is normal on macOS and Windows.
     expect(decide({ platform: 'darwin' })).toEqual({ server: false })
     expect(decide({ platform: 'win32' })).toEqual({ server: false })
@@ -154,9 +162,22 @@ const flaggedExec = decide({ argv: [EXE, '--server'] })
 
 describe('serverStart', () => {
   it('a refusal prints and exits 1 before the lock is asked for', () => {
-    const f = fakes({ refuse: LINUX_ONLY })
+    const f = fakes({ refuse: UNSUPPORTED_PLATFORM })
     expect(serverStart(f.deps)).toEqual({ run: false })
-    expect(f.calls).toEqual([`print ${LINUX_ONLY}`, 'exit 1'])
+    expect(f.calls).toEqual([`print ${UNSUPPORTED_PLATFORM}`, 'exit 1'])
+  })
+
+  it('a darwin server runs when it holds the lock and, when it loses it, prints the held line and exits 1, never quits', () => {
+    const decision = decide({ platform: 'darwin', argv: [EXE, '--server'] })
+    const run = fakes(decision)
+    expect(serverStart(run.deps)).toEqual({ run: true, server: true })
+    expect(run.calls).toEqual(['lock'])
+    const lost = fakes(decision, { lock: () => false })
+    expect(serverStart(lost.deps)).toEqual({ run: false })
+    expect(lost.calls).toEqual([`print ${HELD_LINE}`, 'exit 1'])
+    expect(HELD_LINE).toBe(
+      'server mode: not started: cc-cockpit already runs with this data dir (the desktop app or another server)'
+    )
   })
 
   it('the desktop is the old single-instance lock: run when held, quit when another instance has it', () => {
