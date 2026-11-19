@@ -31,6 +31,10 @@ export class ElectronNoticeBackend implements NoticeBackend {
       ...(spec.actionLabel !== undefined ? { actions: [{ type: 'button' as const, text: spec.actionLabel }] } : {}),
       ...(spec.persistent ? { timeoutType: 'never' as const } : {})
     })
+    // Logged when the notice is made, not in onClose: Notifier.show (a refused or failed download,
+    // most notices) never listens for the close, and its failures said nothing. The OS's error only:
+    // a notice's text may be a plugin's (a mail subject), never logged.
+    n.on('failed', (_event, error) => warnLog(`a notification did not show: ${String(error)}`))
     return {
       show: () => n.show(),
       close: () => n.close(),
@@ -40,11 +44,7 @@ export class ElectronNoticeBackend implements NoticeBackend {
       },
       onClose: (listener) => {
         n.on('close', listener)
-        n.on('failed', (_event, error) => {
-          // The OS's error only: a notice's text may be a plugin's (a mail subject), never logged.
-          warnLog(`a notification did not show: ${String(error)}`)
-          listener()
-        })
+        n.on('failed', listener)
       }
     }
   }
