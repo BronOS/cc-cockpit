@@ -66,7 +66,7 @@ test('qa: selected-tabs read guest gets no marker of a hidden plugin, another pr
     await c.waitForTerminalText('FAKE-CLAUDE banner')
     const tabs = await c.hook<TabLite[]>('tabs', c.projectDir)
     expect(tabs.length).toBe(2)
-    const [a, b] = tabs
+    const [a, b] = tabs as [TabLite, TabLite]
     await invoke(c, 'tabs.rename', { tabId: b.id, name: 'QAZX-tabtitle' })
     await invoke(c, 'tabs.input', { tabId: b.id, data: 'QAZX-unsharedout\r' })
     await c.waitForTerminalText('QAZX-unsharedout')

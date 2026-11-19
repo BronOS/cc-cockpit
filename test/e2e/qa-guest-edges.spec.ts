@@ -42,7 +42,7 @@ test('qa: None refused with a guest in; parallel redeems; no cookie, no entry; p
     await c.waitForTerminalText('FAKE-CLAUDE banner')
     await c.newTab('claude')
     await c.waitForTerminalText('FAKE-CLAUDE banner')
-    const [a, b] = await c.hook<TabLite[]>('tabs', c.projectDir)
+    const [a, b] = (await c.hook<TabLite[]>('tabs', c.projectDir)) as [TabLite, TabLite]
     const web = await enableWebAccess(c)
 
     // Parallel redeems: exactly one device.

@@ -59,7 +59,7 @@ test('qa: write guest limits and the D-9 owner ask', async () => {
   test.setTimeout(120_000)
   const { c, close, origin } = await setup()
   try {
-    const [ownerTab] = await c.hook<TabLite[]>('tabs', c.projectDir)
+    const [ownerTab] = (await c.hook<TabLite[]>('tabs', c.projectDir)) as [TabLite]
     const inv = await inviteGuest(c, { name: 'Wes', role: 'write', scope: 'all' })
     const client = await redeemOk(origin, inv.token)
     // The invite is spent: a second redeem is refused.
@@ -126,7 +126,7 @@ test('qa: downgrade, scope narrowed, plugin hidden and kick each cut a live gues
   test.setTimeout(120_000)
   const { c, close, origin } = await setup()
   try {
-    const [tab] = await c.hook<TabLite[]>('tabs', c.projectDir)
+    const [tab] = (await c.hook<TabLite[]>('tabs', c.projectDir)) as [TabLite]
     const inv = await inviteGuest(c, { name: 'Dee', role: 'write', scope: 'all' })
     const client: GuestClient = await redeemOk(origin, inv.token)
 
@@ -143,7 +143,7 @@ test('qa: downgrade, scope narrowed, plugin hidden and kick each cut a live gues
     expect((await rawInvoke(g, 'tabs.input', { tabId: tab.id, data: 'after-downgrade\r' })).ok).toBe(false)
 
     // A shown plugin's page loads for the guest; hiding the plugin closes 4464 and the page 404s within 1 s.
-    const prefix = (await readyOf(g)).paths.plugins['test.guestteam']
+    const prefix = (await readyOf(g)).paths.plugins['test.guestteam'] ?? ''
     expect(prefix, 'no /p/ prefix for a shown plugin').toBeTruthy()
     const pageUrl = `${prefix.startsWith('/') ? '' : '/'}${prefix}${prefix.endsWith('/') ? '' : '/'}panel.html`
     expect((await guestGet(client, pageUrl)).status).toBe(200)
@@ -172,7 +172,7 @@ test('qa: downgrade, scope narrowed, plugin hidden and kick each cut a live gues
     await invoke(c, 'settings.pluginGuestAccessSet', { pluginId: 'test.guestteam', target: 'app', value: 'shown' })
     await expect.poll(async () => (await g.closed.then(() => true, () => false))).toBe(true)
     g = await rawSocket(client)
-    const prefix2 = (await readyOf(g)).paths.plugins['test.guestteam']
+    const prefix2 = (await readyOf(g)).paths.plugins['test.guestteam'] ?? ''
     const page2 = `${prefix2.startsWith('/') ? '' : '/'}${prefix2}${prefix2.endsWith('/') ? '' : '/'}panel.html`
     expect((await guestGet(client, page2)).status).toBe(200)
     t0 = Date.now()
