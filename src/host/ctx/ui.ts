@@ -55,6 +55,7 @@ import { errorText } from '../../shared/error-text'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import type { OverlayButtonRegistry } from '../overlay-buttons'
 import { dispatchInView } from './origin-view'
+import { HostViews, tagAccess } from './views'
 
 /** Longest panel message, as JSON text (the RPC cap). */
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
@@ -142,16 +143,19 @@ export function fromMainPort(port: MainPortLike, onClose?: () => void): PanelPor
  * `view` names a remote view's page (shared/views.ts, design-web.md §5.3); absent is the desktop
  * window's own page, so a desktop port's message keeps its old shape.
  */
-export function panelPortTag(data: unknown): { pluginId: string; panelId: string; view?: ViewId } | undefined {
+export function panelPortTag(data: unknown): { pluginId: string; panelId: string; view?: ViewId; access: ViewAccess } | undefined {
   if (typeof data !== 'string' || data.length > 1000) return undefined
   try {
-    const tag = (JSON.parse(data) as { panelPort?: { pluginId?: unknown; panelId?: unknown; view?: unknown } } | null)?.panelPort
+    const tag = (JSON.parse(data) as { panelPort?: { pluginId?: unknown; panelId?: unknown; view?: unknown; access?: unknown } } | null)?.panelPort
     if (typeof tag?.pluginId === 'string' && typeof tag.panelId === 'string') {
       const view = viewIdOf(tag.view)
       // A view that is not one main mints is refused (the port is closed), never read as the
       // desktop's: a tag main did not write must not take over the desktop page's slot.
       if (tag.view !== undefined && view === undefined) return undefined
-      return { pluginId: tag.pluginId, panelId: tag.panelId, ...(view !== undefined ? { view } : {}) }
+      // The view's access (views.ts tagAccess): a missing or malformed one refuses the port, never reads as the owner.
+      const access = tagAccess(tag.access, view)
+      if (access === null) return undefined
+      return { pluginId: tag.pluginId, panelId: tag.panelId, ...(view !== undefined ? { view } : {}), access }
     }
   } catch {
     // Not one of main's port messages.
@@ -169,10 +173,7 @@ type MessageListener = (message: JsonValue, from: PanelMessageSource) => void
  */
 export interface PanelMessageSource {
   readonly view: string
-  /**
-   * The view's access (guests, design-guests §6). Task 01 stub: always `owner`, true while main refuses
-   * every guest caller; task 04 reads it from main's port tag.
-   */
+  /** The view's access (guests, design-guests §6), from main's port tag only, never the page's word. */
   readonly access: ViewAccess
 }
 
@@ -182,6 +183,8 @@ export const DESKTOP_VIEW = 'desktop'
 interface Attached {
   port: PanelPort
   unsubscribe: () => void
+  /** Ends this line's entry in ctx.views (views.ts). */
+  release: () => void
 }
 
 /** The views map's key for the desktop window's own page (a port tag with no view). */
@@ -199,7 +202,11 @@ export class PanelPorts {
   private readonly ports = new Map<string, Map<string, Attached>>()
   private readonly listeners = new Map<string, Set<MessageListener>>()
 
-  constructor(private readonly log: (pluginId: string, message: string) => void) {}
+  constructor(
+    private readonly log: (pluginId: string, message: string) => void,
+    /** ctx.views: every port attached here is one line of its view (views.ts). */
+    private readonly views: HostViews = new HostViews(log)
+  ) {}
 
   /**
    * A panel's page in `view` (absent: the desktop window's) (re)connected: `port` replaces that
@@ -207,13 +214,14 @@ export class PanelPorts {
    * not keep talking). Other views' ports stay. The caller checked that the plugin runs here and
    * declares the panel.
    */
-  attach(pluginId: string, panelId: string, port: PanelPort, view?: ViewId): void {
+  attach(pluginId: string, panelId: string, port: PanelPort, view: ViewId | undefined, access: ViewAccess): void {
     const key = `${pluginId}/${panelId}`
     const v = view ?? DESKTOP_PAGE
     this.detachView(key, v)
-    const unsubscribe = port.onMessage((raw) => this.receive(pluginId, key, raw, view))
+    const unsubscribe = port.onMessage((raw) => this.receive(pluginId, key, raw, view, access))
+    const release = this.views.add(pluginId, view ?? DESKTOP_VIEW, access)
     const views = this.ports.get(key) ?? new Map<string, Attached>()
-    views.set(v, { port, unsubscribe })
+    views.set(v, { port, unsubscribe, release })
     this.ports.set(key, views)
   }
 
@@ -239,6 +247,7 @@ export class PanelPorts {
     views.delete(view)
     if (views.size === 0) this.ports.delete(key)
     old.unsubscribe()
+    old.release()
     try {
       old.port.close()
     } catch {
@@ -301,7 +310,7 @@ export class PanelPorts {
    * listener gets its own parsed copy. Each listener runs in its page's view (origin-view.ts), so
    * the calls it makes act where the click came from.
    */
-  private receive(pluginId: string, key: string, raw: unknown, view: ViewId | undefined): void {
+  private receive(pluginId: string, key: string, raw: unknown, view: ViewId | undefined, access: ViewAccess): void {
     const got = decodePortMessage(raw)
     if (!got.ok) {
       this.log(pluginId, `dropped a message from panel ${key}: ${got.reason === 'size' ? 'not a JSON string within the size cap' : 'not JSON'}`)
@@ -311,7 +320,7 @@ export class PanelPorts {
       try {
         dispatchInView(
           view,
-          () => listener(structuredClone(got.value), { view: view ?? DESKTOP_VIEW, access: 'owner' }),
+          () => listener(structuredClone(got.value), { view: view ?? DESKTOP_VIEW, access }),
           (err) => this.log(pluginId, `a panels.onMessage listener failed: ${errorText(err)}`)
         )
       } catch (err) {
@@ -333,7 +342,11 @@ type ActionListener = (actionId: string, from: ViewFrom) => void
 export class PanelActions {
   private readonly listeners = new Map<string, Set<ActionListener>>()
 
-  constructor(private readonly log: (pluginId: string, message: string) => void) {}
+  constructor(
+    private readonly log: (pluginId: string, message: string) => void,
+    /** Where a click's view gets its access: the plugin's own lines (views.ts). */
+    private readonly views: HostViews = new HostViews(log)
+  ) {}
 
   onAction(pluginId: string, panelId: string, listener: ActionListener): Disposer {
     const key = `${pluginId}/${panelId}`
@@ -364,12 +377,15 @@ export class PanelActions {
     // A view main did not mint is refused, never read as the desktop's (as slots.ts does).
     const view = viewIdOf(rawView)
     if (rawView !== undefined && view === undefined) return
+    // The click names its view, not its access: the access is the one main tagged that view's lines of this
+    // plugin with. The desktop page is the owner's; a remote view with no open line of the plugin (it cannot
+    // be showing the panel's page) reads as a read-only guest, never as the owner.
+    const access: ViewAccess = view === undefined ? 'owner' : (this.views.access(pluginId, view) ?? 'read')
     for (const listener of [...(this.listeners.get(`${pluginId}/${panelId}`) ?? [])]) {
       try {
         dispatchInView(
           view,
-          // Task 01 stub: `owner` (main refuses every guest caller until task 03); task 04 tags the access.
-          () => listener(actionId, { view: view ?? DESKTOP_VIEW, access: 'owner' }),
+          () => listener(actionId, { view: view ?? DESKTOP_VIEW, access }),
           (err) => this.log(pluginId, `a panels.onAction listener failed: ${errorText(err)}`)
         )
       } catch (err) {

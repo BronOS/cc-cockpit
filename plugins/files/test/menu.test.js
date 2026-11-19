@@ -410,3 +410,13 @@ test('menuEntries: a folder always has the include item, right after the plain z
     assert.equal(ids.indexOf('download-zip-all'), ids.indexOf('download-zip') + 1, kind)
   }
 })
+
+test("a read-only guest's menu only copies a relative path; no guest gets Copy path", () => {
+  assert.deepEqual(menuEntries({ kind: 'file', system: true, remote: true, download: true, access: 'read' }), ['copy-relative'])
+  assert.deepEqual(menuEntries({ kind: 'dir', shell: true, access: 'read' }), ['copy-relative'])
+  assert.deepEqual(menuEntries({ kind: 'root', access: 'read' }), [])
+  const write = menuEntries({ kind: 'file', system: true, remote: true, download: true, access: 'write' })
+  assert.ok(!write.includes('copy-path'))
+  assert.ok(write.includes('rename') && write.includes('download') && write.includes('copy-relative'))
+  assert.ok(menuEntries({ kind: 'file', system: true }).includes('copy-path'))
+})

@@ -302,7 +302,7 @@ describe('ctx.tabs (host)', () => {
         port.closed = true
       }
     }
-    const parsed = pageTabOpenTag(JSON.stringify({ pageTabOpen: tag }))
+    const parsed = pageTabOpenTag(JSON.stringify({ pageTabOpen: { access: 'owner', ...tag } }))
     if (!parsed) throw new Error('bad tag')
     return { page, port, attached: contexts.attachPageTabPort(parsed, port) }
   }

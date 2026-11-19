@@ -60,12 +60,12 @@ function openFrame(
       port.closed = true
     }
   }
-  const parsed = slotOpenTag(JSON.stringify({ slotOpen: tag }))
+  const parsed = slotOpenTag(JSON.stringify({ slotOpen: { access: 'owner', ...tag } }))
   if (!parsed) throw new Error('bad tag')
   return { page, port, attached: contexts.attachSlotPort(parsed, port) }
 }
 
-const TAG = { pluginId: 'p.cal', id: 's1', type: 'agenda', host: { kind: 'panel', pluginId: 'p.inbox', panelId: 'main' }, params: { days: 2 } }
+const TAG = { pluginId: 'p.cal', id: 's1', type: 'agenda', host: { kind: 'panel', pluginId: 'p.inbox', panelId: 'main' }, params: { days: 2 }, access: 'owner' }
 
 describe('ctx.slots.onOpen', () => {
   it('throws for a type the manifest does not declare, and for a non-function', () => {

@@ -1,9 +1,10 @@
 {
   "id": "cockpit.editor",
   "name": "Editor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "api": 1,
   "main": "dist/host.js",
+  "guests": { "aware": true },
   "contributes": {
     "openFile": { "title": "Editor (a file tab)", "whenPicked": true },
     "tabs": [

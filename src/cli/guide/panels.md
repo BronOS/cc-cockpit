@@ -95,6 +95,10 @@ load, the strip shows the title's first letter.
   what cannot work there, such as a "Reveal in Finder" or "Open with default app" item. It is a UI
   hint only, never a security check: main refuses `ctx.files.reveal` / `openWithSystem` from a
   browser view whatever the page shows.
+- `ccPanel.view.access`: who is behind this view, `'owner'` or a guest the owner invited, `'read'` or `'write'`
+  (`'owner'` until the page is connected and on the desktop). Use it to leave out what a read-only guest may
+  not use (Rename, Delete, Save). Like `view.remote` it is a UI hint only: your host gets the access from the
+  app (`from.access`, `ccc guide plugins` "Guests") and must refuse there, whatever the page shows.
 - `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
   its content, so the app's loader over it goes (without `ready: 'manual'` the loader goes when the
   page has loaded). Harmless in a panel or a slot.

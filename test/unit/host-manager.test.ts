@@ -1719,7 +1719,7 @@ describe('HostManager', () => {
       })
       // Before the window's host has activated anything: no panel takes a port.
       expect(manager.runningPanels('p1', 'a.one')).toBeUndefined()
-      expect(manager.sendPanelPort('p1', 'a.one', 'board', {})).toBe(false)
+      expect(manager.sendPanelPort('p1', 'a.one', 'board', {}, { access: 'owner' })).toBe(false)
       await manager.open('p1', 1)
       expect(ready).toEqual([{ projectId: 'p1', pluginIds: ['a.one', 'a.two'] }])
       expect(manager.runningPanels('p1', 'a.one')).toEqual(['board', 'side'])
@@ -1729,13 +1729,13 @@ describe('HostManager', () => {
       expect(manager.runningPanels('p2', 'a.one')).toBeUndefined()
 
       const port = { the: 'port' }
-      expect(manager.sendPanelPort('p1', 'a.one', 'board', port)).toBe(true)
-      expect(factory.last.ports).toEqual([{ message: JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board' } }), port }])
+      expect(manager.sendPanelPort('p1', 'a.one', 'board', port, { access: 'owner' })).toBe(true)
+      expect(factory.last.ports).toEqual([{ message: JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board', access: 'owner' } }), port }])
       // What the host reads back off that message (host/index.ts).
-      expect(panelPortTag(factory.last.ports[0]!.message)).toEqual({ pluginId: 'a.one', panelId: 'board' })
+      expect(panelPortTag(factory.last.ports[0]!.message)).toEqual({ pluginId: 'a.one', panelId: 'board', access: 'owner' })
       // A remote view's page: the tag names the view, so the host keeps one port per view.
-      expect(manager.sendPanelPort('p1', 'a.one', 'board', port, 'web:3')).toBe(true)
-      expect(panelPortTag(factory.last.ports[1]!.message)).toEqual({ pluginId: 'a.one', panelId: 'board', view: 'web:3' })
+      expect(manager.sendPanelPort('p1', 'a.one', 'board', port, { view: 'web:3', access: 'read' })).toBe(true)
+      expect(panelPortTag(factory.last.ports[1]!.message)).toEqual({ pluginId: 'a.one', panelId: 'board', view: 'web:3', access: 'read' })
     })
 
     it('keeps the ports of a plugin whose scheduled job fails, drops all of them when the host goes', async () => {
@@ -1749,7 +1749,7 @@ describe('HostManager', () => {
       factory.last.exit(1)
       await flush()
       expect(manager.runningPanels('p1', 'a.one')).toBeUndefined()
-      expect(manager.sendPanelPort('p1', 'a.one', 'main', {})).toBe(false)
+      expect(manager.sendPanelPort('p1', 'a.one', 'main', {}, { access: 'owner' })).toBe(false)
       expect(ready).toHaveLength(1)
       await vi.advanceTimersByTimeAsync(1000)
       await flush()
@@ -1758,7 +1758,7 @@ describe('HostManager', () => {
         { projectId: 'p1', pluginIds: ['a.one', 'a.two'] },
         { projectId: 'p1', pluginIds: ['a.one', 'a.two'] }
       ])
-      expect(manager.sendPanelPort('p1', 'a.one', 'main', {})).toBe(true)
+      expect(manager.sendPanelPort('p1', 'a.one', 'main', {}, { access: 'owner' })).toBe(true)
       expect(factory.spawned[0]!.ports).toEqual([])
       expect(factory.last.ports).toHaveLength(1)
 
@@ -1872,7 +1872,7 @@ describe('HostManager', () => {
 
     it("hands a frame's port to the running provider only, and tells it when the frame closes", async () => {
       enabled.p1 = [plugin('a.one', { slots: [agenda] }), plugin('a.two')]
-      const open = { pluginId: 'a.one', id: 's1', type: 'agenda', host: { kind: 'panel' as const, pluginId: 'a.two', panelId: 'main' }, params: { day: 'today' } }
+      const open = { pluginId: 'a.one', id: 's1', type: 'agenda', host: { kind: 'panel' as const, pluginId: 'a.two', panelId: 'main' }, params: { day: 'today' }, access: 'owner' as const }
       expect(slotted.sendSlotPort('p1', open, {})).toBe(false)
       await slotted.open('p1', 1)
       const port = { the: 'port' }
@@ -1896,7 +1896,7 @@ describe('HostManager', () => {
 
     it("page tabs (design-editor.md §1): the port goes to the tab's running plugin only, for a type it declares", async () => {
       enabled.p1 = [plugin('a.one', { pageTabs: [{ type: 'file', page: 'tab.html' }] }), plugin('a.two')]
-      const open = { pluginId: 'a.one', id: 't1', type: 'file', params: { path: 'a.ts' } }
+      const open = { pluginId: 'a.one', id: 't1', type: 'file', params: { path: 'a.ts' }, access: 'owner' as const }
       expect(slotted.sendPageTabPort('p1', open, {})).toBe(false)
       await slotted.open('p1', 1)
       const port = { the: 'port' }

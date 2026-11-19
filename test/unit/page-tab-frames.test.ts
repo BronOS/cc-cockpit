@@ -815,7 +815,7 @@ describe('PanelPortHub: page tabs', () => {
   it("hands the tab's own plugin its end with main's type and params, and the view the other under @tab/<id>", () => {
     const t = hub()
     expect(t.h.connectPageTab('p1', D1, TAB_A, 3)).toBe(true)
-    expect(t.toHost.map((x) => x.open)).toEqual([{ pluginId: 'a.one', id: TAB_A, type: 'file', params: { path: 'a.ts' } }])
+    expect(t.toHost.map((x) => x.open)).toEqual([{ pluginId: 'a.one', id: TAB_A, type: 'file', params: { path: 'a.ts' }, access: 'owner' }])
     expect(t.toRenderer).toEqual([{ viewId: D1, payload: { panelKey: pageTabPortKey(TAB_A), nonce: 3 } }])
     // A remote view's instance names the view.
     expect(t.h.connectPageTab('p1', W1, TAB_A, 4)).toBe(true)

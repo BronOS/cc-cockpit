@@ -133,8 +133,8 @@ with full Node access.
   name (`refresh`, `add`, `search`, `filter`, `settings`, `open-external`, `check`, `sort`) or an
   `.svg` path in your folder. Each call replaces the header, `null` clears it; over a limit it
   throws a TypeError. Cleared when the plugin stops or reloads (`ccc guide panels`).
-- `ctx.panels.onAction(panelId, (actionId) => …)`: a click on one of that panel's header actions
-  (never a busy or disabled one); returns a disposer.
+- `ctx.panels.onAction(panelId, (actionId, from) => …)`: a click on one of that panel's header actions
+  (never a busy or disabled one), with `from: { view, access }` as for `onMessage`; returns a disposer.
 - `ctx.panels.slots(panelId, placements | null)`: place slots (pages another plugin draws) above or
   below one of your own panels: `[{ type, position: 'top' | 'bottom', height, params? }]`, at most
   4; `type` must be in that panel's manifest `slots` (and not an app slot such as
@@ -144,10 +144,15 @@ with full Node access.
   type is the project's pick (`@slot:<type>`); with several providers and no pick, none is drawn.
 - `ctx.views.access(view)` (`'owner' | 'read' | 'write'`, undefined once gone) and `ctx.views.onChange(listener)`: the
   views your pages are open in and who is behind each (the owner or a guest); `onMessage` and `onAction` listeners get
-  `from: { view, access }` (an older app has no `ctx.views`: check `typeof ctx.views === 'object'`).
+  `from: { view, access }` (an older app has no `ctx.views`: check `typeof ctx.views === 'object'`). A view is known
+  once one of your pages (a panel, slot or page tab) connected there and gone when the last one closed;
+  `onChange(({ view, access }) => …)` hears both (`access` undefined when it went) and returns a disposer; a new
+  listener first hears every view already open, before `onChange` returns. The
+  access is main's word for that view, fixed for its life (a guest switched between read-only and write comes back
+  as a new view). See "Guests" in `ccc guide plugins` for what a plugin owes guests.
 - `ctx.slots` (the provider side; an older app has none, so check `typeof ctx.slots === 'object'`):
   `onOpen(type, (slot) => …)` hears a frame of a type from your manifest `contributes.slots`
-  opening (it throws for another type) and returns a disposer. `slot` is `{ id, type, host,
+  opening (it throws for another type) and returns a disposer. `slot` is `{ id, type, host, access,
   params, post(message), onMessage(fn), onClose(fn) }`: `post` and `onMessage` talk to the slot's
   page with the panel message rules (JSON, 1 MiB; `ccPanel.post` / `ccPanel.onMessage` on the
   page), `onClose` fires when the frame ends (host panel hidden or reloaded, placement removed,
@@ -173,12 +178,13 @@ with full Node access.
   shows that tab now or it has the dot already; `openPage`'s budget; newer, so check it is a function). `close(id)`
   closes one the person's way and resolves `{ closed }`: a tab with unsaved changes in a view asks there first,
   so `closed: false` when they keep it (shares `ctx.sessions.close`'s 10 a minute). `onOpen(type, (tab) => …)`
-  hears a tab's frame connect in a view and returns a disposer; `tab` is `{ id, type, params, view, post(message),
+  hears a tab's frame connect in a view and returns a disposer; `tab` is `{ id, type, params, view, access, post(message),
   onMessage(fn), onClose(fn), setTitle(title, icon?), onDiscuss(fn) }`. A tab shown in the desktop window and in
   a browser has one instance per view (`view` is the browser's opaque id, `undefined` on the desktop); a host
   restart, a browser reconnecting or a slow browser catching up gives the same page a new instance (the old one's
   `onClose` runs first) and never reloads it, so keep per-file state by `tab.id` and let the page re-send what it
-  holds (`ccPanel.onConnect`). `post` / `onMessage` follow the panel message rules (JSON, 1 MiB).
+  holds (`ccPanel.onConnect`). `access` (`'owner' | 'read' | 'write'`) is who is behind that view, as for a slot's
+  `access` and `onMessage`'s `from.access` (`ccc guide plugins`, "Guests"). `post` / `onMessage` follow the panel message rules (JSON, 1 MiB).
   `setTitle(title, icon?)` renames the tab (60 per 10 s). `onDiscuss(() => ({ text }) | null)` answers Ask
   Claude: when the page calls `ccPanel.tab.discuss()` the app draws its question box over the tab, asks THIS
   view's handlers for the context (5 s; the first `{ text }` wins, null passes on, a throw sends nothing) and

@@ -1,9 +1,10 @@
 {
   "id": "cockpit.files",
   "name": "Files",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "api": 1,
   "main": "dist/host.js",
+  "guests": { "aware": true },
   "contributes": {
     "panels": [
       {

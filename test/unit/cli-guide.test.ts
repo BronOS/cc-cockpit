@@ -444,3 +444,19 @@ describe('style topic drift guard', () => {
     expect(guideText()).toContain('  style')
   })
 })
+
+describe('ccc guide: guests (design-guests §6)', () => {
+  // A plugin learns a viewer's access in four places and declares it checks with one manifest key; the guide
+  // names each where a plugin author looks for it, so an API change without its text fails here.
+  it('names the manifest key, every place the access reaches and the page hint', () => {
+    const plugins = guideText('plugins')
+    expect(plugins).toContain('## Guests')
+    expect(plugins).toContain('"guests": { "aware": true }')
+    for (const name of ['from.access', 'slot.access', 'tab.access', 'ctx.views.access(view)', 'ccPanel.view.access']) expect(plugins).toContain(name)
+    const api = guideText('api')
+    expect(api).toContain('ctx.panels.onAction(panelId, (actionId, from)')
+    expect(api).toContain('`slot` is `{ id, type, host, access,')
+    expect(api).toContain('`tab` is `{ id, type, params, view, access,')
+    expect(guideText('panels')).toContain('`ccPanel.view.access`')
+  })
+})
