@@ -5,6 +5,8 @@ import type { PanelInfo } from '../../shared/ipc'
 import { ZONE_IDS, type PanelPlacement, type ZoneId } from '../../shared/layout'
 import { useShellLayer } from './use-shell-layer'
 import { shellPageUrl } from '../web/page-paths'
+import { viewAccessHint } from '../shell-kind'
+import { shellAllows } from '../tabs/guest-shell'
 
 const ZONE_NAMES: Record<ZoneId, string> = { left: 'Left', right: 'Right', bottom: 'Bottom' }
 
@@ -175,6 +177,9 @@ export function IconStrip(props: {
   }, [open, zone, setMenu])
 
   const drag = usePanelDrag(props.onPlace, () => setMenu(null))
+  // A guest's view (a hint): panels are toggled only, never moved, hidden or unhidden (`layout.set` with
+  // a new placement is the owner's arrangement).
+  const arrange = shellAllows(viewAccessHint()).arrange
   const menuIndex = menu?.kind === 'panel' ? placed.findIndex((p) => p.placement.panelKey === menu.panelKey) : -1
 
   return (
@@ -194,7 +199,9 @@ export function IconStrip(props: {
           aria-pressed={placement.open}
           title={info.title}
           data-panel={placement.panelKey}
-          onPointerDown={(e) => drag.press(e, placement.panelKey)}
+          onPointerDown={(e) => {
+            if (arrange) drag.press(e, placement.panelKey)
+          }}
           onClick={() => {
             // The click that ends a drag is not a toggle.
             if (drag.consumeClick()) return
@@ -203,7 +210,7 @@ export function IconStrip(props: {
           }}
           onContextMenu={(e) => {
             e.preventDefault()
-            setMenu({ kind: 'panel', panelKey: placement.panelKey, x: e.clientX, y: e.clientY })
+            if (arrange) setMenu({ kind: 'panel', panelKey: placement.panelKey, x: e.clientX, y: e.clientY })
           }}
         >
           <PanelGlyph info={info} />
@@ -220,7 +227,7 @@ export function IconStrip(props: {
           )}
         </button>
       ))}
-      <button
+      {arrange && <button
         type="button"
         className="panel-icon panel-more"
         aria-label="Hidden panels"
@@ -230,7 +237,7 @@ export function IconStrip(props: {
         onClick={() => setMenu(menu?.kind === 'hidden' ? null : { kind: 'hidden' })}
       >
         <span aria-hidden="true">···</span>
-      </button>
+      </button>}
       {zone === 'bottom' && props.collapsed && <CollapsedCaption />}
       {menu?.kind === 'panel' && (
         <div

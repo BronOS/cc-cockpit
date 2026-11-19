@@ -70,9 +70,17 @@ export class LayoutSync {
   /** The newest view from main with a `seq` (events and answers alike), for a late answer. */
   private newest: LayoutView | undefined
 
+  /**
+   * `localOnly`: a guest's view (design-guests §4: `layout.set` is `no` for every guest). Its edits
+   * (open a panel, switch a zone's tab) are drawn here and never sent; the next layout main sends
+   * replaces them. Without it a refused `layout.set` would leave the edit "unanswered" for good, and
+   * the view would stop taking the owner's layout until it reconnects. A UI choice, not a check: main
+   * refuses a guest's `layout.set` whatever this says.
+   */
   constructor(
     private readonly bridge: LayoutBridge,
-    private readonly geometry?: GeometryStore
+    private readonly geometry?: GeometryStore,
+    private readonly localOnly = false
   ) {}
 
   /**
@@ -146,6 +154,12 @@ export class LayoutSync {
       this.acked = sent
       this.placed = false
       this.set({ ...this.snapshot, layout: this.display(this.main) })
+      return
+    }
+    if (this.localOnly) {
+      // Settled here: main's next view is taken whole (the guest's own placement lasts until then).
+      this.acked = sent
+      this.placed = false
       return
     }
     this.placed = false

@@ -200,3 +200,29 @@ describe('LayoutSync', () => {
     expect(sync.get().appSlots).toEqual([])
   })
 })
+
+describe('LayoutSync for a guest view (localOnly)', () => {
+  // design-guests §4: `layout.set` is `no` for guests. A guest's panel click is drawn here only, and
+  // the owner's next layout replaces it (a refused set must not hold main's views off for good).
+  it('never sends layout.set, and takes main\'s next view whole', async () => {
+    const fake = fakeBridge()
+    const memory: { saved?: unknown } = {}
+    const geometry = { load: () => undefined, save: (g: unknown) => void (memory.saved = g) }
+    const sync = new LayoutSync(fake.bridge, geometry, true)
+    sync.start()
+    fake.gets[0]!.resolve(storedView())
+    await settle()
+    sync.commit((l) => togglePanel(l, 'test/sessions'))
+    expect(fake.sets).toHaveLength(0)
+    expect(sync.get().layout.zones.left.panels[0]!.open).toBe(false)
+    // The owner's next layout (the panel still open there) is taken: nothing is held unanswered.
+    fake.emit(storedView([{ ...sessions, title: 'Sessions 2' }]))
+    expect(sync.get().panels[0]!.title).toBe('Sessions 2')
+    expect(sync.get().layout.zones.left.panels[0]!.open).toBe(true)
+    // A sizes-only drag stays this view's own, as for any browser view.
+    sync.preview((l) => resizeZone(l, 'left', 520))
+    sync.flush()
+    expect(fake.sets).toHaveLength(0)
+    expect(memory.saved).toBeDefined()
+  })
+})

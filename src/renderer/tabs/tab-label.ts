@@ -50,6 +50,15 @@ export function openedByLine(tab: TabInfo): string | undefined {
 }
 
 /**
+ * "Opened by guest Ada" for a tab a write guest opened (D-21), the owner's tooltip line; undefined
+ * for any other tab. Main sets `openedByGuest` from the caller it bound, never from a payload, and
+ * strips nothing a guest may not see (the name is the owner's own typed guest name).
+ */
+export function openedByGuestLine(tab: TabInfo): string | undefined {
+  return tab.openedByGuest !== undefined && tab.openedByGuest !== '' ? `Opened by guest ${tab.openedByGuest}` : undefined
+}
+
+/**
  * What a page tab's core marks say to a screen reader (the dots are aria-hidden): unsaved changes in
  * some view (`dirty`) and opened while another tab was selected (`unseen`, design-editor.md §1).
  * Empty for a tab with neither; any tab kind may carry `unseen`, only page tabs `dirty`.

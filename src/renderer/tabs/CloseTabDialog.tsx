@@ -16,6 +16,8 @@ import { closeQuestionText, type CloseQuestion } from './close-confirm'
 export function CloseTabDialog(props: {
   question: CloseQuestion
   onAnswer: (choice: 'close' | 'cancel', dontAskAgain: boolean) => void
+  /** Offer "Don't ask again" (default): the setting is the owner's, so a guest's dialog has none. */
+  offerDontAsk?: boolean
 }): React.JSX.Element {
   const [dontAsk, setDontAsk] = useState(false)
   const cancel = useRef<HTMLButtonElement>(null)
@@ -69,7 +71,7 @@ export function CloseTabDialog(props: {
         )}
         {/* The setting is about running processes; unsaved text always asks (close-confirm.ts). A group
             question with unsaved members has no "Don't ask again" either: it would not stop that ask. */}
-        {!props.question.unsaved && !groupUnsaved && (
+        {props.offerDontAsk !== false && !props.question.unsaved && !groupUnsaved && (
           <label className="confirm-check">
             <input type="checkbox" checked={dontAsk} onChange={(e) => setDontAsk(e.target.checked)} />
             {" Don't ask again"}

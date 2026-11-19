@@ -5,7 +5,7 @@ import type { FlagPatch } from '../../shared/tab-flag'
 import type { TabRoomRef } from '../../shared/tab-room'
 import type { CommandInfo, CommandsView } from '../../shared/ipc'
 import { CommandPalette } from '../commands/CommandPalette'
-import { commandAllowed } from '../commands/command-gate'
+import { commandAllowed, guestMayRun } from '../commands/command-gate'
 import {
   chordOf,
   commandForEvent,
@@ -22,7 +22,7 @@ import { discussTabsOf } from '../overlays/discuss-tabs'
 import { OverlayStack } from '../overlays/OverlayStack'
 import { SettingsOverlay } from '../settings/SettingsOverlay'
 import { OPEN_PLUGIN_SETTINGS_EVENT, targetOf, type SettingsTarget } from '../settings/settings-target'
-import { currentShellChrome, isServerView, isWebShell, takeLoadTab, takeLoadTake } from '../shell-kind'
+import { currentGuest, currentShellChrome, isServerView, isWebShell, takeLoadTab, takeLoadTake, viewAccessHint } from '../shell-kind'
 import { initialTabsState, tabsReducer } from '../state/tabs-store'
 import { ignoresMainSelect, paneView, type PaneView } from '../state/groups-state'
 import { usePrefs } from '../prefs/prefs-store'
@@ -68,6 +68,8 @@ import { SessionRegistry, tabIo } from './terminal-session'
 import { checkFrameFocus, pageFrames, setFrameFocusHandler } from './PageTabArea'
 import { chordTarget, type ChordSource } from './frame-focus'
 import { FocusGiveBack, type CloseCause } from './focus-give-back'
+import { shellAllows } from './guest-shell'
+import { DEFAULT_OWNER_NAME, GuestCloseNotices, type GuestCloseNotice } from './guest-close'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -116,6 +118,10 @@ function settleClose(confirmDone: { current: CloseDone | null }, closed: boolean
 export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean }): React.JSX.Element {
   const [chrome] = useState(currentShellChrome)
   const inPageTitleBar = chrome.titleBar
+  // This view's access (shell-kind.ts, a UI hint only: main refuses by the view it bound). Read once per
+  // mount: a guest's role switch reconnects the web shell, which mounts this again (attachTabs).
+  const [access] = useState(viewAccessHint)
+  const allows = shellAllows(access)
   // macOS hides the traffic lights in full screen; main tells the page when that changes (the
   // initial value comes with window.info, for a window restored in full screen). Both are the
   // desktop window's, so the web shell ignores them (its `window.state` never fires anyway).
@@ -151,6 +157,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     const send = (): void => {
       const a = g.area
       if (!(a.width > 0) || !(a.height > 0)) return
+      // Guest views are left out of `groups.area` (D-14: a small guest screen never vetoes the owner's split).
+      if (access !== 'owner') return
       const payload = { area: { width: a.width, height: a.height }, cell: cellNow() }
       const key = JSON.stringify(payload)
       if (key === g.sent) return
@@ -165,7 +173,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       g.frame = 0
       send()
     }, 16)
-  }, [cellNow])
+  }, [cellNow, access])
   useEffect(() => {
     geometry.current.area = area
     reportGeometry()
@@ -213,6 +221,22 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // Tabs main closed (`tabs.removed`). A restart reply that lands after it must not touch the
   // tab's terminal: sessions.get would create a new one for a tab that is gone.
   const removed = useRef(new Set<string>())
+  // D-9: this guest's Close of a tab it did not open asked the owner (guest-close.ts). The notices
+  // wait for the tab to leave the strip, or say it was kept.
+  const [closeNotices, setCloseNotices] = useState<readonly GuestCloseNotice[]>([])
+  const guestCloses = useRef<GuestCloseNotices | null>(null)
+  useEffect(() => {
+    const notices = new GuestCloseNotices(setCloseNotices)
+    guestCloses.current = notices
+    return () => {
+      notices.dispose()
+      if (guestCloses.current === notices) guestCloses.current = null
+    }
+  }, [])
+  // The owner closed it (`tabs.removed`), or it left the strip any other way: its notice goes.
+  useEffect(() => {
+    guestCloses.current?.tabsChanged((id) => state.tabs.some((t) => t.id === id))
+  }, [state.tabs])
   // Command handlers are registered once but must see the current tab state.
   const stateRef = useRef(state)
   useEffect(() => {
@@ -261,13 +285,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (active?.kind === 'claude') lastClaude.current = active.id
   }, [state.activeId, state.tabs])
   useEffect(() => {
+    // The ccc offer installs a command on the host: the owner's own.
+    if (!shellAllows(access).ownerTools) return
     let cancelled = false
     window.cockpit.invoke('ccc.offer').then(
       (view) => { if (!cancelled && view) setCccOffer(view) },
       () => undefined
     )
     return () => { cancelled = true }
-  }, [])
+  }, [access])
   // The window key handler is registered once; it reads the palette's state through this ref.
   const paletteOpen = useRef(false)
   // Whether an overlay covers the window (OverlayStack reports it); read by the key handler.
@@ -499,22 +525,28 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     dispatch({ type: 'added', tab })
   }
 
-  const create = (kind: 'claude' | 'shell'): void =>
+  const create = (kind: 'claude' | 'shell'): void => {
+    // A read guest opens nothing (`tabs.create` is write-class): no refusal in the error line.
+    if (!allows.write) return
     run(
       window.cockpit.invoke('tabs.create', { kind }).then((tab) => {
         // Never null for Claude or Shell (only a command entry opens as an overlay).
         if (tab) addPicked(tab)
       })
     )
+  }
 
   // A user entry: by level and id only, main looks the command up in its own settings. null: the
-  // entry opens as an overlay, which arrives through `overlays.updated` like any other.
-  const createCommand = (level: TabCommandLevel, entryId: string): void =>
+  // entry opens as an overlay, which arrives through `overlays.updated` like any other. The owner's own
+  // command lines: never a guest's (main refuses any kind but Claude and Shell from one).
+  const createCommand = (level: TabCommandLevel, entryId: string): void => {
+    if (!allows.ownerTools) return
     run(
       window.cockpit.invoke('tabs.create', { kind: 'command', level, entryId }).then((tab) => {
         if (tab) addPicked(tab)
       })
     )
+  }
 
   const loadMenuCommands = (): void => {
     window.cockpit
@@ -538,6 +570,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     run(
       window.cockpit.invoke('tabs.close', discard ? { tabId, discard: true } : { tabId }).then(
         (res) => {
+          if (res && res.asked === true) {
+            // D-9: a write guest's Close of a tab it did not open asked the owner; nothing closed here.
+            // The tab stays (its terminal keeps its output), the notice waits for the owner's answer.
+            intents.current.delete(tabId)
+            const tab = stateRef.current.tabs.find((t) => t.id === tabId)
+            guestCloses.current?.asked(tabId, tab ? labelOf(tabId) : 'this tab', currentGuest()?.ownerName ?? DEFAULT_OWNER_NAME)
+            done?.(false, true)
+            return
+          }
           if (res && res.unsaved === true) {
             // Not closed: no pane took its space, so the focus intent goes with the refusal.
             intents.current.delete(tabId)
@@ -560,7 +601,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     )
   }
 
-  const restart = (tabId: string): void =>
+  const restart = (tabId: string): void => {
+    if (!allows.write) return
     run(
       window.cockpit.invoke('tabs.restart', { tabId }).then((tab) => {
         if (removed.current.has(tabId)) return
@@ -569,9 +611,11 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         dispatch({ type: 'restarted', tab })
       })
     )
+  }
 
-  const cancelQueued = (tabId: string, itemId: string): void =>
-    run(window.cockpit.invoke('sessions.cancelQueued', { tabId, itemId }))
+  const cancelQueued = (tabId: string, itemId: string): void => {
+    if (allows.write) run(window.cockpit.invoke('sessions.cancelQueued', { tabId, itemId }))
+  }
 
   // ---- Split view (design.md §1; SplitArea, pane-commands.ts) ----
   // Group edits are small intents main checks and applies; the result comes back to every view as
@@ -599,12 +643,14 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    */
   const placeTab = useCallback(
     (tabId: string, at: string, edge: PaneEdge, select: boolean): void => {
+      // Split groups are the owner's arrangement (`groups.*` writes are guest `no`).
+      if (access !== 'owner') return
       intents.current.set(tabId, 'stay')
       void groupEdit(window.cockpit.invoke('groups.place', { tabId, at, edge }), tabId).then((r) => {
         if (r.ok && select) pickTab(tabId)
       })
     },
-    [groupEdit, pickTab]
+    [groupEdit, pickTab, access]
   )
   /** The strip's label of a tab, for the drop preview ("Right of npm dev"). */
   const labelOf = (tabId: string): string => {
@@ -616,7 +662,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const paneDropRef = useRef<PaneDrop | null>(null)
   const dragToPane = (tabId: string, point: { x: number; y: number } | null): void => {
     let next: PaneDrop | null = null
-    if (point && isPaneKind(stateRef.current.tabs.find((t) => t.id === tabId)?.kind)) {
+    if (point && allows.arrange && isPaneKind(stateRef.current.tabs.find((t) => t.id === tabId)?.kind)) {
       const hit = paneAtPoint(document.querySelector<HTMLElement>('[data-split-area]'), point.x, point.y)
       const edge = hit && hit.tabId !== tabId ? edgeZone(hit.rect, point) : null
       if (hit && edge) next = { at: hit.tabId, edge, label: labelOf(hit.tabId) }
@@ -641,11 +687,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }
   /** Ungroup, the person's own: the pane they are in stays selected, with its keys. */
   const ungroup = (groupId: string): Promise<GroupsReply> => {
+    if (!allows.arrange) return Promise.resolve({ ok: false, reason: 'unknown-tab' })
     const active = stateRef.current.activeId
     if (active !== null) intents.current.set(active, 'stay')
     return groupEdit(window.cockpit.invoke('groups.dissolve', { groupId }), active ?? undefined)
   }
   const equalizeGroup = (groupId: string): void => {
+    if (!allows.arrange) return
     const g = state.groups.find((x) => x.id === groupId)
     if (!g) return
     for (const { splitId, sizes } of equalizeSplits(g.root)) void groupEdit(window.cockpit.invoke('groups.resize', { groupId, splitId, sizes }))
@@ -655,6 +703,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    * the other tabs only. The strip changes when main's snapshot comes (its order is the one order).
    */
   const moveGroup = (groupId: string, toIndex: number): void => {
+    if (!allows.arrange) return
     const g = state.groups.find((x) => x.id === groupId)
     const first = g ? state.tabs.find((t) => leavesOf(g.root).includes(t.id)) : undefined
     if (first) run(window.cockpit.invoke('tabs.reorder', { tabId: first.id, toIndex, block: true }))
@@ -664,6 +713,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
    * group there. Marked as the person's own move out, so this view's focus follows D3's own rule.
    */
   const detach = (tabId: string, toIndex: number): void => {
+    if (!allows.arrange) return
     intents.current.set(tabId, 'leave')
     run(
       window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).finally(() => {
@@ -674,7 +724,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   /** Close all (the handle's menu): one question listing the running members, then each closes. */
   const closeGroup = (groupId: string): void => {
     const g = state.groups.find((x) => x.id === groupId)
-    if (!g || confirmFor.current !== null) return
+    // Close all is the group handle's (an arrangement action): never a guest's.
+    if (!g || confirmFor.current !== null || !allows.arrange) return
     const members = leavesOf(g.root).flatMap((id) => state.tabs.find((t) => t.id === id) ?? [])
     const closeAll = (): void => {
       for (const t of members) if (stateRef.current.tabs.some((x) => x.id === t.id)) close(t.id)
@@ -725,6 +776,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   const [splitMenu, setSplitMenu] = useState<SplitMenu | null>(null)
   const openSplit = useCallback(
     (anchor: string, edge: 'right' | 'down'): void => {
+      if (access !== 'owner') return
       const blocked = splitBlocked(anchor, edge)
       if (blocked) {
         setError(blocked)
@@ -741,7 +793,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       const y = (host?.top ?? 0) + (pre.y + pre.h / 2) * (host?.height ?? 0) - 60
       setSplitMenu({ anchor, edge, x: Math.max(8, x), y: Math.max(8, y) })
     },
-    [splitBlocked, pickTab]
+    [splitBlocked, pickTab, access]
   )
   const createInPane = (menu: SplitMenu, choice: NewPaneChoice): void => {
     rememberSplitChoice(props.project?.id, choice)
@@ -777,49 +829,62 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The web shell has no host picker to show (`projects.showPicker` is `no`-class): its "+" goes to
   // the web picker, the list of the project windows open on the desktop (web/picker.tsx).
   const openProject = (): void => {
+    // A guest has one project, the one it was invited to (D-32): no picker to go to.
+    if (!allows.ownerTools) return
     if (isWebShell()) location.assign('/')
     else run(window.cockpit.invoke('projects.showPicker'))
   }
 
   // A drag on the strip, or the tab menu's Move left / right. The local order changes only once
   // main accepted it, so the strip never shows an order main doesn't have.
-  const reorder = (tabId: string, toIndex: number): void =>
+  const reorder = (tabId: string, toIndex: number): void => {
+    if (!allows.arrange) return
     run(
       window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).then(() => {
         dispatch({ type: 'moved', tabId, toIndex })
       })
     )
+  }
 
   // The tab menu's Rename. main checks the name; the new one reaches the strip with the next
   // sessions snapshot, so nothing changes here.
-  const rename = (tabId: string, name: string | null): void =>
-    run(window.cockpit.invoke('tabs.rename', { tabId, name }))
+  const rename = (tabId: string, name: string | null): void => {
+    if (allows.arrange) run(window.cockpit.invoke('tabs.rename', { tabId, name }))
+  }
 
   // The person's flag (tab menu, Toggle Tab Flag command). main checks the patch and answers the flag as
   // it stored it (note cleaned, colour filled in), which is what the strip then shows.
-  const flag = (tabId: string, patch: FlagPatch | null): void =>
+  // The flag is the owner's alone (a guest sees its colour): no write from a guest view.
+  const flag = (tabId: string, patch: FlagPatch | null): void => {
+    if (!allows.arrange) return
     run(
       window.cockpit.invoke('tabs.flag', { tabId, flag: patch }).then((stored) => {
         dispatch({ type: 'flagged', tabId, flag: stored })
       })
     )
-  const toggleFlag = (tabId: string): void =>
+  }
+  const toggleFlag = (tabId: string): void => {
+    if (!allows.arrange) return
     run(
       window.cockpit.invoke('tabs.toggleFlag', { tabId }).then((stored) => {
         dispatch({ type: 'flagged', tabId, flag: stored })
       })
     )
+  }
 
   // The person's room mark (tab menu): main stores it and tells every view (`tabs.added`), so nothing is applied here.
   // `room` is the membership the menu showed: main refuses the toggle when the tab is in another room by then.
-  const roomMark = (tabId: string, room: TabRoomRef, mark: boolean): void =>
-    run(window.cockpit.invoke('tabs.roomMark', { tabId, room, mark }))
+  // Rooms (the mark, the held badge, the room view) stay the owner's (D-3).
+  const roomMark = (tabId: string, room: TabRoomRef, mark: boolean): void => {
+    if (allows.ownerTools) run(window.cockpit.invoke('tabs.roomMark', { tabId, room, mark }))
+  }
   // The held badge: the pointer as the person's own act. A click that put nothing in says why (tab-room.ts), never
   // silence; the badge's count follows from the next sessions snapshot.
   // A `draft` answer offers "Deliver anyway": main cannot see the input box, so the person says whether to add the
   // pointer to what may be in it (overDraft, their own act; main still checks everything else again).
   // `room` is the badge's room (kept for "Deliver anyway" too): a tab that moved to another room answers `no-room`.
-  const deliverHeld = (tabId: string, room: TabRoomRef, overDraft = false): void =>
+  const deliverHeld = (tabId: string, room: TabRoomRef, overDraft = false): void => {
+    if (!allows.ownerTools) return
     run(
       window.cockpit.invoke('rooms.deliverHeld', overDraft ? { tabId, room, overDraft: true } : { tabId, room }).then((answer) => {
         if (answer.delivered) return
@@ -827,11 +892,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         setError(deliverHeldText(answer.why))
       })
     )
+  }
 
   // The tab menu's "Room...": the room view for the tab's room (its id from the tab record), unless another modal is up.
   const openRoom = (tabId: string): void => {
     const room = stateRef.current.tabs.find((t) => t.id === tabId)?.room
-    if (!room || confirmFor.current !== null || settingsShown.current || overlayOpen.current || modalShown()) return
+    if (!room || !allows.ownerTools || confirmFor.current !== null || settingsShown.current || overlayOpen.current || modalShown()) return
     roomShown.current = true
     setRoomFor(room.id)
   }
@@ -870,7 +936,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // never closes the tab: its Close is only the answer (`done(true)`), and main closes the tab once
   // that answer wins (close-asks.ts), so a Close racing another view's Cancel cannot kill the process.
   const requestClose = (tabId: string, done?: CloseDone, askId?: string): void => {
-    if (confirmFor.current !== null) {
+    // A read guest closes nothing (`tabs.close` is write-class): a waiting ask is declined, never answered.
+    if (confirmFor.current !== null || !allows.write) {
       done?.(false, true)
       return
     }
@@ -893,8 +960,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       finish()
       return
     }
-    window.cockpit
-      .invoke('settings.confirmTabClose')
+    // The setting is the owner's (`settings.confirmTabClose` is guest `no`): a guest is always asked
+    // about a running tab, with no "Don't ask again" (CloseTabDialog `offerDontAsk`).
+    ;(allows.ownerTools ? window.cockpit.invoke('settings.confirmTabClose') : Promise.resolve(true))
       .catch(() => true)
       .then((enabled) => {
         // Another view answered the ask during the round trip: nothing is left to do here.
@@ -1178,10 +1246,12 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     [giveBack]
   )
   const openSettings = useCallback((): void => {
+    // The settings screen is the owner's (every `settings.*` channel is guest `no`): no gear, no chord.
+    if (!shellAllows(access).ownerTools) return
     settingsShown.current = true
     setPaletteCommands(null)
     setSettingsOpen(true)
-  }, [])
+  }, [access])
   const closeSettings = useCallback((): void => {
     settingsShown.current = false
     setSettingsOpen(false)
@@ -1226,7 +1296,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }, [endSwitcher])
   /** The answer to Close all: every member still here closes, as the person's own closes. */
   const answerGroupClose = (q: CloseQuestion, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {
-    const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain)
+    const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain && allows.ownerTools)
     confirmFor.current = null
     setConfirm(null)
     if (stopAsking) {
@@ -1239,7 +1309,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }
   const answerClose = useCallback(
     (tabId: string, choice: 'close' | 'cancel', dontAskAgain: boolean): void => {
-      const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain)
+      // A guest's dialog offers no "Don't ask again": the setting is the owner's.
+      const { close: doClose, stopAsking } = closeAnswer(choice, dontAskAgain && shellAllows(access).ownerTools)
       confirmFor.current = null
       setConfirm(null)
       if (stopAsking) {
@@ -1259,7 +1330,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         actions.current.closeNow(tabId, done, true)
       } else settleClose(confirmDone, false)
     },
-    []
+    [access]
   )
   // The close dialog went (answered, its tab gone, an overlay over it) and took the focus with it:
   // give it back from an effect, after the commit that lifted `inert` (as for overlays below).
@@ -1294,11 +1365,13 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         // holding the keyboard and picked its pane (the second of two files the person clicked into);
         // that selection reaches stateRef at the next effect, so the stale activeId (the first file)
         // must not refuse it. With the keys off the check blurs the frame and never asks.
+        // Ask Claude runs on the owner's account: never a read guest's (D-22).
+        if (!shellAllows(access).write) return
         if (!discussMayOpen(tabId, { modalUp, switcherUp: switcherRef.current !== null, activeId: tabId }, discussCooldown.current)) return
         discussShown.current = true
         setDiscussFor(lastClaude.current === undefined ? { tabId } : { tabId, preferred: lastClaude.current })
       }),
-    []
+    [access]
   )
   // A frame took the keyboard (design-split-pages.md §4, checkFrameFocus): with the person's evidence
   // its pane is picked as their own act (the outline and `tabs.selected` follow, D18's keys on);
@@ -1380,7 +1453,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         toggleFlag: (id) => actions.current.toggleFlag(id)
       }),
       'palette.open': () => {
-        setPaletteCommands((open) => (open ? null : runnableCommands()))
+        // Only what this view may run (command-gate.ts guestMayRun): a guest's palette lists no dead rows.
+        setPaletteCommands((open) => (open ? null : runnableCommands().filter((c) => guestMayRun(c.id, access))))
       },
       'app.openSettings': toggleSettings,
       'app.openFolder': () => {
@@ -1392,7 +1466,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         confirming: confirmFor.current !== null || modalShown(),
         paletteOpen: paletteOpen.current,
         overlayOpen: overlayOpen.current,
-        settingsShown: settingsShown.current
+        settingsShown: settingsShown.current,
+        access
       })
     // Capture phase on window: a bound chord is taken before the focused element (xterm's hidden
     // textarea included) sees it; an unbound key is not touched and goes to the terminal as usual.
@@ -1545,7 +1620,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       window.removeEventListener('blur', onBlur)
       window.clearTimeout(showTimer.current)
     }
-  }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher, pickTab])
+  }, [closeSettings, openSettings, toggleSettings, switchTabs, endSwitcher, setSwitcher, pickTab, access])
 
   // The split view's commands (D10). They read the state through refs, like the handlers above, and
   // act through the same group channels as the strip's menus.
@@ -1611,7 +1686,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onCreate={create}
           onCreateCommand={createCommand}
           commands={menuCommands}
-          onMenuOpen={loadMenuCommands}
+          // The [+] menu's entries are the owner's settings (`tabs.commands` is guest `no`): a guest's menu
+          // has Claude and Shell only, with no read that would end in the error line.
+          onMenuOpen={allows.ownerTools ? loadMenuCommands : () => {}}
           onMove={move}
           onRename={rename}
           onFlag={flag}
@@ -1625,7 +1702,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           groups={state.groups}
           zoom={view.group ? { groupId: view.group.id, ...(view.zoomTab !== undefined ? { zoomTab: view.zoomTab } : {}), auto: view.auto } : undefined}
           onSelectGroup={selectGroup}
-          onRenameGroup={(groupId, name) => void groupEdit(window.cockpit.invoke('groups.rename', { groupId, name }))}
+          onRenameGroup={(groupId, name) => {
+            if (allows.arrange) void groupEdit(window.cockpit.invoke('groups.rename', { groupId, name }))
+          }}
           onEqualizeGroup={equalizeGroup}
           onUngroup={ungroup}
           onCloseGroup={closeGroup}
@@ -1637,10 +1716,19 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           onSplit={openSplit}
           onShowBeside={(tabId, at, edge) => placeTab(tabId, at, edge, true)}
           onMoveOut={(tabId) => {
+            if (!allows.arrange) return
             intents.current.set(tabId, 'leave')
             void groupEdit(window.cockpit.invoke('groups.remove', { tabId }), tabId)
           }}
         />
+        {closeNotices.map((n) => (
+          <p key={n.tabId} role="status" className="guest-close-notice" data-kind={n.kind} data-testid="guest-close-notice">
+            {n.text}
+            <button type="button" className="guest-close-dismiss" aria-label="Dismiss" onClick={() => guestCloses.current?.drop(n.tabId)}>
+              ×
+            </button>
+          </p>
+        ))}
         {error && (
           <p role="alert" className="tabs-error">
             {error}
@@ -1671,13 +1759,17 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           // divider drag's sizes, which place the frames (design-split-pages.md §2).
           listed={state.listed}
           inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen}
+          access={access}
         />
       </Zones>
       {paletteCommands && (
         <CommandPalette
           commands={paletteCommands}
           mac={navigator.platform.toLowerCase().includes('mac')}
-          onRun={(id) => runCommand(id)}
+          // The palette's pick runs past `allowed` (the palette is still up): the role rule again here.
+          onRun={(id) => {
+            if (guestMayRun(id, access)) runCommand(id)
+          }}
           onClose={closePalette}
         />
       )}
@@ -1731,6 +1823,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         <CloseTabDialog
           key={confirm.tabId}
           question={confirm}
+          offerDontAsk={allows.ownerTools}
           onAnswer={(choice, dontAskAgain) =>
             confirm.group ? answerGroupClose(confirm, choice, dontAskAgain) : answerClose(confirm.tabId, choice, dontAskAgain)
           }

@@ -41,6 +41,18 @@
 //   the shell, and without it the paste box would be gone while main still waits for the address. A
 //   held sign-in is handed over with `replayed`, so the shell shows it and never opens it at once.
 //
+// - Guests (design-guests §10, §16.4; spec-review 22): the bridge keeps the last `ready`'s
+//   `WebSnapshot.guest` across drops (`lastGuest`), so a close's page text can name the owner. A
+//   guest's final closes (4403 another project, 4460 kicked, 4463 access ended) stop like the other
+//   final ones; 4461 (role changed) and 4464 (scope or a plugin's visibility changed) reconnect at
+//   once, with no backoff and no failed attempt counted, to a fresh `ready` under the new access
+//   (main gives the new connection new view ids); `reconnectedAfter` names that code for the new
+//   `ready`, whose snapshot alone knows the new role. 4462 (the host closed the project) is retried
+//   with the normal backoff and its text shows while away. A guest's page that finds itself signed
+//   out (the session answers `guestEnded`, or plain "no device") says the access ended, never
+//   "sign in again": a guest has no sign-in of its own to go back to. All of it is page text: main
+//   decides every right by the access of the view it bound.
+//
 // - Binary frames (design-web-browser.md §3.3): main's only binary frame is a streamed webview's JPEG
 //   (shared/web-protocol.ts `decodeWebviewFrame`). The socket is set to `arraybuffer`, each frame is
 //   decoded and handed to the subscribers of its panel key (`onWebviewFrame`, which outlive a
@@ -66,7 +78,9 @@ import {
   utf8Length
 } from '../../shared/web-protocol'
 import type { ViewId } from '../../shared/views'
+import { guestRoleOf } from '../../shared/guests'
 import { isSignInId } from '../../shared/oauth-paste'
+import { GUEST_ENDED_TEXT, GUEST_PROJECT_CLOSED_TEXT, guestGoneText } from './guest-pages-model'
 import { downloadOfferOf } from '../notices/download-dialog-model'
 import { PortRelay, type ChannelLike } from './port-relay'
 
@@ -88,10 +102,12 @@ const OPEN = 1
 
 /**
  * Where the page stands with the host:
- * - `connecting`: the first connection, before any `ready` (the page draws nothing yet);
+ * - `connecting`: the first connection, before any `ready` (the page draws nothing yet), or a guest's
+ *   reconnect at once after a role or scope change (4461, 4464: the last shell stays drawn, as away);
  * - `ready`: bound to the window as `view`, `generation` counting the `ready`s of this page (1 is
  *   the first; a higher one is a reconnect, after which the page redraws from fresh state);
- * - `away`: the socket dropped (or never opened); the next attempt is due at `retryAt`;
+ * - `away`: the socket dropped (or never opened); the next attempt is due at `retryAt`; `code` is a
+ *   guest close whose text the page shows instead of "host unreachable" (4462, the project closed);
  * - `gone`: main said this view cannot come back by retrying (the project window closed or is not
  *   open, or the page is from another app version); `reason` is for the person, `code` the close
  *   code main sent (absent when the page found itself signed out).
@@ -99,7 +115,7 @@ const OPEN = 1
 export type BridgeStatus =
   | { state: 'connecting' }
   | { state: 'ready'; view: ViewId; generation: number }
-  | { state: 'away'; retryAt: number; attempt: number }
+  | { state: 'away'; retryAt: number; attempt: number; code?: number }
   | { state: 'gone'; reason: string; code?: number }
 
 /**
@@ -107,11 +123,27 @@ export type BridgeStatus =
  * server's browser view (`server`: the `ready` snapshot's hint) whose window was closed: there a
  * close is a browser's Close project, for every device (design-web.md §9.8), and the picker is
  * where every view of that project goes next. On the desktop the message stays: the person at the
- * host closed it, and the browser should say so.
+ * host closed it, and the browser should say so. Never a guest's page (`guest`, D-32): a guest has no
+ * project list, only its one project.
  */
-export function backToPicker(status: BridgeStatus, server: boolean): boolean {
-  return server && status.state === 'gone' && status.code === CLOSE.windowClosed
+export function backToPicker(status: BridgeStatus, server: boolean, guest = false): boolean {
+  return !guest && server && status.state === 'gone' && status.code === CLOSE.windowClosed
 }
+
+/** A guest's identity as the bridge keeps it (`WebSnapshot.guest`). */
+export type BridgeGuest = NonNullable<WebSnapshot['guest']>
+
+/** `WebSnapshot.guest`, checked; undefined when absent or malformed (a page text only, never a right). */
+function snapshotGuestOf(value: unknown): BridgeGuest | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const { id, name, role, ownerName } = value as Record<string, unknown>
+  const r = guestRoleOf(role)
+  if (typeof id !== 'string' || typeof name !== 'string' || r === undefined || typeof ownerName !== 'string') return undefined
+  return { id, name, role: r, ownerName }
+}
+
+/** What the session check after a drop says: signed in, signed out, or an ended guest's cookie (D-32). */
+export type SessionCheck = boolean | 'guest-ended'
 
 export interface Timers {
   now(): number
@@ -141,8 +173,14 @@ export interface WebBridgeOptions {
    * or expired device gets the same 1006 as a network drop (the upgrade is refused), so without this
    * the page would say "host unreachable" and retry forever. Resolves false only on a definite
    * "signed out"; a failed request (host really unreachable) must resolve true or reject.
+   * `guest-ended`: the cookie is an ended guest's (`WebSessionReply.guestEnded`).
    */
-  checkSession?(): Promise<boolean>
+  checkSession?(): Promise<SessionCheck>
+  /**
+   * This browser signed in as a guest (the session answer said so before the bridge started): its
+   * pages are a guest's from the first close on, before any `ready` has carried `WebSnapshot.guest`.
+   */
+  guest?: boolean
   /** How long a `ready` connection must stay up before the backoff starts over; default `STABLE_MS`. */
   stableMs?: number
   /**
@@ -262,6 +300,13 @@ export interface WebBridge {
   status(): BridgeStatus
   /** The latest `ready` snapshot (undefined before the first). */
   snapshot(): WebSnapshot | undefined
+  /** The last `ready`'s `WebSnapshot.guest`, kept across drops (undefined for an owner's view). */
+  lastGuest(): BridgeGuest | undefined
+  /**
+   * The guest close (4461 roleChanged, 4464 accessChanged) the current `ready` reconnected after;
+   * undefined for any other. A plain read, the same until the next `ready` (StrictMode reads twice).
+   */
+  reconnectedAfter(): number | undefined
   /**
    * Be handed every streamed webview frame for panel `key` (a `WebviewFrame`, its `jpeg` a view into
    * the received buffer); returns the unsubscribe function. Survives reconnects, like `api.on`.
@@ -308,6 +353,25 @@ const FINAL_CLOSES: ReadonlyMap<number, string> = new Map([
   [CLOSE.appQuit, 'cc-cockpit was quit on the host. Reload this page once it runs again.'],
   [CLOSE.tooManyViews, 'This browser has too many views of this project open. Close one, then reload this page.']
 ])
+
+/** A guest's closes after which retrying cannot help (design-guests §16.4); their text is guestCloseText's. */
+const GUEST_FINAL_CLOSES: ReadonlySet<number> = new Set([CLOSE.guestProject, CLOSE.kicked, CLOSE.accessEnded])
+/** A guest's closes that reconnect at once to a fresh `ready` (a role or scope change, D-30). */
+const GUEST_IMMEDIATE_CLOSES: ReadonlySet<number> = new Set([CLOSE.roleChanged, CLOSE.accessChanged])
+/**
+ * Immediate reconnects in a row (no connection stable for STABLE_MS between them) before the bridge
+ * falls back to the backoff: a host that closed every fresh view with 4461 would otherwise have the
+ * page reconnect and remount the shell in a tight loop (the `tooLarge` reason of STABLE_MS).
+ */
+export const MAX_IMMEDIATE_RECONNECTS = 3
+
+/** Why a page can stop retrying after `code`, as the person is told; undefined: retried. */
+function finalReason(code: number, guest: BridgeGuest | undefined, isGuest: boolean): string | undefined {
+  if (GUEST_FINAL_CLOSES.has(code)) return guestGoneText(code, guest?.ownerName)
+  // A guest has one project and no picker: "not open" or "closed" is the host's doing either way.
+  if (isGuest && (code === CLOSE.noProject || code === CLOSE.windowClosed)) return GUEST_PROJECT_CLOSED_TEXT
+  return FINAL_CLOSES.get(code)
+}
 
 /**
  * Which mounted shell (the `ready` generation it was mounted for) the web root draws now; 0 for
@@ -410,6 +474,12 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
   let nextId = 1
   let status: BridgeStatus = { state: 'connecting' }
   let snapshot: WebSnapshot | undefined
+  // The last ready's guest, kept across drops for the close texts (see the top of the file).
+  let lastGuest: BridgeGuest | undefined
+  // A guest close (4461, 4464) since the last ready, and the one the current ready came after.
+  let pendingAfter: number | undefined
+  let readyAfter: number | undefined
+  let immediateStreak = 0
   let generation = 0
   let attempt = 0
   let socket: SocketLike | undefined
@@ -448,10 +518,10 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     readyTimer = undefined
   }
 
-  const scheduleRetry = (): void => {
+  const scheduleRetry = (code?: number): void => {
     attempt += 1
     const wait = delay(attempt)
-    setStatus({ state: 'away', retryAt: timers.now() + wait, attempt })
+    setStatus({ state: 'away', retryAt: timers.now() + wait, attempt, ...(code === undefined ? {} : { code }) })
     retryTimer = timers.setTimeout(() => {
       retryTimer = undefined
       connect()
@@ -470,17 +540,38 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     // a remount would be shown a dialog main may already have settled.
     for (const m of sharedAsks.values()) m.clear()
     epoch += 1
-    if (readyAt !== undefined && timers.now() - readyAt >= stableMs) attempt = 0
+    const wasReady = readyAt !== undefined
+    if (readyAt !== undefined && timers.now() - readyAt >= stableMs) {
+      attempt = 0
+      immediateStreak = 0
+    }
     readyAt = undefined
     if (closed) return
-    const final = FINAL_CLOSES.get(code)
+    const final = finalReason(code, lastGuest, isGuest())
     if (final !== undefined) {
       setStatus({ state: 'gone', reason: final, code })
       return
     }
-    scheduleRetry()
+    if (GUEST_IMMEDIATE_CLOSES.has(code)) {
+      pendingAfter = code
+      // Only a socket that had reached `ready`: main closes a view it bound, never a bare hello so.
+      if (wasReady && immediateStreak < MAX_IMMEDIATE_RECONNECTS) {
+        immediateStreak += 1
+        // Not `away`: no "host unreachable" flash, and not a failed attempt. The last shell stays
+        // drawn (shellToDraw) and its calls reject until the new `ready`.
+        setStatus({ state: 'connecting' })
+        connect()
+        return
+      }
+    }
+    // The away bar shows a guest close's text (the project closed; a role or scope change past the
+    // immediate cap) instead of "host unreachable".
+    scheduleRetry(code === CLOSE.projectClosed || GUEST_IMMEDIATE_CLOSES.has(code) ? code : undefined)
     askSession()
   }
+
+  /** Whether this page is a guest's: the session said so at start, or a `ready` carried a guest. */
+  const isGuest = (): boolean => options.guest === true || lastGuest !== undefined
 
   /** After a drop: a signed-out browser cannot retry its way back, so it stops and says so. */
   const askSession = (): void => {
@@ -488,10 +579,13 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     const mine = epoch
     options.checkSession().then(
       (signedIn) => {
-        if (signedIn || closed || mine !== epoch || status.state !== 'away') return
+        if (signedIn === true || closed || mine !== epoch || status.state !== 'away') return
         if (retryTimer !== undefined) timers.clearTimeout(retryTimer)
         retryTimer = undefined
-        setStatus({ state: 'gone', reason: 'This browser is signed out of the host. Sign in again.' })
+        // A guest has no sign-in to go back to: whether main still keeps its tombstone or not, the
+        // access ended (D-32), and the owner's "sign in again" would only lead to the owner's form.
+        const ended = signedIn === 'guest-ended' || isGuest()
+        setStatus({ state: 'gone', reason: ended ? GUEST_ENDED_TEXT : 'This browser is signed out of the host. Sign in again.' })
       },
       () => undefined
     )
@@ -595,6 +689,9 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       clearReadyTimer()
       const ready = f as unknown as ReadyFrame
       snapshot = ready.snapshot
+      lastGuest = snapshotGuestOf(ready.snapshot?.guest) ?? lastGuest
+      readyAfter = pendingAfter
+      pendingAfter = undefined
       // The snapshot's list replaces the old socket's: asks settled while away are not in it.
       for (const kind of SHARED_ASKS) {
         const held = sharedAsks.get(kind.ask)!
@@ -642,7 +739,11 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
       return
     }
     if (status.state !== 'ready' || !ports) return
-    if (f.t === 'port.open') ports.open(f.key, f.nonce)
+    // `oneWay` (D-17, PanelPortPayload.oneWay): main's word that this read guest's page may not post
+    // to that plugin's host; read off the frame as untrusted data (true or nothing), main drops anyway.
+    // ASSUMED field name: PortOpenFrame (shared/web-protocol.ts) has no `oneWay` yet and main's relay
+    // (main/web/port-relay.ts) does not send one, so until both do this is always false.
+    if (f.t === 'port.open') ports.open(f.key, f.nonce, f.oneWay === true)
     else if (f.t === 'port.msg') ports.message(f.key, f.nonce, f.m)
     else if (f.t === 'port.close') ports.remoteClosed(f.key, f.nonce)
     else if (f.t === 'port.resync') ports.resync(f.key, f.nonce)
@@ -769,6 +870,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     api,
     status: () => status,
     snapshot: () => snapshot,
+    lastGuest: () => lastGuest,
+    reconnectedAfter: () => readyAfter,
     onWebviewFrame(key, listener) {
       let set = frameListeners.get(key)
       if (!set) frameListeners.set(key, (set = new Set()))

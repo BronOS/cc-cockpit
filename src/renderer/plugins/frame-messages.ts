@@ -4,7 +4,8 @@ import { MAX_PANEL_MESSAGE_LENGTH, PORT_MESSAGE, THEME_MESSAGE } from '../../sdk
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { BUNDLED_TERMINAL_FONTS, type TerminalFont } from '../../shared/terminal-font'
 import type { Theme } from '../../shared/theme'
-import { isWebShell } from '../shell-kind'
+import type { ViewAccess } from '../../shared/views'
+import { isWebShell, viewAccessHint } from '../shell-kind'
 
 /** A page of a plugin (a panel, or an html overlay a plugin opened), not an inline overlay page. */
 export function isPluginPage(src: string): boolean {
@@ -13,12 +14,24 @@ export function isPluginPage(src: string): boolean {
 
 /**
  * Hands the page its MessagePort (transferred alongside), and says whether the shell posting it is
- * the web shell (`ccPanel.view.remote`). `remote` comes from the shell that mounts the page
- * (shell-kind.ts), never from the page or the plugin's host; a UI hint only, main still refuses a
- * desktop-only call from a browser view (host-api.ts `desktopOnly`).
+ * the web shell (`ccPanel.view.remote`) and this view's access (`ccPanel.view.access`: `owner`, or a
+ * guest's role, design-guests §6). Both come from the shell that mounts the page (shell-kind.ts), never
+ * from the page or the plugin's host; UI hints only, main still refuses a desktop-only call from a
+ * browser view (host-api.ts `desktopOnly`) and anything a guest may not do (GUEST_CLASS).
  */
-export function portMessage(): Readonly<{ type: string; remote: boolean }> {
-  return Object.freeze({ type: PORT_MESSAGE, remote: isWebShell() })
+export function portMessage(): Readonly<{ type: string; remote: boolean; access: ViewAccess }> {
+  return Object.freeze({ type: PORT_MESSAGE, remote: isWebShell(), access: viewAccessHint() })
+}
+
+/**
+ * The port message for a port main marked one-way (PanelPortPayload.oneWay, D-17: a read guest of a
+ * plugin that is not guest-aware, whose posts main drops): `oneWay: true` added, so the page may hide
+ * controls that would do nothing. Any other message (an intro, the theme) and a two-way port's message
+ * go as they are. A hint: main's relay drops the posts whatever the page shows.
+ */
+export function withPortFlags(message: unknown, oneWay: boolean): unknown {
+  if (!oneWay || typeof message !== 'object' || message === null || (message as { type?: unknown }).type !== PORT_MESSAGE) return message
+  return Object.freeze({ ...message, oneWay: true })
 }
 
 /** The longest theme value the panel SDK keeps (panel-core.ts cleanTheme): a longer family list is left out. */

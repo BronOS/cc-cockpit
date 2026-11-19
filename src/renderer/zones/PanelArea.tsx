@@ -5,6 +5,8 @@ import { MoreGlyph } from '../window-icons'
 import { MENU_WIDTH, ZONE_MENU_TRIGGER } from './IconStrip'
 import { PanelHeaderActions, PanelHeaderMeta, PanelSettingsGear } from './PanelHeaderBar'
 import { PluginPanel } from './PluginPanel'
+import { viewAccessHint } from '../shell-kind'
+import { shellAllows } from '../tabs/guest-shell'
 import { Splitter } from './Splitter'
 
 /** Room the terminal keeps beside (or above) a zone that is dragged wider (taller). */
@@ -37,6 +39,9 @@ export function PanelArea(props: {
 }): React.JSX.Element {
   const { zone, state, open } = props
   const bottom = zone === 'bottom'
+  // A guest's view (a hint, main refuses regardless): no move / hide menu (`layout.set`), no settings
+  // gear (the owner's settings), and for a read guest no header actions (`panels.action` is write).
+  const allows = shellAllows(viewAccessHint())
   const area = useRef<HTMLDivElement>(null)
   const stack = useRef<HTMLDivElement>(null)
 
@@ -107,13 +112,13 @@ export function PanelArea(props: {
                   {/* The meta and actions are what the panel's plugin set with ctx.panels.header. */}
                   <PanelHeaderMeta header={info.header} />
                   <span className="panel-header-spacer" />
-                  <PanelHeaderActions panelKey={placement.panelKey} header={info.header} />
-                  <PanelSettingsGear panelKey={placement.panelKey} title={info.title} target={info.settings} />
+                  {allows.write && <PanelHeaderActions panelKey={placement.panelKey} header={info.header} />}
+                  {allows.ownerTools && <PanelSettingsGear panelKey={placement.panelKey} title={info.title} target={info.settings} />}
                   {/* The zone menu (Move to … / Hide) without hunting for the icon's right-click,
                       which still works. Always last, after any plugin actions. Named after what it does, not "<title> menu": the specs
                       (and a screen-reader user) find the panel's icon by a name starting with
                       its title, which this must not also match. */}
-                  <button
+                  {allows.arrange && <button
                     type="button"
                     className="panel-menu-button icon-button sm"
                     aria-label={`Move or hide ${info.title}`}
@@ -128,7 +133,7 @@ export function PanelArea(props: {
                     }}
                   >
                     <MoreGlyph />
-                  </button>
+                  </button>}
                 </header>
                 <PluginPanel info={info} />
               </section>

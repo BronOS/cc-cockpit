@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { WebAccessIndicator } from '../../shared/web-access'
 import { indicatorText, indicatorTitle } from '../settings/web-access-model'
-import { isServerView, isWebShell } from '../shell-kind'
+import { isGuestView, isServerView, isWebShell } from '../shell-kind'
 import { WebConfirmCard } from './WebConfirmCard'
 
 /**
@@ -13,11 +13,13 @@ import { WebConfirmCard } from './WebConfirmCard'
  * are where the person sees who is in; its click opens the browser's read-only card). A browser of a
  * desktop is refused the channels and draws nothing. It also carries the desktop-confirm request
  * card (WebConfirmCard), which rides on the same event; main never sends a browser that request.
+ * A guest's view draws nothing and asks nothing (design-guests §10: no web access chip for guests;
+ * the channel is the owner's, GUEST_CLASS refuses it anyway).
  */
 export function WebAccessChip(props: { onOpen: () => void }): React.JSX.Element | null {
   const [indicator, setIndicator] = useState<WebAccessIndicator | null>(null)
   useEffect(() => {
-    if (isWebShell() && !isServerView()) return
+    if ((isWebShell() && !isServerView()) || isGuestView()) return
     let live = true
     window.cockpit.invoke('webAccess.state').then(
       (value) => {
