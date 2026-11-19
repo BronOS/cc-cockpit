@@ -208,11 +208,46 @@ release); anything malformed refuses the whole call. The browser's outbox sends 
 coalesced and wheels summed; click counts are its own (`ClickCounter`: a PointerEvent's `detail` is 0); a blur releases
 held keys, a pointercancel held buttons. Modifiers are Electron's lower-case names (`shift`, `control`, `alt`, `meta`,
 `leftbuttondown`, ..., `isautorepeat`); held buttons travel on moves (without them a page's `buttons` reads 0); wheel
-deltas are negated for Chromium. Main maps the events to `sendInputEvent` (`mouseMove`, `mouseDown`, `mouseUp`,
+deltas are negated for Chromium. Main maps the events to Electron's input events (`mouseMove`, `mouseDown`, `mouseUp`,
 `mouseWheel`, `keyDown`, `keyUp`, `char`), except the key down of an edit chord (Ctrl or Cmd alone with A, Z, Shift+Z,
-or Ctrl+Y: `editCommandOf`), which goes as the page protocol's `Input.dispatchKeyEvent` carrying `selectAll`, `undo` or
-`redo` (a key event alone runs none of them on a macOS server; the page still sees the key down and can prevent it;
-plan 20261119-server-mode-mac, decision 7). It accepts them only from a current viewer (`server && view.remote`, the panel
+or Ctrl+Y) or a Mac line key (Cmd alone with Left/Right, Up/Down, each with Shift too, and Cmd+Backspace;
+`editCommandOf`), which carries its command (`selectAll`, `undo`, `redo`, `moveToLeftEndOfLine`, ...,
+`deleteToBeginningOfLine`: AppKit's names for those keys): a key event alone runs none of them on a macOS server; the
+page still sees the key down and can prevent it (plan 20261119-server-mode-mac, decision 7). The off-screen view sends
+them all on the page's DevTools protocol through one router per page (`page-input.ts`), with `sendInputEvent` only as
+the fallback when the protocol detached:
+
+- **Keys, text and commands** go on the page's own session (`Input.dispatchKeyEvent` one for one with the key down,
+  `char` and key up, `code` and Windows key code from the allow-list's table; `Input.insertText`): they follow focus into
+  a cross-site iframe, which `sendInputEvent` keys never reach.
+- **Pointer events** go to the session of the deepest cross-site (out-of-process) frame under the point, the point in
+  that frame's own CSS px: neither `sendInputEvent` nor the page's session reaches such a frame of an off-screen page
+  (the top document gets the event, its target the IFRAME element). The child sessions are the ones the hardening
+  auto-attaches (§2); a frame takes input once resumed. Per level main asks the renderer what is under the point
+  (`DOM.getNodeForLocation`, document px: the level's scroll added), whether it owns a child target
+  (`DOM.describeNode`'s `frameId`), and its content box (`DOM.getBoxModel`, a viewport quad: transforms included), and
+  maps the point through the quad and the frame's untransformed size. Clipping, overlays and `pointer-events` are the
+  renderer's own hit test; a point on the owner's border or padding stays with the parent; a box that does not hold the
+  point (a scroll read gone stale) is read once more, then the parent takes it. No cache: one hit test per event, none
+  on a page without cross-site frames. After a press the frame that got it captures the moves and the release (a drag
+  leaving the frame keeps selecting in it; one from the top document stays there over a frame), the owners' boxes read
+  again on each event, until no button is held. When the pointer changes frame, the frame it left gets one move (over
+  the owner, or outside its viewport) so its hover ends.
+- **Order.** One queue per page: mouse events to the same session are pipelined, anything else waits until every
+  command in flight was answered (a key sent while a press into a frame was on its way landed in the old focus 15
+  times in 30), each wait capped at 500 ms. A move waiting in the queue is replaced by the next (an answer to a move
+  comes with the next frame); a full queue drops moves first, never a release. A frame's session refusing (the frame
+  went) sends the event to the page's session at the top point, never to another frame.
+
+`scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
+chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,
+one at `scale(0.5)`, with the top page and the frame scrolled; Tab into the frame; the allow-listed keys the same as
+`sendInputEvent`'s; 50 rounds of clicks and typing across four documents in order. A pointer event costs about one
+frame (16 ms) to be answered, the same in the top document and in frames. Not checked: Linux, a perspective transform
+(approximated by its corners), a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
+by its own CSS `zoom`.
+
+It accepts them only from a current viewer (`server && view.remote`, the panel
 resolved through the caller's layout), allows 600 events per second per view (a token bucket; over-rate input is
 dropped silently) and key names only from the fixed allow-list in `src/shared/webview-keys.ts`. A press, a key or text
 makes the sender the size owner. The page's cursor (`cursor-changed`) goes to the viewers as `webviews.cursor` (a name
@@ -297,8 +332,9 @@ to the clicking view only; the id is main's (one per view and panel, taken once)
 element is found again through a `WeakRef` kept under the id in the isolated world's globals. The browser draws a
 `role="listbox"` dropdown (arrows, Home/End, type-ahead, Enter or Space, Escape). The page sees the select take the
 focus and an untrusted `input` and `change`, not the mouse events of that click. Right and middle presses are never
-held. Keyboard-only still: a select inside an iframe (`elementFromPoint` stops at the frame element; a cross-origin
-frame's document is not ours to walk) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
+held. Keyboard-only still: a select inside an iframe (`elementFromPoint` stops at the frame element; a cross-site
+frame's document would need an isolated world per child session, `Page.createIsolatedWorld`, not done; the click
+reaches the frame, whose popup then opens unpainted; whether the keyboard works it there was not checked) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
 paints and takes clicks on itself. Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS
 `zoom`.
 

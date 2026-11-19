@@ -225,7 +225,11 @@ only (never a host on another machine); the server-mode guest e2e specs are writ
   hidden), selection and select only to the acting view. `webviews.input`, `insertText` and `selectChoose` are `adapted`: accepted
   only when `server && view.remote`, from a current viewer, the panel key resolved through the caller's layout, never trusted
   from the payload. Clipboard chords (Ctrl/Cmd+C, X, V, Shift+Insert) are never forwarded to the page; scripts run in the page
-  use the isolated world `WEBVIEW_WORLD_ID` (1717), never the main world.
+  use the isolated world `WEBVIEW_WORLD_ID` (1717), never the main world. Input goes on the page's DevTools protocol through
+  its `PageInputRouter` (`page-input.ts`, one queue per page): keys, text and edit commands on the page's session, pointer
+  events on the session of the deepest cross-site frame under the point (the hardening's auto-attached child sessions, never
+  a second debugger), `sendInputEvent` only once the protocol detached; a frame's refusal falls back to the page's session,
+  never to another frame. Run `node scripts/offscreen-input-check.mjs` after changing it, `webview-input.ts` or the key table.
 - Remote servers (design-remote-desktop.md, `main/remote/`): a remote window is a browser tab, never a project window: no
   preload, sandboxed, partition `persist:remote-<id>` (only `electron-remote-window.ts` makes one; grep test), the webview
   hardening plus a loopback-request block, and `WindowManager` only counts it (`remoteWindowCount`). The device cookie lives
