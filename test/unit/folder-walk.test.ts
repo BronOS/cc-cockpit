@@ -262,7 +262,8 @@ describe('countFolder', () => {
     // The entry cap, not guessed from the totals (which stopped far under both caps).
     expect(await countFolder(opts(proj))).toMatchObject({ ok: false, problem: 'too-large', cap: 'entries' })
     await expect(names(opts(proj))).rejects.toBeInstanceOf(ZipCapError)
-  }, 30_000)
+    // 20,000 symlinks: about 18 s on macOS (APFS) under load, so 30 s left too little room.
+  }, 90_000)
 
   it('an over-full folder inside node_modules only makes the include choice too large', async () => {
     write('a.txt')
@@ -292,7 +293,8 @@ describe('countFolder', () => {
       readdir: (p: string): Promise<Buffer[]> => Promise.resolve(readdirSync(p, { encoding: 'buffer' })),
     }
     const started = Date.now()
-    const r = await countFolder({ ...opts(proj), fs, timeoutMs: 50 })
+    // 500 ms, not 50: under load the one quick file could miss a 50 ms bound and count 0.
+    const r = await countFolder({ ...opts(proj), fs, timeoutMs: 500 })
     expect(r).toEqual({ ok: false, problem: 'timeout', plain: { files: 1, folders: 1, bytes: 1 } })
     expect(Date.now() - started).toBeLessThan(2000)
   })

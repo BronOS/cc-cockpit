@@ -92,7 +92,8 @@ describe('RoomLog', () => {
     // A cursor anywhere in the file lands on the next entry.
     for (const at of [1, 2, 777, 1500, 2999, 3000]) expect(log.page({ since: at, limit: 1 }).entries.map((e) => e.seq)).toEqual(at < 3000 ? [at + 1] : [])
     expect(log.page({ limit: 3 }).entries.map((e) => e.i)).toEqual([2997, 2998, 2999])
-  })
+    // 3000 synchronous appends: past vitest's 5 s default on a loaded machine.
+  }, 20_000)
 
   it('drops the oldest half past the cap and appends a line saying so', () => {
     const log = new RoomLog(path, 600, clock)

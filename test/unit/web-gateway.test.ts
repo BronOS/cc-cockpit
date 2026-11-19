@@ -608,7 +608,9 @@ describe('Origin check (upgrade and state-changing requests)', () => {
   })
 
   it('a socket that stops answering pings is dropped; one that answers stays (a phone that slept)', async () => {
-    const { gw, port, logs } = await listening({}, { heartbeatMs: 40 })
+    // Not shorter: the live client answers on the same event loop, and at 40 ms a stall of the test
+    // process under load (a full suite beside e2e runs) let a beat land before its pong was read.
+    const { gw, port, logs } = await listening({}, { heartbeatMs: 250 })
     const host = `127.0.0.1:${port}`
     gw.setSocketHandler(() => undefined)
     const open = async (autoPong: boolean): Promise<wsModule.WebSocket> => {

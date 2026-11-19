@@ -419,7 +419,8 @@ describe('the worker side', () => {
     const seed = { cols: 40, rows: 5, data: 'seeded line\r\n\x1b[6n\x1b[?1049h\x1b[?1000h\x1b[?1006hon the alt screen' }
     terms.handle({ t: 'reset', tabId: 'a', seq: 7, cols: 30, rows: 5, seed })
     terms.handle({ t: 'snapshot', id: 1, tabId: 'a' })
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Waited for, not a fixed 20 ms: xterm parses in its own timers, slower than that under load.
+    await vi.waitFor(() => expect(out.some((m) => m.t === 'snapshot')).toBe(true))
     expect(out.filter((m) => m.t === 'reply')).toEqual([])
     expect(out.filter((m) => m.t === 'parsed')).toEqual([{ t: 'parsed', tabId: 'a', seq: 7 }])
     const snap = out.find((m) => m.t === 'snapshot')
@@ -430,8 +431,7 @@ describe('the worker side', () => {
     expect(data).toContain('\x1b[?1006h')
     // The program's own query after the seed is answered again.
     terms.handle({ t: 'item', tabId: 'a', item: { seq: 8, kind: 'data', data: '\x1b[6n' } })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(out.filter((m) => m.t === 'reply')).toHaveLength(1)
+    await vi.waitFor(() => expect(out.filter((m) => m.t === 'reply')).toHaveLength(1))
     terms.dispose()
   })
 

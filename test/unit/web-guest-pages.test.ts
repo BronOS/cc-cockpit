@@ -262,6 +262,11 @@ describe('ports for guests', () => {
     r.message('a/b', 1, '"down"')
     ports[0]!.postMessage('"up"')
     ports[0]!.postMessage('"again"')
+    // Waited for, not a fixed settle: under load the ports' deliveries can take longer than 10 ms.
+    await vi.waitFor(() => {
+      expect(got).toEqual(['"down"'])
+      expect(warn).toHaveBeenCalled()
+    })
     await settle()
     expect(got).toEqual(['"down"'])
     expect(sent).toEqual([])
@@ -281,8 +286,7 @@ describe('ports for guests', () => {
     r.open('a/b', 1)
     expect(flags).toEqual([undefined])
     ports[0]!.postMessage('"up"')
-    await settle()
-    expect(sent).toEqual([{ t: 'port.msg', key: 'a/b', nonce: 1, m: '"up"' }])
+    await vi.waitFor(() => expect(sent).toEqual([{ t: 'port.msg', key: 'a/b', nonce: 1, m: '"up"' }]))
     r.closeAll()
     ports[0]!.close()
   })
