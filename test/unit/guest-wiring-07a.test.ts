@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  downloadViewAllowedOf,
   guestRouterDeps,
   guestSeesOf,
   guestTabDeps,
@@ -219,6 +220,16 @@ describe('offerTakerOf (ccc download offers, D-23)', () => {
   })
 })
 
+describe('downloadViewAllowedOf (ctx.files.download, D-23)', () => {
+  it("an owner's or a write guest's view gets a download; a read guest's, a revoked guest's or a gone view never", () => {
+    const access = (who: Who): GuestAccess =>
+      who === 'owner' ? { kind: 'owner' } : who.guest === 'gW' ? { ...GUEST, id: 'gW' } : who.guest === 'gR' ? { ...GUEST, id: 'gR', role: 'read' } : { kind: 'revoked' }
+    const views: Record<ViewId, Who> = { 'web:1': 'owner', 'web:2': { guest: 'gW' }, 'web:3': { guest: 'gR' }, 'web:4': { guest: 'gone' } }
+    const allowed = downloadViewAllowedOf((v) => views[v], { access })
+    expect(['web:1', 'web:2', 'web:3', 'web:4', 'web:9'].map(allowed)).toEqual([true, true, false, false, false])
+  })
+})
+
 describe('ccc overlay carries its origin tab', () => {
   it("a session token's tab, never one from args; a window token none", async () => {
     const calls: unknown[] = []
@@ -299,6 +310,7 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(block('confirmTrash: chooseAsk({')).toContain('hasRemoteView: hasOwnerRemoteView')
     expect(block('confirmLink: chooseAsk({')).toContain('hasRemoteView: hasOwnerRemoteView')
     expect(block('new Downloads({')).toContain('hasBrowserView: offerTakerOf({')
+    expect(INDEX).toContain("if (!downloadViewAllowedOf((v) => views.whoOf(v), guestStore)(viewId)) throw new Error('a read-only guest cannot download')")
   })
 
   it('wires panel ports, overlays, sessions, exit focus and presence for guests', () => {

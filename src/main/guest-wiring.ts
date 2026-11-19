@@ -125,6 +125,24 @@ export function offerTakerOf(s: {
     })
 }
 
+/**
+ * Whether a browser view may get a download (D-23): an owner's, or a write guest's. A read guest never, whatever a
+ * plugin asks: a guest-aware plugin gets a read guest's full port (shared/guest-access.ts guestPort) and its
+ * `ctx.files.download` names that view as the origin, so main refuses here rather than trust the plugin's check.
+ */
+export function downloadViewAllowedOf(
+  whoOf: (viewId: ViewId) => Who | undefined,
+  guests: Pick<GuestService, 'access'>
+): (viewId: ViewId) => boolean {
+  return (viewId) => {
+    const who = whoOf(viewId)
+    if (who === undefined) return false
+    if (who === 'owner') return true
+    const access = guests.access(who)
+    return access.kind === 'guest' && access.role === 'write'
+  }
+}
+
 /** A view is the owner's (the desktop page, the hidden page and owner browsers); a gone view is not. */
 export function ownerViewOf(whoOf: (viewId: ViewId) => Who | undefined): (viewId: ViewId) => boolean {
   return (viewId) => whoOf(viewId) === 'owner'

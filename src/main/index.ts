@@ -191,7 +191,15 @@ import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
 import { createGuestCloseAsks, settleGoneCloseAsks } from './tabs/guest-close-asks'
 import { PluginGuestAccessStore } from './settings/plugin-guest-access'
-import { guestRouterDeps, guestSeesOf, guestTabDeps, guestUnsavedOf, offerTakerOf, ownerViewOf } from './guest-wiring'
+import {
+  downloadViewAllowedOf,
+  guestRouterDeps,
+  guestSeesOf,
+  guestTabDeps,
+  guestUnsavedOf,
+  offerTakerOf,
+  ownerViewOf
+} from './guest-wiring'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
 import { electronDialogs } from './dialogs/electron-dialog'
@@ -1870,6 +1878,8 @@ function start(server: boolean): void {
       downloads: {
         hasBrowserView: hasRemoteView,
         start: async (caller, viewId, path, includeAll) => {
+          // D-23: never to a read guest's device, whatever the plugin decided.
+          if (!downloadViewAllowedOf((v) => views.whoOf(v), guestStore)(viewId)) throw new Error('a read-only guest cannot download')
           const deviceId = webConnections.deviceIdOf(viewId, caller.windowId)
           if (deviceId === undefined) throw new Error('the browser view is gone')
           await downloads.start({ viewId, windowId: caller.windowId, deviceId }, { projectId: caller.projectId, rel: path }, includeAll)
