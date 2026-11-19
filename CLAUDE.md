@@ -52,8 +52,8 @@ Guests (the owner invites a person into one project, read-only or write, from a 
 Remote servers' Direct window; plugins hidden from guests unless shown) are implemented; design in `docs/design-guests.md`
 (decisions D-1 to D-35 in its §17), summary in `docs/design-web.md` §10, user docs in `docs/features.md` ("Web access" ›
 "Guests"). The D-29 certificate pin runs in real Electron in `guest-direct.spec.ts` against a self-signed loopback host
-only (never a host on another machine); the server-mode guest e2e specs (`guest-server.spec.ts`) are written for `launchServer`, which now starts on macOS too; they had
-not run on either platform when this was written.
+only (never a host on another machine); the server-mode guest e2e spec (`guest-server.spec.ts`, through `launchServer`)
+passes on macOS (2026-11-19) and has not run on Linux.
 
 ## Commands
 

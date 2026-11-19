@@ -764,9 +764,8 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
 - Nothing logs what a guest did; `web-access.log` has only the invites, joins, role and scope changes and ends, by the
   guest's name and device (never the link).
 - Joining from another cc-cockpit app over a self-signed certificate is tested end to end against a host on this same
-  computer only, not one on another machine. Server-mode guest specs (a `ccc web invite` link end to end) are written
-  for `launchServer`, which now starts on macOS as on Linux; they had not run on either when this was written, so only the
-  unit tests have covered that half.
+  computer only, not one on another machine. The server-mode guest spec (a `ccc web invite` link end to end) passes
+  on macOS; it has not run on a Linux server yet.
 - In the guest's own app, a guest window that the host's page sends to the picker stays open with a message instead of
   closing (a page may not move the focus without a click).
 
