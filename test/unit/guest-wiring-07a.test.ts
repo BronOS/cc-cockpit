@@ -64,7 +64,14 @@ describe('guestRouterDeps', () => {
           return o.pluginId !== undefined && pluginVisible(o.pluginId)
         }
       },
-      slotFrame: (projectId, frameId) => (projectId === PROJECT && frameId === 'f1' ? { info: { pluginId: 'shown.one' } } : undefined),
+      // f1: shown.one's frame in its own panel; f2: shown.one's frame in a hidden plugin's panel; f3: shown.one's in the top bar.
+      slotFrame: (projectId, frameId) => {
+        if (projectId !== PROJECT) return undefined
+        if (frameId === 'f1') return { info: { pluginId: 'shown.one' }, host: { kind: 'panel', pluginId: 'shown.one', panelId: 'p' } }
+        if (frameId === 'f2') return { info: { pluginId: 'shown.one' }, host: { kind: 'panel', pluginId: 'hidden.two', panelId: 'p' } }
+        if (frameId === 'f3') return { info: { pluginId: 'shown.one' }, host: { kind: 'app', place: 'top-bar' } }
+        return undefined
+      },
       trashAsks: { pluginOf: (windowId, requestId) => (windowId === WINDOW && requestId === 'trash-1' ? 'shown.one' : undefined) },
       downloads: { offerOrigin: (windowId, requestId) => (windowId === WINDOW && requestId === 'offer-1' ? { originTab: 't1' } : undefined) }
     }
@@ -75,6 +82,9 @@ describe('guestRouterDeps', () => {
     expect(Object.keys(deps).sort()).toEqual(['askInfo', 'frameOwner', 'guests', 'overlayVisible', 'personOf', 'pluginAccess', 'presence'])
     expect(deps.frameOwner(PROJECT, 'f1')).toBe('shown.one')
     expect(deps.frameOwner(PROJECT, 'f9')).toBeUndefined()
+    // A frame a hidden plugin's panel placed is not the guest's, though its provider is shown; an app slot is the provider's alone.
+    expect(deps.frameOwner(PROJECT, 'f2')).toBeUndefined()
+    expect(deps.frameOwner(PROJECT, 'f3')).toBe('shown.one')
     expect(deps.frameOwner('p2', 'f1')).toBeUndefined()
     expect(deps.askInfo(WINDOW, 'trash-1')).toEqual({ kind: 'trash', info: { pluginId: 'shown.one' } })
     expect(deps.askInfo(WINDOW, 'offer-1')).toEqual({ kind: 'download', info: { originTab: 't1' } })

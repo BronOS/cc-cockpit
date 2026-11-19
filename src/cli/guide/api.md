@@ -149,7 +149,8 @@ with full Node access.
   `onChange(({ view, access }) => …)` hears both (`access` undefined when it went) and returns a disposer; a new
   listener first hears every view already open, before `onChange` returns. The
   access is main's word for that view, fixed for its life (a guest switched between read-only and write comes back
-  as a new view). See "Guests" in `ccc guide plugins` for what a plugin owes guests.
+  as a new view). An `onAction` click from a browser view none of your pages is open in reads as `'read'` (fail
+  safe: the host cannot tell whose it is). See "Guests" in `ccc guide plugins` for what a plugin owes guests.
 - `ctx.slots` (the provider side; an older app has none, so check `typeof ctx.slots === 'object'`):
   `onOpen(type, (slot) => …)` hears a frame of a type from your manifest `contributes.slots`
   opening (it throws for another type) and returns a disposer. `slot` is `{ id, type, host, access,

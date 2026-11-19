@@ -34,7 +34,9 @@ export function guestExposure(r: Pick<GuestAccessResult, 'aware' | 'blocked'>): 
   const read =
     guestPort(shown, 'read') === 'full'
       ? `Sees its panels, slots and tabs; the plugin is told the viewer is a read-only guest and decides what they may do. ${SETTINGS}`
-      : `Sees everything its panels, slots and tabs show, and cannot use them: what they click or type does not reach the plugin. ${SETTINGS}`
+      : // One way: the page's messages never reach the plugin, its "hello" included, so only what the plugin sends
+        // unasked shows (a page that asks for its state first stays empty); the text must not promise more.
+        `Sees what the plugin pushes to its panels, slots and tabs; a page that asks for its state first shows nothing. What they click or type does not reach the plugin. ${SETTINGS}`
   const write = r.aware
     ? `Uses its panels, slots and tabs; the plugin is told the viewer is a guest and decides what they may do. ${SETTINGS}`
     : `Uses its panels, slots and tabs like you: anything they let you do, a write guest can do. ${SETTINGS}`

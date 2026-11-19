@@ -1092,8 +1092,11 @@ test("a guest's instance of a tab on a file outside the project serves nothing; 
 
 test('lib/guests: access from the tag only, outside locations stripped, a read-only store', async () => {
   const guests = require('../dist/lib/guests.js')
-  for (const a of [undefined, 'admin', 'OWNER', 1]) assert.equal(guests.accessOf({ access: a }), 'owner')
+  // No tag at all is an older app's (the owner); a value this host does not know is never the owner (fail safe).
+  for (const t of [undefined, null, {}, { access: undefined }, { access: 'owner' }]) assert.equal(guests.accessOf(t), 'owner')
+  for (const a of ['admin', 'OWNER', 1, null, '']) assert.equal(guests.accessOf({ access: a }), 'read', String(a))
   assert.equal(guests.accessOf({ access: 'read' }), 'read')
+  assert.equal(guests.accessOf({ access: 'write' }), 'write')
   const answer = { t: 'lsp-answer', req: 1, result: [{ path: 'a.ts', range: {} }, { outside: '/abs/x.d.ts', range: {} }] }
   assert.deepEqual(guests.withoutOutside(answer).result, [{ path: 'a.ts', range: {} }])
   assert.equal(guests.withoutOutside({ t: 'lsp-answer', req: 2, result: null }).result, null)
@@ -1139,6 +1142,84 @@ test("a guest's read of a path the page names stays inside the project: absolute
       }
     }
   }
+  host.deactivate()
+})
+
+test("a read-only guest reads the tab's own file only: another project file (.env, .git/config), quick open's list and find in files are refused", async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'shared.txt'), 'shared\n')
+  fs.writeFileSync(path.join(f.ctx.projectDir, '.env'), 'TOKEN=ENV-SECRET\n')
+  fs.mkdirSync(path.join(f.ctx.projectDir, '.git'), { recursive: true })
+  fs.writeFileSync(path.join(f.ctx.projectDir, '.git', 'config'), '[remote "origin"]\n\turl = https://GIT-SECRET@example.com/x\n')
+  // Any process (rg for the list and the search) would be a leak: none may start.
+  const spawned = []
+  f.ctx.processes = { spawn: (...a) => (spawned.push(a), assert.fail('a process started for a read-only guest')) }
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('shared.txt')
+  const view = t.connect(t.open[0].id, 'web:4', 'read')
+  view.send({ t: 'open', req: 1, first: true })
+  const own = view.posted.find((m) => m.t === 'file')
+  assert.equal(own.text, 'shared\n')
+  // Its own file again, by the path the host answered with (what the page sends: a re-check, a disk event): still served.
+  let n = view.posted.length
+  view.send({ t: 'read', req: 2, path: own.path })
+  await until(() => view.posted.slice(n).some((m) => m.req === 2), 5000, 'own read')
+  assert.equal(view.posted.slice(n).find((m) => m.req === 2).t, 'file')
+  let req = 10
+  for (const p of ['.env', '.git/config', 'src/a.ts']) {
+    for (const kind of ['read', 'open']) {
+      n = view.posted.length
+      view.send({ t: kind, req: ++req, path: p })
+      await drained()
+      const answers = view.posted.slice(n).filter((x) => x.t !== 'chat-defaults')
+      assert.deepEqual(answers.map((m) => [m.t, m.req, m.message]), [['error', req, 'You are a read-only guest: the host can give you write access.']], `${kind} ${p}`)
+    }
+  }
+  for (const m of [{ t: 'files', req: 30 }, { t: 'grep', req: 31, query: 'SECRET' }]) {
+    n = view.posted.length
+    view.send(m)
+    await drained()
+    const answers = view.posted.slice(n).filter((x) => x.t !== 'chat-defaults')
+    // The guest layer's refusal, not a search that failed on its own (no rg on this machine would also answer search-error).
+    assert.deepEqual(answers.map((a) => [a.t, a.kind, a.req, a.message]), [['search-error', m.t, m.req, 'You are a read-only guest: the host can give you write access.']], m.t)
+  }
+  view.send({ t: 'grep-cancel' })
+  await drained()
+  const all = JSON.stringify(view.posted)
+  assert.ok(!all.includes('ENV-SECRET') && !all.includes('GIT-SECRET'), all)
+  assert.deepEqual(spawned, [])
+  // A write guest's quick open still lists (it edits the project like the owner).
+  const writer = t.connect(t.open[0].id, 'web:5', 'write')
+  n = writer.posted.length
+  writer.send({ t: 'read', req: 40, path: '.env' })
+  await until(() => writer.posted.slice(n).some((m) => m.req === 40), 5000, 'write read')
+  assert.equal(writer.posted.slice(n).find((m) => m.req === 40).t, 'file')
+  host.deactivate()
+})
+
+test("a write guest's page cannot close the tab: a faked conflict report then Close is refused; the owner's still closes", async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('empty.txt')
+  const id = t.open[0].id
+  const guest = t.connect(id, 'web:5', 'write')
+  guest.send({ t: 'conflict', on: true })
+  const n = guest.posted.length
+  guest.send({ t: 'close' })
+  await drained()
+  assert.deepEqual(t.calls.filter((c) => c[0] === 'close'), [])
+  assert.deepEqual(guest.posted.slice(n).filter((m) => m.t !== 'chat-defaults').map((m) => [m.t, m.message]), [['error', 'A guest closes a tab from the tab bar.']])
+  const owner = t.connect(id)
+  owner.send({ t: 'conflict', on: true })
+  owner.send({ t: 'close' })
+  await until(() => t.calls.some((c) => c[0] === 'close'), 5000, "the owner's close")
+  assert.deepEqual(t.calls.filter((c) => c[0] === 'close'), [['close', id]])
   host.deactivate()
 })
 

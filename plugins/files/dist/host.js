@@ -53,8 +53,15 @@ const READ_GUEST_OK = new Set(['hello', 'refresh', 'expand', 'collapse', 'search
 /** Never from a guest: they act on the host's screen. */
 const HOST_SCREEN = new Set(['reveal', 'open-system'])
 
-/** The viewer's access as main tagged it; an app without guests passes none: the owner. */
-const accessOf = (from) => (from && (from.access === 'read' || from.access === 'write') ? from.access : 'owner')
+/**
+ * The viewer's access as main tagged it. An app without guests passes none: the owner. A value this host does
+ * not know (a newer app's role, a malformed tag) is a read-only guest, never the owner (fail safe).
+ */
+const accessOf = (from) => {
+  const a = from && typeof from === 'object' ? from.access : undefined
+  if (a === undefined || a === 'owner') return 'owner'
+  return a === 'write' ? 'write' : 'read'
+}
 
 const askPrompt = (rel) => `Have a look at ${rel} in this project and tell me briefly what it does. Then wait for my questions.`
 
@@ -118,7 +125,8 @@ exports.activate = (ctx) => {
     disposers.push(
       ctx.views.onChange(({ view, access }) => {
         if (access === undefined) views.delete(view)
-        else views.set(view, access)
+        // The same normaliser as `from`: a value this host does not know is a read-only guest's reset.
+        else views.set(view, accessOf({ access }))
       }),
     )
   }
@@ -355,13 +363,7 @@ exports.activate = (ctx) => {
           const rel = tree.normalizeRelative(m.path)
           await openFile(rel, m.rule, access)
         } else if (m.type === 'edit') {
-          const rel = tree.normalizeRelative(m.path)
-          try {
-            await editor.open(rel, {})
-          } catch (e) {
-            const missing = /no enabled plugin/.test(e.message) && /"editor"/.test(e.message)
-            throw new Error(missing ? 'No editor: turn on "Editor" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
-          }
+          await editFile(tree.normalizeRelative(m.path))
         } else if (m.type === 'reveal') {
           await ctx.files.reveal(tree.normalizeRelative(m.path))
         } else if (m.type === 'open-system') {
@@ -406,6 +408,12 @@ exports.activate = (ctx) => {
    * A rule that cannot run throws, so the person sees why instead of something else opening.
    */
   async function openFile(rel, rule, access = 'owner') {
+    // A guest's click (no rule) goes straight to the editor, never the project's opener: that is an overlay
+    // (the file viewer, the Reviewer), which main refuses from a guest's view, so the click would show
+    // nothing. Edit is the path a write guest already uses (07b's e2e: Files' Edit shows the file tab in the
+    // guest's own page); a focus it asks for goes to the click's origin view, main's hint. A read-only guest
+    // never gets here (`open` is not theirs).
+    if (access !== 'owner' && (rule === undefined || rule === -1)) return editFile(rel)
     const matches = openWith.matchRules(rel, openWith.rulesOf(app().openWith))
     let r
     if (rule === undefined) r = matches[0]
@@ -413,7 +421,7 @@ exports.activate = (ctx) => {
       r = matches.find((x) => x.index === rule)
       if (!r) throw new Error('That rule does not match this file any more (the settings changed): reopen the menu.')
     }
-    if (!r || r.action === 'default') return ctx.files.open(rel)
+    if (!r || r.action === 'default') return access === 'owner' ? ctx.files.open(rel) : editFile(rel)
     const name = `Open with rule ${r.index + 1} (${r.extensions.join(', ')})`
     if (r.error) throw new Error(`${name}: ${r.error}. Change it in Settings > Plugins > Files.`)
     if (r.action === 'system') {
@@ -429,6 +437,7 @@ exports.activate = (ctx) => {
     }
     // An overlay (also for a tab rule on an app without openCommand). Not awaited to its end: it
     // settles when the person closes it. A refusal (too many overlays) rejects at once: shown.
+    if (access !== 'owner') throw new Error(`${name} opens an overlay: not for a guest. Use Edit.`)
     const full = `${r.words[0].split('/').pop()}: ${rel}`
     const handle = ctx.overlay.start({ kind: 'terminal', argv, title: full.length > 200 ? `${full.slice(0, 199)}…` : full, size: 'large' })
     handle.result.then(
@@ -437,6 +446,16 @@ exports.activate = (ctx) => {
       },
       (e) => post({ type: 'error', message: safeText(`${name}: ${e.message}`) }),
     )
+  }
+
+  /** Edit: the `editor` service's file tab (the bundled Editor's by default). */
+  async function editFile(rel) {
+    try {
+      await editor.open(rel, {})
+    } catch (e) {
+      const missing = /no enabled plugin/.test(e.message) && /"editor"/.test(e.message)
+      throw new Error(missing ? 'No editor: turn on "Editor" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
+    }
   }
 
   disposers.push(ctx.onSettingsChange(() => sendAll().catch((e) => ctx.log.warn(`settings: ${e.message}`))))

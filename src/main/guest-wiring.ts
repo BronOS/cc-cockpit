@@ -8,6 +8,7 @@
 // not compile; test/unit/guest-wiring-07a.test.ts checks what each one answers and that index.ts passes them.
 
 import type { GuestOnlyAccess } from '../shared/guests'
+import type { SlotHost } from '../shared/slots'
 import type { ViewId, Who } from '../shared/views'
 import { askInfoFrom, downloadOfferSource, trashAskSource } from './asks/guest-asks'
 import type { GuestService, PluginGuestAccessService, PresenceService } from './ipc/guest-deps'
@@ -29,8 +30,8 @@ export interface GuestRouterSources {
   windowIdOf(projectId: string): number | undefined
   /** OverlayManager.visibleTo: an overlay opened from a tab or plugin the guest sees. */
   overlays: { visibleTo(windowId: number, overlayId: string, tabVisible: (tabId: string) => boolean, pluginVisible: (pluginId: string) => boolean): boolean }
-  /** LayoutService.slotFrame: the slot frame's record, whose page is `info.pluginId`'s. */
-  slotFrame(projectId: string, frameId: string): { info: { pluginId: string } } | undefined
+  /** LayoutService.slotFrame: the slot frame's record, whose page is `info.pluginId`'s, placed by `host`. */
+  slotFrame(projectId: string, frameId: string): { info: { pluginId: string }; host: SlotHost } | undefined
   /** TrashAsks.pluginOf: the plugin behind a pending trash ask. */
   trashAsks: { pluginOf(windowId: number, requestId: string): string | undefined }
   /** Downloads.offerOrigin (03b): a pending offer's origin tab. */
@@ -43,8 +44,15 @@ export function guestRouterDeps(s: GuestRouterSources): Required<GuestRouterDeps
     guests: s.guests,
     presence: s.presence,
     pluginAccess: s.pluginAccess,
-    // Only the `slots.*` channels name a frame: the guest must see the plugin whose page it is.
-    frameOwner: (projectId, frameId) => s.slotFrame(projectId, frameId)?.info.pluginId,
+    // Only the `slots.*` channels name a frame: the guest must see the plugin whose page it is and, for a frame a
+    // panel placed, that panel's plugin too (guestLayout's rule: a hidden plugin's panel, and so the slots in it, is
+    // not in a guest's layout). An app slot (the top bar) has no host plugin: the provider alone decides.
+    frameOwner: (projectId, frameId) => {
+      const frame = s.slotFrame(projectId, frameId)
+      if (frame === undefined) return undefined
+      if (frame.host.kind === 'panel' && !s.guests.pluginVisible(projectId, frame.host.pluginId)) return undefined
+      return frame.info.pluginId
+    },
     overlayVisible: (projectId: string, overlayId: string, access: GuestOnlyAccess) => {
       const windowId = s.windowIdOf(projectId)
       return (
