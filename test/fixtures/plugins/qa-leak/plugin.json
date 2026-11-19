@@ -1,0 +1,11 @@
+{
+  "id": "test.qaleakzq",
+  "name": "QAZX-pluginname",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [{ "id": "box", "title": "QAZX-paneltitle", "entry": "panel.html", "defaultZone": "left" }],
+    "commands": [{ "id": "ping", "title": "QAZX-cmdtitle" }]
+  }
+}
