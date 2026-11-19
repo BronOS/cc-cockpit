@@ -13,6 +13,7 @@ import {
   guestUnsavedOf,
   offerTakerOf,
   ownerViewOf,
+  pageSelectTargetOf,
   type GuestRouterSources,
   type GuestTabSources
 } from '../../src/main/guest-wiring'
@@ -353,9 +354,26 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain('presence.viewLeft(desktopViewId(windowId))')
     expect(INDEX).toContain('{ tabs, layouts, overlays, closeAsks, guestCloseAsks, linkAsks,')
     expect(INDEX).toContain('guestCloseAsks.windowClosed(windowId)')
+    // 03e: a plugin's page tab focus selects where it acted; a guest's never reaches the owner's views.
+    expect(INDEX).toContain("const target: PageSelectTarget = focus ? pageSelectTarget(view) : 'none'")
+    expect(INDEX).toContain("const tab = tabs.createPage(projectId, spec, { focus: target === 'project' })")
+    expect(INDEX).toContain('selectPageTab(projectId, tabId, pageSelectTarget(view))')
+    expect(INDEX).toContain("else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })")
     // 03e (D-9): the outcome reaches the asking guest's own views only; an ended guest's asks settle.
     expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")
     expect(block('new GuestStore({')).toContain('ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId)')
     expect(INDEX).toContain('openOverlay(windowId, spec, opener, peerGone, undefined, undefined, undefined, origin)')
+  })
+})
+
+describe('pageSelectTargetOf (03e: a guest\'s click that makes a plugin focus a page tab)', () => {
+  it("never selects in the owner's views for a guest's view; the owner's or no view: the project, as before; a gone view: nowhere", () => {
+    const target = pageSelectTargetOf(whoOf)
+    expect(target('web:2')).toEqual({ viewId: 'web:2' })
+    expect(target('web:3')).toEqual({ viewId: 'web:3' })
+    expect(target('web:1')).toBe('project')
+    expect(target('desktop:7')).toBe('project')
+    expect(target(undefined)).toBe('project')
+    expect(target('web:99')).toBe('none')
   })
 })

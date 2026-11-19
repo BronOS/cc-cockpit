@@ -536,7 +536,7 @@ export interface HostApiDeps {
    * resolved from the host's own list; its type one that plugin declares. Without it ctx.tabs.openPage
    * is refused.
    */
-  openPageTab?(projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<{ id: string }>
+  openPageTab?(projectId: string, spec: PageTabSpec, windowId: number, focus: boolean, view?: ViewId): Promise<{ id: string }>
   /** The project's tabs (TabManager.list), for ctx.tabs.list and the setTitle check. Without it both are refused. */
   listTabs?(projectId: string): TabInfo[]
   /**
@@ -545,8 +545,11 @@ export interface HostApiDeps {
    * setTitle is refused.
    */
   setPageTabTitle?(projectId: string, tabId: string, title: string, icon: string | undefined): void
-  /** Select a page tab in the project's window (ctx.tabs.focus; HostApi checked it is the plugin's own). Without it focus is refused. */
-  focusPageTab?(projectId: string, tabId: string, windowId: number): void
+  /**
+   * Select a page tab in the project's window (ctx.tabs.focus; HostApi checked it is the plugin's own). Without it focus
+   * is refused. `view`: the remote view the plugin acted for (originOf); a guest's selects in that view only (03e).
+   */
+  focusPageTab?(projectId: string, tabId: string, windowId: number, view?: ViewId): void
   /**
    * Give a page tab the unseen dot again (ctx.tabs.markUnseen, TabManager.markUnseen: not when the
    * project shows it) and tell every view; true when it changed. HostApi checked it is the plugin's
@@ -1022,10 +1025,10 @@ export class HostApi {
       'panels.header': (params) => this.panelHeader(params),
       'panels.slots': (params) => this.panelSlots(params),
       'slots.available': (params) => this.slotAvailable(params),
-      'tabs.openPage': (params) => this.openPage(params),
+      'tabs.openPage': (params, meta) => this.openPage(params, meta),
       'tabs.list': (params) => this.listPageTabs(params),
       'tabs.setTitle': (params) => this.setPageTabTitle(params),
-      'tabs.focus': (params) => this.focusPageTab(params),
+      'tabs.focus': (params, meta) => this.focusPageTab(params, meta),
       'tabs.markUnseen': (params) => this.markPageTabUnseen(params),
       'tabs.close': (params) => this.closePageTab(params),
       'overlay.open': (params, meta) => this.overlay(params, meta),
@@ -1706,7 +1709,7 @@ export class HostApi {
    * before the budget is spent, and again by the tab manager. A refusal there (the per-plugin cap)
    * gives the token back: it opened nothing.
    */
-  private async openPage(params: unknown): Promise<{ tabId: string }> {
+  private async openPage(params: unknown, meta?: RpcMeta): Promise<{ tabId: string }> {
     this.alive()
     const { pluginId, type, params: tabParams, title, icon, focus } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'tabs.openPage')
@@ -1727,7 +1730,11 @@ export class HostApi {
     }
     try {
       // The host's own window, never one the plugin names; only that window is told to select it.
-      const tab = await this.deps.openPageTab(this.scope.projectId, spec, this.scope.windowId, focus === true)
+      // `focus` selects it where the plugin acted (originOf): a guest's click never moves the owner's selection (03e).
+      const view = this.originOf(meta)
+      const tab = await (view === undefined
+        ? this.deps.openPageTab(this.scope.projectId, spec, this.scope.windowId, focus === true)
+        : this.deps.openPageTab(this.scope.projectId, spec, this.scope.windowId, focus === true, view))
       return { tabId: tab.id }
     } catch (err) {
       this.pageTabOpens.refund(plugin.id)
@@ -1780,14 +1787,16 @@ export class HostApi {
    * view, as an `openPage` with `focus` does, so it spends the same budget (a loop cannot keep
    * yanking the tab bar); checked before the budget is spent.
    */
-  private focusPageTab(params: unknown): null {
+  private focusPageTab(params: unknown, meta?: RpcMeta): null {
     const { plugin, tabId } = this.ownPageTab(params, 'tabs.focus')
     if (!this.deps.focusPageTab) throw new Error('tabs.focus: page tabs are not available')
     if (!this.pageTabOpens.take(plugin.id)) {
       throw new Error(`tabs.focus: more than ${MAX_PAGE_TAB_OPENS_PER_WINDOW} opens in ${PAGE_TAB_OPEN_WINDOW_MS / 1000} s`)
     }
-    // The host's own window, never one the plugin names.
-    this.deps.focusPageTab(this.scope.projectId, tabId, this.scope.windowId)
+    // The host's own window, never one the plugin names; the view it acted for, if any (a guest's: that view only).
+    const view = this.originOf(meta)
+    if (view === undefined) this.deps.focusPageTab(this.scope.projectId, tabId, this.scope.windowId)
+    else this.deps.focusPageTab(this.scope.projectId, tabId, this.scope.windowId, view)
     return null
   }
 

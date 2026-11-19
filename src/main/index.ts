@@ -198,7 +198,9 @@ import {
   guestTabDeps,
   guestUnsavedOf,
   offerTakerOf,
-  ownerViewOf
+  ownerViewOf,
+  pageSelectTargetOf,
+  type PageSelectTarget
 } from './guest-wiring'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
@@ -1344,12 +1346,20 @@ function start(server: boolean): void {
    * HostApi took the plugin from the host and checked the type and the spec; the tab manager checks
    * the spec again and holds the per-plugin cap. Not unseen when focused: the window selects it now.
    */
-  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<TabInfo> => {
+  // A plugin's `focus` selects where it acted (guest-wiring.ts pageSelectTargetOf): a guest's click selects in that
+  // guest's view only, never the owner's selection or active tab (03e); the tab still gets the unseen dot then.
+  const pageSelectTarget = pageSelectTargetOf((viewId) => views.whoOf(viewId))
+  const selectPageTab = (projectId: string, tabId: string, target: PageSelectTarget): void => {
+    if (target === 'project') sendToProject(projectId, 'tabs.select', { tabId })
+    else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })
+  }
+  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean, view?: ViewId): Promise<TabInfo> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.createPage(projectId, spec, { focus })
+    const target: PageSelectTarget = focus ? pageSelectTarget(view) : 'none'
+    const tab = tabs.createPage(projectId, spec, { focus: target === 'project' })
     sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    selectPageTab(projectId, tab.id, target)
     return tab
   }
   /** Open an overlay once the login env is known (a terminal overlay's PATH depends on it). */
@@ -1833,13 +1843,13 @@ function start(server: boolean): void {
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
       openCommandTab: (projectId, options, windowId, focus, place) => openCommandTab(projectId, options, windowId, focus === true, place),
       // ctx.tabs (design-editor.md §1): HostApi checked the plugin, its declared type and the spec.
-      openPageTab: (projectId, spec, windowId, focus) => openPageTab(projectId, spec, windowId, focus),
+      openPageTab: (projectId, spec, windowId, focus, view) => openPageTab(projectId, spec, windowId, focus, view),
       listTabs: (projectId) => tabs.list(projectId),
       setPageTabTitle: (projectId, tabId, title, icon) => tabs.setPageTitle(projectId, tabId, title, icon),
       // As openPage's `focus`: the project's views are told to select it (only the host's own window).
-      focusPageTab: (projectId, tabId, windowId) => {
+      focusPageTab: (projectId, tabId, windowId, view) => {
         requireWindow(projectId, windowId)
-        sendToProject(projectId, 'tabs.select', { tabId })
+        selectPageTab(projectId, tabId, pageSelectTarget(view))
       },
       // The unseen dot again (ctx.tabs.markUnseen), told to every view as markSeen's clearing is.
       markPageTabUnseen: (projectId, tabId) => {

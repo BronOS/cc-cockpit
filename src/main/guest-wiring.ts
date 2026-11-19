@@ -182,3 +182,21 @@ export function guestUnsavedOf(
     })
   }
 }
+
+/** Where a plugin's page tab `focus` selects (ctx.tabs.openPage / focus): every view, one view, or none. */
+export type PageSelectTarget = 'project' | 'none' | { viewId: ViewId }
+
+/**
+ * A plugin's `focus` acts where the plugin acted (design-guests §7, 03e): the view a plugin call came from
+ * (HostApi.originOf, a hint) decides. None or an owner's view: the project's views select it, as before. A guest's
+ * view: that view only, so a guest's click never moves the owner's selection or active tab. A remote view that
+ * is gone: nowhere (fail closed: it might have been a guest's).
+ */
+export function pageSelectTargetOf(whoOf: (viewId: ViewId) => Who | undefined): (view: ViewId | undefined) => PageSelectTarget {
+  return (view) => {
+    if (view === undefined) return 'project'
+    const who = whoOf(view)
+    if (who === 'owner') return 'project'
+    return who === undefined ? 'none' : { viewId: view }
+  }
+}
