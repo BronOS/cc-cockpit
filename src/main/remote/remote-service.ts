@@ -66,12 +66,6 @@ import { probeTunnel, tunnelProbeError, type TunnelProbeResult } from './tunnel-
 /** A saved server without its credentials (what every reader outside the store gets). */
 export type { RemoteServerRecord }
 
-/**
- * `remote.connect` as the service takes it: a Direct connect carries the person's answers too (a
- * guest invite's certificate pin, design-guests §11), as an SSH one does.
- */
-export type ServiceConnectRequest = RemoteConnectRequest | (Extract<RemoteServerSettings, { kind: 'direct' }> & { answers?: RemoteAnswers })
-
 /** The slice of RemoteServerStore the coordinator uses. */
 export interface RemoteServiceStore {
   list(): Promise<RemoteServerView[]>
@@ -335,7 +329,7 @@ export class RemoteService {
   }
 
   /** The Connect to server form: connect (a new server is saved only once its window opens), then open its web picker. */
-  async connect(request: ServiceConnectRequest): Promise<RemoteConnectAnswer> {
+  async connect(request: RemoteConnectRequest): Promise<RemoteConnectAnswer> {
     if (this.disposed) return fail('the app is quitting')
     const parsed = parseSettings(request)
     if ('error' in parsed) return parsed

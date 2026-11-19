@@ -1463,15 +1463,22 @@ function remoteAnswers(channel: string, value: unknown): RemoteAnswers | undefin
   const hostKey = remoteOptionalText(channel, body, 'hostKey', REMOTE_HOST_KEY_MAX)
   const password = remoteOptionalText(channel, body, 'password', MAX_REMOTE_SECRET)
   const passphrase = remoteOptionalText(channel, body, 'passphrase', MAX_REMOTE_SECRET)
+  // A guest invite's certificate as the prompt showed it (hex or colon pairs); main checks it against the pin
+  // and the certificate it read itself (remote-service.ts, D-29), so this is only bounded here.
+  const certificate = remoteOptionalText(channel, body, 'certificate', REMOTE_CERTIFICATE_ANSWER_MAX)
   const remember = body.remember
   if (remember !== undefined && typeof remember !== 'boolean') throw new Error(`${channel}: remember must be a boolean`)
   return {
     ...(hostKey === undefined ? {} : { hostKey }),
     ...(password === undefined ? {} : { password }),
     ...(passphrase === undefined ? {} : { passphrase }),
+    ...(certificate === undefined ? {} : { certificate }),
     ...(remember === undefined ? {} : { remember })
   }
 }
+
+/** The longest certificate answer: SHA-256 as colon pairs is 95 characters; room for spaces around it. */
+const REMOTE_CERTIFICATE_ANSWER_MAX = 128
 
 /** A server's settings (connect, edit), only the fields named passed on. */
 function remoteSettings(channel: string, body: Record<string, unknown>): RemoteServerSettings {
@@ -1525,8 +1532,13 @@ export function registerRemoteServerHandlers(router: IpcRouter, deps: RemoteServ
     const service = pickerOnly('remote.connect', ctx, view)
     const body = fields('remote.connect', payload)
     const settings = remoteSettings('remote.connect', body)
-    if (settings.kind !== 'ssh') return service.connect(settings)
+    // A tunnel asks nothing; SSH carries its answers (host key, secrets); Direct only a guest invite's
+    // certificate (D-29), the one question it can ask.
+    if (settings.kind === 'tunnel') return service.connect(settings)
     const answers = remoteAnswers('remote.connect', body.answers)
+    if (settings.kind === 'direct') {
+      return service.connect(answers?.certificate === undefined ? settings : { ...settings, answers: { certificate: answers.certificate } })
+    }
     return service.connect(answers === undefined ? settings : { ...settings, answers })
   })
   router.handleWindow('remote.open', (ctx, payload, view) => {

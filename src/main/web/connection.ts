@@ -132,6 +132,8 @@ export interface WebConnectionDeps {
    * not reported.
    */
   viewScheme?(viewId: ViewId, dark: boolean | undefined): void
+  /** A view is bound to a project (presence.ts viewJoined): `who` as `hello` bound it. */
+  viewJoined?(viewId: ViewId, projectId: string, who: Who): void
   /** The view is gone (TabManager.viewGone): the tabs it sized fall back to a remaining view. */
   viewGone?(viewId: ViewId): void
   /**
@@ -314,11 +316,6 @@ export class WebConnections {
     return false
   }
 
-  /** Who is behind a bound view (GuestStore.whoAccess); undefined for a view that is gone or not bound. */
-  whoOf(viewId: ViewId): Who | undefined {
-    return this.open.get(viewId)?.who()
-  }
-
   /** The installed plugins changed: every bound view whose paths differ now gets a `paths` frame. */
   pathsChanged(): void {
     for (const conn of this.open.values()) conn.refreshPaths()
@@ -483,11 +480,6 @@ export class WebConnection {
     return this.device.mode === 'guest' ? this.device.guestId : undefined
   }
 
-  /** Who this view is, frozen at `hello`; undefined before it, and once the view is gone. */
-  who(): Who | undefined {
-    return this.closed ? undefined : this.caller?.who
-  }
-
   /**
    * A guest view's filter context, its access read live; undefined for the owner. `'ended'`: the guest is
    * gone (kicked, its lifetime over) or no guest store is wired; the caller closes the view.
@@ -617,6 +609,12 @@ export class WebConnection {
       this.deps.viewScheme?.(this.viewId, dark)
     } catch (err) {
       this.deps.log(`web access: view ${this.viewId} colour scheme failed: ${errorText(err)}`)
+    }
+    // Presence (a person here): a throw costs the view its place in the list, never the connection.
+    try {
+      this.deps.viewJoined?.(this.viewId, projectId, who)
+    } catch (err) {
+      this.deps.log(`web access: view ${this.viewId} presence failed: ${errorText(err)}`)
     }
     // Joined tab by tab as the view selects them; nothing is sent before `ready` (a select is an invoke).
     this.terminals = new ViewTerminals({

@@ -86,7 +86,7 @@ function world(): World {
 }
 
 function pagesOf(w: World, extra: Partial<PluginPagesDeps> = {}): PluginPages {
-  const deps: PluginPagesDeps = {
+  const deps: PluginPagesDeps = { guestProject: () => undefined, guestPluginVisible: () => false,
     pluginIds: () => w.installed,
     deviceViews: (deviceId) => w.views.get(deviceId) ?? [],
     pluginDir: (projectId, pluginId) => (w.enabled.get(projectId)?.has(pluginId) ? dirs[pluginId] : undefined),

@@ -668,8 +668,7 @@ describe('guest views', () => {
     expect(ready.snapshot.linkAsks).toEqual([])
     expect(ready.snapshot.overlays).toEqual([])
     expect(ready.snapshot.guest).toEqual({ id: 'g1', name: 'Bob', role: 'read', ownerName: 'Alice' })
-    expect(conns.whoOf('web:1')).toEqual({ guest: 'g1' })
-    // The registry is told too: the router's access (view-access.ts) reads it, and its default is the owner.
+    // The registry is told who (the one whoOf: the router's access, view-access.ts, reads it; its default is the owner).
     expect(g.views.whoOf('web:1')).toEqual({ guest: 'g1' })
     expect(conns.guestLive('g1')).toBe(true)
     expect(changes).toEqual([['g1', true]])

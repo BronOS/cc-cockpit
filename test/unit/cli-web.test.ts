@@ -386,7 +386,7 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
       disconnectDevice: () => 0,
       onConnectionsChanged: () => () => undefined
     }
-    const service = new WebAccessService({
+    const service = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,
@@ -775,7 +775,7 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
       disconnectDevice: () => 0,
       onConnectionsChanged: () => () => undefined
     }
-    service = new WebAccessService({
+    service = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,

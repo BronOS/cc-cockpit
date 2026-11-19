@@ -528,7 +528,14 @@ export type RemoteServerSettings =
  * The Connect to server form (`remote.connect`): the settings, and for SSH every answer the person
  * gave so far in this connect (design §5.4: the picker keeps them all and resends them).
  */
-export type RemoteConnectRequest = (Extract<RemoteServerSettings, { kind: 'ssh' }> & { answers?: RemoteAnswers }) | Exclude<RemoteServerSettings, { kind: 'ssh' }>
+/**
+ * A connect: SSH and Direct carry the person's answers so far (an SSH host key or secret; a Direct guest invite's
+ * certificate, design-guests D-29); a tunnel asks nothing.
+ */
+export type RemoteConnectRequest =
+  | (Extract<RemoteServerSettings, { kind: 'ssh' }> & { answers?: RemoteAnswers })
+  | (Extract<RemoteServerSettings, { kind: 'direct' }> & { answers?: RemoteAnswers })
+  | Extract<RemoteServerSettings, { kind: 'tunnel' }>
 
 /**
  * Edit (`remote.edit`): a saved server's new settings, of the same kind. `forgetHostKey` (SSH only):

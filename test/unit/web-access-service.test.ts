@@ -337,7 +337,7 @@ describe('WebAccessService', () => {
     const hasher = new PasswordHasher({ params: { N: 1024, r: 8, p: 1 } })
     auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog, hasher, now: () => clock, log: () => undefined })
     auth.setMode('link')
-    service = new WebAccessService({
+    service = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,
@@ -369,7 +369,7 @@ describe('WebAccessService', () => {
   it('runs the headless terminals only while the settings mean the gateway listens: started before it, drained after it', async () => {
     const calls: string[] = []
     let release: (() => void) | undefined
-    const withTerminals = new WebAccessService({
+    const withTerminals = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway: {
         ...gateway,
         apply: async (settings) => {
@@ -593,7 +593,7 @@ describe('WebAccessService', () => {
     })
 
     it('asks 12 characters in server mode, on loopback too', async () => {
-      const server = new WebAccessService({
+      const server = new WebAccessService({ guests: { blockingNone: () => [] },
         gateway,
         auth,
         read: () => stored,
@@ -888,7 +888,7 @@ describe('server mode: WebAccessService start and first lines (design-web.md §9
       disconnectDevice: () => 0,
       onConnectionsChanged: () => () => undefined
     }
-    return new WebAccessService({
+    return new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,

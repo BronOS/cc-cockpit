@@ -169,11 +169,11 @@ export interface PluginPagesDeps {
   /**
    * The guest a device stands for (design-guests §5, spec-review item 21): undefined for an owner device,
    * the guest's project for a live guest, `null` for a guest device whose guest is gone (served nothing).
-   * Absent: every device is an owner device.
+   * Required: an unwired lookup must not make every guest an owner (fail closed).
    */
-  guestProject?(deviceId: string): string | null | undefined
-  /** Whether the project's guests see the plugin (GuestStore.pluginVisible). Absent: none. */
-  guestPluginVisible?(projectId: string, pluginId: string): boolean
+  guestProject(deviceId: string): string | null | undefined
+  /** Whether the project's guests see the plugin (GuestStore.pluginVisible). Required, as `guestProject`. */
+  guestPluginVisible(projectId: string, pluginId: string): boolean
 }
 
 /** An answer for the gateway to write as is (status, headers, body). */
@@ -239,7 +239,7 @@ export class PluginPages {
   /** The device's guest project, read live; a lookup that throws counts as a gone guest (served nothing). */
   private guestProject(deviceId: string): string | null | undefined {
     try {
-      return this.deps.guestProject?.(deviceId)
+      return this.deps.guestProject(deviceId)
     } catch (err) {
       this.deps.log?.(`web access: guest lookup failed: ${err instanceof Error ? err.message : String(err)}`)
       return null
@@ -248,7 +248,7 @@ export class PluginPages {
 
   private guestSees(projectId: string, pluginId: string): boolean {
     try {
-      return this.deps.guestPluginVisible?.(projectId, pluginId) === true
+      return this.deps.guestPluginVisible(projectId, pluginId) === true
     } catch {
       return false
     }

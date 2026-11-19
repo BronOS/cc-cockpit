@@ -2918,6 +2918,19 @@ describe('remote server handlers', () => {
     ])
   })
 
+  it("passes a Direct connect's certificate answer through (D-29: main checks it), bounded; a tunnel's answers are ignored", async () => {
+    const { ipc, calls } = remoteSetup()
+    const shown = '01:23:45:67:89:AB:CD:EF:'.repeat(4).slice(0, -1)
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box/#i=x&c=y', answers: { certificate: shown } }])
+    await ipc.invoke('remote.connect', PICKER, [{ kind: 'tunnel', localPort: 7331, remotePort: 7330, answers: { certificate: shown } }])
+    expect(calls).toEqual([
+      ['connect', { kind: 'direct', link: 'https://box/#i=x&c=y', answers: { certificate: shown } }],
+      ['connect', { kind: 'tunnel', localPort: 7331, remotePort: 7330 }]
+    ])
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', answers: { certificate: 'a'.repeat(129) } }])).rejects.toThrow(/certificate must be a string/)
+    await expect(ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', answers: { certificate: 5 } }])).rejects.toThrow(/certificate must be a string/)
+  })
+
   it.each(['remote.list', 'remote.connect', 'remote.open', 'remote.edit', 'remote.pickKey', 'remote.rename', 'remote.forget'])(
     '%s is refused to a project window and to a browser view, before the service runs',
     async (channel) => {
@@ -2961,7 +2974,7 @@ describe('remote server handlers', () => {
     await expect(ipc.invoke('remote.forget', PICKER, ['s1'])).rejects.toThrow(/bad payload/)
     // Only the fields named are passed on: an extra field never reaches the service.
     await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', origin: 'http://evil' }])
-    // Answers ride on an SSH connect only; extra answer fields are dropped too.
+    // Answers ride on an SSH connect (a Direct one carries only a certificate); extra answer fields are dropped too.
     await ipc.invoke('remote.connect', PICKER, [{ kind: 'direct', link: 'https://box', answers: { password: 'x' } }])
     await ipc.invoke('remote.connect', PICKER, [{ kind: 'ssh', host: 'h', answers: { password: 'x', cookie: 'c' } }])
     expect(calls).toEqual([

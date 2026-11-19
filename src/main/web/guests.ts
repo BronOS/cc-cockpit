@@ -96,7 +96,7 @@ export interface GuestStoreDeps {
   pluginEnabled?(projectId: string, pluginId: string): boolean
   /** A live tab of any project (TabManager). */
   tabOf(tabId: string): GuestTabInfo | undefined
-  /** Who is behind a live remote view (WebConnections / ViewRegistry `whoOf`); undefined: gone. */
+  /** Who is behind a live remote view (ViewRegistry.whoOf, as `hello` bound it); undefined: gone. */
   whoOfView(viewId: ViewId): Who | undefined
   /** Close every view of the guest with `code` (WebConnections.closeGuest); the count closed. */
   closeGuestViews(guestId: string, code: number, reason: string): number
