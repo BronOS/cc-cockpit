@@ -318,7 +318,8 @@ function fakeTabs(f) {
     close: async (id) => (calls.push(['close', id]), { closed: true }),
   }
   // A frame of tab `id` connecting in `view` (undefined: the desktop): the instance the host serves.
-  const connect = (id, view) => {
+  // `access`: main's tag for that view (guests); absent as on an older app.
+  const connect = (id, view, access) => {
     const t = open.find((x) => x.id === id)
     const posted = []
     const listeners = []
@@ -329,9 +330,9 @@ function fakeTabs(f) {
       if (t.failTitle) throw new Error('the request timed out')
       t.title = title
     }
-    const tab = { id, type: 'file', params: t.params, view, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), onDiscuss: (fn) => discussers.push(fn), setTitle }
+    const tab = { id, type: 'file', params: t.params, view, ...(access ? { access } : {}), post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), onDiscuss: (fn) => discussers.push(fn), setTitle }
     for (const o of openers) o.fn(tab)
-    return { posted, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()), discuss: () => discussers[0]() }
+    return { posted, discussers, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()), discuss: () => discussers[0]() }
   }
   return { calls, open, connect }
 }
@@ -990,4 +991,123 @@ test('open routing: two opens of one file at once make one tab; the second focus
   await Promise.all([f.provided.editor.open('src/b.ts'), f.provided.editor.open('src/c.ts')])
   assert.equal(t.open.length, 3)
   host.deactivate()
+})
+
+// Guests (lib/guests.js): main tags each instance with its view's access; the host checks that, never the page.
+test('a read-only guest: the file read-only, every change, open and Claude feature refused, no language server, no Ask Claude', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  fs.writeFileSync(path.join(f.ctx.projectDir, 'g.txt'), 'guest\n')
+  const stored = new Map()
+  f.ctx.appStorage = { get: async (k) => stored.get(k), set: async (k, v) => void stored.set(k, v) }
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('g.txt')
+  const before = t.calls.length
+  const view = t.connect(t.open[0].id, 'web:4', 'read')
+  // No onDiscuss: core's Ask Claude has nothing to ask in this view.
+  assert.equal(view.discussers.length, 0)
+  view.send({ t: 'open', req: 1, first: true })
+  const file = view.posted.find((m) => m.t === 'file')
+  assert.equal(file.text, 'guest\n')
+  assert.equal(file.readOnly, true)
+  assert.equal(file.why, 'you are a read-only guest')
+  const refused = [
+    [{ t: 'save', req: 2, path: 'g.txt', text: 'x', base: file.hash }, (m) => m.t === 'error' && m.req === 2],
+    [{ t: 'openFile', path: 'src/a.ts' }, (m) => m.t === 'search-error' && m.kind === 'open'],
+    [{ t: 'micro' }, (m) => m.t === 'error'],
+    [{ t: 'close' }, (m) => m.t === 'error'],
+    [{ t: 'git-review' }, (m) => m.t === 'error'],
+    [{ t: 'notes-add', line: 1, text: 'x' }, (m) => m.t === 'error'],
+    [{ t: 'chat-start', id: 'c1', text: 'hi' }, (m) => m.t === 'chat-end' && m.id === 'c1' && m.error === true],
+    [{ t: 'lsp-open', path: 'g.txt', part: 0, parts: 1, text: 'guest\n' }, (m) => m.t === 'lsp-doc' && m.language === null],
+    [{ t: 'lsp-ask', req: 9, what: 'rename', path: 'g.txt', newName: 'x' }, (m) => m.t === 'lsp-answer' && m.req === 9 && m.result === null],
+  ]
+  for (const [m, isAnswer] of refused) {
+    const n = view.posted.length
+    view.send(m)
+    await drained()
+    // Quick chat's pickers arrive on their own (after the store's read): not an answer.
+    const answers = view.posted.slice(n).filter((x) => x.t !== 'chat-defaults')
+    assert.equal(answers.length, 1, `${m.t}: ${JSON.stringify(answers)}`)
+    assert.ok(isAnswer(answers[0]), `${m.t}: ${JSON.stringify(answers[0])}`)
+  }
+  // Reports and reads it has no use for go quietly.
+  for (const m of [{ t: 'conflict', on: true }, { t: 'notes-get' }, { t: 'lsp-change', path: 'g.txt', changes: [] }, { t: 'chat-defaults-get' }]) {
+    const n = view.posted.filter((x) => x.t !== 'chat-defaults').length
+    view.send(m)
+    await drained()
+    assert.equal(view.posted.filter((x) => x.t !== 'chat-defaults').length, n, m.t)
+  }
+  await drained()
+  assert.equal(fs.readFileSync(path.join(f.ctx.projectDir, 'g.txt'), 'utf8'), 'guest\n')
+  assert.deepEqual(t.calls.slice(before), [])
+  assert.equal(f.started.length, 0)
+  assert.equal(stored.size, 0)
+  host.deactivate()
+})
+
+test('a write guest: saves and opens project files, Ask Claude registered; a file outside the project is neither opened nor listed', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('empty.txt')
+  const view = t.connect(t.open[0].id, 'web:5', 'write')
+  assert.equal(view.discussers.length, 1)
+  view.send({ t: 'open', req: 1, first: true })
+  assert.equal(view.posted.find((m) => m.t === 'file').readOnly, false)
+  view.send({ t: 'openFile', path: 'src/a.ts' })
+  await until(() => t.open.length === 2, 5000, 'the project file opened')
+  const n = view.posted.length
+  view.send({ t: 'openFile', outside: '/usr/lib/node_modules/x/index.d.ts', line: 1 })
+  await drained()
+  assert.equal(t.open.length, 2)
+  assert.deepEqual(view.posted.slice(n).map((m) => [m.t, m.kind]), [['search-error', 'open']])
+  host.deactivate()
+})
+
+test("a guest's instance of a tab on a file outside the project serves nothing; the owner's still does", async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  const outside = path.join(require('node:os').tmpdir(), 'nowhere.d.ts')
+  t.open.push({ id: '00000000-0000-4000-8000-0000000000aa', type: 'file', params: { outside }, title: 'nowhere.d.ts' })
+  for (const access of ['read', 'write']) {
+    const view = t.connect(t.open[0].id, 'web:6', access)
+    view.send({ t: 'open', req: 1, first: true })
+    await drained()
+    assert.deepEqual(view.posted.map((m) => m.t), ['error'], access)
+    assert.ok(!JSON.stringify(view.posted).includes(outside), access)
+    assert.equal(view.discussers.length, 0, access)
+  }
+  const owner = t.connect(t.open[0].id, undefined, 'owner')
+  assert.equal(owner.posted[0].t, 'settings')
+  host.deactivate()
+})
+
+test('lib/guests: access from the tag only, outside locations stripped, a read-only store', async () => {
+  const guests = require('../dist/lib/guests.js')
+  for (const a of [undefined, 'admin', 'OWNER', 1]) assert.equal(guests.accessOf({ access: a }), 'owner')
+  assert.equal(guests.accessOf({ access: 'read' }), 'read')
+  const answer = { t: 'lsp-answer', req: 1, result: [{ path: 'a.ts', range: {} }, { outside: '/abs/x.d.ts', range: {} }] }
+  assert.deepEqual(guests.withoutOutside(answer).result, [{ path: 'a.ts', range: {} }])
+  assert.equal(guests.withoutOutside({ t: 'lsp-answer', req: 2, result: null }).result, null)
+  const kept = new Map([['quickChatPick', { model: 'opus' }]])
+  const store = guests.readOnlyStore({ get: async (k) => kept.get(k), set: async () => assert.fail('the owner store was written') })
+  assert.deepEqual(await store.get('quickChatPick'), { model: 'opus' })
+  await store.set('quickChatPick', { model: 'haiku' })
+  assert.deepEqual(kept.get('quickChatPick'), { model: 'opus' })
+  assert.equal(guests.readOnlyStore(undefined), undefined)
+  // A write guest's post strips; the owner's instance is the real one, untouched.
+  const posted = []
+  const raw = { id: 'x', access: 'write', post: (m) => posted.push(m), onMessage: () => {}, onClose: () => {}, setTitle: async () => {} }
+  guests.guestTab(raw).tab.post(answer)
+  assert.equal(posted[0].result.length, 1)
+  const ownerRaw = { id: 'y', post() {}, onMessage() {}, onClose() {} }
+  assert.equal(guests.guestTab(ownerRaw).tab, ownerRaw)
 })
