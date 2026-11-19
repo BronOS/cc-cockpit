@@ -166,8 +166,12 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     await expect.poll(() => logged(cockpit).length, { timeout: 30_000 }).toBe(n + 1)
     const entry = logged(cockpit)[n] as unknown as { placed: boolean[]; error?: string }
     expect(entry.error).toBeUndefined()
-    const placedCount = entry.placed.filter(Boolean).length
-    console.log('column placed:', JSON.stringify(entry.placed), 'window:', JSON.stringify(await page.evaluate(() => [innerWidth, innerHeight])))
+    const [width, height] = await page.evaluate(() => [window.innerWidth, window.innerHeight])
+    console.log('column placed:', JSON.stringify(entry.placed), 'window:', JSON.stringify([width, height]))
+    // The column is the panes placed before the first refusal. A pane opened after it goes beside the
+    // refused one, which opened as a plain tab, so it starts a group of its own, not shown here.
+    const refused = entry.placed.indexOf(false)
+    const placedCount = refused === -1 ? entry.placed.length : refused
     expect(placedCount).toBeGreaterThanOrEqual(1)
     // The invariant: whatever main placed, the desktop draws every pane and does not zoom the group.
     await expect(visiblePanes(page)).toHaveCount(1 + placedCount)
@@ -176,7 +180,10 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     // Six fit a 1900x1000 window by the view's own rule (main judges with the geometry the page reported, not its
     // cell approximation, which refused the sixth: 8 rows a pane against its 6 + 2 of chrome). A seventh would leave
     // each pane under AUTO_ZOOM_CELLS' 6 rows, so the view would zoom: it opens plain (and the cap of 8 is not why).
-    expect(entry.placed).toEqual([true, true, true, true, true, true, false])
+    // A macOS screen can be shorter than 1000 points (a 14" MacBook gives the window about 865 inside),
+    // and the rule then fits fewer: the exact count is checked only where the window got its height.
+    if (height! >= 950) expect(entry.placed).toEqual([true, true, true, true, true, true, false])
+    else expect(refused).toBeGreaterThanOrEqual(1)
     const shot = await page.screenshot({ path: testInfo.outputPath('column.png') })
     if (process.env.SAVE_SHOT) writeFileSync(process.env.SAVE_SHOT, shot)
   } finally {
