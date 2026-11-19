@@ -670,9 +670,11 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
   describe('end with closeTabs', () => {
     let closed: string[]
     let failOn: string | undefined
+    const warnings: string[] = []
     beforeEach(() => {
       closed = []
       failOn = undefined
+      warnings.length = 0
       service.dispose()
       service = new RoomService({
         dir: join(dir, 'rooms2'),
@@ -689,7 +691,9 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
         sessions,
         newId: nextId,
         nonce: () => `${String(++nonces).padStart(16, '0')}`,
-        log: () => {}
+        log: (m) => {
+          warnings.push(m)
+        }
       })
     })
 
@@ -752,6 +756,16 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
       expect(service.removeOwned(owner, id, 'typed', { closeTab: true })).toBe(0)
       expect(closed).toEqual([open])
       expect(service.members(owner, id).map((m) => m.name)).not.toContain('worker')
+    })
+
+    it('remove with closeTab: a failing close still removes the member, counts 0 and logs a warning', () => {
+      const id = room()
+      const a = claudeTab()
+      addTo(id, a, 'a')
+      failOn = a
+      expect(service.removeOwned(owner, id, 'a', { closeTab: true })).toBe(0)
+      expect(service.members(owner, id).map((m) => m.name)).not.toContain('a')
+      expect(warnings.some((w) => w.includes(`could not close tab ${a}`))).toBe(true)
     })
 
     it('remove with no option or false closes nothing', () => {

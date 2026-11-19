@@ -2575,7 +2575,9 @@ describe('beside (split groups, D4 D6 D7)', () => {
           clearRoom: (p, t) => tabs.clearRoom(p, t),
           roomOf: (p, t) => tabs.roomOf(p, t),
           kindOf: (p, t) => tabs.kindOf(p, t),
-          close: () => {}
+          close: (_p, t) => {
+            closedTabs.push(t)
+          }
         },
         sessions: registry,
         log: () => {}
@@ -2585,6 +2587,18 @@ describe('beside (split groups, D4 D6 D7)', () => {
     afterEach(() => {
       rooms.dispose()
       delete deps.rooms
+    })
+    const closedTabs: string[] = []
+    beforeEach(() => {
+      closedTabs.length = 0
+    })
+
+    it('rooms.remove with closeTab closes an app-opened, untyped member tab and answers { closed: 1 }', async () => {
+      const open = hostA()
+      const id = await newRoom(open)
+      const { tabId } = (await open('rooms.open', { pluginId: 'a.one', id, name: 'bob' })) as { tabId: string }
+      await expect(open('rooms.remove', { pluginId: 'a.one', id, name: 'bob', closeTab: true })).resolves.toEqual({ closed: 1 })
+      expect(closedTabs).toEqual([tabId])
     })
     const newRoom = async (open: ReturnType<typeof hostA>): Promise<string> =>
       ((await open('rooms.create', { pluginId: 'a.one', title: 'Review' })) as { id: string }).id
