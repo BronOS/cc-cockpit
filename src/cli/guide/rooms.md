@@ -25,7 +25,8 @@ private docs. `all`, `plugin`, `person`, `user` and `system` are not names a mem
   instead (a message that is literally `-` is `ccc room send <name> -- -`, and one that is literally
   `--help` is `ccc room send <name> -- --help`). A message is at most
   20000 characters: anything longer goes in a doc. The answer is one line per recipient: `delivered`,
-  `held` with why (`paused`, `no-tab`, `typed`, `capped`, `draft` or `not-waiting`: the recipient has the message and
+  `held` with why (`paused`, `no-tab`, `typed`, `capped`, `draft`, `not-waiting` (busy; it comes) or `idle` (at rest and nothing will deliver it: the person
+  types `ccc room read` and Enter in that tab, or clicks its count badge): the recipient has the message and
   reads it itself), `gone` (no member by that name, nothing sent) or `refused` (its queue is full).
 - `ccc room read` prints the messages waiting for you, oldest first, and takes them off your queue
   once they are printed; if `ccc` is stopped before that (Esc, a timeout), nothing is taken and the

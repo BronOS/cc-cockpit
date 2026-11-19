@@ -129,8 +129,13 @@ describe('decide (pure)', () => {
     expect(decide({ paused: false, entry: at('waiting', { typed: true, draft: true }), mark: true })).toEqual({ pointer: false, why: 'draft' })
   })
 
-  it.each<TabStatus>(['working', 'needs-permission', 'starting', 'idle', 'ended'])('holds a tab in %s', (status) => {
+  it.each<TabStatus>(['working', 'needs-permission', 'starting', 'ended'])('holds a tab in %s as busy', (status) => {
     expect(decide({ paused: false, entry: at(status), mark: true })).toEqual({ pointer: false, why: 'not-waiting', status })
+  })
+
+  // An idle tab is not busy: nothing delivers to it by itself (compaction incident, 2026-11-19).
+  it('holds an idle tab with its own reason', () => {
+    expect(decide({ paused: false, entry: at('idle'), mark: true })).toEqual({ pointer: false, why: 'idle', status: 'idle' })
   })
 
   it('holds while a paste is in flight or the start settles, in a paused room and with no tab', () => {

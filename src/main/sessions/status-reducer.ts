@@ -282,6 +282,14 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
       // when a manual `/compact` fires it relative to the prompt is not established, so other
       // statuses go to the non-sendable `idle` as before.
       //
+      // A `compact` while `waiting` also keeps `waiting`. The incident (guest-invite team run,
+      // 2026-11-19): three tabs sat at their prompt after a finished turn and compacted outside a
+      // turn (nobody typed; the trigger is unknown). The session was at its prompt before and
+      // after, but the reducer made them `idle`, and no `idle_prompt` Notification came for 30+
+      // minutes, so queued texts and room messages never arrived until the person typed. The
+      // settle window still opens (send-gate.ts: SessionStart that left the tab waiting). Every
+      // other source/status pair (starting, idle, needs-permission, ended) stays as above.
+      //
       // startup, resume and clear leave Claude at its input prompt: `waiting`, the sendable state
       // (the gate still holds text through a short settle window, send-gate.ts). Checked in claude
       // 2.1.318 with logging hooks in a real terminal: the trust-folder dialog and the project
@@ -292,9 +300,9 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
       // so a send to a fresh or resumed tab sat queued until the person typed a prompt. Any other
       // source (compact outside a turn, fork, a future or missing one) stays `idle`: where it lands
       // relative to the prompt is not established.
-      const compactMidTurn = payload.source === 'compact' && entry.status === 'working'
+      const compactKeep = payload.source === 'compact' && (entry.status === 'working' || entry.status === 'waiting')
       const atPrompt = payload.source === 'startup' || payload.source === 'resume' || payload.source === 'clear'
-      const next: SessionEntry = compactMidTurn
+      const next: SessionEntry = compactKeep
         ? { ...entry }
         : { ...entry, status: atPrompt ? 'waiting' : 'idle', tool: undefined }
       const id = payload.session_id

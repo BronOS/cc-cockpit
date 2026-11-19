@@ -591,7 +591,7 @@ export interface RoomMember {
 
 /**
  * What a room send did for one recipient: `delivered` (the pointer reached its session), `held` (queued; `why` is
- * `paused`, `no-tab`, `typed`, `capped`, `draft` or `not-waiting`), `gone` (no member of that name: nothing queued) or
+ * `paused`, `no-tab`, `typed`, `capped`, `draft`, `not-waiting` or `idle`), `gone` (no member of that name: nothing queued) or
  * `refused` (its queue is full: nothing queued for it).
  */
 export type RoomSendAnswer =
@@ -599,7 +599,7 @@ export type RoomSendAnswer =
   | {
       readonly to: string
       readonly path: 'held'
-      readonly why: 'paused' | 'no-tab' | 'typed' | 'capped' | 'draft' | 'not-waiting'
+      readonly why: 'paused' | 'no-tab' | 'typed' | 'capped' | 'draft' | 'not-waiting' | 'idle'
       readonly status?: SessionStatus
     }
   | { readonly to: string; readonly path: 'gone' }
