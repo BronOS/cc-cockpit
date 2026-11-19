@@ -931,6 +931,9 @@ function start(server: boolean): void {
     },
     onProjectOpened: (projectId, windowId) => {
       hosts.open(projectId, windowId).catch((err: unknown) => console.error('plugin host start failed', err))
+      // The desktop page is the owner at this computer (presence.ts): its selection and typing count from now on.
+      // Not in server mode, where the window is the hidden page and nobody sits at it.
+      if (!server) presence.viewJoined(desktopViewId(windowId), projectId, 'owner')
       // The first Claude tab (first-tab.ts) is for a window with nothing to bring back. Launch
       // queues the restore plan before opening the window, so hasPending is already accurate. The
       // saved record counts too: a project whose folder was missing at launch keeps its tabs (and
@@ -973,7 +976,9 @@ function start(server: boolean): void {
       // No window, no selection: a reopened window reports its own once its page loads. Every
       // view's selection of it goes first, so a remote view closing after this hands nothing back.
       selections.closeProject(projectId)
-      // Its presence goes (its views leave on their own), on a quit and a reopen too.
+      // Its presence goes, the desktop page's view first (browser views leave with their sockets), on a quit and a
+      // reopen too.
+      presence.viewLeft(desktopViewId(windowId))
       presence.projectClosed(projectId)
       sessions.setActive(projectId, undefined)
       // The user closed the window: its tabs are over, so is their record. While quitting the
@@ -3520,7 +3525,7 @@ function start(server: boolean): void {
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot(
         // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
-        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, downloadOffers: downloads, roomRemoveAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
+        { tabs, layouts, overlays, closeAsks, guestCloseAsks, linkAsks, trashAsks, downloadOffers: downloads, roomRemoveAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
         ctx
       ),
     mirror: terminalMirror,

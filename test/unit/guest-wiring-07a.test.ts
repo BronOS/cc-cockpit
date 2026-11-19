@@ -18,6 +18,7 @@ import {
 } from '../../src/main/guest-wiring'
 import type { GuestService } from '../../src/main/ipc/guest-deps'
 import { overlayHandler } from '../../src/main/socket/handlers'
+import { windowSnapshot, type SnapshotSources } from '../../src/main/web/connection'
 import { createGuestCloseAsks } from '../../src/main/tabs/guest-close-asks'
 import type { GuestAccess, GuestOnlyAccess } from '../../src/shared/guests'
 import type { ViewId, Who } from '../../src/shared/views'
@@ -230,6 +231,28 @@ describe('downloadViewAllowedOf (ctx.files.download, D-23)', () => {
   })
 })
 
+describe('ready replays pending guest close asks (D-9)', () => {
+  it("windowSnapshot lists the window's pending guest close asks; absent, none", async () => {
+    const asks = createGuestCloseAsks({ toWindow: () => true })
+    const pending = asks.ask(WINDOW, { tabId: 't2', guestId: 'g1', guestName: 'Bob', title: 'zsh' })
+    const base: SnapshotSources = {
+      tabs: { list: () => [] },
+      layouts: { view: () => ({ layout: {} as never, panels: [] }) },
+      overlays: { infos: () => [] },
+      closeAsks: { pendingFor: () => [] },
+      linkAsks: { pendingFor: () => [] }
+    }
+    const ctx = { windowId: WINDOW, projectId: PROJECT }
+    expect(windowSnapshot({ ...base, guestCloseAsks: asks }, ctx).guestCloseAsks).toEqual([
+      { requestId: 'guest-close-1', tabId: 't2', guestId: 'g1', guestName: 'Bob', title: 'zsh' }
+    ])
+    expect(windowSnapshot({ ...base, guestCloseAsks: asks }, { ...ctx, windowId: 8 }).guestCloseAsks).toEqual([])
+    expect(windowSnapshot(base, ctx).guestCloseAsks).toEqual([])
+    asks.windowClosed(WINDOW)
+    await expect(pending).resolves.toBe(false)
+  })
+})
+
 describe('ccc overlay carries its origin tab', () => {
   it("a session token's tab, never one from args; a window token none", async () => {
     const calls: unknown[] = []
@@ -322,6 +345,10 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain('selections.exitFocus(projectId, tabId, panes, guestSeesOf(')
     expect(INDEX).toContain('presence.tabClosed(tabId)')
     expect(INDEX).toContain('presence.projectClosed(projectId)')
+    // The desktop page is the owner in presence (desktop only), and leaves with its window.
+    expect(INDEX).toContain("if (!server) presence.viewJoined(desktopViewId(windowId), projectId, 'owner')")
+    expect(INDEX).toContain('presence.viewLeft(desktopViewId(windowId))')
+    expect(INDEX).toContain('{ tabs, layouts, overlays, closeAsks, guestCloseAsks, linkAsks,')
     expect(INDEX).toContain('guestCloseAsks.windowClosed(windowId)')
     expect(INDEX).toContain('openOverlay(windowId, spec, opener, peerGone, undefined, undefined, undefined, origin)')
   })

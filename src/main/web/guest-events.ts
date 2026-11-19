@@ -208,6 +208,8 @@ export function guestSnapshot(s: WebSnapshot, g: GuestEventContext): WebSnapshot
     layout: guestLayout(s.layout, g),
     overlays: guestOverlays(s.overlays, g),
     closeAsks: [],
+    // The owner's approvals: a guest's own ask is answered by the owner, never shown back to any guest.
+    guestCloseAsks: [],
     linkAsks: [],
     trashAsks,
     downloadOffers,

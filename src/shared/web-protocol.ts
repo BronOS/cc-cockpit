@@ -584,6 +584,12 @@ export interface WebSnapshot {
    * view joining mid-ask shows the dialog too; `sessions.closeSettled` takes them down.
    */
   closeAsks: Array<IpcEventMap['sessions.closeAsk']>
+  /**
+   * Guests' asks to close an owner's tab still waiting (tabs/guest-close-asks.ts, D-9), replayed to the shell's
+   * `tabs.guestCloseAsk` listener like `closeAsks`, so an owner view joining mid-ask can answer it. Always empty
+   * for a guest's view. Absent (an older fixture) reads as none.
+   */
+  guestCloseAsks?: Array<IpcEventMap['tabs.guestCloseAsk']>
   /** `ccc plugin link` confirms still waiting (LinkAsks.pendingFor): replayed to the shell's `links.ask` listener like `closeAsks`. */
   linkAsks: Array<IpcEventMap['links.ask']>
   /**

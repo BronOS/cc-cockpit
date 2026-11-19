@@ -163,6 +163,7 @@ describe('guestSnapshot', () => {
     layout,
     overlays: [],
     closeAsks: [{ secret: 'close' } as never],
+    guestCloseAsks: [{ secret: 'guest-close' } as never],
     linkAsks: [{ secret: 'link' } as never],
     trashAsks: [trash(), trash('hidden.plugin')],
     downloadOffers: [offer('offer-1'), offer('offer-2'), offer('offer-3')],
@@ -175,6 +176,7 @@ describe('guestSnapshot', () => {
   it('empties the owner\'s asks and notices, filters tabs and asks, and sets guest for the banner', () => {
     const s = guestSnapshot(full(), ctx())
     expect(s.closeAsks).toEqual([])
+    expect(s.guestCloseAsks).toEqual([])
     expect(s.linkAsks).toEqual([])
     expect(s.roomRemoveAsks).toEqual([])
     expect(s.notices).toEqual([])
