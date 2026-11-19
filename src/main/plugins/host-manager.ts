@@ -30,13 +30,14 @@
 // process with the same scope, revoked (every request refused) as soon as the host starts
 // stopping or its window closes, and disposed when that process goes.
 // Panel ports (Task 28): main hands the host one end of a panel's channel next to the RPC, as a
-// `{ panelPort: { pluginId, panelId } }` message with the port in its transfer list; the ids are
-// main's (panel-ports.ts checks them against `runningPanels`), never the renderer's.
-// Slot frames (design-next §2) the same way: `{ slotOpen: { pluginId, id, type, host, params } }`
+// `{ panelPort: { pluginId, panelId, view?, access } }` message with the port in its transfer list; the ids
+// are main's (panel-ports.ts checks them against `runningPanels`), never the renderer's, and `access` is the
+// view's (`owner` or a guest's role, from main's view records; design-guests §6), always set.
+// Slot frames (design-next §2) the same way: `{ slotOpen: { pluginId, id, type, host, params, view?, access } }`
 // with the frame's port, to the PROVIDER's host only (sendSlotPort), and the event
 // `slot.close { pluginId, id }` when the frame goes (closeSlot). Who provides a type is
 // slotProvider: the project's pick among the plugins of the last launch, running now.
-// Page tabs (design-editor.md §1) too: `{ pageTabOpen: { pluginId, id, type, params?, view? } }` with
+// Page tabs (design-editor.md §1) too: `{ pageTabOpen: { pluginId, id, type, params?, view?, access } }` with
 // the frame's port, to the TAB'S OWN plugin only (sendPageTabPort: running now and declaring the type),
 // and `pageTab.close { pluginId, id, view? }` when the frame goes in a view (closePageTab).
 // A plugin's html settings page (design-next §5.4) too: `{ settingsPageOpen: { pluginId, id, scope } }`
@@ -55,6 +56,7 @@
 import { join } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import type { ViewId } from '../../shared/views'
+import { portViewFields, type PortViewTag } from './panel-ports'
 import { PLUGIN_STOPPED_TEXT } from '../../shared/ipc'
 import { ACTIVATE_TIMEOUT_MS, type HostPluginSpec, type PluginRunState } from '../../host/loader'
 import { RpcEndpoint, RpcTimeoutError, type RpcPort } from '../../host/rpc'
@@ -63,7 +65,7 @@ import { CLI_CALL_TIMEOUT_MS, CLI_TIMEOUT_CODE, MAX_CLI_IN_FLIGHT, type PluginCl
 import { capText } from '../../shared/text'
 import { selectSlotProvider } from '../../shared/services'
 import { SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, type SlotHost } from '../../shared/slots'
-import type { JsonValue } from '../../sdk/types'
+import type { JsonValue, ViewAccess } from '../../sdk/types'
 import type { PageTabContribution } from '../../shared/page-tabs'
 import { MAX_NOTIFY_TEXT, parseNotifyOptions, type NotifyOutcome } from '../../shared/notify'
 import type { PluginNotice } from '../notifications/notifier'
@@ -886,12 +888,13 @@ export class HostManager {
   /**
    * Hand the project's host one end of a panel's channel, tagged with the plugin and panel id
    * (the caller took them from `runningPanels`) and, for a remote view's page, main's view id (the
-   * host keeps one port per view). False when there is no host process to take it.
+   * host keeps one port per view) and, always, the view's access (design-guests §6: the plugin's
+   * `from.access`; `owner` for the desktop page). False when there is no host process to take it.
    */
-  sendPanelPort(projectId: string, pluginId: string, panelId: string, port: unknown, view?: ViewId): boolean {
+  sendPanelPort(projectId: string, pluginId: string, panelId: string, port: unknown, tag: PortViewTag): boolean {
     const proc = this.hosts.get(projectId)?.proc
     if (!proc) return false
-    proc.transferPort(JSON.stringify({ panelPort: { pluginId, panelId, ...(view !== undefined ? { view } : {}) } }), port)
+    proc.transferPort(JSON.stringify({ panelPort: { pluginId, panelId, ...portViewFields(tag) } }), port)
     return true
   }
 
@@ -931,7 +934,7 @@ export class HostManager {
    */
   sendSlotPort(
     projectId: string,
-    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue; view?: ViewId },
+    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue; view?: ViewId; access: ViewAccess },
     port: unknown
   ): boolean {
     const rec = this.hosts.get(projectId)
@@ -957,7 +960,7 @@ export class HostManager {
    */
   sendPageTabPort(
     projectId: string,
-    open: { pluginId: string; id: string; type: string; params?: JsonValue; view?: ViewId },
+    open: { pluginId: string; id: string; type: string; params?: JsonValue; view?: ViewId; access: ViewAccess },
     port: unknown
   ): boolean {
     const rec = this.hosts.get(projectId)

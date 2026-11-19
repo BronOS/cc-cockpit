@@ -84,16 +84,27 @@
 //   viewGone    a view left (a browser, or the desktop window closed): its slot instances and the
 //               page it held end.
 //
+// Guests (design-guests §6, D-17): a remote view is the owner's or a guest's (`viewAccess`, read live on
+// every connect). An owner's view connects as before. A guest's view connects only to a plugin its project
+// shows guests (`guestPort`, the owner's setting, hidden by default) and only in the guest's own project;
+// its host tag then carries the guest's role (`access`: the plugin's `from.access` and the instances'
+// `access`, never the page's word), and a read guest of a plugin that is not guest-aware gets a one-way
+// line: the page end is flagged `oneWay` and the web relay drops what that page sends. A settings page is
+// never a guest's. The router checked the channel, the tab's scope and the plugin before this (design
+// §16.3); this is the last check, on main's own ids.
+//
 // No Electron import: the channel factory (MessageChannelMain) and the two senders are injected
 // by index.ts; unit tests pass fakes.
 
 import { errorText } from '../../shared/error-text'
 import { SLOT_FRAME_ID_PATTERN, slotPortKey, type SlotHost } from '../../shared/slots'
 import { PAGE_TAB_ID_PATTERN, pageTabPortKey } from '../../shared/page-tabs'
-import type { JsonValue } from '../../sdk/types'
+import type { JsonValue, ViewAccess } from '../../sdk/types'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from '../../shared/manifest'
 import { isSettingsPageScope, settingsPagePortKey } from '../../shared/settings-page'
-import { isRemoteViewId, type ViewId } from '../../shared/views'
+import type { GuestAccess } from '../../shared/guests'
+import type { PanelPortPayload } from '../../shared/ipc'
+import { isRemoteViewId, type GuestRole, type ViewId } from '../../shared/views'
 import type { SlotFrameRecord } from '../layout/layout-service'
 import { warnLog } from '../warn-log'
 
@@ -114,12 +125,12 @@ export interface PanelPortDeps<P> {
    * Hand the host its end, tagged (HostManager.sendPanelPort); false when there is no host. `view`
    * is set for a remote view's page only (the host keeps one port per view; absent = desktop).
    */
-  toHost(projectId: string, pluginId: string, panelId: string, port: P, view?: ViewId): boolean
+  toHost(projectId: string, pluginId: string, panelId: string, port: P, tag: PortViewTag): boolean
   /**
    * Post the page end to the view that asked (ViewRegistry.postPort on PANEL_PORT_CHANNEL). Throws
    * when the view is gone or cannot take a port; both ends are then closed.
    */
-  toRenderer(viewId: ViewId, payload: { panelKey: string; nonce: number }, port: P): void
+  toRenderer(viewId: ViewId, payload: PanelPortPayload, port: P): void
   /** Tell the project's window to reload these plugins' panels (`panels.reload`). */
   reload(projectId: string, pluginIds: string[]): void
   close(port: P): void
@@ -128,7 +139,7 @@ export interface PanelPortDeps<P> {
   /** Hand the provider's host its end with what onOpen gets (HostManager.sendSlotPort); false when it does not run. */
   slotToHost?(
     projectId: string,
-    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue; view?: ViewId },
+    open: { pluginId: string; id: string; type: string; host: SlotHost; params?: JsonValue; view?: ViewId; access: ViewAccess },
     port: P
   ): boolean
   /** The frame is gone in a view (`view` set for a remote one): tell the provider's host (HostManager.closeSlot). */
@@ -136,7 +147,11 @@ export interface PanelPortDeps<P> {
   /** A page tab of the project now (TabManager.list): main's own record of whose it is and what it shows. Absent: no page tabs. */
   pageTab?(projectId: string, tabId: string): PageTabRecord | undefined
   /** Hand the tab's plugin its end with what its onOpen gets (HostManager.sendPageTabPort); false when it does not run. */
-  pageTabToHost?(projectId: string, open: { pluginId: string; id: string; type: string; params?: JsonValue; view?: ViewId }, port: P): boolean
+  pageTabToHost?(
+    projectId: string,
+    open: { pluginId: string; id: string; type: string; params?: JsonValue; view?: ViewId; access: ViewAccess },
+    port: P
+  ): boolean
   /** The frame is gone in a view (`view` set for a remote one): tell the plugin's host (HostManager.closePageTab). */
   pageTabClosed?(projectId: string, pluginId: string, tabId: string, view?: ViewId): void
   /** The scopes of the plugin's settings page when it runs in the project's host now (HostManager.runningSettingsPage). */
@@ -150,6 +165,13 @@ export interface PanelPortDeps<P> {
    * tell the project's views (`settingsPage.held`). Called once per change, after it.
    */
   settingsPageHeld?(projectId: string, pluginId: string, viewId: ViewId | null): void
+  /**
+   * Who is behind a view now (GuestService.whoAccess, read on every connect: a kick or a role switch holds
+   * at once). Absent: no guests are wired, and every view is the owner's as before guests existed.
+   */
+  viewAccess?(viewId: ViewId): GuestAccess
+  /** The port a guest of `role` gets to the plugin's pages in the project (PluginGuestAccessService.port, D-17). */
+  guestPort?(projectId: string, pluginId: string, role: GuestRole): 'none' | 'oneWay' | 'full'
   log?: (message: string) => void
   /** Clock for the connect cap (tests); Date.now by default. */
   now?: () => number
@@ -179,9 +201,39 @@ interface OpenSlot {
   viewId: ViewId
 }
 
-/** What a host's tag carries for a view: a remote view's id, nothing for a desktop page (unchanged shape). */
+/**
+ * What a host's tag carries for a view: a remote view's id and, always, the view's access (design-guests §6,
+ * the plugin's `from.access` and the instances' `access`).
+ */
+export interface PortViewTag {
+  /** A remote view's id; absent for the desktop window's page. */
+  view?: ViewId
+  /** Always set (`owner` for the desktop page): the host refuses a tag without one, so a missed path fails closed. */
+  access: ViewAccess
+}
+
+/** The tag's fields as they go into a host message (spread into it). */
+export function portViewFields(tag: PortViewTag): { view?: ViewId; access: ViewAccess } {
+  return { ...(tag.view !== undefined ? { view: tag.view } : {}), access: tag.access }
+}
+
+/**
+ * How a view may hold a line to a plugin's page (design-guests §6, D-17): `tag` for the host, `oneWay` for
+ * the page end (main/web/port-relay.ts drops what the page sends). Undefined: refused.
+ */
+interface ViewLine {
+  tag: PortViewTag
+  oneWay?: true
+}
+
+/** A remote view's id for a host message; nothing for the desktop page. */
 function remoteOnly(viewId: ViewId): { view?: ViewId } {
   return isRemoteViewId(viewId) ? { view: viewId } : {}
+}
+
+/** The page end's flag for a one-way line (PanelPortPayload.oneWay); nothing otherwise. */
+function oneWayOf(line: ViewLine): { oneWay?: true } {
+  return line.oneWay === true ? { oneWay: true } : {}
 }
 
 function slotKey(projectId: string, viewId: ViewId, frameId: string): string {
@@ -235,14 +287,15 @@ export class PanelPortHub<P> {
     const panelId = panels?.find((p) => p === panelKey.slice(slash + 1))
     if (panels === undefined || panelId === undefined) return false
     const pluginId = panelKey.slice(0, slash)
+    const line = this.viewLine(projectId, viewId, pluginId)
+    if (line === undefined) return false
     // Per view: a phone's reload loop does not use up the desktop page's budget.
     if (!this.withinCap(projectId, viewId, pluginId, panelId)) return false
 
     const channel = this.deps.createChannel()
     let sent = false
     try {
-      const { view } = remoteOnly(viewId)
-      sent = this.deps.toHost(projectId, pluginId, panelId, channel.host, view)
+      sent = this.deps.toHost(projectId, pluginId, panelId, channel.host, line.tag)
     } catch (err) {
       this.log(`panel ${pluginId}/${panelId}: handing the host its port failed: ${errorText(err)}`)
     }
@@ -253,7 +306,7 @@ export class PanelPortHub<P> {
       return false
     }
     try {
-      this.deps.toRenderer(viewId, { panelKey: `${pluginId}/${panelId}`, nonce }, channel.renderer)
+      this.deps.toRenderer(viewId, { panelKey: `${pluginId}/${panelId}`, nonce, ...oneWayOf(line) }, channel.renderer)
     } catch (err) {
       // The view is closing (or cannot take a port): closing the page end tells the host's end,
       // which detaches only this view's port.
@@ -277,6 +330,9 @@ export class PanelPortHub<P> {
     // From here on the ids are main's own strings (the record's), not the renderer's.
     const id = frame.info.id
     const pluginId = frame.info.pluginId
+    // The provider's visibility decides (the frame shows the provider's page, not the host panel's plugin).
+    const line = this.viewLine(projectId, viewId, pluginId)
+    if (line === undefined) return false
     if (!this.withinCap(projectId, viewId, pluginId, slotPortKey(id))) return false
     // Its page loaded again in this view: the provider's instance for the old load goes first.
     // The same frame in another view is another instance and stays.
@@ -293,7 +349,7 @@ export class PanelPortHub<P> {
           type: frame.info.type,
           host: frame.host,
           ...(frame.params !== undefined ? { params: frame.params } : {}),
-          ...remoteOnly(viewId)
+          ...portViewFields(line.tag)
         },
         channel.host
       )
@@ -307,7 +363,7 @@ export class PanelPortHub<P> {
     }
     this.openSlots.set(slotKey(projectId, viewId, id), { projectId, pluginId, frameId: id, viewId })
     try {
-      this.deps.toRenderer(viewId, { panelKey: slotPortKey(id), nonce }, channel.renderer)
+      this.deps.toRenderer(viewId, { panelKey: slotPortKey(id), nonce, ...oneWayOf(line) }, channel.renderer)
     } catch (err) {
       this.log(`slot ${frame.info.type} of ${pluginId}: posting the view its port failed: ${errorText(err)}`)
       this.closeQuietly(channel.renderer)
@@ -330,6 +386,9 @@ export class PanelPortHub<P> {
     // From here on the ids are main's own strings (the record's), not the renderer's.
     const id = tab.id
     const pluginId = tab.pluginId
+    // Whether the guest may see the tab at all is the router's (scope, design §16.3); here, its plugin.
+    const line = this.viewLine(projectId, viewId, pluginId)
+    if (line === undefined) return false
     // A reconnect loop (a page tab has no reload, but its relay can resync) is bounded like a reload loop.
     if (!this.withinCap(projectId, viewId, pluginId, pageTabPortKey(id))) return false
     // A new line for this view's frame: the plugin's instance of the old line goes first. The same
@@ -341,7 +400,7 @@ export class PanelPortHub<P> {
     try {
       sent = this.deps.pageTabToHost(
         projectId,
-        { pluginId, id, type: tab.type, ...(tab.params !== undefined ? { params: tab.params } : {}), ...remoteOnly(viewId) },
+        { pluginId, id, type: tab.type, ...(tab.params !== undefined ? { params: tab.params } : {}), ...portViewFields(line.tag) },
         channel.host
       )
     } catch (err) {
@@ -354,7 +413,7 @@ export class PanelPortHub<P> {
     }
     this.openPageTabs.set(slotKey(projectId, viewId, id), { projectId, pluginId, tabId: id, viewId })
     try {
-      this.deps.toRenderer(viewId, { panelKey: pageTabPortKey(id), nonce }, channel.renderer)
+      this.deps.toRenderer(viewId, { panelKey: pageTabPortKey(id), nonce, ...oneWayOf(line) }, channel.renderer)
     } catch (err) {
       this.log(`page tab ${tab.type} of ${pluginId}: posting the view its port failed: ${errorText(err)}`)
       this.closeQuietly(channel.renderer)
@@ -399,6 +458,8 @@ export class PanelPortHub<P> {
     if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return false
     if (typeof pluginId !== 'string' || pluginId.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(pluginId)) return false
     if (!isSettingsPageScope(scope) || !this.deps.settingsPageToHost) return false
+    // A plugin's settings page is the owner's, never a guest's (design §5: "settings pages never").
+    if (!this.ownerView(viewId)) return false
     const scopes = this.deps.settingsPageScopes?.(projectId, pluginId)
     if (scopes === undefined || !scopes.includes(scope)) return false
     if (!this.withinCap(projectId, viewId, pluginId, settingsPagePortKey(pluginId))) return false
@@ -536,6 +597,27 @@ export class PanelPortHub<P> {
   hostReady(projectId: string, pluginIds: readonly string[]): void {
     if (pluginIds.length === 0) return
     this.deps.reload(projectId, [...pluginIds])
+  }
+
+  /**
+   * How `viewId` may hold a line to `pluginId`'s pages in the project (see the top of the file, "Guests").
+   * Read on every connect, never cached: a kick, a role switch or a hidden plugin holds for the next one.
+   */
+  private viewLine(projectId: string, viewId: ViewId, pluginId: string): ViewLine | undefined {
+    const { view } = remoteOnly(viewId)
+    if (view === undefined) return { tag: { access: 'owner' } }
+    const access = this.deps.viewAccess?.(viewId) ?? { kind: 'owner' as const }
+    if (access.kind === 'owner') return { tag: { view, access: 'owner' } }
+    if (access.kind === 'revoked' || access.projectId !== projectId) return undefined
+    const port = this.deps.guestPort?.(projectId, pluginId, access.role) ?? 'none'
+    if (port === 'none') return undefined
+    return { tag: { view, access: access.role }, ...(port === 'oneWay' ? { oneWay: true as const } : {}) }
+  }
+
+  /** Whether `viewId` is an owner's (the desktop page, or a remote view main knows as the owner's). */
+  private ownerView(viewId: ViewId): boolean {
+    if (!isRemoteViewId(viewId)) return true
+    return (this.deps.viewAccess?.(viewId) ?? { kind: 'owner' }).kind === 'owner'
   }
 
   /**

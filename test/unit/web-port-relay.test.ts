@@ -147,7 +147,7 @@ function setup() {
     createChannel: () => channel(++made),
     runningPanels: (projectId, pluginId) => (projectId === 'p1' ? running[pluginId] : undefined),
     toHost: (_projectId, pluginId, panelId, port, view) => {
-      hostPorts.push({ key: `${pluginId}/${panelId}`, port, ...(view !== undefined ? { view } : {}) })
+      hostPorts.push({ key: `${pluginId}/${panelId}`, port, ...(view.view !== undefined ? { view: view.view } : {}) })
       return true
     },
     toRenderer: (viewId, payload, port) => views.postPort(viewId, PANEL_PORT_CHANNEL, payload, port),

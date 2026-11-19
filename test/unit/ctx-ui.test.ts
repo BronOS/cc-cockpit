@@ -778,7 +778,7 @@ describe('ctx.panels', () => {
     // Not shown yet: dropped, no throw.
     ctx.panels.post('board', { early: true })
     const { port, page } = panelPort()
-    expect(contexts.attachPanelPort('a.one', 'board', port)).toBe(true)
+    expect(contexts.attachPanelPort('a.one', 'board', port, undefined, 'owner')).toBe(true)
     ctx.panels.post('board', { items: [1, 2] })
     expect(page.sent).toEqual([])
     const received: unknown[] = []
@@ -807,10 +807,10 @@ describe('ctx.panels', () => {
     expect(() => ctx.panels.post('board', 'x'.repeat(1024 * 1024 + 1))).toThrow('exceeds')
     // A port for another plugin's panel, or for a plugin that does not run here, is closed at once.
     const stray = panelPort()
-    expect(contexts.attachPanelPort('a.one', 'inbox', stray.port)).toBe(false)
+    expect(contexts.attachPanelPort('a.one', 'inbox', stray.port, undefined, 'owner')).toBe(false)
     expect(stray.port.closed).toBe(true)
     const unknown = panelPort()
-    expect(contexts.attachPanelPort('x.y', 'board', unknown.port)).toBe(false)
+    expect(contexts.attachPanelPort('x.y', 'board', unknown.port, undefined, 'owner')).toBe(false)
     expect(unknown.port.closed).toBe(true)
   })
 
@@ -819,9 +819,9 @@ describe('ctx.panels', () => {
     const heard: unknown[] = []
     ctx.panels.onMessage('board', (m) => heard.push(m))
     const first = panelPort()
-    contexts.attachPanelPort('a.one', 'board', first.port)
+    contexts.attachPanelPort('a.one', 'board', first.port, undefined, 'owner')
     const second = panelPort()
-    contexts.attachPanelPort('a.one', 'board', second.port)
+    contexts.attachPanelPort('a.one', 'board', second.port, undefined, 'owner')
     expect(first.port.closed).toBe(true)
     first.page.postMessage('"from the old page"')
     second.page.postMessage('"from the new page"')
@@ -837,7 +837,7 @@ describe('ctx.panels', () => {
     const heard: unknown[] = []
     ctx.panels.onMessage('board', (m) => heard.push(m))
     const { port, page } = panelPort()
-    contexts.attachPanelPort('a.one', 'board', port)
+    contexts.attachPanelPort('a.one', 'board', port, undefined, 'owner')
     contexts.dispose('a.one')
     expect(port.closed).toBe(true)
     page.postMessage('"late"')

@@ -26,7 +26,8 @@ import {
   type ProcessSpawnOptions,
   type PluginSettings,
   type ServiceHandle,
-  type ServiceSet
+  type ServiceSet,
+  type ViewAccess
 } from '../../sdk/types'
 import { errorText, toError } from '../../shared/error-text'
 import { normalizeCliResult, type PluginCliResult } from '../../shared/plugin-cli'
@@ -51,6 +52,7 @@ import { createThemesApi } from './themes'
 import { createUiApi, OverlayLinks, PanelActions, PanelPorts, type PanelPort } from './ui'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { dispatchInView } from './origin-view'
+import { HostViews, type ViewChange } from './views'
 import { OverlayButtonRegistry } from '../overlay-buttons'
 import { createWebviewApi, WebviewHub } from './webview'
 
@@ -156,19 +158,23 @@ export class HostContexts {
   private readonly slots: SlotHub
   private readonly settingsPages: SettingsPageHub
   private readonly pageTabs: PageTabHub
+  /** ctx.views: each plugin's views and their access, from main's port tags (views.ts). */
+  private readonly views: HostViews
 
   constructor(private readonly deps: ContextDeps) {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
-    this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.views = new HostViews((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m), this.views)
     this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
     this.typeButtons = new OverlayButtonRegistry((pluginId, m) => deps.log(pluginId, 'warn', m))
-    this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
-    this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m))
+    this.slots = new SlotHub((pluginId, m) => deps.log(pluginId, 'warn', m), this.views)
     this.settingsPages = new SettingsPageHub((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.pageTabs = new PageTabHub(
       (pluginId, m) => deps.log(pluginId, 'warn', m),
-      (method, params) => (deps.call ? deps.call(method, params) : Promise.reject(new Error('no connection to the app')))
+      (method, params) => (deps.call ? deps.call(method, params) : Promise.reject(new Error('no connection to the app'))),
+      this.views
     )
   }
 
@@ -459,11 +465,13 @@ export class HostContexts {
       panels: ui.panels,
       badge: ui.badge,
       overlay: ui.overlay,
-      // Task 01 stub (guests, design-guests §6): every view is the owner's while main refuses every guest
-      // caller; task 04 learns views and their access from main's port tags.
+      // Guests (design-guests §6): the views this plugin's pages are open in, from main's port tags (views.ts).
       views: Object.freeze({
-        access: (view: string) => (view === 'desktop' || viewIdOf(view) !== undefined ? ('owner' as const) : undefined),
-        onChange: () => () => {}
+        access: (view: string) => (typeof view === 'string' ? this.views.access(spec.id, view) : undefined),
+        onChange: (listener: (e: ViewChange) => void): Disposer => {
+          if (typeof listener !== 'function') throw new TypeError('views.onChange needs a function')
+          return this.views.onChange(spec.id, listener)
+        }
       }),
       slots: createSlotsApi({ pluginId: spec.id, types: spec.slotTypes ?? [], call, alive, guardAsync, hub: this.slots }),
       tabs: createTabsApi({ pluginId: spec.id, types: spec.pageTabTypes ?? [], call, alive, guardAsync, hub: this.pageTabs }),
@@ -578,6 +586,8 @@ export class HostContexts {
     rt.cliCalls.clear()
     rt.cli.clear()
     rt.openListeners.clear()
+    // First: the lines the hubs end below must not call this plugin's onChange listeners while it goes.
+    this.views.removePlugin(pluginId)
     this.sessions.removePlugin(pluginId)
     this.ports.removePlugin(pluginId)
     this.overlays.removePlugin(pluginId)
@@ -626,14 +636,14 @@ export class HostContexts {
    * with plugin and panel id, and `view` for a remote view's page). Only for a plugin that runs here and a panel its manifest declares;
    * false (and the port closed) otherwise.
    */
-  attachPanelPort(pluginId: string, panelId: string, port: PanelPort, view?: ViewId): boolean {
+  attachPanelPort(pluginId: string, panelId: string, port: PanelPort, view: ViewId | undefined, access: ViewAccess): boolean {
     const rt = this.runtimes.get(pluginId)
     if (!rt || rt.disposed || !rt.spec.panels.includes(panelId)) {
       port.close()
       return false
     }
     // One port per view (design-web.md §5.3); `view` absent is the desktop window's page.
-    this.ports.attach(pluginId, panelId, port, view)
+    this.ports.attach(pluginId, panelId, port, view, access)
     return true
   }
 

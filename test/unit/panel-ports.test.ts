@@ -20,8 +20,8 @@ const W1 = 'web:1'
 const W2 = 'web:2'
 
 interface Sent {
-  host: { projectId: string; pluginId: string; panelId: string; port: FakePort; view?: string }[]
-  renderer: { viewId: string; payload: { panelKey: string; nonce: number }; port: FakePort }[]
+  host: { projectId: string; pluginId: string; panelId: string; port: FakePort; view?: string; access?: string }[]
+  renderer: { viewId: string; payload: { panelKey: string; nonce: number; oneWay?: true }; port: FakePort }[]
   reloads: { projectId: string; pluginIds: string[] }[]
   channels: { host: FakePort; renderer: FakePort }[]
 }
@@ -37,8 +37,8 @@ function hub(overrides: Partial<PanelPortDeps<FakePort>> = {}): { hub: PanelPort
       return ch
     },
     runningPanels: (projectId, pluginId) => running[projectId]?.[pluginId],
-    toHost: (projectId, pluginId, panelId, port, view) => {
-      sent.host.push({ projectId, pluginId, panelId, port, ...(view !== undefined ? { view } : {}) })
+    toHost: (projectId, pluginId, panelId, port, tag) => {
+      sent.host.push({ projectId, pluginId, panelId, port, ...(tag !== undefined ? { view: tag.view } : {}), ...(tag?.access !== undefined ? { access: tag.access } : {}) })
       return true
     },
     toRenderer: (viewId, payload, port) => void sent.renderer.push({ viewId, payload, port }),
@@ -56,7 +56,7 @@ describe('PanelPortHub', () => {
     expect(h.connect('p1', D1, 'a.one/board', 7)).toBe(true)
     expect(sent.channels).toHaveLength(1)
     const ch = sent.channels[0]!
-    expect(sent.host).toEqual([{ projectId: 'p1', pluginId: 'a.one', panelId: 'board', port: ch.host }])
+    expect(sent.host).toEqual([{ projectId: 'p1', pluginId: 'a.one', panelId: 'board', port: ch.host, access: 'owner' }])
     expect(sent.renderer).toEqual([{ viewId: D1, payload: { panelKey: 'a.one/board', nonce: 7 }, port: ch.renderer }])
     expect(ch.host.closed || ch.renderer.closed).toBe(false)
   })
@@ -177,7 +177,7 @@ describe('the host side of a panel port', () => {
       return undefined
     }
     const port: PanelPort = fromMainPort(raw, () => contexts.detachPanelPort(tag.pluginId, tag.panelId, port))
-    contexts.attachPanelPort(tag.pluginId, tag.panelId, port, tag.view)
+    contexts.attachPanelPort(tag.pluginId, tag.panelId, port, tag.view, tag.access)
     return port
   }
 
@@ -189,7 +189,7 @@ describe('the host side of a panel port', () => {
     return { contexts, heard, post: (m) => ctx.panels.post('board', m as never) }
   }
 
-  const tag = JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board' } })
+  const tag = JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board', access: 'owner' } })
 
   it('starts the port once it is listened to; messages flow both ways as JSON strings', async () => {
     const { contexts, heard, post } = host()
@@ -237,7 +237,7 @@ describe('the host side of a panel port', () => {
     expect(toNew).toEqual(['"still connected"'])
   })
 
-  const viewTag = (view: string): string => JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board', view } })
+  const viewTag = (view: string): string => JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board', view, access: 'owner' } })
 
   it("keeps one port per view: a post reaches every view's page and the listener hears every page", async () => {
     const { contexts, heard, post } = host()
@@ -340,10 +340,10 @@ describe('the host side of a panel port', () => {
   it('closes a port for a plugin or panel this host does not run, and one main did not tag', () => {
     const { contexts } = host()
     const undeclared = channel(1)
-    receive(contexts, JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'nope' } }), undeclared.host)
+    receive(contexts, JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'nope', access: 'owner' } }), undeclared.host)
     expect(undeclared.host.closed).toBe(true)
     const otherPlugin = channel(2)
-    receive(contexts, JSON.stringify({ panelPort: { pluginId: 'a.two', panelId: 'board' } }), otherPlugin.host)
+    receive(contexts, JSON.stringify({ panelPort: { pluginId: 'a.two', panelId: 'board', access: 'owner' } }), otherPlugin.host)
     expect(otherPlugin.host.closed).toBe(true)
     const untagged = channel(3)
     receive(contexts, '{"id":1,"method":"x"}', untagged.host)
@@ -351,8 +351,8 @@ describe('the host side of a panel port', () => {
   })
 
   it('panelPortTag reads main\'s tag and nothing else', () => {
-    expect(panelPortTag(tag)).toEqual({ pluginId: 'a.one', panelId: 'board' })
-    expect(panelPortTag(viewTag('web:12'))).toEqual({ pluginId: 'a.one', panelId: 'board', view: 'web:12' })
+    expect(panelPortTag(tag)).toEqual({ pluginId: 'a.one', panelId: 'board', access: 'owner' })
+    expect(panelPortTag(viewTag('web:12'))).toEqual({ pluginId: 'a.one', panelId: 'board', view: 'web:12', access: 'owner' })
     // A view main does not mint (a desktop id, junk, a non-string) is refused, never read as the desktop's.
     for (const bad of ['desktop:1', 'web:0', 'web:x', '', 7, null]) {
       expect(panelPortTag(JSON.stringify({ panelPort: { pluginId: 'a.one', panelId: 'board', view: bad } })), String(bad)).toBeUndefined()
@@ -394,7 +394,7 @@ describe('PanelPortHub slot frames (design-next §2)', () => {
     const ch = sent.channels[0]!
     // The provider gets the port, the host panel's place and the params; never the host panel's host.
     expect(opened).toEqual([
-      { projectId: 'p1', open: { pluginId: 'a.cal', id: 's1', type: 'agenda', host: frame.host, params: { day: 'today' } }, port: ch.host }
+      { projectId: 'p1', open: { pluginId: 'a.cal', id: 's1', type: 'agenda', host: frame.host, params: { day: 'today' }, access: 'owner' }, port: ch.host }
     ])
     expect(sent.host).toEqual([])
     expect(sent.renderer).toEqual([{ viewId: D1, payload: { panelKey: '@slot/s1', nonce: 5 }, port: ch.renderer }])

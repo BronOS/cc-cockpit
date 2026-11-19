@@ -55,13 +55,14 @@
 //   log        { pluginId, level, text }      a ctx.log line
 //   status     { pluginId, error: string|null }  a scheduled job started or stopped failing (the ⚠)
 // Next to the RPC, main hands over panel ports (src/main/plugins/panel-ports.ts): a message
-// `{ "panelPort": { pluginId, panelId, view? } }` with the port in its transfer list. Those never reach the
+// `{ "panelPort": { pluginId, panelId, view?, access } }` with the port in its transfer list (`access`: the
+// view's, `owner` or a guest's role, always set; a tag without one is refused, ctx/views.ts). Those never reach the
 // RPC endpoint; they are attached to the plugin's ctx.panels (host/ctx/ui.ts). A slot frame the
-// plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params?, view? } }`
+// plugin provides arrives the same way as `{ "slotOpen": { pluginId, id, type, host, params?, view?, access } }`
 // and ends with the `slot.close { pluginId, id, view? }` event or its port closing (host/ctx/slots.ts).
 // A plugin's settings page likewise: `{ "settingsPageOpen": { pluginId, id, scope, view? } }`, ended by
 // `settingsPage.close { pluginId, id }` or its port closing (host/ctx/settings-page.ts). A page tab's
-// frame: `{ "pageTabOpen": { pluginId, id, type, params?, view? } }`, ended by `pageTab.close` or its
+// frame: `{ "pageTabOpen": { pluginId, id, type, params?, view?, access } }`, ended by `pageTab.close` or its
 // port closing (host/ctx/tabs.ts).
 import { HostContexts, type LogLevel } from './ctx'
 import { carryView } from './ctx/origin-view'
@@ -126,7 +127,7 @@ function start(): void {
     // The detach on close is tied to THIS port: the close of a reloaded page's old port can come
     // after the new port is attached, and must not take the new one down.
     const panelPort: PanelPort = fromMainPort(raw, () => contexts.detachPanelPort(tag.pluginId, tag.panelId, panelPort))
-    contexts.attachPanelPort(tag.pluginId, tag.panelId, panelPort, tag.view)
+    contexts.attachPanelPort(tag.pluginId, tag.panelId, panelPort, tag.view, tag.access)
   }
   const port: RpcPort = {
     postMessage: (message) => parentPort.postMessage(message),
