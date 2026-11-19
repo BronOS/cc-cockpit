@@ -166,6 +166,14 @@ export interface PluginPagesDeps {
   /** The built panel SDK (out/sdk/panel.js). */
   sdkFile: string
   log?: (message: string) => void
+  /**
+   * The guest a device stands for (design-guests §5, spec-review item 21): undefined for an owner device,
+   * the guest's project for a live guest, `null` for a guest device whose guest is gone (served nothing).
+   * Absent: every device is an owner device.
+   */
+  guestProject?(deviceId: string): string | null | undefined
+  /** Whether the project's guests see the plugin (GuestStore.pluginVisible). Absent: none. */
+  guestPluginVisible?(projectId: string, pluginId: string): boolean
 }
 
 /** An answer for the gateway to write as is (status, headers, body). */
@@ -210,12 +218,40 @@ export class PluginPages {
 
   constructor(private readonly deps: PluginPagesDeps) {}
 
-  /** The web shell's paths for this device: a prefix per installed plugin, and the overlay prefix. */
+  /**
+   * The web shell's paths for this device: a prefix per installed plugin, and the overlay prefix. A guest's
+   * device gets only the plugins its project shows guests and no overlay prefix (a guest never loads an inline
+   * overlay page, design §16.3): no token is even minted for the rest, so there is nothing to try.
+   */
   paths(deviceId: string): WebPagePaths {
     const plugins: Record<string, string> = {}
+    const guest = this.guestProject(deviceId)
+    if (guest === null) return { plugins, overlays: '' }
     // Sorted: the same set gives the same JSON, so WebConnection.refreshPaths sends only a change.
-    for (const id of [...new Set(this.deps.pluginIds())].sort()) plugins[id] = pluginPrefix(this.tokens.tokenFor(deviceId, id), id)
+    for (const id of [...new Set(this.deps.pluginIds())].sort()) {
+      if (guest !== undefined && !this.guestSees(guest, id)) continue
+      plugins[id] = pluginPrefix(this.tokens.tokenFor(deviceId, id), id)
+    }
+    if (guest !== undefined) return { plugins, overlays: '' }
     return { plugins, overlays: overlayPrefix(this.tokens.tokenFor(deviceId, OVERLAY_KEY)) }
+  }
+
+  /** The device's guest project, read live; a lookup that throws counts as a gone guest (served nothing). */
+  private guestProject(deviceId: string): string | null | undefined {
+    try {
+      return this.deps.guestProject?.(deviceId)
+    } catch (err) {
+      this.deps.log?.(`web access: guest lookup failed: ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
+  }
+
+  private guestSees(projectId: string, pluginId: string): boolean {
+    try {
+      return this.deps.guestPluginVisible?.(projectId, pluginId) === true
+    } catch {
+      return false
+    }
   }
 
   /** Whether the gateway should hand this request path here (before its cookie check). */
@@ -258,8 +294,13 @@ export class PluginPages {
       if (owner) this.deps.log?.(`web access: plugin path refused (token of another plugin)`)
       return pageNotFound()
     }
-    // Enabled in a project one of the device's open views shows: the first such project's folder.
-    const views = this.deps.deviceViews(owner.deviceId)
+    // Enabled in a project one of the device's open views shows: the first such project's folder. A guest's
+    // device: only its own project, and only a plugin that project shows guests (read live: a plugin hidden a
+    // moment ago is 404 now, even before the token drop of D-30 reaches this device).
+    const guest = this.guestProject(owner.deviceId)
+    if (guest === null) return pageNotFound()
+    const views = this.deps.deviceViews(owner.deviceId).filter((v) => guest === undefined || v.projectId === guest)
+    if (guest !== undefined && !this.guestSees(guest, pluginId)) return pageNotFound()
     let dir: string | undefined
     for (const { projectId } of views) {
       dir = this.deps.pluginDir(projectId, pluginId)
@@ -301,6 +342,8 @@ export class PluginPages {
     const owner = this.owner(parts[2])
     const overlayId = parts[3] ?? ''
     if (!owner || owner.key !== OVERLAY_KEY || !isOverlayId(overlayId)) return pageNotFound()
+    // A guest never loads an inline overlay page (its paths have none; an older token is refused here).
+    if (this.guestProject(owner.deviceId) !== undefined) return pageNotFound()
     const page = this.deps.overlayPage(overlayId)
     // Open, and in a window the device has a view of: another window's overlay id is not enough.
     if (!page || !this.deps.deviceViews(owner.deviceId).some((v) => v.windowId === page.windowId)) return pageNotFound()

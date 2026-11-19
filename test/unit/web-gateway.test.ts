@@ -22,7 +22,20 @@ import { DeviceStore } from '../../src/main/web/devices'
 import { CollapsedLog, MAX_SIGN_IN_BODY, WebGateway, type GatewayDeps, type ServerProjects, type WsModule } from '../../src/main/web/gateway'
 import { openProjectFromWeb } from '../../src/main/web/open-project'
 import { webAccessOf } from '../../src/main/web/settings'
-import { CLOSE, DEVICE_KEY_HEADER, SESSIONS_PATH, SIGN_IN_LINK_PATH, WS_PROTOCOL } from '../../src/shared/web-protocol'
+import {
+  CLOSE,
+  DEVICE_KEY_HEADER,
+  INVITE_PATH,
+  PROJECTS_PATH,
+  SESSION_PATH,
+  SESSIONS_PATH,
+  SIGN_IN_LINK_PATH,
+  WS_KEY_PROTOCOL_PREFIX,
+  WS_PROTOCOL,
+  type WebInviteReply,
+  type WebSessionReply
+} from '../../src/shared/web-protocol'
+import { GuestStore } from '../../src/main/web/guests'
 import { countSessions } from '../../src/main/web/session-counts'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { FAKE_SHELL_HTML, FAKE_SHELL_JS, writeFakeShellDir } from '../fakes/fake-shell-dir'
@@ -1726,5 +1739,144 @@ describe('downloads (/d/)', () => {
     for (const h of held) h.destroy()
     s.gw.disconnectDevice(s.deviceId)
     expect(await stalled.ended()).toBe('cut')
+  })
+})
+
+// Guests at the gateway (design-guests §3, §5, D-19, D-26, D-32): the invite redeem route with its own bucket,
+// `/auth/session` naming the guest or saying its access ended, a guest's own project only in the picker's list,
+// and every other device route a 404 to a guest.
+describe('guests', () => {
+  function post(port: number, opts: { path: string; headers: Record<string, string>; body?: string }): Promise<Answer> {
+    return new Promise((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, method: 'POST', path: opts.path, headers: opts.headers, agent: false }, (res) => {
+        let body = ''
+        res.on('data', (d: Buffer) => (body += d.toString()))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }))
+      })
+      req.on('error', reject)
+      req.end(opts.body)
+    })
+  }
+
+  async function guestSetup() {
+    const port = await freePort()
+    const host = `127.0.0.1:${port}`
+    const origin = `http://${host}`
+    const dir = mkdtempSync(join(tmpdir(), 'ccc-gw-guests-'))
+    dirs.push(dir)
+    const accessLog = new AccessLog()
+    const devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog })
+    const auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog })
+    const guests = new GuestStore({
+      devices,
+      accessLog,
+      mode: () => auth.mode,
+      target: () => ({ origin, loopbackOnly: true }),
+      tabOf: () => undefined,
+      whoOfView: () => undefined,
+      closeGuestViews: () => 0,
+      guestLive: () => false,
+      log: () => {},
+      setInterval: () => ({ stop: () => {} })
+    })
+    const logs: string[] = []
+    const gw = new WebGateway({
+      log: (m) => logs.push(m),
+      loadWs: async () => wsModule,
+      auth,
+      accessLog,
+      shellDir: writeFakeShellDir(join(dir, 'shell')),
+      openProjects: () => [
+        { id: 'p1', name: 'one', path: '/work/one' },
+        { id: 'p2', name: 'two', path: '/work/two' }
+      ],
+      sessionCounts: () => ({ projects: [] }) as never,
+      guests
+    })
+    gateway = gw
+    await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
+    const invite = async (name = 'Bob'): Promise<{ token: string; guestId: string }> => {
+      const a = await guests.invite('p1', { name, role: 'read', scope: 'all', lifetime: 'forever' })
+      if (!a.ok) throw new Error(a.error)
+      return { token: a.link.split('#i=')[1] as string, guestId: a.guestId }
+    }
+    const redeem = (token: unknown, extra: Record<string, string> = {}) =>
+      post(port, { path: INVITE_PATH, headers: { Host: host, Origin: origin, 'Content-Type': 'application/json', ...extra }, body: JSON.stringify({ token }) })
+    const get = (path: string, cookie: string, key: string) => http(port, { path, headers: { Host: host, Cookie: cookie, [DEVICE_KEY_HEADER]: key } })
+    return { port, host, origin, guests, auth, devices, logs, invite, redeem, get }
+  }
+
+  it('redeems once: a guest cookie and key, the project; a second redeem is 410 used', async () => {
+    const g = await guestSetup()
+    const { token } = await g.invite()
+    const res = await g.redeem(token)
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as WebInviteReply
+    expect(body).toMatchObject({ ok: true, project: 'p1', device: { name: 'Bob' } })
+    expect(String(res.headers['set-cookie'])).toContain('ccc_device=')
+    const again = await g.redeem(token)
+    expect(again.status).toBe(410)
+    expect(JSON.parse(again.body)).toEqual({ ok: false, error: 'used' })
+    // Never a token in the gateway's log.
+    expect(g.logs.join('\n')).not.toContain(token)
+  })
+
+  it('answers 404 invalid, 400 bad-request, and refuses a POST from another origin', async () => {
+    const g = await guestSetup()
+    expect((await g.redeem('A'.repeat(43))).status).toBe(404)
+    expect((await g.redeem(42)).status).toBe(400)
+    const { token } = await g.invite()
+    expect((await g.redeem(token, { Origin: 'http://evil.example' })).status).toBe(403)
+    expect((await g.redeem(token)).status).toBe(200)
+  })
+
+  it("refuses a browser already signed in as an owner device (409), and lets a guest's browser redeem", async () => {
+    const g = await guestSetup()
+    const link = await g.auth.accessLink(g.origin)
+    if (!link.ok) throw new Error('no link')
+    const signIn = await post(g.port, {
+      path: SIGN_IN_LINK_PATH,
+      headers: { Host: g.host, Origin: g.origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: link.link.split('#t=')[1], name: 'Laptop' })
+    })
+    const ownerCookie = String(signIn.headers['set-cookie']).split(';')[0] as string
+    const ownerKey = (JSON.parse(signIn.body) as { key: string }).key
+    const { token } = await g.invite()
+    const refused = await g.redeem(token, { Cookie: ownerCookie, [DEVICE_KEY_HEADER]: ownerKey })
+    expect(refused.status).toBe(409)
+    expect(JSON.parse(refused.body)).toEqual({ ok: false, error: 'owner-device' })
+    const first = await g.redeem(token)
+    const guestCookie = String(first.headers['set-cookie']).split(';')[0] as string
+    const guestKey = (JSON.parse(first.body) as { key: string }).key
+    const second = await g.invite('Carol')
+    expect((await g.redeem(second.token, { Cookie: guestCookie, [DEVICE_KEY_HEADER]: guestKey })).status).toBe(200)
+  })
+
+  it("a guest's session names it; its picker list is its own project with no path; other routes are 404", async () => {
+    const g = await guestSetup()
+    const { token } = await g.invite()
+    const res = await g.redeem(token)
+    const cookie = String(res.headers['set-cookie']).split(';')[0] as string
+    const key = (JSON.parse(res.body) as { key: string }).key
+    const session = JSON.parse((await g.get(SESSION_PATH, cookie, key)).body) as WebSessionReply
+    expect(session.guest).toEqual({ name: 'Bob', role: 'read', project: 'p1' })
+    const projects = await g.get(PROJECTS_PATH, cookie, key)
+    expect(JSON.parse(projects.body)).toEqual({ projects: [{ id: 'p1', name: 'one', path: '' }] })
+    expect((await g.get(SESSIONS_PATH, cookie, key)).status).toBe(404)
+    expect((await g.get('/api/nothing', cookie, key)).status).toBe(404)
+  })
+
+  it('a kicked guest is no one: 401 on its routes, refused upgrade, and the session says its access ended (D-32)', async () => {
+    const g = await guestSetup()
+    const { token, guestId } = await g.invite()
+    const res = await g.redeem(token)
+    const cookie = String(res.headers['set-cookie']).split(';')[0] as string
+    const key = (JSON.parse(res.body) as { key: string }).key
+    g.guests.kick(guestId)
+    expect((await g.get(PROJECTS_PATH, cookie, key)).status).toBe(401)
+    const session = JSON.parse((await g.get(SESSION_PATH, cookie, key)).body) as WebSessionReply
+    expect(session.device).toBeNull()
+    expect(session.guestEnded).toBe(true)
+    expect(await upgrade(g.port, { Host: g.host, Origin: g.origin, Cookie: cookie, 'Sec-WebSocket-Protocol': `${WS_PROTOCOL}, ${WS_KEY_PROTOCOL_PREFIX}${key}` })).toBe(401)
   })
 })

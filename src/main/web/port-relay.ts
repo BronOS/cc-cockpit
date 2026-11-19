@@ -92,6 +92,14 @@ interface Held {
   paused?: 'waiting' | 'told'
   /** A page tab message too big to send was dropped and logged (once per port). */
   oversizeLogged?: boolean
+  /**
+   * D-17: a read guest's port to a plugin that is not guest-aware (PanelPortPayload.oneWay): host to page
+   * only. The page's messages are dropped here, in main, so a plugin that never heard of guests cannot be
+   * driven by one (a read guest pressing its buttons would act as the owner).
+   */
+  oneWay?: true
+  /** A dropped page message of a one-way port was logged (once per port). */
+  oneWayLogged?: boolean
 }
 
 function isRelayPort(value: unknown): value is RelayPort {
@@ -124,7 +132,7 @@ export class PortRelay {
   take(channel: string, payload: unknown, port: unknown): void {
     if (this.closed) throw new Error('the view is gone')
     if (channel !== PANEL_PORT_CHANNEL) throw new Error(`not a panel port channel: ${channel.slice(0, 64)}`)
-    const p = payload as { panelKey?: unknown; nonce?: unknown } | null
+    const p = payload as { panelKey?: unknown; nonce?: unknown; oneWay?: unknown } | null
     const key = p?.panelKey
     const nonce = p?.nonce
     if (typeof key !== 'string' || key === '' || key.length > MAX_PORT_KEY_LENGTH) throw new Error('bad panel key')
@@ -136,6 +144,8 @@ export class PortRelay {
     // Told before the port is kept: a socket that cannot carry `port.open` gets no port.
     if (!this.deps.send({ t: 'port.open', key, nonce })) throw new Error('the view cannot be told')
     const held: Held = { nonce, port }
+    // Anything but a plain `false`/absent counts as one-way: a malformed flag fails closed.
+    if (p?.oneWay !== undefined && p.oneWay !== false) held.oneWay = true
     this.ports.set(key, held)
     port.on('message', (e) => {
       if (this.ports.get(key) !== held) return
@@ -171,6 +181,13 @@ export class PortRelay {
     if (this.closed || m.length > MAX_PORT_MESSAGE_LENGTH) return
     const held = this.ports.get(key)
     if (!held || held.nonce !== nonce) return
+    if (held.oneWay) {
+      if (!held.oneWayLogged) {
+        held.oneWayLogged = true
+        this.deps.log(`web access: panel ${key}: a read guest's message to a plugin that is not guest-aware dropped (one-way port)`)
+      }
+      return
+    }
     try {
       held.port.postMessage(m)
     } catch (err) {

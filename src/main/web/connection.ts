@@ -30,7 +30,8 @@
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel, LayoutView, OverlayInfo, TabInfo } from '../../shared/ipc'
-import { remoteViewId, type ViewId } from '../../shared/views'
+import { MAX_GUEST_VIEWS_PER_DEVICE, type GuestAccess, type GuestOnlyAccess } from '../../shared/guests'
+import { remoteViewId, type ViewId, type Who } from '../../shared/views'
 import { MAX_VIEWS_PER_DEVICE_WINDOW, MAX_WEBVIEW_FRAME_BYTES, type WebPagePaths, type WebProjectEntry } from '../../shared/web-protocol'
 import type { ProjectContext, WebCaller } from '../ipc/router'
 import { webCaller } from '../ipc/router'
@@ -38,6 +39,7 @@ import type { ViewSink } from '../views/view-registry'
 import { remoteIndicator, type WebAccessIndicator } from '../../shared/web-access'
 import type { AccessActor } from './access-log'
 import type { WebDevice } from './devices'
+import { guestEvent, guestSnapshot, type GuestEventContext } from './guest-events'
 import { PortRelay } from './port-relay'
 import { type TerminalSource, ViewTerminals } from './view-terminals'
 import {
@@ -136,6 +138,21 @@ export interface WebConnectionDeps {
   server?: boolean
   log(message: string): void
   helloTimeoutMs?: number
+  /**
+   * Guests (design-guests §5, D-18). Absent: a guest device's `hello` is closed `accessEnded` (a build
+   * with no guest store has no guest to be).
+   */
+  guests?: ConnectionGuests
+}
+
+/** What a connection asks about guests (GuestStore and guest-events.ts, wired by index.ts). */
+export interface ConnectionGuests {
+  /** The guest's rights now (GuestStore.access): read on every event, never cached. */
+  access(who: Who): GuestAccess
+  /** A guest view's filter context (guest-events.ts `guestContext` over main's live sources). */
+  context(viewId: ViewId, access: GuestOnlyAccess): GuestEventContext
+  /** A guest's views joined or left: `live` says whether it has a bound view now (GuestStore.viewsChanged). */
+  viewsChanged?(guestId: string, live: boolean): void
 }
 
 /**
@@ -215,8 +232,17 @@ export class WebConnections {
 
   accept(ws: WsLike, device: WebDevice): WebConnection {
     const viewId = remoteViewId(this.nextView++)
-    const conn = new WebConnection(ws, device, viewId, this.deps, () => this.open.delete(viewId), (deviceId, windowId) =>
-      this.boundViews(deviceId, windowId)
+    const conn = new WebConnection(
+      ws,
+      device,
+      viewId,
+      this.deps,
+      () => {
+        this.open.delete(viewId)
+        this.guestViewsChanged(device)
+      },
+      (deviceId, windowId) => this.boundViews(deviceId, windowId),
+      () => this.guestViewsChanged(device)
     )
     this.open.set(viewId, conn)
     if (this.ended) conn.end(this.ended.code, this.ended.reason)
@@ -253,6 +279,41 @@ export class WebConnections {
     let n = 0
     for (const conn of this.open.values()) if (conn.deviceId === deviceId && conn.binding()?.windowId === windowId) n++
     return n
+  }
+
+  /** A guest device's view bound or left: the guest store hears whether the guest is live. */
+  private guestViewsChanged(device: WebDevice): void {
+    if (device.guestId === undefined) return
+    try {
+      this.deps.guests?.viewsChanged?.(device.guestId, this.guestLive(device.guestId))
+    } catch (err) {
+      this.deps.log(`web access: guest presence update failed: ${errorText(err)}`)
+    }
+  }
+
+  /**
+   * Close every view of a guest with `code` (GuestStore: kicked, role changed, access changed, ended), sockets
+   * still waiting for `hello` included; the count closed. The page reads the code (guestCloseText).
+   */
+  closeGuest(guestId: string, code: number, reason: string): number {
+    let n = 0
+    for (const conn of [...this.open.values()]) {
+      if (conn.guestId !== guestId) continue
+      conn.end(code, reason)
+      n++
+    }
+    return n
+  }
+
+  /** Whether the guest has a bound view now (the owner's list: live). */
+  guestLive(guestId: string): boolean {
+    for (const conn of this.open.values()) if (conn.guestId === guestId && conn.binding() !== undefined) return true
+    return false
+  }
+
+  /** Who is behind a bound view (GuestStore.whoAccess); undefined for a view that is gone or not bound. */
+  whoOf(viewId: ViewId): Who | undefined {
+    return this.open.get(viewId)?.who()
   }
 
   /** The installed plugins changed: every bound view whose paths differ now gets a `paths` frame. */
@@ -396,7 +457,8 @@ export class WebConnection {
     readonly viewId: ViewId,
     private readonly deps: WebConnectionDeps,
     private readonly onGone: () => void,
-    private readonly boundViews: (deviceId: string, windowId: number) => number = () => 0
+    private readonly boundViews: (deviceId: string, windowId: number) => number = () => 0,
+    private readonly onBound: () => void = () => {}
   ) {
     this.helloTimer = setTimeout(() => this.close(CLOSE.noHello, 'no hello'), deps.helloTimeoutMs ?? HELLO_TIMEOUT_MS)
     ws.on('message', (data, isBinary) => this.message(data, isBinary))
@@ -411,6 +473,29 @@ export class WebConnection {
   /** The signed-in device's name (TabInfo.typedBy). */
   get deviceName(): string {
     return this.device.name
+  }
+
+  /** The guest this view's device belongs to (devices.ts), whether bound yet or not. */
+  get guestId(): string | undefined {
+    return this.device.mode === 'guest' ? this.device.guestId : undefined
+  }
+
+  /** Who this view is, frozen at `hello`; undefined before it, and once the view is gone. */
+  who(): Who | undefined {
+    return this.closed ? undefined : this.caller?.who
+  }
+
+  /**
+   * A guest view's filter context, its access read live; undefined for the owner. `'ended'`: the guest is
+   * gone (kicked, its lifetime over) or no guest store is wired; the caller closes the view.
+   */
+  private guestCtx(): GuestEventContext | 'ended' | undefined {
+    const who = this.caller?.who
+    if (who === undefined || who === 'owner') return undefined
+    const guests = this.deps.guests
+    if (!guests) return 'ended'
+    const access = guests.access(who)
+    return access.kind === 'guest' ? guests.context(this.viewId, access) : 'ended'
   }
 
   /** How the device signed in ('none': the anonymous caller every browser shares, WebConnections.lineageOf). */
@@ -454,9 +539,28 @@ export class WebConnection {
   private hello(version: number, projectId: string, dark?: boolean): void {
     clearTimeout(this.helloTimer)
     if (version !== PROTOCOL_VERSION) return this.close(CLOSE.version, 'protocol version')
+    // A guest's device (design-guests §5): who it is comes from the device, read live, never from the frame.
+    // Another project, open or not, is 4403 (the page says "this invite is for another project"), checked
+    // before the window lookup so a guest cannot learn which projects are open.
+    let who: Who = 'owner'
+    let guestAccess: GuestOnlyAccess | undefined
+    if (this.device.mode === 'guest') {
+      const access = this.device.guestId !== undefined ? this.deps.guests?.access({ guest: this.device.guestId }) : undefined
+      if (access?.kind !== 'guest') return this.close(CLOSE.accessEnded, 'guest ended')
+      if (access.projectId !== projectId) return this.close(CLOSE.guestProject, 'not the guest project')
+      who = { guest: access.id }
+      guestAccess = access
+    }
     const windowId = this.deps.windowIdOf(projectId)
-    // Not logged with the id itself: it is whatever the page sent.
-    if (windowId === undefined) return this.close(CLOSE.noProject, 'project not open')
+    // Not logged with the id itself: it is whatever the page sent. A guest's own project with no window:
+    // the owner closed it (4462, the page waits and retries).
+    if (windowId === undefined) return this.close(guestAccess ? CLOSE.projectClosed : CLOSE.noProject, 'project not open')
+    // A guest's device has a lower cap (MAX_GUEST_VIEWS_PER_DEVICE): every view of a guest is a port per
+    // visible panel, a terminal stream and a presence row, and one person needs a tab or two.
+    if (guestAccess && this.boundViews(this.device.id, windowId) >= MAX_GUEST_VIEWS_PER_DEVICE) {
+      this.deps.log(`web access: view ${this.viewId} refused: guest device ${this.device.id} has ${MAX_GUEST_VIEWS_PER_DEVICE} views`)
+      return this.close(CLOSE.tooManyViews, 'too many views')
+    }
     // Counted before this view is bound (it is not one of them yet). A device past the cap is told
     // so, and the page stops instead of retrying (bridge.ts FINAL_CLOSES). Not for None's anonymous
     // caller: every browser is that one "device", so the ninth browser would be refused for the
@@ -466,10 +570,12 @@ export class WebConnection {
       this.deps.log(`web access: view ${this.viewId} refused: device ${this.device.id} has ${MAX_VIEWS_PER_DEVICE_WINDOW} views of window ${windowId}`)
       return this.close(CLOSE.tooManyViews, 'too many views')
     }
-    const caller = webCaller({ kind: 'project', windowId, projectId }, this.viewId)
+    const caller = webCaller({ kind: 'project', windowId, projectId }, this.viewId, who)
     let snapshot: WebSnapshot
     try {
       snapshot = this.deps.snapshot(caller.context)
+      // The same filters as the events (guest-events.ts), on the snapshot taken in this tick.
+      if (guestAccess) snapshot = guestSnapshot(snapshot, (this.deps.guests as ConnectionGuests).context(this.viewId, guestAccess))
     } catch (err) {
       this.deps.log(`web access: view ${this.viewId} snapshot failed: ${errorText(err)}`)
       return this.close(CLOSE.failed, 'snapshot failed')
@@ -492,7 +598,8 @@ export class WebConnection {
         sendFrame: (frame) => this.sendFrame(frame),
         frameBuffered: () => this.ws.bufferedAmount,
         isClosed: () => this.closed,
-        windowClosed: () => this.close(CLOSE.windowClosed, 'window closed')
+        // A guest's page says "the owner closed the project" and waits (4462), an owner's goes to the picker.
+        windowClosed: () => this.close(guestAccess ? CLOSE.projectClosed : CLOSE.windowClosed, 'window closed')
       })
     } catch (err) {
       this.deps.log(`web access: view ${this.viewId} bind failed: ${errorText(err)}`)
@@ -511,7 +618,8 @@ export class WebConnection {
     // Joined tab by tab as the view selects them; nothing is sent before `ready` (a select is an invoke).
     this.terminals = new ViewTerminals({
       mirror: this.deps.mirror,
-      canFollow: (tabId) => this.deps.hasTab(caller.context.projectId, tabId),
+      // A guest follows only a tab it sees, asked live at each join: a tab unshared since stops at the next.
+      canFollow: (tabId) => this.deps.hasTab(caller.context.projectId, tabId) && this.canSee(tabId),
       send: (frame) => this.send(frame),
       failed: (tabId, err) => this.terminalFailed(tabId, err),
       synced: (tabId) => {
@@ -524,6 +632,14 @@ export class WebConnection {
     const paths = this.pagePaths()
     this.sentPaths = JSON.stringify(paths)
     this.send({ t: 'ready', v: PROTOCOL_VERSION, view: this.viewId, snapshot, paths })
+    if (guestAccess) this.onBound()
+  }
+
+  /** Whether this view may see the tab: always for the owner; for a guest, its live tab rule. */
+  private canSee(tabId: string): boolean {
+    const g = this.guestCtx()
+    if (g === undefined) return true
+    return g !== 'ended' && g.tabVisible(tabId)
   }
 
   private pagePaths(): WebPagePaths {
@@ -582,7 +698,8 @@ export class WebConnection {
   terminalSelect(tabId: string): void {
     if (this.closed || !this.caller) return
     this.selected = tabId
-    const order = this.deps.joinOrder?.(this.caller.context.projectId, tabId) ?? [tabId]
+    // A guest joins only the panes it sees (a split group may hold tabs outside its scope).
+    const order = (this.deps.joinOrder?.(this.caller.context.projectId, tabId) ?? [tabId]).filter((t) => this.canSee(t))
     this.terminals?.selectGroup(order)
   }
 
@@ -627,7 +744,20 @@ export class WebConnection {
     if (channel === 'tabs.data') return
     const out = remoteEvent(channel, payload, this.deps.server === true)
     if (out === undefined) return
-    this.send({ t: 'event', ch: channel, p: out.payload })
+    // D-18: a guest's view gets every event through GUEST_EVENT, here, at its one sink.
+    const g = this.guestCtx()
+    if (g === 'ended') return this.close(CLOSE.accessEnded, 'guest ended')
+    if (g === undefined) return this.send({ t: 'event', ch: channel, p: out.payload })
+    let filtered: unknown
+    try {
+      filtered = guestEvent(channel, out.payload, g)
+    } catch (err) {
+      // Dropped, never sent unfiltered: a guest missing an event is out of step at worst (it reconnects).
+      this.deps.log(`web access: view ${this.viewId}: guest filter for ${channel} failed: ${errorText(err)}`)
+      return
+    }
+    if (filtered === undefined) return
+    this.send({ t: 'event', ch: channel, p: filtered })
   }
 
   private send(frame: ServerFrame): void {

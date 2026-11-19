@@ -49,10 +49,14 @@ export const DEFAULT_DEVICE_NAME = 'Browser'
 
 /**
  * How a device signed in: the access link, a one-time "add a device" link, a password, a desktop confirm, or a
- * guest invite (design-guests §3). `'guest'` is declared by task 01 for task 02, which owns this file: `SIGN_INS`
- * and `recordOf` do not accept it yet, so a stored guest record is still dropped as damaged until 02 does.
+ * guest invite (design-guests §3). A guest device is a mode of its own, not a flag on another mode: an older
+ * build's `recordOf` does not know `'guest'` and drops the record, so a downgrade fails closed (a guest never
+ * becomes an owner device).
  */
 export type DeviceSignIn = 'link' | 'add' | 'password' | 'confirm' | 'guest'
+
+/** The owner's sign-in methods: what "revoke every device this method let in" may name (never a guest's). */
+export type OwnerSignIn = Exclude<DeviceSignIn, 'guest'>
 
 export interface DeviceRecord {
   id: string
@@ -64,6 +68,8 @@ export interface DeviceRecord {
   /** Hex SHA-256 of the origin key (see the header): the cookie is good only with it. */
   keyHash: string
   mode: DeviceSignIn
+  /** The guest this device belongs to (main/web/guests.ts); present iff `mode === 'guest'`. */
+  guestId?: string
 }
 
 /** A device as the rest of main sees it: no hash. `mode: 'none'` is the anonymous None-mode caller (auth.ts). */
@@ -73,6 +79,8 @@ export interface WebDevice {
   createdAt: number
   lastSeenAt: number
   mode: DeviceSignIn | 'none'
+  /** Present iff `mode === 'guest'`: the guest record (GuestStore) that decides this device's rights, live. */
+  guestId?: string
 }
 
 /** The access link's token (auth.ts): its hash, and the secret store's ciphertext of it. */
@@ -99,9 +107,20 @@ interface WebAccessFileData {
   devices: DeviceRecord[]
   accessToken?: AccessTokenRecord
   password?: PasswordRecord
+  /**
+   * The guest store's section (main/web/guests.ts): invites, guests and ended-guest tombstones. Opaque
+   * here: GuestStore validates it record by record when it reads it. Kept in this file so web access
+   * has one credentials file, and so a device and its guest record are written by the same commit order.
+   */
+  guests?: unknown
 }
 
-const SIGN_INS: readonly DeviceSignIn[] = ['link', 'add', 'password', 'confirm']
+const SIGN_INS: readonly DeviceSignIn[] = ['link', 'add', 'password', 'confirm', 'guest']
+
+/** A guest id as main mints it (GuestStore: 12 random bytes, base64url); bounded for a hand-edited file. */
+export function isGuestId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 64 && isBase64Url(value)
+}
 /** The stand-in hash an unknown id is compared against (no secret hashes to all zeros). */
 const DUMMY_HASH = '0'.repeat(64)
 
@@ -155,6 +174,13 @@ function recordOf(raw: unknown): DeviceRecord | { unkeyed: { id: string; name: s
   if (how === undefined) return undefined
   if (keyHash === undefined) return { unkeyed: { id, name: deviceName(name) } }
   if (!isHex64(keyHash)) return undefined
+  // A guest device without its guest (or an owner device naming one) is damaged: dropped, never trusted.
+  const guestId = raw.guestId
+  if (how === 'guest') {
+    if (!isGuestId(guestId)) return undefined
+    return { id, name: deviceName(name), createdAt, lastSeenAt, secretHash, keyHash, mode: how, guestId }
+  }
+  if (guestId !== undefined) return undefined
   return { id, name: deviceName(name), createdAt, lastSeenAt, secretHash, keyHash, mode: how }
 }
 
@@ -171,7 +197,18 @@ export function deviceName(raw: unknown): string {
 }
 
 function publicOf(record: DeviceRecord): WebDevice {
-  return { id: record.id, name: record.name, createdAt: record.createdAt, lastSeenAt: record.lastSeenAt, mode: record.mode }
+  const out: WebDevice = { id: record.id, name: record.name, createdAt: record.createdAt, lastSeenAt: record.lastSeenAt, mode: record.mode }
+  if (record.guestId !== undefined) out.guestId = record.guestId
+  return out
+}
+
+/**
+ * A cookie value's device id and the SHA-256 of its secret, or undefined when it is not a cookie's shape: what
+ * an ended guest's tombstone keeps and is compared against (GuestStore.endedCookie, D-32), never the secret.
+ */
+export function cookieFingerprint(value: string): { id: string; secretHash: string } | undefined {
+  const parts = cookieParts(value)
+  return parts ? { id: parts.id, secretHash: hashSecret(parts.secret) } : undefined
 }
 
 /** `<id>.<secret>` split, or undefined when it is not that shape. */
@@ -195,6 +232,8 @@ export interface DeviceStoreOptions {
 }
 
 export type RevokedListener = (ids: readonly string[]) => void
+/** The records of the devices just revoked or expired, as they were (the guest store ends their guests). */
+export type DroppedListener = (gone: readonly WebDevice[], event: 'revoke' | 'expired') => void
 
 export class DeviceStore {
   private readonly file: JsonFile<WebAccessFileData>
@@ -202,6 +241,7 @@ export class DeviceStore {
   private readonly notify: (text: string, device: string) => void
   private readonly now: () => number
   private readonly listeners = new Set<RevokedListener>()
+  private readonly droppedListeners = new Set<DroppedListener>()
   private readonly changeListeners = new Set<() => void>()
   /** Open sockets per device id (the gateway's reports). In memory only: none survive a restart. */
   private readonly open = new Map<string, number>()
@@ -252,6 +292,16 @@ export class DeviceStore {
     return () => this.listeners.delete(listener)
   }
 
+  /**
+   * Called with the records of the devices revoked or expired, after `onRevoked`'s listeners (whose sockets are
+   * closed by then). The guest store ends a guest whose device went: a pruned or revoked guest device is the
+   * end of that guest, since one device per invite (D-20) means it could never come back.
+   */
+  onDropped(listener: DroppedListener): () => void {
+    this.droppedListeners.add(listener)
+    return () => this.droppedListeners.delete(listener)
+  }
+
   /** Called after a device is added, revoked or expired (the desktop's list and indicator re-read). */
   onChanged(listener: () => void): () => void {
     this.changeListeners.add(listener)
@@ -278,9 +328,13 @@ export class DeviceStore {
    * A new device; returns it with its cookie value and its origin key (the only time either secret
    * exists in clear), or undefined when the store is full. Notifies the desktop and logs the sign-in.
    */
-  add(rawName: unknown, mode: DeviceSignIn): { device: WebDevice; cookie: string; key: string } | undefined {
+  add(rawName: unknown, mode: DeviceSignIn, guestId?: string): { device: WebDevice; cookie: string; key: string } | undefined {
+    // A guest device names its guest, and only a guest device does (recordOf drops anything else on read).
+    if ((mode === 'guest') !== (guestId !== undefined) || (guestId !== undefined && !isGuestId(guestId))) {
+      throw new Error('a guest device needs its guest id, and only a guest device has one')
+    }
     this.expire()
-    if (this.file.data.devices.length >= MAX_DEVICES) return undefined
+    if (!this.hasRoom()) return undefined
     const now = this.now()
     const record: DeviceRecord = {
       id: randomBytes(12).toString('base64url'),
@@ -289,7 +343,8 @@ export class DeviceStore {
       lastSeenAt: now,
       secretHash: '',
       keyHash: '',
-      mode
+      mode,
+      ...(guestId !== undefined ? { guestId } : {})
     }
     const secret = randomSecret()
     const key = randomSecret()
@@ -403,8 +458,48 @@ export class DeviceStore {
     )
   }
 
-  /** Revokes every device that signed in with `mode` (regenerating the access link: `link`). */
-  revokeSignedInWith(mode: DeviceSignIn, reason: string): number {
+  /** Whether one more device fits (MAX_DEVICES): a redeem checks it before it spends its invite. */
+  hasRoom(): boolean {
+    this.expire()
+    return this.file.data.devices.length < MAX_DEVICES
+  }
+
+  /** The live devices of one guest (normally one: D-20). */
+  devicesOfGuest(guestId: string): WebDevice[] {
+    return this.file.data.devices.filter((d) => d.guestId === guestId).map(publicOf)
+  }
+
+  /** Revokes every device of a guest (a kick, a lifetime's end); the count revoked. */
+  revokeGuest(guestId: string, reason: string, by?: AccessActor): number {
+    return this.drop(
+      this.file.data.devices.filter((d) => d.guestId === guestId).map((d) => d.id),
+      'revoke',
+      reason,
+      by
+    )
+  }
+
+  /** The SHA-256 of a live device's cookie secret (a guest's tombstone keeps it when the guest ends). */
+  secretHashOf(id: string): string | undefined {
+    return this.file.data.devices.find((d) => d.id === id)?.secretHash
+  }
+
+  /** The guest store's section of the file, as read (GuestStore validates it). */
+  guestSection(): unknown {
+    return this.file.data.guests
+  }
+
+  /** Replaces the guest store's section; on disk before it returns (invites and guests are credentials' kin). */
+  setGuestSection(value: unknown): void {
+    this.file.data.guests = value
+    this.commit()
+  }
+
+  /**
+   * Revokes every device that signed in with `mode` (regenerating the access link: `link`). Never a guest's:
+   * the owner's link or password changing ends only owner devices (design-guests §3).
+   */
+  revokeSignedInWith(mode: OwnerSignIn, reason: string): number {
     return this.drop(
       this.file.data.devices.filter((d) => d.mode === mode).map((d) => d.id),
       'revoke',
@@ -478,6 +573,14 @@ export class DeviceStore {
         listener(gone.map((d) => d.id))
       } catch {
         // A listener's failure must not keep the others from closing their sockets.
+      }
+    }
+    const records = gone.map(publicOf)
+    for (const listener of this.droppedListeners) {
+      try {
+        listener(records, event)
+      } catch {
+        // As above.
       }
     }
     this.changed()

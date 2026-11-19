@@ -70,6 +70,16 @@ export interface WebAccessServiceDeps {
   accessLog?: { write(entry: AccessEntry): void }
   /** The app's version (index.ts `appVersion`), for `ccc web status` (design-remote-desktop.md §8). */
   version: string
+  /** Guests (guests.ts): the names that keep the owner from switching to None (D-15). Absent: none. */
+  guests?: { blockingNone(): string[] }
+}
+
+/**
+ * D-15: switching to None with guests or invites is refused, naming them. Under None `authorize` falls back to
+ * the anonymous owner when no cookie matches, so a guest who drops its cookie would be the owner (D-1).
+ */
+export function noneBlockedText(names: readonly string[]): string {
+  return `Sign-in None would let guests in as you. End these guests and invites first: ${names.join(', ')}`
 }
 
 /** How a revoke came about, for `web-access.log`: the reason, and the browser that did it. */
@@ -225,6 +235,10 @@ export class WebAccessService {
     if (!result.ok) {
       if (result.needsConfirm) return { needsConfirm: result.needsConfirm }
       throw new Error(result.error)
+    }
+    if (result.value.mode === 'none' && current.mode !== 'none') {
+      const names = this.deps.guests?.blockingNone() ?? []
+      if (names.length > 0) throw new Error(noneBlockedText(names))
     }
     // With no password, the password mode lets nobody in: the page sets one first (setPassword).
     if (result.value.mode === 'password' && current.mode !== 'password' && !this.deps.auth.hasPassword()) {

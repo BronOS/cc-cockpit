@@ -55,6 +55,7 @@ import {
   CONFIRM_POLL_PATH,
   DEVICE_KEY_HEADER,
   FOLDERS_PATH,
+  INVITE_PATH,
   PROJECTS_PATH,
   SESSION_PATH,
   SESSIONS_PATH,
@@ -65,6 +66,7 @@ import {
   type WebConfirmTicket,
   type WebFoldersReply,
   type WebFoldersRequest,
+  type WebInviteReply,
   type WebOpenProjectRequest,
   type WebProjectEntry,
   type WebProjectsReply,
@@ -79,7 +81,15 @@ import { projectColorOf } from '../../shared/project-color'
 import type { WebAccessMode, WebAccessSettings } from '../../shared/types'
 import { FAILED_SIGN_IN_WINDOW_MS, type AccessLog } from './access-log'
 import type { Downloads } from '../files/downloads'
-import { deviceCookie, NONE_DEVICE, offeredKeys, type SignInResult, type WebAuth } from './auth'
+import { AttemptLimiter, cookieValues, DEVICE_COOKIE, deviceCookie, NONE_DEVICE, offeredKeys, type SignInResult, type WebAuth } from './auth'
+import {
+  INVITE_ATTEMPT_CAPACITY,
+  INVITE_ATTEMPT_DELAY_MS,
+  INVITE_ATTEMPT_MAX_WAITING,
+  INVITE_ATTEMPT_REFILL_MS,
+  type GuestOnlyAccess
+} from '../../shared/guests'
+import type { GuestStore } from './guests'
 import { allowedHosts, checkHost, checkOrigin, webShellCsp, type HostRule, type OriginRule } from './checks'
 import { MAX_OFFERED_KEYS, type WebDevice } from './devices'
 import { parseFoldersBody } from './list-folders'
@@ -168,6 +178,9 @@ export function downloadHeaders(name: string): Record<string, string> {
   }
 }
 
+/** The part of the guest store the gateway uses (guests.ts; a fake in tests). */
+export type GatewayGuests = Pick<GuestStore, 'redeem' | 'endedCookie' | 'access'>
+
 /** The part of downloads.ts the gateway uses (a fake in tests). */
 export type DownloadRoute = Pick<Downloads, 'serve' | 'refuse' | 'dropDevice' | 'dropAll'>
 
@@ -215,6 +228,13 @@ export interface GatewayDeps {
   pages?: PluginPages
   /** Downloads (`/d/<token>`, downloads.ts). Absent: every `/d/` GET is a refusal (204). */
   downloads?: DownloadRoute
+  /**
+   * Guests (design-guests, guests.ts). Absent: `/auth/invite` is 404 and a guest device (a record from a
+   * build that had guests) is no one: every route that needs a device answers it as not signed in.
+   */
+  guests?: GatewayGuests
+  /** The invite redemption bucket's options (D-19); tests pass a fake clock. Default: shared/guests.ts constants. */
+  inviteLimiter?: AttemptLimiter
   /** The ping interval (HEARTBEAT_MS); tests shorten it. */
   heartbeatMs?: number
   /** FIRST_REQUEST_MS and MAX_UNAUTHENTICATED; tests shorten them. */
@@ -434,9 +454,22 @@ export class WebGateway {
    */
   private readonly unauthenticated = new Map<Socket, ReturnType<typeof setTimeout> | undefined>()
   private readonly refusals: CollapsedLog
+  /**
+   * D-19: invite redemption has a bucket of its own, so guessing invites on a public tunnel slows only other
+   * redeems, never the owner's sign-in (auth.ts keeps the owner's bucket).
+   */
+  private readonly inviteLimiter: AttemptLimiter
 
   constructor(private readonly deps: GatewayDeps) {
     this.refusals = new CollapsedLog((message) => deps.log(message))
+    this.inviteLimiter =
+      deps.inviteLimiter ??
+      new AttemptLimiter({
+        capacity: INVITE_ATTEMPT_CAPACITY,
+        refillMs: INVITE_ATTEMPT_REFILL_MS,
+        delayMs: INVITE_ATTEMPT_DELAY_MS,
+        maxWaiting: INVITE_ATTEMPT_MAX_WAITING
+      })
     deps.auth.devices.onRevoked((ids) => {
       const gone = new Set(ids)
       // Its plugin paths die at once too (design-web.md §4.1): not only with its sockets' views.
@@ -833,6 +866,14 @@ export class WebGateway {
       })
     }
     if (method === 'GET' && path === SESSION_PATH) return this.session(req, res, host)
+    // A guest invite's redeem (design-guests §3): a sign-in route of its own, with its own bucket (D-19).
+    if (method === 'POST' && path === INVITE_PATH && this.deps.guests) {
+      const guests = this.deps.guests
+      return void this.redeem(req, res, host, guests).catch((err: unknown) => {
+        this.deps.log(`web access: an invite redeem failed: ${errorText(err)}`)
+        if (!res.headersSent && !res.destroyed) this.json(res, host, 500, { ok: false, error: 'bad-request' })
+      })
+    }
     const route = method === 'POST' ? this.signInRoute(path) : undefined
     if (route) {
       // Never an unhandled rejection in main: a failure answers 500 when the request is still there.
@@ -844,7 +885,16 @@ export class WebGateway {
     // Everything else needs a device: a request without a valid cookie and its key learns nothing more.
     const device = this.deviceOf(req)
     if (!device) return this.json(res, host, 401, { error: 'not signed in' })
+    const guest = this.guestOf(device)
+    if (guest === 'revoked') return this.json(res, host, 401, { error: 'not signed in' })
     this.trusted(req.socket)
+    if (guest) {
+      // A guest's routes (design-guests §5, §16.4): its own project in the list, nothing else. Every other
+      // route a device has answers 404 as a route that does not exist (D-26): the session counts, server
+      // mode's open and folder browser are the owner's, and a guest learns nothing from which exist.
+      if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, this.guestProjects(guest))
+      return this.send(res, host, 404, 'text/plain; charset=utf-8', 'not found')
+    }
     if (method === 'GET' && path === PROJECTS_PATH) return this.json(res, host, 200, this.projects())
     if (method === 'GET' && path === SESSIONS_PATH && this.deps.sessionCounts) return this.sessionCounts(res, host, this.deps.sessionCounts)
     const serverProjects = this.deps.serverProjects
@@ -1106,12 +1156,57 @@ export class WebGateway {
     this.send(res, host, status, 'application/json; charset=utf-8', JSON.stringify(value), extra)
   }
 
-  /** Whether this browser is signed in: its cookie with its origin key (a cookie alone answers `device: null`). */
+  /**
+   * Whether this browser is signed in: its cookie with its origin key (a cookie alone answers `device: null`).
+   * A guest's device also gets its name, role and project (the page goes straight to it, D-32); a cookie of a
+   * guest that ended gets `guestEnded` (the page says "your access ended", not the owner's sign-in form).
+   */
   private session(req: IncomingMessage, res: ServerResponse, host: string): void {
-    const device = this.deviceOf(req)
+    const found = this.deviceOf(req)
+    const guest = found ? this.guestOf(found) : undefined
+    const device = guest === 'revoked' ? undefined : found
     if (device) this.trusted(req.socket)
     const reply: WebSessionReply = { mode: this.deps.auth.mode ?? 'link', device: device ? { id: device.id, name: device.name } : null }
+    if (guest && guest !== 'revoked') reply.guest = { name: guest.name, role: guest.role, project: guest.projectId }
+    if (!device && this.deps.guests?.endedCookie(cookieValues(req.headers.cookie, DEVICE_COOKIE)) === true) reply.guestEnded = true
     this.json(res, host, 200, reply)
+  }
+
+  /**
+   * The guest a device stands for, read live (a kick or a lifetime's end holds at the next request): undefined
+   * for an owner device, `revoked` for a guest device whose guest is gone (or with no guest store at all).
+   */
+  private guestOf(device: WebDevice): GuestOnlyAccess | 'revoked' | undefined {
+    if (device.mode !== 'guest') return undefined
+    if (device.guestId === undefined || !this.deps.guests) return 'revoked'
+    const access = this.deps.guests.access({ guest: device.guestId })
+    return access.kind === 'guest' ? access : 'revoked'
+  }
+
+  /** A guest's picker list: its own project when its window is open, with no path (D-33); no recents or host. */
+  private guestProjects(guest: GuestOnlyAccess): WebProjectsReply {
+    const own = this.openProjects().find((p) => p.id === guest.projectId)
+    return { projects: own ? [{ ...own, path: '' }] : [] }
+  }
+
+  /**
+   * `POST /auth/invite`: the guest store checks and spends the invite in one synchronous step, inside the
+   * invite bucket. `ownerDevice`: the request signs in an owner device already (its cookie with its key):
+   * the redeem would replace that browser's owner cookie, so it is refused (open the link in a private window).
+   */
+  private async redeem(req: IncomingMessage, res: ServerResponse, host: string, guests: GatewayGuests): Promise<void> {
+    const origin = String(req.headers.origin)
+    const read = await this.readJson(req, res, host)
+    if (!read) return
+    const signedIn = this.deviceOf(req)
+    const ownerDevice = signedIn !== undefined && signedIn.mode !== 'guest' && signedIn.mode !== 'none'
+    const result = await this.inviteLimiter.run(() => guests.redeem(read.body, { ownerDevice }), () => res.destroyed)
+    if (result === 'cancelled' || res.destroyed) return
+    if (result === 'busy') return this.json(res, host, 429, { ok: false, error: 'busy' } satisfies WebInviteReply)
+    if (!result.ok) return this.json(res, host, result.status, { ok: false, error: result.error } satisfies WebInviteReply)
+    this.trusted(req.socket)
+    const body: WebInviteReply = { ok: true, key: result.key, device: { id: result.device.id, name: result.device.name }, project: result.project }
+    this.json(res, host, 200, body, { 'Set-Cookie': deviceCookie(result.cookie, origin) })
   }
 
   /**
@@ -1194,6 +1289,8 @@ export class WebGateway {
     // The origin key, offered by the page as a subprotocol (a WebSocket takes no headers).
     const device = this.deps.auth.authorize(req.headers.cookie, protocolKeys(req.headers['sec-websocket-protocol']))
     if (!device) return refuseUpgrade(socket, '401 Unauthorized')
+    // A guest device whose guest ended (kicked, its lifetime over) is no one, as at every other route.
+    if (this.guestOf(device) === 'revoked') return refuseUpgrade(socket, '401 Unauthorized')
     this.trusted(req.socket)
     const handler = this.handler
     const wss = this.wss
