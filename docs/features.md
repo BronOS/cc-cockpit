@@ -414,10 +414,12 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   Stop hook (a blocked Stop that keeps Claude working; at most 5 in a row, then the badge holds it until your next
   prompt, your Resume of the room or your click on the badge) or, when Claude is waiting for input, as one paste. A
   message sent in the second after a tab starts waits and is offered when that second ends.
-- **Typed tabs and the mark:** every tab joins a room with the mark on, your own tabs included, so a key you press in
-  a member tab (an arrow, a scroll, a permission answer) does not stop its room messages. With the mark on, a message
-  reaches the tab even after you typed in it: still only as the pointer, the text only through that tab's own `ccc room
-  read`, and never on top of something you have not sent yet. That is a deliberate trade: a member that read a hostile
+- **Typed tabs and the mark:** every tab joins a room with the mark on, your own tabs included, so typing in a member
+  tab no longer holds its room messages for good. With the mark on, a message reaches the tab even after you typed in
+  it: still only as the pointer, the text only through that tab's own `ccc room read`, and never on top of something
+  you have not sent yet. So a key you press while the tab waits for input (an arrow, a scroll, anything but an answer to
+  a permission prompt) still holds the paste until your next prompt or your "Deliver anyway"; at the end of Claude's
+  turn the pointer comes as usual. That is a deliberate trade: a member that read a hostile
   page can then make the pointer appear in a tab you work in. Turn the mark off in the tab menu when you want that tab's
   own conversation kept out of the room: a tab you have typed into then gets no pointer on its own, its messages are
   held and the badge shows the count; click the badge to paste the pointer yourself, or turn the mark back on. Only you

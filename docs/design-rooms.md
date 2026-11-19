@@ -134,7 +134,13 @@ off per tab when they want their own conversation kept out of the room. The reas
 off by default, any key in a member tab made it typed and silently held all its room traffic behind the badge. The
 mark is bound to (tab, room) and dropped when the tab leaves or the room ends; a tab that then joins another room starts
 marked again, so the person's "off" in one room does not carry into the next (a coordinator change of the same member
-keeps it). A restart restores the mark from the tab record as saved (a restore is not a join). The toggle and the
+keeps it). That includes the same room: a tab that leaves (its own `ccc room leave`) and joins again (its own `ccc room
+join` with a new invite) starts marked, so a member tab can undo the person's "off" by rejoining; accepted with the
+rest, since only the tab itself can run both. What the mark does not loosen: the draft bit. A key the person presses
+while a marked tab waits for input (an arrow, a wheel scroll; not a permission answer) still holds every gate paste
+until their next prompt or their "Deliver anyway"; the Stop pointer is unaffected (the box is Claude's while it works).
+A restart restores the mark from the tab record as saved (a restore is not a join); records saved before revision 3
+keep their `false`. The toggle and the
 badge's click carry the room id and member name the strip showed; main refuses the toggle (and answers the click
 `no-room`) when the tab's membership differs by then, so a request that waited while the tab moved never marks or
 delivers into the other room. **Draft bit:** set

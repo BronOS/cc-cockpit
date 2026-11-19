@@ -7,7 +7,8 @@
 // `mark` ("Deliver room messages automatically") is the person's alone, like the flag (tab-flag.ts):
 // changed only by TabManager.setRoomMark from the shell page; no host API, hook or `ccc` path. It is
 // bound to (tab, room): a new membership starts marked (TabManager.setRoom's fixed initial value, design-rooms.md
-// §2: a deliberate loosening, so a stray key does not silently hold a member's traffic) and leaving drops it with the
+// §2: a deliberate loosening, so typing in a member tab no longer holds all its traffic; the draft bit still holds the
+// gate paste until the next prompt) and leaving drops it with the
 // membership, so the person's "off" for one room never carries into the next.
 //
 // The projects file is user-writable, so the saved value is read leniently: anything off loses the

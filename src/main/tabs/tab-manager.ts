@@ -1038,8 +1038,9 @@ export class TabManager {
    * (design-rooms.md §2 "The mark", a deliberate loosening): with it off, a stray key in a member tab (an arrow, a
    * wheel scroll in Claude's full-screen view, a permission answer) silently held all its room traffic behind the
    * badge. The initial value is this constant, never an argument: no plugin, hook or `ccc` input decides it, and only
-   * the person changes it afterwards (setRoomMark). The draft bit still keeps the pointer off unsent text. A mark the
-   * person cleared in one room does not carry into another: the next join starts marked again.
+   * the person changes it afterwards (setRoomMark). The draft bit still keeps the gate's pointer off unsent text (a key
+   * while waiting holds the paste until the next prompt). A mark the person cleared in one room does not carry into
+   * another: the next join starts marked again, a leave and a rejoin of the same room included.
    * Saved with the tab and told to every view.
    */
   setRoom(projectId: string, tabId: string, room: { id: string; name: string; coordinator: boolean }): TabRoom {
