@@ -359,6 +359,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const open = new Map<Session, Map<string, number>>()
   const pressTags = new Map<number, number>()
   const clientPressTags = new Set<number>()
+  const lostPresses = new Set<number>()
   const delivered: string[] = []
   const expected: string[] = []
   let dropsPossible = false
@@ -511,6 +512,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
             const tag = tagOf(p.x as number, p.y as number)
             pressTags.set(tag, (pressTags.get(tag) ?? 1) - 1)
             open.get(session)?.delete(String(p.button))
+            // Refused past its deadline, or by a session that went: the router had moved on (a late
+            // continuation replays nothing), so that press is lost with its session.
+            if (clock.now - c.sentAt >= STEP_TIMEOUT_MS || session.ended) lostPresses.add(tag)
           }
           if (session.doc !== 'page') open.delete(session)
         }
@@ -550,7 +554,11 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         if ((pressTags.get(tag) ?? 0) > 1) violate('press-twice', `the viewer press tag ${tag} delivered twice (fallback)`)
       }
     },
-    log: () => {},
+    // The router's own logs: a step that threw, or a command its sender held back, drops input
+    // silently; either is a broken rule here.
+    log: (message) => {
+      if (/input step failed|held back/.test(message)) violate('router-log', message)
+    },
     timers: {
       set: (fn, ms) => clock.set(fn, ms, true),
       clear: (h) => clock.clear(h)
@@ -800,6 +808,11 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       at++
     }
     if (!dropsPossible && delivered.join() !== expected.join()) violate('key-lost', `delivered ${delivered.length} of ${expected.length}: ${firstDiff(delivered, expected)}`)
+    // Presses too: with nothing that could drop one (a detach, a full queue), every viewer press
+    // reached the page once (a session that took it, or sendInputEvent).
+    if (!dropsPossible) {
+      for (const tag of clientPressTags) if ((pressTags.get(tag) ?? 0) < 1 && !lostPresses.has(tag)) violate('press-lost', `the viewer press tag ${tag} reached no session`)
+    }
     const live = new Set([...sessions.values()].filter((s) => !s.ended).map((s) => s.id))
     for (const ref of sessionRefs(router)) if (!live.has(ref)) violate('dead-session-held', `the router still holds ${ref}`)
     const sizes = collectionSizes(router)
