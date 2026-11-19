@@ -62,6 +62,14 @@ export const MAX_SPENT_INVITES = 128
 export const SWEEP_MS = 30_000
 /** A guest with no live view that left within this long is `away` in the owner's list, else `offline`. */
 export const AWAY_MS = 60 * 60_000
+/**
+ * D-30 coalescing: widening changes (a tab shared, a wider scope) reconnect a guest once, after this long with no
+ * further change, so four quick shares make one 4464 instead of four (each would push the page into the web
+ * client's reconnect backoff). Narrowing changes never wait (see `accessChangedFor`).
+ */
+export const ACCESS_QUIET_MS = 500
+/** ...and never later than this after the first change of the run, however busy the owner is. */
+export const ACCESS_MAX_WAIT_MS = 2_000
 
 /** The parts of a tab the store reads (TabManager's own record, task 07 wires it). */
 export interface GuestTabInfo {
@@ -111,6 +119,8 @@ export interface GuestStoreDeps {
   log(message: string): void
   now?: () => number
   setInterval?: (fn: () => void, ms: number) => { stop(): void }
+  /** One-shot timer (the coalesced D-30 reconnect); tests pass a fake. */
+  setTimeout?: (fn: () => void, ms: number) => { stop(): void }
 }
 
 /** What `/auth/invite` answers (gateway.ts): a status, the body, and on success the device cookie and key. */
@@ -242,9 +252,17 @@ export class GuestStore implements GuestService {
   private readonly sweeper: { stop(): void } | undefined
   /** Guests being ended now: a device revoke inside `end` reaches `dropped` and must not end them twice. */
   private readonly ending = new Set<string>()
+  /** Widening changes waiting for their one 4464 (ACCESS_QUIET_MS): when the run began and its timer. */
+  private readonly pendingAccess = new Map<string, { first: number; timer: { stop(): void } }>()
+  private readonly timeout: (fn: () => void, ms: number) => { stop(): void }
 
   constructor(private readonly deps: GuestStoreDeps) {
     this.now = deps.now ?? Date.now
+    this.timeout = deps.setTimeout ?? ((fn, ms) => {
+      const t = setTimeout(fn, ms)
+      t.unref?.()
+      return { stop: () => clearTimeout(t) }
+    })
     this.data = sectionOf(deps.devices.guestSection())
     // A guest whose device is gone (pruned while the app was off, a hand edit) can never come back (D-20):
     // dropped now. One whose lifetime ended meanwhile goes in the first sweep.
@@ -263,6 +281,8 @@ export class GuestStore implements GuestService {
 
   dispose(): void {
     this.sweeper?.stop()
+    for (const p of this.pendingAccess.values()) p.timer.stop()
+    this.pendingAccess.clear()
   }
 
   // -------------------------------------------------------------------------------------------
@@ -520,6 +540,8 @@ export class GuestStore implements GuestService {
     this.save()
     this.deps.accessLog.write({ event: 'guest', name: g.name, detail: `role ${role}` })
     // Every view of the guest reconnects under the new role (new view ids: a view's access never changes in its life).
+    // That fresh `ready` carries any widening still waiting too, so its 4464 is not sent after it.
+    this.cancelPendingAccess(g.id)
     this.reconnect(g.id, CLOSE.roleChanged, 'role changed')
     this.changed()
     return true
@@ -529,24 +551,44 @@ export class GuestStore implements GuestService {
     const g = this.live(guestId)
     const s = guestScopeOf(scope)
     if (!g || !s) return false
+    const was = g.scope
     g.scope = s === 'all' ? 'all' : s.filter((t) => this.deps.tabOf(t)?.projectId === g.projectId || (g.scope !== 'all' && g.scope.includes(t)))
     this.save()
     this.deps.accessLog.write({ event: 'guest', name: g.name, detail: 'scope' })
-    this.accessChangedFor(g.id)
+    // Wider only when nothing the guest could see before drops out: to all tabs, or a superset of its tabs.
+    const now = g.scope
+    this.accessChangedFor(g.id, now === 'all' || (was !== 'all' && was.every((t) => now.includes(t))))
     this.changed()
     return true
   }
 
   shareTab(guestId: string, tabId: string, shared: boolean): boolean {
     const g = this.live(guestId)
-    if (!g || g.scope === 'all') return false
+    if (!g) return this.sharePendingTab(guestId, tabId, shared)
+    if (g.scope === 'all') return false
     const tab = this.deps.tabOf(tabId)
     if (shared && tab?.projectId !== g.projectId) return false
     const has = g.scope.includes(tabId)
     if (has === shared) return true
     g.scope = shared ? [...g.scope, tabId] : g.scope.filter((t) => t !== tabId)
     this.save()
-    this.accessChangedFor(g.id)
+    this.accessChangedFor(g.id, shared)
+    this.changed()
+    return true
+  }
+
+  /**
+   * Share with <name> on a guest not joined yet: the list shows a pending invite's guest from the start, so its
+   * scope is the invite's until the redeem copies it. No view exists yet, so nothing reconnects.
+   */
+  private sharePendingTab(guestId: string, tabId: string, shared: boolean): boolean {
+    const invite = this.data.invites.find((i) => i.guestId === guestId && i.expiresAt > this.now())
+    if (!invite || invite.scope === 'all') return false
+    if (shared && this.deps.tabOf(tabId)?.projectId !== invite.projectId) return false
+    const has = invite.scope.includes(tabId)
+    if (has === shared) return true
+    invite.scope = shared ? [...invite.scope, tabId] : invite.scope.filter((t) => t !== tabId)
+    this.save()
     this.changed()
     return true
   }
@@ -620,8 +662,15 @@ export class GuestStore implements GuestService {
     }
   }
 
-  /** D-30: the guest's views reconnect and its page tokens die. */
-  private accessChangedFor(guestId: string): void {
+  /**
+   * D-30: the guest's views reconnect to a fresh `ready` and its page tokens die (always at once). A narrowing
+   * change (a tab unshared, a narrower scope, a plugin's visibility, whose direction is not known here) reconnects
+   * at once: an open panel port is checked only when it connects (panel-ports.ts `viewLine`), so only the close
+   * ends a port to what the guest may no longer see. It also takes any widening still waiting with it. A widening
+   * change gives the guest nothing it may not have, so it waits for a quiet moment (ACCESS_QUIET_MS, at most
+   * ACCESS_MAX_WAIT_MS from the first): one 4464 for a run of shares.
+   */
+  private accessChangedFor(guestId: string, widening = false): void {
     for (const d of this.deps.devices.devicesOfGuest(guestId)) {
       try {
         this.deps.dropPageTokens?.(d.id)
@@ -629,7 +678,27 @@ export class GuestStore implements GuestService {
         this.deps.log(`guests: dropping page tokens failed: ${String(err)}`)
       }
     }
-    this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
+    if (!widening) {
+      this.cancelPendingAccess(guestId)
+      this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
+      return
+    }
+    const prev = this.pendingAccess.get(guestId)
+    prev?.timer.stop()
+    const now = this.now()
+    const first = prev?.first ?? now
+    const wait = Math.max(0, Math.min(ACCESS_QUIET_MS, first + ACCESS_MAX_WAIT_MS - now))
+    const timer = this.timeout(() => {
+      if (this.pendingAccess.get(guestId)?.timer !== timer) return
+      this.pendingAccess.delete(guestId)
+      if (this.live(guestId)) this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
+    }, wait)
+    this.pendingAccess.set(guestId, { first, timer })
+  }
+
+  private cancelPendingAccess(guestId: string): void {
+    this.pendingAccess.get(guestId)?.timer.stop()
+    this.pendingAccess.delete(guestId)
   }
 
   /**
@@ -641,6 +710,7 @@ export class GuestStore implements GuestService {
     const g = this.data.guests.find((x) => x.id === guestId)
     if (!g || this.ending.has(guestId)) return
     this.ending.add(guestId)
+    this.cancelPendingAccess(guestId)
     try {
       this.reconnect(guestId, END_CODE[why], why)
       const now = this.now()

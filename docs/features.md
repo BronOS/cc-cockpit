@@ -687,12 +687,15 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   or **Keep open**, kept open after a minute with no answer), edit and save files, use quick chat and Ask Claude (your
   account and quota), and download files to their own device (Files › Download while Files is shown to guests, and
   `ccc download` offers started from a shared tab). They answer a Trash confirm in server mode; on a desktop a guest's
-  Allow is ignored (Deny only, as for your own browser). A terminal's size moves to a write guest only when they type or
-  use Fit to this screen, never by opening or clicking a tab. Their typing counts as a person's typing (`typed`), so
-  plugins stop pasting into that tab. **A write guest has your shell**: typing in a shared tab runs commands here as
-  you, and from a shell they can read your files, mail and plugin data and give themselves lasting access (a new
-  device, an SSH key). Kicking ends their session, not what they ran. Invite only someone you would hand your unlocked
-  laptop.
+  Allow is ignored (Deny only, as for your own browser). Tabs a plugin opens while a guest uses it (an editor tab for a
+  file they open, a Files "Open with" command) are the plugin's, not the guest's: they do not count toward the guest's
+  4, carry no guest name, and join a guest's view only by its scope, so a selected-tabs guest sees a file it opened
+  only once you share that tab with them (**Share with <name>**); an all-tabs guest sees it at once. A terminal's size
+  moves to a write guest only when they type or use Fit to this screen, never by opening or clicking a tab. Their
+  typing counts as a person's typing (`typed`), so plugins stop pasting into that tab. **A write guest has your
+  shell**: typing in a shared tab runs commands here as you, and from a shell they can read your files, mail and plugin
+  data and give themselves lasting access (a new device, an SSH key). Kicking ends their session, not what they ran.
+  Invite only someone you would hand your unlocked laptop.
 - *Plugins:* hidden from guests by default, bundled ones included. Each plugin's card in Settings › Plugins has a
   **Guests** choice (Hidden, Shown app-wide) with what showing it gives read-only and write guests; a project overrides
   it in its own settings page. Showing a plugin is done in the cockpit window on the host (a desktop host's browser
@@ -701,7 +704,9 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   keep guests inside the project folder; Editor gives read-only guests no quick chat or Ask Claude. Sessions is never
   shown to guests (it sees every window's tabs). Usage, if you show it, shows guests the spend and rate-limit windows
   of your whole Claude account, not only this project. A plugin that does not check: a read-only guest sees what its
-  pages show and cannot use them, a write guest uses them like you.
+  pages show and cannot use them, a write guest uses them like you. Since a read-only guest's messages never reach such
+  a plugin, a page that asks its plugin for data when it opens shows that guest nothing until the plugin next sends on
+  its own: Usage stays blank for a read-only guest until its numbers change.
 - *The guest list:* the Live chip (with the number of guests here now) opens it: each guest's name, role, tabs, when
   their access ends, whether they are here, away or offline, the tab they look at and whether they are typing.
   **Read-only** / **Write** switches the role (the guest's page reconnects under the new role): Write first asks "Let
