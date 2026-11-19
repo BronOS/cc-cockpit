@@ -39,7 +39,8 @@ function fakeCtx(root) {
     panels: {
       post: (panel, m, options) => posts.push([panel, m, options]),
       onMessage: (panel, fn) => {
-        listeners.push(fn)
+        // main tags every line ('owner' for the owner's): a test that names no `from` is the owner's, with no view.
+        listeners.push((m, from = { access: 'owner' }) => fn(m, from))
         return () => {}
       },
     },
@@ -62,16 +63,16 @@ test('a search answers only the page that asked; the error goes to it too', asyn
   const host = load()
   const { ctx, posts, listeners } = fakeCtx(root)
   host.activate(ctx)
-  await listeners[0]({ type: 'search', query: 'needle' }, { view: 'web:7' })
+  await listeners[0]({ type: 'search', query: 'needle' }, { view: 'web:7', access: 'owner' })
   const results = posts.filter((p) => p[1].type === 'results')
   assert.equal(results.length, 1)
   assert.deepEqual(results[0][2], { view: 'web:7' })
   assert.ok(results[0][1].paths.includes('needle.txt'))
   // The desktop page is a view too.
-  await listeners[0]({ type: 'search', query: 'needle' }, { view: 'desktop' })
+  await listeners[0]({ type: 'search', query: 'needle' }, { view: 'desktop', access: 'owner' })
   assert.deepEqual(posts.filter((p) => p[1].type === 'results').at(-1)[2], { view: 'desktop' })
   // A failure of the request is shown on the page that made it only.
-  await listeners[0]({ type: 'create', kind: 'file', dir: '..', name: 'x' }, { view: 'web:7' }).catch(() => {})
+  await listeners[0]({ type: 'create', kind: 'file', dir: '..', name: 'x' }, { view: 'web:7', access: 'owner' }).catch(() => {})
   const errors = posts.filter((p) => p[1].type === 'error')
   for (const e of errors) assert.deepEqual(e[2], { view: 'web:7' })
   host.deactivate()
@@ -83,7 +84,7 @@ test('tree state stays a broadcast, and an old caller with no second argument st
   const host = load()
   const { ctx, posts, listeners } = fakeCtx(root)
   host.activate(ctx)
-  await listeners[0]({ type: 'hello' }, { view: 'web:7' })
+  await listeners[0]({ type: 'hello' }, { view: 'web:7', access: 'owner' })
   const dirs = posts.filter((p) => p[1].type === 'dir')
   assert.ok(dirs.length > 0)
   for (const d of dirs) assert.equal(d[2], undefined)
@@ -103,15 +104,15 @@ test('download: the host calls ctx.files.download in the click, with the include
     if (fail) throw fail
   }
   host.activate(ctx)
-  await listeners[0]({ type: 'hello' }, { view: 'web:7' })
+  await listeners[0]({ type: 'hello' }, { view: 'web:7', access: 'owner' })
   assert.equal(posts.find((p) => p[1].type === 'reset')[1].env.download, true)
-  await listeners[0]({ type: 'download', path: 'a/b.txt' }, { view: 'web:7' })
-  await listeners[0]({ type: 'download', path: 'a', all: true }, { view: 'web:7' })
-  await listeners[0]({ type: 'download', path: '' }, { view: 'web:7' })
+  await listeners[0]({ type: 'download', path: 'a/b.txt' }, { view: 'web:7', access: 'owner' })
+  await listeners[0]({ type: 'download', path: 'a', all: true }, { view: 'web:7', access: 'owner' })
+  await listeners[0]({ type: 'download', path: '' }, { view: 'web:7', access: 'owner' })
   assert.deepEqual(calls, [['a/b.txt', undefined], ['a', { includeGitAndNodeModules: true }], ['', undefined]])
   // A refusal reaches the page that clicked.
   fail = new Error('Too big to download.')
-  await listeners[0]({ type: 'download', path: 'a' }, { view: 'web:7' })
+  await listeners[0]({ type: 'download', path: 'a' }, { view: 'web:7', access: 'owner' })
   const err = posts.filter((p) => p[1].type === 'error').at(-1)
   assert.equal(err[1].message, 'Too big to download.')
   assert.deepEqual(err[2], { view: 'web:7' })
@@ -123,7 +124,7 @@ test('download: an app without ctx.files.download says so in the env', async () 
   const host = load()
   const { ctx, posts, listeners } = fakeCtx(root)
   host.activate(ctx)
-  await listeners[0]({ type: 'hello' }, { view: 'web:7' })
+  await listeners[0]({ type: 'hello' }, { view: 'web:7', access: 'owner' })
   assert.equal(posts.find((p) => p[1].type === 'reset')[1].env.download, false)
   host.deactivate()
 })
@@ -214,7 +215,7 @@ test("a write guest works like the owner, but never Reveal, the system's default
   assert.equal(called.length, 5)
   assert.ok(fs.existsSync(path.join(root, 'new.txt')))
   assert.equal(errors().length, 4)
-  // The owner's page (main tags it 'owner'; an older app tags nothing) still opens the opener and reveals.
+  // The owner's page (main tags it 'owner') still opens the opener and reveals.
   await listeners[0]({ type: 'open', path: 'a.txt' }, { view: 'desktop', access: 'owner' })
   await listeners[0]({ type: 'reveal', path: 'a.txt' }, { view: 'desktop', access: 'owner' })
   await listeners[0]({ type: 'reveal', path: 'a.txt' })
@@ -249,7 +250,7 @@ test("a guest's click or Edit on a binary file is refused with why, never handed
   host.deactivate()
 })
 
-test('an access value the host does not know is a read-only guest, never the owner', async () => {
+test('an access value the host does not know, or none (main tags every line), is a read-only guest, never the owner', async () => {
   const root = fs.realpathSync(tempDir('files-guest-'))
   fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
   const host = load()
@@ -258,7 +259,7 @@ test('an access value the host does not know is a read-only guest, never the own
   ctx.files = { open: async (p) => void called.push(['open', p]), reveal: async (p) => void called.push(['reveal', p]) }
   ctx.services = { use: () => ({ open: async (p) => void called.push(['edit', p]) }) }
   host.activate(ctx)
-  for (const access of ['admin', 'OWNER', null, 1]) {
+  for (const access of ['admin', 'OWNER', null, 1, undefined]) {
     for (const m of [{ type: 'open', path: 'a.txt' }, { type: 'edit', path: 'a.txt' }, { type: 'reveal', path: 'a.txt' }]) {
       const before = posts.length
       await listeners[0](m, { view: 'web:8', access })

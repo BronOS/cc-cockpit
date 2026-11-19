@@ -175,7 +175,8 @@ async function host(root, { trash, openWith, openCommand = true, overlayResult }
   }
   hostMod.activate(ctx)
   const send = async (m) => {
-    await onMessage(m)
+    // main tags every line: the owner's desktop page.
+    await onMessage(m, { view: 'desktop', access: 'owner' })
   }
   return { send, calls, posts, done: () => hostMod.deactivate() }
 }

@@ -1,7 +1,7 @@
 'use strict'
 // Guests on a file tab (design-guests §6, spec-review item 19, D-22, D-27, D-33). One tab instance is one
-// view's page; main tags it with that view's access (`tab.access`: 'owner', 'read' or 'write'; an older
-// app has none: the owner), never the page. guestTab wraps the instance before any of the tab's features
+// view's page; main tags it with that view's access (`tab.access`: 'owner', 'read' or 'write'; none is
+// read as a read-only guest, accessOf), never the page. guestTab wraps the instance before any of the tab's features
 // (lib/files.js, search, git, LSP, Ask Claude, quick chat, notes, the host's own messages) sees it, so a
 // refusal is in one place and a feature added later is covered by the allow-list, not by remembering to
 // check:
@@ -27,12 +27,14 @@ const READ_OK = new Set(['open', 'read', 'unwatch', 'git-base'])
 const READ_ONLY = 'You are a read-only guest: the host can give you write access.'
 
 /**
- * The access main tagged the instance with. None at all (an older app, before guests) is the owner; any other
- * value this host does not know (a newer app's role, a malformed tag) is a read-only guest: never the owner.
+ * The access main tagged the instance with: only `'owner'` is the owner. A bundled plugin runs only on the app
+ * it ships with, where every line is tagged (main's panel-ports viewLine writes `owner` for the desktop page and
+ * an owner's browser view too; the host's tagAccess refuses a line without one), so an absent access is not an
+ * older app's: like any value this host does not know, it is a read-only guest, never the owner (fail safe).
  */
 function accessOf(tab) {
   const a = tab && typeof tab === 'object' ? tab.access : undefined
-  if (a === undefined || a === 'owner') return 'owner'
+  if (a === 'owner') return 'owner'
   return a === 'write' ? 'write' : 'read'
 }
 
