@@ -270,6 +270,8 @@ export class Downloads {
   private readonly offerTimes = new Map<number, number[]>()
   /** The last offerAsks send: its id and whether a view took it (read right after `ask`, which sends synchronously). */
   private lastOfferSend: { requestId: string; sent: boolean; threw?: true } | undefined
+  /** The record of the offer being sent right now (offerChecked): in `offers` under its id before the send. */
+  private sendingRecord: OfferRecord | undefined
   /** Per window, offers past the first limit check and not yet asked (parallel calls must not all pass it). */
   private readonly offersInFlight = new Map<number, number>()
   /**
@@ -287,6 +289,7 @@ export class Downloads {
         send: (windowId, info) => {
           // SharedAsks adds the id to the content, so the payload is exactly a DownloadOffer.
           try {
+            if (this.sendingRecord !== undefined) this.offers.set(info.requestId, this.sendingRecord)
             const sent = this.deps.offers?.send(windowId, info as DownloadOffer) === true
             this.lastOfferSend = { requestId: info.requestId, sent }
             return sent
@@ -405,19 +408,29 @@ export class Downloads {
     if (this.deps.windowOf(caller.projectId) !== windowId) throw new Error('the project window is gone')
 
     this.lastOfferSend = undefined
-    const answered = this.offerAsks.ask(windowId, info)
-    const send = this.lastOfferSend as { requestId: string; sent: boolean; threw?: true } | undefined
-    // Not sent and not held: SharedAsks settled it already. On a desktop that is the last browser view
-    // leaving between the check above and the send: the desktop case after all.
-    if (send?.threw) throw new Error('the offer could not be sent to the browser views')
-    if (send === undefined || !this.offerAsks.isPending(windowId, send.requestId)) throw new Error(onThisComputer)
-    const id = send.requestId
-    this.offers.set(id, {
+    // The record is in `offers` before the send: `offerAsks.ask` sends synchronously, and a guest view's sink reads
+    // `offerOrigin` during that send (guest-events.ts guestDownloadOffer); set after it, a live offer never reached a
+    // write guest who sees the tab (only the `ready` snapshot's did).
+    this.sendingRecord = {
       windowId,
       target,
       expiresAt: this.now() + this.offerMs,
       ...(typeof caller.tabId === 'string' && caller.tabId !== '' ? { originTab: caller.tabId } : {})
-    })
+    }
+    let answered: Promise<'accepted' | 'declined'>
+    try {
+      answered = this.offerAsks.ask(windowId, info)
+    } finally {
+      this.sendingRecord = undefined
+    }
+    const send = this.lastOfferSend as { requestId: string; sent: boolean; threw?: true } | undefined
+    // Not sent and not held: SharedAsks settled it already. On a desktop that is the last browser view
+    // leaving between the check above and the send: the desktop case after all.
+    if (send?.threw || send === undefined || !this.offerAsks.isPending(windowId, send.requestId)) {
+      if (send !== undefined) this.offers.delete(send.requestId)
+      throw new Error(send?.threw ? 'the offer could not be sent to the browser views' : onThisComputer)
+    }
+    const id = send.requestId
     this.offerTimes.set(windowId, [...this.recentOffers(windowId), this.now()])
     void answered.then((answer) => {
       // Declined, run out, window closed: over. Accepted: kept for a Try again until its life ends.

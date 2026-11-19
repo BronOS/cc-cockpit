@@ -117,7 +117,7 @@ describe('no direct webContents sends outside the view registry', () => {
     const got: string[] = []
     const sink = (name: string): DesktopViewSink => ({ send: () => void got.push(name), isClosed: () => false })
     views.addDesktop(1, sink('desktop'))
-    views.addRemote(1, remoteViewId(1), sink('web'))
+    views.addRemote(1, remoteViewId(1), sink('web'), 'owner')
     expect(views.toBrowserViews(1, 'app.linkNotice', { url: 'https://a/' })).toBe(1)
     expect(views.toBrowserViews('all', 'app.linkNotice', { url: 'https://a/' })).toBe(1)
     expect(got).toEqual(['web', 'web'])
