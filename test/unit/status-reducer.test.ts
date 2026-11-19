@@ -197,7 +197,13 @@ describe('SessionStart from compaction', () => {
     expect(out).toMatchObject({ status: 'working', tool: 'Bash', sessionId: 's' })
   })
 
-  it.each<TabStatus>(['starting', 'idle', 'waiting', 'needs-permission'])(
+  // The guest-invite incident (2026-11-19): a compaction at the prompt left three tabs idle for 30+ min.
+  it('keeps a waiting tab waiting: it was at its prompt before and after', () => {
+    const out = reduce(withStatus('waiting', { sessionId: 's' }), hook('SessionStart', { session_id: 's', source: 'compact' }))
+    expect(out).toMatchObject({ status: 'waiting', sessionId: 's' })
+  })
+
+  it.each<TabStatus>(['starting', 'idle', 'needs-permission'])(
     'still moves %s to the non-sendable idle',
     (from) => {
       const out = reduce(withStatus(from, { tool: 'Bash' }), hook('SessionStart', { source: 'compact' }))

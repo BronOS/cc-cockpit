@@ -407,6 +407,19 @@ describe('registry wiring', () => {
       expect(texts()).toEqual([paste('next')])
     })
 
+    // The guest-invite incident (2026-11-19): tabs at the prompt compacted outside a turn, went idle, and a queued
+    // text never arrived. A compact from waiting keeps waiting, so the text goes in after the settle window.
+    it('a text queued while waiting is delivered after a compact at the prompt', () => {
+      ev('SessionStart', { source: 'startup' })
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(reg.get('t1')?.status).toBe('waiting')
+      ev('SessionStart', { source: 'compact' })
+      expect(reg.get('t1')).toMatchObject({ status: 'waiting', settling: true })
+      expect(reg.send('t1', 'after compact', 'plugin').delivered).toBe(false)
+      vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
+      expect(texts()).toEqual([paste('after compact')])
+    })
+
     it('a send after the window goes straight in', () => {
       ev('SessionStart', { source: 'resume' })
       vi.advanceTimersByTime(SESSION_START_SETTLE_MS)
