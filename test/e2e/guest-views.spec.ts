@@ -134,6 +134,14 @@ test('a read guest: shared tab live, shown plugins only, no typing, a plugin tha
 
     // The owner's chip says a guest is here (guests.changed).
     await expect(c.page.locator('.guest-chip')).toContainText('Live')
+
+    // A kick kills the guest's page tokens with its device: the Board page it loaded a moment ago is a 404 now.
+    const boardPage = `/p/${token}/test.guestteam/panel.html`
+    const statusOf = (p: string): Promise<number> => page.evaluate(async (u) => (await fetch(u, { cache: 'no-store' })).status, p)
+    expect(await statusOf(boardPage)).toBe(200)
+    expect(await c.hook<boolean>('guestKick', invited.guestId)).toBe(true)
+    await expect(page.getByText('Host removed you.')).toBeVisible({ timeout: 1500 })
+    expect(await statusOf(boardPage)).toBe(404)
   } finally {
     await guest?.close()
     await close()

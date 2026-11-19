@@ -90,6 +90,10 @@ test('a Direct guest invite to a self-signed host: one Trust prompt for the pinn
     const remote = await remoteWindow(guest.cockpit.app, origin)
     await expect(remote).toHaveURL(`${origin}/?project=${encodeURIComponent(web.projectId)}`, { timeout: 20_000 })
     await remote.locator('.tabs-pane').waitFor({ timeout: 20_000 })
+    // The shared shell, live in the guest's own app.
+    const rows = remote.locator('.terminal-view:not([hidden]) .xterm-rows')
+    await host.cockpit.typeLine('echo seen-in-guest-app')
+    await expect.poll(async () => (await rows.locator('> div').allInnerTexts()).join('\n'), { timeout: 15_000 }).toContain('seen-in-guest-app')
     await expect.poll(async () => (await guestList(host.cockpit)).find((g) => g.id === invited.guestId)?.state).not.toBe('pending')
     // Saved only now the window opened (design-remote-desktop §5.4): a guest's Direct record at that origin,
     // with the pin (D-29), which the picker labels "Guest at <origin>" (serverViaText, picker-model.test.ts).
@@ -100,6 +104,11 @@ test('a Direct guest invite to a self-signed host: one Trust prompt for the pinn
         return (app.remoteServers ?? []).map((s) => ({ guest: s.guest, via: s.via, certSha256: s.certSha256 }))
       })
       .toEqual([{ guest: true, via: { kind: 'direct', origin }, certSha256: pin }])
+
+    // A kick reaches the guest's app as the browser's: the page says so, its terminals are cleared.
+    expect(await host.cockpit.hook<boolean>('guestKick', invited.guestId)).toBe(true)
+    await expect(remote.getByText('Host removed you.')).toBeVisible({ timeout: 1500 })
+    await expect(remote.locator('.xterm-rows')).toHaveCount(0)
   } finally {
     await guest.close()
     await host.close()
