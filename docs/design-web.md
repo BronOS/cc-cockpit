@@ -1079,6 +1079,77 @@ What server mode gives up, and what stands in:
 
 macOS and Windows; relink and forget from the browser; `ccc web` writes on the desktop (a Files "Download" item is built, `docs/design-download.md`); more than one person (§10).
 
+### 9.15 Server mode on macOS: measurements
+
+Plan `docs/plans/20261119-server-mode-mac.md` task T0, 2026-11-19, branch `server-mac/t0-spike`. Electron 45.1.0, macOS
+27.0.1 (26A434), Apple Silicon, **on battery** the whole time. The runs used `out/` with a temporary gate (darwin +
+`--server` in a test run, no re-exec, as the earlier spike d9e2019) plus decisions 1 and 4 as the plan words them:
+`setActivationPolicy('accessory')` and `disableHardwareAcceleration()` before `ready` (the policy call does not throw
+there), `powerSaveBlocker.start('prevent-app-suspension')` after it, the project window never shown, its page with
+`backgroundThrottling: false`. Every run on a temp data dir with `CC_COCKPIT_TEST=1`, fake secrets, the harness's env
+scrub and `--use-mock-keychain`; no keychain prompt was seen. The gate and the probes stay off master (T1 and T3 build
+the real start). S2 is the owner's (O1) and is not here.
+
+**Harness caveat.** Under Playwright (`launchServer`), the hidden page reports `visible` and `document.hasFocus()` true
+even with default throttling: Playwright's attach emulates focus, so it cannot see throttling. S1 and S4 were measured
+on a plain spawn of `out/` with no debugger attached; a probe in main installed timers in main and in the page once
+(`executeJavaScript`) and read them back only at the end. The browser was the e2e browser fixture (another process).
+
+**S1, never shown and unthrottled: held.** Run A (decisions 1 and 4) and control B (default `backgroundThrottling`,
+no blocker), side by side, each with a Claude tab, a shell tab and the Browser panel opened once from a browser, then
+10.5 minutes with nothing touching the server:
+- the page is `visible` (`document.hidden` false, no `visibilitychange` event) in **both** runs, `hasFocus()` false;
+  `isVisible()` false for every window and `app.dock.isVisible()` false. A never-shown window's page is not hidden on
+  macOS, so `backgroundThrottling: false` changes nothing measurable here; it stays as the guard decision 1 names;
+- page timers, worst gap per minute over 11 minutes (intensive throttling would start at 5): a 1 s `setInterval`
+  1001-1003 ms, a chained 100 ms `setTimeout` 106-109 ms (A) and 106-110 ms (B). Main: 1002-1034 ms and 106-227 ms;
+- `tabs.screenAsk` after the idle: the mirror worker ended as a crash, the hidden page got both tabs' asks within 3 ms
+  of each other, and a browser that joined 6 s later showed the shell tab's output from before the idle and after it
+  (the seed, not the blank fallback, which would show neither). Same in A and B.
+
+**S3, `open -a` routes to the run: held, with one finding against decision 1.** `scripts/spike/open-routes.mjs` on a copy
+of the repo's Electron.app with its own `CFBundleIdentifier` (ad-hoc signed): other agents' e2e runs on this Mac use the
+stock bundle, and LaunchServices routes by bundle, so `open -a` on the stock one could reach their process.
+- At start: `activate` count 0 after 5 s on the plain spawn, and 0 under Playwright (`launchServer`, two runs);
+  LaunchServices type `UIElement`; the pid holds a `NoIdleSleepAssertion` named "Electron".
+- `open -a <copy>`: no new process (the bundle's main processes by `ps -A -o pid=,comm=` unchanged), `activate` fired
+  once with `hasVisibleWindows` false, about 5 s after the call; a second `open -a` fired it again. No window became
+  visible. SIGTERM afterwards: exit 0, nothing left.
+- **Not held: the run stops being Dock-less.** After the routed launch LaunchServices lists the pid as `Foreground`
+  (it was `UIElement`) and `app.dock.isVisible()` is true; 30 s later still `Foreground`. Nothing in the cockpit
+  changed the policy (`WindowManager.activate` returns at once in server mode). So the reopen gives the server a Dock
+  icon and menu bar for the rest of the run, which decisions 1 and 3 do not cover. Not tried: putting the policy back
+  after `activate`. Finder, Spotlight and a Dock click were not tried; the packaged bundle's routing is O1's.
+
+**S4, sleep and App Nap: partly measured.**
+- The assertion: `pmset -g assertions` lists the pid with `NoIdleSleepAssertion named: "Electron"` (Chromium's
+  `prevent-app-suspension`) from start to the end of the run; none in the control.
+- App Nap: **not read**. Activity Monitor's column was not opened and `taskinfo` needs root. Proxy only: main's and the
+  page's timers held their periods for 11 minutes in A **and** in the control B, so App Nap did not visibly slow either
+  run, and this run cannot show that the blocker is what keeps it off. The Mac was in use (and at times locked) during
+  the runs; `ps` showed priority 46 for both (nice 5 is the agent shell's own, inherited).
+- After 10.5 idle minutes the browser terminal's echo came back in 121 ms (A) and 122 ms (B); the Browser panel opened
+  again drew 90 and 91 frames in 3 s.
+- `pmset displaysleepnow`: **skipped**. The Mac was on battery and in use; frames with the display asleep are
+  unmeasured.
+
+**S6, edit commands on an off-screen page: held.** A standalone Electron script (not kept; T4 has the real path) made an
+off-screen window as `electron-offscreen-webview.ts` does (never shown or focused, sandboxed, page protocol attached),
+focused a field by a trusted click (`sendInputEvent`), and typed with `sendInputEvent` key and char events:
+- a Meta+A or Ctrl+A key event alone selects nothing (the earlier spike's gap);
+- `Input.dispatchKeyEvent` (`rawKeyDown` then `keyUp`) with `commands: ['selectAll']` selects all with Meta or Ctrl
+  modifiers, and a typed `x` then replaces it; `['undo']` empties a typed "hello", `['redo']` with Meta+Shift brings it
+  back. The page sees each keydown with its modifiers. The first command flips `document.hasFocus()` to true; the
+  window stays unfocused (`isFocused()` false);
+- a page that calls `preventDefault()` on the keydown: neither `selectAll` nor `undo` runs;
+- order: "abc" by `sendInputEvent`, the command, "x" by `sendInputEvent`, 100 rounds without awaiting the command and
+  100 awaiting it: "x" every time (0 wrong in both);
+- detached fallback: `webContents.selectAll()`, `undo()` and `redo()` all work on the unfocused page.
+
+**Decisions.** 4 and 7 hold as measured (4's App Nap claim is unproven, not contradicted). 1 holds at start;
+backgroundThrottling turned out not to matter on a never-shown window. **3 conflicts with 1**: the routed launch that
+decision 3 relies on makes the run a Foreground (Dock) app for the rest of its life. Reported to the lead before T1.
+
 ## 10. Guests (pair development)
 
 Built after v1 as guests; the design is [design-guests.md](design-guests.md), user docs are
