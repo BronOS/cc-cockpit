@@ -231,8 +231,8 @@ the fallback when the protocol detached:
   point (a scroll read gone stale) is read once more, then the parent takes it. No cache: one hit test per event, none
   on a page without cross-site frames. After a press the frame that got it captures the moves and the release (a drag
   leaving the frame keeps selecting in it; one from the top document stays there over a frame), the owners' boxes read
-  again on each event, until no button is held. Each press is one record of where it went (the page's session, a
-  frame's, or `sendInputEvent` when the page's session refused it), and its release goes there and nowhere else,
+  again on each event, until no button is held. Each press is one record of where it went (the page's session or a
+  frame's; a press no session took records nothing), and its release goes there and nowhere else,
   exactly once: a release with no record (its press went nowhere: a detach, a full queue) is dropped, so no session
   gets a release it was not pressed for, and one whose frame went is dropped with it. A move without a button still
   pressed, or a press of a button still pressed, means the viewer's release went missing: that release is sent then,
@@ -263,9 +263,10 @@ the fallback when the protocol detached:
   test) of an older attachment or of a session that went changes nothing, requeues nothing and replays nothing, and
   the router keeps nothing of a session that went. A live frame's session refusing (the frame went) sends the event to the
   page's session at the top point, never to another frame (a release is dropped instead; a press sent there owes its
-  release there); a refusal from a frame that already went sends nothing anywhere. The page's session refusing a
-  pointer event sends it by `sendInputEvent`; a key, text or edit command it refuses is dropped (the caller hears the
-  rejection), never run by another road, which could land in a later attachment or after the input behind it. The
+  release there); a refusal from a frame that already went sends nothing anywhere. Whatever the page's own session
+  refuses (a pointer event, key, text or edit command) is dropped and logged once (a text or command's caller hears the
+  rejection), never run by another road, which could land in a later attachment or after the input behind it; a
+  refused press records nothing (its release is dropped too) and a refused release clears its press. The
   detached roads serve only a protocol detached when the step runs, in order (what follows a text waits for it). A seeded randomized test
   (`page-input.fuzz.test.ts`, `FUZZ_SEEDS` for a long run) checks these rules on every send and at quiescence, with
   sessions that answer late, never or refuse, frames that detach, hover effects, the protocol lost (also between two

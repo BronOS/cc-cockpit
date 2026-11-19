@@ -451,11 +451,12 @@ describe('PageInputRouter', () => {
       ['', 'mouseReleased', 20, 225]
     ])
     expect(s.logs).toEqual(["webview: a frame's protocol refused input; it went to the page instead"])
-    // The page's own session refusing: sendInputEvent.
+    // The page's own session refusing: dropped and logged once, never sendInputEvent while attached.
     s.page.opts.refuse.add('')
     s.router.input([move(5, 5)])
     await s.flush()
-    expect(s.fallback).toEqual([move(5, 5)])
+    expect(s.fallback).toEqual([])
+    expect(s.logs).toContain("webview: the page's protocol refused input; dropped")
     expect(s.mice().some((m) => m[0] === 'C')).toBe(false)
   })
 
@@ -1457,5 +1458,34 @@ describe('PageInputRouter scheduling: review 5', () => {
       ['', 'mousePressed', 20, 225],
       ['', 'mouseReleased', 30, 230]
     ])
+  })
+})
+
+// The coordinator's decision after review 5: while attached, the page's own session refusing a
+// pointer event drops it too (sendInputEvent only for a protocol detached when the step runs), and
+// the pairing stays right.
+describe('PageInputRouter scheduling: a page refusal while attached', () => {
+  it('a refused press records nothing (its release is dropped); a refused release clears its press', async () => {
+    const s = setup()
+    s.page.opts.refuse.add('')
+    s.router.input([down(20, 20)])
+    await s.flush()
+    s.page.opts.refuse.clear()
+    s.router.input([up(20, 20), down(30, 30)])
+    await s.flush()
+    s.page.opts.refuse.add('')
+    s.router.input([up(30, 30)])
+    await s.flush()
+    s.page.opts.refuse.clear()
+    s.router.input([move(40, 40), down(50, 50), up(50, 50)])
+    await s.flush()
+    expect(s.fallback).toEqual([])
+    expect(s.mice()).toEqual([
+      ['', 'mousePressed', 30, 30],
+      ['', 'mouseMoved', 40, 40],
+      ['', 'mousePressed', 50, 50],
+      ['', 'mouseReleased', 50, 50]
+    ])
+    expect(s.logs.filter((l) => /refused input; dropped/.test(l))).toHaveLength(1)
   })
 })

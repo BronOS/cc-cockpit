@@ -379,8 +379,6 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   /** Texts and commands a session refused: never to be delivered again (by any road). */
   const refusedEntries = new Set<string>()
   let refusedCount = 0
-  /** The attachment in which the page's own session last refused a command (a mouse fallback's only reason while attached). */
-  let pageRefusedGen = -1
   /** Documents whose frame owners a hover move changed, not hit-tested since (rule 3). */
   const dirty = new Set<DocName>()
   /** Wheel deltas (the DOM's sign): handed in, and delivered. */
@@ -562,17 +560,16 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         if (withTrace) trace.push(`  t=${clock.now} ${ok ? 'answer' : 'refuse'} ${id || 'page'} ${String(p.type ?? method)}`)
         fireArmed()
         if (ok) return resolve({})
-        if (session?.doc === 'page' && !c.detached) pageRefusedGen = c.gen
-        // A wheel refused past its deadline or by a session that went is lost with it (the router had moved on).
-        const lostWith = clock.now - c.sentAt >= STEP_TIMEOUT_MS || (session?.ended ?? false) || c.gen !== gen
+        // A wheel or press refused past its deadline, by a session that went or by the page's own
+        // session is lost with it (the router had moved on, or drops a page refusal).
+        const lostWith = clock.now - c.sentAt >= STEP_TIMEOUT_MS || (session?.ended ?? false) || c.gen !== gen || session?.doc === 'page'
         if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseWheel' && !lostWith) wheelOut -= p.deltaY as number
         if (method === 'Input.dispatchMouseEvent' && session && session.doc !== 'page' && !lostWith) {
           justRefused = { session, wheel: p.type === 'mouseWheel' ? (p.deltaY as number) : 0, press: p.type === 'mousePressed' ? tagOf(p.x as number, p.y as number) : undefined }
         }
         // Refused: it never happened there. The oracle forgets what it recorded for it. A frame's
         // refusal means it went, so its open presses are excused; the page's own session refusing
-        // sends by sendInputEvent instead, to the same page, so a press there stays open until its
-        // release (by either road).
+        // drops the event (a refused press records nothing there, a refused release clears it).
         if (c.logged) {
           const at = delivered.lastIndexOf(c.logged.entry)
           if (at >= 0) delivered.splice(at, 1)
@@ -591,9 +588,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
             open.get(session)?.delete(String(p.button))
             // Refused past its deadline, or by a session that went: the router had moved on (a late
             // continuation replays nothing), so that press is lost with its session.
-            if (clock.now - c.sentAt >= STEP_TIMEOUT_MS || session.ended) lostPresses.add(tag)
-            // A refusal from a session that went, or from an older attachment, replays nothing (rule 7).
-            if (session.ended || c.gen !== gen) noReplay.add(tag)
+            if (lostWith) lostPresses.add(tag)
+            // A refusal from a session that went, from an older attachment or from the page replays nothing (rule 7).
+            if (session.ended || c.gen !== gen || session.doc === 'page') noReplay.add(tag)
           }
           if (session.doc !== 'page') open.delete(session)
         }
@@ -624,8 +621,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       fallback.push(event)
       // While attached, sendInputEvent is a mouse event's road only after the page's own session
       // refused one in this attachment; a key never (a refused key is dropped).
-      if (attached && (event.type === 'keyDown' || event.type === 'keyUp' || event.type === 'char')) violate('fallback-while-attached', `key ${JSON.stringify(event)} by sendInputEvent while attached`)
-      else if (attached && pageRefusedGen !== gen) violate('fallback-old-epoch', `${event.type} by sendInputEvent while attached, with no refusal in this attachment`)
+      // sendInputEvent only while detached: a refusal while attached is dropped, never sent this way.
+      if (attached) violate('fallback-while-attached', `${JSON.stringify(event)} by sendInputEvent while attached`)
       if (event.type === 'mouseWheel') wheelOut -= event.deltaY
       if (event.type === 'mouseDown' && noReplay.has(tagOf(event.x, event.y))) violate('dead-replay', `the press tag ${tagOf(event.x, event.y)} sent again by sendInputEvent`)
       if (event.type === 'keyDown' || event.type === 'keyUp' || event.type === 'char') {
