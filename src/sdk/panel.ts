@@ -23,6 +23,9 @@
 //   ccPanel.view.remote                  the page is drawn in a web access browser view (the shell
 //                                        says so with the port; false until then and on the desktop).
 //                                        A UI hint only: main refuses desktop-only calls by itself
+//   ccPanel.view.access                  who is behind this view: 'owner', or a guest's 'read' / 'write'
+//                                        (the shell says so with the port; 'owner' until then). A UI
+//                                        hint only: the plugin's host gets the access from main
 //
 // Built to out/sdk/panel.js by a build of its own, IIFE output (panelSdk in electron.vite.config.ts,
 // which fails the build if the file imports or requires anything), and served by the cc-plugin://
