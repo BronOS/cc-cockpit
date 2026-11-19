@@ -6,25 +6,38 @@
 // refusal is in one place and a feature added later is covered by the allow-list, not by remembering to
 // check:
 //
-// - a read-only guest reads: the file, project files for quick open and find in files, git's base for the
-//   gutter. Everything else is refused (an answer the page waits for says why) or dropped: save, open
-//   another file, Open in micro, Close, the Reviewer's diff, notes, quick chat, Ask Claude (no onDiscuss),
-//   and the language servers (the first page to open a document is its owner and feeds the server its
-//   text, so a read-only page must never hold one; it is answered like an app without servers);
+// - a read-only guest reads the tab's own file and git's base for its gutter, nothing else (D-2: the
+//   owner shared this file, not the project). Everything else is refused (an answer the page waits for
+//   says why) or dropped: a read of any other path, quick open's file list and find in files (they list
+//   and search the whole project: .env, .git/config), save, open another file, Open in micro, Close, the
+//   Reviewer's diff, notes, quick chat, Ask Claude (no onDiscuss), and the language servers (the first
+//   page to open a document is its owner and feeds the server its text, so a read-only page must never
+//   hold one; it is answered like an app without servers);
 // - a write guest works like the owner, except: a definition outside the project is not opened and not
-//   even listed (its absolute path would reach the guest's page, D-33), and quick chat's model pick is not
-//   remembered app-wide (that store is the owner's; host.js passes a read-only one);
+//   even listed (its absolute path would reach the guest's page, D-33), the deleted bar's Close is refused
+//   (host.js closes on the page's own conflict report, which a guest's page could fake to close a tab the
+//   owner has unsaved text in without core's question, D-9: a guest closes from the tab bar, where main
+//   asks), and quick chat's model pick is not remembered app-wide (that store is the owner's; host.js
+//   passes a read-only one);
 // - an instance of a tab on a file outside the project (`params.outside`) serves no guest at all.
 
-/** A read-only guest's messages that reach the tab's features: reading only. */
-const READ_OK = new Set(['open', 'read', 'unwatch', 'files', 'grep', 'grep-cancel', 'git-base'])
+/** A read-only guest's messages that reach the tab's features: reading the tab's own file only (`open` and `read` checked for the path too). */
+const READ_OK = new Set(['open', 'read', 'unwatch', 'git-base'])
 
 const READ_ONLY = 'You are a read-only guest: the host can give you write access.'
 
-/** The access main tagged the instance with; anything else (an older app) is the owner. */
+/**
+ * The access main tagged the instance with. None at all (an older app, before guests) is the owner; any other
+ * value this host does not know (a newer app's role, a malformed tag) is a read-only guest: never the owner.
+ */
 function accessOf(tab) {
-  return tab && (tab.access === 'read' || tab.access === 'write') ? tab.access : 'owner'
+  const a = tab && typeof tab === 'object' ? tab.access : undefined
+  if (a === undefined || a === 'owner') return 'owner'
+  return a === 'write' ? 'write' : 'read'
 }
+
+const WRITE_CLOSE = 'A guest closes a tab from the tab bar.'
+const OUTSIDE = 'A file outside the project does not open for a guest.'
 
 /**
  * The answer a refused message gets, in the shape the page waits for (a req, a chat id), or null to drop
@@ -36,6 +49,12 @@ function refusal(m, message) {
       return { t: 'error', ...(m.req !== undefined ? { req: m.req } : {}), ...(typeof m.path === 'string' ? { path: m.path } : {}), message }
     case 'openFile':
       return { t: 'search-error', kind: 'open', message }
+    case 'files':
+    case 'grep':
+      return { t: 'search-error', kind: m.t, ...(m.req !== undefined ? { req: m.req } : {}), message }
+    case 'open':
+    case 'read':
+      return { t: 'error', ...(m.req !== undefined ? { req: m.req } : {}), ...(typeof m.path === 'string' ? { path: m.path } : {}), message }
     case 'micro':
     case 'close':
     case 'git-review':
@@ -53,12 +72,21 @@ function refusal(m, message) {
   }
 }
 
-/** Whether `m` from a view with `access` may reach the tab's features. */
-function allowed(access, m) {
+/**
+ * Whether `m` from a view with `access` may reach the tab's features; `path` is the tab's own file (main's
+ * params). A read-only guest's `open` names no path (the tab's file) or that one, its `read` that one: the
+ * page sends its own path (session.mjs), so any other is a page asking for more than was shared.
+ */
+function allowed(access, m, path) {
   if (access === 'owner') return true
-  if (access === 'read') return READ_OK.has(m.t)
-  // A write guest: never a file outside the project.
-  return !(m.t === 'openFile' && m.outside !== undefined)
+  if (access === 'read') {
+    if (!READ_OK.has(m.t)) return false
+    if (m.t === 'open') return m.path === undefined || (typeof path === 'string' && m.path === path)
+    if (m.t === 'read') return typeof path === 'string' && m.path === path
+    return true
+  }
+  // A write guest: never a file outside the project, never the deleted bar's Close.
+  return !(m.t === 'openFile' && m.outside !== undefined) && m.t !== 'close'
 }
 
 /** Shown by the page as "Read-only: <why>" (a why it has no label for is printed as is: no page build). */
@@ -91,9 +119,10 @@ function withoutOutside(m) {
 function guestTab(tab) {
   const access = accessOf(tab)
   if (access === 'owner') return { access, tab }
+  const path = tab.params && typeof tab.params === 'object' ? tab.params.path : undefined
   tab.onMessage((m) => {
-    if (!m || typeof m !== 'object' || allowed(access, m)) return
-    const r = refusal(m, access === 'read' ? READ_ONLY : 'A file outside the project does not open for a guest.')
+    if (!m || typeof m !== 'object' || allowed(access, m, path)) return
+    const r = refusal(m, access === 'read' ? READ_ONLY : m.t === 'close' ? WRITE_CLOSE : OUTSIDE)
     if (r) tab.post(r)
   })
   const wrapped = {
@@ -105,7 +134,7 @@ function guestTab(tab) {
     post: access === 'write' ? (m) => tab.post(withoutOutside(m)) : (m) => tab.post(asReadOnly(m)),
     onMessage: (fn) =>
       tab.onMessage((m) => {
-        if (m && typeof m === 'object' && allowed(access, m)) fn(m)
+        if (m && typeof m === 'object' && allowed(access, m, path)) fn(m)
       }),
     onClose: (fn) => tab.onClose(fn),
     setTitle: (...args) => tab.setTitle(...args),
@@ -120,4 +149,4 @@ function readOnlyStore(store) {
   return Object.freeze({ get: (k) => store.get(k), set: async () => {} })
 }
 
-module.exports = { READ_OK, READ_GUEST_WHY, accessOf, asReadOnly, guestTab, readOnlyStore, refusal, withoutOutside }
+module.exports = { READ_OK, READ_GUEST_WHY, accessOf, allowed, asReadOnly, guestTab, readOnlyStore, refusal, withoutOutside }
