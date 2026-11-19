@@ -247,7 +247,7 @@ describe('toElectronEvents: what reaches sendInputEvent', () => {
 describe('WebviewInput.accept', () => {
   it('sends a viewer\'s events to the page, in order', () => {
     const { viewers, input, sent } = setup()
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     expect(input.accept(PANEL, 'web:1', [move(10, 10), down(10, 10), { ...down(10, 10), type: 'up' }, key('b')])).toBe(4)
     expect(sent).toEqual([
       [
@@ -263,21 +263,21 @@ describe('WebviewInput.accept', () => {
   it('refuses a view that is not a viewer: never reported, hidden, gone, or of another window', () => {
     const { viewers, input, sent } = setup()
     expect(() => input.accept(PANEL, 'web:1', [move(1, 1)])).toThrow(/not a viewer/)
-    viewers.report(PANEL, 'web:1', { ...shown, hidden: true })
+    viewers.report(PANEL, 'web:1', { ...shown, hidden: true }, 'owner')
     expect(() => input.accept(PANEL, 'web:1', [move(1, 1)])).toThrow(/not a viewer/)
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     viewers.viewGone('web:1')
     expect(() => input.accept(PANEL, 'web:1', [move(1, 1)])).toThrow(/not a viewer/)
     // A viewer of the same panel key in another window is no viewer of this window's panel (the
     // router resolves the key in the caller's own window, so it can only name OTHER_WINDOW).
-    viewers.report(OTHER_WINDOW, 'web:2', shown)
+    viewers.report(OTHER_WINDOW, 'web:2', shown, 'owner')
     expect(() => input.accept(PANEL, 'web:2', [move(1, 1)])).toThrow(/not a viewer/)
     expect(sent).toEqual([])
   })
 
   it('refuses a malformed call whole, sending nothing', () => {
     const { viewers, input, sent, claims } = setup()
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     expect(() => input.accept(PANEL, 'web:1', [down(1, 1), key('Meta')])).toThrow(/unknown key/)
     expect(() => input.accept(PANEL, 'web:1', 'events')).toThrow(/must be a list/)
     expect(sent).toEqual([])
@@ -286,7 +286,7 @@ describe('WebviewInput.accept', () => {
 
   it('drops points outside the page, keeps the rest of the call', () => {
     const { viewers, input, sent } = setup({ size: { width: 400, height: 300 } })
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     expect(input.accept(PANEL, 'web:1', [move(401, 10), move(10, 301), { ...down(400, 300), type: 'up' }])).toBe(1)
     expect(sent).toEqual([[{ type: 'mouseUp', x: 399, y: 299, button: 'left', clickCount: 1, modifiers: [] }]])
   })
@@ -295,7 +295,7 @@ describe('WebviewInput.accept', () => {
   // Ctrl+V and paste the server's clipboard (every page's and session's there) into the page.
   it('drops clipboard chords, down and up, on any platform, and keeps the rest of the call', () => {
     const { viewers, input, sent, claims } = setup()
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     const chords = [
       key('v', 'down', ['control']),
       key('v', 'up', ['control']),
@@ -315,15 +315,15 @@ describe('WebviewInput.accept', () => {
 
   it('takes nothing for a panel with no page yet', () => {
     const { viewers, input, sent } = setup({ page: false })
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     expect(input.accept(PANEL, 'web:1', [down(1, 1)])).toBe(0)
     expect(sent).toEqual([])
   })
 
   it(`caps each view at ${INPUT_RATE} events per second, dropping the rest silently`, () => {
     const { viewers, input, sent, advance } = setup()
-    viewers.report(PANEL, 'web:1', shown)
-    viewers.report(PANEL, 'web:2', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
+    viewers.report(PANEL, 'web:2', shown, 'owner')
     const batch = Array(MAX_INPUT_EVENTS).fill(move(1, 1))
     let taken = 0
     for (let i = 0; i < 20; i++) taken += input.accept(PANEL, 'web:1', batch)
@@ -339,15 +339,15 @@ describe('WebviewInput.accept', () => {
     expect(input.accept(PANEL, 'web:1', batch)).toBe(0)
     // The view's socket closed: a new one with the same id starts full.
     input.viewGone('web:1')
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     expect(input.accept(PANEL, 'web:1', batch)).toBe(MAX_INPUT_EVENTS)
     expect(sent.flat().length).toBeGreaterThan(0)
   })
 
   it('a press, a key or a wheel makes the sender the size owner; a move does not', () => {
     const { viewers, input, claims } = setup()
-    viewers.report(PANEL, 'web:1', shown)
-    viewers.report(PANEL, 'web:2', { ...shown, width: 500, height: 400 })
+    viewers.report(PANEL, 'web:1', shown, 'owner')
+    viewers.report(PANEL, 'web:2', { ...shown, width: 500, height: 400 }, 'owner')
     expect(viewers.ownerOf(PANEL)).toBe('web:1')
     input.accept(PANEL, 'web:2', [move(5, 5), move(6, 6)])
     expect(claims).toEqual([])
@@ -660,13 +660,13 @@ describe('WebviewInput.acceptText', () => {
           : { size: () => ({ width: 800, height: 600 }), send: (events) => void sent.push([...events]), insertText: (text) => void texts.push(text) },
       now: () => t
     })
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     return { viewers, input, texts, sent, claims, advance: (ms: number) => void (t += ms) }
   }
 
   it("inserts a viewer's text as the page's committed text and claims the size", () => {
     const { viewers, input, texts, claims } = textSetup()
-    viewers.report(PANEL, 'web:2', { ...shown, width: 500 })
+    viewers.report(PANEL, 'web:2', { ...shown, width: 500 }, 'owner')
     expect(input.acceptText(PANEL, 'web:2', 'héllo ü 👋')).toBe(true)
     expect(texts).toEqual(['héllo ü 👋'])
     expect(claims).toEqual(['web:2'])
@@ -761,8 +761,8 @@ describe('the selection pushed for copy', () => {
       timers: clock.timers,
       now: () => 0
     })
-    viewers.report(PANEL, 'web:1', shown)
-    viewers.report(PANEL, 'web:2', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
+    viewers.report(PANEL, 'web:2', shown, 'owner')
     const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
     return {
       viewers,
@@ -852,12 +852,12 @@ describe('the selection pushed for copy', () => {
     expect(pushes.map(([, e]) => e.text)).toEqual(['one', ''])
     setReading(() => Promise.resolve('two'))
     input.accept(PANEL, 'web:1', [up])
-    viewers.report(PANEL, 'web:1', { ...shown, hidden: true })
+    viewers.report(PANEL, 'web:1', { ...shown, hidden: true }, 'owner')
     clock.run()
     await flush()
     expect(pushes).toHaveLength(2)
     // The socket closed: its debounce is cancelled.
-    viewers.report(PANEL, 'web:1', shown)
+    viewers.report(PANEL, 'web:1', shown, 'owner')
     input.accept(PANEL, 'web:1', [up])
     expect(clock.size()).toBe(1)
     input.viewGone('web:1')

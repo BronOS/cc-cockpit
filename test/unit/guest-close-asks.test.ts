@@ -168,6 +168,7 @@ describe('CloseAsks ownerView: a guest view does not block "every live view decl
   function closeAsks(views: string[], ownerView?: (viewId: string) => boolean) {
     const settled: string[] = []
     const asks = new CloseAsks({
+      ownerView: () => true,
       send: () => true,
       settled: (_w, id) => void settled.push(id),
       close: () => true,

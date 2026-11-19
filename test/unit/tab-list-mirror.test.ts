@@ -71,7 +71,7 @@ function setup(options: { others?: boolean; attach?: TabHandlerDeps['attach'] } 
     // Always a promise, as for the page: a handler that throws at once rejects.
     desktop: async (channel: string, payload?: unknown) => listeners.get(channel)!(desktopFrame, payload),
     remote: (viewId: string, channel: string, payload?: unknown) =>
-      router.dispatch(webCaller(CTX, viewId), channel, payload)
+      router.dispatch(webCaller(CTX, viewId, 'owner'), channel, payload)
   }
 }
 

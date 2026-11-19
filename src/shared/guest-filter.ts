@@ -184,7 +184,7 @@ export function guestSessions(s: SessionsSnapshot, ctx: GuestFilterContext): Ses
         delete out.room
         delete out.held
         // D-33: the files the session touched, relative to the project; one outside it (a host path) is dropped.
-        out.files = d.files.flatMap((f) => {
+        out.files = (Array.isArray(d.files) ? d.files : []).flatMap((f) => {
           const rel = projectRelative(f, root)
           return rel === undefined ? [] : [rel]
         })

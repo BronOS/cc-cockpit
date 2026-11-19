@@ -200,9 +200,10 @@ export type Caller = ElectronCaller | WebCaller
 /**
  * Build a WebCaller. Main's gateway is the only caller; the check here is a second line against a
  * gateway bug (a desktop id or a picker context on a remote connection), not input validation.
- * Frozen so a handler cannot rebind the connection it was handed.
+ * Frozen so a handler cannot rebind the connection it was handed. `who` has no default (03e D): a caller that
+ * forgot it must not become the owner.
  */
-export function webCaller(context: ProjectSenderContext, viewId: ViewId, who: Who = 'owner'): WebCaller {
+export function webCaller(context: ProjectSenderContext, viewId: ViewId, who: Who): WebCaller {
   if (context.kind !== 'project') throw new Error('webCaller: a remote view binds to a project window only')
   if (!isRemoteViewId(viewId)) throw new Error('webCaller: not a remote view id')
   return Object.freeze({
@@ -236,6 +237,17 @@ export interface CallView {
  */
 export function isOwner(view: Pick<CallView, 'who'>): boolean {
   return view.who === 'owner'
+}
+
+/**
+ * A guest call's access, for the handlers that take a guest's path (03e D, fail closed): undefined for the owner,
+ * by `who`; a guest view the router bound no access to throws, so a guest can never fall through to the owner's
+ * path because `access` was left unset.
+ */
+export function guestCall(view: Pick<CallView, 'who' | 'access'>, channel: string): GuestOnlyAccess | undefined {
+  if (view.who === 'owner') return undefined
+  if (!view.access) throw new Error(`${channel}: refused`)
+  return view.access
 }
 
 /**
@@ -798,10 +810,13 @@ export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): 
     deps.disconnect(ctx.projectId, view.viewId, frameIdOf('slots.disconnect', payload))
     return null
   })
-  router.handleProject('slots.height', (ctx, payload) => {
+  router.handleProject('slots.height', (ctx, payload, view) => {
     const frameId = frameIdOf('slots.height', payload)
     const { height } = fields('slots.height', payload)
     if (typeof height !== 'number' || !Number.isFinite(height)) throw new Error('slots.height: height must be a number')
+    // A slot's height is the shared layout's (every view of the window, the owner's included): a read guest only
+    // watches, so its frame's report changes nothing (03e E). A write guest's counts like the owner's.
+    if (guestCall(view, 'slots.height')?.role === 'read') return false
     return deps.setHeight(ctx.projectId, frameId, height)
   })
 }
@@ -1722,7 +1737,8 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   router.handleProject('tabs.commands', (ctx) => tabs.commands(ctx.projectId))
 
   router.handleProject('tabs.create', async (ctx, payload, view) => {
-    const tab = view.access ? await createGuestTab(ctx, payload, view, view.access) : await createTab(ctx, payload)
+    const guestAccess = guestCall(view, 'tabs.create')
+    const tab = guestAccess ? await createGuestTab(ctx, payload, view, guestAccess) : await createTab(ctx, payload)
     if (tab) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.added', payload: tab })
     const guest = tab ? router.guestFilter(ctx, view) : undefined
     return guest && tab ? (guestTab(tab, guest) ?? null) : tab
@@ -1800,7 +1816,8 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     // (the same view can send `discard`); it keeps a race from dropping the person's text unasked.
     if (discard !== true && tabs.pageUnsaved?.(ctx.projectId, tabId) === true) return { unsaved: true as const }
     // D-9: a guest closes only the tabs it opened; any other is the owner's to close, so the owner is asked.
-    if (view.access && !router.guestService()?.openedTabs(view.access.id).includes(tabId)) return askOwnerToClose(ctx, view, view.access, tabId)
+    const guestAccess = guestCall(view, 'tabs.close')
+    if (guestAccess && !router.guestService()?.openedTabs(guestAccess.id).includes(tabId)) return askOwnerToClose(ctx, view, guestAccess, tabId)
     closeNow(ctx, view.viewId, tabId)
   })
   const closeNow = (ctx: ProjectContext, viewId: ViewId, tabId: string): void => {
@@ -1902,7 +1919,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (typeof data !== 'string') throw new Error('tabs.input: data must be a string')
     const tabId = tabIdOf('tabs.input', payload)
     // A write guest's keys (D-3): `typed` set like the owner's, never the project's active tab. Unwired: nothing.
-    if (view.access) {
+    if (guestCall(view, 'tabs.input')) {
       if (!tabs.guest) throw new Error('tabs.input: refused')
       tabs.guest.input(ctx.projectId, tabId, data, view.viewId)
       return
@@ -1918,7 +1935,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     }
     const tabId = tabIdOf('tabs.resize', payload)
     // D-14: a guest's report is remembered for its explicit take only (typing, Fit); unwired, it is dropped.
-    if (view.access) tabs.guest?.resize(ctx.projectId, tabId, cols, rows, view.viewId)
+    if (guestCall(view, 'tabs.resize')) tabs.guest?.resize(ctx.projectId, tabId, cols, rows, view.viewId)
     else tabs.resize(ctx.projectId, tabId, cols, rows, view.viewId)
   })
 
@@ -1969,7 +1986,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   router.handleProject('tabs.selected', (ctx, payload, view) => {
     const tabId = tabIdOf('tabs.selected', payload)
     // A guest's selection is its view's own (design-guests §7): never the project's active tab or lastActing.
-    if (view.access) tabs.guest?.select(ctx.projectId, tabId, view.viewId)
+    if (guestCall(view, 'tabs.selected')) tabs.guest?.select(ctx.projectId, tabId, view.viewId)
     else tabs.select(ctx.projectId, tabId, view.viewId)
     if (view.remote) tabs.viewSelect(view.viewId, tabId)
   })
@@ -2234,7 +2251,7 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     if (typeof move !== 'boolean') throw new Error('trash.answer: move must be a boolean')
     // D-10: a guest (write, of a visible plugin's ask: the router checked) may Deny anywhere, Allow only on a
     // server. On a desktop host its Allow is ignored: the ask stays for the owner.
-    if (view.access && move && deps.server !== true) return false
+    if (guestCall(view, 'trash.answer') && move && deps.server !== true) return false
     return deps.trashAnswer(ctx.windowId, requestId, move)
   })
 
@@ -2375,7 +2392,7 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
       throw new Error('overlays.resize: cols and rows must be numbers')
     }
     const overlayId = overlayIdOf('overlays.resize', payload)
-    if (view.access) deps.guestResize?.(ctx.windowId, overlayId, cols, rows, view.viewId)
+    if (guestCall(view, 'overlays.resize')) deps.guestResize?.(ctx.windowId, overlayId, cols, rows, view.viewId)
     else deps.resize(ctx.windowId, overlayId, cols, rows, view.viewId)
   })
 
@@ -2552,7 +2569,7 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     }
     // The viewers clamp the sizes ([64, 4096] CSS px) and decide viewer and owner.
     // A guest's view (spec-review 14): the role tells the viewers whether it may own the size.
-    viewers.report({ windowId: ctx.windowId, pluginId: ref.pluginId, panelId: ref.panelId }, view.viewId, { width, height, visible, hidden }, view.access?.role)
+    viewers.report({ windowId: ctx.windowId, pluginId: ref.pluginId, panelId: ref.panelId }, view.viewId, { width, height, visible, hidden }, guestCall(view, 'webviews.place')?.role ?? 'owner')
   })
   router.handleProject('webviews.fit', (ctx, payload, view) => {
     const viewers = viewersFor('webviews.fit', view)

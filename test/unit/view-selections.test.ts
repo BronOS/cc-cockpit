@@ -71,8 +71,8 @@ function setup() {
     tabs,
     sessions,
     selections,
-    remoteSelect: (viewId: string, tabId: string) => router.dispatch(webCaller(CTX, viewId), 'tabs.selected', { tabId }),
-    remoteInput: (viewId: string, tabId: string, data: string) => router.dispatch(webCaller(CTX, viewId), 'tabs.input', { tabId, data }),
+    remoteSelect: (viewId: string, tabId: string) => router.dispatch(webCaller(CTX, viewId, 'owner'), 'tabs.selected', { tabId }),
+    remoteInput: (viewId: string, tabId: string, data: string) => router.dispatch(webCaller(CTX, viewId, 'owner'), 'tabs.input', { tabId, data }),
     desktopSelect: (tabId: string) => listeners.get('tabs.selected')!(desktopFrame, { tabId }),
     desktopInput: (tabId: string, data: string) => listeners.get('tabs.input')!(desktopFrame, { tabId, data })
   }

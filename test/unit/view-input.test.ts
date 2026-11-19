@@ -69,7 +69,7 @@ function setup() {
     })
   })
   const remote = (viewId: string, tabId: string, data: string): Promise<unknown> =>
-    router.dispatch(webCaller(CTX, viewId), 'tabs.input', { tabId, data })
+    router.dispatch(webCaller(CTX, viewId, 'owner'), 'tabs.input', { tabId, data })
   const desktop = (tabId: string, data: string): unknown =>
     listeners.get('tabs.input')!({ sender: { id: 11 }, senderFrame: { parent: null, url: 'file:///app/index.html' } }, { tabId, data })
   return { tabs, sessions, typed, remote, desktop, router }
@@ -97,7 +97,7 @@ describe('input from a remote view', () => {
   it('a view bound to a window that is gone reaches neither the pty nor the registry; an unknown tab is ignored', async () => {
     const { tabs, sessions, typed, remote, router } = setup()
     const tab = tabs.create(P, { kind: 'claude' })
-    const gone = webCaller({ kind: 'project', windowId: 2, projectId: P }, 'web:4')
+    const gone = webCaller({ kind: 'project', windowId: 2, projectId: P }, 'web:4', 'owner')
     await expect(router.dispatch(gone, 'tabs.input', { tabId: tab.id, data: 'x' })).rejects.toThrow()
     await remote('web:4', 'no-such-tab', 'x')
     expect(sessions.get(tab.id)?.typed).toBe(false)

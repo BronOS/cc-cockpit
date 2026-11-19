@@ -44,13 +44,13 @@ describe('a read guest', () => {
 
   it("an owner's view joining after it becomes the owner and the page takes its size", () => {
     viewers.report(PANEL, READ, shown(300, 200), 'read')
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     expect(viewers.ownerOf(PANEL)).toBe(OWNER)
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 800, height: 600 })
   })
 
   it('claimOwner from a read guest changes nothing', () => {
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     viewers.report(PANEL, READ, shown(300, 200), 'read')
     viewers.claimOwner(PANEL, READ)
     expect(viewers.ownerOf(PANEL)).toBe(OWNER)
@@ -59,7 +59,7 @@ describe('a read guest', () => {
 
   it('stays a guest on later reports even with no role passed (sticky)', () => {
     viewers.report(PANEL, READ, shown(300, 200), 'read')
-    viewers.report(PANEL, READ, shown(310, 200))
+    viewers.report(PANEL, READ, shown(310, 200), 'owner')
     viewers.claimOwner(PANEL, READ)
     expect(viewers.ownerOf(PANEL)).toBeUndefined()
   })
@@ -77,17 +77,17 @@ describe('a write guest', () => {
 
   it('an owner view joining after an unclaimed write guest owns the size', () => {
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     expect(viewers.ownerOf(PANEL)).toBe(OWNER)
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 800, height: 600 })
     expect(changes.filter((c) => c.kind === 'owner').map((c) => (c as { viewId?: string }).viewId)).toEqual([OWNER])
   })
 
   it('an owner view joining later does not take it back after the guest claimed it from an owner view', () => {
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
     viewers.claimOwner(PANEL, WRITE)
-    viewers.report(PANEL, OWNER2, shown(700, 500))
+    viewers.report(PANEL, OWNER2, shown(700, 500), 'owner')
     expect(viewers.ownerOf(PANEL)).toBe(WRITE)
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 400, height: 300 })
   })
@@ -95,13 +95,13 @@ describe('a write guest', () => {
   it('a lone write guest that claims keeps the size when an owner view joins', () => {
     viewers.report(PANEL, WRITE, shown(500, 400), 'write')
     viewers.claimOwner(PANEL, WRITE)
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     expect(viewers.ownerOf(PANEL)).toBe(WRITE)
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 500, height: 400 })
   })
 
   it('a write guest joining beside an owner view does not own, and owns by its claim', () => {
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
     expect(viewers.ownerOf(PANEL)).toBe(OWNER)
     viewers.claimOwner(PANEL, WRITE)
@@ -120,16 +120,16 @@ describe('a write guest', () => {
 
 describe('the owner leaving', () => {
   it('hands the size to an owner view, never to a guest that reported or claimed more recently', () => {
-    viewers.report(PANEL, OWNER, shown(800, 600))
-    viewers.report(PANEL, OWNER2, shown(700, 500))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
+    viewers.report(PANEL, OWNER2, shown(700, 500), 'owner')
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
-    viewers.report(PANEL, WRITE, shown(410, 300))
+    viewers.report(PANEL, WRITE, shown(410, 300), 'owner')
     viewers.viewGone(OWNER)
     expect(viewers.ownerOf(PANEL)).toBe(OWNER2)
   })
 
   it('with only guests left nobody owns it, owner undefined is emitted and the applied size stays', () => {
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
     viewers.report(PANEL, READ, shown(300, 200), 'read')
     changes.length = 0
@@ -142,7 +142,7 @@ describe('the owner leaving', () => {
   })
 
   it('after that a guest claim owns it again and the page takes its size', () => {
-    viewers.report(PANEL, OWNER, shown(800, 600))
+    viewers.report(PANEL, OWNER, shown(800, 600), 'owner')
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
     viewers.viewGone(OWNER)
     viewers.claimOwner(PANEL, WRITE)

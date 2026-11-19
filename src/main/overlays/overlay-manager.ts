@@ -208,9 +208,10 @@ export interface OverlayManagerOptions {
   browserViews?(windowId: number): ViewId[]
   /**
    * Whether a view is the owner's (ViewRegistry.whoOf, design-guests §9): a guest's view never holds an html
-   * overlay's page (its posts carry the opener's data). Absent: every view is (no guests).
+   * overlay's page (its posts carry the opener's data). Required (03e D): a wiring that forgot it must not hand a
+   * page to a guest's view.
    */
-  ownerView?(viewId: ViewId): boolean
+  ownerView(viewId: ViewId): boolean
 }
 
 /**
@@ -794,7 +795,7 @@ export class OverlayManager {
    * attached), never `except` (the view leaving) nor a desktop view; undefined when none is attached.
    */
   private ownerView(viewId: ViewId): boolean {
-    return this.options.ownerView?.(viewId) ?? true
+    return this.options.ownerView(viewId)
   }
 
   private browserHolder(windowId: number, except?: ViewId): ViewId | undefined {

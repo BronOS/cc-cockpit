@@ -3,6 +3,7 @@
 // router that only captures handlers, the second-line `isOwner` of each server-mode `adapted` site.
 import { describe, expect, it } from 'vitest'
 import {
+  guestCall,
   IpcRouter,
   isOwner,
   registerCoreHandlers,
@@ -11,6 +12,7 @@ import {
   registerOAuthPasteHandlers,
   registerSessionHandlers,
   registerSettingsHandlers,
+  registerSlotHandlers,
   registerTabHandlers,
   registerWebAccessHandlers,
   webCaller,
@@ -18,6 +20,7 @@ import {
   type GuestRouterDeps,
   type IpcEventLike,
   type IpcMainLike,
+  type SlotHandlerDeps,
   type TabHandlerDeps
 } from '../../src/main/ipc/router'
 import { registerRoomStripHandlers, registerRoomViewHandlers } from '../../src/main/ipc/room-handlers'
@@ -113,7 +116,7 @@ function guestDeps(guests: GuestService = fakeGuests(), over: Partial<GuestRoute
   }
 }
 
-const owner = (viewId: `web:${number}` = 'web:3') => webCaller(CTX, viewId)
+const owner = (viewId: `web:${number}` = 'web:3') => webCaller(CTX, viewId, 'owner')
 const guest = (id: string, viewId: `web:${number}` = 'web:5') => webCaller(CTX, viewId, { guest: id })
 
 const outcome = (p: Promise<unknown>): Promise<boolean> =>
@@ -646,5 +649,50 @@ describe('guest list handlers (owner only; widening from a remote view only on a
     await expect(router.dispatch(owner(), 'settings.pluginGuestAccessSet', { pluginId: 'p.vis', target: 'project', value: 'shown' })).rejects.toThrow(/widen/)
     expect(set).toEqual([[PROJECT_A, { pluginId: 'p.vis', target: 'project', value: 'hidden' }]])
     await expect(router.dispatch(owner(), 'settings.pluginGuestAccessSet', { pluginId: '../x', target: 'project', value: 'hidden' })).rejects.toThrow(/bad plugin id/)
+  })
+})
+
+describe('03e D: no fail-open default for a guest', () => {
+  it('guestCall: the owner takes the owner path; a guest without bound access is refused, never the owner', () => {
+    expect(guestCall({ who: 'owner' }, 'x')).toBeUndefined()
+    // An owner with a stray access still takes the owner path: `who` decides, not whether access is set.
+    expect(guestCall({ who: 'owner', access: guestAccess('gW', 'write') }, 'x')).toBeUndefined()
+    expect(guestCall({ who: { guest: 'gW' }, access: guestAccess('gW', 'write') }, 'x')).toEqual(guestAccess('gW', 'write'))
+    expect(() => guestCall({ who: { guest: 'gW' } }, 'tabs.input')).toThrow('tabs.input: refused')
+  })
+
+  it('webCaller takes who explicitly (no owner default)', () => {
+    // @ts-expect-error -- who is required: a caller that forgot it must not become the owner
+    expect(() => webCaller(CTX, 'web:3')).not.toThrow()
+    expect(webCaller(CTX, 'web:3', { guest: 'gW' }).who).toEqual({ guest: 'gW' })
+  })
+})
+
+describe('03e E: slots.height', () => {
+  function slots() {
+    const router = newRouter()
+    router.setGuestDeps(guestDeps())
+    const heights: unknown[][] = []
+    const deps: SlotHandlerDeps = {
+      connect: () => true,
+      disconnect: () => undefined,
+      setHeight: (projectId, frameId, height) => (heights.push([projectId, frameId, height]), true)
+    }
+    registerSlotHandlers(router, deps)
+    return { router, heights }
+  }
+
+  it("a read guest's report changes nothing (false); a write guest's and the owner's set the height", async () => {
+    const { router, heights } = slots()
+    await expect(router.dispatch(guest('gR'), 'slots.height', { frameId: 'f1', height: 300 })).resolves.toBe(false)
+    expect(heights).toEqual([])
+    await expect(router.dispatch(guest('gW'), 'slots.height', { frameId: 'f1', height: 310 })).resolves.toBe(true)
+    await expect(router.dispatch(owner(), 'slots.height', { frameId: 'f1', height: 320 })).resolves.toBe(true)
+    expect(heights).toEqual([
+      [PROJECT_A, 'f1', 310],
+      [PROJECT_A, 'f1', 320]
+    ])
+    // A frame of a plugin the guest cannot see stays refused by the gate, before the handler.
+    await expect(router.dispatch(guest('gW'), 'slots.height', { frameId: 'f2', height: 1 })).rejects.toThrow(/refused/)
   })
 })

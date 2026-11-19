@@ -33,6 +33,7 @@ afterEach(() => {
 
 function manager(extra: Partial<ConstructorParameters<typeof OverlayManager>[0]> = {}): OverlayManager {
   return new OverlayManager({
+    ownerView: () => true,
     backend,
     views: new NoViews(),
     isWindowOpen: () => true,

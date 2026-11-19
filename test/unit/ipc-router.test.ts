@@ -236,7 +236,7 @@ describe('IpcRouter callers and views', () => {
       seen.push(ctx, view)
       return { kind: 'picker', home: '/h' }
     })
-    const caller = webCaller(A_CTX, 'web:7')
+    const caller = webCaller(A_CTX, 'web:7', 'owner')
     await expect(router.dispatch(caller, 'tabs.list', undefined)).resolves.toEqual([])
     await router.dispatch(caller, 'window.info', undefined)
     const view = { viewId: 'web:7', who: 'owner', remote: true }
@@ -251,7 +251,7 @@ describe('IpcRouter callers and views', () => {
       return []
     })
     const forged = { windowId: 2, projectId: PROJECT_B, viewId: 'web:99', kind: 'electron', who: 'x' }
-    await router.dispatch(webCaller(A_CTX, 'web:1'), 'tabs.list', forged)
+    await router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'tabs.list', forged)
     expect(seen[0]).toEqual({ windowId: 1, projectId: PROJECT_A })
     expect(seen[1]).toEqual(forged)
     expect(seen[2]).toEqual({ viewId: 'web:1', who: 'owner', remote: true })
@@ -267,7 +267,7 @@ describe('IpcRouter callers and views', () => {
     router.handleProject('window.reopen', () => {
       calls++
     })
-    const caller = webCaller(A_CTX, 'web:1')
+    const caller = webCaller(A_CTX, 'web:1', 'owner')
     await expect(router.dispatch(caller, 'projects.openFolder', undefined)).rejects.toThrow(/refused/)
     await expect(router.dispatch(caller, 'window.reopen', undefined)).rejects.toThrow(/refused/)
     expect(calls).toBe(0)
@@ -276,7 +276,7 @@ describe('IpcRouter callers and views', () => {
 
   it('refuses unknown and inherited channel names from a web caller', async () => {
     const { router } = setup()
-    const caller = webCaller(A_CTX, 'web:1')
+    const caller = webCaller(A_CTX, 'web:1', 'owner')
     for (const channel of ['nope', '__proto__', 'toString', 'constructor', '']) {
       await expect(router.dispatch(caller, channel, undefined)).rejects.toThrow(/refused/)
     }
@@ -295,7 +295,7 @@ describe('IpcRouter callers and views', () => {
       calls++
       return { kind: 'picker', home: '/h' }
     })
-    const caller = webCaller(A_CTX, 'web:1')
+    const caller = webCaller(A_CTX, 'web:1', 'owner')
     await expect(router.dispatch(caller, 'tabs.list', undefined)).resolves.toEqual([])
     expect(calls).toBe(1)
     // The socket outlived its window: every later frame is refused, not run with the stale binding.
@@ -313,7 +313,7 @@ describe('IpcRouter callers and views', () => {
     const isApp = appPageMatcher({ kind: 'file', path: APP_FILE })
     const router = new IpcRouter(new FakeIpcMain(), (id) => senders.get(id), isApp, () => {})
     router.handleProject('tabs.list', () => [])
-    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'tabs.list', undefined)).rejects.toThrow(/refused/)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'tabs.list', undefined)).rejects.toThrow(/refused/)
   })
 
   it('rejects a throwing handler as a promise, as ipcMain does', async () => {
@@ -321,7 +321,7 @@ describe('IpcRouter callers and views', () => {
     router.handleProject('tabs.list', () => {
       throw new Error('boom')
     })
-    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'tabs.list', undefined)).rejects.toThrow('boom')
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'tabs.list', undefined)).rejects.toThrow('boom')
   })
 
   it('refuses a second handler for one channel', () => {
@@ -331,12 +331,12 @@ describe('IpcRouter callers and views', () => {
   })
 
   it('builds only frozen web callers bound to a project window and a remote view id', () => {
-    expect(() => webCaller(A_CTX, 'desktop:1')).toThrow(/remote view id/)
-    expect(() => webCaller(A_CTX, 'web:0')).toThrow(/remote view id/)
+    expect(() => webCaller(A_CTX, 'desktop:1', 'owner')).toThrow(/remote view id/)
+    expect(() => webCaller(A_CTX, 'web:0', 'owner')).toThrow(/remote view id/)
     expect(() =>
-      webCaller({ kind: 'picker', windowId: 3 } as unknown as typeof A_CTX, 'web:1')
+      webCaller({ kind: 'picker', windowId: 3 } as unknown as typeof A_CTX, 'web:1', 'owner')
     ).toThrow(/project window/)
-    const caller = webCaller(A_CTX, 'web:2')
+    const caller = webCaller(A_CTX, 'web:2', 'owner')
     expect(caller).toEqual({ kind: 'web', context: A_CTX, viewId: 'web:2', who: 'owner' })
     expect(Object.isFrozen(caller)).toBe(true)
     expect(Object.isFrozen(caller.context)).toBe(true)
@@ -574,7 +574,7 @@ describe('core handlers', () => {
       }
     })
     await ipc.invoke('commands.run', 11, [{ id: 'a.one/refresh', view: 'web:9' }])
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4'), 'commands.run', {
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner'), 'commands.run', {
       id: 'a.one/refresh',
       view: 'web:9'
     })
@@ -604,7 +604,7 @@ describe('core handlers', () => {
     await expect(ipc.invoke('theme.get', 11)).resolves.toBe(BUILTIN_THEMES[0])
     await expect(ipc.invoke('theme.get', 13)).resolves.toBe(BUILTIN_THEMES[0])
     // A browser view of window 1: answered by main's binding, never a view named in the payload.
-    const caller = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const caller = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
     await expect(router.dispatch(caller, 'theme.get', { viewId: 'desktop:1' })).resolves.toBe(BUILTIN_THEMES[1])
     expect(asked).toEqual(['desktop:1', 'desktop:3', 'web:5'])
   })
@@ -612,7 +612,7 @@ describe('core handlers', () => {
   it('theme.scheme is taken from a remote view only, and only as a boolean', async () => {
     const schemes: Array<[string, boolean]> = []
     const { ipc, router } = core({ setViewScheme: (viewId, dark) => schemes.push([viewId, dark]) })
-    const caller = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const caller = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
     await router.dispatch(caller, 'theme.scheme', { dark: true, viewId: 'web:9' })
     // The desktop page follows nativeTheme: its report is ignored, not an error.
     await expect(ipc.invoke('theme.scheme', 11, [{ dark: true }])).resolves.toBeUndefined()
@@ -641,12 +641,12 @@ describe('core handlers', () => {
 
   it('app.openExternal from a remote view names that view and its window, as the router bound them', async () => {
     const { router, external, targets } = core()
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'https://example.com/x', viewId: 'web:9', windowId: 2 })
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner'), 'app.openExternal', { url: 'https://example.com/x', viewId: 'web:9', windowId: 2 })
     expect(external).toEqual(['https://example.com/x'])
     // The payload's window and view are ignored: the adapter decides by what the router bound.
     expect(targets).toEqual([{ windowId: 1, viewId: 'web:3' }])
     // The same checks as the desktop's: a bad scheme is refused before the adapter is asked.
-    await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'app.openExternal', { url: 'file:///etc/passwd' })).rejects.toThrow(/app\.openExternal/)
+    await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner'), 'app.openExternal', { url: 'file:///etc/passwd' })).rejects.toThrow(/app\.openExternal/)
     expect(targets).toHaveLength(1)
   })
 
@@ -682,7 +682,7 @@ describe('core handlers', () => {
       })
       return { ipc, router, closed }
     }
-    const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId)
+    const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId, 'owner')
 
     it('in server mode closes the window the remote view is bound to', async () => {
       const { router, closed } = closing(true)
@@ -716,7 +716,7 @@ describe('core handlers', () => {
       const { ipc, router, closed } = closing(true)
       await expect(ipc.invoke('projects.close', 13)).rejects.toThrow(/not a project window/)
       // A view bound to a window that now holds another project: the router refuses before the handler.
-      await expect(router.dispatch(webCaller({ kind: 'project', windowId: 2, projectId: PROJECT_A }, 'web:4'), 'projects.close', undefined)).rejects.toThrow(/refused/)
+      await expect(router.dispatch(webCaller({ kind: 'project', windowId: 2, projectId: PROJECT_A }, 'web:4', 'owner'), 'projects.close', undefined)).rejects.toThrow(/refused/)
       expect(closed).toEqual([])
     })
 
@@ -777,7 +777,7 @@ describe('registerTabHandlers', () => {
 
   it('answers a remote view with the plain list, its own ack and a terminal join; the desktop as before', async () => {
     const { ipc, router, calls } = tabsSetup()
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner')
     // Never the desktop's re-attach (it resets or resyncs the desktop's terminals and runs the restore).
     await expect(router.dispatch(web, 'tabs.list', undefined)).resolves.toEqual([{ id: 't1', kind: 'shell', cwd: '/work/a' }])
     await router.dispatch(web, 'tabs.ack', { tabId: 't1', count: 7 })
@@ -798,7 +798,7 @@ describe('registerTabHandlers', () => {
 
   it('tabs.screen: the desktop page\'s answer, shape-checked, on its own project; a remote view is refused', async () => {
     const { ipc, router, calls } = tabsSetup()
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner')
     await expect(router.dispatch(web, 'tabs.screen', { tabId: 't1', id: 1, screen: { cols: 80, rows: 24, data: 'x' } })).rejects.toThrow(/refused/)
     await ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 1, screen: { cols: 80, rows: 24, data: 'x', extra: 1 }, other: 2 }])
     await ipc.invoke('tabs.screen', 11, [{ tabId: 't1', id: 2, busy: true }])
@@ -815,7 +815,7 @@ describe('registerTabHandlers', () => {
 
   it("keys terminal sizes, fits, visibility and input by the caller's own view, never one from the payload", async () => {
     const { ipc, router, calls } = tabsSetup()
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner')
     await router.dispatch(web, 'tabs.resize', { tabId: 't1', cols: 40, rows: 20, viewId: 'desktop:1' })
     await router.dispatch(web, 'tabs.input', { tabId: 't1', data: 'x', viewId: 'desktop:1' })
     await expect(router.dispatch(web, 'tabs.fit', { tabId: 't1', viewId: 'desktop:1' })).resolves.toBe(true)
@@ -929,7 +929,7 @@ describe('registerTabHandlers', () => {
 
   it('passes a checked beside (split right / down) and the reorder block flag, nothing else', async () => {
     const { ipc, router, calls } = tabsSetup()
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner')
     await ipc.invoke('tabs.create', 11, [{ kind: 'shell', beside: { tabId: 't0', edge: 'down', extra: 1 } }])
     await router.dispatch(web, 'tabs.create', { kind: 'command', level: 'app', entryId: 'e1', beside: { tabId: 't0', edge: 'right' } })
     await ipc.invoke('tabs.reorder', 12, [{ tabId: 't1', toIndex: 0, block: true }])
@@ -1105,7 +1105,7 @@ describe('registerSessionHandlers', () => {
 
   it('links.answer tells main a remote view answered from the view it bound, never from the payload', async () => {
     const { router, calls } = sessionsSetup()
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'links.answer', { requestId: 'link-1', allow: true, remote: false, viewId: 'desktop:1' })
     await router.dispatch(web, 'links.answer', { requestId: 'link-1', allow: false })
     expect(calls).toEqual([
@@ -1117,7 +1117,7 @@ describe('registerSessionHandlers', () => {
   it('trash.answer passes the sender’s window, never one from the payload, from any view, and checks the shape', async () => {
     const { ipc, router, calls } = sessionsSetup()
     await expect(ipc.invoke('trash.answer', 12, [{ requestId: 'trash-1', move: true, windowId: 1 }])).resolves.toBe(true)
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'trash.answer', { requestId: 'trash-2', move: false, windowId: 2 })
     expect(calls).toEqual([
       ['trashAnswer', 2, 'trash-1', true],
@@ -1134,7 +1134,7 @@ describe('registerSessionHandlers', () => {
   it('downloads.accept is taken only from a remote view, with its own window and view, and checks the shape', async () => {
     const { ipc, router, calls } = sessionsSetup()
     await expect(ipc.invoke('downloads.accept', 12, [{ requestId: 'offer-1', all: false }])).resolves.toBe(false)
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await expect(router.dispatch(web, 'downloads.accept', { requestId: 'offer-1', all: true, windowId: 2, viewId: 'web:9' })).resolves.toBe(true)
     expect(calls).toEqual([['downloadAccept', 1, 'web:4', 'offer-1', true]])
     await expect(router.dispatch(web, 'downloads.accept', { requestId: 'offer-1', all: 'yes' })).rejects.toThrow()
@@ -1145,7 +1145,7 @@ describe('registerSessionHandlers', () => {
   it('downloads.answer declines for the sender’s window from any view, never one from the payload', async () => {
     const { ipc, router, calls } = sessionsSetup()
     await expect(ipc.invoke('downloads.answer', 12, [{ requestId: 'offer-1', windowId: 1 }])).resolves.toBe(true)
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'downloads.answer', { requestId: 'offer-2', windowId: 2 })
     expect(calls).toEqual([
       ['downloadDecline', 2, 'offer-1'],
@@ -1233,7 +1233,7 @@ describe('registerLayoutHandlers', () => {
       }
     })
     await ipc.invoke('layout.set', 11, [{ layout: defaultLayout() }])
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'layout.set', { layout: defaultLayout() })
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner'), 'layout.set', { layout: defaultLayout() })
     expect(opts).toEqual([undefined, { keepGeometry: true }])
   })
 
@@ -1313,7 +1313,7 @@ describe('registerSlotHandlers', () => {
     await expect(ipc.invoke('slots.connect', 13, [{ frameId: 's1', nonce: 1 }])).rejects.toThrow(/not a project window/)
     expect(calls).toHaveLength(3)
     // A remote view's frame is its own instance: main's view id from the caller, a payload's ignored.
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'slots.connect', { frameId: 's1', nonce: 5, viewId: 'desktop:1' })
     await router.dispatch(web, 'slots.disconnect', { frameId: 's1', viewId: 'desktop:1' })
     expect(calls.slice(3)).toEqual([
@@ -1359,7 +1359,7 @@ describe('registerPageTabHandlers', () => {
       error: 'Ask Claude is not available here'
     })
     expect(calls).toEqual([])
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'pageTabs.discuss', { tabId: TAB, question: 'why?', target: { kind: 'tab', tabId: 'c1' }, viewId: 'desktop:1' })
     expect(calls).toEqual([['discuss', { windowId: 1, projectId: PROJECT_A, viewId: 'web:4' }, TAB, 'why?', { kind: 'tab', tabId: 'c1' }]])
   })
@@ -1369,7 +1369,7 @@ describe('registerPageTabHandlers', () => {
     await expect(ipc.invoke('pageTabs.dirty', 11, [{ tabId: TAB, dirty: true, viewId: 'web:9', projectId: PROJECT_B }])).resolves.toBeNull()
     await expect(ipc.invoke('pageTabs.dirty', 11, [{ tabId: TAB, dirty: 'yes' }])).rejects.toThrow(/boolean/)
     await expect(ipc.invoke('pageTabs.unsaved', 12, [])).resolves.toEqual(['a.ts'])
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'pageTabs.dirty', { tabId: TAB, dirty: false })
     expect(calls).toEqual([
       ['dirty', PROJECT_A, 'desktop:1', TAB, true],
@@ -1382,7 +1382,7 @@ describe('registerPageTabHandlers', () => {
     const { ipc, router, calls } = pageTabs(true)
     await expect(ipc.invoke('pageTabs.dirty', 11, [{ tabId: TAB, dirty: true }])).resolves.toBeNull()
     expect(calls).toEqual([])
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'pageTabs.dirty', { tabId: TAB, dirty: true })
     expect(calls).toEqual([['dirty', PROJECT_A, 'web:4', TAB, true]])
   })
@@ -1404,7 +1404,7 @@ describe('registerPageTabHandlers', () => {
     await expect(ipc.invoke('pageTabs.connect', 13, [{ tabId: TAB, nonce: 1 }])).rejects.toThrow(/not a project window/)
     expect(calls).toHaveLength(4)
     // A remote view's frame is its own instance: main's view id from the caller.
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'pageTabs.connect', { tabId: TAB, nonce: 5, viewId: 'desktop:1' })
     expect(calls.at(-1)).toEqual(['connect', PROJECT_A, 'web:4', TAB, 5])
   })
@@ -1414,7 +1414,7 @@ describe('registerPageTabHandlers', () => {
     await expect(ipc.invoke('pageTabs.src', 11, [{ tabId: TAB }])).resolves.toBeNull()
     await expect(ipc.invoke('pageTabs.connect', 11, [{ tabId: TAB, nonce: 1 }])).resolves.toBe(false)
     expect(calls).toEqual([])
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await expect(router.dispatch(web, 'pageTabs.src', { tabId: TAB })).resolves.toBe('cc-plugin://a.one/tab.html')
     await expect(router.dispatch(web, 'pageTabs.connect', { tabId: TAB, nonce: 2 })).resolves.toBe(true)
   })
@@ -1453,7 +1453,7 @@ describe('registerSettingsPageHandlers', () => {
     await expect(ipc.invoke('settingsPage.disconnect', 11, ['nope'])).rejects.toThrow(/bad payload/)
     await expect(ipc.invoke('settingsPage.connect', 13, [{ pluginId: 'a.one', scope: 'app', nonce: 1 }])).rejects.toThrow(/not a project window/)
     expect(calls).toHaveLength(3)
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner')
     await router.dispatch(web, 'settingsPage.connect', { pluginId: 'a.one', scope: 'app', nonce: 6, viewId: 'desktop:1' })
     await router.dispatch(web, 'settingsPage.disconnect', { pluginId: 'a.one', viewId: 'desktop:1' })
     expect(calls.slice(3)).toEqual([
@@ -1486,7 +1486,7 @@ describe('registerPanelHandlers', () => {
       [PROJECT_A, 'desktop:1', 'other/x', 4]
     ])
     // A remote view's connect carries its own view id (the page end goes back to it), never a payload's.
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:9'), 'panels.connect', {
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:9', 'owner'), 'panels.connect', {
       panelKey: 'a.one/board',
       nonce: 5,
       viewId: 'desktop:1'
@@ -1517,7 +1517,7 @@ describe('registerPanelHandlers', () => {
     await expect(ipc.invoke('panels.action', 11, [{ panelKey: 'a.one/board', actionId: 'refresh', projectId: PROJECT_B }])).resolves.toBe(true)
     await expect(ipc.invoke('panels.action', 12, [{ panelKey: 'a.one/board', actionId: 'other' }])).resolves.toBe(false)
     // A remote view's click names that view (the caller main bound), none for the desktop's.
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5'), 'panels.action', {
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner'), 'panels.action', {
       panelKey: 'a.one/board',
       actionId: 'refresh',
       view: 'web:9'
@@ -1581,7 +1581,7 @@ describe('registerSettingsHandlers', () => {
   it('projectOpen: the desktop and a server\'s browser open; a desktop\'s browser is refused', async () => {
     const desktop = settingsSetup()
     await desktop.ipc.invoke('settings.projectOpen', 11, [{ id: 'p1' }])
-    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
     await expect(desktop.router.dispatch(browser, 'settings.projectOpen', { id: 'p2', remote: false })).rejects.toThrow(/outside server mode/)
     expect(desktop.calls).toEqual([['openProject', 'p1']])
     const server = settingsSetup({ server: true })
@@ -1593,7 +1593,7 @@ describe('registerSettingsHandlers', () => {
   // desktop's browser is refused and a server's browser (the only screen there) may; the read is any view's.
   it('plugin limits: any view reads; the write from the desktop and a server\'s browser, never a desktop\'s browser', async () => {
     const desktop = settingsSetup()
-    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
     await desktop.ipc.invoke('plugins.limits.get', 11, [{ id: 'a.one' }])
     await desktop.router.dispatch(browser, 'plugins.limits.get', { id: 'a.two' })
     await desktop.ipc.invoke('plugins.limits.set', 11, [{ id: 'a.one', set: [['opensPerMinute', 10]], reset: ['sendsPerMinute'] }])
@@ -1614,7 +1614,7 @@ describe('registerSettingsHandlers', () => {
   // override, so a desktop's browser is refused the write before the service is reached; any view reads.
   it('global plugin limits: any view reads; the write from the desktop and a server\'s browser, never a desktop\'s browser', async () => {
     const desktop = settingsSetup()
-    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
     await desktop.ipc.invoke('plugins.globalLimits.get', 11, [])
     await desktop.router.dispatch(browser, 'plugins.globalLimits.get', undefined)
     await desktop.ipc.invoke('plugins.globalLimits.set', 11, [{ set: [['sendsPerMinute', 90]], reset: ['opensPerMinute'], id: 'ignored' }])
@@ -2148,7 +2148,7 @@ describe('registerWebAccessHandlers', () => {
     for (const options of [{}, { server: false }]) {
       const { router, calls } = webAccessSetup({ ...options, actorOf: () => ({ device: 'd1', name: 'Phone' }) })
       const ctx = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
-      await expect(router.dispatch(webCaller(ctx, 'web:1'), channel, { id: 'abc', server: true })).rejects.toThrow(/refused/)
+      await expect(router.dispatch(webCaller(ctx, 'web:1', 'owner'), channel, { id: 'abc', server: true })).rejects.toThrow(/refused/)
       expect(calls).toEqual([])
     }
   })
@@ -2166,7 +2166,7 @@ describe('registerWebAccessHandlers', () => {
   it.each(MINTING)('refuses %s from a web caller in server mode too', async (channel) => {
     const { router, calls } = webAccessSetup({ server: true, actorOf: () => ({ device: 'd1', name: 'Phone' }) })
     const ctx = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
-    await expect(router.dispatch(webCaller(ctx, 'web:1'), channel, { value: { mode: 'none' }, password: 'x'.repeat(12) })).rejects.toThrow(/refused/)
+    await expect(router.dispatch(webCaller(ctx, 'web:1', 'owner'), channel, { value: { mode: 'none' }, password: 'x'.repeat(12) })).rejects.toThrow(/refused/)
     expect(calls).toEqual([])
   })
 
@@ -2188,10 +2188,10 @@ describe('registerWebAccessHandlers', () => {
 
     it('reads the card, with the secret store, and the indicator without a confirm request', async () => {
       const { router, calls } = serverSetup()
-      const view = (await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webAccess', undefined)) as WebAccessView
+      const view = (await router.dispatch(webCaller(ctx, 'web:4', 'owner'), 'settings.webAccess', undefined)) as WebAccessView
       expect(view.secrets).toEqual({ store: 'keyfile', unavailable: null, otherMode: 2, replaced: 0 })
       expect(view.credentials).toEqual({ accessLink: 'unset', password: 'unset' })
-      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'webAccess.state', undefined)).toEqual({ connected: 1, warning: 'risky' })
+      expect(await router.dispatch(webCaller(ctx, 'web:4', 'owner'), 'webAccess.state', undefined)).toEqual({ connected: 1, warning: 'risky' })
       expect(calls).toEqual([['view'], ['indicator']])
     })
 
@@ -2212,7 +2212,7 @@ describe('registerWebAccessHandlers', () => {
         actorOf: () => phone,
         secrets: async () => ({ store: 'keyfile', unavailable, otherMode: 0, replaced: 0 })
       })
-      const remote = (await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webAccess', undefined)) as WebAccessView
+      const remote = (await router.dispatch(webCaller(ctx, 'web:4', 'owner'), 'settings.webAccess', undefined)) as WebAccessView
       expect(JSON.stringify(remote)).not.toContain('/home/x')
       expect(remote.form.certPath).not.toBe('')
       expect(remote.secrets?.unavailable).toBe(REMOTE_SECRETS_UNAVAILABLE_TEXT)
@@ -2224,9 +2224,9 @@ describe('registerWebAccessHandlers', () => {
     it('revokes and disconnects with the acting device main bound, never one from the payload', async () => {
       const { router, calls, asked } = serverSetup()
       const forged = { id: 'dev-laptop', by: { device: 'dev-forged', name: 'Forged' }, viewId: 'web:9' }
-      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webDeviceRevoke', forged)).toBe(true)
-      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webDeviceDisconnect', forged)).toBe(true)
-      expect(await router.dispatch(webCaller(ctx, 'web:4'), 'settings.webDevicesRevokeAll', forged)).toBe(2)
+      expect(await router.dispatch(webCaller(ctx, 'web:4', 'owner'), 'settings.webDeviceRevoke', forged)).toBe(true)
+      expect(await router.dispatch(webCaller(ctx, 'web:4', 'owner'), 'settings.webDeviceDisconnect', forged)).toBe(true)
+      expect(await router.dispatch(webCaller(ctx, 'web:4', 'owner'), 'settings.webDevicesRevokeAll', forged)).toBe(2)
       expect(calls).toEqual([
         ['revoke', 'dev-laptop', { by: phone }],
         ['disconnect', 'dev-laptop', phone],
@@ -2238,7 +2238,7 @@ describe('registerWebAccessHandlers', () => {
     it('refuses a narrowing call from a view that is already gone (no device to name in the log)', async () => {
       const { router, calls } = serverSetup()
       for (const channel of ['settings.webDeviceRevoke', 'settings.webDeviceDisconnect', 'settings.webDevicesRevokeAll'] as const) {
-        await expect(router.dispatch(webCaller(ctx, 'web:5'), channel, { id: 'dev-laptop' })).rejects.toThrow(/refused/)
+        await expect(router.dispatch(webCaller(ctx, 'web:5', 'owner'), channel, { id: 'dev-laptop' })).rejects.toThrow(/refused/)
       }
       expect(calls).toEqual([])
     })
@@ -2298,7 +2298,7 @@ describe('registerUpdateHandlers', () => {
       dismiss: () => undefined,
       openRelease: (...args) => void calls.push(args)
     })
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4'), 'updates.openRelease', { url: 'https://evil.example' })
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:4', 'owner'), 'updates.openRelease', { url: 'https://evil.example' })
     expect(calls).toEqual([[{ windowId: 1, viewId: 'web:4' }]])
   })
 
@@ -2359,7 +2359,7 @@ describe('registerOverlayHandlers', () => {
 
   it("a remote view's terminal overlay input and size are its own; its acks never reach the PTY's flow", async () => {
     const { router, calls } = overlaySetup()
-    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3')
+    const web = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner')
     await router.dispatch(web, 'overlays.input', { overlayId: 'o1', data: 'j', viewId: 'desktop:1' })
     await router.dispatch(web, 'overlays.resize', { overlayId: 'o1', cols: 50, rows: 30 })
     await router.dispatch(web, 'overlays.ack', { overlayId: 'o1', count: 9 })
@@ -2371,7 +2371,7 @@ describe('registerOverlayHandlers', () => {
 
   it("a remote view's toolbar click names that view (the caller main bound), never one in the payload", async () => {
     const { router, calls } = overlaySetup()
-    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3'), 'overlays.button', {
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner'), 'overlays.button', {
       overlayId: 'o1',
       source: 'opener',
       buttonId: 'b',
@@ -2473,7 +2473,7 @@ describe('notices.click / notices.dismiss', () => {
     })
     return { ipc, router, calls }
   }
-  const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId)
+  const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId, 'owner')
 
   it('in server mode a browser view settles a notice of its own window, whatever window the payload names', async () => {
     const { router, calls } = notices(true)
@@ -2522,7 +2522,7 @@ describe('oauth.paste', () => {
     })
     return { ipc, router, calls }
   }
-  const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId)
+  const webA = (viewId: `web:${number}` = 'web:3') => webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, viewId, 'owner')
   const PASTE = { signIn: 'S'.repeat(22), url: 'http://127.0.0.1:4100/callback?state=s&code=c' }
   const REFUSED = { ok: false, error: OAUTH_PASTE_REFUSED }
 
@@ -2614,10 +2614,10 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
   it("passes a server browser's report on with main's window, panel and view, never the payload's", async () => {
     const { router, calls } = webviewSetup()
     const forged = { ...place, windowId: 2, viewId: 'web:99', pluginId: 'x', panelId: 'y', projectId: PROJECT_B }
-    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.place', forged)
+    await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.place', forged)
     // Sizes go on as sent: the viewers clamp them (webview-viewers.ts).
-    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.place', { ...place, width: 0, height: 1e9, hidden: true })
-    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.fit', { panelKey: 'a.one/view', viewId: 'web:4' })
+    await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.place', { ...place, width: 0, height: 1e9, hidden: true })
+    await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.fit', { panelKey: 'a.one/view', viewId: 'web:4' })
     const panel = { windowId: 1, pluginId: 'a.one', panelId: 'view' }
     expect(calls).toEqual([
       ['report', panel, 'web:3', { width: 800, height: 600, visible: true, hidden: false }],
@@ -2634,8 +2634,8 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
     expect(server.calls).toEqual([])
 
     const desktop = webviewSetup({ server: false })
-    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)).rejects.toThrow(/only a browser view of a server/)
-    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.place', place)).rejects.toThrow(/only a browser view of a server/)
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(
       /only a browser view of a server/
     )
     await expect(desktop.ipc.invoke('webviews.place', 11, [place])).rejects.toThrow(/only a browser view of a server/)
@@ -2643,12 +2643,12 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
 
     // Wired without viewers: refused too (fail closed).
     const none = webviewSetup({ viewers: false })
-    await expect(none.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)).rejects.toThrow(/only a browser view of a server/)
+    await expect(none.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.place', place)).rejects.toThrow(/only a browser view of a server/)
   })
 
   it('checks the payload: finite numbers and booleans', async () => {
     const { router, calls } = webviewSetup()
-    const caller = webCaller(A_CTX, 'web:1')
+    const caller = webCaller(A_CTX, 'web:1', 'owner')
     for (const bad of [
       { ...place, width: Number.NaN },
       { ...place, height: Infinity },
@@ -2685,14 +2685,14 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
     expect(REMOTE_CLASS['webviews.current']).toBe('adapted')
     expect(REMOTE_CLASS['webviews.navigated']).toBe('adapted')
     const forged = { panelKey: 'a.one/view', step: 'back', windowId: 2, projectId: PROJECT_B }
-    await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.step', forged)
-    await expect(router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.current', { panelKey: 'a.one/view', windowId: 2 })).resolves.toEqual({
+    await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.step', forged)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.current', { panelKey: 'a.one/view', windowId: 2 })).resolves.toEqual({
       url: 'https://w1.test/',
       title: ''
     })
     expect(steps).toEqual([['back', { windowId: 1, projectId: PROJECT_A, pluginId: 'a.one', panelId: 'view' }]])
     // Another window's browser naming this project's key: not a panel of its project.
-    await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.step', { panelKey: 'a.one/view', step: 'reload' })).rejects.toThrow(
+    await expect(router.dispatch(webCaller(B_CTX, 'web:5', 'owner'), 'webviews.step', { panelKey: 'a.one/view', step: 'reload' })).rejects.toThrow(
       /not a webview panel/
     )
     // The desktop page (here the hidden page) keeps its toolbar.
@@ -2701,10 +2701,10 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
 
     const desktop = setup()
     registerWebviewHandlers(desktop.router, deps(false))
-    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.step', { panelKey: 'a.one/view', step: 'reload' })).rejects.toThrow(
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.step', { panelKey: 'a.one/view', step: 'reload' })).rejects.toThrow(
       /only a browser view of a server/
     )
-    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.current', { panelKey: 'a.one/view' })).rejects.toThrow(
+    await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.current', { panelKey: 'a.one/view' })).rejects.toThrow(
       /only a browser view of a server/
     )
     await desktop.ipc.invoke('webviews.step', 11, [{ panelKey: 'a.one/view', step: 'reload' }])
@@ -2714,15 +2714,15 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
   it("a view of another window naming the key reaches only its own window: refused, and only its own entry may leave", async () => {
     const { router, calls } = webviewSetup()
     // Project B has no such panel: refused; the unmount path touches B's window and this view only.
-    await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.place', place)).rejects.toThrow(/not a webview panel of this project/)
-    await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(
+    await expect(router.dispatch(webCaller(B_CTX, 'web:5', 'owner'), 'webviews.place', place)).rejects.toThrow(/not a webview panel of this project/)
+    await expect(router.dispatch(webCaller(B_CTX, 'web:5', 'owner'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(
       /not a webview panel of this project/
     )
     // A key that is not a webview panel of the caller's own project (a core panel, a made-up one).
-    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', { ...place, panelKey: 'core/sessions' })).rejects.toThrow(
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.place', { ...place, panelKey: 'core/sessions' })).rejects.toThrow(
       /not a webview panel/
     )
-    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', { ...place, panelKey: 42 })).rejects.toThrow(/not a webview panel/)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.place', { ...place, panelKey: 42 })).rejects.toThrow(/not a webview panel/)
     expect(calls).toEqual([
       ['leave', 2, 'web:5', 'a.one/view'],
       ['leave', 1, 'web:1', 'core/sessions']
@@ -2731,10 +2731,10 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
 
   it('refuses a browser whose window closed', async () => {
     const { router, calls, open } = webviewSetup()
-    await router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)
+    await router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.place', place)
     open.delete(1)
-    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.place', place)).rejects.toThrow(/refused/)
-    await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(/refused/)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.place', place)).rejects.toThrow(/refused/)
+    await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.fit', { panelKey: 'a.one/view' })).rejects.toThrow(/refused/)
     expect(calls).toHaveLength(1)
   })
 
@@ -2772,7 +2772,7 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
       expect(REMOTE_CLASS['webviews.input']).toBe('adapted')
       expect(REMOTE_CLASS['webviews.cursor']).toBe('adapted')
       const { router, accepted } = inputSetup()
-      await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.input', { panelKey: 'a.one/view', events, windowId: 2, viewId: 'web:9' })
+      await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.input', { panelKey: 'a.one/view', events, windowId: 2, viewId: 'web:9' })
       expect(accepted).toEqual([[{ windowId: 1, pluginId: 'a.one', panelId: 'view' }, 'web:3', events]])
     })
 
@@ -2780,11 +2780,11 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
       const server = inputSetup()
       await expect(server.ipc.invoke('webviews.input', 11, [{ panelKey: 'a.one/view', events }])).rejects.toThrow(/only a browser view of a server/)
       const desktop = inputSetup({ server: false })
-      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
+      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
         /only a browser view of a server/
       )
       const none = inputSetup({ input: false })
-      await expect(none.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
+      await expect(none.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
         /only a browser view of a server/
       )
       expect([...server.accepted, ...desktop.accepted, ...none.accepted]).toEqual([])
@@ -2792,13 +2792,13 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
 
     it("refuses a key that is no webview panel of the caller's own project (another window's view naming it)", async () => {
       const { router, accepted } = inputSetup()
-      await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
+      await expect(router.dispatch(webCaller(B_CTX, 'web:5', 'owner'), 'webviews.input', { panelKey: 'a.one/view', events })).rejects.toThrow(
         /not a webview panel of this project/
       )
-      await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', { panelKey: 'core/sessions', events })).rejects.toThrow(
+      await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.input', { panelKey: 'core/sessions', events })).rejects.toThrow(
         /not a webview panel/
       )
-      await expect(router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.input', null)).rejects.toThrow(/bad payload/)
+      await expect(router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.input', null)).rejects.toThrow(/bad payload/)
       expect(accepted).toEqual([])
     })
 
@@ -2807,19 +2807,19 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
       expect(REMOTE_CLASS['webviews.insertText']).toBe('adapted')
       expect(REMOTE_CLASS['webviews.selection']).toBe('adapted')
       const { router, ipc, accepted } = inputSetup()
-      await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'héllo', windowId: 2, viewId: 'web:9' })
+      await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'héllo', windowId: 2, viewId: 'web:9' })
       expect(accepted).toEqual([['text', { windowId: 1, pluginId: 'a.one', panelId: 'view' }, 'web:3', 'héllo']])
       accepted.length = 0
       await expect(ipc.invoke('webviews.insertText', 11, [{ panelKey: 'a.one/view', text: 'x' }])).rejects.toThrow(/only a browser view of a server/)
       const desktop = inputSetup({ server: false })
-      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
+      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
         /only a browser view of a server/
       )
       const none = inputSetup({ input: false })
-      await expect(none.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
+      await expect(none.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
         /only a browser view of a server/
       )
-      await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
+      await expect(router.dispatch(webCaller(B_CTX, 'web:5', 'owner'), 'webviews.insertText', { panelKey: 'a.one/view', text: 'x' })).rejects.toThrow(
         /not a webview panel of this project/
       )
       expect([...accepted, ...desktop.accepted, ...none.accepted]).toEqual([])
@@ -2830,14 +2830,14 @@ describe('registerWebviewHandlers: webviews.place and webviews.fit', () => {
       expect(REMOTE_CLASS['webviews.selectChoose']).toBe('adapted')
       expect(REMOTE_CLASS['webviews.select']).toBe('adapted')
       const { router, ipc, accepted } = inputSetup()
-      await router.dispatch(webCaller(A_CTX, 'web:3'), 'webviews.selectChoose', { panelKey: 'a.one/view', id: 'x', index: 2, viewId: 'web:9' })
+      await router.dispatch(webCaller(A_CTX, 'web:3', 'owner'), 'webviews.selectChoose', { panelKey: 'a.one/view', id: 'x', index: 2, viewId: 'web:9' })
       expect(accepted).toEqual([['choose', { windowId: 1, pluginId: 'a.one', panelId: 'view' }, 'web:3', 'x', 2]])
       accepted.length = 0
       const choose = { panelKey: 'a.one/view', id: 'x', index: null }
       await expect(ipc.invoke('webviews.selectChoose', 11, [choose])).rejects.toThrow(/only a browser view of a server/)
       const desktop = inputSetup({ server: false })
-      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1'), 'webviews.selectChoose', choose)).rejects.toThrow(/only a browser view of a server/)
-      await expect(router.dispatch(webCaller(B_CTX, 'web:5'), 'webviews.selectChoose', choose)).rejects.toThrow(/not a webview panel of this project/)
+      await expect(desktop.router.dispatch(webCaller(A_CTX, 'web:1', 'owner'), 'webviews.selectChoose', choose)).rejects.toThrow(/only a browser view of a server/)
+      await expect(router.dispatch(webCaller(B_CTX, 'web:5', 'owner'), 'webviews.selectChoose', choose)).rejects.toThrow(/not a webview panel of this project/)
       expect([...accepted, ...desktop.accepted]).toEqual([])
     })
   })
@@ -2937,7 +2937,7 @@ describe('remote server handlers', () => {
       const { ipc, router, calls } = remoteSetup()
       const payload = { kind: 'ssh', host: 'devbox', serverId: 's1', name: 'x' }
       await expect(ipc.invoke(channel, 11, [payload])).rejects.toThrow(/only the project picker/)
-      await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:1'), channel, payload)).rejects.toThrow(/refused/)
+      await expect(router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:1', 'owner'), channel, payload)).rejects.toThrow(/refused/)
       // A subframe of the picker page (the isolation already broke) is refused too.
       await expect(ipc.invoke(channel, PICKER, [payload], { parent: {}, url: APP_PAGE })).rejects.toThrow(/refused/)
       expect(calls).toEqual([])
@@ -3015,7 +3015,7 @@ describe('registerGroupHandlers', () => {
 
   it("acts on the sender's own project, for the desktop and a browser view alike (all `yes`, D12)", async () => {
     const { ipc, router, calls } = groupsSetup()
-    const web = webCaller({ kind: 'project', windowId: 2, projectId: PROJECT_B }, 'web:4')
+    const web = webCaller({ kind: 'project', windowId: 2, projectId: PROJECT_B }, 'web:4', 'owner')
     await expect(ipc.invoke('groups.get', 11, [{ projectId: PROJECT_B }])).resolves.toEqual({ seq: 1, order: [], groups: [] })
     await expect(ipc.invoke('groups.place', 11, [{ tabId: 'a', at: 'b', edge: 'left', projectId: PROJECT_B }])).resolves.toEqual({ ok: true, seq: 7 })
     await router.dispatch(web, 'groups.remove', { tabId: 'a' })
@@ -3199,7 +3199,7 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
   })
 
   it("adapted: a desktop's browser is refused, a server's browser counts as the person", async () => {
-    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5')
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
     const desktop = roomSetup()
     await expect(desktop.router.dispatch(browser, 'tabs.roomMark', { tabId: 't1', room: ROOM, mark: true })).rejects.toThrow(/outside server mode/)
     await expect(desktop.router.dispatch(browser, 'rooms.deliverHeld', { tabId: 'held', room: ROOM })).rejects.toThrow(/outside server mode/)
@@ -3242,6 +3242,6 @@ describe('guest callers (design-guests §4; deny-all until task 03)', () => {
     expect(calls).toBe(0)
     expect(logs.join('\n')).toMatch(/refused for guest view web:5/)
     // The owner's view of the same window is unchanged.
-    await expect(router.dispatch(webCaller(A_CTX, 'web:6'), 'tabs.list', undefined)).resolves.toEqual([])
+    await expect(router.dispatch(webCaller(A_CTX, 'web:6', 'owner'), 'tabs.list', undefined)).resolves.toEqual([])
   })
 })

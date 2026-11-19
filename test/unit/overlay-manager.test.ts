@@ -119,6 +119,7 @@ afterEach(() => {
 
 function manager(opts: { server?: boolean } = {}): OverlayManager {
   return new OverlayManager({
+    ownerView: () => true,
     ...opts,
     backend,
     views,
@@ -300,6 +301,7 @@ describe('a url overlay over a visible webview panel', () => {
       }
     }
     const m = new OverlayManager({
+      ownerView: () => true,
       backend,
       views: focusingViews,
       isWindowOpen: () => true,
@@ -368,6 +370,7 @@ describe('a url overlay over a visible webview panel in a background window', ()
       }
     }
     const m = new OverlayManager({
+      ownerView: () => true,
       backend,
       views: focusingViews,
       isWindowOpen: () => true,
@@ -1010,6 +1013,7 @@ describe('html overlays held by one view (design-web.md §5.4)', () => {
   function viewsManager(): { m: OverlayManager; toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }> } {
     const toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }> = []
     const m = new OverlayManager({
+      ownerView: () => true,
       backend,
       views,
       isWindowOpen: () => true,
@@ -1222,6 +1226,7 @@ describe('server mode: html overlays held by browsers only (design-web.md §9.8)
   function serverManager(server = true): { m: OverlayManager; toView: Array<{ viewId: string; payload: unknown }> } {
     const toView: Array<{ viewId: string; payload: unknown }> = []
     const m = new OverlayManager({
+      ownerView: () => true,
       server,
       backend,
       views,
@@ -1897,6 +1902,7 @@ describe('toolbar clicks and type buttons (design-next §3.3)', () => {
 
   function typed(host: ReturnType<typeof fakeHost>, hostWindow = W1): OverlayManager {
     return new OverlayManager({
+      ownerView: () => true,
       backend,
       views,
       isWindowOpen: () => true,
@@ -2162,6 +2168,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
 
   function withDiscuss(sessions: ReturnType<typeof fakeSessions>): OverlayManager {
     return new OverlayManager({
+      ownerView: () => true,
       backend,
       views,
       isWindowOpen: () => true,
