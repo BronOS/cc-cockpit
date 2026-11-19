@@ -3656,6 +3656,16 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // Guests (design-guests §3, spec-review 29): an invite through the invite dialog's own service
+          // (GuestStore.invite, what guests.invite calls, with its checks), the guest list and a kick, so a
+          // spec can make a guest without driving the dialog (only the hand-test spec drives it).
+          guestInvite: async (path: string, req: Parameters<GuestStore['invite']>[1]) => {
+            const project = projectAt(path)
+            if (!project) throw new Error(`guestInvite: no project at ${path}`)
+            return guestStore.invite(project.id, req)
+          },
+          guests: () => guestStore.list(),
+          guestKick: (guestId: string) => guestStore.kick(guestId),
           // The folder remote windows save downloads to in a test run (`<data>/Downloads`, made on the
           // first save), never the developer's own; the remote-window e2e reads what landed there.
           remoteDownloadsDir: () => testDownloadsDir,

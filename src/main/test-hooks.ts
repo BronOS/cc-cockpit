@@ -14,7 +14,8 @@
 // `ccc notify` and ctx.notify (notifications, notificationDetails, clickNotification,
 // dismissNotification, chimes, chimeSounds), the plugin hosts (linkPlugin, enablePlugin, hostStatus,
 // savePluginProjectSettings, pluginCommands, runPluginCommand) and the remote windows' Downloads folder
-// (remoteDownloadsDir: a test run saves under the data dir, never to the developer's Downloads).
+// (remoteDownloadsDir: a test run saves under the data dir, never to the developer's Downloads) and the
+// guests (guestInvite through the invite dialog's own service, guests, guestKick).
 
 /** Name of the global the hooks hang off; fixtures.ts reads it. */
 export const TEST_HOOKS_GLOBAL = '__ccTest'
