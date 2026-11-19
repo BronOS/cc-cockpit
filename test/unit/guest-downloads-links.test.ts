@@ -111,6 +111,32 @@ describe('Downloads.offerOrigin (D-23)', () => {
     expect(failing.pendingOffers(WINDOW)).toEqual([])
   })
 
+  it("asks hasBrowserView with the offer's origin tab, and gives the desktop answer at once when nobody can take it", async () => {
+    const asked: unknown[] = []
+    let takers = true
+    const d = new Downloads({
+      hooks: { start: () => true, failed: () => undefined },
+      offers: { send: () => true, settled: () => undefined },
+      hasBrowserView: (windowId, originTab) => {
+        asked.push([windowId, originTab])
+        return takers
+      },
+      projectPath: (id) => (id === PROJECT ? proj : undefined),
+      windowOf: (id) => (id === PROJECT ? WINDOW : undefined),
+      dataDir: join(tmp, 'data'),
+      env: { home: join(tmp, 'home'), platform: 'linux' }
+    })
+    // A lone read guest (no taker): refused at once, no offer made.
+    takers = false
+    await expect(d.offer({ projectId: PROJECT, windowId: WINDOW, tabId: 't1' }, join(proj, 'a.txt'))).rejects.toThrow(/on this computer/)
+    expect(d.pendingOffers(WINDOW)).toEqual([])
+    takers = true
+    await d.offer({ projectId: PROJECT, windowId: WINDOW, tabId: 't1' }, join(proj, 'a.txt'))
+    await d.offer({ projectId: PROJECT, windowId: WINDOW, tabId: '' }, join(proj, 'a.txt'))
+    expect(asked).toEqual([[WINDOW, 't1'], [WINDOW, 't1'], [WINDOW, undefined]])
+    expect(d.pendingOffers(WINDOW)).toHaveLength(2)
+  })
+
   it('an empty tab id is no tab', async () => {
     const d = downloads()
     const { requestId } = await d.offer({ projectId: PROJECT, windowId: WINDOW, tabId: '' }, join(proj, 'a.txt'))

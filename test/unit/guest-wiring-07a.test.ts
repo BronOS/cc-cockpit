@@ -10,6 +10,7 @@ import {
   guestSeesOf,
   guestTabDeps,
   guestUnsavedOf,
+  offerTakerOf,
   ownerViewOf,
   type GuestRouterSources,
   type GuestTabSources
@@ -180,6 +181,44 @@ describe('ownerViewOf, guestSeesOf, guestUnsavedOf', () => {
   })
 })
 
+describe('offerTakerOf (ccc download offers, D-23)', () => {
+  const roles: Record<string, GuestAccess> = {
+    gW: { ...GUEST, id: 'gW', role: 'write' },
+    gR: { ...GUEST, id: 'gR', role: 'read' }
+  }
+  function taker(views: Record<ViewId, Who>) {
+    const seen: unknown[] = []
+    const has = offerTakerOf({
+      remoteViews: (windowId) => (windowId === WINDOW ? Object.keys(views) : []),
+      whoOf: (viewId) => views[viewId],
+      guests: { access: (who) => (who === 'owner' ? { kind: 'owner' } : (roles[who.guest] ?? { kind: 'revoked' })) },
+      // askVisible's download rule: a write guest that sees the origin tab (t1 only here).
+      sees: (viewId, access, originTab) => {
+        seen.push([viewId, access.id, originTab])
+        return access.role === 'write' && originTab === 't1'
+      }
+    })
+    return { has, seen }
+  }
+
+  it("an owner's browser always takes; a lone read guest never (the 'on this computer' answer at once)", () => {
+    expect(taker({ 'web:1': 'owner' }).has(WINDOW, 't1')).toBe(true)
+    expect(taker({ 'web:1': 'owner' }).has(WINDOW)).toBe(true)
+    expect(taker({ 'web:2': { guest: 'gR' } }).has(WINDOW, 't1')).toBe(false)
+    expect(taker({}).has(WINDOW, 't1')).toBe(false)
+    expect(taker({ 'web:1': 'owner' }).has(8, 't1')).toBe(false)
+  })
+
+  it('a write guest takes only an offer from a tab it sees; no origin tab, or a revoked guest, is no taker', () => {
+    const { has, seen } = taker({ 'web:2': { guest: 'gW' }, 'web:3': { guest: 'gone' } })
+    expect(has(WINDOW, 't1')).toBe(true)
+    expect(has(WINDOW, 't2')).toBe(false)
+    expect(has(WINDOW)).toBe(false)
+    // The revoked guest's view is never asked about.
+    expect(seen.every((s) => (s as unknown[])[0] === 'web:2')).toBe(true)
+  })
+})
+
 describe('ccc overlay carries its origin tab', () => {
   it("a session token's tab, never one from args; a window token none", async () => {
     const calls: unknown[] = []
@@ -259,6 +298,7 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(block('new OverlayManager({')).toContain('ownerView')
     expect(block('confirmTrash: chooseAsk({')).toContain('hasRemoteView: hasOwnerRemoteView')
     expect(block('confirmLink: chooseAsk({')).toContain('hasRemoteView: hasOwnerRemoteView')
+    expect(block('new Downloads({')).toContain('hasBrowserView: offerTakerOf({')
   })
 
   it('wires panel ports, overlays, sessions, exit focus and presence for guests', () => {

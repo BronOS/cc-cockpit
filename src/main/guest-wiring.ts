@@ -104,6 +104,27 @@ export function guestTabDeps(s: GuestTabSources): GuestTabDeps {
   }
 }
 
+/**
+ * Downloads' `hasBrowserView` for `ccc download` offers (D-23): a browser view of the window that can take an offer from
+ * `originTab`: an owner's, or a guest's for which `sees` holds (askVisible('download'), the rule guest-events.ts's sink
+ * drops the offer by, so a view counted here is one the offer reaches).
+ */
+export function offerTakerOf(s: {
+  remoteViews(windowId: number): readonly ViewId[]
+  whoOf(viewId: ViewId): Who | undefined
+  guests: Pick<GuestService, 'access'>
+  sees(viewId: ViewId, access: GuestOnlyAccess, originTab: string | undefined): boolean
+}): (windowId: number, originTab?: string) => boolean {
+  return (windowId, originTab) =>
+    s.remoteViews(windowId).some((viewId) => {
+      const who = s.whoOf(viewId)
+      if (who === undefined) return false
+      if (who === 'owner') return true
+      const access = s.guests.access(who)
+      return access.kind === 'guest' && s.sees(viewId, access, originTab)
+    })
+}
+
 /** A view is the owner's (the desktop page, the hidden page and owner browsers); a gone view is not. */
 export function ownerViewOf(whoOf: (viewId: ViewId) => Who | undefined): (viewId: ViewId) => boolean {
   return (viewId) => whoOf(viewId) === 'owner'

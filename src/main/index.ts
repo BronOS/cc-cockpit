@@ -191,7 +191,7 @@ import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
 import { createGuestCloseAsks, settleGoneCloseAsks } from './tabs/guest-close-asks'
 import { PluginGuestAccessStore } from './settings/plugin-guest-access'
-import { guestRouterDeps, guestSeesOf, guestTabDeps, guestUnsavedOf, ownerViewOf } from './guest-wiring'
+import { guestRouterDeps, guestSeesOf, guestTabDeps, guestUnsavedOf, offerTakerOf, ownerViewOf } from './guest-wiring'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
 import { electronDialogs } from './dialogs/electron-dialog'
@@ -233,7 +233,7 @@ import { GuestStore, type GuestTabInfo } from './web/guests'
 import { guestContext, type GuestContextSources } from './web/guest-events'
 import { Presence } from './web/presence'
 import { ownerNameIn } from './web/settings'
-import { guestPresence } from '../shared/guest-filter'
+import { askVisible, guestPresence } from '../shared/guest-filter'
 import { peerCertificateSha256 } from './remote/peer-certificate'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
@@ -522,8 +522,8 @@ function start(server: boolean): void {
   const views: ViewRegistry<Electron.MessagePortMain> = new ViewRegistry({
     windowIdOf: (projectId): number | undefined => windows.windowIdOf(projectId)
   })
-  // Whether a window has a live browser view (a remote view id): downloads decide by it, a write guest's view too
-  // (D-23: a guest may accept a `ccc download` offer on any host).
+  // Whether a window has a live browser view (a remote view id): ctx.files.download's origin view check decides by it
+  // (a write guest's view too, D-23); `ccc download` offers count takers only (offerTakerOf, at Downloads below).
   const hasRemoteView = (windowId: number): boolean => views.viewsOf(windowId).some((v) => isRemoteViewId(v))
   // The owner's own browsers only: `chooseAsk` (trash, plugin links) decides by it, so a guest joining never turns the
   // owner's native dialog into a shared ask (D-31).
@@ -2404,7 +2404,14 @@ function start(server: boolean): void {
       settled: (windowId, requestId) => void views.toBrowserViews(windowId, 'downloads.settled', { requestId })
     },
     server,
-    hasBrowserView: hasRemoteView,
+    // An owner's browser, or a write guest's that sees the offer's origin tab (D-23): a lone read guest is no taker.
+    hasBrowserView: offerTakerOf({
+      remoteViews: (windowId) => views.viewsOf(windowId).filter((v) => isRemoteViewId(v)),
+      whoOf: (viewId) => views.whoOf(viewId),
+      guests: guestStore,
+      sees: (viewId, access, originTab) =>
+        askVisible('download', originTab === undefined ? {} : { originTab }, access, guestContext(guestSources, viewId, access))
+    }),
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     dataDir,
