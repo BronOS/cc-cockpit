@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { OverlayManager, type OverlayResult, type UrlView, type UrlViewFactory } from '../../src/main/overlays/overlay-manager'
+import { GUEST_ORIGIN_OVERLAY_REFUSAL, OverlayManager, type OverlayResult, type UrlView, type UrlViewFactory } from '../../src/main/overlays/overlay-manager'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const W1 = 1
@@ -104,10 +104,22 @@ describe('visibleTo', () => {
 describe('ownerView: a guest view never holds an html overlay', () => {
   const live = () => true
 
-  it('desktop: a guest as the origin view is not the holder; the desktop holds (no remote holder shown)', () => {
-    const m = manager({ isViewLive: live, ownerView: (v) => v !== GUEST })
-    swallow(m.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', GUEST))
-    expect(m.infos(W1)[0]?.heldBy).toBeUndefined()
+  it("a guest's view as the origin: refused, any kind, desktop or server; nothing reaches the owner's screen (03e)", async () => {
+    for (const server of [false, true]) {
+      const emitted: string[] = []
+      const m = manager({ server, isViewLive: live, browserViews: () => [OWNER, GUEST], ownerView: (v) => v !== GUEST, emit: (_w, ch) => void emitted.push(ch) })
+      for (const spec of [page, { ...terminal, cwd: dir }]) {
+        expect(() => m.start(W1, spec, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', GUEST)).toThrow(GUEST_ORIGIN_OVERLAY_REFUSAL)
+        await expect(m.open(W1, spec, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', GUEST)).rejects.toThrow(GUEST_ORIGIN_OVERLAY_REFUSAL)
+      }
+      // A guest view that is gone by now is refused the same (only an owner's view lets it through).
+      expect(() => manager({ server, isViewLive: () => false, ownerView: (v) => v !== GUEST }).start(W1, page, 'plugin a.one', undefined, undefined, 'a.one', GUEST)).toThrow(
+        GUEST_ORIGIN_OVERLAY_REFUSAL
+      )
+      expect(m.infos(W1)).toEqual([])
+      expect(backend.spawned).toHaveLength(0)
+      expect(emitted).toEqual([])
+    }
   })
 
   it("an owner's browser view as origin still holds it", () => {
@@ -116,7 +128,7 @@ describe('ownerView: a guest view never holds an html overlay', () => {
     expect(m.infos(W1)[0]?.heldBy?.viewId).toBe(OWNER)
   })
 
-  it('without ownerView a remote origin view holds it, as before', () => {
+  it('an ownerView that says owner (no guests): a remote origin view holds it, as before', () => {
     const m = manager({ isViewLive: live })
     swallow(m.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', GUEST))
     expect(m.infos(W1)[0]?.heldBy?.viewId).toBe(GUEST)
@@ -128,11 +140,7 @@ describe('ownerView: a guest view never holds an html overlay', () => {
     expect(m.infos(W1)[0]?.heldBy?.viewId).toBe(OWNER)
   })
 
-  it('server mode: a guest origin view falls to the owner browser; with only guests attached nobody holds it', () => {
-    const m = manager({ server: true, isViewLive: live, browserViews: () => [OWNER, GUEST], ownerView: (v) => v !== GUEST })
-    swallow(m.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', GUEST))
-    expect(m.infos(W1)[0]?.heldBy?.viewId).toBe(OWNER)
-
+  it('server mode: with only guests attached nobody holds a page opened with no origin view', () => {
     const only = manager({ server: true, isViewLive: live, browserViews: () => [GUEST], ownerView: (v) => v !== GUEST })
     swallow(only.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one'))
     expect(only.infos(W1)[0]?.heldBy).toBeUndefined()

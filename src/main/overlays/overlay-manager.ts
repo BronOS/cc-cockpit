@@ -291,6 +291,8 @@ export type OverlayButtonClick =
 
 /** What opening a url overlay gets in server mode (design-web.md §9.9): no native view is made. */
 export const URL_OVERLAY_SERVER_REFUSAL = 'overlay: url overlays are not available in server mode'
+/** What the opener gets when the call came from a guest's view (03e): an overlay is never handed to the owner's screen. */
+export const GUEST_ORIGIN_OVERLAY_REFUSAL = "overlay: refused from a guest's view"
 
 /** Limits on what a caller may put in a spec. Generous for real use, small enough for IPC. */
 export const MAX_URL_LENGTH = 8192
@@ -586,6 +588,11 @@ export class OverlayManager {
     if (parsed.kind === 'url' && this.options.server === true) throw new Error(URL_OVERLAY_SERVER_REFUSAL)
     // Before anything is created: no program, no view, no stack for a window that is gone.
     if (!this.options.isWindowOpen(windowId)) throw new Error('overlay: the window is gone')
+    // 03e (QA): an overlay opened by a call whose origin view is a guest's (a write guest's click that makes a plugin
+    // open one) is refused, whatever its kind. A guest never holds an html page, so it would land on an owner's screen
+    // as a modal that takes focus, repeatable by the guest; a terminal one would too. Any remote view that is not the
+    // owner's counts, a gone one included (fail closed: an owner view gone mid-call costs only this overlay).
+    if (view !== undefined && isRemoteViewId(view) && !this.ownerView(view)) throw new Error(GUEST_ORIGIN_OVERLAY_REFUSAL)
     const id = randomUUID()
     let settle!: (result: OverlayResult) => void
     const promise = new Promise<OverlayResult>((resolve) => {
