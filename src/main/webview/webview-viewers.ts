@@ -210,7 +210,12 @@ export class WebviewViewers {
     // A read guest never takes the size (D-14); the router refuses its claims before this anyway.
     if (viewer.guest === 'read') return
     viewer.at = ++this.clock
-    if (state.owner === viewId) return
+    // Already the owner (a write guest that joined first): the claim still counts, so an owner's view joining
+    // later does not take the size back from it.
+    if (state.owner === viewId) {
+      state.claimed = true
+      return
+    }
     this.setOwner(state, viewId, true)
   }
 
