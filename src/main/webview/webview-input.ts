@@ -102,6 +102,7 @@ import {
   webviewCursor,
   webviewKeyChar,
   webviewKeyCode,
+  webviewKeyInfo,
   type WebviewEditCommand
 } from '../../shared/webview-keys'
 import type { ViewId } from '../../shared/views'
@@ -296,12 +297,12 @@ export function editCommandOfEvent(event: WebviewInputEvent): WebviewEditCommand
 export interface EditCommandInput {
   type: 'editCommand'
   command: WebviewEditCommand
-  /** The DOM key the browser named (`a`, `Z`, `y`): a letter, editCommandOf checked it. */
+  /** The DOM key the browser named (`a`, `Z`, `y`, `ArrowLeft`, `Backspace`): editCommandOf checked it. */
   key: string
   modifiers: InputModifier[]
 }
 
-/** The protocol's modifier bits (`Input.dispatchKeyEvent`): Alt 1, Ctrl 2, Meta/Cmd 4, Shift 8. */
+/** The protocol's modifier bits (`Input.dispatchKeyEvent`, `Input.dispatchMouseEvent`): Alt 1, Ctrl 2, Meta/Cmd 4, Shift 8. */
 const PROTOCOL_MODIFIER_BITS: ReadonlyMap<InputModifier, number> = new Map([
   ['alt', 1],
   ['control', 2],
@@ -309,23 +310,29 @@ const PROTOCOL_MODIFIER_BITS: ReadonlyMap<InputModifier, number> = new Map([
   ['shift', 8]
 ])
 
+/** The protocol's modifier bits of a list of Electron modifiers (held buttons and autorepeat are no bits). */
+export function protocolModifiers(modifiers: readonly InputModifier[]): number {
+  let bits = 0
+  for (const m of modifiers) bits |= PROTOCOL_MODIFIER_BITS.get(m) ?? 0
+  return bits
+}
+
 /**
  * The `Input.dispatchKeyEvent` params for an edit chord's key down: a `rawKeyDown` (no text: the
- * chord types nothing) with the letter's US `code` and Windows key code, the modifiers as bits, and
- * the one command. The letter's case follows Shift, as a real keyboard's `key` does. S6 (design-web.md
+ * chord types nothing) with the key's US `code` and Windows key code, the modifiers as bits, and
+ * the one command. A letter's case follows Shift, as a real keyboard's `key` does. S6 (design-web.md
  * §9.15) checked exactly this shape on an unfocused off-screen page.
  */
 export function editKeyEvent(input: EditCommandInput): Record<string, unknown> {
   const shift = input.modifiers.includes('shift')
-  const upper = input.key.toUpperCase()
-  let modifiers = 0
-  for (const m of input.modifiers) modifiers |= PROTOCOL_MODIFIER_BITS.get(m) ?? 0
+  const letter = input.key.length === 1
+  const info = webviewKeyInfo(letter ? (shift ? input.key.toUpperCase() : input.key.toLowerCase()) : (webviewKeyCode(input.key) ?? ''))
   return {
     type: 'rawKeyDown',
-    key: shift ? upper : input.key.toLowerCase(),
-    code: `Key${upper}`,
-    windowsVirtualKeyCode: upper.charCodeAt(0),
-    modifiers,
+    key: info?.key ?? input.key,
+    code: info?.code ?? '',
+    windowsVirtualKeyCode: info?.keyCode ?? 0,
+    modifiers: protocolModifiers(input.modifiers),
     autoRepeat: input.modifiers.includes('isautorepeat'),
     commands: [input.command]
   }
