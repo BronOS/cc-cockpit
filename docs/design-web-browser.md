@@ -246,8 +246,8 @@ same-site frame; a link dragged; Tab into the frame; the allow-listed keys the s
 clicks and typing across four documents in order. A pointer event costs about one frame (16 ms) to be answered, the
 same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
 by the whole delta (a 120 px wheel moved a 60 px tall box by 120, `sendInputEvent`'s by 60, its height), as a trackpad
-does; the page itself scrolls the same distance either way. Not checked: Linux, a perspective transform
-(approximated by its corners), a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
+does; the page itself scrolls the same distance either way. A frame under a perspective transform (its box no
+parallelogram) is not routed into: its parent takes the event. Not checked: Linux, a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
 by its own CSS `zoom`.
 
 It accepts them only from a current viewer (`server && view.remote`, the panel

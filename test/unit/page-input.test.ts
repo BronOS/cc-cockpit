@@ -8,6 +8,7 @@
 // Chromium's own routing is proven under Electron by scripts/offscreen-input-check.mjs.
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_PENDING_PER_SESSION,
   MAX_QUEUED_STEPS,
   PageInputRouter,
   pointInFrame,
@@ -133,6 +134,12 @@ describe('pointInFrame', () => {
     expect(p.inside).toBe(true)
   })
 
+  // Review finding (codex): an affine inverse of a perspective quad put a point in the wrong spot.
+  it('refuses a perspective quad (no parallelogram): the point stays with the parent', () => {
+    const q = [0, 0, 100, 0, 200, 200, 0, 200]
+    expect(pointInFrame(box(q, q, 200, 200), 66.7, 66.7)).toBeUndefined()
+  })
+
   it('undefined for a flat or malformed box', () => {
     expect(pointInFrame(box([0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0], 10, 10), 0, 0)).toBeUndefined()
     expect(pointInFrame(box(rect(0, 0, 10, 10), rect(0, 0, 10, 10), 0, 10), 1, 1)).toBeUndefined()
@@ -171,7 +178,13 @@ function fakePage() {
   const sent: Sent[] = []
   const queries: Array<{ method: string; session: string }> = []
   const held: Array<{ sent: Sent; resolve: (v: unknown) => void }> = []
-  const opts = { hold: false, refuse: new Set<string>(), hang: new Set<string>(), hitAlways: undefined as number | undefined }
+  const opts = {
+    hold: false,
+    refuse: new Set<string>(),
+    hang: new Set<string>(),
+    hitAlways: undefined as number | undefined,
+    onSent: undefined as ((sent: Sent) => void) | undefined
+  }
   const send = (method: string, params: Record<string, unknown> | undefined, sessionId?: string): Promise<unknown> => {
     const session = sessionId ?? ''
     if (sessionId === '') throw new Error('the page session is named by no id, never by an empty one')
@@ -180,6 +193,7 @@ function fakePage() {
       const entry = { method, params: p, session }
       if (opts.refuse.has(session)) return Promise.reject(new Error('No session with given id'))
       sent.push(entry)
+      opts.onSent?.(entry)
       if (opts.hold) return new Promise((resolve) => void held.push({ sent: entry, resolve }))
       return Promise.resolve({})
     }
@@ -457,7 +471,10 @@ describe('PageInputRouter', () => {
     s.page.opts.hold = true
     s.router.input([down(20, 225), up(20, 225), keyDown('q')])
     await s.flush()
-    // The press and release (same session) both went; the key waits for their answers.
+    // The release is routed only once the press was answered, the key once the release was.
+    expect(s.page.sent.map((x) => `${x.session} ${x.params.type}`)).toEqual(['A mousePressed'])
+    for (const h of s.page.held.splice(0)) h.resolve({})
+    await s.flush()
     expect(s.page.sent.map((x) => `${x.session} ${x.params.type}`)).toEqual(['A mousePressed', 'A mouseReleased'])
     for (const h of s.page.held.splice(0)) h.resolve({})
     await s.flush()
@@ -501,6 +518,9 @@ describe('PageInputRouter', () => {
     await s.flush()
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
     expect(STEP_TIMEOUT_MS).toBe(500)
+    // Its own wait, then the next key's wait for it (still unanswered, still counted): one deadline each.
+    s.fire()
+    await s.flush()
     s.fire()
     await s.flush()
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a', 'b'])
@@ -519,7 +539,7 @@ describe('PageInputRouter', () => {
     expect(s.mice()).toEqual([['', 'mousePressed', 20, 225]])
   })
 
-  it('pipelines events to one session, coalesces moves waiting behind a wait, and a full queue never drops a release', async () => {
+  it('pipelines moves to one session and coalesces moves waiting behind a wait', async () => {
     const s = setup()
     s.page.opts.hold = true
     s.router.input([move(1, 1)])
@@ -535,21 +555,88 @@ describe('PageInputRouter', () => {
     for (const h of s.page.held.splice(0)) h.resolve({})
     await s.flush()
     expect(s.mice().map((m) => m[2])).toEqual([1, 2, 5])
-    // Hold the pump on a key, then overfill the queue.
-    s.router.input([keyDown('b')])
+  })
+
+  // Review finding (codex): every release was exempt from the queue cap, so releases nothing had
+  // pressed queued without bound against a hung page.
+  it('a full queue drops moves first; past it a release goes only for a press it took', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    // A press taken and a key down taken, then the pump held on a key and the queue overfilled.
+    s.router.input([down(9, 9), keyDown('c')])
     await s.flush()
     const many: ElectronInputEvent[] = []
-    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('c'))
-    s.router.input([...many, up(9, 9), { type: 'keyUp', keyCode: 'c', modifiers: [] }])
+    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('d'))
+    const stray: ElectronInputEvent[] = []
+    for (let n = 0; n < 100; n++) stray.push({ type: 'keyUp', keyCode: 'x', modifiers: [] }, up(9, 9, 'right'))
+    s.router.input([...many, ...stray, up(9, 9), { type: 'keyUp', keyCode: 'c', modifiers: [] }])
     expect(s.logs).toEqual(['webview: the page answers no input; input dropped'])
-    // Let everything through: both releases are there, at the end.
-    for (let n = 0; n < 2 * MAX_QUEUED_STEPS && (s.page.held.length > 0 || s.timers.size > 0); n++) {
+    // Let everything through: the two matched releases are there, at the end, and no stray one.
+    for (let n = 0; n < 4 * MAX_QUEUED_STEPS && (s.page.held.length > 0 || s.timers.size > 0); n++) {
       for (const h of s.page.held.splice(0)) h.resolve({})
       await new Promise((r) => setTimeout(r, 0))
     }
     await s.flush()
-    const tail = s.page.sent.slice(-2).map((x) => x.params.type)
-    expect(tail).toEqual(['mouseReleased', 'keyUp'])
+    expect(s.page.sent.slice(-2).map((x) => x.params.type)).toEqual(['mouseReleased', 'keyUp'])
+    expect(s.page.sent.filter((x) => x.params.key === 'x' || x.params.button === 'right')).toEqual([])
+  })
+
+  // Review finding (codex): continuous pointer input to one session never drained, so a renderer
+  // that answers nothing collected unanswered dispatches without end.
+  it('stops issuing to a session at MAX_PENDING_PER_SESSION unanswered; moves are dropped, a press waits', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    for (let n = 0; n < 40; n++) {
+      s.router.input([move(n, n)])
+      await s.flush()
+      s.fire()
+    }
+    await s.flush()
+    expect(s.mice()).toHaveLength(MAX_PENDING_PER_SESSION)
+    // A press at the cap waits for an answer, deadline after deadline, and goes once one comes.
+    s.router.input([down(5, 5)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(s.mice().some((m) => m[1] === 'mousePressed')).toBe(false)
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice().at(-1)).toEqual(['', 'mousePressed', 5, 5])
+  })
+
+  // Review finding (codex): the route was chosen before waiting for the input in flight, so a wheel
+  // that scrolled the frame away still sent the next press to it.
+  it('routes a pointer event only after the press, release or wheel in flight was answered', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    s.router.input([{ type: 'mouseWheel', x: 20, y: 25, deltaX: 0, deltaY: -300, modifiers: [] }, down(20, 225)])
+    await s.flush()
+    expect(s.mice()).toEqual([['', 'mouseWheel', 20, 25]])
+    // The wheel scrolled A out from under (20, 225), then was answered.
+    s.page.owners.set('', [{ node: 7, frameId: 'T-A', box: rect(0, -100, 600, 300), width: 600, height: 300 }])
+    s.page.held.shift()?.resolve({})
+    s.page.opts.hold = false
+    await s.flush()
+    expect(s.mice().at(-1)).toEqual(['', 'mousePressed', 20, 225])
+  })
+
+  it('routes again after a hover move that changed the page under the point', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.router.input([move(20, 25)])
+    await s.flush()
+    // Into A: the top gets its hover move over A's owner, which (a page's hover style) sets the
+    // owner to pointer-events: none, so the hit test no longer finds A there.
+    s.page.opts.onSent = (sent) => {
+      if (sent.session === '' && sent.params.type === 'mouseMoved' && sent.params.y === 225) s.page.owners.set('', [])
+    }
+    s.router.input([down(20, 225)])
+    await s.flush()
+    expect(s.mice().at(-1)).toEqual(['', 'mousePressed', 20, 225])
+    expect(s.mice().some((m) => m[0] === 'A')).toBe(false)
   })
 
   it('detached: every event by sendInputEvent at once, and no capture survives it', async () => {

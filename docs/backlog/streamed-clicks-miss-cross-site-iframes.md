@@ -16,8 +16,10 @@ macOS, Electron 45.1.0, 2026-11-19, by `scripts/offscreen-input-check.mjs`). Lef
   needs an isolated world per child session (`Page.createIsolatedWorld` on the frame's session, re-made after each
   navigation), the frame found by the router's hit test, and the select's rectangle mapped back to the top page.
 - Linux was not run: run `node scripts/offscreen-input-check.mjs` there (it exits 1 on any miss).
-- Not checked: a perspective transform on a frame (the router maps through three corners of its box: exact for
-  translate, scale, rotate and skew only), a frame's scroll chaining to its parent at its end, drag and drop between
-  frames, a page zoomed by its own CSS `zoom`.
+- A frame under a perspective transform is not routed into (the router maps through three corners of its box, exact
+  for translate, scale, rotate and skew only, and refuses a box that is no parallelogram): its parent takes the event.
+  A homography inverse would route it.
+- Not checked: a frame's scroll chaining to its parent at its end, drag and drop between frames, a page zoomed by its
+  own CSS `zoom`.
 - Cost: no hit-test cache. A page with cross-site frames pays four protocol round trips per frame level per pointer
   event (about 0.1 ms each here); a pointer event is answered in about one frame (16 ms) either way.
