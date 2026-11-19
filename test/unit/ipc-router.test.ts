@@ -3203,3 +3203,32 @@ describe('room strip handlers (tabs.roomMark, rooms.deliverHeld)', () => {
     expect(REMOTE_CLASS['rooms.deliverHeld']).toBe('adapted')
   })
 })
+
+describe('guest callers (design-guests §4; deny-all until task 03)', () => {
+  const A_CTX = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+  it('refuses every channel to a guest view before the handler, read-class ones included', async () => {
+    const { router, logs } = setup()
+    let calls = 0
+    router.handleProject('tabs.list', () => {
+      calls++
+      return []
+    })
+    router.handleWindow('window.info', () => {
+      calls++
+      return { kind: 'picker', home: '/h' }
+    })
+    router.handleProject('presence.get', () => {
+      calls++
+      return { seq: 0, people: [], lastTyped: {} }
+    })
+    const guest = webCaller(A_CTX, 'web:5', { guest: 'g1' })
+    // Registered channels only: the handler lookup comes first, so an unregistered one answers "no handler".
+    for (const channel of ['tabs.list', 'window.info', 'presence.get']) {
+      await expect(router.dispatch(guest, channel, undefined), channel).rejects.toThrow(/refused/)
+    }
+    expect(calls).toBe(0)
+    expect(logs.join('\n')).toMatch(/refused for guest view web:5/)
+    // The owner's view of the same window is unchanged.
+    await expect(router.dispatch(webCaller(A_CTX, 'web:6'), 'tabs.list', undefined)).resolves.toEqual([])
+  })
+})

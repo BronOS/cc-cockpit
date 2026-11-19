@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadManifest, validateManifest } from '../../src/main/plugins/validate'
-import { PLUGIN_ID_PATTERN, isReservedPluginId, relativePathProblem, seesAllSessions } from '../../src/shared/manifest'
+import { PLUGIN_ID_PATTERN, isGuestAware, isReservedPluginId, relativePathProblem, seesAllSessions } from '../../src/shared/manifest'
 
 let dir: string
 let outside: string
@@ -684,5 +684,17 @@ describe('settings page (design-next §5.4)', () => {
     expect(await errorsOf(raw)).toContain(
       'contributes.settings.page needs "main": the page talks to ctx.settingsPage.onOpen in the plugin\'s host'
     )
+  })
+})
+
+describe('guests (design-guests §6)', () => {
+  it('accepts "guests": { "aware": true } and refuses anything else in it', async () => {
+    const r = await validateManifest(manifest({ guests: { aware: true } }), dir)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(isGuestAware(r.manifest)).toBe(true)
+    expect((await validateManifest(manifest({ guests: {} }), dir)).ok).toBe(true)
+    for (const guests of [{ aware: 'yes' }, { aware: true, see: 'all' }, true, []]) {
+      expect((await validateManifest(manifest({ guests }), dir)).ok, JSON.stringify(guests)).toBe(false)
+    }
   })
 })
