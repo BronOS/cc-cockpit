@@ -44,6 +44,12 @@ are implemented; design in `docs/design-download.md`, plan in `docs/plans/comple
 Rooms (messages and shared docs between Claude tabs, plus the per-plugin caps the person sets) are implemented; design in
 `docs/design-rooms.md`, plan in `docs/plans/completed/20261114-rooms.md`, user docs in `docs/features.md` ("Rooms").
 
+Guests (the owner invites a person into one project, read-only or write, from a browser or the guest's own app through
+Remote servers' Direct window; plugins hidden from guests unless shown) are implemented; design in `docs/design-guests.md`
+(decisions D-1 to D-35 in its §17), summary in `docs/design-web.md` §10, user docs in `docs/features.md` ("Web access" ›
+"Guests"). The D-29 certificate pin runs in real Electron in `guest-direct.spec.ts` against a self-signed loopback host
+only (never a host on another machine); the server-mode guest e2e specs are written but wait for server mode on macOS.
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
@@ -355,6 +361,35 @@ Rooms (messages and shared docs between Claude tabs, plus the per-plugin caps th
 - Per-plugin caps (`shared/plugin-limits.ts`, `main/plugins/plugin-limits.ts`): stored per plugin id in `app.json`, read
   clamped on every call, dropped on uninstall; the write is `plugin.limits.set`, under `HOST_ONLY_FAMILIES`
   (`plugin.limits.`) so it is shell-only like `ccc web`, and not a boundary. `room` is a reserved core command name.
+- Guests (design-guests.md): main decides who a caller is from the connection it bound, never from a payload: `who` is
+  frozen at `hello` (`'owner'` or `{ guest }`), `ViewRegistry.addRemote(..., who)` takes it with no default and
+  `ViewRegistry.whoOf` is the one lookup for code holding a `ViewId` (`views/view-access.ts` `accessOfView`). Rights are
+  read live, every call, event, port frame and HTTP route, through `GuestStore.access` (tagged `GuestAccess`; `revoked`
+  is nobody, never the owner). "The person" is `isOwner(view)` (router), never `view.remote`: a new `.remote` line in
+  `router.ts` or `room-handlers.ts` must check `isOwner(` or join the transport list of `no-remote-authority.test.ts`.
+- Every new invoke channel needs its `GUEST_CLASS` row (`shared/guest-class.ts`, `no` / `read` / `write`, a target
+  extractor when the request names a tab, panel, frame, plugin, overlay, group or ask) and every new event channel its
+  `GUEST_EVENT` row (`main/web/guest-events.ts`, `drop` / `pass` / a filter), in the same change as its `REMOTE_CLASS`.
+  Both are full mapped types over the channel unions, so a missing row fails typecheck; default to `no` / `drop`.
+  `GUEST_CLASS` only narrows `REMOTE_CLASS`; extractors take `unknown` and fail closed. Guest events are filtered at the
+  guest connection's one sink (`WebConnection.event`, D-18); the `ready` snapshot, `paths`, ports and HTTP routes at
+  their own points with the pure filters of `shared/guest-filter.ts`. The gateway answers a guest's refusal with 404.
+- Guest-visible text never carries a host path or the project record (D-33): `window.info` and `project.updated` are
+  `{ id, name, colour }` for guests, asks and offers carry a file name only.
+- Fail closed when a guest dep is absent: an unwired router refuses every guest call, an unwired plugin-visibility,
+  page-path or access-service check hides or refuses, and a guest view with no store behind it is `revoked`; never a
+  default that treats a guest as the owner. Handlers that await before a change re-check the role after the await.
+- Guest sockets have their own 10 s ping (`GUEST_HEARTBEAT_MS`, `gateway.ts`); the owner's 30 s beat stays. Every guest
+  end (kick, lifetime, revoke, forgotten project) goes through `GuestStore`'s one path: close the views with the code
+  first, then tombstone and revoke. Invite tokens are kept only as SHA-256 hashes, live only in the link's fragment, and
+  are never logged (the log names guests by id, never a name or link).
+- Plugin guest visibility (design.md §5 "Guests"): hidden by default, bundled included, one resolver
+  (`shared/guest-access.ts`) for main and the Plugins page; a plugin learns `access` from main's port tag only; read
+  guests of a plugin that is not `guests.aware` get one-way ports (D-17). Bundled plugins adopt it through the public API.
+- Guest e2e (`test/e2e/guest-fixtures.ts`): a spec makes a guest with `__ccTest.guestInvite` (the invite dialog's own
+  service, `GuestStore.invite`; only a hand-test spec drives the dialog), redeems it as the page does and holds a raw socket
+  that records frames, the close code and its time ("no further frame" and "within 1 s" need a client that does not
+  reconnect). A guessed URL is asserted equal to the answer for something that does not exist, never only its status.
 
 ## Conventions
 
