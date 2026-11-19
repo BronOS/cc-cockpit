@@ -1308,7 +1308,9 @@ describe('guest closes (design-guests §16.4, spec-review 22)', () => {
     expect(r.bridge.status()).toEqual({ state: 'connecting' })
   })
 
-  it('a stable connection starts the immediate count over', () => {
+  // STABLE_MS apart, the window never holds MAX_IMMEDIATE_RECONNECTS closes: the old streak was reset by a
+  // stable connection; the sliding window now lets these through because the old ones age out.
+  it('closes spaced STABLE_MS apart never reach the immediate bound', () => {
     const r = rig()
     guestReady(r, 'web:1')
     for (let i = 0; i < MAX_IMMEDIATE_RECONNECTS * 2; i++) {
