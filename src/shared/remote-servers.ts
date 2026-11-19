@@ -6,6 +6,7 @@
 // No Node, no Electron, no regexes (the link and host come from a text box): the renderer's picker
 // and main share this file.
 import { isPlainObject } from './guards'
+import { INVITE_FRAGMENT_TOKEN, parseInviteFragment } from './web-protocol'
 
 /** At most this many saved servers (an `app.json` the person edited by hand cannot grow without bound). */
 export const MAX_REMOTE_SERVERS = 32
@@ -80,6 +81,12 @@ export interface RemoteAnswers {
   password?: string
   passphrase?: string
   remember?: boolean
+  /**
+   * A Direct guest link's certificate (design-guests §11, D-29): the SHA-256 (lowercase hex of the DER) the
+   * person trusted in the `certificate` prompt. Main pins it for the window and saves it with the record only
+   * after the window opened, like `hostKey`.
+   */
+  certificate?: string
 }
 
 /**
@@ -91,6 +98,13 @@ export type RemoteNeed =
   | { need: 'hostKey'; type: string; sha256: string; address: string }
   | { need: 'password'; again?: true }
   | { need: 'passphrase'; path: string; again?: true }
+  /**
+   * A Direct guest link over https (design-guests §11, D-29): the certificate the server shows, for the person
+   * to trust. `sha256`: lowercase hex of its DER. Main asks only when the certificate it read equals the link's
+   * pin (`c=`); a mismatch is refused outright (no prompt). Answered with `RemoteAnswers.certificate`, trusted
+   * only when it equals both the pin and the certificate main read.
+   */
+  | { need: 'certificate'; origin: string; sha256: string }
 
 /**
  * The command My own tunnel shows (design §3, §6): `ssh -N -L 127.0.0.1:<L>:127.0.0.1:<P> <host>`,
@@ -119,6 +133,8 @@ export interface RemoteRecent {
   projectId: string
   name: string
   at: number
+  /** Opened as a guest (design-guests §11): the picker shows "Guest at <origin>". */
+  guest?: true
 }
 
 export interface RemoteServer {
@@ -141,6 +157,13 @@ export interface RemoteServer {
   localPort?: number
   /** Built-in SSH: the trusted host key (design §5.3). */
   hostKey?: RemoteHostKey
+  /**
+   * A Direct server joined with a guest invite (design-guests §11): no reopen, no machine poll, no re-pair;
+   * the picker row reads "Guest at <origin>".
+   */
+  guest?: true
+  /** Direct over https: the pinned certificate's SHA-256 (lowercase hex of the DER), D-29. */
+  certSha256?: string
 }
 
 /**
@@ -336,13 +359,53 @@ export function remoteCommand(args: readonly string[], override?: string): strin
   return words.map((w) => `'${w}'`).join(' ')
 }
 
-export type RemoteLink = { origin: string; token?: string } | { error: string }
+/**
+ * A parsed link: an access or add-device link (`token`, the `#t=` one), or a guest invite (`guest`,
+ * its token in `invite`, never in `token`: a caller that only knows access links must not sign in
+ * with `#t=<invite>`), with the host certificate's pin when the link carries one.
+ */
+export type RemoteLink =
+  | { origin: string; token?: string; guest?: undefined }
+  | { origin: string; token?: undefined; guest: true; invite: string; certPin?: string }
+  | { error: string }
+
+/** A certificate pin as kept: exactly 64 lower-case hex characters, or undefined. */
+export function certPinOf(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length !== 64) return undefined
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i)
+    if (!isCodeBetween(c, 0x30, 0x39) && !isCodeBetween(c, 0x61, 0x66)) return undefined
+  }
+  return value
+}
+
+/**
+ * The pin a `certificate` answer names: the shown form (`AB:CD:...`) or bare hex, either case;
+ * undefined when it is not 32 bytes of hex. Only for comparing with the link's own pin.
+ */
+export function certAnswerPin(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 95) return undefined
+  return certPinOf(value.split(':').join('').toLowerCase())
+}
+
+/** A pin as the prompt shows it: colon-separated upper-case pairs (the browsers' own form). */
+export function certFingerprintText(pin: string): string {
+  const pairs: string[] = []
+  for (let i = 0; i < pin.length; i += 2) pairs.push(pin.slice(i, i + 2).toUpperCase())
+  return pairs.join(':')
+}
 
 /**
  * An access link or add-device link typed into Direct (design §6): `http:` or `https:`, no userinfo,
  * the path `/` and no query, optionally `#t=<token>` (the fragment the web client reads,
  * renderer/web/sign-in.ts `linkTokenOf`). Parsed with `URL` only. The origin is all that is kept;
  * the caller uses the token once and drops it.
+ *
+ * Or a guest invite (design-guests §11): `#i=<token>[&c=<pin>]`, read by the web client's own
+ * `parseInviteFragment` (one rule for both). A fragment with an `i` key is an invite or nothing: a
+ * repeated or unknown key, a damaged token or pin refuses (never read as an access link instead). A
+ * pin on an http link refuses: there is no certificate to pin, and a link that says otherwise is not
+ * what the host printed.
  */
 export function parseRemoteLink(text: string): RemoteLink {
   const raw = typeof text === 'string' ? text.trim() : ''
@@ -362,7 +425,15 @@ export function parseRemoteLink(text: string): RemoteLink {
   if (origin.length > MAX_ORIGIN) return { error: 'the link is too long' }
   if (url.hash === '') return { origin }
   // URLSearchParams does not throw on a string; same read as the web client's `linkTokenOf`.
-  const token = new URLSearchParams(url.hash.slice(1)).get('t')
+  const params = new URLSearchParams(url.hash.slice(1))
+  if (params.has(INVITE_FRAGMENT_TOKEN)) {
+    const invite = parseInviteFragment(url.hash)
+    if (invite === undefined) return { error: 'this invite link is damaged; ask the host for a new one' }
+    if (invite.cert === undefined) return { origin, guest: true, invite: invite.token }
+    if (url.protocol !== 'https:') return { error: 'a certificate pin needs an https link' }
+    return { origin, guest: true, invite: invite.token, certPin: invite.cert }
+  }
+  const token = params.get('t')
   if (token === null) return { error: 'the part after # must be t=<token>' }
   if (token === '') return { error: 'the link has an empty token' }
   if (token.length > MAX_TOKEN) return { error: 'the link token is too long' }
@@ -478,7 +549,7 @@ function recentOf(value: unknown): RemoteRecent[] {
     const at = raw['at']
     if (projectId === undefined || name === undefined || typeof at !== 'number' || !Number.isFinite(at) || at < 0) continue
     if (out.some((r) => r.projectId === projectId)) continue
-    out.push({ projectId, name, at })
+    out.push({ projectId, name, at, ...(raw['guest'] === true ? { guest: true as const } : {}) })
   }
   return out
 }
@@ -555,6 +626,14 @@ export function validateRemoteServers(raw: unknown): RemoteServer[] {
     if (via.kind === 'ssh' && isLocalPort(entry['localPort'])) server.localPort = entry['localPort']
     const hostKey = via.kind === 'ssh' ? hostKeyOf(entry['hostKey']) : undefined
     if (hostKey !== undefined) server.hostKey = hostKey
+    // A guest is a Direct server's (an invite is a Direct link); its pin only on https. A damaged pin
+    // is dropped alone: no pin is Chromium's own verdict, which refuses a self-signed certificate, so
+    // a damaged record fails closed rather than trusting anything.
+    if (via.kind === 'direct' && entry['guest'] === true) {
+      server.guest = true
+      const pin = certPinOf(entry['certSha256'])
+      if (pin !== undefined && via.origin.startsWith('https:')) server.certSha256 = pin
+    }
     out.push(server)
   }
   return out

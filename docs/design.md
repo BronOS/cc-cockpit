@@ -1282,6 +1282,33 @@ per plugin and 32 folder tokens per view; sub-frames may navigate anywhere excep
 other views' tokens. Chords with
 Cmd/Ctrl/Alt typed into a view are forwarded to the app.
 
+**Guests** (design-guests.md §6, §16.1, §16.5). A guest the owner invited (web access, read-only or write) sees a plugin
+only when the owner shows it: `app.json › pluginGuestAccess[id]` (`hidden` | `shown`) with a per-project override in
+the project record (absent = use global), hidden by default, bundled plugins included; stored and read live by
+`PluginGuestAccessStore` (`main/settings/plugin-guest-access.ts`, the `PluginGuestAccessService` of
+`main/ipc/guest-deps.ts`), dropped on uninstall like the plugin's caps. One resolver, `guestVisibility` /
+`guestPort` in `src/shared/guest-access.ts`, serves main and the Plugins page (`PluginView.guestAccess`), and the page's
+"what it exposes" text is generic (`src/shared/guest-exposure.ts`, from `aware` and the port kind; no manifest text, no
+case for a `cockpit.*` id). Showing is a widening: owner views only, a desktop host's browser may only hide (D-11). A
+plugin that declares `access.sessions: 'all-windows'` and is not aware is `blocked`, never shown (its pages could show
+another project); that keeps `cockpit.sessions` from guests.
+- **Manifest**: top-level `"guests": { "aware": true }` (strict inside; older apps ignore it) says "my host checks
+  `access`". For a plugin that is not aware, a read guest's ports are **one-way** (D-17): main sets
+  `PanelPortPayload.oneWay` from `guestPort`, pages still get the host's posts, and `PortRelay` drops what the page
+  sends, logged once per (plugin, view); a write guest's ports are full (a write guest has the owner's shell anyway).
+  Main cannot enforce "nothing that changes state" inside a plugin; it enforces the one-way port.
+- **What the host learns** comes from main's port tag, never the page: `ViewAccess = 'owner' | 'read' | 'write'`;
+  `ctx.panels.onMessage` and `onAction` listeners get `from: { view, access }`; `SlotInstance.access` and
+  `PageTabInstance.access` (fixed for the frame's life); `ctx.views.access(view)` and `ctx.views.onChange` (views known
+  from port tags host-wide, gone when a view's last port closes; replayed to a new listener) for posting owner-only data
+  per view with `ctx.panels.post(id, msg, { view })` instead of broadcasting. A role switch reconnects the guest's page
+  as a new view, so a view's access never changes. Page side, `ccPanel.view.access` is a hint for hiding buttons only.
+- **What a plugin cannot do**: widen what a guest sees. A tab a plugin opens for a guest's click follows the normal
+  scope (D-27), the origin-view hint is never a check, and presence is not given to plugins in v1.
+- **Bundled plugins** adopt it through the public API only: Files and Editor declare `aware` (read guests: no rename,
+  trash, upload, download, save, quick chat or Ask Claude; all guests confined to the project realpath for files, LSP and
+  outside paths), Usage is unchanged and hidden by default (shown, it shows the account's spend), Sessions stays blocked.
+
 **Bundled plugins**: `PluginSource` has a third kind, `bundled`, for plugins shipped in the app
 resources (`plugins/browser`, `plugins/reviewer`, `plugins/editor`, `plugins/files`, `plugins/sessions`, `extraResources`). They are indexed from an allowlist
 (`BUNDLED_PLUGINS`) at every start, never copied, cannot be uninstalled (only disabled) and update with the app.

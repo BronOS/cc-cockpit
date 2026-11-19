@@ -16,10 +16,20 @@ export function ExitedBanner(props: {
   notStarted?: boolean
   onRestart: () => void
   onClose: () => void
+  /** Offer Restart and Close (default): a read-only guest only sees that the process ended. */
+  actions?: boolean
 }): React.JSX.Element {
+  const label = props.notStarted ? 'not started (restored commands run only when you ask)' : exitLabel(props.exit)
+  if (props.actions === false) {
+    return (
+      <div className="exited-banner" role="status">
+        <span>{label}</span>
+      </div>
+    )
+  }
   return (
     <div className="exited-banner" role="status">
-      <span>{props.notStarted ? 'not started (restored commands run only when you ask)' : exitLabel(props.exit)}: </span>
+      <span>{label}: </span>
       <button type="button" onClick={props.onRestart}>
         Restart
       </button>

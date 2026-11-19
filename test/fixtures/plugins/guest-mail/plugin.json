@@ -1,0 +1,17 @@
+{
+  "id": "test.guestmail",
+  "name": "Guest Mail",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [
+      {
+        "id": "inbox",
+        "title": "Inbox",
+        "entry": "panel.html",
+        "defaultZone": "right"
+      }
+    ]
+  }
+}

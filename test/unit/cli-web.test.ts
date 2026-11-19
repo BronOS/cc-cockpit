@@ -10,14 +10,17 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseArgs } from '../../src/cli/args'
-import { buildRequest, NOT_RUNNING, run, runCommand, type Output } from '../../src/cli/client'
-import { formatWebSaved, formatWebStatus } from '../../src/cli/web-format'
+import { buildRequest, INVITE_LOOPBACK_WARNING, NOT_RUNNING, run, runCommand, type Output } from '../../src/cli/client'
+import { formatWebGuests, formatWebKick, formatWebRole, formatWebSaved, formatWebStatus } from '../../src/cli/web-format'
 import { MAX_PASSWORD_STDIN_BYTES, PROMPT_TIMEOUT_MS, readHidden, readPassword } from '../../src/cli/web-password'
 import { fakeSecretStore, KEYFILE_PREFIX, unreadableCounts, type SecretStore } from '../../src/main/secrets/secret-store'
 import { SocketServer, type Caller, type Handler } from '../../src/main/socket/socket-server'
 import {
   confirmNeededText,
+  DESKTOP_GUEST_REFUSAL,
   DESKTOP_REFUSAL,
+  GUESTS_UNAVAILABLE,
+  INVITE_ERROR_TEXT,
   registerWebHandlers,
   SHELL_REVOKE_REASON,
   shellChangeNotice,
@@ -46,6 +49,7 @@ import {
   type Reply,
   type Request
 } from '../../src/shared/protocol'
+import type { GuestInviteAnswer, GuestInviteRequest, GuestView } from '../../src/shared/guests'
 import type { WebAccessSettings } from '../../src/shared/types'
 import { SERVER_NONE_WARNING, WEB_RISK_TEXT, type WebCliStatus } from '../../src/shared/web-access'
 
@@ -249,6 +253,7 @@ describe("webHandlerDeps (main's wiring)", () => {
     expect(lines).toEqual([{ event: 'shell', detail: 'ccc web mode link' }])
     // Every change from the shell is a core notice too (server mode: a stdout line and every browser's in-page notice).
     expect(raised).toEqual([shellChangeNotice('ccc web mode link')])
+    expect(shellChangeNotice('ccc web mode link')).toBe('Web access was changed from the server shell: ccc web mode link')
     deps.stop()
     expect(quits).toBe(0)
     expect(timers.map((t) => t.ms)).toEqual([STOP_AFTER_REPLY_MS])
@@ -381,7 +386,7 @@ describe('WebAccessService.cliStatus: what ccc web status shows, and no secret',
       disconnectDevice: () => 0,
       onConnectionsChanged: () => () => undefined
     }
-    const service = new WebAccessService({
+    const service = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,
@@ -770,7 +775,7 @@ describe('ccc web part 2 through the real WebAccessService (server mode)', () =>
       disconnectDevice: () => 0,
       onConnectionsChanged: () => () => undefined
     }
-    service = new WebAccessService({
+    service = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,
@@ -1173,5 +1178,419 @@ describe('ccc web part 2: the CLI', () => {
     err = ''
     expect(await run(['web', 'set', '--bind', '0.0.0.0', '--port', '7400', '--confirm', 'plain-http'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
     expect(out).toBe('saved\naddress: 0.0.0.0:7400\ngateway: not listening: port 7400 is in use\n')
+  })
+})
+
+describe('ccc web guest commands (design-guests §12, D-25): the handlers called directly', () => {
+  const PROJECT = '0123456789abcdef'
+  const LIVE: GuestView = { id: 'g-ann', name: 'Ann', role: 'read', projectId: PROJECT, scope: 'all', state: 'live', until: 86_400_000 }
+  const PENDING: GuestView = {
+    id: 'g-bob',
+    name: 'Bob',
+    role: 'write',
+    projectId: PROJECT,
+    scope: ['t1', 't2'],
+    state: 'pending',
+    until: null,
+    inviteId: 'inv-bob',
+    inviteExpiresAt: 3_600_000
+  }
+
+  /** The recorder plus a fake guest store over `rows`; `answer` is what invite returns. */
+  function guestRecorder(
+    server: boolean,
+    rows: GuestView[] = [LIVE, PENDING],
+    answer: GuestInviteAnswer = { ok: true, link: 'http://h/#i=SECRET', inviteId: 'inv-1', guestId: 'g-new', expiresAt: 5 }
+  ): ReturnType<typeof recorder> & { invites: Array<[string, GuestInviteRequest]> } {
+    const deps = recorder(server)
+    const invites: Array<[string, GuestInviteRequest]> = []
+    const known = (id: string): boolean => rows.some((g) => g.id === id)
+    return Object.assign(deps, {
+      invites,
+      projectOf: (idOrPath: string) => {
+        deps.calls.push(`projectOf ${idOrPath}`)
+        return idOrPath === PROJECT || idOrPath === '/work/proj' ? PROJECT : undefined
+      },
+      guests: {
+        list: () => (deps.calls.push('list'), rows),
+        invite: async (projectId: string, req: GuestInviteRequest) => (invites.push([projectId, req]), answer),
+        revokeInvite: (id: string) => (deps.calls.push(`revokeInvite ${id}`), rows.some((g) => g.inviteId === id)),
+        kick: (id: string) => (deps.calls.push(`kick ${id}`), known(id)),
+        setRole: (id: string, role: string) => (deps.calls.push(`setRole ${id} ${role}`), known(id))
+      }
+    })
+  }
+
+  const INVITE = { project: PROJECT, name: 'Cid', role: 'write' }
+
+  it('each of the four refuses any caller but the shell, with guests wired too, and does nothing', async () => {
+    for (const server of [true, false]) {
+      const deps = guestRecorder(server)
+      const h = webHandlers(deps)
+      for (const cmd of ['web.invite', 'web.guests', 'web.kick', 'web.role']) {
+        for (const caller of NOT_HOST) {
+          await expect(Promise.resolve().then(() => h[cmd]!({ ...INVITE, guest: 'Ann' }, caller)), `${cmd} ${caller.kind}`).rejects.toThrow(HOST_ONLY_TEXT)
+        }
+      }
+      expect(deps.calls).toEqual([])
+      expect(deps.invites).toEqual([])
+    }
+  })
+
+  it('without a guest service each answers "guests are not available" (the desktop invite its own refusal first)', async () => {
+    for (const server of [true, false]) {
+      const h = webHandlers(recorder(server))
+      await expect(Promise.resolve().then(() => h['web.invite']!(INVITE, HOST))).rejects.toThrow(server ? GUESTS_UNAVAILABLE : DESKTOP_GUEST_REFUSAL)
+      expect(() => h['web.guests']!({}, HOST)).toThrow(GUESTS_UNAVAILABLE)
+      expect(() => h['web.kick']!({ guest: 'Ann' }, HOST)).toThrow(GUESTS_UNAVAILABLE)
+      expect(() => h['web.role']!({ guest: 'Ann', role: 'read' }, HOST)).toThrow(GUESTS_UNAVAILABLE)
+    }
+    // A store without the project lookup cannot resolve --project: the same answer, nothing invited.
+    const noLookup = guestRecorder(true)
+    delete (noLookup as Partial<WebHandlerDeps>).projectOf
+    await expect(Promise.resolve().then(() => webHandlers(noLookup)['web.invite']!(INVITE, HOST))).rejects.toThrow(GUESTS_UNAVAILABLE)
+    expect(noLookup.invites).toEqual([])
+  })
+
+  it('invite: server mode makes it for the project main resolves, answers the link once, logs no link and no name', async () => {
+    const deps = guestRecorder(true)
+    const result = await webHandlers(deps)['web.invite']!({ ...INVITE, project: '/work/proj', scope: ['t1'], lifetime: '7d' }, HOST)
+    expect(result).toEqual({ link: 'http://h/#i=SECRET', inviteId: 'inv-1', guestId: 'g-new', expiresAt: 5 })
+    expect(deps.invites).toEqual([[PROJECT, { name: 'Cid', role: 'write', scope: ['t1'], lifetime: '7d' }]])
+    expect(deps.calls).toEqual(['projectOf /work/proj', 'log ccc web invite --role write --tabs 1 tab(s) --lifetime 7d (guest g-new)'])
+    expect(deps.calls.join('\n')).not.toContain('SECRET')
+    expect(deps.calls.join('\n')).not.toContain('Cid')
+    // Defaults: all tabs, one day.
+    const plain = guestRecorder(true)
+    await webHandlers(plain)['web.invite']!(INVITE, HOST)
+    expect(plain.invites).toEqual([[PROJECT, { name: 'Cid', role: 'write', scope: 'all', lifetime: '1d' }]])
+  })
+
+  it('invite: the loopback-only warning is passed on, nothing else is', async () => {
+    const warned = guestRecorder(true, [], { ok: true, link: 'l', inviteId: 'i', guestId: 'g', expiresAt: 1, warning: 'loopback-only' })
+    expect(await webHandlers(warned)['web.invite']!(INVITE, HOST)).toEqual({ link: 'l', inviteId: 'i', guestId: 'g', expiresAt: 1, warning: 'loopback-only' })
+    const odd = guestRecorder(true, [], { ok: true, link: 'l', inviteId: 'i', guestId: 'g', expiresAt: 1, warning: 'other' } as unknown as GuestInviteAnswer)
+    expect(await webHandlers(odd)['web.invite']!(INVITE, HOST)).toEqual({ link: 'l', inviteId: 'i', guestId: 'g', expiresAt: 1 })
+  })
+
+  it('invite: the desktop refuses before anything is looked up (D-25)', async () => {
+    const deps = guestRecorder(false)
+    await expect(Promise.resolve().then(() => webHandlers(deps)['web.invite']!(INVITE, HOST))).rejects.toThrow(DESKTOP_GUEST_REFUSAL)
+    expect(deps.calls).toEqual([])
+    expect(deps.invites).toEqual([])
+  })
+
+  it('invite: each store refusal is one plain sentence, nothing logged', async () => {
+    for (const error of ['none-mode', 'name-taken', 'cap', 'full'] as const) {
+      const deps = guestRecorder(true, [], { ok: false, error })
+      await expect(Promise.resolve().then(() => webHandlers(deps)['web.invite']!(INVITE, HOST)), error).rejects.toThrow(INVITE_ERROR_TEXT[error])
+      expect(INVITE_ERROR_TEXT[error]).not.toContain('\n')
+      expect(deps.calls.filter((c) => c.startsWith('log '))).toEqual([])
+    }
+  })
+
+  it('invite: a bad field is refused before the store; an unknown project is not echoed', async () => {
+    const deps = guestRecorder(true)
+    const invite = webHandlers(deps)['web.invite']!
+    for (const [args, message] of [
+      [{ ...INVITE, name: '' }, /a name is 1 to 60 characters/],
+      [{ ...INVITE, name: '  ' }, /a name is 1 to 60 characters/],
+      [{ ...INVITE, name: 'x'.repeat(61) }, /a name is 1 to 60 characters/],
+      [{ ...INVITE, name: 'evil\x1b[2J' }, /plain text/],
+      [{ ...INVITE, name: 5 }, /a name is/],
+      [{ ...INVITE, role: 'admin' }, /--role takes read or write/],
+      [{ ...INVITE, scope: 'some' }, /--tabs takes all or tab ids/],
+      [{ ...INVITE, scope: [''] }, /--tabs takes all or tab ids/],
+      [{ ...INVITE, lifetime: '30d' }, /--lifetime takes 1d, 7d or forever/],
+      [{ ...INVITE, project: '' }, /--project takes a project id or a folder path/],
+      [{ ...INVITE, project: 7 }, /--project takes/],
+      [{ ...INVITE, extra: true }, /unexpected field "extra"/],
+      [{ ...INVITE, project: '/secret/unknown' }, /no such project/]
+    ] as const) {
+      await expect(Promise.resolve().then(() => invite(args, HOST)), JSON.stringify(args)).rejects.toThrow(message)
+    }
+    await Promise.resolve()
+      .then(() => invite({ ...INVITE, project: '/secret/unknown' }, HOST))
+      .catch((err: unknown) => expect(String(err)).not.toContain('/secret/unknown'))
+    expect(deps.invites).toEqual([])
+    expect(deps.calls.filter((c) => c.startsWith('log '))).toEqual([])
+  })
+
+  it('guests: both hosts answer the list as the store gives it', () => {
+    for (const server of [true, false]) {
+      const deps = guestRecorder(server)
+      expect(webHandlers(deps)['web.guests']!({}, HOST)).toEqual([LIVE, PENDING])
+      expect(() => webHandlers(deps)['web.guests']!({ all: true }, HOST)).toThrow(/unexpected field/)
+    }
+  })
+
+  it('kick: by id or name on both hosts; a pending guest cancels its invite; --invite cancels one by id', () => {
+    for (const server of [true, false]) {
+      const deps = guestRecorder(server)
+      const kick = webHandlers(deps)['web.kick']!
+      expect(kick({ guest: 'g-ann' }, HOST)).toEqual({ guest: 'g-ann', name: 'Ann' })
+      expect(kick({ guest: 'Ann' }, HOST)).toEqual({ guest: 'g-ann', name: 'Ann' })
+      expect(kick({ guest: 'Bob' }, HOST)).toEqual({ invite: 'inv-bob', name: 'Bob' })
+      expect(kick({ invite: 'inv-bob' }, HOST)).toEqual({ invite: 'inv-bob' })
+      expect(deps.calls.filter((c) => c.startsWith('log '))).toEqual([
+        'log ccc web kick g-ann',
+        'log ccc web kick g-ann',
+        'log ccc web kick --invite inv-bob',
+        'log ccc web kick --invite inv-bob'
+      ])
+      expect(deps.calls).not.toContain('kick g-bob')
+    }
+  })
+
+  it('kick: a name two guests share is refused; unknown targets and invites are errors that do not echo', () => {
+    const twin: GuestView = { ...LIVE, id: 'g-ann2' }
+    const deps = guestRecorder(true, [LIVE, twin, PENDING])
+    const kick = webHandlers(deps)['web.kick']!
+    expect(() => kick({ guest: 'Ann' }, HOST)).toThrow('web kick: two guests are named Ann: use the id')
+    // The id still picks one.
+    expect(kick({ guest: 'g-ann2' }, HOST)).toEqual({ guest: 'g-ann2', name: 'Ann' })
+    expect(() => kick({ guest: 'Nobody-xyz' }, HOST)).toThrow(/no guest or invite has that id or name/)
+    expect(() => kick({ invite: 'inv-xyz' }, HOST)).toThrow(/no pending invite has that id/)
+    for (const args of [{ guest: 'Nobody-xyz' }, { invite: 'inv-xyz' }]) {
+      try {
+        kick(args, HOST)
+      } catch (err) {
+        expect(String(err)).not.toContain('xyz')
+      }
+    }
+    for (const args of [{}, { guest: 'Ann', invite: 'inv-bob' }, { guest: '' }, { guest: 5 }, { invite: 'x'.repeat(129) }, { guest: 'Ann', all: true }]) {
+      expect(() => kick(args, HOST), JSON.stringify(args)).toThrow(/web kick/)
+    }
+    expect(deps.calls).not.toContain('kick g-ann')
+  })
+
+  it('role: read on both hosts; write in server mode only, refused on the desktop before the guest is looked up', () => {
+    for (const server of [true, false]) {
+      const deps = guestRecorder(server)
+      const role = webHandlers(deps)['web.role']!
+      expect(role({ guest: 'Ann', role: 'read' }, HOST)).toEqual({ guest: 'g-ann', name: 'Ann', role: 'read' })
+      if (server) expect(role({ guest: 'g-ann', role: 'write' }, HOST)).toEqual({ guest: 'g-ann', name: 'Ann', role: 'write' })
+      else {
+        const before = deps.calls.length
+        expect(() => role({ guest: 'Ann', role: 'write' }, HOST)).toThrow(DESKTOP_GUEST_REFUSAL)
+        // An unknown guest gets the same answer: the refusal says nothing about who exists.
+        expect(() => role({ guest: 'Nobody', role: 'write' }, HOST)).toThrow(DESKTOP_GUEST_REFUSAL)
+        expect(deps.calls.length).toBe(before)
+      }
+      expect(deps.calls.filter((c) => c.startsWith('log '))).toEqual(server ? ['log ccc web role g-ann read', 'log ccc web role g-ann write'] : ['log ccc web role g-ann read'])
+    }
+  })
+
+  it('role: a shared name is refused, an unknown guest and a bad role are errors, nothing set', () => {
+    const deps = guestRecorder(true, [LIVE, { ...LIVE, id: 'g-ann2' }])
+    const role = webHandlers(deps)['web.role']!
+    expect(() => role({ guest: 'Ann', role: 'read' }, HOST)).toThrow('web role: two guests are named Ann: use the id')
+    expect(() => role({ guest: 'Nobody', role: 'read' }, HOST)).toThrow(/no guest or invite has that id or name/)
+    expect(() => role({ guest: 'Ann', role: 'admin' }, HOST)).toThrow(/the role is read or write/)
+    // A row the list gave that the store will not switch (a pending invite here) says so, not "no such guest".
+    const pending = guestRecorder(true, [{ ...LIVE, state: 'pending', inviteId: 'inv-a' }])
+    pending.guests!.setRole = () => false
+    expect(() => webHandlers(pending)['web.role']!({ guest: 'Ann', role: 'read' }, HOST)).toThrow(/could not be changed/)
+    expect(() => role({ guest: 'Ann', role: 'read', scope: 'all' }, HOST)).toThrow(/unexpected field/)
+    expect(deps.calls.filter((c) => c.startsWith('setRole') || c.startsWith('log '))).toEqual([])
+  })
+
+  it('webHandlerDeps passes the guest store and the project lookup through (task 07 wires them); absent stays absent', () => {
+    const guests = guestRecorder(true).guests!
+    const projectOf = (): string | undefined => undefined
+    const base = {
+      server: true,
+      access: {} as Parameters<typeof webHandlerDeps>[0]['access'],
+      secrets: async () => ({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }) as const,
+      notices: () => [],
+      accessLog: { write: () => undefined },
+      quit: () => undefined
+    }
+    const wired = webHandlerDeps({ ...base, guests, projectOf })
+    expect(wired.guests).toBe(guests)
+    expect(wired.projectOf).toBe(projectOf)
+    const bare = webHandlerDeps(base)
+    expect('guests' in bare).toBe(false)
+    expect('projectOf' in bare).toBe(false)
+  })
+
+  it("a desktop shell change (kick, role read) is a notice that does not call the desktop's shell the server's", () => {
+    const raised: string[] = []
+    const deps = webHandlerDeps({
+      server: false,
+      access: {} as Parameters<typeof webHandlerDeps>[0]['access'],
+      secrets: async () => ({ store: 'fake', unavailable: null, otherMode: 0, replaced: 0 }) as const,
+      notices: () => [],
+      accessLog: { write: () => undefined },
+      notice: (text) => void raised.push(text),
+      quit: () => undefined,
+      guests: guestRecorder(false).guests!
+    })
+    webHandlers(deps)['web.kick']!({ guest: 'Ann' }, HOST)
+    expect(raised).toEqual(['Web access was changed from a shell outside cc-cockpit: ccc web kick g-ann'])
+  })
+})
+
+describe('ccc web guest commands: the CLI', () => {
+  let root: string
+  let sock: string
+  let servers: Server[]
+  let out: string
+  let err: string
+  const io: Output = {
+    stdout: (t) => void (out += t),
+    stderr: (t) => void (err += t)
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(POSIX ? '/tmp' : process.env.TEMP!, 'ccwg-'))
+    sock = join(root, 's.sock')
+    servers = []
+    out = ''
+    err = ''
+  })
+  afterEach(() => {
+    for (const s of servers) s.close()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function fakeApp(answer: (r: Request) => { ok: true; result: unknown } | { ok: false; error: string }): Promise<Request[]> {
+    const seen: Request[] = []
+    const server = createServer((socket: Socket) => {
+      const framer = new LineFramer()
+      socket.on('data', (chunk: Buffer) => {
+        for (const line of framer.push(chunk)) {
+          const request = parseRequest(line)
+          seen.push(request)
+          socket.write(encodeReply({ id: request.id, ...answer(request) }))
+        }
+      })
+      socket.on('error', () => {})
+    })
+    servers.push(server)
+    return new Promise((resolve) => server.listen(sock, () => resolve(seen)))
+  }
+
+  const ROWS: GuestView[] = [
+    { id: 'g-ann', name: 'Ann\x1b[2J', role: 'read', projectId: '0123456789abcdef', scope: 'all', state: 'live', until: 0 },
+    { id: 'g-cy', name: 'Cy', role: 'write', projectId: '0123456789abcdef', scope: ['t1'], state: 'away', until: null },
+    { id: 'g-bob', name: 'Bob', role: 'write', projectId: '0123456789abcdef', scope: ['t1', 't2'], state: 'pending', until: null, inviteId: 'inv-bob', inviteExpiresAt: 0 }
+  ]
+  const plain = (t: unknown): string => String(t).split('\x1b').join(' ')
+
+  it('sends the project in args (an id as typed, a folder made absolute), never as routing; in a tab the token goes along', () => {
+    const invite = { kind: 'web-invite', name: 'Ann', role: 'read', tabs: ['t1', 't2'], lifetime: '7d', json: false } as const
+    expect(buildRequest({ ...invite, tabs: ['t1', 't2'], project: '0123456789abcdef' }, {}, CWD)).toEqual({
+      v: 1,
+      id: 1,
+      cmd: 'web.invite',
+      args: { project: '0123456789abcdef', name: 'Ann', role: 'read', scope: ['t1', 't2'], lifetime: '7d' }
+    })
+    for (const [typed, sent] of [
+      ['proj', '/work/dir/proj'],
+      ['./0123456789abcdef', '/work/dir/0123456789abcdef'],
+      ['0123456789ABCDEF', '/work/dir/0123456789ABCDEF'],
+      ['/abs/p', '/abs/p']
+    ] as const) {
+      const request = buildRequest({ ...invite, tabs: 'all', project: typed }, {}, CWD)
+      expect(request, typed).toMatchObject({ cmd: 'web.invite', args: { project: sent, scope: 'all' } })
+      expect('project' in (request as Request), typed).toBe(false)
+    }
+    expect(buildRequest({ kind: 'web-guests', json: true }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.guests', args: {} })
+    expect(buildRequest({ kind: 'web-kick', guest: 'Ann' }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.kick', args: { guest: 'Ann' } })
+    expect(buildRequest({ kind: 'web-kick', invite: 'inv-1' }, {}, CWD)).toEqual({ v: 1, id: 1, cmd: 'web.kick', args: { invite: 'inv-1' } })
+    expect(buildRequest({ kind: 'web-role', guest: 'Ann', role: 'write' }, { APP_TAB_TOKEN: TOKEN }, CWD)).toEqual({
+      v: 1,
+      id: 1,
+      cmd: 'web.role',
+      args: { guest: 'Ann', role: 'write' },
+      token: TOKEN
+    })
+  })
+
+  it('with the app not running each prints "cc-cockpit is not running" and exits 1', async () => {
+    for (const argv of [
+      ['web', 'invite', '--project', '/p', '--name', 'A', '--role', 'read'],
+      ['web', 'guests'],
+      ['web', 'kick', 'A'],
+      ['web', 'role', 'A', 'read']
+    ]) {
+      out = ''
+      err = ''
+      expect(await run(argv, { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD), argv.join(' ')).toBe(1)
+      expect(out).toBe('')
+      expect(err).toBe(`ccc: ${NOT_RUNNING}\n`)
+    }
+  })
+
+  it('invite prints the link alone on stdout; --json the object; loopback-only adds a warning line on stderr', async () => {
+    const app: { warning?: string } = {}
+    await fakeApp(() => ({ ok: true, result: { link: 'http://h/#i=abc\x1b[2J', inviteId: 'inv-1', guestId: 'g-1', expiresAt: 9, ...app } }))
+    const argv = ['web', 'invite', '--project', '/p', '--name', 'Ann', '--role', 'read']
+    expect(await run(argv, { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('http://h/#i=abc [2J\n')
+    expect(err).toBe('')
+    out = ''
+    app.warning = 'loopback-only'
+    expect(await run(argv, { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('http://h/#i=abc [2J\n')
+    expect(err).toBe(`ccc: warning: ${INVITE_LOOPBACK_WARNING}\n`)
+    expect(INVITE_LOOPBACK_WARNING).toBe('web access listens on loopback only; set an external origin or a network bind so the guest can reach it')
+    out = ''
+    err = ''
+    expect(await run([...argv, '--json'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(JSON.parse(out)).toEqual({ link: 'http://h/#i=abc\x1b[2J', inviteId: 'inv-1', guestId: 'g-1', expiresAt: 9, warning: 'loopback-only' })
+    expect(err).toBe(`ccc: warning: ${INVITE_LOOPBACK_WARNING}\n`)
+  })
+
+  it('a refusal is exit 1 with its one line on stderr, nothing on stdout', async () => {
+    await fakeApp((r) => ({ ok: false, error: r.cmd === 'web.invite' ? DESKTOP_GUEST_REFUSAL : 'web kick: two guests are named Ann: use the id' }))
+    expect(await run(['web', 'invite', '--project', '/p', '--name', 'Ann', '--role', 'read'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(1)
+    expect(err).toBe(`ccc: ${DESKTOP_GUEST_REFUSAL}\n`)
+    err = ''
+    expect(await run(['web', 'kick', 'Ann'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(1)
+    expect(err).toBe('ccc: web kick: two guests are named Ann: use the id\n')
+    expect(out).toBe('')
+  })
+
+  it('guests prints a row each and --json the list as main gave it; kick and role say what they did', async () => {
+    await fakeApp((r) => {
+      switch (r.cmd) {
+        case 'web.guests':
+          return { ok: true, result: ROWS }
+        case 'web.kick':
+          return { ok: true, result: r.args.invite !== undefined ? { invite: 'inv-bob' } : { guest: 'g-ann', name: 'Ann' } }
+        default:
+          return { ok: true, result: { guest: 'g-ann', name: 'Ann', role: 'read' } }
+      }
+    })
+    expect(await run(['web', 'guests'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toContain('guests: 3\n  g-ann\tAnn [2J\tread\t')
+    expect(out).not.toContain('\x1b')
+    out = ''
+    expect(await run(['web', 'guests', '--json'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(JSON.parse(out)).toEqual(ROWS)
+    out = ''
+    expect(await run(['web', 'kick', 'Ann'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(await run(['web', 'kick', '--invite', 'inv-bob'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(await run(['web', 'role', 'Ann', 'read'], { CC_COCKPIT_SOCK: sock }, Readable.from([]), io, CWD)).toBe(0)
+    expect(out).toBe('removed guest Ann (g-ann)\ncancelled invite (inv-bob)\nguest Ann (g-ann) now has the read role\n')
+    expect(err).toBe('')
+  })
+
+  it('formats the rows: scope, state, until or the pending invite, plain text only', () => {
+    expect(formatWebGuests(ROWS, plain)).toBe(
+      [
+        'guests: 3',
+        '  g-ann\tAnn [2J\tread\tproject 0123456789abcdef\tall tabs\there now\tuntil 1970-01-01T00:00:00.000Z',
+        '  g-cy\tCy\twrite\tproject 0123456789abcdef\t1 tab\taway\tuntil removed',
+        '  g-bob\tBob\twrite\tproject 0123456789abcdef\t2 tabs\tpending\tinvite inv-bob, expires 1970-01-01T00:00:00.000Z',
+        ''
+      ].join('\n')
+    )
+    expect(formatWebGuests([], plain)).toBe('guests: none\n')
+    expect(formatWebGuests({ not: 'a list' }, plain)).toBe('guests: none\n')
+    expect(formatWebKick({ invite: 'inv-bob', name: 'Bob' }, plain)).toBe('cancelled invite for Bob (inv-bob)\n')
+    expect(formatWebRole({ guest: 'g', name: 'N\x1b', role: 'write' }, plain)).toBe('guest N  (g) now has the write role\n')
   })
 })

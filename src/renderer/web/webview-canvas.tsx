@@ -40,6 +40,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PanelInfo } from '../../shared/ipc'
 import { WEBVIEW_CURSORS } from '../../shared/webview-keys'
 import { commandForEvent } from '../commands/keybindings'
+import { viewAccessHint } from '../shell-kind'
 import { useWebviewPage, WebviewLoadError, WebviewToolbar } from '../zones/webview-toolbar'
 import {
   boxToPage,
@@ -67,6 +68,8 @@ const MENU_ROWS = 12
 
 export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Element {
   const { panelKey, title, error } = props.info
+  // A read-only guest watches the stream only (fixed for the page's life: a role switch reconnects and remounts).
+  const watchOnly = viewAccessHint() === 'read'
   const page = useWebviewPage(panelKey)
   const hasPage = page.url !== ''
   // A page shown before and none now: its view went (a crash, the plugin stopped). Not on mount.
@@ -190,11 +193,13 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     }
   }, [panelKey])
 
-  // Input: pointer, wheel, keys and text over the frame to the page (see the top of the file).
+  // Input: pointer, wheel, keys and text over the frame to the page (see the top of the file). A read-only
+  // guest only watches (design-guests §4: `webviews.input`, `insertText` and `fit` are write): no
+  // listeners at all, so nothing is offered that main would refuse. A hint, main refuses regardless.
   useEffect(() => {
     const node = layer.current
     const text = textbox.current
-    if (!node || !text) return
+    if (!node || !text || watchOnly) return
     const queue = new InputQueue(
       (events) => {
         window.cockpit.invoke('webviews.input', { panelKey, events }).catch(() => {})
@@ -392,7 +397,7 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
       queue.dispose()
       if (outbox.current === queue) outbox.current = undefined
     }
-  }, [panelKey])
+  }, [panelKey, watchOnly])
 
   // Select popups from main, placed over the select as the person sees it on the canvas now.
   useEffect(() => {
@@ -421,7 +426,7 @@ export function WebviewCanvasPanel(props: { info: PanelInfo }): React.JSX.Elemen
     if (id !== undefined) answerMenu(id, null)
   }, [page.url, hasPage, answerMenu])
 
-  const fitButton = fit && hasPage && (
+  const fitButton = fit && hasPage && !watchOnly && (
     <button
       type="button"
       className="webview-fit"

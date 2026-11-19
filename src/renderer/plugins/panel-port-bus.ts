@@ -13,6 +13,11 @@ import { slotPortKey } from '../../shared/slots'
 type Waiter = { nonce: number; take: (port: MessagePort) => void }
 
 const waiting = new Map<string, Waiter>()
+/**
+ * Ports main marked one-way (PanelPortPayload.oneWay, D-17), so the frame that gets one can tell its page
+ * (PluginFrame, frame-messages.ts withPortFlags). A WeakSet: a port forgotten anywhere else leaves it.
+ */
+const oneWayPorts = new WeakSet<MessagePort>()
 let nextNonce = 1
 let listening = false
 
@@ -20,24 +25,31 @@ function onMessage(event: MessageEvent): void {
   // Only the preload posts these, into its own window. A panel iframe posting to its parent has
   // the iframe's window as source and is ignored here, port and all.
   if (event.source !== window) return
-  const data = event.data as { type?: unknown; panelKey?: unknown; nonce?: unknown } | null
+  const data = event.data as { type?: unknown; panelKey?: unknown; nonce?: unknown; oneWay?: unknown } | null
   if (data?.type !== PANEL_PORT_MESSAGE) return
   const [port] = event.ports
   if (!port) return
-  if (!deliverPanelPort(data.panelKey, data.nonce, port)) port.close()
+  if (!deliverPanelPort(data.panelKey, data.nonce, port, data.oneWay)) port.close()
 }
 
 /**
  * Hand `port` to the request waiting for `panelKey` with `nonce`; false (the caller closes it) when
  * none does. The preload's posts come through `onMessage`; the web shell's socket relay
- * (web/port-relay.ts, main's `port.open`) calls this directly.
+ * (web/port-relay.ts, main's `port.open`) calls this directly. `oneWay`: main's PanelPortPayload.oneWay
+ * (only `true` counts), kept for isOneWayPort.
  */
-export function deliverPanelPort(panelKey: unknown, nonce: unknown, port: MessagePort): boolean {
+export function deliverPanelPort(panelKey: unknown, nonce: unknown, port: MessagePort, oneWay?: unknown): boolean {
   const waiter = typeof panelKey === 'string' ? waiting.get(panelKey) : undefined
   if (!waiter || waiter.nonce !== nonce) return false
   waiting.delete(panelKey as string)
+  if (oneWay === true) oneWayPorts.add(port)
   waiter.take(port)
   return true
+}
+
+/** Whether main marked `port` one-way when it was delivered (deliverPanelPort). */
+export function isOneWayPort(port: MessagePort): boolean {
+  return oneWayPorts.has(port)
 }
 
 /**

@@ -26,6 +26,24 @@ export interface ViewInputDeps {
    * which a view sends just by being clicked into, does not count.
    */
   acted(projectId: string, tabId: string, viewId: ViewId): void
+  /**
+   * ViewSelections.guestTyped: a write guest typed (design-guests §7): the view's own selection and the exit
+   * focus's time, never the project's active tab. Only guestViewInputHandler calls it.
+   */
+  guestActed?(projectId: string, tabId: string, viewId: ViewId): void
+}
+
+/**
+ * A write guest's keys (design-guests §7, §8; D-3): the same path as the owner's (the pty write, `typed`, the
+ * room draft bit, the typing take of the size) except that it never makes the guest's tab the project's active
+ * one. Read guests never get here: the router refuses their `tabs.input` (GUEST_CLASS `write`).
+ */
+export function guestViewInputHandler(deps: ViewInputDeps): (projectId: string, tabId: string, data: string, viewId: ViewId) => void {
+  return (projectId, tabId, data, viewId) => {
+    const sent = deps.viewInput(projectId, tabId, data, viewId)
+    deps.userInput(projectId, tabId, sent)
+    if (isPersonInput(sent)) deps.guestActed?.(projectId, tabId, viewId)
+  }
 }
 
 /** The router's `tabs.input` dependency. The registry sees what reached the pty, not the raw chunk. */

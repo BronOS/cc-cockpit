@@ -57,6 +57,14 @@ export class TrashAsks {
     return this.core.answer(windowId, requestId, move === true)
   }
 
+  /**
+   * The pending ask's plugin (design-guests §9): a guest's answer is taken only for a trash a plugin it sees asked
+   * for (asks/guest-asks.ts). Undefined for an unknown, settled or foreign id.
+   */
+  pluginOf(windowId: number, requestId: string): string | undefined {
+    return this.core.infoOf(windowId, requestId)?.pluginId
+  }
+
   /** The asks still waiting in `windowId`, oldest first (`ready`'s `trashAsks`). */
   pendingFor(windowId: number): TrashAskInfo[] {
     return this.core.pendingFor(windowId)

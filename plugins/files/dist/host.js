@@ -21,6 +21,12 @@
 // a command tab through ctx.sessions.openCommand), or the project's file opener. No rule: the opener,
 // as before. The menu lists every matching rule and the opener, so a rule never locks the Reviewer
 // out. The page only names a rule by its index; the host re-reads the setting and re-matches the path.
+//
+// Guests (0.5.0, design-guests §6): the manifest declares `guests.aware`, so this host checks the
+// viewer's access, which only main sets (`from.access`; only `owner` is the owner, none is a read-only guest). A read-only
+// guest gets the tree, its folders and search, nothing that changes state or opens a tab (D-27); no guest
+// gets Reveal or the system's default app (they act on the host's screen); a guest's `reset` leaves out the
+// project's absolute path. A write guest otherwise works like the owner (the tabs it opens are the owner's).
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -33,6 +39,8 @@ const EXPANDED_KEY = 'expanded' // ctx.storage (per project): the folders the pe
 const MAX_EXPANDED = 500
 const MAX_WATCHERS = 200
 const LIST_DEBOUNCE_MS = 250
+/** The Editor's binary rule (its lib/files.js): a NUL in the first this-many bytes. */
+const BINARY_SNIFF_BYTES = 8000
 const MARKS_DEBOUNCE_MS = 1000
 
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
@@ -42,6 +50,23 @@ const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')
  * prompt (Claude reads it itself, with the person's permissions, and a prompt is an argv element
  * with a size limit); it starts with a letter, so it is never a slash command or a bash line.
  */
+/** What a read-only guest may ask for: reading the tree (and opening or closing its folders, a shared state). */
+const READ_GUEST_OK = new Set(['hello', 'refresh', 'expand', 'collapse', 'search'])
+/** Never from a guest: they act on the host's screen. */
+const HOST_SCREEN = new Set(['reveal', 'open-system'])
+
+/**
+ * The viewer's access as main tagged it: only `'owner'` is the owner. A bundled plugin runs only on the app it
+ * ships with, where every line is tagged (main's panel-ports viewLine writes `owner` for the desktop page and an
+ * owner's browser view too; the host refuses a line without one, and gives onAction `owner` or the view's own),
+ * so an absent access is not an older app's: like any value this host does not know, it is a read-only guest.
+ */
+const accessOf = (from) => {
+  const a = from && typeof from === 'object' ? from.access : undefined
+  if (a === 'owner') return 'owner'
+  return a === 'write' ? 'write' : 'read'
+}
+
 const askPrompt = (rel) => `Have a look at ${rel} in this project and tell me briefly what it does. Then wait for my questions.`
 
 let disposers = []
@@ -80,6 +105,49 @@ exports.activate = (ctx) => {
     }
   }
 
+  /**
+   * Text for the page with the project folder's path cut out (a raw fs error names it: EACCES on a
+   * folder, ENOTDIR): the page may be a guest's, which never gets the host's paths (D-33).
+   */
+  let realRoot = root
+  try {
+    realRoot = fs.realpathSync(root)
+  } catch {
+    // the folder went: the given path is all there is to cut
+  }
+  const safeText = (text) => {
+    let s = String(text)
+    for (const r of new Set([realRoot, root])) s = s.split(r + path.sep).join('').split(r).join('.')
+    return s
+  }
+
+  // The views the panel is open in and who is behind each (ctx.views; an older app has none and no guests).
+  // A new listener first hears the views already open, so the map is whole from here on.
+  const views = new Map()
+  const tracking = !!(ctx.views && typeof ctx.views.onChange === 'function')
+  if (tracking) {
+    disposers.push(
+      ctx.views.onChange(({ view, access }) => {
+        if (access === undefined) views.delete(view)
+        // The same normaliser as `from`: a value this host does not know is a read-only guest's reset.
+        else views.set(view, accessOf({ access }))
+      }),
+    )
+  }
+  /**
+   * The `reset` message to every view. An older app (no ctx.views) has no guests: one broadcast, as before.
+   * Otherwise one per view main told us of, and only a view main called the owner's gets the project's
+   * absolute path (Copy path is the owner's): a view not known here gets no path, never a broadcast's.
+   */
+  const postReset = (m) => {
+    if (!tracking) return post(m)
+    const forGuests = { ...m, env: { ...m.env, root: '' } }
+    // A read-only guest opens nothing, and the owner's Open with rules name programs by the owner's own paths
+    // (D-33): none for them. A write guest keeps them: a click runs the rule, as the owner's would.
+    const forReaders = { ...forGuests, openWith: [] }
+    for (const [view, access] of views) post(access === 'owner' ? m : access === 'read' ? forReaders : forGuests, view)
+  }
+
   // ---- reading ----
 
   async function sendDir(rel) {
@@ -97,7 +165,7 @@ exports.activate = (ctx) => {
         }
         post({ type: 'gone', path: rel })
       } else {
-        post({ type: 'dir', path: rel, entries: [], more: 0, error: e.message })
+        post({ type: 'dir', path: rel, entries: [], more: 0, error: safeText(e.message) })
       }
       return false
     }
@@ -114,7 +182,7 @@ exports.activate = (ctx) => {
 
   async function sendAll() {
     await loaded
-    post({
+    postReset({
       type: 'reset',
       expanded: [...expanded],
       settings: { hideHidden: options().hideHidden, hideIgnored: options().hideIgnored },
@@ -267,6 +335,15 @@ exports.activate = (ctx) => {
       // A search answer and a failure belong to the page that asked (another view shows its own
       // query); the tree state everywhere else is shared, so it still goes to every view.
       const reply = (r) => post(r, from && from.view)
+      const access = accessOf(from)
+      if (access === 'read' && !READ_GUEST_OK.has(m.type)) {
+        reply({ type: 'error', message: 'You are a read-only guest: the host can give you write access.' })
+        return
+      }
+      if (access !== 'owner' && HOST_SCREEN.has(m.type)) {
+        reply({ type: 'error', message: "That acts on the host's screen: not for a guest." })
+        return
+      }
       try {
         if (m.type === 'hello' || m.type === 'refresh') {
           await sendAll()
@@ -288,15 +365,10 @@ exports.activate = (ctx) => {
           saveExpanded()
         } else if (m.type === 'open') {
           const rel = tree.normalizeRelative(m.path)
-          await openFile(rel, m.rule)
+          await openFile(rel, m.rule, access)
         } else if (m.type === 'edit') {
           const rel = tree.normalizeRelative(m.path)
-          try {
-            await editor.open(rel, {})
-          } catch (e) {
-            const missing = /no enabled plugin/.test(e.message) && /"editor"/.test(e.message)
-            throw new Error(missing ? 'No editor: turn on "Editor" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
-          }
+          await (access === 'owner' ? editFile(rel) : guestEdit(rel))
         } else if (m.type === 'reveal') {
           await ctx.files.reveal(tree.normalizeRelative(m.path))
         } else if (m.type === 'open-system') {
@@ -328,7 +400,7 @@ exports.activate = (ctx) => {
           reply({ type: 'results', query: m.query, paths, total })
         }
       } catch (e) {
-        reply({ type: 'error', message: e.message })
+        reply({ type: 'error', message: safeText(e.message) })
       }
     }),
   )
@@ -340,7 +412,13 @@ exports.activate = (ctx) => {
    * rule if it still matches the path, -1 (the menu's "Open in file viewer") the project's opener.
    * A rule that cannot run throws, so the person sees why instead of something else opening.
    */
-  async function openFile(rel, rule) {
+  async function openFile(rel, rule, access = 'owner') {
+    // A guest's click (no rule) goes straight to the editor, never the project's opener: that is an overlay
+    // (the file viewer, the Reviewer), which main refuses from a guest's view, so the click would show
+    // nothing. Edit is the path a write guest already uses (07b's e2e: Files' Edit shows the file tab in the
+    // guest's own page); a focus it asks for goes to the click's origin view, main's hint. A read-only guest
+    // never gets here (`open` is not theirs).
+    if (access !== 'owner' && (rule === undefined || rule === -1)) return guestEdit(rel)
     const matches = openWith.matchRules(rel, openWith.rulesOf(app().openWith))
     let r
     if (rule === undefined) r = matches[0]
@@ -348,10 +426,13 @@ exports.activate = (ctx) => {
       r = matches.find((x) => x.index === rule)
       if (!r) throw new Error('That rule does not match this file any more (the settings changed): reopen the menu.')
     }
-    if (!r || r.action === 'default') return ctx.files.open(rel)
+    if (!r || r.action === 'default') return access === 'owner' ? ctx.files.open(rel) : guestEdit(rel)
     const name = `Open with rule ${r.index + 1} (${r.extensions.join(', ')})`
     if (r.error) throw new Error(`${name}: ${r.error}. Change it in Settings > Plugins > Files.`)
-    if (r.action === 'system') return ctx.files.openWithSystem(rel)
+    if (r.action === 'system') {
+      if (access !== 'owner') throw new Error(`${name}: the system's default app is on the host's screen: not for a guest.`)
+      return ctx.files.openWithSystem(rel)
+    }
     const argv = openWith.buildArgv(r, rel)
     const base = rel.split('/').pop()
     if (r.where === 'tab' && typeof ctx.sessions.openCommand === 'function') {
@@ -361,14 +442,57 @@ exports.activate = (ctx) => {
     }
     // An overlay (also for a tab rule on an app without openCommand). Not awaited to its end: it
     // settles when the person closes it. A refusal (too many overlays) rejects at once: shown.
+    if (access !== 'owner') throw new Error(`${name} opens an overlay: not for a guest. Use Edit.`)
     const full = `${r.words[0].split('/').pop()}: ${rel}`
     const handle = ctx.overlay.start({ kind: 'terminal', argv, title: full.length > 200 ? `${full.slice(0, 199)}…` : full, size: 'large' })
     handle.result.then(
       (res) => {
-        if (res && res.kind === 'exit' && res.code === 127) post({ type: 'error', message: `${name}: ${r.words[0]} was not found (exit 127).` })
+        if (res && res.kind === 'exit' && res.code === 127) post({ type: 'error', message: safeText(`${name}: ${r.words[0]} was not found (exit 127).`) })
       },
-      (e) => post({ type: 'error', message: `${name}: ${e.message}` }),
+      (e) => post({ type: 'error', message: safeText(`${name}: ${e.message}`) }),
     )
+  }
+
+  /**
+   * A guest's Edit: refused for a binary file. The Editor hands one to the project's opener (an overlay: the
+   * file viewer), which main refuses from a guest's view, so the guest would get main's refusal instead of why.
+   */
+  async function guestEdit(rel) {
+    if (await isBinary(rel)) throw new Error(`${rel}: a binary file has no editor view for a guest.`)
+    return editFile(rel)
+  }
+
+  /**
+   * Whether the project file `rel` is binary by the Editor's rule (a NUL in the first BINARY_SNIFF_BYTES;
+   * its lib/files.js sniffBinary). False when it cannot tell (missing, not a file, a link out of the project):
+   * the editor answers those itself.
+   */
+  async function isBinary(rel) {
+    let fh
+    try {
+      const real = await fs.promises.realpath(path.join(root, rel))
+      if (!tree.within(await fs.promises.realpath(root), real)) return false
+      fh = await fs.promises.open(real, 'r')
+      const st = await fh.stat()
+      if (!st.isFile()) return false
+      const buf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, st.size))
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+      return buf.subarray(0, bytesRead).includes(0)
+    } catch {
+      return false
+    } finally {
+      if (fh) await fh.close().catch(() => {})
+    }
+  }
+
+  /** Edit: the `editor` service's file tab (the bundled Editor's by default). */
+  async function editFile(rel) {
+    try {
+      await editor.open(rel, {})
+    } catch (e) {
+      const missing = /no enabled plugin/.test(e.message) && /"editor"/.test(e.message)
+      throw new Error(missing ? 'No editor: turn on "Editor" (or another editor plugin) in Settings > Plugins.' : e.message.replace(/^editor: /, ''), { cause: e })
+    }
   }
 
   disposers.push(ctx.onSettingsChange(() => sendAll().catch((e) => ctx.log.warn(`settings: ${e.message}`))))

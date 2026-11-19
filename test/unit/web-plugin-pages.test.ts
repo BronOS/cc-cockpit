@@ -85,13 +85,14 @@ function world(): World {
   }
 }
 
-function pagesOf(w: World): PluginPages {
-  const deps: PluginPagesDeps = {
+function pagesOf(w: World, extra: Partial<PluginPagesDeps> = {}): PluginPages {
+  const deps: PluginPagesDeps = { guestProject: () => undefined, guestPluginVisible: () => false,
     pluginIds: () => w.installed,
     deviceViews: (deviceId) => w.views.get(deviceId) ?? [],
     pluginDir: (projectId, pluginId) => (w.enabled.get(projectId)?.has(pluginId) ? dirs[pluginId] : undefined),
     overlayPage: (id) => w.overlays.get(id),
-    sdkFile
+    sdkFile,
+    ...extra
   }
   return new PluginPages(deps)
 }
@@ -355,6 +356,127 @@ describe('plugin files', () => {
       const kind = rewritten.includes(html) ? 'rewritten' : failClosed.includes(html) ? 'failClosed' : 'neither'
       expect({ html, touched, warned }).toEqual({ html, touched: kind === 'rewritten', warned: kind !== 'neither' })
     }
+  })
+})
+
+// Guest devices (design-guests §5, spec-review 21, D-30): a guest's device is served only the plugins its
+// project shows guests, only from that project, and never an inline overlay page; all read live, so a
+// plugin hidden after a token was minted is refused at once.
+describe('guest devices', () => {
+  /** `gdev` is a guest of `guest.project` (null: gone; undefined: an owner device); `visible` the plugins its project shows. */
+  function guestWorld() {
+    const w = world()
+    w.views.set('gdev', [{ windowId: 1, projectId: 'p1' }])
+    const guest: { project: string | null | undefined } = { project: 'p1' }
+    const visible = new Set(['b.plugin'])
+    const logs: string[] = []
+    const pages = pagesOf(w, {
+      guestProject: (deviceId) => (deviceId === 'gdev' ? guest.project : undefined),
+      guestPluginVisible: (projectId, pluginId) => projectId === 'p1' && visible.has(pluginId),
+      log: (m) => logs.push(m)
+    })
+    const get = (path: string): Promise<number> => pages.serve(path, 'GET', [ORIGIN]).then((r) => r.status)
+    return { w, guest, visible, pages, get, logs }
+  }
+
+  it("paths: a guest's device lists only the visible plugins and no overlay prefix; a gone guest nothing; owners unchanged", () => {
+    const { pages, guest } = guestWorld()
+    const g = pages.paths('gdev')
+    expect(Object.keys(g.plugins)).toEqual(['b.plugin'])
+    expect(g.overlays).toBe('')
+    expect(Object.keys(pages.paths('dev1').plugins)).toEqual(['a.plugin', 'b.plugin'])
+    expect(pages.paths('dev1').overlays).toMatch(/^\/o\/[A-Za-z0-9_-]{32}\/$/)
+    guest.project = null
+    expect(pages.paths('gdev')).toEqual({ plugins: {}, overlays: '' })
+  })
+
+  it('a lookup that throws counts as a gone guest: nothing listed, nothing served, logged', async () => {
+    const { pages, get, logs, w } = guestWorld()
+    const prefix = pages.paths('gdev').plugins['b.plugin']!
+    const throwing = pagesOf(w, {
+      guestProject: () => {
+        throw new Error('store gone')
+      },
+      guestPluginVisible: () => true,
+      log: (m) => logs.push(m)
+    })
+    expect(throwing.paths('gdev')).toEqual({ plugins: {}, overlays: '' })
+    expect(logs.some((m) => m.includes('guest lookup failed'))).toBe(true)
+    // The first pages object still serves its own token; the throwing one never mints any.
+    expect(await get(`${prefix}secret.js`)).toBe(200)
+    expect(throwing.tokens.size()).toBe(0)
+  })
+
+  it('a plugin hidden after its token was minted is 404 at once, and back when shown again', async () => {
+    const { pages, get, visible } = guestWorld()
+    visible.add('a.plugin')
+    const prefix = pages.paths('gdev').plugins['a.plugin']!
+    expect(await get(`${prefix}panel.html`)).toBe(200)
+    visible.delete('a.plugin')
+    expect(await get(`${prefix}panel.html`)).toBe(404)
+    visible.add('a.plugin')
+    expect(await get(`${prefix}panel.html`)).toBe(200)
+  })
+
+  it('a kick, a hide or a token drop during the file read holds for that answer (checked again after the last await)', async () => {
+    // The change lands from `pluginDir`, which runs after the checks before the read and before its await.
+    for (const change of ['kick', 'hide', 'drop'] as const) {
+      const w = world()
+      w.views.set('gdev', [{ windowId: 1, projectId: 'p1' }])
+      let project: string | null = 'p1'
+      let visible = true
+      let changed = false
+      const pages: PluginPages = pagesOf(w, {
+        guestProject: (d) => (d === 'gdev' ? project : undefined),
+        guestPluginVisible: () => visible,
+        pluginDir: (projectId, pluginId) => {
+          if (changed) {
+            if (change === 'kick') project = null
+            else if (change === 'hide') visible = false
+            else pages.tokens.dropDevice('gdev')
+          }
+          return w.enabled.get(projectId)?.has(pluginId) ? dirs[pluginId] : undefined
+        }
+      })
+      const prefix = pages.paths('gdev').plugins['b.plugin']!
+      expect((await pages.serve(`${prefix}secret.js`, 'GET', [ORIGIN])).status, change).toBe(200)
+      changed = true
+      expect((await pages.serve(`${prefix}secret.js`, 'GET', [ORIGIN])).status, change).toBe(404)
+    }
+  })
+
+  it('a guest gone (null) is served nothing, even with a live token', async () => {
+    const { pages, get, guest } = guestWorld()
+    const prefix = pages.paths('gdev').plugins['b.plugin']!
+    expect(await get(`${prefix}secret.js`)).toBe(200)
+    guest.project = null
+    expect(await get(`${prefix}secret.js`)).toBe(404)
+  })
+
+  it("serves only from the guest's own project's views, never another project the device has a view of", async () => {
+    const { pages, get, w } = guestWorld()
+    // b.plugin is enabled in p2 only; the guest device somehow has a view of p2 beside its own project.
+    w.enabled.get('p1')!.delete('b.plugin')
+    w.views.set('gdev', [
+      { windowId: 1, projectId: 'p1' },
+      { windowId: 2, projectId: 'p2' }
+    ])
+    const prefix = pages.paths('gdev').plugins['b.plugin']!
+    expect(await get(`${prefix}secret.js`)).toBe(404)
+    // An owner device with the same views is served from p2, as before: the guest's project is the difference.
+    w.views.set('dev1', w.views.get('gdev')!)
+    expect((await pages.serve(`${pages.paths('dev1').plugins['b.plugin']}secret.js`, 'GET', [ORIGIN])).status).toBe(200)
+  })
+
+  it('an inline overlay page is always 404 for a guest device, even with an overlay token minted while it was an owner', async () => {
+    const { pages, get, guest } = guestWorld()
+    guest.project = undefined
+    const overlays = pages.paths('gdev').overlays
+    expect(await get(`${overlays}${OVERLAY_ID}/`)).toBe(200)
+    guest.project = 'p1'
+    expect(await get(`${overlays}${OVERLAY_ID}/`)).toBe(404)
+    guest.project = null
+    expect(await get(`${overlays}${OVERLAY_ID}/`)).toBe(404)
   })
 })
 

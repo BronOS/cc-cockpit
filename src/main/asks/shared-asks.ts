@@ -18,8 +18,19 @@
 export interface SharedAskHooks<Info> {
   /** Post the ask to every view of the window; false when no view took it (settled `refused` at once). */
   send(windowId: number, ask: Info & { requestId: string }): boolean
-  /** The ask is over: tell every view of the window. */
-  settled?(windowId: number, requestId: string): void
+  /**
+   * The ask is over: tell every view of the window. `how`: what it was about, the answer it settled with, and
+   * why: a view answered, the wait ran out, or it went moot (window closed, no view, aborted, `settleWhere`).
+   */
+  settled?(windowId: number, requestId: string, how: SettledHow<Info>): void
+}
+
+/** How an ask ended (SharedAskHooks.settled). */
+export type SettledWhy = 'answered' | 'timeout' | 'gone'
+export interface SettledHow<Info> {
+  info: Info & { requestId: string }
+  answer: unknown
+  why: SettledWhy
 }
 
 export interface SharedAskOptions<Info, Answer> {
@@ -57,7 +68,7 @@ export class SharedAsks<Info extends object, Answer> {
     const requestId = `${this.options.prefix}-${this.next++}`
     return new Promise<Answer>((resolve) => {
       if (signal?.aborted) return resolve(this.options.refused)
-      const timer = setTimeout(() => this.settle(requestId, this.options.refused), this.options.timeoutMs)
+      const timer = setTimeout(() => this.settle(requestId, this.options.refused, 'timeout'), this.options.timeoutMs)
       timer.unref?.()
       const entry: Pending<Info, Answer> = { windowId, info: { ...info, requestId }, resolve, timer }
       if (signal) {
@@ -89,8 +100,14 @@ export class SharedAsks<Info extends object, Answer> {
    */
   answer(windowId: number, requestId: string, answer: Answer): boolean {
     if (!this.isPending(windowId, requestId)) return false
-    this.settle(requestId, answer)
+    this.settle(requestId, answer, 'answered')
     return true
+  }
+
+  /** What the pending ask `requestId` of `windowId` is about (a copy); undefined for an unknown, settled or foreign id. */
+  infoOf(windowId: number, requestId: string): (Info & { requestId: string }) | undefined {
+    const entry = this.pending.get(requestId)
+    return entry?.windowId === windowId ? { ...entry.info } : undefined
   }
 
   /** The asks still waiting in `windowId`, oldest first (`ready`'s list). Copies. */
@@ -117,7 +134,7 @@ export class SharedAsks<Info extends object, Answer> {
     return this.pending.size
   }
 
-  private settle(requestId: string, answer: Answer): void {
+  private settle(requestId: string, answer: Answer, why: SettledWhy = 'gone'): void {
     const entry = this.pending.get(requestId)
     if (!entry) return
     this.pending.delete(requestId)
@@ -125,7 +142,7 @@ export class SharedAsks<Info extends object, Answer> {
     entry.offAbort?.()
     entry.resolve(answer)
     try {
-      this.options.hooks.settled?.(entry.windowId, requestId)
+      this.options.hooks.settled?.(entry.windowId, requestId, { info: { ...entry.info }, answer, why })
     } catch {
       // Best effort: a view that missed it still has its dialog, whose late answer finds nothing.
     }

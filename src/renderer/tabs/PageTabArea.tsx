@@ -202,6 +202,17 @@ export function hasUnsavedPages(): boolean {
   return frames?.hasDirty() ?? false
 }
 
+/**
+ * Every page tab frame goes, unsaved text included (design-guests §10): a guest's page whose access
+ * ended (kicked, lifetime over, another project's invite). The frames live outside the React root, so
+ * unmounting the shell only hides their layer: without this a kicked guest would keep a live page
+ * (and its "Leave site?" hold) on a socket that is gone. The pool is made afresh if a shell mounts again.
+ */
+export function disposePageTabs(): void {
+  frames?.disposeAll()
+  frames = undefined
+}
+
 /** The page's pool, made on first use with the DOM and IPC of this shell. */
 export function pageFrames(): PageFrames {
   if (frames) return frames

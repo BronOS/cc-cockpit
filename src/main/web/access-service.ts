@@ -5,6 +5,8 @@
 // renderer reads. A browser view reaches only the read side and Revoke/Disconnect, and only in server
 // mode (`adapted`, ipc/router.ts registerWebAccessHandlers, design-web.md §9.4, §9.6); everything
 // that adds or widens access is `no`-class, so a browser never widens its own access.
+import { createHash, X509Certificate } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import type { WebAccessSettings } from '../../shared/types'
 import type {
   WebAccessIndicator,
@@ -23,11 +25,13 @@ import type { AccessActor, AccessEntry } from './access-log'
 import type { WebAuth } from './auth'
 import { linkOrigin, NONE_DEVICE } from './auth'
 import type { GatewayStatus } from './gateway'
+import type { InviteTarget } from './guests'
 import { MIN_NETWORK_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from './password'
 import {
   applyWebAccessPatch,
   isLoopbackBind,
   listenPlanOf,
+  ownerNameIn,
   serverConfirmCommand,
   serverStartSettings,
   webAccessOf,
@@ -70,6 +74,22 @@ export interface WebAccessServiceDeps {
   accessLog?: { write(entry: AccessEntry): void }
   /** The app's version (index.ts `appVersion`), for `ccc web status` (design-remote-desktop.md §8). */
   version: string
+  /** Guests (guests.ts): the names that keep the owner from switching to None (D-15). Absent: none. */
+  /**
+   * The guest store (design-guests D-15): a switch to None is refused while it names guests or invites. Required:
+   * an unwired store must not let None through with guests still signed in.
+   */
+  guests: { blockingNone(): string[] }
+  /** Reads the TLS certificate for the invite pin (tests); fs.readFileSync by default. */
+  readFile?: (path: string) => Buffer
+}
+
+/**
+ * D-15: switching to None with guests or invites is refused, naming them. Under None `authorize` falls back to
+ * the anonymous owner when no cookie matches, so a guest who drops its cookie would be the owner (D-1).
+ */
+export function noneBlockedText(names: readonly string[]): string {
+  return `Sign-in None would let guests in as you. End these guests and invites first: ${names.join(', ')}`
 }
 
 /** How a revoke came about, for `web-access.log`: the reason, and the browser that did it. */
@@ -159,7 +179,9 @@ export class WebAccessService {
       passwordMinLength: this.passwordMinLength(settings),
       passwordShort: this.passwordShort(settings),
       // States only (synchronous, no decrypt): the card says when one must be made again (§9.5).
-      credentials: this.deps.auth.credentialStates()
+      credentials: this.deps.auth.credentialStates(),
+      // What guests call the owner (D-24), always sent: "Host" when unset.
+      ownerName: ownerNameIn(settings)
     }
   }
 
@@ -225,6 +247,10 @@ export class WebAccessService {
     if (!result.ok) {
       if (result.needsConfirm) return { needsConfirm: result.needsConfirm }
       throw new Error(result.error)
+    }
+    if (result.value.mode === 'none' && current.mode !== 'none') {
+      const names = this.deps.guests.blockingNone()
+      if (names.length > 0) throw new Error(noneBlockedText(names))
     }
     // With no password, the password mode lets nobody in: the page sets one first (setPassword).
     if (result.value.mode === 'password' && current.mode !== 'password' && !this.deps.auth.hasPassword()) {
@@ -396,6 +422,28 @@ export class WebAccessService {
 
   revokeAll(how: RevokeHow = {}): number {
     return this.deps.auth.devices.revokeAll(reasonOf(how), how.by)
+  }
+
+  /**
+   * Where a guest invite points (GuestStore's `target`, design-guests §4): the access links' origin; whether only
+   * this computer can open it (a loopback bind with no external origin, D-35); and, when the gateway itself serves
+   * TLS, the SHA-256 of its certificate's DER for the invite's `c=` (D-29). No pin behind an external origin: a
+   * proxy's certificate is not the gateway's. A certificate that cannot be read gives no pin (the guest's app then
+   * goes by Chromium's own verdict).
+   */
+  inviteTarget(): InviteTarget {
+    const settings = this.settings()
+    const origin = linkOrigin(settings)
+    const loopbackOnly = settings.externalOrigin === undefined && isLoopbackBind(settings.bind)
+    let certPin: string | undefined
+    if (settings.externalOrigin === undefined && settings.tls !== undefined) {
+      try {
+        certPin = createHash('sha256').update(new X509Certificate((this.deps.readFile ?? readFileSync)(settings.tls.certPath)).raw).digest('hex')
+      } catch {
+        certPin = undefined
+      }
+    }
+    return { origin, loopbackOnly, ...(certPin === undefined ? {} : { certPin }) }
   }
 
   /** The origin a link points at, or the reply that says why there is no link. */

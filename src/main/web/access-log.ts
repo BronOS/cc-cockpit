@@ -62,6 +62,11 @@ export type AccessEvent =
    * token or a path: the name is what the browser saved it as.
    */
   | 'download'
+  /**
+   * A guest's life (design-guests): `invite`, `joined`, `role read|write`, `scope`, `ended: <why>` as the
+   * detail; `name` is the guest's name (the owner's own text), `device` its device once it has one. Never a token.
+   */
+  | 'guest'
 
 /**
  * The signed-in device that did something to another (or itself) from a browser: server mode's

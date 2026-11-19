@@ -15,6 +15,7 @@ import { projectColorOf } from '../../shared/project-color'
 import { SERVICE_NAME_PATTERN } from '../../shared/manifest'
 import { OPEN_FILE_PICK } from '../../shared/services'
 import { slotTypeOfPickKey } from '../../shared/slots'
+import type { GuestVisibility } from '../../shared/guest-access'
 import type { AppSettings, ProjectRecord, ProjectView } from '../../shared/types'
 
 /**
@@ -367,6 +368,58 @@ export class ProjectRegistry {
       else r.serviceProviders = Object.fromEntries(entries)
     })
     return true
+  }
+
+  /**
+   * Guest visibility of plugins (design-guests §6): `app.json › pluginGuestAccess` (`target: 'app'`) or a
+   * project record's override, as stored (user-writable: read through `guestVisibilityOf`). A copy; none for
+   * an unknown project.
+   */
+  pluginGuestAccess(target: 'app' | { projectId: string }): Record<string, unknown> {
+    const raw = target === 'app' ? this.app.data.pluginGuestAccess : this.load(target.projectId)?.data.pluginGuestAccess
+    // A damaged value (not an object) reads as none, and is replaced on the next write.
+    return isPlainObject(raw) ? { ...raw } : {}
+  }
+
+  /**
+   * Set one plugin's guest visibility (`null`: remove the key, use the next level). Returns whether the
+   * stored value changed. Throws for an unknown project. The caller checked the plugin id and the value.
+   */
+  setPluginGuestAccess(target: 'app' | { projectId: string }, pluginId: string, value: GuestVisibility | null): boolean {
+    const current = this.pluginGuestAccess(target)
+    const before = Object.hasOwn(current, pluginId) ? current[pluginId] : undefined
+    if ((before ?? null) === value) return false
+    // A fresh object built from entries: a key is only ever set as an own data property.
+    const entries = Object.entries(current).filter(([k]) => k !== pluginId)
+    if (value !== null) entries.push([pluginId, value])
+    const next = entries.length === 0 ? undefined : Object.fromEntries(entries)
+    if (target === 'app') {
+      this.app.update((a) => {
+        if (next === undefined) delete a.pluginGuestAccess
+        else a.pluginGuestAccess = next
+      })
+      return true
+    }
+    const file = this.load(target.projectId)
+    if (!file) throw new Error(`unknown project: ${target.projectId}`)
+    file.update((r) => {
+      if (next === undefined) delete r.pluginGuestAccess
+      else r.pluginGuestAccess = next
+    })
+    return true
+  }
+
+  /**
+   * Drop a plugin's guest visibility everywhere (it was uninstalled), so a reinstall starts hidden, as
+   * `pluginLimits` are dropped. Best effort through the debounced writers: a record that cannot be read now
+   * keeps its key, which a reinstall of the same id would find (the owner set it for that id).
+   */
+  dropPluginGuestAccess(pluginId: string): void {
+    this.setPluginGuestAccess('app', pluginId, null)
+    for (const id of this.knownIds()) {
+      if (this.load(id) === undefined) continue
+      this.setPluginGuestAccess({ projectId: id }, pluginId, null)
+    }
   }
 
   /** Write everything pending now (call on quit). */

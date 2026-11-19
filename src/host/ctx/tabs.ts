@@ -28,7 +28,7 @@
 // Discuss (design-editor.md §4 "Ask Claude"): core draws the question box over the tab; main asks
 // `pageTab.discuss { pluginId, id, view? }` for the context, and the instance of THAT view (its
 // selection is the one the person sees) answers through its `onDiscuss` handlers.
-import type { Disposer, JsonValue, PageTabInfo, PageTabInstance, PluginContext } from '../../sdk/types'
+import type { Disposer, JsonValue, PageTabInfo, PageTabInstance, PluginContext, ViewAccess } from '../../sdk/types'
 import { MAX_DISCUSS_TEXT } from '../../shared/discuss'
 import { errorText } from '../../shared/error-text'
 import {
@@ -41,7 +41,8 @@ import {
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { dispatchInView } from './origin-view'
 import { PortLine } from './port-line'
-import type { PanelPort } from './ui'
+import { DESKTOP_VIEW, type PanelPort } from './ui'
+import { HostViews, tagAccess } from './views'
 
 type DiscussHandler = () => unknown
 
@@ -59,6 +60,8 @@ export interface PageTabOpenTag {
   params?: JsonValue
   /** The remote view whose frame this is; absent: the desktop window's. */
   view?: ViewId
+  /** Who is behind that view, from main's tag (views.ts tagAccess; main always writes it). */
+  access: ViewAccess
 }
 
 /** The frames map's key: one tab id per view (absent view: the desktop window's). */
@@ -78,12 +81,16 @@ export function pageTabOpenTag(data: unknown): PageTabOpenTag | undefined {
     // A view main did not mint is refused, never read as the desktop's frame (it would close it).
     const view = viewIdOf(tag.view)
     if (tag.view !== undefined && view === undefined) return undefined
+    // A malformed role refuses the line, never reads as the owner.
+    const access = tagAccess(tag.access, view)
+    if (access === null) return undefined
     return {
       pluginId,
       id,
       type,
       ...(params !== undefined ? { params: params as JsonValue } : {}),
-      ...(view !== undefined ? { view } : {})
+      ...(view !== undefined ? { view } : {}),
+      access
     }
   } catch {
     // Not one of main's port messages.
@@ -116,7 +123,9 @@ export class PageTabHub {
   constructor(
     private readonly log: (pluginId: string, message: string) => void,
     /** A request to main (`tabs.setTitle` from an instance). */
-    private readonly call: (method: string, params: unknown) => Promise<unknown>
+    private readonly call: (method: string, params: unknown) => Promise<unknown>,
+    /** ctx.views: every connected frame is one line of its view (views.ts). */
+    private readonly views: HostViews = new HostViews(log)
   ) {}
 
   /** The plugin's ctx guard (createTabsApi), for the instances of frames that connect from now on. */
@@ -148,6 +157,7 @@ export class PageTabHub {
     const old = this.frames.get(key)
     if (old) old.line.end()
     const discussHandlers = new Set<DiscussHandler>()
+    const release = this.views.add(tag.pluginId, tag.view ?? DESKTOP_VIEW, tag.access)
     const line = new PortLine(
       port,
       tag.view,
@@ -156,6 +166,7 @@ export class PageTabHub {
       () => {
         if (this.frames.get(key) === frame) this.frames.delete(key)
         discussHandlers.clear()
+        release()
       }
     )
     const frame: Frame = { pluginId: tag.pluginId, id: tag.id, view: tag.view, line, discussHandlers }
@@ -261,6 +272,7 @@ export class PageTabHub {
       type: tag.type,
       params: tag.params === undefined ? undefined : structuredClone(tag.params),
       view: tag.view,
+      access: tag.access,
       post: frame.line.post,
       onMessage: frame.line.onMessage,
       onClose: frame.line.onClose,

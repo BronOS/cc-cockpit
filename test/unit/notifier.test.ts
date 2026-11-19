@@ -310,9 +310,9 @@ describe('PageNoticeBackend (server mode)', () => {
     const other = new RecordingSink()
     views.addDesktop(1, hidden1)
     views.addDesktop(2, hidden2)
-    views.addRemote(1, remoteViewId(1), phone)
-    views.addRemote(1, remoteViewId(2), laptop)
-    views.addRemote(2, remoteViewId(3), other)
+    views.addRemote(1, remoteViewId(1), phone, 'owner')
+    views.addRemote(1, remoteViewId(2), laptop, 'owner')
+    views.addRemote(2, remoteViewId(3), other, 'owner')
     let n = 0
     const backend = new PageNoticeBackend({ views, newId: () => `n${++n}`, ...(cap !== undefined ? { cap } : {}) })
     const notifier = new Notifier(backend, (m) => logs.push(m))
@@ -521,7 +521,7 @@ describe('chimeRinger', () => {
     const page = new RecordingSink()
     const browser = new RecordingSink()
     registry.addDesktop(1, page)
-    registry.addRemote(1, remoteViewId(1), browser)
+    registry.addRemote(1, remoteViewId(1), browser, 'owner')
     return { registry, page, browser }
   }
 

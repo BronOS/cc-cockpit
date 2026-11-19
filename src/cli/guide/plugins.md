@@ -206,6 +206,29 @@ script served at `__sdk/panel.js` (a page loads it by a relative URL, `../__sdk/
 Pages use URLs relative to themselves, never root-absolute ones: web access serves them under a path prefix, and
 `ccc plugin link` warns about the others. See the `panels` topic.
 
+## Guests
+
+The owner can invite guests into one project from a browser or their own cockpit app: a read-only guest watches,
+a write guest pairs. A guest sees a plugin only when the owner shows it to guests (Settings > Plugins, app-wide or
+per project; hidden by default, built-in plugins included), so a plugin with private data (mail, an inbox, a
+chat) stays out of their reach without any code. A plugin the owner shows needs to know who looks:
+
+- Every page line carries its view's access, set by the app, never by the page: `'owner'`, `'read'` or `'write'`.
+  Your host reads it as `from.access` in `ctx.panels.onMessage` and `onAction`, `slot.access` and `tab.access` on
+  the instances, and `ctx.views.access(view)` (`ccc guide api`). `ccPanel.view.access` in the page is a hint
+  for hiding buttons, never a check.
+- `"guests": { "aware": true }` at the top level of `plugin.json` says "my host checks `access`". Without it, a
+  read-only guest's page gets a one-way line: it receives what your host posts, and what it sends is dropped,
+  so a page that asks for its state first (`hello`) shows nothing to them. A write guest's page talks to your
+  host like the owner's (a write guest can run commands in the owner's terminals anyway).
+- An aware plugin refuses what changes state for `access === 'read'` (save, rename, delete, send), in the host,
+  and keeps owner-only data off a guest's view: `post(id, message)` without `{ view }` goes to every view, guests
+  included, so post such data per view (`{ view }`, the views from `ctx.views`) instead.
+- Tabs your plugin opens or closes for a guest's click are the owner's tabs: a guest who sees only some tabs
+  does not see a new one until the owner shares it, and nothing your plugin does widens what a guest sees.
+- A plugin that declares `"access": { "sessions": "all-windows" }` and is not aware is never shown to guests
+  (its panel could show another project).
+
 ## Settings, secrets, sign-in
 
 See the `settings-secrets` topic. In short: JSON Schema forms from the manifest, a `secret`

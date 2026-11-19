@@ -18,7 +18,10 @@
 //   device: a browser reconnecting gets a fresh view id) when it reports a size for the key, unless
 //   a view explicitly took the key (typing, "Fit to this screen") in between;
 // - with `reconnectGraceMs`, a sizer of a lineage that leaves keeps the size that long before it
-//   falls back: a dropped socket that reconnects within it changes nothing on the pty at all.
+//   falls back: a dropped socket that reconnects within it changes nothing on the pty at all;
+// - a guest's view (design-guests §8, D-14) reports `explicitOnly`: it takes the size only by an explicit act
+//   (typing, "Fit to this screen"), never by a first report, by showing again, as an heir or as a fallback, so
+//   a small guest screen never resizes the owner's terminal by itself.
 //
 // Kept generic so the two users cannot drift apart (they did: overlays had a copy of this rule).
 // View ids come from main (router CallView, never a payload); keys are checked by the caller before
@@ -71,6 +74,8 @@ interface ViewSize {
   at: number
   /** The view's lineage (ViewSizesDeps.lineage), read on its first report for the key. */
   lineage: string | undefined
+  /** A guest's view (D-14): only an explicit act (typing, Fit) makes it the sizer. */
+  explicitOnly: boolean
 }
 
 interface KeySizes {
@@ -110,17 +115,21 @@ export class ViewSizes<K = string> {
    * A view measured the key's pane (its resize observer). Remembered; applied when the view sizes
    * the key, or becomes the sizer because nobody does yet.
    */
-  report(key: K, viewId: ViewId, cols: number, rows: number): void {
+  report(key: K, viewId: ViewId, cols: number, rows: number, explicitOnly = false): void {
     // Not even remembered: with no entry it can never take (typed, take and visible find nothing).
     if (this.deps.measured && !this.deps.measured(viewId)) return
     const t = this.entry(key)
     const known = t.views.get(viewId)
     const lineage = known ? known.lineage : this.deps.lineage?.(viewId)
-    t.views.set(viewId, { cols, rows, at: ++this.clock, lineage })
+    // Sticky per key: a view that once reported as a guest's stays one (its `who` is frozen at hello).
+    const guest = explicitOnly || known?.explicitOnly === true
+    t.views.set(viewId, { cols, rows, at: ++this.clock, lineage, explicitOnly: guest })
     if (t.sizer === viewId) {
       if (this.canSize(t, viewId)) this.deps.apply(key, cols, rows)
       return
     }
+    // D-14: a guest's report is remembered for its explicit take, never taken by itself.
+    if (guest) return
     // The view the size fell from (or its device, reconnected) is back and visible: it sizes again.
     if (this.heir(t, viewId) && !this.hidden.has(viewId)) return this.become(key, t, viewId)
     // Nobody sizes the key (a new one, or the sizer left with no visible view to fall back to).
@@ -173,7 +182,7 @@ export class ViewSizes<K = string> {
       if (!visible) {
         if (t.pending?.viewId === viewId) this.cancel(t)
         if (t.sizer === viewId) this.fallback(key, t, viewId, t.views.get(viewId)?.lineage)
-      } else if (t.views.has(viewId) && (t.sizer === undefined || !this.sizes(t, t.sizer) || this.heir(t, viewId))) {
+      } else if (t.views.has(viewId) && t.views.get(viewId)?.explicitOnly !== true && (t.sizer === undefined || !this.sizes(t, t.sizer) || this.heir(t, viewId))) {
         // Nobody visible sizes the key, or the size fell from this view when it was hidden and
         // nobody took it since: the view that shows again takes it.
         this.become(key, t, viewId)
@@ -280,12 +289,16 @@ export class ViewSizes<K = string> {
     let next: ViewId | undefined
     let at = -1
     for (const [viewId, size] of t.views) {
-      if (this.hidden.has(viewId) || size.at <= at) continue
+      // A guest's view never takes by a fallback (D-14): the owner's views only; none, the size stays.
+      if (this.hidden.has(viewId) || size.explicitOnly || size.at <= at) continue
       next = viewId
       at = size.at
     }
     // A lone hidden view left (the desktop minimized after the browser went): it sizes, as canSize.
-    if (next === undefined && t.views.size === 1) next = t.views.keys().next().value
+    if (next === undefined && t.views.size === 1) {
+      const [only, size] = t.views.entries().next().value as [ViewId, ViewSize]
+      if (!size.explicitOnly) next = only
+    }
     if (next === undefined) {
       t.sizer = undefined
       return

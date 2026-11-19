@@ -66,7 +66,7 @@ describe('ccc web (design-web.md §9.4)', () => {
   })
 
   it.each([
-    [['web'], /web needs status, revoke, stop, link, add-device, password, mode or set/],
+    [['web'], /web needs status, revoke, stop, link, add-device, password, mode, set, invite, guests, kick or role/],
     [['web', 'status', '--all'], /web status takes only --json/],
     [['web', 'revoke'], /one device id or --all/],
     [['web', 'revoke', 'a', 'b'], /one device id or --all/],
@@ -134,6 +134,76 @@ describe('ccc web (design-web.md §9.4)', () => {
     expect(parsed.kind).toBe('usage')
     expect((parsed as { message: string }).message).toMatch(/reads the password from stdin/)
     expect(JSON.stringify(parsed)).not.toContain('hunter2')
+  })
+})
+
+describe('ccc web guest commands (design-guests §12)', () => {
+  it('parses invite with its defaults and every option, guests, kick and role', () => {
+    expect(parseArgs(['web', 'invite', '--project', '/p', '--name', 'Ann', '--role', 'read'])).toEqual({
+      kind: 'web-invite',
+      project: '/p',
+      name: 'Ann',
+      role: 'read',
+      tabs: 'all',
+      lifetime: '1d',
+      json: false
+    })
+    expect(
+      parseArgs(['web', 'invite', '--json', '--role', 'write', '--tabs', 't1,t2', '--lifetime', 'forever', '--name', 'Bob B', '--project', '0123456789abcdef'])
+    ).toEqual({ kind: 'web-invite', project: '0123456789abcdef', name: 'Bob B', role: 'write', tabs: ['t1', 't2'], lifetime: 'forever', json: true })
+    expect(parseArgs(['web', 'invite', '--project', 'p', '--name', 'A', '--role', 'read', '--tabs', 'all', '--lifetime', '7d'])).toMatchObject({ tabs: 'all', lifetime: '7d' })
+    expect(parseArgs(['web', 'guests'])).toEqual({ kind: 'web-guests', json: false })
+    expect(parseArgs(['web', 'guests', '--json'])).toEqual({ kind: 'web-guests', json: true })
+    expect(parseArgs(['web', 'kick', 'g-1'])).toEqual({ kind: 'web-kick', guest: 'g-1' })
+    expect(parseArgs(['web', 'kick', 'Ann Lee'])).toEqual({ kind: 'web-kick', guest: 'Ann Lee' })
+    expect(parseArgs(['web', 'kick', '--', '-dash'])).toEqual({ kind: 'web-kick', guest: '-dash' })
+    expect(parseArgs(['web', 'kick', '--invite', 'inv-1'])).toEqual({ kind: 'web-kick', invite: 'inv-1' })
+    expect(parseArgs(['web', 'role', 'Ann', 'write'])).toEqual({ kind: 'web-role', guest: 'Ann', role: 'write' })
+    expect(parseArgs(['web', 'role', '--', '-dash', 'read'])).toEqual({ kind: 'web-role', guest: '-dash', role: 'read' })
+    expect(parseArgs(['web', 'invite', '--help'])).toEqual({ kind: 'help', command: 'web' })
+  })
+
+  const base = ['web', 'invite', '--project', '/p', '--name', 'Ann', '--role', 'read']
+  it.each([
+    [['web', 'invite'], /web invite needs --project, --name and --role/],
+    [['web', 'invite', '--project', '/p', '--name', 'Ann'], /needs --project, --name and --role/],
+    [['web', 'invite', '--project', '/p', '--role', 'read'], /needs --project, --name and --role/],
+    [['web', 'invite', '--name', 'Ann', '--role', 'read'], /needs --project, --name and --role/],
+    [[...base, '--role', 'write'], /--role given twice/],
+    [[...base, '--json', '--json'], /--json given twice/],
+    [[...base, '--tabs'], /--tabs needs a value/],
+    [[...base, '--tabs', ''], /--tabs needs a value/],
+    [[...base, '--tabs', 'a,,b'], /--tabs takes all or tab ids separated by commas/],
+    [[...base, '--tabs', 'a,'], /--tabs takes all or tab ids/],
+    [[...base, '--tabs', 'all,t1'], /--tabs takes all or tab ids/],
+    [[...base, '--lifetime', '30d'], /--lifetime takes 1d, 7d, forever/],
+    [[...base, '--scope', 'all'], /web invite: unknown option --scope/],
+    [[...base, 'extra'], /web invite: unknown option extra/],
+    [['web', 'invite', '--project', '/p', '--name', 'Ann', '--role', 'admin'], /--role takes read or write/],
+    [['web', 'invite', '--project', '/p', '--name', '   ', '--role', 'read'], /--name takes 1 to 60 characters/],
+    [['web', 'invite', '--project', '/p', '--name', 'x'.repeat(61), '--role', 'read'], /--name takes 1 to 60 characters/],
+    [['web', 'guests', '--all'], /web guests takes only --json/],
+    [['web', 'kick'], /web kick takes one guest id or name, or --invite/],
+    [['web', 'kick', 'a', 'b'], /web kick takes one guest id or name/],
+    [['web', 'kick', ''], /web kick takes one guest id or name/],
+    [['web', 'kick', '--all'], /web kick: unknown option --all/],
+    [['web', 'kick', '--invite'], /web kick --invite takes one invite id/],
+    [['web', 'kick', '--invite', 'a', 'b'], /web kick --invite takes one invite id/],
+    [['web', 'role', 'Ann'], /web role takes a guest id or name, then read or write/],
+    [['web', 'role', 'Ann', 'admin'], /web role: the role is read or write/],
+    [['web', 'role', 'Ann', 'read', 'now'], /web role takes a guest id or name/],
+    [['web', 'role', '--force', 'read'], /web role: unknown option --force/]
+  ])('%j is a usage error', (argv, message) => {
+    const parsed = parseArgs(argv)
+    expect(parsed.kind).toBe('usage')
+    expect((parsed as { message: string }).message).toMatch(message)
+  })
+
+  it('lists the four in the usage, invite as server mode with its link shown once', () => {
+    const web = usageFor('web') ?? ''
+    for (const sub of ['invite', 'guests', 'kick', 'role']) expect(web).toContain(`ccc web ${sub}`)
+    expect(web).toContain('shown only this once')
+    expect(web).toContain('write: server mode only')
   })
 })
 

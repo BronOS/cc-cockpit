@@ -18,6 +18,7 @@ import { MAX_PLUGIN_CONFIG_EDITS, parseConfigValue, PLUGIN_CONFIG_SCOPES, type P
 import { MAX_PLUGIN_LIMIT_EDITS } from '../shared/plugin-limits'
 import type { WebAccessRisk } from '../shared/types'
 import { WEB_RISK_ORDER, WEB_SHELL_MODES } from '../shared/web-access'
+import { DEFAULT_GUEST_LIFETIME, GUEST_LIFETIMES, GUEST_NAME_MAX, guestLifetimeOf, guestRoleOf, type GuestLifetime, type GuestRole } from '../shared/guests'
 import {
   CLI_NAME_PATTERN,
   type CoreCliCommand,
@@ -114,6 +115,16 @@ export type Command =
       /** As typed ('' clears it); the client makes it absolute against its cwd. */
       startFolder?: string
     }
+  /**
+   * `ccc web invite` (design-guests §12): server mode only, main decides. `project` is an id or a path as typed
+   * (client.ts makes a path absolute); `tabs` is `all` or the tab ids of `--tabs a,b`, checked by main.
+   */
+  | { kind: 'web-invite'; project: string; name: string; role: GuestRole; tabs: 'all' | string[]; lifetime: GuestLifetime; json: boolean }
+  | { kind: 'web-guests'; json: boolean }
+  /** `ccc web kick <guest id|name>` (`guest`) or `--invite <invite id>` (`invite`), exactly one; main resolves a name. */
+  | { kind: 'web-kick'; guest?: string; invite?: string }
+  /** `ccc web role <guest id|name> read|write`; `write` is server mode only (D-25, main decides). */
+  | { kind: 'web-role'; guest: string; role: GuestRole }
   /**
    * `ccc room …` (design-rooms.md §4): a Claude tab only, identity from its token (main decides). `send` and `doc put`
    * carry no `text` when it comes from stdin (`-`): client.ts reads it, bounded, and fills it in before the request.
@@ -323,7 +334,18 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       {
         synopsis: ['web set --start-folder <path>'],
         text: ["where the browser's folder browser starts (server mode);", "'' for the home folder (the default)"]
-      }
+      },
+      {
+        synopsis: ['web invite --project <id|path> --name <name> --role read|write'],
+        text: [
+          'invite a guest to one project (server mode); prints the link,',
+          'shown only this once. --tabs all|<id>,<id> (default all),',
+          '--lifetime 1d|7d|forever (default 1d), --json'
+        ]
+      },
+      { synopsis: ['web guests [--json]'], text: ['list the guests and pending invites'] },
+      { synopsis: ['web kick <guest id|name> | --invite <invite id>'], text: ['remove a guest, or cancel a pending invite'] },
+      { synopsis: ['web role <guest id|name> read|write'], text: ["switch a guest's role (write: server mode only)"] }
     ]
   },
   room: {
@@ -608,13 +630,14 @@ function parseSession(rest: readonly string[]): Command {
 }
 
 /**
- * `ccc web status|revoke|stop|link|add-device|password|mode|set` (server-mode plan Tasks 11, 12). Each
+ * `ccc web status|revoke|stop|link|add-device|password|mode|set` (server-mode plan Tasks 11, 12) and the guest
+ * commands `invite|guests|kick|role` (design-guests §12). Each
  * takes a fixed shape; anything else is a usage error. A device id, a bind or an origin is passed as
  * typed: main checks it (`applyWebAccessPatch`). No regexes (the project rule for settings parsing).
  */
 function parseWeb(rest: readonly string[]): Command {
   const [sub, ...args] = rest
-  if (sub === undefined) return usage('web needs status, revoke, stop, link, add-device, password, mode or set')
+  if (sub === undefined) return usage('web needs status, revoke, stop, link, add-device, password, mode, set, invite, guests, kick or role')
   if (args[0] === '--help' || args[0] === '-h') return { kind: 'help', command: 'web' }
   switch (sub) {
     case 'status':
@@ -645,6 +668,31 @@ function parseWeb(rest: readonly string[]): Command {
       return parseWebMode(args)
     case 'set':
       return parseWebSet(args)
+    case 'invite':
+      return parseWebInvite(args)
+    case 'guests':
+      if (args.length === 0) return { kind: 'web-guests', json: false }
+      if (args.length === 1 && args[0] === '--json') return { kind: 'web-guests', json: true }
+      return usage('web guests takes only --json')
+    case 'kick': {
+      if (args[0] === '--invite') {
+        return args.length === 2 && args[1] !== '' ? { kind: 'web-kick', invite: args[1] as string } : usage('web kick --invite takes one invite id')
+      }
+      // `--` ends options, as for revoke: a guest name is the owner's own text and may start with `-`.
+      const literal = args[0] === '--'
+      const [target, ...extra] = literal ? args.slice(1) : args
+      if (target === undefined || target === '' || extra.length > 0) return usage('web kick takes one guest id or name, or --invite <invite id>')
+      if (!literal && target.startsWith('-')) return usage(`web kick: unknown option ${target}`)
+      return { kind: 'web-kick', guest: target }
+    }
+    case 'role': {
+      const literal = args[0] === '--'
+      const [target, value, ...extra] = literal ? args.slice(1) : args
+      if (target === undefined || target === '' || value === undefined || extra.length > 0) return usage('web role takes a guest id or name, then read or write')
+      if (!literal && target.startsWith('-')) return usage(`web role: unknown option ${target}`)
+      const role = guestRoleOf(value)
+      return role === undefined ? usage('web role: the role is read or write') : { kind: 'web-role', guest: target, role }
+    }
     default:
       return usage(`unknown web command: ${sub}`)
   }
@@ -809,6 +857,68 @@ function parseWebSet(args: readonly string[]): Command {
   if (hosts.length > 0) out.hosts = hosts
   if (seen.size === 0 && hosts.length === 0 && out.confirm.length === 0) return usage('web set needs at least one option')
   return out
+}
+
+/** The options of `ccc web invite` that take a value. */
+const INVITE_OPTIONS: readonly string[] = ['--project', '--name', '--role', '--tabs', '--lifetime']
+
+/**
+ * `ccc web invite --project <id|path> --name <name> --role read|write [--tabs all|<id>,<id>] [--lifetime 1d|7d|forever]
+ * [--json]`: each option at most once; project, name and role are required (no default role: write is a choice made
+ * on purpose). The name's length is checked here to save a round trip; main checks it again with the rest (a
+ * tab id, a project), as the authority.
+ */
+function parseWebInvite(args: readonly string[]): Command {
+  const seen = new Set<string>()
+  let project: string | undefined
+  let name: string | undefined
+  let role: GuestRole | undefined
+  let tabs: 'all' | string[] = 'all'
+  let lifetime: GuestLifetime = DEFAULT_GUEST_LIFETIME
+  let json = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (arg !== '--json' && !INVITE_OPTIONS.includes(arg)) return usage(`web invite: unknown option ${arg}`)
+    if (seen.has(arg)) return usage(`web invite: ${arg} given twice`)
+    seen.add(arg)
+    if (arg === '--json') {
+      json = true
+      continue
+    }
+    const value = args[++i]
+    if (value === undefined || value === '') return usage(`web invite: ${arg} needs a value`)
+    switch (arg) {
+      case '--project':
+        project = value
+        break
+      case '--name':
+        if (value.trim() === '' || value.length > GUEST_NAME_MAX) return usage(`web invite: --name takes 1 to ${GUEST_NAME_MAX} characters`)
+        name = value
+        break
+      case '--role':
+        role = guestRoleOf(value)
+        if (role === undefined) return usage('web invite: --role takes read or write')
+        break
+      case '--tabs':
+        if (value === 'all') tabs = 'all'
+        else {
+          // Split by hand (no regex): an empty id (`a,,b`, a trailing comma) is a typo, not "no tab".
+          const ids = value.split(',')
+          // `all` inside a list is a mix-up, not a tab id: the person meant one or the other.
+          if (ids.some((id) => id === '' || id === 'all')) return usage('web invite: --tabs takes all or tab ids separated by commas')
+          tabs = ids
+        }
+        break
+      default: {
+        // --lifetime, the last of INVITE_OPTIONS.
+        const picked = guestLifetimeOf(value)
+        if (picked === undefined) return usage(`web invite: --lifetime takes ${GUEST_LIFETIMES.join(', ')}`)
+        lifetime = picked
+      }
+    }
+  }
+  if (project === undefined || name === undefined || role === undefined) return usage('web invite needs --project, --name and --role')
+  return { kind: 'web-invite', project, name, role, tabs, lifetime, json }
 }
 
 /** The options of `ccc web set` that take a value. */

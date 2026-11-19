@@ -449,6 +449,35 @@ function splitSelectors(prelude: string): string[] {
   return out
 }
 
+describe('panel SDK: view.access (guests, a UI hint)', () => {
+  it("is the owner's until the shell says a guest role with the port, and takes only read or write", () => {
+    const { c } = client()
+    expect(c.api.view.access).toBe('owner')
+    c.receive({ type: PORT_MESSAGE, remote: true, access: 'read' }, [])
+    expect(c.api.view.access).toBe('owner')
+    c.receive({ type: PORT_MESSAGE, remote: true, access: 'read' }, [new FakePort()])
+    expect(c.api.view.access).toBe('read')
+    c.receive({ type: PORT_MESSAGE, remote: true, access: 'write' }, [new FakePort()])
+    expect(c.api.view.access).toBe('write')
+    for (const access of ['admin', 'owner', 1, null, undefined]) {
+      c.receive({ type: PORT_MESSAGE, remote: true, access }, [new FakePort()])
+      expect(c.api.view.access).toBe('owner')
+    }
+  })
+
+  it('cannot be set by the page', () => {
+    const { c } = client()
+    c.receive({ type: PORT_MESSAGE, remote: true, access: 'read' }, [new FakePort()])
+    const view = c.api.view as { access: string }
+    try {
+      view.access = 'owner'
+    } catch {
+      // strict mode: assigning a getter-only property throws
+    }
+    expect(c.api.view.access).toBe('read')
+  })
+})
+
 describe('panel SDK: view.remote', () => {
   it('is false before the port and on the desktop shell, true from the web shell', () => {
     resetShellKindForTest()
@@ -516,7 +545,7 @@ describe('frame messages (the shell side)', () => {
   })
 
   it('posts the port and the theme in the shape the SDK reads', () => {
-    expect(portMessage()).toEqual({ type: PORT_MESSAGE, remote: false })
+    expect(portMessage()).toEqual({ type: PORT_MESSAGE, remote: false, access: 'owner' })
     const msg = themeMessage({ id: 'x', name: 'X', kind: 'light', vars: { '--a': '#fff' }, xterm: { red: '#f00' } })
     // The xterm palette stays in the shell.
     expect(msg).toEqual({ type: THEME_MESSAGE, theme: { kind: 'light', vars: { '--a': '#fff' } }, mac: false })

@@ -145,9 +145,10 @@ function setup() {
   const running: Record<string, readonly string[]> = { 'a.one': ['board', 'side'] }
   const hub = new PanelPortHub<FakePort>({
     createChannel: () => channel(++made),
+    whoOf: (viewId) => views.whoOf(viewId),
     runningPanels: (projectId, pluginId) => (projectId === 'p1' ? running[pluginId] : undefined),
     toHost: (_projectId, pluginId, panelId, port, view) => {
-      hostPorts.push({ key: `${pluginId}/${panelId}`, port, ...(view !== undefined ? { view } : {}) })
+      hostPorts.push({ key: `${pluginId}/${panelId}`, port, ...(view.view !== undefined ? { view: view.view } : {}) })
       return true
     },
     toRenderer: (viewId, payload, port) => views.postPort(viewId, PANEL_PORT_CHANNEL, payload, port),
@@ -175,7 +176,7 @@ function setup() {
   const gone: string[] = []
   const conns = new WebConnections({
     dispatch: (caller, ch, payload, live) => router.dispatch(caller, ch, payload, live),
-    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
+    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink, 'owner'),
     windowIdOf: (projectId) => windows.get(projectId),
     snapshot: () => ({ tabs: [], layout: LAYOUT, overlays: [], closeAsks: [], linkAsks: [] }),
     mirror: { join: () => undefined },
@@ -375,9 +376,9 @@ describe('relay round trip', () => {
     ws.drop()
     expect(t.gone).toEqual(['web:1'])
     expect(t.hostPorts.map((h) => h.port.closed)).toEqual([true, true])
-    // The view is gone: a connect for it is refused and both ends of the new channel close.
+    // The view is gone: a connect for it is refused before any channel is made (ViewRegistry.whoOf knows it no more).
     expect(t.hub.connect('p1', 'web:1', 'a.one/board', 5)).toBe(false)
-    expect(t.hostPorts[2]?.port.closed).toBe(true)
+    expect(t.hostPorts).toHaveLength(2)
     a!.close()
     b!.close()
   })
@@ -488,6 +489,81 @@ describe('main relay bounds', () => {
     expect(t.hostPorts[0]!.port.closed).toBe(true)
     expect(t.logs.some((m) => m.includes('message over'))).toBe(true)
     page!.close()
+  })
+})
+
+// D-17: a read guest's port to a plugin that is not guest-aware is one-way (host to page). Main drops the
+// page's messages, so a plugin that never heard of guests cannot be driven by a read guest's clicks.
+describe('one-way ports (D-17)', () => {
+  function relay() {
+    const sent: Array<Record<string, unknown>> = []
+    const logs: string[] = []
+    const r = new MainPortRelay({
+      send: (frame) => (sent.push(frame), true),
+      buffered: () => 0,
+      log: (m) => logs.push(m)
+    })
+    return { r, sent, logs }
+  }
+
+  /** A port taken with `payload`; `posted` counts the page messages main hands the port. */
+  function taken(payload: Record<string, unknown>) {
+    const t = relay()
+    const ch = channel(1)
+    const posted: unknown[] = []
+    const post = ch.renderer.postMessage.bind(ch.renderer)
+    ch.renderer.postMessage = (m: unknown) => {
+      posted.push(m)
+      post(m)
+    }
+    t.r.take(PANEL_PORT_CHANNEL, { panelKey: 'a.one/board', nonce: 1, ...payload }, ch.renderer)
+    const atHost: unknown[] = []
+    ch.host.on('message', (e) => atHost.push(e.data))
+    ch.host.start()
+    return { ...t, ch, posted, atHost }
+  }
+
+  it('relays host to page, drops every page message before the port, logged once per port', async () => {
+    const { r, sent, logs, ch, posted, atHost } = taken({ oneWay: true })
+    // The browser is told the line is one-way (web/bridge.ts reads it).
+    expect(sent[0]).toEqual({ t: 'port.open', key: 'a.one/board', nonce: 1, oneWay: true })
+    ch.host.postMessage('{"board":1}')
+    await settle()
+    expect(sent).toContainEqual({ t: 'port.msg', key: 'a.one/board', nonce: 1, m: '{"board":1}' })
+    r.fromPage('a.one/board', 1, '{"click":"delete"}')
+    r.fromPage('a.one/board', 1, '{"click":"again"}')
+    await settle()
+    expect(posted).toEqual([])
+    expect(atHost).toEqual([])
+    expect(logs.filter((m) => m.includes('one-way'))).toHaveLength(1)
+    // The port itself stays: the guest still sees the panel update.
+    expect(r.size()).toBe(1)
+    expect(ch.host.closed).toBe(false)
+  })
+
+  it('a malformed flag fails closed: anything but false or absent is one-way', async () => {
+    for (const oneWay of ['yes', 1, 0, null, {}, 'false']) {
+      const { r, posted, logs, sent } = taken({ oneWay })
+      expect(sent[0], String(oneWay)).toMatchObject({ t: 'port.open', oneWay: true })
+      r.fromPage('a.one/board', 1, '"x"')
+      await settle()
+      expect(posted, String(oneWay)).toEqual([])
+      expect(logs.filter((m) => m.includes('one-way')), String(oneWay)).toHaveLength(1)
+    }
+  })
+
+  it('oneWay false or absent relays both ways, as before', async () => {
+    for (const payload of [{ oneWay: false }, {}]) {
+      const { r, sent, logs, ch, posted, atHost } = taken(payload)
+      expect(sent[0]).toEqual({ t: 'port.open', key: 'a.one/board', nonce: 1 })
+      ch.host.postMessage('"down"')
+      r.fromPage('a.one/board', 1, '"up"')
+      await settle()
+      expect(sent).toContainEqual({ t: 'port.msg', key: 'a.one/board', nonce: 1, m: '"down"' })
+      expect(posted).toEqual(['"up"'])
+      expect(atHost).toEqual(['"up"'])
+      expect(logs).toEqual([])
+    }
   })
 })
 

@@ -37,6 +37,8 @@ export interface WebAccessPatch {
   confirm?: WebAccessRisk[]
   /** Server mode's folder browser start (`ccc web set --start-folder`): an absolute path; null or '' clears it (home). */
   startFolder?: string | null
+  /** The owner's name guests see (D-24): plain text, 60 characters; null or '' resets it to "Host". */
+  ownerName?: string | null
 }
 
 /** The answer to a change that needs the person's confirm first: nothing was saved. */
@@ -159,6 +161,11 @@ export interface WebAccessView {
   credentials: { accessLink: WebCredentialState; password: WebCredentialState }
   /** Server mode only (the browser's card): the secret store of the run, as `ccc web status` has it. */
   secrets?: WebSecretsStatus
+  /**
+   * The owner's name guests see (D-24; default "Host"). Optional only so an older main's answer still types:
+   * task 02's main always sends it.
+   */
+  ownerName?: string
 }
 
 /**

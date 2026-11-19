@@ -7,8 +7,10 @@ import { SlotFrame } from '../zones/SlotFrame'
 import { ProjectDot } from './ProjectDot'
 import { topStripClass } from './strip-order'
 import { WebAccessChip } from './WebAccessChip'
-import { isServerView, isWebShell, showsThisComputerChip, THIS_COMPUTER_URL } from '../shell-kind'
+import { currentGuest, isServerView, isWebShell, showsThisComputerChip, THIS_COMPUTER_URL } from '../shell-kind'
 import { CloseProjectButton } from '../web/CloseProject'
+import { GuestBanner } from '../guests/GuestBanner'
+import { GuestsChip } from '../guests/GuestsChip'
 
 /**
  * The bar across the top of every project window (variant A, "unified bar"): the project's name
@@ -42,6 +44,13 @@ import { CloseProjectButton } from '../web/CloseProject'
  * project sits before the gear too (web/CloseProject.tsx, design-web.md §9.8). The gear
  * opens settings; it sits outside the slot's space so a wide strip never pushes it out of view.
  *
+ * Guests (design-guests §10, spec-review 24): on an owner view the guest chip (GuestsChip: "Live" with
+ * the guest list, or "Share" to invite) sits before the web access chip. A guest's view (the shell's
+ * guest hint, shell-kind.ts `currentGuest`) draws the guest banner where the "+" was and none of the
+ * owner's controls: no "+", no web access chip, no Close project, no gear (no settings for any guest);
+ * "This computer" stays (it is the guest's own app). A hint only: main refuses those calls to a guest
+ * whatever is drawn.
+ *
  * A project with a colour (Settings › This Project) marks its bar three ways: a 3px line along
  * the window's top edge, a faint tint of the whole bar, and a dot by its name. The bar carries the
  * colour as `--cc-project-color` with `data-project-color` set (styles.css); with no colour neither
@@ -67,6 +76,7 @@ export function TopStrip(props: {
   const meter = props.slots?.find((f) => f.position === 'top-bar' && f.type === USAGE_METER_SLOT)
   const { project } = props
   const color = project?.color
+  const guest = currentGuest()
   return (
     // A <header> holding the <nav> rather than one nav: the project's name is the window's title,
     // not a session, and the specs find the strip by the nav's label.
@@ -98,31 +108,38 @@ export function TopStrip(props: {
           </button>
         )}
         {slot && <SlotFrame key={slot.id} frame={slot} collapseUntilConnected />}
-        <div className="strip-list">
-          <button
-            type="button"
-            className="strip-open-project icon-button sm"
-            aria-label="Open project…"
-            title="Open project…"
-            onClick={props.onOpenProject}
-          >
-            <PlusGlyph size={14} />
-          </button>
-        </div>
+        {guest ? (
+          <GuestBanner guest={guest} />
+        ) : (
+          <div className="strip-list">
+            <button
+              type="button"
+              className="strip-open-project icon-button sm"
+              aria-label="Open project…"
+              title="Open project…"
+              onClick={props.onOpenProject}
+            >
+              <PlusGlyph size={14} />
+            </button>
+          </div>
+        )}
       </nav>
       <div className={meter ? 'titlebar-end has-slot' : 'titlebar-end'}>
         {meter && <SlotFrame key={meter.id} frame={meter} collapseUntilConnected />}
-        <WebAccessChip onOpen={props.onOpenSettings} />
-        {project && isServerView() && <CloseProjectButton name={project.name} />}
-        <button
-          type="button"
-          className="strip-settings icon-button"
-          aria-label="Settings"
-          title="Settings"
-          onClick={props.onOpenSettings}
-        >
-          <GearGlyph />
-        </button>
+        {!guest && project && <GuestsChip projectId={project.id} inert={props.inert} onOpenSettings={props.onOpenSettings} />}
+        {!guest && <WebAccessChip onOpen={props.onOpenSettings} />}
+        {!guest && project && isServerView() && <CloseProjectButton name={project.name} />}
+        {!guest && (
+          <button
+            type="button"
+            className="strip-settings icon-button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={props.onOpenSettings}
+          >
+            <GearGlyph />
+          </button>
+        )}
       </div>
     </header>
   )

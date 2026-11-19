@@ -18,13 +18,17 @@
 //   (design-web.md §5.7): reported at `hello` and on every change (`theme.scheme`). Until main's
 //   theme arrives (and on the sign-in and picker pages, which never get one) the page shows the
 //   built-in of the browser's scheme, and web.css paints that background before any script runs.
+// - a guest (design-guests §10, D-32; a browser signed in by an invite): it lands on its own project
+//   only (never the picker), its pages never link to the project list, an ended guest's page says so
+//   instead of the owner's sign-in form, and the shell is told the guest hint before each mount
+//   (shell-kind.ts setGuestHint: a UI hint, main refuses regardless).
 import { StrictMode, useEffect, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { WebAccessMode } from '../../shared/types'
-import { SESSION_PATH, WS_PATH } from '../../shared/web-protocol'
+import { SESSION_PATH, WS_PATH, parseInviteFragment } from '../../shared/web-protocol'
 import { App } from '../App'
 import { setPrefs, startPrefs } from '../prefs/prefs-store'
-import { armLoadTab, armLoadTake, isServerView, markWebShell, setOwnView, setServerHint } from '../shell-kind'
+import { armLoadTab, armLoadTake, isServerView, markWebShell, setGuestHint, setOwnView, setServerHint } from '../shell-kind'
 import { startTheme } from '../theme/apply-theme'
 import { applyTheme } from '../theme/theme-store'
 import { validateTheme } from '../../shared/theme'
@@ -34,13 +38,15 @@ import { loadTerminalFont } from '../tabs/terminal-font'
 import { backToPicker, createWebBridge, shellToDraw, socketUrl, type BridgeStatus, type SocketLike, type WebBridge } from './bridge'
 import { startChime } from '../notify/chime'
 import { deliverPanelPort } from '../plugins/panel-port-bus'
-import { hasUnsavedPages, pageTabsReady } from '../tabs/PageTabArea'
+import { disposePageTabs, hasUnsavedPages, pageTabsReady } from '../tabs/PageTabArea'
 import { keyedFetch, pageSocketProtocols, storeDeviceKey } from './device-key'
 import { setPagePaths } from './page-paths'
 import { WebPicker } from './picker'
 import { projectHref, takeTabParam } from './picker-model'
 import { ConfirmSignIn, PasswordSignIn } from './sign-in-forms'
-import { linkTokenOf, signIn, signedOutText } from './sign-in'
+import { linkTokenOf, sessionReplyOf, signIn, signedOutText } from './sign-in'
+import { GUEST_ENDED_TEXT, guestGoneText, landingOf, reconnectNotice, type SessionGuest } from './guest-pages-model'
+import { GuestNotice, GuestStatePage } from './guest-pages'
 import '../assets/fonts/fonts.css'
 import '../styles.css'
 import './web.css'
@@ -132,6 +138,8 @@ async function resync(): Promise<void> {
 }
 
 function Unreachable({ status, bridge }: { status: BridgeStatus & { state: 'away' }; bridge: WebBridge }): React.JSX.Element {
+  // A guest's project closed on the host (4462): its text instead of "host unreachable", retried as any drop.
+  const guestText = status.code === undefined ? undefined : guestGoneText(status.code, bridge.lastGuest()?.ownerName)
   // Ticks once a second so the countdown moves; the bridge itself owns the retry timer.
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -141,7 +149,9 @@ function Unreachable({ status, bridge }: { status: BridgeStatus & { state: 'away
   const secs = Math.max(0, Math.ceil((status.retryAt - now) / 1000))
   return (
     <div className="web-unreachable" role="alert">
-      <span>Host unreachable. {secs > 0 ? `Retrying in ${secs}s.` : 'Retrying...'}</span>
+      <span>
+        {guestText ?? 'Host unreachable.'} {secs > 0 ? `Retrying in ${secs}s.` : 'Retrying...'}
+      </span>
       <button type="button" onClick={() => bridge.retryNow()}>
         Retry now
       </button>
@@ -149,10 +159,17 @@ function Unreachable({ status, bridge }: { status: BridgeStatus & { state: 'away
   )
 }
 
-function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
+/**
+ * `guest`: the session said this browser is a guest's before the bridge started; a `ready` carrying
+ * `WebSnapshot.guest` says it too (a close can come before any `ready`, so both count).
+ */
+function WebRoot({ bridge, guest }: { bridge: WebBridge; guest: boolean }): React.JSX.Element {
   const status = useSyncExternalStore(bridge.onStatus, bridge.status)
   // The `ready` generation whose state the shell was mounted with (0: not yet).
   const [shown, setShown] = useState(0)
+  // The generation whose reconnect notice (a role switch) the person dismissed.
+  const [dismissed, setDismissed] = useState(0)
+  const guestPage = guest || bridge.lastGuest() !== undefined
 
   useEffect(() => {
     if (status.state !== 'ready') return
@@ -160,6 +177,9 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
     setOwnView(status.view)
     // Before the shell mounts: approvals offer Allow in a server's browser views (a UI hint).
     setServerHint(bridge.snapshot()?.server === true)
+    // Before the shell mounts, on every ready (a role switch reconnects with a new view and role):
+    // the shell hides what a guest may not do. A UI hint only; main refuses by the view it bound.
+    setGuestHint(bridge.snapshot()?.guest)
     // Before the shell mounts (its tabs pane consumes it): the first ready of this page load only.
     armLoadTake(status.generation)
     // A later ready is a web reconnect: live page tab frames (outside the shell, kept across its
@@ -184,13 +204,24 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
   // A server's project closed for every device (a browser's Close project): every view of it goes
   // back to the project list, the asking one included. `replace`: Back must not land on the closed
   // project's page. Relative to the page's own path, so a reverse-proxy prefix is kept and `?project=` dropped.
-  const toPicker = backToPicker(status, isServerView())
+  // Never a guest's page: it has no project list (D-32).
+  const toPicker = backToPicker(status, isServerView(), guestPage)
   useEffect(() => {
     if (toPicker) location.replace(location.pathname)
   }, [toPicker])
 
+  // A guest's final page: its page tab frames (outside the React root) go with the shell, unsaved text
+  // included; the access is over, so there is nothing left to save them to (design-guests §10).
+  const guestGone = guestPage && status.state === 'gone'
+  useEffect(() => {
+    if (guestGone) disposePageTabs()
+  }, [guestGone])
+
   if (toPicker) return <main className="web-state">The project was closed. Opening the project list...</main>
   if (status.state === 'gone') {
+    // The shell is unmounted here (a kick clears the terminals with it). A guest's page has no
+    // picker link: `/` would only send it back to this project.
+    if (guestPage) return <GuestStatePage text={status.reason} />
     return (
       <main className="web-state" role="alert">
         <div className="web-state-box">
@@ -202,19 +233,26 @@ function WebRoot({ bridge }: { bridge: WebBridge }): React.JSX.Element {
   }
   // Not the last state once a newer `ready` is in: it would act on the new view (shellToDraw).
   const drawn = shellToDraw(status, shown)
+  // After a role switch: the new role is known only now, from the new ready's snapshot.
+  const notice =
+    status.state === 'ready' && drawn === status.generation && dismissed !== status.generation
+      ? reconnectNotice(bridge.reconnectedAfter(), bridge.lastGuest())
+      : undefined
   return (
     <>
       {drawn > 0 && <App key={drawn} />}
+      {notice !== undefined && status.state === 'ready' && <GuestNotice text={notice} onDismiss={() => setDismissed(status.generation)} />}
       {drawn === 0 && status.state !== 'away' && <main className="web-state">Connecting...</main>}
       {status.state === 'away' && <Unreachable status={status} bridge={bridge} />}
     </>
   )
 }
 
-function startShell(reactRoot: ReturnType<typeof createRoot>): void {
+function startShell(reactRoot: ReturnType<typeof createRoot>, guest: SessionGuest | undefined): void {
   const bridge = createWebBridge({
     url: socketUrl(location, WS_PATH),
     project,
+    guest: guest !== undefined,
     // Read at each `hello`: the view's first `theme.get` already answers by this browser's scheme.
     ...(darkQuery ? { dark: () => darkQuery.matches } : {}),
     // The DOM WebSocket's handler types name its own event classes; the bridge reads `data`,
@@ -226,11 +264,13 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
     // Panel ports main opens for this view go to the panel that asked, as the preload's do.
     onPort: deliverPanelPort,
     // Only a definite "device: null" counts as signed out; a failed request means the host is away.
+    // An ended guest's cookie (`guestEnded`, D-32) is told apart: that page says the access ended.
     checkSession: async () => {
       const res = await keyedFetch(SESSION_PATH, { credentials: 'same-origin', cache: 'no-store' })
       if (!res.ok) return true
-      const body = (await res.json()) as { device?: unknown }
-      return body.device !== null
+      const reply = sessionReplyOf(await res.json())
+      if (reply === undefined || reply.device !== null) return true
+      return reply.guestEnded === true ? 'guest-ended' : false
     }
   })
   window.cockpit = bridge.api
@@ -266,7 +306,7 @@ function startShell(reactRoot: ReturnType<typeof createRoot>): void {
   })
   reactRoot.render(
     <StrictMode>
-      <WebRoot bridge={bridge} />
+      <WebRoot bridge={bridge} guest={guest !== undefined} />
     </StrictMode>
   )
 }
@@ -279,8 +319,9 @@ reactRoot.render(<main className="web-state">Connecting...</main>)
 // An access link opened over this page (pasted into the address bar of the signed-out page) only
 // changes the fragment: the browser does not load the page again, so the sign-in above would never
 // see it. Load it again; the fresh page reads the token (and clears it) like any first visit.
+// An invite link (`#i=`) the same: a guest pasting it over an open page redeems it on the fresh load.
 window.addEventListener('hashchange', () => {
-  if (linkTokenOf(location.hash) !== undefined) location.reload()
+  if (linkTokenOf(location.hash) !== undefined || parseInviteFragment(location.hash) !== undefined) location.reload()
 })
 
 void signIn({
@@ -303,10 +344,27 @@ void signIn({
     )
   } else if (state.state === 'signed-out') {
     reactRoot.render(<SignedOut mode={state.mode} {...(state.error !== undefined ? { error: state.error } : {})} />)
-  } else if (project === '') {
-    // The device went away while the picker was up: a fresh page asks again and says why.
-    reactRoot.render(<WebPicker fetch={browserFetch} onSignedOut={() => location.reload()} />)
+  } else if (state.state === 'guest-ended') {
+    // Never the owner's sign-in form or the signed-out text for an ended guest (D-32).
+    reactRoot.render(<GuestStatePage text={GUEST_ENDED_TEXT} />)
+  } else if (state.state === 'invite-failed') {
+    reactRoot.render(<GuestStatePage text={state.text} />)
+  } else if (state.state === 'redeemed') {
+    // The invite's project, relative like the picker's links (a reverse-proxy prefix is kept);
+    // `replace`: Back must not land on the redeem page.
+    reactRoot.render(<main className="web-state">Opening the project...</main>)
+    location.replace(projectHref(state.project))
   } else {
-    startShell(reactRoot)
+    const landing = landingOf(state.guest, project)
+    if (landing.go === 'redirect') {
+      // A guest at `/` or at another project's address goes to its own project (D-32).
+      reactRoot.render(<main className="web-state">Opening the project...</main>)
+      location.replace(landing.href)
+    } else if (landing.go === 'picker') {
+      // The device went away while the picker was up: a fresh page asks again and says why.
+      reactRoot.render(<WebPicker fetch={browserFetch} onSignedOut={() => location.reload()} />)
+    } else {
+      startShell(reactRoot, state.guest)
+    }
   }
 })

@@ -5,11 +5,15 @@
 //
 // What reaches a panel page, all from its parent (the shell renderer), checked by the bootstrap to
 // come from `window.parent`:
-//   { type: 'cc-plugin.port', remote } + a MessagePort   the line to the plugin's host (or, for an
-//                                                 html overlay, to the overlay itself); a later one
-//                                                 replaces the earlier one. `remote`: the shell that
+//   { type: 'cc-plugin.port', remote, access? } + a MessagePort   the line to the plugin's host (or,
+//                                                 for an html overlay, to the overlay itself); a later
+//                                                 one replaces the earlier one. `remote`: the shell that
 //                                                 mounts the page is the web shell (a web access
-//                                                 browser view), read as `ccPanel.view.remote`
+//                                                 browser view), read as `ccPanel.view.remote`.
+//                                                 `access`: who is behind that shell (`read` | `write`
+//                                                 for a guest; absent: the owner), read as
+//                                                 `ccPanel.view.access`. Both are UI hints only: the
+//                                                 plugin's host learns the access from main's tag.
 //   { type: 'cc-plugin.theme', theme: { kind, vars }, mac }   the app's theme, again on every change;
 //                                                 `mac` is the shell's platform (no scrollbar rule there)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
@@ -175,6 +179,13 @@ export interface PanelViewApi {
    * message can arrive), and always false on the desktop.
    */
   readonly remote: boolean
+  /**
+   * Who is behind this view (design-guests §6): `owner`, or a guest the owner invited, `read` or `write`.
+   * Said by the shell with the port (`owner` until then and on the desktop). A UI hint only, to hide what
+   * the viewer may not use: the plugin's host gets the access from main (`from.access`) and must check it
+   * there; a page can claim anything.
+   */
+  readonly access: 'owner' | 'read' | 'write'
 }
 
 export interface PanelApi {
@@ -200,7 +211,7 @@ export interface PanelApi {
   readonly slot: SlotPageApi | undefined
   /** Set (a frozen object) once the shell says the page is a page tab; undefined anywhere else. */
   readonly tab: TabPageApi | undefined
-  /** Where the page is drawn (a frozen object; `remote` is read-only). */
+  /** Where the page is drawn and who looks at it (a frozen object; `remote` and `access` are read-only). */
   readonly view: PanelViewApi
   /**
    * An html overlay's page has drawn what it shows: the app's loader over it goes. Needed only for
@@ -301,6 +312,7 @@ export class PanelClient {
   private readonly connectListeners = new Set<() => void>()
   /** From the shell's port message only (receive); nothing the page can call sets it. */
   private remote = false
+  private access: 'owner' | 'read' | 'write' = 'owner'
   readonly api: PanelApi
 
   /**
@@ -342,6 +354,7 @@ export class PanelClient {
     // write it (an assignment throws in strict code and is ignored otherwise).
     const view = {}
     Object.defineProperty(view, 'remote', { enumerable: true, get: (): boolean => this.remote })
+    Object.defineProperty(view, 'access', { enumerable: true, get: (): 'owner' | 'read' | 'write' => this.access })
     const api = {
       post: (message: JsonValue) => this.post(message),
       onMessage: (listener: (message: JsonValue) => void) => this.onMessage(listener),
@@ -362,6 +375,9 @@ export class PanelClient {
     if (type === PORT_MESSAGE && ports[0]) {
       // Before the port is connected: a message the host sent first may already be waiting on it.
       this.remote = (data as { remote?: unknown }).remote === true
+      // Anything but a guest role is the owner's view: the hint can only hide more, never grant anything.
+      const access = (data as { access?: unknown }).access
+      this.access = access === 'read' || access === 'write' ? access : 'owner'
       this.connect(ports[0])
     }
     else if (type === SLOT_MESSAGE) this.becomeSlot((data as { slot?: { type?: unknown } }).slot?.type)

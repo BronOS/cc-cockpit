@@ -44,9 +44,9 @@ function world(): World {
   views.addDesktop(1, w.desk1)
   views.addDesktop(2, w.desk2)
   views.addDesktop(3, w.desk3)
-  views.addRemote(1, remoteViewId(1), w.web1)
-  views.addRemote(1, remoteViewId(2), w.web2)
-  views.addRemote(2, remoteViewId(3), w.web3)
+  views.addRemote(1, remoteViewId(1), w.web1, 'owner')
+  views.addRemote(1, remoteViewId(2), w.web2, 'owner')
+  views.addRemote(2, remoteViewId(3), w.web3, 'owner')
   return w
 }
 
@@ -108,7 +108,8 @@ describe('openExternal adapter on the desktop', () => {
     await open(URL_A, { windowId: 1 }, { signIn: 'S'.repeat(22) })
     await open(URL_A, { windowId: 1, viewId: 'web:1' }, { signIn: 'S'.repeat(22) })
     expect(system).toEqual([URL_A])
-    expect(w.web1.payloads).toEqual([{ url: URL_A }])
+    // Stamped with the asking view (design-guests §9: the guest sink passes only its own view's notices).
+    expect(w.web1.payloads).toEqual([{ url: URL_A, to: 'web:1' }])
   })
 
   it("a page's own open with no asking view still goes to the OS browser on the desktop (no browser view to mark it for)", async () => {

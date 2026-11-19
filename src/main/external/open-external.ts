@@ -15,6 +15,11 @@
 // The target is always main's: the router's bound caller, the plugin host's own window and origin
 // view, the window a view or overlay belongs to. Never a window or view id read from a payload.
 //
+// Guests (design-guests §9, the `app.linkNotice` row): the notice sent to one view carries that view's id
+// (`to`), stamped here, because the guest sink cannot tell a `toView` from a broadcast: it passes a guest only
+// a notice whose `to` is its own view and that has no sign-in. A broadcast (no browser asked) has no `to`, so
+// no guest ever gets a link it did not ask for.
+//
 // No Electron import: the OS opener is passed in (electron-open-external.ts, looked up at each call
 // so the e2e recorder that replaces `shell.openExternal` is seen); unit tests pass recorders.
 
@@ -90,7 +95,7 @@ export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
       // v1 (design-web.md §6.1): the host's browser is not a browser view's screen. A view that is gone
       // by now gets nothing, as before: its person left.
       if (asking !== undefined) {
-        options.views.toView(asking, 'app.linkNotice', extra?.page === true ? { url, page: true } : { url })
+        options.views.toView(asking, 'app.linkNotice', extra?.page === true ? { url, page: true, to: asking } : { url, to: asking })
         return
       }
       await options.system(url)
@@ -105,7 +110,7 @@ export function createOpenExternal(options: OpenExternalOptions): OpenExternal {
       ...(extra?.page === true ? { page: true as const } : {})
     }
     let reached: number
-    if (asking !== undefined) reached = options.views.toView(asking, 'app.linkNotice', payload) ? 1 : 0
+    if (asking !== undefined) reached = options.views.toView(asking, 'app.linkNotice', { ...payload, to: asking }) ? 1 : 0
     else reached = options.views.toBrowserViews(target === 'app' ? 'all' : target.windowId, 'app.linkNotice', payload)
     if (reached > 0) return
     log(`open external: ${NO_BROWSER_TEXT}; not opened: ${urlForLog(url)}`)

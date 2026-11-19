@@ -203,7 +203,11 @@ interface Setup {
   picked: Array<[number, string]>
 }
 
+/** The certificate a guest test's https server presents (peer-certificate.ts is faked): the invites' pin unless a test says otherwise. */
+const PRESENTED = { sha256: '0123456789abcdef'.repeat(4) as string | undefined }
+
 function setup(options: { link?: (id: string, store: SshLinkStore) => RemoteLink } = {}): Setup {
+  PRESENTED.sha256 = '0123456789abcdef'.repeat(4)
   const steps: string[] = []
   const writes = { count: 0 }
   const app = {
@@ -243,6 +247,7 @@ function setup(options: { link?: (id: string, store: SshLinkStore) => RemoteLink
     clearSession: async (serverId) => {
       steps.push(`clear ${serverId}`)
     },
+    peerCertificate: async () => PRESENTED.sha256,
     pickFile: async (windowId, start) => {
       picked.push([windowId, start])
       return '/home/me/.ssh/id_work'
@@ -894,5 +899,121 @@ describe('RemoteService with the real SshLink', () => {
     expect(await service.connect({ ...request, answers: { hostKey: realKey.sha256, password: 'wrong' } })).toEqual({ ok: false, need: { need: 'password', again: true } })
     expect(ssh.attempts.filter((m) => m === 'password')).toHaveLength(1)
     expect(app.data.remoteServers).toBeUndefined()
+  })
+})
+
+
+// A guest's own app joining a host with an invite link (design-guests §11, D-29): the pin is a
+// question before anything is saved, the record keeps `guest` and the pin, and the window's first
+// load is the invite.
+describe('RemoteService: guest invites', () => {
+  const INVITE = 'Ab0-'.repeat(10) + 'x_Z'
+  const PIN = '0123456789abcdef'.repeat(4)
+  const ORIGIN = 'https://host.example:8765'
+  const SHOWN = '01:23:45:67:89:AB:CD:EF:'.repeat(4).slice(0, -1)
+  const invite = (pin?: string): string => `${ORIGIN}/#i=${INVITE}${pin === undefined ? '' : `&c=${pin}`}`
+
+  it('joins with an invite with no pin: a guest record, the window loads the invite, the token is not kept', async () => {
+    const { service, store, windows, app } = setup()
+    expect(await service.connect({ kind: 'direct', link: invite() })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(store.get('srv1')).toMatchObject({ via: { kind: 'direct', origin: ORIGIN }, guest: true })
+    expect(store.get('srv1')).not.toHaveProperty('certSha256')
+    expect(windows.opens).toEqual([{ serverId: 'srv1', origin: ORIGIN, token: INVITE, invite: true }])
+    expect(JSON.stringify(app.data)).not.toContain(INVITE)
+    expect((await service.list())[0]).toMatchObject({ id: 'srv1', guest: true })
+    expect((await service.list())[0]).not.toHaveProperty('certSha256')
+  })
+
+  it('asks to trust the certificate the server presents; an answer naming anything else is refused; nothing saved before', async () => {
+    const { service, store, windows, writes } = setup()
+    const need = { ok: false, need: { need: 'certificate', origin: ORIGIN, sha256: PIN } }
+    expect(await service.connect({ kind: 'direct', link: invite(PIN) })).toEqual(need)
+    // The answer is the page's word: trusted only when it equals both the pin and the presented certificate.
+    const wrong = await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: 'ab'.repeat(32) } })
+    expect(wrong).toMatchObject({ ok: false })
+    expect(wrong).not.toHaveProperty('need')
+    expect((wrong as { error: string }).error).toContain('is not the one')
+    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: 'not a pin' } })).not.toHaveProperty('need')
+    expect(await store.list()).toEqual([])
+    expect(windows.opens).toEqual([])
+    expect(writes.count).toBe(0)
+    // The shown form, sent back as is.
+    // (Each asked connect prepared a draft id it never saved.)
+    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: SHOWN } })).toEqual({ ok: true, serverId: 'srv4' })
+    expect((await store.list()).map((s) => s.id)).toEqual(['srv4'])
+    expect(store.get('srv4')).toMatchObject({ guest: true, certSha256: PIN })
+    expect(windows.opens).toEqual([{ serverId: 'srv4', origin: ORIGIN, token: INVITE, invite: true }])
+    // The list says guest, never the pin.
+    expect(JSON.stringify(await service.list())).not.toContain(PIN)
+  })
+
+  it('refuses outright when the server presents another certificate than the pin (never a question), or none can be read', async () => {
+    const { service, store, windows } = setup()
+    PRESENTED.sha256 = 'e'.repeat(64)
+    for (const answers of [{}, { certificate: PIN }, { certificate: 'e'.repeat(64) }]) {
+      const r = await service.connect({ kind: 'direct', link: invite(PIN), answers })
+      expect(r).not.toHaveProperty('need')
+      expect((r as { error: string }).error).toContain('is not the one in the invite')
+    }
+    PRESENTED.sha256 = undefined
+    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: PIN } })).toEqual({ ok: false, error: `could not read the certificate of ${ORIGIN}` })
+    expect(await store.list()).toEqual([])
+    expect(windows.opens).toEqual([])
+  })
+
+  it('saves nothing when the window does not open', async () => {
+    const { service, store, windows } = setup()
+    windows.failWith = 'no screen'
+    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: PIN } })).toEqual({ ok: false, error: 'no screen' })
+    expect(await store.list()).toEqual([])
+  })
+
+  it('refuses a pin a saved guest does not have, never asking; the same pin or none opens with no question', async () => {
+    const { service, windows } = setup()
+    await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: PIN } })
+    const other = 'f'.repeat(64)
+    const refused = await service.connect({ kind: 'direct', link: invite(other), answers: { certificate: other } })
+    expect(refused).toMatchObject({ ok: false })
+    expect((refused as { error: string }).error).toContain('forget the server and join again')
+    expect(await service.connect({ kind: 'direct', link: invite(PIN) })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(await service.connect({ kind: 'direct', link: invite() })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(windows.opens.slice(1).map((o) => o.invite)).toEqual([true, true])
+  })
+
+  it('one record is never both: an invite for an owner\'s server, an access link for a guest\'s', async () => {
+    const owner = setup()
+    await owner.service.connect({ kind: 'direct', link: `${ORIGIN}/#t=own` })
+    const asGuest = await owner.service.connect({ kind: 'direct', link: invite() })
+    expect((asGuest as { error: string }).error).toContain('as your own server')
+    expect(owner.store.get('srv1')).not.toHaveProperty('guest')
+    const guest = setup()
+    await guest.service.connect({ kind: 'direct', link: invite() })
+    const asOwner = await guest.service.connect({ kind: 'direct', link: `${ORIGIN}/#t=own` })
+    expect((asOwner as { error: string }).error).toContain('is saved as a guest')
+    // The bare address opens the saved guest as a reconnect does.
+    expect(await guest.service.connect({ kind: 'direct', link: ORIGIN })).toEqual({ ok: true, serverId: 'srv1' })
+    expect(guest.windows.opens.at(-1)).toEqual({ serverId: 'srv1', origin: ORIGIN })
+  })
+
+  it('a reconnect of a guest loads with no token (the saved cookie signs in)', async () => {
+    const { service, windows } = setup()
+    await service.connect({ kind: 'direct', link: invite() })
+    expect(await service.open('srv1', 'p1')).toEqual({ ok: true, serverId: 'srv1' })
+    expect(windows.opens.at(-1)).toEqual({ serverId: 'srv1', origin: ORIGIN, projectId: 'p1' })
+  })
+
+  it('My own tunnel and Edit take no invite; Edit gives a guest no access link', async () => {
+    const { service } = setup()
+    expect(await service.connect({ kind: 'tunnel', localPort: 4100, remotePort: 8765, link: invite() })).toEqual({ ok: false, error: 'an invite link joins with Link: paste it there' })
+    await service.connect({ kind: 'direct', link: invite() })
+    expect(await service.edit({ serverId: 'srv1', kind: 'direct', link: invite() })).toEqual({ ok: false, error: 'an invite link joins as a new server: paste it into Connect to server' })
+    expect(await service.edit({ serverId: 'srv1', kind: 'direct', link: `${ORIGIN}/#t=own` })).toEqual({ ok: false, error: 'a guest server signs in only with a new invite from its host' })
+    expect(await service.edit({ serverId: 'srv1', kind: 'direct', link: 'https://other.example' })).toMatchObject({ ok: false })
+    expect(await service.edit({ serverId: 'srv1', kind: 'direct', link: ORIGIN, name: 'Alice' })).toEqual({ ok: true, serverId: 'srv1' })
+  })
+
+  it('a certificate need met in the background says to join again', () => {
+    const server = { id: 'g', name: 'Alice', via: { kind: 'direct' as const, origin: ORIGIN }, recent: [] }
+    expect(backgroundNeedText({ need: 'certificate', origin: ORIGIN, sha256: PIN }, server)).toBe('the certificate of Alice is not trusted yet: join again with the invite link')
   })
 })

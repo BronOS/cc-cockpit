@@ -14,12 +14,17 @@ import { ChevronDownGlyph, CloseGlyph, CommandGlyph, FileGlyph, PageGlyph, PlusG
 import { groupOf, isPaneKind, leavesOf, type PaneEdge, type TabGroup } from '../../shared/tab-groups'
 import { PANE_MODE_PX } from './pane-layout'
 import { groupTitle, handleWords, leftSegment, stripRuns } from './strip-groups'
-import { commandTooltip, pageTabMarks, tabLabel } from './tab-label'
+import { commandTooltip, openedByGuestLine, pageTabMarks, tabLabel } from './tab-label'
 import { DRAG_THRESHOLD, dropIndex, dropMarker } from './tab-drag'
 import { hiddenFlags, type OverflowState, overflowState, scrollToReveal, wheelScrollsSideways } from './tab-overflow'
 import { allTabsOrder, nextAttention, sameIds, statusesOf } from './tab-flags'
 import { heldBadge, roomMarker, roomMenuItems } from './tab-room'
 import { FlagSwatch } from './FlagSwatch'
+import { currentGuest, viewAccessHint } from '../shell-kind'
+import { PresenceAvatars } from '../guests/PresenceAvatars'
+import { avatarsForTab, presenceLines, selfPersonId } from '../guests/presence-model'
+import { guestNameOf, shareItems, tabControls } from '../guests/tab-access-model'
+import { canWidenGuests, useGuests, usePresence, useProjectId } from '../guests/use-guests'
 
 /** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
 interface TabDrag {
@@ -148,6 +153,14 @@ function CoreEntry(props: { id: string; label: string; onClick: () => void }): R
  * drag a tab left or right to reorder, and a context menu that does the same (move left / right)
  * for keyboard and assistive-tech users.
  *
+ * Guests (design-guests §10, spec-review 24): what the strip offers follows this view's access as the
+ * shell hints it (guests/tab-access-model.ts `tabControls`): a read guest gets no [+], no tab menu, no
+ * drag, no close; a write guest gets [+] with Claude and Shell only and Close, nothing else. Hidden,
+ * never greyed out; main refuses every such call to a guest whatever is drawn. Every view shows
+ * presence on the tabs (avatars of the others looking at a tab, typing, who typed last); the owner's
+ * tooltip names a tab a guest opened, and its tab menu has "Share with <guest>" for each
+ * selected-tabs guest of the project (`guests.shareTab`).
+ *
  * The drag uses pointer events, not HTML5 drag and drop: a native drag session goes through the
  * window system (on Wayland, the compositor), shows a ghost image we don't control and can start a
  * drop into other apps, while a tab only ever moves within its own strip.
@@ -157,6 +170,8 @@ export function TabBar(props: {
   activeId: string | null
   onSelect: (tabId: string) => void
   onClose: (tabId: string) => void
+  /** The owner's "Share with <guest>" toggle (`guests.shareTab`); TabsPane shows main's refusal. */
+  onShare: (guestId: string, guestName: string, tabId: string, shared: boolean) => void
   onCreate: (kind: 'claude' | 'shell') => void
   /** A user entry of the [+] menu, by level and id: main looks its command up. */
   onCreateCommand: (level: TabCommandLevel, entryId: string) => void
@@ -217,6 +232,15 @@ export function TabBar(props: {
   const { tabs, activeId, groups, onPaneDrag } = props
   // Settings › Appearance › Tabs; pushed by main, so every window's strip follows a pick.
   const { tabCloseSide } = usePrefs()
+  // Guests: the controls this view's access gets (a hint), presence for every view, and for the owner the
+  // project's guests (the "Share with" entries). The hint is fixed for the page's life: a role switch
+  // reconnects the guest's page with a fresh `ready` (design §10).
+  const access = viewAccessHint()
+  const controls = tabControls(access)
+  const presence = usePresence()
+  const selfId = selfPersonId(currentGuest()?.id)
+  const guests = useGuests(access === 'owner')
+  const projectId = useProjectId()
   const [createOpen, setCreateOpen] = useState(false)
   // The all-tabs list (shown only while tabs are hidden, see `overflow`).
   const [allOpen, setAllOpen] = useState(false)
@@ -405,7 +429,7 @@ export function TabBar(props: {
 
   /** A press on a tab label, or on a group's handle (`groupId`: the block moves). */
   const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>, tabId: string, groupId?: string): void => {
-    if (e.button !== 0 || anyOpen) return
+    if (e.button !== 0 || anyOpen || !controls.drag) return
     press.current = { tabId, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, ...(groupId ? { groupId } : {}) }
   }
 
@@ -487,7 +511,8 @@ export function TabBar(props: {
     const status = props.sessions.get(tab.id)
     // In the DOM where it shows (not CSS `order`), so Tab moves through a tab's buttons in
     // the order the eye reads them.
-    const close = (
+    // A read guest has no close (tab-access-model.ts); a write guest's close of the owner's tab asks the owner (D-9).
+    const close = controls.closeButton ? (
       <button
         type="button"
         className="tab-close"
@@ -496,11 +521,15 @@ export function TabBar(props: {
       >
         <CloseGlyph size={12} />
       </button>
-    )
+    ) : null
     const dragged = drag?.tabId === tab.id
     const markEdge = marker?.tabId === tab.id ? marker.edge : undefined
     // A command tab: what it runs, where, and which plugin opened it (tab-label.ts commandTooltip).
     const where = commandTooltip(tab) ?? (status?.title ? `${status.title}\n${tab.cwd}` : tab.cwd)
+    // Guests: who opened it (a write guest, D-21) and who is here, typing, typed last (presence).
+    const here = presenceLines(presence, tab.id, selfId)
+    const guestLines = [openedByGuestLine(tab, (id) => guestNameOf(id, guests, presence, currentGuest())), ...here].filter((l) => l !== undefined)
+    const avatars = avatarsForTab(presence, tab.id, selfId)
     const flag = tab.flag
     const room = roomMarker(tab, status)
     const held = heldBadge(tab, status)
@@ -522,12 +551,13 @@ export function TabBar(props: {
         aria-selected={tab.id === activeId}
         className="tab-label"
         // The note is the tooltip's first line: the reminder is what the person flagged it for.
-        title={flag?.note ? `${flag.note}\n${where}` : where}
+        title={[flag?.note, where, ...guestLines].filter((l) => l !== undefined && l !== '').join('\n')}
         aria-description={
           [
             flag ? `flagged ${FLAG_COLOR_LABEL[flag.color].toLowerCase()}${flag.note ? `: ${flag.note}` : ''}` : undefined,
             room?.tooltip.replace(/\n/g, ', '),
-            ...pageTabMarks(tab)
+            ...pageTabMarks(tab),
+            ...guestLines
           ]
             .filter((d) => d !== undefined)
             .join(', ') || undefined
@@ -540,6 +570,8 @@ export function TabBar(props: {
         onLostPointerCapture={(e) => endDrag(e, false)}
         onContextMenu={(e) => {
           e.preventDefault()
+          // A read guest has no tab menu at all.
+          if (controls.menu.size === 0) return
           setCreateOpen(false)
           setMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
         }}
@@ -567,8 +599,10 @@ export function TabBar(props: {
             {room.name}
           </span>
         )}
+        {/* Presence (design-guests §10): the others looking at this tab; said in words in aria-description. */}
+        <PresenceAvatars avatars={avatars} />
       </button>
-      {held && (
+      {held && controls.roomControls && (
         <button
           type="button"
           className="tab-held"
@@ -579,7 +613,7 @@ export function TabBar(props: {
           {held.text}
         </button>
       )}
-      {status && (
+      {status && controls.roomControls && (
         <QueuedChip
           queue={status.queue}
           onCancel={(itemId) => props.onCancelQueued(tab.id, itemId)}
@@ -626,8 +660,8 @@ export function TabBar(props: {
                 data-group-handle={g.id}
                 aria-label={words.label}
                 aria-description={words.asks}
-                aria-haspopup="menu"
-                title={`${words.text}: click to show, drag to move, right-click for its menu`}
+                aria-haspopup={controls.groupMenu ? 'menu' : undefined}
+                title={controls.groupMenu ? `${words.text}: click to show, drag to move, right-click for its menu` : `${words.text}: click to show`}
                 onClick={() => props.onSelectGroup(g.id)}
                 onPointerDown={(e) => onPointerDown(e, run.tabs[0]!.id, g.id)}
                 onPointerMove={onPointerMove}
@@ -636,6 +670,8 @@ export function TabBar(props: {
                 onLostPointerCapture={(e) => endDrag(e, false)}
                 onContextMenu={(e) => {
                   e.preventDefault()
+                  // No group actions for a guest (spec-review 24).
+                  if (!controls.groupMenu) return
                   setCreateOpen(false)
                   setMenu(null)
                   setGroupMenu({ groupId: g.id, x: e.clientX, y: e.clientY })
@@ -715,63 +751,67 @@ export function TabBar(props: {
           )}
         </div>
       )}
-      <div className="tab-new">
-        <button
-          type="button"
-          aria-label="New tab"
-          aria-haspopup="menu"
-          aria-expanded={createOpen}
-          onClick={(e) => {
-            // Stop the click reaching the window listener, which would close the menu again.
-            e.stopPropagation()
-            setMenu(null)
-            if (!createOpen) props.onMenuOpen()
-            setCreateOpen(!createOpen)
-          }}
-        >
-          <PlusGlyph size={15} />
-        </button>
-        {createOpen && (
-          <div className="menu" role="menu">
-            <CoreEntry id="tab.newClaude" label="Claude" onClick={() => props.onCreate('claude')} />
-            <CoreEntry id="tab.newShell" label="Shell" onClick={() => props.onCreate('shell')} />
-            {COMMAND_GROUPS.map(({ level, name }) => {
-              const items = props.commands?.[level] ?? []
-              if (items.length === 0) return null
-              return (
-                <div key={level} role="group" aria-label={name} className="menu-group">
-                  <div role="separator" className="menu-separator" />
-                  {/* The group's name shown too; hidden from assistive tech, which already
-                      gets it from aria-label (it would be read twice). */}
-                  <div className="menu-caption" aria-hidden="true">
-                    {name}
+      {/* A read guest has no [+]; a write guest's lists Claude and Shell only (D-21: the owner's process,
+          and the command entries are the owner's own commands, which it does not even read for a guest). */}
+      {controls.newTab !== 'none' && (
+        <div className="tab-new">
+          <button
+            type="button"
+            aria-label="New tab"
+            aria-haspopup="menu"
+            aria-expanded={createOpen}
+            onClick={(e) => {
+              // Stop the click reaching the window listener, which would close the menu again.
+              e.stopPropagation()
+              setMenu(null)
+              if (!createOpen && controls.newTab === 'all') props.onMenuOpen()
+              setCreateOpen(!createOpen)
+            }}
+          >
+            <PlusGlyph size={15} />
+          </button>
+          {createOpen && (
+            <div className="menu" role="menu">
+              <CoreEntry id="tab.newClaude" label="Claude" onClick={() => props.onCreate('claude')} />
+              <CoreEntry id="tab.newShell" label="Shell" onClick={() => props.onCreate('shell')} />
+              {controls.newTab === 'all' && COMMAND_GROUPS.map(({ level, name }) => {
+                const items = props.commands?.[level] ?? []
+                if (items.length === 0) return null
+                return (
+                  <div key={level} role="group" aria-label={name} className="menu-group">
+                    <div role="separator" className="menu-separator" />
+                    {/* The group's name shown too; hidden from assistive tech, which already
+                        gets it from aria-label (it would be read twice). */}
+                    <div className="menu-caption" aria-hidden="true">
+                      {name}
+                    </div>
+                    {items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="menuitem"
+                        className="menu-entry"
+                        data-level={level}
+                        data-entry={item.id}
+                        data-open={item.open}
+                        onClick={() => props.onCreateCommand(level, item.id)}
+                        aria-keyshortcuts={item.key ? ariaShortcut(item.key) : undefined}
+                        aria-description={item.open === 'overlay' ? 'opens as an overlay' : undefined}
+                      >
+                        <OpenIcon open={item.open === 'overlay' ? 'overlay' : 'tab'} />
+                        <span className="menu-label">{item.label}</span>
+                        {/* Hidden from the accessible name (the label alone names the item);
+                            aria-keyshortcuts carries the chord for assistive tech. */}
+                        {item.key && <Keys chord={item.key} />}
+                      </button>
+                    ))}
                   </div>
-                  {items.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      role="menuitem"
-                      className="menu-entry"
-                      data-level={level}
-                      data-entry={item.id}
-                      data-open={item.open}
-                      onClick={() => props.onCreateCommand(level, item.id)}
-                      aria-keyshortcuts={item.key ? ariaShortcut(item.key) : undefined}
-                      aria-description={item.open === 'overlay' ? 'opens as an overlay' : undefined}
-                    >
-                      <OpenIcon open={item.open === 'overlay' ? 'overlay' : 'tab'} />
-                      <span className="menu-label">{item.label}</span>
-                      {/* Hidden from the accessible name (the label alone names the item);
-                          aria-keyshortcuts carries the chord for assistive tech. */}
-                      {item.key && <Keys chord={item.key} />}
-                    </button>
-                  ))}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
       {menu && menuTab && (
         <div
           ref={ctxRef}
@@ -781,23 +821,29 @@ export function TabBar(props: {
           style={{ left: menu.x, top: menu.y }}
           onKeyDown={(e) => walkMenu(e, true)}
         >
-          <button
-            type="button"
-            role="menuitem"
-            disabled={menuIndex === 0}
-            onClick={() => props.onMove(menu.tabId, -1)}
-          >
-            Move left
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={menuIndex === tabs.length - 1}
-            onClick={() => props.onMove(menu.tabId, 1)}
-          >
-            Move right
-          </button>
-          {tabs[menuIndex]?.kind === 'claude' && (
+          {/* Which sections show follows this view's access (tab-access-model.ts): all for the owner,
+              Close alone for a write guest; a read guest never gets here (no menu). */}
+          {controls.menu.has('move') && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={menuIndex === 0}
+                onClick={() => props.onMove(menu.tabId, -1)}
+              >
+                Move left
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={menuIndex === tabs.length - 1}
+                onClick={() => props.onMove(menu.tabId, 1)}
+              >
+                Move right
+              </button>
+            </>
+          )}
+          {controls.menu.has('rename') && tabs[menuIndex]?.kind === 'claude' && (
             <button
               type="button"
               role="menuitem"
@@ -815,7 +861,7 @@ export function TabBar(props: {
           )}
           {/* The split view (design §1): a new pane beside this tab, this tab beside another, out of
               its group. A split too small to make is disabled with the reason (D5). Every tab kind has them. */}
-          {isPaneKind(menuTab.kind) && (
+          {controls.menu.has('split') && isPaneKind(menuTab.kind) && (
             <>
               <div role="separator" className="menu-separator" />
               <button
@@ -860,7 +906,7 @@ export function TabBar(props: {
             </>
           )}
           {/* A member tab's room entries (tab-room.ts): the person's mark, and the room view. */}
-          {roomMenuItems(menuTab, { roomView: props.onOpenRoom !== undefined }).map((item, i) => (
+          {(controls.menu.has('room') ? roomMenuItems(menuTab, { roomView: props.onOpenRoom !== undefined }) : []).map((item, i) => (
             <Fragment key={item.id}>
               {i === 0 && <div role="separator" className="menu-separator" />}
               {item.id === 'mark' ? (
@@ -884,47 +930,76 @@ export function TabBar(props: {
               )}
             </Fragment>
           ))}
-          <div role="separator" className="menu-separator" />
-          {/* The person's flag (shared/tab-flag.ts), on any tab kind: a colour row, the note, clear. */}
-          <div role="group" aria-label="Flag" className="menu-flag-row">
-            <span className="menu-caption" aria-hidden="true">
-              Flag
-            </span>
-            {FLAG_COLORS.map((color) => (
+          {/* The owner's "Share with <guest>" (design-guests §7): one per selected-tabs guest of the project,
+              checked by the guest's scope in `guests.changed`, which main sends again after the toggle. */}
+          {(controls.menu.has('share') ? shareItems(guests, projectId, menuTab, canWidenGuests()) : []).map((item, i) => (
+            <Fragment key={item.guestId}>
+              {i === 0 && <div role="separator" className="menu-separator" />}
               <button
-                key={color}
                 type="button"
-                role="menuitemradio"
-                aria-checked={menuTab.flag?.color === color}
-                aria-label={`Flag ${FLAG_COLOR_LABEL[color]}`}
-                title={FLAG_COLOR_LABEL[color]}
-                className="flag-choice"
-                data-flag={color}
-                onClick={() => props.onFlag(menu.tabId, { color })}
+                role="menuitemcheckbox"
+                aria-checked={item.checked}
+                onClick={() => {
+                  // A refusal (the guest left, the invite went meanwhile) changes nothing; TabsPane says so in one line.
+                  props.onShare(item.guestId, item.name, menu.tabId, !item.checked)
+                }}
               >
-                <FlagSwatch color={color} />
+                <span className="menu-check" aria-hidden="true">
+                  {item.checked ? '✓' : ''}
+                </span>
+                {item.label}
               </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={(e) => {
-              // Else the window's click listener closes the editor this opens.
-              e.stopPropagation()
-              setNoting({ tabId: menu.tabId, x: menu.x, y: menu.y, value: menuTab.flag?.note ?? '' })
-              setMenu(null)
-            }}
-          >
-            Edit note…
-          </button>
-          <button type="button" role="menuitem" disabled={!menuTab.flag} onClick={() => props.onFlag(menu.tabId, null)}>
-            Clear flag
-          </button>
-          <div role="separator" className="menu-separator" />
-          <button type="button" role="menuitem" onClick={() => props.onClose(menu.tabId)}>
-            Close
-          </button>
+            </Fragment>
+          ))}
+          {controls.menu.has('flag') && (
+            <>
+              <div role="separator" className="menu-separator" />
+              {/* The person's flag (shared/tab-flag.ts), on any tab kind: a colour row, the note, clear. */}
+              <div role="group" aria-label="Flag" className="menu-flag-row">
+                <span className="menu-caption" aria-hidden="true">
+                  Flag
+                </span>
+                {FLAG_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={menuTab.flag?.color === color}
+                    aria-label={`Flag ${FLAG_COLOR_LABEL[color]}`}
+                    title={FLAG_COLOR_LABEL[color]}
+                    className="flag-choice"
+                    data-flag={color}
+                    onClick={() => props.onFlag(menu.tabId, { color })}
+                  >
+                    <FlagSwatch color={color} />
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={(e) => {
+                  // Else the window's click listener closes the editor this opens.
+                  e.stopPropagation()
+                  setNoting({ tabId: menu.tabId, x: menu.x, y: menu.y, value: menuTab.flag?.note ?? '' })
+                  setMenu(null)
+                }}
+              >
+                Edit note…
+              </button>
+              <button type="button" role="menuitem" disabled={!menuTab.flag} onClick={() => props.onFlag(menu.tabId, null)}>
+                Clear flag
+              </button>
+            </>
+          )}
+          {controls.menu.has('close') && (
+            <>
+              {controls.menu.size > 1 && <div role="separator" className="menu-separator" />}
+              <button type="button" role="menuitem" onClick={() => props.onClose(menu.tabId)}>
+                Close
+              </button>
+            </>
+          )}
         </div>
       )}
       {beside && (

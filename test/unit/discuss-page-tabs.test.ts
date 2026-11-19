@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { composeDiscuss } from '../../src/main/overlays/discuss'
+import { composeDiscuss, GUEST_DISCUSS_REFUSED, type DiscussGuest } from '../../src/main/overlays/discuss'
 import type { DiscussSessions } from '../../src/main/overlays/overlay-manager'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { PageTabDiscuss, discussQuestionOf, type DiscussPageTab } from '../../src/main/tabs/page-tab-discuss'
@@ -26,7 +26,9 @@ let root: string
 let backend: FakePtyBackend
 let registry: SessionRegistry
 let tabs: TabManager
-let selected: Array<{ windowId: number; tabId: string }>
+let selected: Array<{ windowId: number; tabId: string; view?: string }>
+/** What the registry's guestMayDeliver answers (03e A). */
+let guestOk: boolean
 let asked: Array<{ projectId: string; tab: DiscussPageTab; view: string | undefined }>
 let context: () => Promise<unknown>
 
@@ -36,11 +38,13 @@ beforeEach(() => {
   backend = new FakePtyBackend()
   selected = []
   asked = []
+  guestOk = true
   context = async () => ({ text: 'src/x.ts:40-52\n```ts\nconst x = 1\n```' })
   registry = new SessionRegistry({
     projectName: () => 'p',
     broadcast: () => {},
     write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data),
+    guestMayDeliver: () => guestOk,
     log: () => {}
   })
   tabs = new TabManager({
@@ -75,12 +79,14 @@ function discuss(opened: string[] = []): PageTabDiscuss {
       return windowId === WIN_A && entry?.projectId === A && entry.status !== 'ended'
     },
     notReady: (tabId) => registry.get(tabId)?.status === 'idle',
-    send: (tabId, text, origin) => registry.send(tabId, text, origin),
-    openSession: async (_windowId, prompt) => {
-      opened.push(prompt)
-      return { tabId: tabs.create(A, { kind: 'claude' }).id }
+    send: (tabId, text, origin, guestId) => (guestId === undefined ? registry.send(tabId, text, origin) : registry.send(tabId, text, origin, guestId)),
+    openSession: async (_windowId, prompt, guestId) => {
+      opened.push(guestId === undefined ? prompt : `${guestId}: ${prompt}`)
+      return { tabId: tabs.create(A, guestId === undefined ? { kind: 'claude' } : { kind: 'claude', openedByGuest: guestId }).id }
     },
-    selectTab: (windowId, tabId) => void selected.push({ windowId, tabId }),
+    liveTabs: () => tabs.list(A).map((t) => t.id),
+    closeTab: (_windowId, tabId) => tabs.close(A, tabId),
+    selectTab: (windowId, tabId, view) => void selected.push({ windowId, tabId, ...(view === undefined ? {} : { view }) }),
     prompt: () => undefined
   }
   return new PageTabDiscuss({
@@ -282,5 +288,95 @@ describe('the page asks: ccPanel.tab.discuss() and the shell pool', () => {
     b.focusedNow = true
     b.fromPage({ type: TAB_DISCUSS_MESSAGE })
     expect(asks).toEqual([TAB_B])
+  })
+})
+
+describe("a write guest's Ask Claude (03e A, B)", () => {
+  const GUEST_VIEW = 'web:9'
+  let allowed: boolean
+  let openTabs: Array<readonly string[]>
+  const guest = (over: Partial<DiscussGuest> = {}): DiscussGuest => ({
+    id: 'g1',
+    viewId: GUEST_VIEW,
+    allowed: () => allowed,
+    openTab: async (live, create) => {
+      openTabs.push(live)
+      return create()
+    },
+    ...over
+  })
+  beforeEach(() => {
+    allowed = true
+    openTabs = []
+  })
+
+  it('kicked, downgraded or the tab unshared while the plugin was asked: nothing sent, nothing selected', async () => {
+    const page = fileTab()
+    const claude = waitingTab()
+    context = async () => {
+      allowed = false
+      return { text: 'ctx' }
+    }
+    await expect(discuss().discuss(caller(GUEST_VIEW), page, 'q', { kind: 'tab', tabId: claude }, guest())).resolves.toEqual({
+      ok: false,
+      error: GUEST_DISCUSS_REFUSED
+    })
+    expect(ptyOf(claude).writes.join('')).not.toContain('About:')
+    expect(selected).toEqual([])
+  })
+
+  it("still allowed: sent with the guest's id and selected in the guest's own view only", async () => {
+    const page = fileTab()
+    const claude = waitingTab()
+    await expect(discuss().discuss(caller(GUEST_VIEW), page, 'q', { kind: 'tab', tabId: claude }, guest())).resolves.toEqual({
+      ok: true,
+      tabId: claude,
+      queued: false
+    })
+    expect(ptyOf(claude).writes.join('')).toContain('About: x.ts')
+    expect(selected).toEqual([{ windowId: WIN_A, tabId: claude, view: GUEST_VIEW }])
+  })
+
+  it('queued behind a busy turn, then the guest is kicked: the Stop pastes nothing of it', async () => {
+    const page = fileTab()
+    const claude = waitingTab()
+    registry.applyHook(claude, 'UserPromptSubmit', { prompt: 'p' })
+    await expect(discuss().discuss(caller(GUEST_VIEW), page, 'later', { kind: 'tab', tabId: claude }, guest())).resolves.toMatchObject({ ok: true, queued: true })
+    expect(registry.get(claude)?.queue.map((q) => q.guestId)).toEqual(['g1'])
+    guestOk = false
+    registry.applyHook(claude, 'Stop', {})
+    expect(ptyOf(claude).writes.join('')).not.toContain('later')
+    expect(registry.get(claude)?.queue).toEqual([])
+  })
+
+  it("a new session is the guest's tab: through its openTab (D-21) with the live tabs, tagged, selected in its view", async () => {
+    const page = fileTab()
+    const opened: string[] = []
+    const answer = await discuss(opened).discuss(caller(GUEST_VIEW), page, 'new one', { kind: 'new' }, guest())
+    expect(answer).toMatchObject({ ok: true, queued: false })
+    const tabId = (answer as { tabId: string }).tabId
+    expect(openTabs).toHaveLength(1)
+    expect(openTabs[0]).toContain(page)
+    expect(opened).toHaveLength(1)
+    expect(opened[0]!.startsWith('g1: About: x.ts')).toBe(true)
+    expect(tabs.list(A).find((t) => t.id === tabId)?.openedByGuest).toBe('g1')
+    expect(selected).toEqual([{ windowId: WIN_A, tabId, view: GUEST_VIEW }])
+  })
+
+  it("over the guest's cap (openTab throws) or refused before the send: no new session", async () => {
+    const page = fileTab()
+    const opened: string[] = []
+    const capped = guest({
+      openTab: async () => {
+        throw new Error('a guest may have at most 4 tabs open')
+      }
+    })
+    await expect(discuss(opened).discuss(caller(GUEST_VIEW), page, 'x', { kind: 'new' }, capped)).resolves.toEqual({
+      ok: false,
+      error: 'No new session: a guest may have at most 4 tabs open'
+    })
+    allowed = false
+    await expect(discuss(opened).discuss(caller(GUEST_VIEW), page, 'x', { kind: 'new' }, guest())).resolves.toEqual({ ok: false, error: GUEST_DISCUSS_REFUSED })
+    expect(opened).toEqual([])
   })
 })

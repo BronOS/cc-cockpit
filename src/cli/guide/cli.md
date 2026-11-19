@@ -133,8 +133,9 @@ stderr).
   text. The desktop keeps its OS notifications and lists none.
   `revoke` signs out one device by the id `status` shows, or all of them. `stop` quits a
   server-mode app as SIGTERM does (open browser tabs reconnect when it is back). On the desktop only
-  `status` and `revoke` are answered; the rest says "use Settings › Web access". When the app is
-  not running `ccc web` prints "cc-cockpit is not running" and exits 1.
+  `status` and `revoke` (and the guest commands below, but for `invite` and `role … write`, which
+  say to use the app window) are answered; the rest says "use Settings › Web access". When the app is not running `ccc web` prints
+  "cc-cockpit is not running" and exits 1.
 - In server mode `ccc web` also hands out and changes sign-in, again only from a shell on the
   server: `ccc web link [--regenerate]` prints the access link (made on first use; `--regenerate`
   makes a new one and signs out every device that used the old); `ccc web add-device` prints a
@@ -154,6 +155,20 @@ stderr).
   against the current folder; `''` goes back to the default, the server user's home folder; a folder
   that is gone when a browser asks falls back to home with a note); `ccc web status` shows it. Each
   change is written to `web-access.log`, never a link or a password.
+- Guests (a web device bound to one project, a role and a tab scope) from the same shell:
+  `ccc web invite --project <id|path> --name <name> --role read|write [--tabs all|<id>,<id>]
+  [--lifetime 1d|7d|forever] [--json]` makes an invite (server mode only; on the desktop guests are
+  invited in the app window) and prints its link alone on stdout, shown only this once and never
+  logged (`--json`: `{ link, inviteId, guestId, expiresAt, warning? }`). `--tabs` defaults to all
+  (tabs opened later included), `--lifetime` to 1d (counted from the redeem; an unused invite expires
+  after a day); `--project` is a project id or the folder of a project cc-cockpit knows. When web
+  access listens on loopback only, a warning on stderr says to set an external origin or a network
+  bind so the guest can reach it. `ccc web guests [--json]` lists the guests and pending invites (id,
+  name, role, project, scope, state, until when; a pending one its invite id and expiry).
+  `ccc web kick <guest id|name>` removes a guest (a pending one's invite is cancelled) and
+  `ccc web kick --invite <invite id>` cancels an invite; `ccc web role <guest id|name> read|write`
+  switches a guest's role (`write` in server mode only). A name two guests share is refused: use the
+  id. Each change is written to `web-access.log` with the guest's id, never a link or a name.
 - `ccc room [status] [--json]`, `ccc room join <invite>`, `ccc room leave`, `ccc room send <name|all>
   <text...>` (or `-` for stdin), `ccc room read` and `ccc room doc ls | get <path> | put <path> -` are
   messages and shared docs between the Claude tabs of one room, made by a plugin. Claude tabs only (any

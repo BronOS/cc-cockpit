@@ -45,10 +45,23 @@
 // restart (`panels.reload`), a web reconnect and main's `port.resync` (a port paused at the relay's
 // byte limit, main/web/port-relay.ts); a page tab's port that main ends is not followed by a reload.
 //
+// Guests (design-guests §6, D-17). The plugin port message (`cc-plugin.port`) carries `access`
+// beside `remote`: the view's access as this shell hints it (shell-kind.ts viewAccessHint: `owner`, or
+// the guest's role), read when the port is posted, so a reconnect after a role switch (new view,
+// remounted shell) posts the new one; the SDK shows it as `ccPanel.view.access`. A hint for the page
+// to hide what it cannot do, never a right: the plugin's host learns a view's access from main's
+// port tag. Inline overlays' `cc-overlay.port` gets nothing (not a plugin page's SDK message).
+// A port main opened `oneWay` (a read guest's port to a plugin that is not guest-aware) relays
+// main to page only: what the page posts is dropped here, logged once per port. Main drops it too
+// (main/web/port-relay.ts); this only spares the socket.
+//
 // DOM-free (the frame, the timers and the channel factory are passed in) so unit tests run it in
 // plain Node, whose MessageChannel behaves as the browser's.
 
+import { PORT_MESSAGE } from '../../sdk/panel-core'
 import { isPageTabPortKey } from '../../shared/page-tabs'
+import type { ViewAccess } from '../../shared/views'
+import { viewAccessHint } from '../shell-kind'
 import { MAX_PORT_KEY_LENGTH, MAX_PORT_MESSAGE_LENGTH, type PortCloseFrame, type PortMsgFrame } from '../../shared/web-protocol'
 
 /** What the frame that took a relayed port1 holds on to. */
@@ -79,8 +92,12 @@ export interface ChannelLike {
 export interface PortRelayOptions {
   /** A frame to main; false when it did not go out (the socket dropped, or over the frame cap). */
   send(frame: PortMsgFrame | PortCloseFrame): boolean
-  /** Hand port1 to whoever asked for `key` with `nonce` (panel-port-bus deliverPanelPort); false: nobody. */
-  deliver(key: string, nonce: number, port: MessagePort): boolean
+  /**
+   * Hand port1 to whoever asked for `key` with `nonce` (panel-port-bus deliverPanelPort); false: nobody.
+   * `oneWay`: main opened it host to page only, passed on so the frame can tell its page (a hint: the
+   * relay above drops what the page posts, and main drops it again).
+   */
+  deliver(key: string, nonce: number, port: MessagePort, oneWay?: true): boolean
   createChannel?(): ChannelLike
 }
 
@@ -103,8 +120,11 @@ export class PortRelay {
 
   constructor(private readonly options: PortRelayOptions) {}
 
-  /** `port.open` from main: a port for whoever asked with this key and nonce. */
-  open(key: unknown, nonce: unknown): void {
+  /**
+   * `port.open` from main: a port for whoever asked with this key and nonce. `oneWay`: main to page
+   * only (see the top of the file); the page's messages are dropped, never sent.
+   */
+  open(key: unknown, nonce: unknown, oneWay = false): void {
     if (this.closed || typeof key !== 'string' || key === '' || key.length > MAX_PORT_KEY_LENGTH) return
     if (typeof nonce !== 'number' || !Number.isSafeInteger(nonce)) return
     // Main replaced this key's port (and said `port.close` for the old one first); defensive.
@@ -112,9 +132,18 @@ export class PortRelay {
     const ch = this.options.createChannel?.() ?? new MessageChannel()
     const entry: Entry = { nonce, port: ch.port2 }
     this.ports.set(key, entry)
-    // Assigning onmessage starts the port (in the browser and in Node).
+    let warnedOneWay = false
+    // Assigning onmessage starts the port (in the browser and in Node). A one-way port is started
+    // too, so what the page posts is read and dropped rather than queued for the port's life.
     ch.port2.onmessage = (e: MessageEvent<unknown>) => {
       if (this.ports.get(key) !== entry) return
+      if (oneWay) {
+        if (!warnedOneWay) {
+          warnedOneWay = true
+          console.warn(`web bridge: ${key} is display-only for this view; its messages are not sent`)
+        }
+        return
+      }
       // The SDK posts one JSON string per message (panel-core.ts); main checks it again.
       if (typeof e.data !== 'string' || e.data.length > MAX_PORT_MESSAGE_LENGTH) return
       if (!this.options.send({ t: 'port.msg', key, nonce, m: e.data })) console.warn(`web bridge: a message of ${key} was not sent`)
@@ -136,7 +165,7 @@ export class PortRelay {
     handles.set(ch.port1, handle)
     let taken = false
     try {
-      taken = this.options.deliver(key, nonce, ch.port1)
+      taken = oneWay ? this.options.deliver(key, nonce, ch.port1, true) : this.options.deliver(key, nonce, ch.port1)
     } catch (err) {
       console.warn(`web bridge: handing over the port of ${key} failed`, err)
     }
@@ -262,6 +291,15 @@ export interface FrameLoadsOptions {
 /** Whether a relayed port is a plugin panel's (a slot's or settings page's key starts with `@`). */
 function isPanelKey(key: string): boolean {
   return !key.startsWith('@')
+}
+
+/**
+ * A plugin page's port message with the view's access added (see the top of the file); any other
+ * message (an inline overlay's) as it is. A new object: frame-messages.ts portMessage() is frozen.
+ */
+export function withAccess(message: object, access: ViewAccess = viewAccessHint()): object {
+  if ((message as { type?: unknown }).type !== PORT_MESSAGE) return message
+  return { ...message, access }
 }
 
 /** Close a port this will not hand over, and tell main when it is a relayed one. */
@@ -419,7 +457,7 @@ export class FrameLoads {
   private hand(visit: number, port: MessagePort): void {
     const intro = this.o.intro?.()
     if (intro) this.o.target.post(intro)
-    if (!this.o.target.post(this.o.portMessage, [port])) return drop(port)
+    if (!this.o.target.post(withAccess(this.o.portMessage), [port])) return drop(port)
     const handle = relayHandleOf(port)
     if (!handle) return
     this.handle = handle

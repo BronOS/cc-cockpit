@@ -857,6 +857,28 @@ export function removeLeaf(
   return { ok: true, groups: canon, order: others }
 }
 
+/**
+ * A guest's view of the arrangement (D-16): every tab `visible` says no to is removed from the order and
+ * from its group, the siblings take its share (renormalised, as a closed pane's would), a group left with
+ * one pane dissolves into a plain tab, and a group that lost any member loses its name (a name can say
+ * what the hidden pane is). Group and split ids are kept, so a guest's later `groups.changed` matches.
+ * Pure; the input is main's own snapshot, so nothing is refused.
+ */
+export function projectGroups(snapshot: GroupsSnapshot, visible: (tabId: string) => boolean): GroupsSnapshot {
+  const order = snapshot.order.filter((t) => visible(t))
+  const live = new Set(order)
+  const projected = canonAll(snapshot.groups, live, GROUP_CAPS)
+  const groups = projected.map((g) => {
+    const before = snapshot.groups.find((o) => o.id === g.id)
+    const lost = before !== undefined && leavesOf(before.root).some((t) => !live.has(t))
+    if (!lost || g.name === undefined) return g
+    const out = { ...g }
+    delete out.name
+    return out
+  })
+  return { seq: snapshot.seq, order: contiguousOrder(order, groups), groups }
+}
+
 /** Ungroup: the group's members become plain tabs where they are (the block stays); nothing closes. */
 export function dissolve(groups: readonly TabGroup[], order: readonly string[], groupId: string): GroupsResult {
   if (!groups.some((g) => g.id === groupId)) return refuse('unknown-group')

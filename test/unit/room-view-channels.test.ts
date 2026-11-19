@@ -383,7 +383,7 @@ const senders = new Map<number, SenderContext>([
   [12, { kind: 'project', windowId: 2, projectId: P2 }],
   [13, { kind: 'picker', windowId: 3 }]
 ])
-const browser = (viewId: `web:${number}` = 'web:5') => webCaller({ kind: 'project', windowId: 1, projectId: P1 }, viewId)
+const browser = (viewId: `web:${number}` = 'web:5') => webCaller({ kind: 'project', windowId: 1, projectId: P1 }, viewId, 'owner')
 
 function routerSetup(options: { server?: boolean } = {}) {
   const ipc = new FakeIpcMain()
@@ -527,7 +527,7 @@ describe('registerRoomViewHandlers', () => {
     expect(posted).toEqual([{ windowId: 1, ask: { requestId: 'room-remove-1', roomId: id, title: 'Team', name: 'bob' } }])
     expect(await memberNames(id)).toEqual(['alice', 'bob'])
     // Another project's window cannot answer it.
-    const otherWindow = webCaller({ kind: 'project', windowId: 2, projectId: P2 }, 'web:9')
+    const otherWindow = webCaller({ kind: 'project', windowId: 2, projectId: P2 }, 'web:9', 'owner')
     expect(await router.dispatch(otherWindow, 'rooms.removeAnswer', { requestId: 'room-remove-1', remove: true })).toBe(false)
     // Any view of the window may (here another browser): first answer wins.
     expect(await router.dispatch(browser('web:6'), 'rooms.removeAnswer', { requestId: 'room-remove-1', remove: true })).toBe(true)

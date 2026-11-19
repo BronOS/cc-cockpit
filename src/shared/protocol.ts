@@ -109,6 +109,12 @@ export const HOST_ONLY_COMMANDS: readonly string[] = [
   'web.password',
   'web.mode',
   'web.set',
+  // Guests (design-guests §12, D-25): minting, listing, kicking and switching guests is the owner's shell
+  // only, never a tab's (a prompt-injected Claude must not invite itself a friend).
+  'web.invite',
+  'web.guests',
+  'web.kick',
+  'web.role',
   'plugin.limits.set'
 ]
 

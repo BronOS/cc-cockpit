@@ -247,7 +247,9 @@ export function createSession(ui, timers = { set: (fn, ms) => setTimeout(fn, ms)
     // is there: the host never saves an absolute path, so a restored one whose file is gone must not
     // turn into an editable "New file" whose every save is refused.
     const outside = isOutsidePath(head.path)
-    s.readOnly = (s.exists && head.readOnly === true) || outside
+    // The host's word counts for a missing file too: a read-only guest's view of a file that is not there yet
+    // (lib/guests.js) is not a new file to create. The host's own answer for a missing file carries no flag.
+    s.readOnly = head.readOnly === true || outside
     s.why = s.readOnly ? head.why || (outside ? 'outside' : undefined) : undefined
     s.noText = s.exists && typeof text !== 'string'
     if (s.exists) {

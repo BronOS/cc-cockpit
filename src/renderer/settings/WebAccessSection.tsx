@@ -23,7 +23,11 @@ import {
   modeHelp,
   modeNeedsPassword,
   modeOptions,
+  NONE_GUESTS_NOTE,
   NONE_MODE_NOTE,
+  DEFAULT_OWNER_NAME,
+  ownerNameOf,
+  ownerNamePatch,
   NONE_REVOKE_NOTE,
   passwordDraftProblem,
   patchOf,
@@ -42,7 +46,9 @@ const loadWebAccess = (): Promise<WebAccessView> => window.cockpit.invoke('setti
 /**
  * Settings › General › Web access (design-web.md §4): open the cockpit in a browser on another device.
  * Everything here is the desktop's alone (every channel is `no`-class: a browser must never widen its
- * own access), and main validates every value again; the page only shows main's reasons.
+ * own access), and main validates every value again; the page only shows main's reasons. One exception:
+ * the owner's name for guests (D-24), which grants nothing, so a server's browser may save it alone
+ * (spec-review 23, a name-only patch; main decides that by the view it bound).
  *
  * The access link is a secret. It is not fetched until the person presses Show, it is not in the page
  * while hidden (web-access-model.ts `displayedLink`), and it hides again after a minute, so a
@@ -106,10 +112,16 @@ function ServerWebAccessSection(): React.JSX.Element {
     <>
       <Group
         title="Web access"
-        description="This cockpit runs as a server: browsers are the only way in. What is set now, read-only here."
+        description="This cockpit runs as a server: browsers are the only way in. What is set now, read-only here but for your name for guests."
       >
         {view.error && <p role="alert" className="settings-alert">{view.error}</p>}
         {error && <p role="alert" className="settings-alert">{error}</p>}
+        {/* Its own card: the read-only card's foot ("change these with ccc web") stays true of every row in it. */}
+        {view.data && (
+          <div className="settings-card">
+            <OwnerNameRow data={view.data} busy={busy} run={run} reload={reload} />
+          </div>
+        )}
         {view.data && (
           <div className="settings-card" data-testid="web-access-server-card">
             {serverCardRows(view.data).map((row) => (
@@ -272,10 +284,90 @@ function WebAccessCard(props: {
           />
         )}
         {form.mode === 'none' && !pendingPassword && (
-          <Row label="No sign-in" help={NONE_MODE_NOTE} />
+          <>
+            <Row label="No sign-in" help={NONE_MODE_NOTE} />
+            <Row label="Guests" help={NONE_GUESTS_NOTE} />
+          </>
         )}
+        <OwnerNameRow data={data} busy={busy} run={run} reload={reload} onSave={save} />
       </div>
     </>
+  )
+}
+
+/**
+ * "Your name for guests" (D-24): what guests read as "<name>'s cc-cockpit" and beside your avatar on the
+ * tabs. Its own draft and Save (the address form's draft is another), a patch with `ownerName` alone
+ * (web-access-model.ts `ownerNamePatch`); a blank name saves the default. Plain text: React renders it
+ * as text everywhere, main checks it again.
+ */
+function OwnerNameRow(props: {
+  data: WebAccessView
+  busy: string | null
+  run: Action['run']
+  reload: () => void
+  /**
+   * The desktop card's save, which shows the §4.3 confirm when main answers `needsConfirm` (a name-only
+   * patch gets it only when the stored settings carry a risk not confirmed, a hand-edited file). Absent
+   * in a server's browser, which has no risk confirm: there main's refusal shows as the page's error.
+   */
+  onSave?: (patch: WebAccessPatch) => void
+}): React.JSX.Element {
+  const id = useId()
+  const saved = ownerNameOf(props.data)
+  const [draft, setDraft] = useState(saved)
+  // Follow main's copy when it changes (another window, a refused save): adjusted while rendering.
+  const [seen, setSeen] = useState(saved)
+  if (seen !== saved) {
+    setSeen(saved)
+    setDraft(saved)
+  }
+  const [problem, setProblem] = useState<string | null>(null)
+  const result = ownerNamePatch(props.data, draft)
+  const submit = (): void => {
+    if (result === null) return
+    if ('error' in result) {
+      setProblem(result.error)
+      return
+    }
+    setProblem(null)
+    if (props.onSave) props.onSave(result.patch)
+    else void props.run('web-owner-name', () => window.cockpit.invoke('settings.webAccessSet', { value: result.patch })).then(props.reload)
+  }
+  return (
+    <Row
+      label="Your name for guests"
+      htmlFor={`${id}-owner-name`}
+      data-testid="web-access-owner-name"
+      help={
+        problem !== null ? (
+          <span className="settings-error">{problem}</span>
+        ) : (
+          `Guests see it beside your tab and in their banner. Empty: ${DEFAULT_OWNER_NAME}.`
+        )
+      }
+    >
+      <input
+        id={`${id}-owner-name`}
+        type="text"
+        value={draft}
+        placeholder={DEFAULT_OWNER_NAME}
+        spellCheck={false}
+        disabled={props.busy !== null}
+        onChange={(e) => {
+          setProblem(null)
+          setDraft(e.target.value)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit()
+        }}
+      />
+      {/* "Save name", not "Save": the address form above has its own Save, and two same-named buttons in one
+          section leave a person (and a screen reader's button list) guessing which saves what. */}
+      <button type="button" className="primary" disabled={props.busy !== null || result === null} onClick={submit}>
+        Save name
+      </button>
+    </Row>
   )
 }
 

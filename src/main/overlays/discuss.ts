@@ -25,7 +25,26 @@ import {
 import { errorText } from '../../shared/error-text'
 import type { DiscussAnswer } from '../../shared/ipc'
 import type { CleanOverlayType } from '../../shared/overlay-buttons'
+import type { ViewId } from '../../shared/views'
 import type { DiscussSessions } from './overlay-manager'
+
+/**
+ * A write guest's Discuss (03e A, B; design-guests §4): the router builds it from the caller it bound. The text is
+ * sent only if `allowed` still holds right before the send (the guest kicked, made read-only or the target tab
+ * unshared while its plugin was asked: nothing goes), and a queued text carries `id` so the session registry checks
+ * again when the gate dequeues it. A new session opens through `openTab` (IpcRouter.openGuestTab: D-21's cap and
+ * reservation, tagged as the guest's, noted after a re-check). The tab is then selected in `viewId` only.
+ */
+export interface DiscussGuest {
+  id: string
+  viewId: ViewId
+  /** Still a write guest of the project that sees `target` (a tab) now; false on any doubt. */
+  allowed(target: DiscussTarget): boolean
+  openTab<T>(liveTabs: readonly string[], create: () => Promise<T>, idOf: (tab: T) => string, close: (tabId: string) => void): Promise<T | null>
+}
+
+/** What a guest's Discuss answers when its access changed before the send. */
+export const GUEST_DISCUSS_REFUSED = 'Not sent: your access changed'
 
 export interface DiscussParts {
   /** The overlay's title (any text: it is made one line here). */
@@ -181,18 +200,33 @@ export async function deliverDiscuss(
   budget: DiscussSessionBudget,
   windowId: number,
   target: DiscussTarget,
-  text: string
+  text: string,
+  guest?: DiscussGuest
 ): Promise<DiscussAnswer> {
+  // A guest's access is read again right before the send (03e A): what changed while its plugin was asked counts.
+  if (guest !== undefined && !guest.allowed(target)) return { ok: false, error: GUEST_DISCUSS_REFUSED }
   if (target.kind === 'tab') {
     try {
-      return { ok: true, tabId: target.tabId, queued: !sessions.send(target.tabId, text, 'core').delivered }
+      const sent = guest === undefined ? sessions.send(target.tabId, text, 'core') : sessions.send(target.tabId, text, 'core', guest.id)
+      return { ok: true, tabId: target.tabId, queued: !sent.delivered }
     } catch (err) {
       return { ok: false, error: `Not sent: ${errorText(err)}` }
     }
   }
   if (!budget.take(windowId)) return { ok: false, error: 'Too many new sessions from Discuss in the last minute; try again shortly' }
   try {
-    return { ok: true, tabId: (await sessions.openSession(windowId, text)).tabId, queued: false }
+    if (guest === undefined) return { ok: true, tabId: (await sessions.openSession(windowId, text)).tabId, queued: false }
+    // D-21 (03e B): the guest's new session is one of its tabs, under its cap, tagged and noted as such.
+    const { liveTabs, closeTab } = sessions
+    if (!liveTabs || !closeTab) throw new Error('not available')
+    const opened = await guest.openTab(
+      liveTabs(windowId),
+      () => sessions.openSession(windowId, text, guest.id),
+      (o) => o.tabId,
+      (tabId) => closeTab(windowId, tabId)
+    )
+    if (opened === null) throw new Error('nothing opened')
+    return { ok: true, tabId: opened.tabId, queued: false }
   } catch (err) {
     budget.refund(windowId)
     return { ok: false, error: `No new session: ${errorText(err)}` }

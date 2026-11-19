@@ -219,7 +219,8 @@ export function sendNow(entry: SessionEntry, item: QueuedText): GateStep {
  * isPersonInput): `typed` is set and every queued `plugin` item is dropped at once, so the next
  * Stop cannot paste a plugin's text into a session the person is now driving (their half-typed
  * prompt would be glued to it, or the turn they are running would be followed by one they never
- * asked for). `core` items stay queued and are delivered as before: the person sent them.
+ * asked for). `core` items stay queued and are delivered as before: the person sent them. A guest's Discuss
+ * (`core` with a `guestId`, 03e A) goes like a plugin's (03g): the person now driving the tab did not send it.
  *
  * A plugin paste already written (`delivering`) is not undone: it is in Claude's input box, and
  * the gate's only tool is typing more. Nothing is delivered here either: a takeover never types.
@@ -230,9 +231,10 @@ export function takenOver(entry: SessionEntry): GateStep {
   if (entry.typed) return { entry }
   // Only `core` stays: a `room` item never gets queued (sendNow), but if one ever did, the
   // takeover is exactly when it must go (design-rooms.md §2: a pointer is never kept past it).
-  const kept = entry.queue.filter((q) => q.origin === 'core')
+  const keep = (q: QueuedText): boolean => q.origin === 'core' && q.guestId === undefined
+  const kept = entry.queue.filter(keep)
   const step: GateStep = { entry: { ...entry, typed: true, queue: kept } }
-  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => q.origin !== 'core')
+  if (kept.length < entry.queue.length) step.dropped = entry.queue.filter((q) => !keep(q))
   return step
 }
 
@@ -298,6 +300,22 @@ export function deliveringTimedOut(entry: SessionEntry): SessionEntry {
 export function settled(entry: SessionEntry): GateStep {
   if (!entry.settling) return { entry }
   return deliverHead({ ...entry, settling: false })
+}
+
+/**
+ * The step a gate function returned, with every delivered item `allowed` refuses taken out instead of pasted, and
+ * the next head delivered in its place (03e A: a guest's Discuss text whose guest was kicked, made read-only or lost
+ * the tab while it waited). The refused items are reported as `dropped`. Pure: `allowed` is main's live check.
+ */
+export function skipRefused(step: GateStep, allowed: (item: QueuedText) => boolean): GateStep {
+  let s = step
+  const refused: QueuedText[] = []
+  while (s.delivered !== undefined && s.write !== undefined && !allowed(s.delivered)) {
+    refused.push(s.delivered)
+    s = deliverHead({ ...s.entry, delivering: false })
+  }
+  if (refused.length === 0) return step
+  return { ...s, dropped: [...(s.dropped ?? []), ...refused] }
 }
 
 function deliverHead(entry: SessionEntry): GateStep {

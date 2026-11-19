@@ -1,0 +1,157 @@
+import { describe, expect, it } from 'vitest'
+import {
+  byCommand,
+  byOverlayButton,
+  byOverlayDiscuss,
+  byPageDiscuss,
+  byTab,
+  byTabCreate,
+  GUEST_CLASS,
+  GUEST_SAFE_COMMANDS,
+  guestClassOf,
+  guestRoleAllows,
+  type GuestRule
+} from '../../src/shared/guest-class'
+import { INVOKE_CHANNELS, REMOTE_CLASS, type InvokeChannel } from '../../src/shared/ipc'
+import { CORE_COMMANDS } from '../../src/main/commands/command-registry'
+
+// design-guests §4 / shared/design.md §16.3: what a guest may call. Default deny, narrower than REMOTE_CLASS.
+
+const MALFORMED: unknown[] = [undefined, null, 3, 'x', [], [{ tabId: 't' }], { tabId: 3 }, { tabId: '' }, { tabId: 'x'.repeat(201) }]
+
+describe('GUEST_CLASS', () => {
+  it('has exactly one entry per invoke channel', () => {
+    expect(Object.keys(GUEST_CLASS).sort()).toEqual([...INVOKE_CHANNELS].sort())
+  })
+
+  it('only narrows REMOTE_CLASS: no channel a remote view may not call is read or write for a guest', () => {
+    for (const channel of INVOKE_CHANNELS) {
+      if (REMOTE_CLASS[channel] === 'no') expect(GUEST_CLASS[channel].cls, channel).toBe('no')
+    }
+  })
+
+  it('answers no for unknown and inherited names', () => {
+    for (const name of ['nope', '__proto__', 'toString', 'constructor', 'hasOwnProperty', '']) expect(guestClassOf(name).cls).toBe('no')
+  })
+
+  it('gives every read or write channel whose request names a target an extractor', () => {
+    // Runtime twin of the type rule (GuestRule): a read/write entry of a channel whose request has a target
+    // field. Channels with no target field and no extractor are the "plain" ones listed here.
+    const plain = new Set([
+      'window.info', 'app.openExternal', 'theme.get', 'theme.scheme', 'prefs.get', 'sessions.list', 'layout.get',
+      'commands.list', 'pageTabs.unsaved', 'overlays.list', 'tabs.list', 'groups.get', 'tabs.visibility', 'presence.get'
+    ])
+    for (const channel of INVOKE_CHANNELS) {
+      const rule = guestClassOf(channel)
+      if (rule.cls === 'no') continue
+      if (plain.has(channel)) expect(rule.target, channel).toBeUndefined()
+      else expect(typeof rule.target, channel).toBe('function')
+    }
+  })
+
+  it('keeps the riskiest channels away from guests (design §4)', () => {
+    const never: InvokeChannel[] = [
+      'links.answer', 'oauth.paste', 'plugins.limits.set', 'plugins.globalLimits.set', 'projects.close',
+      'settings.pluginInstall', 'settings.marketplaceInstall', 'settings.pluginSettingsSave', 'settings.webDeviceRevoke',
+      'settings.webAccessSet', 'layout.set', 'tabs.flag', 'tabs.toggleFlag', 'tabs.rename', 'tabs.reorder', 'tabs.roomMark',
+      'tabs.commands', 'tabs.screen', 'rooms.doc', 'rooms.pause', 'overlays.take', 'overlays.message', 'sessions.closeAnswer',
+      'groups.place', 'groups.area', 'notices.click', 'settingsPage.connect', 'guests.list', 'guests.invite', 'guests.kick',
+      'guests.setRole', 'guests.setScope', 'guests.shareTab', 'guests.revokeInvite', 'settings.pluginGuestAccessSet',
+      'tabs.guestCloseAnswer'
+    ]
+    for (const channel of never) expect(GUEST_CLASS[channel].cls, channel).toBe('no')
+  })
+
+  it('lets a read guest watch and a write guest pair', () => {
+    for (const c of ['tabs.list', 'tabs.ack', 'tabs.selected', 'panels.connect', 'groups.get', 'presence.get'] as const) {
+      expect(GUEST_CLASS[c].cls, c).toBe('read')
+    }
+    for (const c of ['tabs.input', 'tabs.fit', 'tabs.create', 'tabs.close', 'trash.answer', 'downloads.accept', 'commands.run'] as const) {
+      expect(GUEST_CLASS[c].cls, c).toBe('write')
+    }
+  })
+
+  it('the type makes an extractor mandatory on a read or write entry whose request names a target', () => {
+    // @ts-expect-error: tabs.input names a tabId, so a write entry without a target does not compile.
+    const bad: GuestRule<'tabs.input'> = { cls: 'write' }
+    const fine: GuestRule<'tabs.input'> = { cls: 'no' }
+    const plain: GuestRule<'tabs.list'> = { cls: 'read' }
+    expect([bad.cls, fine.cls, plain.cls]).toEqual(['write', 'no', 'read'])
+  })
+})
+
+describe('guestRoleAllows', () => {
+  it('read for both roles, write for write guests, no for none', () => {
+    expect(guestRoleAllows('read', 'read')).toBe(true)
+    expect(guestRoleAllows('write', 'read')).toBe(true)
+    expect(guestRoleAllows('read', 'write')).toBe(false)
+    expect(guestRoleAllows('write', 'write')).toBe(true)
+    expect(guestRoleAllows('write', 'no')).toBe(false)
+    expect(guestRoleAllows('read', 'no')).toBe(false)
+  })
+})
+
+describe('target extractors (fail closed)', () => {
+  it('byTab: the tab, or undefined for anything malformed', () => {
+    expect(byTab({ tabId: 't1', data: 'x' })).toEqual([{ tab: 't1' }])
+    for (const raw of MALFORMED) expect(byTab(raw), JSON.stringify(raw)).toBeUndefined()
+    // An inherited key is not the payload's own.
+    expect(byTab(Object.create({ tabId: 't1' }))).toBeUndefined()
+  })
+
+  it('every extractor of the table is undefined on a non-object', () => {
+    for (const channel of INVOKE_CHANNELS) {
+      const target = guestClassOf(channel).target
+      if (!target) continue
+      for (const raw of [undefined, null, 3, 'x', []]) expect(target(raw), `${channel} ${JSON.stringify(raw)}`).toBeUndefined()
+    }
+  })
+
+  it('commands.run: the plugin before the first slash; core ids and junk refused', () => {
+    expect(byCommand({ id: 'bronos.team/start' })).toEqual([{ plugin: 'bronos.team' }])
+    expect(byCommand({ id: 'a.b/c/d' })).toEqual([{ plugin: 'a.b' }])
+    for (const id of ['tab.close', '/x', '', 3, undefined, 'x'.repeat(201)]) expect(byCommand({ id }), String(id)).toBeUndefined()
+  })
+
+  it('tabs.create: Claude and Shell only; beside must name a tab', () => {
+    expect(byTabCreate({ kind: 'claude' })).toEqual([])
+    expect(byTabCreate({ kind: 'shell', cwd: '/x' })).toEqual([])
+    expect(byTabCreate({ kind: 'claude', beside: { tabId: 't2', edge: 'right' } })).toEqual([{ tab: 't2' }])
+    expect(byTabCreate({ kind: 'command', level: 'app', entryId: 'e' })).toBeUndefined()
+    expect(byTabCreate({ kind: 'page' })).toBeUndefined()
+    expect(byTabCreate({ kind: 'claude', beside: {} })).toBeUndefined()
+    expect(byTabCreate({ kind: 'claude', beside: 'left' })).toBeUndefined()
+    expect(GUEST_CLASS['tabs.create'].cls).toBe('write')
+  })
+
+  it('Discuss: the page tab or overlay and the target tab; a new session names none', () => {
+    expect(byPageDiscuss({ tabId: 'p', question: 'q', target: { kind: 'tab', tabId: 'c' } })).toEqual([{ tab: 'p' }, { tab: 'c' }])
+    expect(byPageDiscuss({ tabId: 'p', question: 'q', target: { kind: 'new' } })).toEqual([{ tab: 'p' }])
+    expect(byPageDiscuss({ tabId: 'p', target: { kind: 'tab' } })).toBeUndefined()
+    expect(byPageDiscuss({ tabId: 'p' })).toBeUndefined()
+    expect(byOverlayDiscuss({ overlayId: 'o', target: { kind: 'tab', tabId: 'c' } })).toEqual([{ overlay: 'o' }, { tab: 'c' }])
+    expect(byOverlayDiscuss({ overlayId: 'o', target: { kind: 'other', tabId: 'c' } })).toBeUndefined()
+  })
+
+  it('overlays.button: the overlay, plus the plugin of a type button', () => {
+    expect(byOverlayButton({ overlayId: 'o', source: 'opener', buttonId: 'b' })).toEqual([{ overlay: 'o' }])
+    expect(byOverlayButton({ overlayId: 'o', source: 'type', pluginId: 'x.y', buttonId: 'b' })).toEqual([{ overlay: 'o' }, { plugin: 'x.y' }])
+    expect(byOverlayButton({ overlayId: 'o', source: 'type', pluginId: 7, buttonId: 'b' })).toBeUndefined()
+  })
+})
+
+describe('GUEST_SAFE_COMMANDS', () => {
+  it('names only core commands, and a write guest has every read command', () => {
+    const core = new Set(CORE_COMMANDS.map((c) => c.id))
+    for (const role of ['read', 'write'] as const) for (const id of GUEST_SAFE_COMMANDS[role]) expect(core.has(id), id).toBe(true)
+    for (const id of GUEST_SAFE_COMMANDS.read) expect(GUEST_SAFE_COMMANDS.write).toContain(id)
+  })
+
+  it('never offers settings, folders, flags, layout or group edits', () => {
+    for (const id of ['app.openSettings', 'app.openFolder', 'tab.toggleFlag', 'zone.toggleLeft', 'pane.splitRight', 'pane.ungroup']) {
+      expect(GUEST_SAFE_COMMANDS.write, id).not.toContain(id)
+    }
+    expect(GUEST_SAFE_COMMANDS.read).not.toContain('tab.newClaude')
+    expect(GUEST_SAFE_COMMANDS.read).not.toContain('tab.close')
+  })
+})

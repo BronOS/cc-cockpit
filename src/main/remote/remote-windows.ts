@@ -18,6 +18,18 @@
 // Close project) is cancelled and the desktop picker shows; the window closes when the server no
 // longer has the project open, and stays otherwise (`backToPicker`).
 //
+// A guest (design-guests §11, the record's `guest`: this app joined someone else's cockpit with an
+// invite). Its first load is the invite (`<origin>/#i=<token>`): the host's page redeems it and lands
+// on its project, and the device cookie it gets is kept as any Direct sign-in's. What an owner's
+// window does on the person's behalf is not done for a guest: no project check and reopen POST
+// (`loadChecked`: a guest cannot reopen the host's projects, and must not try), no machine poll
+// (`serverIds`, `fetchFromServer`), no re-pair (Direct never does). Its page going back to the host's
+// picker, which a guest has no use for, is the host ending the session (`guestEnded`): with the
+// person's click the window closes and the desktop picker shows (the record stays there to open
+// again); with none the window stays and says so, since closing it would move the focus to whatever
+// window is behind it, the very move a page may not make without a click (see below).
+// A pinned guest's certificate (D-29) is the partition's (`certificatePin`, electron-remote-window.ts).
+//
 // Windows per (server, project): the project comes from the page's own routing (`?project=<id>`,
 // renderer/web/main.tsx), read on every main-frame navigation. Opening a project that has a window
 // focuses it; the server's web picker navigating a second window to it focuses the first and sends
@@ -143,7 +155,7 @@ import {
   isDownloadUrl
 } from '../../shared/downloads'
 import { recentEntryOf, type RemoteServerRecord } from '../../shared/remote-servers'
-import { PROJECTS_PATH, SESSION_PATH, type WebOpenProjectRequest } from '../../shared/web-protocol'
+import { inviteLink, PROJECTS_PATH, SESSION_PATH, type WebOpenProjectRequest } from '../../shared/web-protocol'
 import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
 import { warnLog } from '../warn-log'
@@ -336,6 +348,15 @@ export function remotePageUrl(origin: string, projectId?: string, token?: string
   return `${origin}/${query}${fragment}`
 }
 
+/**
+ * The page a window signs in with: an access token's (`remotePageUrl`, its project kept), or a guest
+ * invite's `<origin>/#i=<token>` (`inviteLink`, the host's own form: its page redeems the invite and
+ * picks the project, so none is put in the URL).
+ */
+export function signInUrl(origin: string, projectId: string | undefined, token: string, invite: boolean): string {
+  return invite ? inviteLink(origin, encodeURIComponent(token)) : remotePageUrl(origin, projectId, token)
+}
+
 /** Text from the server shown by main (a title, an error): control characters out, capped at `max`. */
 function serverText(text: string, max: number): string {
   let out = ''
@@ -444,6 +465,18 @@ export interface RemoteSessionHooks {
    * false means the adapter cancels it at once.
    */
   download(item: RemoteDownloadItem, webContentsId: number | undefined): boolean
+  /**
+   * A guest server's certificate pin (D-29) and the host name it holds for (`URL.hostname` of the
+   * record's origin), read on every verification; undefined: none (Chromium's own verdict only).
+   * Absent: none (tests of other things).
+   */
+  certificatePin?(): RemoteCertificatePin | undefined
+}
+
+/** A pinned host certificate: the SHA-256 of its DER (64 lower-case hex) for that host name only. */
+export interface RemoteCertificatePin {
+  hostname: string
+  pin: string
 }
 
 /** One server's partition. */
@@ -538,6 +571,8 @@ export interface RemoteOpenRequest {
   projectId?: string
   /** A one-time access token (a fresh pairing): the page signs in with `#t=`. */
   token?: string
+  /** `token` is a guest invite's: the first load is `<origin>/#i=<token>`, which the host's page redeems. */
+  invite?: true
   /**
    * The tab the project page selects once loaded (a session chip of another project, see
    * `isProjectSwitch`). A new window only: a window that shows the project already is only focused.
@@ -599,6 +634,8 @@ interface WindowRecord {
   title: string
   /** The person's close is being decided (the page asked, or the box up): another close waits for it. */
   closing: boolean
+  /** A guest's window that shows "the host ended this session" (`guestEnded`): an open of it loads again. */
+  ended: boolean
 }
 
 export type SessionReply = { mode: string; device: { id: string } | null }
@@ -718,8 +755,11 @@ export class RemoteWindows {
     await state.restored
     const projectId = request.projectId === '' ? undefined : request.projectId
     const existing = this.find(serverId, projectId)
+    const invite = request.invite === true
     if (existing !== undefined) {
-      if (request.token !== undefined) this.signInWith(existing, state, request.token)
+      if (request.token !== undefined) this.signInWith(existing, state, request.token, invite)
+      else if (existing.ended) this.load(existing, remotePageUrl(state.origin, projectId), projectId === undefined ? undefined : 'open')
+      existing.ended = false
       existing.view.focus()
       return
     }
@@ -755,13 +795,13 @@ export class RemoteWindows {
         if (made.rec !== undefined) this.closed(made.rec)
       }
     })
-    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, downloadClickAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined, title: remoteTitle(server.name), closing: false }
+    const rec: WindowRecord = { serverId, view, project: projectId, titled: null, clickedAt: undefined, downloadClickAt: undefined, closed: false, loads: 0, passed: undefined, focusedAt: ++this.focusSeq, retry: undefined, waiting: undefined, recheck: undefined, title: remoteTitle(server.name), closing: false, ended: false }
     made.rec = rec
     this.windows.set(view.id, rec)
     this.byWebContents.set(view.webContentsId, rec)
     this.options.onChanged?.()
     this.updateTitle(rec)
-    if (request.token !== undefined) this.signInWith(rec, state, request.token)
+    if (request.token !== undefined) this.signInWith(rec, state, request.token, invite)
     else this.load(rec, remotePageUrl(state.origin, projectId, undefined, request.tabId), projectId === undefined ? undefined : 'open')
   }
 
@@ -802,10 +842,11 @@ export class RemoteWindows {
 
   /**
    * The servers with a remote window open, each once, in the order their first open window opened
-   * (the machine poller's set, machine-status.ts).
+   * (the machine poller's set, machine-status.ts). A guest's server is left out: the host's own
+   * Claude tabs are not the guest's to count, and the poll would be a request the guest never made.
    */
   serverIds(): string[] {
-    return [...new Set([...this.windows.values()].map((r) => r.serverId))]
+    return [...new Set([...this.windows.values()].map((r) => r.serverId))].filter((id) => !this.isGuest(id))
   }
 
   /**
@@ -828,6 +869,8 @@ export class RemoteWindows {
   async fetchFromServer(serverId: string, path: string): Promise<unknown> {
     const state = this.servers.get(serverId)
     if (state === undefined) throw new Error('no such server')
+    // Never polled (`serverIds` leaves it out); refused here too, whatever asks.
+    if (this.isGuest(serverId)) throw new Error("a guest does not poll the host's sessions")
     await state.restored
     // No window to vouch for it: a tunnel server is probed before every poll.
     const origin = state.origin
@@ -893,7 +936,8 @@ export class RemoteWindows {
         void this.refreshKey(serverId, rec)
         this.trigger(rec)
       },
-      download: (item, webContentsId) => this.download(serverId, item, webContentsId)
+      download: (item, webContentsId) => this.download(serverId, item, webContentsId),
+      certificatePin: () => this.certificatePin(serverId)
     })
     const cookie = new RemoteCookie({
       serverId,
@@ -928,6 +972,22 @@ export class RemoteWindows {
 
   private now(): number {
     return this.options.now?.() ?? Date.now()
+  }
+
+  /** Whether server `serverId` is a guest's (see "A guest" in the header), as the record says now. */
+  private isGuest(serverId: string): boolean {
+    return this.options.store.get(serverId)?.guest === true
+  }
+
+  /**
+   * The pin of server `serverId`'s certificate and the host it is for, from the record as it is now:
+   * a forgotten server, or one with no pin, has none (the partition is then Chromium's own verdict).
+   */
+  private certificatePin(serverId: string): RemoteCertificatePin | undefined {
+    const server = this.options.store.get(serverId)
+    if (server?.certSha256 === undefined || server.via.kind !== 'direct') return undefined
+    const hostname = parsed(server.via.origin)?.hostname
+    return hostname === undefined || hostname === '' ? undefined : { hostname, pin: server.certSha256 }
   }
 
   /**
@@ -988,8 +1048,29 @@ export class RemoteWindows {
       return false
     }
     if (!isPickerNavigation(from, url, origin)) return true
-    if (this.gesture(rec, 'a move back to the picker', true)) this.backToPicker(rec, project)
+    if (this.isGuest(rec.serverId)) this.guestEnded(rec)
+    else if (this.gesture(rec, 'a move back to the picker', true)) this.backToPicker(rec, project)
     return false
+  }
+
+  /**
+   * A guest's project page going to the host's picker (see "A guest" in the header): the host ended
+   * the session (or sent the page where a guest has nothing). No question to the server (its project
+   * list is not the guest's to read for this). With the person's click (and the server's page-action
+   * budget) the window closes and the desktop picker shows, the record kept there; otherwise the
+   * window stays, saying so, and the focus with it. An open of it from the picker loads it again.
+   */
+  private guestEnded(rec: WindowRecord): void {
+    if (this.gesture(rec, 'a guest window closing', true)) {
+      this.options.showPicker?.()
+      rec.view.close()
+      return
+    }
+    const name = this.options.store.get(rec.serverId)?.name ?? 'The host'
+    rec.ended = true
+    rec.view.showError(
+      `${name} ended this session, or sent this window to its project list, which a guest does not see. Close this window; the server stays in the project picker, where you can open it again.`
+    )
   }
 
   /**
@@ -1301,13 +1382,13 @@ export class RemoteWindows {
    * SSH, the usual check: a token that did not work re-pairs, bounded as any re-pair. A pairing
    * already running keeps the say; the token is only loaded.
    */
-  private signInWith(rec: WindowRecord, state: ServerState, token: string): void {
+  private signInWith(rec: WindowRecord, state: ServerState, token: string, invite = false): void {
     if (state.pairing !== undefined) {
-      this.load(rec, remotePageUrl(state.origin, rec.project, token))
+      this.load(rec, signInUrl(state.origin, rec.project, token, invite))
       return
     }
     this.hold(rec, state, async () => {
-      await this.loadToken(rec, state, token)
+      await this.loadToken(rec, state, token, invite)
       if (this.options.store.get(rec.serverId)?.via.kind === 'ssh') await this.pair(rec, state)
     })
   }
@@ -1326,16 +1407,17 @@ export class RemoteWindows {
    * Load the page with `token` in `rec` and wait for the sign-in to land the cookie; the server's
    * other windows (still on their sign-in screen) reload once it has. True when it landed.
    */
-  private async loadToken(rec: WindowRecord, state: ServerState, token: string): Promise<boolean> {
+  private async loadToken(rec: WindowRecord, state: ServerState, token: string, invite = false): Promise<boolean> {
     const landed = this.waitSignedIn(state)
-    this.load(rec, remotePageUrl(state.origin, rec.project, token))
+    this.load(rec, signInUrl(state.origin, rec.project, token, invite))
     const ok = await landed
     if (ok) {
       // The page stores the sign-in's key a moment after the cookie landed: main's requests below need it.
       await state.keyWait
       for (const other of this.windowsOf(rec.serverId)) if (other !== rec) this.reload(other, state)
-      // The page signed in on its project: one the server closed shows "not open" until reopened.
-      if (rec.project !== undefined) this.load(rec, remotePageUrl(state.origin, rec.project), 'signedIn')
+      // The page signed in on its project: one the server closed shows "not open" until reopened. Not
+      // a guest's: the host's page goes to the invite's project itself, and a guest reopens nothing.
+      if (rec.project !== undefined && !this.isGuest(rec.serverId)) this.load(rec, remotePageUrl(state.origin, rec.project), 'signedIn')
     }
     return ok
   }
@@ -1418,7 +1500,8 @@ export class RemoteWindows {
    */
   private loadChecked(rec: WindowRecord, url: string, attempt: number, reopen: ReopenMode | undefined): void {
     const state = this.servers.get(rec.serverId)
-    const project = reopen === undefined ? undefined : projectOfUrl(url)
+    // A guest's page loads as is: no project list asked, no reopen POST (see "A guest" in the header).
+    const project = reopen === undefined || this.isGuest(rec.serverId) ? undefined : projectOfUrl(url)
     if (state === undefined || project === undefined) {
       rec.waiting = undefined
       rec.view.load(url)

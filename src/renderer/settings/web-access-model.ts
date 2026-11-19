@@ -14,6 +14,7 @@ import type {
   WebSecretsStatus
 } from '../../shared/web-access'
 import { SERVER_NONE_WARNING } from '../../shared/web-access'
+import { GUEST_NAME_MAX } from '../../shared/guests'
 
 /** How long a revealed link stays on screen before it hides again (a forgotten screen share must not keep it). */
 export const REVEAL_MS = 60_000
@@ -174,6 +175,9 @@ const MODE_TEXT: Record<WebAccessMode, { label: string; help: string }> = {
  */
 export const NONE_MODE_NOTE =
   'Anyone who can reach the address controls this computer. Revoke has no effect in this mode: a browser that is revoked or disconnected comes straight back without signing in. Host and Origin checks still apply, so other web pages and unknown names stay out. Use it only behind a proxy that signs people in.'
+
+/** The card's line under None (D-1): the Share button stays, and its dialog cannot invite. */
+export const NONE_GUESTS_NOTE = 'Inviting guests needs a sign-in mode.'
 
 /** The devices list's note while None is on: Revoke there does not lock anyone out. */
 export const NONE_REVOKE_NOTE = 'Sign-in is off, so Revoke has no effect: anyone who can reach the address comes back in. Pick another sign-in to keep browsers out.'
@@ -442,4 +446,59 @@ export function desktopCredentialNotes(credentials: WebAccessView['credentials']
     notes.push(`The password was saved by ${by(credentials.password)} and cannot be checked here: set it again.`)
   }
   return notes
+}
+
+// The owner's name in presence (design-guests §10, D-24): what guests see as "<owner>'s cc-cockpit" and
+// beside the owner's avatar. A Web access setting, default "Host", plain text, at most 60 characters
+// (GUEST_NAME_MAX, the guest names' cap). It grants nothing, so a server's browser may save it alone
+// (spec-review 23: a name-only patch from an owner browser).
+// `WebAccessView.ownerName` is optional on the wire (an older main's answer has none): read as the default.
+
+/** The name guests see when the owner set none. */
+export const DEFAULT_OWNER_NAME = 'Host'
+
+/** The longest owner name, in characters (code points), as for a guest's name. */
+export const OWNER_NAME_MAX = GUEST_NAME_MAX
+
+/** The owner's name as the view has it, or the default. */
+export function ownerNameOf(view: WebAccessView): string {
+  const name = view.ownerName
+  return typeof name === 'string' && name.trim() !== '' ? name : DEFAULT_OWNER_NAME
+}
+
+/**
+ * A character that has no place in a one-line name: C0 and C1 controls, DEL, and the Unicode line and
+ * paragraph separators (a name shown in a banner and a tooltip must stay one line). Read by code point,
+ * no regex.
+ */
+function isControl(cp: number): boolean {
+  return cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029
+}
+
+/**
+ * Why the typed name cannot be saved, or undefined. Blank is allowed: it goes back to the default
+ * (ownerNamePatch sends "Host"). Counted like the password, by NFC code points, so an accented letter
+ * typed either way counts once. Main checks again.
+ */
+export function ownerNameProblem(draft: string): string | undefined {
+  const name = draft.trim().normalize('NFC')
+  for (const ch of name) {
+    if (isControl(ch.codePointAt(0) ?? 0)) return 'One line of text: no line breaks or control characters.'
+  }
+  if ([...name].length > OWNER_NAME_MAX) return `Use at most ${OWNER_NAME_MAX} characters.`
+  return undefined
+}
+
+/**
+ * What Save sends: a patch with exactly `ownerName` (nothing else, so a server's browser sends the
+ * name-only patch main allows it), the error that keeps Save off, or null when the name is what is
+ * saved already. A blank name saves the default.
+ */
+export function ownerNamePatch(view: WebAccessView, draft: string): { patch: WebAccessPatch } | { error: string } | null {
+  const error = ownerNameProblem(draft)
+  if (error !== undefined) return { error }
+  const trimmed = draft.trim().normalize('NFC')
+  const name = trimmed === '' ? DEFAULT_OWNER_NAME : trimmed
+  if (name === ownerNameOf(view)) return null
+  return { patch: { ownerName: name } }
 }

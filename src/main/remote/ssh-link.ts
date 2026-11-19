@@ -118,8 +118,11 @@ export interface LinkAnswers {
   passphrase?: string
 }
 
-/** What a call needs from the person before it can go on (design §5.4): passed to the picker as is. */
-export type LinkNeed = RemoteNeed
+/**
+ * What a call needs from the person before it can go on (design §5.4): passed to the picker as is.
+ * Never a guest invite's certificate (a Direct link's, asked by RemoteService.connect).
+ */
+export type LinkNeed = Exclude<RemoteNeed, { need: 'certificate' }>
 
 /**
  * What the live connection rests on that the store does not have yet: a host key trusted from an

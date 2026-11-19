@@ -137,6 +137,7 @@ beforeEach(() => {
   const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
   emitted = []
   overlays = new OverlayManager({
+    ownerView: () => true,
     backend: overlayBackend,
     views: { create: () => view, focusWindow: () => {} },
     isWindowOpen: (id) => id === WIN_A || id === WIN_B,
@@ -1818,6 +1819,7 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     const { api, call, hostCalls } = toolbarHost((c) => (c.method === 'overlay.buttons' ? [] : null))
     const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
     const typed = new OverlayManager({
+      ownerView: () => true,
       backend: overlayBackend,
       views: { create: () => view, focusWindow: () => {} },
       isWindowOpen: (id) => id === WIN_A,
@@ -2553,6 +2555,30 @@ describe('beside (split groups, D4 D6 D7)', () => {
     panes = 5
     expect([await placed('down'), await placed('down'), await placed('down')]).toEqual([true, true, false])
     expect(members(A)[0]).toHaveLength(5)
+  })
+
+  it("03f: with focus, every open (plain too) passes the origin view after the placement; without focus or a view, none", async () => {
+    deps.viewWindow = (view) => ({ 'web:1': WIN_A, 'web:2': WIN_B })[view]
+    const views: unknown[][] = []
+    const rec =
+      (what: string) =>
+      async (projectId: string, _o: object, _w: number, _f?: boolean, _p?: PluginPlacement, ...view: string[]) => {
+        views.push([what, ...view])
+        return tabs.create(projectId, { kind: 'shell' })
+      }
+    deps.openTab = rec('open')
+    deps.openShellTab = rec('shell')
+    deps.openCommandTab = rec('command')
+    deps.limits = () => ({ ...DEFAULT_PLUGIN_LIMITS, opensPerMinute: 60 })
+    const api = new HostApi(deps, scopeA(), () => {})
+    apis.push(api)
+    await api.handlers['sessions.open']!({ pluginId: 'a.one', focus: true }, { view: 'web:1' })
+    await api.handlers['sessions.openShell']!({ pluginId: 'a.one', focus: true }, { view: 'web:1' })
+    await api.handlers['sessions.openCommand']!({ pluginId: 'a.one', argv: ['less'], focus: true }, { view: 'web:1' })
+    await api.handlers['sessions.open']!({ pluginId: 'a.one' }, { view: 'web:1' })
+    await api.handlers['sessions.open']!({ pluginId: 'a.one', focus: true }, { view: 'web:2' })
+    await api.handlers['sessions.open']!({ pluginId: 'a.one', focus: true })
+    expect(views).toEqual([['open', 'web:1'], ['shell', 'web:1'], ['command', 'web:1'], ['open'], ['open'], ['open']])
   })
 
   it('passes the origin view only when it is a view of this host’s window', async () => {

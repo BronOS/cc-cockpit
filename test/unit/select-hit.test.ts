@@ -410,8 +410,8 @@ function pressSetup(
     },
     now: () => 0
   })
-  viewers.report(PANEL, 'web:1', shown)
-  viewers.report(PANEL, 'web:2', shown)
+  viewers.report(PANEL, 'web:1', shown, 'owner')
+  viewers.report(PANEL, 'web:2', shown, 'owner')
   const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
   const timeout = (): void => {
     const fns = [...timers.values()]
@@ -548,7 +548,7 @@ describe('a press held behind its hit-test', () => {
   it('a view that stopped viewing gets no popup (the press goes as it came); a view that went, nothing', async () => {
     const s = pressSetup()
     s.input.accept(PANEL, 'web:1', [pdown(20, 30), pup(20, 30)])
-    s.viewers.report(PANEL, 'web:1', { ...shown, visible: false })
+    s.viewers.report(PANEL, 'web:1', { ...shown, visible: false }, 'owner')
     s.hits[0]?.resolve(SELECT_RESULT)
     await s.flush()
     expect(s.popups).toEqual([])
@@ -765,7 +765,7 @@ describe('acceptChoice: the current popup id only, once; bounds and disabled opt
 
   it('throws for a view that is no viewer', async () => {
     const { input, viewers } = await opened()
-    viewers.report(PANEL, 'web:1', { ...shown, visible: false })
+    viewers.report(PANEL, 'web:1', { ...shown, visible: false }, 'owner')
     expect(() => input.acceptChoice(PANEL, 'web:1', ID, 1)).toThrow(/not a viewer/)
   })
 

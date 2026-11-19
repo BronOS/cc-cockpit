@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CERTIFICATE_HINT,
+  certificateFingerprint,
+  serverViaText as guestViaText,
+  withAnswer as withAnswer05,
   canConnect,
+  connectRequest,
   connectSettings,
   editFields,
   emptyConnectFields,
@@ -406,5 +411,51 @@ describe('prompt flow (answers of one connect)', () => {
     expect(step(flow, { need: 'password' }).step).toEqual({ error: 'the server did not take the password' })
     const key = withAnswer(newPromptFlow(), { need: 'passphrase', secret: 'pp', remember: true })
     expect(step(key, { need: 'passphrase', path: '/k' }).step).toEqual({ error: 'the passphrase did not open /k' })
+  })
+})
+
+
+describe('a guest invite in the desktop picker (design-guests §11, D-29)', () => {
+  it('labels a guest Direct record "Guest at <origin>", and only a Direct one', () => {
+    expect(guestViaText({ via: { kind: 'direct', origin: 'https://host.example.com' }, guest: true })).toBe('Guest at https://host.example.com')
+    expect(guestViaText({ via: { kind: 'direct', origin: 'https://host.example.com' } })).toBe('https://host.example.com')
+    expect(guestViaText({ via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 }, guest: true })).toBe('tunnel :7331')
+  })
+
+  it('asks for a certificate once; the same one again is an error, never a second prompt', () => {
+    const need = { need: 'certificate' as const, origin: 'https://host.example.com', sha256: 'a'.repeat(64) }
+    const first = promptStep(newPromptFlow(), need)
+    expect(first.step).toEqual({ ask: need, retry: false })
+    const answered = withAnswer05(first.flow, { need: 'certificate', sha256: need.sha256 })
+    expect(answered.answers.certificate).toBe(need.sha256)
+    expect(answered.answers.hostKey).toBeUndefined()
+    expect(promptStep(answered, need).step).toEqual({ error: 'the certificate of https://host.example.com could not be confirmed' })
+  })
+
+  it('says what Trust means', () => {
+    expect(CERTIFICATE_HINT).toContain('only this certificate')
+  })
+
+  it('shows the fingerprint as colon-separated upper-case pairs, as browsers show it', () => {
+    const hex = '0a1b'.repeat(16)
+    const shown = certificateFingerprint({ sha256: hex })
+    expect(shown).toBe(Array.from({ length: 16 }, () => '0A:1B').join(':'))
+    expect(shown.split(':')).toHaveLength(32)
+  })
+})
+
+describe('connectRequest (what the Connect form sends with a run\'s answers)', () => {
+  const pin = 'ab'.repeat(32)
+  it("a Direct guest invite carries the trusted certificate (D-29): dropping it made main ask again and the run fail", () => {
+    const link = { kind: 'direct' as const, link: 'https://host:7330/#i=tok&c=' + pin }
+    expect(connectRequest(link, { certificate: pin })).toEqual({ ...link, answers: { certificate: pin } })
+    expect(connectRequest(link, undefined)).toEqual(link)
+  })
+
+  it('SSH carries its answers; a tunnel never does', () => {
+    const ssh = { kind: 'ssh' as const, host: 'box' }
+    expect(connectRequest(ssh, { password: 'x' })).toEqual({ ...ssh, answers: { password: 'x' } })
+    const tunnel = { kind: 'tunnel' as const, localPort: 7331, remotePort: 7330 }
+    expect(connectRequest(tunnel, { certificate: pin })).toEqual(tunnel)
   })
 })

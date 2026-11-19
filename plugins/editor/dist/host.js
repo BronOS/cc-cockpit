@@ -28,6 +28,7 @@ const search = require('./lib/search.js')
 const git = require('./lib/git.js')
 const ask = require('./lib/ask.js')
 const quickChat = require('./lib/quick-chat.js')
+const guests = require('./lib/guests.js')
 const notes = require('./lib/notes.js')
 const { LspManager } = require('./lib/lsp/manager.js')
 const { serveLsp } = require('./lib/lsp/serve.js')
@@ -468,10 +469,18 @@ exports.activate = (ctx) => {
         })
       }
     }
-    ctx.tabs.onOpen('file', (tab) => {
+    ctx.tabs.onOpen('file', (raw) => {
+      // Guests (lib/guests.js): every feature below gets the guarded instance, never `raw`.
+      const { access, tab } = guests.guestTab(raw)
+      if (access !== 'owner' && typeof files.paramsOf(raw).outside === 'string') {
+        // A file outside the project (its absolute path is the tab's params): not a guest's (D-33).
+        raw.post({ t: 'error', message: 'This tab shows a file outside the project: it is not shared with guests.' })
+        return
+      }
       files.serveFileTab(mine, tab, ctx.log)
       const searching = search.serveSearch(tab, { spawn, root: ctx.projectDir, log: ctx.log })
-      const speaking = serveLsp(tab, lsp, ctx.log)
+      // A read-only guest holds no document (its LSP messages never get here: lib/guests.js answers them).
+      const speaking = serveLsp(tab, access === 'read' ? null : lsp, ctx.log)
       // main's params for the tab: `path` (a project file) or `outside` (a read-only file outside it).
       const params = files.paramsOf(tab)
       const tabPath = typeof params.path === 'string' ? params.path : undefined
@@ -487,7 +496,8 @@ exports.activate = (ctx) => {
         root: ctx.projectDir,
         rel: tabPath,
         defaults: () => quickChat.defaultsOf(app()),
-        store: ctx.appStorage,
+        // A guest's pick is not remembered app-wide: that store is the owner's.
+        store: access === 'owner' ? ctx.appStorage : guests.readOnlyStore(ctx.appStorage),
         log: ctx.log,
       })
       // The Reviewer's notes in the gutter and "Add review note": the tab's own file, through the reviewer service.

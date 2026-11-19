@@ -69,6 +69,7 @@ import {
   registerTabHandlers,
   registerGroupHandlers,
   registerWebviewHandlers,
+  registerGuestHandlers,
   summary
 } from './ipc/router'
 import { registerRoomStripHandlers, registerRoomViewHandlers } from './ipc/room-handlers'
@@ -99,6 +100,7 @@ import {
   OverlayManager,
   type DiscussSessions,
   type OverlayChannel,
+  type OverlayOrigin,
   type OverlayResult,
   type OverlayTypeButtons
 } from './overlays/overlay-manager'
@@ -187,6 +189,22 @@ import { TabManager } from './tabs/tab-manager'
 import { TabGroups } from './tabs/tab-groups'
 import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
+import { createGuestCloseAsks, settleGoneCloseAsks, settleGuestCloseAsks } from './tabs/guest-close-asks'
+import { PluginGuestAccessStore } from './settings/plugin-guest-access'
+import {
+  downloadViewAllowedOf,
+  guestRouterDeps,
+  guestSeesOf,
+  guestTabDeps,
+  guestUnsavedOf,
+  offerTakerOf,
+  guestMayDeliverOf,
+  ownerViewOf,
+  pageSelectTargetOf,
+  pluginFocusSelectOf,
+  pluginFocusViewOf,
+  type PageSelectTarget
+} from './guest-wiring'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
 import { electronDialogs } from './dialogs/electron-dialog'
@@ -224,6 +242,12 @@ import { storedWebAccess, webAccessOf } from './web/settings'
 import { WebGateway } from './web/gateway'
 import { countSessions } from './web/session-counts'
 import { PluginPages } from './web/plugin-pages'
+import { GuestStore, type GuestTabInfo } from './web/guests'
+import { guestContext, type GuestContextSources } from './web/guest-events'
+import { Presence } from './web/presence'
+import { ownerNameIn } from './web/settings'
+import { askVisible, guestPresence } from '../shared/guest-filter'
+import { peerCertificateSha256 } from './remote/peer-certificate'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
@@ -409,7 +433,16 @@ function start(server: boolean): void {
       : undefined,
     log: warnLog
   })
-  const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
+  // A forgotten project ends its guests and drops its invites (GuestStore.projectRemoved, design-guests §4). Set
+  // once the guest store exists (below); a forget before that (none at start) has no guests to end.
+  const guestsForget: { project?: (id: string) => void } = {}
+  const registry = new ProjectRegistry({
+    dataDir,
+    onForget: (id) => {
+      pluginSecrets.forgetProject(id)
+      guestsForget.project?.(id)
+    }
+  })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
   // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).
   if (needsSessionFilesMigration(registry.app.data)) registry.app.update(migrateSessionFilesShown)
@@ -502,8 +535,15 @@ function start(server: boolean): void {
   const views: ViewRegistry<Electron.MessagePortMain> = new ViewRegistry({
     windowIdOf: (projectId): number | undefined => windows.windowIdOf(projectId)
   })
-  // Whether a window has a live browser view (a remote view id): the shared asks and downloads decide by it.
+  // Whether a window has a live browser view (a remote view id): ctx.files.download's origin view check decides by it
+  // (a write guest's view too, D-23); `ccc download` offers count takers only (offerTakerOf, at Downloads below).
   const hasRemoteView = (windowId: number): boolean => views.viewsOf(windowId).some((v) => isRemoteViewId(v))
+  // The owner's own browsers only: `chooseAsk` (trash, plugin links) decides by it, so a guest joining never turns the
+  // owner's native dialog into a shared ask (D-31).
+  const hasOwnerRemoteView = (windowId: number): boolean => views.hasOwnerRemoteView(windowId)
+  // A view is the owner's (the desktop page, the hidden page, owner browsers): close asks and html overlays leave
+  // guests' views out by it (design-guests §9).
+  const ownerView = ownerViewOf((viewId) => views.whoOf(viewId))
   // Every link main opens outside the app (external/open-external.ts): the OS browser on the desktop,
   // a clickable notice in a browser view, and in server mode never the host's browser. The OS opener
   // looks shell.openExternal up at each call, so the e2e's recorder that replaces it is what runs.
@@ -688,7 +728,7 @@ function start(server: boolean): void {
     shell: electronSystemShell,
     confirmTrash: chooseAsk({
       server,
-      hasRemoteView,
+      hasRemoteView: hasOwnerRemoteView,
       shared: trashAsks.ask,
       native:
         testTrashConfirm?.confirm ??
@@ -764,6 +804,8 @@ function start(server: boolean): void {
           probe,
           ready: () => loginEnvReady,
           clearSession: (serverId) => factory.clearSession(serverId),
+          // A guest invite's pin is checked against what the host presents now (D-29).
+          peerCertificate: (origin) => peerCertificateSha256(origin),
           // The key file Browse button: the native dialog as a sheet on the picker.
           pickFile: async (windowId, defaultPath) => {
             const options: OpenDialogOptions = { title: 'Choose a private key file', defaultPath, properties: ['openFile', 'showHiddenFiles'] }
@@ -894,6 +936,9 @@ function start(server: boolean): void {
     },
     onProjectOpened: (projectId, windowId) => {
       hosts.open(projectId, windowId).catch((err: unknown) => console.error('plugin host start failed', err))
+      // The desktop page is the owner at this computer (presence.ts): its selection and typing count from now on.
+      // Not in server mode, where the window is the hidden page and nobody sits at it.
+      if (!server) presence.viewJoined(desktopViewId(windowId), projectId, 'owner')
       // The first Claude tab (first-tab.ts) is for a window with nothing to bring back. Launch
       // queues the restore plan before opening the window, so hasPending is already accurate. The
       // saved record counts too: a project whose folder was missing at launch keeps its tabs (and
@@ -936,6 +981,10 @@ function start(server: boolean): void {
       // No window, no selection: a reopened window reports its own once its page loads. Every
       // view's selection of it goes first, so a remote view closing after this hands nothing back.
       selections.closeProject(projectId)
+      // Its presence goes, the desktop page's view first (browser views leave with their sockets), on a quit and a
+      // reopen too.
+      presence.viewLeft(desktopViewId(windowId))
+      presence.projectClosed(projectId)
       sessions.setActive(projectId, undefined)
       // The user closed the window: its tabs are over, so is their record. While quitting the
       // same callback runs for every window and the saved tabs are exactly what must stay; on a
@@ -959,6 +1008,7 @@ function start(server: boolean): void {
       webviewViewers.closeWindow(windowId)
       // A plugin's close waiting on this window's dialog is answered: not closed by it.
       closeAsks.windowClosed(windowId)
+      guestCloseAsks.windowClosed(windowId)
       linkAsks.windowClosed(windowId)
       trashAsks.windowClosed(windowId)
       // Its `ccc download` offers end (settled for every view) and an accepted one's Try again with them.
@@ -1023,9 +1073,23 @@ function start(server: boolean): void {
   // window, settled by the first `sessions.closeAnswer` from any of them (then every view hears
   // `sessions.closeSettled`), or false when it closes or the wait runs out. False at once when no
   // view of the window took the ask (nobody could answer it).
+  // A guest's close of a tab it did not open, asked of the owner's views (D-9, tabs/guest-close-asks.ts): every view
+  // of the window gets it (guests' sinks drop it), the first owner answer wins; the router sends the answers. The
+  // outcome goes to the asking guest's own views of the window, matched by the view's bound guest id.
+  const guestCloseAsks = createGuestCloseAsks({
+    toWindow: (windowId, channel, payload) => views.toWindow(windowId, channel, payload),
+    toGuest: (windowId, guestId, channel, payload) => {
+      for (const viewId of views.viewsOf(windowId)) {
+        const who = views.whoOf(viewId)
+        if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)
+      }
+    }
+  })
   const closeAsks = new CloseAsks({
     send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
+    // Guests' views are left out of the "every live view declined" count (design-guests §9).
+    ownerView,
     // A view's Close won the ask: main closes the tab (a view only answers), as `tabs.close` does,
     // and the window's other views hear `tabs.removed`; the answering view drops it on the reply.
     close: (windowId, viewId, tabId) => {
@@ -1092,15 +1156,39 @@ function start(server: boolean): void {
     },
     notReady: (tabId) => sessions.get(tabId)?.status === 'idle',
     // Discuss names its origin (`core`, overlay-manager.ts, page-tab-discuss.ts): passed through, not chosen here.
-    send: (tabId, text, origin) => sessions.send(tabId, text, origin),
-    openSession: async (windowId, prompt) => {
+    // A guest's text carries its id, so the registry checks its access again when the gate dequeues it (03e A).
+    send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),
+    openSession: async (windowId, prompt, guestId) => {
       const projectId = projectOfWindow(windowId)
       if (projectId === undefined) throw new Error('the window is gone')
-      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &.
-      const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
+      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &. A guest's is tagged as
+      // its tab (D-21); the router's openGuestTab around this call keeps the cap and notes it.
+      const options = { prompt: prepareText(prompt), ...(guestId === undefined ? {} : { openedByGuest: guestId }) }
+      const tab = await openClaudeTab(projectId, options, windowId, false)
       return { tabId: tab.id }
     },
-    selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId }),
+    liveTabs: (windowId) => {
+      const projectId = projectOfWindow(windowId)
+      return projectId === undefined ? [] : tabs.list(projectId).map((t) => t.id)
+    },
+    // A guest's new session whose access ended while it opened: it was announced, so every view hears it go too.
+    closeTab: (windowId, tabId) => {
+      const projectId = projectOfWindow(windowId)
+      if (projectId === undefined) return
+      const gen = tabs.list(projectId).find((t) => t.id === tabId)?.gen
+      tabs.close(projectId, tabId)
+      if (gen !== undefined) sendToProject(projectId, 'tabs.removed', { tabId, gen })
+    },
+    // A guest's Discuss selects in its own view only (design-guests §7): never the owner's selection. The tab is told
+    // to that view first: a guest with a selected-tabs scope had its `tabs.added` dropped (announced before the
+    // router noted the new session as the guest's, D-21), and a page selects only a tab it has.
+    selectTab: (windowId, tabId, view) => {
+      if (view === undefined) return sendToWindow(windowId, 'tabs.select', { tabId })
+      const projectId = projectOfWindow(windowId)
+      const tab = projectId === undefined ? undefined : tabs.list(projectId).find((t) => t.id === tabId)
+      if (tab) views.toView(view, 'tabs.added', tab)
+      views.toView(view, 'tabs.select', { tabId })
+    },
     // The window's own project's override, else the global one; read now, at send time.
     prompt: (windowId) => {
       const projectId = projectOfWindow(windowId)
@@ -1115,6 +1203,8 @@ function start(server: boolean): void {
     // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8),
     // and a url overlay is refused at its open (§9.9).
     server,
+    // A guest's view never holds an html overlay's page (design-guests §9); it sees an overlay by its origin.
+    ownerView,
     views: {
       create: (windowId, url, onChord, onGone, onLoaded) => {
         nativeViewsMade.urlOverlays++
@@ -1193,14 +1283,15 @@ function start(server: boolean): void {
    */
   const openClaudeTab = async (
     projectId: string,
-    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string> },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string>; openedByGuest?: string },
     windowId: number,
     focus: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    view?: ViewId
   ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    return announcePluginTab(projectId, windowId, focus, place, () => tabs.create(projectId, { kind: 'claude', ...options }))
+    return announcePluginTab(projectId, windowId, focus, place, () => tabs.create(projectId, { kind: 'claude', ...options }), view)
   }
   /**
    * A tab main opened for a plugin (or Discuss), told to its window, which did not ask for it: create
@@ -1215,7 +1306,8 @@ function start(server: boolean): void {
     windowId: number,
     focus: boolean,
     place: PluginPlacement | undefined,
-    create: () => TabInfo
+    create: () => TabInfo,
+    view?: ViewId
   ): TabInfo & { placed?: boolean } => {
     const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
     const { tab, placed } = tabGroups.createBeside(projectId, beside, create, { plugin: true, pluginId: place?.pluginId })
@@ -1224,13 +1316,23 @@ function start(server: boolean): void {
     // Sent after `tabs.added` on the same webContents, so the page already has the tab when it
     // selects it.
     if (focus) {
-      // The origin view only if it is one of this window's (HostApi checked; checked again), else the desktop page.
-      const view = place?.view !== undefined && views.windowOf(place.view) === windowId ? place.view : desktopViewId(windowId)
-      const to = tabGroups.pluginFocus(projectId, { tabId: tab.id, placed, ...(place ? { anchor: place.beside } : {}) }, view, (v) =>
-        selections.selectionOf(v as ViewId)
-      )
-      if (to?.to === 'window') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })
-      else if (to?.to === 'view') views.toView(to.view as ViewId, 'tabs.select', { tabId: to.tabId })
+      // Where the plugin acted (03f, design-guests §7): a guest's click selects in that guest's view only, a plain
+      // tab included; a remote view main no longer has selects nowhere. The owner's path: the origin view only if it
+      // is one of this window's (HostApi checked; checked again), else the desktop page, and a plain tab in every view.
+      const origin = place?.view ?? view
+      const target = pageSelectTarget(origin)
+      const selectIn = pluginFocusViewOf(target, origin, windowId, (v) => views.windowOf(v))
+      const to =
+        selectIn === undefined
+          ? undefined
+          : pluginFocusSelectOf(
+              target,
+              tabGroups.pluginFocus(projectId, { tabId: tab.id, placed, ...(place ? { anchor: place.beside } : {}) }, selectIn, (v) =>
+                selections.selectionOf(v as ViewId)
+              )
+            )
+      if (to?.to === 'project') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })
+      else if (to?.to === 'view') views.toView(to.view, 'tabs.select', { tabId: to.tabId })
     }
     return place === undefined ? tab : { ...tab, placed }
   }
@@ -1244,12 +1346,18 @@ function start(server: boolean): void {
     options: { cwd?: string },
     windowId: number,
     focus: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    view?: ViewId
   ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    return announcePluginTab(projectId, windowId, focus, place, () =>
-      tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    return announcePluginTab(
+      projectId,
+      windowId,
+      focus,
+      place,
+      () => tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) }),
+      view
     )
   }
   /**
@@ -1263,7 +1371,8 @@ function start(server: boolean): void {
     options: { argv: string[]; cwd?: string; title: string; openedBy: string },
     windowId: number,
     focus: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    view?: ViewId
   ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
@@ -1275,7 +1384,8 @@ function start(server: boolean): void {
         title: options.title,
         openedBy: options.openedBy,
         ...(typeof name === 'string' ? { openedByName: name } : {})
-      })
+      }),
+      view
     )
   }
   /**
@@ -1283,12 +1393,20 @@ function start(server: boolean): void {
    * HostApi took the plugin from the host and checked the type and the spec; the tab manager checks
    * the spec again and holds the per-plugin cap. Not unseen when focused: the window selects it now.
    */
-  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<TabInfo> => {
+  // A plugin's `focus` selects where it acted (guest-wiring.ts pageSelectTargetOf): a guest's click selects in that
+  // guest's view only, never the owner's selection or active tab (03e); the tab still gets the unseen dot then.
+  const pageSelectTarget = pageSelectTargetOf((viewId) => views.whoOf(viewId))
+  const selectPageTab = (projectId: string, tabId: string, target: PageSelectTarget): void => {
+    if (target === 'project') sendToProject(projectId, 'tabs.select', { tabId })
+    else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })
+  }
+  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean, view?: ViewId): Promise<TabInfo> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.createPage(projectId, spec, { focus })
+    const target: PageSelectTarget = focus ? pageSelectTarget(view) : 'none'
+    const tab = tabs.createPage(projectId, spec, { focus: target === 'project' })
     sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    selectPageTab(projectId, tab.id, target)
     return tab
   }
   /** Open an overlay once the login env is known (a terminal overlay's PATH depends on it). */
@@ -1299,10 +1417,11 @@ function start(server: boolean): void {
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
     pluginId?: string,
-    view?: ViewId
+    view?: ViewId,
+    origin?: OverlayOrigin
   ): Promise<OverlayResult> => {
     await loginEnvReady
-    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId, view)
+    return overlays.open(windowId, spec, opener, peerGone, channel, pluginId, view, origin)
   }
   // Webview panels (`"kind": "webview"`, ctx.webview): one native view per panel per window, made
   // and judged in main (webview-manager.ts). Local files go through cc-preview://, answered on each
@@ -1762,22 +1881,22 @@ function start(server: boolean): void {
       openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
-      openTab: (projectId, options, windowId, focus, place) => openClaudeTab(projectId, options, windowId, focus === true, place),
+      openTab: (projectId, options, windowId, focus, place, view) => openClaudeTab(projectId, options, windowId, focus === true, place, view),
       // A `beside` anchor: any tab of that project by TabManager's table (an overlay is never one). A
       // page anchor has no `sizeOf`, so the halves check is skipped as for any anchor of unknown size.
       hasTab: (projectId, tabId) => tabs.kindOf(projectId, tabId) !== undefined,
       // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
-      openShellTab: (projectId, options, windowId, focus, place) => openShellTab(projectId, options, windowId, focus === true, place),
+      openShellTab: (projectId, options, windowId, focus, place, view) => openShellTab(projectId, options, windowId, focus === true, place, view),
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
-      openCommandTab: (projectId, options, windowId, focus, place) => openCommandTab(projectId, options, windowId, focus === true, place),
+      openCommandTab: (projectId, options, windowId, focus, place, view) => openCommandTab(projectId, options, windowId, focus === true, place, view),
       // ctx.tabs (design-editor.md §1): HostApi checked the plugin, its declared type and the spec.
-      openPageTab: (projectId, spec, windowId, focus) => openPageTab(projectId, spec, windowId, focus),
+      openPageTab: (projectId, spec, windowId, focus, view) => openPageTab(projectId, spec, windowId, focus, view),
       listTabs: (projectId) => tabs.list(projectId),
       setPageTabTitle: (projectId, tabId, title, icon) => tabs.setPageTitle(projectId, tabId, title, icon),
       // As openPage's `focus`: the project's views are told to select it (only the host's own window).
-      focusPageTab: (projectId, tabId, windowId) => {
+      focusPageTab: (projectId, tabId, windowId, view) => {
         requireWindow(projectId, windowId)
-        sendToProject(projectId, 'tabs.select', { tabId })
+        selectPageTab(projectId, tabId, pageSelectTarget(view))
       },
       // The unseen dot again (ctx.tabs.markUnseen), told to every view as markSeen's clearing is.
       markPageTabUnseen: (projectId, tabId) => {
@@ -1830,6 +1949,8 @@ function start(server: boolean): void {
       downloads: {
         hasBrowserView: hasRemoteView,
         start: async (caller, viewId, path, includeAll) => {
+          // D-23: never to a read guest's device, whatever the plugin decided.
+          if (!downloadViewAllowedOf((v) => views.whoOf(v), guestStore)(viewId)) throw new Error('a read-only guest cannot download')
           const deviceId = webConnections.deviceIdOf(viewId, caller.windowId)
           if (deviceId === undefined) throw new Error('the browser view is gone')
           await downloads.start({ viewId, windowId: caller.windowId, deviceId }, { projectId: caller.projectId, rel: path }, includeAll)
@@ -1869,6 +1990,11 @@ function start(server: boolean): void {
   // main's records), renderer end to the window that asked. Electron's MessageChannelMain is only
   // touched here; the hub is plain code (panel-ports.ts).
   const panelPorts = new PanelPortHub<Electron.MessagePortMain>({
+    // Who is behind a view (design-guests §6): required, so the hub fails closed. A guest's role is read live on
+    // every connect, and its port is the one the project's plugin visibility gives that role (D-17).
+    whoOf: (viewId) => views.whoOf(viewId),
+    guestAccess: (viewId) => guestStore.whoAccess(viewId),
+    guestPort: (projectId, pluginId, role) => pluginGuestAccess.port(projectId, pluginId, role),
     createChannel: () => {
       const { port1, port2 } = new MessageChannelMain()
       return { host: port1, renderer: port2 }
@@ -1916,7 +2042,7 @@ function start(server: boolean): void {
   // snapshot goes out throttled, and each project window gets ITS OWN view: the strip fields of
   // every tab plus the full entries of its own project's tabs (never another project's prompts,
   // notes, files or queue). A picker window shows no strip and gets nothing.
-  const sessions = new SessionRegistry({
+  const sessions: SessionRegistry = new SessionRegistry({
     projectName: (projectId) => registry.get(projectId)?.name,
     projectColor: (projectId) => registry.get(projectId)?.color,
     broadcast: (snapshotFor) => {
@@ -1928,7 +2054,10 @@ function start(server: boolean): void {
     // with the entry's own project, so the write cannot land in another project's tab; `tabs` is
     // defined below and is only reached once a tab exists. Never through `sessions.userInput`: a
     // delivery must not set SessionInfo.typed (the person's takeover flag).
-    write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
+    write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data),
+    // A guest's queued Discuss text is checked again as the gate dequeues it (03e A); `guestStore` is made below
+    // and only read once a guest's text is queued.
+    guestMayDeliver: (guestId: string, tabId: string): boolean => guestMayDeliverOf(guestStore, (t) => sessions.get(t)?.projectId)(guestId, tabId)
   })
   // The person's per-plugin caps (design-rooms.md §6, plugins/plugin-limits.ts): `app.json` › `pluginLimits[id]` over
   // the global values in `pluginLimitsGlobal`, read with every value clamped on each open and send (HostApi, the room
@@ -2043,6 +2172,9 @@ function start(server: boolean): void {
         webConnections.tabClosed(tabId)
         // Its pane goes (the group may dissolve); TabManager's own change right after saves it.
         tabGroups.tabClosed(tabId)
+        // Nobody shows it or types in it any more; a guest's ask to close it is moot (every dialog goes).
+        presence.tabClosed(tabId)
+        settleGoneCloseAsks(guestCloseAsks, (t) => t !== tabId)
       },
       renamed: (tabId, name) => void sessions.setName(tabId, name),
       flagged: (tabId, flag) => void sessions.setFlag(tabId, flag),
@@ -2055,7 +2187,8 @@ function start(server: boolean): void {
     exitClosed: (projectId, tabId) => {
       const panes = tabGroups.departedPanes(tabId)
       if (!panes) return
-      for (const to of selections.exitFocus(projectId, tabId, panes)) {
+      // A guest's view is handed only a pane it sees (design-guests §7).
+      for (const to of selections.exitFocus(projectId, tabId, panes, guestSeesOf((viewId) => views.whoOf(viewId), guestStore))) {
         views.toView(to.viewId, 'tabs.exitFocus', { tabId: to.tabId, closed: tabId })
       }
     },
@@ -2098,6 +2231,8 @@ function start(server: boolean): void {
         r.tabGroups = groups
       }),
     restoreGroups: (projectId, saved, idMap) => tabGroups.restore(projectId, saved, idMap),
+    // Restored tabs get new ids: a selected-tabs guest's scope and every guest's opened tabs follow them.
+    onRestored: (projectId, idMap) => guestStore.remap(projectId, idMap),
     projectPath: (projectId) => registry.get(projectId)?.path,
     pluginAvailable: (pluginId) => pluginAvailable(pluginId),
     // A page tab comes back only while its plugin loaded, is on in the project and still declares
@@ -2216,6 +2351,93 @@ function start(server: boolean): void {
     // Many failed sign-ins in a short time: a core notice (the desktop's, or server mode's line and in-page notice).
     alarm: (text) => coreNotices.show({ kind: 'sign-in-failures', text, title: 'cc-cockpit web access' })
   })
+  // Guests (design-guests, task 02): invites, the guest list, kicks, role and scope changes, lifetimes. Rights are
+  // read live through `access`; `who` is frozen at `hello` and kept by ViewRegistry (the one whoOf). The views it
+  // closes and the live check are the web connections' (made below: these closures run only after start).
+  // Which plugins guests see, app-wide and per project (task 04, D-17): the store the guest store, the router, the
+  // Plugins page and the panel ports all read. A change reconnects the guests it touches to a fresh `ready` (D-30).
+  const pluginGuestAccess = new PluginGuestAccessStore({
+    records: registry,
+    installed: (pluginId) => plugins.get(pluginId),
+    knownProject: (projectId) => registry.get(projectId) !== undefined
+  })
+  const guestTabOf = (tabId: string): GuestTabInfo | undefined => {
+    for (const p of registry.list()) {
+      if (windows.windowIdOf(p.id) === undefined) continue
+      const t = tabs.list(p.id).find((x) => x.id === tabId)
+      if (t === undefined) continue
+      return { projectId: p.id, ...(t.openedBy !== undefined ? { openedBy: t.openedBy } : {}), ...(t.page !== undefined ? { page: { plugin: t.page.plugin } } : {}) }
+    }
+    return undefined
+  }
+  const guestStore: GuestStore = new GuestStore({
+    devices: webDevices,
+    accessLog: webAccessLog,
+    mode: () => webAuth.mode,
+    target: () => webAccess.inviteTarget(),
+    pluginEnabled: (projectId, pluginId) => enabledIds(projectId).includes(pluginId),
+    tabOf: guestTabOf,
+    whoOfView: (viewId) => views.whoOf(viewId),
+    closeGuestViews: (guestId, code, reason) => webConnections.closeGuest(guestId, code, reason),
+    guestLive: (guestId) => webConnections.guestLive(guestId),
+    dropPageTokens: (deviceId) => pluginPages.tokens.dropDevice(deviceId),
+    // Created further down (it needs the gateway's view lookups); only called once guests act, long after.
+    dropDownloads: (deviceId) => downloads.dropDevice(deviceId),
+    pluginShown: (projectId, pluginId) => pluginGuestAccess.visible(projectId, pluginId),
+    // A role downgrade warns about the guest's own unsaved pages only.
+    unsavedOf: guestUnsavedOf((viewId) => views.whoOf(viewId), { access: (who) => guestStore.access(who) }, (projectId, inView) =>
+      tabs.unsavedTitlesIn(projectId, inView)
+    ),
+    // "Bob joined": a new device signed in. Guests' views drop core notices (guest-events.ts `notices.show`).
+    notify: (text) => coreNotices.show({ kind: 'new-device', text, title: 'cc-cockpit web access' }),
+    // An ended guest's close asks leave the owner's screens at once (D-9).
+    ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId),
+    log: warnLog
+  })
+  guestsForget.project = (id) => guestStore.projectRemoved(id)
+  pluginGuestAccess.onChange(() => guestStore.pluginAccessChanged())
+  /** What a guest view's filters read (guest-events.ts guestContext): main's live tables, never the payload. */
+  const guestSources: GuestContextSources = {
+    guests: guestStore,
+    overlayVisible: (guestId, overlayId) => {
+      const access = guestStore.access({ guest: guestId })
+      if (access.kind !== 'guest') return false
+      const windowId = windows.windowIdOf(access.projectId)
+      return (
+        windowId !== undefined &&
+        overlays.visibleTo(windowId, overlayId, (t) => guestStore.tabVisible(guestId, t), (p) => guestStore.pluginVisible(access.projectId, p))
+      )
+    },
+    personOf: (viewId) => presence.personOf(viewId),
+    tabOrder: (projectId) => tabs.list(projectId).map((t) => t.id),
+    // 03b's offer origin, for the offer's window as the view sees it.
+    downloadOrigin: (viewId, requestId) => {
+      const windowId = views.windowOf(viewId as ViewId)
+      return windowId === undefined ? undefined : downloads.offerOrigin(windowId, requestId)?.originTab
+    },
+    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess)),
+    // Only to make a session's files project-relative for the guest (guestSessions); the path itself is never sent.
+    projectPath: (projectId) => registry.get(projectId)?.path
+  }
+  // Who is here and where (design-guests §10, presence.ts): joins and leaves from the web connections below;
+  // selections and typing from the tab handlers, tab closes from TabManager's `closed`, a window's close below.
+  const presence: Presence = new Presence({
+    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess)),
+    guestsOf: (projectId) => guestStore.guestsOf(projectId),
+    emit: (projectId, snapshot) => views.toProject(projectId, 'presence.changed', snapshot),
+    filterFor: (viewId, who) => {
+      if (who === 'owner') return undefined
+      const access = guestStore.access(who)
+      if (access.kind !== 'guest') return 'revoked'
+      const ctx = guestContext(guestSources, viewId, access)
+      return (s) => guestPresence(s, ctx)
+    },
+    log: warnLog
+  })
+  guestStore.onChange(() => presence.peopleChanged())
+  // The owner's chip and guest list (05's use-guests.ts read guests.list once, then this): every view, guest views
+  // drop it at their sink (GUEST_EVENT 'drop'), and the page keeps its own project's rows.
+  guestStore.onChange(() => views.toAll('guests.changed', guestStore.list()))
   // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
   // plugin), served only while the device has a view bound to a project the plugin is enabled in
   // (the same folder rule as `cc-plugin:`, servedPluginDir below, narrowed to that project) and an
@@ -2231,7 +2453,16 @@ function start(server: boolean): void {
     overlayPage: (overlayId) => overlays.inlinePage(overlayId),
     // out/sdk/panel.js, as the cc-plugin: handler serves it.
     sdkFile: join(__dirname, '../sdk/panel.js'),
-    log: warnLog
+    log: warnLog,
+    // A guest device's pages: its own project, visible plugins only, no inline overlays (design-guests §5, §6).
+    guestProject: (deviceId) => {
+      const device = webDevices.list().find((d) => d.id === deviceId)
+      if (device === undefined || device.mode !== 'guest') return undefined
+      if (device.guestId === undefined) return null
+      const access = guestStore.access({ guest: device.guestId })
+      return access.kind === 'guest' ? access.projectId : null
+    },
+    guestPluginVisible: (projectId, pluginId) => guestStore.pluginVisible(projectId, pluginId)
   })
   /**
    * The home folder's real path: project paths are stored resolved, so a symlinked home (or macOS
@@ -2266,7 +2497,14 @@ function start(server: boolean): void {
       settled: (windowId, requestId) => void views.toBrowserViews(windowId, 'downloads.settled', { requestId })
     },
     server,
-    hasBrowserView: hasRemoteView,
+    // An owner's browser, or a write guest's that sees the offer's origin tab (D-23): a lone read guest is no taker.
+    hasBrowserView: offerTakerOf({
+      remoteViews: (windowId) => views.viewsOf(windowId).filter((v) => isRemoteViewId(v)),
+      whoOf: (viewId) => views.whoOf(viewId),
+      guests: guestStore,
+      sees: (viewId, access, originTab) =>
+        askVisible('download', originTab === undefined ? {} : { originTab }, access, guestContext(guestSources, viewId, access))
+    }),
     projectPath: (projectId) => registry.get(projectId)?.path,
     windowOf: (projectId) => windows.windowIdOf(projectId),
     dataDir,
@@ -2278,6 +2516,8 @@ function start(server: boolean): void {
     accessLog: webAccessLog,
     pages: pluginPages,
     downloads,
+    // The invite redeem route, guest sessions and the guests' 404s (design-guests §4, §5).
+    guests: guestStore,
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
     shellDir: join(__dirname, '../renderer'),
     // The web picker lists what a remote view can bind to: projects with a window open now.
@@ -2334,6 +2574,8 @@ function start(server: boolean): void {
   // browsers read the card and narrow too, §9.4, §9.6).
   const webAccess = new WebAccessService({
     gateway: webGateway,
+    // None is refused while guests or invites exist (D-15).
+    guests: guestStore,
     auth: webAuth,
     read: () => registry.app.data.webAccess,
     write: (next) => {
@@ -2440,7 +2682,9 @@ function start(server: boolean): void {
       return project && { name: project.name, path: project.path }
     },
     windowIdOf: (projectId) => windows.windowIdOf(projectId),
-    openOverlay
+    // `origin`: the Claude tab that ran `ccc overlay` (main's CliCall.tabId), so a guest who sees that tab sees it.
+    openOverlay: (windowId, spec, opener, peerGone, origin) =>
+      openOverlay(windowId, spec, opener, peerGone, undefined, undefined, undefined, origin)
   })
   // `ccc download` (design-download.md §2.2): an offer to the tab's window's browser views; the
   // server already refused a tokenless caller (protocol.ts WINDOW_TOKEN_COMMANDS).
@@ -2463,7 +2707,10 @@ function start(server: boolean): void {
       notices: () => coreNotices.list(),
       accessLog: webAccessLog,
       notice: (text) => coreNotices.show({ kind: 'access-changed', text, title: 'cc-cockpit web access' }),
-      quit: quitLikeSigterm
+      quit: quitLikeSigterm,
+      // `ccc web invite|guests|kick|role` (design-guests §12, D-25). A project by id, or by the folder of one.
+      guests: guestStore,
+      projectOf: (idOrPath) => registry.get(idOrPath)?.id ?? registry.list().find((p) => p.path === idOrPath)?.id
     })
   )
 
@@ -2488,7 +2735,7 @@ function start(server: boolean): void {
     // Server mode: never the native dialog (it aborts main under Ozone headless) nor the queued fake.
     confirmLink: chooseAsk({
       server,
-      hasRemoteView,
+      hasRemoteView: hasOwnerRemoteView,
       shared: (windowId, info, signal) => linkAsks.ask(windowId, info, signal),
       native:
         testLinkConfirm?.confirm ??
@@ -2587,6 +2834,20 @@ function start(server: boolean): void {
     // A remote view's bound window must still be open on its project (re-checked per call).
     (windowId, projectId) => windows.windowIdOf(projectId) === windowId
   )
+  // Guests' calls (design-guests §2): every guest caller is refused until this is set (IpcRouter.setGuestDeps).
+  router.setGuestDeps(
+    guestRouterDeps({
+      guests: guestStore,
+      presence,
+      pluginAccess: pluginGuestAccess,
+      windowIdOf: (projectId) => windows.windowIdOf(projectId),
+      overlays,
+      slotFrame: (projectId, frameId) => layouts.slotFrame(projectId, frameId),
+      trashAsks,
+      downloads,
+      projectPath: (projectId) => registry.get(projectId)?.path
+    })
+  )
 
   registerCoreHandlers(router, {
     getProject: (id) => registry.get(id),
@@ -2659,6 +2920,8 @@ function start(server: boolean): void {
   }
   const settings = new SettingsService({
     projects: registry,
+    // The Plugins page's guest visibility row and its `settings.pluginGuestAccessSet` (task 04).
+    guestAccess: pluginGuestAccess,
     hasWindow: (projectId) => windows.windowIdOf(projectId) !== undefined,
     openProjectPath: (path) => {
       windows.openPath(path)
@@ -2711,6 +2974,8 @@ function start(server: boolean): void {
     bundledOffChanged: async (pluginId) => {
       // Off in all projects ends its rooms everywhere (design-rooms.md §1); on again brings none back.
       roomsGate.sweep()
+      // A plugin that is off shows guests nothing: they reconnect to a fresh `ready` (D-30).
+      guestStore.pluginAccessChanged()
       const plugin = plugins.get(pluginId)
       if (!plugin) return
       for (const { projectId } of windows.projectWindows()) {
@@ -2752,6 +3017,12 @@ function start(server: boolean): void {
     slotsChanged: (projectId) => layouts.refreshSlots(projectId)
   })
   registerSettingsHandlers(router, settings, { server })
+  // The owner's guest controls (invite, list, kick, role, scope, plugin visibility); widening from a browser only on
+  // a server (D-11), decided in the router.
+  registerGuestHandlers(router, {
+    server,
+    setPluginGuestAccess: (projectId, req) => settings.setPluginGuestAccess(projectId, req)
+  })
   registerServiceHandlers(router, serviceChoices)
 
   // "This Project", "General" and "Appearance": per-project plugin set, project settings
@@ -2769,6 +3040,7 @@ function start(server: boolean): void {
     // off here has its rooms in this project ended (design-rooms.md §1).
     enabledChanged: (projectId) => {
       roomsGate.sweep()
+      guestStore.pluginAccessChanged(projectId)
       return hosts.enabledChanged(projectId)
     },
     settingsChanged: (projectId, pluginId) => hosts.settingsChanged(projectId, pluginId),
@@ -3112,7 +3384,7 @@ function start(server: boolean): void {
     },
     dirty: (projectId, viewId, tabId, dirty) => tabs.setPageDirty(projectId, tabId, viewId, dirty),
     unsaved: (projectId) => tabs.unsavedTitles(projectId),
-    discuss: (caller, tabId, question, target) => pageTabDiscuss.discuss(caller, tabId, question, target),
+    discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),
     server
   })
   registerSlotHandlers(router, {
@@ -3162,7 +3434,10 @@ function start(server: boolean): void {
     input: viewInputHandler({
       viewInput: (projectId, tabId, data, viewId) => tabs.viewInput(projectId, tabId, data, viewId),
       userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
-      acted: (projectId, tabId, viewId) => selections.typed(projectId, viewId, tabId)
+      acted: (projectId, tabId, viewId) => {
+        selections.typed(projectId, viewId, tabId)
+        presence.typed(viewId, tabId)
+      }
     }),
     // Per view (main/tabs/terminal-sizes.ts): the pty takes a view's size only while it sizes the tab.
     resize: (projectId, tabId, cols, rows, viewId) => tabs.resize(projectId, tabId, cols, rows, viewId),
@@ -3184,6 +3459,18 @@ function start(server: boolean): void {
     // A tab one view opened, restarted, flagged or closed, told to the window's other views (the
     // desktop and the browsers show one tab strip, design-web.md §5.1).
     others: (windowId, viewId, event) => views.toOthers(windowId, viewId, event.channel, event.payload),
+    // A guest's close the owner allowed: every view drops the tab, the guest's own included (it asked, it got no reply).
+    everyone: (windowId, event) => views.toWindow(windowId, event.channel, event.payload),
+    // A guest's terminal acts (design-guests §7, §8): its own selection and presence, sizes by explicit take only,
+    // keys that set `typed`, and a close of a tab it did not open asked of the owner's views (D-9).
+    guest: guestTabDeps({
+      presence,
+      tabExists: (projectId, tabId) => tabs.list(projectId).some((t) => t.id === tabId),
+      selections,
+      tabs,
+      userInput: (projectId, tabId, data) => sessions.userInput(projectId, tabId, data),
+      closeAsks: guestCloseAsks
+    }),
     // A view's tab pane selection, for SessionInfo.active (the view that acted last,
     // tabs/view-selections.ts). Only a tab of the sender's project counts: anything else (a tab
     // closed while the message travelled, a foreign id) leaves it as it was.
@@ -3191,6 +3478,7 @@ function start(server: boolean): void {
     // the window as the tab as stored (`tabs.added` merges it by id and generation).
     select: (projectId, tabId, viewId) => {
       selections.acted(projectId, viewId, tabId)
+      if (tabs.list(projectId).some((t) => t.id === tabId)) presence.viewSelected(viewId, tabId)
       const seen = tabs.markSeen(projectId, tabId)
       if (seen) sendToProject(projectId, 'tabs.added', seen)
     },
@@ -3199,12 +3487,13 @@ function start(server: boolean): void {
       const keys = new Map(commands.view(projectId).commands.map((c) => [c.id, c.key]))
       return menuWithKeys(tabCommands.menu(projectId), (id) => keys.get(id))
     },
-    create: async (projectId, options, windowId) => {
+    create: async (projectId, options, windowId, guestId) => {
       await spawnReady
       requireWindow(projectId, windowId)
       // Split right / down: created and placed beside the anchor under one snapshot; a refused
-      // placement leaves the tab plain (D15), an overlay entry is never placed.
-      return tabGroups.createBeside(projectId, options.beside, () => createTab(projectId, options, windowId)).tab
+      // placement leaves the tab plain (D15), an overlay entry is never placed. A guest's tab (claude or shell
+      // only, the router's check) is tagged with the guest (D-21: its cap and its close without asking).
+      return tabGroups.createBeside(projectId, options.beside, () => createTab(projectId, options, windowId, guestId)).tab
     },
     restart: async (projectId, tabId, windowId) => {
       await spawnReady
@@ -3248,7 +3537,7 @@ function start(server: boolean): void {
     area: (projectId, viewId, geometry) => tabGroups.viewArea(projectId, viewId, geometry)
   })
   /** A tab the person asked for (`tabs.create`), after the login env and the window check. */
-  function createTab(projectId: string, options: TabCreateRequest, windowId: number): TabInfo | null {
+  function createTab(projectId: string, options: TabCreateRequest, windowId: number, openedByGuest?: string): TabInfo | null {
     if (options.kind === 'command') {
       // By id, from main's own settings, looked up after the wait: an entry deleted meanwhile
       // is refused rather than run from a stale menu. The entry also says tab or overlay.
@@ -3267,7 +3556,11 @@ function start(server: boolean): void {
       })
     }
     // `beside` is not TabManager's: TabGroups places the tab once it exists (createBeside).
-    return tabs.create(projectId, options.cwd === undefined ? { kind: options.kind } : { kind: options.kind, cwd: options.cwd })
+    return tabs.create(projectId, {
+      kind: options.kind,
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(openedByGuest !== undefined ? { openedByGuest } : {})
+    })
   }
 
   registerLayoutHandlers(router, {
@@ -3288,7 +3581,9 @@ function start(server: boolean): void {
     loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
     take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
     button: (windowId, overlayId, click, viewId) => overlays.buttonClick(windowId, overlayId, click, viewId),
-    discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target)
+    discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),
+    // A guest's size report is remembered for its explicit take only (D-14).
+    guestResize: (windowId, overlayId, cols, rows, viewId) => overlays.guestResize(windowId, overlayId, cols, rows, viewId)
   })
 
   // Remote views (design-web.md §2.1, §3): each socket the gateway accepted binds to one open
@@ -3296,8 +3591,9 @@ function start(server: boolean): void {
   // handler is registered; the gateway refuses upgrades until then.
   const webConnections: WebConnections = new WebConnections({
     dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
-    addView: (windowId, viewId, sink) => {
-      const remove = views.addRemote(windowId, viewId, sink)
+    // `who` as `hello` bound it; `addRemote` requires it (no owner default: a missed wiring fails to compile).
+    addView: (windowId, viewId, sink, who) => {
+      const remove = views.addRemote(windowId, viewId, sink, who)
       // The last browser leaving a window kept running hidden shows it again (window-manager.ts).
       return () => {
         remove()
@@ -3308,7 +3604,7 @@ function start(server: boolean): void {
     // Plain reads (tabs.list, overlays.infos), never the desktop's re-attach calls: see SnapshotSources.
     snapshot: (ctx) => windowSnapshot(
         // Sign-ins only in server mode: the desktop's go to the system browser and have no paste box.
-        { tabs, layouts, overlays, closeAsks, linkAsks, trashAsks, downloadOffers: downloads, roomRemoveAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
+        { tabs, layouts, overlays, closeAsks, guestCloseAsks, linkAsks, trashAsks, downloadOffers: downloads, roomRemoveAsks, notices: pageNotices, signIns: server ? pluginOAuth : undefined, server },
         ctx
       ),
     mirror: terminalMirror,
@@ -3324,7 +3620,15 @@ function start(server: boolean): void {
     // Recorded at `hello`, before `ready` and with no event: the view's first `theme.get` answers by
     // its own appearance, so a dark browser never paints the light built-in first.
     viewScheme: (viewId, dark) => themes.viewJoined(viewId, dark),
+    viewJoined: (viewId, projectId, who) => presence.viewJoined(viewId, projectId, who),
+    // A guest's rights read live, its events filtered at this sink (guest-events.ts), its views counted.
+    guests: {
+      access: (who) => guestStore.access(who),
+      context: (viewId, access) => guestContext(guestSources, viewId, access),
+      viewsChanged: (guestId, live) => guestStore.viewsChanged(guestId, live)
+    },
     viewGone: (viewId) => {
+      presence.viewLeft(viewId)
       tabs.viewGone(viewId)
       // Its split geometry no longer stands for a screen (tab-groups.ts panesFit).
       tabGroups.viewGone(viewId)
@@ -3388,7 +3692,8 @@ function start(server: boolean): void {
         raise: (projectId) => windows.focusProject(projectId),
         select: (viewId, id) => views.toView(viewId, 'tabs.select', { tabId: id }),
         server,
-        goto: (viewId, projectId, id) => views.toView(viewId, 'project.goto', { projectId, tabId: id })
+        goto: (viewId, projectId, id) => views.toView(viewId, 'project.goto', { projectId, tabId: id }),
+        whoOf: (viewId) => views.whoOf(viewId)
       },
       entry.projectId,
       tabId,
@@ -3396,6 +3701,8 @@ function start(server: boolean): void {
     )
   }
   registerSessionHandlers(router, {
+    // D-10: a write guest's trash Allow counts in server mode only.
+    server,
     snapshotFor: (projectId) => sessions.snapshotFor(projectId),
     // Scoped to the sender's project inside the registry (cancelQueuedFor).
     cancelQueued: (projectId, tabId, itemId) => sessions.cancelQueuedFor(projectId, tabId, itemId),
@@ -3429,6 +3736,16 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // Guests (design-guests §3, spec-review 29): an invite through the invite dialog's own service
+          // (GuestStore.invite, what guests.invite calls, with its checks), the guest list and a kick, so a
+          // spec can make a guest without driving the dialog (only the hand-test spec drives it).
+          guestInvite: async (path: string, req: Parameters<GuestStore['invite']>[1]) => {
+            const project = projectAt(path)
+            if (!project) throw new Error(`guestInvite: no project at ${path}`)
+            return guestStore.invite(project.id, req)
+          },
+          guests: () => guestStore.list(),
+          guestKick: (guestId: string) => guestStore.kick(guestId),
           // The folder remote windows save downloads to in a test run (`<data>/Downloads`, made on the
           // first save), never the developer's own; the remote-window e2e reads what landed there.
           remoteDownloadsDir: () => testDownloadsDir,

@@ -34,6 +34,7 @@ afterEach(() => {
 
 function setup(): { overlays: OverlayManager; options: OpenDiffOptions } {
   const overlays = new OverlayManager({
+    ownerView: () => true,
     backend,
     views: noViews,
     isWindowOpen: (windowId) => !closed.has(windowId),

@@ -116,6 +116,16 @@ export function highlightPieces(text, ranges) {
  *   files state: { loading, paths, truncated, error, missing }
  *   grep state:  { loading, query, groups, count, files, truncated, error, missing }
  */
+/**
+ * Whether this view may use quick open and find in files: they list and search the whole project, which a
+ * read-only guest is not shown (only the shared file; the host refuses them anyway, lib/guests.js). `access`
+ * is the page's hint (`ccPanel.view.access`); none (an older app) is the owner's page. A value this page does
+ * not know hides them too.
+ */
+export function searchesProject(access) {
+  return access === undefined || access === 'owner' || access === 'write'
+}
+
 export function createSearch(deps) {
   let req = 0
   const files = { req: null, at: 0, paths: [], got: [], truncated: false, loading: false, error: null, missing: false }

@@ -3,7 +3,9 @@ import type { OverlayInfo } from '../../shared/ipc'
 import { registerHandlers } from '../commands/keybindings'
 import { HeldElsewhere } from '../plugins/HeldElsewhere'
 import { usePrefs } from '../prefs/prefs-store'
-import { holdsPage, isWebShell } from '../shell-kind'
+import { holdsPage, isWebShell, viewAccessHint } from '../shell-kind'
+import { shellAllows } from '../tabs/guest-shell'
+import { gateTerminalIo } from '../tabs/terminal-access'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
 import { DiscussButton } from './DiscussPopover'
 import type { DiscussTab } from './discuss-tabs'
@@ -13,8 +15,15 @@ import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
 import { urlViewBounds, type ToolbarEntry } from './overlay-toolbar'
 import { TerminalOverlay } from './TerminalOverlay'
 
-/** A terminal overlay's keystrokes, acks and size, through the overlay channels. */
+/**
+ * A terminal overlay's keystrokes, acks and size, through the overlay channels; a guest's gated like a
+ * tab's (terminal-access.ts: a read guest never answers nor sizes an overlay, design-guests §8).
+ */
 function overlayIo(overlayId: string): TerminalIo {
+  return gateTerminalIo(rawOverlayIo(overlayId), viewAccessHint())
+}
+
+function rawOverlayIo(overlayId: string): TerminalIo {
   return {
     input: (data) => {
       window.cockpit.invoke('overlays.input', { overlayId, data }).catch(() => {})
@@ -181,15 +190,17 @@ export function OverlayStack(props: {
             {/* The ✕ follows the tabs' close-side setting, so it sits where the user's hand already
                 goes for a tab's ✕. */}
             <OverlayToolbar
-              overlay={overlay}
+              // A read guest's clicks would be refused (`overlays.button` is write-class): no buttons to press.
+              overlay={shellAllows(viewAccessHint()).write ? overlay : { ...overlay, buttons: undefined, typeButtons: undefined }}
               closeSide={tabCloseSide}
               onClose={() => closeOverlay(overlay.id)}
               onButton={(entry) => buttonClicked(overlay.id, entry)}
               onMenuOpenChange={(open) =>
                 setMenuOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
               }
+              // Discuss sends into a Claude tab: never from a read guest's view (D-22).
               discuss={
-                overlay.discuss && (
+                overlay.discuss && shellAllows(viewAccessHint()).write && (
                   <DiscussButton
                     overlayId={overlay.id}
                     preferredTabId={overlay.discuss.tabId}
@@ -211,7 +222,14 @@ export function OverlayStack(props: {
                 <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
               )}
               {elsewhere !== undefined && (
-                <HeldElsewhere device={elsewhere} className="overlay-held-elsewhere" onTakeOver={() => takeOverlay(overlay.id)} />
+                viewAccessHint() === 'owner' ? (
+                  <HeldElsewhere device={elsewhere} className="overlay-held-elsewhere" onTakeOver={() => takeOverlay(overlay.id)} />
+                ) : (
+                  // `overlays.take` is guest `no`: a guest is told where it is, with no Take over to press.
+                  <div className="held-elsewhere overlay-held-elsewhere" role="status" data-testid="held-elsewhere">
+                    <span className="held-elsewhere-text">Open on {elsewhere}</span>
+                  </div>
+                )
               )}
               {overlay.kind === 'url' && (
                 <UrlBody

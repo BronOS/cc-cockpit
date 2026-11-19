@@ -192,6 +192,13 @@ var MANIFEST_SCHEMA = {
       additionalProperties: false,
       properties: { sessions: { enum: ["all-windows"] } }
     },
+    // Strict inside like `access`: a misspelt `awre` would be a promise to check guests that the app
+    // never reads, while the plugin's author believes it declared one.
+    guests: {
+      type: "object",
+      additionalProperties: false,
+      properties: { aware: { type: "boolean" } }
+    },
     contributes: {
       type: "object",
       properties: {

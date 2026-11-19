@@ -68,6 +68,11 @@ export interface TabRecord {
   argv?: string[]
   openedBy?: string
   openedByName?: string
+  /**
+   * A tab a write guest opened (D-21): the guest's name, for the tooltip. Display only; whose tab it is
+   * for closing (D-9) is the guest record's `openedTabs`, never this text. Kept when the guest leaves.
+   */
+  openedByGuest?: string
   /** A Claude tab's name given by the person (shared/session-name.ts); shown over Claude's topic. */
   name?: string
   /**
@@ -168,6 +173,12 @@ export interface ProjectRecord {
    * `@builtin` for the built-in viewer (shared/services.ts OPEN_FILE_PICK).
    */
   serviceProviders?: Record<string, string>
+  /**
+   * pluginId -> whether guests of this project see the plugin, over the app-wide value
+   * (`AppSettings.pluginGuestAccess`; design-guests §6). Absent key = use the global value. User-writable:
+   * read through `guestVisibilityOf` (shared/guest-access.ts), anything but `hidden` / `shown` is absent.
+   */
+  pluginGuestAccess?: Record<string, unknown>
   /** Epoch ms of the last `openPath`. */
   lastOpenedAt: number
 }
@@ -311,6 +322,13 @@ export interface AppSettings {
    */
   pluginLimits?: Record<string, unknown>
   /**
+   * pluginId -> whether guests see the plugin, app-wide (design-guests §6): `hidden` (the default when
+   * absent) or `shown`; a project may override it (`ProjectRecord.pluginGuestAccess`). Written only from
+   * an owner view (`settings.pluginGuestAccessSet`); dropped on uninstall like `pluginLimits`.
+   * User-writable: read through `guestVisibilityOf`.
+   */
+  pluginGuestAccess?: Record<string, unknown>
+  /**
    * The global value of each cap, for every plugin without its own override (same keys and clamping as
    * `pluginLimits[id]`): written only by Settings › General and the shell-only `ccc plugin limits --global` write.
    * Absent = the built-in defaults.
@@ -381,6 +399,11 @@ export interface WebAccessSettings {
    * the browser asks falls back to home with a note (main/web/list-folders.ts).
    */
   startFolder?: string
+  /**
+   * The owner's name guests see in presence and the banner (design-guests D-24): plain text, at most 60
+   * characters. Absent: "Host".
+   */
+  ownerName?: string
 }
 
 /**

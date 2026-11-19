@@ -303,3 +303,76 @@ describe('matchesHash', () => {
     expect(matchesHash('secret', 'zz')).toBe(false)
   })
 })
+
+// Guest devices (design-guests §3): a mode of their own, carrying their guest id; a damaged record (a guest
+// device without a guest, an owner device naming one) is dropped, never trusted; the owner's "revoke every
+// link device" never reaches a guest; the guest store's section rides in the same file.
+describe('guest devices', () => {
+  it('adds a guest device with its guest id, kept across a reload', () => {
+    const s = store()
+    const added = s.add('Bob', 'guest', 'gst1')
+    if (!added) throw new Error('not added')
+    expect(added.device).toMatchObject({ mode: 'guest', guestId: 'gst1' })
+    expect(s.devicesOfGuest('gst1').map((d) => d.id)).toEqual([added.device.id])
+    expect(store().devicesOfGuest('gst1')).toHaveLength(1)
+    expect(s.secretHashOf(added.device.id)).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('refuses a guest device without a guest id, and an owner device with one', () => {
+    const s = store()
+    expect(() => s.add('x', 'guest')).toThrow()
+    expect(() => s.add('x', 'link', 'gst1')).toThrow()
+    expect(() => s.add('x', 'guest', 'bad id!')).toThrow()
+  })
+
+  it('drops a damaged record on read: a guest device with no guest, an owner device naming one', () => {
+    const s = store()
+    s.add('ok', 'guest', 'gst1')
+    s.add('owner', 'link')
+    const data = onDisk() as { devices: Array<Record<string, unknown>> }
+    const [guest, owner] = data.devices as [Record<string, unknown>, Record<string, unknown>]
+    writeFileSync(file, JSON.stringify({ ...data, devices: [{ ...guest, guestId: undefined }, { ...owner, guestId: 'gst1' }] }))
+    expect(store().list()).toEqual([])
+  })
+
+  it('an older build drops a guest device on read: its mode is one a stock SIGN_INS rejects (the same path as any unknown mode)', () => {
+    const s = store()
+    s.add('Bob', 'guest', 'gst1')
+    s.add('owner', 'link')
+    const data = onDisk() as { devices: Array<Record<string, unknown>> }
+    // The sign-in modes before guests (master's SIGN_INS): 'guest' is not one of them.
+    const STOCK = ['link', 'add', 'password', 'confirm']
+    expect(data.devices.map((d) => d['mode'])).toEqual(['guest', 'link'])
+    expect(STOCK).not.toContain(data.devices[0]?.['mode'])
+    // What that build does with a mode it does not know, shown here with one this build does not know either.
+    writeFileSync(file, JSON.stringify({ ...data, devices: [{ ...data.devices[0], mode: 'from-a-newer-build' }, data.devices[1]] }))
+    expect(store().list().map((d) => d.mode)).toEqual(['link'])
+  })
+
+  it("revokeSignedInWith('link') leaves guest devices; revokeGuest and Revoke all take them, telling onDropped", () => {
+    const s = store()
+    const gone: Array<[string[], string]> = []
+    s.onDropped((devs, event) => gone.push([devs.map((d) => d.guestId ?? d.mode), event]))
+    s.add('owner', 'link')
+    s.add('Bob', 'guest', 'gst1')
+    s.add('Carol', 'guest', 'gst2')
+    expect(s.revokeSignedInWith('link', 'regenerated')).toBe(1)
+    expect(s.revokeGuest('gst1', 'kicked')).toBe(1)
+    s.revokeAll('all')
+    expect(gone).toEqual([[['link'], 'revoke'], [['gst1'], 'revoke'], [['gst2'], 'revoke']])
+  })
+
+  it('hasRoom is false at MAX_DEVICES', () => {
+    const s = store()
+    for (let i = 0; i < MAX_DEVICES; i++) s.add(`d${i}`, 'link')
+    expect(s.hasRoom()).toBe(false)
+    expect(s.add('one more', 'guest', 'gst1')).toBeUndefined()
+  })
+
+  it("keeps the guest store's section in the file, beside the devices", () => {
+    const s = store()
+    s.setGuestSection({ v: 1, invites: [], guests: [], spent: [], ended: [] })
+    s.add('x', 'link')
+    expect(store().guestSection()).toEqual({ v: 1, invites: [], guests: [], spent: [], ended: [] })
+  })
+})

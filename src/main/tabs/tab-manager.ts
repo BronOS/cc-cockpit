@@ -306,6 +306,11 @@ export interface CreateTabOptions {
    * restore spawns with it (Tab.env).
    */
   env?: Readonly<Record<string, string>>
+  /**
+   * The guest whose act opened the tab (design-guests §7, D-21): the owner's process all the same, shown as
+   * "opened by <guest>", saved and restored with it. Display and the D-9 close rule only; never a right.
+   */
+  openedByGuest?: string
 }
 
 /** A command tab's own copy of its new-tab menu entry (TabCommandsService.resolve). */
@@ -387,6 +392,8 @@ export interface RestoreTabOptions {
    * when the room registry still has that member (TabRoomHooks.rebind). Ignored on any other kind.
    */
   room?: TabRoom
+  /** A Claude or shell tab a guest opened (D-21): kept across a restore. */
+  openedByGuest?: string
   /** Required for, and only for, kind 'page': its plugin, type, params, title, icon (re-checked here). */
   page?: PageTabSpec
   /**
@@ -418,6 +425,8 @@ interface Tab {
    * with Code Mode can only be resumed with Code Mode on.
    */
   env?: Readonly<Record<string, string>>
+  /** The guest whose act opened it (CreateTabOptions.openedByGuest, D-21). */
+  openedByGuest?: string
   /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
   flag?: TabFlag
   /**
@@ -626,7 +635,7 @@ export class TabManager {
   }
 
   /** Start a tab. Throws (and creates nothing) for an unknown project, a bad cwd or a failed spawn. */
-  create(projectId: string, { kind, cwd, prompt, model, effort, env }: CreateTabOptions): TabInfo {
+  create(projectId: string, { kind, cwd, prompt, model, effort, env, openedByGuest }: CreateTabOptions): TabInfo {
     // Checked at run time as well: a command tab must come through createCommand, whose caller
     // looked the command up in main's settings, never through a kind someone passed along.
     if (kind !== 'claude' && kind !== 'shell') throw new Error('unknown tab kind')
@@ -642,7 +651,8 @@ export class TabManager {
       ...(prompt === undefined ? {} : { prompt }),
       ...(model === undefined ? {} : { model }),
       ...(effort === undefined ? {} : { effort }),
-      ...(checkedEnv.env === undefined || Object.keys(checkedEnv.env).length === 0 ? {} : { env: checkedEnv.env })
+      ...(checkedEnv.env === undefined || Object.keys(checkedEnv.env).length === 0 ? {} : { env: checkedEnv.env }),
+      ...guestTag(openedByGuest)
     })
     this.changed(projectId)
     return out
@@ -788,13 +798,18 @@ export class TabManager {
     return (this.order.get(projectId) ?? []).flatMap((t) => (t.dirtyIn !== undefined && t.page ? [t.page.title] : []))
   }
 
+  /** The same, counting only the views `inView` accepts (a guest's own views: guest-wiring.ts guestUnsavedOf). */
+  unsavedTitlesIn(projectId: string, inView: (viewId: ViewId) => boolean): string[] {
+    return (this.order.get(projectId) ?? []).flatMap((t) => (t.page && [...(t.dirtyIn ?? [])].some(inView) ? [t.page.title] : []))
+  }
+
   /**
    * Bring a saved tab back at start. Not reachable from a renderer or plugin (no IPC channel
    * maps here): `resumeId` is text from a hook payload that was saved to disk, and restore.ts
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page, env }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page, env, openedByGuest }: RestoreTabOptions): TabInfo {
     // Re-read like the name: a bad saved flag only loses the flag. Any kind keeps one.
     const savedFlag = flag === undefined ? undefined : tabFlagOf(flag)
     const flagOpt = savedFlag === undefined ? {} : { flag: savedFlag }
@@ -830,7 +845,8 @@ export class TabManager {
       ...(kept === undefined ? {} : { name: kept }),
       ...flagOpt,
       ...(savedRoom === undefined ? {} : { room: savedRoom }),
-      ...(savedEnv.env === undefined ? {} : { env: savedEnv.env })
+      ...(savedEnv.env === undefined ? {} : { env: savedEnv.env }),
+      ...guestTag(openedByGuest)
     })
   }
 
@@ -895,6 +911,7 @@ export class TabManager {
       flag?: TabFlag
       room?: TabRoom
       env?: Readonly<Record<string, string>>
+      openedByGuest?: string
     }
   ): TabInfo {
     const root = this.projectRoot(projectId)
@@ -914,6 +931,8 @@ export class TabManager {
     // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
     if (opts.name !== undefined) tab.name = opts.name
     if (opts.flag !== undefined) tab.flag = { ...opts.flag }
+    // D-21: only a Claude or shell tab is ever a guest's (tabs.create refuses other kinds for guests).
+    if (opts.openedByGuest !== undefined && (kind === 'claude' || kind === 'shell')) tab.openedByGuest = opts.openedByGuest
     // Before start(): the first spawn reads it like every later one. A Claude tab's only (create and
     // restoreTab pass none for another kind; a frozen copy so nothing that kept a reference changes it).
     if (opts.env !== undefined && kind === 'claude') tab.env = Object.freeze({ ...opts.env })
@@ -1247,6 +1266,17 @@ export class TabManager {
   fit(projectId: string, tabId: string, viewId: ViewId = DESKTOP_VIEW): boolean {
     const tab = this.terminalTab(projectId, tabId)
     return tab ? this.sizes.take(tab.id, viewId) : false
+  }
+
+  /**
+   * A guest's view measured the tab's pane (design-guests §8, D-14): remembered for its explicit take (typing,
+   * Fit), never taken by itself, by showing again or by a fallback (views/view-sizes.ts `explicitOnly`). The
+   * router sends only write guests here; a read guest's size is never even remembered.
+   */
+  guestResize(projectId: string, tabId: string, cols: number, rows: number, viewId: ViewId): void {
+    const tab = this.terminalTab(projectId, tabId)
+    if (!tab || !validSize(cols, rows)) return
+    this.sizes.report(tab.id, viewId, cols, rows, true)
   }
 
   /** A view was hidden or shown (a minimized window, a background browser tab): hidden ones never size. */
@@ -1699,6 +1729,11 @@ function tabEvent(tab: Tab): TabEvent {
   }
 }
 
+/** A guest id as a tab may carry it (D-21): a short plain id; anything else is dropped, never the tab. */
+function guestTag(guestId: unknown): { openedByGuest?: string } {
+  return typeof guestId === 'string' && guestId.length > 0 && guestId.length <= 64 ? { openedByGuest: guestId } : {}
+}
+
 /** Reports `sessionId` only once it is resumable: that is what restore saves and resumes. */
 function info(tab: Tab): TabInfo {
   const out: TabInfo = { id: tab.id, kind: tab.kind, cwd: tab.cwd, gen: tab.gen }
@@ -1712,6 +1747,7 @@ function info(tab: Tab): TabInfo {
   if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }
   if (tab.page) out.page = pageCopy(tab.page)
   if (tab.pluginName !== undefined) out.pluginName = tab.pluginName
+  if (tab.openedByGuest !== undefined) out.openedByGuest = tab.openedByGuest
   if (tab.unseen) out.unseen = true
   if (tab.dirtyIn !== undefined) out.dirty = true
   if (tab.command) {

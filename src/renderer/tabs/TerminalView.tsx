@@ -18,6 +18,8 @@ export function TerminalView(props: {
   sessions: SessionRegistry
   onRestart: () => void
   onClose: () => void
+  /** Restart and Close on the exited banner (default): not for a read-only guest. */
+  canWrite?: boolean
 }): React.JSX.Element {
   const { tab, shown, focused, sessions } = props
   const host = useRef<HTMLDivElement>(null)
@@ -54,6 +56,7 @@ export function TerminalView(props: {
           notStarted={tab.notStarted === true}
           onRestart={props.onRestart}
           onClose={props.onClose}
+          actions={props.canWrite !== false}
         />
       )}
     </div>

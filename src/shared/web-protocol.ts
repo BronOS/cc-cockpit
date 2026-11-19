@@ -7,7 +7,7 @@
 import type { IpcEventMap, LayoutView, OverlayInfo, TabInfo } from './ipc'
 import type { ProjectColor } from './project-color'
 import type { WebAccessMode } from './types'
-import type { ViewId } from './views'
+import type { GuestRole, ViewId } from './views'
 
 /**
  * Bumped on any incompatible frame change; a client speaking another version is closed. 2: the first
@@ -57,6 +57,70 @@ export function socketProtocols(key: string | undefined): string[] {
 }
 
 /** A sign-in's answer (SIGN_IN_LINK_PATH, SIGN_IN_PASSWORD_PATH, an allowed CONFIRM_POLL_PATH): the device, and its origin key. */
+/**
+ * Redeem a guest invite (design-guests §3, shared/design.md §16.4): a POST, after the Host and Origin
+ * checks and its own attempt bucket (D-19). Body `WebInviteRequest`; answers `WebInviteReply` with
+ * 200 (and the guest device's cookie), 400 `bad-request`, 404 `invalid`, 410 `used` / `expired`, 409
+ * `owner-device` / `none-mode`, 429 `busy`, 503 `full` (the device store is full; the invite stays unspent).
+ */
+export const INVITE_PATH = '/auth/invite'
+
+/** The `/auth/invite` body: the token from the link's fragment. */
+export interface WebInviteRequest {
+  token: string
+}
+
+export type WebInviteError = 'bad-request' | 'invalid' | 'used' | 'expired' | 'owner-device' | 'none-mode' | 'busy' | 'full'
+
+/** The `/auth/invite` answer: the guest's device key (as a sign-in's) and the project it joins. */
+export type WebInviteReply =
+  | { ok: true; key: string; device: { id: string; name: string }; project: string }
+  | { ok: false; error: WebInviteError }
+
+/**
+ * An invite link's fragment (never the query: a fragment is in no request, log, history `Referer` or
+ * tunnel log): `#i=<token>`, plus `&c=<sha256 hex of the host's TLS certificate>` when the host serves
+ * TLS (D-29: the guest's own cockpit pins it). The page clears the fragment with `replaceState`.
+ */
+export const INVITE_FRAGMENT_TOKEN = 'i'
+export const INVITE_FRAGMENT_CERT = 'c'
+
+/** A certificate pin: 64 lowercase hex characters. */
+const isCertPin = (v: string): boolean =>
+  v.length === 64 && [...v].every((ch) => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))
+/** A token: 43 base64url characters (32 bytes, no padding). */
+const isInviteToken = (v: string): boolean =>
+  v.length === 43 && [...v].every((ch) => (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === '-' || ch === '_')
+
+/**
+ * An invite link's fragment (`location.hash`, with or without its `#`), or undefined when it is not one.
+ * No regex (untrusted text, CLAUDE.md): split on `&` and the first `=`; a repeated or unknown key, a bad
+ * token or a bad pin is not an invite.
+ */
+export function parseInviteFragment(hash: string): { token: string; cert?: string } | undefined {
+  const body = hash.startsWith('#') ? hash.slice(1) : hash
+  if (body.length === 0 || body.length > 256) return undefined
+  let token: string | undefined
+  let cert: string | undefined
+  for (const part of body.split('&')) {
+    const eq = part.indexOf('=')
+    if (eq <= 0) return undefined
+    const key = part.slice(0, eq)
+    const value = part.slice(eq + 1)
+    if (key === INVITE_FRAGMENT_TOKEN && token === undefined && isInviteToken(value)) token = value
+    else if (key === INVITE_FRAGMENT_CERT && cert === undefined && isCertPin(value)) cert = value
+    else return undefined
+  }
+  if (token === undefined) return undefined
+  return cert === undefined ? { token } : { token, cert }
+}
+
+/** An invite link: the host's external origin, then the fragment. */
+export function inviteLink(origin: string, token: string, cert?: string): string {
+  const pin = cert === undefined ? '' : `&${INVITE_FRAGMENT_CERT}=${cert}`
+  return `${origin}/#${INVITE_FRAGMENT_TOKEN}=${token}${pin}`
+}
+
 export interface WebSignInReply {
   device: { id: string; name: string }
   key: string
@@ -157,6 +221,13 @@ export type WebConfirmPoll =
 export interface WebSessionReply {
   mode: WebAccessMode
   device: { id: string; name: string } | null
+  /** This browser's device is a guest's (design-guests): its name, role and the one project it may open. */
+  guest?: { name: string; role: GuestRole; project: string }
+  /**
+   * The cookie is an ended guest's (kicked, revoked, its lifetime over; main keeps a hash tombstone for
+   * 7 days, D-32): the page shows "your access ended", not the owner's sign-in form.
+   */
+  guestEnded?: true
 }
 
 /**
@@ -451,6 +522,18 @@ export const CLOSE = Object.freeze({
   serverStop: 4505,
   /** The snapshot could not be built (the project record went away mid-handshake). */
   failed: 4500,
+  /** A guest's `hello` named another project than its own, open or not (no oracle). Final. */
+  guestProject: 4403,
+  /** The owner removed the guest (kick, revoke). Final; the page clears its terminals. */
+  kicked: 4460,
+  /** The guest's role changed: reconnect at once, no backoff, to a fresh `ready` under the new role. */
+  roleChanged: 4461,
+  /** The host closed the guest's project: retried with backoff (it may open again). */
+  projectClosed: 4462,
+  /** The guest's lifetime ended (D-12). Final. */
+  accessEnded: 4463,
+  /** The guest's scope or a plugin's visibility changed (D-30): reconnect at once to a fresh `ready`. */
+  accessChanged: 4464,
   /**
    * This device already has MAX_VIEWS_PER_DEVICE_WINDOW views of the window (browser tabs left
    * open): one more is refused rather than retried, the person closes one and reloads.
@@ -501,6 +584,12 @@ export interface WebSnapshot {
    * view joining mid-ask shows the dialog too; `sessions.closeSettled` takes them down.
    */
   closeAsks: Array<IpcEventMap['sessions.closeAsk']>
+  /**
+   * Guests' asks to close an owner's tab still waiting (tabs/guest-close-asks.ts, D-9), replayed to the shell's
+   * `tabs.guestCloseAsk` listener like `closeAsks`, so an owner view joining mid-ask can answer it. Always empty
+   * for a guest's view. Absent (an older fixture) reads as none.
+   */
+  guestCloseAsks?: Array<IpcEventMap['tabs.guestCloseAsk']>
   /** `ccc plugin link` confirms still waiting (LinkAsks.pendingFor): replayed to the shell's `links.ask` listener like `closeAsks`. */
   linkAsks: Array<IpcEventMap['links.ask']>
   /**
@@ -539,6 +628,34 @@ export interface WebSnapshot {
    * reads as false.
    */
   server?: boolean
+  /**
+   * Present only on a guest's view (design-guests §10): who it is, its role and the owner's name (the
+   * Web access setting, D-24) for the banner. A UI hint: main decides every right from the view's access.
+   */
+  guest?: { id: string; name: string; role: GuestRole; ownerName: string }
+}
+
+/**
+ * The text a guest's page shows for a guest close code (design-guests §10, §16.4); undefined for any
+ * other code. `owner` is `WebSnapshot.guest.ownerName` (the page keeps the last one it got).
+ */
+export function guestCloseText(code: number, owner: string, role?: GuestRole): string | undefined {
+  switch (code) {
+    case CLOSE.guestProject:
+      return 'This invite is for another project.'
+    case CLOSE.kicked:
+      return `${owner} removed you.`
+    case CLOSE.roleChanged:
+      return role === undefined ? `${owner} changed your access.` : `${owner} made you a ${role === 'read' ? 'read-only' : 'write'} guest.`
+    case CLOSE.projectClosed:
+      return 'The host closed this project.'
+    case CLOSE.accessEnded:
+      return 'Your access ended.'
+    case CLOSE.accessChanged:
+      return `${owner} changed what you can see.`
+    default:
+      return undefined
+  }
 }
 
 /**
@@ -559,7 +676,11 @@ export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
  * the next one's of the same key: a late frame of an old load never reaches or closes the new port.
  * `m` is the panel SDK's JSON text, at most MAX_PORT_MESSAGE_LENGTH.
  */
-export type PortOpenFrame = { t: 'port.open'; key: string; nonce: number }
+/**
+ * `oneWay`: the line is host to page only (design-guests D-17, PanelPortPayload.oneWay): main drops what the page
+ * sends, and the browser shell may say so. Present only when true.
+ */
+export type PortOpenFrame = { t: 'port.open'; key: string; nonce: number; oneWay?: true }
 export type PortMsgFrame = { t: 'port.msg'; key: string; nonce: number; m: string }
 export type PortCloseFrame = { t: 'port.close'; key: string; nonce: number }
 /**

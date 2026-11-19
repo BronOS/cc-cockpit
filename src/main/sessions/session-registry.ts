@@ -76,6 +76,11 @@ export interface SessionRegistryOptions {
   deliveringTimeoutMs?: number
   /** Tests only: the settle window after SessionStart (default send-gate.ts SESSION_START_SETTLE_MS). */
   settleMs?: number
+  /**
+   * Whether the write guest `guestId` may still send to `tabId` (still this project's write guest and sees the tab),
+   * read when the gate is about to paste a guest's queued text (03e A). Absent: a guest's text is never pasted.
+   */
+  guestMayDeliver?(guestId: string, tabId: string): boolean
   log?: (message: string) => void
 }
 
@@ -369,13 +374,13 @@ export class SessionRegistry {
    * cannot slip past the takeover by forgetting to (host-api passes `plugin`; Discuss and the
    * test hook `core`, index.ts and overlay-manager.ts).
    */
-  send(tabId: string, text: string, origin: SendOrigin): SendResult {
+  send(tabId: string, text: string, origin: SendOrigin, guestId?: string): SendResult {
     const prev = this.entries.get(tabId)
     if (!prev) throw new Error('unknown tab')
-    const item: QueuedText = { id: randomUUID(), text: gate.prepareText(text), origin }
-    const step = gate.send(prev, item)
-    const entry = this.commit(prev, step)
-    // Delivered only when this very item left the queue and was not put back by a failed write.
+    const item: QueuedText = { id: randomUUID(), text: gate.prepareText(text), origin, ...(guestId === undefined ? {} : { guestId }) }
+    const { entry, step } = this.commitStep(prev, gate.send(prev, item))
+    // Delivered only when this very item left the queue and was not put back by a failed write (nor dropped as a
+    // refused guest's: then `step.delivered` is another item or none).
     return { id: item.id, delivered: step.delivered === item && !entry.queue.includes(item) }
   }
 
@@ -602,7 +607,15 @@ export class SessionRegistry {
    * reach the PTY. A write that throws puts the item back at the head of the queue, not delivering.
    * Returns the entry as stored.
    */
-  private commit(prev: SessionEntry, step: gate.GateStep): SessionEntry {
+  private commit(prev: SessionEntry, gateStep: gate.GateStep): SessionEntry {
+    return this.commitStep(prev, gateStep).entry
+  }
+
+  /** `commit`, also giving the step it applied (a guest's refused text taken out: `send` reports from it). */
+  private commitStep(prev: SessionEntry, gateStep: gate.GateStep): { entry: SessionEntry; step: gate.GateStep } {
+    // A guest's text is checked again here, at the one place every paste goes through (03e A); fail closed.
+    const step = gate.skipRefused(gateStep, (item) => item.guestId === undefined || this.options.guestMayDeliver?.(item.guestId, gateStep.entry.tabId) === true)
+    if (step !== gateStep) this.log(`session ${step.entry.tabId}: a guest's queued text was dropped (its access changed)`)
     let entry = step.entry
     if (step.write !== undefined && step.delivered !== undefined) {
       try {
@@ -621,11 +634,11 @@ export class SessionRegistry {
     // A SessionStart opened the settle window; one already running is not restarted by later events.
     if (entry.settling && !this.settleTimers.has(entry.tabId)) this.startSettleTimer(entry.tabId)
     if (!entry.settling) this.clearSettleTimer(entry.tabId)
-    if (step.dropped) {
-      this.log(`session ${entry.tabId}: session ended, dropped ${step.dropped.length} queued text(s)`)
+    if (gateStep.dropped) {
+      this.log(`session ${entry.tabId}: session ended, dropped ${gateStep.dropped.length} queued text(s)`)
     }
     if (entry !== prev) this.set(prev, entry, step.dropped) // else nothing changed
-    return entry
+    return { entry, step }
   }
 
   /**

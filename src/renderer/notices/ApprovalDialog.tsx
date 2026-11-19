@@ -35,6 +35,12 @@ export interface ApprovalDialogProps {
    * Allow: Enter and Space do nothing inside anyway, and Esc is Deny.
    */
   focusDeny?: boolean
+  /**
+   * Offer Deny only, with `note` beside it: a guest on a desktop host, whose Allow main ignores (D-10).
+   * Nothing to arm then; the dialog still takes no focus and Esc is Deny.
+   */
+  denyOnly?: boolean
+  note?: string
   /** `data-testid`s for e2e specs: the dialog box and its two buttons. */
   testIds?: { dialog?: string; allow?: string; deny?: string }
   onAnswer(allow: boolean): void
@@ -128,10 +134,11 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
         </h2>
         <div id={textId}>{props.children}</div>
         <div className="confirm-buttons">
+          {props.note !== undefined && <span className="confirm-note">{props.note}</span>}
           <button type="button" ref={deny} data-testid={props.testIds?.deny} onClick={() => answer(false)}>
             {props.denyLabel ?? 'Deny'}
           </button>
-          <button
+          {props.denyOnly !== true && <button
             type="button"
             className="confirm-danger"
             data-testid={props.testIds?.allow}
@@ -143,7 +150,7 @@ export function ApprovalBox(props: ApprovalDialogProps): React.JSX.Element {
             }}
           >
             {props.allowLabel ?? 'Allow'}
-          </button>
+          </button>}
         </div>
       </div>
     </div>

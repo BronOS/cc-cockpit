@@ -12,12 +12,13 @@
 // an open never arrives without its port. The frame ends with main's `slot.close { pluginId, id }`
 // event, or when the page's end of the port closes (the iframe was removed or reloaded). Messages
 // on the port follow the panel rules (host/ctx/ui.ts): ONE JSON string each, the same 1 MiB cap.
-import type { Disposer, JsonValue, PluginContext, SlotInstance } from '../../sdk/types'
+import type { Disposer, JsonValue, PluginContext, SlotInstance, ViewAccess } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { MAX_SLOT_PARAMS_BYTES, SLOT_FRAME_ID_PATTERN, SLOT_TYPE_PATTERN, type SlotHost } from '../../shared/slots'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { PortLine } from './port-line'
-import type { PanelPort } from './ui'
+import { DESKTOP_VIEW, type PanelPort } from './ui'
+import { HostViews, tagAccess } from './views'
 
 
 /**
@@ -37,6 +38,8 @@ export interface SlotOpenTag {
    * frame id can be open in several views at once, each its own instance with its own port.
    */
   view?: ViewId
+  /** Who is behind that view, from main's tag (views.ts tagAccess; main always writes it). */
+  access: ViewAccess
 }
 
 /** The frames map's key: one frame id per view (absent view: the desktop window's). */
@@ -67,13 +70,17 @@ export function slotOpenTag(data: unknown): SlotOpenTag | undefined {
     // A view main did not mint is refused, never read as the desktop's frame (it would close it).
     const view = viewIdOf(tag.view)
     if (tag.view !== undefined && view === undefined) return undefined
+    // A malformed role refuses the frame, never reads as the owner.
+    const access = tagAccess(tag.access, view)
+    if (access === null) return undefined
     return {
       pluginId,
       id,
       type,
       host,
       ...(params !== undefined ? { params: params as JsonValue } : {}),
-      ...(view !== undefined ? { view } : {})
+      ...(view !== undefined ? { view } : {}),
+      access
     }
   } catch {
     // Not one of main's port messages.
@@ -95,7 +102,11 @@ export class SlotHub {
   /** frameKey(pluginId, frameId, view) -> frame. */
   private readonly frames = new Map<string, Frame>()
 
-  constructor(private readonly log: (pluginId: string, message: string) => void) {}
+  constructor(
+    private readonly log: (pluginId: string, message: string) => void,
+    /** ctx.views: every open frame is one line of its view (views.ts). */
+    private readonly views: HostViews = new HostViews(log)
+  ) {}
 
   onOpen(pluginId: string, type: string, listener: (slot: SlotInstance) => void): Disposer {
     const key = `${pluginId}/${type}`
@@ -121,6 +132,7 @@ export class SlotHub {
     const key = frameKey(tag.pluginId, tag.id, tag.view)
     const old = this.frames.get(key)
     if (old) old.line.end()
+    const release = this.views.add(tag.pluginId, tag.view ?? DESKTOP_VIEW, tag.access)
     const line = new PortLine(
       port,
       tag.view,
@@ -128,6 +140,7 @@ export class SlotHub {
       (message) => this.log(tag.pluginId, message),
       () => {
         if (this.frames.get(key) === frame) this.frames.delete(key)
+        release()
       }
     )
     const frame: Frame = { pluginId: tag.pluginId, id: tag.id, line }
@@ -175,6 +188,7 @@ export class SlotHub {
       type: tag.type,
       host: Object.freeze(structuredClone(tag.host)),
       params: tag.params === undefined ? undefined : structuredClone(tag.params),
+      access: tag.access,
       post: frame.line.post,
       onMessage: frame.line.onMessage,
       onClose: frame.line.onClose

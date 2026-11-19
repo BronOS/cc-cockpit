@@ -1,0 +1,20 @@
+{
+  "id": "test.guestteam",
+  "name": "Guest Team",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "guests": {
+    "aware": true
+  },
+  "contributes": {
+    "panels": [
+      {
+        "id": "board",
+        "title": "Board",
+        "entry": "panel.html",
+        "defaultZone": "left"
+      }
+    ]
+  }
+}

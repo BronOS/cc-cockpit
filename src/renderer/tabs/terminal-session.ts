@@ -11,11 +11,12 @@ import type { TerminalFont } from '../../shared/terminal-font'
 import { screenOf, type ScreenAnswer } from '../../shared/terminal-screen'
 import { commandForEvent } from '../commands/keybindings'
 import { currentPrefs, onPrefs } from '../prefs/prefs-store'
-import { isWebShell } from '../shell-kind'
+import { isWebShell, viewAccessHint } from '../shell-kind'
 import { xtermLookOptions } from '../theme/see-through'
 import { currentXtermTheme, onXtermTheme } from '../theme/theme-store'
 import { drawAt, type TermSize, usableSize } from './terminal-draw'
 import { loadTerminalFont, sameFont, xtermFontOptions } from './terminal-font'
+import { gateTerminalIo, implicitTakesAllowed, type TerminalIo } from './terminal-access'
 
 function openLink(uri: string): void {
   window.cockpit.invoke('app.openExternal', { url: uri }).catch((err: unknown) => {
@@ -23,28 +24,18 @@ function openLink(uri: string): void {
   })
 }
 
+/** Where a terminal's keystrokes, acks and size go (terminal-access.ts, which gates a guest's). */
+export type { TerminalIo } from './terminal-access'
+
 /**
- * Where a terminal's keystrokes, acks and size go: a tab's PTY by default, a terminal overlay's
- * through the overlay channels (OverlayStack). Both PTYs live in main and are scoped there.
+ * The tab channels, as this view's access may use them (terminal-access.ts: a guest's are gated, read
+ * when the terminal is made). Failures are dropped: main ignores a tab that is gone.
  */
-export interface TerminalIo {
-  input(data: string): void
-  ack(count: number): void
-  resize(cols: number, rows: number): void
-  /**
-   * "Fit to this screen": the pty takes this view's size (`tabs.fit`). Absent for a terminal whose
-   * pty only this view sizes (an overlay's): it never gets a size item, so it never offers one.
-   */
-  fit?(): void
-  /**
-   * This view's screen of the terminal, answering main's `tabs.screenAsk` (`tabs.screen`). Absent
-   * for a terminal main never asks about (an overlay's).
-   */
-  screen?(answer: ScreenAnswer): void
+export function tabIo(tabId: string): TerminalIo {
+  return gateTerminalIo(rawTabIo(tabId), viewAccessHint())
 }
 
-/** The tab channels. Failures are dropped: main ignores a tab that is gone. */
-export function tabIo(tabId: string): TerminalIo {
+function rawTabIo(tabId: string): TerminalIo {
   return {
     input: (data) => {
       window.cockpit.invoke('tabs.input', { tabId, data }).catch(() => {})
@@ -282,6 +273,9 @@ export class TerminalSession {
    */
   private takeSize(): void {
     this.pendingTake = false
+    // Every implicit take ends here (load, select, a press, a refocus gesture): never a guest's (D-14).
+    // The Fit button's own click calls io.fit directly, an explicit act.
+    if (!implicitTakesAllowed(viewAccessHint())) return
     if (this.disposed || !this.ptySize || !this.io.fit || !this.shown()) return
     this.io.fit()
   }
@@ -403,6 +397,14 @@ export class TerminalSession {
     return el !== undefined && target !== null && (target === el || (typeof el.contains === 'function' && el.contains(target as Node)))
   }
 
+  /**
+   * A key or paste in this terminal, seen on its container in the capture phase (before xterm's own
+   * listeners on the textarea turn it into input): the person's own act here (TerminalIo.act).
+   */
+  private readonly onOwnAct = (): void => {
+    this.io.act?.()
+  }
+
   private readonly onPointerDown = (): void => {
     this.backArmed = false
     this.takeSize()
@@ -420,12 +422,16 @@ export class TerminalSession {
   attach(container: HTMLElement): void {
     if (this.disposed) return
     this.observer?.disconnect()
-    this.container?.removeEventListener('pointerdown', this.onPointerDown, true)
+    this.removeContainerListeners()
     this.container = container
     if (this.term.element) container.appendChild(this.term.element)
     else this.term.open(container)
     // Capture: xterm handles the press on its own elements first otherwise.
     container.addEventListener('pointerdown', this.onPointerDown, true)
+    if (this.io.act) {
+      container.addEventListener('keydown', this.onOwnAct, true)
+      container.addEventListener('paste', this.onOwnAct, true)
+    }
     this.term.textarea?.removeEventListener('focus', this.onTermFocus)
     this.term.textarea?.addEventListener('focus', this.onTermFocus)
     // Fires once on observe and again whenever the pane is resized or un-hidden (a hidden tab is
@@ -435,8 +441,14 @@ export class TerminalSession {
     this.refit()
   }
 
-  detach(): void {
+  private removeContainerListeners(): void {
     this.container?.removeEventListener('pointerdown', this.onPointerDown, true)
+    this.container?.removeEventListener('keydown', this.onOwnAct, true)
+    this.container?.removeEventListener('paste', this.onOwnAct, true)
+  }
+
+  detach(): void {
+    this.removeContainerListeners()
     this.container?.classList.remove('terminal-crop', 'terminal-crop-cols', 'terminal-crop-rows')
     this.observer?.disconnect()
     this.observer = undefined

@@ -32,10 +32,10 @@ const flush = async (): Promise<void> => {
 describe('HostApi tabs.* (main)', () => {
   let root: string
   let tabs: TabManager
-  let opened: Array<{ projectId: string; tab: TabInfo; windowId: number; focus: boolean }>
+  let opened: Array<{ projectId: string; tab: TabInfo; windowId: number; focus: boolean; view?: string[] }>
   let emitted: Array<{ projectId: string; channel: string; payload: unknown }>
   let apis: HostApi[]
-  let focused: Array<{ projectId: string; tabId: string; windowId: number }>
+  let focused: Array<{ projectId: string; tabId: string; windowId: number; view?: string[] }>
   let marked: Array<{ projectId: string; tabId: string }>
   let closing: Array<{ windowId: number; projectId: string; tabId: string }>
   let closeAnswer: boolean
@@ -68,7 +68,7 @@ describe('HostApi tabs.* (main)', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  function host(projectId = A): (method: string, params?: unknown) => Promise<unknown> {
+  function host(projectId = A): (method: string, params?: unknown, meta?: { view?: string }) => Promise<unknown> {
     const deps = {
       listSessions: () => [],
       session: () => undefined,
@@ -79,14 +79,17 @@ describe('HostApi tabs.* (main)', () => {
       openOverlay: async () => ({ kind: 'dismissed' }),
       secrets: unusedSecrets,
       oauth: unusedOAuth,
-      openPageTab: async (pid: string, spec: Parameters<NonNullable<HostApiDeps['openPageTab']>>[1], windowId: number, focus: boolean) => {
+      openPageTab: async (pid: string, spec: Parameters<NonNullable<HostApiDeps['openPageTab']>>[1], windowId: number, focus: boolean, ...view: string[]) => {
         const tab = tabs.createPage(pid, spec)
-        opened.push({ projectId: pid, tab, windowId, focus })
+        opened.push({ projectId: pid, tab, windowId, focus, ...(view.length > 0 ? { view } : {}) })
         return tab
       },
+      // The views of this host's window are web:1..9; web:77 is another window's.
+      viewWindow: (view: string) => (view === 'web:77' ? WIN_A + 1 : WIN_A),
       listTabs: (pid: string) => tabs.list(pid),
       setPageTabTitle: (pid: string, tabId: string, title: string, icon: string | undefined) => tabs.setPageTitle(pid, tabId, title, icon),
-      focusPageTab: (pid: string, tabId: string, windowId: number) => focused.push({ projectId: pid, tabId, windowId }),
+      focusPageTab: (pid: string, tabId: string, windowId: number, ...view: string[]) =>
+        focused.push({ projectId: pid, tabId, windowId, ...(view.length > 0 ? { view } : {}) }),
       markPageTabUnseen: (pid: string, tabId: string) => (marked.push({ projectId: pid, tabId }), marked.length === 1),
       // The person's close path (close-asks.ts): a dirty tab asks in its views, the answer comes back.
       closeTab: async (windowId: number, pid: string, tabId: string) => (closing.push({ windowId, projectId: pid, tabId }), closeAnswer),
@@ -104,7 +107,7 @@ describe('HostApi tabs.* (main)', () => {
     const api = new HostApi(deps, scope, () => {})
     apis.push(api)
     const handlers = api.handlers
-    return (method, params) => Promise.resolve().then(() => handlers[method]!(params))
+    return (method, params, meta?: { view?: string }) => Promise.resolve().then(() => handlers[method]!(params, meta as never))
   }
 
   it("opens a page tab of the caller's own declared type in the host's project and window", async () => {
@@ -122,6 +125,17 @@ describe('HostApi tabs.* (main)', () => {
       title: 'x.ts',
       icon: 'file'
     })
+  })
+
+  it('hands openPage and focus the view the plugin acted for (03e: a guest\'s click selects in its own view only); none or a foreign window\'s: no view', async () => {
+    const call = host()
+    const a = (await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'a', focus: true }, { view: 'web:5' })) as { tabId: string }
+    await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'b', focus: true })
+    await call('tabs.openPage', { pluginId: 'p.editor', type: 'file', title: 'c', focus: true }, { view: 'web:77' })
+    expect(opened.map((o) => o.view)).toEqual([['web:5'], undefined, undefined])
+    await call('tabs.focus', { pluginId: 'p.editor', tabId: a.tabId }, { view: 'web:5' })
+    await call('tabs.focus', { pluginId: 'p.editor', tabId: a.tabId })
+    expect(focused.map((f) => f.view)).toEqual([['web:5'], undefined])
   })
 
   it("refuses a foreign type: another plugin's, an undeclared one, an unknown plugin", async () => {
@@ -302,7 +316,7 @@ describe('ctx.tabs (host)', () => {
         port.closed = true
       }
     }
-    const parsed = pageTabOpenTag(JSON.stringify({ pageTabOpen: tag }))
+    const parsed = pageTabOpenTag(JSON.stringify({ pageTabOpen: { access: 'owner', ...tag } }))
     if (!parsed) throw new Error('bad tag')
     return { page, port, attached: contexts.attachPageTabPort(parsed, port) }
   }

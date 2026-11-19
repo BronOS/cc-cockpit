@@ -2,8 +2,8 @@
 // is shown, what the filter keeps, where the keyboard highlight goes, how old a row is. DOM-free so
 // the unit tests (plain Node) cover it. The desktop picker's Servers section (remote servers,
 // design-remote-desktop.md §3) takes its labels, order and grouping from here too.
-import type { ProjectSummary, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
-import { checkSshHost, parseRemoteLink, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
+import type { ProjectSummary, RemoteConnectRequest, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
+import { certFingerprintText, checkSshHost, parseRemoteLink, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
 
 /**
  * `path` with the home folder written as `~` (`/Users/me/src/app` -> `~/src/app`). Only a whole
@@ -210,7 +210,7 @@ export interface ServerGroup {
 export function groupServers(servers: readonly RemoteServerInfo[]): ServerGroup[] {
   return sortServers(servers).map((server) => ({
     server,
-    via: viaLabel(server.via),
+    via: serverViaText(server),
     state: serverStateLabel(server),
     notes: serverNotes(server),
     projects: remoteRecentRows(server.recent)
@@ -385,7 +385,10 @@ export function newPromptFlow(): PromptFlow {
 }
 
 /** What the person answered a prompt: the fingerprint they trusted, or a secret and Remember. */
-export type PromptAnswer = { need: 'hostKey'; sha256: string } | { need: 'password' | 'passphrase'; secret: string; remember: boolean }
+export type PromptAnswer =
+  | { need: 'hostKey'; sha256: string }
+  | { need: 'certificate'; sha256: string }
+  | { need: 'password' | 'passphrase'; secret: string; remember: boolean }
 
 /** The prompt to show (`retry`: the last one was wrong, say so), or the error that ends the connect. */
 export type PromptStep = { ask: RemoteNeed; retry: boolean } | { error: string }
@@ -402,6 +405,11 @@ export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFl
     if (flow.answers.hostKey === need.sha256) return { flow, step: { error: `the host key of ${need.address} could not be confirmed` } }
     return { flow, step: { ask: need, retry: false } }
   }
+  // A Direct guest link's certificate (D-29): asked once, like a host key; the same one again is an error.
+  if (need.need === 'certificate') {
+    if (flow.answers.certificate === need.sha256) return { flow, step: { error: `the certificate of ${need.origin} could not be confirmed` } }
+    return { flow, step: { ask: need, retry: false } }
+  }
   const name = need.need
   if (need.again === true) {
     const wrong = { ...flow.wrong, [name]: flow.wrong[name] + 1 }
@@ -415,8 +423,44 @@ export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFl
   return { flow, step: { ask: need, retry: false } }
 }
 
+/**
+ * The certificate prompt's fingerprint (D-29): main's lowercase hex shown as browsers show it, colon-separated
+ * upper-case pairs (shared/remote-servers.ts `certFingerprintText`), so the person can compare it with the
+ * host's own Settings or a browser's certificate viewer. Display only: the answer carries main's own value.
+ */
+export function certificateFingerprint(need: { sha256: string }): string {
+  return certFingerprintText(need.sha256)
+}
+
+/**
+ * The certificate prompt's line (D-29): what Trust means. The host's own certificate is self-signed, so
+ * nothing but the person can vouch for it; the invite link is how it reached them.
+ */
+export const CERTIFICATE_HINT =
+  'The host uses its own certificate, which this computer cannot check. Trust it only if the invite came to you from the host. This app then accepts only this certificate for this address; a different one is refused.'
+
+/**
+ * The `remote.connect` request for the Connect form's settings and a prompt run's answers: SSH carries
+ * them (host key, password, passphrase), Direct too (a guest invite's certificate, D-29: dropping it
+ * made main ask again and the run end in "could not be confirmed"), a tunnel never asks.
+ */
+export function connectRequest(settings: RemoteServerSettings, answers: RemoteAnswers | undefined): RemoteConnectRequest {
+  return settings.kind !== 'tunnel' && answers !== undefined ? { ...settings, answers } : settings
+}
+
+/**
+ * A server's label under its name: a guest's Direct record reads "Guest at <origin>" (design-guests §11),
+ * every other one its connection (viaLabel). `guest` comes from main's record, never from the link.
+ */
+export function serverViaText(server: { via: RemoteVia; guest?: true }): string {
+  const via = viaLabel(server.via)
+  return server.guest === true && server.via.kind === 'direct' ? `Guest at ${via}` : via
+}
+
 /** The flow with one more answer: a new answer for the same thing replaces the old one, the others stay. */
 export function withAnswer(flow: PromptFlow, answer: PromptAnswer): PromptFlow {
   if (answer.need === 'hostKey') return { ...flow, answers: { ...flow.answers, hostKey: answer.sha256 } }
+  // D-29: the certificate the person trusted; main pins it and saves it only after the window opened.
+  if (answer.need === 'certificate') return { ...flow, answers: { ...flow.answers, certificate: answer.sha256 } }
   return { ...flow, answers: { ...flow.answers, [answer.need]: answer.secret, remember: answer.remember } }
 }

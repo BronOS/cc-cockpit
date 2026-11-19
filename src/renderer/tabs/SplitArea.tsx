@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { SessionDetail, TabInfo } from '../../shared/ipc'
+import type { ViewAccess } from '../../shared/views'
 import { rectsOf, type PaneEdge, type PaneRect, type PaneSplit } from '../../shared/tab-groups'
 import type { PaneView } from '../state/groups-state'
 import { StatusDot } from '../status/StatusDot'
@@ -18,6 +19,7 @@ import {
   withSizes,
   type Size
 } from './pane-layout'
+import { emptyTabsText, shellAllows } from './guest-shell'
 import { PageTabArea, pageFrames, usePageUnavailable } from './PageTabArea'
 import { openedByLine, pageTabMarks, tabLabel } from './tab-label'
 import type { SessionRegistry } from './terminal-session'
@@ -94,8 +96,16 @@ export function SplitArea(props: {
   listed: boolean
   /** The zones are inert (a dialog, the settings screen, an overlay): so is the page tab layer. */
   inert: boolean
+  /**
+   * This view's access (shell-kind.ts viewAccessHint, a hint): a guest gets no divider drag (`groups.resize`
+   * is guest `no`), a read guest no Restart or Close on an exited pane, and an empty area says nothing is
+   * shared. Absent: the owner.
+   */
+  access?: ViewAccess
 }): React.JSX.Element {
   const { tabs, activeId, view, keysOff, sessions, details } = props
+  const access = props.access ?? 'owner'
+  const allows = shellAllows(access)
   const areaRef = useRef<HTMLDivElement>(null)
   const [area, setArea] = useState<Size>({ width: 0, height: 0 })
   const onArea = props.onArea
@@ -202,7 +212,7 @@ export function SplitArea(props: {
       // D19: whether the shown group is zoomed here, by the person (⌘⇧Enter) or by D5's narrow view.
       data-zoom={view.zoomTab === undefined ? undefined : view.auto ? 'auto' : 'manual'}
     >
-      {tabs.length === 0 && <p className="tabs-empty">No tabs yet. Use + to start Claude or a shell.</p>}
+      {tabs.length === 0 && <p className={access === 'owner' ? 'tabs-empty' : 'tabs-empty guest-nothing-shared'}>{emptyTabsText(access)}</p>}
       {tabs.map((tab) => {
         const shown = view.visible.includes(tab.id)
         const r = shown && tiled ? rectOf(tab.id) : { x: 0, y: 0, w: 1, h: 1 }
@@ -274,6 +284,7 @@ export function SplitArea(props: {
                   sessions={sessions}
                   onRestart={() => props.onRestart(tab.id)}
                   onClose={() => props.onClose(tab.id)}
+                  canWrite={allows.write}
                 />
               </div>
             )}
@@ -301,13 +312,14 @@ export function SplitArea(props: {
               key={`${d.splitId}:${d.index}`}
               className={`pane-divider pane-divider-${d.dir}`}
               style={style}
-              // Double-click equalizes this split (D16: one resize per split).
+              // Double-click equalizes this split (D16: one resize per split). The owner's only: a guest
+              // sees the divider but cannot move it (`groups.resize` is guest `no`).
               onDoubleClick={() => {
                 const n = sizes.length
-                if (n > 1) void props.onResize(group.id, d.splitId, evenSizes(n))
+                if (allows.arrange && n > 1) void props.onResize(group.id, d.splitId, evenSizes(n))
               }}
             >
-              <Splitter
+              {allows.arrange && <Splitter
                 axis={d.dir === 'row' ? 'x' : 'y'}
                 value={(sizes[d.index] ?? 0) * splitPx}
                 label="Resize panes"
@@ -321,7 +333,7 @@ export function SplitArea(props: {
                   setDragBoth({ ...cur, sizes: next })
                 }}
                 onCommit={commit}
-              />
+              />}
             </div>
           )
         })}

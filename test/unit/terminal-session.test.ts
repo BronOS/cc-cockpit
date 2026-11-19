@@ -644,3 +644,55 @@ describe('the screen main asks for (tabs.screenAsk)', () => {
     registry.disposeAll()
   })
 })
+
+// Guests (D-14, spec-review 14): a guest view's implicit gestures take nothing; a write guest's own key in
+// the pane sends its held size first (terminal-access.ts gates the io, the session tells it the act).
+const guestKind = (await import('../../src/renderer/shell-kind')) as {
+  markWebShell(): void
+  setGuestHint(g: { id: string; name: string; role: 'read' | 'write'; ownerName: string } | undefined): void
+  resetShellKindForTest(): void
+}
+const { gateTerminalIo } = (await import('../../src/renderer/tabs/terminal-access')) as {
+  gateTerminalIo(io: Io, access: 'owner' | 'read' | 'write'): Io & { act?(): void }
+}
+
+describe("a guest view's terminal", () => {
+  afterEach(() => guestKind.resetShellKindForTest())
+
+  it('takes nothing on a press, a selection or a page load, while another view sizes the pty', () => {
+    guestKind.markWebShell()
+    guestKind.setGuestHint({ id: 'g1', name: 'Ana', role: 'write', ownerName: 'Host' })
+    const { s, container, fits } = session()
+    s.write('', false, { cols: 50, rows: 30 }, false)
+    container.dispatchEvent(new Event('pointerdown'))
+    s.takeOnSelect()
+    s.takeOnLoad()
+    expect(fits()).toBe(0)
+  })
+
+  it("a write guest's key or paste in the pane sends its held size; a press does not", () => {
+    guestKind.markWebShell()
+    guestKind.setGuestHint({ id: 'g1', name: 'Ana', role: 'write', ownerName: 'Host' })
+    const calls: string[] = []
+    const io = gateTerminalIo(
+      {
+        input: (d) => void calls.push(`input ${d}`),
+        ack: () => undefined,
+        resize: (c, r) => void calls.push(`resize ${c}x${r}`),
+        fit: () => void calls.push('fit')
+      },
+      'write'
+    )
+    const s = new TerminalSession('t1', io)
+    made.push(s)
+    const container = laidOutPane()
+    s.attach(container)
+    // Attaching measured the pane: held, not sent.
+    container.dispatchEvent(new Event('pointerdown'))
+    expect(calls).toEqual([])
+    container.dispatchEvent(new Event('paste'))
+    expect(calls).toEqual(['resize 120x40'])
+    container.dispatchEvent(new Event('keydown'))
+    expect(calls).toEqual(['resize 120x40'])
+  })
+})
