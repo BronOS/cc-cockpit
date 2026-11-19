@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
 import type { CockpitApi } from '../../src/shared/ipc'
+import { certFingerprintText } from '../../src/shared/remote-servers'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { guestList, inviteGuest } from './guest-fixtures'
 import { enableWebAccess } from './web-fixtures'
@@ -81,7 +82,7 @@ test('a Direct guest invite to a self-signed host: one Trust prompt for the pinn
     const prompt = guest.cockpit.page.getByTestId('remote-cert-prompt')
     await expect(prompt).toBeVisible()
     await expect(prompt.getByTestId('remote-cert-origin')).toHaveText(origin)
-    await expect(prompt.getByTestId('remote-cert-fingerprint')).toHaveText(pin)
+    await expect(prompt.getByTestId('remote-cert-fingerprint')).toHaveText(certFingerprintText(pin))
     // Trust takes a click only after the dialog was seen for a moment (ApprovalArm).
     await expect(prompt.getByTestId('remote-cert-trust')).toBeEnabled({ timeout: 5000 })
     await prompt.getByTestId('remote-cert-trust').click()
