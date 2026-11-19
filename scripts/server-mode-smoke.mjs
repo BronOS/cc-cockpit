@@ -43,8 +43,13 @@
 // (a session leader's pgid is its pid), plus every descendant seen before the stop, so a helper or a
 // pty's child that left the group still counts. The detected run and the fallback are Linux-only and
 // skipped with a line. The `--server` run also starts a second `--server` on the same data dir, which
-// must exit 1 with the held line while the first keeps serving. Not here: a launchd run and `open -a`
-// routing (the LaunchAgent itself), which need `launchctl` in the person's login session.
+// must exit 1 with the held line while the first keeps serving. The reopen case (`out/` only): `--server`
+// from a copy of Electron.app with its own CFBundleIdentifier (LaunchServices routes by bundle, and other
+// runs on the Mac use the stock one), then `open -a <copy>`: no second process starts, and the reopen
+// notice answers from CC_COCKPIT_TEST_SERVER_BOX: `stop` exits the server with 0, `cancel` leaves it
+// serving and back to `UIElement`. The copy lives under /private/tmp/claude-<uid>/ (else the temp dir) and is
+// unregistered from LaunchServices and removed at the end. Not here: a real LaunchAgent (`launchctl`, the
+// person's login session), which the owner runs by hand (plan 20261119-server-mode-mac, O1).
 // Exits 1 on any failure.
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
@@ -235,6 +240,117 @@ async function checkHeld(args, env, port, dataDir, failures) {
   if (status !== 200) failures.push(`after the second --server, GET / answered ${status}`)
   const web = await ccc(dataDir, env, ['web', 'status', '--json'])
   if (web.code !== 0) failures.push(`after the second --server, ccc web status: exit ${web.code}: ${web.stderr.trim()}`)
+}
+
+/** second-launch.ts `SECOND_LAUNCH_ANSWER_ENV`: a test run's answer to the box, no box shown. */
+const SECOND_LAUNCH_ANSWER_ENV = 'CC_COCKPIT_TEST_SERVER_BOX'
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+
+/**
+ * macOS: a clone of this repo's Electron.app with its own bundle id, ad-hoc signed again (the Info.plist
+ * edit breaks the seal), so `open -a` can reach only this run (§9.15 S3). Returns its paths and a cleanup.
+ */
+function copyBundle() {
+  const stock = resolve(dirname(command.exe), '..', '..')
+  const parent = existsSync(`/private/tmp/claude-${process.getuid()}`) ? `/private/tmp/claude-${process.getuid()}` : tmpdir()
+  const dir = mkdtempSync(join(parent, 'ccc-smoke-bundle-'))
+  const bundle = join(dir, 'Electron.app')
+  execFileSync('cp', ['-c', '-R', stock, bundle])
+  execFileSync('plutil', ['-replace', 'CFBundleIdentifier', '-string', `dev.cc-cockpit.smoke.${process.pid}`, join(bundle, 'Contents', 'Info.plist')])
+  execFileSync('codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'ignore' })
+  return {
+    bundle,
+    exe: join(bundle, 'Contents', 'MacOS', 'Electron'),
+    remove: () => {
+      try {
+        execFileSync(LSREGISTER, ['-u', bundle], { stdio: 'ignore' })
+      } catch {
+        // never registered
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/** macOS: live main processes of the copied bundle (its helpers carry `--type=`). */
+function bundleMains(exe) {
+  return psTable()
+    .filter((p) => (p.command === exe || p.command.startsWith(`${exe} `)) && !p.command.includes('--type='))
+    .map((p) => p.pid)
+}
+
+/**
+ * macOS, the reopen case: `--server` from the copy, `open -a` the copy, the notice answered by `answer`.
+ * `stop`: the server exits 0 on its own. `cancel`: it keeps serving and is `UIElement` again (the routed
+ * launch makes it `Foreground`; the notice puts the accessory policy back). Either way no second process.
+ */
+async function runReopen(copy, answer) {
+  const port = 20000 + Math.floor(Math.random() * 20000)
+  const { base, dataDir, env } = newRunEnv(port, { enabled: true, mode: 'none' })
+  env[SECOND_LAUNCH_ANSWER_ENV] = answer
+  const args = [root, '--server']
+  console.log(`\n== reopen (open -a on a bundle copy), notice answered ${answer}: ${[copy.exe, ...args].join(' ')}`)
+  const child = launch(copy.exe, args, env, false)
+  const sid = child.pid
+  const failures = []
+  let seen = []
+  let others = new Set()
+  try {
+    await until('the gateway', START_MS, async () =>
+      child.exit === undefined && existsSync(join(dataDir, 'app.sock'))
+        ? await fetch(`http://127.0.0.1:${port}/`).then((r) => r.status === 200, () => false)
+        : false
+    )
+    await checkDarwinApp(child.pid, failures)
+    seen = [...new Set([...descendantsOf(child.pid), ...processesOf(sid)])]
+    execFileSync('open', ['-a', copy.bundle])
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline && (answer === 'cancel' || child.exit === undefined)) {
+      for (const pid of bundleMains(copy.exe)) if (pid !== child.pid) others.add(pid)
+      if (answer === 'cancel' && Date.now() > deadline - 5000 && lsType(child.pid) === 'UIElement') break
+      await sleep(100)
+    }
+    if (answer === 'stop') {
+      const result = await Promise.race([child.exited, sleep(QUIT_MS).then(() => undefined)])
+      console.log(`   after open -a: ${result ? `exited, code ${result.code}, signal ${result.signal}` : 'still running'}`)
+      if (!result || result.code !== 0) failures.push(`the notice's Stop: ${result ? `code ${result.code}, signal ${result.signal}` : 'still running'}`)
+    } else {
+      const type = lsType(child.pid)
+      const status = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.status, () => 0)
+      console.log(`   after open -a: type ${type}, GET / ${status}`)
+      if (child.exit !== undefined) failures.push(`the server exited after a Cancel: ${JSON.stringify(child.exit)}`)
+      if (type !== 'UIElement') failures.push(`LaunchServices type ${type} after the notice, expected UIElement`)
+      if (status !== 200) failures.push(`GET / answered ${status} after the notice`)
+      await checkWebStatus(dataDir, env, port, failures)
+      seen = [...new Set([...seen, ...descendantsOf(child.pid)])]
+      process.kill(child.pid, 'SIGTERM')
+      const result = await Promise.race([child.exited, sleep(QUIT_MS).then(() => undefined)])
+      if (!result || result.code !== 0) failures.push(`SIGTERM: ${result ? `code ${result.code}, signal ${result.signal}` : 'still running'}`)
+    }
+    for (const pid of bundleMains(copy.exe)) if (pid !== child.pid) others.add(pid)
+    if (others.size > 0) failures.push(`open -a started another process: ${[...others].join(' ')}`)
+    const left = await until('the run to end', 5000, () => {
+      const pids = [...processesOf(sid), ...aliveOf(seen)]
+      return pids.length === 0 ? [] : undefined
+    }).catch(() => [...processesOf(sid), ...aliveOf(seen)])
+    console.log(`   ${seen.length} processes seen in the run, ${left.length} left`)
+    if (left.length > 0) failures.push(`live processes left: ${left.join(' ')}`)
+  } catch (err) {
+    failures.push(err.message)
+  } finally {
+    for (const pid of [...processesOf(sid), ...aliveOf(seen), ...bundleMains(copy.exe)]) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // already gone
+      }
+    }
+    rmSync(base, { recursive: true, force: true })
+  }
+  for (const line of child.out.split('\n').filter((l) => l.trim() !== '')) console.log(`   stdout: ${line.trimEnd()}`)
+  if (failures.length > 0) for (const f of failures) console.log(`   FAIL: ${f}`)
+  else console.log('   ok')
+  return failures.length === 0
 }
 
 /**
@@ -655,4 +771,15 @@ results.push(await run('--server under a pty, link mode', { flag: true, underPty
 results.push(await run('--server, stopped with ccc web stop', { flag: true, webAccess: none, stopWithCcc: true }))
 results.push(await run('--server with web views off-screen', { flag: true, webAccess: none, webviews: true }))
 results.push(await runPortTaken())
+if (darwin && packaged) {
+  console.log('\n== reopen (open -a): skipped for a packaged app (it ignores the test answer, so a real box would show; O1 by hand)')
+} else if (darwin) {
+  const copy = copyBundle()
+  try {
+    results.push(await runReopen(copy, 'cancel'))
+    results.push(await runReopen(copy, 'stop'))
+  } finally {
+    copy.remove()
+  }
+}
 process.exit(results.every(Boolean) ? 0 : 1)

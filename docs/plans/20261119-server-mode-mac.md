@@ -66,9 +66,12 @@ this release, with every `launchServer` spec (the guest server spec included) gr
    path. `expectMainAlive` also checks no visible `BrowserWindow` and, on darwin, no Dock icon.
 10. **Smoke.** Darwin: processes by `ps -A -o pid=,pgid=,stat=` instead of `/proc`; runs `--server` (pipe), pty link
     mode, `ccc web stop`, off-screen webviews, taken port; detection and fallback skipped with a line; checks argv
-    without Ozone, the pid's PreventUserIdleSystemSleep in `pmset -g assertions`, `lsappinfo` type UIElement. Opt-in
-    `--launchd`: bootstraps the docs plist (label, paths, data dir substituted), `open -a` routes to it (notice line,
-    no second process), `bootout`, nothing left.
+    without Ozone, the pid's idle-sleep line in `pmset -g assertions` (`NoIdleSleepAssertion named: "Electron"`, the
+    per-pid name of the PreventUserIdleSystemSleep kind), `lsappinfo` type UIElement; a second `--server` on the same
+    data dir exits 1 with the held line. Reopen case (`out/` only, no launchd): `--server` from a copy of Electron.app
+    with its own bundle id, `open -a <copy>`: no second process; the notice prints nothing, so it is seen by its
+    effect, with `SECOND_LAUNCH_ANSWER_ENV` stop (the server exits 0) and cancel (type back to UIElement, still
+    serving); nothing left. A real LaunchAgent (bootstrap the docs plist, `open -a`, `bootout`) is the owner's, O1.
 11. **Packaging.** Same bundle; `electron-builder.yml` `mac:` has no `extendInfo`, and must never get
     `LSUIElement`/`LSBackgroundOnly` (they would hide the desktop's Dock icon): asserted in `packaging-config.test.ts`.
 12. **Docs.** T6 lists them; user-facing additions: macOS start, plist, one at a time, sleep, Gatekeeper (open the app
@@ -86,7 +89,7 @@ this release, with every `launchServer` spec (the guest server spec included) gr
 - **O1 Owner checklist** (desktop quit; a packaged build ignores test answers): S2 on `npm run package:dir`, observe
   only (never delete the real Safe Storage item): any keychain access or prompt from a server whose Browser panel sets
   a cookie, with and without `use-mock-keychain`; if not honoured, the lead decides in-memory webview partitions.
-  Finder routing and a Dock flash with the real bundle under the agent; Gatekeeper first open; T7's `--launchd` with
+  Finder routing and a Dock flash with the real bundle under the agent; Gatekeeper first open; the LaunchAgent run (docs plist bootstrapped, `open -a`, `bootout`, nothing left) with
   the packaged executable.
 - **T1 Start on darwin** [model: opus]. `server-mode.ts`, `second-launch.ts`, `windows/window-manager.ts`
   (`SecondInstanceData`), `index.ts` (decision 2, `losingLaunchAsks`, GPU off so T2's baseline is final),
@@ -117,7 +120,7 @@ this release, with every `launchServer` spec (the guest server spec included) gr
   item deleted, `packaging-config.test.ts`. Acceptance: `grep -rn "Linux only"` over docs, `src/cli/guide`, tests
   leaves only true statements; `plutil -lint` of the plist block passes.
 - **T7 Smoke on darwin** [model: opus]. `scripts/server-mode-smoke.mjs` per decision 10. Acceptance: passes on `out/`,
-  `--launchd` included; packaged run in O1; results recorded in `features.md` and §9.15.
+  the reopen case included; LaunchAgent and packaged runs in O1; results recorded in `features.md` and §9.15.
 - **R1 Release gate** (the lead owns or waives in writing): T1, T3 and T4 touch Linux paths with no Linux e2e; run the
   Linux smoke and server specs on a VM.
 
