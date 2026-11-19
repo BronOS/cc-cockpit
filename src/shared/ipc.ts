@@ -906,6 +906,8 @@ export interface AppearanceView {
   sessionGist: boolean
   /** Claude tabs report usage through the status line (AppSettings.statusLineUsage, default on). */
   statusLineUsage: boolean
+  /** Keep the computer from idle sleep while a Claude tab works (AppSettings.keepAwake, default on). */
+  keepAwake: boolean
   /** The global Discuss prompt (AppSettings.discussPrompt; '' = none). */
   discussPrompt: string
   /** A plugin's notification with `sound` rings a chime (AppSettings.notificationSounds, default on). */
@@ -1449,6 +1451,11 @@ export interface IpcInvokeMap {
   'settings.sessionGistSet': { req: { value: boolean }; res: void }
   /** Turn the status line usage report on or off (AppSettings.statusLineUsage); hooks.json is rewritten for new tabs. */
   'settings.statusLineUsageSet': { req: { value: boolean }; res: void }
+  /**
+   * Keep the computer from idle sleep while a Claude tab works, or not (AppSettings.keepAwake). Off releases the
+   * hold at once. Refused for a browser view of a desktop (REMOTE_CLASS `adapted`).
+   */
+  'settings.keepAwakeSet': { req: { value: boolean }; res: void }
   /** Set the global Discuss prompt; main refuses a non-string or one over MAX_DISCUSS_PROMPT. '' clears it. */
   'settings.discussPromptSet': { req: { value: string }; res: void }
   /** Set this project's own Discuss prompt ('' = off here), or null to use the global one again. */
@@ -2237,6 +2244,7 @@ export const INVOKE_CHANNELS = [
   'settings.claudeTabOnOpenSet',
   'settings.sessionGistSet',
   'settings.statusLineUsageSet',
+  'settings.keepAwakeSet',
   'settings.discussPromptSet',
   'settings.projectDiscussPromptSet',
   'settings.notificationSoundsSet',
@@ -2609,6 +2617,10 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'settings.claudeTabOnOpenSet': 'yes',
   'settings.sessionGistSet': 'yes',
   'settings.statusLineUsageSet': 'yes',
+  // `adapted`: it decides whether the host's computer may sleep, and on keeps it reachable for longer, so a
+  // browser of a desktop is refused (the person changes it at the desktop); in server mode a browser is the
+  // only screen and may. Decided by the view main bound the call to and main's own flag, never the payload.
+  'settings.keepAwakeSet': 'adapted',
   'settings.discussPromptSet': 'yes',
   'settings.projectDiscussPromptSet': 'yes',
   'settings.notificationSoundsSet': 'yes',

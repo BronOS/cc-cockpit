@@ -32,6 +32,8 @@ function rig(initialOverrides: unknown = {}) {
     sessionGistChanged: 0,
     statusLineUsage: undefined as unknown,
     statusLineUsageChanged: 0,
+    keepAwake: undefined as unknown,
+    keepAwakeChanged: 0,
     notificationSounds: undefined as unknown,
     notificationSound: undefined as unknown,
     /** The system sound ids a fresh listing would hold now. */
@@ -101,6 +103,15 @@ function rig(initialOverrides: unknown = {}) {
     },
     statusLineUsageChanged: () => {
       state.statusLineUsageChanged++
+    },
+    keepAwake: {
+      get: () => state.keepAwake,
+      set: (next) => {
+        state.keepAwake = next
+      }
+    },
+    keepAwakeChanged: () => {
+      state.keepAwakeChanged++
     },
     notificationSounds: {
       get: () => state.notificationSounds,
@@ -472,6 +483,39 @@ describe('rate limits from the status line', () => {
     expect(() => r.service.setStatusLineUsage('off')).toThrow('give true or false')
     expect(r.state.statusLineUsage).toBe(true)
     expect(r.state.statusLineUsageChanged).toBe(2)
+  })
+})
+
+describe('keep the computer awake while Claude works', () => {
+  it('is on by default, and only an explicit false turns it off', () => {
+    const r = rig()
+    expect(r.service.view(P).keepAwake).toBe(true)
+    // A damaged value (the file is user-writable) reads as the default the person asked for.
+    for (const damaged of ['false', 0, {}, null]) {
+      r.state.keepAwake = damaged
+      expect(r.service.view(P).keepAwake).toBe(true)
+    }
+    r.state.keepAwake = false
+    expect(r.service.view(P).keepAwake).toBe(false)
+  })
+
+  it('stores true and false, tells the hold only on a real flip, and refuses anything else', () => {
+    const r = rig()
+    r.service.setKeepAwake(true)
+    expect(r.state.keepAwake).toBe(true)
+    expect(r.state.keepAwakeChanged).toBe(0)
+    r.service.setKeepAwake(false)
+    expect(r.state.keepAwake).toBe(false)
+    expect(r.state.keepAwakeChanged).toBe(1)
+    expect(r.service.view(P).keepAwake).toBe(false)
+    r.service.setKeepAwake(false)
+    expect(r.state.keepAwakeChanged).toBe(1)
+    r.service.setKeepAwake(true)
+    expect(r.state.keepAwakeChanged).toBe(2)
+    expect(r.service.view(P).keepAwake).toBe(true)
+    expect(() => r.service.setKeepAwake('off')).toThrow('give true or false')
+    expect(r.state.keepAwake).toBe(true)
+    expect(r.state.keepAwakeChanged).toBe(2)
   })
 })
 

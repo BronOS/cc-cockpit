@@ -104,8 +104,10 @@ only (never a host on another machine); the server-mode guest e2e specs are writ
   headless a message box aborts main with SIGTRAP, so server mode gets `serverDialogs`, where a box rejects, an open dialog is
   canceled and an error box is a log line; logic in `dialogs.ts`) and `shell.openExternal` only in
   `main/external/electron-open-external.ts` (behind `createOpenExternal`: in server mode a link goes to browser views as a
-  notice, never to the server's own browser), each with a grep test (`no-direct-dialog.test.ts`,
-  `no-direct-open-external.test.ts`); `safeStorage` is imported only by
+  notice, never to the server's own browser) and `powerSaveBlocker` only in `main/power/electron-power.ts` (behind
+  `PowerHolds`, `main/power/power-holds.ts`: one blocker per hold, so keep-awake and a server's whole-run hold never
+  release each other's; logic in `keep-awake.ts`, fake `test/fakes/fake-power-backend.ts`), each with a grep test
+  (`no-direct-dialog.test.ts`, `no-direct-open-external.test.ts`, `no-direct-power-save-blocker.test.ts`); `safeStorage` is imported only by
   `main/index.ts` and reached through `main/secrets/secret-store.ts`. Do not import them elsewhere
   (rule stated in `main/index.ts`).
 - `CC_COCKPIT_DATA_DIR` overrides the data dir (default: Electron `userData`); tests always set it.

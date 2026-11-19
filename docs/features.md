@@ -134,6 +134,12 @@ behind it are in [design.md](design.md).
   status line command, which passes the plan's 5-hour and weekly usage, the session's cost and its context fill to
   plugins (`ctx.sessions.rateLimits`, `SessionInfo.costUsd` / `contextPercent`) and then runs your own status line from
   your Claude settings, so it looks as before. Turning it off applies to tabs started afterwards.
+- Keep the computer awake while Claude is working (on by default; Settings > General > Claude sessions): while any
+  Claude tab in any window is working, the computer does not idle-sleep; it may sleep again a minute after the last one
+  stops. A tab waiting for your permission does not count. The display can still sleep, and closing a laptop's lid or
+  choosing Sleep still sleeps it. macOS shows the hold in `pmset -g assertions`; Windows uses `SetThreadExecutionState`;
+  Linux asks logind or the desktop's screensaver service over the session bus, so on a server with no session bus it
+  may do nothing. A browser of a desktop shows the switch but cannot change it; a server's browsers can.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Typing in a Claude tab takes it over from plugins: once you type or paste there, plugins can no longer send text into it and their queued texts are dropped (clicks, focus and terminal replies do not count; Discuss with Claude still works).
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a

@@ -222,6 +222,11 @@ export interface AppSettings {
    */
   statusLineUsage?: boolean
   /**
+   * Keep the computer from idle sleep while any Claude tab of any window is working
+   * (main/power/keep-awake.ts). Absent or anything but `false` (the file is user-writable) reads as on.
+   */
+  keepAwake?: boolean
+  /**
    * Plugins' `ctx.notify(text, { sound: true })` ring a short chime in the project window (main's
    * ChimeGate reads it at each ring). Absent or anything but `false` (the file is user-writable)
    * reads as on. Off: no chime, and such notifications stay silent on the OS side too.
