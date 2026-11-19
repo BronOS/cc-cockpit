@@ -10,8 +10,15 @@ import { blurCall, projectWindowBackground, projectWindowChrome, type ProjectWin
 import type { WindowCallbacks, WindowFactory, WindowHandle } from './window-manager'
 
 export class ElectronWindowFactory implements WindowFactory {
-  /** `openLink`: main's openExternal adapter, for the links a window's page asks to open (create-window.ts). */
-  constructor(private readonly openLink: WindowLinkOpener) {}
+  /**
+   * `openLink`: main's openExternal adapter, for the links a window's page asks to open (create-window.ts).
+   * `server`: server mode's, decided once at start (server-mode.ts): no window this factory makes is
+   * ever shown (the hidden page; docs/plans/20261119-server-mode-mac.md decision 1).
+   */
+  constructor(
+    private readonly openLink: WindowLinkOpener,
+    private readonly server = false
+  ) {}
 
   createProjectWindow(
     project: ProjectView,
@@ -33,8 +40,10 @@ export class ElectronWindowFactory implements WindowFactory {
       title: project.name,
       minWidth: MIN_WINDOW_WIDTH,
       minHeight: MIN_WINDOW_HEIGHT
-    }, this.openLink)
-    if (maximized || fullScreen) {
+    }, this.openLink, { server: this.server })
+    // Not in server mode: maximize() shows a hidden window. The manager passes no bounds there (it
+    // never reads or writes them for the hidden page), so this only keeps a later change from showing it.
+    if ((maximized || fullScreen) && !this.server) {
       // After createWindow's own ready-to-show listener (listeners run in order), so the window is
       // shown first: maximize() on a hidden window shows it before the page is painted (Electron
       // docs), and macOS can refuse full screen for a window that is not on screen yet.
@@ -97,7 +106,7 @@ export class ElectronWindowFactory implements WindowFactory {
       // A modal child: the parent takes no focus or input until this closes (a sheet on macOS).
       // A modal child needs a shown parent, and createWindow shows its window on ready-to-show.
       ...(modalOver ? { parent: modalOver, modal: true } : {})
-    }, this.openLink)
+    }, this.openLink, { server: this.server })
     return this.finish(win, callbacks.onClosed)
   }
 
@@ -142,8 +151,10 @@ export class ElectronWindowFactory implements WindowFactory {
         postPort: (channel, payload, port) => win.webContents.postMessage(channel, payload, [port as MessagePortMain]),
         isClosed: () => win.isDestroyed() || win.webContents.isDestroyed()
       },
+      // Inert in server mode, where the manager never calls it (CLAUDE.md, the hidden page): a stray
+      // call must not put the hidden page on the Mac's screen.
       focus: () => {
-        if (win.isDestroyed()) return
+        if (win.isDestroyed() || this.server) return
         if (win.isMinimized()) win.restore()
         win.show()
         win.focus()

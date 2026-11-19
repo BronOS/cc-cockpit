@@ -149,13 +149,23 @@ function alive(pid: number): boolean {
 /**
  * Main is alive: its pid lives and the gateway answers `GET /` with 200. Every server spec calls it
  * at its end: the spike's faults (a crash in a dialog or a desktop-only call) killed main while the
- * page the spec was looking at still showed its last frame.
+ * page the spec was looking at still showed its last frame. Nothing reached the server's screen
+ * either (docs/plans/20261119-server-mode-mac.md decisions 1 and 9): no `BrowserWindow` is visible
+ * (the hidden page and the off-screen webviews are never shown) and, on macOS, the run has no Dock icon
+ * (the accessory policy; on Linux there is no Dock).
  */
 export async function expectMainAlive(server: Server): Promise<void> {
   expect(alive(server.pid), `main (pid ${server.pid}) is not running`).toBe(true)
   const res = await fetch(`${server.origin}/`)
   expect(res.status).toBe(200)
   await res.body?.cancel()
+  const screen = await server.cockpit.app.evaluate(({ app, BrowserWindow }) => ({
+    visible: BrowserWindow.getAllWindows()
+      .filter((w) => !w.isDestroyed() && w.isVisible())
+      .map((w) => w.getTitle()),
+    dock: process.platform === 'darwin' ? (app.dock?.isVisible() ?? false) : false
+  }))
+  expect(screen, 'a window or a Dock icon appeared on the server').toEqual({ visible: [], dock: false })
 }
 
 export interface CccResult {
