@@ -82,6 +82,17 @@ describe('TabManager: dirty per (tab, view)', () => {
     expect(tabs.unsavedTitles(A)).toEqual([])
   })
 
+  it("unsavedTitlesIn counts only the views it is given (a guest's own: guest-wiring.ts guestUnsavedOf)", () => {
+    const tabs = manager()
+    const a = tabs.createPage(A, file('a.ts'))
+    const b = tabs.createPage(A, file('b.ts'))
+    tabs.setPageDirty(A, a.id, 'web:3', true)
+    tabs.setPageDirty(A, b.id, 'desktop:1', true)
+    expect(tabs.unsavedTitlesIn(A, (v) => v === 'web:3')).toEqual(['a.ts'])
+    expect(tabs.unsavedTitlesIn(A, (v) => v === 'web:9')).toEqual([])
+    expect(tabs.unsavedTitlesIn(B, () => true)).toEqual([])
+  })
+
   it('ignores anything but a page tab of that project', () => {
     const tabs = manager()
     const shell = tabs.create(A, { kind: 'shell' })
