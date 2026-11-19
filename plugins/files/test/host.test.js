@@ -212,12 +212,12 @@ test("a guest's reset leaves out the project's absolute path; the owner's keeps 
   let onViews
   ctx.views = { access: () => undefined, onChange: (fn) => ((onViews = fn), () => {}) }
   host.activate(ctx)
-  // Only the owner looks: one broadcast, as before.
+  // Only the owner looks: one reset, to the owner's view, with the path.
   onViews({ view: 'desktop', access: 'owner' })
   await listeners[0]({ type: 'hello' }, { view: 'desktop', access: 'owner' })
   const first = posts.filter((p) => p[1].type === 'reset')
   assert.equal(first.length, 1)
-  assert.equal(first[0][2], undefined)
+  assert.deepEqual(first[0][2], { view: 'desktop' })
   assert.equal(first[0][1].env.root, root)
   // A guest joins: one reset per view, the guest's without the path.
   onViews({ view: 'web:2', access: 'read' })
@@ -254,4 +254,44 @@ test("a guest's tree stays inside the project's real path: a folder link out and
   const top = posts.filter((x) => x[1].type === 'dir' && x[1].path === '').at(-1)[1]
   assert.equal(top.entries.find((e) => e.name === 'out').blocked, true)
   host.deactivate()
+})
+
+test('a view main has not told of gets no reset with the path; an older app without ctx.views still broadcasts', async () => {
+  const root = fs.realpathSync(tempDir('files-guest-'))
+  const host = load()
+  const { ctx, posts, listeners } = fakeCtx(root)
+  ctx.views = { access: () => undefined, onChange: () => () => {} }
+  host.activate(ctx)
+  await listeners[0]({ type: 'hello' }, { view: 'web:9', access: 'read' })
+  assert.deepEqual(posts.filter((p) => p[1].type === 'reset'), [])
+  host.deactivate()
+  // No ctx.views (an app before guests): the one broadcast, as before.
+  const old = fakeCtx(root)
+  host.activate(old.ctx)
+  await old.listeners[0]({ type: 'hello' })
+  const resets = old.posts.filter((p) => p[1].type === 'reset')
+  assert.equal(resets.length, 1)
+  assert.equal(resets[0][2], undefined)
+  host.deactivate()
+})
+
+test("an fs error shown on the page never carries the project's absolute path", { skip: !process.getuid || process.getuid() === 0 }, async () => {
+  const root = fs.realpathSync(tempDir('files-guest-'))
+  const locked = path.join(root, 'locked')
+  fs.mkdirSync(locked)
+  fs.writeFileSync(path.join(locked, 'a.txt'), 'x\n')
+  fs.chmodSync(locked, 0o000)
+  try {
+    const host = load()
+    const { ctx, posts, listeners } = fakeCtx(root)
+    host.activate(ctx)
+    await listeners[0]({ type: 'expand', path: 'locked' }, { view: 'web:3', access: 'read' })
+    await listeners[0]({ type: 'rename', path: 'locked/a.txt', name: 'b.txt' }, { view: 'web:4', access: 'write' })
+    const shown = posts.filter((p) => p[1].type === 'error' || (p[1].type === 'dir' && p[1].error))
+    assert.ok(shown.length >= 1)
+    for (const p of shown) assert.ok(!JSON.stringify(p[1]).includes(root), JSON.stringify(p[1]))
+    host.deactivate()
+  } finally {
+    fs.chmodSync(locked, 0o755)
+  }
 })

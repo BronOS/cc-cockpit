@@ -192,6 +192,19 @@ describe("host: the role from main's tag (ctx/ui.ts, slots.ts, tabs.ts, views.ts
     ])
   })
 
+  it('replays the views already open to a new onChange listener, before onChange returns', async () => {
+    const { ctx, attach } = setup()
+    // The guest's page connected while the plugin was still activating: before anyone listened.
+    attach(panelTag('web:4', 'read'))
+    attach(panelTag())
+    const changes: unknown[] = []
+    ctx.views.onChange((e) => changes.push(e))
+    expect(changes).toEqual([
+      { view: 'web:4', access: 'read' },
+      { view: 'desktop', access: 'owner' }
+    ])
+  })
+
   it("gives onAction's from the access of the view's open line; an unknown remote view reads as a read guest", async () => {
     const { contexts, ctx, attach } = setup()
     const clicks: unknown[] = []

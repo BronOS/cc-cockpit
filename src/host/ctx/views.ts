@@ -9,6 +9,9 @@
 //   lifetime  a view is known to a plugin from its first open line of any kind and gone when its last
 //             one ends (main never tells a host a view left, spec-review 17): each hub registers a line
 //             when it opens one and releases it when the line ends, whichever way it ends.
+//   replay    a new onChange listener first hears every view already known, at once: a line can open
+//             before the plugin subscribes (a page connecting while it activates), and a listener that
+//             missed it would count a guest's view as not there (Files would send it the project path).
 //
 // Per plugin: a plugin learns only of views its own pages are open in.
 
@@ -84,6 +87,15 @@ export class HostViews {
     const entry: Listener = (e) => listener(e)
     set.add(entry)
     this.listeners.set(pluginId, set)
+    // The views already open, before onChange returns (see "replay" above).
+    for (const [view, { access }] of [...(this.lines.get(pluginId) ?? [])]) {
+      if (!set.has(entry)) break
+      try {
+        entry({ view, access })
+      } catch (err) {
+        this.log(pluginId, `a views.onChange listener threw: ${errorText(err)}`)
+      }
+    }
     return () => {
       set.delete(entry)
       if (set.size === 0 && this.listeners.get(pluginId) === set) this.listeners.delete(pluginId)

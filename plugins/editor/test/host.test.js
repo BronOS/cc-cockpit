@@ -1111,3 +1111,33 @@ test('lib/guests: access from the tag only, outside locations stripped, a read-o
   const ownerRaw = { id: 'y', post() {}, onMessage() {}, onClose() {} }
   assert.equal(guests.guestTab(ownerRaw).tab, ownerRaw)
 })
+
+test("a guest's read of a path the page names stays inside the project: absolute, .. and a link out give no bytes", async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const outside = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'edhost-out-'))
+  made.push(outside)
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'SECRET-BYTES\n')
+  fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(f.ctx.projectDir, 'leak.txt'))
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('empty.txt')
+  for (const access of ['read', 'write']) {
+    const view = t.connect(t.open[0].id, 'web:7', access)
+    let req = 10
+    for (const p of [path.join(outside, 'secret.txt'), '../' + path.basename(outside) + '/secret.txt', 'leak.txt']) {
+      for (const kind of ['read', 'open']) {
+        const n = view.posted.length
+        view.send({ t: kind, req: ++req, path: p })
+        await until(() => view.posted.slice(n).some((m) => m.req === req), 5000, `${access} ${kind} ${p}`)
+        const answer = view.posted.slice(n).find((m) => m.req === req)
+        assert.equal(answer.t, 'error', `${access} ${kind} ${p}: ${JSON.stringify(answer)}`)
+        assert.ok(!JSON.stringify(view.posted).includes('SECRET-BYTES'), `${access} ${kind} ${p}`)
+        // The page's own path may be echoed back; the host's project folder never is.
+        assert.ok(!answer.message.includes(f.ctx.projectDir), answer.message)
+      }
+    }
+  }
+  host.deactivate()
+})

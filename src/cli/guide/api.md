@@ -146,7 +146,8 @@ with full Node access.
   views your pages are open in and who is behind each (the owner or a guest); `onMessage` and `onAction` listeners get
   `from: { view, access }` (an older app has no `ctx.views`: check `typeof ctx.views === 'object'`). A view is known
   once one of your pages (a panel, slot or page tab) connected there and gone when the last one closed;
-  `onChange(({ view, access }) => …)` hears both (`access` undefined when it went) and returns a disposer. The
+  `onChange(({ view, access }) => …)` hears both (`access` undefined when it went) and returns a disposer; a new
+  listener first hears every view already open, before `onChange` returns. The
   access is main's word for that view, fixed for its life (a guest switched between read-only and write comes back
   as a new view). See "Guests" in `ccc guide plugins` for what a plugin owes guests.
 - `ctx.slots` (the provider side; an older app has none, so check `typeof ctx.slots === 'object'`):

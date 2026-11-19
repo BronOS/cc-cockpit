@@ -94,9 +94,27 @@ exports.activate = (ctx) => {
     }
   }
 
+  /**
+   * Text for the page with the project folder's path cut out (a raw fs error names it: EACCES on a
+   * folder, ENOTDIR): the page may be a guest's, which never gets the host's paths (D-33).
+   */
+  let realRoot = root
+  try {
+    realRoot = fs.realpathSync(root)
+  } catch {
+    // the folder went: the given path is all there is to cut
+  }
+  const safeText = (text) => {
+    let s = String(text)
+    for (const r of new Set([realRoot, root])) s = s.split(r + path.sep).join('').split(r).join('.')
+    return s
+  }
+
   // The views the panel is open in and who is behind each (ctx.views; an older app has none and no guests).
+  // A new listener first hears the views already open, so the map is whole from here on.
   const views = new Map()
-  if (ctx.views && typeof ctx.views.onChange === 'function') {
+  const tracking = !!(ctx.views && typeof ctx.views.onChange === 'function')
+  if (tracking) {
     disposers.push(
       ctx.views.onChange(({ view, access }) => {
         if (access === undefined) views.delete(view)
@@ -105,11 +123,12 @@ exports.activate = (ctx) => {
     )
   }
   /**
-   * The `reset` message to every view: as before while only the owner looks; with a guest among them, per
-   * view, a guest's without the project's absolute path (Copy path is the owner's).
+   * The `reset` message to every view. An older app (no ctx.views) has no guests: one broadcast, as before.
+   * Otherwise one per view main told us of, and only a view main called the owner's gets the project's
+   * absolute path (Copy path is the owner's): a view not known here gets no path, never a broadcast's.
    */
   const postReset = (m) => {
-    if (![...views.values()].some((a) => a !== 'owner')) return post(m)
+    if (!tracking) return post(m)
     const forGuests = { ...m, env: { ...m.env, root: '' } }
     for (const [view, access] of views) post(access === 'owner' ? m : forGuests, view)
   }
@@ -131,7 +150,7 @@ exports.activate = (ctx) => {
         }
         post({ type: 'gone', path: rel })
       } else {
-        post({ type: 'dir', path: rel, entries: [], more: 0, error: e.message })
+        post({ type: 'dir', path: rel, entries: [], more: 0, error: safeText(e.message) })
       }
       return false
     }
@@ -371,7 +390,7 @@ exports.activate = (ctx) => {
           reply({ type: 'results', query: m.query, paths, total })
         }
       } catch (e) {
-        reply({ type: 'error', message: e.message })
+        reply({ type: 'error', message: safeText(e.message) })
       }
     }),
   )
@@ -411,9 +430,9 @@ exports.activate = (ctx) => {
     const handle = ctx.overlay.start({ kind: 'terminal', argv, title: full.length > 200 ? `${full.slice(0, 199)}…` : full, size: 'large' })
     handle.result.then(
       (res) => {
-        if (res && res.kind === 'exit' && res.code === 127) post({ type: 'error', message: `${name}: ${r.words[0]} was not found (exit 127).` })
+        if (res && res.kind === 'exit' && res.code === 127) post({ type: 'error', message: safeText(`${name}: ${r.words[0]} was not found (exit 127).`) })
       },
-      (e) => post({ type: 'error', message: `${name}: ${e.message}` }),
+      (e) => post({ type: 'error', message: safeText(`${name}: ${e.message}`) }),
     )
   }
 
