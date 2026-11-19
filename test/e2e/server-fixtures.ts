@@ -19,7 +19,7 @@
 // in the way a person on the server does, through `ccc web add-device` / `ccc web password` run
 // from the data dir's wrapper (`ccc`, below).
 //
-// Linux only: server mode refuses to start anywhere else. Specs call `test.skip` on other platforms.
+// Linux and macOS: server mode refuses to start anywhere else. Specs call `test.skip` on Windows.
 //
 // Plan-time check (Task 2, 2026-11-11): Playwright's `_electron.launch` attaches to the Ozone
 // headless process, `firstWindow()` resolves to the hidden page (the project shell, `.tabs-pane`)
