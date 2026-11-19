@@ -102,7 +102,7 @@ describe('guestEvent', () => {
     expect(got).toEqual({ id: 'p1', name: 'Proj', path: '', missing: false, color: 'red' })
   })
 
-  it('presence.changed: a person on a tab the guest cannot see is elsewhere, with no tab id', () => {
+  it('presence.changed: a person on a tab the guest cannot see is elsewhere, with no tab id and not typing', () => {
     const s: PresenceSnapshot = {
       seq: 3,
       people: [
@@ -114,7 +114,7 @@ describe('guestEvent', () => {
     expect(guestEvent('presence.changed', s, ctx())).toEqual({
       seq: 3,
       people: [
-        { id: 'owner', name: 'Oleg', role: 'owner', color: 0, state: 'live', tabId: null, elsewhere: true, typing: true },
+        { id: 'owner', name: 'Oleg', role: 'owner', color: 0, state: 'live', tabId: null, elsewhere: true, typing: false },
         { id: 'g1', name: 'Bob', role: 'write', color: 2, state: 'live', tabId: 't1', typing: false }
       ],
       lastTyped: { t1: 'g1' }

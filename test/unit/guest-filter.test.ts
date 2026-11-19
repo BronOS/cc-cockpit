@@ -272,7 +272,7 @@ describe('notices and asks', () => {
     }
   })
 
-  it('presence: a person on a hidden tab is elsewhere; last typed only on visible tabs', () => {
+  it('presence: a person on a hidden tab is elsewhere and not typing; last typed only on visible tabs', () => {
     const s: PresenceSnapshot = {
       seq: 3,
       people: [
@@ -282,8 +282,13 @@ describe('notices and asks', () => {
       lastTyped: { secret: 'owner', t1: 'g1' }
     }
     const out = guestPresence(s, ctx())
-    expect(out.people[0]).toEqual({ id: 'owner', name: 'Host', role: 'owner', color: 0, state: 'live', tabId: null, elsewhere: true, typing: true })
+    // Typing there would tell the guest when the hidden tab is being typed in: reported as not typing.
+    expect(out.people[0]).toEqual({ id: 'owner', name: 'Host', role: 'owner', color: 0, state: 'live', tabId: null, elsewhere: true, typing: false })
     expect(out.people[1]!.tabId).toBe('t1')
+    // On a visible tab, typing is passed as it is.
+    const seen = guestPresence({ ...s, people: [{ ...s.people[0]!, tabId: 't1' }] }, ctx())
+    expect(seen.people[0]).toMatchObject({ tabId: 't1', typing: true })
+    expect(seen.people[0]!.elsewhere).toBeUndefined()
     expect(out.lastTyped).toEqual({ t1: 'g1' })
     expect(JSON.stringify(out)).not.toContain('secret')
   })
