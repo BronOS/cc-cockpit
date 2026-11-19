@@ -36,6 +36,8 @@ export interface GuestRouterSources {
   trashAsks: { pluginOf(windowId: number, requestId: string): string | undefined }
   /** Downloads.offerOrigin (03b): a pending offer's origin tab. */
   downloads: { offerOrigin(windowId: number, requestId: string): { originTab?: string } | undefined }
+  /** The project's folder (the registry's record), for guestSessions' project-relative files. */
+  projectPath(projectId: string): string | undefined
 }
 
 /** The router's guest deps (IpcRouter.setGuestDeps). */
@@ -67,7 +69,8 @@ export function guestRouterDeps(s: GuestRouterSources): Required<GuestRouterDeps
     },
     // Only trash asks and download offers can be a guest's (asks/guest-asks.ts); any other id is unknown, refused.
     askInfo: askInfoFrom([trashAskSource(s.trashAsks), downloadOfferSource(s.downloads)]),
-    personOf: (viewId) => s.presence.personOf(viewId)
+    personOf: (viewId) => s.presence.personOf(viewId),
+    projectRoot: (projectId) => s.projectPath(projectId)
   }
 }
 
@@ -185,5 +188,39 @@ export function guestUnsavedOf(
       const who = whoOf(viewId)
       return who !== undefined && who !== 'owner' && who.guest === guestId
     })
+  }
+}
+
+/** Where a plugin's page tab `focus` selects (ctx.tabs.openPage / focus): every view, one view, or none. */
+export type PageSelectTarget = 'project' | 'none' | { viewId: ViewId }
+
+/**
+ * A plugin's `focus` acts where the plugin acted (design-guests §7, 03e): the view a plugin call came from
+ * (HostApi.originOf, a hint) decides. None or an owner's view: the project's views select it, as before. A guest's
+ * view: that view only, so a guest's click never moves the owner's selection or active tab. A remote view that
+ * is gone: nowhere (fail closed: it might have been a guest's).
+ */
+export function pageSelectTargetOf(whoOf: (viewId: ViewId) => Who | undefined): (view: ViewId | undefined) => PageSelectTarget {
+  return (view) => {
+    if (view === undefined) return 'project'
+    const who = whoOf(view)
+    if (who === 'owner') return 'project'
+    return who === undefined ? 'none' : { viewId: view }
+  }
+}
+
+/**
+ * SessionRegistry's `guestMayDeliver` (03e A): a guest's queued Discuss text is pasted only while that guest is
+ * still a live write guest of the tab's project that sees the tab. Anything else (kicked, ended, made read-only,
+ * the tab unshared, a tab of another project or gone): false, and the text is dropped.
+ */
+export function guestMayDeliverOf(
+  guests: Pick<GuestService, 'access' | 'tabVisible'>,
+  projectOfTab: (tabId: string) => string | undefined
+): (guestId: string, tabId: string) => boolean {
+  return (guestId, tabId) => {
+    const access = guests.access({ guest: guestId })
+    if (access.kind !== 'guest' || access.role !== 'write') return false
+    return projectOfTab(tabId) === access.projectId && guests.tabVisible(access.id, tabId)
   }
 }

@@ -70,6 +70,7 @@ import type { WebviewViewers } from '../webview/webview-viewers'
 import type { WebviewInput } from '../webview/webview-input'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
+import type { DiscussGuest } from '../overlays/discuss'
 import type { SenderContext } from '../windows/window-manager'
 import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 import { guestClassOf, guestRoleAllows, type GuestTarget } from '../../shared/guest-class'
@@ -200,9 +201,10 @@ export type Caller = ElectronCaller | WebCaller
 /**
  * Build a WebCaller. Main's gateway is the only caller; the check here is a second line against a
  * gateway bug (a desktop id or a picker context on a remote connection), not input validation.
- * Frozen so a handler cannot rebind the connection it was handed.
+ * Frozen so a handler cannot rebind the connection it was handed. `who` has no default (03e D): a caller that
+ * forgot it must not become the owner.
  */
-export function webCaller(context: ProjectSenderContext, viewId: ViewId, who: Who = 'owner'): WebCaller {
+export function webCaller(context: ProjectSenderContext, viewId: ViewId, who: Who): WebCaller {
   if (context.kind !== 'project') throw new Error('webCaller: a remote view binds to a project window only')
   if (!isRemoteViewId(viewId)) throw new Error('webCaller: not a remote view id')
   return Object.freeze({
@@ -239,6 +241,17 @@ export function isOwner(view: Pick<CallView, 'who'>): boolean {
 }
 
 /**
+ * A guest call's access, for the handlers that take a guest's path (03e D, fail closed): undefined for the owner,
+ * by `who`; a guest view the router bound no access to throws, so a guest can never fall through to the owner's
+ * path because `access` was left unset.
+ */
+export function guestCall(view: Pick<CallView, 'who' | 'access'>, channel: string): GuestOnlyAccess | undefined {
+  if (view.who === 'owner') return undefined
+  if (!view.access) throw new Error(`${channel}: refused`)
+  return view.access
+}
+
+/**
  * What the router needs to let a guest through (design-guests §4; 07 wires it in index.ts). The services are 02's
  * and 04's (guest-deps.ts); the target resolvers are main's own modules'. Absent, or any piece absent: every
  * guest call that needs it is refused.
@@ -255,6 +268,8 @@ export interface GuestRouterDeps extends GuestDeps {
   askInfo?(windowId: number, requestId: string): { kind: GuestAskKind; info: GuestAskInfo } | undefined
   /** The name of the person behind a view of the project (the owner's D-24 name or a guest's), for filters. */
   personOf?(viewId: string | null): string | undefined
+  /** The project's folder, so a session's files reach a guest project-relative (guestSessions); absent: none do. */
+  projectRoot?(projectId: string): string | undefined
 }
 
 type Result<C extends InvokeChannel> = Res<C> | Promise<Res<C>>
@@ -276,6 +291,8 @@ export class IpcRouter {
   private readonly routes = new Map<string, Route>()
   /** Guests' services and resolvers (setGuestDeps); undefined: every guest caller is refused. */
   private guestDeps: GuestRouterDeps | undefined
+  /** Guest tab opens in flight, per guest id (D-21's cap counts them): every way a guest opens a tab shares it. */
+  private readonly guestCreating = new Map<string, number>()
 
   /**
    * `isAppPage` is normally `appPageMatcher(<where the shell UI is loaded from>)`.
@@ -331,6 +348,74 @@ export class IpcRouter {
     return this.filterFor(ctx.projectId, view.viewId, view.access, tabOrder)
   }
 
+  /**
+   * D-21 for every way a guest's act opens a tab (`tabs.create`, Discuss's new session, 03e B): at most
+   * MAX_GUEST_TABS live opened tabs, the opens still spawning counted too (several frames of one socket all run
+   * before the first spawn ends). `create` opens it tagged as the guest's (`openedByGuest`); after it the access is
+   * read again (gone or downgraded meanwhile: `close` closes it and this throws), then the tab is noted as the
+   * guest's (it joins its scope, D-9 lets it close it). Null: `create` opened nothing.
+   */
+  async openGuestTab<T>(
+    channel: string,
+    ctx: ProjectContext,
+    view: CallView,
+    access: GuestOnlyAccess,
+    liveTabs: readonly string[],
+    create: () => Promise<T | null> | T | null,
+    idOf: (tab: T) => string,
+    close: (tabId: string) => void
+  ): Promise<T | null> {
+    const guests = this.guestService()
+    if (!guests) throw new Error(`${channel}: refused`)
+    const live = new Set(liveTabs)
+    const pending = this.guestCreating.get(access.id) ?? 0
+    if (guests.openedTabs(access.id).filter((id) => live.has(id)).length + pending >= MAX_GUEST_TABS) {
+      throw new Error(`${channel}: a guest may have at most ${MAX_GUEST_TABS} tabs open`)
+    }
+    this.guestCreating.set(access.id, pending + 1)
+    try {
+      const tab = await create()
+      if (tab === null) return null
+      const id = idOf(tab)
+      try {
+        this.guestAccessNow(channel, ctx, view)
+      } catch (err) {
+        close(id)
+        throw err
+      }
+      guests.noteOpenedTab(access.id, id)
+      return tab
+    } finally {
+      const left = (this.guestCreating.get(access.id) ?? 1) - 1
+      if (left > 0) this.guestCreating.set(access.id, left)
+      else this.guestCreating.delete(access.id)
+    }
+  }
+
+  /**
+   * A guest caller's Discuss (03e A, B; overlays/discuss.ts DiscussGuest), undefined for the owner. `allowed` reads
+   * the access live (still this project's write guest, still seeing a tab target), false on any doubt; `openTab` is
+   * openGuestTab, so a Discuss new session is one of the guest's D-21 tabs.
+   */
+  discussGuest(channel: string, ctx: ProjectContext, view: CallView): DiscussGuest | undefined {
+    const access = guestCall(view, channel)
+    if (!access) return undefined
+    return {
+      id: access.id,
+      viewId: view.viewId,
+      allowed: (target) => {
+        try {
+          const now = this.guestAccessNow(channel, ctx, view)
+          if (!now || now.id !== access.id) return false
+          return target.kind === 'new' || this.guestService()?.tabVisible(now.id, target.tabId) === true
+        } catch {
+          return false
+        }
+      },
+      openTab: (liveTabs, create, idOf, close) => this.openGuestTab(channel, ctx, view, access, liveTabs, create, idOf, close)
+    }
+  }
+
   private filterFor(projectId: string, viewId: ViewId, access: GuestOnlyAccess, tabOrder: () => readonly string[] = () => []): GuestFilterContext {
     const deps = this.guestDeps
     const guests = deps?.guests
@@ -342,7 +427,8 @@ export class IpcRouter {
       pluginVisible: (pluginId) => guests.pluginVisible(projectId, pluginId),
       overlayVisible: (overlayId) => deps?.overlayVisible?.(projectId, overlayId, access) === true,
       personOf: (id) => deps?.personOf?.(id),
-      tabOrder
+      tabOrder,
+      projectRoot: () => deps?.projectRoot?.(projectId)
     }
   }
 
@@ -795,10 +881,13 @@ export function registerSlotHandlers(router: IpcRouter, deps: SlotHandlerDeps): 
     deps.disconnect(ctx.projectId, view.viewId, frameIdOf('slots.disconnect', payload))
     return null
   })
-  router.handleProject('slots.height', (ctx, payload) => {
+  router.handleProject('slots.height', (ctx, payload, view) => {
     const frameId = frameIdOf('slots.height', payload)
     const { height } = fields('slots.height', payload)
     if (typeof height !== 'number' || !Number.isFinite(height)) throw new Error('slots.height: height must be a number')
+    // A slot's height is the shared layout's (every view of the window, the owner's included): a read guest only
+    // watches, so its frame's report changes nothing (03e E). A write guest's counts like the owner's.
+    if (guestCall(view, 'slots.height')?.role === 'read') return false
     return deps.setHeight(ctx.projectId, frameId, height)
   })
 }
@@ -825,7 +914,13 @@ export interface PageTabHandlerDeps {
    * Ask Claude from a page tab (PageTabDiscuss.discuss): the caller is the window, project and view
    * main bound the sender to; the tab id, question and target are renderer input, checked there.
    */
-  discuss(caller: { windowId: number; projectId: string; viewId: ViewId }, tabId: string, question: unknown, target: unknown): Promise<DiscussAnswer>
+  discuss(
+    caller: { windowId: number; projectId: string; viewId: ViewId },
+    tabId: string,
+    question: unknown,
+    target: unknown,
+    guest?: DiscussGuest
+  ): Promise<DiscussAnswer>
   /** Server mode: the window's own page is the hidden page, which never mounts a page tab. */
   server: boolean
 }
@@ -878,7 +973,9 @@ export function registerPageTabHandlers(router: IpcRouter, deps: PageTabHandlerD
     const tabId = tabIdShort('pageTabs.discuss', payload)
     if (hiddenPage(view)) return { ok: false, error: 'Ask Claude is not available here' }
     const { question, target } = fields('pageTabs.discuss', payload)
-    return deps.discuss({ windowId: ctx.windowId, projectId: ctx.projectId, viewId: view.viewId }, tabId, question, target)
+    const guest = router.discussGuest('pageTabs.discuss', ctx, view)
+    const caller = { windowId: ctx.windowId, projectId: ctx.projectId, viewId: view.viewId }
+    return guest === undefined ? deps.discuss(caller, tabId, question, target) : deps.discuss(caller, tabId, question, target, guest)
   })
 }
 
@@ -1719,7 +1816,8 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   router.handleProject('tabs.commands', (ctx) => tabs.commands(ctx.projectId))
 
   router.handleProject('tabs.create', async (ctx, payload, view) => {
-    const tab = view.access ? await createGuestTab(ctx, payload, view, view.access) : await createTab(ctx, payload)
+    const guestAccess = guestCall(view, 'tabs.create')
+    const tab = guestAccess ? await createGuestTab(ctx, payload, view, guestAccess) : await createTab(ctx, payload)
     if (tab) tabs.others?.(ctx.windowId, view.viewId, { channel: 'tabs.added', payload: tab })
     const guest = tab ? router.guestFilter(ctx, view) : undefined
     return guest && tab ? (guestTab(tab, guest) ?? null) : tab
@@ -1729,38 +1827,23 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   // the owner's process, tagged with the guest and added to its scope. The role is checked again after the
   // spawn's await: a guest downgraded meanwhile gets nothing and the tab it caused is closed.
   const createGuestTab = async (ctx: ProjectContext, payload: unknown, view: CallView, access: GuestOnlyAccess): Promise<TabInfo | null> => {
-    const guests = router.guestService()
-    if (!guests) throw new Error('tabs.create: refused')
+    if (!router.guestService()) throw new Error('tabs.create: refused')
     const p = fields('tabs.create', payload)
     const kind = p.kind
     if (kind !== 'claude' && kind !== 'shell') throw new Error('tabs.create: refused')
-    const live = new Set(tabs.list(ctx.projectId).map((t) => t.id))
-    // Creates still spawning count too: several frames of one socket read all run before the first spawn ends.
-    const pending = creating.get(access.id) ?? 0
-    if (guests.openedTabs(access.id).filter((id) => live.has(id)).length + pending >= MAX_GUEST_TABS) {
-      throw new Error(`tabs.create: a guest may have at most ${MAX_GUEST_TABS} tabs open`)
-    }
     const beside = besideOf(p.beside)
-    creating.set(access.id, pending + 1)
-    try {
-      const tab = await tabs.create(ctx.projectId, beside === undefined ? { kind } : { kind, beside }, ctx.windowId, access.id)
-      if (!tab) return null
-      try {
-        router.guestAccessNow('tabs.create', ctx, view)
-      } catch (err) {
-        tabs.close(ctx.projectId, tab.id)
-        throw err
-      }
-      guests.noteOpenedTab(access.id, tab.id)
-      return tab
-    } finally {
-      const left = (creating.get(access.id) ?? 1) - 1
-      if (left > 0) creating.set(access.id, left)
-      else creating.delete(access.id)
-    }
+    // The cap, the reservation, the re-check and the note: IpcRouter.openGuestTab, shared with Discuss's new session.
+    return router.openGuestTab(
+      'tabs.create',
+      ctx,
+      view,
+      access,
+      tabs.list(ctx.projectId).map((t) => t.id),
+      () => tabs.create(ctx.projectId, beside === undefined ? { kind } : { kind, beside }, ctx.windowId, access.id),
+      (tab) => tab.id,
+      (tabId) => tabs.close(ctx.projectId, tabId)
+    )
   }
-  /** Guest creates in flight, per guest id (D-21's cap counts them). */
-  const creating = new Map<string, number>()
   const createTab = (ctx: ProjectContext, payload: unknown): TabInfo | null | Promise<TabInfo | null> => {
     const p = fields('tabs.create', payload)
     const kind = p.kind
@@ -1797,7 +1880,8 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     // (the same view can send `discard`); it keeps a race from dropping the person's text unasked.
     if (discard !== true && tabs.pageUnsaved?.(ctx.projectId, tabId) === true) return { unsaved: true as const }
     // D-9: a guest closes only the tabs it opened; any other is the owner's to close, so the owner is asked.
-    if (view.access && !router.guestService()?.openedTabs(view.access.id).includes(tabId)) return askOwnerToClose(ctx, view, view.access, tabId)
+    const guestAccess = guestCall(view, 'tabs.close')
+    if (guestAccess && !router.guestService()?.openedTabs(guestAccess.id).includes(tabId)) return askOwnerToClose(ctx, view, guestAccess, tabId)
     closeNow(ctx, view.viewId, tabId)
   })
   const closeNow = (ctx: ProjectContext, viewId: ViewId, tabId: string): void => {
@@ -1807,8 +1891,9 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (gen !== undefined) tabs.others?.(ctx.windowId, viewId, { channel: 'tabs.removed', payload: { tabId, gen } })
   }
   // The guest gets `{ asked: true }` at once ("Asked <owner>"); the tab closes only on an owner's Close. The tab is
-  // checked again then (closed meanwhile: nothing). The asking guest is not: the Close is the owner's own decision
-  // about the owner's tab, and stands even if the guest left meanwhile. Every view is told, the asker included.
+  // checked again then (closed meanwhile: nothing). A guest that ENDED meanwhile (kicked, revoked, expired) has its
+  // asks settled as moot (GuestStore `ended`, settleGuestCloseAsks), so no Close lands; one that only left still
+  // gets the owner's Close. Every view is told, the asker included; the asker's views also get `tabs.guestCloseDone`.
   const askOwnerToClose = (ctx: ProjectContext, view: CallView, access: GuestOnlyAccess, tabId: string): { asked: true } => {
     const ask = tabs.guest?.closeAsk
     const tab = tabs.list(ctx.projectId).find((t) => t.id === tabId)
@@ -1898,7 +1983,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (typeof data !== 'string') throw new Error('tabs.input: data must be a string')
     const tabId = tabIdOf('tabs.input', payload)
     // A write guest's keys (D-3): `typed` set like the owner's, never the project's active tab. Unwired: nothing.
-    if (view.access) {
+    if (guestCall(view, 'tabs.input')) {
       if (!tabs.guest) throw new Error('tabs.input: refused')
       tabs.guest.input(ctx.projectId, tabId, data, view.viewId)
       return
@@ -1914,7 +1999,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     }
     const tabId = tabIdOf('tabs.resize', payload)
     // D-14: a guest's report is remembered for its explicit take only (typing, Fit); unwired, it is dropped.
-    if (view.access) tabs.guest?.resize(ctx.projectId, tabId, cols, rows, view.viewId)
+    if (guestCall(view, 'tabs.resize')) tabs.guest?.resize(ctx.projectId, tabId, cols, rows, view.viewId)
     else tabs.resize(ctx.projectId, tabId, cols, rows, view.viewId)
   })
 
@@ -1965,7 +2050,7 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   router.handleProject('tabs.selected', (ctx, payload, view) => {
     const tabId = tabIdOf('tabs.selected', payload)
     // A guest's selection is its view's own (design-guests §7): never the project's active tab or lastActing.
-    if (view.access) tabs.guest?.select(ctx.projectId, tabId, view.viewId)
+    if (guestCall(view, 'tabs.selected')) tabs.guest?.select(ctx.projectId, tabId, view.viewId)
     else tabs.select(ctx.projectId, tabId, view.viewId)
     if (view.remote) tabs.viewSelect(view.viewId, tabId)
   })
@@ -2230,7 +2315,7 @@ export function registerSessionHandlers(router: IpcRouter, deps: SessionHandlerD
     if (typeof move !== 'boolean') throw new Error('trash.answer: move must be a boolean')
     // D-10: a guest (write, of a visible plugin's ask: the router checked) may Deny anywhere, Allow only on a
     // server. On a desktop host its Allow is ignored: the ask stays for the owner.
-    if (view.access && move && deps.server !== true) return false
+    if (guestCall(view, 'trash.answer') && move && deps.server !== true) return false
     return deps.trashAnswer(ctx.windowId, requestId, move)
   })
 
@@ -2338,8 +2423,8 @@ export interface OverlayHandlerDeps {
    * `viewId` (the caller main bound): the plugin's handlers run in it when it is a remote view.
    */
   button(windowId: number, overlayId: string, click: OverlayButtonClick, viewId: ViewId): boolean
-  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again). */
-  discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer>
+  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again); `guest`: a guest's (03e). */
+  discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest): Promise<DiscussAnswer>
 }
 
 /**
@@ -2371,7 +2456,7 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
       throw new Error('overlays.resize: cols and rows must be numbers')
     }
     const overlayId = overlayIdOf('overlays.resize', payload)
-    if (view.access) deps.guestResize?.(ctx.windowId, overlayId, cols, rows, view.viewId)
+    if (guestCall(view, 'overlays.resize')) deps.guestResize?.(ctx.windowId, overlayId, cols, rows, view.viewId)
     else deps.resize(ctx.windowId, overlayId, cols, rows, view.viewId)
   })
 
@@ -2440,12 +2525,15 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
 
   // Discuss on an overlay of the SENDER's window; a tab target is checked there to be a Claude tab
   // of that window (twice: now and just before the send).
-  router.handleProject('overlays.discuss', (ctx, payload) => {
+  router.handleProject('overlays.discuss', (ctx, payload, view) => {
     const { target } = fields('overlays.discuss', payload)
     const overlayId = overlayIdOf('overlays.discuss', payload)
     const t = (target ?? {}) as Record<string, unknown>
-    if (t.kind === 'new') return deps.discuss(ctx.windowId, overlayId, { kind: 'new' })
-    if (t.kind === 'tab' && typeof t.tabId === 'string') return deps.discuss(ctx.windowId, overlayId, { kind: 'tab', tabId: t.tabId })
+    const guest = router.discussGuest('overlays.discuss', ctx, view)
+    const send = (to: DiscussTarget): Promise<DiscussAnswer> =>
+      guest === undefined ? deps.discuss(ctx.windowId, overlayId, to) : deps.discuss(ctx.windowId, overlayId, to, guest)
+    if (t.kind === 'new') return send({ kind: 'new' })
+    if (t.kind === 'tab' && typeof t.tabId === 'string') return send({ kind: 'tab', tabId: t.tabId })
     throw new Error('overlays.discuss: target must be { kind: "tab", tabId } or { kind: "new" }')
   })
 }
@@ -2548,7 +2636,7 @@ export function registerWebviewHandlers(router: IpcRouter, deps: WebviewHandlerD
     }
     // The viewers clamp the sizes ([64, 4096] CSS px) and decide viewer and owner.
     // A guest's view (spec-review 14): the role tells the viewers whether it may own the size.
-    viewers.report({ windowId: ctx.windowId, pluginId: ref.pluginId, panelId: ref.panelId }, view.viewId, { width, height, visible, hidden }, view.access?.role)
+    viewers.report({ windowId: ctx.windowId, pluginId: ref.pluginId, panelId: ref.panelId }, view.viewId, { width, height, visible, hidden }, guestCall(view, 'webviews.place')?.role ?? 'owner')
   })
   router.handleProject('webviews.fit', (ctx, payload, view) => {
     const viewers = viewersFor('webviews.fit', view)

@@ -73,7 +73,7 @@ describe('WebviewViewers', () => {
   })
 
   it('makes a visible, not hidden report a viewer: the size first, then the first viewer shows the view', () => {
-    viewers.report(PANEL, 'web:1', shown(800, 600))
+    viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
     expect(calls).toEqual([
       ['size', 7, 'a.one', 'view', { width: 800, height: 600 }],
       ['viewed', 7, 'a.one', 'view', true]
@@ -85,33 +85,33 @@ describe('WebviewViewers', () => {
     expect(changes.map((c) => c.kind)).toEqual(['owner', 'size', 'added'])
     // A second viewer joins: no second setViewed, no resize (it is not the owner).
     calls.length = 0
-    viewers.report(PANEL, 'web:2', shown(400, 300))
+    viewers.report(PANEL, 'web:2', shown(400, 300), 'owner')
     expect(calls).toEqual([])
     expect(viewers.viewers(PANEL)).toEqual(['web:1', 'web:2'])
     expect(changes.at(-1)).toEqual({ kind: 'added', panel: PANEL, viewId: 'web:2' })
   })
 
   it('a hidden tab, a panel off screen or a collapsed panel is no viewer; the last viewer leaving hides the view', () => {
-    viewers.report(PANEL, 'web:1', { ...shown(), hidden: true })
-    viewers.report(PANEL, 'web:1', { ...shown(), visible: false })
-    viewers.report(PANEL, 'web:1', shown(0, 600))
-    viewers.report(PANEL, 'web:1', shown(800, 0))
+    viewers.report(PANEL, 'web:1', { ...shown(), hidden: true }, 'owner')
+    viewers.report(PANEL, 'web:1', { ...shown(), visible: false }, 'owner')
+    viewers.report(PANEL, 'web:1', shown(0, 600), 'owner')
+    viewers.report(PANEL, 'web:1', shown(800, 0), 'owner')
     expect(calls).toEqual([])
     expect(viewers.viewers(PANEL)).toEqual([])
-    viewers.report(PANEL, 'web:1', shown())
-    viewers.report(PANEL, 'web:2', shown())
+    viewers.report(PANEL, 'web:1', shown(), 'owner')
+    viewers.report(PANEL, 'web:2', shown(), 'owner')
     calls.length = 0
-    viewers.report(PANEL, 'web:1', { ...shown(), hidden: true })
+    viewers.report(PANEL, 'web:1', { ...shown(), hidden: true }, 'owner')
     expect(calls).toEqual([])
     expect(viewers.viewers(PANEL)).toEqual(['web:2'])
-    viewers.report(PANEL, 'web:2', { ...shown(), visible: false })
+    viewers.report(PANEL, 'web:2', { ...shown(), visible: false }, 'owner')
     expect(calls).toEqual([['viewed', 7, 'a.one', 'view', false]])
     expect(viewers.viewers(PANEL)).toEqual([])
     expect(viewers.ownerOf(PANEL)).toBeUndefined()
     // A view coming back is the first viewer again: shown, sized at once.
     clock.advance(1)
     calls.length = 0
-    viewers.report(PANEL, 'web:2', shown(640, 480))
+    viewers.report(PANEL, 'web:2', shown(640, 480), 'owner')
     expect(calls).toEqual([
       ['size', 7, 'a.one', 'view', { width: 640, height: 480 }],
       ['viewed', 7, 'a.one', 'view', true]
@@ -119,13 +119,13 @@ describe('WebviewViewers', () => {
   })
 
   it('keeps panels and windows apart', () => {
-    viewers.report(PANEL, 'web:1', shown())
-    viewers.report(OTHER_PANEL, 'web:1', shown())
-    viewers.report(OTHER_WINDOW, 'web:3', shown())
+    viewers.report(PANEL, 'web:1', shown(), 'owner')
+    viewers.report(OTHER_PANEL, 'web:1', shown(), 'owner')
+    viewers.report(OTHER_WINDOW, 'web:3', shown(), 'owner')
     expect(viewers.viewers(PANEL)).toEqual(['web:1'])
     expect(viewers.viewers(OTHER_PANEL)).toEqual(['web:1'])
     expect(viewers.viewers(OTHER_WINDOW)).toEqual(['web:3'])
-    viewers.report(PANEL, 'web:1', { ...shown(), visible: false })
+    viewers.report(PANEL, 'web:1', { ...shown(), visible: false }, 'owner')
     expect(viewers.isViewer(OTHER_PANEL, 'web:1')).toBe(true)
     // A claim for another window's panel from a view that is not its viewer changes nothing.
     viewers.claimOwner(OTHER_WINDOW, 'web:1')
@@ -134,19 +134,19 @@ describe('WebviewViewers', () => {
 
   describe('the size owner', () => {
     it('is the first reporter; only its reports resize the page', () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
-      viewers.report(PANEL, 'web:2', shown(400, 300))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
+      viewers.report(PANEL, 'web:2', shown(400, 300), 'owner')
       clock.advance(RESIZE_THROTTLE_MS)
       calls.length = 0
-      viewers.report(PANEL, 'web:2', shown(500, 300))
+      viewers.report(PANEL, 'web:2', shown(500, 300), 'owner')
       expect(calls).toEqual([])
-      viewers.report(PANEL, 'web:1', shown(900, 600))
+      viewers.report(PANEL, 'web:1', shown(900, 600), 'owner')
       expect(calls).toEqual([['size', 7, 'a.one', 'view', { width: 900, height: 600 }]])
     })
 
     it('moves to a viewer that claims it (a press, a key, text, Fit to this screen), at its last size', () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
-      viewers.report(PANEL, 'web:2', shown(400, 300))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
+      viewers.report(PANEL, 'web:2', shown(400, 300), 'owner')
       clock.advance(RESIZE_THROTTLE_MS)
       calls.length = 0
       viewers.claimOwner(PANEL, 'web:2')
@@ -164,11 +164,11 @@ describe('WebviewViewers', () => {
     })
 
     it('an owner that leaves hands the size to the viewer active last', () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
-      viewers.report(PANEL, 'web:2', shown(400, 300))
-      viewers.report(PANEL, 'web:3', shown(300, 200))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
+      viewers.report(PANEL, 'web:2', shown(400, 300), 'owner')
+      viewers.report(PANEL, 'web:3', shown(300, 200), 'owner')
       // web:2 reports again (a resize): it is the one active last.
-      viewers.report(PANEL, 'web:2', shown(420, 300))
+      viewers.report(PANEL, 'web:2', shown(420, 300), 'owner')
       clock.advance(RESIZE_THROTTLE_MS)
       calls.length = 0
       viewers.viewGone('web:1')
@@ -178,19 +178,19 @@ describe('WebviewViewers', () => {
       // A claim counts as activity too.
       viewers.claimOwner(PANEL, 'web:3')
       viewers.claimOwner(PANEL, 'web:2')
-      viewers.report(PANEL, 'web:2', { ...shown(), hidden: true })
+      viewers.report(PANEL, 'web:2', { ...shown(), hidden: true }, 'owner')
       expect(viewers.ownerOf(PANEL)).toBe('web:3')
     })
   })
 
   describe('the resize throttle', () => {
     it(`applies at most one resize per ${RESIZE_THROTTLE_MS} ms, the final size on the trailing edge`, () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
       calls.length = 0
       // A dragged splitter: a report per pixel.
       for (let w = 801; w <= 850; w++) {
         clock.advance(2)
-        viewers.report(PANEL, 'web:1', shown(w, 600))
+        viewers.report(PANEL, 'web:1', shown(w, 600), 'owner')
       }
       // 100 ms after the first resize: one trailing resize so far.
       expect(calls.length).toBeLessThanOrEqual(1)
@@ -202,34 +202,34 @@ describe('WebviewViewers', () => {
     })
 
     it('a report back to the applied size during the wait resizes nothing', () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
       calls.length = 0
       clock.advance(10)
-      viewers.report(PANEL, 'web:1', shown(900, 600))
-      viewers.report(PANEL, 'web:1', shown(800, 600))
+      viewers.report(PANEL, 'web:1', shown(900, 600), 'owner')
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
       clock.advance(RESIZE_THROTTLE_MS)
       expect(calls).toEqual([])
     })
 
     it('a resize after a quiet spell applies at once', () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
       clock.advance(RESIZE_THROTTLE_MS + 1)
       calls.length = 0
-      viewers.report(PANEL, 'web:1', shown(700, 600))
+      viewers.report(PANEL, 'web:1', shown(700, 600), 'owner')
       expect(calls).toEqual([['size', 7, 'a.one', 'view', { width: 700, height: 600 }]])
     })
 
     it('a pending resize is dropped when the panel loses its viewers or its window', () => {
-      viewers.report(PANEL, 'web:1', shown(800, 600))
+      viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
       clock.advance(10)
-      viewers.report(PANEL, 'web:1', shown(900, 600))
+      viewers.report(PANEL, 'web:1', shown(900, 600), 'owner')
       viewers.viewGone('web:1')
       calls.length = 0
       clock.advance(RESIZE_THROTTLE_MS)
       expect(calls).toEqual([])
-      viewers.report(OTHER_WINDOW, 'web:2', shown(800, 600))
+      viewers.report(OTHER_WINDOW, 'web:2', shown(800, 600), 'owner')
       clock.advance(10)
-      viewers.report(OTHER_WINDOW, 'web:2', shown(900, 600))
+      viewers.report(OTHER_WINDOW, 'web:2', shown(900, 600), 'owner')
       viewers.closeWindow(8)
       calls.length = 0
       clock.advance(RESIZE_THROTTLE_MS)
@@ -254,14 +254,14 @@ describe('WebviewViewers', () => {
     })
 
     it('a tiny, huge or non-finite report never reaches the manager unclamped', () => {
-      viewers.report(PANEL, 'web:1', shown(10, 1e9))
+      viewers.report(PANEL, 'web:1', shown(10, 1e9), 'owner')
       expect(calls[0]).toEqual(['size', 7, 'a.one', 'view', { width: MIN_PLACE_SIDE, height: MAX_PLACE_SIDE }])
       // A NaN or Infinity side (the router refuses them first): not a viewer.
-      viewers.report(PANEL, 'web:2', shown(Number.NaN, 600))
-      viewers.report(PANEL, 'web:3', shown(800, Infinity))
+      viewers.report(PANEL, 'web:2', shown(Number.NaN, 600), 'owner')
+      viewers.report(PANEL, 'web:3', shown(800, Infinity), 'owner')
       expect(viewers.viewers(PANEL)).toEqual(['web:1'])
       // The owner sending one leaves the panel rather than resizing it.
-      viewers.report(PANEL, 'web:1', shown(Number.NaN, Number.NaN))
+      viewers.report(PANEL, 'web:1', shown(Number.NaN, Number.NaN), 'owner')
       expect(viewers.viewers(PANEL)).toEqual([])
       expect(calls.filter((c) => c[0] === 'size')).toHaveLength(1)
     })
@@ -269,9 +269,9 @@ describe('WebviewViewers', () => {
 
   describe('views and windows going', () => {
     it('a view gone leaves every panel it viewed', () => {
-      viewers.report(PANEL, 'web:1', shown())
-      viewers.report(OTHER_PANEL, 'web:1', shown())
-      viewers.report(OTHER_PANEL, 'web:2', shown())
+      viewers.report(PANEL, 'web:1', shown(), 'owner')
+      viewers.report(OTHER_PANEL, 'web:1', shown(), 'owner')
+      viewers.report(OTHER_PANEL, 'web:2', shown(), 'owner')
       calls.length = 0
       viewers.viewGone('web:1')
       expect(calls).toEqual([['viewed', 7, 'a.one', 'view', false]])
@@ -286,8 +286,8 @@ describe('WebviewViewers', () => {
     })
 
     it('a closed window forgets its panels without telling the manager (it drops the views itself)', () => {
-      viewers.report(PANEL, 'web:1', shown())
-      viewers.report(OTHER_WINDOW, 'web:2', shown())
+      viewers.report(PANEL, 'web:1', shown(), 'owner')
+      viewers.report(OTHER_WINDOW, 'web:2', shown(), 'owner')
       calls.length = 0
       changes.length = 0
       viewers.closeWindow(7)
@@ -298,9 +298,9 @@ describe('WebviewViewers', () => {
     })
 
     it('leave takes only the view\'s own entry in its own window off a panel named by key', () => {
-      viewers.report(PANEL, 'web:1', shown())
-      viewers.report(PANEL, 'web:2', shown())
-      viewers.report(OTHER_WINDOW, 'web:1', shown())
+      viewers.report(PANEL, 'web:1', shown(), 'owner')
+      viewers.report(PANEL, 'web:2', shown(), 'owner')
+      viewers.report(OTHER_WINDOW, 'web:1', shown(), 'owner')
       viewers.leave(7, 'web:1', 'a.one/view')
       expect(viewers.viewers(PANEL)).toEqual(['web:2'])
       expect(viewers.viewers(OTHER_WINDOW)).toEqual(['web:1'])
@@ -329,7 +329,7 @@ describe('WebviewViewers', () => {
     })
     const heard: ViewersChange[] = []
     const off = broken.onChange((c) => void heard.push(c))
-    broken.report(PANEL, 'web:1', shown())
+    broken.report(PANEL, 'web:1', shown(), 'owner')
     expect(broken.viewers(PANEL)).toEqual(['web:1'])
     expect(heard.map((c) => c.kind)).toEqual(['owner', 'size', 'added'])
     expect(logs.join('\n')).toMatch(/boom/)
@@ -398,7 +398,7 @@ describe('WebviewManager driven by the viewers (server mode)', () => {
     })
     await manager.navigate(owner, 'https://example.com/')
     expect(made).toEqual([])
-    viewers.report(PANEL, 'web:1', shown(800, 600))
+    viewers.report(PANEL, 'web:1', shown(800, 600), 'owner')
     expect(made).toHaveLength(1)
     const view = made[0] as Fake
     expect(view.loaded).toEqual(['https://example.com/'])
@@ -421,7 +421,7 @@ describe('WebviewManager driven by the viewers (server mode)', () => {
       setViewed: (w, p, id, v) => manager.setViewed(w, p, id, v),
       setSize: (w, p, id, s) => manager.setViewSize(w, p, id, s)
     })
-    viewers.report(PANEL, 'web:1', shown(640, 480))
+    viewers.report(PANEL, 'web:1', shown(640, 480), 'owner')
     await manager.navigate(owner, 'https://example.com/')
     expect(made).toHaveLength(1)
     manager.destroyPlugin(7, 'a.one')

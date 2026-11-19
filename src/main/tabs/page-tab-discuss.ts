@@ -23,7 +23,7 @@ import type { DiscussAnswer } from '../../shared/ipc'
 import type { JsonValue } from '../../sdk/types'
 import { within } from '../../shared/timeout'
 import { isRemoteViewId, type ViewId } from '../../shared/views'
-import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget } from '../overlays/discuss'
+import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget, type DiscussGuest } from '../overlays/discuss'
 import type { DiscussSessions } from '../overlays/overlay-manager'
 
 /** A page tab as Discuss needs it, from main's own record. */
@@ -83,7 +83,7 @@ export class PageTabDiscuss {
   constructor(private readonly deps: PageTabDiscussDeps) {}
 
   /** The box's Send (see the top of the file). Never rejects: an error is the answer's text. */
-  async discuss(caller: DiscussCaller, tabId: unknown, rawQuestion: unknown, rawTarget: unknown): Promise<DiscussAnswer> {
+  async discuss(caller: DiscussCaller, tabId: unknown, rawQuestion: unknown, rawTarget: unknown, guest?: DiscussGuest): Promise<DiscussAnswer> {
     if (typeof tabId !== 'string') return { ok: false, error: 'Ask Claude is not available on this tab' }
     const target = discussTargetOf(rawTarget)
     if (!target) return { ok: false, error: 'Pick a Claude session or a new one' }
@@ -127,11 +127,12 @@ export class PageTabDiscuss {
       })
       const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
-      const sent = await deliverDiscuss(sessions, this.budget, windowId, target, text)
+      const sent = await deliverDiscuss(sessions, this.budget, windowId, target, text, guest)
       if (!sent.ok) return sent
       const sentTo = sent.tabId
       try {
-        sessions.selectTab(windowId, sentTo)
+        if (guest === undefined) sessions.selectTab(windowId, sentTo)
+        else sessions.selectTab(windowId, sentTo, guest.viewId)
       } catch (err) {
         this.deps.log?.(`page tab ${tab.id}: selecting tab ${sentTo} failed: ${errorText(err)}`)
       }

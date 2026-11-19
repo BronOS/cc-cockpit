@@ -189,7 +189,7 @@ import { TabManager } from './tabs/tab-manager'
 import { TabGroups } from './tabs/tab-groups'
 import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
-import { createGuestCloseAsks, settleGoneCloseAsks } from './tabs/guest-close-asks'
+import { createGuestCloseAsks, settleGoneCloseAsks, settleGuestCloseAsks } from './tabs/guest-close-asks'
 import { PluginGuestAccessStore } from './settings/plugin-guest-access'
 import {
   downloadViewAllowedOf,
@@ -198,7 +198,10 @@ import {
   guestTabDeps,
   guestUnsavedOf,
   offerTakerOf,
-  ownerViewOf
+  guestMayDeliverOf,
+  ownerViewOf,
+  pageSelectTargetOf,
+  type PageSelectTarget
 } from './guest-wiring'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
 import { isTestRun } from './test-run'
@@ -1069,8 +1072,17 @@ function start(server: boolean): void {
   // `sessions.closeSettled`), or false when it closes or the wait runs out. False at once when no
   // view of the window took the ask (nobody could answer it).
   // A guest's close of a tab it did not open, asked of the owner's views (D-9, tabs/guest-close-asks.ts): every view
-  // of the window gets it (guests' sinks drop it), the first owner answer wins; the router sends the answers.
-  const guestCloseAsks = createGuestCloseAsks(views)
+  // of the window gets it (guests' sinks drop it), the first owner answer wins; the router sends the answers. The
+  // outcome goes to the asking guest's own views of the window, matched by the view's bound guest id.
+  const guestCloseAsks = createGuestCloseAsks({
+    toWindow: (windowId, channel, payload) => views.toWindow(windowId, channel, payload),
+    toGuest: (windowId, guestId, channel, payload) => {
+      for (const viewId of views.viewsOf(windowId)) {
+        const who = views.whoOf(viewId)
+        if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)
+      }
+    }
+  })
   const closeAsks = new CloseAsks({
     send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
@@ -1142,15 +1154,39 @@ function start(server: boolean): void {
     },
     notReady: (tabId) => sessions.get(tabId)?.status === 'idle',
     // Discuss names its origin (`core`, overlay-manager.ts, page-tab-discuss.ts): passed through, not chosen here.
-    send: (tabId, text, origin) => sessions.send(tabId, text, origin),
-    openSession: async (windowId, prompt) => {
+    // A guest's text carries its id, so the registry checks its access again when the gate dequeues it (03e A).
+    send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),
+    openSession: async (windowId, prompt, guestId) => {
       const projectId = projectOfWindow(windowId)
       if (projectId === undefined) throw new Error('the window is gone')
-      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &.
-      const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
+      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &. A guest's is tagged as
+      // its tab (D-21); the router's openGuestTab around this call keeps the cap and notes it.
+      const options = { prompt: prepareText(prompt), ...(guestId === undefined ? {} : { openedByGuest: guestId }) }
+      const tab = await openClaudeTab(projectId, options, windowId, false)
       return { tabId: tab.id }
     },
-    selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId }),
+    liveTabs: (windowId) => {
+      const projectId = projectOfWindow(windowId)
+      return projectId === undefined ? [] : tabs.list(projectId).map((t) => t.id)
+    },
+    // A guest's new session whose access ended while it opened: it was announced, so every view hears it go too.
+    closeTab: (windowId, tabId) => {
+      const projectId = projectOfWindow(windowId)
+      if (projectId === undefined) return
+      const gen = tabs.list(projectId).find((t) => t.id === tabId)?.gen
+      tabs.close(projectId, tabId)
+      if (gen !== undefined) sendToProject(projectId, 'tabs.removed', { tabId, gen })
+    },
+    // A guest's Discuss selects in its own view only (design-guests §7): never the owner's selection. The tab is told
+    // to that view first: a guest with a selected-tabs scope had its `tabs.added` dropped (announced before the
+    // router noted the new session as the guest's, D-21), and a page selects only a tab it has.
+    selectTab: (windowId, tabId, view) => {
+      if (view === undefined) return sendToWindow(windowId, 'tabs.select', { tabId })
+      const projectId = projectOfWindow(windowId)
+      const tab = projectId === undefined ? undefined : tabs.list(projectId).find((t) => t.id === tabId)
+      if (tab) views.toView(view, 'tabs.added', tab)
+      views.toView(view, 'tabs.select', { tabId })
+    },
     // The window's own project's override, else the global one; read now, at send time.
     prompt: (windowId) => {
       const projectId = projectOfWindow(windowId)
@@ -1245,7 +1281,7 @@ function start(server: boolean): void {
    */
   const openClaudeTab = async (
     projectId: string,
-    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string> },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string>; openedByGuest?: string },
     windowId: number,
     focus: boolean,
     place?: PluginPlacement
@@ -1335,12 +1371,20 @@ function start(server: boolean): void {
    * HostApi took the plugin from the host and checked the type and the spec; the tab manager checks
    * the spec again and holds the per-plugin cap. Not unseen when focused: the window selects it now.
    */
-  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean): Promise<TabInfo> => {
+  // A plugin's `focus` selects where it acted (guest-wiring.ts pageSelectTargetOf): a guest's click selects in that
+  // guest's view only, never the owner's selection or active tab (03e); the tab still gets the unseen dot then.
+  const pageSelectTarget = pageSelectTargetOf((viewId) => views.whoOf(viewId))
+  const selectPageTab = (projectId: string, tabId: string, target: PageSelectTarget): void => {
+    if (target === 'project') sendToProject(projectId, 'tabs.select', { tabId })
+    else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })
+  }
+  const openPageTab = async (projectId: string, spec: PageTabSpec, windowId: number, focus: boolean, view?: ViewId): Promise<TabInfo> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    const tab = tabs.createPage(projectId, spec, { focus })
+    const target: PageSelectTarget = focus ? pageSelectTarget(view) : 'none'
+    const tab = tabs.createPage(projectId, spec, { focus: target === 'project' })
     sendToProject(projectId, 'tabs.added', tab)
-    if (focus) sendToProject(projectId, 'tabs.select', { tabId: tab.id })
+    selectPageTab(projectId, tab.id, target)
     return tab
   }
   /** Open an overlay once the login env is known (a terminal overlay's PATH depends on it). */
@@ -1824,13 +1868,13 @@ function start(server: boolean): void {
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
       openCommandTab: (projectId, options, windowId, focus, place) => openCommandTab(projectId, options, windowId, focus === true, place),
       // ctx.tabs (design-editor.md §1): HostApi checked the plugin, its declared type and the spec.
-      openPageTab: (projectId, spec, windowId, focus) => openPageTab(projectId, spec, windowId, focus),
+      openPageTab: (projectId, spec, windowId, focus, view) => openPageTab(projectId, spec, windowId, focus, view),
       listTabs: (projectId) => tabs.list(projectId),
       setPageTabTitle: (projectId, tabId, title, icon) => tabs.setPageTitle(projectId, tabId, title, icon),
       // As openPage's `focus`: the project's views are told to select it (only the host's own window).
-      focusPageTab: (projectId, tabId, windowId) => {
+      focusPageTab: (projectId, tabId, windowId, view) => {
         requireWindow(projectId, windowId)
-        sendToProject(projectId, 'tabs.select', { tabId })
+        selectPageTab(projectId, tabId, pageSelectTarget(view))
       },
       // The unseen dot again (ctx.tabs.markUnseen), told to every view as markSeen's clearing is.
       markPageTabUnseen: (projectId, tabId) => {
@@ -1976,7 +2020,7 @@ function start(server: boolean): void {
   // snapshot goes out throttled, and each project window gets ITS OWN view: the strip fields of
   // every tab plus the full entries of its own project's tabs (never another project's prompts,
   // notes, files or queue). A picker window shows no strip and gets nothing.
-  const sessions = new SessionRegistry({
+  const sessions: SessionRegistry = new SessionRegistry({
     projectName: (projectId) => registry.get(projectId)?.name,
     projectColor: (projectId) => registry.get(projectId)?.color,
     broadcast: (snapshotFor) => {
@@ -1988,7 +2032,10 @@ function start(server: boolean): void {
     // with the entry's own project, so the write cannot land in another project's tab; `tabs` is
     // defined below and is only reached once a tab exists. Never through `sessions.userInput`: a
     // delivery must not set SessionInfo.typed (the person's takeover flag).
-    write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
+    write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data),
+    // A guest's queued Discuss text is checked again as the gate dequeues it (03e A); `guestStore` is made below
+    // and only read once a guest's text is queued.
+    guestMayDeliver: (guestId: string, tabId: string): boolean => guestMayDeliverOf(guestStore, (t) => sessions.get(t)?.projectId)(guestId, tabId)
   })
   // The person's per-plugin caps (design-rooms.md §6, plugins/plugin-limits.ts): `app.json` › `pluginLimits[id]` over
   // the global values in `pluginLimitsGlobal`, read with every value clamped on each open and send (HostApi, the room
@@ -2321,6 +2368,8 @@ function start(server: boolean): void {
     ),
     // "Bob joined": a new device signed in. Guests' views drop core notices (guest-events.ts `notices.show`).
     notify: (text) => coreNotices.show({ kind: 'new-device', text, title: 'cc-cockpit web access' }),
+    // An ended guest's close asks leave the owner's screens at once (D-9).
+    ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId),
     log: warnLog
   })
   guestsForget.project = (id) => guestStore.projectRemoved(id)
@@ -2344,7 +2393,9 @@ function start(server: boolean): void {
       const windowId = views.windowOf(viewId as ViewId)
       return windowId === undefined ? undefined : downloads.offerOrigin(windowId, requestId)?.originTab
     },
-    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess))
+    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess)),
+    // Only to make a session's files project-relative for the guest (guestSessions); the path itself is never sent.
+    projectPath: (projectId) => registry.get(projectId)?.path
   }
   // Who is here and where (design-guests §10, presence.ts): joins and leaves from the web connections below;
   // selections and typing from the tab handlers, tab closes from TabManager's `closed`, a window's close below.
@@ -2771,7 +2822,8 @@ function start(server: boolean): void {
       overlays,
       slotFrame: (projectId, frameId) => layouts.slotFrame(projectId, frameId),
       trashAsks,
-      downloads
+      downloads,
+      projectPath: (projectId) => registry.get(projectId)?.path
     })
   )
 
@@ -3310,7 +3362,7 @@ function start(server: boolean): void {
     },
     dirty: (projectId, viewId, tabId, dirty) => tabs.setPageDirty(projectId, tabId, viewId, dirty),
     unsaved: (projectId) => tabs.unsavedTitles(projectId),
-    discuss: (caller, tabId, question, target) => pageTabDiscuss.discuss(caller, tabId, question, target),
+    discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),
     server
   })
   registerSlotHandlers(router, {
@@ -3507,7 +3559,7 @@ function start(server: boolean): void {
     loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
     take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
     button: (windowId, overlayId, click, viewId) => overlays.buttonClick(windowId, overlayId, click, viewId),
-    discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target),
+    discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),
     // A guest's size report is remembered for its explicit take only (D-14).
     guestResize: (windowId, overlayId, cols, rows, viewId) => overlays.guestResize(windowId, overlayId, cols, rows, viewId)
   })

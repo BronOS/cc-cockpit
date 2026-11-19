@@ -73,7 +73,7 @@ import { isPanelHeaderIcon } from '../../shared/panel-header'
 import { within } from '../../shared/timeout'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
-import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget } from './discuss'
+import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget, type DiscussGuest } from './discuss'
 import { PtyService } from '../pty/pty-service'
 import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
@@ -208,9 +208,10 @@ export interface OverlayManagerOptions {
   browserViews?(windowId: number): ViewId[]
   /**
    * Whether a view is the owner's (ViewRegistry.whoOf, design-guests §9): a guest's view never holds an html
-   * overlay's page (its posts carry the opener's data). Absent: every view is (no guests).
+   * overlay's page (its posts carry the opener's data). Required (03e D): a wiring that forgot it must not hand a
+   * page to a guest's view.
    */
-  ownerView?(viewId: ViewId): boolean
+  ownerView(viewId: ViewId): boolean
 }
 
 /**
@@ -268,14 +269,21 @@ export interface DiscussSessions {
    * Throws when refused. Discuss passes `core`: the person clicked Send, so their typing in the
    * tab neither refuses the text nor drops it from the queue (send-gate.ts takenOver).
    */
-  send(tabId: string, text: string, origin: SendOrigin): { delivered: boolean }
+  send(tabId: string, text: string, origin: SendOrigin, guestId?: string): { delivered: boolean }
   /**
    * Open a Claude tab in the window's project folder with `prompt` as its first prompt (main's own
    * open path, the ctx.sessions.open argument rule) and tell the window. Throws when refused.
    */
-  openSession(windowId: number, prompt: string): Promise<{ tabId: string }>
-  /** Select the tab in the window (the person sees where the text went). */
-  selectTab(windowId: number, tabId: string): void
+  openSession(windowId: number, prompt: string, guestId?: string): Promise<{ tabId: string }>
+  /** The window's project's live tab ids (a guest's new session counts its open tabs, D-21). Absent: no guest opens one. */
+  liveTabs?(windowId: number): string[]
+  /** Close a tab of the window's project (a guest's new session whose access ended while it opened). */
+  closeTab?(windowId: number, tabId: string): void
+  /**
+   * Select the tab in the window (the person sees where the text went). `view`: only that view selects it (a
+   * guest's Discuss: its own view, never the owner's selection, design-guests §7).
+   */
+  selectTab(windowId: number, tabId: string, view?: ViewId): void
   /**
    * The person's closing prompt for the window's own project, resolved by main at send time
    * (effectiveDiscussPrompt), never taken from the renderer. Absent or undefined: none.
@@ -290,6 +298,8 @@ export type OverlayButtonClick =
 
 /** What opening a url overlay gets in server mode (design-web.md §9.9): no native view is made. */
 export const URL_OVERLAY_SERVER_REFUSAL = 'overlay: url overlays are not available in server mode'
+/** What the opener gets when the call came from a guest's view (03e): an overlay is never handed to the owner's screen. */
+export const GUEST_ORIGIN_OVERLAY_REFUSAL = "overlay: refused from a guest's view"
 
 /** Limits on what a caller may put in a spec. Generous for real use, small enough for IPC. */
 export const MAX_URL_LENGTH = 8192
@@ -585,6 +595,11 @@ export class OverlayManager {
     if (parsed.kind === 'url' && this.options.server === true) throw new Error(URL_OVERLAY_SERVER_REFUSAL)
     // Before anything is created: no program, no view, no stack for a window that is gone.
     if (!this.options.isWindowOpen(windowId)) throw new Error('overlay: the window is gone')
+    // 03e (QA): an overlay opened by a call whose origin view is a guest's (a write guest's click that makes a plugin
+    // open one) is refused, whatever its kind. A guest never holds an html page, so it would land on an owner's screen
+    // as a modal that takes focus, repeatable by the guest; a terminal one would too. Any remote view that is not the
+    // owner's counts, a gone one included (fail closed: an owner view gone mid-call costs only this overlay).
+    if (view !== undefined && isRemoteViewId(view) && !this.ownerView(view)) throw new Error(GUEST_ORIGIN_OVERLAY_REFUSAL)
     const id = randomUUID()
     let settle!: (result: OverlayResult) => void
     const promise = new Promise<OverlayResult>((resolve) => {
@@ -794,7 +809,7 @@ export class OverlayManager {
    * attached), never `except` (the view leaving) nor a desktop view; undefined when none is attached.
    */
   private ownerView(viewId: ViewId): boolean {
-    return this.options.ownerView?.(viewId) ?? true
+    return this.options.ownerView(viewId)
   }
 
   private browserHolder(windowId: number, except?: ViewId): ViewId | undefined {
@@ -1215,7 +1230,7 @@ export class OverlayManager {
    * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window (an overlay
    * dismissed while the new session opens has already answered `dismissed`). Never rejects.
    */
-  async discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer> {
+  async discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest): Promise<DiscussAnswer> {
     const overlay = this.find(windowId, overlayId)
     if (!overlay?.info.discuss) return { ok: false, error: 'Discuss is not available on this overlay' }
     const sessions = this.options.discuss
@@ -1244,7 +1259,7 @@ export class OverlayManager {
       const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, prompt: sessions.prompt?.(windowId) })
       const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
-      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text)
+      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, guest)
       if (!sent.ok) return sent
       const { tabId, queued } = sent
       // The person may dismiss the overlay while a new session opens. The session already has the
@@ -1256,7 +1271,8 @@ export class OverlayManager {
       }
       this.finish(overlay, { kind: 'discussed', tabId, queued })
       try {
-        sessions.selectTab(windowId, tabId)
+        if (guest === undefined) sessions.selectTab(windowId, tabId)
+        else sessions.selectTab(windowId, tabId, guest.viewId)
       } catch (err) {
         this.log(`overlay ${overlay.id}: selecting tab ${tabId} failed: ${String(err)}`)
       }

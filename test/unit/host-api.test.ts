@@ -137,6 +137,7 @@ beforeEach(() => {
   const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
   emitted = []
   overlays = new OverlayManager({
+    ownerView: () => true,
     backend: overlayBackend,
     views: { create: () => view, focusWindow: () => {} },
     isWindowOpen: (id) => id === WIN_A || id === WIN_B,
@@ -1818,6 +1819,7 @@ describe('overlay toolbar (design-next §3.3, §3.6)', () => {
     const { api, call, hostCalls } = toolbarHost((c) => (c.method === 'overlay.buttons' ? [] : null))
     const view: UrlView = { setBounds: () => {}, setVisible: () => {}, focus: () => {}, destroy: () => {} }
     const typed = new OverlayManager({
+      ownerView: () => true,
       backend: overlayBackend,
       views: { create: () => view, focusWindow: () => {} },
       isWindowOpen: (id) => id === WIN_A,

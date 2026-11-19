@@ -16,6 +16,7 @@ import {
   sendNow,
   SESSION_START_SETTLE_MS,
   settled,
+  skipRefused,
   stripControls,
   stripMarkers,
   takenOver,
@@ -819,5 +820,84 @@ describe('a Stop main answered with the room pointer (rooms/room-stop.ts)', () =
   it('a plain Stop still delivers the head', () => {
     const e = entryIn('waiting', { queue: [item('a', 'a', 'core')] })
     expect(afterEvent(e, hook('Stop')).write).toBe(paste('a'))
+  })
+})
+
+describe("a guest's queued text (03e A)", () => {
+  const guestItem = (id: string, guestId: string): QueuedText => ({ id, text: id, origin: 'core', guestId })
+
+  it('skipRefused: a refused head is dropped and the next one delivered; nothing refused leaves the step as it was', () => {
+    const step = afterEvent(entryIn('waiting', { queue: [guestItem('a', 'gX'), guestItem('b', 'gX'), item('c', 'c', 'core')] }), hook('Stop'))
+    const out = skipRefused(step, (i) => i.guestId === undefined)
+    expect(out.delivered?.id).toBe('c')
+    expect(out.write).toBe(pasteBytes('c'))
+    expect(out.dropped?.map((d) => d.id)).toEqual(['a', 'b'])
+    expect(out.entry).toMatchObject({ queue: [], delivering: true })
+    expect(skipRefused(step, () => true)).toBe(step)
+    // All refused: nothing written, nothing delivering.
+    const none = skipRefused(afterEvent(entryIn('waiting', { queue: [guestItem('a', 'gX')] }), hook('Stop')), () => false)
+    expect(none.write).toBeUndefined()
+    expect(none.entry).toMatchObject({ queue: [], delivering: false })
+  })
+
+  describe('SessionRegistry guestMayDeliver', () => {
+    let writes: string[]
+    let reg: SessionRegistry
+    let allowed: boolean
+    let asked: Array<[string, string]>
+    let changes: SessionChange[]
+
+    function make(withCheck = true): SessionRegistry {
+      const r = new SessionRegistry({
+        projectName: () => 'p',
+        broadcast: () => {},
+        write: (_e, data) => void writes.push(data),
+        ...(withCheck ? { guestMayDeliver: (g: string, t: string) => (asked.push([g, t]), allowed) } : {}),
+        log: () => {}
+      })
+      r.tabStarted({ tabId: 't1', projectId: 'p1', kind: 'claude', cwd: '/proj' })
+      r.onChange((c) => void changes.push(c))
+      return r
+    }
+    beforeEach(() => {
+      vi.useFakeTimers()
+      writes = []
+      allowed = true
+      asked = []
+      changes = []
+      reg = make()
+    })
+    afterEach(() => {
+      reg.dispose()
+      vi.useRealTimers()
+    })
+
+    it('pasted while the guest still may send to the tab, checked with its id at the paste', () => {
+      reg.applyHook('t1', 'Stop', {})
+      expect(reg.send('t1', 'hi', 'core', 'g1')).toMatchObject({ delivered: true })
+      expect(writes).toEqual([paste('hi')])
+      expect(asked).toEqual([['g1', 't1']])
+    })
+
+    it('kicked, downgraded or unshared while it waited in the queue: dropped at the Stop, the next text goes instead', () => {
+      reg.send('t1', 'from guest', 'core', 'g1')
+      reg.send('t1', 'from owner', 'core')
+      expect(writes).toEqual([])
+      allowed = false
+      reg.applyHook('t1', 'Stop', {})
+      expect(writes).toEqual([paste('from owner')])
+      expect(reg.get('t1')?.queue).toEqual([])
+      expect(changes.flatMap((c) => c.dropped ?? []).map((d) => d.text)).toEqual(['from guest'])
+    })
+
+    it('no check wired: a guest text is never pasted (fail closed); an owner text is', () => {
+      reg.dispose()
+      reg = make(false)
+      reg.applyHook('t1', 'Stop', {})
+      expect(reg.send('t1', 'x', 'core', 'g1').delivered).toBe(false)
+      expect(writes).toEqual([])
+      expect(reg.send('t1', 'y', 'core').delivered).toBe(true)
+      expect(writes).toEqual([paste('y')])
+    })
   })
 })

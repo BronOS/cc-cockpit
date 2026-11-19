@@ -820,6 +820,7 @@ describe('windowSnapshot leaves the desktop as it was', () => {
       const backend = new FakePtyBackend()
       const emitted: Array<{ channel: EventChannel; payload: unknown }> = []
       const overlays = new OverlayManager({
+        ownerView: () => true,
         backend,
         views: {
           create: () => {
@@ -1579,6 +1580,7 @@ describe('shared asks', () => {
     const { views, router } = ctx
     views.addDesktop(2, { send: () => {}, isClosed: () => false })
     const asks = (late.asks = new CloseAsks({
+      ownerView: () => true,
       send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
       settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
       close: () => true,
@@ -1605,6 +1607,7 @@ describe('shared asks', () => {
     })
     const backend = new FakePtyBackend()
     const overlays = (late.overlays = new OverlayManager({
+      ownerView: () => true,
       backend,
       views: {
         create: () => {
@@ -1826,6 +1829,7 @@ describe('html overlays held by one view', () => {
     const { views, router, conns } = ctx
     late.conns = conns
     const overlays = (late.overlays = new OverlayManager({
+      ownerView: () => true,
       backend: new FakePtyBackend(),
       views: {
         create: () => {

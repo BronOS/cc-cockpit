@@ -22,8 +22,18 @@ describe('guest invites (design-guests §2, §3)', () => {
     const codes = [CLOSE.guestProject, CLOSE.kicked, CLOSE.roleChanged, CLOSE.projectClosed, CLOSE.accessEnded, CLOSE.accessChanged]
     expect(codes).toEqual([4403, 4460, 4461, 4462, 4463, 4464])
     expect(new Set(Object.values(CLOSE)).size).toBe(Object.values(CLOSE).length)
-    for (const code of codes) expect(typeof guestCloseText(code, 'Oleg', 'read'), String(code)).toBe('string')
-    expect(guestCloseText(CLOSE.kicked, 'Oleg')).toContain('Oleg')
+    // The texts themselves (§16.4): what the page shows, word for word, so a swapped case or a lost owner name fails.
+    expect(codes.map((code) => guestCloseText(code, 'Oleg', 'read'))).toEqual([
+      'This invite is for another project.',
+      'Oleg removed you.',
+      'Oleg made you a read-only guest.',
+      'The host closed this project.',
+      'Your access ended.',
+      'Oleg changed what you can see.'
+    ])
+    expect(guestCloseText(CLOSE.roleChanged, 'Oleg', 'write')).toBe('Oleg made you a write guest.')
+    expect(guestCloseText(CLOSE.roleChanged, 'Oleg')).toBe('Oleg changed your access.')
+    expect(guestCloseText(CLOSE.kicked, 'Ann')).toBe('Ann removed you.')
     expect(guestCloseText(1000, 'Oleg')).toBeUndefined()
     expect(INVITE_PATH).toBe('/auth/invite')
   })

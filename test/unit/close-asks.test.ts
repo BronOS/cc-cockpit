@@ -31,6 +31,7 @@ beforeEach(() => {
     [2, ['desktop:2']]
   ])
   asks = new CloseAsks({
+    ownerView: () => true,
     send: (windowId, ask) => {
       if (windowId === 99) return false
       sent.push({ windowId, ...ask })
@@ -121,7 +122,7 @@ describe('CloseAsks', () => {
   })
 
   it('without a view list a decline is the answer (one view)', async () => {
-    const single = new CloseAsks({ send: () => true, close })
+    const single = new CloseAsks({ ownerView: () => true, send: () => true, close })
     const p = single.ask(1, 't1')
     expect(single.answer(1, 'desktop:1', 'close-1', { closed: false, declined: true })).toBe(true)
     await expect(p).resolves.toBe(false)
@@ -141,6 +142,7 @@ describe('CloseAsks', () => {
   it('answers false at once for a window that cannot be asked, or a send that throws', async () => {
     await expect(asks.ask(99, 't1')).resolves.toBe(false)
     const throwing = new CloseAsks({
+      ownerView: () => true,
       send: () => {
         throw new Error('gone')
       },
@@ -200,6 +202,7 @@ describe('CloseAsks', () => {
     await expect(p).resolves.toBe(false)
     expect(asks.size).toBe(0)
     const throwing = new CloseAsks({
+      ownerView: () => true,
       send: () => true,
       close: () => {
         throw new Error('unknown tab')
@@ -215,6 +218,7 @@ describe('CloseAsks', () => {
     const closed: string[] = []
     const unsavedTabs = new Set(['t1'])
     const guarded = new CloseAsks({
+      ownerView: () => true,
       send: () => true,
       close: (_w, _v, tabId) => (closed.push(tabId), true),
       unsaved: (_w, tabId) => unsavedTabs.has(tabId)
@@ -235,6 +239,7 @@ describe('CloseAsks', () => {
 
   it('a settled hook that throws does not keep the plugin from its answer', async () => {
     const loud = new CloseAsks({
+      ownerView: () => true,
       send: () => true,
       settled: () => {
         throw new Error('view gone')
@@ -262,6 +267,7 @@ describe('CloseAsks through the ViewRegistry (two views of one window)', () => {
     registry.addRemote(1, 'web:1', web, 'owner')
     registry.addDesktop(2, other)
     const shared = new CloseAsks({
+      ownerView: () => true,
       send: (windowId, ask) => registry.toWindow(windowId, 'sessions.closeAsk', ask),
       settled: (windowId, requestId) => registry.toWindow(windowId, 'sessions.closeSettled', { requestId }),
       close,

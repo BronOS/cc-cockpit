@@ -12,7 +12,9 @@ import {
   guestTabDeps,
   guestUnsavedOf,
   offerTakerOf,
+  guestMayDeliverOf,
   ownerViewOf,
+  pageSelectTargetOf,
   type GuestRouterSources,
   type GuestTabSources
 } from '../../src/main/guest-wiring'
@@ -73,13 +75,14 @@ describe('guestRouterDeps', () => {
         return undefined
       },
       trashAsks: { pluginOf: (windowId, requestId) => (windowId === WINDOW && requestId === 'trash-1' ? 'shown.one' : undefined) },
-      downloads: { offerOrigin: (windowId, requestId) => (windowId === WINDOW && requestId === 'offer-1' ? { originTab: 't1' } : undefined) }
+      downloads: { offerOrigin: (windowId, requestId) => (windowId === WINDOW && requestId === 'offer-1' ? { originTab: 't1' } : undefined) },
+      projectPath: (projectId) => (projectId === PROJECT ? '/Users/host/project' : undefined)
     }
   }
 
   it('has every GuestRouterDeps key, each answering from main', () => {
     const deps = guestRouterDeps(sources())
-    expect(Object.keys(deps).sort()).toEqual(['askInfo', 'frameOwner', 'guests', 'overlayVisible', 'personOf', 'pluginAccess', 'presence'])
+    expect(Object.keys(deps).sort()).toEqual(['askInfo', 'frameOwner', 'guests', 'overlayVisible', 'personOf', 'pluginAccess', 'presence', 'projectRoot'])
     expect(deps.frameOwner(PROJECT, 'f1')).toBe('shown.one')
     expect(deps.frameOwner(PROJECT, 'f9')).toBeUndefined()
     // A frame a hidden plugin's panel placed is not the guest's, though its provider is shown; an app slot is the provider's alone.
@@ -91,6 +94,8 @@ describe('guestRouterDeps', () => {
     expect(deps.askInfo(WINDOW, 'guest-close-1')).toBeUndefined()
     expect(deps.askInfo(8, 'trash-1')).toBeUndefined()
     expect(deps.personOf('web:2')).toBe('Bob')
+    expect(deps.projectRoot(PROJECT)).toBe('/Users/host/project')
+    expect(deps.projectRoot('p2')).toBeUndefined()
   })
 
   it("an overlay is visible to a guest only by its origin: a tab it sees or a plugin shown to the project's guests", () => {
@@ -125,7 +130,7 @@ describe('guestTabDeps', () => {
         viewInput: (_p, _t, data) => data
       },
       userInput: (p, t, d) => void calls.push(`userInput ${p} ${t} ${JSON.stringify(d)}`),
-      closeAsks: createGuestCloseAsks({ toWindow: () => true })
+      closeAsks: createGuestCloseAsks({ toWindow: () => true, toGuest: () => undefined })
     }
     return { deps: guestTabDeps(s), calls }
   }
@@ -243,7 +248,7 @@ describe('downloadViewAllowedOf (ctx.files.download, D-23)', () => {
 
 describe('ready replays pending guest close asks (D-9)', () => {
   it("windowSnapshot lists the window's pending guest close asks; absent, none", async () => {
-    const asks = createGuestCloseAsks({ toWindow: () => true })
+    const asks = createGuestCloseAsks({ toWindow: () => true, toGuest: () => undefined })
     const pending = asks.ask(WINDOW, { tabId: 't2', guestId: 'g1', guestName: 'Bob', title: 'zsh' })
     const base: SnapshotSources = {
       tabs: { list: () => [] },
@@ -360,6 +365,55 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain('presence.viewLeft(desktopViewId(windowId))')
     expect(INDEX).toContain('{ tabs, layouts, overlays, closeAsks, guestCloseAsks, linkAsks,')
     expect(INDEX).toContain('guestCloseAsks.windowClosed(windowId)')
+    // 03e: a plugin's page tab focus selects where it acted; a guest's never reaches the owner's views.
+    expect(INDEX).toContain("const target: PageSelectTarget = focus ? pageSelectTarget(view) : 'none'")
+    expect(INDEX).toContain("const tab = tabs.createPage(projectId, spec, { focus: target === 'project' })")
+    expect(INDEX).toContain('selectPageTab(projectId, tabId, pageSelectTarget(view))')
+    // 03e A, B: a guest's queued Discuss text is checked again at the paste; its new session is its tab.
+    expect(block('new SessionRegistry({')).toContain('guestMayDeliver: (guestId: string, tabId: string): boolean => guestMayDeliverOf(guestStore,')
+    expect(INDEX).toContain("send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),")
+    expect(INDEX).toContain('...(guestId === undefined ? {} : { openedByGuest: guestId })')
+    expect(INDEX).toContain("if (tab) views.toView(view, 'tabs.added', tab)\n      views.toView(view, 'tabs.select', { tabId })")
+    expect(INDEX).toContain("if (gen !== undefined) sendToProject(projectId, 'tabs.removed', { tabId, gen })")
+    expect(INDEX).toContain('discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),')
+    expect(INDEX).toContain('discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),')
+    expect(INDEX).toContain("else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })")
+    // 03e (D-9): the outcome reaches the asking guest's own views only; an ended guest's asks settle.
+    expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")
+    expect(block('new GuestStore({')).toContain('ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId)')
     expect(INDEX).toContain('openOverlay(windowId, spec, opener, peerGone, undefined, undefined, undefined, origin)')
+  })
+})
+
+describe('pageSelectTargetOf (03e: a guest\'s click that makes a plugin focus a page tab)', () => {
+  it("never selects in the owner's views for a guest's view; the owner's or no view: the project, as before; a gone view: nowhere", () => {
+    const target = pageSelectTargetOf(whoOf)
+    expect(target('web:2')).toEqual({ viewId: 'web:2' })
+    expect(target('web:3')).toEqual({ viewId: 'web:3' })
+    expect(target('web:1')).toBe('project')
+    expect(target('desktop:7')).toBe('project')
+    expect(target(undefined)).toBe('project')
+    expect(target('web:99')).toBe('none')
+  })
+})
+
+describe('guestMayDeliverOf (03e A)', () => {
+  it("only a live write guest of the tab's project that sees the tab", () => {
+    const access: Record<string, GuestAccess> = {
+      gW: { kind: 'guest', id: 'gW', name: 'W', role: 'write', projectId: PROJECT, scope: 'all' },
+      gR: { kind: 'guest', id: 'gR', name: 'R', role: 'read', projectId: PROJECT, scope: 'all' },
+      gX: { kind: 'guest', id: 'gX', name: 'X', role: 'write', projectId: 'p2', scope: 'all' }
+    }
+    const may = guestMayDeliverOf(
+      { access: (who) => (who === 'owner' ? { kind: 'owner' } : (access[who.guest] ?? { kind: 'revoked' })), tabVisible: (_g, t) => t !== 'hidden' },
+      (t) => (t === 'gone' ? undefined : t === 'other' ? 'p2' : PROJECT)
+    )
+    expect(may('gW', 't1')).toBe(true)
+    expect(may('gW', 'hidden')).toBe(false)
+    expect(may('gW', 'gone')).toBe(false)
+    expect(may('gW', 'other')).toBe(false)
+    expect(may('gR', 't1')).toBe(false)
+    expect(may('gX', 'other')).toBe(true)
+    expect(may('kicked', 't1')).toBe(false)
   })
 })

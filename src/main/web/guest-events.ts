@@ -65,6 +65,8 @@ export interface GuestContextSources {
   downloadOrigin?(viewId: string, requestId: string): string | undefined
   /** The owner's name (Web access settings, D-24). */
   ownerName(): string
+  /** The project's folder, for guestSessions' project-relative files (D-33). Absent: no file reaches a guest. */
+  projectPath?(projectId: string): string | undefined
 }
 
 /**
@@ -82,7 +84,8 @@ export function guestContext(src: GuestContextSources, viewId: string, access: G
     personOf: (v) => src.personOf(v),
     tabOrder: () => src.tabOrder(access.projectId),
     downloadOrigin: (requestId) => src.downloadOrigin?.(viewId, requestId),
-    ownerName: () => src.ownerName()
+    ownerName: () => src.ownerName(),
+    projectRoot: () => src.projectPath?.(access.projectId)
   }
 }
 
@@ -170,7 +173,10 @@ export const GUEST_EVENT: { readonly [E in EventChannel]: GuestEventRule<E> } = 
   'presence.changed': guestPresence,
   // D-9's asks are the owner's.
   'tabs.guestCloseAsk': 'drop',
-  'tabs.guestCloseSettled': 'drop'
+  'tabs.guestCloseSettled': 'drop',
+  // The asking guest's outcome (D-9): main sends it to that guest's own views only (guest-close-asks.ts toGuest);
+  // re-picked so nothing else rides along.
+  'tabs.guestCloseDone': (p) => ({ tabId: p.tabId, closed: p.closed === true })
 })
 
 /**

@@ -35,7 +35,7 @@
 // CallView, never a payload), panels are main's (LayoutService.webviewPanel, never a payload).
 
 import { errorText } from '../../shared/error-text'
-import type { GuestRole, ViewId } from '../../shared/views'
+import type { GuestRole, ViewAccess, ViewId } from '../../shared/views'
 import { warnLog } from '../warn-log'
 
 /** Smallest side, CSS px, a report is clamped to: a sliver of a panel still gets a usable page. */
@@ -153,7 +153,9 @@ export class WebviewViewers {
    * A browser view's placement report for a panel of its own window. Visible, not hidden and with
    * an area: the view is (or stays) a viewer at the clamped size; otherwise it leaves the panel.
    */
-  report(panel: WebviewPanelOf, viewId: ViewId, report: PlaceReport, guest?: GuestRole): void {
+  report(panel: WebviewPanelOf, viewId: ViewId, report: PlaceReport, access: ViewAccess): void {
+    // `access` has no default (03e D): a report that forgot it must not be counted as the owner's.
+    const guest: GuestRole | undefined = access === 'owner' ? undefined : access
     const width = clampSide(report.width)
     const height = clampSide(report.height)
     const key = keyOf(panel.windowId, panel.pluginId, panel.panelId)
