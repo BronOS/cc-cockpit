@@ -47,6 +47,8 @@ export function createWindow(
     // nativeTheme; a browser view's first paint is web.css's, by its own prefers-color-scheme.
     backgroundColor: builtinBackground(nativeTheme.shouldUseDarkColors ? 'dark' : 'light'),
     ...options,
+    // After the caller's spread: the hidden page is never shown, whatever a caller passes.
+    ...(server ? { show: false } : {}),
     webPreferences: {
       // Caller-supplied webPreferences are merged first and then the security flags are forced,
       // so a caller can add (e.g. a partition) but never weaken them. Every flag that widens the

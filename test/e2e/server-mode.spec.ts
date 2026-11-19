@@ -82,8 +82,9 @@ test('server mode: nothing on the screen; the platform row applied; the hidden p
   }>('serverPlatform')
   expect(seen.row).toEqual({ accessory: darwin, gpuOff: darwin, mockKeychain: darwin, holdAwake: darwin })
   expect(seen.held).toBe(darwin)
-  // Only the server's hold: no Claude tab works, so keep-awake holds nothing.
-  expect(seen.holdOwners).toEqual(darwin ? ['server-mode'] : [])
+  // The server's own hold (keep-awake may hold another while a Claude tab works: not asserted here).
+  if (darwin) expect(seen.holdOwners).toContain('server-mode')
+  else expect(seen.holdOwners).not.toContain('server-mode')
   expect(seen.mockKeychain).toBe(darwin)
   if (darwin) expect(seen.hardwareAcceleration).toBe(false)
   // The blocker is the OS's, not only main's record: the pid holds a no-idle-sleep assertion.

@@ -114,6 +114,7 @@ describe('createWindow', () => {
       openLink,
       { server: true }
     ) as unknown as FakeWindow
+    expect(win.options.show).toBe(false)
     expect(prefs(win).backgroundThrottling).toBe(false)
     expect(win.listeners.get('ready-to-show') ?? []).toEqual([])
     win.emit('ready-to-show')
