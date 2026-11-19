@@ -318,6 +318,11 @@ export class PluginPages {
     const contentType = res.headers.get('content-type') ?? 'application/octet-stream'
     const prefix = pluginPrefix(token as string, pluginId)
     let body = Buffer.from(await res.arrayBuffer())
+    // The file read awaited: a kick, a hidden plugin or a token drop (D-30) that landed meanwhile holds for this
+    // answer too. The same checks as above, after the last await, so nothing is answered on a decision made before.
+    const still = this.owner(token)
+    if (still?.deviceId !== owner.deviceId || still.key !== pluginId) return pageNotFound()
+    if (guest !== undefined && (this.guestProject(owner.deviceId) !== guest || !this.guestSees(guest, pluginId))) return pageNotFound()
     // latin1 both ways is byte for byte: a page in another charset, or with invalid UTF-8, keeps
     // its bytes (a UTF-8 round trip would turn them into U+FFFD); the prefix is ASCII.
     if (contentType.startsWith('text/html')) body = Buffer.from(rewriteRootUrls(body.toString('latin1'), prefix), 'latin1')

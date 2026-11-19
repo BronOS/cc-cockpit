@@ -28,8 +28,11 @@
 //    marked `guest` and the window's first load is `<origin>/#i=<token>` (the host's page redeems it
 //    and lands on its project; the cookie it gets is kept as a Direct sign-in's). A pin (D-29) is a
 //    question first: the connect answers a `certificate` need until the answers name that same pin,
-//    and only then is the record saved, with it, as the window opens. A pin is set on a new record
-//    only: a saved guest's pin that differs from the link's is refused, never asked (Forget fixes
+//    and only then is the record saved, with it: inserted just before `windows.open` (so the window's verify
+//    proc can read the pin on its first load) and forgotten again when that open fails (`showWindow`, `open`).
+//    The pin holds for the record's host name, not its port: Electron's verify proc is given no port, and the
+//    pin is an exact certificate, so another port of that host passes only with that same certificate.
+//    A pin is set on a new record only: a saved guest's pin that differs from the link's is refused, never asked (Forget fixes
 //    it), and Edit cannot take an invite or move a guest's address.
 //  - One connect or open per server at a time: the server keeps one add-device token at a time
 //    (auth.ts addDeviceLink), so two at once could void each other's. Connects of new servers also go

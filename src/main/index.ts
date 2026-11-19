@@ -2312,6 +2312,8 @@ function start(server: boolean): void {
     closeGuestViews: (guestId, code, reason) => webConnections.closeGuest(guestId, code, reason),
     guestLive: (guestId) => webConnections.guestLive(guestId),
     dropPageTokens: (deviceId) => pluginPages.tokens.dropDevice(deviceId),
+    // Created further down (it needs the gateway's view lookups); only called once guests act, long after.
+    dropDownloads: (deviceId) => downloads.dropDevice(deviceId),
     pluginShown: (projectId, pluginId) => pluginGuestAccess.visible(projectId, pluginId),
     // A role downgrade warns about the guest's own unsaved pages only.
     unsavedOf: guestUnsavedOf((viewId) => views.whoOf(viewId), { access: (who) => guestStore.access(who) }, (projectId, inView) =>
