@@ -87,7 +87,11 @@ test('server mode: nothing on the screen; the platform row applied; the hidden p
   // The server's own hold (keep-awake may hold another while a Claude tab works: not asserted here).
   if (darwin) expect(seen.holdOwners).toContain('server-mode')
   else expect(seen.holdOwners).not.toContain('server-mode')
-  expect(seen.mockKeychain).toBe(darwin)
+  // Not `toBe(darwin)`: Playwright's Electron loader appends its Chromium switches on every platform,
+  // `--use-mock-keychain` and `--password-store=basic` among them (playwright-core
+  // lib/server/electron/loader.js), so under the e2e the switch is on for a Linux server too (R1 run,
+  // 2026-11-19). It is no evidence that main appended it on macOS either: the row above is.
+  if (darwin) expect(seen.mockKeychain).toBe(true)
   if (darwin) expect(seen.hardwareAcceleration).toBe(false)
   // The blocker is the OS's, not only main's record: the pid holds a no-idle-sleep assertion.
   if (darwin) {
