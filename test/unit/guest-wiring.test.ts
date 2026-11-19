@@ -43,6 +43,14 @@ describe("index.ts wires 02's guest deps", () => {
     expect(store).toContain('target: () => webAccess.inviteTarget()')
   })
 
+  it("a view's end reaches the panel port relays and the webview viewers (what a kick's 4460 close tears down)", () => {
+    const conns = depsOf('WebConnections')
+    const gone = conns.slice(conns.indexOf('viewGone: (viewId) =>'))
+    expect(gone).toContain('panelPorts.viewGone(viewId)')
+    expect(gone).toContain('webviewViewers.viewGone(viewId)')
+    expect(gone).toContain('presence.viewLeft(viewId)')
+  })
+
   it('checks a guest invite pin against the certificate the host presents (D-29)', () => {
     expect(depsOf('RemoteService')).toContain('peerCertificate: (origin) => peerCertificateSha256(origin)')
   })
