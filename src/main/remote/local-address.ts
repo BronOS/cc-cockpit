@@ -22,11 +22,12 @@
 // Cost. Only a request outside the server's own origin and past the name rule gets here (the web
 // client's own traffic never does), and an IP literal is classified with no lookup. `dns.lookup` runs
 // on libuv's thread pool, which file I/O shares and which has no timeout of its own, so at most
-// LOOKUPS_MAX run at once and the rest wait in a bounded queue; the verdict's timeout counts from the
-// ask, and a lookup still running after it keeps its slot until it ends (a hostile page's slow names
-// cannot pile up threads). Addresses, not verdicts, are cached per name (LOOKUP_CACHE_MS, at most
-// LOOKUP_CACHE_MAX names), and a failed lookup for LOOKUP_ERROR_CACHE_MS; concurrent asks for one name
-// share one lookup.
+// LOOKUPS_MAX run at once and the rest wait in a bounded queue; a name's verdict times out
+// LOOKUP_TIMEOUT_MS after its first ask, and a lookup still running after it keeps its slot until it
+// ends (a hostile page's slow names cannot pile up threads). Addresses, not verdicts, are cached per
+// name as written (LOOKUP_CACHE_MS, at most LOOKUP_CACHE_MAX names), and a failed lookup for
+// LOOKUP_ERROR_CACHE_MS; concurrent asks for one name share one lookup and one timed verdict (a page
+// repeating a hung name holds no memory past the timeout).
 //
 // The limit: this is main's own lookup, and Chromium resolves the name again for the real request.
 // A rebinding name (TTL 0, answers flipping between a public address and 127.0.0.1) can answer main
@@ -153,7 +154,7 @@ export class LocalAddressCheck {
   private readonly now: () => number
   private readonly timers: LocalAddressTimers
   private readonly cache = new Map<string, CacheEntry>()
-  /** The lookup per name in progress (shared by its concurrent asks). */
+  /** The timed verdict per name whose lookup is in progress (shared by its concurrent asks). */
   private readonly inFlight = new Map<string, Promise<string[] | undefined>>()
   /** Names waiting for a slot, in order. */
   private readonly queue: Array<() => void> = []
@@ -170,19 +171,26 @@ export class LocalAddressCheck {
    * name; a promise, which never rejects, when a lookup is needed.
    */
   allows(hostname: string): boolean | Promise<boolean> {
-    const host = hostname.endsWith('.') ? hostname.slice(0, -1) : hostname
-    if (host === '') return false
-    const literal = canonicalAddress(host)
+    // The name is resolved and cached as written, a trailing dot kept: `printer.` is absolute while
+    // `printer` goes through the search domains (printer.corp.example), and Chromium resolves the
+    // name the page wrote. Stripping it would judge another name than the one the request reaches.
+    const host = hostname
+    if (host === '' || host === '.') return false
+    const literal = canonicalAddress(host.endsWith('.') ? host.slice(0, -1) : host)
     if (literal !== undefined) return !isThisMachine(literal, this.ownAddresses())
     const cached = this.cached(host)
     if (cached !== null) return this.verdict(cached)
+    // One timed verdict per name, shared by every ask while its lookup runs: each ask hangs one
+    // reaction on it, and it settles within LOOKUP_TIMEOUT_MS, so a page repeating a hung name holds
+    // nothing past that (one reaction per ask on the lookup itself would stay until DNS answered).
+    // After the timeout the entry stays, settled refused, until the lookup ends.
     let pending = this.inFlight.get(host)
     if (pending === undefined) {
       if (this.running >= LOOKUPS_MAX && this.queue.length >= LOOKUP_QUEUE_MAX) return false
-      pending = this.resolve(host)
+      pending = this.withTimeout(this.resolve(host))
       this.inFlight.set(host, pending)
     }
-    return this.withTimeout(pending).then((addresses) => this.verdict(addresses))
+    return pending.then((addresses) => this.verdict(addresses))
   }
 
   /** The cached addresses of `host` (undefined: a failed lookup), or null for nothing fresh. */
