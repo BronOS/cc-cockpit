@@ -15,6 +15,8 @@ import {
   guestMayDeliverOf,
   ownerViewOf,
   pageSelectTargetOf,
+  pluginFocusSelectOf,
+  pluginFocusViewOf,
   type GuestRouterSources,
   type GuestTabSources
 } from '../../src/main/guest-wiring'
@@ -382,6 +384,16 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")
     expect(block('new GuestStore({')).toContain('ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId)')
     expect(INDEX).toContain('openOverlay(windowId, spec, opener, peerGone, undefined, undefined, undefined, origin)')
+    // 03f: a plugin-opened tab's focus and ctx.sessions.focus follow the same rule.
+    const announce = INDEX.slice(INDEX.indexOf('const announcePluginTab = ('), INDEX.indexOf('const openShellTab = async ('))
+    expect(announce).toContain('const target = pageSelectTarget(origin)')
+    expect(announce).toContain('const selectIn = pluginFocusViewOf(target, origin, windowId, (v) => views.windowOf(v))')
+    expect(announce).toContain("if (to?.to === 'project') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })")
+    expect(announce).not.toContain('desktopViewId')
+    expect(INDEX).toContain('openTab: (projectId, options, windowId, focus, place, view) => openClaudeTab(projectId, options, windowId, focus === true, place, view),')
+    expect(INDEX).toContain('openShellTab: (projectId, options, windowId, focus, place, view) => openShellTab(projectId, options, windowId, focus === true, place, view),')
+    expect(INDEX).toContain('openCommandTab: (projectId, options, windowId, focus, place, view) => openCommandTab(projectId, options, windowId, focus === true, place, view),')
+    expect(INDEX).toContain('whoOf: (viewId) => views.whoOf(viewId)')
   })
 })
 
@@ -394,6 +406,27 @@ describe('pageSelectTargetOf (03e: a guest\'s click that makes a plugin focus a 
     expect(target('desktop:7')).toBe('project')
     expect(target(undefined)).toBe('project')
     expect(target('web:99')).toBe('none')
+  })
+})
+
+describe('pluginFocusViewOf, pluginFocusSelectOf (03f: a plugin-opened tab with focus from a guest\'s click)', () => {
+  const windowOf = (v: ViewId): number | undefined => ({ 'desktop:7': 7, 'web:1': 7, 'web:2': 7, 'web:5': 8 })[v]
+  const target = pageSelectTargetOf(whoOf)
+  it('the view pluginFocus works for: the guest\'s own (of this window); the owner\'s origin or the desktop page; none for a gone view', () => {
+    expect(pluginFocusViewOf(target('web:2'), 'web:2', 7, windowOf)).toBe('web:2')
+    expect(pluginFocusViewOf({ viewId: 'web:5' }, 'web:5', 7, windowOf)).toBeUndefined()
+    expect(pluginFocusViewOf(target('web:1'), 'web:1', 7, windowOf)).toBe('web:1')
+    expect(pluginFocusViewOf(target(undefined), undefined, 7, windowOf)).toBe('desktop:7')
+    expect(pluginFocusViewOf('project', 'web:5', 7, windowOf)).toBe('desktop:7')
+    expect(pluginFocusViewOf(target('web:99'), 'web:99', 7, windowOf)).toBeUndefined()
+  })
+  it("a guest's: always its own view, a plain tab included; the owner's: unchanged; none: nothing", () => {
+    expect(pluginFocusSelectOf({ viewId: 'web:2' }, { to: 'window', tabId: 't' })).toEqual({ to: 'view', view: 'web:2', tabId: 't' })
+    expect(pluginFocusSelectOf({ viewId: 'web:2' }, { to: 'view', view: 'web:2', tabId: 'a' })).toEqual({ to: 'view', view: 'web:2', tabId: 'a' })
+    expect(pluginFocusSelectOf({ viewId: 'web:2' }, undefined)).toBeUndefined()
+    expect(pluginFocusSelectOf('project', { to: 'window', tabId: 't' })).toEqual({ to: 'project', tabId: 't' })
+    expect(pluginFocusSelectOf('project', { to: 'view', view: 'web:1', tabId: 'a' })).toEqual({ to: 'view', view: 'web:1', tabId: 'a' })
+    expect(pluginFocusSelectOf('none', { to: 'window', tabId: 't' })).toBeUndefined()
   })
 })
 

@@ -9,7 +9,7 @@
 
 import type { GuestOnlyAccess } from '../shared/guests'
 import type { SlotHost } from '../shared/slots'
-import type { ViewId, Who } from '../shared/views'
+import { desktopViewId, type ViewId, type Who } from '../shared/views'
 import { askInfoFrom, downloadOfferSource, trashAskSource } from './asks/guest-asks'
 import type { GuestService, PluginGuestAccessService, PresenceService } from './ipc/guest-deps'
 import type { GuestRouterDeps, GuestTabDeps } from './ipc/router'
@@ -207,6 +207,39 @@ export function pageSelectTargetOf(whoOf: (viewId: ViewId) => Who | undefined): 
     if (who === 'owner') return 'project'
     return who === undefined ? 'none' : { viewId: view }
   }
+}
+
+/**
+ * Where a plugin-opened tab's `focus` selects (ctx.sessions.open / openShell / openCommand, announcePluginTab; 03f).
+ * `target` is pageSelectTargetOf's answer for the call's origin view; `to` is TabGroups.pluginFocus's answer, worked
+ * out for `selectIn` (pluginFocusViewOf). The owner's path is unchanged: a plain tab selects in every view of the
+ * project, a placed one in its view. A guest's view: that view only, a plain tab included. None: nowhere.
+ */
+export type PluginFocusSelect = { to: 'project'; tabId: string } | { to: 'view'; view: ViewId; tabId: string } | undefined
+
+export function pluginFocusSelectOf(
+  target: PageSelectTarget,
+  to: { to: 'window'; tabId: string } | { to: 'view'; view: string; tabId: string } | undefined
+): PluginFocusSelect {
+  if (target === 'none' || to === undefined) return undefined
+  if (target === 'project') return to.to === 'window' ? { to: 'project', tabId: to.tabId } : { to: 'view', view: to.view as ViewId, tabId: to.tabId }
+  // A guest's: whatever pluginFocus answered, it lands in the guest's own view and nowhere else.
+  return { to: 'view', view: target.viewId, tabId: to.tabId }
+}
+
+/**
+ * The view pluginFocus works for: a guest's own view; for the owner's path the origin view when it is one of the
+ * window's, else the desktop page (as before 03f). None for 'none' (nothing selects).
+ */
+export function pluginFocusViewOf(
+  target: PageSelectTarget,
+  origin: ViewId | undefined,
+  windowId: number,
+  windowOf: (viewId: ViewId) => number | undefined
+): ViewId | undefined {
+  if (target === 'none') return undefined
+  if (target !== 'project') return windowOf(target.viewId) === windowId ? target.viewId : undefined
+  return origin !== undefined && windowOf(origin) === windowId ? origin : desktopViewId(windowId)
 }
 
 /**

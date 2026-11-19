@@ -502,7 +502,9 @@ export interface HostApiDeps {
     options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string> },
     windowId: number,
     focus?: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    /** The view the call came from (originOf), given with `focus` only: a guest's selects there alone (03f). */
+    view?: ViewId
   ): Promise<{ id: string; placed?: boolean }>
   /**
    * Start a shell tab in the project and tell its window, as `openTab` does for a Claude tab: the
@@ -515,7 +517,9 @@ export interface HostApiDeps {
     options: { cwd?: string },
     windowId: number,
     focus?: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    /** The view the call came from (originOf), given with `focus` only: a guest's selects there alone (03f). */
+    view?: ViewId
   ): Promise<{ id: string; placed?: boolean }>
   /**
    * Start a command tab running `argv` with no shell (TabManager.createPluginCommand) and tell its
@@ -528,7 +532,9 @@ export interface HostApiDeps {
     options: { argv: string[]; cwd?: string; title: string; openedBy: string },
     windowId: number,
     focus?: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    /** The view the call came from (originOf), given with `focus` only: a guest's selects there alone (03f). */
+    view?: ViewId
   ): Promise<{ id: string; placed?: boolean }>
   /**
    * Open a page tab in the project (TabManager.createPage, which checks the spec again and holds the
@@ -1637,7 +1643,8 @@ export class HostApi {
       // Only the host's own window, the one the tab opens in, is ever told to select it: a plugin
       // can move the selection there (as its Discuss click means to), never in another project.
       focus === true,
-      place
+      place,
+      ...this.focusView(focus, meta)
     )
     // `env` in the answer only when one was given and applied: a plugin cannot read the app's version,
     // and an older app ignores `env` and answers without it, so this is how the plugin tells the two apart.
@@ -1676,7 +1683,8 @@ export class HostApi {
       // The host's own window, never one the plugin names; only that window is told to select it.
       this.scope.windowId,
       focus === true,
-      place
+      place,
+      ...this.focusView(focus, meta)
     )
     return opened(tab, place)
   }
@@ -1689,6 +1697,15 @@ export class HostApi {
    * limit, a pane too small) is TabGroups' call when the tab exists, and a refusal there opens a plain
    * tab (`placed: false`). `pluginId` is the host's own plugin, so main reads that plugin's limit.
    */
+  /**
+   * The origin view an open's `focus` selects in (03f, design-guests §7): a guest's click selects the new tab in
+   * that guest's view only. Passed only with `focus`, as a trailing argument main reads (announcePluginTab).
+   */
+  private focusView(focus: unknown, meta: RpcMeta | undefined): [] | [ViewId] {
+    const view = focus === true ? this.originOf(meta) : undefined
+    return view === undefined ? [] : [view]
+  }
+
   private placement(method: string, plugin: HostApiPlugin, beside: unknown, side: unknown, meta: RpcMeta | undefined): PluginPlacement | undefined {
     if (beside === undefined) {
       if (side !== undefined) throw new Error(`${method}: side needs beside`)
@@ -1904,7 +1921,8 @@ export class HostApi {
       // The host's own window, never one the plugin names; only that window is told to select it.
       this.scope.windowId,
       focus === true,
-      place
+      place,
+      ...this.focusView(focus, meta)
     )
     return opened(tab, place)
   }
