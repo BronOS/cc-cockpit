@@ -45,6 +45,8 @@ function hub(overrides: Partial<PanelPortDeps<FakePort>> = {}): { hub: PanelPort
     reload: (projectId, pluginIds) => void sent.reloads.push({ projectId, pluginIds }),
     close: (port) => port.close(),
     log: () => {},
+    // Every view here is the owner's (guest views: guest-plugin-ports.test.ts).
+    whoOf: () => 'owner',
     ...overrides
   }
   return { hub: new PanelPortHub(deps), sent }

@@ -1012,3 +1012,19 @@ test('Save in the deleted bar with a save already in flight: the bar stays', () 
   assert.deepEqual(ui.posted, [])
   assert.equal(ui.last.conflict.kind, 'deleted')
 })
+
+test("a read-only guest's missing file (the host marks it read-only) is shown missing, never a new file, never saved", () => {
+  const ui = fakeUi()
+  const s = createSession(ui, fakeTimers())
+  s.connect()
+  s.receive({ t: 'file', req: 1, path: 'src/new.ts', exists: false, part: 0, parts: 1, readOnly: true, why: 'you are a read-only guest' })
+  assert.equal(ui.last.readOnly, true)
+  assert.equal(ui.last.why, 'you are a read-only guest')
+  assert.equal(ui.last.missing, true)
+  ui.posted.length = 0
+  ui.text = 'typed anyway\n'
+  s.edited()
+  assert.equal(s.saveNow(), false)
+  s.blur()
+  assert.deepEqual(ui.posted.filter((m) => m.t === 'save'), [])
+})

@@ -1869,6 +1869,8 @@ function start(server: boolean): void {
   // main's records), renderer end to the window that asked. Electron's MessageChannelMain is only
   // touched here; the hub is plain code (panel-ports.ts).
   const panelPorts = new PanelPortHub<Electron.MessagePortMain>({
+    // Who is behind a view (design-guests §6): required, so the hub fails closed; 07 wires guestAccess and guestPort.
+    whoOf: (viewId) => views.whoOf(viewId),
     createChannel: () => {
       const { port1, port2 } = new MessageChannelMain()
       return { host: port1, renderer: port2 }

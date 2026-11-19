@@ -69,7 +69,10 @@ const READ_GUEST_WHY = 'you are a read-only guest'
  * neither edits nor autosaves (the host refuses a save anyway; this spares the person the errors).
  */
 function asReadOnly(m) {
-  if (!m || typeof m !== 'object' || m.readOnly !== false) return m
+  if (!m || typeof m !== 'object') return m
+  // A missing file's answer has no flag: without one the page offers an editable "New file" (session.mjs adopt).
+  const missing = m.t === 'file' && m.exists === false && m.readOnly === undefined
+  if (m.readOnly !== false && !missing) return m
   return { ...m, readOnly: true, why: READ_GUEST_WHY }
 }
 

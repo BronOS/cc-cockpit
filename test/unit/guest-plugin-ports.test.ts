@@ -43,7 +43,13 @@ function mainHub(access: Record<string, GuestAccess>, port: (pluginId: string, r
     pageTabToHost: (_p, open) => (tabs.push(open), true),
     settingsPageScopes: () => ['app', 'project'],
     settingsPageToHost: (_p, open) => (settings.push(open), true),
-    viewAccess: (viewId) => access[viewId] ?? { kind: 'revoked' },
+    // ViewRegistry's frozen who: the owner's, a guest's (a revoked one is still a guest's view), or no live view.
+    whoOf: (viewId) => {
+      const a = access[viewId]
+      if (a === undefined) return undefined
+      return a.kind === 'owner' ? 'owner' : { guest: a.kind === 'guest' ? a.id : 'gone' }
+    },
+    guestAccess: (viewId) => access[viewId] ?? { kind: 'revoked' },
     guestPort: (_projectId, pluginId, role) => port(pluginId, role),
     log: () => {}
   }
@@ -97,7 +103,7 @@ describe('main: guest views and plugin ports (panel-ports.ts)', () => {
     expect(m.settings).toHaveLength(1)
   })
 
-  it('without guest deps every view is the owner\'s, as before guests', () => {
+  it('fails closed: with guests unwired a guest view is refused, an owner view and the desktop still connect', () => {
     const m = mainHub(access, port)
     const bare = new PanelPortHub<FakePort>({
       createChannel: () => channel(1),
@@ -105,10 +111,39 @@ describe('main: guest views and plugin ports (panel-ports.ts)', () => {
       toHost: (_p, pluginId, _id, _port, tag) => (m.host.push({ pluginId, tag }), true),
       toRenderer: () => {},
       reload: () => {},
-      close: () => {}
+      close: () => {},
+      // ViewRegistry knows web:1 as the owner's and web:2 as a guest's; no guestAccess (07 has not wired it).
+      whoOf: (viewId) => (viewId === 'web:1' ? 'owner' : viewId === 'web:2' ? { guest: 'g1' } : undefined)
     })
-    expect(bare.connect('p1', 'web:2', 'a.one/board', 1)).toBe(true)
-    expect(m.host).toEqual([{ pluginId: 'a.one', tag: { view: 'web:2', access: 'owner' } }])
+    expect(bare.connect('p1', 'web:2', 'a.one/board', 1)).toBe(false)
+    expect(bare.connect('p1', 'web:9', 'a.one/board', 2)).toBe(false)
+    expect(bare.connect('p1', 'web:1', 'a.one/board', 3)).toBe(true)
+    expect(bare.connect('p1', 'desktop:1', 'a.one/board', 4)).toBe(true)
+    expect(m.host).toEqual([
+      { pluginId: 'a.one', tag: { view: 'web:1', access: 'owner' } },
+      { pluginId: 'a.one', tag: { access: 'owner' } }
+    ])
+  })
+
+  it("decides the owner from whoOf only: a guest's view the store calls the owner's, or a gone view, gets nothing", () => {
+    const m = mainHub(access, port)
+    const odd = new PanelPortHub<FakePort>({
+      createChannel: () => channel(1),
+      runningPanels: () => ['board'],
+      toHost: (_p, pluginId, _id, _port, tag) => (m.host.push({ pluginId, tag }), true),
+      toRenderer: () => {},
+      reload: () => {},
+      close: () => {},
+      settingsPageScopes: () => ['app', 'project'],
+      settingsPageToHost: () => true,
+      whoOf: (viewId) => (viewId === 'web:2' ? { guest: 'g1' } : undefined),
+      // A store answering "owner" for a guest's view never makes it one.
+      guestAccess: () => ({ kind: 'owner' }),
+      guestPort: () => 'full'
+    })
+    expect(odd.connect('p1', 'web:2', 'a.one/board', 1)).toBe(false)
+    expect(odd.connect('p1', 'web:7', 'a.one/board', 2)).toBe(false)
+    expect(m.host).toEqual([])
   })
 
   it('portViewFields always carries the access (the host refuses a tag without one)', () => {

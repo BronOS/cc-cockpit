@@ -795,6 +795,7 @@ describe('PanelPortHub: page tabs', () => {
     let n = 0
     const h = new PanelPortHub<FakePort>({
       createChannel: () => channel(++n),
+      whoOf: () => 'owner',
       runningPanels: () => undefined,
       toHost: () => false,
       toRenderer: (viewId, payload) => void toRenderer.push({ viewId, payload }),
