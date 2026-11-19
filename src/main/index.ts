@@ -201,6 +201,8 @@ import {
   guestMayDeliverOf,
   ownerViewOf,
   pageSelectTargetOf,
+  pluginFocusSelectOf,
+  pluginFocusViewOf,
   type PageSelectTarget
 } from './guest-wiring'
 import { focusTabInView, ViewSelections } from './tabs/view-selections'
@@ -1284,11 +1286,12 @@ function start(server: boolean): void {
     options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string>; openedByGuest?: string },
     windowId: number,
     focus: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    view?: ViewId
   ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    return announcePluginTab(projectId, windowId, focus, place, () => tabs.create(projectId, { kind: 'claude', ...options }))
+    return announcePluginTab(projectId, windowId, focus, place, () => tabs.create(projectId, { kind: 'claude', ...options }), view)
   }
   /**
    * A tab main opened for a plugin (or Discuss), told to its window, which did not ask for it: create
@@ -1303,7 +1306,8 @@ function start(server: boolean): void {
     windowId: number,
     focus: boolean,
     place: PluginPlacement | undefined,
-    create: () => TabInfo
+    create: () => TabInfo,
+    view?: ViewId
   ): TabInfo & { placed?: boolean } => {
     const beside = place === undefined ? undefined : { tabId: place.beside, edge: place.side }
     const { tab, placed } = tabGroups.createBeside(projectId, beside, create, { plugin: true, pluginId: place?.pluginId })
@@ -1312,13 +1316,23 @@ function start(server: boolean): void {
     // Sent after `tabs.added` on the same webContents, so the page already has the tab when it
     // selects it.
     if (focus) {
-      // The origin view only if it is one of this window's (HostApi checked; checked again), else the desktop page.
-      const view = place?.view !== undefined && views.windowOf(place.view) === windowId ? place.view : desktopViewId(windowId)
-      const to = tabGroups.pluginFocus(projectId, { tabId: tab.id, placed, ...(place ? { anchor: place.beside } : {}) }, view, (v) =>
-        selections.selectionOf(v as ViewId)
-      )
-      if (to?.to === 'window') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })
-      else if (to?.to === 'view') views.toView(to.view as ViewId, 'tabs.select', { tabId: to.tabId })
+      // Where the plugin acted (03f, design-guests §7): a guest's click selects in that guest's view only, a plain
+      // tab included; a remote view main no longer has selects nowhere. The owner's path: the origin view only if it
+      // is one of this window's (HostApi checked; checked again), else the desktop page, and a plain tab in every view.
+      const origin = place?.view ?? view
+      const target = pageSelectTarget(origin)
+      const selectIn = pluginFocusViewOf(target, origin, windowId, (v) => views.windowOf(v))
+      const to =
+        selectIn === undefined
+          ? undefined
+          : pluginFocusSelectOf(
+              target,
+              tabGroups.pluginFocus(projectId, { tabId: tab.id, placed, ...(place ? { anchor: place.beside } : {}) }, selectIn, (v) =>
+                selections.selectionOf(v as ViewId)
+              )
+            )
+      if (to?.to === 'project') sendToProject(projectId, 'tabs.select', { tabId: to.tabId })
+      else if (to?.to === 'view') views.toView(to.view, 'tabs.select', { tabId: to.tabId })
     }
     return place === undefined ? tab : { ...tab, placed }
   }
@@ -1332,12 +1346,18 @@ function start(server: boolean): void {
     options: { cwd?: string },
     windowId: number,
     focus: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    view?: ViewId
   ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
-    return announcePluginTab(projectId, windowId, focus, place, () =>
-      tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    return announcePluginTab(
+      projectId,
+      windowId,
+      focus,
+      place,
+      () => tabs.create(projectId, { kind: 'shell', ...(options.cwd === undefined ? {} : { cwd: options.cwd }) }),
+      view
     )
   }
   /**
@@ -1351,7 +1371,8 @@ function start(server: boolean): void {
     options: { argv: string[]; cwd?: string; title: string; openedBy: string },
     windowId: number,
     focus: boolean,
-    place?: PluginPlacement
+    place?: PluginPlacement,
+    view?: ViewId
   ): Promise<TabInfo & { placed?: boolean }> => {
     await spawnReady
     requireWindow(projectId, windowId)
@@ -1363,7 +1384,8 @@ function start(server: boolean): void {
         title: options.title,
         openedBy: options.openedBy,
         ...(typeof name === 'string' ? { openedByName: name } : {})
-      })
+      }),
+      view
     )
   }
   /**
@@ -1859,14 +1881,14 @@ function start(server: boolean): void {
       openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
-      openTab: (projectId, options, windowId, focus, place) => openClaudeTab(projectId, options, windowId, focus === true, place),
+      openTab: (projectId, options, windowId, focus, place, view) => openClaudeTab(projectId, options, windowId, focus === true, place, view),
       // A `beside` anchor: any tab of that project by TabManager's table (an overlay is never one). A
       // page anchor has no `sizeOf`, so the halves check is skipped as for any anchor of unknown size.
       hasTab: (projectId, tabId) => tabs.kindOf(projectId, tabId) !== undefined,
       // ctx.sessions.openShell: a plain shell tab (HostApi checked the cwd and spent the open budget).
-      openShellTab: (projectId, options, windowId, focus, place) => openShellTab(projectId, options, windowId, focus === true, place),
+      openShellTab: (projectId, options, windowId, focus, place, view) => openShellTab(projectId, options, windowId, focus === true, place, view),
       // ctx.sessions.openCommand: a plugin's argv tab, marked with the plugin (HostApi checked it all).
-      openCommandTab: (projectId, options, windowId, focus, place) => openCommandTab(projectId, options, windowId, focus === true, place),
+      openCommandTab: (projectId, options, windowId, focus, place, view) => openCommandTab(projectId, options, windowId, focus === true, place, view),
       // ctx.tabs (design-editor.md §1): HostApi checked the plugin, its declared type and the spec.
       openPageTab: (projectId, spec, windowId, focus, view) => openPageTab(projectId, spec, windowId, focus, view),
       listTabs: (projectId) => tabs.list(projectId),
@@ -3670,7 +3692,8 @@ function start(server: boolean): void {
         raise: (projectId) => windows.focusProject(projectId),
         select: (viewId, id) => views.toView(viewId, 'tabs.select', { tabId: id }),
         server,
-        goto: (viewId, projectId, id) => views.toView(viewId, 'project.goto', { projectId, tabId: id })
+        goto: (viewId, projectId, id) => views.toView(viewId, 'project.goto', { projectId, tabId: id }),
+        whoOf: (viewId) => views.whoOf(viewId)
       },
       entry.projectId,
       tabId,

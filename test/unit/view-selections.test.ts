@@ -172,11 +172,13 @@ describe('focusTabInView (ctx.sessions.focus)', () => {
     const gone: Array<[string, string, string]> = []
     const deps: FocusTabDeps = {
       windowOfProject: (projectId) => ({ [P]: 1, [Q]: 2 })[projectId],
-      windowOfView: (viewId) => ({ 'web:1': 1, 'web:2': 2, 'desktop:2': 2 })[viewId],
+      windowOfView: (viewId) => ({ 'web:1': 1, 'web:2': 2, 'desktop:2': 2, 'web:7': 1, 'web:8': 2 })[viewId],
       raise: (projectId) => (raised.push(projectId), true),
       select: (viewId, tabId) => (selected.push([viewId, tabId]), true),
       server,
-      goto: (viewId, projectId, tabId) => (gone.push([viewId, projectId, tabId]), true)
+      goto: (viewId, projectId, tabId) => (gone.push([viewId, projectId, tabId]), true),
+      // web:7 and web:8 are guests' views (of windows 1 and 2); web:99 is gone.
+      whoOf: (viewId) => (viewId === 'web:7' || viewId === 'web:8' ? { guest: 'g1' } : viewId === 'web:99' ? undefined : 'owner')
     }
     return { deps, selected, raised, gone }
   }
@@ -193,13 +195,23 @@ describe('focusTabInView (ctx.sessions.focus)', () => {
     expect(focusTabInView(deps, P, 't1')).toBe(true)
     // web:2 is a view of project Q's window: the tab in P's window is not its to select.
     expect(focusTabInView(deps, P, 't1', 'web:2')).toBe(true)
-    expect(focusTabInView(deps, P, 't1', 'web:99')).toBe(true)
     expect(selected).toEqual([
-      ['desktop:1', 't1'],
       ['desktop:1', 't1'],
       ['desktop:1', 't1']
     ])
-    expect(raised).toEqual([P, P, P])
+    expect(raised).toEqual([P, P])
+  })
+
+  it("03f: a guest's view selects in itself only; of another window, or a view main no longer has, moves nothing", () => {
+    for (const server of [false, true]) {
+      const { deps, selected, raised, gone } = focusSetup(server)
+      expect(focusTabInView(deps, P, 't1', 'web:7')).toBe(true)
+      expect(focusTabInView(deps, P, 't1', 'web:8')).toBe(false)
+      expect(focusTabInView(deps, P, 't1', 'web:99')).toBe(false)
+      expect(selected).toEqual([['web:7', 't1']])
+      expect(raised).toEqual([])
+      expect(gone).toEqual([])
+    }
   })
 
   // Server mode: a project window is a hidden page; raising it moves nothing on any screen.
@@ -211,22 +223,21 @@ describe('focusTabInView (ctx.sessions.focus)', () => {
     expect(raised).toEqual([])
   })
 
-  it('server mode: the same window still selects in place; no view, a desktop view or a gone view raises as before', () => {
+  it('server mode: the same window still selects in place; no view or a desktop view raises as before', () => {
     const { deps, selected, raised, gone } = focusSetup(true)
     expect(focusTabInView(deps, P, 't1', 'web:1')).toBe(true)
     expect(focusTabInView(deps, P, 't1')).toBe(true)
     // The hidden page's own view (a desktop id) never gets `project.goto`.
     expect(focusTabInView(deps, P, 't1', 'desktop:2')).toBe(true)
-    // A browser view that closed meanwhile: no view to send it to.
-    expect(focusTabInView(deps, P, 't1', 'web:99')).toBe(true)
+    // A browser view that closed meanwhile: it might have been a guest's, so nothing moves (03f).
+    expect(focusTabInView(deps, P, 't1', 'web:99')).toBe(false)
     expect(gone).toEqual([])
     expect(selected).toEqual([
       ['web:1', 't1'],
       ['desktop:1', 't1'],
-      ['desktop:1', 't1'],
       ['desktop:1', 't1']
     ])
-    expect(raised).toEqual([P, P, P])
+    expect(raised).toEqual([P, P])
   })
 
   it('off server mode a browser view of another window never gets project.goto', () => {

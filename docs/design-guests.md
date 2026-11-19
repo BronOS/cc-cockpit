@@ -144,6 +144,11 @@ holds it.
 - **`activeTab`**: a guest's selection is kept per view (presence needs it) but never sets the project's `activeTab`
   (`view-selections.ts` `setActive`, the `viewGone` handback) nor `lastActing` (server mode's overlay holder), or
   Discuss and plugins would retarget to the guest's click.
+- **A plugin acting on a guest's click** never moves the owner's selection or screen: its `focus` (`ctx.tabs.openPage`,
+  `ctx.tabs.focus`, `ctx.sessions.open` / `openShell` / `openCommand`, `ctx.sessions.focus`) selects in that guest's
+  view only, and an overlay it opens is refused, never handed to an owner's view. Both rest on the plugin host's
+  origin-view hint, so a plugin that opens an overlay or focuses a tab more than 10 s after a guest's click, or from a
+  timer, acts on the owner's screen.
 - **`typed`**: a write guest's input sets `typed` and the room draft bit (both protect a human typing from a plugin
   paste) **[D-3]**. Tab flags, room marks, Pause, Resume and Remove stay the owner's; a guest sees a flag's colour,
   never its note.

@@ -15,7 +15,7 @@
 // never acts for the project: its select or keys never set the active tab, it is never `lastActing` (server
 // mode's overlay holder), and its going away hands nothing back. Otherwise Discuss and every plugin would
 // retarget to a guest's click.
-import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
+import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 
 export interface ViewSelectionsDeps {
   /** Whether `tabId` is a tab of `projectId` now (a stale or foreign id changes nothing). */
@@ -184,6 +184,8 @@ export interface FocusTabDeps {
   server: boolean
   /** Tell one browser view to go to another project's page and select a tab there (`project.goto`). */
   goto(viewId: ViewId, projectId: string, tabId: string): boolean
+  /** Who a live view is bound to (ViewRegistry.whoOf); undefined for a view main no longer has. */
+  whoOf(viewId: ViewId): Who | undefined
 }
 
 /**
@@ -204,6 +206,9 @@ export function focusTabInView(deps: FocusTabDeps, projectId: string, tabId: str
   const windowId = deps.windowOfProject(projectId)
   if (windowId === undefined) return false
   if (view !== undefined && deps.windowOfView(view) === windowId) return deps.select(view, tabId)
+  // A guest's view (or a remote view main no longer has, which might have been one) moves nothing beyond itself
+  // (design-guests §7, 03f): no raise, no desktop selection, no goto to another project.
+  if (view !== undefined && isRemoteViewId(view) && deps.whoOf(view) !== 'owner') return false
   if (deps.server && view !== undefined && isRemoteViewId(view) && deps.windowOfView(view) !== undefined) {
     return deps.goto(view, projectId, tabId)
   }
