@@ -21,7 +21,7 @@ import {
   type TabHandlerDeps
 } from '../../src/main/ipc/router'
 import { registerRoomStripHandlers, registerRoomViewHandlers } from '../../src/main/ipc/room-handlers'
-import type { GuestService, PluginGuestAccessService } from '../../src/main/ipc/guest-deps'
+import type { GuestService } from '../../src/main/ipc/guest-deps'
 import { GUEST_CLASS, guestClassOf, guestRoleAllows, type GuestTarget } from '../../src/shared/guest-class'
 import { remoteAllowed, type TabInfo } from '../../src/shared/ipc'
 import type { GuestOnlyAccess, GuestScope, GuestView } from '../../src/shared/guests'
@@ -592,17 +592,14 @@ describe('guest list handlers (owner only; widening from a remote view only on a
     const router = newRouter()
     const guests = fakeGuests()
     const set: unknown[][] = []
-    const pluginAccess = {
-      visible: () => true,
-      port: () => 'none',
-      set: (...args: unknown[]) => {
+    router.setGuestDeps(guestDeps(guests))
+    registerGuestHandlers(router, {
+      server,
+      setPluginGuestAccess: (...args: unknown[]) => {
         set.push(args)
-        return true
-      },
-      onChange: () => () => undefined
-    } as unknown as PluginGuestAccessService
-    router.setGuestDeps({ ...guestDeps(guests), pluginAccess })
-    registerGuestHandlers(router, { server, pluginView: () => ({ id: 'p.vis' }) as never })
+        return { id: 'p.vis' } as never
+      }
+    })
     return { router, guests, set }
   }
   const invite = { name: 'Ann', role: 'write', scope: 'all', lifetime: '1d' }
@@ -647,6 +644,7 @@ describe('guest list handlers (owner only; widening from a remote view only on a
     const { router, set } = guestsSetup(false)
     await router.dispatch(owner(), 'settings.pluginGuestAccessSet', { pluginId: 'p.vis', target: 'project', value: 'hidden' })
     await expect(router.dispatch(owner(), 'settings.pluginGuestAccessSet', { pluginId: 'p.vis', target: 'project', value: 'shown' })).rejects.toThrow(/widen/)
-    expect(set).toHaveLength(1)
+    expect(set).toEqual([[PROJECT_A, { pluginId: 'p.vis', target: 'project', value: 'hidden' }]])
+    await expect(router.dispatch(owner(), 'settings.pluginGuestAccessSet', { pluginId: '../x', target: 'project', value: 'hidden' })).rejects.toThrow(/bad plugin id/)
   })
 })

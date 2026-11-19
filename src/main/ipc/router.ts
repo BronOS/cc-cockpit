@@ -938,7 +938,8 @@ export interface SettingsHandlerDeps {
   openProject(id: unknown): void
   relinkProject(windowId: number, id: string): Promise<boolean>
   removeProject(id: unknown): void
-  plugins(): PluginView[]
+  /** The Plugins page's rows for the sender's project (04: its guest visibility is per project). */
+  plugins(projectId: string): PluginView[]
   installPlugin(url: unknown, tag: unknown): Promise<PluginView>
   linkPlugin(windowId: number): Promise<boolean>
   updatePlugin(id: unknown, tag: unknown): Promise<PluginView>
@@ -1000,7 +1001,7 @@ export function registerSettingsHandlers(router: IpcRouter, deps: SettingsHandle
     deps.removeProject(idOf('settings.projectRemove', payload))
   })
 
-  router.handleProject('settings.plugins', () => deps.plugins())
+  router.handleProject('settings.plugins', (ctx) => deps.plugins(ctx.projectId))
   router.handleProject('settings.pluginInstall', (_ctx, payload) => {
     const p = fields('settings.pluginInstall', payload)
     return deps.installPlugin(p.url, p.tag)
@@ -1962,8 +1963,12 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
 export interface GuestHandlerDeps {
   /** Main runs as a server (server-mode.ts): there an owner's browser may widen access too (D-11). */
   server: boolean
-  /** The Plugins page's view of one plugin after a guest-access change (04's settings view); absent: refused. */
-  pluginView?(projectId: string, pluginId: string): PluginView | undefined
+  /**
+   * Store the owner's guest visibility of a plugin and answer its Plugins page row (04's
+   * SettingsService.setPluginGuestAccess, which shape-checks it again). The router has checked the caller (owner),
+   * the fields and D-11 first. Absent: refused.
+   */
+  setPluginGuestAccess?(projectId: string, req: Req<'settings.pluginGuestAccessSet'>): PluginView
 }
 
 /**
@@ -2059,8 +2064,7 @@ export function registerGuestHandlers(router: IpcRouter, deps: GuestHandlerDeps)
   })
 
   router.handleProject('settings.pluginGuestAccessSet', (ctx, payload, view) => {
-    const access = router.pluginAccessService()
-    if (!isOwner(view) || !access || !deps.pluginView) throw new Error('settings.pluginGuestAccessSet: refused')
+    if (!isOwner(view) || !deps.setPluginGuestAccess) throw new Error('settings.pluginGuestAccessSet: refused')
     const p = fields('settings.pluginGuestAccessSet', payload)
     if (typeof p.pluginId !== 'string' || p.pluginId.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(p.pluginId)) {
       throw new Error('settings.pluginGuestAccessSet: bad plugin id')
@@ -2070,12 +2074,7 @@ export function registerGuestHandlers(router: IpcRouter, deps: GuestHandlerDeps)
     const value = p.value === null ? null : guestVisibilityOf(p.value)!
     // Hiding narrows; showing or falling back to the next value may widen (D-11).
     if (value !== 'hidden') widening('settings.pluginGuestAccessSet', view)
-    if (!access.set(p.pluginId, p.target, value, p.target === 'project' ? ctx.projectId : undefined)) {
-      throw new Error('settings.pluginGuestAccessSet: unknown plugin')
-    }
-    const out = deps.pluginView(ctx.projectId, p.pluginId)
-    if (!out) throw new Error('settings.pluginGuestAccessSet: unknown plugin')
-    return out
+    return deps.setPluginGuestAccess(ctx.projectId, { pluginId: p.pluginId, target: p.target, value })
   })
 }
 
