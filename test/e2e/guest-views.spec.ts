@@ -272,7 +272,7 @@ test('a write guest saves through the editor, and a kick cuts its running downlo
     // Read in the page, a pause after each chunk, state on window. Without a kick this read is still running 5 s
     // later (checked by hand: about 40 MB/s here, so the sparse 1 GiB file takes far longer).
     await page.evaluate((u) => {
-      const dl = { status: 0, total: 0, state: 'running', error: '' }
+      const dl = { status: 0, total: 0, state: 'running', error: '', endedAt: 0 }
       ;(window as unknown as { dl: typeof dl }).dl = dl
       void (async () => {
         const res = await fetch(u, { credentials: 'same-origin', cache: 'no-store' })
@@ -282,6 +282,7 @@ test('a write guest saves through the editor, and a kick cuts its running downlo
           const { done, value } = await reader.read()
           if (done) {
             dl.state = 'done'
+            dl.endedAt = Date.now()
             return
           }
           dl.total += value.length
@@ -290,18 +291,31 @@ test('a write guest saves through the editor, and a kick cuts its running downlo
       })().catch((err: unknown) => {
         dl.state = 'error'
         dl.error = String(err)
+        dl.endedAt = Date.now()
       })
     }, url)
-    type Dl = { status: number; total: number; state: string; error: string }
+    type Dl = { status: number; total: number; state: string; error: string; endedAt: number }
     const dl = (): Promise<Dl> => page.evaluate(() => ({ ...(window as unknown as { dl: Dl }).dl }))
     await expect.poll(async () => (await dl()).total).toBeGreaterThan(0)
     expect((await dl()).status).toBe(200)
 
-    // The kick: the page is told, and the stream ends short of the file (an error, or a close before the end).
+    // Running right before the kick: still open and still moving.
+    const before = await dl()
+    expect(before.state).toBe('running')
+    await expect.poll(async () => (await dl()).total).toBeGreaterThan(before.total)
+    expect((await dl()).state).toBe('running')
+
+    // The kick: the stream ends (an error, or a close before the end) after the kick began and within 1 s of its
+    // reply (spec-review item 30), short of the file; the page says so. One clock: the page and this process share it.
+    const kickAt = Date.now()
     expect(await c.hook<boolean>('guestKick', invited.guestId)).toBe(true)
+    const repliedAt = Date.now()
+    await expect.poll(async () => (await dl()).state, { timeout: 1500 }).not.toBe('running')
+    const after = await dl()
+    expect(after.endedAt).toBeGreaterThanOrEqual(kickAt)
+    expect(after.endedAt - repliedAt).toBeLessThanOrEqual(1000)
+    expect(after.total).toBeLessThan(SIZE)
     await expect(page.getByText('Host removed you.')).toBeVisible({ timeout: 1500 })
-    await expect.poll(async () => (await dl()).state, { timeout: 5000 }).not.toBe('running')
-    expect((await dl()).total).toBeLessThan(SIZE)
   } finally {
     await guest?.close()
     await close()
