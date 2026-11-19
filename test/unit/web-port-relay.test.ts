@@ -145,6 +145,7 @@ function setup() {
   const running: Record<string, readonly string[]> = { 'a.one': ['board', 'side'] }
   const hub = new PanelPortHub<FakePort>({
     createChannel: () => channel(++made),
+    whoOf: (viewId) => views.whoOf(viewId),
     runningPanels: (projectId, pluginId) => (projectId === 'p1' ? running[pluginId] : undefined),
     toHost: (_projectId, pluginId, panelId, port, view) => {
       hostPorts.push({ key: `${pluginId}/${panelId}`, port, ...(view.view !== undefined ? { view: view.view } : {}) })
@@ -375,9 +376,9 @@ describe('relay round trip', () => {
     ws.drop()
     expect(t.gone).toEqual(['web:1'])
     expect(t.hostPorts.map((h) => h.port.closed)).toEqual([true, true])
-    // The view is gone: a connect for it is refused and both ends of the new channel close.
+    // The view is gone: a connect for it is refused before any channel is made (ViewRegistry.whoOf knows it no more).
     expect(t.hub.connect('p1', 'web:1', 'a.one/board', 5)).toBe(false)
-    expect(t.hostPorts[2]?.port.closed).toBe(true)
+    expect(t.hostPorts).toHaveLength(2)
     a!.close()
     b!.close()
   })

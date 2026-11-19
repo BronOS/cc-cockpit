@@ -84,8 +84,10 @@
 //   viewGone    a view left (a browser, or the desktop window closed): its slot instances and the
 //               page it held end.
 //
-// Guests (design-guests §6, D-17): a remote view is the owner's or a guest's (`viewAccess`, read live on
-// every connect). An owner's view connects as before. A guest's view connects only to a plugin its project
+// Guests (design-guests §6, D-17): a remote view is the owner's or a guest's (`whoOf`, ViewRegistry's frozen
+// `who`, and for a guest `guestAccess`, its role read live on every connect). Fails closed: `whoOf` is a
+// required dep (a hub built without it does not compile), a view it does not know is refused, and a guest's
+// view is refused while `guestAccess` is unwired or says the guest is gone. An owner's view connects as before. A guest's view connects only to a plugin its project
 // shows guests (`guestPort`, the owner's setting, hidden by default) and only in the guest's own project;
 // its host tag then carries the guest's role (`access`: the plugin's `from.access` and the instances'
 // `access`, never the page's word), and a read guest of a plugin that is not guest-aware gets a one-way
@@ -104,7 +106,7 @@ import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN, type SettingsPageScope } from 
 import { isSettingsPageScope, settingsPagePortKey } from '../../shared/settings-page'
 import type { GuestAccess } from '../../shared/guests'
 import type { PanelPortPayload } from '../../shared/ipc'
-import { isRemoteViewId, type GuestRole, type ViewId } from '../../shared/views'
+import { isRemoteViewId, type GuestRole, type ViewId, type Who } from '../../shared/views'
 import type { SlotFrameRecord } from '../layout/layout-service'
 import { warnLog } from '../warn-log'
 
@@ -166,10 +168,15 @@ export interface PanelPortDeps<P> {
    */
   settingsPageHeld?(projectId: string, pluginId: string, viewId: ViewId | null): void
   /**
-   * Who is behind a view now (GuestService.whoAccess, read on every connect: a kick or a role switch holds
-   * at once). Absent: no guests are wired, and every view is the owner's as before guests existed.
+   * Who a live view is (ViewRegistry.whoOf): `'owner'`, `{ guest }`, or undefined for a view that is gone or never
+   * was. Required, so a hub wired without it fails to compile instead of reading every view as the owner's.
    */
-  viewAccess?(viewId: ViewId): GuestAccess
+  whoOf(viewId: ViewId): Who | undefined
+  /**
+   * A guest view's access now (GuestService.whoAccess, read on every connect: a kick or a role switch holds at
+   * once). Asked only for a view `whoOf` calls a guest's. Absent (guests not wired): a guest's view is refused.
+   */
+  guestAccess?(viewId: ViewId): GuestAccess
   /** The port a guest of `role` gets to the plugin's pages in the project (PluginGuestAccessService.port, D-17). */
   guestPort?(projectId: string, pluginId: string, role: GuestRole): 'none' | 'oneWay' | 'full'
   log?: (message: string) => void
@@ -606,9 +613,12 @@ export class PanelPortHub<P> {
   private viewLine(projectId: string, viewId: ViewId, pluginId: string): ViewLine | undefined {
     const { view } = remoteOnly(viewId)
     if (view === undefined) return { tag: { access: 'owner' } }
-    const access = this.deps.viewAccess?.(viewId) ?? { kind: 'owner' as const }
-    if (access.kind === 'owner') return { tag: { view, access: 'owner' } }
-    if (access.kind === 'revoked' || access.projectId !== projectId) return undefined
+    const who = this.deps.whoOf(viewId)
+    if (who === undefined) return undefined
+    if (who === 'owner') return { tag: { view, access: 'owner' } }
+    // A guest's view: its role only from the guest store; nothing without one, or for a guest it no longer has.
+    const access = this.deps.guestAccess?.(viewId)
+    if (access === undefined || access.kind !== 'guest' || access.projectId !== projectId) return undefined
     const port = this.deps.guestPort?.(projectId, pluginId, access.role) ?? 'none'
     if (port === 'none') return undefined
     return { tag: { view, access: access.role }, ...(port === 'oneWay' ? { oneWay: true as const } : {}) }
@@ -617,7 +627,7 @@ export class PanelPortHub<P> {
   /** Whether `viewId` is an owner's (the desktop page, or a remote view main knows as the owner's). */
   private ownerView(viewId: ViewId): boolean {
     if (!isRemoteViewId(viewId)) return true
-    return (this.deps.viewAccess?.(viewId) ?? { kind: 'owner' }).kind === 'owner'
+    return this.deps.whoOf(viewId) === 'owner'
   }
 
   /**
