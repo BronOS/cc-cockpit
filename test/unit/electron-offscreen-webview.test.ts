@@ -630,10 +630,26 @@ describe('OffscreenWebviewFactory', () => {
   })
 
   // Task 7: a browser's checked input (webview-input.ts) goes to the page as trusted input, and
-  // never focuses or shows the window to get there.
-  it('sends input with sendInputEvent, in order, and nothing once the page is gone', () => {
+  // never focuses or shows the window to get there. On the page's protocol while it is attached
+  // (page-input.ts: keys follow focus into a cross-site frame), sendInputEvent once it detached.
+  it('sends input on the page protocol in order, by sendInputEvent once detached, and nothing once the page is gone', async () => {
     const { view, wc, win } = make()
     wc.calls.length = 0
+    const before = wc.debugger.commands.length
+    view.sendInput([
+      { type: 'mouseDown', x: 1, y: 1, button: 'left', clickCount: 1, modifiers: [] },
+      { type: 'keyDown', keyCode: 'a', modifiers: [] },
+      { type: 'char', keyCode: 'a', modifiers: [] }
+    ])
+    await vi.waitFor(() => expect(wc.debugger.commands.length).toBe(before + 3))
+    expect(wc.debugger.commands.slice(before).map((c) => [c.method, (c.params as { type: string }).type, c.sessionId])).toEqual([
+      ['Input.dispatchMouseEvent', 'mousePressed', undefined],
+      ['Input.dispatchKeyEvent', 'rawKeyDown', undefined],
+      ['Input.dispatchKeyEvent', 'char', undefined]
+    ])
+    expect(wc.calls).toEqual([])
+    // Detached: sendInputEvent, at once, as before the router.
+    wc.debugger.attachedWith = undefined
     view.sendInput([
       { type: 'mouseDown', x: 1, y: 1, button: 'left', clickCount: 1, modifiers: [] },
       { type: 'keyDown', keyCode: 'a', modifiers: [] },
@@ -644,7 +660,44 @@ describe('OffscreenWebviewFactory', () => {
     view.destroy()
     wc.calls.length = 0
     view.sendInput([{ type: 'mouseMove', x: 1, y: 1, modifiers: [] }])
+    await settle()
     expect(wc.calls).toEqual([])
+  })
+
+  // The router's frames come from the hardening's own auto-attach (no second debugger): a frame is
+  // routed to once it was resumed, and no longer once it detached.
+  it('routes a click over a ready cross-site frame to its session, and to the page once it detached', async () => {
+    const { view, wc } = make()
+    // The page: a cross-site frame (target F1, session S1) whose owner box is at (0, 200), 600x300.
+    wc.debugger.answer = (method, sessionId) => {
+      if (sessionId !== undefined) return undefined
+      if (method === 'Page.getLayoutMetrics') return Promise.resolve({ cssLayoutViewport: { pageX: 0, pageY: 0 } })
+      if (method === 'DOM.getNodeForLocation') return Promise.resolve({ backendNodeId: 7 })
+      if (method === 'DOM.describeNode') return Promise.resolve({ node: { nodeName: 'IFRAME', frameId: 'T-S1' } })
+      if (method === 'DOM.getBoxModel') {
+        const quad = [0, 200, 600, 200, 600, 500, 0, 500]
+        return Promise.resolve({ model: { content: quad, border: quad, width: 600, height: 300 } })
+      }
+      return undefined
+    }
+    wc.debugger.attachChild('S1', 'iframe')
+    await vi.waitFor(() => expect(wc.debugger.sentOn('S1')).toContain('Runtime.runIfWaitingForDebugger'))
+    await settle()
+    const mark = wc.debugger.commands.length
+    view.sendInput([{ type: 'mouseDown', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] }])
+    await vi.waitFor(() => expect(wc.debugger.commands.slice(mark).some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(true))
+    const press = wc.debugger.commands.slice(mark).find((c) => c.method === 'Input.dispatchMouseEvent')
+    expect(press?.sessionId).toBe('S1')
+    expect(press?.params).toMatchObject({ type: 'mousePressed', x: 20, y: 25 })
+    // Gone: the release (no capture left to follow) and what comes after go to the page.
+    wc.debugger.emit('message', {}, 'Target.detachedFromTarget', { sessionId: 'S1', targetId: 'T-S1' }, '')
+    const mark2 = wc.debugger.commands.length
+    view.sendInput([{ type: 'mouseUp', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] }])
+    await vi.waitFor(() => expect(wc.debugger.commands.slice(mark2).some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(true))
+    const release = wc.debugger.commands.slice(mark2).find((c) => c.method === 'Input.dispatchMouseEvent')
+    expect(release?.sessionId).toBeUndefined()
+    expect(release?.params).toMatchObject({ type: 'mouseReleased', x: 20, y: 225 })
+    expect(wc.calls.filter((c) => c.startsWith('input'))).toEqual([])
   })
 
   // Task 8: committed text goes in as an IME commit; the selection is read in main's isolated world.

@@ -42,6 +42,7 @@ import { session as electronSession, type Session, type WebContents, type WebPre
 import { refuseClientCertificatesOf } from '../security/client-certificates'
 import { lockDownSession, NO_APP_PAGE } from '../windows/permissions'
 import { PREVIEW_SCHEME } from './preview-protocol'
+import type { ChildFrameObserver } from './page-input'
 import type { WebviewEvents, WebviewPage, WebviewView } from './webview-manager'
 
 /** Chromium's ERR_ABORTED: a navigation superseded by a newer one (or stopped), not a failed page. */
@@ -257,8 +258,13 @@ export const CHILD_SETUP_TIMEOUT_MS = 5000
  * child's are awaited before its resume, at most CHILD_SETUP_TIMEOUT_MS: the resume and the
  * renderer's commands do not travel one ordered channel, so sending them back to back could let
  * the frame's first document run before its print lock.
+ *
+ * `frames` (the off-screen view's input router, page-input.ts) hears each child frame's session:
+ * attached (with the session it came from, so nested frames form a tree), ready once resumed (input
+ * goes to a frame only from then on), detached, and all gone with the page's protocol. The router
+ * reuses these sessions; nothing attaches a second debugger.
  */
-export function cancelOffscreenNativeUi(wc: WebContents, log: (message: string) => void): void {
+export function cancelOffscreenNativeUi(wc: WebContents, log: (message: string) => void, frames?: ChildFrameObserver): void {
   try {
     wc.debugger.attach('1.3')
   } catch (err) {
@@ -299,19 +305,28 @@ export function cancelOffscreenNativeUi(wc: WebContents, log: (message: string) 
   }
   // Before the auto-attach below, so no child's attach can come first. Every session's children
   // land here, a nested frame's with its parent's session as the listener's own `sessionId`.
-  wc.debugger.on('message', (_event, method, params) => {
+  wc.debugger.on('message', (_event, method, params, parentSessionId) => {
+    if (method === 'Target.detachedFromTarget') {
+      const { sessionId } = (params ?? {}) as { sessionId?: unknown }
+      if (typeof sessionId === 'string' && sessionId !== '') frames?.frameDetached(sessionId)
+      return
+    }
     if (method !== 'Target.attachedToTarget') return
-    const { sessionId, targetInfo } = (params ?? {}) as { sessionId?: unknown; targetInfo?: { type?: unknown } }
+    const { sessionId, targetInfo } = (params ?? {}) as { sessionId?: unknown; targetInfo?: { type?: unknown; targetId?: unknown } }
     if (typeof sessionId !== 'string' || sessionId === '') return
+    const type = typeof targetInfo?.type === 'string' ? targetInfo.type : ''
+    const targetId = typeof targetInfo?.targetId === 'string' ? targetInfo.targetId : ''
+    frames?.frameAttached(sessionId, targetId, typeof parentSessionId === 'string' ? parentSessionId : '', type)
     // A child that is not waiting (none should be, all are auto-attached paused) gets the resume
     // too: harmless when it is already running.
-    void prepareChild(sessionId, typeof targetInfo?.type === 'string' ? targetInfo.type : '')
+    void prepareChild(sessionId, type).then(() => frames?.frameReady(sessionId))
   })
   void cancels()
   // Detached by anything but the page closing (`target closed`, also our own destroy, while the
   // WebContents does not say destroyed yet): the cancels are off from here on, so say so. A
   // cross-site navigation swaps the renderer but keeps the attachment (checked at runtime).
   wc.debugger.on('detach', (_event, reason) => {
+    frames?.reset()
     if (reason !== 'target closed' && !wc.isDestroyed()) {
       log(`webview: the page's protocol detached (${reason}); its pickers and print are no longer cancelled`)
     }
