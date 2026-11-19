@@ -167,14 +167,6 @@ export interface RemoteServer {
 }
 
 /**
- * What the picker learns of a guest server beyond `RemoteServerInfo` (shared/ipc.ts): set only when
- * true, so the row reads "Guest at <origin>". Never the pin itself.
- */
-export interface RemoteGuestInfo {
-  guest?: true
-}
-
-/**
  * A saved server as every reader outside the store gets it: never the cookie, never the secrets
  * (encrypted or not). The store's `get` and `add` answer this; nothing else hands out a record.
  */

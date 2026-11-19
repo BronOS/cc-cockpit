@@ -279,7 +279,7 @@ function setup(
   views.addDesktop(1, desktop)
   const conns = new WebConnections({
     dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
-    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
+    addView: (windowId, viewId, sink, who) => views.addRemote(windowId, viewId, sink, who),
     windowIdOf: (projectId) => windows.get(projectId),
     snapshot:
       over.snapshot ??
@@ -658,7 +658,8 @@ describe('guest views', () => {
   }
 
   it("binds a guest to its own project: ready is filtered and names the guest; the view's who is the guest", () => {
-    const { connect, conns, changes } = guestSetup()
+    const g = guestSetup()
+    const { connect, conns, changes } = g
     const ws = connect('p1', GUEST)
     const ready = ws.frames('ready')[0] as { snapshot: Record<string, unknown> }
     // The visible tab only, its host folder blanked (D-33: shared/guest-filter.ts guestTabInfo).
@@ -668,6 +669,8 @@ describe('guest views', () => {
     expect(ready.snapshot.overlays).toEqual([])
     expect(ready.snapshot.guest).toEqual({ id: 'g1', name: 'Bob', role: 'read', ownerName: 'Alice' })
     expect(conns.whoOf('web:1')).toEqual({ guest: 'g1' })
+    // The registry is told too: the router's access (view-access.ts) reads it, and its default is the owner.
+    expect(g.views.whoOf('web:1')).toEqual({ guest: 'g1' })
     expect(conns.guestLive('g1')).toBe(true)
     expect(changes).toEqual([['g1', true]])
     ws.drop()

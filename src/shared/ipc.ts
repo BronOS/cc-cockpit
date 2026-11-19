@@ -503,6 +503,8 @@ export interface RemoteServerInfo {
   windows: number
   /** SSH: the tunnel's state; absent for Direct. */
   connection?: RemoteConnectionState
+  /** Joined with a host's guest invite (design-guests §11), set by main from the record: the "Guest at <origin>" row. Never the pin. */
+  guest?: true
 }
 
 /**

@@ -100,8 +100,11 @@ export interface WebConnectionDeps {
    * connection's socket is still open; the router asks it right before the handler runs.
    */
   dispatch(caller: WebCaller, channel: string, payload: unknown, live: () => boolean): Promise<unknown>
-  /** ViewRegistry.addRemote. */
-  addView(windowId: number, viewId: ViewId, sink: ViewSink): () => void
+  /**
+   * ViewRegistry.addRemote, with `who` as `hello` bound it (design-guests §2, spec-review 5). Pass it on: the
+   * registry's default is the owner, so a wiring that drops it makes every guest view the owner's to the router.
+   */
+  addView(windowId: number, viewId: ViewId, sink: ViewSink, who: Who): () => void
   /** The window that shows the project now (WindowManager.windowIdOf); project windows only. */
   windowIdOf(projectId: string): number | undefined
   /**
@@ -600,7 +603,7 @@ export class WebConnection {
         isClosed: () => this.closed,
         // A guest's page says "the owner closed the project" and waits (4462), an owner's goes to the picker.
         windowClosed: () => this.close(guestAccess ? CLOSE.projectClosed : CLOSE.windowClosed, 'window closed')
-      })
+      }, who)
     } catch (err) {
       this.deps.log(`web access: view ${this.viewId} bind failed: ${errorText(err)}`)
       return this.close(CLOSE.failed, 'bind failed')

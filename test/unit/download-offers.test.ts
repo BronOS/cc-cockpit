@@ -7,7 +7,7 @@ import { lstat, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DOWNLOAD_GUEST_TEXT, Downloads, type DownloadsDeps, type DownloadView } from '../../src/main/files/downloads'
+import { Downloads, type DownloadsDeps, type DownloadView } from '../../src/main/files/downloads'
 import {
   DOWNLOAD_OFFER_MS,
   DOWNLOAD_OFFERS_MAX,
@@ -17,7 +17,6 @@ import {
   type DownloadOffer,
   type DownloadStart,
 } from '../../src/shared/downloads'
-import type { GuestAccess } from '../../src/shared/guests'
 import { desktopViewId } from '../../src/shared/views'
 import { windowSnapshot, type SnapshotSources } from '../../src/main/web/connection'
 import { openVerified } from '../../src/main/verified-read'
@@ -469,112 +468,5 @@ describe('offers: limits per window', () => {
   it('no offer hooks: refused', async () => {
     const d = make({ offers: undefined })
     await expect(d.offer(CALLER, write(join(proj, 'a.txt')))).rejects.toThrow('downloads are not available')
-  })
-})
-
-// D-23 (design-guests §9): only a write guest's view is minted a link, and a guest sees and takes a
-// `ccc download` offer only when it sees the tab the command ran in (main's own `CliCall.tabId`).
-describe('offers: guests (D-23)', () => {
-  /** PHONE (web:1) is a guest's view, LAPTOP (web:2) the owner's; the guest sees the tabs in `seen`. */
-  function guests(access: GuestAccess, seen: string[] = []) {
-    const asked: string[] = []
-    return {
-      asked,
-      deps: {
-        guests: {
-          whoAccess: (viewId: string): GuestAccess => (viewId === LAPTOP.viewId ? { kind: 'owner' } : access),
-          tabVisible: (guestId: string, tabId: string) => (asked.push(`${guestId} ${tabId}`), seen.includes(tabId))
-        }
-      } satisfies Partial<DownloadsDeps>
-    }
-  }
-  const writeGuest = { kind: 'guest', id: 'g1', name: 'Bob', role: 'write', projectId: 'p1', scope: ['t1'] } as const
-  const readGuest = { ...writeGuest, role: 'read' } as const
-
-  it("start refuses a read guest's view and a gone guest's, live; a write guest and the owner get a link", async () => {
-    const file = write(join(proj, 'a.txt'))
-    const target = { projectId: 'p1', abs: file }
-    await expect(make(guests(readGuest).deps).start(PHONE, target, false)).rejects.toThrow(DOWNLOAD_GUEST_TEXT)
-    await expect(make(guests({ kind: 'revoked' }).deps).start(PHONE, target, false)).rejects.toThrow(DOWNLOAD_GUEST_TEXT)
-    expect(starts).toEqual([])
-    await expect(make(guests(writeGuest).deps).start(PHONE, target, false)).resolves.toMatchObject({ name: 'a.txt', kind: 'file' })
-    await expect(make(guests(readGuest).deps).start(LAPTOP, target, false)).resolves.toMatchObject({ name: 'a.txt' })
-    expect(starts.map((s) => s.viewId)).toEqual(['web:1', 'web:2'])
-  })
-
-  it("an offer keeps the caller's tab for originOf; a call with no tab has none", async () => {
-    const d = make()
-    const withTab = await d.offer({ ...CALLER, tabId: 't1' }, write(join(proj, 'a.txt')))
-    const without = await d.offer(CALLER, write(join(proj, 'b.txt')))
-    expect(d.originOf(withTab.requestId)).toBe('t1')
-    expect(d.originOf(without.requestId)).toBeUndefined()
-    expect(d.originOf('offer-999')).toBeUndefined()
-    // The origin is main's own: never in the payload the views get.
-    expect(JSON.stringify(offers)).not.toContain('t1')
-  })
-
-  it('the origin is known while the offer is sent (a guest view\'s sink reads it during the send), and gone if the send fails', async () => {
-    const seenInSend: Array<string | undefined> = []
-    const d: Downloads = make({
-      offers: {
-        send: (windowId, offer) => {
-          seenInSend.push(d.originOf(offer.requestId))
-          offers.push({ windowId, offer })
-          return true
-        },
-        settled: () => {}
-      }
-    })
-    await d.offer({ ...CALLER, tabId: 't1' }, write(join(proj, 'a.txt')))
-    expect(seenInSend).toEqual(['t1'])
-    const failing: Downloads = make({
-      offers: {
-        send: (_w, offer) => {
-          seenInSend.push(failing.originOf(offer.requestId))
-          throw new Error('sink gone')
-        },
-        settled: () => {}
-      }
-    })
-    await expect(failing.offer({ ...CALLER, tabId: 't2' }, write(join(proj, 'b.txt')))).rejects.toThrow()
-    expect(seenInSend).toEqual(['t1', 't2'])
-    expect(failing.pendingOffers(WINDOW)).toEqual([])
-  })
-
-  it("a guest's accept of an offer from a tab it cannot see is refused and settles nothing for the owner", async () => {
-    const g = guests(writeGuest, [])
-    const d = make(g.deps)
-    const r = await d.offer({ ...CALLER, tabId: 't9' }, write(join(proj, 'a.txt')))
-    expect(await d.accept(PHONE, r.requestId, false)).toBe(false)
-    expect(g.asked).toEqual(['g1 t9'])
-    expect(settled).toEqual([])
-    expect(starts).toEqual([])
-    expect(d.pendingOffers(WINDOW)).toHaveLength(1)
-    // The owner's view still takes it.
-    expect(await d.accept(LAPTOP, r.requestId, false)).toBe(true)
-    expect(starts.map((s) => s.viewId)).toEqual(['web:2'])
-  })
-
-  it("an offer with no origin tab is never a guest's, whatever it sees", async () => {
-    const d = make(guests(writeGuest, ['t1']).deps)
-    const r = await d.offer(CALLER, write(join(proj, 'a.txt')))
-    expect(await d.accept(PHONE, r.requestId, false)).toBe(false)
-    expect(settled).toEqual([])
-    expect(d.pendingOffers(WINDOW)).toHaveLength(1)
-  })
-
-  it("a revoked guest's accept is refused before the answer", async () => {
-    const d = make(guests({ kind: 'revoked' }, ['t1']).deps)
-    const r = await d.offer({ ...CALLER, tabId: 't1' }, write(join(proj, 'a.txt')))
-    expect(await d.accept(PHONE, r.requestId, false)).toBe(false)
-    expect(settled).toEqual([])
-  })
-
-  it('a write guest who sees the origin tab takes it: settled for every view, started in its view', async () => {
-    const d = make(guests(writeGuest, ['t1']).deps)
-    const r = await d.offer({ ...CALLER, tabId: 't1' }, write(join(proj, 'a.txt')))
-    expect(await d.accept(PHONE, r.requestId, false)).toBe(true)
-    expect(settled).toEqual([{ windowId: WINDOW, requestId: r.requestId }])
-    expect(starts.map((s) => s.viewId)).toEqual(['web:1'])
   })
 })

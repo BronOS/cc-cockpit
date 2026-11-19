@@ -141,11 +141,12 @@ export class PortRelay {
     // The same panel loaded again in this view: the previous load's port ends (the host replaces
     // this view's port anyway; closing it here frees main's end and tells the browser).
     this.drop(key, undefined, true)
-    // Told before the port is kept: a socket that cannot carry `port.open` gets no port.
-    if (!this.deps.send({ t: 'port.open', key, nonce })) throw new Error('the view cannot be told')
-    const held: Held = { nonce, port }
     // Anything but a plain `false`/absent counts as one-way: a malformed flag fails closed.
-    if (p?.oneWay !== undefined && p.oneWay !== false) held.oneWay = true
+    const oneWay = p?.oneWay !== undefined && p.oneWay !== false
+    // Told before the port is kept: a socket that cannot carry `port.open` gets no port.
+    if (!this.deps.send({ t: 'port.open', key, nonce, ...(oneWay ? { oneWay: true as const } : {}) })) throw new Error('the view cannot be told')
+    const held: Held = { nonce, port }
+    if (oneWay) held.oneWay = true
     this.ports.set(key, held)
     port.on('message', (e) => {
       if (this.ports.get(key) !== held) return

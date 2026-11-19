@@ -50,7 +50,6 @@ import {
   checkSshHost,
   parseRemoteLink,
   type RemoteAnswers,
-  type RemoteGuestInfo,
   type RemoteHostKey,
   type RemoteNeed,
   type RemoteSecretName,
@@ -72,9 +71,6 @@ export type { RemoteServerRecord }
  * guest invite's certificate pin, design-guests §11), as an SSH one does.
  */
 export type ServiceConnectRequest = RemoteConnectRequest | (Extract<RemoteServerSettings, { kind: 'direct' }> & { answers?: RemoteAnswers })
-
-/** A picker row: `RemoteServerInfo` plus whether the server is a guest's (never its pin). */
-export type ServiceServerInfo = RemoteServerInfo & RemoteGuestInfo
 
 /** The slice of RemoteServerStore the coordinator uses. */
 export interface RemoteServiceStore {
@@ -319,10 +315,10 @@ export class RemoteService {
   }
 
   /** The saved servers for the picker: no credential, no port; window counts and the link's state. */
-  async list(): Promise<ServiceServerInfo[]> {
+  async list(): Promise<RemoteServerInfo[]> {
     const servers = await this.options.store.list()
     return servers.map((s) => {
-      const info: ServiceServerInfo = {
+      const info: RemoteServerInfo = {
         id: s.id,
         name: s.name,
         via: s.via,

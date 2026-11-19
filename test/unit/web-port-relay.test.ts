@@ -524,6 +524,8 @@ describe('one-way ports (D-17)', () => {
 
   it('relays host to page, drops every page message before the port, logged once per port', async () => {
     const { r, sent, logs, ch, posted, atHost } = taken({ oneWay: true })
+    // The browser is told the line is one-way (web/bridge.ts reads it).
+    expect(sent[0]).toEqual({ t: 'port.open', key: 'a.one/board', nonce: 1, oneWay: true })
     ch.host.postMessage('{"board":1}')
     await settle()
     expect(sent).toContainEqual({ t: 'port.msg', key: 'a.one/board', nonce: 1, m: '{"board":1}' })
@@ -540,7 +542,8 @@ describe('one-way ports (D-17)', () => {
 
   it('a malformed flag fails closed: anything but false or absent is one-way', async () => {
     for (const oneWay of ['yes', 1, 0, null, {}, 'false']) {
-      const { r, posted, logs } = taken({ oneWay })
+      const { r, posted, logs, sent } = taken({ oneWay })
+      expect(sent[0], String(oneWay)).toMatchObject({ t: 'port.open', oneWay: true })
       r.fromPage('a.one/board', 1, '"x"')
       await settle()
       expect(posted, String(oneWay)).toEqual([])
@@ -551,6 +554,7 @@ describe('one-way ports (D-17)', () => {
   it('oneWay false or absent relays both ways, as before', async () => {
     for (const payload of [{ oneWay: false }, {}]) {
       const { r, sent, logs, ch, posted, atHost } = taken(payload)
+      expect(sent[0]).toEqual({ t: 'port.open', key: 'a.one/board', nonce: 1 })
       ch.host.postMessage('"down"')
       r.fromPage('a.one/board', 1, '"up"')
       await settle()

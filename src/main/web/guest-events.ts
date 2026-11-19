@@ -58,8 +58,11 @@ export interface GuestContextSources {
   personOf(viewId: string | null): string | undefined
   /** The project's tab order now (TabManager). */
   tabOrder(projectId: string): readonly string[]
-  /** A `ccc download` offer's origin tab (Downloads.originOf). Absent: none, so no offer reaches a guest. */
-  downloadOrigin?(requestId: string): string | undefined
+  /**
+   * A `ccc download` offer's origin tab as the view `viewId` sees it: `Downloads.offerOrigin(<the view's window>,
+   * requestId)?.originTab` (03b). Absent: none, so no offer reaches a guest.
+   */
+  downloadOrigin?(viewId: string, requestId: string): string | undefined
   /** The owner's name (Web access settings, D-24). */
   ownerName(): string
 }
@@ -78,7 +81,7 @@ export function guestContext(src: GuestContextSources, viewId: string, access: G
     overlayVisible: (overlayId) => src.overlayVisible(access.id, overlayId),
     personOf: (v) => src.personOf(v),
     tabOrder: () => src.tabOrder(access.projectId),
-    downloadOrigin: (requestId) => src.downloadOrigin?.(requestId),
+    downloadOrigin: (requestId) => src.downloadOrigin?.(viewId, requestId),
     ownerName: () => src.ownerName()
   }
 }

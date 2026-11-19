@@ -225,4 +225,22 @@ describe('guestContext', () => {
     // With no download source, no offer reaches the guest at all.
     expect(guestEvent('downloads.offer', offer('offer-1'), g)).toBeUndefined()
   })
+
+  it("asks the download source with the guest view's own id (its window picks the offer, 03b's offerOrigin)", () => {
+    const asked: string[] = []
+    const g = guestContext(
+      {
+        guests: { tabVisible: () => true, pluginVisible: () => true },
+        overlayVisible: () => false,
+        personOf: () => undefined,
+        tabOrder: () => [],
+        ownerName: () => 'Host',
+        downloadOrigin: (viewId, id) => (asked.push(`${viewId} ${id}`), 't1')
+      },
+      'web:4',
+      guest()
+    )
+    expect(g.downloadOrigin('offer-2')).toBe('t1')
+    expect(asked).toEqual(['web:4 offer-2'])
+  })
 })
