@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest'
 import {
   claimsOwner,
   cleanSelection,
+  editKeyEvent,
+  type EditCommandInput,
   cursorEvent,
   encodedBytes,
   MAX_SELECTION_BYTES,
@@ -20,6 +22,7 @@ import {
   INPUT_RATE,
   MAX_INPUT_EVENTS,
   MAX_WHEEL_DELTA,
+  PAGE_WAIT_MS,
   parseInputEvents,
   toElectronEvents,
   WebviewInput,
@@ -30,7 +33,7 @@ import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webv
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { REMOTE_CLASS, type WebviewInputEventWire } from '../../src/shared/ipc'
 import { MAX_FRAME_BYTES } from '../../src/shared/web-protocol'
-import { isClipboardChord, WEBVIEW_CURSORS, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../src/shared/webview-keys'
+import { editCommandOf, isClipboardChord, WEBVIEW_CURSORS, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../src/shared/webview-keys'
 import {
   boxToPage,
   ClickCounter,
@@ -368,10 +371,198 @@ describe('WebviewInput.accept', () => {
   })
 })
 
+// Plan 20261119-server-mode-mac, decision 7 (design-web.md §9.15 S6): Ctrl or Cmd alone with A, Z,
+// Shift+Z or Ctrl+Y carries selectAll, undo or redo to the page through the protocol, in the lane.
+describe('edit chords: selectAll, undo and redo as commands', () => {
+  const mods = (...on: Array<'control' | 'meta' | 'alt' | 'shift'>) => ({
+    control: on.includes('control'),
+    meta: on.includes('meta'),
+    alt: on.includes('alt'),
+    shift: on.includes('shift')
+  })
+
+  it('editCommandOf: Ctrl or Cmd alone, no Alt; A, Z, Shift+Z, and Ctrl+Y only', () => {
+    expect(editCommandOf('a', mods('control'))).toBe('selectAll')
+    expect(editCommandOf('a', mods('meta'))).toBe('selectAll')
+    expect(editCommandOf('A', mods('meta'))).toBe('selectAll')
+    expect(editCommandOf('z', mods('control'))).toBe('undo')
+    expect(editCommandOf('z', mods('meta'))).toBe('undo')
+    // A browser names Shift+Z 'Z'.
+    expect(editCommandOf('Z', mods('meta', 'shift'))).toBe('redo')
+    expect(editCommandOf('Z', mods('control', 'shift'))).toBe('redo')
+    expect(editCommandOf('y', mods('control'))).toBe('redo')
+    // Not commands: Cmd+Y (no redo on a Mac), Shift with A or Y, Alt with anything, both Ctrl and
+    // Cmd, neither, another letter, a named key.
+    expect(editCommandOf('y', mods('meta'))).toBeUndefined()
+    expect(editCommandOf('Y', mods('control', 'shift'))).toBeUndefined()
+    expect(editCommandOf('A', mods('control', 'shift'))).toBeUndefined()
+    expect(editCommandOf('a', mods('control', 'alt'))).toBeUndefined()
+    expect(editCommandOf('z', mods('meta', 'alt'))).toBeUndefined()
+    expect(editCommandOf('Z', mods('meta', 'alt', 'shift'))).toBeUndefined()
+    expect(editCommandOf('a', mods('control', 'meta'))).toBeUndefined()
+    expect(editCommandOf('a', mods())).toBeUndefined()
+    expect(editCommandOf('z', mods('shift'))).toBeUndefined()
+    expect(editCommandOf('b', mods('control'))).toBeUndefined()
+    expect(editCommandOf('Enter', mods('control'))).toBeUndefined()
+    expect(editCommandOf('', mods('control'))).toBeUndefined()
+    // Clipboard chords are never commands (never forwarded at all).
+    for (const k of ['c', 'x', 'v']) expect(editCommandOf(k, mods('control'))).toBeUndefined()
+  })
+
+  it("editKeyEvent: S6's rawKeyDown with the letter's code, the modifier bits and the one command", () => {
+    expect(editKeyEvent({ type: 'editCommand', command: 'redo', key: 'Z', modifiers: ['meta', 'shift'] })).toEqual({
+      type: 'rawKeyDown',
+      key: 'Z',
+      code: 'KeyZ',
+      windowsVirtualKeyCode: 90,
+      modifiers: 12,
+      autoRepeat: false,
+      commands: ['redo']
+    })
+    // Held buttons are no key modifier; a repeat is the key's own flag; the case follows Shift.
+    expect(editKeyEvent({ type: 'editCommand', command: 'selectAll', key: 'A', modifiers: ['control', 'leftbuttondown', 'isautorepeat'] })).toEqual({
+      type: 'rawKeyDown',
+      key: 'a',
+      code: 'KeyA',
+      windowsVirtualKeyCode: 65,
+      modifiers: 2,
+      autoRepeat: true,
+      commands: ['selectAll']
+    })
+    expect(editKeyEvent({ type: 'editCommand', command: 'redo', key: 'y', modifiers: ['control'] })).toMatchObject({ key: 'y', code: 'KeyY', windowsVirtualKeyCode: 89, modifiers: 2 })
+  })
+
+  /** A WebviewInput whose page takes edit commands, each settled by hand (or `done`'s answer). */
+  function commandSetup(done?: () => Promise<unknown> | void) {
+    const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => 0 })
+    const order: string[] = []
+    const commands: EditCommandInput[] = []
+    const pending: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
+    const selections: string[] = []
+    const timers = new Map<number, () => void>()
+    let nextTimer = 0
+    const input = new WebviewInput({
+      isViewer: (panel, viewId) => viewers.isViewer(panel, viewId),
+      claimOwner: (panel, viewId) => viewers.claimOwner(panel, viewId),
+      target: () => ({
+        size: () => ({ width: 800, height: 600 }),
+        send: (events) => void order.push(...events.map((e) => ('keyCode' in e ? `${e.type} ${e.keyCode}` : e.type))),
+        insertText: (text) => void order.push(`text ${text}`),
+        readSelection: () => Promise.resolve('sel'),
+        editCommand: (cmd) => {
+          commands.push(cmd)
+          order.push(`command ${cmd.command}`)
+          return done ? done() : new Promise((resolve, reject) => void pending.push({ resolve, reject }))
+        }
+      }),
+      pushSelection: (viewId, event) => void selections.push(`${viewId} ${event.text}`),
+      timers: {
+        set: (fn) => {
+          timers.set(++nextTimer, fn)
+          return nextTimer
+        },
+        clear: (h) => void timers.delete(h as number)
+      },
+      now: () => 0
+    })
+    viewers.report(PANEL, 'web:1', shown, 'owner')
+    viewers.report(PANEL, 'web:2', shown, 'owner')
+    const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+    /** Run every timer due (the page wait, the selection debounce). */
+    const fire = (): void => {
+      const fns = [...timers.values()]
+      timers.clear()
+      for (const fn of fns) fn()
+    }
+    return { viewers, input, order, commands, pending, selections, timers, flush, fire }
+  }
+
+  it('a chord\'s key down goes as one command (never also as a key down); its key up as a key up', async () => {
+    const s = commandSetup(() => Promise.resolve())
+    expect(s.input.accept(PANEL, 'web:1', [key('a', 'down', ['control']), key('a', 'up', ['control'])])).toBe(2)
+    await s.flush()
+    expect(s.order).toEqual(['command selectAll', 'keyUp a'])
+    expect(s.commands).toEqual([{ type: 'editCommand', command: 'selectAll', key: 'a', modifiers: ['control'] }])
+    s.order.length = 0
+    s.input.accept(PANEL, 'web:1', [key('Z', 'down', ['meta', 'shift'])])
+    await s.flush()
+    s.input.accept(PANEL, 'web:1', [key('y', 'down', ['control'])])
+    await s.flush()
+    s.input.accept(PANEL, 'web:1', [key('z', 'down', ['meta'])])
+    await s.flush()
+    expect(s.order).toEqual(['command redo', 'command redo', 'command undo'])
+    // Not chords: plain keys, Alt with them, Cmd+Y go as keys.
+    s.order.length = 0
+    s.input.accept(PANEL, 'web:1', [key('a'), key('a', 'down', ['control', 'alt']), key('y', 'down', ['meta'])])
+    expect(s.order).toEqual(['keyDown a', 'char a', 'keyDown a', 'keyDown y'])
+  })
+
+  it('a chord still claims the size, as any key down does', () => {
+    const s = commandSetup(() => Promise.resolve())
+    expect(s.viewers.ownerOf(PANEL)).not.toBe('web:2')
+    s.input.accept(PANEL, 'web:2', [key('a', 'down', ['meta'])])
+    expect(s.commands).toHaveLength(1)
+    expect(s.viewers.ownerOf(PANEL)).toBe('web:2')
+  })
+
+  it('clipboard chords stay refused: never a command, never a key', async () => {
+    const s = commandSetup(() => Promise.resolve())
+    const chords = [key('v', 'down', ['meta']), key('c', 'down', ['control']), key('X', 'down', ['meta', 'shift']), key('Insert', 'down', ['shift'])]
+    expect(s.input.accept(PANEL, 'web:1', chords)).toBe(0)
+    await s.flush()
+    expect(s.order).toEqual([])
+    expect(s.commands).toEqual([])
+  })
+
+  it('the lane holds what comes after a command until the page has it; what came before goes first', async () => {
+    const s = commandSetup()
+    s.input.accept(PANEL, 'web:1', [key('x'), key('a', 'down', ['control']), key('a', 'up', ['control']), key('y')])
+    s.input.acceptText(PANEL, 'web:1', 'é')
+    s.input.accept(PANEL, 'web:1', [move(1, 1)])
+    expect(s.order).toEqual(['keyDown x', 'char x', 'command selectAll'])
+    s.pending[0]?.resolve({})
+    await s.flush()
+    expect(s.order).toEqual(['keyDown x', 'char x', 'command selectAll', 'keyUp a', 'keyDown y', 'char y', 'text é', 'mouseMove'])
+    // Nothing waits any more.
+    s.input.accept(PANEL, 'web:1', [key('b')])
+    expect(s.order.slice(-2)).toEqual(['keyDown b', 'char b'])
+  })
+
+  it(`a command the page never confirms holds the rest at most PAGE_WAIT_MS; a refused one holds nothing`, async () => {
+    const hung = commandSetup(() => new Promise(() => {}))
+    hung.input.accept(PANEL, 'web:1', [key('z', 'down', ['meta']), key('q')])
+    expect(hung.order).toEqual(['command undo'])
+    expect(PAGE_WAIT_MS).toBeLessThanOrEqual(1000)
+    hung.fire()
+    expect(hung.order).toEqual(['command undo', 'keyDown q', 'char q'])
+    const refused = commandSetup(() => Promise.reject(new Error('detached')))
+    refused.input.accept(PANEL, 'web:1', [key('z', 'down', ['meta']), key('q')])
+    await refused.flush()
+    expect(refused.order).toEqual(['command undo', 'keyDown q', 'char q'])
+  })
+
+  it("one view's waiting command does not hold another view's input", () => {
+    const s = commandSetup()
+    s.input.accept(PANEL, 'web:1', [key('a', 'down', ['meta'])])
+    s.input.accept(PANEL, 'web:2', [key('b')])
+    expect(s.order).toEqual(['command selectAll', 'keyDown b', 'char b'])
+  })
+
+  it('a select all pushes the selection to the acting view, as a key down does', async () => {
+    const s = commandSetup(() => Promise.resolve())
+    s.input.accept(PANEL, 'web:1', [key('a', 'down', ['control'])])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(s.selections).toEqual(['web:1 sel'])
+  })
+})
+
 describe('WebviewManager.inputTarget', () => {
   interface Fake extends WebviewView {
     input: ElectronInputEvent[][]
     texts: string[]
+    commands: EditCommandInput[]
   }
 
   function managerFor(server: boolean, withInput = true): { manager: WebviewManager; made: Fake[] } {
@@ -382,6 +573,7 @@ describe('WebviewManager.inputTarget', () => {
           const v: Fake = {
             input: [],
             texts: [],
+            commands: [],
             load: () => Promise.resolve(),
             back: () => {},
             forward: () => {},
@@ -396,6 +588,7 @@ describe('WebviewManager.inputTarget', () => {
                   size: () => ({ width: 640, height: 480 }),
                   sendInput: (events: readonly ElectronInputEvent[]) => void v.input.push([...events]),
                   insertText: (text: string) => void v.texts.push(text),
+                  editCommand: (cmd: EditCommandInput) => void v.commands.push(cmd),
                   readSelection: () => Promise.resolve('sel')
                 }
               : {})
@@ -428,14 +621,19 @@ describe('WebviewManager.inputTarget', () => {
     target?.insertText?.('é')
     expect(made[0]?.texts).toEqual(['é'])
     await expect(target?.readSelection?.()).resolves.toBe('sel')
+    const undo: EditCommandInput = { type: 'editCommand', command: 'undo', key: 'z', modifiers: ['meta'] }
+    target?.editCommand?.(undo)
+    expect(made[0]?.commands).toEqual([undo])
     // Another window's panel of the same key has no view: nothing.
     expect(manager.inputTarget(8, 'a.one', 'view')).toBeUndefined()
     // The view goes (the plugin stopped): a target handed out before sends nothing.
     manager.destroyPlugin(7, 'a.one')
     target?.send([ev])
     target?.insertText?.('x')
+    target?.editCommand?.(undo)
     expect(made[0]?.input).toEqual([[ev]])
     expect(made[0]?.texts).toEqual(['é'])
+    expect(made[0]?.commands).toEqual([undo])
     await expect(target?.readSelection?.()).resolves.toBeUndefined()
     expect(manager.inputTarget(7, 'a.one', 'view')).toBeUndefined()
   })

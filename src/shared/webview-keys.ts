@@ -70,6 +70,29 @@ export function webviewKeyChar(key: string, mods: { control: boolean; meta: bool
   return undefined
 }
 
+/** An editing command a key down carries to a streamed page (editCommandOf). */
+export type WebviewEditCommand = 'selectAll' | 'undo' | 'redo'
+
+/**
+ * The editing command a key down stands for, or undefined (plan 20261119-server-mode-mac, decision
+ * 7): exactly one of Ctrl and Cmd, no Alt, and A → selectAll, Z → undo, Shift+Z → redo, Ctrl+Y →
+ * redo (Windows'; Cmd+Y is no redo on a Mac). On a macOS server a key event alone runs none of
+ * them: Chromium takes them from the menu and the responder chain, which an off-screen page never
+ * has (design-web.md §9.15 S6: Cmd+A and Ctrl+A by key event selected nothing). Both Ctrl and Cmd on
+ * every server and from every browser, since the browser's OS is not the server's. The letter case-
+ * insensitively: a browser names Shift+Z `Z`. Shift with A or Y is no command (Ctrl+Shift+A is a
+ * page's own shortcut, if anything). Copy, cut and paste are never here (isClipboardChord: never
+ * forwarded at all).
+ */
+export function editCommandOf(key: string, mods: { control: boolean; meta: boolean; alt: boolean; shift: boolean }): WebviewEditCommand | undefined {
+  if (mods.control === mods.meta || mods.alt) return undefined
+  const letter = key.length === 1 ? key.toLowerCase() : ''
+  if (letter === 'a') return mods.shift ? undefined : 'selectAll'
+  if (letter === 'z') return mods.shift ? 'redo' : 'undo'
+  if (letter === 'y') return mods.control && !mods.shift ? 'redo' : undefined
+  return undefined
+}
+
 /**
  * Whether a key event is a copy, cut or paste chord on any platform: Ctrl/Cmd+C, X, V (with Shift
  * or Alt too), Ctrl+Insert, Shift+Insert and Shift+Delete. Both sides read it: the browser never

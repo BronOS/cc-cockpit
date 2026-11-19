@@ -27,11 +27,17 @@
 //   paints nothing by itself, spike).
 // - `paint` and `cursor-changed` go to the view's sink (setSink), for the frame stream and the
 //   browsers' cursor; with no sink they are dropped. Input comes back through sendInput
-//   (`sendInputEvent`, checked by webview-input.ts).
+//   (`sendInputEvent`, checked by webview-input.ts), text through insertText and edit chords
+//   through editCommand (both on the page's protocol while it is attached).
+// - Input reaches the top document only: neither `sendInputEvent` nor the page session's
+//   `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` routes into an out-of-process
+//   (cross-site) iframe of an off-screen page; the top document gets the event, its target the
+//   IFRAME element (scripts/offscreen-input-check.mjs, macOS, Electron 45.1.0, 2026-11-19).
+//   docs/backlog/streamed-clicks-miss-cross-site-iframes.md has what would reach one.
 import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
-import { SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
+import { editKeyEvent, SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
 import { chooseScript, hitScript } from './select-hit'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
@@ -213,6 +219,23 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       insertText: (text) => {
         if (wc.isDestroyed()) return Promise.resolve()
         return wc.debugger.isAttached() ? wc.debugger.sendCommand('Input.insertText', { text }) : wc.insertText(text)
+      },
+      // An edit chord (webview-input.ts editKeyEvent; plan 20261119-server-mode-mac, decision 7):
+      // its key down with `selectAll`, `undo` or `redo` as the protocol's `Input.dispatchKeyEvent`
+      // on the page's session (attached by cancelOffscreenNativeUi). S6 (design-web.md §9.15): it
+      // runs on the never-focused page, the page sees the key down and preventing it stops the
+      // command, and it keeps its place behind keys sendInputEvent sent just before (100 of 100),
+      // settling once the page has it. Only for a view whose protocol detached:
+      // `webContents.selectAll` / `undo` / `redo`, which the page's key down never precedes (so a
+      // page that handles the chord itself cannot keep its own undo there) and which, an IPC of
+      // their own, a key sent around them may overtake; the key up still goes as a key up.
+      editCommand: (input) => {
+        if (wc.isDestroyed()) return Promise.resolve()
+        if (wc.debugger.isAttached()) return wc.debugger.sendCommand('Input.dispatchKeyEvent', editKeyEvent(input))
+        if (input.command === 'selectAll') wc.selectAll()
+        else if (input.command === 'undo') wc.undo()
+        else wc.redo()
+        return Promise.resolve()
       },
       // The page's selection, read in main's own isolated world (webview-input.ts SELECTION_SCRIPT):
       // the page's scripts cannot see the read nor stand in for what it calls.
