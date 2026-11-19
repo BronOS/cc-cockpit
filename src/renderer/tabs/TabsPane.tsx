@@ -223,13 +223,16 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // tab's terminal: sessions.get would create a new one for a tab that is gone.
   const removed = useRef(new Set<string>())
   // D-9: this guest's Close of a tab it did not open asked the owner (guest-close.ts). The notices
-  // wait for the tab to leave the strip, or say it was kept.
+  // wait for main's answer (`tabs.guestCloseDone`, sent to the asking guest's own views only) or for the
+  // tab to leave the strip, and say it was kept.
   const [closeNotices, setCloseNotices] = useState<readonly GuestCloseNotice[]>([])
   const guestCloses = useRef<GuestCloseNotices | null>(null)
   useEffect(() => {
     const notices = new GuestCloseNotices(setCloseNotices)
     guestCloses.current = notices
+    const offDone = window.cockpit.on('tabs.guestCloseDone', ({ tabId, closed }) => notices.answered(tabId, closed))
     return () => {
+      offDone()
       notices.dispose()
       if (guestCloses.current === notices) guestCloses.current = null
     }
