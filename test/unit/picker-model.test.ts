@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CERTIFICATE_HINT,
+  serverViaText as guestViaText,
+  withAnswer as withAnswer05,
   canConnect,
   connectSettings,
   editFields,
@@ -406,5 +409,28 @@ describe('prompt flow (answers of one connect)', () => {
     expect(step(flow, { need: 'password' }).step).toEqual({ error: 'the server did not take the password' })
     const key = withAnswer(newPromptFlow(), { need: 'passphrase', secret: 'pp', remember: true })
     expect(step(key, { need: 'passphrase', path: '/k' }).step).toEqual({ error: 'the passphrase did not open /k' })
+  })
+})
+
+
+describe('a guest invite in the desktop picker (design-guests §11, D-29)', () => {
+  it('labels a guest Direct record "Guest at <origin>", and only a Direct one', () => {
+    expect(guestViaText({ via: { kind: 'direct', origin: 'https://host.example.com' }, guest: true })).toBe('Guest at https://host.example.com')
+    expect(guestViaText({ via: { kind: 'direct', origin: 'https://host.example.com' } })).toBe('https://host.example.com')
+    expect(guestViaText({ via: { kind: 'tunnel', localPort: 7331, remotePort: 7330 }, guest: true })).toBe('tunnel :7331')
+  })
+
+  it('asks for a certificate once; the same one again is an error, never a second prompt', () => {
+    const need = { need: 'certificate' as const, origin: 'https://host.example.com', sha256: 'a'.repeat(64) }
+    const first = promptStep(newPromptFlow(), need)
+    expect(first.step).toEqual({ ask: need, retry: false })
+    const answered = withAnswer05(first.flow, { need: 'certificate', sha256: need.sha256 })
+    expect(answered.answers.certificate).toBe(need.sha256)
+    expect(answered.answers.hostKey).toBeUndefined()
+    expect(promptStep(answered, need).step).toEqual({ error: 'the certificate of https://host.example.com could not be confirmed' })
+  })
+
+  it('says what Trust means', () => {
+    expect(CERTIFICATE_HINT).toContain('only this certificate')
   })
 })

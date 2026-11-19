@@ -367,7 +367,7 @@ export function ConnectForm(props: {
                 id={`${uid}-link`}
                 label="Link"
                 testId="connect-link"
-                hint="The access link, or a one-time link from “ccc web add-device” on the server."
+                hint="The access link, a one-time link from “ccc web add-device” on the server, or a guest invite link someone sent you."
                 errorId={errorRef}
               >
                 {(attrs) => (

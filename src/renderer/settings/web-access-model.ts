@@ -449,15 +449,7 @@ export function desktopCredentialNotes(credentials: WebAccessView['credentials']
 // beside the owner's avatar. A Web access setting, default "Host", plain text, at most 60 characters
 // (GUEST_NAME_MAX, the guest names' cap). It grants nothing, so a server's browser may save it alone
 // (spec-review 23: a name-only patch from an owner browser).
-//
-// `ownerName` on WebAccessView and WebAccessPatch is task 02's (shared/web-access.ts); until it lands
-// the page reads and writes it through this local optional field, so an older main's view reads as the
-// default and its patch carries one key main does not know yet.
-
-/** The field `shared/web-access.ts` gains (D-24); optional here until it does. */
-export interface OwnerNamed {
-  ownerName?: string
-}
+// `WebAccessView.ownerName` is optional on the wire (an older main's answer has none): read as the default.
 
 /** The name guests see when the owner set none. */
 export const DEFAULT_OWNER_NAME = 'Host'
@@ -467,7 +459,7 @@ export const OWNER_NAME_MAX = GUEST_NAME_MAX
 
 /** The owner's name as the view has it, or the default. */
 export function ownerNameOf(view: WebAccessView): string {
-  const name = (view as WebAccessView & OwnerNamed).ownerName
+  const name = view.ownerName
   return typeof name === 'string' && name.trim() !== '' ? name : DEFAULT_OWNER_NAME
 }
 
@@ -499,7 +491,7 @@ export function ownerNameProblem(draft: string): string | undefined {
  * name-only patch main allows it), the error that keeps Save off, or null when the name is what is
  * saved already. A blank name saves the default.
  */
-export function ownerNamePatch(view: WebAccessView, draft: string): { patch: WebAccessPatch & OwnerNamed } | { error: string } | null {
+export function ownerNamePatch(view: WebAccessView, draft: string): { patch: WebAccessPatch } | { error: string } | null {
   const error = ownerNameProblem(draft)
   if (error !== undefined) return { error }
   const trimmed = draft.trim().normalize('NFC')

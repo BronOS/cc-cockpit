@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom'
 import type { RemoteConnectAnswer } from '../../shared/ipc'
 import type { RemoteAnswers, RemoteNeed } from '../../shared/remote-servers'
 import { ApprovalDialog } from '../notices/ApprovalDialog'
-import { newPromptFlow, promptStep, withAnswer, type PromptAnswer } from './picker-model'
+import { CERTIFICATE_HINT, newPromptFlow, promptStep, withAnswer, type PromptAnswer } from './picker-model'
 
 /** A run's end: main's answer, the picker's own error (a secret wrong twice), or the person's Cancel. */
 export type PromptedAnswer = RemoteConnectAnswer | { ok: false; cancelled: true }
@@ -85,8 +85,11 @@ export function useRemotePrompts(): {
           onAnswer={(trust) => pending.resolve(trust ? { need: 'hostKey', sha256: need.sha256 } : null)}
         />
       ) : need.need === 'certificate' ? (
-        // The D-29 certificate prompt is task 05's (no main sends this need before task 02).
-        null
+        <CertificatePrompt
+          key={need.sha256}
+          need={need}
+          onAnswer={(trust) => pending.resolve(trust ? { need: 'certificate', sha256: need.sha256 } : null)}
+        />
       ) : (
         <SecretPrompt
           // A new prompt (another try) starts empty: the wrong text is not kept in the field.
@@ -131,6 +134,38 @@ function HostKeyPrompt(props: { need: Extract<RemoteNeed, { need: 'hostKey' }>; 
       <p className="remote-prompt-hint">
         Compare with <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on the server.
       </p>
+    </ApprovalDialog>
+  )
+}
+
+/**
+ * Trust this certificate? (design-guests §11, D-29): a Direct guest link to a host that serves https with
+ * a certificate this machine does not trust (self-signed, as a desktop host's own TLS is). Shown once;
+ * main then accepts that one certificate for the origin and saves the pin with the record, and a
+ * changed certificate later is refused, never asked again (Forget fixes it). The same ApprovalDialog
+ * as the host key: Trust is never the default and takes a click only after it was seen for a moment.
+ * The fingerprint is main's (the certificate the server showed), plain text.
+ */
+function CertificatePrompt(props: { need: Extract<RemoteNeed, { need: 'certificate' }>; onAnswer(trust: boolean): void }): React.JSX.Element {
+  const { need } = props
+  return (
+    <ApprovalDialog
+      title="Trust this certificate?"
+      allowLabel="Trust"
+      denyLabel="Cancel"
+      focusDeny
+      testIds={{ dialog: 'remote-cert-prompt', allow: 'remote-cert-trust', deny: 'remote-cert-cancel' }}
+      onAnswer={props.onAnswer}
+    >
+      <dl className="remote-hostkey">
+        <dt>Address</dt>
+        <dd data-testid="remote-cert-origin">{need.origin}</dd>
+        <dt>Certificate (SHA-256)</dt>
+        <dd>
+          <code data-testid="remote-cert-fingerprint">{need.sha256}</code>
+        </dd>
+      </dl>
+      <p className="remote-prompt-hint">{CERTIFICATE_HINT}</p>
     </ApprovalDialog>
   )
 }
