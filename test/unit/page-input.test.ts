@@ -459,7 +459,7 @@ describe('PageInputRouter', () => {
     expect(s.mice().some((m) => m[0] === 'C')).toBe(false)
   })
 
-  it('a captured frame that went: the rest of the drag goes to the page session', async () => {
+  it('a captured frame that went: the rest of the drag goes to the page session, its release nowhere', async () => {
     const s = setup()
     s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
     s.router.input([down(20, 225)])
@@ -467,10 +467,10 @@ describe('PageInputRouter', () => {
     s.router.frameDetached('A')
     s.router.input([move(30, 225, true), up(30, 225)])
     await s.flush()
+    // A release goes only where its press went: the page never got one, so it gets no stray release.
     expect(s.mice()).toEqual([
       ['A', 'mousePressed', 20, 25],
-      ['', 'mouseMoved', 30, 225],
-      ['', 'mouseReleased', 30, 225]
+      ['', 'mouseMoved', 30, 225]
     ])
   })
 
@@ -545,24 +545,18 @@ describe('PageInputRouter', () => {
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
     expect(s.logs).toEqual(['webview: the page or a frame did not answer input in time; it gets no more until it does'])
     // Typing goes on meanwhile: held in order behind 'b' (not sent), and goes once 'a' answered.
+    // The moves are dropped while the page owes its answer, the one queued before the stall too
+    // (the next move after it is hit-tested anew).
     s.router.input([keyDown('c'), move(6, 6)])
     await s.flush()
     expect(s.page.sent).toHaveLength(1)
     s.page.opts.hold = false
     s.page.held.shift()?.resolve({})
     await s.flush()
-    expect(s.page.sent.map((x) => x.params.key ?? `${x.params.type} ${x.params.x}`)).toEqual(['a', 'b', 'mouseMoved 5', 'c', 'mouseMoved 6'])
-    // A move that comes to a stalled page session is dropped (the next one takes its place).
-    s.page.opts.hold = true
-    s.router.input([keyDown('d')])
-    await s.flush()
-    s.fire()
-    await s.flush()
+    expect(s.page.sent.map((x) => x.params.key ?? `${x.params.type} ${x.params.x}`)).toEqual(['a', 'b', 'c'])
     s.router.input([move(7, 7)])
     await s.flush()
-    s.page.held.shift()?.resolve({})
-    await s.flush()
-    expect(s.mice().at(-1)).toEqual(['', 'mouseMoved', 6, 6])
+    expect(s.mice()).toEqual([['', 'mouseMoved', 7, 7]])
   })
 
   it('a hit test that never answers sends the event to the page session after ROUTE_TIMEOUT_MS', async () => {
@@ -843,7 +837,10 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     s.detach()
     s.router.input([up(20, 225)])
     expect(s.fallback).toEqual([up(20, 225)])
+    // A new attachment: its frames are announced anew (new sessions).
     s.attach()
+    s.page.owners.set('', [])
+    s.frame('A2', '', 7, rect(0, 200, 600, 300), 600, 300)
     s.router.input([down(20, 225)])
     await s.flush()
     old?.resolve({})
@@ -853,11 +850,11 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     // The new press is unanswered: the move waits for it.
     expect(s.mice()).toEqual([
       ['A', 'mousePressed', 20, 25],
-      ['A', 'mousePressed', 20, 25]
+      ['A2', 'mousePressed', 20, 25]
     ])
     s.page.held.shift()?.resolve({})
     await s.flush()
-    expect(s.mice().at(-1)).toEqual(['A', 'mouseMoved', 30, 25])
+    expect(s.mice().at(-1)).toEqual(['A2', 'mouseMoved', 30, 25])
   })
 
   // Round 1, MUST 1: "A preceding wheel can scroll that frame away during the drain ... Dispatch
@@ -1338,6 +1335,42 @@ describe('PageInputRouter scheduling: review 4', () => {
     expect(s.mice().filter((m) => m[1] === 'mouseMoved')).toEqual([
       ['A', 'mouseMoved', -1, -1],
       ['', 'mouseMoved', 700, 50]
+    ])
+  })
+})
+
+// Found by page-input.fuzz.test.ts (a mutation it caught at 20,000 seeds; pinned here).
+describe('PageInputRouter scheduling: owed releases', () => {
+  it('a frame that answers while a press is hit-tested gets its owed release before the press', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.router.input([down(20, 225)])
+    await s.flush()
+    // A drag move A does not answer in time (A stalled), then the release: owed to A.
+    s.page.opts.holdSessions.add('A')
+    s.router.input([move(30, 230, true)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.router.input([up(30, 230)])
+    await s.flush()
+    // The next press is mid-hit-test when A answers.
+    s.page.opts.holdQueries = true
+    s.router.input([down(40, 240)])
+    await s.flush()
+    expect(s.page.heldQueries).toHaveLength(1)
+    s.page.opts.holdSessions.clear()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    s.page.opts.holdQueries = false
+    for (let n = 0; n < 10 && s.page.heldQueries.length > 0; n++) {
+      s.page.heldQueries.shift()?.answer()
+      await s.flush()
+    }
+    expect(s.mice().filter((m) => m[1] !== 'mouseMoved')).toEqual([
+      ['A', 'mousePressed', 20, 25],
+      ['A', 'mouseReleased', 30, 30],
+      ['A', 'mousePressed', 40, 40]
     ])
   })
 })

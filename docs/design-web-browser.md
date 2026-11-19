@@ -231,11 +231,16 @@ the fallback when the protocol detached:
   point (a scroll read gone stale) is read once more, then the parent takes it. No cache: one hit test per event, none
   on a page without cross-site frames. After a press the frame that got it captures the moves and the release (a drag
   leaving the frame keeps selecting in it; one from the top document stays there over a frame), the owners' boxes read
-  again on each event, until no button is held. When the pointer changes frame, the frame it left gets one move (over
-  the owner, or outside its viewport) so its hover ends.
+  again on each event, until no button is held. Each press is one record of where it went (the page's session, a
+  frame's, or `sendInputEvent` when the page's session refused it), and its release goes there and nowhere else,
+  exactly once: a release with no record (its press went nowhere: a detach, a full queue) is dropped, so no session
+  gets a release it was not pressed for, and one whose frame went is dropped with it. A move without a button still
+  pressed, or a press of a button still pressed, means the viewer's release went missing: that release is sent then,
+  to its press's session. When the pointer changes frame, the frame it left gets one move (over the owner, or outside
+  its viewport) so its hover ends.
 - **Order.** One queue per page, one step at a time, and at most one input command on its way per page across all
-  its sessions: every `Input.*` (keys, texts, edit commands, pointer events and the hover moves) goes through one
-  sender, and the step that sent it waits until it is answered or its 500 ms deadline passed before anything else
+  its sessions: every `Input.*` (keys, texts, edit commands, pointer events, the hover moves and the owed releases)
+  goes through one sender, which holds the rest of this contract too, and the step that sent it waits until it is answered or its 500 ms deadline passed before anything else
   goes (a key sent while a press into a frame was on its way landed in the old focus 15 times in 30; a press
   hit-tested while a move was on its way could pick a frame that move's hover covered). A pointer event does every
   wait first and its hit test last, right before its send; after hover moves it is hit-tested again, at most twice,
@@ -248,12 +253,19 @@ the fallback when the protocol detached:
   the page's one on its way (a stalled frame holds itself, not the page). A move for a stalled frame is dropped, its
   press or wheel goes to the page's session at the top point. A release always goes where its press went: a frame
   that got a press and then stalled is owed the release, sent once it answers (dropped if the frame or the
-  attachment goes); an edit command's key down counts as a press for the queue's cap like any key. While the page's own session is stalled
-  its moves are dropped and the rest waits in the queue (bounded by the cap), so a page busy for a second loses no
-  key; its answer or a detach starts the queue again. A hit-test query that missed its 200 ms deadline marks its
-  session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch: an
-  answer from before a detach changes nothing. A frame's session refusing (the frame went) sends the event to the
-  page's session at the top point, never to another frame.
+  attachment goes), and gets nothing new before it; an edit command's key down counts as a press for the queue's cap
+  like any key. While the page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
+  presses, releases, wheels and owed releases wait in the queue in order (bounded by the cap; no hit test runs), moves
+  are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
+  answered; its answer or a detach starts the queue again. A hit-test query that missed its 200 ms deadline marks its
+  session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch and
+  each session its own lifetime: every continuation (an answer, a refusal, a deadline, a hover move's end, a hit
+  test) of an older attachment or of a session that went changes nothing, requeues nothing and replays nothing, and
+  the router keeps nothing of a session that went. A frame's session refusing (the frame went) sends the event to the
+  page's session at the top point, never to another frame (a release is dropped instead); the page's session refusing
+  sends it by `sendInputEvent` (a text or edit command by its detached road). A seeded randomized test
+  (`page-input.fuzz.test.ts`, `FUZZ_SEEDS` for a long run) checks these rules on every send and at quiescence, with
+  sessions that answer late, never or refuse, frames that detach, hover effects and the protocol lost.
 
 `scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
 chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,

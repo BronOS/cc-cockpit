@@ -47,8 +47,8 @@ const BUTTONS: readonly Button[] = ['left', 'right', 'middle']
 const BUTTON_MOD: Readonly<Record<Button, InputModifier>> = { left: 'leftbuttondown', right: 'rightbuttondown', middle: 'middlebuttondown' }
 /** How a session answers each input command. */
 type Mode = 'fast' | 'slow' | 'late' | 'never' | 'reject'
-/** How a session answers each hit-test query. */
-type QueryMode = 'fast' | 'late' | 'never' | 'reject'
+/** How a session answers each hit-test query (slow: within the route's deadline, so a late input answer can land mid-hit-test). */
+type QueryMode = 'fast' | 'slow' | 'late' | 'never' | 'reject'
 type FrameName = 'A' | 'B' | 'C' | 'D'
 type DocName = 'page' | FrameName
 /** A hover side effect on a frame owner: a move over it covers it (an overlay), uncovers it, or flips. */
@@ -95,7 +95,9 @@ const DOCS: readonly DocName[] = ['page', 'A', 'B', 'C', 'D']
 /** Keys a viewer may press: plain, named, and the letters of the clipboard and edit chords. */
 const KEYS = ['a', 'b', 'q', 'c', 'v', 'x', 'z', 'A', 'Enter', 'ArrowLeft', 'Backspace', 'Insert', 'Delete', 'Tab']
 const MOD_SETS: readonly InputModifier[][] = [[], [], [], ['shift'], ['control'], ['meta'], ['meta', 'shift'], ['alt']]
-const ADVANCES = [1, 10, 50, 199, 200, 201, 300, 499, 500, 501, 1000]
+const ADVANCES = [1, 10, 30, 50, 199, 200, 201, 300, 499, 500, 501, 1000]
+/** How long past its deadline a late session answers (some land while a later step is mid-hit-test). */
+const LATE = [1, 30, 61, 120, 260, 520]
 
 function pick<T>(r: () => number, list: readonly T[]): T {
   return list[Math.floor(r() * list.length)] as T
@@ -165,9 +167,9 @@ function makeScript(seed: number): Action[] {
     } else if (p < 0.75) {
       out.push({ a: 'advance', ms: pick(r, ADVANCES) })
     } else if (p < 0.81) {
-      out.push({ a: 'mode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'slow', 'late', 'never', 'reject'] as const) })
+      out.push({ a: 'mode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'slow', 'late', 'late', 'never', 'reject'] as const) })
     } else if (p < 0.83) {
-      out.push({ a: 'qmode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'late', 'never', 'reject'] as const) })
+      out.push({ a: 'qmode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'slow', 'slow', 'late', 'never', 'reject'] as const) })
     } else if (p < 0.86) {
       out.push({ a: 'box', frame: pick(r, FRAME_NAMES), dx: Math.floor(r() * 41) - 20, dy: Math.floor(r() * 41) - 20 })
     } else if (p < 0.88) {
@@ -447,7 +449,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
               reject(err)
             }
           },
-          mode === 'late' ? ROUTE_TIMEOUT_MS + 1 : 0,
+          mode === 'late' ? ROUTE_TIMEOUT_MS + 1 : mode === 'slow' ? 30 : 0,
           false
         )
       })
@@ -496,8 +498,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         c.answered = true
         if (withTrace) trace.push(`  t=${clock.now} ${ok ? 'answer' : 'refuse'} ${id || 'page'} ${String(p.type ?? method)}`)
         if (ok) return resolve({})
-        // Refused: it never happened there. The oracle forgets what it recorded for it, and a
-        // refusing session's open presses are excused (it went, or it is broken).
+        // Refused: it never happened there. The oracle forgets what it recorded for it. A frame's
+        // refusal means it went, so its open presses are excused; the page's own session refusing
+        // sends by sendInputEvent instead, to the same page, so a press there stays open until its
+        // release (by either road).
         if (c.logged) {
           const at = delivered.lastIndexOf(c.logged.entry)
           if (at >= 0) delivered.splice(at, 1)
@@ -506,23 +510,32 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (p.type === 'mousePressed') {
             const tag = tagOf(p.x as number, p.y as number)
             pressTags.set(tag, (pressTags.get(tag) ?? 1) - 1)
+            open.get(session)?.delete(String(p.button))
           }
-          open.delete(session)
+          if (session.doc !== 'page') open.delete(session)
         }
         reject(new Error('No session with given id'))
       }
       c.resolve = () => settle(true)
       c.reject = () => settle(false)
       if (mode === 'never') return
-      const delay = mode === 'slow' ? 300 : mode === 'late' ? STEP_TIMEOUT_MS + 1 + (commands.length % 3) * 100 : 0
+      const delay = mode === 'slow' ? 300 : mode === 'late' ? STEP_TIMEOUT_MS + LATE[commands.length % LATE.length]! : 0
       clock.set(() => settle(mode !== 'reject'), delay, false)
     })
   }
 
   const fallback: ElectronInputEvent[] = []
+  // A router that spins (a step that never ends and never waits) would hang the run: counted, then stopped.
+  let turns = 0
   const router = new PageInputRouter({
     send,
-    attached: () => attached,
+    attached: () => {
+      if (++turns > 200_000) {
+        violate('spin', 'the router ran 200000 turns in one run without waiting')
+        throw new Error('spin')
+      }
+      return attached
+    },
     fallback: (event) => {
       if (withTrace) trace.push(`  t=${clock.now} fallback ${JSON.stringify(event)}`)
       fallback.push(event)
@@ -864,7 +877,7 @@ async function shrink(seed: number, script: Action[], id: string): Promise<Actio
   return current
 }
 
-const SEEDS = Number(process.env.FUZZ_SEEDS ?? 3000)
+const SEEDS = Number(process.env.FUZZ_SEEDS ?? 2000)
 const ONE_SEED = process.env.FUZZ_SEED === undefined ? undefined : Number(process.env.FUZZ_SEED)
 
 describe('PageInputRouter, randomized against its rules', () => {

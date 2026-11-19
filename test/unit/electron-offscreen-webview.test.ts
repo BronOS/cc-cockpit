@@ -689,14 +689,18 @@ describe('OffscreenWebviewFactory', () => {
     const press = wc.debugger.commands.slice(mark).find((c) => c.method === 'Input.dispatchMouseEvent')
     expect(press?.sessionId).toBe('S1')
     expect(press?.params).toMatchObject({ type: 'mousePressed', x: 20, y: 25 })
-    // Gone: the release (no capture left to follow) and what comes after go to the page.
+    // Gone: its release goes nowhere (a release goes only where its press went, and the page got
+    // none), and what comes after goes to the page.
     wc.debugger.emit('message', {}, 'Target.detachedFromTarget', { sessionId: 'S1', targetId: 'T-S1' }, '')
     const mark2 = wc.debugger.commands.length
-    view.sendInput([{ type: 'mouseUp', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] }])
+    view.sendInput([
+      { type: 'mouseUp', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] },
+      { type: 'mouseDown', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] }
+    ])
     await vi.waitFor(() => expect(wc.debugger.commands.slice(mark2).some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(true))
-    const release = wc.debugger.commands.slice(mark2).find((c) => c.method === 'Input.dispatchMouseEvent')
-    expect(release?.sessionId).toBeUndefined()
-    expect(release?.params).toMatchObject({ type: 'mouseReleased', x: 20, y: 225 })
+    const next = wc.debugger.commands.slice(mark2).filter((c) => c.method === 'Input.dispatchMouseEvent')
+    expect(next.map((c) => [c.sessionId, (c.params as { type?: unknown } | undefined)?.type])).toEqual([[undefined, 'mousePressed']])
+    expect(next[0]?.params).toMatchObject({ x: 20, y: 225 })
     expect(wc.calls.filter((c) => c.startsWith('input'))).toEqual([])
   })
 
@@ -744,10 +748,13 @@ describe('OffscreenWebviewFactory', () => {
       { method: 'Input.dispatchKeyEvent', params: editKeyEvent(redo) }
     ])
     expect(wc.calls).toEqual([])
-    // A protocol refusing the command: the rejection is the lane's (it lets the rest go), not thrown here.
+    // A protocol refusing the command: its detached road, as a refused key goes by sendInputEvent
+    // (a refused text or command is never lost), not thrown here.
     state.refuse = true
-    await expect(view.editCommand?.(undo)).rejects.toThrow(/refused/)
+    await expect(view.editCommand?.(undo)).resolves.toBeUndefined()
+    expect(wc.calls).toEqual(['undo'])
     state.refuse = false
+    wc.calls.length = 0
     // Detached: the webContents commands, no key event, settled at once.
     wc.debugger.attachedWith = undefined
     const before = wc.debugger.commands.length
