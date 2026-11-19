@@ -35,8 +35,23 @@
 // each followed by `ccc browser url` showing the title the page set after the call returned; a
 // refused port is a load error (exit 1). Main must answer `ccc web status` after each, and quit as
 // every run does (status 0, nothing left), off-screen pages and all.
+//
+// On macOS (plan 20261119-server-mode-mac, decision 10; design-web.md §9.15) only `--server` starts a
+// server, with no re-exec, so the pid that printed the first lines is the app: its argv has no Ozone
+// switch, LaunchServices lists it as `UIElement` (no Dock icon) and `pmset -g assertions` shows its
+// idle-sleep hold. Processes are read with `ps` (no /proc): the run is the started pid's process group
+// (a session leader's pgid is its pid), plus every descendant seen before the stop, so a helper or a
+// pty's child that left the group still counts. The detected run and the fallback are Linux-only and
+// skipped with a line. The `--server` run also starts a second `--server` on the same data dir, which
+// must exit 1 with the held line while the first keeps serving. The reopen case (`out/` only): `--server`
+// from a copy of Electron.app with its own CFBundleIdentifier (LaunchServices routes by bundle, and other
+// runs on the Mac use the stock one), then `open -a <copy>`: no second process starts, and the reopen
+// notice answers from CC_COCKPIT_TEST_SERVER_BOX: `stop` exits the server with 0, `cancel` leaves it
+// serving and back to `UIElement`. The copy lives under /private/tmp/claude-<uid>/ (else the temp dir) and is
+// unregistered from LaunchServices and removed at the end. Not here: a real LaunchAgent (`launchctl`, the
+// person's login session), which the owner runs by hand (plan 20261119-server-mode-mac, O1).
 // Exits 1 on any failure.
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import pty from 'node-pty'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -50,10 +65,13 @@ const packaged = process.argv[2]
 const START_MS = 60_000
 const QUIT_MS = 15_000
 
-if (process.platform !== 'linux') {
-  console.log('server mode runs on Linux only: nothing to test here')
+const darwin = process.platform === 'darwin'
+if (process.platform !== 'linux' && !darwin) {
+  console.log('server mode runs on Linux and macOS only: nothing to test here')
   process.exit(0)
 }
+/** server-mode.ts `HELD_LINE`: a darwin `--server` that lost the data dir's lock. */
+const HELD_LINE = 'server mode: not started: cc-cockpit already runs with this data dir (the desktop app or another server)'
 
 const command = packaged
   ? { exe: resolve(packaged), args: [] }
@@ -82,6 +100,7 @@ async function until(what, ms, check) {
  * Chromium's process titles overwrite /proc/<pid>/environ.
  */
 function processesOf(sid) {
+  if (darwin) return psTable().filter((p) => p.pgid === sid).map((p) => p.pid)
   const pids = []
   for (const name of readdirSync('/proc')) {
     if (!/^\d+$/.test(name)) continue
@@ -99,11 +118,239 @@ function processesOf(sid) {
 
 /** The command line as one string: Chromium rewrites the process title into argv's memory, spaces and all. */
 function cmdline(pid) {
+  if (darwin) return psTable().find((p) => p.pid === pid)?.command ?? ''
   try {
     return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ')
   } catch {
     return ''
   }
+}
+
+/**
+ * macOS (no /proc): every live process as `ps -A -o pid=,ppid=,pgid=,stat=,command=` reads it, zombies
+ * (a `stat` starting with Z) left out. `command` last: it may hold spaces.
+ */
+function psTable() {
+  let out
+  try {
+    out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,pgid=,stat=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  } catch {
+    return []
+  }
+  const rows = []
+  for (const line of out.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s?(.*)$/.exec(line)
+    if (!m || m[4].startsWith('Z')) continue
+    rows.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], command: m[5] })
+  }
+  return rows
+}
+
+/** macOS: `pid` and every live descendant by parent pid (helpers, plugin hosts, ptys and their children). */
+function descendantsOf(pid) {
+  const rows = psTable()
+  const found = new Set([pid])
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const row of rows) {
+      if (found.has(row.ppid) && !found.has(row.pid)) {
+        found.add(row.pid)
+        grew = true
+      }
+    }
+  }
+  return [...found].filter((p) => rows.some((row) => row.pid === p))
+}
+
+/** macOS: which of `pids` are still alive (not zombies). */
+function aliveOf(pids) {
+  const live = new Set(psTable().map((p) => p.pid))
+  return pids.filter((p) => live.has(p))
+}
+
+/** macOS: the LaunchServices type of `pid` (`UIElement`, `Foreground` ...), or `not listed`. */
+function lsType(pid) {
+  return /type="([^"]+)"/.exec(lsBlock(pid))?.[1] ?? 'not listed'
+}
+
+function lsBlock(pid) {
+  let out
+  try {
+    out = execFileSync('lsappinfo', ['list'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  } catch {
+    return ''
+  }
+  return out.split(/\n(?=\s*\d+\) ")/).find((b) => b.includes(`pid = ${pid} `)) ?? ''
+}
+
+/** macOS: the `pmset -g assertions` lines `pid` holds (`pid <n>(<name>): ...`). */
+function assertionsOf(pid) {
+  try {
+    return execFileSync('pmset', ['-g', 'assertions'], { encoding: 'utf8' })
+      .split('\n')
+      .filter((l) => l.includes(`pid ${pid}(`))
+      .map((l) => l.trim())
+  } catch {
+    return []
+  }
+}
+
+/**
+ * macOS: the app is the pid that was started (no re-exec, no Ozone switch), Dock-less (`UIElement`) and
+ * holding idle sleep off for the run (server-platform.ts; Chromium's `prevent-app-suspension` shows as
+ * `NoIdleSleepAssertion`, the per-pid name of the `PreventUserIdleSystemSleep` kind).
+ */
+async function checkDarwinApp(pid, failures) {
+  const argv = cmdline(pid)
+  if (argv === '' || argv.includes('--ozone-platform') || argv.includes('--server-parent=')) {
+    failures.push(`pid ${pid} is not the app as started: ${argv}`)
+  }
+  const type = await until('a LaunchServices entry', 10_000, () => {
+    const t = lsType(pid)
+    return t === 'not listed' ? undefined : t
+  }).catch(() => 'not listed')
+  const held = assertionsOf(pid)
+  const sleepHold = held.find((l) => l.includes('NoIdleSleepAssertion') || l.includes('PreventUserIdleSystemSleep'))
+  console.log(`   pid ${pid}: LaunchServices type ${type}; ${sleepHold ?? 'no idle-sleep assertion'}`)
+  if (type !== 'UIElement') failures.push(`LaunchServices type ${type}, expected UIElement:\n${lsBlock(pid)}`)
+  if (!sleepHold) failures.push(`no idle-sleep assertion for pid ${pid}: ${JSON.stringify(held)}`)
+}
+
+/**
+ * macOS: a second `--server` on the same data dir while the first serves (decision 2, `refuseWhenHeld`):
+ * it exits 1 by itself with the held line on stdout, leaves nothing behind, and the first keeps serving.
+ */
+async function checkHeld(args, env, port, dataDir, failures) {
+  const second = launch(command.exe, args, env, false)
+  const result = await Promise.race([second.exited, sleep(START_MS).then(() => undefined)])
+  if (!result) failures.push(`the second --server still runs ${START_MS} ms after start`)
+  else {
+    console.log(`   second --server: code ${result.code}, signal ${result.signal}, stdout ${JSON.stringify(second.out.trim())}`)
+    if (result.code !== 1) failures.push(`the second --server exited with ${result.code} (signal ${result.signal}), expected 1`)
+    if (!second.out.includes(HELD_LINE)) failures.push(`the second --server did not print the held line: ${JSON.stringify(second.out)}`)
+  }
+  const left = await until('the second run to end', 5000, () => (processesOf(second.pid).length === 0 ? [] : undefined)).catch(() =>
+    processesOf(second.pid)
+  )
+  if (left.length > 0) failures.push(`the second --server left processes: ${left.join(' ')}`)
+  const status = await fetch(`http://127.0.0.1:${port}/`).then(
+    (res) => res.status,
+    () => 0
+  )
+  if (status !== 200) failures.push(`after the second --server, GET / answered ${status}`)
+  const web = await ccc(dataDir, env, ['web', 'status', '--json'])
+  if (web.code !== 0) failures.push(`after the second --server, ccc web status: exit ${web.code}: ${web.stderr.trim()}`)
+}
+
+/** second-launch.ts `SECOND_LAUNCH_ANSWER_ENV`: a test run's answer to the box, no box shown. */
+const SECOND_LAUNCH_ANSWER_ENV = 'CC_COCKPIT_TEST_SERVER_BOX'
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+
+/**
+ * macOS: a clone of this repo's Electron.app with its own bundle id, ad-hoc signed again (the Info.plist
+ * edit breaks the seal), so `open -a` can reach only this run (§9.15 S3). Returns its paths and a cleanup.
+ */
+function copyBundle() {
+  const stock = resolve(dirname(command.exe), '..', '..')
+  const parent = existsSync(`/private/tmp/claude-${process.getuid()}`) ? `/private/tmp/claude-${process.getuid()}` : tmpdir()
+  const dir = mkdtempSync(join(parent, 'ccc-smoke-bundle-'))
+  const bundle = join(dir, 'Electron.app')
+  execFileSync('cp', ['-c', '-R', stock, bundle])
+  execFileSync('plutil', ['-replace', 'CFBundleIdentifier', '-string', `dev.cc-cockpit.smoke.${process.pid}`, join(bundle, 'Contents', 'Info.plist')])
+  execFileSync('codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'ignore' })
+  return {
+    bundle,
+    exe: join(bundle, 'Contents', 'MacOS', 'Electron'),
+    remove: () => {
+      try {
+        execFileSync(LSREGISTER, ['-u', bundle], { stdio: 'ignore' })
+      } catch {
+        // never registered
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/** macOS: live main processes of the copied bundle (its helpers carry `--type=`). */
+function bundleMains(exe) {
+  return psTable()
+    .filter((p) => (p.command === exe || p.command.startsWith(`${exe} `)) && !p.command.includes('--type='))
+    .map((p) => p.pid)
+}
+
+/**
+ * macOS, the reopen case: `--server` from the copy, `open -a` the copy, the notice answered by `answer`.
+ * `stop`: the server exits 0 on its own. `cancel`: it keeps serving and is `UIElement` again (the routed
+ * launch makes it `Foreground`; the notice puts the accessory policy back). Either way no second process.
+ */
+async function runReopen(copy, answer) {
+  const port = 20000 + Math.floor(Math.random() * 20000)
+  const { base, dataDir, env } = newRunEnv(port, { enabled: true, mode: 'none' })
+  env[SECOND_LAUNCH_ANSWER_ENV] = answer
+  const args = [root, '--server']
+  console.log(`\n== reopen (open -a on a bundle copy), notice answered ${answer}: ${[copy.exe, ...args].join(' ')}`)
+  const child = launch(copy.exe, args, env, false)
+  const sid = child.pid
+  const failures = []
+  let seen = []
+  let others = new Set()
+  try {
+    await until('the gateway', START_MS, async () =>
+      child.exit === undefined && existsSync(join(dataDir, 'app.sock'))
+        ? await fetch(`http://127.0.0.1:${port}/`).then((r) => r.status === 200, () => false)
+        : false
+    )
+    await checkDarwinApp(child.pid, failures)
+    seen = [...new Set([...descendantsOf(child.pid), ...processesOf(sid)])]
+    execFileSync('open', ['-a', copy.bundle])
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline && (answer === 'cancel' || child.exit === undefined)) {
+      for (const pid of bundleMains(copy.exe)) if (pid !== child.pid) others.add(pid)
+      if (answer === 'cancel' && Date.now() > deadline - 5000 && lsType(child.pid) === 'UIElement') break
+      await sleep(100)
+    }
+    if (answer === 'stop') {
+      const result = await Promise.race([child.exited, sleep(QUIT_MS).then(() => undefined)])
+      console.log(`   after open -a: ${result ? `exited, code ${result.code}, signal ${result.signal}` : 'still running'}`)
+      if (!result || result.code !== 0) failures.push(`the notice's Stop: ${result ? `code ${result.code}, signal ${result.signal}` : 'still running'}`)
+    } else {
+      const type = lsType(child.pid)
+      const status = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.status, () => 0)
+      console.log(`   after open -a: type ${type}, GET / ${status}`)
+      if (child.exit !== undefined) failures.push(`the server exited after a Cancel: ${JSON.stringify(child.exit)}`)
+      if (type !== 'UIElement') failures.push(`LaunchServices type ${type} after the notice, expected UIElement`)
+      if (status !== 200) failures.push(`GET / answered ${status} after the notice`)
+      await checkWebStatus(dataDir, env, port, failures)
+      seen = [...new Set([...seen, ...descendantsOf(child.pid)])]
+      process.kill(child.pid, 'SIGTERM')
+      const result = await Promise.race([child.exited, sleep(QUIT_MS).then(() => undefined)])
+      if (!result || result.code !== 0) failures.push(`SIGTERM: ${result ? `code ${result.code}, signal ${result.signal}` : 'still running'}`)
+    }
+    for (const pid of bundleMains(copy.exe)) if (pid !== child.pid) others.add(pid)
+    if (others.size > 0) failures.push(`open -a started another process: ${[...others].join(' ')}`)
+    const left = await until('the run to end', 5000, () => {
+      const pids = [...processesOf(sid), ...aliveOf(seen)]
+      return pids.length === 0 ? [] : undefined
+    }).catch(() => [...processesOf(sid), ...aliveOf(seen)])
+    console.log(`   ${seen.length} processes seen in the run, ${left.length} left`)
+    if (left.length > 0) failures.push(`live processes left: ${left.join(' ')}`)
+  } catch (err) {
+    failures.push(err.message)
+  } finally {
+    for (const pid of [...processesOf(sid), ...aliveOf(seen), ...bundleMains(copy.exe)]) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // already gone
+      }
+    }
+    rmSync(base, { recursive: true, force: true })
+  }
+  for (const line of child.out.split('\n').filter((l) => l.trim() !== '')) console.log(`   stdout: ${line.trimEnd()}`)
+  if (failures.length > 0) for (const f of failures) console.log(`   FAIL: ${f}`)
+  else console.log('   ok')
+  return failures.length === 0
 }
 
 /**
@@ -305,6 +552,12 @@ async function runPortTaken() {
       (async () => {
         const deadline = Date.now() + START_MS
         while (child.exit === undefined && Date.now() < deadline) {
+          if (darwin) {
+            // One `ps` per poll, and slower: forking it every 20 ms would load a Mac other runs share.
+            if (psTable().some((p) => p.pgid === sid && p.command.includes('--type=renderer'))) renderer = true
+            await sleep(100)
+            continue
+          }
           if (processesOf(sid).some((pid) => cmdline(pid).includes('--type=renderer'))) renderer = true
           await sleep(20)
         }
@@ -355,19 +608,29 @@ function newRunEnv(port, webAccess) {
       keyOverrides: {},
       pluginSettings: {},
       updateCheck: false,
+      // macOS: a project opened (the web view step) starts no Claude tab, the person's `claude` included.
+      ...(darwin ? { claudeTabOnOpen: false } : {}),
       webAccess: { bind: '127.0.0.1', port, hosts: [], ...webAccess } })
   )
   const bus = 'unix:path=/nonexistent/bus'
   // Built from nothing, so no DISPLAY, WAYLAND_DISPLAY, CC_COCKPIT_SOCK, APP_TAB_*, CLAUDE_CODE_* or
   // ELECTRON_* of the shell running this script reaches the app.
-  const env = {
-    PATH: process.env.PATH ?? '/usr/bin:/bin',
-    HOME: home,
-    LANG: 'C.UTF-8',
-    CC_COCKPIT_DATA_DIR: dataDir,
-    DBUS_SESSION_BUS_ADDRESS: bus,
-    XDG_RUNTIME_DIR: runtime
-  }
+  const env = darwin
+    ? {
+        // No session bus or runtime dir on macOS; the fake `claude` first, should a tab start one.
+        PATH: [join(root, 'test', 'fixtures', 'bin'), process.env.PATH ?? '/usr/bin:/bin'].join(':'),
+        HOME: home,
+        LANG: 'en_US.UTF-8',
+        CC_COCKPIT_DATA_DIR: dataDir
+      }
+    : {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: home,
+        LANG: 'C.UTF-8',
+        CC_COCKPIT_DATA_DIR: dataDir,
+        DBUS_SESSION_BUS_ADDRESS: bus,
+        XDG_RUNTIME_DIR: runtime
+      }
   if (!packaged) {
     env.CC_COCKPIT_TEST = '1'
     env.CC_COCKPIT_MARKETPLACE_URLS = ''
@@ -375,7 +638,7 @@ function newRunEnv(port, webAccess) {
   return { base, dataDir, runtime, bus, env }
 }
 
-async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false, addDevice = false, webviews = false }) {
+async function run(name, { flag, noExecve, underPty = false, webAccess, stopWithCcc = false, addDevice = false, webviews = false, held = false }) {
   const port = 20000 + Math.floor(Math.random() * 20000)
   const { base, dataDir, runtime, bus, env } = newRunEnv(port, webAccess)
   if (noExecve) env.CC_COCKPIT_NO_EXECVE = '1'
@@ -387,18 +650,22 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
   }
   const args = [...command.args, ...(flag ? ['--server'] : []), ...(webviews ? [projectDir] : [])]
   console.log(`\n== ${name}: ${[command.exe, ...args].join(' ')}${underPty ? ' (under a pty)' : ''}`)
-  console.log(`   DBUS_SESSION_BUS_ADDRESS=${bus} XDG_RUNTIME_DIR=${runtime}`)
+  if (!darwin) console.log(`   DBUS_SESSION_BUS_ADDRESS=${bus} XDG_RUNTIME_DIR=${runtime}`)
 
   const started = Date.now()
   const child = launch(command.exe, args, env, underPty)
   const sid = child.pid
   const exited = child.exited
   const failures = []
+  // macOS: every descendant seen while the run serves, checked gone after the stop.
+  let seen = []
   try {
     await until('the CLI socket', START_MS, () => child.exit === undefined && existsSync(join(dataDir, 'app.sock')))
     console.log(`   socket after ${Date.now() - started} ms`)
     const argv = cmdline(child.pid)
-    if (noExecve) {
+    if (darwin) {
+      await checkDarwinApp(child.pid, failures)
+    } else if (noExecve) {
       // The first process waits in spawnSync; the app is its child, carrying the parent marker.
       const app = processesOf(sid).find((pid) => cmdline(pid).includes(`--server-parent=${child.pid}`))
       if (!app) failures.push('no process carries the parent marker')
@@ -435,6 +702,8 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
     await checkWebStatus(dataDir, env, port, failures)
     if (addDevice) await checkAddDevice(dataDir, env, port, failures)
     if (webviews) await checkWebviews(dataDir, env, projectDir, failures)
+    if (held) await checkHeld(args, env, port, dataDir, failures)
+    if (darwin) seen = [...new Set([...descendantsOf(child.pid), ...processesOf(sid)])]
     const termAt = Date.now()
     const how = stopWithCcc ? 'ccc web stop' : 'SIGTERM'
     if (stopWithCcc) {
@@ -457,6 +726,14 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
       return pids.length === 0 ? [] : undefined
     }).catch(() => processesOf(sid))
     if (left.length > 0) failures.push(`live processes left: ${left.join(' ')}`)
+    if (darwin) {
+      const stray = aliveOf(seen)
+      console.log(`   ${seen.length} processes seen in the run, ${stray.length} left`)
+      if (stray.length > 0) {
+        const rows = psTable().filter((p) => stray.includes(p.pid))
+        failures.push(`processes of the run left (out of its group or not): ${rows.map((p) => `${p.pid} ${p.command}`).join('; ')}`)
+      }
+    }
     // After the quit: app.json is saved debounced, and flushed at quit.
     if (webAccess.enabled === false) {
       const written = JSON.parse(readFileSync(join(dataDir, 'app.json'), 'utf8')).webAccess
@@ -465,7 +742,7 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
   } catch (err) {
     failures.push(err.message)
   } finally {
-    for (const pid of processesOf(sid)) {
+    for (const pid of [...processesOf(sid), ...(darwin ? aliveOf(seen) : [])]) {
       try {
         process.kill(pid, 'SIGKILL')
       } catch {
@@ -484,13 +761,25 @@ async function run(name, { flag, noExecve, underPty = false, webAccess, stopWith
 }
 
 const none = { enabled: true, mode: 'none' }
-const results = [
-  await run('--server', { flag: true, webAccess: { enabled: false, mode: 'confirm' }, addDevice: true }),
-  await run('detected (no flag)', { flag: false, webAccess: none })
-]
-if (!packaged) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))
+const results = [await run('--server', { flag: true, webAccess: { enabled: false, mode: 'confirm' }, addDevice: true, held: darwin })]
+if (darwin) {
+  console.log('\n== detected (no flag): skipped on macOS (only --server starts a server there; a Mac always has a display)')
+  console.log('== fallback (CC_COCKPIT_NO_EXECVE=1): skipped on macOS (no re-exec there, so no fallback)')
+} else results.push(await run('detected (no flag)', { flag: false, webAccess: none }))
+if (!packaged && !darwin) results.push(await run('fallback (CC_COCKPIT_NO_EXECVE=1)', { flag: true, noExecve: true, webAccess: none }))
 results.push(await run('--server under a pty, link mode', { flag: true, underPty: true, webAccess: { enabled: true, mode: 'link' } }))
 results.push(await run('--server, stopped with ccc web stop', { flag: true, webAccess: none, stopWithCcc: true }))
 results.push(await run('--server with web views off-screen', { flag: true, webAccess: none, webviews: true }))
 results.push(await runPortTaken())
+if (darwin && packaged) {
+  console.log('\n== reopen (open -a): skipped for a packaged app (it ignores the test answer, so a real box would show; O1 by hand)')
+} else if (darwin) {
+  const copy = copyBundle()
+  try {
+    results.push(await runReopen(copy, 'cancel'))
+    results.push(await runReopen(copy, 'stop'))
+  } finally {
+    copy.remove()
+  }
+}
 process.exit(results.every(Boolean) ? 0 : 1)
