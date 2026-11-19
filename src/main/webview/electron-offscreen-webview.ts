@@ -225,9 +225,8 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // router's queue) and settled once the page has it; it follows focus into a cross-site frame.
       // `webContents.insertText` is an IPC of its own to the renderer, which a key sent just before
       // or after it overtook (the e2e typed 'héllo ü' as "hlélo ü" and "éhllo ü", about one run in
-      // ten); it is only the fallback for a view whose protocol detached or whose page session
-      // refused the command (the router runs it then, so a text is never lost to a refusal). A
-      // rejection is the lane's to hear (it lets the input after the text go), never thrown here.
+      // ten); it is only the fallback for a view whose protocol detached. A rejection is the lane's
+      // to hear (it lets the input after the text go), never thrown here.
       insertText: (text) => {
         if (wc.isDestroyed()) return Promise.resolve()
         return input.command('Input.insertText', { text }, () => (wc.isDestroyed() ? undefined : wc.insertText(text)))
@@ -236,7 +235,7 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // decision 7): its key down with its command as the protocol's `Input.dispatchKeyEvent` on the
       // page's session, in the router's queue. S6 (design-web.md §9.15): it runs on the never-focused
       // page, the page sees the key down and preventing it stops the command, settling once the
-      // page has it. Only for a view whose protocol detached (or refused it): `webContents.selectAll` / `undo` /
+      // page has it. Only for a view whose protocol detached: `webContents.selectAll` / `undo` /
       // `redo` (which the page's key down never precedes, so a page that handles the chord itself
       // cannot keep its own undo there), and a line key as a plain key down (which, as before the
       // command, moves nothing on a macOS server); the key up still goes as a key up.

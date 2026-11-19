@@ -87,11 +87,17 @@
 //              findings: a late answer after a detach counted down the new attachment's commands; a
 //              hover move refused after a detach requeued its press into the new attachment; a
 //              deadline put a frame that went back among the stalled ones).
-//   fallback   a refused command on a frame's session (the frame went: navigated, removed) goes to
-//              the page's session at the top document's point, never to another frame and never
-//              dropped (a release excepted: above); a refusal there goes by `sendInputEvent` (a text or
-//              an edit command by its detached road), as does every event while the protocol is
-//              detached. Each is logged once per view.
+//   fallback   a refused command on a live frame's session (the frame went: navigated, removed)
+//              goes to the page's session at the top document's point, never to another frame (a
+//              release excepted: above); a press sent there owes its release there. A refusal from a
+//              frame that already went (or from an older attachment) is stale: nothing is sent again,
+//              anywhere. A pointer event the page's own session refuses goes by `sendInputEvent`; a
+//              key, a text or an edit command it refuses is dropped and logged (a text or command's
+//              caller hears the rejection), never sent by another road: one run after a refusal could
+//              land in a later attachment or after the input queued behind it (review 5). The
+//              detached roads (`sendInputEvent`, a command's own) are for a protocol that is
+//              detached when the step runs, in order: what follows a text or command waits for its
+//              road's answer. Each is logged once per view.
 //
 // Not routed into frames (top document only): the select popup's hit-test and choice and the
 // selection read (select-hit.ts, SELECTION_SCRIPT run in the top document's isolated world; a
@@ -523,9 +529,9 @@ export class PageInputRouter implements ChildFrameObserver {
   /**
    * A text (`Input.insertText`) or an edit command's key down (`Input.dispatchKeyEvent`) on the
    * page's session, in its place among the input and sent by the router as any key is (one command
-   * at a time, its deadline, a stalled page session). Its promise is the command's answer;
-   * `detached` runs instead while the protocol is detached (`webContents.insertText`, ...) and when
-   * the page's session refused it, as a refused key goes by sendInputEvent.
+   * at a time, its deadline, a stalled page session). Its promise is the command's answer (a
+   * refusal rejects it, and nothing else runs it); `detached` runs instead only while the protocol
+   * is detached (`webContents.insertText`, ...), and the input after it waits for its answer.
    */
   command(method: PageCommandMethod, params: Record<string, unknown>, detached: () => unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
@@ -611,10 +617,15 @@ export class PageInputRouter implements ChildFrameObserver {
     try {
       for (;;) {
         if (!this.deps.attached()) {
-          // The protocol went: everything waiting by the roads of a detached view, at once.
+          // The protocol went: what waits goes by the roads of a detached view, in order. A text or
+          // an edit command's road answers later (an IPC of its own), so what comes after it waits
+          // for that answer, STEP_TIMEOUT_MS at most, as for a command on the protocol.
           this.lost()
-          for (let step = this.queue.shift(); step; step = this.queue.shift()) this.runDetached(step)
-          return
+          const step = this.queue.shift()
+          if (!step) return
+          if (step.kind === 'command') await this.within(this.settle(step, step.detached), STEP_TIMEOUT_MS)
+          else this.runDetached(step)
+          continue
         }
         if (this.page.stalled) {
           this.queue = this.queue.filter((s) => !isMove(s))
@@ -623,7 +634,7 @@ export class PageInputRouter implements ChildFrameObserver {
         const owed = this.owed.findIndex((o) => !o.lane.stalled)
         if (owed >= 0) {
           const [o] = this.owed.splice(owed, 1) as [Owed]
-          if ((await this.sendInput(o.lane, 'Input.dispatchMouseEvent', o.params).outcome) === 'refused') this.frameRefused(o.lane)
+          if ((await this.sendInput(o.lane, 'Input.dispatchMouseEvent', o.params).outcome) === 'refused' && o.lane.live) this.frameRefused(o.lane)
           continue
         }
         const step = this.queue.shift()
@@ -643,9 +654,8 @@ export class PageInputRouter implements ChildFrameObserver {
     }
   }
 
-  private runDetached(step: Step): void {
+  private runDetached(step: Exclude<Step, { kind: 'command' }>): void {
     if (step.kind === 'call') this.runCall(step)
-    else if (step.kind === 'command') this.settle(step, step.detached)
     else this.deps.fallback(step.event)
   }
 
@@ -656,11 +666,11 @@ export class PageInputRouter implements ChildFrameObserver {
       return 'done'
     }
     if (step.kind === 'command') {
+      // Refused: the caller hears the rejection, and no other road runs it (review 5: a detached
+      // road run after a refusal could land in a later attachment, or after the input behind it).
       const { sent, outcome } = this.sendInput(this.page, step.method, step.params)
-      // Refused by the page's session (in this attachment): the detached road, as a refused key
-      // goes by sendInputEvent, so a text is never lost to it.
-      if ((await outcome) === 'refused') this.settle(step, step.detached)
-      else sent.then(step.resolve, step.reject)
+      sent.then(step.resolve, step.reject)
+      if ((await outcome) === 'refused') this.warn('refused', "webview: the page's protocol refused input; dropped")
       return 'done'
     }
     if (step.kind === 'key') {
@@ -669,7 +679,8 @@ export class PageInputRouter implements ChildFrameObserver {
         this.deps.fallback(step.event)
         return 'done'
       }
-      if ((await this.sendInput(this.page, 'Input.dispatchKeyEvent', params).outcome) === 'refused') this.pageRefused(step.event)
+      // Refused: dropped, never by sendInputEvent (the same reasons).
+      if ((await this.sendInput(this.page, 'Input.dispatchKeyEvent', params).outcome) === 'refused') this.warn('refused', "webview: the page's protocol refused input; dropped")
       return 'done'
     }
     return this.runMouse(step.event)
@@ -751,7 +762,9 @@ export class PageInputRouter implements ChildFrameObserver {
   /** The send of one mouse event on `route`, its fallbacks, and what it leaves held (hover, press). */
   private async dispatch(route: Route, event: MouseEvent, epoch: number): Promise<StepEnd> {
     const outcome = await this.sendInput(route.lane, 'Input.dispatchMouseEvent', protocolMouseEvent(event, route.x, route.y)).outcome
-    if (outcome === 'stale' || epoch !== this.epoch) return 'done'
+    // Checked again where the step goes on (a detach, or the frame going, may land between the
+    // command's end and here): a session that went replays nothing anywhere (review 5).
+    if (outcome === 'stale' || epoch !== this.epoch || !route.lane.live) return 'done'
     let at: Route | 'fallback' = route
     if (outcome === 'refused') {
       if (route.lane === this.page) {
@@ -762,7 +775,7 @@ export class PageInputRouter implements ChildFrameObserver {
         this.frameRefused(route.lane)
         const top = topRoute(event, this.page)
         const second = await this.sendInput(this.page, 'Input.dispatchMouseEvent', protocolMouseEvent(event, event.x, event.y)).outcome
-        if (second === 'stale' || epoch !== this.epoch) return 'done'
+        if (second === 'stale' || epoch !== this.epoch || !top.lane.live) return 'done'
         if (second === 'refused') {
           this.pageRefused(event)
           at = 'fallback'
@@ -806,11 +819,12 @@ export class PageInputRouter implements ChildFrameObserver {
       return
     }
     const outcome = await this.sendInput(lane, 'Input.dispatchMouseEvent', params).outcome
+    if (outcome === 'stale' || !lane.live || lane.epoch !== this.epoch) return
     if (outcome === 'refused') {
       if (lane === this.page) this.pageRefused(event)
       else this.frameRefused(lane)
     }
-    if (outcome !== 'stale' && lane.live) this.hover = { lane, links: press.links }
+    this.hover = { lane, links: press.links }
   }
 
   /**
@@ -875,7 +889,10 @@ export class PageInputRouter implements ChildFrameObserver {
       const finish = (result: Outcome): void => {
         over = true
         if (this.onWay === token) this.onWay = undefined
-        done(epoch === this.epoch ? result : 'stale')
+        // An answer, refusal or deadline of an older attachment or of a session that went is stale:
+        // its step does nothing more with it (review 5: a frame's refusal after it went replayed its
+        // press on the page).
+        done(epoch === this.epoch && lane.live ? result : 'stale')
       }
       const timer = this.timers.set(() => {
         if (over) return
@@ -917,13 +934,16 @@ export class PageInputRouter implements ChildFrameObserver {
     return pending
   }
 
-  /** A command's detached road, its result (or throw) handed to its caller. */
-  private settle(step: Extract<Step, { kind: 'command' }>, run: () => unknown): void {
+  /** A command's detached road, its result (or throw) handed to its caller; the promise the pump waits on. */
+  private settle(step: Extract<Step, { kind: 'command' }>, run: () => unknown): Promise<unknown> {
+    let pending: Promise<unknown>
     try {
-      Promise.resolve(run()).then(step.resolve, step.reject)
+      pending = Promise.resolve(run())
     } catch (err) {
-      step.reject(err)
+      pending = Promise.reject(err)
     }
+    pending.then(step.resolve, step.reject)
+    return pending
   }
 
   /**

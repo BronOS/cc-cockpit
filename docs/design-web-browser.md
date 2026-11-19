@@ -261,11 +261,16 @@ the fallback when the protocol detached:
   session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch and
   each session its own lifetime: every continuation (an answer, a refusal, a deadline, a hover move's end, a hit
   test) of an older attachment or of a session that went changes nothing, requeues nothing and replays nothing, and
-  the router keeps nothing of a session that went. A frame's session refusing (the frame went) sends the event to the
-  page's session at the top point, never to another frame (a release is dropped instead); the page's session refusing
-  sends it by `sendInputEvent` (a text or edit command by its detached road). A seeded randomized test
+  the router keeps nothing of a session that went. A live frame's session refusing (the frame went) sends the event to the
+  page's session at the top point, never to another frame (a release is dropped instead; a press sent there owes its
+  release there); a refusal from a frame that already went sends nothing anywhere. The page's session refusing a
+  pointer event sends it by `sendInputEvent`; a key, text or edit command it refuses is dropped (the caller hears the
+  rejection), never run by another road, which could land in a later attachment or after the input behind it. The
+  detached roads serve only a protocol detached when the step runs, in order (what follows a text waits for it). A seeded randomized test
   (`page-input.fuzz.test.ts`, `FUZZ_SEEDS` for a long run) checks these rules on every send and at quiescence, with
-  sessions that answer late, never or refuse, frames that detach, hover effects and the protocol lost.
+  sessions that answer late, never or refuse, frames that detach, hover effects, the protocol lost (also between two
+  microtasks of the router's continuations) and detached roads that answer late, each delivery checked against the
+  attachment it lands in.
 
 `scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
 chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,

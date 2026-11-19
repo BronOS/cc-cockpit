@@ -394,6 +394,12 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   let lostHappened = false
   let peakQueue = 0
   let armed: Extract<Action, { a: 'arm' }> | undefined
+  /**
+   * The pointer event a live frame just refused, until the router sends anything again: if the frame
+   * goes in between (before the router's continuation runs), the router replays nothing (rule 7), so
+   * that event is lost with the frame, never to be delivered.
+   */
+  let justRefused: { session: Session; wheel: number; press?: number } | undefined
   const delivered: string[] = []
   const expected: string[] = []
   let dropsPossible = false
@@ -457,6 +463,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (sessionId === '') violate('empty-session-id', method)
     const session = docOfSession(id)
     if (withTrace) trace.push(`  t=${clock.now} send ${id || 'page'} ${method} ${JSON.stringify(p)}`)
+    // The router went on from the refusal (to the page, attached or not): the frame going now changes nothing.
+    justRefused = undefined
     if (!attached) {
       // Refused at once, as Electron's debugger does when detached; nothing to check.
       const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: true, resolve: () => {}, reject: () => {} }
@@ -558,6 +566,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         // A wheel refused past its deadline or by a session that went is lost with it (the router had moved on).
         const lostWith = clock.now - c.sentAt >= STEP_TIMEOUT_MS || (session?.ended ?? false) || c.gen !== gen
         if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseWheel' && !lostWith) wheelOut -= p.deltaY as number
+        if (method === 'Input.dispatchMouseEvent' && session && session.doc !== 'page' && !lostWith) {
+          justRefused = { session, wheel: p.type === 'mouseWheel' ? (p.deltaY as number) : 0, press: p.type === 'mousePressed' ? tagOf(p.x as number, p.y as number) : undefined }
+        }
         // Refused: it never happened there. The oracle forgets what it recorded for it. A frame's
         // refusal means it went, so its open presses are excused; the page's own session refusing
         // sends by sendInputEvent instead, to the same page, so a press there stays open until its
@@ -569,7 +580,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           // review 5): it no longer counts as handed in.
           refusedCount++
           if (!c.logged.entry.startsWith('k:')) refusedEntries.add(c.logged.entry)
-          countKey(p.type === 'keyUp' ? keyUps : p.type === 'rawKeyDown' ? keyDowns : undefined, p.code, -1)
+          // A refused key down never went down; a refused key up is excused (the session refusing
+          // it is the end of what the router can do: it never sends one by another road).
+          countKey(p.type === 'rawKeyDown' ? keyDowns : undefined, p.code, -1)
         }
         if (session && method === 'Input.dispatchMouseEvent') {
           if (p.type === 'mousePressed') {
@@ -732,6 +745,14 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
 
   const endSession = (s: Session, rejectPending: boolean): void => {
     s.ended = true
+    if (justRefused?.session === s) {
+      wheelOut += justRefused.wheel
+      if (justRefused.press !== undefined) {
+        lostPresses.add(justRefused.press)
+        noReplay.add(justRefused.press)
+      }
+      justRefused = undefined
+    }
     if (sessionOf.get(s.doc) === s) sessionOf.delete(s.doc)
     if (rejectPending) for (const c of commands) if (c.session === s.id && !c.answered) c.reject(new Error('gone'))
   }
