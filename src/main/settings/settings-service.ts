@@ -40,6 +40,7 @@ import type { PluginEntry } from '../plugins/plugin-index'
 import { isPlainObject } from '../../shared/guards'
 import type { GlobalPluginLimitsView, PluginLimitsView } from '../../shared/plugin-limits'
 import type { PluginLimitsStore } from '../plugins/plugin-limits'
+import type { PluginGuestAccessStore } from './plugin-guest-access'
 import { appSettingKey, projectDefaultSettingKey } from '../secrets/plugin-secrets'
 import { checkFormSettings, effectiveProjectValues, saveSettingsForm, settingsViewOf, type SecretSettingsStore } from './plugin-settings'
 
@@ -100,6 +101,12 @@ export interface SettingsDeps {
   projectSettingsChanged(projectId: string, pluginId: string): Promise<void>
   /** The person's per-plugin caps, `app.json` › `pluginLimits` (PluginLimitsStore). Without it the Limits calls are refused. */
   limits?: Pick<PluginLimitsStore, 'view' | 'set' | 'globalView' | 'setGlobal'>
+  /**
+   * Which plugins guests see (design-guests §6, plugin-guest-access.ts): each plugin's row shows it
+   * (`PluginView.guestAccess`), `settings.pluginGuestAccessSet` stores it, an uninstall drops it. Without it
+   * rows carry none (the page reads absent as hidden) and the set is refused.
+   */
+  guestAccess?: Pick<PluginGuestAccessStore, 'view' | 'set' | 'drop'>
 }
 
 const MAX_MARKETPLACE_URLS = 20
@@ -169,8 +176,28 @@ export class SettingsService {
   // Plugins
   // -------------------------------------------------------------------------------------------
 
-  plugins(): PluginView[] {
-    return this.deps.plugins.list().map((p) => this.pluginView(p))
+  /** Every installed plugin; `projectId` (the asking window's) adds that project's guest override to each row. */
+  plugins(projectId?: string): PluginView[] {
+    return this.deps.plugins.list().map((p) => this.pluginView(p, projectId))
+  }
+
+  /**
+   * `settings.pluginGuestAccessSet { pluginId, target, value }` (design-guests §16.2): store whether guests see
+   * the plugin, app-wide or for `projectId` (the caller's project, from the router), `null` = use the next
+   * level. The router decided the caller may (`shown` is a widening, D-11); this checks the shape. Answers the
+   * plugin's row as it is now.
+   */
+  setPluginGuestAccess(projectId: string, req: unknown): PluginView {
+    const store = this.deps.guestAccess
+    if (!store) throw new Error('guest access is not available')
+    if (!isPlainObject(req)) throw new Error('give the plugin, the scope and the value')
+    const { pluginId, target, value } = req
+    if (typeof pluginId !== 'string' || (target !== 'app' && target !== 'project')) throw new Error('give the plugin and app or project')
+    if (value !== null && value !== 'hidden' && value !== 'shown') throw new Error('give hidden, shown or null')
+    const plugin = this.deps.plugins.get(pluginId)
+    if (!plugin) throw new Error('unknown plugin')
+    if (!store.set(pluginId, target, value, target === 'project' ? projectId : undefined)) throw new Error('could not store it')
+    return this.pluginView(plugin, projectId)
   }
 
   async installPlugin(url: unknown, tag: unknown): Promise<PluginView> {
@@ -218,6 +245,12 @@ export class SettingsService {
         console.warn(`uninstall of ${entry.id}: repository history not updated: ${err instanceof Error ? err.message : String(err)}`)
       }
     })
+    // A reinstall starts hidden from guests (design-guests §6), as its caps start over (pluginLimits).
+    try {
+      this.deps.guestAccess?.drop(id)
+    } catch (err) {
+      console.warn(`uninstall of ${id}: guest visibility not dropped: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /**
@@ -521,7 +554,7 @@ export class SettingsService {
     return settingsViewOf(schema, this.deps.appPluginSettings.get(p.id), (f) => this.deps.secrets.settingState(p.id, appSettingKey(f)))
   }
 
-  private pluginView(p: InstalledPlugin): PluginView {
+  private pluginView(p: InstalledPlugin, projectId?: string): PluginView {
     const view: PluginView = {
       id: p.id,
       name: p.manifest?.name ?? p.id,
@@ -547,6 +580,8 @@ export class SettingsService {
     // Bundled plugins too: they ship their logo card (electron-builder.yml filters) like a listed plugin.
     if (hasOwnPreview(p.dir)) view.preview = true
     if (p.source.kind === 'git' && p.marketplace !== undefined) view.marketplace = p.marketplace
+    const guestAccess = this.deps.guestAccess?.view(p.id, projectId)
+    if (guestAccess !== undefined) view.guestAccess = guestAccess
     return view
   }
 }
