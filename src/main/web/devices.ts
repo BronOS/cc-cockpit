@@ -47,8 +47,12 @@ export const MAX_DEVICES = 64
 export const MAX_DEVICE_NAME = 60
 export const DEFAULT_DEVICE_NAME = 'Browser'
 
-/** How a device signed in: the access link, a one-time "add a device" link, a password, a desktop confirm. */
-export type DeviceSignIn = 'link' | 'add' | 'password' | 'confirm'
+/**
+ * How a device signed in: the access link, a one-time "add a device" link, a password, a desktop confirm, or a
+ * guest invite (design-guests §3). `'guest'` is declared by task 01 for task 02, which owns this file: `SIGN_INS`
+ * and `recordOf` do not accept it yet, so a stored guest record is still dropped as damaged until 02 does.
+ */
+export type DeviceSignIn = 'link' | 'add' | 'password' | 'confirm' | 'guest'
 
 export interface DeviceRecord {
   id: string

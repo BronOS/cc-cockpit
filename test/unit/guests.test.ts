@@ -17,6 +17,7 @@ import {
   viewAccessOf
 } from '../../src/shared/guests'
 import { AttemptLimiter } from '../../src/main/web/auth'
+import type { DeviceSignIn } from '../../src/main/web/devices'
 import { isOwnerWho } from '../../src/shared/views'
 
 // design-guests §2, §3, §16.1; D-12, D-19, D-21.
@@ -66,6 +67,11 @@ describe('guest records', () => {
     expect(viewAccessOf({ kind: 'revoked' })).toBeUndefined()
     expect(isOwnerWho('owner')).toBe(true)
     expect(isOwnerWho({ guest: 'g' })).toBe(false)
+  })
+
+  it('declares the guest sign-in mode for task 02 (devices.ts recordOf does not take it yet)', () => {
+    const mode: DeviceSignIn = 'guest'
+    expect(mode).toBe('guest')
   })
 })
 
