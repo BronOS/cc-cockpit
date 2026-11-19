@@ -58,6 +58,7 @@ import {
   type RemoteVia
 } from '../../shared/remote-servers'
 import { warnLog } from '../warn-log'
+import { peerCertificateSha256 } from './peer-certificate'
 import { sameSettings, type RemoteServerView, type SecretResult } from './remote-servers'
 import type { RemoteOpenRequest, RemoteWindowsStore } from './remote-windows'
 import type { LinkAccepted, LinkAnswers, LinkResult, LinkState, RemoteLink, SshLinkStore } from './ssh-link'
@@ -107,6 +108,11 @@ export interface RemoteServiceOptions {
    * reads the record and secrets only through `store`, which also serves a server not saved yet.
    */
   link(serverId: string, store: SshLinkStore): RemoteLink
+  /**
+   * The SHA-256 of the certificate an https origin presents now (peer-certificate.ts by default): what a
+   * guest link's pin and the person's answer must both equal (D-29).
+   */
+  peerCertificate?(origin: string): Promise<string | undefined>
   /** My own tunnel's probe of a local port (tunnel-probe.ts `probeTunnel` by default). */
   probe?(localPort: number): Promise<TunnelProbeResult>
   /**
@@ -151,7 +157,6 @@ export function backgroundNeedText(need: RemoteNeed, server: RemoteServerRecord)
   if (need.need === 'hostKey') return `the host key of ${server.name} is not trusted yet: open the server from the project picker`
   if (need.need === 'certificate') return `the certificate of ${server.name} is not trusted yet: join again with the invite link`
   if (need.need === 'password') return `${server.name} needs its password again: open the server from the project picker`
-  if (need.need === 'certificate') return `the certificate of ${server.name} is not trusted yet: open the server from the project picker`
   return `the key ${need.path} needs its passphrase again: open the server from the project picker`
 }
 
@@ -363,9 +368,20 @@ export class RemoteService {
         if (problem !== undefined) return fail(problem)
         return this.run(id, () => this.openNow(id, undefined, sign, answers))
       }
-      // A new guest with a pin: the person trusts it first (D-29). Nothing is saved or dialled before.
-      if (invite?.certPin !== undefined && certAnswerPin(answers.certificate) !== invite.certPin) {
-        return { ok: false, need: { need: 'certificate', origin: parsed.via.kind === 'direct' ? parsed.via.origin : '', sha256: invite.certPin } }
+      // A new guest with a pin (D-29): main reads the certificate the server presents and trusts the person's
+      // answer only when it equals both the link's pin and that certificate. A server showing another
+      // certificate is refused outright (never a question); no answer yet is the question; an answer that
+      // names anything else is refused. Nothing is saved or opened before.
+      if (invite?.certPin !== undefined && parsed.via.kind === 'direct') {
+        const origin = parsed.via.origin
+        const presented = await (this.options.peerCertificate ?? peerCertificateSha256)(origin).catch(() => undefined)
+        if (presented === undefined) return fail(`could not read the certificate of ${origin}`)
+        if (presented !== invite.certPin) {
+          return fail(`the certificate of ${origin} is not the one in the invite, so it is refused; ask the host for a new invite`)
+        }
+        if (answers.certificate === undefined) return { ok: false, need: { need: 'certificate', origin, sha256: presented } }
+        const answered = certAnswerPin(answers.certificate)
+        if (answered !== invite.certPin || answered !== presented) return fail(`the certificate you trusted is not the one ${origin} shows, so it is refused`)
       }
       this.drafts.set(id, prepared.record)
       try {

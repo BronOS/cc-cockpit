@@ -216,6 +216,7 @@ vi.mock('electron', () => ({
 const {
   CERT_ACCEPT,
   CERT_CHROMIUM_VERDICT,
+  CERT_REFUSE,
   certificateSha256,
   certificateVerdict,
   ElectronRemoteWindowFactory,
@@ -704,18 +705,18 @@ describe('the certificate pin', () => {
     expect(certificateSha256('-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n')).toBeUndefined()
   })
 
-  it('accepts the pinned certificate for its host only; anything else is Chromium\'s verdict', () => {
+  it('accepts the pinned certificate for its host only, refuses any other there; other hosts get Chromium\'s verdict', () => {
     const pinned = { hostname: 'host.example', pin }
     expect(certificateVerdict('host.example', pem(der), pinned)).toBe(CERT_ACCEPT)
     expect(certificateVerdict('HOST.example.', pem(der), pinned)).toBe(CERT_ACCEPT)
-    // Another certificate for the host: refused as Chromium refuses it, never a question.
-    expect(certificateVerdict('host.example', pem(other), pinned)).toBe(CERT_CHROMIUM_VERDICT)
+    // Another certificate for the pinned host: refused outright, even one Chromium would trust (D-29), never a question.
+    expect(certificateVerdict('host.example', pem(other), pinned)).toBe(CERT_REFUSE)
     // The pinned certificate on another host (a redirect, a sub-resource): not the pin's.
     expect(certificateVerdict('evil.example', pem(der), pinned)).toBe(CERT_CHROMIUM_VERDICT)
     expect(certificateVerdict('', pem(der), pinned)).toBe(CERT_CHROMIUM_VERDICT)
     // No pin: Chromium's verdict for everything.
     expect(certificateVerdict('host.example', pem(der), undefined)).toBe(CERT_CHROMIUM_VERDICT)
-    expect(certificateVerdict('host.example', 'garbage', pinned)).toBe(CERT_CHROMIUM_VERDICT)
+    expect(certificateVerdict('host.example', 'garbage', pinned)).toBe(CERT_REFUSE)
     // IPv6: Chromium's host name and URL's bracketed one are the same host.
     expect(certificateVerdict('::1', pem(der), { hostname: '[::1]', pin })).toBe(CERT_ACCEPT)
     expect(certificateVerdict('[::1]', pem(der), { hostname: '[::1]', pin })).toBe(CERT_ACCEPT)
@@ -734,7 +735,7 @@ describe('the certificate pin', () => {
     verify('host.example', pem(other))
     current = undefined
     verify('host.example', pem(der))
-    expect(verdicts).toEqual([CERT_ACCEPT, CERT_CHROMIUM_VERDICT, CERT_CHROMIUM_VERDICT])
+    expect(verdicts).toEqual([CERT_ACCEPT, CERT_REFUSE, CERT_CHROMIUM_VERDICT])
     // A hook that throws is Chromium's verdict, logged without the pin.
     factory.session('g2', { ...sessionHooks(log), certificatePin: () => {
       throw new Error('store gone')

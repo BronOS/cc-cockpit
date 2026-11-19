@@ -203,7 +203,11 @@ interface Setup {
   picked: Array<[number, string]>
 }
 
+/** The certificate a guest test's https server presents (peer-certificate.ts is faked): the invites' pin unless a test says otherwise. */
+const PRESENTED = { sha256: '0123456789abcdef'.repeat(4) as string | undefined }
+
 function setup(options: { link?: (id: string, store: SshLinkStore) => RemoteLink } = {}): Setup {
+  PRESENTED.sha256 = '0123456789abcdef'.repeat(4)
   const steps: string[] = []
   const writes = { count: 0 }
   const app = {
@@ -243,6 +247,7 @@ function setup(options: { link?: (id: string, store: SshLinkStore) => RemoteLink
     clearSession: async (serverId) => {
       steps.push(`clear ${serverId}`)
     },
+    peerCertificate: async () => PRESENTED.sha256,
     pickFile: async (windowId, start) => {
       picked.push([windowId, start])
       return '/home/me/.ssh/id_work'
@@ -919,12 +924,16 @@ describe('RemoteService: guest invites', () => {
     expect((await service.list())[0]).not.toHaveProperty('certSha256')
   })
 
-  it('asks to trust the pin until the answers name it; nothing is saved or opened before', async () => {
+  it('asks to trust the certificate the server presents; an answer naming anything else is refused; nothing saved before', async () => {
     const { service, store, windows, writes } = setup()
     const need = { ok: false, need: { need: 'certificate', origin: ORIGIN, sha256: PIN } }
     expect(await service.connect({ kind: 'direct', link: invite(PIN) })).toEqual(need)
-    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: 'ab'.repeat(32) } })).toEqual(need)
-    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: 'not a pin' } })).toEqual(need)
+    // The answer is the page's word: trusted only when it equals both the pin and the presented certificate.
+    const wrong = await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: 'ab'.repeat(32) } })
+    expect(wrong).toMatchObject({ ok: false })
+    expect(wrong).not.toHaveProperty('need')
+    expect((wrong as { error: string }).error).toContain('is not the one')
+    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: 'not a pin' } })).not.toHaveProperty('need')
     expect(await store.list()).toEqual([])
     expect(windows.opens).toEqual([])
     expect(writes.count).toBe(0)
@@ -936,6 +945,20 @@ describe('RemoteService: guest invites', () => {
     expect(windows.opens).toEqual([{ serverId: 'srv4', origin: ORIGIN, token: INVITE, invite: true }])
     // The list says guest, never the pin.
     expect(JSON.stringify(await service.list())).not.toContain(PIN)
+  })
+
+  it('refuses outright when the server presents another certificate than the pin (never a question), or none can be read', async () => {
+    const { service, store, windows } = setup()
+    PRESENTED.sha256 = 'e'.repeat(64)
+    for (const answers of [{}, { certificate: PIN }, { certificate: 'e'.repeat(64) }]) {
+      const r = await service.connect({ kind: 'direct', link: invite(PIN), answers })
+      expect(r).not.toHaveProperty('need')
+      expect((r as { error: string }).error).toContain('is not the one in the invite')
+    }
+    PRESENTED.sha256 = undefined
+    expect(await service.connect({ kind: 'direct', link: invite(PIN), answers: { certificate: PIN } })).toEqual({ ok: false, error: `could not read the certificate of ${ORIGIN}` })
+    expect(await store.list()).toEqual([])
+    expect(windows.opens).toEqual([])
   })
 
   it('saves nothing when the window does not open', async () => {

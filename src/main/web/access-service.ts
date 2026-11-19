@@ -28,6 +28,7 @@ import {
   applyWebAccessPatch,
   isLoopbackBind,
   listenPlanOf,
+  ownerNameIn,
   serverConfirmCommand,
   serverStartSettings,
   webAccessOf,
@@ -169,7 +170,9 @@ export class WebAccessService {
       passwordMinLength: this.passwordMinLength(settings),
       passwordShort: this.passwordShort(settings),
       // States only (synchronous, no decrypt): the card says when one must be made again (§9.5).
-      credentials: this.deps.auth.credentialStates()
+      credentials: this.deps.auth.credentialStates(),
+      // What guests call the owner (D-24), always sent: "Host" when unset.
+      ownerName: ownerNameIn(settings)
     }
   }
 

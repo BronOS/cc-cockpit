@@ -35,8 +35,8 @@
 //   only (`certificateVerdict`, the pin read through `certificatePin` on every verification, so a
 //   forgotten record pins nothing); everything else is Chromium's own verdict, so any other
 //   certificate error is refused as before (the page hardening's `certificate-error` refusal stays).
-//   A pin that does not match is that verdict too, never a question: a self-signed certificate that
-//   changed is refused, and Forget then a new invite fixes it;
+//   On the pinned host any other certificate is refused outright (CERT_REFUSE), even one Chromium would
+//   trust: the guest joined that certificate (D-29). Never a question: Forget then a new invite fixes it;
 // - the user agent carries `cc-cockpit-desktop/<version> (<hostname>)` (shared/remote-agent.ts):
 //   the web client then keeps the desktop's key table and names the device after this machine.
 //   Set on the session too, so main's own requests (`fetchJson`) say the same;
@@ -74,6 +74,7 @@ export function remotePartition(serverId: string): string {
 
 /** A certificate verify proc's answers (Electron `setCertificateVerifyProc`): accept it, or Chromium's own verdict. */
 export const CERT_ACCEPT = 0
+export const CERT_REFUSE = -2
 export const CERT_CHROMIUM_VERDICT = -3
 
 /**
@@ -100,16 +101,16 @@ function bareHost(host: string): string {
 }
 
 /**
- * The verify proc's answer for a certificate of `hostname` (D-29): CERT_ACCEPT only when the server
- * has a pin, the request is for the pin's own host and the certificate hashes to it; CERT_CHROMIUM_VERDICT
- * otherwise (no pin, another host the page or a redirect reaches, another certificate), which refuses
- * what Chromium refuses. Never CERT_ACCEPT on a guess: a certificate that does not parse is not the pin.
+ * The verify proc's answer for a certificate of `hostname` (D-29): on the pin's own host, CERT_ACCEPT when
+ * the certificate hashes to the pin and CERT_REFUSE for anything else (another certificate, one that does
+ * not parse), even one Chromium would trust; CERT_CHROMIUM_VERDICT where there is no pin or for another host
+ * the page reaches. Never CERT_ACCEPT on a guess.
  */
 export function certificateVerdict(hostname: string, pem: string, pinned: RemoteCertificatePin | undefined): number {
   if (pinned === undefined || typeof hostname !== 'string' || hostname === '') return CERT_CHROMIUM_VERDICT
   if (bareHost(hostname) !== bareHost(pinned.hostname)) return CERT_CHROMIUM_VERDICT
   const sha256 = certificateSha256(pem)
-  return sha256 !== undefined && sha256 === pinned.pin ? CERT_ACCEPT : CERT_CHROMIUM_VERDICT
+  return sha256 !== undefined && sha256 === pinned.pin ? CERT_ACCEPT : CERT_REFUSE
 }
 
 /** How long main's own request to the server (the session check, the project list, a reopen) may take. */
