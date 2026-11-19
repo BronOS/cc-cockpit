@@ -2,7 +2,7 @@
 // project records (a real ProjectRegistry in a temp dir); the rule is shared/guest-access.ts, fed by
 // PluginGuestAccessStore; the settings service shows it on each plugin row, stores it and drops it on
 // uninstall.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -172,5 +172,34 @@ describe('SettingsService: guest visibility on the Plugins page', () => {
     await s.uninstallPlugin('test.mail')
     expect(uninstalled).toEqual(['test.mail'])
     expect(registry.pluginGuestAccess('app')).toEqual({})
+  })
+})
+
+// D-34: the bundled plugins' own manifests decide it, with no special case for their ids. Sessions sees every
+// window and is not guest-aware, so it stays blocked whatever the owner sets; Usage is hidden until shown
+// and then one-way for read guests; Files and Editor check access, so a shown one gives guests a full line.
+describe('the bundled plugins for guests (D-34)', () => {
+  const bundled = (dir: string): InstalledPlugin => {
+    const manifest = JSON.parse(readFileSync(join(__dirname, '../../plugins', dir, 'plugin.json'), 'utf8')) as PluginManifest
+    return { ...plugin(manifest.id, manifest, { kind: 'bundled', path: `/app/plugins/${dir}` }), manifest }
+  }
+  const BUNDLED = ['sessions', 'usage', 'files', 'editor'].map(bundled)
+  const real = (): PluginGuestAccessStore =>
+    new PluginGuestAccessStore({ records: registry, installed: (id) => BUNDLED.find((p) => p.id === id), knownProject: (id) => registry.get(id) !== undefined })
+
+  it('are hidden by default; Sessions stays blocked when shown; Usage is one-way for read guests; Files and Editor full', () => {
+    const s = real()
+    for (const p of BUNDLED) {
+      expect(s.visible(p1, p.id)).toBe(false)
+      expect(s.set(p.id, 'app', 'shown')).toBe(true)
+    }
+    expect(s.visible(p1, 'cockpit.sessions')).toBe(false)
+    expect(s.port(p1, 'cockpit.sessions', 'write')).toBe('none')
+    expect(s.port(p1, 'cockpit.usage', 'read')).toBe('oneWay')
+    expect(s.port(p1, 'cockpit.usage', 'write')).toBe('full')
+    for (const id of ['cockpit.files', 'cockpit.editor']) {
+      expect(s.port(p1, id, 'read')).toBe('full')
+      expect(s.port(p1, id, 'write')).toBe('full')
+    }
   })
 })
