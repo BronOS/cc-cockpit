@@ -734,6 +734,35 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
       expect(closed).toEqual([b])
     })
 
+    it('remove with closeTab closes an opened member, keeps a coordinator, an invited and a typed-in tab', () => {
+      const id = room()
+      const open = claudeTab()
+      const boss = claudeTab()
+      const invited = claudeTab()
+      const typed = claudeTab()
+      addTo(id, open, 'worker')
+      addTo(id, boss, 'boss', true)
+      addTo(id, typed, 'typed')
+      const inv = service.registry.invite(owner, id, { name: 'guest' })
+      service.registry.redeem(inv.code, invited, P1)
+      sessions.userInput(P1, typed, 'x')
+      expect(service.removeOwned(owner, id, 'worker', { closeTab: true })).toBe(1)
+      expect(service.removeOwned(owner, id, 'boss', { closeTab: true })).toBe(0)
+      expect(service.removeOwned(owner, id, 'guest', { closeTab: true })).toBe(0)
+      expect(service.removeOwned(owner, id, 'typed', { closeTab: true })).toBe(0)
+      expect(closed).toEqual([open])
+      expect(service.members(owner, id).map((m) => m.name)).not.toContain('worker')
+    })
+
+    it('remove with no option or false closes nothing', () => {
+      const id = room()
+      addTo(id, claudeTab(), 'a')
+      addTo(id, claudeTab(), 'b')
+      expect(service.removeOwned(owner, id, 'a')).toBe(0)
+      expect(service.removeOwned(owner, id, 'b', { closeTab: false })).toBe(0)
+      expect(closed).toEqual([])
+    })
+
     it('skips a member with no bound tab', () => {
       const id = room()
       const a = claudeTab()

@@ -2679,6 +2679,12 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     return ((await call('rooms.create', { pluginId: 'a.one', title })) as { id: string }).id
   }
 
+  it('rooms.remove rejects a closeTab that is not a boolean', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    await expect(call('rooms.remove', { pluginId: 'a.one', id, name: 'bob', closeTab: 'yes' })).rejects.toThrow('closeTab must be true or false')
+  })
+
   it('rooms.end rejects a closeTabs that is not a boolean', async () => {
     const call = hostA()
     const id = await newRoom(call)
@@ -2856,7 +2862,7 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     await expect(call('rooms.docs.put', { pluginId: 'a.one', id, path: 'shared/x.md', text: 'bell\x07' })).rejects.toThrow('rooms.docs.put:')
     await expect(call('rooms.docs.get', { pluginId: 'a.one', id, path: '../room.json' })).rejects.toThrow('rooms.docs.get:')
 
-    await expect(call('rooms.remove', { pluginId: 'a.one', id, name: 'bob' })).resolves.toBeNull()
+    await expect(call('rooms.remove', { pluginId: 'a.one', id, name: 'bob' })).resolves.toEqual({ closed: 0 })
     expect(tabs.roomOf(A, tab)).toBeUndefined()
     await expect(call('rooms.members', { pluginId: 'a.one', id })).resolves.toEqual([])
   })

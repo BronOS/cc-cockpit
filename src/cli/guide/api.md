@@ -443,7 +443,7 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   for an existing tab, which joins by running `ccc room join <code>` itself; hand the code out through your
   own command. A plugin can never pull a tab into a room.
 - `ctx.rooms.members(id)`: `RoomMember` per member (`name`, `coordinator`, `tabId` while it has a tab,
-  `held`: messages waiting). `ctx.rooms.remove(id, name)`: the member leaves (its tab stays), its waiting
+  `held`: messages waiting). `ctx.rooms.remove(id, name, { closeTab? })`: the member leaves (its tab stays unless `closeTab: true`, which closes it with no dialog under `end`'s `closeTabs` rule: opened by `rooms.open`, not a coordinator's, not an invited member's, not one the person typed into; resolves `{ closed: 0 | 1 }`), its waiting
   messages are dropped and no coordinator is told (only the person closing a tab tells them); refused on an ended room.
 - `ctx.rooms.send(id, to, text)`: a message `from plugin` to a member name or `all`, at most 20000
   characters (more goes in a doc). The answer is a `RoomSendAnswer` per recipient: `delivered`, `held`

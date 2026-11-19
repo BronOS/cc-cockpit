@@ -517,12 +517,18 @@ export class RoomRegistry {
     const room = this.rooms.get(roomId)
     if (!room) return []
     const out: string[] = []
-    for (const [name, m] of Object.entries(room.members)) {
-      if (m.opened !== true || m.coordinator || m.personTyped === true) continue
-      const tabId = this.boundTab(roomId, name)
+    for (const name of Object.keys(room.members)) {
+      const tabId = this.closableTab(roomId, name)
       if (tabId !== undefined) out.push(tabId)
     }
     return out
+  }
+
+  /** The one-member form of `closableTabs` (`remove({ closeTab })`): the same rule, read before the removal unbinds the tab. */
+  closableTab(roomId: string, name: string): string | undefined {
+    const m = this.rooms.get(roomId)?.members[name]
+    if (!m || m.opened !== true || m.coordinator || m.personTyped === true) return undefined
+    return this.boundTab(roomId, name)
   }
 
   /** The tab bound to a member now. */

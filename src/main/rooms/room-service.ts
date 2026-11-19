@@ -517,6 +517,25 @@ export class RoomService {
     return left
   }
 
+  /**
+   * ctx.rooms.remove with `closeTab: true`: removes the member, then closes its tab with no dialog when the registry's
+   * rule allows (opened by the app, not a coordinator, never typed in: the same as `end`'s `closeTabs`). Chosen before
+   * the removal (it unbinds the tab); a failing close is logged and counts 0, the member is out either way.
+   */
+  removeOwned(owner: RoomOwner, id: unknown, name: unknown, opts: { closeTab?: boolean } = {}): number {
+    const room = this.registry.get(owner, id)
+    const toClose = opts.closeTab === true && typeof name === 'string' ? this.registry.closableTab(room.id, name) : undefined
+    this.remove(owner, room.id, name)
+    if (toClose === undefined) return 0
+    try {
+      this.options.tabs.close(room.projectId, toClose)
+      return 1
+    } catch (err) {
+      this.warn(`rooms: could not close tab ${toClose} of removed member in room ${room.id}: ${err instanceof Error ? err.message : String(err)}`)
+      return 0
+    }
+  }
+
   /** ctx.rooms.send: a message `from plugin` (the owner's own room only). */
   sendAsPlugin(owner: RoomOwner, id: unknown, to: unknown, text: unknown): RecipientAnswer[] {
     return this.delivery.send(this.ownerRoomId(owner, id), 'plugin', to, text)

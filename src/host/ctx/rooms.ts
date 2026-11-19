@@ -121,9 +121,17 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
         })
       }),
     members: (id: string) => guardAsync(() => ask<RoomMember[]>('rooms.members', { id: text(id, 'rooms.members', 'id') })),
-    remove: (id: string, name: string) =>
+    remove: (id: string, name: string, opts?: { closeTab?: boolean }) =>
       guardAsync(async () => {
-        await ask<null>('rooms.remove', { id: text(id, 'rooms.remove', 'id'), name: text(name, 'rooms.remove', 'name') })
+        const w = 'rooms.remove'
+        const o = options(opts, w)
+        const answer = await ask<{ closed?: number } | null>(w, {
+          id: text(id, w, 'id'),
+          name: text(name, w, 'name'),
+          ...defined({ closeTab: optionalBoolean(o.closeTab, w, 'closeTab') })
+        })
+        // An older app answers null and never closes.
+        return { closed: answer?.closed === 1 ? 1 : 0 }
       }),
     send: (id: string, to: string, body: string) =>
       guardAsync(() =>

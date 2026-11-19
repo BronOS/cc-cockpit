@@ -131,7 +131,7 @@
 //                     -> { tabId, placed? }
 //   rooms.invite    { pluginId, id, name, coordinator? } -> { code, expiresAt }   open is sessions.open (its
 //   rooms.members   { pluginId, id }           -> RoomMember[]    checks and its budget) plus the membership;
-//   rooms.remove    { pluginId, id, name }     -> null            send is `from plugin` through the delivery
+//   rooms.remove    { pluginId, id, name, closeTab? } -> { closed }          send is `from plugin` through the delivery
 //   rooms.send      { pluginId, id, to, text } -> RoomSendAnswer[] (its caps); the docs are the owner's role
 //   rooms.docs.list|get|put { pluginId, id, path?, text? }        (every doc of the room); log the room's
 //   rooms.log       { pluginId, id, since?, limit? } -> RoomLogPage  events (room-service.ts does the rest)
@@ -715,6 +715,7 @@ export type HostRoomsApi = Pick<
   | 'invite'
   | 'members'
   | 'remove'
+  | 'removeOwned'
   | 'sendAsPlugin'
   | 'ownerDocList'
   | 'ownerDocGet'
@@ -1089,7 +1090,10 @@ export class HostApi {
           )
         ),
       'rooms.remove': (params) =>
-        this.roomsVoid(params, 'rooms.remove', (rooms, owner, p) => rooms.remove(owner, p.id, p.name)),
+        this.roomsCall(params, 'rooms.remove', (rooms, owner, p) => {
+          if (p.closeTab !== undefined && typeof p.closeTab !== 'boolean') throw new Error('closeTab must be true or false')
+          return { closed: rooms.removeOwned(owner, p.id, p.name, { closeTab: p.closeTab === true }) }
+        }),
       'rooms.send': (params) =>
         this.roomsCall(params, 'rooms.send', (rooms, owner, p) =>
           rooms.sendAsPlugin(owner, p.id, p.to, p.text).map((a) => ({ ...a }) as RoomSendAnswer)

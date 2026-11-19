@@ -1224,8 +1224,13 @@ export interface PluginContext {
     invite(id: string, options: { name: string; coordinator?: boolean }): Promise<{ code: string; expiresAt: number }>
     /** The room's members, with their tab now and how many messages wait for each. */
     members(id: string): Promise<RoomMember[]>
-    /** Remove a member: its tab stays, out of the room; the messages waiting for it are dropped. */
-    remove(id: string, name: string): Promise<void>
+    /**
+     * Remove a member: out of the room, the messages waiting for it dropped. Its tab stays, unless `closeTab: true`
+     * closes it with no dialog under the rule of `end`'s `closeTabs`: the app opened it for this room (`open`), not a
+     * coordinator's, not an invited member's, not one the person typed into. Resolves `{ closed }`, 1 when the tab was
+     * closed. An app older than this option ignores it and closes nothing (`closed: 0`).
+     */
+    remove(id: string, name: string, options?: { closeTab?: boolean }): Promise<{ closed: 0 | 1 }>
     /**
      * A message `from plugin` to a member or `all` (every member): at most 20000 characters (more goes in a doc).
      * The answer says per recipient what happened. Counts against the room's 60 sends a minute, every sender together

@@ -42,6 +42,7 @@ describe('ctx.rooms (host side)', () => {
     await rooms.invite('r1', { name: 'helper', coordinator: false })
     await rooms.members('r1')
     await rooms.remove('r1', 'bob')
+    await rooms.remove('r1', 'bob', { closeTab: true })
     await rooms.send('r1', 'all', 'hello')
     await rooms.docs.list('r1')
     await rooms.docs.get('r1', 'shared/a.md')
@@ -63,6 +64,7 @@ describe('ctx.rooms (host side)', () => {
       { method: 'rooms.invite', params: { ...p, id: 'r1', name: 'helper', coordinator: false } },
       { method: 'rooms.members', params: { ...p, id: 'r1' } },
       { method: 'rooms.remove', params: { ...p, id: 'r1', name: 'bob' } },
+      { method: 'rooms.remove', params: { ...p, id: 'r1', name: 'bob', closeTab: true } },
       { method: 'rooms.send', params: { ...p, id: 'r1', to: 'all', text: 'hello' } },
       { method: 'rooms.docs.list', params: { ...p, id: 'r1' } },
       { method: 'rooms.docs.get', params: { ...p, id: 'r1', path: 'shared/a.md' } },

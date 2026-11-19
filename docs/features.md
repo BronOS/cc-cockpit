@@ -398,7 +398,7 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   automatically" (the mark) and "Room...", which opens the room dialog: members with their status and held counts,
   Remove, the room's documents (read-only), the last 200 events of the log, Pause and Resume. An ended room stays
   viewable until its plugin deletes it. Pause, Resume and the mark are yours alone: a plugin cannot do any of
-  them (a plugin can remove a member with `ctx.rooms.remove`). Remove asks "Cancel / Remove" in the dialog first (Remove is armed after about a second) and does not work on an
+  them (a plugin can remove a member with `ctx.rooms.remove`, and with `closeTab: true` also close its tab when the app opened it for the room and you never typed in it). Remove asks "Cancel / Remove" in the dialog first (Remove is armed after about a second) and does not work on an
   ended room. When you close a member's tab, the room's coordinators get a message from `system`, "<name> left: tab
   closed".
 - **`ccc room`** (inside a Claude tab): `ccc room [status] [--json]`, `join <invite>`, `leave`, `send <name|all> <text...>`
