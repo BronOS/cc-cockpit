@@ -448,7 +448,11 @@ sessions, on by default: absent or anything but `false` is on). `main/power/keep
 from the session registry on every change and releases it a minute after the last tab stops working
 (between tools a tab stays *working*; the minute covers the gaps between turns: a queued text, a quick
 follow-up, a short prompt). *Needs permission* does not count: nothing runs while a prompt waits, and
-counting it would keep an unattended computer up all night for a prompt nobody answers. Turning the
+counting it would keep an unattended computer up all night for a prompt nobody answers. Nor does an
+interrupted turn (Esc fires no Stop, so the tab stays *working*): an `idle_prompt` Notification while
+*working* leaves the status alone and sets `SessionEntry.idleAtPrompt` (dropped by the next hook but a
+Notification), and a *working* tab with no hook for 30 minutes (`KEEP_AWAKE_SILENT_MS`,
+`SessionRegistry.lastActivityAt`) stops counting too. Turning the
 setting off releases at once; on with a tab working holds at once. The write (`settings.keepAwakeSet`) is
 `adapted`: the desktop page and a server's browsers, never a desktop's browser. The blocker goes through
 `PowerHolds` (`main/power/power-holds.ts`), one Electron blocker per hold, so macOS server mode's whole-run

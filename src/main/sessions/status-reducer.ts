@@ -154,6 +154,16 @@ export interface SessionEntry {
    * stopped). Never persisted, never in SessionInfo.
    */
   blockedStop?: string
+  /**
+   * Claude Code said it has sat at its input prompt (an `idle_prompt` Notification, about 60 s in) while the tab
+   * still shows `working`. The status does not move (notificationStatus: idle_prompt never makes a working tab
+   * `waiting`, the one state the app types into), so this flag records it and nothing else: only keep awake reads it
+   * (main/power/keep-awake.ts), which stops counting the tab. The case: a turn the person interrupts with Esc fires no
+   * Stop, so the tab would show `working` until its next prompt and hold the computer awake all night. Set by the
+   * reducer only; dropped by any later hook but a Notification, by the answer key, and whenever the status leaves
+   * `working` (reduce). Never persisted, never in SessionInfo, SessionDetail or a summary (each lists its fields).
+   */
+  idleAtPrompt?: true
 }
 
 /** SessionInfo.room: the room's title, the member's name and its coordinator flag. */
@@ -248,6 +258,20 @@ export function newEntry(init: {
 }
 
 export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
+  // SessionEntry.idleAtPrompt: any sign that the turn went on (a hook other than a Notification, the key that
+  // answered a prompt) drops it, and so does any status but `working`, where it means nothing.
+  const goesOn = event.type === 'answer' || (event.type === 'hook' && event.event !== 'Notification')
+  const next = reduceStatus(goesOn && entry.idleAtPrompt ? withoutIdleAtPrompt(entry) : entry, event)
+  return next.idleAtPrompt && next.status !== 'working' ? withoutIdleAtPrompt(next) : next
+}
+
+function withoutIdleAtPrompt(entry: SessionEntry): SessionEntry {
+  const next = { ...entry }
+  delete next.idleAtPrompt
+  return next
+}
+
+function reduceStatus(entry: SessionEntry, event: ReducerEvent): SessionEntry {
   if (event.type === 'exit') return exited(entry, event.code)
   // Only out of needs-permission: from any other status the key was ordinary typing (a prompt's
   // Enter is followed by UserPromptSubmit anyway), and an ended entry stays ended. Not out of a
@@ -350,7 +374,13 @@ export function reduce(entry: SessionEntry, event: ReducerEvent): SessionEntry {
     }
     case 'Notification': {
       const status = notificationStatus(payload, entry.status)
-      return status === undefined ? entry : { ...entry, status }
+      if (status !== undefined) return { ...entry, status }
+      // Claude sits at its prompt while the tab shows working (an interrupted turn): recorded, status unchanged
+      // (SessionEntry.idleAtPrompt). A changed entry, so onChange subscribers (keep awake) hear it.
+      if (payload.notification_type === 'idle_prompt' && entry.status === 'working' && entry.idleAtPrompt !== true) {
+        return { ...entry, idleAtPrompt: true }
+      }
+      return entry
     }
     case 'Stop':
       // A Stop main answered with the room pointer (design-rooms.md §2 "The Stop pointer") is not a

@@ -1,7 +1,7 @@
 // Keep awake while Claude works (src/main/power/keep-awake.ts) over a real SessionRegistry, and the
 // holds it takes (power-holds.ts) over a fake powerSaveBlocker.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEEP_AWAKE_OWNER, KEEP_AWAKE_RELEASE_MS, KeepAwake, keepAwakeOf } from '../../src/main/power/keep-awake'
+import { KEEP_AWAKE_OWNER, KEEP_AWAKE_RELEASE_MS, KEEP_AWAKE_SILENT_MS, KeepAwake, keepAwakeOf } from '../../src/main/power/keep-awake'
 import { PowerHolds } from '../../src/main/power/power-holds'
 import { SessionRegistry } from '../../src/main/sessions/session-registry'
 import { FakePowerBackend } from '../fakes/fake-power-backend'
@@ -12,11 +12,13 @@ describe('KeepAwake', () => {
   let holds: PowerHolds
   let enabled: boolean
   let keep: KeepAwake
+  let writes: string[]
 
   beforeEach(() => {
     vi.useFakeTimers()
     enabled = true
-    reg = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: () => {}, log: () => {} })
+    writes = []
+    reg = new SessionRegistry({ projectName: () => 'p', broadcast: () => {}, write: (_tab, data) => writes.push(data), log: () => {} })
     backend = new FakePowerBackend()
     holds = new PowerHolds(backend)
     keep = new KeepAwake({ sessions: reg, holds, enabled: () => enabled })
@@ -98,6 +100,68 @@ describe('KeepAwake', () => {
     expect(reg.get('c1')?.status).toBe('needs-permission')
     vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_MS)
     expect(backend.active.size).toBe(0)
+  })
+
+  // An interrupted turn (Esc) fires no Stop: the tab stays working until Claude Code's idle_prompt says it sits at
+  // its prompt. That must release the hold, and must never open a typing path (the status stays working).
+  it('stops counting a working tab once idle_prompt says it sits at its prompt; the status stays working', () => {
+    start('c1')
+    work('c1')
+    reg.send('c1', 'queued while busy', 'plugin')
+    const heard: Array<true | undefined> = []
+    reg.onChange((c) => heard.push(c.entry?.idleAtPrompt))
+    vi.advanceTimersByTime(60_000)
+    reg.applyHook('c1', 'Notification', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' })
+    expect(heard).toEqual([true]) // the change reached subscribers
+    const entry = reg.get('c1')
+    expect(entry?.status).toBe('working')
+    expect(entry?.queue).toHaveLength(1)
+    expect(writes).toEqual([]) // nothing typed
+    // Nothing that leaves main carries it.
+    expect(JSON.stringify(reg.snapshotFor('p'))).not.toContain('idleAtPrompt')
+    expect(JSON.stringify(reg.summariesFor('p'))).not.toContain('idleAtPrompt')
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_MS)
+    expect(backend.active.size).toBe(0)
+    // The next turn holds again.
+    work('c1')
+    expect(keep.held()).toBe(true)
+  })
+
+  it('a hook after the idle_prompt (the turn went on) counts the tab again', () => {
+    start('c1')
+    work('c1')
+    reg.applyHook('c1', 'Notification', { notification_type: 'idle_prompt' })
+    reg.applyHook('c1', 'PreToolUse', { tool_name: 'Bash' })
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_MS * 2)
+    expect(backend.calls).toEqual([['start', 1]])
+  })
+
+  it('stops counting a working tab with no hook for KEEP_AWAKE_SILENT_MS, with no event to wake it', () => {
+    start('c1')
+    work('c1')
+    vi.advanceTimersByTime(KEEP_AWAKE_SILENT_MS - 1)
+    expect(keep.held()).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(reg.get('c1')?.status).toBe('working')
+    expect(keep.held()).toBe(true) // the release delay still applies
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_MS)
+    expect(backend.active.size).toBe(0)
+  })
+
+  it('a hook within the silence window moves the fallback out', () => {
+    start('c1')
+    work('c1')
+    vi.advanceTimersByTime(KEEP_AWAKE_SILENT_MS - 1000)
+    reg.applyHook('c1', 'PreToolUse', { tool_name: 'Bash' }) // a long Bash call starts
+    vi.advanceTimersByTime(KEEP_AWAKE_SILENT_MS - 1)
+    expect(backend.calls).toEqual([['start', 1]])
+    // Another tab still fresh keeps it while this one goes silent.
+    start('c2')
+    work('c2')
+    vi.advanceTimersByTime(KEEP_AWAKE_RELEASE_MS * 2)
+    expect(keep.held()).toBe(true)
+    vi.advanceTimersByTime(KEEP_AWAKE_SILENT_MS)
+    expect(keep.held()).toBe(false)
   })
 
   it('releases when the last working tab closes or exits', () => {

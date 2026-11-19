@@ -1217,10 +1217,11 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   (plugins and `ccc sessions` see status `needs-permission` with that tool). It ends when Claude
   reports the tool done, not on a key; a cancelled question (Esc) keeps showing until Claude's
   next turn, and a background subagent's tool call while the dialog is up shows "working".
-- Keep awake follows the tab's status: a turn you interrupt with Esc sends no Stop hook, so the tab keeps showing
-  "working" until its next prompt, and the computer stays awake until then (or until the tab closes). There is no
-  inactivity limit, since a long tool call is just as quiet. Turn the setting off, or send the tab any prompt, to let
-  it sleep.
+- Keep awake and an interrupted turn: a turn you interrupt with Esc sends no Stop hook, so the tab keeps showing
+  "working" until its next prompt. Keep awake stops counting it once Claude Code reports it has sat at its prompt
+  (about a minute later), so the computer may sleep about two minutes after the interrupt. Should that report not
+  come, a working tab with no hook event for 30 minutes stops counting; a turn that thinks that long without a single
+  tool call loses the hold the same way.
 - Closing a whole project window, or quitting, does not ask, even with running tabs. With a browser attached to the
   window, closing it asks "Close for everyone" (the browser is told the window closed) or "Keep running for <device>":
   the window is hidden and its tabs keep running for the browser. Opening the project again (the project picker,

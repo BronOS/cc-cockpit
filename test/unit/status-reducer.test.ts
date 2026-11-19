@@ -593,3 +593,41 @@ describe('a Stop main answered with the room pointer (design-rooms.md §2 "The S
     expect(reduce(dead, blockedStop('a1'))).toBe(dead)
   })
 })
+
+// Keep awake (main/power/keep-awake.ts): an interrupted turn fires no Stop, so the tab stays `working`; Claude Code's
+// idle_prompt about a minute later is recorded as SessionEntry.idleAtPrompt and never moves the status.
+describe('idleAtPrompt (idle_prompt while working)', () => {
+  const idle = hook('Notification', { notification_type: 'idle_prompt' })
+
+  it('is set by an idle_prompt while working, the status staying working', () => {
+    const next = reduce(withStatus('working', { tool: 'Bash' }), idle)
+    expect(next.status).toBe('working')
+    expect(next.tool).toBe('Bash')
+    expect(next.idleAtPrompt).toBe(true)
+    // A repeat changes nothing (no new entry, so no change event).
+    expect(reduce(next, idle)).toBe(next)
+  })
+
+  it('is not set from any other status', () => {
+    for (const status of ['starting', 'idle', 'waiting', 'needs-permission', 'ended'] as const) {
+      expect(reduce(withStatus(status), idle).idleAtPrompt, status).toBeUndefined()
+    }
+  })
+
+  it('is dropped by any later hook but a Notification, and by the answer key', () => {
+    const flagged = reduce(withStatus('working'), idle)
+    for (const event of HOOKS.filter((e) => e !== 'Notification')) {
+      expect(reduce(flagged, hook(event, { prompt: 'p', tool_name: 'Bash', source: 'compact' })).idleAtPrompt, event).toBeUndefined()
+    }
+    expect(reduce(flagged, hook('Notification', { notification_type: 'auth_success' })).idleAtPrompt).toBe(true)
+    expect(reduce(flagged, { type: 'answer' }).idleAtPrompt).toBeUndefined()
+  })
+
+  it('is dropped when the status leaves working (a permission prompt, the exit)', () => {
+    const flagged = reduce(withStatus('working'), idle)
+    const asked = reduce(flagged, hook('Notification', { notification_type: 'permission_prompt' }))
+    expect(asked.status).toBe('needs-permission')
+    expect(asked.idleAtPrompt).toBeUndefined()
+    expect(reduce(flagged, { type: 'exit', code: 0 }).idleAtPrompt).toBeUndefined()
+  })
+})
