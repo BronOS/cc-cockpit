@@ -92,8 +92,12 @@ export interface ChannelLike {
 export interface PortRelayOptions {
   /** A frame to main; false when it did not go out (the socket dropped, or over the frame cap). */
   send(frame: PortMsgFrame | PortCloseFrame): boolean
-  /** Hand port1 to whoever asked for `key` with `nonce` (panel-port-bus deliverPanelPort); false: nobody. */
-  deliver(key: string, nonce: number, port: MessagePort): boolean
+  /**
+   * Hand port1 to whoever asked for `key` with `nonce` (panel-port-bus deliverPanelPort); false: nobody.
+   * `oneWay`: main opened it host to page only, passed on so the frame can tell its page (a hint: the
+   * relay above drops what the page posts, and main drops it again).
+   */
+  deliver(key: string, nonce: number, port: MessagePort, oneWay?: true): boolean
   createChannel?(): ChannelLike
 }
 
@@ -161,7 +165,7 @@ export class PortRelay {
     handles.set(ch.port1, handle)
     let taken = false
     try {
-      taken = this.options.deliver(key, nonce, ch.port1)
+      taken = oneWay ? this.options.deliver(key, nonce, ch.port1, true) : this.options.deliver(key, nonce, ch.port1)
     } catch (err) {
       console.warn(`web bridge: handing over the port of ${key} failed`, err)
     }

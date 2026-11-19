@@ -193,7 +193,7 @@ export interface WebBridgeOptions {
    * request that asked with `key` and `nonce` (panel-port-bus.ts deliverPanelPort); false when none
    * waits. Absent: every port is refused (closed at once).
    */
-  onPort?(key: string, nonce: number, port: MessagePort): boolean
+  onPort?(key: string, nonce: number, port: MessagePort, oneWay?: true): boolean
   /** The channel factory for relayed ports (tests); `new MessageChannel()` by default. */
   createChannel?(): ChannelLike
 }
@@ -740,9 +740,8 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     }
     if (status.state !== 'ready' || !ports) return
     // `oneWay` (D-17, PanelPortPayload.oneWay): main's word that this read guest's page may not post
-    // to that plugin's host; read off the frame as untrusted data (true or nothing), main drops anyway.
-    // ASSUMED field name: PortOpenFrame (shared/web-protocol.ts) has no `oneWay` yet and main's relay
-    // (main/web/port-relay.ts) does not send one, so until both do this is always false.
+    // to that plugin's host (PortOpenFrame.oneWay); read off the frame as untrusted data (true or
+    // nothing), main drops anyway.
     if (f.t === 'port.open') ports.open(f.key, f.nonce, f.oneWay === true)
     else if (f.t === 'port.msg') ports.message(f.key, f.nonce, f.m)
     else if (f.t === 'port.close') ports.remoteClosed(f.key, f.nonce)
@@ -782,7 +781,7 @@ export function createWebBridge(options: WebBridgeOptions): WebBridge {
     ports?.closeAll()
     ports = new PortRelay({
       send: (frame) => sendPortFrame(s, frame),
-      deliver: (key, nonce, port) => options.onPort?.(key, nonce, port) ?? false,
+      deliver: (key, nonce, port, oneWay) => options.onPort?.(key, nonce, port, oneWay) ?? false,
       ...(options.createChannel ? { createChannel: options.createChannel } : {})
     })
     readyTimer = timers.setTimeout(() => {

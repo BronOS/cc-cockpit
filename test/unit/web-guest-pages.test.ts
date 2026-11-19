@@ -251,9 +251,12 @@ describe('ports for guests', () => {
   it("a one-way port (D-17) relays main to page only: the page's messages are dropped, logged once", async () => {
     const ports: MessagePort[] = []
     const sent: unknown[] = []
-    const r = new PortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, port) => (ports.push(port), true) })
+    const flags: unknown[] = []
+    const r = new PortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, port, oneWay) => (ports.push(port), flags.push(oneWay), true) })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     r.open('a/b', 1, true)
+    // The frame is told too (a hint for its page: ccPanel's one-way state).
+    expect(flags).toEqual([true])
     const got: unknown[] = []
     ports[0]!.onmessage = (e: MessageEvent) => got.push(e.data)
     r.message('a/b', 1, '"down"')
@@ -273,8 +276,10 @@ describe('ports for guests', () => {
   it('a two-way port still sends what the page posts', async () => {
     const ports: MessagePort[] = []
     const sent: unknown[] = []
-    const r = new PortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, port) => (ports.push(port), true) })
+    const flags: unknown[] = []
+    const r = new PortRelay({ send: (f) => (sent.push(f), true), deliver: (_k, _n, port, oneWay) => (ports.push(port), flags.push(oneWay), true) })
     r.open('a/b', 1)
+    expect(flags).toEqual([undefined])
     ports[0]!.postMessage('"up"')
     await settle()
     expect(sent).toEqual([{ t: 'port.msg', key: 'a/b', nonce: 1, m: '"up"' }])
