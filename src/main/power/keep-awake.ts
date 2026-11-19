@@ -23,6 +23,10 @@
 //    room's pointer, a person's quick follow-up, a short permission prompt. A minute is short next to any
 //    OS idle-sleep timer, so holding it that long costs nothing. Any change while the timer runs leaves it
 //    alone (only a tab working again cancels it), so title or gist changes cannot keep pushing it out.
+//  - Known gap: a turn the person interrupts (Esc) fires no Stop hook (Claude Code skips Stop on a user
+//    interrupt), so the tab stays `working` until its next prompt, exit or close, and the hold with it.
+//    No inactivity cap: a long tool call (a 2-hour test run) is just as silent, and it is the case this
+//    exists for. Documented in docs/features.md, Known limitations.
 //  - Turning the setting off releases at once; turning it on with a tab working holds at once
 //    (settingChanged). Reading `enabled()` at every change means a hand edit of app.json is seen on the
 //    next change.
