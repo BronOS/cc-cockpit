@@ -8,7 +8,8 @@
 // `secrets/secret-store.ts`; `dialog` only in `dialogs/electron-dialog.ts`, and never called in server
 // mode); `shell.openExternal` only in `external/electron-open-external.ts`, reached through the
 // openExternal adapter (`external/open-external.ts`), never on the server in server mode;
-// `powerSaveBlocker` only in `power/electron-power.ts`, reached through `power/power-holds.ts`), never
+// `powerSaveBlocker` only in `power/electron-power.ts` and the `systemd-inhibit` spawn only in
+// `power/logind-inhibit.ts`, both reached through `power/power-holds.ts`), never
 // from logic modules that unit tests load.
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
@@ -167,6 +168,7 @@ import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
 import { electronPowerSaveBackend } from './power/electron-power'
 import { KeepAwake, keepAwakeOf } from './power/keep-awake'
+import { selectPowerBackend } from './power/logind-inhibit'
 import { PowerHolds, type PowerHold } from './power/power-holds'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
@@ -2144,7 +2146,15 @@ function start(server: boolean): void {
   // default; main/power/keep-awake.ts). `powerHolds` is the one way to a power save blocker
   // (power-holds.ts): macOS server mode's whole-run hold (docs/plans/20261119-server-mode-mac.md,
   // decision 4) takes its own `powerHolds.hold('server-mode')`, so neither can release the other's.
-  const powerHolds = new PowerHolds(electronPowerSaveBackend, warnLog)
+  // On Linux with `systemd-inhibit` on PATH each hold also takes a logind sleep lock (logind-inhibit.ts):
+  // Electron's blocker reaches nothing there but GNOME's session manager. Chosen once, here.
+  const power = selectPowerBackend({
+    platform: process.platform,
+    pathEnv: process.env.PATH,
+    electron: electronPowerSaveBackend,
+    log: warnLog
+  })
+  const powerHolds = new PowerHolds(power.backend, warnLog)
   const keepAwake = new KeepAwake({
     sessions,
     holds: powerHolds,
@@ -4142,6 +4152,9 @@ function start(server: boolean): void {
     void terminalMirror.stop()
     sessionGist.dispose()
     keepAwake.dispose()
+    // The release above only ended the pipes; their one-second kill timers die with main, so the
+    // inhibitor groups are SIGKILLed now (the closed pipes would end them anyway).
+    power.logind?.dispose()
     rateLimits.dispose()
     sessions.dispose()
     // Members stay members with no tab (design-rooms.md §1 "Restart"); then the room stop's ack timers stop.

@@ -458,10 +458,17 @@ setting off releases at once; on with a tab working holds at once. The write (`s
 `PowerHolds` (`main/power/power-holds.ts`), one Electron blocker per hold, so macOS server mode's whole-run
 hold (`docs/plans/20261119-server-mode-mac.md`, decision 4) and this one never release each other's;
 `powerSaveBlocker` itself is only in `main/power/electron-power.ts` (grep test). What it does: an IOPM
-no-idle-sleep assertion on macOS (`pmset -g assertions`), `SetThreadExecutionState` on Windows, a session
-bus inhibitor on Linux (logind or the desktop's screensaver service; with no session bus, as on a
-headless server, it may do nothing). The display may still sleep; a lid close or a Sleep the person
-picks still sleeps the computer.
+no-idle-sleep assertion on macOS (`pmset -g assertions`), `SetThreadExecutionState` on Windows. On Linux
+Electron only asks GNOME's session manager or `org.freedesktop.PowerManagement` on the session bus (nothing
+on Hyprland, nothing on a server with no session bus), so when `systemd-inhibit` is on PATH at start each
+hold also runs its own `systemd-inhibit --what=sleep --who=cc-cockpit --why=... --mode=block cat`
+(`main/power/logind-inhibit.ts`, the only file that spawns it, grep test): a logind lock over the system
+bus, held while `cat` reads a pipe from main, so it ends with main however main ends; one process per hold,
+so a release ends only its own lock. A failure (spawn error, a polkit refusal outside a login session, an
+early exit) is logged once and never respawned; the hold still counts. The display may still sleep; a lid
+close still sleeps the computer, and so does a Sleep the person picks on macOS and Windows (on Linux logind
+refuses a `block` lock's suspend request even from its own user, which is also why the idle suspend of a
+Hyprland desktop, the person's own `systemctl suspend`, is held off; `block-weak` would hold off nothing).
 
 **Restore.** Main saves each project's tabs (kind, cwd, `session_id`, order; a Claude tab's name;
 any tab's flag; a command tab's own label and command); on next start Claude tabs reopen with `claude --resume <id>`, shell tabs start

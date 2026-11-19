@@ -1212,8 +1212,8 @@ differs:
   (design.md §3) needed holds with owners, so `power/power-holds.ts` is one Electron blocker per hold and `server-platform.ts`
   takes `powerHolds.hold('server-mode')` once after `ready` (`holdForRun`) and keeps the handle for the run, so the
   server's hold and the keep-awake feature's never release each other's. The assertion is Chromium's
-  `prevent-app-suspension` as measured in S4; a Linux server plans no hold (a server with no session bus may have no
-  power service to ask).
+  `prevent-app-suspension` as measured in S4; a Linux server plans no whole-run hold, and keep awake while Claude works
+  reaches logind there over the system bus (`power/logind-inhibit.ts`, design.md §3 "Keep awake").
 - **The window.** `createWindow` forces `show: false` and `backgroundThrottling: false` after the caller's options under
   `server`, on both platforms (decision 1 had them for the macOS case; Linux's hidden page never showed anything).
   `disableHardwareAcceleration()` and the accessory policy are the darwin row's, before `ready`.

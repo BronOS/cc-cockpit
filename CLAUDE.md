@@ -111,7 +111,9 @@ passes on macOS (2026-11-19) and has not run on Linux.
   `main/external/electron-open-external.ts` (behind `createOpenExternal`: in server mode a link goes to browser views as a
   notice, never to the server's own browser) and `powerSaveBlocker` only in `main/power/electron-power.ts` (behind
   `PowerHolds`, `main/power/power-holds.ts`: one blocker per hold, so keep-awake and a server's whole-run hold never
-  release each other's; logic in `keep-awake.ts`, fake `test/fakes/fake-power-backend.ts`), each with a grep test
+  release each other's; logic in `keep-awake.ts`, fake `test/fakes/fake-power-backend.ts`; on Linux each hold also spawns its
+  own `systemd-inhibit ... --mode=block cat`, only in `main/power/logind-inhibit.ts`, grep test `no-direct-systemd-inhibit.test.ts`),
+  each with a grep test
   (`no-direct-dialog.test.ts`, `no-direct-open-external.test.ts`, `no-direct-power-save-blocker.test.ts`); `safeStorage` is imported only by
   `main/index.ts` and reached through `main/secrets/secret-store.ts`. Do not import them elsewhere
   (rule stated in `main/index.ts`).
