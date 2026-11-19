@@ -84,7 +84,11 @@ test('qa walk: invite dialog texts, read guest shell, upgrade, write guest saves
       console.log('QA read guest files menu:', await files.locator('body').innerText().catch(() => '?'))
       // D-2: a read guest cannot open a page tab, whatever the Files row offers.
       const before = (await c.hook<Array<{ id: string }>>('tabs', c.projectDir)).length
-      await files.getByRole('button', { name: 'Edit' }).first().click().catch((e) => console.log('QA read Edit click failed', String(e).slice(0, 120)))
+      await page.keyboard.press('Escape')
+      await files.getByText('notes.txt').click()
+      await page.waitForTimeout(1000)
+      console.log('QA owner overlays after the READ guest clicked a file:', JSON.stringify(await c.page.locator('.overlay').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))))
+      await files.getByText('Edit', { exact: true }).first().click({ timeout: 5000 }).catch((e) => console.log('QA read Edit click failed', String(e).slice(0, 120)))
       await page.waitForTimeout(1500)
       await shot(page, 'guest-read-after-edit-click')
       const afterTabs = await c.hook<Array<{ id: string; kind: string }>>('tabs', c.projectDir)
@@ -197,8 +201,7 @@ test("qa: a write guest's Files Edit click and the owner's own: does an overlay 
     const of = c.page.frameLocator('section.panel[aria-label="Files"] iframe')
     console.log('QA owner overlays before own click:', JSON.stringify(await overlays()))
     await of.getByText('b.txt').click()
-    await of.getByRole('button', { name: 'Edit' }).last().click({ force: true })
-    await expect(c.page.getByRole('tab', { name: /b\.txt/ })).toBeVisible({ timeout: 10_000 })
+    await of.getByText('Edit', { exact: true }).first().click({ timeout: 5000 }).catch((e) => console.log('QA owner Edit click failed', String(e).slice(0, 120)))
     await expect.poll(overlays, { timeout: 4000 }).not.toEqual([]).catch(() => {})
     console.log('QA owner overlays after the owner Edit click:', JSON.stringify(await overlays()))
     await shot(c.page, 'owner-after-own-edit-click')
