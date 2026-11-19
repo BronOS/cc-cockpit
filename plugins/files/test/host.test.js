@@ -175,7 +175,7 @@ test('a read-only guest reads the tree and searches, and is refused everything t
   host.deactivate()
 })
 
-test("a write guest works like the owner, but never Reveal or the system's default app", async () => {
+test("a write guest works like the owner, but never Reveal, the system's default app or an overlay: a click edits", async () => {
   const root = fs.realpathSync(tempDir('files-guest-'))
   fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
   const host = load()
@@ -186,22 +186,59 @@ test("a write guest works like the owner, but never Reveal or the system's defau
     reveal: async (p) => void called.push(['reveal', p]),
     openWithSystem: async (p) => void called.push(['system', p]),
   }
-  ctx.settings = { app: { openWith: [{ extensions: 'md', action: 'system' }] } }
+  ctx.services = { use: () => ({ open: async (p) => void called.push(['edit', p]) }) }
+  ctx.overlay = { start: () => (called.push(['overlay']), { result: new Promise(() => {}) }) }
+  ctx.settings = { app: { openWith: [{ extensions: 'md', action: 'system' }, { extensions: 'log', action: 'terminal', command: 'less {file}' }, { extensions: 'md, log', action: 'default' }] } }
   fs.writeFileSync(path.join(root, 'r.md'), '# x\n')
+  fs.writeFileSync(path.join(root, 'b.log'), 'y\n')
   host.activate(ctx)
   const guest = { view: 'web:6', access: 'write' }
+  const errors = () => posts.filter((p) => p[1].type === 'error').map((p) => p[1].message)
+  // A click: the editor's file tab, never the project's opener (an overlay main refuses a guest), whatever the first rule.
   await listeners[0]({ type: 'open', path: 'a.txt' }, guest)
+  await listeners[0]({ type: 'open', path: 'r.md' }, guest)
+  await listeners[0]({ type: 'open', path: 'b.log' }, guest)
+  // The menu's "Open in file viewer" and a Default opener rule: the editor too.
+  await listeners[0]({ type: 'open', path: 'a.txt', rule: -1 }, guest)
+  await listeners[0]({ type: 'open', path: 'r.md', rule: 2 }, guest)
+  assert.deepEqual(called, [['edit', 'a.txt'], ['edit', 'r.md'], ['edit', 'b.log'], ['edit', 'a.txt'], ['edit', 'r.md']])
+  assert.deepEqual(errors(), [])
+  // The menu's system rule and terminal-overlay rule: refused with why.
+  await listeners[0]({ type: 'open', path: 'r.md', rule: 0 }, guest)
+  await listeners[0]({ type: 'open', path: 'b.log', rule: 1 }, guest)
+  assert.equal(errors().length, 2)
+  assert.match(errors()[1], /opens an overlay: not for a guest/)
   await listeners[0]({ type: 'create', kind: 'file', dir: '', name: 'new.txt' }, guest)
   await listeners[0]({ type: 'reveal', path: 'a.txt' }, guest)
   await listeners[0]({ type: 'open-system', path: 'a.txt' }, guest)
-  await listeners[0]({ type: 'open', path: 'r.md' }, guest)
-  assert.deepEqual(called, [['open', 'a.txt']])
+  assert.equal(called.length, 5)
   assert.ok(fs.existsSync(path.join(root, 'new.txt')))
-  assert.equal(posts.filter((p) => p[1].type === 'error').length, 3)
-  // The owner's page (main tags it 'owner'; an older app tags nothing) still reveals.
+  assert.equal(errors().length, 4)
+  // The owner's page (main tags it 'owner'; an older app tags nothing) still opens the opener and reveals.
+  await listeners[0]({ type: 'open', path: 'a.txt' }, { view: 'desktop', access: 'owner' })
   await listeners[0]({ type: 'reveal', path: 'a.txt' }, { view: 'desktop', access: 'owner' })
   await listeners[0]({ type: 'reveal', path: 'a.txt' })
-  assert.deepEqual(called.slice(1), [['reveal', 'a.txt'], ['reveal', 'a.txt']])
+  assert.deepEqual(called.slice(5), [['open', 'a.txt'], ['reveal', 'a.txt'], ['reveal', 'a.txt']])
+  host.deactivate()
+})
+
+test('an access value the host does not know is a read-only guest, never the owner', async () => {
+  const root = fs.realpathSync(tempDir('files-guest-'))
+  fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
+  const host = load()
+  const { ctx, posts, listeners } = fakeCtx(root)
+  const called = []
+  ctx.files = { open: async (p) => void called.push(['open', p]), reveal: async (p) => void called.push(['reveal', p]) }
+  ctx.services = { use: () => ({ open: async (p) => void called.push(['edit', p]) }) }
+  host.activate(ctx)
+  for (const access of ['admin', 'OWNER', null, 1]) {
+    for (const m of [{ type: 'open', path: 'a.txt' }, { type: 'edit', path: 'a.txt' }, { type: 'reveal', path: 'a.txt' }]) {
+      const before = posts.length
+      await listeners[0](m, { view: 'web:8', access })
+      assert.deepEqual(posts.slice(before).map((p) => [p[1].type, p[1].message]), [['error', 'You are a read-only guest: the host can give you write access.']], `${String(access)} ${m.type}`)
+    }
+  }
+  assert.deepEqual(called, [])
   host.deactivate()
 })
 
