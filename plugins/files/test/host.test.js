@@ -262,6 +262,16 @@ test("a guest's reset leaves out the project's absolute path; the owner's keeps 
   await listeners[0]({ type: 'hello' }, { view: 'web:2', access: 'read' })
   const resets = posts.filter((p) => p[1].type === 'reset')
   assert.deepEqual(resets.map((p) => [p[2].view, p[1].env.root]), [['desktop', root], ['web:2', '']])
+  // A view with an access value the host does not know gets a read-only guest's reset: no path, no Open-with rules.
+  ctx.settings = { app: { openWith: [{ extensions: 'md', action: 'system' }] } }
+  onViews({ view: 'web:3', access: 'admin' })
+  posts.length = 0
+  await listeners[0]({ type: 'hello' }, { view: 'desktop', access: 'owner' })
+  const odd = posts.filter((p) => p[1].type === 'reset' && p[2].view === 'web:3')
+  assert.equal(odd.length, 1)
+  assert.equal(odd[0][1].env.root, '')
+  assert.deepEqual(odd[0][1].openWith, [])
+  assert.ok(posts.find((p) => p[1].type === 'reset' && p[2].view === 'desktop')[1].openWith.length > 0)
   host.deactivate()
 })
 

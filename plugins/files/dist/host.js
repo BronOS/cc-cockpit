@@ -125,7 +125,8 @@ exports.activate = (ctx) => {
     disposers.push(
       ctx.views.onChange(({ view, access }) => {
         if (access === undefined) views.delete(view)
-        else views.set(view, access)
+        // The same normaliser as `from`: a value this host does not know is a read-only guest's reset.
+        else views.set(view, accessOf({ access }))
       }),
     )
   }
@@ -409,8 +410,9 @@ exports.activate = (ctx) => {
   async function openFile(rel, rule, access = 'owner') {
     // A guest's click (no rule) goes straight to the editor, never the project's opener: that is an overlay
     // (the file viewer, the Reviewer), which main refuses from a guest's view, so the click would show
-    // nothing. The editor's file tab is a page tab the guest's view focuses itself (the click's origin
-    // view), and a read-only guest never gets here (`open` is not theirs).
+    // nothing. Edit is the path a write guest already uses (07b's e2e: Files' Edit shows the file tab in the
+    // guest's own page); a focus it asks for goes to the click's origin view, main's hint. A read-only guest
+    // never gets here (`open` is not theirs).
     if (access !== 'owner' && (rule === undefined || rule === -1)) return editFile(rel)
     const matches = openWith.matchRules(rel, openWith.rulesOf(app().openWith))
     let r

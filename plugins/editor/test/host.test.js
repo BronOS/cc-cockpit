@@ -1161,10 +1161,11 @@ test("a read-only guest reads the tab's own file only: another project file (.en
   await f.provided.editor.open('shared.txt')
   const view = t.connect(t.open[0].id, 'web:4', 'read')
   view.send({ t: 'open', req: 1, first: true })
-  assert.equal(view.posted.find((m) => m.t === 'file').text, 'shared\n')
-  // Its own file again, by name (a re-check, a disk event): still served.
+  const own = view.posted.find((m) => m.t === 'file')
+  assert.equal(own.text, 'shared\n')
+  // Its own file again, by the path the host answered with (what the page sends: a re-check, a disk event): still served.
   let n = view.posted.length
-  view.send({ t: 'read', req: 2, path: 'shared.txt' })
+  view.send({ t: 'read', req: 2, path: own.path })
   await until(() => view.posted.slice(n).some((m) => m.req === 2), 5000, 'own read')
   assert.equal(view.posted.slice(n).find((m) => m.req === 2).t, 'file')
   let req = 10
@@ -1174,7 +1175,7 @@ test("a read-only guest reads the tab's own file only: another project file (.en
       view.send({ t: kind, req: ++req, path: p })
       await drained()
       const answers = view.posted.slice(n).filter((x) => x.t !== 'chat-defaults')
-      assert.deepEqual(answers.map((m) => [m.t, m.req]), [['error', req]], `${kind} ${p}`)
+      assert.deepEqual(answers.map((m) => [m.t, m.req, m.message]), [['error', req, 'You are a read-only guest: the host can give you write access.']], `${kind} ${p}`)
     }
   }
   for (const m of [{ t: 'files', req: 30 }, { t: 'grep', req: 31, query: 'SECRET' }]) {
@@ -1182,7 +1183,8 @@ test("a read-only guest reads the tab's own file only: another project file (.en
     view.send(m)
     await drained()
     const answers = view.posted.slice(n).filter((x) => x.t !== 'chat-defaults')
-    assert.deepEqual(answers.map((a) => [a.t, a.kind, a.req]), [['search-error', m.t, m.req]], m.t)
+    // The guest layer's refusal, not a search that failed on its own (no rg on this machine would also answer search-error).
+    assert.deepEqual(answers.map((a) => [a.t, a.kind, a.req, a.message]), [['search-error', m.t, m.req, 'You are a read-only guest: the host can give you write access.']], m.t)
   }
   view.send({ t: 'grep-cancel' })
   await drained()
