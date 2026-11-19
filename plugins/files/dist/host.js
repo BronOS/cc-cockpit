@@ -23,7 +23,7 @@
 // out. The page only names a rule by its index; the host re-reads the setting and re-matches the path.
 //
 // Guests (0.5.0, design-guests §6): the manifest declares `guests.aware`, so this host checks the
-// viewer's access, which only main sets (`from.access`; an older app has none: the owner). A read-only
+// viewer's access, which only main sets (`from.access`; only `owner` is the owner, none is a read-only guest). A read-only
 // guest gets the tree, its folders and search, nothing that changes state or opens a tab (D-27); no guest
 // gets Reveal or the system's default app (they act on the host's screen); a guest's `reset` leaves out the
 // project's absolute path. A write guest otherwise works like the owner (the tabs it opens are the owner's).
@@ -56,12 +56,14 @@ const READ_GUEST_OK = new Set(['hello', 'refresh', 'expand', 'collapse', 'search
 const HOST_SCREEN = new Set(['reveal', 'open-system'])
 
 /**
- * The viewer's access as main tagged it. An app without guests passes none: the owner. A value this host does
- * not know (a newer app's role, a malformed tag) is a read-only guest, never the owner (fail safe).
+ * The viewer's access as main tagged it: only `'owner'` is the owner. A bundled plugin runs only on the app it
+ * ships with, where every line is tagged (main's panel-ports viewLine writes `owner` for the desktop page and an
+ * owner's browser view too; the host refuses a line without one, and gives onAction `owner` or the view's own),
+ * so an absent access is not an older app's: like any value this host does not know, it is a read-only guest.
  */
 const accessOf = (from) => {
   const a = from && typeof from === 'object' ? from.access : undefined
-  if (a === undefined || a === 'owner') return 'owner'
+  if (a === 'owner') return 'owner'
   return a === 'write' ? 'write' : 'read'
 }
 

@@ -285,7 +285,7 @@ test('file tabs: deactivate closes the watch of an open file tab (no disk event 
   host.activate(f.ctx)
   const posted = []
   const listeners = []
-  opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {} })
+  opened[0].fn({ id: 't', type: 'file', params: { path: 'a.txt' }, access: 'owner', post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {} })
   for (const l of listeners) l({ t: 'open', req: 1 })
   assert.deepEqual(posted.map((m) => m.t), ['settings', 'file'])
   // The open tab's folder is watched...
@@ -318,7 +318,8 @@ function fakeTabs(f) {
     close: async (id) => (calls.push(['close', id]), { closed: true }),
   }
   // A frame of tab `id` connecting in `view` (undefined: the desktop): the instance the host serves.
-  // `access`: main's tag for that view (guests); absent as on an older app.
+  // `access`: main's tag for that view, which main always writes ('owner' when not given here); `null`
+  // leaves it out (a line main never sends: read as a read-only guest).
   const connect = (id, view, access) => {
     const t = open.find((x) => x.id === id)
     const posted = []
@@ -330,7 +331,7 @@ function fakeTabs(f) {
       if (t.failTitle) throw new Error('the request timed out')
       t.title = title
     }
-    const tab = { id, type: 'file', params: t.params, view, ...(access ? { access } : {}), post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), onDiscuss: (fn) => discussers.push(fn), setTitle }
+    const tab = { id, type: 'file', params: t.params, view, ...(access === null ? {} : { access: access === undefined ? 'owner' : access }), post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: (fn) => closers.push(fn), onDiscuss: (fn) => discussers.push(fn), setTitle }
     for (const o of openers) o.fn(tab)
     return { posted, discussers, send: (m) => listeners.forEach((l) => l(m)), close: () => closers.forEach((c) => c()), discuss: () => discussers[0]() }
   }
@@ -1092,8 +1093,10 @@ test("a guest's instance of a tab on a file outside the project serves nothing; 
 
 test('lib/guests: access from the tag only, outside locations stripped, a read-only store', async () => {
   const guests = require('../dist/lib/guests.js')
-  // No tag at all is an older app's (the owner); a value this host does not know is never the owner (fail safe).
-  for (const t of [undefined, null, {}, { access: undefined }, { access: 'owner' }]) assert.equal(guests.accessOf(t), 'owner')
+  // Only main's 'owner' is the owner. A bundled host runs on the app it ships with, which tags every line: no
+  // tag at all, like a value this host does not know, is a read-only guest (fail safe).
+  assert.equal(guests.accessOf({ access: 'owner' }), 'owner')
+  for (const t of [undefined, null, {}, { access: undefined }]) assert.equal(guests.accessOf(t), 'read', JSON.stringify(t))
   for (const a of ['admin', 'OWNER', 1, null, '']) assert.equal(guests.accessOf({ access: a }), 'read', String(a))
   assert.equal(guests.accessOf({ access: 'read' }), 'read')
   assert.equal(guests.accessOf({ access: 'write' }), 'write')
@@ -1111,7 +1114,7 @@ test('lib/guests: access from the tag only, outside locations stripped, a read-o
   const raw = { id: 'x', access: 'write', post: (m) => posted.push(m), onMessage: () => {}, onClose: () => {}, setTitle: async () => {} }
   guests.guestTab(raw).tab.post(answer)
   assert.equal(posted[0].result.length, 1)
-  const ownerRaw = { id: 'y', post() {}, onMessage() {}, onClose() {} }
+  const ownerRaw = { id: 'y', access: 'owner', post() {}, onMessage() {}, onClose() {} }
   assert.equal(guests.guestTab(ownerRaw).tab, ownerRaw)
 })
 
@@ -1220,6 +1223,25 @@ test("a write guest's page cannot close the tab: a faked conflict report then Cl
   owner.send({ t: 'close' })
   await until(() => t.calls.some((c) => c[0] === 'close'), 5000, "the owner's close")
   assert.deepEqual(t.calls.filter((c) => c[0] === 'close'), [['close', id]])
+  host.deactivate()
+})
+
+test('a tab line with no access (main tags every one) is served as a read-only guest, never the owner', async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  await f.provided.editor.open('empty.txt')
+  const view = t.connect(t.open[0].id, 'web:4', null)
+  assert.equal(view.discussers.length, 0)
+  view.send({ t: 'open', req: 1, first: true })
+  const file = view.posted.find((m) => m.t === 'file')
+  assert.deepEqual([file.readOnly, file.why], [true, 'you are a read-only guest'])
+  const n = view.posted.length
+  view.send({ t: 'save', req: 2, path: file.path, text: 'x', base: file.hash })
+  await drained()
+  assert.deepEqual(view.posted.slice(n).filter((m) => m.t !== 'chat-defaults').map((m) => m.t), ['error'])
   host.deactivate()
 })
 

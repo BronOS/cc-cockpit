@@ -280,7 +280,7 @@ test('an outside file tab: read-only (why outside), only the path in its params;
   })
   const posted = []
   let onMessage = null
-  const tab = { id: 't1', type: 'file', params: { outside }, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => (onMessage = fn), onClose: () => {} }
+  const tab = { id: 't1', type: 'file', params: { outside }, view: undefined, access: 'owner', post: (m) => posted.push(m), onMessage: (fn) => (onMessage = fn), onClose: () => {} }
   files.serveFileTab(shared, tab)
   onMessage({ t: 'open', req: 1, first: true })
   const file = posted.find((m) => m.t === 'file')
@@ -466,7 +466,7 @@ test('host: a definition outside the project opens a read-only tab; a path no se
   await provided.editor.open('src/a.ts')
   const posted = []
   const listeners = []
-  const tab = { id: open[0].id, type: 'file', params: open[0].params, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {}, setTitle: async () => {} }
+  const tab = { id: open[0].id, type: 'file', params: open[0].params, view: undefined, access: 'owner', post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {}, setTitle: async () => {} }
   for (const o of openers) o(tab)
   const send = (m) => listeners.forEach((l) => l(m))
   // A path no server named: refused, no tab.
@@ -544,7 +544,7 @@ async function hostSetup(t, flagsFor = () => []) {
     const o = open.find((x) => x.params.path === rel)
     const posted = []
     const listeners = []
-    const tab = { id: o.id, type: 'file', params: o.params, view: undefined, post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {}, setTitle: async () => {} }
+    const tab = { id: o.id, type: 'file', params: o.params, view: undefined, access: 'owner', post: (m) => posted.push(m), onMessage: (fn) => listeners.push(fn), onClose: () => {}, setTitle: async () => {} }
     for (const fn of openers) fn(tab)
     return { posted, send: (m) => listeners.forEach((l) => l(m)) }
   }
