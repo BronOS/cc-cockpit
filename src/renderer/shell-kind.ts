@@ -10,7 +10,7 @@
 // DOM-free (the root element is passed in) so unit tests run it in plain Node.
 
 import { parseDesktopAgent } from '../shared/remote-agent'
-import { isRemoteViewId } from '../shared/views'
+import { isRemoteViewId, type GuestRole, type ViewAccess } from '../shared/views'
 
 let webShell = false
 /** The web shell's own view id, from main's `ready` (a fresh one per connection). */
@@ -74,6 +74,42 @@ export function isServerView(): boolean {
   return webShell && serverHint
 }
 
+/** A guest view's identity (WebSnapshot.guest): who it is, its role and the owner's name for the banner. */
+export interface GuestHint {
+  id: string
+  name: string
+  role: GuestRole
+  ownerName: string
+}
+
+let guestHint: GuestHint | undefined
+
+/**
+ * The web shell's `ready` said this view is a guest's (WebSnapshot.guest, design-guests §10; web/main.tsx
+ * sets it before mounting the shell, again after every reconnect, since a role switch reconnects with new
+ * view ids). A UI HINT ONLY: the shell hides what a guest may not do so it does not offer dead buttons,
+ * but main refuses every such call by the access of the view it bound (GUEST_CLASS), never by anything
+ * the page says. Ignored in the Electron window: the desktop page is always the owner's.
+ */
+export function setGuestHint(guest: GuestHint | undefined): void {
+  guestHint = webShell ? guest : undefined
+}
+
+/** This view's guest identity, or undefined for an owner view (setGuestHint). */
+export function currentGuest(): GuestHint | undefined {
+  return guestHint
+}
+
+/** Whether this page is a guest's view (setGuestHint); always false in the Electron window. */
+export function isGuestView(): boolean {
+  return guestHint !== undefined
+}
+
+/** This view's access as the shell hints it: `owner`, or the guest's role. */
+export function viewAccessHint(): ViewAccess {
+  return guestHint?.role ?? 'owner'
+}
+
 let loadTake = false
 
 /**
@@ -129,6 +165,7 @@ export function resetShellKindForTest(): void {
   loadTab = undefined
   ownView = undefined
   serverHint = false
+  guestHint = undefined
 }
 
 export interface ShellChrome {

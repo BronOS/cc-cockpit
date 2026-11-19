@@ -1,7 +1,23 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import type { GuestVisibility } from '../../shared/guest-access'
 import type { MarketplaceEntryView, MarketplaceIndexView, MarketplaceView, PluginView } from '../../shared/ipc'
+import { ApprovalDialog } from '../notices/ApprovalDialog'
+import { isServerView, isWebShell } from '../shell-kind'
 import { MARKETPLACE_CATEGORIES, STALE_AFTER_MS, type MarketplaceCategory } from '../../shared/marketplace'
 import { serviceProblemMessage, type PluginServiceStatus, type PluginServicesView } from '../../shared/services'
+import {
+  appGuestValue,
+  canShowToGuests,
+  GUEST_SHOW_DESKTOP_ONLY,
+  guestAccessOf,
+  guestChange,
+  guestExposureLines,
+  guestOverrideNote,
+  guestShowAskText,
+  type GuestShell,
+  type GuestTarget,
+  type PluginGuestAccess
+} from './guest-visibility-model'
 import { GearIcon } from './icons'
 import { LimitsForm, type LimitsSave } from './LimitsForm'
 import { IndexesSection, MarketplaceNotices } from './MarketplaceIndexes'
@@ -703,6 +719,7 @@ function PluginCardItem(props: {
           </button>
         </form>
       )}
+      {plugin !== undefined && <PluginGuests plugin={plugin} busy={busy} run={run} reload={reload} />}
       {plugin !== undefined && <PluginSettings plugin={plugin} shown={showSettings} reload={reload} />}
       {plugin !== undefined && showLimits && <PluginLimits id={plugin.id} name={plugin.name} busy={busy} run={run} />}
     </li>
@@ -783,5 +800,109 @@ function PluginLimits(props: { id: string; name: string; busy: string | null; ru
         </>
       }
     />
+  )
+}
+
+/** The page's shell for the guest rules (guest-visibility-model.ts), read when called: a hint only. */
+function guestShell(): GuestShell {
+  return { webShell: isWebShell(), serverView: isServerView() }
+}
+
+/**
+ * One plugin's guest visibility change (`settings.pluginGuestAccessSet`), shared by the Plugins page
+ * (app-wide) and This Project (the project's override): a narrowing, or any change on the desktop page,
+ * is sent at once; a widening from a server's browser waits for the armed in-page confirm (D-11,
+ * ApprovalDialog: no default, Allow armed after about a second of visibility); a widening from a desktop
+ * cockpit's browser is not offered (the control disables it) and dropped here if it gets through. The
+ * confirm is a hint like the rest: main applies its own rule (`server && isOwner`) to the call.
+ */
+export function useGuestVisibilitySet(props: {
+  pluginId: string
+  name: string
+  access: PluginGuestAccess
+  run: Action['run']
+  reload: () => void
+}): { set: (target: GuestTarget, value: GuestVisibility | null) => void; dialog: React.JSX.Element | null } {
+  const { pluginId, name, access, run, reload } = props
+  const [ask, setAsk] = useState<{ target: GuestTarget; value: GuestVisibility | null } | null>(null)
+  const send = (target: GuestTarget, value: GuestVisibility | null): void => {
+    void run(`guests ${pluginId}`, () => window.cockpit.invoke('settings.pluginGuestAccessSet', { pluginId, target, value })).then(reload)
+  }
+  const set = (target: GuestTarget, value: GuestVisibility | null): void => {
+    const change = guestChange(access, target, value, guestShell())
+    if (change === 'direct') send(target, value)
+    else if (change === 'confirm') setAsk({ target, value })
+  }
+  const text = ask !== null ? guestShowAskText(name, access, ask.target) : null
+  const dialog =
+    ask !== null && text !== null ? (
+      <ApprovalDialog
+        title={text.title}
+        allowLabel={text.allowLabel}
+        denyLabel="Cancel"
+        testIds={{ dialog: 'guest-show-confirm', allow: 'guest-show-allow', deny: 'guest-show-cancel' }}
+        onAnswer={(yes) => {
+          setAsk(null)
+          if (yes) send(ask.target, ask.value)
+        }}
+      >
+        <p>{text.body}</p>
+      </ApprovalDialog>
+    ) : null
+  return { set, dialog }
+}
+
+/**
+ * The card's "Guests" control (design-guests §6, §16.1): Hidden or Shown app-wide, the stored app value
+ * (absent = hidden; a project's own value is set under This Project and named here when this window's
+ * project has one). A blocked plugin (it sees every window's sessions and does not check the viewer)
+ * shows the control off with its reason. Bundled plugins are no special case. The line under it is
+ * core's own text from `aware` (spec-review 18), never the manifest's.
+ */
+function PluginGuests(props: { plugin: PluginView; busy: string | null; run: Action['run']; reload: () => void }): React.JSX.Element {
+  const { plugin, busy } = props
+  const access = guestAccessOf(plugin)
+  const blocked = access.blocked !== undefined
+  const canShow = canShowToGuests(guestShell())
+  const id = useId()
+  const { set, dialog } = useGuestVisibilitySet({ pluginId: plugin.id, name: plugin.name, access, run: props.run, reload: props.reload })
+  const value = blocked ? 'hidden' : appGuestValue(access)
+  const note = guestOverrideNote(access)
+  return (
+    <>
+      {dialog}
+      <div className="settings-item-foot" data-testid="plugin-guests">
+        <label className="settings-item-meta" htmlFor={id}>
+          Guests
+        </label>
+        <Select
+          id={id}
+          aria-label={`Guests: ${plugin.name}`}
+          value={value}
+          disabled={busy !== null || blocked}
+          onChange={(ev) => {
+            const next = ev.target.value as GuestVisibility
+            if (next !== value) set('app', next)
+          }}
+        >
+          <option value="hidden">Hidden</option>
+          {/* Off in a desktop cockpit's browser: main refuses a widening from it; hiding stays. */}
+          <option value="shown" disabled={!canShow && value !== 'shown'}>
+            Shown app-wide
+          </option>
+        </Select>
+      </div>
+      <div className="settings-item-foot settings-item-meta" data-testid="plugin-guests-text">
+        {guestExposureLines(access).map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+      {note !== undefined && (
+        <div className="settings-item-foot settings-item-meta" data-testid="plugin-guests-override">
+          {note}
+        </div>
+      )}
+      {!blocked && !canShow && value !== 'shown' && <div className="settings-item-foot settings-item-meta">{GUEST_SHOW_DESKTOP_ONLY}</div>}
+    </>
   )
 }

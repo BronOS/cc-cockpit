@@ -1,15 +1,30 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { AppearanceView, ProjectPanelView, ProjectPluginView, ProjectSettingsView } from '../../shared/ipc'
+import type { GuestVisibility } from '../../shared/guest-access'
+import type { AppearanceView, PluginView, ProjectPanelView, ProjectPluginView, ProjectSettingsView } from '../../shared/ipc'
 import { ZONE_IDS, type ZoneId } from '../../shared/layout'
 import { BUILTIN_VIEWER, OPEN_FILE_PICK, type PluginServicesView } from '../../shared/services'
 import { SLOT_NONE, slotPickKey } from '../../shared/slots'
+import {
+  canShowToGuests,
+  GUEST_SHOW_DESKTOP_ONLY,
+  GUEST_VISIBILITY_LABEL,
+  globalGuestLabel,
+  guestAccessOf,
+  guestChange,
+  guestEffectiveText,
+  projectGuestChoice,
+  projectOverrideStart,
+  type PluginGuestAccess
+} from './guest-visibility-model'
 import { BlocksIcon, PanelIcon } from './icons'
+import { useGuestVisibilitySet } from './PluginsPage'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { PluginSettingsPage } from './PluginSettingsPage'
 import { DiscussPromptField } from './DiscussPromptField'
 import { ProjectColorSettings } from './ProjectColorSettings'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { Empty, Group, PageHeader, Row, Select, Switch } from './ui'
+import { isServerView, isWebShell } from '../shell-kind'
 import { useAction } from './use-action'
 import { useLoaded } from './use-loaded'
 
@@ -20,6 +35,11 @@ const loadProject = (): Promise<ProjectSettingsView> => window.cockpit.invoke('s
 // Services are this project's: main answers for the window's project and only over the plugins its
 // host runs. A failure must not break the rest of the page: the picks just do not show.
 const loadServices = (): Promise<PluginServicesView | null> => window.cockpit.invoke('settings.pluginServices').catch(() => null)
+
+// Each plugin's guest visibility (design-guests §6): `ProjectPluginView` has none, `PluginView.guestAccess`
+// carries the app value, this project's own value and what is in force here. A failure (an older main)
+// hides the guest rows only.
+const loadPluginViews = (): Promise<PluginView[] | null> => window.cockpit.invoke('settings.plugins').catch(() => null)
 
 const ZONE_LABEL: Record<ZoneId, string> = { left: 'Left', right: 'Right', bottom: 'Bottom' }
 
@@ -37,6 +57,7 @@ export function ProjectPage(props: {
   const project = useLoaded(loadProject)
   const services = useLoaded(loadServices)
   const appearance = useLoaded(loadAppearance)
+  const pluginViews = useLoaded(loadPluginViews)
   const { data, error: loadError } = project
   // A plugin switched on or off changes the candidates of every pick, and a pick changes nothing
   // else here but is cheap to re-read: both reload together.
@@ -44,6 +65,7 @@ export function ProjectPage(props: {
     project.reload()
     services.reload()
     appearance.reload()
+    pluginViews.reload()
   }
   const { busy, error, run, setError } = useAction()
 
@@ -80,7 +102,15 @@ export function ProjectPage(props: {
             ) : (
               <ul className="settings-card settings-list">
                 {data.plugins.map((plugin) => (
-                  <ProjectPlugin key={plugin.id} plugin={plugin} open={props.openPlugin === plugin.id} busy={busy} run={run} reload={reload} />
+                  <ProjectPlugin
+                    key={plugin.id}
+                    plugin={plugin}
+                    guestAccess={guestAccessOfView(pluginViews.data, plugin.id)}
+                    open={props.openPlugin === plugin.id}
+                    busy={busy}
+                    run={run}
+                    reload={reload}
+                  />
                 ))}
               </ul>
             )}
@@ -114,8 +144,16 @@ export function ProjectPage(props: {
   )
 }
 
+/** A plugin's guest access from `settings.plugins`, or undefined when that list is not in (no guest row then). */
+function guestAccessOfView(views: PluginView[] | null, id: string): PluginGuestAccess | undefined {
+  const view = views?.find((p) => p.id === id)
+  return view !== undefined ? guestAccessOf(view) : undefined
+}
+
 function ProjectPlugin(props: {
   plugin: ProjectPluginView
+  /** Its guest visibility (settings.plugins); undefined while that list is not in. */
+  guestAccess: PluginGuestAccess | undefined
   busy: string | null
   run: ReturnType<typeof useAction>['run']
   reload: () => void
@@ -197,6 +235,9 @@ function ProjectPlugin(props: {
           save={(values, secrets) => window.cockpit.invoke('settings.projectPluginSettingsSave', { pluginId: plugin.id, values, secrets })}
           onSaved={reload}
         />
+      )}
+      {props.guestAccess !== undefined && (
+        <ProjectPluginGuests plugin={plugin} access={props.guestAccess} busy={busy} run={run} reload={reload} />
       )}
       {/* The plugin's html page for the project scope (design-next §5.4); off here, it says to enable the plugin. */}
       {plugin.settingsPage && showSettings && <PluginSettingsPage pluginId={plugin.id} pluginName={plugin.name} scope="project" />}
@@ -406,5 +447,71 @@ function ProjectDiscussPrompt(props: {
         </Row>
       </div>
     </Group>
+  )
+}
+
+/**
+ * This project's guest visibility of one plugin (design-guests §6): "Use global" (the project record's
+ * key absent: the app-wide value under Plugins, hidden by default) or this project's own Hidden / Shown,
+ * like the "Use global" switches of the project's plugin settings. Unchecking stores the global value as
+ * this project's own, to change from there (as the Discuss prompt does). The line under it says what
+ * guests here get and from where. A widening ("Shown", or "Use global" over a global Shown) follows
+ * the Plugins page's rule (useGuestVisibilitySet): at once on the desktop page, behind the armed
+ * confirm in a server's browser, not offered in a desktop cockpit's browser.
+ */
+function ProjectPluginGuests(props: {
+  plugin: ProjectPluginView
+  access: PluginGuestAccess
+  busy: string | null
+  run: ReturnType<typeof useAction>['run']
+  reload: () => void
+}): React.JSX.Element {
+  const { plugin, access, busy } = props
+  const id = useId()
+  const blocked = access.blocked !== undefined
+  const shell = { webShell: isWebShell(), serverView: isServerView() }
+  const canShow = canShowToGuests(shell)
+  const { set, dialog } = useGuestVisibilitySet({ pluginId: plugin.id, name: plugin.name, access, run: props.run, reload: props.reload })
+  const choice = projectGuestChoice(access)
+  const global = access.appValue ?? 'hidden'
+  // "Use global" on: the select shows the global value, read-only, as a project form's field does.
+  const shown: GuestVisibility = blocked ? 'hidden' : choice === 'global' ? global : choice
+  // Back to a global Shown from a desktop cockpit's browser: a widening it cannot make (main refuses it).
+  const globalRefused = choice !== 'global' && guestChange(access, 'project', null, shell) === 'refused'
+  return (
+    <>
+      {dialog}
+      <div className="settings-item-foot" data-testid="project-plugin-guests">
+        <span className="settings-item-meta">Guests</span>
+        <label className="settings-inline-switch" htmlFor={`${id}-global`}>
+          <Switch
+            id={`${id}-global`}
+            checked={choice === 'global'}
+            disabled={busy !== null || blocked || globalRefused}
+            aria-label={`Guests of ${plugin.name}: use global`}
+            onChange={(e) => set('project', e.target.checked ? null : projectOverrideStart(access, shell))}
+          />
+          {globalGuestLabel(access)}
+        </label>
+        <Select
+          aria-label={`Guests of ${plugin.name} in this project`}
+          value={shown}
+          disabled={busy !== null || blocked || choice === 'global'}
+          onChange={(e) => {
+            const next = e.target.value as GuestVisibility
+            if (next !== shown) set('project', next)
+          }}
+        >
+          <option value="hidden">{GUEST_VISIBILITY_LABEL.hidden}</option>
+          <option value="shown" disabled={!canShow && shown !== 'shown'}>
+            {GUEST_VISIBILITY_LABEL.shown}
+          </option>
+        </Select>
+      </div>
+      <div className="settings-item-foot settings-item-meta" data-testid="project-plugin-guests-text">
+        {guestEffectiveText(access)}
+      </div>
+      {!blocked && !canShow && shown !== 'shown' && <div className="settings-item-foot settings-item-meta">{GUEST_SHOW_DESKTOP_ONLY}</div>}
+    </>
   )
 }

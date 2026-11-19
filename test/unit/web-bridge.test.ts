@@ -28,7 +28,9 @@ import {
   shellToDraw,
   socketUrl,
   UNREACHABLE,
+  MAX_IMMEDIATE_RECONNECTS,
   type BridgeStatus,
+  type SessionCheck,
   type SocketLike,
   type Timers,
   type WebBridge
@@ -124,7 +126,7 @@ afterEach(() => {
   for (const b of bridges.splice(0)) b.close()
 })
 
-function rig(checkSession?: () => Promise<boolean>): Rig {
+function rig(checkSession?: () => Promise<SessionCheck>, guest?: boolean): Rig {
   const sockets: FakeSocket[] = []
   const timers = new FakeTimers()
   const bridge = createWebBridge({
@@ -132,6 +134,7 @@ function rig(checkSession?: () => Promise<boolean>): Rig {
     project: 'p1',
     timers,
     checkSession,
+    ...(guest === undefined ? {} : { guest }),
     createSocket: (url) => {
       const s = new FakeSocket(url)
       sockets.push(s)
@@ -1149,5 +1152,157 @@ describe('pending close asks', () => {
     anyApi(r.api).on('sessions.closeAsk', (p) => got.push(p))
     await tick()
     expect(got).toEqual([{ requestId: 'close-2', tabId: 't2' }])
+  })
+})
+
+describe('guest closes (design-guests §16.4, spec-review 22)', () => {
+  const GUEST = { id: 'g1', name: 'Bob', role: 'read', ownerName: 'Oleg' } as const
+  const guestReady = (r: Rig, view: string, role: 'read' | 'write' = 'read'): FakeSocket => {
+    const s = r.last()
+    s.open()
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view, snapshot: { ...SNAPSHOT, guest: { ...GUEST, role } } })
+    return s
+  }
+
+  it('keeps the last ready\'s guest across drops; an owner view has none; a malformed one is not kept', () => {
+    const owner = rig()
+    connect(owner)
+    expect(owner.bridge.lastGuest()).toBeUndefined()
+    const r = rig()
+    guestReady(r, 'web:1')
+    expect(r.bridge.lastGuest()).toEqual(GUEST)
+    r.last().serverClose(1006)
+    expect(r.bridge.lastGuest()).toEqual(GUEST)
+    const bad = rig()
+    bad.last().open()
+    bad.last().serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, guest: { ...GUEST, role: 'owner' } } })
+    expect(bad.bridge.lastGuest()).toBeUndefined()
+  })
+
+  it.each([
+    [CLOSE.kicked, 'Oleg removed you.'],
+    [CLOSE.accessEnded, 'Your access ended.'],
+    [CLOSE.guestProject, 'This invite is for another project.']
+  ])('close %i is final, with its text naming the owner', (code, text) => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    r.last().serverClose(code)
+    expect(r.bridge.status()).toEqual({ state: 'gone', reason: text, code })
+    expect(r.timers.pending()).toBe(0)
+    r.timers.advance(60_000)
+    expect(r.sockets).toHaveLength(1)
+  })
+
+  it('a kick before any ready names the default owner', () => {
+    const r = rig(undefined, true)
+    r.last().open()
+    r.last().serverClose(CLOSE.kicked)
+    expect(r.bridge.status()).toEqual({ state: 'gone', reason: 'Host removed you.', code: CLOSE.kicked })
+  })
+
+  it.each([CLOSE.roleChanged, CLOSE.accessChanged])('close %i reconnects at once, counts no attempt and keeps the shell drawn', (code) => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    r.last().serverClose(code)
+    // No wait and no "host unreachable": the new socket is there already.
+    expect(r.sockets).toHaveLength(2)
+    expect(r.bridge.status()).toEqual({ state: 'connecting' })
+    expect(r.statuses.some((s) => s.state === 'away')).toBe(false)
+    expect(shellToDraw(r.bridge.status(), 1)).toBe(1)
+    guestReady(r, 'web:2', 'write')
+    expect(r.bridge.status()).toEqual({ state: 'ready', view: 'web:2', generation: 2 })
+    expect(r.bridge.reconnectedAfter()).toBe(code)
+    // A plain read: the same however often the page asks, until the next ready.
+    expect(r.bridge.reconnectedAfter()).toBe(code)
+    expect(r.bridge.lastGuest()).toEqual({ ...GUEST, role: 'write' })
+    // The next drop is the first failed attempt: the immediate one was not counted.
+    r.last().serverClose(1006)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+    r.timers.advance(500)
+    guestReady(r, 'web:3')
+    expect(r.bridge.reconnectedAfter()).toBeUndefined()
+  })
+
+  it('a role switch followed by a failed reconnect still names the role switch at the next ready', () => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    r.last().serverClose(CLOSE.roleChanged)
+    r.last().serverClose(1006)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+    r.timers.advance(500)
+    guestReady(r, 'web:2', 'write')
+    expect(r.bridge.reconnectedAfter()).toBe(CLOSE.roleChanged)
+  })
+
+  it('immediate reconnects in a row fall back to the backoff, and a socket never ready gets the backoff', () => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    for (let i = 0; i < MAX_IMMEDIATE_RECONNECTS; i++) {
+      r.last().serverClose(CLOSE.accessChanged)
+      guestReady(r, `web:${i + 2}`)
+    }
+    expect(r.sockets).toHaveLength(MAX_IMMEDIATE_RECONNECTS + 1)
+    r.last().serverClose(CLOSE.accessChanged)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+    expect(r.sockets).toHaveLength(MAX_IMMEDIATE_RECONNECTS + 1)
+    const never = rig()
+    never.last().open()
+    never.last().serverClose(CLOSE.roleChanged)
+    expect(never.bridge.status()).toMatchObject({ state: 'away', attempt: 1 })
+  })
+
+  it('a stable connection starts the immediate count over', () => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    for (let i = 0; i < MAX_IMMEDIATE_RECONNECTS * 2; i++) {
+      r.timers.advance(STABLE_MS)
+      r.last().serverClose(CLOSE.accessChanged)
+      expect(r.bridge.status()).toEqual({ state: 'connecting' })
+      guestReady(r, `web:${i + 2}`)
+    }
+  })
+
+  it('the project closed on the host (4462) is retried with the backoff and away carries its code', () => {
+    const r = rig()
+    guestReady(r, 'web:1')
+    r.last().serverClose(CLOSE.projectClosed)
+    expect(r.bridge.status()).toEqual({ state: 'away', retryAt: r.timers.t + 500, attempt: 1, code: CLOSE.projectClosed })
+    r.timers.advance(500)
+    r.last().open()
+    r.last().serverClose(CLOSE.projectClosed)
+    expect(r.bridge.status()).toMatchObject({ state: 'away', attempt: 2, code: CLOSE.projectClosed })
+    r.timers.advance(1000)
+    guestReady(r, 'web:2')
+    expect(r.bridge.status()).toMatchObject({ state: 'ready', generation: 2 })
+  })
+
+  it("a guest's page told its project is not open says the host closed it, and never goes back to the picker", () => {
+    for (const code of [CLOSE.noProject, CLOSE.windowClosed]) {
+      const r = rig(undefined, true)
+      r.last().open()
+      r.last().serverClose(code)
+      expect(r.bridge.status()).toEqual({ state: 'gone', reason: 'The host closed this project.', code })
+      expect(backToPicker(r.bridge.status(), true, true)).toBe(false)
+    }
+    const owner = rig()
+    connect(owner)
+    owner.last().serverClose(CLOSE.noProject)
+    expect(owner.bridge.status()).toMatchObject({ reason: 'This project is not open on the host.' })
+  })
+
+  it('signed out after a drop: an ended guest says so, never "sign in again"', async () => {
+    const ended = rig(() => Promise.resolve('guest-ended'))
+    connect(ended)
+    ended.last().serverClose(1006)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(ended.bridge.status()).toEqual({ state: 'gone', reason: 'Your guest access ended. Ask the host for a new invite.' })
+    // A guest whose tombstone is gone (plain "no device") is still told its access ended.
+    const plain = rig(() => Promise.resolve(false))
+    guestReady(plain, 'web:1')
+    plain.last().serverClose(1006)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(plain.bridge.status()).toMatchObject({ state: 'gone', reason: expect.stringContaining('guest access ended') as string })
   })
 })

@@ -3,7 +3,8 @@ import { isWebShell } from '../shell-kind'
 import { currentTheme, onTheme } from '../theme/theme-store'
 import { shellPageUrl } from '../web/page-paths'
 import { FrameLoads, type FrameTarget } from '../web/port-relay'
-import { portMessage, themeMessage } from './frame-messages'
+import { portMessage, themeMessage, withPortFlags } from './frame-messages'
+import { isOneWayPort } from './panel-port-bus'
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
@@ -136,7 +137,9 @@ export function frameTarget(frame: { readonly current: HTMLIFrameElement | null 
       // '*': a sandboxed frame's origin is opaque, there is no origin to name; only this frame's
       // window receives it.
       if (!target) return false
-      target.postMessage(message, '*', transfer ?? [])
+      // A port main marked one-way says so in its message (D-17), so the page may hide its controls.
+      const port = transfer?.[0]
+      target.postMessage(withPortFlags(message, port !== undefined && isOneWayPort(port)), '*', transfer ?? [])
       return true
     }
   }

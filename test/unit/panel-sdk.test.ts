@@ -545,7 +545,7 @@ describe('frame messages (the shell side)', () => {
   })
 
   it('posts the port and the theme in the shape the SDK reads', () => {
-    expect(portMessage()).toEqual({ type: PORT_MESSAGE, remote: false })
+    expect(portMessage()).toEqual({ type: PORT_MESSAGE, remote: false, access: 'owner' })
     const msg = themeMessage({ id: 'x', name: 'X', kind: 'light', vars: { '--a': '#fff' }, xterm: { red: '#f00' } })
     // The xterm palette stays in the shell.
     expect(msg).toEqual({ type: THEME_MESSAGE, theme: { kind: 'light', vars: { '--a': '#fff' } }, mac: false })

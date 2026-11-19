@@ -5035,3 +5035,403 @@ ul.settings-alert {
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-md);
 }
+
+/* Guests (task 05) */
+/* Presence avatars (guests/PresenceAvatars.tsx): a person's initial on its presence colour. The palette is
+   indexed by PresencePerson.color (0..7, main's, stable per person; presence-model.ts clamps it), fixed
+   colours rather than theme variables so a person keeps the same colour on every device and theme; white
+   text reads on each in light and dark. */
+.guest-avatars {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+.guest-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.guest-avatar {
+  --guest-color: #e5484d;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  color: #fff;
+  background: var(--guest-color);
+  box-shadow: 0 0 0 1.5px var(--cc-bg-bar);
+}
+.guest-avatar[data-color='0'] {
+  --guest-color: #e5484d;
+}
+.guest-avatar[data-color='1'] {
+  --guest-color: #f76b15;
+}
+.guest-avatar[data-color='2'] {
+  --guest-color: #d6a10f;
+}
+.guest-avatar[data-color='3'] {
+  --guest-color: #30a46c;
+}
+.guest-avatar[data-color='4'] {
+  --guest-color: #12a594;
+}
+.guest-avatar[data-color='5'] {
+  --guest-color: #0090ff;
+}
+.guest-avatar[data-color='6'] {
+  --guest-color: #6e56cf;
+}
+.guest-avatar[data-color='7'] {
+  --guest-color: #d6409f;
+}
+.guest-avatar[data-faded] {
+  opacity: 0.45;
+}
+/* Typing (keys in the last 2 s): a ring in the person's colour that breathes; still with reduced motion. */
+.guest-avatar[data-typing] {
+  outline: 2px solid var(--guest-color);
+  outline-offset: 1px;
+  animation: guest-typing 0.9s ease-in-out infinite alternate;
+}
+@keyframes guest-typing {
+  to {
+    outline-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .guest-avatar[data-typing] {
+    animation: none;
+  }
+}
+/* The owner's guest chip in the top bar (GuestsChip.tsx): "Live" with the guest list, or "Share" to invite.
+   Shaped like the web access chip beside it. */
+.guest-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  margin-right: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--cc-fg-muted);
+  font: inherit;
+  font-size: var(--cc-text-xs);
+  cursor: pointer;
+}
+.guest-chip:hover,
+.guest-chip[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--cc-fg) 7%, transparent);
+  color: var(--cc-fg);
+}
+.guest-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cc-fg-subtle);
+}
+.guest-chip[data-live] {
+  border-color: color-mix(in srgb, var(--cc-status-working) 55%, transparent);
+  color: var(--cc-fg);
+}
+.guest-chip[data-live] .guest-chip-dot {
+  background: var(--cc-status-working);
+}
+/* The guest list: a menu-styled popover portalled to <body> (out of the title bar's drag region and
+   clipping), placed under the chip by GuestsChip; under the approvals (120) and the settings screen. */
+.guest-list.menu {
+  position: fixed;
+  z-index: 110;
+  width: min(360px, 92vw);
+  max-height: 70vh;
+  overflow-y: auto;
+  -webkit-app-region: no-drag;
+}
+.guest-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.guest-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border-radius: var(--cc-radius-md);
+}
+.guest-row + .guest-row {
+  border-top: 1px solid var(--cc-border);
+}
+.guest-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.guest-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.guest-row-state,
+.guest-row-meta {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-fg-muted);
+  overflow-wrap: anywhere;
+}
+.guest-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+.guest-list .guest-row-actions button {
+  width: auto;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-border-strong);
+  font-size: var(--cc-text-sm);
+}
+.guest-role-switch {
+  display: inline-flex;
+  margin-right: auto;
+}
+.guest-list .guest-role-switch button {
+  border-radius: 0;
+}
+.guest-list .guest-role-switch button:first-child {
+  border-radius: var(--cc-radius-md) 0 0 var(--cc-radius-md);
+}
+.guest-list .guest-role-switch button:last-child {
+  border-radius: 0 var(--cc-radius-md) var(--cc-radius-md) 0;
+}
+.guest-list .guest-role-switch button:only-child {
+  border-radius: var(--cc-radius-md);
+}
+.guest-list .guest-role-switch button + button {
+  border-left: 0;
+}
+.guest-list .guest-role-switch button[aria-checked='true'] {
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent);
+}
+.guest-danger {
+  color: var(--cc-status-ended, #cd3131);
+}
+.guest-row-ask p {
+  margin: 4px 0;
+  font-size: var(--cc-text-sm);
+  white-space: normal;
+}
+.guest-error {
+  margin: 6px 9px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-status-ended, #cd3131);
+  white-space: normal;
+}
+/* The invite dialog (InviteDialog.tsx): the confirm frame, taller, scrolling inside. */
+.guest-dialog-backdrop {
+  padding-top: 8vh;
+}
+.guest-dialog {
+  width: min(500px, 92vw);
+  max-height: 84vh;
+  overflow-y: auto;
+}
+.guest-invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.guest-invite-form .confirm-title {
+  margin: 0;
+}
+.guest-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.guest-field-label {
+  padding: 0;
+  font-size: var(--cc-text-sm);
+  font-weight: 600;
+}
+.guest-dialog input:not([type='checkbox'], [type='radio']),
+.guest-dialog select {
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-1, var(--cc-bg));
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+}
+.guest-choices {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+.guest-choices .guest-field-label {
+  flex-basis: 100%;
+}
+.guest-choices label,
+.guest-tab-list label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.guest-tab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+}
+.guest-note {
+  margin: 0;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+}
+.guest-warning {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: var(--cc-text-sm);
+  border-left: 3px solid var(--cc-status-needs-permission);
+  background: color-mix(in srgb, var(--cc-status-needs-permission) 10%, transparent);
+  border-radius: var(--cc-radius-sm);
+}
+.guest-dialog .guest-error {
+  margin: 0;
+}
+.guest-link-button {
+  padding: 0;
+  font: inherit;
+  color: var(--cc-accent);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.confirm-buttons .guest-primary {
+  color: var(--cc-accent-fg);
+  background: var(--cc-accent);
+  border-color: var(--cc-accent);
+}
+.confirm-buttons .guest-primary:hover {
+  background: var(--cc-accent-hover, var(--cc-accent));
+}
+.guest-link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.guest-link {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+  overflow-wrap: anywhere;
+  user-select: all;
+  background: var(--cc-bg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+}
+.guest-link-row button {
+  height: 28px;
+  padding: 0 12px;
+  font: inherit;
+  color: var(--cc-fg);
+  background: var(--cc-surface-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  cursor: pointer;
+}
+/* A guest's banner in the top bar (GuestBanner.tsx), where the owner's "+" is: the role, then who else is here. */
+.guest-banner {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 10px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg);
+  background: var(--cc-accent-soft);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.guest-banner[data-role='write'] {
+  background: color-mix(in srgb, var(--cc-status-needs-permission) 14%, transparent);
+}
+.guest-banner-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.guest-banner-people .guest-avatars {
+  gap: 8px;
+  margin-left: 0;
+}
+.guest-person-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--cc-fg-muted);
+}
+
+/* Guest shell (task 05) */
+/* A guest's tab area with nothing shared (SplitArea, guest-shell.ts emptyTabsText): centred, plain. */
+.tabs-empty.guest-nothing-shared {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+}
+/* D-9: a write guest's "Asked <owner> to close <title>." / "<owner> kept the tab open." (TabsPane, guest-close.ts),
+   a status line where the strip's errors go, not an error. */
+.guest-close-notice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 14px;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-fg-muted);
+  border-bottom: 1px solid var(--cc-border);
+}
+.guest-close-dismiss {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}

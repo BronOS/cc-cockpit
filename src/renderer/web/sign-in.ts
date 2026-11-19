@@ -21,18 +21,34 @@
 // keeps it (`storeKey`) before it loads again, and sends it with every request behind sign-in, the
 // session check included (main.tsx passes a fetch that adds it). A browser with the cookie but not the
 // key (its site data cleared, a device from before the key) is signed out and signs in again.
+//
+// Guest invites (design-guests §3, §16.4): the owner sends `<origin>/#i=<token>` (plus `&c=<pin>`,
+// which only the guest's own cc-cockpit app reads, D-29; a browser ignores it). The fragment is read
+// and cleared like an access link's, before any request, and the token is posted to INVITE_PATH
+// whatever the session says: a browser signed in as a guest may redeem a new invite (a new grant),
+// and one signed in as the owner is refused by the gateway (`owner-device`), which the page says.
+// The redeem answers a device key like any sign-in; the page then opens the invite's project
+// (main.tsx). A guest's session answer names the guest (`guest`), and a cookie of an ended guest
+// answers `guestEnded` (D-32): that page says the access ended, never the owner's sign-in form.
 // DOM-free (the location, history and fetch are passed in) so unit tests run it in plain Node.
+import { guestRoleOf } from '../../shared/guests'
 import { parseDesktopAgent } from '../../shared/remote-agent'
 import { deviceKeyOf } from './device-key'
 import type { WebAccessMode } from '../../shared/types'
+import { INVITE_UNREACHABLE_TEXT, inviteErrorOf, inviteErrorText, type SessionGuest } from './guest-pages-model'
 import {
   CONFIRM_ASK_PATH,
+  INVITE_FRAGMENT_TOKEN,
+  INVITE_PATH,
+  parseInviteFragment,
   CONFIRM_POLL_PATH,
   SESSION_PATH,
   SIGN_IN_LINK_PATH,
   SIGN_IN_PASSWORD_PATH,
   type WebConfirmPoll,
   type WebConfirmTicket,
+  type WebInviteError,
+  type WebInviteRequest,
   type WebSessionReply
 } from '../../shared/web-protocol'
 
@@ -40,11 +56,18 @@ import {
 const MAX_TOKEN_LENGTH = 512
 
 export type SignInState =
-  | { state: 'signed-in'; device: { id: string; name: string } }
+  /** `guest`: this browser's device is a guest's (the session answer), which lands on its own project only. */
+  | { state: 'signed-in'; device: { id: string; name: string }; guest?: SessionGuest }
   /** Not signed in; `error` is why the link just posted did not work, if one was. */
   | { state: 'signed-out'; mode: WebAccessMode; error?: string }
   /** The gateway did not answer (or answered nonsense): the host is away or web access went off. */
   | { state: 'unreachable'; error: string }
+  /** The cookie is an ended guest's (`WebSessionReply.guestEnded`, D-32): no sign-in form, no picker link. */
+  | { state: 'guest-ended' }
+  /** An invite was just redeemed: the page opens `project` (`?project=`), signed in as the guest. */
+  | { state: 'redeemed'; project: string }
+  /** An invite in the URL did not let this browser in; `text` is the page's whole message (plain text). */
+  | { state: 'invite-failed'; text: string }
 
 /** What the page passes in; the browser's own objects fit it. */
 export interface SignInEnv {
@@ -125,16 +148,77 @@ function isMode(value: unknown): value is WebAccessMode {
   return value === 'link' || value === 'password' || value === 'confirm' || value === 'none'
 }
 
+/**
+ * A session answer's `guest`, checked; undefined when it is not one. A malformed one makes the whole
+ * answer malformed (sessionReplyOf): a page that cannot tell must never read as the owner's.
+ */
+function sessionGuestOf(value: unknown): SessionGuest | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+  const { name, role, project } = value as Record<string, unknown>
+  const r = guestRoleOf(role)
+  if (typeof name !== 'string' || r === undefined || typeof project !== 'string' || project === '') return undefined
+  return { name, role: r, project }
+}
+
 /** The SESSION_PATH answer, checked; undefined when it is not one. */
 export function sessionReplyOf(body: unknown): WebSessionReply | undefined {
   if (body === null || typeof body !== 'object') return undefined
-  const { mode, device } = body as Record<string, unknown>
+  const { mode, device, guest, guestEnded } = body as Record<string, unknown>
   if (!isMode(mode)) return undefined
-  if (device === null) return { mode, device: null }
-  if (typeof device !== 'object') return undefined
+  if (device === null) return guestEnded === true ? { mode, device: null, guestEnded: true } : { mode, device: null }
+  if (device === undefined || typeof device !== 'object') return undefined
   const { id, name } = device as Record<string, unknown>
   if (typeof id !== 'string' || typeof name !== 'string') return undefined
-  return { mode, device: { id, name } }
+  if (guest === undefined) return { mode, device: { id, name } }
+  const g = sessionGuestOf(guest)
+  return g === undefined ? undefined : { mode, device: { id, name }, guest: g }
+}
+
+/** A session answer as the page's state once it has a device or an ended guest's cookie; undefined otherwise. */
+function sessionState(reply: WebSessionReply): SignInState | undefined {
+  if (reply.device) return reply.guest === undefined ? { state: 'signed-in', device: reply.device } : { state: 'signed-in', device: reply.device, guest: reply.guest }
+  if (reply.guestEnded === true) return { state: 'guest-ended' }
+  return undefined
+}
+
+/**
+ * Whether a fragment names an invite token at all (`i=` among its parts), valid or not: a broken
+ * invite link is told as one, not answered with the owner's sign-in page.
+ */
+function looksLikeInvite(hash: string): boolean {
+  const body = hash.startsWith('#') ? hash.slice(1) : hash
+  return body.split('&').some((part) => part.startsWith(`${INVITE_FRAGMENT_TOKEN}=`))
+}
+
+/**
+ * Posts an invite's token (the keyed fetch, like every sign-in) and keeps the answer's origin key.
+ * The project to open, or why not as page text: only the gateway's error CODE is read (a closed
+ * table, guest-pages-model.ts), never its text.
+ */
+export async function redeemInvite(
+  env: Pick<SignInEnv, 'fetch' | 'storeKey'>,
+  token: string
+): Promise<{ ok: true; project: string } | { ok: false; error: WebInviteError | undefined; text: string }> {
+  let res: Awaited<ReturnType<SignInEnv['fetch']>>
+  let body: unknown
+  try {
+    res = await postJson(env, INVITE_PATH, { token } satisfies WebInviteRequest)
+    body = await res.json().catch(() => undefined)
+  } catch {
+    return { ok: false, error: undefined, text: INVITE_UNREACHABLE_TEXT }
+  }
+  const b = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+  if (res.ok && b['ok'] === true) {
+    const key = deviceKeyOf(body)
+    const project = b['project']
+    // A gateway that let this browser in answers both; without the key the cookie is no use, and
+    // without the project there is nowhere to go (the next visit's session answer would say).
+    if (key === undefined || typeof project !== 'string' || project === '') return { ok: false, error: undefined, text: inviteErrorText(undefined) }
+    env.storeKey(key)
+    return { ok: true, project }
+  }
+  const error = inviteErrorOf(b['error'])
+  return { ok: false, error, text: inviteErrorText(error) }
 }
 
 /** A JSON post to a sign-in route, with this page's cookies (the answer may set the device's). */
@@ -273,20 +357,43 @@ async function sessionOf(env: SignInEnv): Promise<WebSessionReply | Extract<Sign
  * device" token for nothing. The device the browser has goes on.
  */
 export async function signIn(env: SignInEnv): Promise<SignInState> {
-  const token = linkTokenOf(env.location.hash)
-  if (env.location.hash !== '') {
+  const hash = env.location.hash
+  const token = linkTokenOf(hash)
+  // Read before the fragment is cleared, like the access link's token. `cert` (D-29) is ignored here.
+  const invite = parseInviteFragment(hash)
+  const inviteLike = invite !== undefined || looksLikeInvite(hash)
+  if (hash !== '') {
     // Any fragment goes, a token or not: nothing else the page uses lives there.
     env.replaceUrl(env.location.pathname + env.location.search)
   }
+  if (inviteLike) return signInWithInvite(env, invite?.token)
   let reply = await sessionOf(env)
   if ('state' in reply) return reply
-  if (reply.device) return { state: 'signed-in', device: reply.device }
+  // An access link on a browser holding an ended guest's cookie is the owner's own sign-in: posted.
+  const now = sessionState(reply)
+  if (now !== undefined && !(now.state === 'guest-ended' && token !== undefined)) return now
   if (token === undefined) return { state: 'signed-out', mode: reply.mode }
   const linkError = await postLink(env, token)
   reply = await sessionOf(env)
   if ('state' in reply) return reply
-  if (reply.device) return { state: 'signed-in', device: reply.device }
+  if (reply.device) return sessionState(reply)!
   return linkError === undefined ? { state: 'signed-out', mode: reply.mode } : { state: 'signed-out', mode: reply.mode, error: linkError }
+}
+
+/**
+ * An invite in the URL: posted before the session is asked, whatever it would say (see the top of
+ * the file). A guest re-opening the link it already redeemed gets `used`; when this browser is
+ * signed in as a guest, it goes on to its own project (main.tsx's landing) instead of an error page.
+ */
+async function signInWithInvite(env: SignInEnv, token: string | undefined): Promise<SignInState> {
+  if (token === undefined) return { state: 'invite-failed', text: inviteErrorText('bad-request') }
+  const result = await redeemInvite(env, token)
+  if (result.ok) return { state: 'redeemed', project: result.project }
+  if (result.error === 'used') {
+    const reply = await sessionOf(env)
+    if (!('state' in reply) && reply.device && reply.guest !== undefined) return { state: 'signed-in', device: reply.device, guest: reply.guest }
+  }
+  return { state: 'invite-failed', text: result.text }
 }
 
 /** What the signed-out page says, by mode. Plain text: the page draws it as text. */

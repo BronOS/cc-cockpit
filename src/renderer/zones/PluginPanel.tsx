@@ -5,6 +5,8 @@ import { PluginFrame } from '../plugins/PluginFrame'
 import { slotColumn } from './slot-layout'
 import { SlotFrames } from './SlotFrame'
 import { WebviewPanel } from './WebviewPanel'
+import { viewAccessHint } from '../shell-kind'
+import { shellAllows } from '../tabs/guest-shell'
 
 /** `<pluginId>/<panelId>` -> the plugin id (plugin ids hold no slash, so the last one splits). */
 function pluginOf(panelKey: string): string {
@@ -50,10 +52,17 @@ export function PluginPanel(props: { info: PanelInfo }): React.JSX.Element {
     }
     return (
       <div className="panel-body plugin-stopped" data-panel-body={panelKey} role="status">
-        <span>plugin stopped:</span>
-        <button type="button" onClick={restart} disabled={restarting}>
-          Restart
-        </button>
+        {/* Restart restarts the window's plugin host (`plugins.restart`): the owner's, never a guest's. */}
+        {shellAllows(viewAccessHint()).ownerTools ? (
+          <>
+            <span>plugin stopped:</span>
+            <button type="button" onClick={restart} disabled={restarting}>
+              Restart
+            </button>
+          </>
+        ) : (
+          <span>plugin stopped</span>
+        )}
       </div>
     )
   }

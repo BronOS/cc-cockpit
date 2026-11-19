@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { isServerView, isWebShell } from '../shell-kind'
+import { currentGuest, isGuestView, isServerView, isWebShell } from '../shell-kind'
+import { DEFAULT_OWNER_NAME, GUEST_CLOSE_ASK_TEXT, guestCloseAskTitle } from '../tabs/guest-close'
 import { ApprovalDialog } from './ApprovalDialog'
 import { RoomRemoveConfirm } from '../rooms/RoomDialog'
 import { ApprovalArm, approvalStack, enterArmedAtOnce } from './approval-model'
@@ -20,8 +21,11 @@ import {
   type LinkAsk,
   type PageNotice,
   type TitleMark,
-  type TrashAsk
+  type TrashAsk,
+  trashDenyOnlyNote,
+  trashMayAllow
 } from './notice-state'
+import type { IpcEventMap } from '../../shared/ipc'
 import {
   addDownloadNotice,
   clickDownload,
@@ -50,6 +54,7 @@ export function ShellNotices(): React.JSX.Element {
       <LinkNotice />
       <LinkConfirm />
       <TrashConfirm />
+      <GuestCloseConfirm />
       <DownloadOffers />
       <DownloadNotices />
       <RoomRemoveConfirm />
@@ -504,15 +509,60 @@ function TrashConfirm(): React.JSX.Element | null {
     setAsks((prev) => dropSharedAsk(prev, ask.requestId))
     window.cockpit.invoke('trash.answer', { requestId: ask.requestId, move }).catch(() => {})
   }
+  // A guest on a desktop host may only Deny (D-10): its Allow would be ignored, so none is offered.
+  const guest = currentGuest()
+  const denyOnly = !trashMayAllow({ guest: guest !== undefined, server: isServerView(), write: guest?.role === 'write' })
   return (
     <ApprovalDialog
       key={ask.requestId}
       title={<TrashAskTitle ask={ask} />}
       allowLabel="Move to Trash"
       denyLabel="Cancel"
+      {...(denyOnly ? { denyOnly: true, note: trashDenyOnlyNote(guest?.ownerName ?? DEFAULT_OWNER_NAME) } : {})}
       onAnswer={onAnswer}
     >
       <TrashAskText ask={ask} />
+    </ApprovalDialog>
+  )
+}
+
+type GuestCloseAsk = IpcEventMap['tabs.guestCloseAsk']
+
+/**
+ * `tabs.guestCloseAsk` (D-9): a write guest asked to close one of the owner's tabs. Every owner view of
+ * the window shows the guarded ApprovalDialog (it takes no focus from a terminal and arms Close tab a
+ * second after it is seen); the first answer wins (`tabs.guestCloseAnswer`), `tabs.guestCloseSettled`
+ * takes it down everywhere, and no answer in 60 s keeps the tab (main). Never on a guest's view: main
+ * sends the ask to owner views only, and a guest's page ignores one anyway. The guest's name and the
+ * tab's title are plain text (React escapes them).
+ */
+function GuestCloseConfirm(): React.JSX.Element | null {
+  const [asks, setAsks] = useState<readonly GuestCloseAsk[]>([])
+  useEffect(() => {
+    if (isGuestView()) return undefined
+    const offAsk = window.cockpit.on('tabs.guestCloseAsk', (ask) => setAsks((prev) => addSharedAsk(prev, ask)))
+    const offSettled = window.cockpit.on('tabs.guestCloseSettled', ({ requestId }) => setAsks((prev) => dropSharedAsk(prev, requestId)))
+    return () => {
+      offAsk()
+      offSettled()
+    }
+  }, [])
+  const ask = asks[0]
+  if (!ask) return null
+  const onAnswer = (close: boolean): void => {
+    setAsks((prev) => dropSharedAsk(prev, ask.requestId))
+    window.cockpit.invoke('tabs.guestCloseAnswer', { requestId: ask.requestId, close }).catch(() => {})
+  }
+  return (
+    <ApprovalDialog
+      key={ask.requestId}
+      title={guestCloseAskTitle(ask.guestName, ask.title)}
+      allowLabel="Close tab"
+      denyLabel="Keep open"
+      testIds={{ dialog: 'guest-close-ask', allow: 'guest-close-allow', deny: 'guest-close-keep' }}
+      onAnswer={onAnswer}
+    >
+      <p>{GUEST_CLOSE_ASK_TEXT}</p>
     </ApprovalDialog>
   )
 }

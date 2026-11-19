@@ -210,7 +210,7 @@ export interface ServerGroup {
 export function groupServers(servers: readonly RemoteServerInfo[]): ServerGroup[] {
   return sortServers(servers).map((server) => ({
     server,
-    via: viaLabel(server.via),
+    via: serverViaText(server),
     state: serverStateLabel(server),
     notes: serverNotes(server),
     projects: remoteRecentRows(server.recent)
@@ -385,7 +385,10 @@ export function newPromptFlow(): PromptFlow {
 }
 
 /** What the person answered a prompt: the fingerprint they trusted, or a secret and Remember. */
-export type PromptAnswer = { need: 'hostKey'; sha256: string } | { need: 'password' | 'passphrase'; secret: string; remember: boolean }
+export type PromptAnswer =
+  | { need: 'hostKey'; sha256: string }
+  | { need: 'certificate'; sha256: string }
+  | { need: 'password' | 'passphrase'; secret: string; remember: boolean }
 
 /** The prompt to show (`retry`: the last one was wrong, say so), or the error that ends the connect. */
 export type PromptStep = { ask: RemoteNeed; retry: boolean } | { error: string }
@@ -420,8 +423,26 @@ export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFl
   return { flow, step: { ask: need, retry: false } }
 }
 
+/**
+ * The certificate prompt's line (D-29): what Trust means. The host's own certificate is self-signed, so
+ * nothing but the person can vouch for it; the invite link is how it reached them.
+ */
+export const CERTIFICATE_HINT =
+  'The host uses its own certificate, which this computer cannot check. Trust it only if the invite came to you from the host. This app then accepts only this certificate for this address; a different one is refused.'
+
+/**
+ * A server's label under its name: a guest's Direct record reads "Guest at <origin>" (design-guests §11),
+ * every other one its connection (viaLabel). `guest` comes from main's record, never from the link.
+ */
+export function serverViaText(server: { via: RemoteVia; guest?: true }): string {
+  const via = viaLabel(server.via)
+  return server.guest === true && server.via.kind === 'direct' ? `Guest at ${via}` : via
+}
+
 /** The flow with one more answer: a new answer for the same thing replaces the old one, the others stay. */
 export function withAnswer(flow: PromptFlow, answer: PromptAnswer): PromptFlow {
   if (answer.need === 'hostKey') return { ...flow, answers: { ...flow.answers, hostKey: answer.sha256 } }
+  // D-29: the certificate the person trusted; main pins it and saves it only after the window opened.
+  if (answer.need === 'certificate') return { ...flow, answers: { ...flow.answers, certificate: answer.sha256 } }
   return { ...flow, answers: { ...flow.answers, [answer.need]: answer.secret, remember: answer.remember } }
 }

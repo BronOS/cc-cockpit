@@ -116,6 +116,23 @@ export function canAllowLink(webShell: boolean): boolean {
 }
 
 /**
+ * Whether this page may offer Move to Trash on a trash ask (D-10): a guest only in server mode, where a
+ * write guest's Allow counts; on a desktop host main ignores a guest's Allow, so the guest gets Deny
+ * only, with trashDenyOnlyNote. The owner's views are unchanged (main decides theirs, `!view.remote ||
+ * server`). A hint: main re-checks the role and the host at answer time.
+ */
+export function trashMayAllow(env: { guest: boolean; server: boolean; write?: boolean }): boolean {
+  // A read-only guest never answers (main sends it no trash ask at all); a write guest Allows only in
+  // server mode (D-10).
+  return !env.guest || (env.server && env.write === true)
+}
+
+/** Beside a guest's Deny-only trash ask: who can move it. */
+export function trashDenyOnlyNote(owner: string): string {
+  return `Only ${owner} can move it to the Trash`
+}
+
+/**
  * The browser tab's title while in-page notices are unseen (design-web.md §9.9): a notice that came
  * while the tab was in the background would be missed, so the title counts them, `(2) cc-cockpit`,
  * until the tab is shown again. `base` is the page's own title; zero unseen leaves it as it is.

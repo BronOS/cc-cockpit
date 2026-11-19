@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from 'react'
 import type { WebviewPageInfo } from '../../shared/ipc'
+import { viewAccessHint } from '../shell-kind'
 import { BackGlyph, ExternalGlyph, ForwardGlyph, ReloadGlyph } from '../window-icons'
 
 export const NO_PAGE: WebviewPageInfo = { url: '', title: '' }
@@ -69,8 +70,13 @@ export function useWebviewPage(panelKey: string): WebviewPageInfo {
 export function WebviewToolbar(props: { panelKey: string; title: string; page: WebviewPageInfo; extra?: React.ReactNode }): React.JSX.Element {
   const { panelKey, title, page } = props
   const hasPage = page.url !== ''
+  // Back, Forward and Reload act on the owner's page (`webviews.step` is write): a read-only guest only
+  // watches, so they are not drawn (design-guests §4; a hint, main refuses regardless).
+  const steps = viewAccessHint() !== 'read'
   return (
     <div className="webview-toolbar" role="toolbar" aria-label={`${title} navigation`}>
+      {steps && (
+      <>
       <button type="button" className="icon-button sm" aria-label="Back" title="Back" disabled={!hasPage} onClick={() => step(panelKey, 'back')}>
         <BackGlyph size={15} />
       </button>
@@ -80,6 +86,8 @@ export function WebviewToolbar(props: { panelKey: string; title: string; page: W
       <button type="button" className="icon-button sm" aria-label="Reload" title="Reload" disabled={!hasPage} onClick={() => step(panelKey, 'reload')}>
         <ReloadGlyph size={15} />
       </button>
+      </>
+      )}
       <span className="webview-url" title={page.title ? `${page.title}\n${page.url}` : page.url} data-url={page.url}>
         {hasPage ? <UrlParts url={page.url} /> : 'No page'}
       </span>
