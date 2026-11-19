@@ -160,7 +160,9 @@ while the person types. When `activeElement` is the frame of tab T, it counts on
 - the person's pointer went into it: the last pointer position the shell saw (a `pointermove`, `pointerdown`, `wheel`,
   or the `pointerout` as the pointer left the shell's area) is inside T's frame box or within 24 px of it
   (`POINTER_NEAR_PX`), nearer to T's box than to any other visible frame's, no more than 3 s old (`POINTER_FRESH_MS`),
-  and no shell `keydown` (nor a focus moving within the shell) came after it.
+  and no shell `keydown` (nor a focus moving within the shell) came after it. A `pointerout` at the position already
+  recorded is no move and counts for nothing: Chromium sends one when the shell scrolls or lays out again under a
+  resting pointer (measured on macOS: focusing a shell field scrolled the document and revived stale evidence).
 
 *Measured, Electron 45:* the shell gets no event at all as the pointer goes into a cross-site frame (no `pointerout`,
 no `pointerover` of the iframe, no `:hover` on it) and none while it is inside one. The last position the shell has is

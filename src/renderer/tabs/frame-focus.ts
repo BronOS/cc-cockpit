@@ -285,10 +285,12 @@ export function watchShellEvidence(win: EventTarget, doc: EventTarget, pointer: 
     sinks.endPassThrough()
   }
   // A `pointerout` where the pointer already was is no move: Chromium sends boundary events when the
-  // element under a resting pointer changes (a re-render of the panes, a frame's own passThrough
-  // giving the pointer to its pane and back). Counted, one revived stale evidence after the person's
-  // keys (a page's `focus()` then kept the keyboard while they typed in a shell field, the e2e on
-  // macOS) and ended a passThrough at once. A press or a wheel there is the person's own act and counts.
+  // element under a resting pointer changes (the shell scrolled or laid out again under it). Counted,
+  // one revived stale evidence after the person's keys: in the e2e on macOS, focusing a shell field
+  // scrolled the document 21 px, the pane header under the resting pointer gave way to the frame's
+  // pane, and a page's `focus()` then kept the keyboard while they typed in that field. Only the last
+  // position the shell recorded is known: a pointer resting where the shell never saw it (inside a
+  // frame) still counts such an event as a move. A press or a wheel in place is the person's act and counts.
   win.addEventListener('pointermove', moved, true)
   win.addEventListener('pointerdown', moved, true)
   win.addEventListener(
