@@ -255,6 +255,20 @@ export interface PluginManifest {
    * like `services`: an older app tolerates the unknown key and simply never offers the scope.
    */
   access?: { sessions?: 'all-windows' }
+  /**
+   * `aware: true`: "I check `access`" (design-guests §6). The plugin reads the viewer's access from
+   * `onMessage`'s `from.access` (and the page tab and slot instances' `access`) and keeps owner-only
+   * data and state changes from guests itself. A plugin that does not declare it gets a one-way port
+   * for read-only guests (their messages are dropped, D-17); whether guests see the plugin at all is
+   * the owner's setting (`pluginGuestAccess`, hidden by default), never the manifest's. Top level and
+   * tolerated by older apps like `access`; strict inside.
+   */
+  guests?: { aware?: boolean }
+}
+
+/** The manifest declares `"guests": { "aware": true }` (the plugin checks a viewer's access itself). */
+export function isGuestAware(manifest: Pick<PluginManifest, 'guests'> | undefined): boolean {
+  return manifest?.guests?.aware === true
 }
 
 /** The manifest declares `"access": { "sessions": "all-windows" }` (ctx.sessions scope `all`). */
@@ -316,6 +330,13 @@ export const MANIFEST_SCHEMA = {
       type: 'object',
       additionalProperties: false,
       properties: { sessions: { enum: ['all-windows'] } }
+    },
+    // Strict inside like `access`: a misspelt `awre` would be a promise to check guests that the app
+    // never reads, while the plugin's author believes it declared one.
+    guests: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { aware: { type: 'boolean' } }
     },
     contributes: {
       type: 'object',

@@ -142,6 +142,9 @@ with full Node access.
   provider sees. Each call replaces the set, `null` removes it; a bad placement throws a TypeError
   or Error, a refusal from the app is logged. Cleared when the plugin stops or reloads. Who draws a
   type is the project's pick (`@slot:<type>`); with several providers and no pick, none is drawn.
+- `ctx.views.access(view)` (`'owner' | 'read' | 'write'`, undefined once gone) and `ctx.views.onChange(listener)`: the
+  views your pages are open in and who is behind each (the owner or a guest); `onMessage` and `onAction` listeners get
+  `from: { view, access }` (an older app has no `ctx.views`: check `typeof ctx.views === 'object'`).
 - `ctx.slots` (the provider side; an older app has none, so check `typeof ctx.slots === 'object'`):
   `onOpen(type, (slot) => …)` hears a frame of a type from your manifest `contributes.slots`
   opening (it throws for another type) and returns a disposer. `slot` is `{ id, type, host,

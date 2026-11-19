@@ -31,6 +31,9 @@ import type { PageNotice } from './notify'
 import type { OAuthPasteAnswer } from './oauth-paste'
 import type { RemoteAnswers, RemoteNeed, RemoteRecent, RemoteSecretName, RemoteVia, SshAuth } from './remote-servers'
 import type { WebAccessIndicator, WebAccessPatch, WebAccessSetReply, WebAccessView, WebActionReply, WebLinkReply } from './web-access'
+import type { GuestInviteAnswer, GuestInviteRequest, GuestScope, GuestView, PresenceSnapshot } from './guests'
+import type { GuestAccessResult, GuestVisibility } from './guest-access'
+import type { GuestRole } from './views'
 
 /** Where a Claude tab stands (see main/sessions/status-reducer.ts for how hook events move it). */
 export type TabStatus = 'starting' | 'idle' | 'working' | 'needs-permission' | 'waiting' | 'ended'
@@ -210,6 +213,16 @@ export interface TabInfo {
    * was restored), for the pane header's "Opened by" line; absent: show the bare id. Display only.
    */
   pluginName?: string
+  /**
+   * A tab a write guest opened (D-21): that guest's name, for the tab's tooltip. Set by main from the
+   * caller it bound (never a payload); stays when the guest leaves. Display only.
+   */
+  openedByGuest?: string
+  /**
+   * The ids of the guests with a selected-tabs scope this tab is shared with (the owner's "Share with"
+   * menu). Owner views only: the guest filter strips it (shared/guest-filter.ts `guestTabInfo`).
+   */
+  sharedWith?: string[]
   /**
    * The core unseen dot (design-editor.md §1): the tab was opened while another tab was selected
    * (`ccc edit` while you type in Claude), and no view has shown it yet. Cleared by the first
@@ -445,6 +458,12 @@ export const PANEL_PORT_MESSAGE = 'cc-cockpit.panel-port'
 export interface PanelPortPayload {
   panelKey: string
   nonce: number
+  /**
+   * Set by main from `guestPort` (D-17): this view is a read-only guest of a plugin that is not
+   * guest-aware, so the relay drops what the page posts to the host. Main enforces it (PortRelay);
+   * the page may use it only to hide controls.
+   */
+  oneWay?: true
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -614,6 +633,12 @@ export interface PluginView {
    * update it. The Plugins page merges that listing into the plugin's card.
    */
   marketplace?: string
+  /**
+   * Whether guests see the plugin (design-guests §6, shared/guest-access.ts `guestVisibility`), with the
+   * stored values the page edits (`settings.pluginGuestAccessSet`). Optional until main's settings
+   * service fills it (task 04); a page reads absent as hidden.
+   */
+  guestAccess?: GuestAccessResult & { appValue?: GuestVisibility; projectValue?: GuestVisibility }
 }
 
 /** The repository and commit a confirmation displayed; main compares them with its own pin before it installs. */
@@ -1660,8 +1685,10 @@ export interface IpcInvokeMap {
    * pageUnsaved) is not closed unless `discard` says the person was asked and chose Close: the
    * answer is then `{ unsaved: true }` and the view asks (a view's copy of `TabInfo.dirty` can lag
    * behind a page's report, its own or another view's).
+   * `{ asked: true }`: a write guest named a tab it did not open (D-9); nothing closed, the owner's
+   * views were asked (`tabs.guestCloseAsk`) and the tab closes, or stays, by the owner's answer.
    */
-  'tabs.close': { req: { tabId: string; discard?: boolean }; res: { unsaved: true } | void }
+  'tabs.close': { req: { tabId: string; discard?: boolean }; res: { unsaved: true; asked?: undefined } | { asked: true; unsaved?: undefined } | void }
   /**
    * Move a tab to a position in the project's tab order (clamped to the ends). Split groups (D9):
    * `block` (the group handle's drag) moves the whole group of `tabId`, `toIndex` counted in the
@@ -1773,6 +1800,37 @@ export interface IpcInvokeMap {
    * the sender's project's is ignored, as a selection racing a close is normal.
    */
   'tabs.selected': { req: { tabId: string }; res: void }
+
+  // Guests (design-guests, shared/design.md §16.2). Every one is GUEST_CLASS `no`: a guest never
+  // manages guests. Narrowing (kick, revoke, read, scope down, hide) is allowed from any owner view;
+  // widening (invite, write, scope up, shown) follows D-11 (the desktop page, or in server mode an
+  // owner browser behind an armed confirm). The router decides by the caller main bound.
+  /** The guests and pending invites of every project (the owner's Live list). */
+  'guests.list': { req: void; res: GuestView[] }
+  /** Make an invite for the sender's project; the link is in the answer, once. */
+  'guests.invite': { req: GuestInviteRequest; res: GuestInviteAnswer }
+  /** Revoke an invite nobody redeemed yet; false for an unknown or spent one. */
+  'guests.revokeInvite': { req: { inviteId: string }; res: boolean }
+  /** End a guest now (D-6): its devices are revoked, its views closed with `kicked`. */
+  'guests.kick': { req: { guestId: string }; res: boolean }
+  /** Switch a guest between read-only and write (its views reconnect with `roleChanged`). */
+  'guests.setRole': { req: { guestId: string; role: GuestRole }; res: boolean }
+  /** Replace a guest's tab scope (its views reconnect with `accessChanged`, D-30). */
+  'guests.setScope': { req: { guestId: string; scope: GuestScope }; res: boolean }
+  /** Share or unshare one tab with a selected-tabs guest (the tab menu's "Share with <guest>"). */
+  'guests.shareTab': { req: { guestId: string; tabId: string; shared: boolean }; res: boolean }
+  /**
+   * The owner's guest visibility of a plugin: app-wide or for the sender's project (`null`: use the
+   * global value / the default). `shown` is a widening (D-11).
+   */
+  'settings.pluginGuestAccessSet': {
+    req: { pluginId: string; target: 'app' | 'project'; value: GuestVisibility | null }
+    res: PluginView
+  }
+  /** Who is here and on which tab (design §10); filtered for a guest (shared/guest-filter.ts). */
+  'presence.get': { req: void; res: PresenceSnapshot }
+  /** The owner's answer to `tabs.guestCloseAsk` (D-9): `close` true closes the tab. False for an unknown or settled id. */
+  'tabs.guestCloseAnswer': { req: { requestId: string; close: boolean }; res: boolean }
 }
 
 /** main -> renderer events for `cockpit.on(channel, cb)`; later tasks add status, theme, ... */
@@ -1931,8 +1989,10 @@ export interface IpcEventMap {
    * `page`: the open is a web page's own (a webview panel's or url overlay's window.open, a mail frame's
    * link; main/external/open-external.ts OpenExtra), set by main at the call site: the shell only shows
    * such a notice, never opens it at once.
+   * `to`: the view main sent it to (`toView`), stamped by main, so a guest connection's sink (which
+   * cannot tell a `toView` from a broadcast) passes a guest only its own (`to === viewId`).
    */
-  'app.linkNotice': { url: string; signIn?: string; replayed?: true; page?: true }
+  'app.linkNotice': { url: string; signIn?: string; replayed?: true; page?: true; to?: string }
   /**
    * A plugin's sign-in named by an `app.linkNotice`'s `signIn` is over, however it ended (server mode,
    * design-web.md §9.9): sent to every browser view of its window. `finished` when the redirect brought a
@@ -2036,10 +2096,25 @@ export interface IpcEventMap {
   'commands.trigger':
     | { id: string; chord: string; code?: string; from: 'webview' }
     | { id: string; chord: string; code: string; from: 'page-tab'; tab: string }
+  /** The guests and invites changed (owner views only): the whole list, as `guests.list` answers. */
+  'guests.changed': GuestView[]
+  /** Presence changed (design §10): the whole snapshot, filtered per guest view. */
+  'presence.changed': PresenceSnapshot
+  /**
+   * A write guest asked to close a tab it did not open (D-9): every owner view shows an approval
+   * (`ApprovalDialog`), the first answer wins (`tabs.guestCloseAnswer`), no answer in 60 s keeps the
+   * tab. `title`: the tab's title as the owner's strip shows it.
+   */
+  'tabs.guestCloseAsk': { requestId: string; tabId: string; guestId: string; guestName: string; title: string }
+  /** The ask is over (answered, timed out or the tab is gone): owner views take their dialog down. */
+  'tabs.guestCloseSettled': { requestId: string }
 }
 
 export type InvokeChannel = keyof IpcInvokeMap
 export type EventChannel = keyof IpcEventMap
+/** A channel's request and response (the router's handlers, the guest table's extractors). */
+export type Req<C extends InvokeChannel> = IpcInvokeMap[C]['req']
+export type Res<C extends InvokeChannel> = IpcInvokeMap[C]['res']
 
 /** The whole API the preload exposes as `window.cockpit`. Nothing else crosses the bridge. */
 export interface CockpitApi {
@@ -2230,7 +2305,17 @@ export const INVOKE_CHANNELS = [
   'groups.dissolve',
   'groups.resize',
   'groups.area',
-  'groups.rename'
+  'groups.rename',
+  'guests.list',
+  'guests.invite',
+  'guests.revokeInvite',
+  'guests.kick',
+  'guests.setRole',
+  'guests.setScope',
+  'guests.shareTab',
+  'settings.pluginGuestAccessSet',
+  'presence.get',
+  'tabs.guestCloseAnswer'
 ] as const satisfies readonly InvokeChannel[]
 
 /** Every main -> renderer event channel, for the preload's allow-list (see INVOKE_CHANNELS). */
@@ -2284,7 +2369,11 @@ export const EVENT_CHANNELS = [
   'webviews.cursor',
   'webviews.selection',
   'webviews.select',
-  'commands.trigger'
+  'commands.trigger',
+  'guests.changed',
+  'presence.changed',
+  'tabs.guestCloseAsk',
+  'tabs.guestCloseSettled'
 ] as const satisfies readonly EventChannel[]
 
 /** Compiles only when the two lists name every channel of their map. */
@@ -2678,7 +2767,23 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   // screen and widens no access.
   'groups.area': 'yes',
   'groups.rename': 'yes',
-  'groups.changed': 'yes'
+  'groups.changed': 'yes',
+  // Guests (design-guests §16.2): `adapted` by the caller main bound (owner views only; widening as D-11),
+  // never by the payload. Presence is every view's, filtered per guest (shared/guest-filter.ts).
+  'guests.list': 'adapted',
+  'guests.invite': 'adapted',
+  'guests.revokeInvite': 'adapted',
+  'guests.kick': 'adapted',
+  'guests.setRole': 'adapted',
+  'guests.setScope': 'adapted',
+  'guests.shareTab': 'adapted',
+  'guests.changed': 'adapted',
+  'settings.pluginGuestAccessSet': 'adapted',
+  'presence.get': 'yes',
+  'presence.changed': 'yes',
+  'tabs.guestCloseAsk': 'adapted',
+  'tabs.guestCloseSettled': 'adapted',
+  'tabs.guestCloseAnswer': 'adapted'
 })
 
 /**

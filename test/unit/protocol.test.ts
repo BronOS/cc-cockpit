@@ -140,9 +140,23 @@ function catchError(fn: () => unknown): unknown {
 }
 
 describe('HOST_ONLY_COMMANDS (ccc web, design-web.md §9.4)', () => {
-  it('lists all eight ccc web requests, those whose handler comes later included, and the plugin limits write', () => {
+  it('lists all twelve ccc web requests (the guest ones of design-guests §12 included, whose handlers come in task 02) and the plugin limits write', () => {
     expect([...HOST_ONLY_COMMANDS].sort()).toEqual(
-      ['web.status', 'web.revoke', 'web.stop', 'web.link', 'web.add-device', 'web.password', 'web.mode', 'web.set', 'plugin.limits.set'].sort()
+      [
+        'web.status',
+        'web.revoke',
+        'web.stop',
+        'web.link',
+        'web.add-device',
+        'web.password',
+        'web.mode',
+        'web.set',
+        'web.invite',
+        'web.guests',
+        'web.kick',
+        'web.role',
+        'plugin.limits.set'
+      ].sort()
     )
   })
 

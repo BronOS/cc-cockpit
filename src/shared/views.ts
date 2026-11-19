@@ -16,10 +16,23 @@
 export type ViewId = string
 
 /**
- * Who is behind a call. v1 has one person (the owner of the machine); multi-user (design §10) adds
- * people. Kept on every caller now so a later per-person check has a field to read, not a refactor.
+ * Who is behind a call: the owner of the machine, or a guest (design-guests: a web device minted by
+ * redeeming an invite, `{ guest: <guest id> }`). Frozen on the caller at `hello` and never taken from
+ * a payload. Only the identity is frozen: a guest's role and scope are read live through the guest
+ * store on every call (`GuestService.access`), so a role switch or a kick holds at once.
  */
-export type Who = 'owner'
+export type Who = 'owner' | { readonly guest: string }
+
+/** What a guest may do: watch (`read`) or pair (`write`, which includes typing into shared tabs). */
+export type GuestRole = 'read' | 'write'
+
+/** A view's access as plugins and pages learn it (the port tag): the owner, or a guest's role. */
+export type ViewAccess = 'owner' | GuestRole
+
+/** Whether `who` is the owner. The structural check only: a guest id that no longer exists is not the owner either. */
+export function isOwnerWho(who: Who): boolean {
+  return who === 'owner'
+}
 
 /**
  * A remote view id main mints. Anchored, one literal prefix and a bounded digit run: linear, so a

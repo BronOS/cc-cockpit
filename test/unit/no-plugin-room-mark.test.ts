@@ -63,6 +63,8 @@ describe('the room mark and the badge are reached only from the shell page', () 
         'src/main/rooms/room-delivery.ts',
         'src/main/rooms/room-service.ts',
         'src/renderer/tabs/TabsPane.tsx',
+        // The guest class table (design-guests §4) names every channel; this one is `no` there.
+        'src/shared/guest-class.ts',
         'src/shared/ipc.ts'
       ]
     },
@@ -90,7 +92,8 @@ describe('the room mark and the badge are reached only from the shell page', () 
   it('the channels are named only by the shared channel list, the room handlers and the shell renderer', () => {
     const found = sites(/(['"`])(tabs\.roomMark|rooms\.deliverHeld)\1/)
     for (const file of filesOf(found)) {
-      expect(['src/shared/ipc.ts', 'src/main/ipc/room-handlers.ts'].includes(file) || file.startsWith('src/renderer/'), file).toBe(true)
+      // guest-class.ts: the guest table classifies every channel, these two as `no` (design-guests §4).
+      expect(['src/shared/ipc.ts', 'src/shared/guest-class.ts', 'src/main/ipc/room-handlers.ts'].includes(file) || file.startsWith('src/renderer/'), file).toBe(true)
     }
     expect(filesOf(found)).toContain('src/main/ipc/room-handlers.ts')
   })

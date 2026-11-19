@@ -459,6 +459,12 @@ export class HostContexts {
       panels: ui.panels,
       badge: ui.badge,
       overlay: ui.overlay,
+      // Task 01 stub (guests, design-guests §6): every view is the owner's while main refuses every guest
+      // caller; task 04 learns views and their access from main's port tags.
+      views: Object.freeze({
+        access: (view: string) => (view === 'desktop' || viewIdOf(view) !== undefined ? ('owner' as const) : undefined),
+        onChange: () => () => {}
+      }),
       slots: createSlotsApi({ pluginId: spec.id, types: spec.slotTypes ?? [], call, alive, guardAsync, hub: this.slots }),
       tabs: createTabsApi({ pluginId: spec.id, types: spec.pageTabTypes ?? [], call, alive, guardAsync, hub: this.pageTabs }),
       settingsPage: createSettingsPageApi({ pluginId: spec.id, declared: spec.settingsPage !== undefined, alive, hub: this.settingsPages }),

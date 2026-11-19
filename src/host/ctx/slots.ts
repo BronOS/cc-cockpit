@@ -175,6 +175,8 @@ export class SlotHub {
       type: tag.type,
       host: Object.freeze(structuredClone(tag.host)),
       params: tag.params === undefined ? undefined : structuredClone(tag.params),
+      // Task 01 stub (guests): `owner` while main refuses every guest caller; task 04 reads main's port tag.
+      access: 'owner',
       post: frame.line.post,
       onMessage: frame.line.onMessage,
       onClose: frame.line.onClose

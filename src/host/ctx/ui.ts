@@ -42,7 +42,9 @@ import type {
   OverlayResult,
   OverlaySpec,
   OverlayTypeButton,
-  PluginContext
+  PluginContext,
+  ViewAccess,
+  ViewFrom
 } from '../../sdk/types'
 import { MAX_DISCUSS_TEXT } from '../../shared/discuss'
 import { parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
@@ -167,6 +169,11 @@ type MessageListener = (message: JsonValue, from: PanelMessageSource) => void
  */
 export interface PanelMessageSource {
   readonly view: string
+  /**
+   * The view's access (guests, design-guests §6). Task 01 stub: always `owner`, true while main refuses
+   * every guest caller; task 04 reads it from main's port tag.
+   */
+  readonly access: ViewAccess
 }
 
 /** The `view` a plugin sees for the desktop window's own page. */
@@ -304,7 +311,7 @@ export class PanelPorts {
       try {
         dispatchInView(
           view,
-          () => listener(structuredClone(got.value), { view: view ?? DESKTOP_VIEW }),
+          () => listener(structuredClone(got.value), { view: view ?? DESKTOP_VIEW, access: 'owner' }),
           (err) => this.log(pluginId, `a panels.onMessage listener failed: ${errorText(err)}`)
         )
       } catch (err) {
@@ -314,7 +321,7 @@ export class PanelPorts {
   }
 }
 
-type ActionListener = (actionId: string) => void
+type ActionListener = (actionId: string, from: ViewFrom) => void
 
 /**
  * The ctx.panels.onAction listeners of every plugin of one host, keyed `<pluginId>/<panelId>`,
@@ -332,7 +339,7 @@ export class PanelActions {
     const key = `${pluginId}/${panelId}`
     const set = this.listeners.get(key) ?? new Set<ActionListener>()
     // Wrapped: the same function registered twice is two registrations, each with its disposer.
-    const entry: ActionListener = (id) => listener(id)
+    const entry: ActionListener = (id, from) => listener(id, from)
     set.add(entry)
     this.listeners.set(key, set)
     return () => {
@@ -361,7 +368,8 @@ export class PanelActions {
       try {
         dispatchInView(
           view,
-          () => listener(actionId),
+          // Task 01 stub: `owner` (main refuses every guest caller until task 03); task 04 tags the access.
+          () => listener(actionId, { view: view ?? DESKTOP_VIEW, access: 'owner' }),
           (err) => this.log(pluginId, `a panels.onAction listener failed: ${errorText(err)}`)
         )
       } catch (err) {

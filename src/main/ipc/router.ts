@@ -12,7 +12,8 @@ import type {
   CommandsView,
   DiscussAnswer,
   InvokeChannel,
-  IpcInvokeMap,
+  Req,
+  Res,
   LayoutView,
   MarketplaceUpdateAllResult,
   MarketplaceView,
@@ -194,8 +195,6 @@ export interface CallView {
   remote: boolean
 }
 
-type Req<C extends InvokeChannel> = IpcInvokeMap[C]['req']
-type Res<C extends InvokeChannel> = IpcInvokeMap[C]['res']
 type Result<C extends InvokeChannel> = Res<C> | Promise<Res<C>>
 
 /** A registered handler, as the router stores it for both transports. */
@@ -302,6 +301,13 @@ export class IpcRouter {
       // remote view.
       if (!remoteAllowed(channel)) {
         this.log(`ipc ${channel}: refused for remote view ${caller.viewId}`)
+        throw new Error(`${channel}: refused`)
+      }
+      // Guests (design-guests §4): deny-all until the router enforces GUEST_CLASS and its targets (task
+      // 03). Every caller that is not the owner is refused, whatever the channel; no guest can exist
+      // before the guest store does (task 02), so owners see no change.
+      if (caller.who !== 'owner') {
+        this.log(`ipc ${channel}: refused for guest view ${caller.viewId}`)
         throw new Error(`${channel}: refused`)
       }
       // The context was bound at handshake and the gateway closes the socket when its window
