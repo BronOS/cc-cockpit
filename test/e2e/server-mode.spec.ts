@@ -14,15 +14,16 @@ import { WebSocket } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { WebCliStatus } from '../../src/shared/web-access'
 import { IGNORED_LINE } from '../../src/main/second-launch'
+import { HELD_LINE } from '../../src/main/server-mode'
 import { MAX_PASTE_ATTEMPTS } from '../../src/main/oauth/plugin-oauth'
 import { PROTOCOL_VERSION, socketProtocols } from '../../src/shared/web-protocol'
 import { OAUTH_PASTE_REFUSED, OAUTH_SIGN_IN_OVER } from '../../src/shared/oauth-paste'
 import { FakeOAuthServer } from '../fakes/fake-oauth-server'
 import { launchCockpit } from './fixtures'
-import { addDeviceLink, ccc, expectMainAlive, launchProfiles, launchServer, secondLaunch, type Server } from './server-fixtures'
+import { addDeviceLink, ccc, expectMainAlive, launchProfiles, launchServer, secondLaunch, serverLaunchOnHeldDir, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 let server: Server | undefined
 
@@ -36,13 +37,14 @@ test('server mode: main runs as a server; a terminal tab opened in the browser t
   server = await launchServer()
   // Main took the switches as server mode (the flag every later module hangs on).
   expect(await server.cockpit.hook<boolean>('serverMode')).toBe(true)
-  // ...under Ozone headless, with no display in its env (the harness removed it from the app only).
+  // ...under Ozone headless on Linux (the re-exec's switch; macOS has no Ozone), with no display in its env
+  // (the harness removed it from the app only).
   const seen = await server.cockpit.app.evaluate(({ app }) => ({
     ozone: app.commandLine.getSwitchValue('ozone-platform'),
     display: process.env.DISPLAY ?? null,
     wayland: process.env.WAYLAND_DISPLAY ?? null
   }))
-  expect(seen).toEqual({ ozone: 'headless', display: null, wayland: null })
+  expect(seen).toEqual({ ozone: process.platform === 'linux' ? 'headless' : '', display: null, wayland: null })
 
   // Mode None on loopback: the bare origin signs the browser in, no link needed.
   const browser = await openBrowser(`${server.origin}/`)
@@ -636,9 +638,11 @@ test('server mode: the browser picker opens folders through the folder browser, 
     expect(await openCount()).toBe(2)
 
     // Closed on the server (Close project in the browser has its own spec below): now a recent project.
-    // The bound view loses its window, so the picker is loaded again by hand.
+    // The bound view loses its window and navigates itself to the picker: wait for that URL, so the
+    // goto below does not race it (ERR_ABORTED, "interrupted by another navigation", seen on macOS).
     await closeNewestWindow()
     await expect.poll(openCount).toBe(1)
+    await expect(page).toHaveURL(`${server.origin}/`)
 
     // `gone`: opened by a double click in the folder browser, closed, its folder removed.
     await page.goto(`${server.origin}/`)
@@ -651,6 +655,7 @@ test('server mode: the browser picker opens folders through the folder browser, 
     await expect.poll(openCount).toBe(2)
     await closeNewestWindow()
     await expect.poll(openCount).toBe(1)
+    await expect(page).toHaveURL(`${server.origin}/`)
     rmSync(gone, { recursive: true })
 
     await page.goto(`${server.origin}/`)
@@ -697,6 +702,7 @@ test('server mode: the browser picker opens folders through the folder browser, 
     await expect.poll(openCount).toBe(2)
     await closeNewestWindow()
     await expect.poll(openCount).toBe(1)
+    await expect(page).toHaveURL(`${server.origin}/`)
 
     // Forget: the moved folder gone too, confirmed in the row; the project leaves the list for good.
     rmSync(moved, { recursive: true })
@@ -1311,6 +1317,31 @@ test('server mode: a second launch from a desktop is ignored by the server; its 
   // The Stop launch swept what the Cancel launch's profile left (an empty dir Chromium made again).
   expect(launchProfiles(cancel.pid)).toEqual([])
   expect(await exited).toEqual({ code: 0, signal: null })
+})
+
+// macOS: `--server` while the person's desktop holds the data dir (plan 20261119-server-mode-mac decision 2).
+// The desktop ignores a launch's argv, so the loser says nothing was handed over and exits 1; the desktop
+// opens nothing for the folder it was given.
+test('server mode on macOS: --server against a running desktop on the same data dir exits 1 and the desktop opens nothing', async () => {
+  test.skip(process.platform !== 'darwin', 'only macOS starts --server without a re-exec; Linux hands the launch over')
+  test.setTimeout(60_000)
+  const { cockpit, close } = await launchCockpit()
+  try {
+    const other = join(cockpit.root, 'other')
+    mkdirSync(other)
+    const windows = (): Promise<number> => cockpit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)
+    const before = await windows()
+    const result = await serverLaunchOnHeldDir(cockpit, other)
+    expect(result.code).toBe(1)
+    expect(result.signal).toBeNull()
+    expect(result.output).toContain(HELD_LINE)
+    // The desktop is still the desktop and opened no window for the loser's folder.
+    expect(await cockpit.hook('serverMode')).toBe(false)
+    expect(await cockpit.hook('windowLook', other)).toBeUndefined()
+    expect(await windows()).toBe(before)
+  } finally {
+    await close()
+  }
 })
 
 // No wall-clock bound on the launch: a cold Electron start under xvfb can come near the 2 s ask

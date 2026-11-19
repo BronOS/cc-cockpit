@@ -1,6 +1,6 @@
 // Downloads in server mode (design-download.md §2.2, §7; plan 20261114-download Task 13): a Files
 // download in a browser of a headless server, and an offer made while no browser shows the project,
-// which waits and is shown (armed) when a browser connects. Linux only, like every server spec.
+// which waits and is shown (armed) when a browser connects. Linux and macOS, like every server spec.
 //
 // The offer is made by a Claude tab's own delayed `/ccc download` (the fake claude's `/later`), so it
 // runs after the only browser has left: nothing else can type into a tab of a server with no browser.
@@ -11,7 +11,7 @@ import { filesTree, pluginActive, savedDownload, treeRow, zipNames } from './dow
 import { expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 const BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 11 + 5) % 256))
 

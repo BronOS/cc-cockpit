@@ -9,7 +9,7 @@ import type { HostStatus } from '../../src/main/plugins/host-manager'
 import { expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser, type WebBrowser } from './web-fixtures'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 let server: Server | undefined
 
@@ -323,6 +323,131 @@ test('server mode: typed and pasted text reach the streamed page; its selection 
     await expect(pageTitle).toHaveAttribute('title', /^value\n/, { timeout: 10_000 })
     // Nothing selected now: the copy event leaves the clipboard alone.
     await expect.poll(() => clip(), { timeout: 10_000 }).toBe('')
+    await expectMainAlive(server)
+  } finally {
+    await browser.close()
+  }
+})
+
+// Edit chords in a streamed page (plan 20261119-server-mode-mac T4, shared/webview-keys.ts `editCommandOf`):
+// on a macOS server a key event alone selects and undoes nothing (no menu, no responder chain), so main
+// runs the command through the page's DevTools session. Ctrl and Cmd both work, from any browser. The page
+// reports its value and the Cmd/Ctrl+Z keydowns it saw in its title: `v[<value>] z=<count>`. The block
+// variant cancels those keydowns, as a page with its own undo does.
+const EDIT_SCRIPT = `const i=document.getElementById('i');let z=0;const show=()=>{document.title='v['+i.value+'] z='+z};
+i.addEventListener('input',show);show();`
+const EDIT_PAGE = `<!doctype html><meta charset="utf-8"><title>edit</title><body style="margin:0">
+<input id="i" style="display:block;margin:0;width:400px;height:40px;font-size:20px" autocomplete="off">
+<script>${EDIT_SCRIPT}
+document.addEventListener('keydown',(e)=>{if(e.key.toLowerCase()==='z'&&(e.metaKey||e.ctrlKey)){z++;show()}})</script>`
+const EDIT_BLOCK_PAGE = `<!doctype html><meta charset="utf-8"><title>edit</title><body style="margin:0">
+<input id="i" style="display:block;margin:0;width:400px;height:40px;font-size:20px" autocomplete="off">
+<script>${EDIT_SCRIPT}
+document.addEventListener('keydown',(e)=>{if(e.key.toLowerCase()==='z'&&(e.metaKey||e.ctrlKey)){e.preventDefault();z++;show()}})</script>`
+
+test('server mode: Cmd/Ctrl+A, Z, Shift+Z and Ctrl+Y edit the streamed page; a page that blocks Cmd+Z keeps its text; chords keep their order with typing', async () => {
+  test.setTimeout(180_000)
+  server = await launchServer({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  const { cockpit } = server
+  for (const name of ['select', 'undo', 'block', 'order', 'copy']) {
+    writeFileSync(join(cockpit.projectDir, `edit-${name}.html`), name === 'block' ? EDIT_BLOCK_PAGE : EDIT_PAGE)
+  }
+  await expect
+    .poll(async () => (await cockpit.hook<HostStatus>('hostStatus', cockpit.projectDir)).plugins.find((p) => p.id === 'cockpit.browser')?.state, {
+      timeout: 20_000
+    })
+    .toBe('active')
+  const browser = await openBrowser(`${server.origin}/`)
+  try {
+    const { page } = browser
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await openProjectInBrowser(browser, server.origin, server.projectId)
+    const section = page.locator('section.panel[aria-label="Browser"]')
+    if (!(await section.isVisible())) await page.getByRole('button', { name: /^Browser/ }).first().click()
+    await expect(section).toBeVisible({ timeout: 15_000 })
+    const layer = section.locator('.webview-input')
+    const textbox = section.locator('textarea.webview-text')
+    const pageTitle = section.locator('.webview-url')
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await browser.waitForTerminalText('FAKE-CLAUDE banner')
+    /** Opens a page and focuses its input with a click (the input is the page's top 40 px). */
+    const open = async (name: string): Promise<void> => {
+      await runInClaude(browser, `/ccc browser open edit-${name}.html`)
+      await expect(pageTitle).toHaveAttribute('title', /^v\[\] z=0\n/, { timeout: 15_000 })
+      await expect(section.locator('canvas.webview-canvas')).toHaveAttribute('data-drawn', 'true', { timeout: 15_000 })
+      const b = await layer.boundingBox()
+      if (!b) throw new Error('no input layer')
+      await page.mouse.click(b.x + 100, b.y + 20)
+      await expect(textbox).toBeFocused()
+    }
+    const expectState = (value: string, z = 0): Promise<void> =>
+      expect(pageTitle).toHaveAttribute('title', new RegExp(`^v\\[${value}\\] z=${z}\\n`), { timeout: 10_000 })
+
+    // Select all (Cmd, then Ctrl), then typing replaces the text.
+    await open('select')
+    await page.keyboard.type('hello')
+    await expectState('hello')
+    await page.keyboard.press('Meta+a')
+    await page.keyboard.type('X')
+    await expectState('X')
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type('Y')
+    await expectState('Y')
+
+    // Undo and redo: Cmd+Z, Cmd+Shift+Z, then Ctrl+Z and Ctrl+Y (Windows' redo).
+    // One character: how Chromium groups several typed ones into undo steps is its own business.
+    await open('undo')
+    await page.keyboard.type('a')
+    await expectState('a')
+    await page.keyboard.press('Meta+z')
+    await expectState('', 1)
+    await page.keyboard.press('Meta+Shift+z')
+    // (The page counts every Cmd/Ctrl+Z keydown, Shift or not; Ctrl+Y is no Z.)
+    await expectState('a', 2)
+    await page.keyboard.press('Control+z')
+    await expectState('', 3)
+    await page.keyboard.press('Control+y')
+    await expectState('a', 3)
+
+    // A page that blocks Cmd+Z keeps its text and still sees the keydown (once per press).
+    await open('block')
+    await page.keyboard.type('abc')
+    await expectState('abc')
+    await page.keyboard.press('Meta+z')
+    await expectState('abc', 1)
+    await page.keyboard.press('Control+z')
+    await expectState('abc', 2)
+    // Not undone later either: a keydown after the block types on from the same text.
+    await page.keyboard.type('d')
+    await expectState('abcd', 2)
+
+    // Type, chord, type with no waits between: the chord runs between the two, never before or after.
+    await open('order')
+    await page.keyboard.type('ab')
+    await page.keyboard.press('Meta+a')
+    await page.keyboard.type('c')
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type('d')
+    await expectState('d')
+    await page.keyboard.type('ef')
+    await page.keyboard.press('Control+z')
+    await page.keyboard.press('Meta+a')
+    await page.keyboard.type('g')
+    await expectState('g', 1)
+
+    // Copy after Cmd+A gives the whole text (the browser's copy event carries what main pushed).
+    await open('copy')
+    await page.keyboard.type('héllo ü pasted')
+    await expectState('héllo ü pasted')
+    const clip = (): Promise<string> =>
+      textbox.evaluate((t: HTMLTextAreaElement) => {
+        const data = new DataTransfer()
+        t.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }))
+        return data.getData('text/plain')
+      })
+    await page.keyboard.press('Meta+a')
+    await expect.poll(() => clip(), { timeout: 10_000 }).toBe('héllo ü pasted')
     await expectMainAlive(server)
   } finally {
     await browser.close()

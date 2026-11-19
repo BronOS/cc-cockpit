@@ -119,7 +119,7 @@ test('the room dialog opens from the tab menu: members, a doc read-only, the liv
 })
 
 test.describe('server mode', () => {
-  test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+  test.skip(process.platform === 'win32', 'server mode does not run on Windows')
   let server: Server | undefined
   test.afterEach(async () => {
     await server?.close()
