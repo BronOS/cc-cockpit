@@ -73,7 +73,8 @@ function makeService(limits?: (pluginId: string) => PluginLimits): RoomService {
       setRoom: (p, t, r) => tabs.setRoom(p, t, r),
       clearRoom: (p, t) => tabs.clearRoom(p, t),
       roomOf: (p, t) => tabs.roomOf(p, t),
-      kindOf: (p, t) => tabs.kindOf(p, t)
+      kindOf: (p, t) => tabs.kindOf(p, t),
+      close: () => {}
     },
     sessions,
     newId: nextId,
@@ -498,7 +499,7 @@ describe('room.read', () => {
   it('reads in bounded batches: the rest waits, and the text ends with the pointer for it (the Stop’s count)', async () => {
     const small = new RoomService({
       dir: join(dir, 'rooms-small'),
-      tabs: { setRoom: () => ({ id: '', name: '', coordinator: false, mark: false }), clearRoom: () => {}, roomOf: () => undefined, kindOf: () => 'claude' },
+      tabs: { setRoom: () => ({ id: '', name: '', coordinator: false, mark: false }), clearRoom: () => {}, roomOf: () => undefined, kindOf: () => 'claude', close: () => {} },
       sessions,
       newId: nextId,
       nonce: () => 'n'.repeat(16),
@@ -664,6 +665,82 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     }
     expect(service.stop.stop(a, { stop_hook_active: false })).toBeUndefined()
     expect(service.list(owner)[0]?.endedAt).toBeDefined()
+  })
+
+  describe('end with closeTabs', () => {
+    let closed: string[]
+    let failOn: string | undefined
+    beforeEach(() => {
+      closed = []
+      failOn = undefined
+      service.dispose()
+      service = new RoomService({
+        dir: join(dir, 'rooms2'),
+        tabs: {
+          setRoom: (p, t, r) => tabs.setRoom(p, t, r),
+          clearRoom: (p, t) => tabs.clearRoom(p, t),
+          roomOf: (p, t) => tabs.roomOf(p, t),
+          kindOf: (p, t) => tabs.kindOf(p, t),
+          close: (_p, t) => {
+            if (t === failOn) throw new Error('boom')
+            closed.push(t)
+          }
+        },
+        sessions,
+        newId: nextId,
+        nonce: () => `${String(++nonces).padStart(16, '0')}`,
+        log: () => {}
+      })
+    })
+
+    it('closes an opened member, keeps a coordinator, an invited member and a typed-in one', () => {
+      const id = room()
+      const open = claudeTab()
+      const boss = claudeTab()
+      const invited = claudeTab()
+      const typed = claudeTab()
+      addTo(id, open, 'worker')
+      addTo(id, boss, 'boss', true)
+      addTo(id, typed, 'typed')
+      const inv = service.registry.invite(owner, id, { name: 'guest' })
+      service.registry.redeem(inv.code, invited, P1)
+      sessions.userInput(P1, typed, 'x')
+      expect(service.end(owner, id, { closeTabs: true })).toBe(1)
+      expect(closed).toEqual([open])
+      expect(service.list(owner)[0]?.endedAt).toBeDefined()
+    })
+
+    it('closes nothing without closeTabs or with false, and endAllOf closes nothing', () => {
+      const id = room()
+      addTo(id, claudeTab(), 'a')
+      expect(service.end(owner, id)).toBe(0)
+      const id2 = room('Two')
+      addTo(id2, claudeTab(), 'b')
+      expect(service.end(owner, id2, { closeTabs: false })).toBe(0)
+      const id3 = room('Three')
+      addTo(id3, claudeTab(), 'c')
+      service.endAllOf('example.team')
+      expect(closed).toEqual([])
+    })
+
+    it('one failing close does not stop the others', () => {
+      const id = room()
+      const a = claudeTab()
+      const b = claudeTab()
+      addTo(id, a, 'a')
+      addTo(id, b, 'b')
+      failOn = a
+      expect(service.end(owner, id, { closeTabs: true })).toBe(1)
+      expect(closed).toEqual([b])
+    })
+
+    it('skips a member with no bound tab', () => {
+      const id = room()
+      const a = claudeTab()
+      addTo(id, a, 'a')
+      service.registry.unbind(a)
+      expect(service.end(owner, id, { closeTabs: true })).toBe(0)
+    })
   })
 
   it('endAllOf ends the plugin’s live rooms in every project and releases their tabs', () => {

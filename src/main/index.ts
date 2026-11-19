@@ -1949,7 +1949,14 @@ function start(server: boolean): void {
       setRoom: (projectId, tabId, room) => tabs.setRoom(projectId, tabId, room),
       clearRoom: (projectId, tabId) => tabs.clearRoom(projectId, tabId),
       roomOf: (projectId, tabId) => tabs.roomOf(projectId, tabId),
-      kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId)
+      kindOf: (projectId, tabId) => tabs.kindOf(projectId, tabId),
+      // A main-initiated close (closeAsks.close): the tab's gen is read first, and every view hears `tabs.removed`.
+      close: (projectId, tabId) => {
+        const gen = tabs.list(projectId).find((t) => t.id === tabId)?.gen
+        if (gen === undefined) return
+        tabs.close(projectId, tabId)
+        views.toProject(projectId, 'tabs.removed', { tabId, gen })
+      }
     },
     sessions,
     limits: (pluginId) => pluginLimits.limits(pluginId),

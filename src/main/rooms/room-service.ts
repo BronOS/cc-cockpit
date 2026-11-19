@@ -49,6 +49,8 @@ export interface RoomServiceTabs {
   clearRoom(projectId: string, tabId: string): void
   roomOf(projectId: string, tabId: string): TabRoom | undefined
   kindOf(projectId: string, tabId: string): TabKind | undefined
+  /** Close a tab as a main-initiated close does (views told); no dialog. */
+  close(projectId: string, tabId: string): void
 }
 
 /** The session registry as the room service uses it (SessionRegistry). */
@@ -223,7 +225,13 @@ export class RoomService {
       log: this.warn
     })
     // The person's keystrokes reset the room's auto-pause count; the person's prompt ends the tab's run of Stop blocks.
-    this.unsubscribe.push(options.sessions.onPersonInput((tabId) => this.stop.personInput(tabId)))
+    this.unsubscribe.push(
+      options.sessions.onPersonInput((tabId) => {
+        this.stop.personInput(tabId)
+        // `closeTabs` keeps a tab the person typed in; the registry saves the record on the first keystroke only.
+        this.registry.markPersonTyped(tabId)
+      })
+    )
     this.unsubscribe.push(options.sessions.onPersonPrompt((tabId) => this.stop.personPrompt(tabId)))
     // The settle window after SessionStart ended (send-gate.ts settled): the tab may take a paste now, with no hook event
     // to say so. A message sent in that window (a plugin's kickoff right after rooms.open, the rooms e2e) was held as
@@ -417,11 +425,25 @@ export class RoomService {
   }
 
   /** End the owner's room: every tab it had bound leaves it (record, mirror), and its counts are forgotten. */
-  end(owner: RoomOwner, id: unknown): void {
+  end(owner: RoomOwner, id: unknown, opts: { closeTabs?: boolean } = {}): number {
     const room = this.registry.get(owner, id)
     const bound = this.boundTabs(room.id)
+    // Chosen before the end (it unbinds the tabs) but closed after it, so members leave as an end, not as `closed`.
+    // Only the boolean comes from the plugin; which tabs qualify is the registry's rule. No dialog: the tabs were opened
+    // automatically and ending the team is the decision. `endAllOf` never closes tabs.
+    const toClose = opts.closeTabs === true ? this.registry.closableTabs(room.id) : []
     this.registry.end(owner, room.id)
     this.roomEnded(room, bound)
+    let closed = 0
+    for (const tabId of toClose) {
+      try {
+        this.options.tabs.close(room.projectId, tabId)
+        closed++
+      } catch (err) {
+        this.warn(`rooms: could not close tab ${tabId} of ended room ${room.id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return closed
   }
 
   /**

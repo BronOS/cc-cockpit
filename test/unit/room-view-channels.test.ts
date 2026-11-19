@@ -59,7 +59,8 @@ beforeEach(() => {
       setRoom: (p, t, r) => tabs.setRoom(p, t, r),
       clearRoom: (p, t) => tabs.clearRoom(p, t),
       roomOf: (p, t) => tabs.roomOf(p, t),
-      kindOf: (p, t) => tabs.kindOf(p, t)
+      kindOf: (p, t) => tabs.kindOf(p, t),
+      close: () => {}
     },
     sessions,
     newId: nextId,

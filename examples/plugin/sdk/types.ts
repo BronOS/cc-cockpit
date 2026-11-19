@@ -1175,8 +1175,13 @@ export interface PluginContext {
     create(options: { title: string }): Promise<{ id: string }>
     /** This plugin's rooms in this window, ended ones included (they stay until `delete`). */
     list(): Promise<RoomInfo[]>
-    /** End a room: its members leave it (their tabs stay), invites die; its record and docs stay until `delete`. */
-    end(id: string): Promise<void>
+    /**
+     * End a room: its members leave it (their tabs stay), invites die; its record and docs stay until `delete`.
+     * `closeTabs: true` also closes, with no dialog, the tabs the app opened for it (`open`): not a coordinator's, not an
+     * invited member's (the person's own tab), not one the person typed into, not one of a room saved by an older app.
+     * Busy or idle does not matter. Resolves with how many tabs were closed.
+     */
+    end(id: string, options?: { closeTabs?: boolean }): Promise<{ closed: number }>
     /** Delete an ended room with its docs and log. */
     delete(id: string): Promise<void>
     /**

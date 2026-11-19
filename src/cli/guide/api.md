@@ -423,7 +423,7 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   `delete` one).
 - `ctx.rooms.list()`: your rooms of this window (`RoomInfo`: `id`, `title`, `createdAt`, `endedAt` once
   ended, `paused`, `members` as a count), ended ones included. No messages.
-- `ctx.rooms.end(id)`: its members leave it (their tabs stay), its invites die; the record and docs stay.
+- `ctx.rooms.end(id, { closeTabs? })`: its members leave it (their tabs stay), its invites die; the record and docs stay. `closeTabs: true` also closes, with no dialog, the tabs `rooms.open` made (not a coordinator's, an invited member's or one the person typed into) and resolves `{ closed }`.
   `ctx.rooms.delete(id)` removes an ended room with its docs and log.
 - `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd, beside, side })` -> `{ tabId, placed }`: a new Claude tab
   of this window that is a member from the start. `name` matches `^[a-z][a-z0-9-]{0,30}$`, is unique in

@@ -32,7 +32,7 @@ a Settings › Rooms page, `onEvent` (`log` with `since` covers it), a cap on op
 A **room** is created by a plugin in its own project window: `ctx.rooms.create({ title })` returns an opaque id. The
 title is one line, at most 60 characters, no control, quote or bracket characters. A room belongs to that plugin and
 window. Caps: 5 rooms per plugin in a project, 20 members per room (both defaults the person can change, §6), 50 ended rooms kept per plugin in a project
-(an ended room stays until `delete`; past 50, `create` refuses until one is deleted, never dropping one by itself), 20 one-time invites waiting per room, 100 messages waiting per member and 1,000,000 characters of waiting messages per room (a send past the last two is `refused`), 1000 files and folders in a room's docs. It ends with `ctx.rooms.end(id)` or when its plugin
+(an ended room stays until `delete`; past 50, `create` refuses until one is deleted, never dropping one by itself), 20 one-time invites waiting per room, 100 messages waiting per member and 1,000,000 characters of waiting messages per room (a send past the last two is `refused`), 1000 files and folders in a room's docs. It ends with `ctx.rooms.end(id)` (`{ closeTabs: true }` also closes the tabs `rooms.open` made for it, with no dialog, except a coordinator's, an invited member's and any the person typed into; main decides from flags saved per member, `opened` and `personTyped`, never from the plugin) or when its plugin
 is disabled, removed or revoked. A room's record (members, queue, paused) and docs are kept on disk.
 
 A **member** is one Claude tab with a name unique in the room (`^[a-z][a-z0-9-]{0,30}$`, reserved: `all`, `plugin`,

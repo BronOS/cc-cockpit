@@ -123,7 +123,9 @@
 //                                                                path and mints the view's link
 //   rooms.create    { pluginId, title }        -> { id }         ctx.rooms (design-rooms.md §4), each call on
 //   rooms.list      { pluginId }               -> RoomInfo[]      the plugin's OWN rooms of THIS project only:
-//   rooms.end|delete { pluginId, id }          -> null            the owner is main's (the plugin this host runs,
+//   rooms.end        { pluginId, id, closeTabs? } -> { closed }  (closeTabs: also close the opened, untyped,
+//                                              non-coordinator members' tabs)
+//   rooms.delete     { pluginId, id }          -> null            the owner is main's (the plugin this host runs,
 //   rooms.open      { pluginId, id, name, coordinator?, cwd?,     the project it was spawned for), another
 //                     prompt?, model?, effort?, beside?, side? }  plugin's or window's room is "no such room";
 //                     -> { tabId, placed? }
@@ -1065,7 +1067,10 @@ export class HostApi {
       'rooms.create': (params) => this.roomsCall(params, 'rooms.create', (rooms, owner, p) => ({ id: rooms.create(owner, { title: p.title }).id })),
       'rooms.list': (params) => this.roomsCall(params, 'rooms.list', (rooms, owner) => rooms.list(owner).map(roomInfoOf)),
       'rooms.end': (params) =>
-        this.roomsVoid(params, 'rooms.end', (rooms, owner, p) => rooms.end(owner, p.id)),
+        this.roomsCall(params, 'rooms.end', (rooms, owner, p) => {
+          if (p.closeTabs !== undefined && typeof p.closeTabs !== 'boolean') throw new Error('closeTabs must be true or false')
+          return { closed: rooms.end(owner, p.id, { closeTabs: p.closeTabs === true }) }
+        }),
       'rooms.delete': (params) =>
         this.roomsVoid(params, 'rooms.delete', (rooms, owner, p) => rooms.delete(owner, p.id)),
       'rooms.open': (params, meta) => this.roomsOpen(params, meta),

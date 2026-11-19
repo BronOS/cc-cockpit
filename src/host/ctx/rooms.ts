@@ -74,10 +74,13 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
     create: (opts: { title: string }) =>
       guardAsync(() => ask<{ id: string }>('rooms.create', { title: text(options(opts, 'rooms.create').title, 'rooms.create', 'title') })),
     list: () => guardAsync(() => ask<RoomInfo[]>('rooms.list', {})),
-    end: (id: string) =>
-      guardAsync(async () => {
-        await ask<null>('rooms.end', { id: text(id, 'rooms.end', 'id') })
-      }),
+    end: (id: string, opts?: { closeTabs?: boolean }) =>
+      guardAsync(() =>
+        ask<{ closed: number }>('rooms.end', {
+          id: text(id, 'rooms.end', 'id'),
+          ...(opts?.closeTabs === undefined ? {} : { closeTabs: opts.closeTabs })
+        })
+      ),
     delete: (id: string) =>
       guardAsync(async () => {
         await ask<null>('rooms.delete', { id: text(id, 'rooms.delete', 'id') })

@@ -2534,7 +2534,8 @@ describe('beside (split groups, D4 D6 D7)', () => {
           setRoom: (p, t, r) => tabs.setRoom(p, t, r),
           clearRoom: (p, t) => tabs.clearRoom(p, t),
           roomOf: (p, t) => tabs.roomOf(p, t),
-          kindOf: (p, t) => tabs.kindOf(p, t)
+          kindOf: (p, t) => tabs.kindOf(p, t),
+          close: () => {}
         },
         sessions: registry,
         log: () => {}
@@ -2618,7 +2619,8 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
         setRoom: (p, t, r) => tabs.setRoom(p, t, r),
         clearRoom: (p, t) => tabs.clearRoom(p, t),
         roomOf: (p, t) => tabs.roomOf(p, t),
-        kindOf: (p, t) => tabs.kindOf(p, t)
+        kindOf: (p, t) => tabs.kindOf(p, t),
+          close: () => {}
       },
       sessions: registry,
       log: () => {}
@@ -2637,6 +2639,13 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     return ((await call('rooms.create', { pluginId: 'a.one', title })) as { id: string }).id
   }
 
+  it('rooms.end rejects a closeTabs that is not a boolean', async () => {
+    const call = hostA()
+    const id = await newRoom(call)
+    await expect(call('rooms.end', { pluginId: 'a.one', id, closeTabs: 'yes' })).rejects.toThrow('closeTabs must be true or false')
+    await expect(call('rooms.end', { pluginId: 'a.one', id, closeTabs: true })).resolves.toEqual({ closed: 0 })
+  })
+
   it('creates, lists, ends and deletes the plugin\'s own rooms, with no message text in the list', async () => {
     const call = hostA()
     const id = await newRoom(call)
@@ -2647,7 +2656,7 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     expect(listed).toEqual([{ id, title: 'Review', createdAt: expect.any(Number), paused: false, members: 1 }])
     expect(JSON.stringify(listed)).not.toContain('secret words')
     await expect(call('rooms.delete', { pluginId: 'a.one', id })).rejects.toThrow('rooms.delete: only an ended room can be deleted')
-    await expect(call('rooms.end', { pluginId: 'a.one', id })).resolves.toBeNull()
+    await expect(call('rooms.end', { pluginId: 'a.one', id })).resolves.toEqual({ closed: 0 })
     // The member's tab left the room with it: the tab record and SessionInfo follow.
     expect(tabs.roomOf(A, tab.id)).toBeUndefined()
     expect((await call('rooms.list', { pluginId: 'a.one' })) as unknown[]).toEqual([expect.objectContaining({ id, endedAt: expect.any(Number) })])
@@ -2744,7 +2753,8 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
         setRoom: (p, t, r) => tabs.setRoom(p, t, r),
         clearRoom: (p, t) => tabs.clearRoom(p, t),
         roomOf: (p, t) => tabs.roomOf(p, t),
-        kindOf: (p, t) => tabs.kindOf(p, t)
+        kindOf: (p, t) => tabs.kindOf(p, t),
+          close: () => {}
       },
       sessions: registry,
       limits: () => ({ ...DEFAULT_PLUGIN_LIMITS, membersPerRoom: tabsBackend.spawned.length >= spawnedAtDrop ? 1 : cap }),

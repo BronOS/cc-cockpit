@@ -76,6 +76,16 @@ export interface RoomMessage {
 
 export interface RoomMemberRecord {
   coordinator: boolean
+  /**
+   * Joined through `ctx.rooms.open` (the app opened its tab), never an invite (the person's own tab). Absent in records
+   * saved before `closeTabs` existed, which reads as "not opened": such a tab is kept.
+   */
+  opened?: true
+  /**
+   * The person typed into the member's tab while it was a member. Kept here and not read from SessionInfo.typed, which a
+   * restart sets for every restored member. Sticky for the membership.
+   */
+  personTyped?: true
 }
 
 /** The saved record (plan "Technical Details"). Plain data: copies go out, never the live object. */
@@ -488,6 +498,33 @@ export class RoomRegistry {
     return m ? { roomId: bound.roomId, name: bound.name, coordinator: m.coordinator } : undefined
   }
 
+  /** The person typed into a bound member's tab: remembered (saved once) so `closeTabs` keeps it. */
+  markPersonTyped(tabId: string): void {
+    const bound = this.tabs.get(tabId)
+    const room = bound && this.rooms.get(bound.roomId)
+    if (!bound || !room || room.endedAt !== undefined || !isMember(room, bound.name)) return
+    const m = room.members[bound.name]
+    if (!m || m.personTyped === true) return
+    m.personTyped = true
+    this.save(room)
+  }
+
+  /**
+   * The bound tabs `end({ closeTabs })` may close: opened by the app, not a coordinator, never typed in. Read before the
+   * end, which unbinds them.
+   */
+  closableTabs(roomId: string): string[] {
+    const room = this.rooms.get(roomId)
+    if (!room) return []
+    const out: string[] = []
+    for (const [name, m] of Object.entries(room.members)) {
+      if (m.opened !== true || m.coordinator || m.personTyped === true) continue
+      const tabId = this.boundTab(roomId, name)
+      if (tabId !== undefined) out.push(tabId)
+    }
+    return out
+  }
+
   /** The tab bound to a member now. */
   boundTab(roomId: string, name: string): string | undefined {
     for (const [tabId, b] of this.tabs) if (b.roomId === roomId && b.name === name) return tabId
@@ -702,7 +739,7 @@ export class RoomRegistry {
   }
 
   private join(room: RoomRecord, name: string, coordinator: boolean, tabId: string, via: 'open' | 'invite'): RoomMembership {
-    room.members[name] = { coordinator }
+    room.members[name] = via === 'open' ? { coordinator, opened: true } : { coordinator }
     this.tabs.set(tabId, { roomId: room.id, name })
     this.save(room)
     this.logEvent(room.id, 'join', { member: name, coordinator, via })
@@ -884,7 +921,15 @@ function parseRoom(v: unknown, dirName: string): RoomRecord | null {
   const outMembers = record<RoomMemberRecord>()
   for (const [name, m] of Object.entries(members)) {
     if (!isRoomName(name) || !isObject(m) || typeof m.coordinator !== 'boolean') return null
-    outMembers[name] = { coordinator: m.coordinator }
+    // The close flags: absent stays absent; anything but `true` rejects the record like a bad `coordinator`. Dropping a
+    // bad `personTyped` would turn "the person typed here" into "safe to close", so a quiet drop is the wrong failure.
+    if (m.opened !== undefined && m.opened !== true) return null
+    if (m.personTyped !== undefined && m.personTyped !== true) return null
+    outMembers[name] = {
+      coordinator: m.coordinator,
+      ...(m.opened === true ? { opened: true as const } : {}),
+      ...(m.personTyped === true ? { personTyped: true as const } : {})
+    }
   }
   // The ceiling, never the cap in effect: a room grown under a raised cap restores whole after the person lowered it.
   if (Object.keys(outMembers).length > MEMBERS_PER_ROOM_CEILING) return null

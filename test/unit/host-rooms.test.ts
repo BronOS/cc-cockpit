@@ -94,7 +94,7 @@ describe('ctx.rooms (host side)', () => {
   it('answers what main answered, and void for the calls that return nothing', async () => {
     const { rooms } = harness({ id: 'r1' })
     await expect(rooms.create({ title: 'x' })).resolves.toEqual({ id: 'r1' })
-    await expect(rooms.end('r1')).resolves.toBeUndefined()
+    await rooms.end('r1')
     await expect(rooms.docs.put('r1', 'shared/a', 'x')).resolves.toBeUndefined()
   })
 

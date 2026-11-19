@@ -205,6 +205,33 @@ describe('RoomRegistry', () => {
       expect(reg.redeem(inv.code, 'late-tab', 'p1')).toEqual({ roomId: room.id, name: 'late', coordinator: false })
     })
 
+    it('keeps opened and personTyped across a reload; an old record has neither; a bad value rejects the record', () => {
+      const reg = make()
+      const room = reg.create(owner, { title: 'Flags' })
+      reg.addMember(owner, room.id, { tabId: 't1', name: 'a' })
+      reg.addMember(owner, room.id, { tabId: 't2', name: 'b' })
+      reg.markPersonTyped('t2')
+      expect(reg.closableTabs(room.id)).toEqual(['t1'])
+      const again = make()
+      again.load()
+      expect(again.rebind('n1', room.id, 'a', 'p1')).toBe(true)
+      expect(again.rebind('n2', room.id, 'b', 'p1')).toBe(true)
+      expect(again.closableTabs(room.id)).toEqual(['n1'])
+      const file = join(dir, room.id, 'room.json')
+      const rec = JSON.parse(readFileSync(file, 'utf8'))
+      rec.members.a = { coordinator: false }
+      writeFileSync(file, JSON.stringify(rec))
+      const old = make()
+      old.load()
+      expect(old.rebind('o1', room.id, 'a', 'p1')).toBe(true)
+      expect(old.closableTabs(room.id)).toEqual([])
+      rec.members.a = { coordinator: false, personTyped: 'no' }
+      writeFileSync(file, JSON.stringify(rec))
+      const bad = make()
+      bad.load()
+      expect(bad.list(owner)).toEqual([])
+    })
+
     it('restores a room with more members than the cap (grown under a raised one), and rebinds them', () => {
       global = { ...global, membersPerRoom: 30 }
       const reg = make(lookup)
@@ -667,7 +694,7 @@ describe('RoomRegistry', () => {
       again.load()
       const back = again.get(owner, room.id)
       expect(back.paused).toBe(true)
-      expect(back.members).toEqual({ lead: { coordinator: true }, dev: { coordinator: false } })
+      expect(back.members).toEqual({ lead: { coordinator: true, opened: true }, dev: { coordinator: false, opened: true } })
       expect(again.take(room.id, 'dev').map((m) => m.text)).toEqual(['hi'])
       expect(again.memberOf('t1')).toBeUndefined()
       expect(again.get(owner, ended.id).endedAt).toBe(1000)
@@ -747,8 +774,8 @@ describe('RoomRegistry', () => {
       reg.addMember(owner, room.id, { tabId: 't4', name: 'dev' })
       expect(reg.members(otherProject, elsewhere.id).map((m) => m.name)).toEqual(['far'])
       expect(JSON.parse(readFileSync(join(dir, room.id, 'room.json'), 'utf8')).members).toEqual({
-        qa: { coordinator: false },
-        dev: { coordinator: false }
+        qa: { coordinator: false, opened: true },
+        dev: { coordinator: false, opened: true }
       })
     })
 
