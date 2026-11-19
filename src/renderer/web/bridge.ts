@@ -33,7 +33,8 @@
 //   view joining mid-ask would never show the dialog. The `ccc plugin link` confirm (`links.ask` /
 //   `links.settled`, `ready`'s `linkAsks`, main/plugins/link-asks.ts) and the Move to Trash confirm
 //   (`trash.ask` / `trash.settled`, `trashAsks`, main/files/trash-asks.ts) and a room member's Remove confirm
-//   (`rooms.removeAsk` / `rooms.removeSettled`, `roomRemoveAsks`, ipc/room-handlers.ts registerRoomViewHandlers) are the same (SHARED_ASKS),
+//   (`rooms.removeAsk` / `rooms.removeSettled`, `roomRemoveAsks`, ipc/room-handlers.ts registerRoomViewHandlers) and a guest's ask
+//   to close an owner's tab (`tabs.guestCloseAsk` / `tabs.guestCloseSettled`, `guestCloseAsks`, D-9) are the same (SHARED_ASKS),
 //   and so are a server's in-page notices (`notices.show` / `notices.gone`, `notices`,
 //   main/notifications/notifier.ts PageNoticeBackend): one shown before the shell mounted still shows.
 //   A plugin's pending OAuth sign-in in server mode is held the same way (`app.linkNotice` with
@@ -205,6 +206,16 @@ function closeAskOf(value: unknown): { requestId: string; tabId: string } | unde
   return typeof requestId === 'string' && typeof tabId === 'string' ? { requestId, tabId } : undefined
 }
 
+/** A `tabs.guestCloseAsk` from main (an event or `ready`'s list), checked; undefined when malformed. */
+function guestCloseAskOf(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  const { requestId, tabId, guestId, guestName, title } = v
+  if (typeof requestId !== 'string' || typeof tabId !== 'string' || typeof guestId !== 'string') return undefined
+  if (typeof guestName !== 'string' || typeof title !== 'string') return undefined
+  return { requestId, tabId, guestId, guestName, title }
+}
+
 /** A `links.ask` from main (an event or `ready`'s list), checked; undefined when malformed. */
 function linkAskOf(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null) return undefined
@@ -261,11 +272,12 @@ function signInOf(value: unknown): Record<string, unknown> | undefined {
 const SHARED_ASKS: ReadonlyArray<{
   ask: string
   settled: string
-  field: 'closeAsks' | 'linkAsks' | 'trashAsks' | 'downloadOffers' | 'roomRemoveAsks' | 'notices' | 'signIns'
+  field: 'closeAsks' | 'guestCloseAsks' | 'linkAsks' | 'trashAsks' | 'downloadOffers' | 'roomRemoveAsks' | 'notices' | 'signIns'
   key: 'requestId' | 'signIn'
   parse(value: unknown): Record<string, unknown> | undefined
 }> = [
   { ask: 'sessions.closeAsk', settled: 'sessions.closeSettled', field: 'closeAsks', key: 'requestId', parse: closeAskOf },
+  { ask: 'tabs.guestCloseAsk', settled: 'tabs.guestCloseSettled', field: 'guestCloseAsks', key: 'requestId', parse: guestCloseAskOf },
   { ask: 'links.ask', settled: 'links.settled', field: 'linkAsks', key: 'requestId', parse: linkAskOf },
   { ask: 'trash.ask', settled: 'trash.settled', field: 'trashAsks', key: 'requestId', parse: trashAskOf },
   { ask: 'downloads.offer', settled: 'downloads.settled', field: 'downloadOffers', key: 'requestId', parse: (v) => downloadOfferOf(v) as Record<string, unknown> | undefined },

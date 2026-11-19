@@ -1025,6 +1025,26 @@ describe('pending room Remove asks', () => {
   })
 })
 
+// D-9: a guest's ask to close an owner's tab, the same way: an owner view joining mid-ask can answer it.
+describe('pending guest close asks', () => {
+  const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
+  const ask = (n: number): Record<string, unknown> => ({ requestId: `guest-close-${n}`, tabId: `t${n}`, guestId: 'g1', guestName: 'Bob', title: 'zsh' })
+
+  it('hands ready’s list and early events to a late tabs.guestCloseAsk listener, minus settled and malformed ones', async () => {
+    const r = rig()
+    const s = r.last()
+    s.open()
+    const bad = [{ ...ask(8), guestName: 3 }, { requestId: 'guest-close-9', tabId: 't9' }]
+    s.serverSend({ t: 'ready', v: PROTOCOL_VERSION, view: 'web:1', snapshot: { ...SNAPSHOT, guestCloseAsks: [ask(1), ask(2), ...bad] } })
+    s.serverSend({ t: 'event', ch: 'tabs.guestCloseSettled', p: { requestId: 'guest-close-2' } })
+    s.serverSend({ t: 'event', ch: 'tabs.guestCloseAsk', p: ask(3) })
+    const got: unknown[] = []
+    anyApi(r.api).on('tabs.guestCloseAsk', (p) => got.push(p))
+    await tick()
+    expect(got).toEqual([ask(1), ask(3)])
+  })
+})
+
 // design-web.md §9.9: a server's in-page notices, the same way: one shown before the shell mounted shows.
 describe('pending in-page notices', () => {
   const tick = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve))
