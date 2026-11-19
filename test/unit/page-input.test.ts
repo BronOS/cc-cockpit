@@ -178,8 +178,11 @@ function fakePage() {
   const sent: Sent[] = []
   const queries: Array<{ method: string; session: string }> = []
   const held: Array<{ sent: Sent; resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
+  /** Hit-test queries held while `holdQueries` is on: answered by hand (`answer`, from the layout then) or refused. */
+  const heldQueries: Array<{ method: string; session: string; answer: () => void; reject: (e: unknown) => void }> = []
   const opts = {
     hold: false,
+    holdQueries: false,
     /** Input on these sessions is held (never answered until resolved by hand) even when `hold` is off. */
     holdSessions: new Set<string>(),
     refuse: new Set<string>(),
@@ -201,6 +204,14 @@ function fakePage() {
     }
     queries.push({ method, session })
     if (opts.hang.has(method)) return new Promise(() => {})
+    if (opts.holdQueries) {
+      return new Promise((resolve, reject) => {
+        heldQueries.push({ method, session, answer: () => resolve(query(method, p, session)), reject })
+      })
+    }
+    return query(method, p, session)
+  }
+  const query = (method: string, p: Record<string, unknown>, session: string): Promise<unknown> => {
     if (opts.refuse.has(session)) return Promise.reject(new Error('No session with given id'))
     const s = scroll.get(session) ?? { x: 0, y: 0 }
     const list = owners.get(session) ?? []
@@ -222,7 +233,7 @@ function fakePage() {
     }
     return Promise.resolve({})
   }
-  return { send, scroll, owners, sent, queries, held, opts }
+  return { send, scroll, owners, sent, queries, held, heldQueries, opts }
 }
 
 function setup() {
@@ -1168,5 +1179,165 @@ describe('PageInputRouter scheduling: review 3', () => {
     q?.resolve({})
     await s.flush()
     expect(s.page.held.map((h) => `${h.sent.session} ${h.sent.params.key ?? h.sent.params.type}`)).toEqual(['A mousePressed', ' r'])
+  })
+})
+
+/** Every string the router still holds in its own fields (maps, sets, arrays and records a few levels deep). */
+function heldStrings(router: object): Set<string> {
+  const found = new Set<string>()
+  const seen = new Set<unknown>()
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 5 || v === null || v === undefined) return
+    if (typeof v === 'string') return void found.add(v)
+    if (typeof v !== 'object' || seen.has(v) || v instanceof Promise) return
+    seen.add(v)
+    if (v instanceof Map) {
+      for (const [k, x] of v) {
+        walk(k, depth + 1)
+        walk(x, depth + 1)
+      }
+    } else if (v instanceof Set || Array.isArray(v)) for (const x of v) walk(x, depth + 1)
+    else for (const x of Object.values(v)) walk(x, depth + 1)
+  }
+  for (const [k, v] of Object.entries(router)) if (k !== 'deps' && k !== 'timers') walk(v, 0)
+  return found
+}
+
+// The fourth codex review of the router (of 59a3b00), one test per MUST, by the review's words.
+describe('PageInputRouter scheduling: review 4', () => {
+  // MUST: "Left-down reaches A and times out. Right-down falls back to the page while capture retains
+  // A's links. A answers; right-up follows capture into A because releaseToPress ignores presses
+  // recorded on the page session. The page receives right-down without right-up."
+  it('a release goes to the session its press went to: the page, while the capture keeps A', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('A')
+    s.router.input([down(20, 225)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    // A owes its answer: the right press goes to the page's session at the top point.
+    s.router.input([{ type: 'mouseDown', x: 30, y: 230, button: 'right', clickCount: 1, modifiers: ['leftbuttondown'] }])
+    await s.flush()
+    s.page.opts.holdSessions.clear()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    s.router.input([{ type: 'mouseUp', x: 30, y: 230, button: 'right', clickCount: 1, modifiers: ['leftbuttondown'] }, up(40, 240)])
+    await s.flush()
+    expect(s.mice().filter((m) => m[1] !== 'mouseMoved')).toEqual([
+      ['A', 'mousePressed', 20, 25],
+      ['', 'mousePressed', 30, 230],
+      ['', 'mouseReleased', 30, 230],
+      ['A', 'mouseReleased', 40, 40]
+    ])
+  })
+
+  // MUST: "Send a page keydown, withhold its answer past 500 ms, then press inside ready frame A. A
+  // receives the press immediately; wheels and releases can likewise proceed."
+  it('a stalled page session holds everything, pointer input into a frame included, until it answers', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('')
+    s.router.input([keyDown('a')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    const queried = s.page.queries.length
+    s.router.input([down(20, 225), { type: 'mouseWheel', x: 20, y: 225, deltaX: 0, deltaY: -120, modifiers: [] }, up(20, 225)])
+    await s.flush()
+    // Nothing at all: no input, not even a hit test.
+    expect(s.mice()).toEqual([])
+    expect(s.page.queries.length).toBe(queried)
+    s.page.opts.holdSessions.clear()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice().map((m) => `${m[0]} ${m[1]}`)).toEqual(['A mousePressed', 'A mouseWheel', 'A mouseReleased'])
+  })
+
+  // MUST: "Hover A, then press outside it; withhold A's synthetic hover-exit answer. Detach/reset/
+  // reattach, then reject that old command. leave() returns false, the step returns `again`, and the
+  // old press is dispatched into the new attachment."
+  it('an old hover-exit refusal replays nothing into the new attachment', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.router.input([move(20, 225)])
+    await s.flush()
+    s.page.opts.holdSessions.add('A')
+    s.router.input([down(700, 50)])
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['A', 'mouseMoved', 20, 25],
+      ['A', 'mouseMoved', -1, -1]
+    ])
+    const old = s.page.held.shift()
+    s.detach()
+    s.router.reset()
+    s.attach()
+    old?.reject(new Error('target closed'))
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['A', 'mouseMoved', 20, 25],
+      ['A', 'mouseMoved', -1, -1]
+    ])
+    expect(s.fallback).toEqual([])
+  })
+
+  // MUST (same finding): "Stale hit-test continuations similarly requeue."
+  it('a hit test answered after a detach replays nothing into the new attachment', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdQueries = true
+    s.router.input([down(20, 225)])
+    await s.flush()
+    expect(s.page.heldQueries.map((q) => q.method)).toEqual(['Page.getLayoutMetrics'])
+    s.detach()
+    s.router.reset()
+    s.attach()
+    s.page.opts.holdQueries = false
+    s.page.heldQueries.shift()?.answer()
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(s.mice()).toEqual([])
+    expect(s.page.queries.map((q) => q.method)).toEqual(['Page.getLayoutMetrics'])
+  })
+
+  // MUST: "Send input to A, detach A before its deadline, then let the deadline fire while its
+  // command remains unresolved. The timer reinserts A into `stalled` after frameDetached() removed it.
+  // Repeat with fresh sessions: the map and promises grow without bound."
+  it('a frame that went is held nowhere, its deadline firing after it went included', async () => {
+    const s = setup()
+    for (let n = 0; n < 50; n++) {
+      const id = `A${n}`
+      s.page.owners.set('', [])
+      s.frame(id, '', 7, rect(0, 200, 600, 300), 600, 300)
+      s.page.opts.holdSessions.add(id)
+      s.router.input([move(20 + (n % 2), 225)])
+      await s.flush()
+      expect(s.page.held.at(-1)?.sent.session).toBe(id)
+      s.router.frameDetached(id)
+      s.fire()
+      await s.flush()
+    }
+    const held = [...heldStrings(s.router)].filter((v) => /^A\d+$/.test(v) || v === 'T-A0')
+    expect(held).toEqual([])
+    expect(s.timers.size).toBe(0)
+  })
+
+  // MUST: "Down in A; move outside A with no button modifiers; then up outside. The move clears
+  // pressedAt, so the up reaches the page instead of A. A never receives its release."
+  it('a move with no button held sends the lost release to the press\'s frame, once', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.router.input([down(20, 225), move(700, 50), up(700, 50)])
+    await s.flush()
+    expect(s.mice().filter((m) => m[1] !== 'mouseMoved').map((m) => `${m[0]} ${m[1]}`)).toEqual(['A mousePressed', 'A mouseReleased'])
+    // The move itself, no longer captured, is hit-tested: the top document, A's hover ended first.
+    expect(s.mice().filter((m) => m[1] === 'mouseMoved')).toEqual([
+      ['A', 'mouseMoved', -1, -1],
+      ['', 'mouseMoved', 700, 50]
+    ])
   })
 })
