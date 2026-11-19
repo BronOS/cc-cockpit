@@ -130,7 +130,10 @@ exports.activate = (ctx) => {
   const postReset = (m) => {
     if (!tracking) return post(m)
     const forGuests = { ...m, env: { ...m.env, root: '' } }
-    for (const [view, access] of views) post(access === 'owner' ? m : forGuests, view)
+    // A read-only guest opens nothing, and the owner's Open with rules name programs by the owner's own paths
+    // (D-33): none for them. A write guest keeps them: a click runs the rule, as the owner's would.
+    const forReaders = { ...forGuests, openWith: [] }
+    for (const [view, access] of views) post(access === 'owner' ? m : access === 'read' ? forReaders : forGuests, view)
   }
 
   // ---- reading ----

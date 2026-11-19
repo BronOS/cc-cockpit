@@ -295,3 +295,24 @@ test("an fs error shown on the page never carries the project's absolute path", 
     fs.chmodSync(locked, 0o755)
   }
 })
+
+test("a read-only guest's reset has no Open with rules (the owner's programs); a write guest's keeps them", async () => {
+  const root = fs.realpathSync(tempDir('files-guest-'))
+  const host = load()
+  const { ctx, posts, listeners } = fakeCtx(root)
+  ctx.settings = { app: { openWith: [{ extensions: 'pdf', action: 'terminal', command: '/Users/owner/bin/viewer {file}' }] } }
+  let onViews
+  ctx.views = { access: () => undefined, onChange: (fn) => ((onViews = fn), () => {}) }
+  host.activate(ctx)
+  onViews({ view: 'desktop', access: 'owner' })
+  onViews({ view: 'web:2', access: 'read' })
+  onViews({ view: 'web:3', access: 'write' })
+  await listeners[0]({ type: 'hello' }, { view: 'web:2', access: 'read' })
+  const reset = (view) => posts.filter((p) => p[1].type === 'reset' && p[2] && p[2].view === view).at(-1)[1]
+  assert.equal(reset('desktop').openWith.length, 1)
+  assert.equal(reset('web:3').openWith.length, 1)
+  assert.deepEqual(reset('web:2').openWith, [])
+  assert.ok(!JSON.stringify(reset('web:2')).includes('/Users/owner'))
+  assert.equal(reset('web:2').env.root, '')
+  host.deactivate()
+})
