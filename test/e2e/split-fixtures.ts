@@ -83,17 +83,22 @@ export async function tagPane(page: Page, pane: Locator, tag: string): Promise<v
 }
 
 /**
- * A new shell tab on the desktop (the [+] menu), tagged `tag`. Alone on screen when no group is shown,
- * so the single visible terminal is the one that is typed into.
+ * A new shell tab on the desktop (the [+] menu), tagged `tag`. Its own pane is waited for and typed
+ * into, by the new tab's id: `.terminal-view:not([hidden])` and the shell's ready line do not tell it
+ * from the tab before it (whose screen shows `FAKE-SHELL ready` too), and on a loaded macOS run the
+ * click went to a terminal that was not the one drawn ("element is not visible").
  */
 export async function newTaggedShell(cockpit: Cockpit, tag: string): Promise<TabInfo> {
-  const before = new Set((await tabsOf(cockpit.page)).map((t) => t.id))
+  const { page } = cockpit
+  const before = new Set((await tabsOf(page)).map((t) => t.id))
   await cockpit.newTab('shell')
-  await cockpit.waitForTerminalText('FAKE-SHELL ready')
-  await expect.poll(async () => (await tabsOf(cockpit.page)).filter((t) => !before.has(t.id)).length).toBe(1)
-  const created = (await tabsOf(cockpit.page)).find((t) => !before.has(t.id))!
-  await cockpit.typeLine(`echo ${tag}-$((1+1))`)
-  await cockpit.waitForTerminalText(`${tag}-2`)
+  await expect.poll(async () => (await tabsOf(page)).filter((t) => !before.has(t.id)).length).toBe(1)
+  const created = (await tabsOf(page)).find((t) => !before.has(t.id))!
+  const pane = paneOf(page, created.id)
+  await expect(pane).toBeVisible()
+  await waitPaneText(pane, 'FAKE-SHELL ready')
+  await typeInPane(page, pane, `echo ${tag}-$((1+1))`)
+  await waitPaneText(pane, `${tag}-2`)
   return created
 }
 
