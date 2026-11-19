@@ -177,6 +177,9 @@ function activate(rel, kind, entry) {
     else expand(rel)
   } else if (entry && entry.kind === 'other') {
     showError(`${rel} is not a regular file.`)
+  } else if (ccPanel.view?.access === 'read') {
+    // The host refuses it too: opening a file opens a tab for everyone, not a read-only guest's to open.
+    showError('You are a read-only guest: files open in tabs the host shares with you.')
   } else {
     ccPanel.post({ type: 'open', path: rel })
   }
@@ -374,7 +377,9 @@ function menuItems(target) {
   const { rel, kind } = target
   const post = (type, extra = {}) => () => ccPanel.post({ type, path: rel, ...extra })
   const remote = ccPanel.view?.remote === true
-  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download })
+  // Who looks (a guest's role or the owner): a hint to leave out what the host would refuse.
+  const access = ccPanel.view?.access === 'read' || ccPanel.view?.access === 'write' ? ccPanel.view.access : 'owner'
+  const entries = ccFilesMenu.menuEntries({ kind, rules: kind === 'file' ? rulesFor(rel) : [], system: env.system, shell: env.shell, remote, download: env.download, access })
   const items = []
   for (const e of entries) {
     if (e === 'sep') items.push('sep')
@@ -417,6 +422,8 @@ function closeMenu(focusBack = true) {
  */
 function openMenu(target, at) {
   closeMenu(false)
+  // Nothing to offer (a read-only guest's project folder): no empty menu.
+  if (menuItems(target).length === 0) return
   menuState.restore = document.activeElement instanceof HTMLElement ? document.activeElement : list
   const menu = document.createElement('div')
   menu.className = 'cc-menu'

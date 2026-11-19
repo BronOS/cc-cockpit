@@ -8,6 +8,10 @@
 // and main refuses them from a browser view anyway (`files.reveal` / `files.openWithSystem`), so the
 // flag only spares the person an item that would fail. Move to Trash and Open terminal here stay:
 // main serves them to a browser view too.
+//
+// `access` is `ccPanel.view.access` (guests, a hint like `remote`; the host refuses by main's word): a
+// read-only guest's menu only copies a relative path, and no guest gets Copy path (the host leaves the
+// project's absolute path out of a guest's `reset`).
 ;(function (root) {
   /**
    * The items for a row (`file`, `dir`) or the project folder (`root`), in order: a string id, or
@@ -20,7 +24,8 @@
    * (the listing never shows `.git`, hides ignored names when asked, is capped, and holds direct
    * children only, while the walk drops both names at any depth).
    */
-  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false }) {
+  function menuEntries({ kind, rules = [], system = false, shell = false, remote = false, download = false, access = 'owner' }) {
+    if (access === 'read') return kind === 'root' ? [] : ['copy-relative']
     // On the host's screen only: hidden in a browser view.
     const desktop = system && !remote
     const ids = []
@@ -42,7 +47,8 @@
         ids.push('download-zip', 'download-zip-all')
       }
     }
-    ids.push('sep', 'copy-path')
+    ids.push('sep')
+    if (access === 'owner') ids.push('copy-path')
     if (kind !== 'root') {
       ids.push('copy-relative', 'sep', 'rename')
       if (system) ids.push('trash')

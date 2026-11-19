@@ -21,6 +21,12 @@
 // a command tab through ctx.sessions.openCommand), or the project's file opener. No rule: the opener,
 // as before. The menu lists every matching rule and the opener, so a rule never locks the Reviewer
 // out. The page only names a rule by its index; the host re-reads the setting and re-matches the path.
+//
+// Guests (0.5.0, design-guests §6): the manifest declares `guests.aware`, so this host checks the
+// viewer's access, which only main sets (`from.access`; an older app has none: the owner). A read-only
+// guest gets the tree, its folders and search, nothing that changes state or opens a tab (D-27); no guest
+// gets Reveal or the system's default app (they act on the host's screen); a guest's `reset` leaves out the
+// project's absolute path. A write guest otherwise works like the owner (the tabs it opens are the owner's).
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -42,6 +48,14 @@ const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')
  * prompt (Claude reads it itself, with the person's permissions, and a prompt is an argv element
  * with a size limit); it starts with a letter, so it is never a slash command or a bash line.
  */
+/** What a read-only guest may ask for: reading the tree (and opening or closing its folders, a shared state). */
+const READ_GUEST_OK = new Set(['hello', 'refresh', 'expand', 'collapse', 'search'])
+/** Never from a guest: they act on the host's screen. */
+const HOST_SCREEN = new Set(['reveal', 'open-system'])
+
+/** The viewer's access as main tagged it; an app without guests passes none: the owner. */
+const accessOf = (from) => (from && (from.access === 'read' || from.access === 'write') ? from.access : 'owner')
+
 const askPrompt = (rel) => `Have a look at ${rel} in this project and tell me briefly what it does. Then wait for my questions.`
 
 let disposers = []
@@ -80,6 +94,26 @@ exports.activate = (ctx) => {
     }
   }
 
+  // The views the panel is open in and who is behind each (ctx.views; an older app has none and no guests).
+  const views = new Map()
+  if (ctx.views && typeof ctx.views.onChange === 'function') {
+    disposers.push(
+      ctx.views.onChange(({ view, access }) => {
+        if (access === undefined) views.delete(view)
+        else views.set(view, access)
+      }),
+    )
+  }
+  /**
+   * The `reset` message to every view: as before while only the owner looks; with a guest among them, per
+   * view, a guest's without the project's absolute path (Copy path is the owner's).
+   */
+  const postReset = (m) => {
+    if (![...views.values()].some((a) => a !== 'owner')) return post(m)
+    const forGuests = { ...m, env: { ...m.env, root: '' } }
+    for (const [view, access] of views) post(access === 'owner' ? m : forGuests, view)
+  }
+
   // ---- reading ----
 
   async function sendDir(rel) {
@@ -114,7 +148,7 @@ exports.activate = (ctx) => {
 
   async function sendAll() {
     await loaded
-    post({
+    postReset({
       type: 'reset',
       expanded: [...expanded],
       settings: { hideHidden: options().hideHidden, hideIgnored: options().hideIgnored },
@@ -267,6 +301,15 @@ exports.activate = (ctx) => {
       // A search answer and a failure belong to the page that asked (another view shows its own
       // query); the tree state everywhere else is shared, so it still goes to every view.
       const reply = (r) => post(r, from && from.view)
+      const access = accessOf(from)
+      if (access === 'read' && !READ_GUEST_OK.has(m.type)) {
+        reply({ type: 'error', message: 'You are a read-only guest: the host can give you write access.' })
+        return
+      }
+      if (access !== 'owner' && HOST_SCREEN.has(m.type)) {
+        reply({ type: 'error', message: "That acts on the host's screen: not for a guest." })
+        return
+      }
       try {
         if (m.type === 'hello' || m.type === 'refresh') {
           await sendAll()
@@ -288,7 +331,7 @@ exports.activate = (ctx) => {
           saveExpanded()
         } else if (m.type === 'open') {
           const rel = tree.normalizeRelative(m.path)
-          await openFile(rel, m.rule)
+          await openFile(rel, m.rule, access)
         } else if (m.type === 'edit') {
           const rel = tree.normalizeRelative(m.path)
           try {
@@ -340,7 +383,7 @@ exports.activate = (ctx) => {
    * rule if it still matches the path, -1 (the menu's "Open in file viewer") the project's opener.
    * A rule that cannot run throws, so the person sees why instead of something else opening.
    */
-  async function openFile(rel, rule) {
+  async function openFile(rel, rule, access = 'owner') {
     const matches = openWith.matchRules(rel, openWith.rulesOf(app().openWith))
     let r
     if (rule === undefined) r = matches[0]
@@ -351,7 +394,10 @@ exports.activate = (ctx) => {
     if (!r || r.action === 'default') return ctx.files.open(rel)
     const name = `Open with rule ${r.index + 1} (${r.extensions.join(', ')})`
     if (r.error) throw new Error(`${name}: ${r.error}. Change it in Settings > Plugins > Files.`)
-    if (r.action === 'system') return ctx.files.openWithSystem(rel)
+    if (r.action === 'system') {
+      if (access !== 'owner') throw new Error(`${name}: the system's default app is on the host's screen: not for a guest.`)
+      return ctx.files.openWithSystem(rel)
+    }
     const argv = openWith.buildArgv(r, rel)
     const base = rel.split('/').pop()
     if (r.where === 'tab' && typeof ctx.sessions.openCommand === 'function') {
