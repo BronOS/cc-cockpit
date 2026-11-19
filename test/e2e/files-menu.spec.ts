@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
 import type { TabInfo } from '../../src/shared/ipc'
+import { pluginActive } from './download-fixtures'
 import { expect, launchCockpit, test as base, type Cockpit } from './fixtures'
 
 const test = base.extend<{ cockpit: Cockpit }>({
@@ -228,6 +229,8 @@ test('Open with rules: a click runs the first matching rule (overlay, tab, syste
   writeFileSync(join(projectDir, 'app.log'), 'line\n')
   writeFileSync(join(projectDir, 'spec.pdf'), '%PDF-1.4\n')
   const shellCalls = await stubShell(cockpit)
+  // Saved once main has loaded the plugin: right after start the save can still be "unknown plugin".
+  await pluginActive(cockpit, 'cockpit.files')
   await page.evaluate(
     `window.cockpit.invoke('settings.pluginSettingsSave', ${JSON.stringify({
       id: 'cockpit.files',

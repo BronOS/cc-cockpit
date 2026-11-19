@@ -196,8 +196,9 @@ test('hand test: Share invites a read guest, the owner switches it to write (typ
     await page.getByRole('tab', { name: /Shell/ }).click()
     await page.locator('.terminal-view:not([hidden])').click()
     await page.keyboard.type('echo saved-by-ola > ola.txt\n')
-    await expect.poll(() => existsSync(join(c.projectDir, 'ola.txt')), { timeout: 10_000 }).toBe(true)
-    expect(readFileSync(join(c.projectDir, 'ola.txt'), 'utf8')).toBe('saved-by-ola\n')
+    // The content, not the file: the shell's `>` makes it before echo writes (read in between: "").
+    const ola = join(c.projectDir, 'ola.txt')
+    await expect.poll(() => (existsSync(ola) ? readFileSync(ola, 'utf8') : ''), { timeout: 10_000 }).toBe('saved-by-ola\n')
 
     // Kick: the guest's page says so and its terminals are cleared; the guest is gone from the list.
     const list = c.page.getByRole('dialog', { name: 'Guests' })
