@@ -761,6 +761,15 @@ describe('guest views', () => {
     expect(ws.closedWith?.code).toBe(CLOSE.accessEnded)
   })
 
+  it("guests.changed (the owner's guest list, sent to every view) never reaches a guest view", () => {
+    const { connect, views } = guestSetup()
+    const guest = connect('p1', GUEST)
+    const owner = connect('p1')
+    views.toAll('guests.changed', [{ id: 'g1', name: 'Bob', role: 'read', projectId: 'p1', scope: 'all', state: 'here', until: null }])
+    expect(owner.frames('event').map((f) => f.ch)).toContain('guests.changed')
+    expect(guest.frames('event').map((f) => f.ch)).not.toContain('guests.changed')
+  })
+
   it('closeGuest closes every view of that guest with the code, sockets waiting for hello too', () => {
     const { connect, conns } = guestSetup()
     const a = connect('p1', GUEST)

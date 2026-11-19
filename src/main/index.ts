@@ -2360,6 +2360,9 @@ function start(server: boolean): void {
     log: warnLog
   })
   guestStore.onChange(() => presence.peopleChanged())
+  // The owner's chip and guest list (05's use-guests.ts read guests.list once, then this): every view, guest views
+  // drop it at their sink (GUEST_EVENT 'drop'), and the page keeps its own project's rows.
+  guestStore.onChange(() => views.toAll('guests.changed', guestStore.list()))
   // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
   // plugin), served only while the device has a view bound to a project the plugin is enabled in
   // (the same folder rule as `cc-plugin:`, servedPluginDir below, narrowed to that project) and an
