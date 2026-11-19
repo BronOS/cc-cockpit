@@ -136,6 +136,22 @@ describe('ownerView: a guest view never holds an html overlay', () => {
     swallow(only.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one'))
     expect(only.infos(W1)[0]?.heldBy).toBeUndefined()
   })
+
+  it('server mode: a guest listing the stack never picks up a waiting page; an owner browser does', () => {
+    const m = manager({ server: true, isViewLive: live, browserViews: () => [], ownerView: (v) => v !== GUEST })
+    swallow(m.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one'))
+    expect(m.list(W1, GUEST)[0]?.heldBy).toBeUndefined()
+    expect(m.list(W1, OWNER)[0]?.heldBy?.viewId).toBe(OWNER)
+  })
+
+  it('a guest cannot take a page over (desktop or server)', () => {
+    for (const server of [false, true]) {
+      const m = manager({ server, isViewLive: live, browserViews: () => [OWNER], ownerView: (v) => v !== GUEST })
+      swallow(m.open(W1, page, 'plugin a.one', undefined, { onMessage: () => {} }, 'a.one', OWNER))
+      expect(m.take(W1, GUEST, idOf(m))).toBe(false)
+      expect(m.infos(W1)[0]?.heldBy?.viewId).toBe(OWNER)
+    }
+  })
 })
 
 describe('guestResize', () => {

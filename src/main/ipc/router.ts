@@ -1636,6 +1636,11 @@ export interface TabHandlerDeps {
    */
   others?(windowId: number, viewId: ViewId, event: TabListEvent): void
   /**
+   * The same event to every view of the window (views.toWindow): a close nobody's page made itself (a guest's
+   * close the owner answered later, D-9), so no view has it from a reply. Absent: `others` minus the asker.
+   */
+  everyone?(windowId: number, event: TabListEvent): void
+  /**
    * A guest's terminal acts (design-guests §7, §8), wired to the modules' guest-aware calls. Absent: a guest's
    * selection, size report, keys and close of a tab it did not open change nothing (fail closed).
    */
@@ -1717,21 +1722,32 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const kind = p.kind
     if (kind !== 'claude' && kind !== 'shell') throw new Error('tabs.create: refused')
     const live = new Set(tabs.list(ctx.projectId).map((t) => t.id))
-    if (guests.openedTabs(access.id).filter((id) => live.has(id)).length >= MAX_GUEST_TABS) {
+    // Creates still spawning count too: several frames of one socket read all run before the first spawn ends.
+    const pending = creating.get(access.id) ?? 0
+    if (guests.openedTabs(access.id).filter((id) => live.has(id)).length + pending >= MAX_GUEST_TABS) {
       throw new Error(`tabs.create: a guest may have at most ${MAX_GUEST_TABS} tabs open`)
     }
     const beside = besideOf(p.beside)
-    const tab = await tabs.create(ctx.projectId, beside === undefined ? { kind } : { kind, beside }, ctx.windowId, access.id)
-    if (!tab) return null
+    creating.set(access.id, pending + 1)
     try {
-      router.guestAccessNow('tabs.create', ctx, view)
-    } catch (err) {
-      tabs.close(ctx.projectId, tab.id)
-      throw err
+      const tab = await tabs.create(ctx.projectId, beside === undefined ? { kind } : { kind, beside }, ctx.windowId, access.id)
+      if (!tab) return null
+      try {
+        router.guestAccessNow('tabs.create', ctx, view)
+      } catch (err) {
+        tabs.close(ctx.projectId, tab.id)
+        throw err
+      }
+      guests.noteOpenedTab(access.id, tab.id)
+      return tab
+    } finally {
+      const left = (creating.get(access.id) ?? 1) - 1
+      if (left > 0) creating.set(access.id, left)
+      else creating.delete(access.id)
     }
-    guests.noteOpenedTab(access.id, tab.id)
-    return tab
   }
+  /** Guest creates in flight, per guest id (D-21's cap counts them). */
+  const creating = new Map<string, number>()
   const createTab = (ctx: ProjectContext, payload: unknown): TabInfo | null | Promise<TabInfo | null> => {
     const p = fields('tabs.create', payload)
     const kind = p.kind
@@ -1777,8 +1793,9 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     tabs.close(ctx.projectId, tabId)
     if (gen !== undefined) tabs.others?.(ctx.windowId, viewId, { channel: 'tabs.removed', payload: { tabId, gen } })
   }
-  // The guest gets `{ asked: true }` at once ("Asked <owner>"); the tab closes only on an owner's Close, and the
-  // tab and the asking guest are checked again then (closed meanwhile, guest gone or no longer write: nothing).
+  // The guest gets `{ asked: true }` at once ("Asked <owner>"); the tab closes only on an owner's Close. The tab is
+  // checked again then (closed meanwhile: nothing). The asking guest is not: the Close is the owner's own decision
+  // about the owner's tab, and stands even if the guest left meanwhile. Every view is told, the asker included.
   const askOwnerToClose = (ctx: ProjectContext, view: CallView, access: GuestOnlyAccess, tabId: string): { asked: true } => {
     const ask = tabs.guest?.closeAsk
     const tab = tabs.list(ctx.projectId).find((t) => t.id === tabId)
@@ -1786,8 +1803,13 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     const title = tab.name ?? tab.label ?? tab.page?.title ?? (tab.kind === 'shell' ? 'Shell' : 'Claude')
     void ask(ctx.windowId, { tabId, guestId: access.id, guestName: access.name, title }).then(
       (close) => {
-        if (!close || !tabs.list(ctx.projectId).some((t) => t.id === tabId)) return
-        closeNow(ctx, view.viewId, tabId)
+        if (!close) return
+        const gen = tabs.list(ctx.projectId).find((t) => t.id === tabId)?.gen
+        if (gen === undefined) return
+        tabs.close(ctx.projectId, tabId)
+        const removed: TabListEvent = { channel: 'tabs.removed', payload: { tabId, gen } }
+        if (tabs.everyone) tabs.everyone(ctx.windowId, removed)
+        else tabs.others?.(ctx.windowId, view.viewId, removed)
       },
       () => undefined
     )

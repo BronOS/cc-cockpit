@@ -66,18 +66,21 @@ describe('a read guest', () => {
 })
 
 describe('a write guest', () => {
-  it('owns as the first viewer when no owner view watches, and the page takes its size', () => {
+  it('does not own by joining, not even as the first viewer (only a press, key or Fit claims)', () => {
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
-    expect(viewers.ownerOf(PANEL)).toBe(WRITE)
-    expect(viewers.sizeOf(PANEL)).toEqual({ width: 400, height: 300 })
+    expect(viewers.isViewer(PANEL, WRITE)).toBe(true)
+    expect(viewers.ownerOf(PANEL)).toBeUndefined()
+    expect(calls.filter((c) => c[0] === 'size')).toEqual([])
+    // The page still paints for it.
+    expect(calls).toContainEqual(['viewed', 7, 'a.one', 'view', true])
   })
 
-  it('an owner view joining later takes the size back when the guest did not claim', () => {
+  it('an owner view joining after an unclaimed write guest owns the size', () => {
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
     viewers.report(PANEL, OWNER, shown(800, 600))
     expect(viewers.ownerOf(PANEL)).toBe(OWNER)
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 800, height: 600 })
-    expect(changes.filter((c) => c.kind === 'owner').map((c) => (c as { viewId?: string }).viewId)).toEqual([WRITE, OWNER])
+    expect(changes.filter((c) => c.kind === 'owner').map((c) => (c as { viewId?: string }).viewId)).toEqual([OWNER])
   })
 
   it('an owner view joining later does not take it back after the guest claimed it from an owner view', () => {
@@ -89,7 +92,7 @@ describe('a write guest', () => {
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 400, height: 300 })
   })
 
-  it('a write guest that owns as the first viewer and then claims keeps the size when an owner view joins', () => {
+  it('a lone write guest that claims keeps the size when an owner view joins', () => {
     viewers.report(PANEL, WRITE, shown(500, 400), 'write')
     viewers.claimOwner(PANEL, WRITE)
     viewers.report(PANEL, OWNER, shown(800, 600))
@@ -106,9 +109,11 @@ describe('a write guest', () => {
     expect(viewers.sizeOf(PANEL)).toEqual({ width: 400, height: 300 })
   })
 
-  it('a write guest joining after a read guest (no owner yet) owns', () => {
+  it('a write guest joining after a read guest (no owner yet) owns only once it claims', () => {
     viewers.report(PANEL, READ, shown(300, 200), 'read')
     viewers.report(PANEL, WRITE, shown(400, 300), 'write')
+    expect(viewers.ownerOf(PANEL)).toBeUndefined()
+    viewers.claimOwner(PANEL, WRITE)
     expect(viewers.ownerOf(PANEL)).toBe(WRITE)
   })
 })

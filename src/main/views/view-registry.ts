@@ -138,10 +138,16 @@ export class ViewRegistry<P = unknown> {
    * native dialogs into in-page ones (asks/shared-asks.ts chooseAsk's `hasRemoteView`).
    */
   hasOwnerRemoteView(windowId: number): boolean {
+    return this.ownerRemoteViews(windowId).length > 0
+  }
+
+  /** The window's live browser views of the owner's, in attach order (no desktop view, no guest's). */
+  ownerRemoteViews(windowId: number): ViewId[] {
+    const out: ViewId[] = []
     for (const [id, entry] of this.views) {
-      if (entry.windowId === windowId && isRemoteViewId(id) && entry.who === 'owner' && !entry.sink.isClosed()) return true
+      if (entry.windowId === windowId && isRemoteViewId(id) && entry.who === 'owner' && !entry.sink.isClosed()) out.push(id)
     }
-    return false
+    return out
   }
 
   /** The ids of a window's live views, the desktop view first. */

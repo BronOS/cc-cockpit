@@ -708,7 +708,8 @@ export class OverlayManager {
     // Server mode: an html page nobody holds (opened, or left, with no browser attached) goes to the
     // first browser to list the stack. The view is the router's caller, a live view of this window.
     let taken = false
-    if (this.options.server === true && isRemoteViewId(viewId)) {
+    // Never a guest's view (design-guests §9): a guest listing the stack never picks up a waiting page.
+    if (this.options.server === true && isRemoteViewId(viewId) && this.ownerView(viewId)) {
       for (const o of stack) {
         if (o.info.kind !== 'html' || o.holder !== undefined) continue
         this.hold(o, viewId)
@@ -736,6 +737,8 @@ export class OverlayManager {
     if (overlay?.info.kind !== 'html') return false
     // Server mode: the hidden page never holds a page (nothing there asks; refused all the same).
     if (this.options.server === true && !isRemoteViewId(viewId)) return false
+    // A guest never takes a page over (design-guests §9): its posts carry the opener's data.
+    if (!this.ownerView(viewId)) return false
     if (overlay.holder === viewId) return true
     this.hold(overlay, viewId)
     this.reloading(overlay)

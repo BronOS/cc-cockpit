@@ -380,7 +380,7 @@ describe('server-mode adapted sites refuse a guest even past the gate (isOwner, 
 // ---------------------------------------------------------------------------------------------------------------
 
 describe('guest tab handlers', () => {
-  function tabsSetup(opts: { wired?: boolean; closeAnswer?: boolean } = {}) {
+  function tabsSetup(opts: { wired?: boolean; closeAnswer?: boolean; slowCreate?: boolean } = {}) {
     const router = newRouter()
     const guests = fakeGuests()
     router.setGuestDeps(guestDeps(guests))
@@ -402,8 +402,16 @@ describe('guest tab handlers', () => {
       create: (...args: unknown[]) => {
         calls.push(['create', ...args])
         const tab = { id: `n${next++}`, kind: 'shell', cwd: '/work/a', gen: 1 } as TabInfo
-        live.push(tab)
-        return tab
+        if (!opts.slowCreate) {
+          live.push(tab)
+          return tab
+        }
+        return new Promise<TabInfo>((resolve) =>
+          setTimeout(() => {
+            live.push(tab)
+            resolve(tab)
+          }, 5)
+        )
       },
       close: (projectId: string, tabId: string) => {
         calls.push(['close', projectId, tabId])
@@ -414,7 +422,8 @@ describe('guest tab handlers', () => {
       resize: rec('resize'),
       select: rec('select'),
       viewSelect: rec('viewSelect'),
-      others: () => undefined,
+      others: (...args: unknown[]) => void calls.push(['others', ...args]),
+      everyone: (...args: unknown[]) => void calls.push(['everyone', ...args]),
       ...(opts.wired === false
         ? { guest: undefined }
         : {
@@ -446,6 +455,13 @@ describe('guest tab handlers', () => {
     await expect(router.dispatch(guest('gW'), 'tabs.create', { kind: 'claude' })).rejects.toThrow(/at most 4/)
   })
 
+  it('counts creates still spawning toward the cap (frames of one socket read)', async () => {
+    const { router, calls } = tabsSetup({ slowCreate: true })
+    const results = await Promise.all(Array.from({ length: 6 }, () => outcome(router.dispatch(guest('gW'), 'tabs.create', { kind: 'shell' }))))
+    expect(results.filter(Boolean)).toHaveLength(4)
+    expect(calls.filter((c) => c[0] === 'create')).toHaveLength(4)
+  })
+
   it('counts only live tabs toward the cap, and refuses other kinds and read guests', async () => {
     const { router, calls, guests, live } = tabsSetup()
     guests.opened.push('old1', 'old2', 'old3', 'old4')
@@ -469,6 +485,8 @@ describe('guest tab handlers', () => {
     await Promise.resolve()
     expect(calls.some((c) => c[0] === 'close' && c[2] === 't1')).toBe(true)
     expect(live.some((t) => t.id === 't1')).toBe(false)
+    // No page removed it itself, so every view is told, the asking guest's included.
+    expect(calls.filter((c) => c[0] === 'everyone')).toEqual([['everyone', 1, { channel: 'tabs.removed', payload: { tabId: 't1', gen: 1 } }]])
   })
 
   it('an owner No leaves the tab; a hidden tab is refused before any ask', async () => {
