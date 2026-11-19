@@ -39,6 +39,8 @@ const EXPANDED_KEY = 'expanded' // ctx.storage (per project): the folders the pe
 const MAX_EXPANDED = 500
 const MAX_WATCHERS = 200
 const LIST_DEBOUNCE_MS = 250
+/** The Editor's binary rule (its lib/files.js): a NUL in the first this-many bytes. */
+const BINARY_SNIFF_BYTES = 8000
 const MARKS_DEBOUNCE_MS = 1000
 
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
@@ -363,7 +365,8 @@ exports.activate = (ctx) => {
           const rel = tree.normalizeRelative(m.path)
           await openFile(rel, m.rule, access)
         } else if (m.type === 'edit') {
-          await editFile(tree.normalizeRelative(m.path))
+          const rel = tree.normalizeRelative(m.path)
+          await (access === 'owner' ? editFile(rel) : guestEdit(rel))
         } else if (m.type === 'reveal') {
           await ctx.files.reveal(tree.normalizeRelative(m.path))
         } else if (m.type === 'open-system') {
@@ -413,7 +416,7 @@ exports.activate = (ctx) => {
     // nothing. Edit is the path a write guest already uses (07b's e2e: Files' Edit shows the file tab in the
     // guest's own page); a focus it asks for goes to the click's origin view, main's hint. A read-only guest
     // never gets here (`open` is not theirs).
-    if (access !== 'owner' && (rule === undefined || rule === -1)) return editFile(rel)
+    if (access !== 'owner' && (rule === undefined || rule === -1)) return guestEdit(rel)
     const matches = openWith.matchRules(rel, openWith.rulesOf(app().openWith))
     let r
     if (rule === undefined) r = matches[0]
@@ -421,7 +424,7 @@ exports.activate = (ctx) => {
       r = matches.find((x) => x.index === rule)
       if (!r) throw new Error('That rule does not match this file any more (the settings changed): reopen the menu.')
     }
-    if (!r || r.action === 'default') return access === 'owner' ? ctx.files.open(rel) : editFile(rel)
+    if (!r || r.action === 'default') return access === 'owner' ? ctx.files.open(rel) : guestEdit(rel)
     const name = `Open with rule ${r.index + 1} (${r.extensions.join(', ')})`
     if (r.error) throw new Error(`${name}: ${r.error}. Change it in Settings > Plugins > Files.`)
     if (r.action === 'system') {
@@ -446,6 +449,38 @@ exports.activate = (ctx) => {
       },
       (e) => post({ type: 'error', message: safeText(`${name}: ${e.message}`) }),
     )
+  }
+
+  /**
+   * A guest's Edit: refused for a binary file. The Editor hands one to the project's opener (an overlay: the
+   * file viewer), which main refuses from a guest's view, so the guest would get main's refusal instead of why.
+   */
+  async function guestEdit(rel) {
+    if (await isBinary(rel)) throw new Error(`${rel}: a binary file has no editor view for a guest.`)
+    return editFile(rel)
+  }
+
+  /**
+   * Whether the project file `rel` is binary by the Editor's rule (a NUL in the first BINARY_SNIFF_BYTES;
+   * its lib/files.js sniffBinary). False when it cannot tell (missing, not a file, a link out of the project):
+   * the editor answers those itself.
+   */
+  async function isBinary(rel) {
+    let fh
+    try {
+      const real = await fs.promises.realpath(path.join(root, rel))
+      if (!tree.within(await fs.promises.realpath(root), real)) return false
+      fh = await fs.promises.open(real, 'r')
+      const st = await fh.stat()
+      if (!st.isFile()) return false
+      const buf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, st.size))
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+      return buf.subarray(0, bytesRead).includes(0)
+    } catch {
+      return false
+    } finally {
+      if (fh) await fh.close().catch(() => {})
+    }
   }
 
   /** Edit: the `editor` service's file tab (the bundled Editor's by default). */

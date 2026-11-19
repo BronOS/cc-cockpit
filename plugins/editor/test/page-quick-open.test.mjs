@@ -2,7 +2,7 @@
 // grouping, and the request state (parts joined, stale answers dropped, a reconnect asking again).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createSearch, fuzzyFilter, fuzzyMatch, groupMatches, highlightPieces, MAX_ROWS, FILES_TTL_MS } from '../src/page/quick-open.mjs'
+import { createSearch, fuzzyFilter, fuzzyMatch, groupMatches, highlightPieces, searchesProject, MAX_ROWS, FILES_TTL_MS } from '../src/page/quick-open.mjs'
 
 test('fuzzyMatch: characters in order, case-insensitive; the file name and word starts win', () => {
   assert.equal(fuzzyMatch('xyz', 'src/a.ts'), null)
@@ -26,6 +26,11 @@ test('fuzzyMatch: positions index the path itself when lower-casing changes a le
   // The camel-case bonus reads the right character: 'V' after 'p' is a word start.
   assert.ok(fuzzyMatch('v', path).score > fuzzyMatch('e', path).score)
   assert.deepEqual(fuzzyMatch('ist', path).positions.map((i) => path[i]), ['İ', 's', 't'])
+})
+
+test("searchesProject: the owner's and a write guest's page (and an older app's, no hint) only", () => {
+  for (const a of [undefined, 'owner', 'write']) assert.equal(searchesProject(a), true, String(a))
+  for (const a of ['read', 'admin', null, '']) assert.equal(searchesProject(a), false, String(a))
 })
 
 test('groupMatches keeps rg order; highlightPieces splits by ranges', () => {
