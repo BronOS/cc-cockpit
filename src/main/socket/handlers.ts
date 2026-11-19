@@ -647,7 +647,7 @@ export interface DownloadCliOptions {
   /** The project window that is open now. */
   windowIdOf(projectId: string): number | undefined
   /** Downloads.offer: throws with the exit-1 text; answers at once, never waits for the click. */
-  offer(caller: { projectId: string; windowId: number }, abs: string, peerGone?: AbortSignal): Promise<{ text: string }>
+  offer(caller: { projectId: string; windowId: number; tabId?: string }, abs: string, peerGone?: AbortSignal): Promise<{ text: string }>
 }
 
 /** What a tokenless `ccc download` is told (it reaches here only if the server's tables ever widened). */
@@ -667,7 +667,10 @@ export function downloadHandler(options: DownloadCliOptions): Handler {
     }
     const windowId = options.windowIdOf(caller.projectId)
     if (windowId === undefined) throw new Error(NOT_OPEN)
-    const { text } = await options.offer({ projectId: caller.projectId, windowId }, path, peerGone)
+    // The tab is the session token's (main's), kept on the offer for guests (D-23): a write guest sees an offer only
+    // from a tab it sees. A window token names no tab, so its offers are the owner's alone.
+    const tab = caller.kind === 'session' ? { tabId: caller.tabId } : {}
+    const { text } = await options.offer({ projectId: caller.projectId, windowId, ...tab }, path, peerGone)
     return { text }
   }
 }

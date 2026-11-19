@@ -27,6 +27,16 @@ export function askInfoFrom(
   }
 }
 
+/**
+ * A download offer source (D-23): the offer's origin tab (Downloads.offerOrigin). An offer made with no tab answers
+ * `{}`, so its kind is still known and askVisible refuses it.
+ */
+export function downloadOfferSource(downloads: {
+  offerOrigin(windowId: number, requestId: string): { originTab?: string } | undefined
+}): GuestAskSource {
+  return { kind: 'download', info: (windowId, requestId) => downloads.offerOrigin(windowId, requestId) }
+}
+
 /** A trash ask source: the asking plugin of a pending trash ask (TrashAsks.pluginOf). */
 export function trashAskSource(trash: { pluginOf(windowId: number, requestId: string): string | undefined }): GuestAskSource {
   return {
