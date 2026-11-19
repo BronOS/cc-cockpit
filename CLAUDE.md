@@ -18,6 +18,10 @@ design in `docs/design-web.md`, plan in `docs/plans/completed/20261110-web-acces
 Server mode (Linux, no display, browsers only: `--server`, the key file, `ccc web`, approvals in the browser) is implemented
 on top of it; design in `docs/design-web.md` §9, plan in `docs/plans/completed/20261111-server-mode.md`, user docs in `docs/features.md`
 ("Server mode"). Only the unpacked build was run; the AppImage, the deb on a real server and the systemd unit were not.
+Server mode on macOS (a LaunchAgent starts `--server` in the person's login session: no re-exec, windows never shown, no Dock
+icon, held awake, off the keychain, a reopen notice; the plist is documented in `docs/features.md`, not a `ccc web` command) is
+implemented; design in `docs/design-web.md` §9.1 and §9.15, plan in `docs/plans/20261119-server-mode-mac.md`. Run from the repo's
+Electron only: a packaged Mac, the LaunchAgent, Gatekeeper's first open, App Nap and a sleeping display were not.
 Streamed web views (server mode: the Browser and every webview panel rendered off-screen on the server and streamed to
 browsers over the view's WebSocket, one port) are implemented; design in `docs/design-web-browser.md`, plan in
 `docs/plans/completed/20261111-streamed-webviews.md`, user docs in `docs/features.md` ("Server mode" › "The Browser panel").
@@ -48,7 +52,8 @@ Guests (the owner invites a person into one project, read-only or write, from a 
 Remote servers' Direct window; plugins hidden from guests unless shown) are implemented; design in `docs/design-guests.md`
 (decisions D-1 to D-35 in its §17), summary in `docs/design-web.md` §10, user docs in `docs/features.md` ("Web access" ›
 "Guests"). The D-29 certificate pin runs in real Electron in `guest-direct.spec.ts` against a self-signed loopback host
-only (never a host on another machine); the server-mode guest e2e specs are written but wait for server mode on macOS.
+only (never a host on another machine); the server-mode guest e2e specs (`guest-server.spec.ts`) are written for `launchServer`, which now starts on macOS too; they had
+not run on either platform when this was written.
 
 ## Commands
 
@@ -170,8 +175,17 @@ only (never a host on another machine); the server-mode guest e2e specs are writ
   (revoke, disconnect: `adapted`, by `server && view.remote`, the acting device logged from the view main bound).
 - Server mode (`main/server-mode.ts`, design-web.md §9): `server` is the one flag, decided before `ready` by
   `decideServerMode` (platform, env, argv) and passed into `start()` and every service that differs; never re-derive it from
-  `DISPLAY`, and never from a payload. Start re-executes the image in place (`process.execve` with the headless switches: same
-  pid and stdio, so a unit's main pid is the app); the path is chosen at run time by `typeof process.execve` and
+  `DISPLAY`, and never from a payload. On Linux start re-executes the image in place (`process.execve` with the headless
+  switches: same pid and stdio, so a unit's main pid is the app); the re-exec, the `--server-parent` watch and the Ozone
+  switch are Linux-only: on darwin only `--server` starts a server (never detected), with no re-exec, and `refuseWhenHeld`
+  makes a `--server` launch that loses the lock print `HELD_LINE` and `process.exit(1)` (desktop and server run one at a
+  time on a Mac; a desktop primary ignores a darwin server launch, `SecondInstanceData.serverLaunch`; win32 refuses). What a
+  darwin server needs from main is `server-platform.ts`'s row (`serverPlatform(platform, server)`, pure, effects injected):
+  before `ready` the accessory policy, `disableHardwareAcceleration()` and `use-mock-keychain`, after it one
+  `powerHolds.hold('server-mode')` for the run (never a direct `powerSaveBlocker`: `PowerHolds` keeps it apart from
+  keep-awake's holds); the desktop and a Linux server get an empty row. The launchd plist is docs, never a `ccc` command (an
+  install would be a CLI-local command outside `HOST_ONLY_COMMANDS`); `mac:` in `electron-builder.yml` never gets `extendInfo`,
+  `LSUIElement` or `LSBackgroundOnly` (they would hide the desktop's Dock icon; `packaging-config.test.ts`). The path is chosen at run time by `typeof process.execve` and
   `accessSync(exe, X_OK)` and the fallback is `spawnSync` plus the `--server-parent` watch, never a `try` / `catch` around
   `execve` (a failed `execve` aborts the process, nothing to catch). Unit tests inject `lock`, `execve`, `spawnSync`. The
   lock-losing re-exec exits with `process.exit(0)`, not `app.quit()` (with no display a quit returns to Electron, which fails
@@ -179,7 +193,10 @@ only (never a host on another machine); the server-mode guest e2e specs are writ
   failing exits 1 after the mirror worker is awaited (exiting while it bootstraps segfaults) and `app.exit(1)` at the end of
   `will-quit` (`process.exitCode` is ignored).
 - Server mode secrets: `main/secrets/key-file-store.ts` is one more `SecretStore`, chosen by `selectSecretStore` from `server`
-  (server mode always the key file with `--password-store=basic`, the desktop always the keychain, never by keychain state).
+  (server mode always the key file, the desktop always the keychain, never by keychain state). Chromium's own store is kept off
+  the keychain too: `--password-store=basic` is Linux-only (the re-exec's argv), and on darwin main appends `use-mock-keychain`
+  before `ready` (`server-platform.ts`); the keychain would prompt with nobody at the screen and the ad-hoc signature resets its
+  ACL on every update. Whether Electron honours it is unverified (the owner's check on the packaged app).
   `<data>/secret.key` is made `O_EXCL` 0600, read `O_NOFOLLOW` and checked by `fstat` on that descriptor, never made again over
   an existing file; values are `KEYFILE-V1:` AES-256-GCM, and each store refuses the other's values with its own text
   (`storedValueState`: readable, other-mode, replaced), so a view never shows "set" for a value it cannot read.
@@ -193,17 +210,26 @@ only (never a host on another machine); the server-mode guest e2e specs are writ
   focus taken from a terminal, Allow armed after about a second of visibility (`ApprovalArm`); a backdrop click answers nothing.
   Close project, device revoke and disconnect, `oauth.paste` and notice clicks use `adapted` channels the same way. A new
   approval a browser may give needs an `ApprovalDialog`, never a plain `confirm`.
-- The hidden page (the project's `BrowserWindow` in server mode, never shown): `WindowManager {server}` never calls `focus`,
+- The hidden page (the project's `BrowserWindow` in server mode, never shown, on macOS as on Linux: `createWindow` forces `show:
+  false` and `backgroundThrottling: false` under `server`, after the caller's options): `WindowManager {server}` never calls `focus`,
   `show`, `hide` or `showPicker`, never writes bounds, and reloads a crashed or failed page with a backoff (never closes the
   window); `ViewSizes` never measures it, so a tab keeps the last browser's size and a new unsized one gets 120x40; an overlay
   with no origin view is held by a browser, never by it. A new window or layout call must keep these under `server`.
+- The one dialog a server may show (`reopen-notice.ts`): `serverDialogs` stays on macOS (nobody is at the screen), except the
+  reopen notice, reached only from `activate` (macOS server only), through `electronDialogs()` (the adapter, never `dialog`
+  directly), one box at a time, `app.focus({ steal: true })` first. LaunchServices turns the reopened process into a Dock app, so the
+  accessory policy is re-applied once the box is answered (before a Stop quits) and when an `activate` comes while one is up;
+  a test run answers from `SECOND_LAUNCH_ANSWER_ENV`. A new box a server may show needs the same case made, never a call
+  from elsewhere.
 - Core notices in server mode (`notifications/core-notices.ts`, in-page `PageNoticeBackend` for plugins): a stdout line each, last
   50 kept for `ccc web status`, plain text with no link and no plugin text, never logged with a mail subject.
 - Web e2e specs drive Electron's own Chromium as the "plain browser" (`test/fixtures/web-browser/main.cjs`, helpers in
   `test/e2e/web-fixtures.ts`: `enableWebAccess` on a random loopback port, retried on `failed`, and `openBrowser`); a spec that
   needs plugin panels launches with `env: { CC_COCKPIT_NO_BUNDLED: '' }`. Server-mode specs use `launchServer`
-  (`test/e2e/server-fixtures.ts`: the headless switches passed directly, no display, no session bus, `ccc` run from the data
-  dir's wrapper); they never go through the re-exec, which only `scripts/server-mode-smoke.mjs` covers.
+  (`test/e2e/server-fixtures.ts`: on Linux the headless switches passed directly, no display, no session bus; on darwin `--server`
+  alone, the LaunchAgent's real start, so the e2e covers that start path there; `ccc` run from the data dir's wrapper;
+  `expectMainAlive` also asserts no visible `BrowserWindow` and, on darwin, no Dock icon); they never go through the Linux re-exec,
+  which only `scripts/server-mode-smoke.mjs` covers.
 - With web access on, a headless terminal mirror worker (`main/terminals/mirror-worker.ts`; `view-terminals.ts` for browser views) owns pty flow control and answers the
   program's terminal queries; views get numbered chunks and snapshots and resync from them, the desktop included. Do not add a
   second consumer of pty data or a reply path that bypasses the worker. Terminal size has one owner (last typer or "Fit to this

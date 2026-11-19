@@ -40,7 +40,7 @@ Plugins do not change.
   close the door on it: every view carries an identity).
 - A cloud relay run by us. Reaching the machine from outside is the person's network (Tailscale, SSH tunnel, their
   own reverse proxy).
-- A server with no display in v1 itself; server mode is designed in §9 (Linux only) and ships with the same feature.
+- A server with no display in v1 itself; server mode is designed in §9 (Linux, and macOS by §9.15) and ships with the same feature.
 - Windows hosts. A phone-first layout (later phase).
 
 ## 1. What the survey and review found
@@ -551,10 +551,12 @@ proxy.
 ## 9. Server mode
 
 Status: implemented 2026-11-11 (plan `docs/plans/completed/20261111-server-mode.md`), from a spike (Electron 45.1, Linux, no
-keyring) and revised after review. Linux only in this phase. Run so far: the unpacked build, headless, by
+keyring) and revised after review. Linux in this phase; macOS followed (§9.1 "macOS", §9.15, plan
+`docs/plans/20261119-server-mode-mac.md`). Run so far on Linux: the unpacked build, headless, by
 `scripts/server-mode-smoke.mjs` (also with the network off), and the e2e suite with the harness's direct switches. Not
 run: the AppImage on a stock Ubuntu Server, the deb and the systemd unit on a real server, Tailscale (§9.1 "Installs",
-`docs/features.md` "Server mode"). Where the build differs from the text below, a "Built:" note says so.
+`docs/features.md` "Server mode"). Where the build differs from the text below, a "Built:" note says so. Text that names the Ozone switch, the re-exec,
+`--password-store=basic` or a systemd unit is Linux's; macOS's rows are in §9.1's "macOS" bullet and §9.15.
 
 **Goal.** Someone installs cc-cockpit on a server with no display (a home server, a VM) and uses it only through web
 access, from browsers. The model is v1's: one person with several devices, every signed-in device is that person (§4).
@@ -575,10 +577,38 @@ hang, so it needs the same work.
   the Ozone switch Electron exits at once, "The platform failed to initialize"). `ssh -X` sets `DISPLAY`, so a
   forwarded session gets the desktop; `--server` forces server mode. Not `--headless`: Chromium reads that switch itself
   (measured: `app.commandLine.hasSwitch('headless')` is true with it on argv).
-- **Linux only.** On macOS and Windows `--server` prints "server mode runs on Linux only" and exits 1, and nothing is
-  detected. macOS would need another mechanism (never-shown windows, throttling, the dock, a GUI login session, a
-  keychain that prompts on screen) and has no spike.
-- **Re-exec.** The Ozone switch must be on argv: `app.commandLine.appendSwitch` from main is too late and
+- **Platforms.** Linux (this section) and macOS (the next bullet). On Windows `--server` prints "server mode runs on Linux
+  and macOS only" and exits 1 before the lock, and nothing is detected.
+- **macOS.** Built from the plan `docs/plans/20261119-server-mode-mac.md` (measurements in §9.15). macOS has no
+  headless Chromium platform, so the server runs in the person's Aqua session and its windows are never shown.
+  `decideServerMode` on darwin: only `--server` starts one, as `{ server: true, detected: false, refuseWhenHeld: true }`,
+  with no re-exec (everything darwin needs is set from main before `ready`), no `--server-parent` watch and no test-run
+  gate; a Mac always has a WindowServer, so nothing is detected. What main sets, by `server-platform.ts` (pure, the
+  effects injected; `serverPlatform(platform, server)` is one row table): before `ready` the accessory activation
+  policy (no Dock icon, no menu bar), `disableHardwareAcceleration()` (nothing is composited on screen) and Chromium's
+  `use-mock-keychain` (§9.5); after `ready` one `powerHolds.hold('server-mode')` for the whole run (§9.15, "Built").
+  A desktop on darwin and a server on Linux get an empty row. The launch is a LaunchAgent the person writes from the
+  plist in `docs/features.md` (Label `dev.cc-cockpit.server`, `RunAtLoad`, `KeepAlive` `{Crashed: true}`,
+  `ProcessType` Interactive, `LimitLoadToSessionType` Aqua, Umask 0077, no core dumps, stdout and stderr to
+  `~/Library/Logs/cc-cockpit-server.log`): documentation, not a `ccc web` command. `ccc web` is the running app's surface
+  and its writes are shell-only to keep a prompt-injected tab from reconfiguring access; an install command would run
+  when no server exists, so it would be a CLI-local command outside `HOST_ONLY_COMMANDS`, a weaker gate on the one
+  command that makes a login-persistent, network-reachable process. Same model as the systemd unit: documented, not
+  shipped, and no token in the file. Desktop and server run one at a time on a Mac: **`refuseWhenHeld`**. A `--server`
+  launch that loses the lock prints `HELD_LINE` ("server mode: not started: cc-cockpit already runs with this data dir
+  (the desktop app or another server)") and ends with `process.exit(1)`, never `app.quit()` and never the Linux loser's
+  exit 0 with `NOT_STARTED_LINE`; its argv still reaches the holder as `second-instance`, and a desktop primary ignores a
+  launch whose data says server (`SecondInstanceData.serverLaunch`, logged, nothing opened or focused). A launch without
+  `--server` that loses the lock to a server is the desktop launch of the next bullet (`losingLaunchAsks` accepts
+  darwin). **Reopening the app** while the server runs (Finder, Spotlight, `open -a`) is routed by LaunchServices to the
+  running process as `activate`, which in server mode shows the reopen notice (`reopen-notice.ts`): the second-launch
+  box's text (`serverBoxMessage(address)`) with Stop and Cancel (Cancel the default and what Esc answers) and the
+  detail "Stop ends this run; the LaunchAgent starts it again at your next login". It is the one named exception to
+  `serverDialogs` (§9.7). The reopen made the process `Foreground` with a Dock icon (§9.15 S3), so the accessory policy
+  is applied again once the box is answered, before a Stop quits, and when an `activate` arrives while a box is up.
+  Packaging is the same bundle: `electron-builder.yml`'s `mac:` has no `extendInfo` and must never get `LSUIElement` or
+  `LSBackgroundOnly`, which would hide the desktop's Dock icon too (`packaging-config.test.ts`).
+- **Re-exec (Linux only; macOS has none).** The Ozone switch must be on argv: `app.commandLine.appendSwitch` from main is too late and
   `ELECTRON_OZONE_PLATFORM_HINT=headless` is not read (spike). `app.relaunch` loses stdout: measured, the relaunched
   process has fd 1 and 2 on `/dev/null` and is detached, so a manual run would daemonize silently. A `spawnSync` child
   keeps stdout, but a SIGTERM sent to the first process alone leaves the child running, reparented; an async `spawn`
@@ -754,8 +784,14 @@ A server rarely has a Secret Service, so safeStorage falls back to `basic_text` 
 settings fields, OAuth tokens) are off (spike).
 
 - **The mode decides the store.** Server mode always uses the key file and runs Chromium with `--password-store=basic`
-  (§9.1's re-exec), so the keyring is never asked and a locked Secret Service cannot leave a probe waiting on an unlock
-  prompt nobody sees. The desktop always uses the keychain and keeps refusing `basic_text`: a desktop has a keychain to
+  (§9.1's re-exec; Linux only), so the keyring is never asked and a locked Secret Service cannot leave a probe waiting
+  on an unlock prompt nobody sees. On macOS `--password-store=basic` does not exist: the keychain would prompt with
+  nobody at the screen, and the ad-hoc signature (`identity: '-'`) changes on every update, which resets its ACL. The
+  key file is chosen the same way (`selectSecretStore(server)`, never by keychain state), and main appends Chromium's
+  `use-mock-keychain` before `ready` (`server-platform.ts`, darwin's counterpart) so the webview partitions' cookie key
+  ("cc-cockpit Safe Storage") stays off the keychain too. Whether Electron 45 honours the switch is the owner's check
+  (plan O1, observe only with the packaged app); until then it is unverified, and the fallback the plan names is
+  in-memory webview partitions. The desktop always uses the keychain and keeps refusing `basic_text`: a desktop has a keychain to
   fix, and a silent key file would weaken it. No selection by keychain state, no mixed reads.
 - **Key file.** `<data>/secret.key`: 256 random bits, made on first start with `O_CREAT | O_EXCL` and mode 0600 at open
   (never chmod after). Each value is AES-256-GCM with a random 96-bit IV, stored as `KEYFILE-V1:` + base64(iv, tag,
@@ -816,7 +852,7 @@ stays: a remote view may only Deny.
 
 ### 9.7 Native dialogs
 
-Under Ozone headless `dialog.showMessageBox` (with a parent or without) and `dialog.showErrorBox` abort main with SIGTRAP,
+Under Ozone headless (Linux) `dialog.showMessageBox` (with a parent or without) and `dialog.showErrorBox` abort main with SIGTRAP,
 a Chromium CHECK (reproduced in a 10-line app). `showOpenDialog` answers `canceled` with no portal. Test runs hid it:
 their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 1516-1528).
 
@@ -824,7 +860,11 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
   `main/index.ts` and CLAUDE.md, and a grep test like `no-direct-webcontents-send.test.ts`); the logic is in
   `src/main/dialogs/dialogs.ts`. In server mode it never calls `dialog`: a message box rejects (`ServerDialogError`), an
   open dialog answers canceled, an error box becomes a log line. A call site missed below then fails closed instead of
-  killing main. `link-dialog.ts`, `close-dialog.ts` and `trash-dialog.ts` get it instead of `dialog.showMessageBox`.
+  killing main. On macOS a box would not abort main, but nobody is at the screen and approvals are the browsers', so
+  `serverDialogs` stays there too, with one named exception: the reopen notice (§9.1), reached only from `activate`
+  (macOS-only, a gesture at this screen), through `electronDialogs()` (the adapter, never `dialog` directly), one box at
+  a time and `app.focus({ steal: true })` first; Stop is `quitLikeSigterm`, and a test run answers from
+  `SECOND_LAUNCH_ANSWER_ENV` (`reopen-notice.ts`). `link-dialog.ts`, `close-dialog.ts` and `trash-dialog.ts` get it instead of `dialog.showMessageBox`.
 - **Each call site in server mode** (grep of `dialog.` in `src/main`):
 
 | Call | Server mode |
@@ -836,6 +876,11 @@ their queued fakes replace the close, link and trash dialogs (index.ts:450-490, 
 | `showOpenDialog`: open folder (index.ts:1600), relink (1655), `pickFolder` (1686: Settings relink, Settings link a plugin folder) | not reached: these are `no`-class for browsers and nobody drives the hidden page. Projects open by path (§9.8); plugins link with `ccc plugin link` (§9.6) |
 
 ### 9.8 Projects and the hidden page
+
+On both platforms the window factory is given `server` at construction (`createWindow`, `electron-window-factory.ts`) and
+never shows the window: `show: false` is applied after the caller's options, so no caller turns it on, and
+`backgroundThrottling: false` likewise (a macOS window would otherwise be on the Mac's screen, where Linux's Ozone has
+none to show it on). §9.15 S1 measured the page `visible` with unthrottled timers either way.
 
 - **Opening.** In server mode the browser picker (`renderer/web/picker.tsx`) lists the recent projects and has "Open
   folder…" with a server path field. The picker's GET adds recent and missing projects only in server mode
@@ -1062,6 +1107,14 @@ What server mode gives up, and what stands in:
   views and not the hidden page. OAuth paste: wrong origin, path or `state`, an oversize code, the attempt limit, no
   request made, the pending sign-in taken from the caller's window, no URL in errors. `buildPtyEnv`:
   `CLAUDE_CODE_OAUTH_TOKEN` passes, every other `CLAUDE_CODE_*` is still stripped.
+- macOS rows: `server-mode.test.ts` (darwin `--server` gives `refuseWhenHeld` with no exec and no refusal, darwin without
+  the flag is no server, win32 refuses; a `refuseWhenHeld` loser prints `HELD_LINE` and exits 1, never quits),
+  `second-launch.test.ts` (a desktop primary ignores a darwin server launch; `losingLaunchAsks` accepts darwin; Linux rows
+  unchanged), `server-platform.test.ts` (the three rows, the before-`ready` effects, the one hold), `reopen-notice.test.ts`
+  (one box at a time, Stop quits, Cancel does nothing, the test answer, the accessory policy re-applied), the window
+  options under `server`, and `packaging-config.test.ts` (no `extendInfo`, `LSUIElement` or `LSBackgroundOnly` for
+  `mac:`). The harness (`launchServer`) passes `--server` alone on darwin, the agent's real start, so the e2e covers
+  that start path there; `expectMainAlive` also checks that no `BrowserWindow` is visible and, on darwin, no Dock icon.
 - Smoke script, like `scripts/web-terminal-bench.mjs` (the re-exec replaces the image Playwright launched and drops its
   inspector connection, so the e2e cannot cover it): no display, no switches, wait for the socket, the pid unchanged,
   `ccc web status --json`, SIGTERM, check the exit status and that no live process of the run is left; one run with
@@ -1077,7 +1130,7 @@ What server mode gives up, and what stands in:
 
 ### 9.14 Out of scope
 
-macOS and Windows; relink and forget from the browser; `ccc web` writes on the desktop (a Files "Download" item is built, `docs/design-download.md`); more than one person (§10).
+Windows; relink and forget from the browser; Cmd+arrows and Cmd+Backspace in a streamed page on a macOS server (`docs/backlog/streamed-mac-line-edit-keys.md`); a LaunchDaemon (the owner's decision: a LaunchAgent in the login session only) and a macOS server and desktop at once; `ccc web` writes on the desktop (a Files "Download" item is built, `docs/design-download.md`); more than one person (§10).
 
 ### 9.15 Server mode on macOS: measurements
 
@@ -1153,6 +1206,33 @@ focused a field by a trusted click (`sendInputEvent`), and typed with `sendInput
 backgroundThrottling turned out not to matter on a never-shown window. **3 conflicts with 1**: the routed launch that
 decision 3 relies on makes the run a Foreground (Dock) app for the rest of its life. Reported to the lead before T1.
 
+**Built (T1 to T5, 2026-11-19): where the code differs from the plan.** The merged code is the truth where the plan
+differs:
+- **Sleep goes through `PowerHolds`, not a direct blocker** (plan decision 4 said `powerSaveBlocker.start`). Keep awake
+  (design.md §3) needed holds with owners, so `power/power-holds.ts` is one Electron blocker per hold and `server-platform.ts`
+  takes `powerHolds.hold('server-mode')` once after `ready` (`holdForRun`) and keeps the handle for the run, so the
+  server's hold and the keep-awake feature's never release each other's. The assertion is Chromium's
+  `prevent-app-suspension` as measured in S4; a Linux server plans no hold (a server with no session bus may have no
+  power service to ask).
+- **The window.** `createWindow` forces `show: false` and `backgroundThrottling: false` after the caller's options under
+  `server`, on both platforms (decision 1 had them for the macOS case; Linux's hidden page never showed anything).
+  `disableHardwareAcceleration()` and the accessory policy are the darwin row's, before `ready`.
+- **The keychain switch** is `use-mock-keychain`, appended by main before `ready` from the darwin row, not a flag on argv
+  (decision 5's S2, whether Electron 45 honours it, is still the owner's O1 check on the packaged app).
+- **Edit chords** (decision 7) are built as designed: `editCommandOf` (`shared/webview-keys.ts`: exactly one of Ctrl and
+  Cmd, no Alt, A, Z, Shift+Z, Ctrl+Y) and `editKeyEvent` (`main/webview/webview-input.ts`) send the key down as
+  `Input.dispatchKeyEvent` `rawKeyDown` with `commands: ['selectAll' | 'undo' | 'redo']` through the attached page
+  protocol, on every server (the browser's OS is not the server's), the lane waiting on its promise; the detached
+  fallback is `webContents.selectAll/undo/redo`. Cmd+arrows and Cmd+Backspace do not work yet (backlog
+  `streamed-mac-line-edit-keys`).
+- **`refuseWhenHeld`** is as decided: the loser prints `HELD_LINE` and `process.exit(1)`; a desktop primary logs
+  `IGNORED_SERVER_LINE` and opens and focuses nothing for a `--server` launch (`SecondInstanceData.serverLaunch`).
+- **The reopen notice** is as amended after S3 (accessory policy re-applied after the box and while one is up), with
+  Cancel as the default button and a test run answering from `SECOND_LAUNCH_ANSWER_ENV`; an `activate` at start fires
+  nothing (S3 measured 0), so a test hook counts the notices shown (0 after a start).
+- **Not run when this was written:** the packaged app under a LaunchAgent, Gatekeeper's first open, Finder's routing with
+  the real bundle, App Nap's state (S4 only has the timers as a proxy) and a sleeping display with frames streaming.
+
 ## 10. Guests (pair development)
 
 Built after v1 as guests; the design is [design-guests.md](design-guests.md), user docs are
@@ -1200,4 +1280,4 @@ Built after v1 as guests; the design is [design-guests.md](design-guests.md), us
 7. ~~Device management from a browser in server mode~~: Revoke and Disconnect allowed, minting stays on the server
    shell (§9.6).
 8. ~~stdout over `app.relaunch`~~: lost and detached (measured in review), so §9.1 re-executes in place
-   (`process.execve`), same stdio. macOS is not in this phase.
+   (`process.execve`), same stdio. Linux; macOS has no re-exec (§9.1 "macOS").
