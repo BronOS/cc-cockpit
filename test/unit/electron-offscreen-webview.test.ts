@@ -748,13 +748,13 @@ describe('OffscreenWebviewFactory', () => {
       { method: 'Input.dispatchKeyEvent', params: editKeyEvent(redo) }
     ])
     expect(wc.calls).toEqual([])
-    // A protocol refusing the command: its detached road, as a refused key goes by sendInputEvent
-    // (a refused text or command is never lost), not thrown here.
+    // A protocol refusing the command: the rejection is the lane's (it lets the rest go), not thrown
+    // here, and no other road runs it (review 5: a fallback after a refusal could land in a later
+    // attachment or after the input behind it).
     state.refuse = true
-    await expect(view.editCommand?.(undo)).resolves.toBeUndefined()
-    expect(wc.calls).toEqual(['undo'])
+    await expect(view.editCommand?.(undo)).rejects.toThrow(/refused/)
+    expect(wc.calls).toEqual([])
     state.refuse = false
-    wc.calls.length = 0
     // Detached: the webContents commands, no key event, settled at once.
     wc.debugger.attachedWith = undefined
     const before = wc.debugger.commands.length

@@ -1374,3 +1374,88 @@ describe('PageInputRouter scheduling: owed releases', () => {
     ])
   })
 })
+
+// The fifth codex review (of b551fe8): its three MUSTs, by its words, and the owner's decision
+// that a refusal while attached is dropped, never replayed by another road.
+describe('PageInputRouter scheduling: review 5', () => {
+  /** A detach, reset and new attachment a few microtasks from now: between the router's continuations. */
+  const reconnectSoon = (s: ReturnType<typeof setup>, microtasks: number): void => {
+    let left = microtasks
+    const tick = (): void => {
+      if (left-- > 0) return queueMicrotask(tick)
+      s.detach()
+      s.router.reset()
+      s.attach()
+    }
+    queueMicrotask(tick)
+  }
+
+  // MUST 1: "Reject a command, then queue a microtask that detaches/resets/reattaches. outcome
+  // resolves before reset, but run resumes afterward and invokes the old detached callback without
+  // rechecking epoch. The key-refusal path has the same gap."
+  it('a refused text, edit command or key runs no other road, a reconnect between its continuations included', async () => {
+    for (let microtasks = 0; microtasks < 6; microtasks++) {
+      const s = setup()
+      s.page.opts.refuse.add('')
+      const roads: string[] = []
+      const text = s.router.command('Input.insertText', { text: 'A' }, () => void roads.push('insertText A'))
+      const edit = s.router.command('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', commands: ['selectAll'] }, () => void roads.push('selectAll'))
+      s.router.input([keyDown('b')])
+      reconnectSoon(s, microtasks)
+      await expect(text).rejects.toThrow()
+      await expect(edit).rejects.toThrow()
+      await s.flush()
+      expect([microtasks, roads, s.fallback]).toEqual([microtasks, [], []])
+    }
+  })
+
+  // MUST 2: "Refuse text A; its detached insertText returns a pending promise; enqueue key B.
+  // settle() starts A but returns immediately, so the router sends B before A completes."
+  it('a refused text is dropped, so nothing of it can land after the key behind it', async () => {
+    const s = setup()
+    s.page.opts.refuse.add('')
+    let landed = 0
+    const text = s.router.command('Input.insertText', { text: 'A' }, () => new Promise<void>((r) => setTimeout(() => (landed++, r()), 5)))
+    await expect(text).rejects.toThrow()
+    s.page.opts.refuse.clear()
+    s.router.input([keyDown('b')])
+    await s.flush()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(landed).toBe(0)
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['b'])
+  })
+
+  // MUST 3: "Send left-down to A; detach A; reject its outstanding command before 500 ms. finish()
+  // checks epoch but not lane.live, returns refused, and dispatch() sends left-down onto the page."
+  it("a frame that went: its refusal replays nothing on the page, and its release is dropped with it", async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('A')
+    s.router.input([down(20, 225)])
+    await s.flush()
+    s.router.frameDetached('A')
+    s.page.held.shift()?.reject(new Error('No session with given id'))
+    await s.flush()
+    s.router.input([up(20, 225)])
+    await s.flush()
+    expect(s.mice()).toEqual([['A', 'mousePressed', 20, 25]])
+    expect(s.fallback).toEqual([])
+  })
+
+  // The path the decision keeps: a LIVE frame's refusal goes to the page at the top point, and that
+  // press's release goes to the page too (it owes it there).
+  it("a live frame's refusal goes to the page, and the press's release with it", async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.refuse.add('A')
+    s.router.input([down(20, 225)])
+    await s.flush()
+    s.page.opts.refuse.clear()
+    s.router.input([up(30, 230)])
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['', 'mousePressed', 20, 225],
+      ['', 'mouseReleased', 30, 230]
+    ])
+  })
+})
