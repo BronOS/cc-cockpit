@@ -183,12 +183,54 @@ export function webviewNavigation(wc: WebContents): Pick<WebviewView, 'load' | '
 }
 
 /**
- * The page's print() made a no-op in every document of the main frame and its same-process frames,
- * before any page script runs (`runImmediately`: also the document already there). Locked
- * (`configurable: false`), so `delete window.print` cannot bring the native one back.
+ * Print taken away in every document it is installed in, before any page script runs
+ * (`runImmediately`: also the document already there):
+ * - `window.print` a no-op, locked (`configurable: false`), so `delete window.print` cannot bring the
+ *   native one back;
+ * - `document.execCommand('print')`, Chromium's other way to the print dialog, which never reads
+ *   `window.print`: refused (false, as for an unsupported command), the rest passed through. The
+ *   match is case-insensitive, as Chromium's command lookup. What the wrapper calls is captured
+ *   before the page runs (`Reflect.apply`, `toLowerCase`, `String`), so a page replacing
+ *   `Function.prototype.call` or `String.prototype.toLowerCase` gets neither the native function
+ *   nor a miss; the command is turned into a string once and that same string goes on, so a
+ *   `toString` answering differently the second time cannot slip `print` past the check.
+ * Runs in the page's main world, the one exception to scripts in WEBVIEW_WORLD_ID: a lock in an
+ * isolated world would change only that world's `window`, never the one the page's code calls.
+ * The parameters `window` and `Document` are the page's globals (a unit test passes its own).
  */
-export const PRINT_DISABLED_SOURCE =
-  "Object.defineProperty(window, 'print', { value: function print() {}, writable: false, configurable: false })"
+export const PRINT_DISABLED_SOURCE = `(() => {
+  const apply = Reflect.apply, lower = String.prototype.toLowerCase, toString = String
+  const lock = (target, name, value) => Object.defineProperty(target, name, { value, writable: false, configurable: false })
+  lock(window, 'print', function print() {})
+  const native = Document.prototype.execCommand
+  if (typeof native !== 'function') return
+  lock(Document.prototype, 'execCommand', function execCommand(command) {
+    const name = toString(command)
+    if (apply(lower, name, []) === 'print') return false
+    const n = arguments.length
+    return apply(native, this, n < 2 ? [name] : n < 3 ? [name, arguments[1]] : [name, arguments[1], arguments[2]])
+  })
+})()`
+
+/**
+ * Auto-attach to the page's child targets, each paused until its cancels are in (below). `flatten`
+ * gives each child a session on the same connection; it does not reach a child's own children,
+ * so every frame child is sent this again before it runs.
+ */
+const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } as const
+
+/**
+ * The child target types that are documents and get the page's cancels (a cross-site iframe, a
+ * prerendered or portal page). Every other type (dedicated, shared and service workers, worklets)
+ * has no chooser, no print and no Page domain: it is only resumed, untouched.
+ */
+const FRAME_TARGET_TYPES: ReadonlySet<string> = new Set(['iframe', 'page'])
+
+/**
+ * How long a paused child waits for its cancel commands before it is resumed anyway: a command
+ * that never answers must not leave a frame (and the page showing it) hung for good.
+ */
+export const CHILD_SETUP_TIMEOUT_MS = 5000
 
 /**
  * Off-screen views only: cancel the native UI a page can raise that nobody can answer. Spike
@@ -202,11 +244,19 @@ export const PRINT_DISABLED_SOURCE =
  * - `Page.setInterceptFileChooserDialog` with `cancel`: every chooser of the page is cancelled
  *   before it shows (a picker rejects with AbortError); it needs `Page.enable` (spike: without it
  *   the interception does not apply);
- * - PRINT_DISABLED_SOURCE in every new document. A cross-site sub-frame runs in another process
- *   the session is not attached to, so its print() is not covered (not proven either way in the
- *   spike); the worst it does there is the portal dialog and that frame's renderer blocked.
- * Commands are sent without waiting: they apply before the first load (spike), and a failure
- * (an already attached debugger) is logged, never thrown, so a view is still made.
+ * - PRINT_DISABLED_SOURCE in every new document;
+ * - the same three for every cross-site (out-of-process) iframe, at any depth: the main target's
+ *   session covers only the main frame's process, and such a frame's chooser and print went
+ *   uncancelled (security review of the streamed webviews; checked under Electron with
+ *   scripts/offscreen-frames-check.mjs). `Target.setAutoAttach` pauses each new child before its
+ *   first document; its session gets the cancels (and the auto-attach, for its own children),
+ *   then `Runtime.runIfWaitingForDebugger`. The resume is sent whatever happened to the rest (a
+ *   paused frame is a hung page): a refused command is logged, never thrown.
+ * Commands to the main target are sent without waiting: they apply before the first load (spike),
+ * and a failure (an already attached debugger) is logged, never thrown, so a view is still made. A
+ * child's are awaited before its resume, at most CHILD_SETUP_TIMEOUT_MS: the resume and the
+ * renderer's commands do not travel one ordered channel, so sending them back to back could let
+ * the frame's first document run before its print lock.
  */
 export function cancelOffscreenNativeUi(wc: WebContents, log: (message: string) => void): void {
   try {
@@ -215,16 +265,49 @@ export function cancelOffscreenNativeUi(wc: WebContents, log: (message: string) 
     log(`webview: attaching the page's protocol for its cancels failed: ${err instanceof Error ? err.message : String(err)}`)
     return
   }
-  const send = (method: string, params?: Record<string, unknown>): void => {
-    wc.debugger.sendCommand(method, params).catch((err: unknown) => {
+  /** One command on the page's session (no sessionId) or a child's; settles either way, a refusal logged. */
+  const send = async (method: string, params?: Record<string, unknown>, sessionId?: string): Promise<void> => {
+    try {
+      // The child's id only when there is one: the page's own session takes none.
+      await (sessionId === undefined ? wc.debugger.sendCommand(method, params) : wc.debugger.sendCommand(method, params, sessionId))
+    } catch (err) {
       // A view closed under the command: nothing left to cancel for.
       if (wc.isDestroyed()) return
-      log(`webview: ${method} failed: ${err instanceof Error ? err.message : String(err)}`)
-    })
+      log(`webview: ${method}${sessionId === undefined ? '' : ' (child frame)'} failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
-  send('Page.enable')
-  send('Page.setInterceptFileChooserDialog', { enabled: true, cancel: true })
-  send('Page.addScriptToEvaluateOnNewDocument', { source: PRINT_DISABLED_SOURCE, runImmediately: true })
+  /** The page's cancels, on its own session or a frame child's. */
+  const cancels = (sessionId?: string): Array<Promise<void>> => [
+    send('Page.enable', undefined, sessionId),
+    send('Page.setInterceptFileChooserDialog', { enabled: true, cancel: true }, sessionId),
+    send('Page.addScriptToEvaluateOnNewDocument', { source: PRINT_DISABLED_SOURCE, runImmediately: true }, sessionId),
+    send('Target.setAutoAttach', AUTO_ATTACH, sessionId)
+  ]
+  /** A new child target, paused: its cancels if it is a frame, then resumed in every case. */
+  const prepareChild = async (sessionId: string, type: string): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (FRAME_TARGET_TYPES.has(type)) {
+        const timedOut = new Promise<boolean>((done) => (timer = setTimeout(() => done(true), CHILD_SETUP_TIMEOUT_MS)))
+        const late = await Promise.race([Promise.all(cancels(sessionId)).then(() => false), timedOut])
+        if (late && !wc.isDestroyed()) log(`webview: a child frame's cancels took over ${CHILD_SETUP_TIMEOUT_MS} ms; resuming it anyway`)
+      }
+    } finally {
+      clearTimeout(timer)
+      await send('Runtime.runIfWaitingForDebugger', undefined, sessionId)
+    }
+  }
+  // Before the auto-attach below, so no child's attach can come first. Every session's children
+  // land here, a nested frame's with its parent's session as the listener's own `sessionId`.
+  wc.debugger.on('message', (_event, method, params) => {
+    if (method !== 'Target.attachedToTarget') return
+    const { sessionId, targetInfo } = (params ?? {}) as { sessionId?: unknown; targetInfo?: { type?: unknown } }
+    if (typeof sessionId !== 'string' || sessionId === '') return
+    // A child that is not waiting (none should be, all are auto-attached paused) gets the resume
+    // too: harmless when it is already running.
+    void prepareChild(sessionId, typeof targetInfo?.type === 'string' ? targetInfo.type : '')
+  })
+  void cancels()
   // Detached by anything but the page closing (`target closed`, also our own destroy, while the
   // WebContents does not say destroyed yet): the cancels are off from here on, so say so. A
   // cross-site navigation swaps the renderer but keeps the attachment (checked at runtime).

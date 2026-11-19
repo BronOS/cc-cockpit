@@ -65,8 +65,8 @@ A throwaway script (not in the repo) made an off-screen `BrowserWindow` (`webPre
 
   | Case | Plain server (no session bus) | With a desktop portal on the session bus | Handling |
   |---|---|---|---|
-  | `window.print()` | returns at once | the portal's Print dialog on the host's desktop; the page's renderer blocked until answered (only destroy frees it) | off-screen: `print` locked to a no-op in every new document (DevTools protocol) |
-  | `<input type=file>` click, `showOpenFilePicker` / `showSaveFilePicker` / `showDirectoryPicker` | nothing / AbortError | the portal's file chooser on the host's desktop; the promise pending | off-screen: `Page.setInterceptFileChooserDialog {cancel}` (AbortError) |
+  | `window.print()` | returns at once | the portal's Print dialog on the host's desktop; the page's renderer blocked until answered (only destroy frees it) | off-screen: `print` locked to a no-op and `execCommand('print')` refused in every new document, cross-site frames included (DevTools protocol, a session per frame) |
+  | `<input type=file>` click, `showOpenFilePicker` / `showSaveFilePicker` / `showDirectoryPicker` | nothing / AbortError | the portal's file chooser on the host's desktop; the promise pending | off-screen: `Page.setInterceptFileChooserDialog {cancel}` (AbortError), on every cross-site frame's session too |
   | `<input type=color>`, date, datetime-local, time, month | survives, nothing painted | same | none |
   | HTTP basic auth (page or sub-resource) | cancelled by Electron's default, 401 body shown | same | `login` → cancel, explicit (both adapters) |
   | Self-signed certificate | load fails, ERR_CERT_AUTHORITY_INVALID | same | `certificate-error` → reject, explicit (both adapters) |
@@ -77,9 +77,16 @@ A throwaway script (not in the repo) made an off-screen `BrowserWindow` (`webPre
   | `beforeunload`, then a navigate or reload | silently cancelled (ERR_ABORTED) without the handler | same | existing: `will-prevent-unload` → proceed |
 
   The desktop keeps its file choosers, print and page dialogs; only the `login` and `certificate-error` pins are
-  shared, and they match what Electron did before. A cross-site sub-frame's `print()` runs in a process the
-  protocol session is not attached to and is not covered (the worst it does is that frame blocked and the portal
-  dialog). Killing a blocked renderer on `unresponsive` did not free it in the spike, so there is no watchdog.
+  shared, and they match what Electron did before. A cross-site (out-of-process) sub-frame is not reached by the
+  page's own protocol session: before the fix (security review, 2026-11-19, `scripts/offscreen-frames-check.mjs` on a
+  Mac) its `print()` was the native one and the frame stopped answering at it, a cross-site frame's file chooser
+  stayed pending, and the top frame stopped answering at `execCommand('print')`, which never reads `window.print`. Now
+  `Target.setAutoAttach {waitForDebuggerOnStart, flatten}` pauses each new frame target at any depth, its own session
+  gets the same cancels (and the auto-attach for its children), then `Runtime.runIfWaitingForDebugger`, sent whatever
+  the rest did; worker targets (dedicated and service workers, also auto-attached paused) are only resumed. The File
+  System Access pickers are refused in a cross-origin sub-frame by Chromium itself (SecurityError). Not yet run
+  against a real desktop portal on Linux. Killing a blocked renderer on `unresponsive` did not free it in the spike,
+  so there is no watchdog.
 
 ## 3. Architecture
 
