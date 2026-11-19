@@ -79,13 +79,14 @@ A throwaway script (not in the repo) made an off-screen `BrowserWindow` (`webPre
   The desktop keeps its file choosers, print and page dialogs; only the `login` and `certificate-error` pins are
   shared, and they match what Electron did before. A cross-site (out-of-process) sub-frame is not reached by the
   page's own protocol session: before the fix (security review, 2026-11-19, `scripts/offscreen-frames-check.mjs` on a
-  Mac) its `print()` was the native one and blocked the frame, a grandchild frame's file chooser went uncancelled, and
-  `execCommand('print')`, which never reads `window.print`, blocked the top frame. Now `Target.setAutoAttach
-  {waitForDebuggerOnStart, flatten}` pauses each new frame target at any depth, its own session gets the same cancels
-  (and the auto-attach for its children), then `Runtime.runIfWaitingForDebugger`, sent whatever the rest did; worker
-  targets are only resumed. The File System Access pickers are refused in a cross-origin sub-frame by Chromium itself
-  (SecurityError). Not yet run against a real desktop portal on Linux. Killing a blocked renderer on `unresponsive`
-  did not free it in the spike, so there is no watchdog.
+  Mac) its `print()` was the native one and the frame stopped answering at it, a cross-site frame's file chooser
+  stayed pending, and the top frame stopped answering at `execCommand('print')`, which never reads `window.print`. Now
+  `Target.setAutoAttach {waitForDebuggerOnStart, flatten}` pauses each new frame target at any depth, its own session
+  gets the same cancels (and the auto-attach for its children), then `Runtime.runIfWaitingForDebugger`, sent whatever
+  the rest did; worker targets (dedicated and service workers, also auto-attached paused) are only resumed. The File
+  System Access pickers are refused in a cross-origin sub-frame by Chromium itself (SecurityError). Not yet run
+  against a real desktop portal on Linux. Killing a blocked renderer on `unresponsive` did not free it in the spike,
+  so there is no watchdog.
 
 ## 3. Architecture
 

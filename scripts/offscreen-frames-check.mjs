@@ -8,17 +8,21 @@
 // gesture from main in the nested ones; see the loop below), clicks an
 // <input type=file>, calls showOpenFilePicker, window.print() and document.execCommand('print').
 // Passes (exit 0) when, in every frame: the chooser and the picker were cancelled (the input's
-// `cancel` event, the picker's AbortError, both under a user activation), print and
+// `cancel` event, the picker's AbortError, both under a user activation; in a nested frame Chromium
+// refuses the picker itself with a SecurityError before any chooser, which passes too), print and
 // execCommand('print') returned at once (the frame still answers afterwards) and neither is the
-// native function; each nested frame was auto-attached as an `iframe` target; and main is alive at
-// the end. Same-origin about:blank and srcdoc frames are reported too (a page reaching a fresh
-// realm's print).
+// native function; its dedicated worker and service worker run (auto-attached paused too, so they
+// prove the resume); each nested frame was auto-attached as an `iframe` target, paused; and main is
+// alive at the end. Same-origin about:blank and srcdoc frames are reported too (a page reaching a
+// fresh realm's print).
 //
 //   node scripts/offscreen-frames-check.mjs                     the worktree's webview-hardening.ts
 //   node scripts/offscreen-frames-check.mjs --hardening <file>  another version of it in its place (a
-//                                                               control run against an older one; it
-//                                                               may open real dialogs and is killed
-//                                                               after 30 s)
+//                                                               control run against an older one, e.g.
+//                                                               `git show master:<path> > <file>`; the
+//                                                               file must sit in src/main/webview/ for
+//                                                               its relative imports; it may open real
+//                                                               dialogs and is killed after 30 s)
 //
 // On Linux it runs with the server's headless switches but keeps the session bus, so a desktop
 // portal there (the case the cancels exist for) is what a missed cancel would reach; on a Mac a
@@ -103,6 +107,13 @@ function page(port) {
     if (kind === 'blank') look()
     else fr.addEventListener('load', look)
   }
+  // Workers are auto-attached paused too: one that was never resumed never answers.
+  const worker = new Worker(URL.createObjectURL(new Blob(['postMessage("up")'], { type: 'text/javascript' })))
+  worker.onmessage = () => note('worker-answered')
+  navigator.serviceWorker.register('/sw.js').then(
+    () => navigator.serviceWorker.ready.then(() => note('service-worker-ready')),
+    (e) => note('service-worker-refused', { name: e.name, message: e.message })
+  )
   const host = location.hostname
   const next = host === '127.0.0.1' ? 'localhost' : host === 'localhost' ? '[::1]' : undefined
   if (next) {
@@ -142,6 +153,11 @@ const within = (p, ms, fallback) => Promise.race([p, sleep(ms).then(() => fallba
 async function main() {
   const OffscreenWebviewFactory = await loadFactory()
   const server = createServer((req, res) => {
+    if (req.url === '/sw.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' })
+      res.end("self.addEventListener('install', () => self.skipWaiting())")
+      return
+    }
     res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' })
     res.end(page(server.address().port))
   })
@@ -240,6 +256,8 @@ async function main() {
     const refusedHere = role !== 'top' && picked?.name === 'SecurityError' && /Cross origin sub frames/.test(picked.message)
     want(picked?.name === 'AbortError' || refusedHere, `the picker was not aborted (${JSON.stringify(get('picker-rejected') ?? get('picker-resolved') ?? 'pending')})`)
     want(get('print-returned') !== undefined, 'print() did not return')
+    want(get('worker-answered') !== undefined, 'its dedicated worker never answered (left paused?)')
+    want(get('service-worker-ready') !== undefined || get('service-worker-refused') !== undefined, 'its service worker never got ready (left paused?)')
     want(get('exec-print-returned')?.result === false && get('exec-print-mixed')?.result === false, "execCommand('print') was not refused")
   }
   console.log('\nprotocol:')
