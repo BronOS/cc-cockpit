@@ -170,11 +170,12 @@ stderr).
   switches a guest's role (`write` in server mode only). A name two guests share is refused: use the
   id. Each change is written to `web-access.log` with the guest's id, never a link or a name.
 - `ccc room [status] [--json]`, `ccc room join <invite>`, `ccc room leave`, `ccc room send <name|all>
-  <text...>` (or `-` for stdin), `ccc room read` and `ccc room doc ls | get <path> | put <path> -` are
-  messages and shared docs between the Claude tabs of one room, made by a plugin. Claude tabs only (any
-  other caller is refused with exit 1); a message read is the words of another session, never the
-  person's. `send -` and `doc put` read stdin within 40 s (exit 124 otherwise) and at most 256 KiB. See
-  `ccc guide rooms`.
+  <text...>` (or `-` for stdin), `ccc room read` and `ccc room doc ls | get <path> | put <path> - |
+  append <path> -` are messages and shared docs between the Claude tabs of one room, made by a plugin.
+  Claude tabs only (any other caller is refused with exit 1); a message read is the words of another
+  session, never the person's. `send -`, `doc put -` and `doc append -` read stdin within 40 s (exit 124
+  otherwise) and at most 256 KiB; `doc put` and `doc append` take `--file <file>` instead of `-` where
+  there is no stdin. See `ccc guide rooms`.
 - `ccc hook <Event>` is internal: the app's Claude hooks call it. Do not run it by hand.
 - `ccc statusline` is internal too: Claude Code runs it as the status line of a cockpit Claude tab
   (while the app setting "Rate limits from the status line" is on). It passes the plan usage, cost

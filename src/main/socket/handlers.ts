@@ -2,7 +2,7 @@
 // overlay, sessions, notify; the plugin commands (plan B Task 5): plugin.cli.spec, plugin.cli,
 // plugin.cli.list; and the plugin dev loop (Task 6): plugin.link, plugin.unlink, plugin.list.
 // The rooms commands (design-rooms.md §4): room.status, room.join, room.leave, room.send, room.read (and its room.read.ack),
-// room.doc.ls|get|put.
+// room.doc.ls|get|put|append.
 // (`hook` and `hook.ack` are sessions/hook-handler.ts.)
 //
 // Authority (CLAUDE.md: main is the only authority): the SocketServer already built `caller` from
@@ -688,7 +688,7 @@ export function registerDownloadHandler(server: { handle(cmd: string, handler: H
  * What the `room.*` commands need (rooms/room-service.ts RoomService). Each takes the tab main resolved from the session
  * token; the member's name, coordinator flag and room come from the room registry by that tab.
  */
-export type RoomCliService = Pick<RoomService, 'status' | 'join' | 'leave' | 'send' | 'read' | 'readAck' | 'docList' | 'docGet' | 'docPut'>
+export type RoomCliService = Pick<RoomService, 'status' | 'join' | 'leave' | 'send' | 'read' | 'readAck' | 'docList' | 'docGet' | 'docPut' | 'docAppend'>
 
 /**
  * The `ccc room` commands (design-rooms.md §4): a Claude tab only. The server refuses a window token and a tokenless
@@ -710,6 +710,10 @@ export function roomHandlers(rooms: RoomCliService): Record<string, Handler> {
     'room.doc.get': async (args, caller) => ({ text: await rooms.docGet(roomTab(caller), args.path) }),
     'room.doc.put': async (args, caller) => {
       await rooms.docPut(roomTab(caller), args.path, args.text)
+      return null
+    },
+    'room.doc.append': async (args, caller) => {
+      await rooms.docAppend(roomTab(caller), args.path, args.text)
       return null
     }
   }

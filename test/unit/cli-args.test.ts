@@ -250,11 +250,26 @@ describe('ccc room (design-rooms.md §4)', () => {
     }
   )
 
-  it('parses doc ls, get and put (put always reads stdin)', () => {
+  it('parses doc ls, get, put and append (the text from stdin or --file, never an argument)', () => {
     expect(parseArgs(['room', 'doc', 'ls'])).toEqual({ kind: 'room-doc-ls' })
     expect(parseArgs(['room', 'doc', 'get', 'shared/brief.md'])).toEqual({ kind: 'room-doc-get', path: 'shared/brief.md' })
     expect(parseArgs(['room', 'doc', 'put', 'members/bob/q.md', '-'])).toEqual({ kind: 'room-doc-put', path: 'members/bob/q.md' })
+    expect(parseArgs(['room', 'doc', 'put', 'shared/p.md', '--file', 'out/p.diff'])).toEqual({ kind: 'room-doc-put', path: 'shared/p.md', file: 'out/p.diff' })
+    expect(parseArgs(['room', 'doc', 'append', 'shared/log.md', '-'])).toEqual({ kind: 'room-doc-append', path: 'shared/log.md' })
+    expect(parseArgs(['room', 'doc', 'append', 'shared/log.md', '--file', '/tmp/x'])).toEqual({ kind: 'room-doc-append', path: 'shared/log.md', file: '/tmp/x' })
+    expect(parseArgs(['room', 'doc', 'append', '--help'])).toEqual({ kind: 'help', command: 'room' })
     for (const argv of [
+      ['room', 'doc', 'append'],
+      ['room', 'doc', 'append', 'a'],
+      ['room', 'doc', 'append', 'a', 'text'],
+      ['room', 'doc', 'append', 'a', '-', 'x'],
+      ['room', 'doc', 'append', 'a', '--file'],
+      ['room', 'doc', 'append', 'a', '--file', ''],
+      ['room', 'doc', 'put', 'a', '--file'],
+      ['room', 'doc', 'put', 'a', '--file', 'f', 'g'],
+      ['room', 'doc', 'put', 'a', '-', '--file', 'f'],
+      ['room', 'doc', 'put', '--file', 'f'],
+      ['room', 'doc', 'put', '', '-'],
       ['room', 'doc'],
       ['room', 'doc', 'ls', 'x'],
       ['room', 'doc', 'get'],
@@ -280,7 +295,7 @@ describe('ccc room (design-rooms.md §4)', () => {
     expect(CORE_CLI_COMMANDS).toContain('room')
     expect(RESERVED_CLI_NAMES).toContain('room')
     const usage = usageFor('room') as string
-    for (const sub of ['room [status] [--json]', 'room join <invite>', 'room leave', 'room send <name|all>', 'room read', 'room doc ls', 'room doc get <path>', 'room doc put <path> -']) {
+    for (const sub of ['room [status] [--json]', 'room join <invite>', 'room leave', 'room send <name|all>', 'room read', 'room doc ls', 'room doc get <path>', 'room doc put <path> -|--file <file>', 'room doc append <path> -|--file <file>']) {
       expect(usage, sub).toContain(`ccc ${sub}`)
     }
   })

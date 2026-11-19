@@ -164,7 +164,7 @@ export function logText(e: RoomViewLogEntry): string {
     case 'doc-read':
       return `${field(e.by)} read ${field(e.path)}`
     case 'doc-write':
-      return `${field(e.by)} wrote ${field(e.path)}`
+      return e.op === 'append' ? `${field(e.by)} appended to ${field(e.path)}` : `${field(e.by)} wrote ${field(e.path)}`
     case 'doc-refused':
       return `${field(e.by)}: ${field(e.op)} of ${field(e.path)} refused (${field(e.reason)})`
     case 'trimmed':

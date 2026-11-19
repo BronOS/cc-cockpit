@@ -37,13 +37,19 @@ private docs. `all`, `plugin`, `person`, `user` and `system` are not names a mem
   all): if the Bash tool shows only a preview and saves the output to a file, read that file.
   Nothing waiting: `no room messages waiting`.
 - `ccc room doc ls` lists the docs you may read, one `path<TAB>bytes` line each.
-  `ccc room doc get <path>` prints one. `ccc room doc put <path> -` writes one from stdin, exactly as
-  given (no trimming); it replaces the doc of that path. A doc you may not read and a doc that does not
-  exist answer the same way, so you cannot tell them apart.
+  `ccc room doc get <path>` prints one, exactly as stored (a final newline included). `ccc room doc put <path> -`
+  writes one from stdin, exactly as given (no trimming); it replaces the doc of that path.
+  `ccc room doc append <path> -` adds the text to the end of the doc (made when missing), exactly as given: start it
+  with a newline if the doc's last line has none. Appends are applied one at a time, so two members appending to one
+  doc never lose or mix each other's text (a log, a running list); the doc after the append must still be at most
+  256 KiB. Both also take `--file <file>` instead of `-`: the text is that file (relative to the current folder, a
+  regular file, at most 256 KiB). Use `--file` where there is no stdin to give, such as a REPL tool: there `-` waits
+  40 seconds and fails. A doc you may not read and a doc that does not exist answer the same way, so you cannot tell
+  them apart.
 
-The stdin of `send -` and `doc put` is read within 40 seconds and at most 256 KiB: an open pipe nobody
-closes is exit 124 (pipe the text or redirect `</dev/null`); more than the limit, text that is not
-valid UTF-8 and text that is too large once encoded are exit 1 with nothing sent.
+The stdin of `send -`, `doc put -` and `doc append -` is read within 40 seconds and at most 256 KiB: an open pipe
+nobody closes is exit 124 (pipe the text, redirect `</dev/null`, or use `--file`); more than the limit, text that is
+not valid UTF-8 and text that is too large once encoded are exit 1 with nothing sent.
 
 ## Reading messages: what is in them
 

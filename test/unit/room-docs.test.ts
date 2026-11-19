@@ -457,3 +457,127 @@ describe('RoomDocs concurrent writes', () => {
     expect(results.filter((r) => r?.code === 'limit')).toHaveLength(1)
   })
 })
+
+describe('RoomDocs append', () => {
+  it('makes a missing doc, then adds to its end exactly (no newline added or taken)', async () => {
+    await docs.append(ROOM, alice, 'members/alice/log.md', 'one')
+    expect(await docs.get(ROOM, alice, 'members/alice/log.md')).toBe('one')
+    await docs.append(ROOM, alice, 'members/alice/log.md', '\ntwo\n')
+    await docs.append(ROOM, alice, 'members/alice/log.md', 'three\r\n')
+    expect(await docs.get(ROOM, alice, 'members/alice/log.md')).toBe('one\ntwo\nthree\r\n')
+    expect(readdirSync(store('members', 'alice'))).toEqual(['log.md'])
+  })
+
+  it('many appends in flight together all land, whole and in call order', async () => {
+    await docs.put(ROOM, lead, 'shared/verify.md', '# verify\n')
+    const lines = Array.from({ length: 30 }, (_, i) => `- item ${i} ${'x'.repeat(i * 50)}\n`)
+    await Promise.all(lines.map((line, i) => docs.append(ROOM, i % 2 === 0 ? lead : plugin, 'shared/verify.md', line)))
+    expect(await docs.get(ROOM, alice, 'shared/verify.md')).toBe(`# verify\n${lines.join('')}`)
+  })
+
+  it('a put and appends in one chain keep call order: the put replaces what came before it', async () => {
+    const a = docs.append(ROOM, plugin, 'shared/x.md', 'a')
+    const p = docs.put(ROOM, plugin, 'shared/x.md', 'P')
+    const b = docs.append(ROOM, plugin, 'shared/x.md', 'b')
+    await Promise.all([a, p, b])
+    expect(await docs.get(ROOM, plugin, 'shared/x.md')).toBe('Pb')
+  })
+
+  it('has the access rule of a put: a refused caller gets "no such doc" and writes nothing', async () => {
+    await docs.put(ROOM, plugin, 'members/alice/n.md', 'mine')
+    await docs.put(ROOM, plugin, 'shared/brief.md', 'brief')
+    expect(await failure(docs.append(ROOM, bob, 'members/alice/n.md', 'x'))).toEqual(NOT_FOUND)
+    expect(await failure(docs.append(ROOM, lead, 'members/alice/n.md', 'x'))).toEqual(NOT_FOUND)
+    expect(await failure(docs.append(ROOM, alice, 'shared/brief.md', 'x'))).toEqual(NOT_FOUND)
+    expect(await failure(docs.append(ROOM, 'person', 'shared/brief.md', 'x'))).toEqual(NOT_FOUND)
+    // Access before text: a refused caller with bad or oversized text still learns only "no such doc".
+    expect(await failure(docs.append(ROOM, bob, 'members/alice/n.md', '\u0007'))).toEqual(NOT_FOUND)
+    expect(await failure(docs.append(ROOM, bob, 'members/alice/n.md', 'a'.repeat(MAX_DOC_BYTES + 1)))).toEqual(NOT_FOUND)
+    expect(await docs.get(ROOM, plugin, 'members/alice/n.md')).toBe('mine')
+    expect(await docs.get(ROOM, plugin, 'shared/brief.md')).toBe('brief')
+    expect(logEntries()).toContainEqual(expect.objectContaining({ type: 'doc-refused', by: 'bob', path: 'members/alice/n.md', op: 'append', reason: 'not allowed' }))
+  })
+
+  it('caps the doc after the append, leaving it unchanged when over', async () => {
+    await docs.put(ROOM, plugin, 'shared/full.md', 'a'.repeat(MAX_DOC_BYTES - 2))
+    await docs.append(ROOM, plugin, 'shared/full.md', 'bb')
+    expect((await docs.get(ROOM, plugin, 'shared/full.md')).length).toBe(MAX_DOC_BYTES)
+    const over = await failure(docs.append(ROOM, plugin, 'shared/full.md', 'c'))
+    expect(over?.code).toBe('limit')
+    expect(over?.message).toContain('after the append')
+    expect(await docs.get(ROOM, plugin, 'shared/full.md')).toBe(`${'a'.repeat(MAX_DOC_BYTES - 2)}bb`)
+    // A piece over the cap alone is refused before the chain, as a put's is.
+    expect((await failure(docs.append(ROOM, plugin, 'shared/new.md', 'a'.repeat(MAX_DOC_BYTES + 1))))?.code).toBe('limit')
+    expect(existsSync(store('shared', 'new.md'))).toBe(false)
+    expect(readdirSync(store('shared')).sort()).toEqual(['full.md'])
+  })
+
+  it('checks the text of the piece and of the doc it makes: a BOM is fine at the start only', async () => {
+    expect((await failure(docs.append(ROOM, plugin, 'shared/t.md', 'a\u001b[31m')))?.code).toBe('invalid')
+    expect((await failure(docs.append(ROOM, plugin, 'shared/t.md', 'lone\r')))?.code).toBe('invalid')
+    await docs.append(ROOM, plugin, 'shared/t.md', '﻿start')
+    // Valid as a text of its own (a leading BOM), not in the middle of the doc.
+    expect((await failure(docs.append(ROOM, plugin, 'shared/t.md', '﻿more')))?.code).toBe('invalid')
+    expect(await docs.get(ROOM, plugin, 'shared/t.md')).toBe('﻿start')
+    expect(logEntries()).toContainEqual(expect.objectContaining({ type: 'doc-refused', path: 'shared/t.md', op: 'append', reason: 'bad text' }))
+  })
+
+  it('refuses a doc that is a link or a folder, without touching the target', async () => {
+    const outside = join(root, 'outside.txt')
+    writeFileSync(outside, 'secret')
+    mkdirSync(store('shared', 'dir.md'), { recursive: true })
+    symlinkSync(outside, store('shared', 'link.md'))
+    expect(await failure(docs.append(ROOM, plugin, 'shared/link.md', 'more'))).toEqual(NOT_FOUND)
+    expect(await failure(docs.append(ROOM, plugin, 'shared/dir.md', 'more'))).toEqual(NOT_FOUND)
+    expect(readFileSync(outside, 'utf8')).toBe('secret')
+  })
+
+  it('refuses a doc on disk that is not UTF-8 or grew past the cap, as missing', async () => {
+    mkdirSync(store('shared'), { recursive: true })
+    writeFileSync(store('shared', 'bin.md'), Buffer.from([0x63, 0xe9]))
+    writeFileSync(store('shared', 'huge.md'), 'a'.repeat(MAX_DOC_BYTES + 1))
+    expect(await failure(docs.append(ROOM, plugin, 'shared/bin.md', 'x'))).toEqual(NOT_FOUND)
+    expect(await failure(docs.append(ROOM, plugin, 'shared/huge.md', 'x'))).toEqual(NOT_FOUND)
+  })
+
+  it('logs a doc-write with op append, the doc size and the bytes added; a put logs as before', async () => {
+    await docs.put(ROOM, plugin, 'shared/l.md', 'abc')
+    await docs.append(ROOM, plugin, 'shared/l.md', 'de')
+    const writes = logEntries()
+      .filter((e) => e.type === 'doc-write')
+      .map((entry) => {
+        const rest: Record<string, unknown> = { ...entry }
+        delete rest.at
+        delete rest.seq
+        return rest
+      })
+    expect(writes).toEqual([
+      { type: 'doc-write', by: 'plugin', path: 'shared/l.md', bytes: 3 },
+      { type: 'doc-write', by: 'plugin', path: 'shared/l.md', bytes: 5, op: 'append', added: 2 }
+    ])
+  })
+
+  it('counts against the room total by the size after the append', async () => {
+    docs = smallRoomDocs()
+    mkdirSync(store('shared', 'fill'), { recursive: true })
+    for (let i = 0; i < SMALL_ROOM_BYTES / MAX_DOC_BYTES - 1; i++) writeFileSync(store('shared', 'fill', `f${i}.md`), 'a'.repeat(MAX_DOC_BYTES))
+    await docs.put(ROOM, plugin, 'shared/x.md', 'a'.repeat(MAX_DOC_BYTES - 10))
+    await docs.append(ROOM, plugin, 'shared/x.md', 'b'.repeat(10))
+    expect((await failure(docs.append(ROOM, plugin, 'shared/y.md', 'c')))?.code).toBe('limit')
+  })
+})
+
+describe('RoomDocs: a final newline round-trips exactly', () => {
+  // The backlog's third point (a patch read back without its final newline failed `git apply`): the store keeps bytes.
+  it.each([
+    ['none', 'a'],
+    ['LF', 'a\n'],
+    ['two LF', 'a\n\n'],
+    ['CRLF', 'a\r\n'],
+    ['a patch', 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n']
+  ])('put then get: %s', async (_name, text) => {
+    await docs.put(ROOM, plugin, 'shared/p.md', text)
+    expect(await docs.get(ROOM, alice, 'shared/p.md')).toBe(text)
+    expect(readFileSync(store('shared', 'p.md'), 'utf8')).toBe(text)
+  })
+})

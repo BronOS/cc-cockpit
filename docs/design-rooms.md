@@ -174,8 +174,12 @@ Store: `<data>/rooms/<id>/docs/`, written only by main, two areas:
 - `shared/...`: every member reads it; coordinators write it (brief, design, decisions, tasks).
 - `members/<name>/...`: that member writes and reads it; coordinators read it (memos, questions, the kickoff).
 
-Commands: `ccc room doc ls` (what you may read), `doc get <path>`, `doc put <path> -` (stdin). A refused doc and a
-missing one answer the same, so blind work stays blind. To pass one member's doc to others, a coordinator reads it and
+Commands: `ccc room doc ls` (what you may read), `doc get <path>`, `doc put <path> -` (stdin) and `doc append <path> -`
+(adds to the end, creating the doc when missing); put and append also take `--file <file>` instead of `-` (a regular file
+read by `ccc`, at most the doc cap: the way for a tab with no stdin, such as Code Mode's REPL). An append goes through the
+same per-room write chain as a put (the old text is read inside it and the whole doc rewritten), so two appends never
+interleave or lose text; the cap and the text rule apply to the doc after the append. A refused doc and a missing one
+answer the same, so blind work stays blind. To pass one member's doc to others, a coordinator reads it and
 puts a copy in `shared/`.
 
 The owning plugin reads and writes any doc of its rooms (`ctx.rooms.docs.list/get/put`): it seeds a member's kickoff into
@@ -196,7 +200,7 @@ ended room's too (an ended room stays viewable, docs and log, until its plugin d
 - `ccc room [status] [--json]`: my room, my name, the members and their tab status, held counts
 - `join <invite>`, `leave`
 - `send <name|all> <text...> | -`, `read`
-- `doc ls | get <path> | put <path> -`
+- `doc ls | get <path> | put <path> -|--file <file> | append <path> -|--file <file>`
 
 `ctx.rooms` acts only on the calling plugin's own rooms in its window:
 - `create({ title })` -> `{ id }`, `list()`, `end(id)`, `delete(id)` (an ended room, docs too)

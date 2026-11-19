@@ -126,8 +126,9 @@ export type Command =
   /** `ccc web role <guest id|name> read|write`; `write` is server mode only (D-25, main decides). */
   | { kind: 'web-role'; guest: string; role: GuestRole }
   /**
-   * `ccc room …` (design-rooms.md §4): a Claude tab only, identity from its token (main decides). `send` and `doc put`
-   * carry no `text` when it comes from stdin (`-`): client.ts reads it, bounded, and fills it in before the request.
+   * `ccc room …` (design-rooms.md §4): a Claude tab only, identity from its token (main decides). `send`, `doc put` and
+   * `doc append` carry no `text` when it comes from stdin (`-`) or a file (`--file <file>`, as typed: client.ts resolves
+   * it against the cwd): client.ts reads it, bounded, and fills it in before the request.
    */
   | { kind: 'room-status'; json: boolean }
   | { kind: 'room-join'; invite: string }
@@ -136,7 +137,8 @@ export type Command =
   | { kind: 'room-read' }
   | { kind: 'room-doc-ls' }
   | { kind: 'room-doc-get'; path: string }
-  | { kind: 'room-doc-put'; path: string; text?: string }
+  | { kind: 'room-doc-put'; path: string; text?: string; file?: string }
+  | { kind: 'room-doc-append'; path: string; text?: string; file?: string }
   | { kind: 'usage'; message: string }
   | { kind: 'none' }
 
@@ -359,8 +361,8 @@ const CORE_COMMANDS: { readonly [C in CoreCliCommand]: CoreCommand } = {
       },
       { synopsis: ['room read'], text: ['print the room messages waiting for me, fenced'] },
       {
-        synopsis: ['room doc ls', 'room doc get <path>', 'room doc put <path> -'],
-        text: ['the room docs I may read; print one; write one from stdin']
+        synopsis: ['room doc ls', 'room doc get <path>', 'room doc put <path> -|--file <file>', 'room doc append <path> -|--file <file>'],
+        text: ['the room docs I may read; print one; write one, or add to', "one's end, from stdin or a file (--file where there is no stdin)"]
       }
     ]
   },
@@ -725,7 +727,8 @@ function parseWebMode(args: readonly string[]): Command {
 }
 
 /**
- * `ccc room [status] [--json] | join <invite> | leave | send <to> <text...>|- | read | doc ls|get <path>|put <path> -`.
+ * `ccc room [status] [--json] | join <invite> | leave | send <to> <text...>|- | read | doc ls | doc get <path> |
+ * doc put|append <path> -|--file <file>`.
  * Each takes a fixed shape; anything else is a usage error. Nothing here checks a name, an invite or a path: main does
  * (a refused doc and a missing one answer the same, so a typo here saves nothing but a round trip). `-` as the whole
  * text is stdin; a message that is literally `-` is `send <to> -- -` (`--` ends the options, as in `session note`).
@@ -765,7 +768,7 @@ function parseRoom(rest: readonly string[]): Command {
 
 function parseRoomDoc(args: readonly string[]): Command {
   const [sub, ...rest] = args
-  if (sub === undefined) return usage('room doc needs ls, get or put')
+  if (sub === undefined) return usage('room doc needs ls, get, put or append')
   if (rest[0] === '--help' || rest[0] === '-h') return { kind: 'help', command: 'room' }
   switch (sub) {
     case 'ls':
@@ -773,10 +776,17 @@ function parseRoomDoc(args: readonly string[]): Command {
     case 'get':
       return rest.length === 1 && rest[0] !== '' ? { kind: 'room-doc-get', path: rest[0] as string } : usage('room doc get takes one path')
     case 'put':
-      // The text is always stdin: a doc is too big and too exact (no trimming) for an argument.
-      return rest.length === 2 && rest[0] !== '' && rest[1] === '-'
-        ? { kind: 'room-doc-put', path: rest[0] as string }
-        : usage('room doc put takes a path and - (the doc is read from stdin)')
+    case 'append': {
+      // The text is stdin or a file, never an argument: a doc is too big and too exact (no trimming) for one. A file is
+      // the way for a caller with no stdin to give (Code Mode's REPL: `-` there waited the full 40 s, then exit 124).
+      const kind = sub === 'put' ? 'room-doc-put' : 'room-doc-append'
+      const path = rest[0]
+      if (path !== undefined && path !== '' && !path.startsWith('-')) {
+        if (rest.length === 2 && rest[1] === '-') return { kind, path }
+        if (rest.length === 3 && rest[1] === '--file' && rest[2] !== '') return { kind, path, file: rest[2] as string }
+      }
+      return usage(`room doc ${sub} takes a path, then - (stdin) or --file <file>`)
+    }
     default:
       return usage(`unknown room doc command: ${sub}`)
   }
