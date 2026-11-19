@@ -28,9 +28,9 @@ tested).
   terminals and panels. Off by default; sign in by link, password or a desktop confirm (Settings > General). Files >
   Download and `ccc download` send a file, or a folder as a streamed .zip, to the device you are on
   ([docs/features.md](docs/features.md#web-access)).
-- **Server mode (Linux).** Run it on a machine with no display (`cc-cockpit --server`, or just start it with no
-  `DISPLAY`) and use it only from browsers: sign-in is managed from a shell with `ccc web`, secrets live in a key file,
-  and approvals happen in the browser. Not tested beyond the unpacked build; see
+- **Server mode (Linux, and macOS).** Run it on a machine with no display (`cc-cockpit --server`, or just start it with no
+  `DISPLAY`), or on a Mac under a LaunchAgent with no window shown, and use it only from browsers: sign-in is managed from a shell with `ccc web`, secrets live in a key file,
+  and approvals happen in the browser. Not tested beyond the unpacked build on Linux and the repo's own Electron on a Mac; see
   [docs/features.md](docs/features.md#server-mode).
 - **Remote servers.** Connect the desktop app to a cc-cockpit in server mode on another machine, over a built-in SSH
   client (agent, keys or password), your own tunnel or a pasted link, one window per project, and the top bar's strip has a chip per server with its session counts; see [docs/features.md](docs/features.md#remote-servers).
@@ -117,6 +117,7 @@ running app's.
 | macOS, arm64 | v0.1.0 installed with `brew` on a Mac and ran: first launch needed allowing the app once. Upgrading over a running app is untested |
 | Linux x64 | Runs from source, tried on Hyprland/Wayland; restoring window size and position may not work there. The packaged AppImage launched only via `--appimage-extract-and-run --no-sandbox` (no libfuse2 here); a plain double-click run (FUSE, Chromium sandbox) and Ubuntu are untested; the `.deb` was built and unpacked but not launched |
 | Linux x64, server mode | The unpacked build (`npm run package:dir`) ran headless with no display and no network, checked by `scripts/server-mode-smoke.mjs`. The `.deb` was installed and started on a Debian server (up to 0.19.1 it needed `sudo apt install libasound2` first; fixed in 0.19.3). The AppImage on a stock Ubuntu Server, the systemd unit on a real server and Tailscale were not run |
+| macOS arm64, server mode | Run from the repo's Electron (`out/`) only, with no window and no Dock icon, kept awake and off the keychain. The packaged app under a LaunchAgent, Gatekeeper's first open and App Nap were not run |
 | macOS x64 | Not supported yet |
 | Windows | Not supported |
 

@@ -168,6 +168,15 @@ describe('electron-builder.yml', () => {
     expect(mac).toMatch(/^ {2}artifactName: cc-cockpit-\$\{version\}-mac-arm64\.\$\{ext\}$/m)
   })
 
+  // Server mode on macOS (plan 20261119-server-mode-mac, decision 11): the same bundle is the desktop app and the
+  // LaunchAgent's server, which hides its Dock icon at run time (the accessory policy, main/server-platform.ts). An
+  // Info.plist key would hide the desktop's icon too, so `mac:` must not set one.
+  it('keeps the mac bundle a Dock app: no Info.plist keys that hide it', () => {
+    const mac = yml.slice(yml.indexOf('\nmac:'), yml.indexOf('\nlinux:'))
+    expect(mac).not.toMatch(/extendInfo/)
+    expect(mac).not.toMatch(/LSUIElement|LSBackgroundOnly/)
+  })
+
   it('builds Linux as x64 AppImage and deb with fixed artifact names', () => {
     const linux = yml.slice(yml.indexOf('\nlinux:'))
     expect(linux).toMatch(/^ {4}- target: AppImage$/m)

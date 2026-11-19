@@ -764,8 +764,9 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
 - Nothing logs what a guest did; `web-access.log` has only the invites, joins, role and scope changes and ends, by the
   guest's name and device (never the link).
 - Joining from another cc-cockpit app over a self-signed certificate is tested end to end against a host on this same
-  computer only, not one on another machine. Server-mode guest specs (a `ccc web invite` link end to end) wait for
-  server mode on macOS; only the unit tests ran for them.
+  computer only, not one on another machine. Server-mode guest specs (a `ccc web invite` link end to end) are written
+  for `launchServer`, which now starts on macOS as on Linux; they had not run on either when this was written, so only the
+  unit tests have covered that half.
 - In the guest's own app, a guest window that the host's page sends to the picker stays open with a message instead of
   closing (a page may not move the focus without a click).
 
@@ -775,13 +776,15 @@ Run cc-cockpit on a machine with no display (a home server, a VM) and use it onl
 model is web access's: one person, several devices, every signed-in device is that person. What changes is that no
 desktop exists, so what web access keeps on the desktop moves: who gets in is set from a shell on the server (`ccc web`),
 who is in is shown by the log, `ccc web status` and the browsers' card, and approving what runs as code is done in the
-browser. Linux only; on macOS and Windows `--server` prints "server mode runs on Linux only" and exits 1. Design and
-reasons: [design-web.md](design-web.md) §9.
+browser. It runs on Linux (a machine with no display) and on macOS (your own login session, see "On macOS" below); on
+Windows `--server` prints "server mode runs on Linux and macOS only" and exits 1. Design and reasons:
+[design-web.md](design-web.md) §9.
 
 **Start:** `cc-cockpit --server`, or just `cc-cockpit` on Linux when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set
 (it then prints one line saying it detected that). `ssh -X` sets `DISPLAY`, so such a session gets the desktop; use
-`--server` to force server mode. The app re-executes itself in place with the headless switches (same pid, stdout and
-exit status kept), so a manual run stays in the terminal, Ctrl-C quits, and a unit's main process is the app. Where the
+`--server` to force server mode. On Linux the app re-executes itself in place with the headless switches (same pid, stdout and
+exit status kept), so a manual run stays in the terminal, Ctrl-C quits, and a unit's main process is the app. macOS has no
+re-exec and detects nothing: only `--server` starts a server there (below). Where the
 runtime cannot re-execute in place it starts a child and watches its parent instead, chosen at start with no change for
 you. It starts the web gateway and the CLI socket before any project opens; if either fails (the port is taken) it
 prints the reason and exits 1. Web access is turned on and said once ("turned web access on"); turning it off, and
@@ -817,6 +820,108 @@ WantedBy=default.target
 the app. `systemctl --user stop` ends it in under a second; tabs are saved and Claude tabs resume on the next start, and
 open browser tabs reconnect by themselves. Output goes to `journalctl --user -u cc-cockpit`, which never holds a link.
 Never run it as root: Chromium's sandbox refuses, and the app never passes `--no-sandbox`.
+
+**On macOS** a server runs in your own login session: macOS has no headless display mode, so the app is started the way
+the desktop is, and never shows a window, a Dock icon or a menu bar. Only `--server` starts one (never detected), with no
+re-exec. It keeps the Mac from idle sleep for the whole run (the display may sleep), and it does not use the keychain
+(secrets in the key file, below; Chromium's own cookie key off the keychain too), because nobody would be at the screen
+to answer a prompt. Desktop and server run one at a time on a Mac: whichever starts second finds the data folder taken,
+and `cc-cockpit --server` then prints "server mode: not started: cc-cockpit already runs with this data dir (the desktop
+app or another server)" and exits 1; a desktop started while a server runs opens and focuses nothing (a log line says
+so). Start it at login with a LaunchAgent (a user agent; a LaunchDaemon cannot, there is no login session at boot), which
+is a plist you write, as with the systemd unit: not a `ccc web` command, because `ccc web` is the running app's surface
+and a command that makes a network-reachable process start at every login is not one a Claude tab should be able to run.
+Install the app in `/Applications` and open it once from Finder first (it is ad-hoc signed: Gatekeeper asks once), then
+quit it. Run the block below in a shell, as you:
+
+<!-- server-mode-plist:start -->
+```sh
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+cat > ~/Library/LaunchAgents/dev.cc-cockpit.server.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.cc-cockpit.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/cc-cockpit.app/Contents/MacOS/cc-cockpit</string>
+    <string>--server</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- A crash restarts it. A refusal (the data folder is taken), a failed start or Stop exits and stays down:
+       no retry loop while the desktop runs. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <!-- Unset, launchd throttles a background job's CPU and IO. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <!-- The app needs the login session (Aqua), not a boot-time daemon. -->
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <!-- 63 is 0077: new files (data folder, key file, sockets, what tabs write) are yours only. -->
+  <key>Umask</key>
+  <integer>63</integer>
+  <!-- No core dumps: one would put secrets, tokens and session keys from memory on disk. -->
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>Core</key>
+    <integer>0</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>Core</key>
+    <integer>0</integer>
+  </dict>
+  <!-- launchd expands neither ~ nor a variable: the shell wrote your home folder's real path here. -->
+  <key>StandardOutPath</key>
+  <string>$HOME/Library/Logs/cc-cockpit-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/Library/Logs/cc-cockpit-server.log</string>
+</dict>
+</plist>
+EOF
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.cc-cockpit.server.plist
+```
+<!-- server-mode-plist:end -->
+
+`bootstrap` loads it and, with `RunAtLoad`, starts it now and at every login. No token or secret goes in the plist (an
+optional `CLAUDE_CODE_OAUTH_TOKEN` would go in its `EnvironmentVariables`, readable by you only; see Claude login). After an
+update run `launchctl kickstart -k gui/$(id -u)/dev.cc-cockpit.server` (a replaced app leaves the old image running). To
+remove it: `launchctl bootout gui/$(id -u)/dev.cc-cockpit.server`, then `rm ~/Library/LaunchAgents/dev.cc-cockpit.server.plist`.
+Output goes to `~/Library/Logs/cc-cockpit-server.log` (a file, not a terminal, so it never holds a link: run `ccc web
+add-device` for one; the wrapper is `~/Library/Application Support/cc-cockpit/bin/ccc`; the log grows, rotate it
+yourself).
+
+What differs on a Mac:
+- **Sleep.** A sleeping Mac serves nothing. Server mode keeps it from idle sleep (the display may sleep). Closing a
+  MacBook's lid sleeps it unless it is on power with an external display; a manual Sleep, a logout or a flat battery
+  stops the server, and after a reboot it starts only once you log in.
+- **Opening the app again** (Finder, Spotlight, `open -a`) reaches the running server, which shows a box
+  with its address and Stop or Cancel ("Stop ends this run; the LaunchAgent starts it again at your next login"; after
+  a Stop that you want to last, `launchctl bootout` it). It is the only box a server ever shows; the Dock icon macOS gives
+  the reopened app is taken away again once you answer. Running the executable again without `--server` (a second
+  process) loses the lock and shows the same kind of box from that launch; with `--server` it exits 1 as above.
+- **Privacy prompts.** Claude tabs and shells read folders such as Desktop, Documents and Downloads, which
+  macOS asks about once, at the Mac's screen, and again after an update (the signature changes with each build). Nobody
+  answers them from a browser: grant them once when you set up. A bind other than loopback, with the firewall on, asks
+  there too.
+- **Edit keys in the Browser panel** (below): Cmd or Ctrl with A, Z, Shift+Z and Ctrl+Y select all, undo and redo in a
+  streamed page on every server, whichever system the browser is on. Cmd+Left/Right and Cmd+Backspace in a text field of
+  a streamed page do nothing yet (`docs/backlog/streamed-mac-line-edit-keys.md`).
+- **Secrets and cookies.** The key file as on Linux; `--password-store=basic` is Linux's, and a Mac's server runs Chromium
+  with `use-mock-keychain` instead, so the Browser panel's cookie key never touches the keychain. Cookies of the Browser
+  panel and secrets do not move between the desktop and the server, as on Linux.
+- **Not run:** a packaged and installed app under the LaunchAgent (a Mac server has been run from the unpacked build
+  and the repo's Electron only), Gatekeeper's first open, Finder's routing of a reopen to the agent's process with the
+  real bundle, App Nap (the measurements saw no slowdown with the app idle for 11 minutes but could not read the
+  state), and what a display that has gone to sleep does to a streamed page. A Mac is not a server: it sleeps, restarts
+  for updates and moves between networks.
 
 **The first link:** with stdout a terminal and the mode access link, start prints the address and a one-time link
 (works once, expires in 10 minutes). Under systemd or in a pipe it prints the address and a hint instead, so no live
@@ -892,14 +997,16 @@ both as under Web access above. A LAN bind works with the same confirms.
   server's OS account.
 - A desktop launch that meets a server: with a display, `cc-cockpit <folder>` on the server's own desktop does not
   open the folder in the server (it logs a line); the second launch asks the running one and shows a box "cc-cockpit
-  runs in server mode on this machine (web access at ...)" with Stop and Cancel. Stop ends the server.
+  runs in server mode on this machine (web access at ...)" with Stop and Cancel. Stop ends the server. On a Mac a
+  second launch is also what `cc-cockpit --server` against a running desktop or server is: it exits 1 with a line
+  (see "On macOS").
 - A later desktop start on the same data folder finds web access on, and its stored secrets belong to the other store: the
   desktop asks for them again (a secret field shows "stored in the other mode", the access link cannot be shown until it
   is regenerated, the password must be set again; signed-in devices stay signed in), and the same in the other
   direction. Nothing moves between the keychain and the key file.
 - With no theme picked, each browser follows its own light or dark setting (the server has none, and used to paint
   every browser light); a picked theme applies to all of them.
-- The window is never seen. Its page is kept hidden and never sizes a terminal: a terminal keeps the size the last
+- The window is never seen (on a Mac it is created and never shown, with no Dock icon). Its page is kept hidden and never sizes a terminal: a terminal keeps the size the last
   browser gave it, and a new tab no browser has sized starts at 120x40. A crash of the hidden page reloads it with a
   log line. With no project open the app stays up with the gateway; it never shows a picker or quits on its own.
 
@@ -930,6 +1037,8 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   (the page's `print()` and file choosers are cancelled on the server regardless).
 
 **Installs** (what was run, not what is expected to work):
+- macOS: the repo's Electron (`out/`) has been run as a server; a packaged app, the LaunchAgent above and the first open
+  through Gatekeeper have not. No install is called supported on a Mac yet.
 - Unpacked build (`npm run package:dir`): run. The smoke script (`node scripts/server-mode-smoke.mjs <executable>`)
   starts it with no display and no session bus, checks the pid, `ccc web status`, a sign-in, SIGTERM and that nothing is
   left, and passed with the network off too.
@@ -945,7 +1054,8 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
 No install is called supported beyond what was run.
 
 **Known limitations (server mode)**
-- Linux only; the packaged installs above are unverified except the unpacked build.
+- The packaged installs above are unverified except the unpacked build, on Linux and on macOS.
+- macOS: one server or one desktop per data folder at a time; a sleeping or logged-out Mac serves nothing.
 - A notice that needs a person reaches only open browsers.
 - A first start killed between creating `secret.key` and writing it leaves a file the app refuses (wrong length): delete
   it and enter the secrets again.
