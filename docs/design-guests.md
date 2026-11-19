@@ -650,7 +650,12 @@ fingerprint, and saves the pin; any other certificate error is refused as today;
 question (refused, fixed by Forget).
 
 ### D-30: Any scope or visibility change for a live guest reconnects it
-Close code `4464 accessChanged`, reconnect at once to a fresh `ready`; page tokens dropped.
+Close code `4464 accessChanged`, reconnect at once to a fresh `ready`; page tokens dropped at once. Narrowing changes (a
+tab unshared, a narrower scope, any plugin-visibility change) close at once: an open panel port is checked only when it
+connects, so only the close ends one to what the guest may no longer see. Widening changes (a tab shared, a wider
+scope) give nothing early, so a run of them sends one 4464 after `ACCESS_QUIET_MS` (500 ms) of quiet, at most
+`ACCESS_MAX_WAIT_MS` (2 s) after the first (verify: four quick shares had pushed the page into the web client's
+backoff); a narrowing change, a role switch or an end takes a waiting one with it (`GuestStore.accessChangedFor`).
 
 ### D-31: A guest joining never changes the owner's own dialogs
 `chooseAsk`'s "a remote view is attached" counts owner views only.
@@ -716,7 +721,8 @@ and `__ccTest` hooks in `test/fixtures` and `main/test-hooks.ts`.
     origin-view hint; bundled plugins refuse open actions for read guests.
 12. **A plugin hidden or a tab unshared while a guest is in**: the guest's views close with a new
     `4464 accessChanged` (reconnect at once, fresh `ready`), the device's page tokens are dropped; an all-tabs guest's
-    new tabs still arrive as filtered `tabs.added` (D-30).
+    new tabs still arrive as filtered `tabs.added` (D-30). Shares and wider scopes are coalesced into one 4464 (500 ms
+    quiet, 2 s cap); narrowing never waits.
 13. **Owner unchanged when a guest joins**: `chooseAsk`'s `hasRemoteView` counts owner views only (D-31).
 14. **Streamed webview size**: read guests are viewers, never size owners; write guests claim only by press, key
     or Fit, never by a first report while an owner viewer exists. The shell skips implicit `tabs.resize`/`fit` for read
@@ -775,7 +781,8 @@ and `__ccTest` hooks in `test/fixtures` and `main/test-hooks.ts`.
   guests and pending invites app-wide (`cap`).
 - **Ends and close codes** (§14, §16.4): a kick and a forgotten project close 4460; a lifetime's end and a revoke or
   idle expiry of the guest's device close 4463; a scope, share or plugin-visibility change closes 4464 and drops the
-  device's page tokens (D-30). Every end closes the views before revoking the device and leaves a 7-day tombstone (D-32).
+  device's page tokens (D-30; a run of widening changes closes once, after 500 ms of quiet, 2 s at most). Every end
+  closes the views before revoking the device and leaves a 7-day tombstone (D-32).
 - **Heartbeat** (§10): guest sockets have their own 10 s ping (`GUEST_HEARTBEAT_MS`, `gateway.ts`); the owner's 30 s
   beat is unchanged.
 - **D-29 check**: main reads the certificate the origin presents with its own TLS handshake that sends nothing

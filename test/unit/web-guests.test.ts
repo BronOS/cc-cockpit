@@ -11,7 +11,7 @@ import { CLOSE, parseInviteFragment } from '../../src/shared/web-protocol'
 import { remoteViewId, type ViewId, type Who } from '../../src/shared/views'
 import { AccessLog } from '../../src/main/web/access-log'
 import { DEVICE_IDLE_MS, DeviceStore, MAX_DEVICES } from '../../src/main/web/devices'
-import { ENDED_TOMBSTONE_MS, GuestStore, inviteHash, SWEEP_MS, type GuestStoreDeps, type GuestTabInfo } from '../../src/main/web/guests'
+import { ACCESS_MAX_WAIT_MS, ACCESS_QUIET_MS, ENDED_TOMBSTONE_MS, GuestStore, inviteHash, SWEEP_MS, type GuestStoreDeps, type GuestTabInfo } from '../../src/main/web/guests'
 import type { WebAccessMode } from '../../src/shared/types'
 
 let dir: string
@@ -25,6 +25,7 @@ let views: Map<ViewId, Who>
 let notices: string[]
 let dropped: string[]
 let ticks: Array<() => void>
+let timers: Array<{ fn: () => void; ms: number; stopped: boolean }>
 let log: AccessLog
 let devices: DeviceStore
 
@@ -48,6 +49,7 @@ beforeEach(() => {
   notices = []
   dropped = []
   ticks = []
+  timers = []
   log = new AccessLog({ now: () => clock })
   devices = newDevices()
 })
@@ -79,9 +81,24 @@ function store(over: Partial<GuestStoreDeps> = {}): GuestStore {
       ticks.push(fn)
       return { stop: () => {} }
     },
+    setTimeout: (fn, ms) => {
+      const t = { fn, ms, stopped: false }
+      timers.push(t)
+      return { stop: () => (t.stopped = true) }
+    },
     ...over
   })
 }
+
+/** Runs the one-shot timers still armed (the coalesced D-30 reconnects), as their time had come. */
+function fireTimers(): void {
+  for (const t of timers.splice(0)) {
+    if (t.stopped) continue
+    t.stopped = true
+    t.fn()
+  }
+}
+const armed = (): number[] => timers.filter((t) => !t.stopped).map((t) => t.ms)
 
 async function invited(s: GuestStore, over: Partial<GuestInviteRequest> = {}): Promise<{ token: string; guestId: string; inviteId: string }> {
   const a = await s.invite(P, req(over))
@@ -327,10 +344,103 @@ describe('changes', () => {
     expect(s.tabVisible(guestId, 't2')).toBe(true)
     expect(s.shareTab(guestId, 'other', true)).toBe(false)
     expect(s.setScope(guestId, 'all')).toBe(true)
-    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged, CLOSE.accessChanged])
+    // Both widen: the page tokens die at once, the one 4464 comes after the quiet period.
     expect(dropped).toEqual([deviceId, deviceId])
+    expect(closed).toEqual([])
+    fireTimers()
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged])
     // "all" has no per-tab share.
     expect(s.shareTab(guestId, 't1', false)).toBe(false)
+  })
+
+  it('D-30 coalescing: four quick shares make one 4464, after ACCESS_QUIET_MS of quiet, never later than ACCESS_MAX_WAIT_MS', async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: ['t1'] })
+    const { deviceId } = redeemed(s, token)
+    for (const t of ['t2', 'n1', 'n2', 'n3']) tabs.set(t, { projectId: P })
+    for (const t of ['t2', 'n1', 'n2', 'n3']) {
+      expect(s.shareTab(guestId, t, true)).toBe(true)
+      clock += 400
+    }
+    expect(closed).toEqual([])
+    expect(dropped).toEqual([deviceId, deviceId, deviceId, deviceId])
+    // Each share re-armed the quiet period (the 4th came 1200 ms after the 1st, well inside the cap): one timer.
+    expect(armed()).toEqual([ACCESS_QUIET_MS])
+    fireTimers()
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged])
+    expect(s.access({ guest: guestId })).toMatchObject({ scope: ['t1', 't2', 'n1', 'n2', 'n3'] })
+  })
+
+  it('the coalescing cap: a run of shares reconnects at most ACCESS_MAX_WAIT_MS after its first', async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: ['t1'] })
+    redeemed(s, token)
+    for (const t of ['n1', 'n2']) tabs.set(t, { projectId: P })
+    s.shareTab(guestId, 't2', true)
+    clock += 1_800
+    s.shareTab(guestId, 'n1', true)
+    expect(armed()).toEqual([ACCESS_MAX_WAIT_MS - 1_800])
+    clock += 300
+    s.shareTab(guestId, 'n2', true)
+    expect(armed()).toEqual([0])
+    fireTimers()
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged])
+    // The next share starts a new run.
+    s.shareTab(guestId, 'n2', false)
+    s.shareTab(guestId, 'n2', true)
+    expect(armed()).toEqual([ACCESS_QUIET_MS])
+  })
+
+  it('narrowing never waits: unshare, a narrower scope and a plugin visibility change reconnect at once and take a waiting widening with them', async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: ['t1'] })
+    redeemed(s, token)
+    s.shareTab(guestId, 't2', true)
+    expect(closed).toEqual([])
+    s.shareTab(guestId, 't1', false)
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged])
+    fireTimers()
+    expect(closed).toHaveLength(1)
+
+    s.shareTab(guestId, 't1', true)
+    expect(s.setScope(guestId, ['t1'])).toBe(true)
+    expect(closed).toHaveLength(2)
+    fireTimers()
+    expect(closed).toHaveLength(2)
+
+    s.setScope(guestId, 'all')
+    expect(closed).toHaveLength(2)
+    expect(s.setScope(guestId, ['t1', 't2'])).toBe(true)
+    expect(closed).toHaveLength(3)
+
+    s.shareTab(guestId, 'tp', true)
+    s.pluginAccessChanged(P)
+    expect(closed).toHaveLength(4)
+    fireTimers()
+    expect(closed).toHaveLength(4)
+  })
+
+  it('a role switch or an end cancels a waiting 4464 (the fresh ready or the end already covers it)', async () => {
+    const s = store()
+    const a = await invited(s, { scope: ['t1'] })
+    redeemed(s, a.token)
+    s.shareTab(a.guestId, 't2', true)
+    s.setRole(a.guestId, 'read')
+    fireTimers()
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.roleChanged])
+
+    closed = []
+    s.shareTab(a.guestId, 'tp', true)
+    expect(s.kick(a.guestId)).toBe(true)
+    fireTimers()
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.kicked])
+
+    // dispose stops a waiting one too.
+    const b = await invited(s, { name: 'Ben', scope: ['t1'] })
+    redeemed(s, b.token)
+    s.shareTab(b.guestId, 't2', true)
+    s.dispose()
+    expect(armed()).toEqual([])
   })
 
   it("Share with <name> on a pending invite edits the invite's scope (no view, nothing to close); the redeem keeps it", async () => {
