@@ -335,6 +335,20 @@ describe('guest devices', () => {
     expect(store().list()).toEqual([])
   })
 
+  it('an older build drops a guest device on read: its mode is one a stock SIGN_INS rejects (the same path as any unknown mode)', () => {
+    const s = store()
+    s.add('Bob', 'guest', 'gst1')
+    s.add('owner', 'link')
+    const data = onDisk() as { devices: Array<Record<string, unknown>> }
+    // The sign-in modes before guests (master's SIGN_INS): 'guest' is not one of them.
+    const STOCK = ['link', 'add', 'password', 'confirm']
+    expect(data.devices.map((d) => d['mode'])).toEqual(['guest', 'link'])
+    expect(STOCK).not.toContain(data.devices[0]?.['mode'])
+    // What that build does with a mode it does not know, shown here with one this build does not know either.
+    writeFileSync(file, JSON.stringify({ ...data, devices: [{ ...data.devices[0], mode: 'from-a-newer-build' }, data.devices[1]] }))
+    expect(store().list().map((d) => d.mode)).toEqual(['link'])
+  })
+
   it("revokeSignedInWith('link') leaves guest devices; revokeGuest and Revoke all take them, telling onDropped", () => {
     const s = store()
     const gone: Array<[string[], string]> = []

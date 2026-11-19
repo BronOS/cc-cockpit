@@ -120,7 +120,8 @@ export const GUEST_EVENT: { readonly [E in EventChannel]: GuestEventRule<E> } = 
   'webAccess.changed': 'drop',
   'theme.changed': 'pass',
   'prefs.changed': 'pass',
-  'window.state': 'pass',
+  // The host window's full screen (design §16.3: dropped with window.reopen, projects.*, remote.*).
+  'window.state': 'drop',
   // Notifications are the host's (no notice has a source on the wire, design §16.3: none to guests in v1).
   'notify.chime': 'drop',
   'notices.show': 'drop',

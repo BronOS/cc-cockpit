@@ -81,10 +81,15 @@ describe('guestEvent', () => {
   })
 
   it('drops what is the owner\'s: terminals, notices, link asks, access, the guest list', () => {
-    for (const name of ['notices.show', 'notices.gone', 'links.ask', 'webAccess.changed', 'guests.changed', 'tabs.data', 'rooms.changed', 'sessions.closeAsk', 'tabs.guestCloseAsk', 'overlays.message']) {
+    for (const name of ['notices.show', 'notices.gone', 'links.ask', 'webAccess.changed', 'guests.changed', 'tabs.data', 'rooms.changed', 'sessions.closeAsk', 'tabs.guestCloseAsk', 'overlays.message', 'window.state']) {
       expect(GUEST_EVENT[name as keyof typeof GUEST_EVENT], name).toBe('drop')
       expect(guestEvent(name, { anything: true }, ctx()), name).toBeUndefined()
     }
+  })
+
+  it('passes exactly the design\'s pass rows (§16.3); everything else is dropped or filtered', () => {
+    const passing = Object.entries(GUEST_EVENT).filter(([, rule]) => rule === 'pass').map(([name]) => name).sort()
+    expect(passing).toEqual(['downloads.failed', 'downloads.settled', 'downloads.start', 'prefs.changed', 'theme.changed', 'trash.settled'])
   })
 
   it('passes a pass rule as is (the same object)', () => {

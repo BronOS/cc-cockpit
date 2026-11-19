@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
-import { REMOTE_CLASS, type EventChannel, type LayoutView } from '../../src/shared/ipc'
+import { EVENT_CHANNELS, REMOTE_CLASS, type EventChannel, type LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, registerWebAccessHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { cleanSelection } from '../../src/main/webview/webview-input'
@@ -710,6 +710,44 @@ describe('guest views', () => {
     expect((guest.frames('event')[0] as { p: { id: string } }).p.id).toBe('p1-t1')
     expect((guest.frames('event')[1] as { p: { path: string } }).p.path).toBe('')
     expect(owner.frames('event').map((f) => f.ch)).toEqual(['tabs.added', 'tabs.added', 'project.updated', 'links.ask'])
+  })
+
+  it('guests change nothing for the owner: every event channel reaches an owner view exactly as with no guest store', () => {
+    const withGuests = guestSetup()
+    const plain = setup({ hasTab: () => true })
+    const owner = withGuests.connect('p1')
+    const alone = plain.connect('p1')
+    withGuests.connect('p1', GUEST)
+    for (const ch of EVENT_CHANNELS) {
+      const payload = { marker: ch, tabId: 'p1-t2', id: 'p1-t2' } as never
+      withGuests.views.toProject('p1', ch, payload)
+      plain.views.toProject('p1', ch, payload)
+    }
+    expect(owner.frames('event').length).toBeGreaterThan(0)
+    expect(owner.frames('event')).toEqual(alone.frames('event'))
+  })
+
+  it('no guest frame carries a marker planted in an unshared tab, a hidden plugin, another project or the host folder', () => {
+    const MARK = 'MARKER-7f3a'
+    const g = guestSetup()
+    const guest = g.connect('p1', GUEST)
+    const send = (projectId: string, ch: EventChannel, p: unknown): void => g.views.toProject(projectId, ch, p as never)
+    // Controls: what the guest may see arrives (a filter that threw would drop these too).
+    send('p1', 'tabs.added', { id: 'p1-t1', title: 'VISIBLE-1' })
+    send('p1', 'sessions.snapshot', { own: [{ tabId: 'p1-t1', title: 'VISIBLE-2' }] })
+    // Planted.
+    send('p1', 'tabs.added', { id: 'p1-t2', title: MARK })
+    send('p1', 'sessions.snapshot', { own: [{ tabId: 'p1-t2', title: MARK }] })
+    send('p1', 'project.updated', { id: 'p1', name: 'P', path: `/home/${MARK}` })
+    send('p1', 'commands.updated', { commands: [{ id: 'hidden.plugin/x', source: 'plugin', title: MARK }, { id: 'core.a', source: 'core', title: 'VISIBLE-3' }], conflicts: [] })
+    send('p1', 'panels.reload', { pluginIds: [MARK] })
+    send('p1', 'webviews.navigated', { panelKey: `hidden.plugin/${MARK}`, url: MARK })
+    send('p1', 'links.ask', { requestId: 'r', id: MARK, name: MARK, path: MARK, caller: 'tab' })
+    send('p2', 'tabs.added', { id: 'p2-t1', title: MARK })
+    send('p2', 'project.updated', { id: 'p2', name: MARK, path: '/p2' })
+    const all = JSON.stringify(guest.frames('event')) + JSON.stringify(guest.frames('ready'))
+    expect(all).not.toContain(MARK)
+    for (const v of ['VISIBLE-1', 'VISIBLE-2', 'VISIBLE-3']) expect(all).toContain(v)
   })
 
   it('the next event after the guest ended closes the view 4463 instead of sending it', () => {

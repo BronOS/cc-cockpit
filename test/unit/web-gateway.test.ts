@@ -1758,7 +1758,7 @@ describe('guests', () => {
     })
   }
 
-  async function guestSetup() {
+  async function guestSetup(beats: { heartbeatMs?: number; guestHeartbeatMs?: number } = {}) {
     const port = await freePort()
     const host = `127.0.0.1:${port}`
     const origin = `http://${host}`
@@ -1794,7 +1794,8 @@ describe('guests', () => {
         { id: 'p2', name: 'two', path: '/work/two' }
       ],
       sessionCounts: () => ({ projects: [] }) as never,
-      guests
+      guests,
+      ...beats
     })
     gateway = gw
     await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
@@ -1806,7 +1807,7 @@ describe('guests', () => {
     const redeem = (token: unknown, extra: Record<string, string> = {}) =>
       post(port, { path: INVITE_PATH, headers: { Host: host, Origin: origin, 'Content-Type': 'application/json', ...extra }, body: JSON.stringify({ token }) })
     const get = (path: string, cookie: string, key: string) => http(port, { path, headers: { Host: host, Cookie: cookie, [DEVICE_KEY_HEADER]: key } })
-    return { port, host, origin, guests, auth, devices, logs, invite, redeem, get, clock }
+    return { port, host, origin, guests, auth, devices, logs, invite, redeem, get, clock, gw }
   }
 
   it('redeems once: a guest cookie and key, the project; a second redeem is 410 used', async () => {
@@ -1881,6 +1882,30 @@ describe('guests', () => {
     expect(session.device).toBeNull()
     expect(session.guestEnded).toBe(true)
     expect(await upgrade(g.port, { Host: g.host, Origin: g.origin, Cookie: cookie, 'Sec-WebSocket-Protocol': `${WS_PROTOCOL}, ${WS_KEY_PROTOCOL_PREFIX}${key}` })).toBe(401)
+  })
+
+  it("a guest's socket is on the short beat (§10): a silent one goes long before the owner's beat would drop it", async () => {
+    const g = await guestSetup({ heartbeatMs: 60_000, guestHeartbeatMs: 40 })
+    g.gw.setSocketHandler(() => undefined)
+    const open = async (autoPong: boolean): Promise<wsModule.WebSocket> => {
+      const { token } = await g.invite(autoPong ? 'Pong' : 'Silent')
+      const res = await g.redeem(token)
+      const cookie = String(res.headers['set-cookie']).split(';')[0] as string
+      const key = (JSON.parse(res.body) as { key: string }).key
+      const client = new wsModule.WebSocket(`ws://${g.host}/ws`, [WS_PROTOCOL, `${WS_KEY_PROTOCOL_PREFIX}${key}`], { origin: g.origin, headers: { Cookie: cookie }, autoPong })
+      await new Promise<void>((resolve, reject) => {
+        client.on('open', () => resolve())
+        client.on('error', reject)
+      })
+      return client
+    }
+    const live = await open(true)
+    const silent = await open(false)
+    const closed = await new Promise<number>((resolve) => silent.on('close', (code) => resolve(code)))
+    expect(closed).toBe(1006)
+    expect(g.logs).toContain('web access: socket dropped, no answer to a ping')
+    expect(live.readyState).toBe(wsModule.WebSocket.OPEN)
+    live.close()
   })
 
   it('a lifetime over before the sweep: the device is still there, and the session already says ended (D-32)', async () => {

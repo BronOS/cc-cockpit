@@ -114,6 +114,12 @@ export const CLOSE_GRACE_MS = 1_000
  */
 const HEARTBEAT_MS = 30_000
 
+/**
+ * A guest's sockets are pinged this often instead (design-guests §10): the owner's guest list and presence say
+ * live / reconnecting, so a guest whose phone slept must leave within two of these, not a minute.
+ */
+export const GUEST_HEARTBEAT_MS = 10_000
+
 // Listener bounds (listen below). Generous for a phone on a slow link, small next to an fd limit.
 const HEADERS_TIMEOUT_MS = 10_000
 const REQUEST_TIMEOUT_MS = 30_000
@@ -237,6 +243,8 @@ export interface GatewayDeps {
   inviteLimiter?: AttemptLimiter
   /** The ping interval (HEARTBEAT_MS); tests shorten it. */
   heartbeatMs?: number
+  /** The ping interval of guest sockets (GUEST_HEARTBEAT_MS); tests shorten it. */
+  guestHeartbeatMs?: number
   /** FIRST_REQUEST_MS and MAX_UNAUTHENTICATED; tests shorten them. */
   firstRequestMs?: number
   maxUnauthenticated?: number
@@ -446,6 +454,7 @@ export class WebGateway {
   /** Sockets that answered the last ping (or opened since); the rest are dropped on the next beat. */
   private readonly alive = new Set<WebSocket>()
   private heartbeat: ReturnType<typeof setInterval> | undefined
+  private guestHeartbeat: ReturnType<typeof setInterval> | undefined
   /** Told after a socket is handed out or closes (the desktop's connected-devices indicator). */
   private readonly connectionListeners = new Set<() => void>()
   /**
@@ -663,8 +672,10 @@ export class WebGateway {
     // A client error (a malformed request line) is answered by Node; never let it reach the app.
     server.on('clientError', (_err, socket: Duplex) => refuseUpgrade(socket, '400 Bad Request'))
     this.server = server
-    this.heartbeat = setInterval(() => this.beat(), this.deps.heartbeatMs ?? HEARTBEAT_MS)
+    this.heartbeat = setInterval(() => this.beat(false), this.deps.heartbeatMs ?? HEARTBEAT_MS)
     this.heartbeat.unref()
+    this.guestHeartbeat = setInterval(() => this.beat(true), this.deps.guestHeartbeatMs ?? GUEST_HEARTBEAT_MS)
+    this.guestHeartbeat.unref()
     return await new Promise((resolve, reject) => {
       server.once('error', reject)
       // `localhost` resolves through the resolver (often ::1 only, or something else on an odd host);
@@ -689,6 +700,8 @@ export class WebGateway {
     const wss = this.wss
     clearInterval(this.heartbeat)
     this.heartbeat = undefined
+    clearInterval(this.guestHeartbeat)
+    this.guestHeartbeat = undefined
     this.server = undefined
     this.wss = undefined
     this.plan = undefined
@@ -779,9 +792,13 @@ export class WebGateway {
     return this.deps.auth.authorize(req.headers.cookie, offeredKeys(req.headers[DEVICE_KEY_HEADER]))
   }
 
-  /** One heartbeat (HEARTBEAT_MS): drop a socket that did not answer the last ping, ping the rest. */
-  private beat(): void {
-    for (const ws of this.sockets.keys()) {
+  /**
+   * One heartbeat of the owner's sockets (HEARTBEAT_MS) or the guests' (GUEST_HEARTBEAT_MS): drop a socket that
+   * did not answer the last ping, ping the rest. Each socket is in one beat only, so neither shortens the other.
+   */
+  private beat(guests: boolean): void {
+    for (const [ws, device] of this.sockets) {
+      if ((device.mode === 'guest') !== guests) continue
       if (!this.alive.delete(ws)) {
         this.deps.log('web access: socket dropped, no answer to a ping')
         ws.terminate()

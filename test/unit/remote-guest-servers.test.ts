@@ -128,6 +128,19 @@ describe('RemoteServerStore: guest records', () => {
     expect(() => store.insert({ id: 'x1', name: 'x', via: { kind: 'direct', origin: ORIGIN }, recent: [], guest: true, certSha256: 'nope' })).toThrow('the certificate pin is not valid')
   })
 
+  it('a guest server\'s recents say guest (the picker\'s "Guest at" row) and keep it on read; an owner\'s do not', () => {
+    const { store, app } = make()
+    store.insert(store.prepare({ via: { kind: 'direct', origin: ORIGIN }, guest: true }).record)
+    store.insert(store.prepare({ via: { kind: 'direct', origin: 'https://own.example' } }).record)
+    store.recordRecent('g1', 'p1', 'one', 5)
+    store.recordRecent('g2', 'p1', 'one', 5)
+    expect(store.get('g1')?.recent).toEqual([{ projectId: 'p1', name: 'one', at: 5, guest: true }])
+    expect(store.get('g2')?.recent).toEqual([{ projectId: 'p1', name: 'one', at: 5 }])
+    expect(validateRemoteServers(app.data.remoteServers)[0]?.recent).toEqual([{ projectId: 'p1', name: 'one', at: 5, guest: true }])
+    const damaged = { id: 'g9', name: 'Host', via: { kind: 'direct', origin: ORIGIN }, recent: [{ projectId: 'p', name: 'n', at: 1, guest: 'yes' }] }
+    expect(validateRemoteServers([damaged])[0]?.recent).toEqual([{ projectId: 'p', name: 'n', at: 1 }])
+  })
+
   it("Edit renames a guest but never moves it to another address (the pin is that host's)", () => {
     const { store } = make()
     store.insert(store.prepare({ via: { kind: 'direct', origin: ORIGIN }, guest: true, certPin: PIN }).record)

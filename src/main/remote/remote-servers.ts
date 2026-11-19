@@ -437,7 +437,9 @@ export class RemoteServerStore {
     const entry = recentEntryOf(projectId, name, at)
     if (entry === undefined) return
     this.change(id, (s) => {
-      s.recent = [entry, ...s.recent.filter((r) => r.projectId !== entry.projectId)].slice(0, MAX_REMOTE_RECENT)
+      // A guest server's projects were opened as a guest: the picker's row says "Guest at <origin>".
+      const row = s.guest === true ? { ...entry, guest: true as const } : entry
+      s.recent = [row, ...s.recent.filter((r) => r.projectId !== entry.projectId)].slice(0, MAX_REMOTE_RECENT)
     })
   }
 

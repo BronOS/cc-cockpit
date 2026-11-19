@@ -33,10 +33,10 @@
 // - a guest's pinned host certificate (design-guests §11, D-29): the partition's certificate verify
 //   proc accepts the one certificate whose SHA-256 is the record's pin, for the record origin's host
 //   only (`certificateVerdict`, the pin read through `certificatePin` on every verification, so a
-//   forgotten record pins nothing); everything else is Chromium's own verdict, so any other
-//   certificate error is refused as before (the page hardening's `certificate-error` refusal stays).
-//   On the pinned host any other certificate is refused outright (CERT_REFUSE), even one Chromium would
-//   trust: the guest joined that certificate (D-29). Never a question: Forget then a new invite fixes it;
+//   forgotten record pins nothing). On the pinned host any other certificate is refused outright
+//   (CERT_REFUSE), even one Chromium would trust: the guest joined that certificate (D-29). Other hosts,
+//   and servers with no pin, get Chromium's own verdict (the page hardening's `certificate-error` refusal
+//   stays). Never a question: Forget then a new invite fixes it;
 // - the user agent carries `cc-cockpit-desktop/<version> (<hostname>)` (shared/remote-agent.ts):
 //   the web client then keeps the desktop's key table and names the device after this machine.
 //   Set on the session too, so main's own requests (`fetchJson`) say the same;

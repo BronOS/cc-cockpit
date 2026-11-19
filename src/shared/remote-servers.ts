@@ -100,8 +100,9 @@ export type RemoteNeed =
   | { need: 'passphrase'; path: string; again?: true }
   /**
    * A Direct guest link over https (design-guests §11, D-29): the certificate the server shows, for the person
-   * to trust. `sha256`: lowercase hex of its DER; when the link carried a pin (`c=`) main asks only when they
-   * differ, and refuses a mismatch outright (no prompt). Answered with `RemoteAnswers.certificate`.
+   * to trust. `sha256`: lowercase hex of its DER. Main asks only when the certificate it read equals the link's
+   * pin (`c=`); a mismatch is refused outright (no prompt). Answered with `RemoteAnswers.certificate`, trusted
+   * only when it equals both the pin and the certificate main read.
    */
   | { need: 'certificate'; origin: string; sha256: string }
 
@@ -556,7 +557,7 @@ function recentOf(value: unknown): RemoteRecent[] {
     const at = raw['at']
     if (projectId === undefined || name === undefined || typeof at !== 'number' || !Number.isFinite(at) || at < 0) continue
     if (out.some((r) => r.projectId === projectId)) continue
-    out.push({ projectId, name, at })
+    out.push({ projectId, name, at, ...(raw['guest'] === true ? { guest: true as const } : {}) })
   }
   return out
 }
