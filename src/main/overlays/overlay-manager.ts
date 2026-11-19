@@ -599,6 +599,8 @@ export class OverlayManager {
     // open one) is refused, whatever its kind. A guest never holds an html page, so it would land on an owner's screen
     // as a modal that takes focus, repeatable by the guest; a terminal one would too. Any remote view that is not the
     // owner's counts, a gone one included (fail closed: an owner view gone mid-call costs only this overlay).
+    // Best-effort: `view` is the plugin host's origin-view hint (10 s cap, none from a timer), so a plugin that opens
+    // one later than that after a guest's click is not caught here and it lands on the owner's screen (design-guests §7).
     if (view !== undefined && isRemoteViewId(view) && !this.ownerView(view)) throw new Error(GUEST_ORIGIN_OVERLAY_REFUSAL)
     const id = randomUUID()
     let settle!: (result: OverlayResult) => void

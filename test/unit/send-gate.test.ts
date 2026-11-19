@@ -241,6 +241,14 @@ describe('takeover (pure)', () => {
     expect(step.write).toBeUndefined()
   })
 
+  it("03g: takenOver drops a guest's Discuss (core with a guestId) like a plugin's; the person's own core stays", () => {
+    const guest: QueuedText = { ...item('g1', 'g1', 'core'), guestId: 'gW' }
+    const step = takenOver(entryIn('working', { queue: [item('c1', 'c1', 'core'), guest, item('c2', 'c2', 'core')] }))
+    expect(step.entry.queue.map((q) => q.id)).toEqual(['c1', 'c2'])
+    expect(step.dropped?.map((q) => q.id)).toEqual(['g1'])
+    expect(step.write).toBeUndefined()
+  })
+
   it('takenOver never types, reports nothing dropped for a core-only queue, and leaves a delivery in flight', () => {
     const step = takenOver(entryIn('waiting', { queue: [item('c', 'c', 'core')], delivering: true }))
     expect(step).toEqual({ entry: expect.objectContaining({ typed: true, delivering: true, queue: [item('c', 'c', 'core')] }) })
