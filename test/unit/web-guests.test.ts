@@ -333,6 +333,30 @@ describe('changes', () => {
     expect(s.shareTab(guestId, 't1', false)).toBe(false)
   })
 
+  it("Share with <name> on a pending invite edits the invite's scope (no view, nothing to close); the redeem keeps it", async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: ['t1'] })
+    expect(s.shareTab(guestId, 't2', true)).toBe(true)
+    expect(s.shareTab(guestId, 'other', true)).toBe(false)
+    expect(s.shareTab(guestId, 't1', false)).toBe(true)
+    expect(s.list().find((g) => g.id === guestId)).toMatchObject({ scope: ['t2'] })
+    expect(closed).toEqual([])
+    expect(dropped).toEqual([])
+    redeemed(s, token)
+    expect(s.access({ guest: guestId })).toMatchObject({ scope: ['t2'] })
+    expect(s.tabVisible(guestId, 't2')).toBe(true)
+    expect(s.tabVisible(guestId, 't1')).toBe(false)
+  })
+
+  it('Share with <name> refuses an all-tabs invite and an expired one', async () => {
+    const s = store()
+    const all = await invited(s, { name: 'Al' })
+    expect(s.shareTab(all.guestId, 't2', true)).toBe(false)
+    const sel = await invited(s, { name: 'Sel', scope: ['t1'] })
+    clock += INVITE_UNUSED_MS + 1
+    expect(s.shareTab(sel.guestId, 't2', true)).toBe(false)
+  })
+
   it('a plugin visibility change reconnects the project guests', async () => {
     const s = store()
     const { token, guestId } = await invited(s)

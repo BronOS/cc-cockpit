@@ -539,7 +539,8 @@ export class GuestStore implements GuestService {
 
   shareTab(guestId: string, tabId: string, shared: boolean): boolean {
     const g = this.live(guestId)
-    if (!g || g.scope === 'all') return false
+    if (!g) return this.sharePendingTab(guestId, tabId, shared)
+    if (g.scope === 'all') return false
     const tab = this.deps.tabOf(tabId)
     if (shared && tab?.projectId !== g.projectId) return false
     const has = g.scope.includes(tabId)
@@ -547,6 +548,22 @@ export class GuestStore implements GuestService {
     g.scope = shared ? [...g.scope, tabId] : g.scope.filter((t) => t !== tabId)
     this.save()
     this.accessChangedFor(g.id)
+    this.changed()
+    return true
+  }
+
+  /**
+   * Share with <name> on a guest not joined yet: the list shows a pending invite's guest from the start, so its
+   * scope is the invite's until the redeem copies it. No view exists yet, so nothing reconnects.
+   */
+  private sharePendingTab(guestId: string, tabId: string, shared: boolean): boolean {
+    const invite = this.data.invites.find((i) => i.guestId === guestId && i.expiresAt > this.now())
+    if (!invite || invite.scope === 'all') return false
+    if (shared && this.deps.tabOf(tabId)?.projectId !== invite.projectId) return false
+    const has = invite.scope.includes(tabId)
+    if (has === shared) return true
+    invite.scope = shared ? [...invite.scope, tabId] : invite.scope.filter((t) => t !== tabId)
+    this.save()
     this.changed()
     return true
   }
