@@ -28,6 +28,11 @@ this release, with every `launchServer` spec (the guest server spec included) gr
    `activate` (macOS-only, a gesture at this screen), one box at a time, `app.focus({ steal: true })` first; Stop is
    `quitLikeSigterm`; a test run answers from `SECOND_LAUNCH_ANSWER_ENV`. A direct exec is a second process: it loses
    the lock and gets the existing box (`losingLaunchAsks` accepts darwin).
+   **Amended after T0 (S3, 2026-11-19):** `open -a` routes to the server as planned, but LaunchServices then turns the
+   process from `UIElement` to `Foreground` and its Dock icon stays. So the `activate` handler re-applies
+   `app.setActivationPolicy('accessory')` once the notice is answered (Cancel or Stop), and also when an `activate`
+   arrives while a notice is already up and dismissed; T5 tests that the Dock icon is gone again after the box (on the
+   unlocked screen, O1 repeats it with the packaged app).
 4. **Sleep.** Darwin server: `powerSaveBlocker.start('prevent-app-suspension')` for the run (an IOPM no-idle-sleep
    assertion, which should also keep App Nap off: S4 measures); the plist sets `ProcessType Interactive` (unset,
    launchd throttles CPU and IO). Docs line: "A sleeping Mac serves nothing. Server mode keeps it from idle sleep (the
@@ -103,7 +108,7 @@ this release, with every `launchServer` spec (the guest server spec included) gr
   `electron-offscreen-webview.ts`. Unit: mapping (Ctrl/Cmd, Alt excluded, Ctrl+Y), the lane holds behind a command.
   e2e: select-all unfixme'd, Cmd+Z / Cmd+Shift+Z, a page preventing Cmd+Z undoes nothing. Acceptance: server-webview
   green on the Mac; Backspace, arrows, Option/Cmd+arrows probed, failures filed to backlog.
-- **T5 Reopen notice** [model: sonnet]. New `src/main/reopen-notice.ts`, `second-launch.ts` (shared text), `index.ts`
+- **T5 Reopen notice** [model: sonnet]. Includes the decision 3 amendment (accessory policy re-applied after the box). New `src/main/reopen-notice.ts`, `second-launch.ts` (shared text), `index.ts`
   (`activate` under `server`). Unit: one box at a time, Stop quits, Cancel nothing, test answer. Acceptance: e2e shows
   no notice after start (hook count 0); `app.emit('activate')` with cancel leaves main alive, with stop exits 0.
 - **T6 Docs and packaging** [model: sonnet]. `docs/features.md`, `CLAUDE.md` (top line; server-mode bullet: re-exec
