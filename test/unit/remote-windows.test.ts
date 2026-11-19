@@ -31,6 +31,7 @@ import {
   projectOfUrl,
   remotePageUrl,
   remoteTitle,
+  signInUrl,
   tabOfUrl,
   type RemoteSessionHooks,
   type RemoteWindowFactory,
@@ -2236,5 +2237,121 @@ describe('RemoteWindows: downloads', () => {
     const item = new FakeItem([D_URL], 'a.txt')
     expect(t.factory.session1().hooks.download(item, view.webContentsId)).toBe(false)
     expect(item.savePath).toBeUndefined()
+  })
+})
+
+
+// A guest's window (design-guests §11): the invite is the first load and its cookie is kept, the host's
+// projects are never reopened, nothing polls the host, a move to the host's picker ends the session,
+// and the partition's certificate pin is the record's.
+describe('RemoteWindows: a guest', () => {
+  const GUEST = 'https://host.example:8765'
+  const INVITE = 'Ab0-'.repeat(10) + 'x_Z'
+  const PIN = '0123456789abcdef'.repeat(4)
+  let t: ReturnType<typeof setup>
+  beforeEach(() => {
+    t = setup()
+    t.store.servers.set('g1', { id: 'g1', name: 'Alice', via: { kind: 'direct', origin: GUEST }, recent: [], guest: true, certSha256: PIN })
+    t.factory.fetcher = async (url) => (url.endsWith('/api/projects') ? projects : signedIn)
+    t.factory.poster = async () => ({ status: 200, body: { id: 'p9-new' } })
+  })
+
+  it('signs in with #i= (the host page picks the project) or #t= as before', () => {
+    expect(signInUrl(GUEST, undefined, INVITE, true)).toBe(`${GUEST}/#i=${INVITE}`)
+    expect(signInUrl(GUEST, 'p1', INVITE, true)).toBe(`${GUEST}/#i=${INVITE}`)
+    expect(signInUrl(GUEST, 'p1', 'tok', false)).toBe(remotePageUrl(GUEST, 'p1', 'tok'))
+  })
+
+  it('loads the invite first, keeps the cookie it lands, and reopens nothing once the page is on its project', async () => {
+    await t.windows.open('g1', { origin: GUEST, token: INVITE, invite: true })
+    const view = t.factory.views[0] as FakeView
+    expect(view.loads).toEqual([`${GUEST}/#i=${INVITE}`])
+    // The host's page redeems the invite: the device cookie lands, then the page goes to its project.
+    t.factory.session1('g1').jar.put({ name: REMOTE_DEVICE_COOKIE, value: 'guest-dev', domain: 'host.example', expirationDate: Date.now() / 1000 + 86_400 })
+    view.commit(`${GUEST}/?project=p1`)
+    await flush()
+    await t.windows.settled('g1')
+    await flush()
+    expect(t.store.setCalls).toEqual(['guest-dev'])
+    expect(view.loads).toEqual([`${GUEST}/#i=${INVITE}`])
+    expect(t.factory.session1('g1').posts).toEqual([])
+    expect(t.minted).toEqual([])
+  })
+
+  it('never POSTs a reopen of a project the host has not open: the page loads as is', async () => {
+    await warm(t, 'g1', GUEST)
+    await t.windows.open('g1', { origin: GUEST, projectId: 'p9' })
+    await flush()
+    const view = t.factory.views[0] as FakeView
+    expect(t.factory.session1('g1').posts).toEqual([])
+    expect(view.loads).toEqual([`${GUEST}/?project=p9`])
+    expect(t.factory.events.filter((e) => e.startsWith('post'))).toEqual([])
+  })
+
+  it('is never polled: left out of the machine set, and a fetch for it refused', async () => {
+    await t.windows.open('g1', { origin: GUEST })
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    expect(t.windows.serverIds()).toEqual(['d1'])
+    await expect(t.windows.fetchFromServer('g1', '/api/sessions')).rejects.toThrow("a guest does not poll the host's sessions")
+    expect(t.factory.session1('g1').fetches.filter((u) => u.endsWith('/api/sessions'))).toEqual([])
+  })
+
+  async function projectWindow(): Promise<FakeView> {
+    await t.windows.open('g1', { origin: GUEST, projectId: 'p1' })
+    const view = t.factory.views.at(-1) as FakeView
+    view.commit(`${GUEST}/?project=p1`)
+    await flush()
+    return view
+  }
+
+  it("a move to the host's picker with the person's click closes the window and shows the desktop picker, asking the host nothing", async () => {
+    const view = await projectWindow()
+    const fetches = t.factory.session1('g1').fetches.length
+    view.click()
+    expect(view.hooks.allowNavigation(`${GUEST}/`)).toBe(false)
+    expect(view.closed).toBe(true)
+    expect(t.pickers()).toBe(1)
+    await flush()
+    expect(t.factory.session1('g1').fetches.slice(fetches)).toEqual([])
+    expect(t.allClosed).toEqual(['g1'])
+  })
+
+  it('with no click the window stays and says the host ended the session; an open of it loads again', async () => {
+    const view = await projectWindow()
+    expect(view.hooks.allowNavigation(`${GUEST}/`)).toBe(false)
+    expect(view.closed).toBe(false)
+    expect(t.pickers()).toBe(0)
+    expect(view.errors).toHaveLength(1)
+    expect(view.errors[0]).toContain('Alice ended this session')
+    await t.windows.open('g1', { origin: GUEST, projectId: 'p1' })
+    await flush()
+    expect(t.factory.views).toHaveLength(1)
+    expect(view.loads.at(-1)).toBe(`${GUEST}/?project=p1`)
+    // Once loaded again, a plain focus from the picker loads nothing more.
+    const loads = view.loads.length
+    await t.windows.open('g1', { origin: GUEST, projectId: 'p1' })
+    expect(view.loads).toHaveLength(loads)
+  })
+
+  it("an owner's window still goes back to the picker as before", async () => {
+    await t.windows.open('d1', { origin: 'https://box.example', projectId: 'p1' })
+    const view = t.factory.views.at(-1) as FakeView
+    view.commit('https://box.example/?project=p1')
+    await flush()
+    view.click()
+    expect(view.hooks.allowNavigation('https://box.example/')).toBe(false)
+    expect(view.closed).toBe(false)
+    expect(view.errors).toEqual([])
+    expect(t.pickers()).toBe(1)
+  })
+
+  it("hands the partition the record's pin and host, read when asked: none for an owner or a forgotten guest", async () => {
+    await t.windows.open('g1', { origin: GUEST })
+    await t.windows.open('d1', { origin: 'https://box.example' })
+    const pin = t.factory.session1('g1').hooks.certificatePin
+    expect(pin?.()).toEqual({ hostname: 'host.example', pin: PIN })
+    expect(t.factory.session1('d1').hooks.certificatePin?.()).toBeUndefined()
+    t.store.servers.delete('g1')
+    expect(pin?.()).toBeUndefined()
   })
 })

@@ -26,6 +26,7 @@ import {
   checkKeyPath,
   checkSshHost,
   checkSshUser,
+  certPinOf,
   chosenServerName,
   defaultServerName,
   hostKeyOf,
@@ -146,8 +147,11 @@ export class RemoteServerStore {
    * saved (`saved: true`), or a new record with a fresh id that nothing holds yet. The connect dials
    * with that record and `insert`s it only once the window opens. `via` is the input as checked (a
    * saved record keeps its own settings: compare with `sameSettings`). Throws as `add` does.
+   *
+   * `guest` and `certPin` (a Direct invite, design-guests §11) go on a new record only: a saved one
+   * keeps its own, and the caller decides what a difference means (RemoteService.connect).
    */
-  prepare(input: { name?: string; via: RemoteVia }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia } {
+  prepare(input: { name?: string; via: RemoteVia; guest?: true; certPin?: string }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia } {
     const via = this.checkedVia(input.via)
     const servers = this.read()
     const same = this.sameSaved(servers, via)
@@ -156,15 +160,22 @@ export class RemoteServerStore {
     const ids = new Set(servers.map((s) => s.id))
     let id = this.newId()
     while (ids.has(id)) id = this.newId()
-    const server: RemoteServer = { id, name, via, recent: [] }
+    const server: RemoteServer = {
+      id,
+      name,
+      via,
+      recent: [],
+      ...guestFields(via, { ...(input.guest ? { guest: input.guest } : {}), ...(input.certPin !== undefined ? { certSha256: input.certPin } : {}) })
+    }
     // The validator is the one reader: a made-up id (a test seam) it would drop is refused here, not lost silently.
-    if (validateRemoteServers([server]).length !== 1) throw new RemoteServerError('the server record is not valid')
+    checkValid(server)
     return { record: server, saved: false, via }
   }
 
   /**
    * Save a record `prepare` made. Checked again (the list may have changed meanwhile): a same server
-   * saved since, a clash, the cap. Only the id, name and `via` are taken; the rest starts empty.
+   * saved since, a clash, the cap. Only the id, name, `via` and a guest's `guest` and `certSha256` are
+   * taken; the rest starts empty.
    */
   insert(record: RemoteServerRecord): RemoteServerRecord {
     const servers = this.read()
@@ -172,8 +183,8 @@ export class RemoteServerStore {
     const via = this.checkedVia(record.via)
     const same = this.sameSaved(servers, via)
     if (same !== undefined) throw new RemoteServerError(`this server was saved meanwhile as "${same.name}"`)
-    const server: RemoteServer = { id: record.id, name: this.newName(servers, record.name, via), via, recent: [] }
-    if (validateRemoteServers([server]).length !== 1) throw new RemoteServerError('the server record is not valid')
+    const server: RemoteServer = { id: record.id, name: this.newName(servers, record.name, via), via, recent: [], ...guestFields(via, record) }
+    checkValid(server)
     this.write([...servers, server])
     return withoutSecrets(server)
   }
@@ -202,6 +213,11 @@ export class RemoteServerStore {
     if (server === undefined) throw new RemoteServerError('unknown server')
     const via = this.checkedVia(input.via)
     if (via.kind !== server.via.kind) throw new RemoteServerError('Edit cannot change how a server is reached: connect it as a new server')
+    // A guest's address is the invite's, and its pin that host's certificate: a new address is another
+    // host's, joined only with that host's invite (D-29: the pin never moves to another origin).
+    if (server.guest === true && !sameSettings(server.via, via)) {
+      throw new RemoteServerError('a guest server keeps the address of its invite: forget it and join again with a new invite')
+    }
     const other = servers.find((s) => s.id !== id && sameVia(s.via, via))
     if (other !== undefined) throw new RemoteServerError(`"${other.name}" is already saved with these settings`)
     const unnamed = chosenServerName(server) === undefined
@@ -535,6 +551,23 @@ export class RemoteServerStore {
     mutate(server)
     this.write(servers)
   }
+}
+
+/**
+ * A guest's fields for a new record (design-guests §11): `guest` on a Direct server only, `certSha256`
+ * only beside it and only on https (as `validateRemoteServers` reads them back).
+ */
+function guestFields(via: RemoteVia, input: { guest?: true; certSha256?: string }): Pick<RemoteServer, 'guest' | 'certSha256'> {
+  if (via.kind !== 'direct' || input.guest !== true) return {}
+  if (input.certSha256 === undefined) return { guest: true }
+  if (certPinOf(input.certSha256) === undefined || !via.origin.startsWith('https:')) throw new RemoteServerError('the certificate pin is not valid')
+  return { guest: true, certSha256: input.certSha256 }
+}
+
+/** A new record as the validator reads it back, all of it: a field it would drop is refused, not lost silently. */
+function checkValid(server: RemoteServer): void {
+  const [read] = validateRemoteServers([server])
+  if (read === undefined || read.guest !== server.guest || read.certSha256 !== server.certSha256) throw new RemoteServerError('the server record is not valid')
 }
 
 /** The record as it leaves the store: no cookie and no secrets, encrypted or not (design §2). */

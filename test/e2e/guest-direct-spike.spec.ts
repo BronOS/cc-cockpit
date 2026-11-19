@@ -4,7 +4,7 @@
 // (expected to fail: the remote window refuses certificate errors, electron-remote-window.ts).
 // Throwaway: kept on guest/02-web as the seed of 07's Direct guest spec.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ElectronApplication, Page } from '@playwright/test'
@@ -21,7 +21,7 @@ function lanAddress(): string | undefined {
 
 async function invoke<T>(c: Cockpit, channel: string, payload?: unknown): Promise<T> {
   return c.page.evaluate(
-    async ([ch, p]) => (window as unknown as { cockpit: CockpitApi }).cockpit.invoke(ch as never, p as never),
+    async ([ch, p]) => ((window as unknown as { cockpit: CockpitApi }).cockpit.invoke as unknown as (c: string, q?: unknown) => Promise<unknown>)(ch, p),
     [channel, payload] as const
   ) as Promise<T>
 }

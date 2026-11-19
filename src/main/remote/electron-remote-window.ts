@@ -30,6 +30,13 @@
 //   the web client's own unsaved-text hold never shows; instead the person's close (never main's) is
 //   reported (`closeRequested`) and held while remote-windows.ts asks the page (`holdsUnload`) and
 //   then the person ("Unsaved page tabs" there);
+// - a guest's pinned host certificate (design-guests §11, D-29): the partition's certificate verify
+//   proc accepts the one certificate whose SHA-256 is the record's pin, for the record origin's host
+//   only (`certificateVerdict`, the pin read through `certificatePin` on every verification, so a
+//   forgotten record pins nothing); everything else is Chromium's own verdict, so any other
+//   certificate error is refused as before (the page hardening's `certificate-error` refusal stays).
+//   A pin that does not match is that verdict too, never a question: a self-signed certificate that
+//   changed is refused, and Forget then a new invite fixes it;
 // - the user agent carries `cc-cockpit-desktop/<version> (<hostname>)` (shared/remote-agent.ts):
 //   the web client then keeps the desktop's key table and names the device after this machine.
 //   Set on the session too, so main's own requests (`fetchJson`) say the same;
@@ -38,6 +45,7 @@
 //   `readKey` in main's own isolated world (remote-key.ts) and kept by remote-windows.ts; this file only
 //   reads it and puts it on a request, never stores or logs it.
 import { app, BrowserWindow, nativeTheme, session as electronSession, type DownloadItem, type Session } from 'electron'
+import { createHash } from 'node:crypto'
 import { hostname } from 'node:os'
 import { desktopAgentSuffix } from '../../shared/remote-agent'
 import { DEVICE_KEY_HEADER, SESSION_PATH } from '../../shared/web-protocol'
@@ -49,11 +57,59 @@ import { warnLog } from '../warn-log'
 import type { RemoteCookieJar } from './remote-cookie'
 import type { RemoteDownloadItem } from './remote-downloads'
 import { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } from './remote-key'
-import { RemoteHttpError, type RemoteSessionHooks, type RemoteSessionView, type RemoteWindowFactory, type RemoteWindowHooks, type RemoteWindowView } from './remote-windows'
+import {
+  RemoteHttpError,
+  type RemoteCertificatePin,
+  type RemoteSessionHooks,
+  type RemoteSessionView,
+  type RemoteWindowFactory,
+  type RemoteWindowHooks,
+  type RemoteWindowView
+} from './remote-windows'
 
 /** The partition of server `serverId`'s windows. The prefix is named in this file only (grep test). */
 export function remotePartition(serverId: string): string {
   return `persist:remote-${serverId}`
+}
+
+/** A certificate verify proc's answers (Electron `setCertificateVerifyProc`): accept it, or Chromium's own verdict. */
+export const CERT_ACCEPT = 0
+export const CERT_CHROMIUM_VERDICT = -3
+
+/**
+ * The SHA-256 (64 lower-case hex) of the first certificate in `pem` (Electron's `Certificate.data`):
+ * the base64 between its BEGIN and END lines decoded to DER, as `openssl x509 -outform der | sha256sum`
+ * and the host's invite (`c=`) count it. Undefined for text with no whole certificate block.
+ */
+export function certificateSha256(pem: string): string | undefined {
+  if (typeof pem !== 'string') return undefined
+  const lines = pem.split('\n').map((line) => line.trim())
+  const begin = lines.indexOf('-----BEGIN CERTIFICATE-----')
+  const end = lines.indexOf('-----END CERTIFICATE-----', begin + 1)
+  if (begin < 0 || end < 0) return undefined
+  const der = Buffer.from(lines.slice(begin + 1, end).join(''), 'base64')
+  if (der.length === 0) return undefined
+  return createHash('sha256').update(der).digest('hex')
+}
+
+/** A host name as compared: lower case, IPv6 brackets and a trailing dot dropped (Chromium may give either form). */
+function bareHost(host: string): string {
+  let bare = host.toLowerCase()
+  if (bare.startsWith('[') && bare.endsWith(']')) bare = bare.slice(1, -1)
+  return bare.endsWith('.') ? bare.slice(0, -1) : bare
+}
+
+/**
+ * The verify proc's answer for a certificate of `hostname` (D-29): CERT_ACCEPT only when the server
+ * has a pin, the request is for the pin's own host and the certificate hashes to it; CERT_CHROMIUM_VERDICT
+ * otherwise (no pin, another host the page or a redirect reaches, another certificate), which refuses
+ * what Chromium refuses. Never CERT_ACCEPT on a guess: a certificate that does not parse is not the pin.
+ */
+export function certificateVerdict(hostname: string, pem: string, pinned: RemoteCertificatePin | undefined): number {
+  if (pinned === undefined || typeof hostname !== 'string' || hostname === '') return CERT_CHROMIUM_VERDICT
+  if (bareHost(hostname) !== bareHost(pinned.hostname)) return CERT_CHROMIUM_VERDICT
+  const sha256 = certificateSha256(pem)
+  return sha256 !== undefined && sha256 === pinned.pin ? CERT_ACCEPT : CERT_CHROMIUM_VERDICT
 }
 
 /** How long main's own request to the server (the session check, the project list, a reopen) may take. */
@@ -191,7 +247,7 @@ export interface ElectronRemoteWindowOptions {
 
 export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
   private readonly log: (message: string) => void
-  private readonly sessions = new Map<string, { ses: Session; view: RemoteSessionView; userAgent: string }>()
+  private readonly sessions = new Map<string, { ses: Session; view: RemoteSessionView; userAgent: string; verify: () => void }>()
 
   constructor(private readonly options: ElectronRemoteWindowOptions) {
     this.log = options.log ?? warnLog
@@ -217,6 +273,21 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       }
       if (!saves) event.preventDefault()
     })
+    // Every remote partition gets the proc (a pin can come after the session was made: a guest joined
+    // on a server id whose session exists); with no pin it is Chromium's verdict, as with none. The
+    // network service caches the proc's answers (Electron's docs), so clearSession (Forget) sets it
+    // again, meant to start that cache afresh; not checked against Electron's source.
+    const verify = (): void =>
+      ses.setCertificateVerifyProc((request, callback) => {
+        let verdict = CERT_CHROMIUM_VERDICT
+        try {
+          verdict = certificateVerdict(request.hostname, request.certificate.data, hooks.certificatePin?.())
+        } catch (err) {
+          this.log(`remote ${serverId}: checking a certificate failed: ${String(err)}`)
+        }
+        callback(verdict)
+      })
+    verify()
     const userAgent = `${ses.getUserAgent()} ${desktopAgentSuffix(this.options.version, hostname())}`
     ses.setUserAgent(userAgent)
     // One listener per session (a second `onBeforeRequest` would replace it): the loopback rule.
@@ -276,7 +347,7 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
         return { status: res.status, body: parsed }
       }
     }
-    this.sessions.set(serverId, { ses, view, userAgent })
+    this.sessions.set(serverId, { ses, view, userAgent, verify })
     return view
   }
 
@@ -393,8 +464,11 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
 
   /** Forget: the server's partition emptied (cookies, storage, cache). Its windows are closed first. */
   async clearSession(serverId: string): Promise<void> {
-    const ses = this.sessions.get(serverId)?.ses ?? electronSession.fromPartition(remotePartition(serverId))
+    const known = this.sessions.get(serverId)
+    const ses = known?.ses ?? electronSession.fromPartition(remotePartition(serverId))
     await ses.clearStorageData()
     await ses.clearCache()
+    // The verify proc's cached answers go too (a pin the record no longer has).
+    known?.verify()
   }
 }
