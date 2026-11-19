@@ -418,6 +418,33 @@ describe('guest devices', () => {
     expect(await get(`${prefix}panel.html`)).toBe(200)
   })
 
+  it('a kick, a hide or a token drop during the file read holds for that answer (checked again after the last await)', async () => {
+    // The change lands from `pluginDir`, which runs after the checks before the read and before its await.
+    for (const change of ['kick', 'hide', 'drop'] as const) {
+      const w = world()
+      w.views.set('gdev', [{ windowId: 1, projectId: 'p1' }])
+      let project: string | null = 'p1'
+      let visible = true
+      let changed = false
+      const pages: PluginPages = pagesOf(w, {
+        guestProject: (d) => (d === 'gdev' ? project : undefined),
+        guestPluginVisible: () => visible,
+        pluginDir: (projectId, pluginId) => {
+          if (changed) {
+            if (change === 'kick') project = null
+            else if (change === 'hide') visible = false
+            else pages.tokens.dropDevice('gdev')
+          }
+          return w.enabled.get(projectId)?.has(pluginId) ? dirs[pluginId] : undefined
+        }
+      })
+      const prefix = pages.paths('gdev').plugins['b.plugin']!
+      expect((await pages.serve(`${prefix}secret.js`, 'GET', [ORIGIN])).status, change).toBe(200)
+      changed = true
+      expect((await pages.serve(`${prefix}secret.js`, 'GET', [ORIGIN])).status, change).toBe(404)
+    }
+  })
+
   it('a guest gone (null) is served nothing, even with a live token', async () => {
     const { pages, get, guest } = guestWorld()
     const prefix = pages.paths('gdev').plugins['b.plugin']!
