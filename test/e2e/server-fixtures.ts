@@ -34,8 +34,14 @@ import type { CockpitApi } from '../../src/shared/ipc'
 import { LAUNCH_PROFILE_PREFIX, SECOND_LAUNCH_ANSWER_ENV } from '../../src/main/second-launch'
 import { launchCockpit, type Cockpit, type LaunchOptions } from './fixtures'
 
-/** The switches the re-exec appends (server-mode.ts), with `--server` in front. */
-export const SERVER_SWITCHES = ['--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic']
+/**
+ * The switches the re-exec appends (server-mode.ts), with `--server` in front. On macOS there is no
+ * re-exec and no Ozone (design-web.md §9.15): `--server` alone, the rest is set from main.
+ */
+export const SERVER_SWITCHES =
+  process.platform === 'darwin'
+    ? ['--server']
+    : ['--server', '--ozone-platform=headless', '--disable-gpu', '--password-store=basic']
 
 export interface ServerOptions extends Pick<LaunchOptions, 'env' | 'root' | 'settings'> {
   /** The sign-in mode written to a fresh `app.json`. Default 'none' (any browser on this machine is in). */

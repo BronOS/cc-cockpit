@@ -26,10 +26,16 @@ export const SERVER_SWITCHES: readonly string[] = [SERVER_FLAG, OZONE_HEADLESS, 
 /** The fallback's marker: the pid of the first process, which the second one watches (`armParentWatch`). */
 export const PARENT_MARKER = '--server-parent='
 
-export const LINUX_ONLY = 'server mode runs on Linux only'
+export const UNSUPPORTED_PLATFORM = 'server mode runs on Linux and macOS only'
 export const DETECTED_LINE = 'no display: starting cc-cockpit in server mode, web access on; stop with Ctrl-C'
 /** `--server` while another run holds the lock: the person asked for a server and must not get silence. */
 export const NOT_STARTED_LINE = 'server mode: not started, cc-cockpit is already running with this data dir (it got this launch)'
+/**
+ * A darwin `--server` that loses the lock (`refuseWhenHeld`): the holder may be the person's own
+ * desktop, which ignores this launch's argv, so the line says nothing was handed over.
+ */
+export const HELD_LINE =
+  'server mode: not started: cc-cockpit already runs with this data dir (the desktop app or another server)'
 
 export interface ServerInput {
   platform: NodeJS.Platform
@@ -46,20 +52,23 @@ export interface ServerExec {
 
 export type ServerDecision =
   | { server: false }
-  | { server: true; detected: boolean; exec?: ServerExec }
+  | { server: true; detected: boolean; exec?: ServerExec; refuseWhenHeld?: true }
   | { refuse: string }
 
 /**
  * Server mode with `--server`, or on Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY` (an empty
- * value counts as unset: Electron cannot open an empty display either). Off Linux `--server` refuses
- * and nothing is detected: macOS would need another mechanism and has no spike (§9.1).
+ * value counts as unset: Electron cannot open an empty display either). On macOS only `--server`
+ * starts one, with no re-exec (§9.15: nothing there needs a switch on argv; main sets the rest before
+ * `ready`) and nothing detected (a Mac always has a WindowServer); it refuses to start when the lock
+ * is held (`refuseWhenHeld`): desktop and server run one at a time there. Elsewhere `--server` refuses.
  *
  * `exe` is `execPath` in an AppImage too (`APPIMAGE` set): under `execve` the image's mount lives on
  * with the pid, and executing `APPIMAGE` again would nest a second runtime and mount.
  */
 export function decideServerMode(input: ServerInput): ServerDecision {
   const flag = input.argv.slice(1).includes(SERVER_FLAG)
-  if (input.platform !== 'linux') return flag ? { refuse: LINUX_ONLY } : { server: false }
+  if (input.platform === 'darwin') return flag ? { server: true, detected: false, refuseWhenHeld: true } : { server: false }
+  if (input.platform !== 'linux') return flag ? { refuse: UNSUPPORTED_PLATFORM } : { server: false }
   const noDisplay = !input.env.DISPLAY && !input.env.WAYLAND_DISPLAY
   if (!flag && !noDisplay) return { server: false }
   const detected = !flag
@@ -110,7 +119,8 @@ export type ServerStart = { run: true; server: boolean } | { run: false }
 
 /**
  * The top of index.ts. A refusal prints and exits 1 before the lock is asked for. Without a re-exec
- * (desktop, or the headless switch already on argv) it is the old single-instance lock. With one:
+ * (desktop, a darwin server, or the headless switch already on argv) it is the old single-instance
+ * lock, except that a `refuseWhenHeld` loser prints `HELD_LINE` and exits 1 (never `quit`). With one:
  *
  * 1. the lock: held elsewhere, argv went to the holder as any second launch and this process exits 0
  *    with nothing re-executed (with `--server` it says so: the person asked for a server; a detected
@@ -135,6 +145,12 @@ export function serverStart(deps: ServerStartDeps): ServerStart {
   const exec = decision.server ? decision.exec : undefined
   if (!exec) {
     if (!deps.lock()) {
+      // A darwin server never quits through Electron (the loser's box path): it says why and exits 1.
+      if (decision.server && decision.refuseWhenHeld) {
+        deps.print(HELD_LINE)
+        deps.exit(1)
+        return { run: false }
+      }
       deps.quit()
       return { run: false }
     }
