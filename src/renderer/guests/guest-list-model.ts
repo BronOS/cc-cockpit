@@ -18,14 +18,14 @@ export type LiveChipState = { kind: 'none' } | { kind: 'share' } | { kind: 'live
 
 /**
  * The chip from this project's guests. With none, a small Share button while this view may invite
- * (`canInvite`: the desktop page, or a server's browser behind an armed confirm, D-11), web access
- * is on and its sign-in is not None (D-1: an invite there is refused); else nothing, so a window with
- * web access off looks as it always did. With guests or
+ * (`canInvite`: the desktop page, or a server's browser behind an armed confirm, D-11) and web access
+ * is on, sign-in None included: there the dialog says why it cannot invite (D-1), which a hidden button
+ * could not. Else nothing, so a window with web access off looks as it always did. With guests or
  * invites, "Live" (with the count of guests here now when any), whatever this owner view may widen:
  * every owner view may narrow (kick, revoke, read-only).
  */
-export function liveChip(guests: readonly GuestView[], canInvite: boolean, webOn: boolean, signInNone = false): LiveChipState {
-  if (guests.length === 0) return canInvite && webOn && !signInNone ? { kind: 'share' } : { kind: 'none' }
+export function liveChip(guests: readonly GuestView[], canInvite: boolean, webOn: boolean): LiveChipState {
+  if (guests.length === 0) return canInvite && webOn ? { kind: 'share' } : { kind: 'none' }
   const live = guests.filter((g) => g.state === 'live').length
   const pending = guests.filter((g) => g.state === 'pending').length
   const joined = guests.length - pending

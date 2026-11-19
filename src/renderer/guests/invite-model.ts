@@ -80,7 +80,7 @@ export const NO_SHARED_PLUGINS_TEXT = 'No plugin panels are shown to guests.'
 export function inviteErrorText(error: GuestInviteError, name: string): string {
   switch (error) {
     case 'none-mode':
-      return 'Guests need a sign-in mode: Access link, Password or Desktop confirm. Web access sign-in is None.'
+      return 'Guests need a sign-in mode: Access link, Password or Desktop confirm (Settings › Web access).'
     case 'name-taken':
       return `A guest named ${name.trim()} is already here. Pick another name.`
     case 'cap':

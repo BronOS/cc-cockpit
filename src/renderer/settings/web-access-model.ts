@@ -176,6 +176,9 @@ const MODE_TEXT: Record<WebAccessMode, { label: string; help: string }> = {
 export const NONE_MODE_NOTE =
   'Anyone who can reach the address controls this computer. Revoke has no effect in this mode: a browser that is revoked or disconnected comes straight back without signing in. Host and Origin checks still apply, so other web pages and unknown names stay out. Use it only behind a proxy that signs people in.'
 
+/** The card's line under None (D-1): the Share button stays, and its dialog cannot invite. */
+export const NONE_GUESTS_NOTE = 'Inviting guests needs a sign-in mode.'
+
 /** The devices list's note while None is on: Revoke there does not lock anyone out. */
 export const NONE_REVOKE_NOTE = 'Sign-in is off, so Revoke has no effect: anyone who can reach the address comes back in. Pick another sign-in to keep browsers out.'
 

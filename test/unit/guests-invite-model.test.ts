@@ -93,7 +93,7 @@ describe('the invite texts', () => {
 
   it('names every refusal in plain words (D-1 for None)', () => {
     expect(inviteErrorText('none-mode', 'Ada')).toBe(
-      'Guests need a sign-in mode: Access link, Password or Desktop confirm. Web access sign-in is None.'
+      'Guests need a sign-in mode: Access link, Password or Desktop confirm (Settings › Web access).'
     )
     expect(inviteErrorText('name-taken', ' Ada ')).toBe('A guest named Ada is already here. Pick another name.')
     expect(inviteErrorText('cap', 'Ada')).toContain(String(MAX_GUESTS))

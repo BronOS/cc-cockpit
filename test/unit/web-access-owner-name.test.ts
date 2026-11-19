@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { WebAccessView } from '../../src/shared/web-access'
 import {
   DEFAULT_OWNER_NAME,
+  NONE_GUESTS_NOTE,
   OWNER_NAME_MAX,
   ownerNameOf,
   ownerNamePatch,
@@ -71,5 +72,11 @@ describe('ownerNamePatch', () => {
   })
   it('carries the problem instead of a patch', () => {
     expect(ownerNamePatch(view(), 'a'.repeat(61))).toEqual({ error: 'Use at most 60 characters.' })
+  })
+})
+
+describe('the card under sign-in None (D-1, Q3)', () => {
+  it('says in one line that inviting guests needs a sign-in mode', () => {
+    expect(NONE_GUESTS_NOTE).toBe('Inviting guests needs a sign-in mode.')
   })
 })

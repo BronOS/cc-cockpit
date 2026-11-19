@@ -23,6 +23,7 @@ import {
   modeHelp,
   modeNeedsPassword,
   modeOptions,
+  NONE_GUESTS_NOTE,
   NONE_MODE_NOTE,
   DEFAULT_OWNER_NAME,
   ownerNameOf,
@@ -283,7 +284,10 @@ function WebAccessCard(props: {
           />
         )}
         {form.mode === 'none' && !pendingPassword && (
-          <Row label="No sign-in" help={NONE_MODE_NOTE} />
+          <>
+            <Row label="No sign-in" help={NONE_MODE_NOTE} />
+            <Row label="Guests" help={NONE_GUESTS_NOTE} />
+          </>
         )}
         <OwnerNameRow data={data} busy={busy} run={run} reload={reload} onSave={save} />
       </div>

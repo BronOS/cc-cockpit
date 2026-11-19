@@ -39,10 +39,9 @@ describe('the chip', () => {
     expect(liveChip([], false, true)).toEqual({ kind: 'none' })
   })
 
-  it('offers no Share under sign-in None (D-1), but still shows Live for the guests there are', () => {
-    expect(liveChip([], true, true, true)).toEqual({ kind: 'none' })
-    expect(liveChip([], true, true, false)).toEqual({ kind: 'share' })
-    expect(liveChip([guest({ id: 'a' })], true, true, true)).toMatchObject({ kind: 'live' })
+  it('keeps Share whatever the sign-in mode (Q3): under None its dialog says why it cannot invite', () => {
+    // The chip takes no mode: web access on and a view that may invite is all it asks.
+    expect(liveChip([], true, true)).toEqual({ kind: 'share' })
   })
 
   it('shows Live with the count of guests here, whatever this view may widen', () => {
