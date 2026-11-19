@@ -89,6 +89,38 @@ describe('GuestCloseNotices', () => {
     expect(n.notices.map((x) => x.tabId)).toEqual(['t2'])
   })
 
+  it("main's Keep open (tabs.guestCloseDone closed:false) says the tab was kept at once, then the line goes", () => {
+    const { n, clock } = notices()
+    n.asked('t1', 'npm dev', 'Oleg')
+    clock.advance(1_000)
+    n.answered('t1', false)
+    expect(n.notices).toEqual([{ tabId: 't1', kind: 'kept', text: 'Oleg kept the tab open.' }])
+    // The wait's own timer went: only the kept line's runs, and nothing turns "kept" twice.
+    expect(clock.pending()).toBe(1)
+    clock.advance(KEPT_OPEN_SHOW_MS)
+    expect(n.notices).toEqual([])
+    expect(clock.pending()).toBe(0)
+  })
+
+  it('closed:true drops the notice before tabs.removed; an answer for a tab with no waiting notice changes nothing', () => {
+    const { n, clock, seen } = notices()
+    n.asked('t1', 'a', 'Host')
+    n.answered('t1', true)
+    expect(n.notices).toEqual([])
+    expect(clock.pending()).toBe(0)
+    const before = seen.length
+    n.answered('t9', false)
+    n.answered('t9', true)
+    expect(seen.length).toBe(before)
+    // A kept line already showing is not restarted by a late repeat.
+    n.asked('t2', 'b', 'Host')
+    n.answered('t2', false)
+    clock.advance(KEPT_OPEN_SHOW_MS - 1)
+    n.answered('t2', false)
+    clock.advance(1)
+    expect(n.notices).toEqual([])
+  })
+
   it('tells nobody after dispose, and leaves no timer behind', () => {
     const { n, seen, clock } = notices()
     n.asked('t1', 'a', 'Host')

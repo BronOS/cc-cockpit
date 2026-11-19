@@ -11,6 +11,8 @@ import { copyText } from './copy-text'
 import {
   emptyInviteForm,
   inviteConfirmTitle,
+  inviteBlockedText,
+  inviteDismiss,
   inviteErrorText,
   inviteProblem,
   inviteRequest,
@@ -41,7 +43,9 @@ interface Made {
  *
  * Modal like the web access risk confirm (RiskConfirmDialog): portalled out of #root, which goes inert
  * while it is up, so no key typed into the name field reaches a terminal behind. Esc and Cancel close it
- * (not a click outside: a half-filled form is not dropped by a stray click). In a server's browser the
+ * (not a click outside: a half-filled form is not dropped by a stray click), but not while the invite is
+ * being made, and once the link shows only Done does (the link is shown once). Under sign-in None the
+ * dialog says so as it opens and Create stays off (D-1). In a server's browser the
  * invite is a widening of access from a remote view, so it goes through the armed approval (D-11,
  * ApprovalDialog: never the default, live after a second); main decides by its own flag either way.
  */
@@ -56,6 +60,8 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
   const [copied, setCopied] = useState<boolean | undefined>(undefined)
   // The request waiting for the armed confirm (a server's browser only).
   const [confirming, setConfirming] = useState<GuestInviteRequest | null>(null)
+  // Sign-in None (D-1): said as the dialog opens, Create disabled (main refuses `none-mode` anyway).
+  const [blocked, setBlocked] = useState<string | undefined>(undefined)
   const titleId = useId()
   const mounted = useRef(true)
   // A webview panel's native view would paint over the dialog (shell-layers.ts).
@@ -66,6 +72,12 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
     window.cockpit.invoke('tabs.list').then(
       (list) => {
         if (mounted.current) setTabs(list)
+      },
+      () => undefined
+    )
+    window.cockpit.invoke('settings.webAccess').then(
+      (view) => {
+        if (mounted.current) setBlocked(inviteBlockedText(view.form.mode))
       },
       () => undefined
     )
@@ -81,10 +93,14 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
   }, [])
 
   // #root inert while the dialog is up, the focus back where it was after; Esc closes (not while an
-  // approval is up over it: that Esc is the approval's Cancel, heard on the approval itself).
+  // approval is up over it: that Esc is the approval's Cancel, heard on the approval itself; not while
+  // the invite is being made, nor once the link shows: inviteDismiss).
+  const dismiss = inviteDismiss({ busy, linkShown: made !== null })
   const closeRef = useRef(onClose)
+  const escRef = useRef(dismiss.esc)
   useEffect(() => {
     closeRef.current = onClose
+    escRef.current = dismiss.esc
   })
   useEffect(() => {
     const root = document.getElementById('root')
@@ -92,9 +108,10 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
     root?.setAttribute('inert', '')
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || approvalStack.size > 0) return
+      // Swallowed even when it closes nothing: an Esc must not reach a terminal or the page behind.
       e.preventDefault()
       e.stopPropagation()
-      closeRef.current()
+      if (escRef.current) closeRef.current()
     }
     document.addEventListener('keydown', onKey, true)
     return () => {
@@ -149,7 +166,7 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
             onSubmit={(e) => {
               e.preventDefault()
               // Enter in the form again while the armed confirm is up (it takes no focus) asks nothing twice.
-              if (!busy && confirming === null) submit()
+              if (!busy && blocked === undefined && confirming === null) submit()
             }}
           >
             <h2 id={titleId} className="confirm-title">
@@ -225,6 +242,7 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
                 <button
                   type="button"
                   className="guest-link-button"
+                  disabled={!dismiss.cancel}
                   onClick={() => {
                     onClose()
                     props.onOpenSettings()
@@ -235,16 +253,21 @@ export function InviteDialog(props: { onClose: () => void; onOpenSettings: () =>
               </p>
             </div>
             <p className="guest-note">{SCROLLBACK_LINE}</p>
+            {blocked !== undefined && (
+              <p role="alert" className="guest-error" data-testid="guest-invite-blocked">
+                {blocked}
+              </p>
+            )}
             {problem !== undefined && (
               <p id={`${titleId}-problem`} role="alert" className="guest-error">
                 {problem}
               </p>
             )}
             <div className="confirm-buttons">
-              <button type="button" onClick={onClose}>
+              <button type="button" disabled={!dismiss.cancel} onClick={onClose}>
                 Cancel
               </button>
-              <button type="submit" className="guest-primary" disabled={busy}>
+              <button type="submit" className="guest-primary" disabled={busy || blocked !== undefined}>
                 Create invite
               </button>
             </div>

@@ -3,7 +3,7 @@
 // offers a dead control (hide, don't grey out), but main refuses every such call by the access of the
 // view it bound (GUEST_CLASS), whatever this page draws. The desktop page is always the owner.
 
-import type { GuestScope, GuestView } from '../../shared/guests'
+import type { GuestScope, GuestView, PresenceSnapshot } from '../../shared/guests'
 import type { TabInfo } from '../../shared/ipc'
 import type { ViewAccess } from '../../shared/views'
 
@@ -51,6 +51,8 @@ export function tabControls(access: ViewAccess): TabControls {
 /** One "Share with <guest>" entry of the owner's tab menu. */
 export interface ShareItem {
   guestId: string
+  /** The guest's name, for the refusal line. */
+  name: string
   label: string
   checked: boolean
 }
@@ -80,6 +82,36 @@ export function shareItems(
   if (projectId === undefined || guests === null) return []
   return guests
     .filter((g) => g.projectId === projectId && g.scope !== 'all')
-    .map((g) => ({ guestId: g.id, label: `Share with ${g.name}`, checked: scopeHas(g.scope, tab.id) }))
+    .map((g) => ({ guestId: g.id, name: g.name, label: `Share with ${g.name}`, checked: scopeHas(g.scope, tab.id) }))
     .filter((item) => canWiden || item.checked)
+}
+
+/**
+ * The one line the strip shows when main answers a Share toggle `false` (the guest left, the invite was used
+ * up or expired meanwhile, the tab is not this project's): nothing changed, and the menu, which reads the
+ * scope from `guests.changed`, already shows what holds. A pending invite's guest is shared with like a
+ * joined one (main edits the invite's scope until the redeem copies it).
+ */
+export function shareRefusedText(name: string, shared: boolean): string {
+  return shared
+    ? `This tab was not shared with ${name}: the guest or the invite is gone.`
+    : `${name} still sees this tab: the guest or the invite is gone.`
+}
+
+/**
+ * A guest's name by its id, for the "Opened by guest" line (TabInfo.openedByGuest holds the id, D-21): the
+ * owner's guest list first, then presence (which a guest view has too), then the view's own hint. Undefined
+ * when none knows it (the guest left): the line then says "a guest", never the raw id.
+ */
+export function guestNameOf(
+  guestId: string,
+  guests: readonly GuestView[] | null,
+  presence: PresenceSnapshot | null,
+  self?: { id: string; name: string }
+): string | undefined {
+  return (
+    guests?.find((g) => g.id === guestId)?.name ??
+    presence?.people.find((p) => p.id === guestId)?.name ??
+    (self?.id === guestId ? self.name : undefined)
+  )
 }

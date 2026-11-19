@@ -3,7 +3,9 @@ import { GUEST_NAME_MAX, MAX_GUESTS, type GuestInviteError } from '../../src/sha
 import type { PluginView, TabInfo } from '../../src/shared/ipc'
 import {
   emptyInviteForm,
+  inviteBlockedText,
   inviteConfirmTitle,
+  inviteDismiss,
   inviteErrorText,
   inviteProblem,
   inviteRequest,
@@ -50,6 +52,21 @@ describe('the invite form', () => {
     expect(inviteRequest(selected, ['t1', 't2'])).toEqual({ name: 'Ada', role: 'write', scope: ['t1'], lifetime: '7d' })
     expect(inviteRequest({ ...selected, selected: ['gone'] }, ['t1'])).toBeUndefined()
     expect(inviteRequest({ ...form, name: '' }, [])).toBeUndefined()
+  })
+})
+
+describe('what may close the dialog, and when it cannot invite at all', () => {
+  it('nothing closes it while the invite is being made; once the link shows, only Done (no Esc)', () => {
+    expect(inviteDismiss({ busy: false, linkShown: false })).toEqual({ esc: true, cancel: true })
+    expect(inviteDismiss({ busy: true, linkShown: false })).toEqual({ esc: false, cancel: false })
+    expect(inviteDismiss({ busy: false, linkShown: true })).toEqual({ esc: false, cancel: true })
+  })
+
+  it('says why under sign-in None (D-1), as main would; nothing for another mode or an unknown one', () => {
+    expect(inviteBlockedText('none')).toBe(inviteErrorText('none-mode', ''))
+    expect(inviteBlockedText('none')).toContain('sign-in mode')
+    for (const mode of ['link', 'password', 'confirm'] as const) expect(inviteBlockedText(mode)).toBeUndefined()
+    expect(inviteBlockedText(undefined)).toBeUndefined()
   })
 })
 

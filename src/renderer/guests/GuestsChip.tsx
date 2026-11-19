@@ -10,13 +10,14 @@ import { useShellLayer } from '../zones/use-shell-layer'
 import { downgradeWarning, guestRows, liveChip, projectGuests, upgradeTitle, type GuestRow } from './guest-list-model'
 import { InviteDialog } from './InviteDialog'
 import { writeWarning } from './invite-model'
-import { canWidenGuests, useGuests, usePresence, useWebAccessOn } from './use-guests'
+import { canWidenGuests, useGuests, usePresence, useWebAccessState } from './use-guests'
 
 /**
  * The owner's guest entry in the top bar (design-guests §10): the "Live" chip while this project has
  * guests or invites, opening the guest list; with none, a small "Share" button that opens the invite
  * dialog, drawn only where this view may invite (the desktop page; a server's browser, D-11) and only
- * while web access is on, so a window that never shares looks as before. TopStrip draws it on owner
+ * while web access is on with a sign-in mode (not None, D-1), so a window that never shares looks as
+ * before. Invite… in the list stays under None; the dialog then says why and offers no Create. TopStrip draws it on owner
  * views only (never when the shell's guest hint is set); main refuses every guest channel to anyone
  * else whatever this draws.
  *
@@ -31,10 +32,10 @@ import { canWidenGuests, useGuests, usePresence, useWebAccessOn } from './use-gu
 export function GuestsChip(props: { projectId: string; inert: boolean | undefined; onOpenSettings: () => void }): React.JSX.Element | null {
   const all = useGuests(true)
   const presence = usePresence()
-  const webOn = useWebAccessOn(props.inert)
+  const web = useWebAccessState(props.inert)
   const canWiden = canWidenGuests()
   const guests = projectGuests(all, props.projectId)
-  const chip = liveChip(guests, canWiden, webOn)
+  const chip = liveChip(guests, canWiden, web.on, web.mode === 'none')
   // Where the open list hangs, under the chip, measured at the click (null: closed). Shown only while the
   // chip is: the last guest going takes the list down with it.
   const [openAt, setOpenAt] = useState<ListPlace | null>(null)
