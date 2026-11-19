@@ -258,8 +258,9 @@ with full Node access.
   opener's own, at most 4), `discuss` (`false` or `{ tabId }`, above) and, for `html` only,
   `ready: 'load' | 'manual'`. Well-known types, so plugins agree on them: `file` `{ path, mime? }`
   (`path` relative to the project folder; the editor adds Edit, the reviewer's file reviews have it) and
-  `inbox-item` `{ source, id }` (`source` is the providing plugin's id; Discuss names it
-  `Item: <source> <id>`). The toolbar reads, left to right: the title, the opener's buttons, a divider,
+  `inbox-item` `{ source, id, closeOnAction? }` (`source` is the providing plugin's id; Discuss names it
+  `Item: <source> <id>`; `closeOnAction: false`, set from the Inbox's switch, asks a source's Mark read and Done
+  buttons to leave the overlay open, any other value closes it after them; Mark unread never closes). The toolbar reads, left to right: the title, the opener's buttons, a divider,
   the type buttons of other plugins (in plugin-title order), Discuss, and the close button where the tab
   close side setting puts it; more than 6 buttons fold the rest into "...". Plain text, no chords, no
   icons beyond the core names and plugin `.svg` files.
