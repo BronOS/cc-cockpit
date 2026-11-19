@@ -58,7 +58,7 @@ import { languageOfText } from './languages.mjs'
 import { createSession } from './session.mjs'
 import { lineChanges } from './merge.mjs'
 import { conflictField as createConflictField, setConflicts, resolveSpec } from './conflicts.mjs'
-import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces } from './quick-open.mjs'
+import { createSearch, fuzzyFilter, fuzzyMatch, highlightPieces, searchesProject } from './quick-open.mjs'
 import { indentGuides, detectIndentUnit } from './indent-guides.mjs'
 import { createLspClient } from './lsp/client.mjs'
 import { lspFeatures, lspChangesOf, applyEditsTo, showDiagnostics } from './lsp/editor.js'
@@ -699,6 +699,9 @@ const chat = createQuickChat({ post: (m) => ccPanel.post(m), getView: () => view
 // keeps the requests and filters. A pick in this tab's own file moves the cursor here; any other
 // file goes to the host (`openFile`), which opens or focuses its tab (checked inside the project).
 
+/** Quick open and find in files are this view's (not a read-only guest's): read when used, the hint may come after load. */
+const projectSearch = () => searchesProject(typeof ccPanel === 'object' && ccPanel.view ? ccPanel.view.access : undefined)
+
 const palette = { mode: null, lastMode: 'files', rows: [], index: 0, files: null, grep: null, opts: { caseSensitive: false, word: false, regex: false } }
 
 const search = createSearch({
@@ -731,6 +734,8 @@ const search = createSearch({
  * (`spec`: { placeholder, value, hint, onSubmit(value) }: rename).
  */
 function showPalette(mode, fresh = true, spec = null) {
+  // A read-only guest's page offers no project-wide list or search (the hint; the host refuses them too).
+  if ((mode === 'files' || mode === 'grep') && !projectSearch()) return
   palette.mode = mode
   if (mode === 'files' || mode === 'grep') palette.lastMode = mode
   else palette.spec = spec
@@ -996,6 +1001,7 @@ $('editor').addEventListener('contextmenu', (e) => {
   const menu = $('ctxmenu')
   // "Add review note" only while a Reviewer answers (no Reviewer, an older one: the host said has: false).
   $('ctx-note').hidden = !notes.available()
+  $('ctx-grep').hidden = !projectSearch()
   menu.hidden = false
   // Kept inside the frame: the menu opens up and left when the pointer is near the edge.
   const x = Math.max(0, Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 4))

@@ -222,6 +222,33 @@ test("a write guest works like the owner, but never Reveal, the system's default
   host.deactivate()
 })
 
+test("a guest's click or Edit on a binary file is refused with why, never handed to the editor (it would open the viewer overlay)", async () => {
+  const root = fs.realpathSync(tempDir('files-guest-'))
+  fs.writeFileSync(path.join(root, 'img.bin'), Buffer.from([0x89, 0x50, 0x00, 0x47]))
+  fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
+  const host = load()
+  const { ctx, posts, listeners } = fakeCtx(root)
+  const called = []
+  ctx.files = { open: async (p) => void called.push(['open', p]) }
+  ctx.services = { use: () => ({ open: async (p) => void called.push(['edit', p]) }) }
+  host.activate(ctx)
+  const guest = { view: 'web:6', access: 'write' }
+  for (const m of [{ type: 'open', path: 'img.bin' }, { type: 'open', path: 'img.bin', rule: -1 }, { type: 'edit', path: 'img.bin' }]) {
+    const before = posts.length
+    await listeners[0](m, guest)
+    assert.deepEqual(posts.slice(before).map((p) => [p[1].type, p[1].message, p[2]]), [['error', 'img.bin: a binary file has no editor view for a guest.', { view: 'web:6' }]], JSON.stringify(m))
+  }
+  assert.deepEqual(called, [])
+  // A text file still edits; a missing one goes to the editor, which answers it.
+  await listeners[0]({ type: 'open', path: 'a.txt' }, guest)
+  await listeners[0]({ type: 'edit', path: 'gone.txt' }, guest)
+  // The owner's click still runs the opener; the owner's Edit still asks the editor.
+  await listeners[0]({ type: 'open', path: 'img.bin' }, { view: 'desktop', access: 'owner' })
+  await listeners[0]({ type: 'edit', path: 'img.bin' })
+  assert.deepEqual(called, [['edit', 'a.txt'], ['edit', 'gone.txt'], ['open', 'img.bin'], ['edit', 'img.bin']])
+  host.deactivate()
+})
+
 test('an access value the host does not know is a read-only guest, never the owner', async () => {
   const root = fs.realpathSync(tempDir('files-guest-'))
   fs.writeFileSync(path.join(root, 'a.txt'), 'x\n')
