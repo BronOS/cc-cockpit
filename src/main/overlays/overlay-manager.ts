@@ -73,7 +73,7 @@ import { isPanelHeaderIcon } from '../../shared/panel-header'
 import { within } from '../../shared/timeout'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
-import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget } from './discuss'
+import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget, type DiscussGuest } from './discuss'
 import { PtyService } from '../pty/pty-service'
 import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
@@ -269,14 +269,21 @@ export interface DiscussSessions {
    * Throws when refused. Discuss passes `core`: the person clicked Send, so their typing in the
    * tab neither refuses the text nor drops it from the queue (send-gate.ts takenOver).
    */
-  send(tabId: string, text: string, origin: SendOrigin): { delivered: boolean }
+  send(tabId: string, text: string, origin: SendOrigin, guestId?: string): { delivered: boolean }
   /**
    * Open a Claude tab in the window's project folder with `prompt` as its first prompt (main's own
    * open path, the ctx.sessions.open argument rule) and tell the window. Throws when refused.
    */
-  openSession(windowId: number, prompt: string): Promise<{ tabId: string }>
-  /** Select the tab in the window (the person sees where the text went). */
-  selectTab(windowId: number, tabId: string): void
+  openSession(windowId: number, prompt: string, guestId?: string): Promise<{ tabId: string }>
+  /** The window's project's live tab ids (a guest's new session counts its open tabs, D-21). Absent: no guest opens one. */
+  liveTabs?(windowId: number): string[]
+  /** Close a tab of the window's project (a guest's new session whose access ended while it opened). */
+  closeTab?(windowId: number, tabId: string): void
+  /**
+   * Select the tab in the window (the person sees where the text went). `view`: only that view selects it (a
+   * guest's Discuss: its own view, never the owner's selection, design-guests §7).
+   */
+  selectTab(windowId: number, tabId: string, view?: ViewId): void
   /**
    * The person's closing prompt for the window's own project, resolved by main at send time
    * (effectiveDiscussPrompt), never taken from the renderer. Absent or undefined: none.
@@ -1223,7 +1230,7 @@ export class OverlayManager {
    * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window (an overlay
    * dismissed while the new session opens has already answered `dismissed`). Never rejects.
    */
-  async discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer> {
+  async discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest): Promise<DiscussAnswer> {
     const overlay = this.find(windowId, overlayId)
     if (!overlay?.info.discuss) return { ok: false, error: 'Discuss is not available on this overlay' }
     const sessions = this.options.discuss
@@ -1252,7 +1259,7 @@ export class OverlayManager {
       const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, prompt: sessions.prompt?.(windowId) })
       const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
-      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text)
+      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, guest)
       if (!sent.ok) return sent
       const { tabId, queued } = sent
       // The person may dismiss the overlay while a new session opens. The session already has the
@@ -1264,7 +1271,8 @@ export class OverlayManager {
       }
       this.finish(overlay, { kind: 'discussed', tabId, queued })
       try {
-        sessions.selectTab(windowId, tabId)
+        if (guest === undefined) sessions.selectTab(windowId, tabId)
+        else sessions.selectTab(windowId, tabId, guest.viewId)
       } catch (err) {
         this.log(`overlay ${overlay.id}: selecting tab ${tabId} failed: ${String(err)}`)
       }

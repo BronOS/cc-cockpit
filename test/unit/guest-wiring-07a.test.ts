@@ -12,6 +12,7 @@ import {
   guestTabDeps,
   guestUnsavedOf,
   offerTakerOf,
+  guestMayDeliverOf,
   ownerViewOf,
   pageSelectTargetOf,
   type GuestRouterSources,
@@ -358,6 +359,13 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain("const target: PageSelectTarget = focus ? pageSelectTarget(view) : 'none'")
     expect(INDEX).toContain("const tab = tabs.createPage(projectId, spec, { focus: target === 'project' })")
     expect(INDEX).toContain('selectPageTab(projectId, tabId, pageSelectTarget(view))')
+    // 03e A, B: a guest's queued Discuss text is checked again at the paste; its new session is its tab.
+    expect(block('new SessionRegistry({')).toContain('guestMayDeliver: (guestId: string, tabId: string): boolean => guestMayDeliverOf(guestStore,')
+    expect(INDEX).toContain("send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),")
+    expect(INDEX).toContain('...(guestId === undefined ? {} : { openedByGuest: guestId })')
+    expect(INDEX).toContain("void views.toView(view, 'tabs.select', { tabId })")
+    expect(INDEX).toContain('discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),')
+    expect(INDEX).toContain('discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),')
     expect(INDEX).toContain("else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })")
     // 03e (D-9): the outcome reaches the asking guest's own views only; an ended guest's asks settle.
     expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")
@@ -375,5 +383,26 @@ describe('pageSelectTargetOf (03e: a guest\'s click that makes a plugin focus a 
     expect(target('desktop:7')).toBe('project')
     expect(target(undefined)).toBe('project')
     expect(target('web:99')).toBe('none')
+  })
+})
+
+describe('guestMayDeliverOf (03e A)', () => {
+  it("only a live write guest of the tab's project that sees the tab", () => {
+    const access: Record<string, GuestAccess> = {
+      gW: { kind: 'guest', id: 'gW', name: 'W', role: 'write', projectId: PROJECT, scope: 'all' },
+      gR: { kind: 'guest', id: 'gR', name: 'R', role: 'read', projectId: PROJECT, scope: 'all' },
+      gX: { kind: 'guest', id: 'gX', name: 'X', role: 'write', projectId: 'p2', scope: 'all' }
+    }
+    const may = guestMayDeliverOf(
+      { access: (who) => (who === 'owner' ? { kind: 'owner' } : (access[who.guest] ?? { kind: 'revoked' })), tabVisible: (_g, t) => t !== 'hidden' },
+      (t) => (t === 'gone' ? undefined : t === 'other' ? 'p2' : PROJECT)
+    )
+    expect(may('gW', 't1')).toBe(true)
+    expect(may('gW', 'hidden')).toBe(false)
+    expect(may('gW', 'gone')).toBe(false)
+    expect(may('gW', 'other')).toBe(false)
+    expect(may('gR', 't1')).toBe(false)
+    expect(may('gX', 'other')).toBe(true)
+    expect(may('kicked', 't1')).toBe(false)
   })
 })

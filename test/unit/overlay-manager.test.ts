@@ -2139,7 +2139,9 @@ describe('Discuss with Claude (design-next §3.5)', () => {
       // Kept apart from `sent` so its toEqual checks stay as they were.
       origins: [] as string[],
       opened: [] as { windowId: number; prompt: string }[],
-      selected: [] as { windowId: number; tabId: string }[],
+      selected: [] as { windowId: number; tabId: string; view?: string }[],
+      /** Guest ids the gate was handed (03e A), kept apart like `origins`. */
+      guestIds: [] as Array<string | undefined>,
       notReady: new Set<string>(),
       delivered: true,
       sendError: undefined as Error | undefined,
@@ -2150,10 +2152,11 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     s.deps = {
       isClaudeTab: (windowId, tabId) => s.claude.get(windowId)?.has(tabId) === true,
       notReady: (tabId) => s.notReady.has(tabId),
-      send: (tabId, text, origin) => {
+      send: (tabId, text, origin, guestId) => {
         if (s.sendError) throw s.sendError
         s.sent.push({ tabId, text })
         s.origins.push(origin)
+        s.guestIds.push(guestId)
         return { delivered: s.delivered }
       },
       openSession: (windowId, prompt) => {
@@ -2161,7 +2164,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
         s.opened.push({ windowId, prompt })
         return Promise.resolve({ tabId: `new${s.next++}` })
       },
-      selectTab: (windowId, tabId) => s.selected.push({ windowId, tabId })
+      selectTab: (windowId, tabId, ...view) => s.selected.push({ windowId, tabId, ...(view.length > 0 ? { view: view[0] } : {}) })
     }
     return s
   }
@@ -2237,6 +2240,31 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     m.setDiscussHandler(W1, bare!.id, true)
     expect(m.infos(W1)[1]!.discuss).toEqual({ primary: true })
     expect(m.setDiscussPrimary(W2, bare!.id, true)).toBe(false)
+  })
+
+  it("a write guest's Discuss (03e A): refused when its access changed while the opener answered; else sent with its id, selected in its view only", async () => {
+    const sessions = fakeSessions()
+    const m = withDiscuss(sessions)
+    let allowed = true
+    const guest = { id: 'g1', viewId: 'web:9' as const, allowed: () => allowed, openTab: () => Promise.reject(new Error('no')) }
+    const ch = opener(async () => {
+      allowed = false
+      return { text: 'ctx' }
+    })
+    track(m.open(W1, fileSpec, 'plugin p.rev', undefined, ch, 'p.rev'))
+    const id = m.infos(W1)[0]!.id
+    m.setDiscussHandler(W1, id, true)
+    await expect(m.discuss(W1, id, { kind: 'tab', tabId: 't2' }, guest)).resolves.toEqual({ ok: false, error: "Not sent: your access changed" })
+    expect(sessions.sent).toEqual([])
+    expect(m.infos(W1)).toHaveLength(1)
+    allowed = true
+    const ok = opener(() => Promise.resolve({ text: 'ctx' }))
+    track(m.open(W1, fileSpec, 'plugin p.rev', undefined, ok, 'p.rev'))
+    const id2 = m.infos(W1).at(-1)!.id
+    m.setDiscussHandler(W1, id2, true)
+    await expect(m.discuss(W1, id2, { kind: 'tab', tabId: 't2' }, guest)).resolves.toEqual({ ok: true, tabId: 't2', queued: false })
+    expect(sessions.guestIds).toEqual(['g1'])
+    expect(sessions.selected).toEqual([{ windowId: W1, tabId: 't2', view: 'web:9' }])
   })
 
   it('sends to an existing tab through the gate, closes as discussed and selects the tab', async () => {

@@ -198,6 +198,7 @@ import {
   guestTabDeps,
   guestUnsavedOf,
   offerTakerOf,
+  guestMayDeliverOf,
   ownerViewOf,
   pageSelectTargetOf,
   type PageSelectTarget
@@ -1153,15 +1154,27 @@ function start(server: boolean): void {
     },
     notReady: (tabId) => sessions.get(tabId)?.status === 'idle',
     // Discuss names its origin (`core`, overlay-manager.ts, page-tab-discuss.ts): passed through, not chosen here.
-    send: (tabId, text, origin) => sessions.send(tabId, text, origin),
-    openSession: async (windowId, prompt) => {
+    // A guest's text carries its id, so the registry checks its access again when the gate dequeues it (03e A).
+    send: (tabId, text, origin, guestId) => (guestId === undefined ? sessions.send(tabId, text, origin) : sessions.send(tabId, text, origin, guestId)),
+    openSession: async (windowId, prompt, guestId) => {
       const projectId = projectOfWindow(windowId)
       if (projectId === undefined) throw new Error('the window is gone')
-      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &.
-      const tab = await openClaudeTab(projectId, { prompt: prepareText(prompt) }, windowId, false)
+      // The ctx.sessions.open prompt rule: control bytes out, capped, no leading / ! # &. A guest's is tagged as
+      // its tab (D-21); the router's openGuestTab around this call keeps the cap and notes it.
+      const options = { prompt: prepareText(prompt), ...(guestId === undefined ? {} : { openedByGuest: guestId }) }
+      const tab = await openClaudeTab(projectId, options, windowId, false)
       return { tabId: tab.id }
     },
-    selectTab: (windowId, tabId) => sendToWindow(windowId, 'tabs.select', { tabId }),
+    liveTabs: (windowId) => {
+      const projectId = projectOfWindow(windowId)
+      return projectId === undefined ? [] : tabs.list(projectId).map((t) => t.id)
+    },
+    closeTab: (windowId, tabId) => {
+      const projectId = projectOfWindow(windowId)
+      if (projectId !== undefined) tabs.close(projectId, tabId)
+    },
+    // A guest's Discuss selects in its own view only (design-guests §7): never the owner's selection.
+    selectTab: (windowId, tabId, view) => (view === undefined ? sendToWindow(windowId, 'tabs.select', { tabId }) : void views.toView(view, 'tabs.select', { tabId })),
     // The window's own project's override, else the global one; read now, at send time.
     prompt: (windowId) => {
       const projectId = projectOfWindow(windowId)
@@ -1256,7 +1269,7 @@ function start(server: boolean): void {
    */
   const openClaudeTab = async (
     projectId: string,
-    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string> },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string>; openedByGuest?: string },
     windowId: number,
     focus: boolean,
     place?: PluginPlacement
@@ -1995,7 +2008,7 @@ function start(server: boolean): void {
   // snapshot goes out throttled, and each project window gets ITS OWN view: the strip fields of
   // every tab plus the full entries of its own project's tabs (never another project's prompts,
   // notes, files or queue). A picker window shows no strip and gets nothing.
-  const sessions = new SessionRegistry({
+  const sessions: SessionRegistry = new SessionRegistry({
     projectName: (projectId) => registry.get(projectId)?.name,
     projectColor: (projectId) => registry.get(projectId)?.color,
     broadcast: (snapshotFor) => {
@@ -2007,7 +2020,10 @@ function start(server: boolean): void {
     // with the entry's own project, so the write cannot land in another project's tab; `tabs` is
     // defined below and is only reached once a tab exists. Never through `sessions.userInput`: a
     // delivery must not set SessionInfo.typed (the person's takeover flag).
-    write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data)
+    write: ({ tabId, projectId }, data) => tabs.input(projectId, tabId, data),
+    // A guest's queued Discuss text is checked again as the gate dequeues it (03e A); `guestStore` is made below
+    // and only read once a guest's text is queued.
+    guestMayDeliver: (guestId: string, tabId: string): boolean => guestMayDeliverOf(guestStore, (t) => sessions.get(t)?.projectId)(guestId, tabId)
   })
   // The person's per-plugin caps (design-rooms.md §6, plugins/plugin-limits.ts): `app.json` › `pluginLimits[id]` over
   // the global values in `pluginLimitsGlobal`, read with every value clamped on each open and send (HostApi, the room
@@ -3332,7 +3348,7 @@ function start(server: boolean): void {
     },
     dirty: (projectId, viewId, tabId, dirty) => tabs.setPageDirty(projectId, tabId, viewId, dirty),
     unsaved: (projectId) => tabs.unsavedTitles(projectId),
-    discuss: (caller, tabId, question, target) => pageTabDiscuss.discuss(caller, tabId, question, target),
+    discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),
     server
   })
   registerSlotHandlers(router, {
@@ -3529,7 +3545,7 @@ function start(server: boolean): void {
     loaded: (windowId, overlayId, viewId) => overlays.pageLoaded(windowId, overlayId, viewId),
     take: (windowId, viewId, overlayId) => overlays.take(windowId, viewId, overlayId),
     button: (windowId, overlayId, click, viewId) => overlays.buttonClick(windowId, overlayId, click, viewId),
-    discuss: (windowId, overlayId, target) => overlays.discuss(windowId, overlayId, target),
+    discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),
     // A guest's size report is remembered for its explicit take only (D-14).
     guestResize: (windowId, overlayId, cols, rows, viewId) => overlays.guestResize(windowId, overlayId, cols, rows, viewId)
   })

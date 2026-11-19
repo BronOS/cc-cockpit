@@ -300,6 +300,22 @@ export function settled(entry: SessionEntry): GateStep {
   return deliverHead({ ...entry, settling: false })
 }
 
+/**
+ * The step a gate function returned, with every delivered item `allowed` refuses taken out instead of pasted, and
+ * the next head delivered in its place (03e A: a guest's Discuss text whose guest was kicked, made read-only or lost
+ * the tab while it waited). The refused items are reported as `dropped`. Pure: `allowed` is main's live check.
+ */
+export function skipRefused(step: GateStep, allowed: (item: QueuedText) => boolean): GateStep {
+  let s = step
+  const refused: QueuedText[] = []
+  while (s.delivered !== undefined && s.write !== undefined && !allowed(s.delivered)) {
+    refused.push(s.delivered)
+    s = deliverHead({ ...s.entry, delivering: false })
+  }
+  if (refused.length === 0) return step
+  return { ...s, dropped: [...(s.dropped ?? []), ...refused] }
+}
+
 function deliverHead(entry: SessionEntry): GateStep {
   const [head, ...rest] = entry.queue
   if (head === undefined || !maySend(entry)) return { entry }

@@ -200,3 +200,19 @@ export function pageSelectTargetOf(whoOf: (viewId: ViewId) => Who | undefined): 
     return who === undefined ? 'none' : { viewId: view }
   }
 }
+
+/**
+ * SessionRegistry's `guestMayDeliver` (03e A): a guest's queued Discuss text is pasted only while that guest is
+ * still a live write guest of the tab's project that sees the tab. Anything else (kicked, ended, made read-only,
+ * the tab unshared, a tab of another project or gone): false, and the text is dropped.
+ */
+export function guestMayDeliverOf(
+  guests: Pick<GuestService, 'access' | 'tabVisible'>,
+  projectOfTab: (tabId: string) => string | undefined
+): (guestId: string, tabId: string) => boolean {
+  return (guestId, tabId) => {
+    const access = guests.access({ guest: guestId })
+    if (access.kind !== 'guest' || access.role !== 'write') return false
+    return projectOfTab(tabId) === access.projectId && guests.tabVisible(access.id, tabId)
+  }
+}

@@ -70,6 +70,7 @@ import type { WebviewViewers } from '../webview/webview-viewers'
 import type { WebviewInput } from '../webview/webview-input'
 import type { OverlayButtonClick } from '../overlays/overlay-manager'
 import type { DiscussTarget } from '../../shared/discuss'
+import type { DiscussGuest } from '../overlays/discuss'
 import type { SenderContext } from '../windows/window-manager'
 import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 import { guestClassOf, guestRoleAllows, type GuestTarget } from '../../shared/guest-class'
@@ -290,6 +291,8 @@ export class IpcRouter {
   private readonly routes = new Map<string, Route>()
   /** Guests' services and resolvers (setGuestDeps); undefined: every guest caller is refused. */
   private guestDeps: GuestRouterDeps | undefined
+  /** Guest tab opens in flight, per guest id (D-21's cap counts them): every way a guest opens a tab shares it. */
+  private readonly guestCreating = new Map<string, number>()
 
   /**
    * `isAppPage` is normally `appPageMatcher(<where the shell UI is loaded from>)`.
@@ -343,6 +346,74 @@ export class IpcRouter {
     if (view.who === 'owner') return undefined
     if (!view.access) throw new Error('refused')
     return this.filterFor(ctx.projectId, view.viewId, view.access, tabOrder)
+  }
+
+  /**
+   * D-21 for every way a guest's act opens a tab (`tabs.create`, Discuss's new session, 03e B): at most
+   * MAX_GUEST_TABS live opened tabs, the opens still spawning counted too (several frames of one socket all run
+   * before the first spawn ends). `create` opens it tagged as the guest's (`openedByGuest`); after it the access is
+   * read again (gone or downgraded meanwhile: `close` closes it and this throws), then the tab is noted as the
+   * guest's (it joins its scope, D-9 lets it close it). Null: `create` opened nothing.
+   */
+  async openGuestTab<T>(
+    channel: string,
+    ctx: ProjectContext,
+    view: CallView,
+    access: GuestOnlyAccess,
+    liveTabs: readonly string[],
+    create: () => Promise<T | null> | T | null,
+    idOf: (tab: T) => string,
+    close: (tabId: string) => void
+  ): Promise<T | null> {
+    const guests = this.guestService()
+    if (!guests) throw new Error(`${channel}: refused`)
+    const live = new Set(liveTabs)
+    const pending = this.guestCreating.get(access.id) ?? 0
+    if (guests.openedTabs(access.id).filter((id) => live.has(id)).length + pending >= MAX_GUEST_TABS) {
+      throw new Error(`${channel}: a guest may have at most ${MAX_GUEST_TABS} tabs open`)
+    }
+    this.guestCreating.set(access.id, pending + 1)
+    try {
+      const tab = await create()
+      if (tab === null) return null
+      const id = idOf(tab)
+      try {
+        this.guestAccessNow(channel, ctx, view)
+      } catch (err) {
+        close(id)
+        throw err
+      }
+      guests.noteOpenedTab(access.id, id)
+      return tab
+    } finally {
+      const left = (this.guestCreating.get(access.id) ?? 1) - 1
+      if (left > 0) this.guestCreating.set(access.id, left)
+      else this.guestCreating.delete(access.id)
+    }
+  }
+
+  /**
+   * A guest caller's Discuss (03e A, B; overlays/discuss.ts DiscussGuest), undefined for the owner. `allowed` reads
+   * the access live (still this project's write guest, still seeing a tab target), false on any doubt; `openTab` is
+   * openGuestTab, so a Discuss new session is one of the guest's D-21 tabs.
+   */
+  discussGuest(channel: string, ctx: ProjectContext, view: CallView): DiscussGuest | undefined {
+    const access = guestCall(view, channel)
+    if (!access) return undefined
+    return {
+      id: access.id,
+      viewId: view.viewId,
+      allowed: (target) => {
+        try {
+          const now = this.guestAccessNow(channel, ctx, view)
+          if (!now || now.id !== access.id) return false
+          return target.kind === 'new' || this.guestService()?.tabVisible(now.id, target.tabId) === true
+        } catch {
+          return false
+        }
+      },
+      openTab: (liveTabs, create, idOf, close) => this.openGuestTab(channel, ctx, view, access, liveTabs, create, idOf, close)
+    }
   }
 
   private filterFor(projectId: string, viewId: ViewId, access: GuestOnlyAccess, tabOrder: () => readonly string[] = () => []): GuestFilterContext {
@@ -843,7 +914,13 @@ export interface PageTabHandlerDeps {
    * Ask Claude from a page tab (PageTabDiscuss.discuss): the caller is the window, project and view
    * main bound the sender to; the tab id, question and target are renderer input, checked there.
    */
-  discuss(caller: { windowId: number; projectId: string; viewId: ViewId }, tabId: string, question: unknown, target: unknown): Promise<DiscussAnswer>
+  discuss(
+    caller: { windowId: number; projectId: string; viewId: ViewId },
+    tabId: string,
+    question: unknown,
+    target: unknown,
+    guest?: DiscussGuest
+  ): Promise<DiscussAnswer>
   /** Server mode: the window's own page is the hidden page, which never mounts a page tab. */
   server: boolean
 }
@@ -896,7 +973,9 @@ export function registerPageTabHandlers(router: IpcRouter, deps: PageTabHandlerD
     const tabId = tabIdShort('pageTabs.discuss', payload)
     if (hiddenPage(view)) return { ok: false, error: 'Ask Claude is not available here' }
     const { question, target } = fields('pageTabs.discuss', payload)
-    return deps.discuss({ windowId: ctx.windowId, projectId: ctx.projectId, viewId: view.viewId }, tabId, question, target)
+    const guest = router.discussGuest('pageTabs.discuss', ctx, view)
+    const caller = { windowId: ctx.windowId, projectId: ctx.projectId, viewId: view.viewId }
+    return guest === undefined ? deps.discuss(caller, tabId, question, target) : deps.discuss(caller, tabId, question, target, guest)
   })
 }
 
@@ -1748,38 +1827,23 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
   // the owner's process, tagged with the guest and added to its scope. The role is checked again after the
   // spawn's await: a guest downgraded meanwhile gets nothing and the tab it caused is closed.
   const createGuestTab = async (ctx: ProjectContext, payload: unknown, view: CallView, access: GuestOnlyAccess): Promise<TabInfo | null> => {
-    const guests = router.guestService()
-    if (!guests) throw new Error('tabs.create: refused')
+    if (!router.guestService()) throw new Error('tabs.create: refused')
     const p = fields('tabs.create', payload)
     const kind = p.kind
     if (kind !== 'claude' && kind !== 'shell') throw new Error('tabs.create: refused')
-    const live = new Set(tabs.list(ctx.projectId).map((t) => t.id))
-    // Creates still spawning count too: several frames of one socket read all run before the first spawn ends.
-    const pending = creating.get(access.id) ?? 0
-    if (guests.openedTabs(access.id).filter((id) => live.has(id)).length + pending >= MAX_GUEST_TABS) {
-      throw new Error(`tabs.create: a guest may have at most ${MAX_GUEST_TABS} tabs open`)
-    }
     const beside = besideOf(p.beside)
-    creating.set(access.id, pending + 1)
-    try {
-      const tab = await tabs.create(ctx.projectId, beside === undefined ? { kind } : { kind, beside }, ctx.windowId, access.id)
-      if (!tab) return null
-      try {
-        router.guestAccessNow('tabs.create', ctx, view)
-      } catch (err) {
-        tabs.close(ctx.projectId, tab.id)
-        throw err
-      }
-      guests.noteOpenedTab(access.id, tab.id)
-      return tab
-    } finally {
-      const left = (creating.get(access.id) ?? 1) - 1
-      if (left > 0) creating.set(access.id, left)
-      else creating.delete(access.id)
-    }
+    // The cap, the reservation, the re-check and the note: IpcRouter.openGuestTab, shared with Discuss's new session.
+    return router.openGuestTab(
+      'tabs.create',
+      ctx,
+      view,
+      access,
+      tabs.list(ctx.projectId).map((t) => t.id),
+      () => tabs.create(ctx.projectId, beside === undefined ? { kind } : { kind, beside }, ctx.windowId, access.id),
+      (tab) => tab.id,
+      (tabId) => tabs.close(ctx.projectId, tabId)
+    )
   }
-  /** Guest creates in flight, per guest id (D-21's cap counts them). */
-  const creating = new Map<string, number>()
   const createTab = (ctx: ProjectContext, payload: unknown): TabInfo | null | Promise<TabInfo | null> => {
     const p = fields('tabs.create', payload)
     const kind = p.kind
@@ -2359,8 +2423,8 @@ export interface OverlayHandlerDeps {
    * `viewId` (the caller main bound): the plugin's handlers run in it when it is a remote view.
    */
   button(windowId: number, overlayId: string, click: OverlayButtonClick, viewId: ViewId): boolean
-  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again). */
-  discuss(windowId: number, overlayId: string, target: DiscussTarget): Promise<DiscussAnswer>
+  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again); `guest`: a guest's (03e). */
+  discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest): Promise<DiscussAnswer>
 }
 
 /**
@@ -2461,12 +2525,15 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
 
   // Discuss on an overlay of the SENDER's window; a tab target is checked there to be a Claude tab
   // of that window (twice: now and just before the send).
-  router.handleProject('overlays.discuss', (ctx, payload) => {
+  router.handleProject('overlays.discuss', (ctx, payload, view) => {
     const { target } = fields('overlays.discuss', payload)
     const overlayId = overlayIdOf('overlays.discuss', payload)
     const t = (target ?? {}) as Record<string, unknown>
-    if (t.kind === 'new') return deps.discuss(ctx.windowId, overlayId, { kind: 'new' })
-    if (t.kind === 'tab' && typeof t.tabId === 'string') return deps.discuss(ctx.windowId, overlayId, { kind: 'tab', tabId: t.tabId })
+    const guest = router.discussGuest('overlays.discuss', ctx, view)
+    const send = (to: DiscussTarget): Promise<DiscussAnswer> =>
+      guest === undefined ? deps.discuss(ctx.windowId, overlayId, to) : deps.discuss(ctx.windowId, overlayId, to, guest)
+    if (t.kind === 'new') return send({ kind: 'new' })
+    if (t.kind === 'tab' && typeof t.tabId === 'string') return send({ kind: 'tab', tabId: t.tabId })
     throw new Error('overlays.discuss: target must be { kind: "tab", tabId } or { kind: "new" }')
   })
 }

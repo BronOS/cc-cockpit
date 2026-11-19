@@ -62,6 +62,11 @@ export interface QueuedText {
   id: string
   text: string
   origin: SendOrigin
+  /**
+   * The write guest whose Discuss sent it (03e A). Its access is read again when the gate is about to paste it
+   * (SessionRegistry `guestMayDeliver`): kicked, made read-only or the tab unshared meanwhile, it is dropped.
+   */
+  guestId?: string
 }
 
 export interface SessionEntry {

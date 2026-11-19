@@ -696,3 +696,57 @@ describe('03e E: slots.height', () => {
     await expect(router.dispatch(guest('gW'), 'slots.height', { frameId: 'f2', height: 1 })).rejects.toThrow(/refused/)
   })
 })
+
+describe("03e A, B: a guest's Discuss (IpcRouter.discussGuest, openGuestTab)", () => {
+  const viewOf = (id: string, role: GuestRole = 'write'): CallView => ({ viewId: 'web:5', who: { guest: id }, remote: true, access: guestAccess(id, role) })
+  function setup() {
+    let role: GuestRole | 'gone' = 'write'
+    const guests = fakeGuests({
+      access: (who: Who) => (who === 'owner' ? { kind: 'owner' } : role === 'gone' ? { kind: 'revoked' } : guestAccess((who as { guest: string }).guest, role))
+    })
+    const router = newRouter()
+    router.setGuestDeps(guestDeps(guests))
+    return { router, guests, setRole: (r: GuestRole | 'gone') => void (role = r) }
+  }
+
+  it('none for the owner; for a guest, allowed reads the access live: write, the project, the tab visible', () => {
+    const { router, setRole } = setup()
+    expect(router.discussGuest('pageTabs.discuss', CTX, { viewId: 'web:3', who: 'owner', remote: true })).toBeUndefined()
+    const g = router.discussGuest('pageTabs.discuss', CTX, viewOf('gW'))!
+    expect(g).toMatchObject({ id: 'gW', viewId: 'web:5' })
+    expect(g.allowed({ kind: 'tab', tabId: 't1' })).toBe(true)
+    expect(g.allowed({ kind: 'tab', tabId: 't9' })).toBe(false)
+    expect(g.allowed({ kind: 'new' })).toBe(true)
+    setRole('read')
+    expect(g.allowed({ kind: 'tab', tabId: 't1' })).toBe(false)
+    expect(g.allowed({ kind: 'new' })).toBe(false)
+    setRole('gone')
+    expect(g.allowed({ kind: 'tab', tabId: 't1' })).toBe(false)
+    // A guest view with no bound access is refused outright (03e D).
+    expect(() => router.discussGuest('pageTabs.discuss', CTX, { viewId: 'web:5', who: { guest: 'gW' }, remote: true })).toThrow(/refused/)
+  })
+
+  it("a Discuss new session counts against the guest's cap with the opens in flight, is noted as its tab, and closes if access ended", async () => {
+    const { router, guests, setRole } = setup()
+    const g = router.discussGuest('overlays.discuss', CTX, viewOf('gW'))!
+    guests.opened.push('o1', 'o2')
+    const live = ['o1', 'o2', 'x']
+    // Two opens in flight: the cap (4) counts them before either has spawned.
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const first = g.openTab(live, async () => (await gate, { tabId: 'n1' }), (t) => t.tabId, () => undefined)
+    const second = g.openTab(live, async () => (await gate, { tabId: 'n2' }), (t) => t.tabId, () => undefined)
+    await expect(g.openTab(live, async () => ({ tabId: 'n3' }), (t) => t.tabId, () => undefined)).rejects.toThrow(/at most 4 tabs/)
+    release()
+    await expect(first).resolves.toEqual({ tabId: 'n1' })
+    await expect(second).resolves.toEqual({ tabId: 'n2' })
+    expect(guests.opened).toEqual(['o1', 'o2', 'n1', 'n2'])
+    // Downgraded while it opened: the new tab is closed and not noted.
+    guests.opened.length = 0
+    const closed: string[] = []
+    setRole('read')
+    await expect(g.openTab([], async () => ({ tabId: 'n4' }), (t) => t.tabId, (id) => void closed.push(id))).rejects.toThrow(/refused/)
+    expect(closed).toEqual(['n4'])
+    expect(guests.opened).toEqual([])
+  })
+})
