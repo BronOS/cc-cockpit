@@ -1,0 +1,17 @@
+{
+  "id": "test.guestplain",
+  "name": "Guest Plain",
+  "version": "1.0.0",
+  "api": 1,
+  "main": "host.js",
+  "contributes": {
+    "panels": [
+      {
+        "id": "counter",
+        "title": "Counter",
+        "entry": "panel.html",
+        "defaultZone": "left"
+      }
+    ]
+  }
+}
