@@ -24,8 +24,18 @@ export type WindowLinkOpener = (url: string, windowId: number) => Promise<void>
  *   navigation. One exception, still never a window: a link clicked in the reviewer's Original view
  *   of a mail (a frame with no script, so a popup request is its only signal) has its URL checked
  *   and handed to the system browser (mail-frame-links.ts).
+ *
+ * `server` (server mode, design-web.md §9.8; docs/plans/20261119-server-mode-mac.md decision 1): the
+ * window is the hidden page and is never shown, on Linux as on macOS, where there is no Ozone headless
+ * and a shown window would appear on the Mac's screen. Its page gets `backgroundThrottling: false`, so
+ * its timers (`tabs.screenAsk`, the mirror's asks) keep their periods while nothing is on screen
+ * (§9.15: a never-shown window's page read `visible` anyway; the flag is the guard).
  */
-export function createWindow(options: BrowserWindowConstructorOptions, openLink: WindowLinkOpener): BrowserWindow {
+export function createWindow(
+  options: BrowserWindowConstructorOptions,
+  openLink: WindowLinkOpener,
+  { server = false }: { server?: boolean } = {}
+): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -50,7 +60,9 @@ export function createWindow(options: BrowserWindowConstructorOptions, openLink:
       webSecurity: true,
       allowRunningInsecureContent: false,
       webviewTag: false,
-      experimentalFeatures: false
+      experimentalFeatures: false,
+      // After the caller's spread, so no caller turns it back on for the hidden page.
+      ...(server ? { backgroundThrottling: false } : {})
     }
   })
 
@@ -81,7 +93,8 @@ export function createWindow(options: BrowserWindowConstructorOptions, openLink:
   const windowId = win.id
   const onWindowOpen = windowOpenHandler({ openExternal: (url) => openLink(url, windowId) })
   win.webContents.setWindowOpenHandler((details) => onWindowOpen(details, win.webContents.focusedFrame))
-  win.once('ready-to-show', () => win.show())
+  // Never in server mode: nobody is at the screen, and on macOS the hidden page would appear on it.
+  if (!server) win.once('ready-to-show', () => win.show())
   return win
 }
 

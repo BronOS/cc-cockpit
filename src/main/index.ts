@@ -167,7 +167,7 @@ import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
 import { electronPowerSaveBackend } from './power/electron-power'
 import { KeepAwake, keepAwakeOf } from './power/keep-awake'
-import { PowerHolds } from './power/power-holds'
+import { PowerHolds, type PowerHold } from './power/power-holds'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
 import {
@@ -217,6 +217,7 @@ import { serverDialogs, type Dialogs } from './dialogs/dialogs'
 import { systemOpenExternal } from './external/electron-open-external'
 import { createOpenExternal, type OpenExternal, type OpenTarget } from './external/open-external'
 import { armParentWatch, decideServerMode, serverStart } from './server-mode'
+import { applyBeforeReady, holdForRun, serverPlatform } from './server-platform'
 import { handleSecondInstance, launchHasDisplay, loseLaunch } from './second-launch'
 import { runStartOrder } from './server-start'
 import { DEFAULT_MARKETPLACE_URL } from '../shared/marketplace'
@@ -367,9 +368,6 @@ if (serverRun.run) {
       quit: quitLikeSigterm
     })
   }
-  // A darwin server draws nothing on screen (design-web.md §9.15: the spike ran GPU-off); this must
-  // come before `ready`, which start() only waits for.
-  if (serverRun.server && process.platform === 'darwin') app.disableHardwareAcceleration()
   start(serverRun.server)
 }
 
@@ -395,6 +393,15 @@ function testPreviewFetcher(inner: PreviewFetcher, testRun: boolean): PreviewFet
 }
 
 function start(server: boolean): void {
+  // What the platform needs beyond the shared server rules (server-platform.ts): on a darwin server,
+  // before `ready`, the accessory policy (no Dock icon), GPU off and the mock keychain; the power hold
+  // is taken once `ready` is in (below). The desktop and a Linux server apply nothing here.
+  const platformRow = serverPlatform(process.platform, server)
+  applyBeforeReady(platformRow, {
+    setActivationPolicy: (policy) => app.setActivationPolicy(policy),
+    disableHardwareAcceleration: () => app.disableHardwareAcceleration(),
+    appendSwitch: (name) => app.commandLine.appendSwitch(name)
+  })
   // Native dialogs (dialogs/): in server mode nothing reaches Electron's `dialog`, which aborts main
   // under Ozone headless; a message box rejects, an open dialog is canceled, an error box is logged.
   const dialogs: Dialogs<BrowserWindow> = server ? serverDialogs() : electronDialogs()
@@ -903,7 +910,11 @@ function start(server: boolean): void {
   const windows = new WindowManager({
     // A link a window's page asks to open (the reviewer's mail frame) comes from its desktop page.
     // A mail's own link (`page`): in server mode only a notice to click, never opened at once.
-    factory: new ElectronWindowFactory((url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) }, { page: true })),
+    // `server`: the factory never shows a window (the hidden page) and unthrottles its page (create-window.ts).
+    factory: new ElectronWindowFactory(
+      (url, windowId) => openExternal(url, { windowId, viewId: desktopViewId(windowId) }, { page: true }),
+      server
+    ),
     registry,
     platform: process.platform,
     quit: () => app.quit(),
@@ -3773,6 +3784,15 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // What server-platform.ts applied for this run and the live power holds' owners (a darwin
+          // server: 'server-mode' for the whole run), plus what Electron reports back for the row.
+          serverPlatform: () => ({
+            row: platformRow,
+            held: serverHold !== undefined,
+            holdOwners: powerHolds.owners(),
+            hardwareAcceleration: app.isHardwareAccelerationEnabled(),
+            mockKeychain: app.commandLine.hasSwitch('use-mock-keychain')
+          }),
           // Guests (design-guests §3, spec-review 29): an invite through the invite dialog's own service
           // (GuestStore.invite, what guests.invite calls, with its checks), the guest list and a kick, so a
           // spec can make a guest without driving the dialog (only the hand-test spec drives it).
@@ -4154,9 +4174,13 @@ function start(server: boolean): void {
     if (!isOffscreenWindow(win)) appMenu.refresh(win)
   })
 
+  // The darwin server's power hold, taken once at `ready` and kept for the run (server-platform.ts;
+  // the process exit ends it). Read by the `serverPlatform` test hook.
+  let serverHold: PowerHold | undefined
   app
     .whenReady()
     .then(async () => {
+      serverHold = holdForRun(platformRow, powerHolds)
       // server-start.ts has the order. The socket first, so the first Claude tab already has a live
       // socket to report to (milliseconds; the stale probe is capped at 500 ms; on the desktop false
       // only logs and its tabs get no CC_COCKPIT_SOCK, see the TabManager `sock` above). In server

@@ -67,6 +67,38 @@ test('server mode: main runs as a server; a terminal tab opened in the browser t
   }
 })
 
+test('server mode: nothing on the screen; the platform row applied; the hidden page stays visible', async () => {
+  test.setTimeout(60_000)
+  server = await launchServer()
+  // server-platform.ts: on macOS the accessory policy, GPU off, the mock keychain and the whole-run power
+  // hold; on Linux nothing (the re-exec's switches do that part, no hold).
+  const darwin = process.platform === 'darwin'
+  const seen = await server.cockpit.hook<{
+    row: { accessory: boolean; gpuOff: boolean; mockKeychain: boolean; holdAwake: boolean }
+    held: boolean
+    holdOwners: string[]
+    hardwareAcceleration: boolean
+    mockKeychain: boolean
+  }>('serverPlatform')
+  expect(seen.row).toEqual({ accessory: darwin, gpuOff: darwin, mockKeychain: darwin, holdAwake: darwin })
+  expect(seen.held).toBe(darwin)
+  // Only the server's hold: no Claude tab works, so keep-awake holds nothing.
+  expect(seen.holdOwners).toEqual(darwin ? ['server-mode'] : [])
+  expect(seen.mockKeychain).toBe(darwin)
+  if (darwin) expect(seen.hardwareAcceleration).toBe(false)
+  // The blocker is the OS's, not only main's record: the pid holds a no-idle-sleep assertion.
+  if (darwin) {
+    const assertions = execFileSync('pmset', ['-g', 'assertions'], { encoding: 'utf8' })
+    const mine = assertions.split('\n').filter((line) => line.includes(`pid ${server!.pid}(`))
+    expect(mine.some((line) => line.includes('NoIdleSleepAssertion')), assertions).toBe(true)
+  }
+  // The page was never shown, yet reads visible (design-web.md §9.15; under Playwright's attach this is
+  // weak evidence, the spike's plain spawn is the stronger one) and its timers are not throttled.
+  expect(await server.cockpit.page.evaluate(() => document.visibilityState)).toBe('visible')
+  // No window and no Dock icon (expectMainAlive checks both).
+  await expectMainAlive(server)
+})
+
 test('server mode: the dialogs main wired never reach Electron; main survives each call', async () => {
   test.setTimeout(60_000)
   server = await launchServer()
