@@ -91,8 +91,15 @@ test('a Direct guest invite to a self-signed host: one Trust prompt for the pinn
     await expect(remote).toHaveURL(`${origin}/?project=${encodeURIComponent(web.projectId)}`, { timeout: 20_000 })
     await remote.locator('.tabs-pane').waitFor({ timeout: 20_000 })
     await expect.poll(async () => (await guestList(host.cockpit)).find((g) => g.id === invited.guestId)?.state).not.toBe('pending')
-    // The picker's record says what it is: a guest's, at that origin.
-    await expect(guest.cockpit.page.getByText(`Guest at ${origin}`)).toBeVisible()
+    // Saved only now the window opened (design-remote-desktop §5.4): a guest's Direct record at that origin,
+    // with the pin (D-29), which the picker labels "Guest at <origin>" (serverViaText, picker-model.test.ts).
+    // Read from app.json: main closed the picker when the remote window opened.
+    await expect
+      .poll(() => {
+        const app = JSON.parse(readFileSync(join(guest.cockpit.dataDir, 'app.json'), 'utf8')) as { remoteServers?: Array<Record<string, unknown>> }
+        return (app.remoteServers ?? []).map((s) => ({ guest: s.guest, via: s.via, certSha256: s.certSha256 }))
+      })
+      .toEqual([{ guest: true, via: { kind: 'direct', origin }, certSha256: pin }])
   } finally {
     await guest.close()
     await host.close()

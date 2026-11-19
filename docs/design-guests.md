@@ -672,8 +672,9 @@ spend); Files and Editor per §18 item 19; Team per item 20.
 ## 18. Review answers
 
 The answers to the review of the interfaces, numbered as the code cites them ("spec-review n"); items about
-work split and tests (1, 2, 26, 28 to 32) are left out: item 1 gave each file one owner, item 29 put the guest test
-fixtures and `__ccTest` hooks in `test/fixtures` and `main/test-hooks.ts`.
+work split and tests (1, 2, 26, 28 to 32) are left out: item 1 gave each file one owner (and is where `restore.ts`'s
+`onRestored(projectId, idMap)` hook comes from, which `GuestStore.remap` consumes), item 29 put the guest test fixtures
+and `__ccTest` hooks in `test/fixtures` and `main/test-hooks.ts`.
 
 3. **Where invoke answers are filtered, and the one visibility predicate**. Pure functions in
    `src/shared/guest-filter.ts`, used by the connection's sink and snapshot and by the router's handlers (`tabs.list`, `sessions.list`,

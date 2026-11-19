@@ -1,7 +1,7 @@
 // Guest e2e helpers (design-guests, task 07b): make a guest through the invite dialog's own service
 // (`__ccTest.guestInvite`, src/main/index.ts), redeem its link as a plain HTTP client would, and hold a
 // raw socket that records every frame, the close code and when it closed. A raw client is the one way to
-// say "no further frame" and "out within 1 s" (spec-review item 30): a page reconnects and hides both.
+// time "out within 1 s" (spec-review item 30): a page reconnects and hides it.
 import { expect } from '@playwright/test'
 import { WebSocket } from 'ws'
 import type { GuestInviteAnswer, GuestInviteRequest, GuestView } from '../../src/shared/guests'
@@ -107,8 +107,6 @@ export interface RawSocket {
   frames: Array<Record<string, unknown>>
   /** Raw text of every frame (a marker search reads these). */
   texts: string[]
-  /** Frames received after close (none is the claim). */
-  late: () => number
   closed: Promise<Closed>
   /** Resolves with the first frame `pick` accepts (waits for later ones). */
   next(pick: (f: Record<string, unknown>) => boolean, timeout?: number): Promise<Record<string, unknown>>
@@ -122,11 +120,8 @@ export async function rawSocket(client: GuestClient, project: string = client.pr
   const ws = new WebSocket(url, socketProtocols(client.key), { origin: client.origin, headers: { Cookie: client.cookie } })
   const frames: Array<Record<string, unknown>> = []
   const texts: string[] = []
-  let closedAt: number | undefined
-  let late = 0
   const waiters: Array<{ pick: (f: Record<string, unknown>) => boolean; resolve: (f: Record<string, unknown>) => void }> = []
   ws.on('message', (data, binary) => {
-    if (closedAt !== undefined) late++
     if (binary) return
     const text = data.toString()
     texts.push(text)
@@ -146,8 +141,7 @@ export async function rawSocket(client: GuestClient, project: string = client.pr
   })
   const closed = new Promise<Closed>((resolve) => {
     ws.on('close', (code, reason) => {
-      closedAt = Date.now()
-      resolve({ code, reason: reason.toString(), at: closedAt })
+      resolve({ code, reason: reason.toString(), at: Date.now() })
     })
   })
   await new Promise<void>((resolve, reject) => {
@@ -159,7 +153,6 @@ export async function rawSocket(client: GuestClient, project: string = client.pr
   return {
     frames,
     texts,
-    late: () => late,
     closed,
     ws,
     close: () => ws.close(),

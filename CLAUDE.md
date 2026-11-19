@@ -382,7 +382,7 @@ only (never a host on another machine); the server-mode guest e2e specs are writ
 - Guest sockets have their own 10 s ping (`GUEST_HEARTBEAT_MS`, `gateway.ts`); the owner's 30 s beat stays. Every guest
   end (kick, lifetime, revoke, forgotten project) goes through `GuestStore`'s one path: close the views with the code
   first, then tombstone and revoke. Invite tokens are kept only as SHA-256 hashes, live only in the link's fragment, and
-  are never logged (the log names guests by id, never a name or link).
+  are never logged (`web-access.log` names a guest by its invite name and device id, never the link or the token).
 - Plugin guest visibility (design.md §5 "Guests"): hidden by default, bundled included, one resolver
   (`shared/guest-access.ts`) for main and the Plugins page; a plugin learns `access` from main's port tag only; read
   guests of a plugin that is not `guests.aware` get one-way ports (D-17). Bundled plugins adopt it through the public API.

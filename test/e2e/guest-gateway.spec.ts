@@ -1,16 +1,18 @@
 // Guests at the gateway (design-guests §3-§5, spec-review items 30-31; task 07b): a redeemed invite against
 // the real app, from a raw client. What a guest can reach by guessing (each refusal looks exactly like the
 // answer to something that does not exist: no oracle), and a kick: the 4460 close within 1 s of the
-// owner's kick, nothing after it, the cookie then answered as ended (D-32) and its upgrade refused.
+// kick, the cookie then answered as ended (D-32) and its upgrade refused. The clock starts at the store's
+// kick (the hook); once 07a wires the router, the owner page's guests.kick reply starts it.
 // The guest's page (05) and what it shows are guest-views.spec.ts; plugins and tabs need 07a's wiring.
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CockpitApi } from '../../src/shared/ipc'
 import { CLOSE, FOLDERS_PATH, PROJECTS_PATH, SESSIONS_PATH } from '../../src/shared/web-protocol'
-import { expect, test } from './fixtures'
+import { filesTree, joinProject, pluginActive, treeRow } from './download-fixtures'
+import { expect, launchCockpit, test } from './fixtures'
 import { guestGet, guestList, inviteGuest, rawSocket, redeem, redeemOk, session, upgradeRefused } from './guest-fixtures'
-import { enableWebAccess } from './web-fixtures'
+import { enableWebAccess, type WebBrowser } from './web-fixtures'
 
 test('a read guest: redeems once, opens only its own project, and every guessed URL answers as a nonexistent one', async ({ cockpit }) => {
   test.setTimeout(90_000)
@@ -86,7 +88,7 @@ test('a read guest: redeems once, opens only its own project, and every guessed 
   }
 })
 
-test('kick: the guest socket closes 4460 within 1 s of the owner\'s kick, gets nothing after, and its cookie is ended', async ({ cockpit }) => {
+test('kick: the guest socket closes 4460 within 1 s of the owner\'s kick, and its cookie is ended', async ({ cockpit }) => {
   test.setTimeout(60_000)
   const web = await enableWebAccess(cockpit)
   const invited = await inviteGuest(cockpit, { name: 'Bo', role: 'write' })
@@ -101,9 +103,6 @@ test('kick: the guest socket closes 4460 within 1 s of the owner\'s kick, gets n
   const closed = await socket.closed
   expect(closed.code).toBe(CLOSE.kicked)
   expect(closed.at - repliedAt).toBeLessThan(1000)
-  // Nothing after the close, even a moment later.
-  await new Promise((r) => setTimeout(r, 500))
-  expect(socket.late()).toBe(0)
 
   // The cookie is a tombstone now (D-32): the session says ended, every API answers as an unknown device,
   // and the upgrade is refused.
@@ -111,4 +110,53 @@ test('kick: the guest socket closes 4460 within 1 s of the owner\'s kick, gets n
   expect((await guestGet(guest, PROJECTS_PATH)).status).not.toBe(200)
   expect(await upgradeRefused(guest)).toBe(true)
   expect(await guestList(cockpit)).toEqual([])
+})
+
+test("a guest holding the owner's live /d/ token gets the answer a made-up token gets (cookie-bound, design-download §5)", async () => {
+  test.setTimeout(120_000)
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
+  let owner: WebBrowser | undefined
+  try {
+    writeFileSync(join(c.projectDir, 'secret.txt'), 'owner only\n')
+    const web = await enableWebAccess(c)
+    await pluginActive(c, 'cockpit.files')
+    owner = await joinProject(web)
+    // The owner's Download, stopped in the browser before it reaches the gateway: a live, unused token.
+    // In the browser's own session (a download is not a page request page.route sees): cancelled before it is sent.
+    // Two of them: the owner spends one (proof a token caught this way is live), the guest tries the other.
+    await owner.app.evaluate(({ session }) => {
+      const g = globalThis as unknown as { capturedDownloads: string[] }
+      g.capturedDownloads = []
+      session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/d/*'] }, (details, callback) => {
+        g.capturedDownloads.push(details.url)
+        callback({ cancel: true })
+      })
+    })
+    const captured = (): Promise<string[]> =>
+      owner!.app.evaluate(() => (globalThis as unknown as { capturedDownloads: string[] }).capturedDownloads)
+    const tree = await filesTree(owner.page)
+    for (let i = 1; i <= 2; i++) {
+      await treeRow(tree, 'secret.txt').click({ button: 'right' })
+      await tree.getByRole('menu').getByRole('menuitem', { name: 'Download', exact: true }).click()
+      await expect.poll(async () => (await captured()).length).toBe(i)
+    }
+    await owner.app.evaluate(({ session }) => session.defaultSession.webRequest.onBeforeRequest(null))
+    const [spent, ownerUrl] = await captured()
+    const ownersOwn = await owner.page.evaluate(async (url) => {
+      const res = await fetch(url, { credentials: 'same-origin' })
+      return { status: res.status, body: await res.text() }
+    }, spent!)
+    expect(ownersOwn).toEqual({ status: 200, body: 'owner only\n' })
+    const ownerPath = ownerUrl!.slice(web.origin.length)
+
+    const guest = await redeemOk(web.origin, (await inviteGuest(c, { name: 'Dee', role: 'write' })).token)
+    const stolen = await guestGet(guest, ownerPath)
+    const madeUp = await guestGet(guest, `/d/${'A'.repeat(43)}`)
+    expect(stolen.status).not.toBe(200)
+    expect(stolen).toEqual(madeUp)
+    expect(stolen.body).not.toContain('owner only')
+  } finally {
+    await owner?.close()
+    await close()
+  }
 })

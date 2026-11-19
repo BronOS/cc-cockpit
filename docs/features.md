@@ -738,7 +738,8 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
 - A plugin whose page asks its plugin for its state first shows a read-only guest nothing unless the plugin checks who
   is looking.
 - Guests get no notices, sounds or desktop notifications; plugins do not see presence.
-- Nothing logs what a guest did; `web-access.log` has only the invites, kicks and role changes, by guest id.
+- Nothing logs what a guest did; `web-access.log` has only the invites, joins, role and scope changes and ends, by the
+  guest's name and device (never the link).
 - Joining from another cc-cockpit app over a self-signed certificate is tested end to end against a host on this same
   computer only, not one on another machine. Server-mode guest specs (a `ccc web invite` link end to end) wait for
   server mode on macOS; only the unit tests ran for them.
