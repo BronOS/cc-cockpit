@@ -1169,12 +1169,24 @@ function start(server: boolean): void {
       const projectId = projectOfWindow(windowId)
       return projectId === undefined ? [] : tabs.list(projectId).map((t) => t.id)
     },
+    // A guest's new session whose access ended while it opened: it was announced, so every view hears it go too.
     closeTab: (windowId, tabId) => {
       const projectId = projectOfWindow(windowId)
-      if (projectId !== undefined) tabs.close(projectId, tabId)
+      if (projectId === undefined) return
+      const gen = tabs.list(projectId).find((t) => t.id === tabId)?.gen
+      tabs.close(projectId, tabId)
+      if (gen !== undefined) sendToProject(projectId, 'tabs.removed', { tabId, gen })
     },
-    // A guest's Discuss selects in its own view only (design-guests §7): never the owner's selection.
-    selectTab: (windowId, tabId, view) => (view === undefined ? sendToWindow(windowId, 'tabs.select', { tabId }) : void views.toView(view, 'tabs.select', { tabId })),
+    // A guest's Discuss selects in its own view only (design-guests §7): never the owner's selection. The tab is told
+    // to that view first: a guest with a selected-tabs scope had its `tabs.added` dropped (announced before the
+    // router noted the new session as the guest's, D-21), and a page selects only a tab it has.
+    selectTab: (windowId, tabId, view) => {
+      if (view === undefined) return sendToWindow(windowId, 'tabs.select', { tabId })
+      const projectId = projectOfWindow(windowId)
+      const tab = projectId === undefined ? undefined : tabs.list(projectId).find((t) => t.id === tabId)
+      if (tab) views.toView(view, 'tabs.added', tab)
+      views.toView(view, 'tabs.select', { tabId })
+    },
     // The window's own project's override, else the global one; read now, at send time.
     prompt: (windowId) => {
       const projectId = projectOfWindow(windowId)
