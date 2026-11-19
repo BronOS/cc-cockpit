@@ -2117,6 +2117,11 @@ export interface IpcEventMap {
   'tabs.guestCloseAsk': { requestId: string; tabId: string; guestId: string; guestName: string; title: string }
   /** The ask is over (answered, timed out or the tab is gone): owner views take their dialog down. */
   'tabs.guestCloseSettled': { requestId: string }
+  /**
+   * To the asking guest's own views only (D-9): an owner answered its close ask, or nobody did in time (`closed`
+   * false: the tab stays open). Not sent when the ask went moot (the tab gone, the window closed).
+   */
+  'tabs.guestCloseDone': { tabId: string; closed: boolean }
 }
 
 export type InvokeChannel = keyof IpcInvokeMap
@@ -2382,7 +2387,8 @@ export const EVENT_CHANNELS = [
   'guests.changed',
   'presence.changed',
   'tabs.guestCloseAsk',
-  'tabs.guestCloseSettled'
+  'tabs.guestCloseSettled',
+  'tabs.guestCloseDone'
 ] as const satisfies readonly EventChannel[]
 
 /** Compiles only when the two lists name every channel of their map. */
@@ -2792,6 +2798,7 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'presence.changed': 'yes',
   'tabs.guestCloseAsk': 'adapted',
   'tabs.guestCloseSettled': 'adapted',
+  'tabs.guestCloseDone': 'adapted',
   'tabs.guestCloseAnswer': 'adapted'
 })
 

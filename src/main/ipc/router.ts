@@ -1807,8 +1807,9 @@ export function registerTabHandlers(router: IpcRouter, tabs: TabHandlerDeps): vo
     if (gen !== undefined) tabs.others?.(ctx.windowId, viewId, { channel: 'tabs.removed', payload: { tabId, gen } })
   }
   // The guest gets `{ asked: true }` at once ("Asked <owner>"); the tab closes only on an owner's Close. The tab is
-  // checked again then (closed meanwhile: nothing). The asking guest is not: the Close is the owner's own decision
-  // about the owner's tab, and stands even if the guest left meanwhile. Every view is told, the asker included.
+  // checked again then (closed meanwhile: nothing). A guest that ENDED meanwhile (kicked, revoked, expired) has its
+  // asks settled as moot (GuestStore `ended`, settleGuestCloseAsks), so no Close lands; one that only left still
+  // gets the owner's Close. Every view is told, the asker included; the asker's views also get `tabs.guestCloseDone`.
   const askOwnerToClose = (ctx: ProjectContext, view: CallView, access: GuestOnlyAccess, tabId: string): { asked: true } => {
     const ask = tabs.guest?.closeAsk
     const tab = tabs.list(ctx.projectId).find((t) => t.id === tabId)

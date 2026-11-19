@@ -3,10 +3,18 @@
 // nobody answering keeps the tab (false), and settleGoneCloseAsks ends the asks of tabs that ended another way.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
-import { createGuestCloseAsks, GUEST_CLOSE_ASK_MS, settleGoneCloseAsks, type GuestCloseAsk } from '../../src/main/tabs/guest-close-asks'
+import {
+  createGuestCloseAsks,
+  GUEST_CLOSE_ASK_MS,
+  settleGoneCloseAsks,
+  settleGuestCloseAsks,
+  type GuestCloseAsk
+} from '../../src/main/tabs/guest-close-asks'
 
-type Sent = { windowId: number; channel: string; payload: unknown }
+type Sent = { windowId: number; channel: string; payload: unknown; guestId?: string }
 let sent: Sent[]
+/** What the asking guest's views were told (`tabs.guestCloseDone`). */
+const done = (): Sent[] => sent.filter((s) => s.channel === 'tabs.guestCloseDone')
 
 const ASK: GuestCloseAsk = { tabId: 't1', guestId: 'g1', guestName: 'Ann', title: 'build' }
 
@@ -15,6 +23,9 @@ function setup(timeoutMs?: number, toWindow = true) {
     toWindow: (windowId: number, channel: 'tabs.guestCloseAsk' | 'tabs.guestCloseSettled', payload: unknown) => {
       sent.push({ windowId, channel, payload })
       return toWindow
+    },
+    toGuest: (windowId: number, guestId: string, channel: 'tabs.guestCloseDone', payload: unknown) => {
+      sent.push({ windowId, channel, payload, guestId })
     }
   }
   return createGuestCloseAsks(views, timeoutMs)
@@ -47,8 +58,21 @@ describe('createGuestCloseAsks', () => {
     await expect(p).resolves.toBe(true)
     expect(sent[1]).toEqual({ windowId: 4, channel: 'tabs.guestCloseSettled', payload: { requestId } })
     expect(asks.answer(4, requestId, false)).toBe(false)
-    expect(sent).toHaveLength(2)
+    expect(sent.filter((s) => s.channel !== 'tabs.guestCloseDone')).toHaveLength(2)
     expect(asks.size).toBe(0)
+  })
+
+  it("the asking guest's views hear the owner's answer at once: Close and Keep", async () => {
+    const asks = setup()
+    const closing = asks.ask(4, ASK)
+    asks.answer(4, (sent[0]!.payload as { requestId: string }).requestId, true)
+    await closing
+    expect(done()).toEqual([{ windowId: 4, channel: 'tabs.guestCloseDone', guestId: 'g1', payload: { tabId: 't1', closed: true } }])
+    sent = []
+    const keeping = asks.ask(4, { ...ASK, tabId: 't2', guestId: 'g2' })
+    asks.answer(4, (sent[0]!.payload as { requestId: string }).requestId, false)
+    await keeping
+    expect(done()).toEqual([{ windowId: 4, channel: 'tabs.guestCloseDone', guestId: 'g2', payload: { tabId: 't2', closed: false } }])
   })
 
   it('an answer from another window is ignored', async () => {
@@ -68,7 +92,9 @@ describe('createGuestCloseAsks', () => {
     expect(asks.size).toBe(1)
     vi.advanceTimersByTime(1)
     await expect(p).resolves.toBe(false)
-    expect(sent.map((s) => s.channel)).toEqual(['tabs.guestCloseAsk', 'tabs.guestCloseSettled'])
+    expect(sent.map((s) => s.channel)).toEqual(['tabs.guestCloseAsk', 'tabs.guestCloseSettled', 'tabs.guestCloseDone'])
+    // Kept: the guest's page says so now, not after its own timer.
+    expect(done()[0]).toMatchObject({ guestId: 'g1', payload: { tabId: 't1', closed: false } })
   })
 
   it('a custom timeout is honoured', async () => {
@@ -81,6 +107,15 @@ describe('createGuestCloseAsks', () => {
   it('no view took the ask: refused at once', async () => {
     const asks = setup(undefined, false)
     await expect(asks.ask(4, ASK)).resolves.toBe(false)
+    expect(done()).toEqual([])
+  })
+
+  it('a moot ask (window closed) tells the guest nothing', async () => {
+    const asks = setup()
+    const p = asks.ask(4, ASK)
+    asks.windowClosed(4)
+    await expect(p).resolves.toBe(false)
+    expect(done()).toEqual([])
   })
 })
 
@@ -95,6 +130,8 @@ describe('settleGoneCloseAsks', () => {
     const settled = sent.filter((s) => s.channel === 'tabs.guestCloseSettled')
     expect(settled).toHaveLength(1)
     const liveId = (sent[1]!.payload as { requestId: string }).requestId
+    // The gone tab's removal says it all: no outcome for it.
+    expect(done()).toEqual([])
     expect(asks.answer(4, liveId, true)).toBe(true)
     await expect(live).resolves.toBe(true)
   })
@@ -104,6 +141,26 @@ describe('settleGoneCloseAsks', () => {
     const isLive = vi.fn(() => false)
     settleGoneCloseAsks(asks, isLive)
     expect(isLive).not.toHaveBeenCalled()
+  })
+})
+
+describe('settleGuestCloseAsks (an ended guest)', () => {
+  it("settles that guest's asks on every owner screen, keeps the others, and tells nobody an outcome", async () => {
+    const asks = setup()
+    const mine = asks.ask(4, ASK)
+    const mine2 = asks.ask(5, { ...ASK, tabId: 't2' })
+    const other = asks.ask(4, { ...ASK, guestId: 'g2' })
+    settleGuestCloseAsks(asks, 'g1')
+    await expect(mine).resolves.toBe(false)
+    await expect(mine2).resolves.toBe(false)
+    expect(asks.size).toBe(1)
+    expect(sent.filter((s) => s.channel === 'tabs.guestCloseSettled').map((s) => s.windowId)).toEqual([4, 5])
+    expect(done()).toEqual([])
+    // A late Close from an owner's dialog finds nothing, so no tab closes for an ended guest.
+    const mineId = (sent[0]!.payload as { requestId: string }).requestId
+    expect(asks.answer(4, mineId, true)).toBe(false)
+    asks.answer(4, (sent[2]!.payload as { requestId: string }).requestId, false)
+    await expect(other).resolves.toBe(false)
   })
 })
 

@@ -189,7 +189,7 @@ import { TabManager } from './tabs/tab-manager'
 import { TabGroups } from './tabs/tab-groups'
 import type { PluginPlacement } from './plugins/host-api'
 import { viewInputHandler } from './tabs/view-input'
-import { createGuestCloseAsks, settleGoneCloseAsks } from './tabs/guest-close-asks'
+import { createGuestCloseAsks, settleGoneCloseAsks, settleGuestCloseAsks } from './tabs/guest-close-asks'
 import { PluginGuestAccessStore } from './settings/plugin-guest-access'
 import {
   downloadViewAllowedOf,
@@ -1069,8 +1069,17 @@ function start(server: boolean): void {
   // `sessions.closeSettled`), or false when it closes or the wait runs out. False at once when no
   // view of the window took the ask (nobody could answer it).
   // A guest's close of a tab it did not open, asked of the owner's views (D-9, tabs/guest-close-asks.ts): every view
-  // of the window gets it (guests' sinks drop it), the first owner answer wins; the router sends the answers.
-  const guestCloseAsks = createGuestCloseAsks(views)
+  // of the window gets it (guests' sinks drop it), the first owner answer wins; the router sends the answers. The
+  // outcome goes to the asking guest's own views of the window, matched by the view's bound guest id.
+  const guestCloseAsks = createGuestCloseAsks({
+    toWindow: (windowId, channel, payload) => views.toWindow(windowId, channel, payload),
+    toGuest: (windowId, guestId, channel, payload) => {
+      for (const viewId of views.viewsOf(windowId)) {
+        const who = views.whoOf(viewId)
+        if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)
+      }
+    }
+  })
   const closeAsks = new CloseAsks({
     send: (windowId, ask) => views.toWindow(windowId, 'sessions.closeAsk', ask),
     settled: (windowId, requestId) => views.toWindow(windowId, 'sessions.closeSettled', { requestId }),
@@ -2319,6 +2328,8 @@ function start(server: boolean): void {
     ),
     // "Bob joined": a new device signed in. Guests' views drop core notices (guest-events.ts `notices.show`).
     notify: (text) => coreNotices.show({ kind: 'new-device', text, title: 'cc-cockpit web access' }),
+    // An ended guest's close asks leave the owner's screens at once (D-9).
+    ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId),
     log: warnLog
   })
   guestsForget.project = (id) => guestStore.projectRemoved(id)

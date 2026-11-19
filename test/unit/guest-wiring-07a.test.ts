@@ -115,7 +115,7 @@ describe('guestTabDeps', () => {
         viewInput: (_p, _t, data) => data
       },
       userInput: (p, t, d) => void calls.push(`userInput ${p} ${t} ${JSON.stringify(d)}`),
-      closeAsks: createGuestCloseAsks({ toWindow: () => true })
+      closeAsks: createGuestCloseAsks({ toWindow: () => true, toGuest: () => undefined })
     }
     return { deps: guestTabDeps(s), calls }
   }
@@ -233,7 +233,7 @@ describe('downloadViewAllowedOf (ctx.files.download, D-23)', () => {
 
 describe('ready replays pending guest close asks (D-9)', () => {
   it("windowSnapshot lists the window's pending guest close asks; absent, none", async () => {
-    const asks = createGuestCloseAsks({ toWindow: () => true })
+    const asks = createGuestCloseAsks({ toWindow: () => true, toGuest: () => undefined })
     const pending = asks.ask(WINDOW, { tabId: 't2', guestId: 'g1', guestName: 'Bob', title: 'zsh' })
     const base: SnapshotSources = {
       tabs: { list: () => [] },
@@ -350,6 +350,9 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain('presence.viewLeft(desktopViewId(windowId))')
     expect(INDEX).toContain('{ tabs, layouts, overlays, closeAsks, guestCloseAsks, linkAsks,')
     expect(INDEX).toContain('guestCloseAsks.windowClosed(windowId)')
+    // 03e (D-9): the outcome reaches the asking guest's own views only; an ended guest's asks settle.
+    expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")
+    expect(block('new GuestStore({')).toContain('ended: (guestId) => settleGuestCloseAsks(guestCloseAsks, guestId)')
     expect(INDEX).toContain('openOverlay(windowId, spec, opener, peerGone, undefined, undefined, undefined, origin)')
   })
 })

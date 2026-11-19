@@ -108,6 +108,8 @@ export interface GuestStoreDeps {
   unsavedOf?(guestId: string): string[]
   /** A notice to the owner ("Bob joined"): core notices. Absent: none. */
   notify?(text: string): void
+  /** The guest ended (any `end` why): its pending close asks settle on the owner's screens (D-9). Absent: nothing. */
+  ended?(guestId: string): void
   log(message: string): void
   now?: () => number
   setInterval?: (fn: () => void, ms: number) => { stop(): void }
@@ -659,6 +661,11 @@ export class GuestStore implements GuestService {
       this.save()
       this.deps.devices.revokeGuest(guestId, `guest ended: ${why}`)
       this.deps.accessLog.write({ event: 'guest', name: g.name, detail: `ended: ${why}` })
+      try {
+        this.deps.ended?.(guestId)
+      } catch (err) {
+        this.deps.log(`guests: ended hook failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
     } finally {
       this.ending.delete(guestId)
     }
