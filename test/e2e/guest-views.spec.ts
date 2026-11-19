@@ -4,16 +4,17 @@
 // guests: not its panel, not its marker in any frame, not its page by a guessed address. The hand test
 // (spec-review item 29: the only spec that drives 05's dialog): the owner invites from Share, switches the
 // guest to write (it types into Claude and saves a file from the shell), then kicks it.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import type { CockpitApi } from '../../src/shared/ipc'
-import { pluginActive } from './download-fixtures'
+import { filesTree, pluginActive, treeRow } from './download-fixtures'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { guestList, inviteGuest } from './guest-fixtures'
 import { enableWebAccess, openBrowser, type WebAccessOn, type WebBrowser } from './web-fixtures'
 
 const FIXTURES = join(__dirname, '..', 'fixtures', 'plugins')
+const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
 /** test/fixtures/plugins/guest-mail/marker.js's MARKER (checked against the file below). */
 const MARKER = 'CCC-GUEST-MAIL-MARKER-5b1e'
 
@@ -205,6 +206,102 @@ test('hand test: Share invites a read guest, the owner switches it to write (typ
     await expect(page.getByText('Host removed you.')).toBeVisible({ timeout: 1500 })
     await expect(page.locator('.xterm-rows')).toHaveCount(0)
     await expect.poll(async () => (await guestList(c)).length).toBe(0)
+  } finally {
+    await guest?.close()
+    await close()
+  }
+})
+
+test('a write guest saves through the editor, and a kick cuts its running download', async () => {
+  test.setTimeout(150_000)
+  const { cockpit: c, close } = await launchCockpit({
+    env: { CC_COCKPIT_NO_BUNDLED: '' },
+    // Save is the guest's own Cmd/Ctrl+S, never an autosave.
+    settings: { pluginSettings: { 'cockpit.editor': { autosaveIdleSeconds: 0, autosaveOnBlur: false } } }
+  })
+  let guest: WebBrowser | undefined
+  try {
+    const notes = join(c.projectDir, 'notes.txt')
+    writeFileSync(notes, 'alpha\nbeta\n')
+    // Big enough that the stream is still running when the kick lands (the page reads one chunk, then waits).
+    const SIZE = 1024 * 1024 * 1024
+    writeFileSync(join(c.projectDir, 'big.bin'), '')
+    truncateSync(join(c.projectDir, 'big.bin'), SIZE)
+    await pluginActive(c, 'cockpit.files')
+    await pluginActive(c, 'cockpit.editor')
+    await enableWebAccess(c)
+    for (const pluginId of ['cockpit.files', 'cockpit.editor']) {
+      await invoke(c, 'settings.pluginGuestAccessSet', { pluginId, target: 'app', value: 'shown' })
+    }
+    const invited = await inviteGuest(c, { name: 'Wes', role: 'write' })
+    guest = await openBrowser(invited.link)
+    const { page } = guest
+    await expect(page.getByTestId('guest-banner')).toHaveAttribute('data-role', 'write', { timeout: 20_000 })
+
+    // Saves a file: opened from Files into the editor, typed, Cmd/Ctrl+S; on disk.
+    const tree = await filesTree(page)
+    const row = treeRow(tree, 'notes.txt')
+    await row.hover()
+    await row.getByRole('button', { name: 'Edit' }).click()
+    const editor = page.frameLocator('iframe.page-tab-frame:not([hidden])')
+    await expect(editor.locator('.cm-content')).toContainText('beta', { timeout: 15_000 })
+    await editor.locator('.cm-content').click()
+    await page.keyboard.press(`${MOD}+Home`)
+    await page.keyboard.type('by Wes ')
+    await expect(editor.locator('#state')).toHaveText('Unsaved')
+    await page.keyboard.press(`${MOD}+s`)
+    await expect.poll(() => readFileSync(notes, 'utf8'), { timeout: 20_000 }).toBe('by Wes alpha\nbeta\n')
+
+    // A running download: Files' Download, caught in the guest browser's session before it is sent, then
+    // fetched by the page, which reads one chunk and holds the rest.
+    await guest.app.evaluate(({ session }) => {
+      const g = globalThis as unknown as { capturedDownloads: string[] }
+      g.capturedDownloads = []
+      session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/d/*'] }, (details, callback) => {
+        g.capturedDownloads.push(details.url)
+        callback({ cancel: true })
+      })
+    })
+    await treeRow(tree, 'big.bin').click({ button: 'right' })
+    await tree.getByRole('menu').getByRole('menuitem', { name: 'Download', exact: true }).click()
+    await expect.poll(() => guest!.app.evaluate(() => (globalThis as unknown as { capturedDownloads: string[] }).capturedDownloads.length)).toBe(1)
+    const url = await guest.app.evaluate(({ session }) => {
+      session.defaultSession.webRequest.onBeforeRequest(null)
+      return (globalThis as unknown as { capturedDownloads: string[] }).capturedDownloads[0]!
+    })
+    // Read in the page, a pause after each chunk, state on window. Without a kick this read is still running 5 s
+    // later (checked by hand: about 40 MB/s here, so the sparse 1 GiB file takes far longer).
+    await page.evaluate((u) => {
+      const dl = { status: 0, total: 0, state: 'running', error: '' }
+      ;(window as unknown as { dl: typeof dl }).dl = dl
+      void (async () => {
+        const res = await fetch(u, { credentials: 'same-origin', cache: 'no-store' })
+        dl.status = res.status
+        const reader = res.body!.getReader()
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) {
+            dl.state = 'done'
+            return
+          }
+          dl.total += value.length
+          await new Promise((r) => setTimeout(r, 50))
+        }
+      })().catch((err: unknown) => {
+        dl.state = 'error'
+        dl.error = String(err)
+      })
+    }, url)
+    type Dl = { status: number; total: number; state: string; error: string }
+    const dl = (): Promise<Dl> => page.evaluate(() => ({ ...(window as unknown as { dl: Dl }).dl }))
+    await expect.poll(async () => (await dl()).total).toBeGreaterThan(0)
+    expect((await dl()).status).toBe(200)
+
+    // The kick: the page is told, and the stream ends short of the file (an error, or a close before the end).
+    expect(await c.hook<boolean>('guestKick', invited.guestId)).toBe(true)
+    await expect(page.getByText('Host removed you.')).toBeVisible({ timeout: 1500 })
+    await expect.poll(async () => (await dl()).state, { timeout: 5000 }).not.toBe('running')
+    expect((await dl()).total).toBeLessThan(SIZE)
   } finally {
     await guest?.close()
     await close()
