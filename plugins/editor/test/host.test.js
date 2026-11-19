@@ -1141,3 +1141,21 @@ test("a guest's read of a path the page names stays inside the project: absolute
   }
   host.deactivate()
 })
+
+test("a read-only guest's tab on a file not there yet comes read-only; the owner's is a new file", async () => {
+  const host = require('../dist/host.js')
+  const f = fakeCtx({ execResult: { code: 0, stdout: 'micro version 2', stderr: '' } })
+  f.ctx.projectDir = project()
+  const t = fakeTabs(f)
+  host.activate(f.ctx)
+  t.open.push({ id: '00000000-0000-4000-8000-0000000000bb', type: 'file', params: { path: 'not-yet.txt' }, title: 'not-yet.txt' })
+  const guest = t.connect(t.open[0].id, 'web:4', 'read')
+  guest.send({ t: 'open', req: 1 })
+  const g = guest.posted.find((m) => m.t === 'file')
+  assert.deepEqual([g.exists, g.readOnly, g.why], [false, true, 'you are a read-only guest'])
+  const owner = t.connect(t.open[0].id)
+  owner.send({ t: 'open', req: 1 })
+  const o = owner.posted.find((m) => m.t === 'file')
+  assert.deepEqual([o.exists, o.readOnly], [false, undefined])
+  host.deactivate()
+})
