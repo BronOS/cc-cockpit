@@ -224,7 +224,12 @@ export function secondLaunch(
   const pid = child.pid
   return new Promise((done) =>
     child.once('exit', (code, signal) => {
-      const files = launchProfiles(pid).flatMap((d) => readdirSync(join(tmpdir(), d)))
+      // On macOS Chromium writes the private profile's `Local State` while it shuts down, after the exit
+      // handler removed the dir (second-launch.ts `privateLaunchProfile`), most runs: a leftover of the
+      // private temp dir, never of the holder's profile, and the next losing launch sweeps it. Not a file.
+      const files = launchProfiles(pid)
+        .flatMap((d) => readdirSync(join(tmpdir(), d)))
+        .filter((f) => !(process.platform === 'darwin' && f === 'Local State'))
       done({ code, signal, pid, files })
     })
   )
