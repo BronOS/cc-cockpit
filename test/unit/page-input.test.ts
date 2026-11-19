@@ -8,8 +8,8 @@
 // Chromium's own routing is proven under Electron by scripts/offscreen-input-check.mjs.
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_PENDING_PER_SESSION,
   MAX_QUEUED_STEPS,
+  MAX_RETESTS,
   PageInputRouter,
   pointInFrame,
   protocolKeyEvent,
@@ -519,19 +519,39 @@ describe('PageInputRouter', () => {
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a', 'b', 'c'])
   })
 
-  it('a command that never answers holds the rest only until STEP_TIMEOUT_MS', async () => {
+  it('a key that misses STEP_TIMEOUT_MS stalls the page session: the next key waits for its answer, nothing else unanswered', async () => {
     const s = setup()
     s.page.opts.hold = true
-    s.router.input([keyDown('a'), keyDown('b')])
+    s.router.input([keyDown('a'), keyDown('b'), move(5, 5)])
     await s.flush()
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
     expect(STEP_TIMEOUT_MS).toBe(500)
-    // Its own wait, then the next key's wait for it (still unanswered, still counted): one deadline each.
+    // The deadline: the page session owes 'a' and gets nothing more until it answers; the pump waits
+    // with no timer of its own.
     s.fire()
+    await s.flush()
+    expect(s.timers.size).toBe(0)
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
+    expect(s.logs).toEqual(['webview: the page or a frame did not answer input in time; it gets no more until it does'])
+    // Typing goes on meanwhile: held in order behind 'b' (not sent), and goes once 'a' answered.
+    s.router.input([keyDown('c'), move(6, 6)])
+    await s.flush()
+    expect(s.page.sent).toHaveLength(1)
+    s.page.opts.hold = false
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.page.sent.map((x) => x.params.key ?? `${x.params.type} ${x.params.x}`)).toEqual(['a', 'b', 'mouseMoved 5', 'c', 'mouseMoved 6'])
+    // A move that comes to a stalled page session is dropped (the next one takes its place).
+    s.page.opts.hold = true
+    s.router.input([keyDown('d')])
     await s.flush()
     s.fire()
     await s.flush()
-    expect(s.page.sent.map((x) => x.params.key)).toEqual(['a', 'b'])
+    s.router.input([move(7, 7)])
+    await s.flush()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice().at(-1)).toEqual(['', 'mouseMoved', 6, 6])
   })
 
   it('a hit test that never answers sends the event to the page session after ROUTE_TIMEOUT_MS', async () => {
@@ -545,24 +565,38 @@ describe('PageInputRouter', () => {
     s.fire()
     await s.flush()
     expect(s.mice()).toEqual([['', 'mousePressed', 20, 225]])
+    // That session owes the query: the next events ask it nothing (no timer, no second query) until it answers.
+    s.router.input([up(20, 225), down(20, 226)])
+    await s.flush()
+    expect(s.timers.size).toBe(0)
+    expect(s.page.queries.filter((q) => q.method === 'DOM.getNodeForLocation')).toHaveLength(1)
+    expect(s.mice().map((m) => m[0])).toEqual(['', '', ''])
   })
 
-  it('pipelines moves to one session and coalesces moves waiting behind a wait', async () => {
+  it('one command at a time: a move waits for the one before it; moves waiting coalesce, wheels sum', async () => {
     const s = setup()
     s.page.opts.hold = true
     s.router.input([move(1, 1)])
     s.router.input([move(2, 2)])
     await s.flush()
-    // Both went without waiting for the first's answer (same session).
-    expect(s.mice().map((m) => m[2])).toEqual([1, 2])
-    s.router.input([keyDown('a'), move(3, 3), move(4, 4), move(5, 5)])
+    expect(s.mice().map((m) => m[2])).toEqual([1])
+    s.router.input([move(3, 3), keyDown('a'), move(4, 4), move(5, 5)])
+    s.router.input([{ type: 'mouseWheel', x: 6, y: 6, deltaX: 1, deltaY: -100, modifiers: [] }])
+    s.router.input([{ type: 'mouseWheel', x: 7, y: 7, deltaX: 2, deltaY: -20, modifiers: [] }])
+    for (let n = 0; n < 6; n++) {
+      await s.flush()
+      for (const h of s.page.held.splice(0)) h.resolve({})
+    }
     await s.flush()
-    // The key waits for the moves' answers; the three moves behind it are one.
-    for (const h of s.page.held.splice(0)) h.resolve({})
-    await s.flush()
-    for (const h of s.page.held.splice(0)) h.resolve({})
-    await s.flush()
-    expect(s.mice().map((m) => m[2])).toEqual([1, 2, 5])
+    // 2 and 3 were one move behind 1; 4 and 5 one behind the key; the two wheels one (DOM sign, summed).
+    expect(s.page.sent.map((x) => x.params.key ?? `${x.params.type} ${x.params.x}`)).toEqual([
+      'mouseMoved 1',
+      'mouseMoved 3',
+      'a',
+      'mouseMoved 5',
+      'mouseWheel 7'
+    ])
+    expect(s.page.sent.at(-1)?.params).toMatchObject({ deltaX: -3, deltaY: 120 })
   })
 
   // Review finding (codex): every release was exempt from the queue cap, so releases nothing had
@@ -591,7 +625,7 @@ describe('PageInputRouter', () => {
 
   // Review finding (codex): continuous pointer input to one session never drained, so a renderer
   // that answers nothing collected unanswered dispatches without end.
-  it('stops issuing to a session at MAX_PENDING_PER_SESSION unanswered; moves are dropped, a press waits', async () => {
+  it('a page session that answers nothing: one unanswered command; moves dropped, a press waits for the answer', async () => {
     const s = setup()
     s.page.opts.hold = true
     for (let n = 0; n < 40; n++) {
@@ -600,11 +634,8 @@ describe('PageInputRouter', () => {
       s.fire()
     }
     await s.flush()
-    expect(s.mice()).toHaveLength(MAX_PENDING_PER_SESSION)
-    // A press at the cap waits for an answer, deadline after deadline, and goes once one comes.
+    expect(s.mice()).toHaveLength(1)
     s.router.input([down(5, 5)])
-    await s.flush()
-    s.fire()
     await s.flush()
     s.fire()
     await s.flush()
@@ -794,6 +825,9 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     s.page.opts.hold = true
     s.router.input([down(20, 225)])
     await s.flush()
+    // Its deadline passed (A stalled), then the protocol detached.
+    s.fire()
+    await s.flush()
     const old = s.page.held.shift()
     s.detach()
     s.router.input([up(20, 225)])
@@ -866,5 +900,121 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     s.fire()
     await s.flush()
     expect(s.page.held).toHaveLength(1)
+  })
+
+  // Rule 3: the hit test is the last thing before the send; a page that changes on every hover is
+  // hit-tested again MAX_RETESTS times, then the page session takes the event.
+  it('a page that changes under every hover move: two re-tests, then the page session at the top point', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.frame('C', '', 8, rect(0, 200, 600, 300), 600, 300)
+    const a = s.page.owners.get('')?.[0] as FakeOwner
+    const c = s.page.owners.get('')?.[1] as FakeOwner
+    s.page.owners.set('', [a])
+    s.router.input([move(20, 25)])
+    await s.flush()
+    // Each hover move over an owner swaps which frame is under the point.
+    s.page.opts.onSent = (sent) => {
+      if (sent.session === '' && sent.params.type === 'mouseMoved' && sent.params.y === 225) s.page.owners.set('', [s.page.owners.get('')?.[0] === a ? c : a])
+    }
+    const hits = (): number => s.page.queries.filter((q) => q.method === 'DOM.getNodeForLocation').length
+    const before = hits()
+    s.router.input([down(20, 225)])
+    await s.flush()
+    expect(MAX_RETESTS).toBe(2)
+    expect(hits() - before).toBe(1 + MAX_RETESTS)
+    expect(s.mice().filter((m) => m[1] === 'mousePressed')).toEqual([['', 'mousePressed', 20, 225]])
+  })
+
+  // Rule 4: a stalled frame gets nothing more; its wheel goes to the page session at the top point.
+  it('a frame that missed a deadline: its moves dropped, its wheel and press on the page session, until it answers', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('A')
+    s.router.input([move(20, 225)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.router.input([move(21, 225), { type: 'mouseWheel', x: 22, y: 225, deltaX: 0, deltaY: -120, modifiers: [] }, down(23, 225)])
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['A', 'mouseMoved', 20, 25],
+      ['', 'mouseWheel', 22, 225],
+      ['', 'mousePressed', 23, 225]
+    ])
+    // A answers: it takes input again (the release follows the press's capture, the top).
+    s.page.opts.holdSessions.clear()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    s.router.input([up(23, 225), move(24, 226)])
+    await s.flush()
+    expect(s.mice().slice(3)).toEqual([
+      ['', 'mouseReleased', 23, 225],
+      ['', 'mouseMoved', 24, 226],
+      ['A', 'mouseMoved', 24, 26]
+    ])
+  })
+
+  // Rule 7: each attachment has an epoch; an answer from an older one changes nothing.
+  it('a late answer from before a detach clears no stall of the new attachment', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    s.router.input([keyDown('a')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    const old = s.page.held.shift()
+    s.detach()
+    s.router.input([keyDown('x')])
+    expect(s.fallback).toEqual([keyDown('x')])
+    s.attach()
+    s.router.input([keyDown('b')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    old?.resolve({})
+    await s.flush()
+    s.router.input([keyDown('c')])
+    await s.flush()
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['a', 'b'])
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('a detach while keys wait for the stalled page session: they go by sendInputEvent', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    s.router.input([keyDown('a'), keyDown('b')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.detach()
+    s.router.reset()
+    await s.flush()
+    expect(s.fallback).toEqual([keyDown('b')])
+  })
+
+  it('a text or an edit command goes through the router: in order, one at a time, the detached road while detached', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    const detached: string[] = []
+    s.router.input([keyDown('a')])
+    const text = s.router.command('Input.insertText', { text: 'é' }, () => detached.push('é'))
+    s.router.input([keyDown('b')])
+    await s.flush()
+    expect(s.page.sent.map((x) => x.method)).toEqual(['Input.dispatchKeyEvent'])
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.page.sent.at(-1)).toEqual({ method: 'Input.insertText', params: { text: 'é' }, session: '' })
+    s.page.held.shift()?.resolve('inserted')
+    await expect(text).resolves.toBe('inserted')
+    await s.flush()
+    expect(s.page.sent.map((x) => x.params.key ?? x.params.text)).toEqual(['a', 'é', 'b'])
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    s.detach()
+    await expect(s.router.command('Input.insertText', { text: 'ü' }, () => detached.push('ü'))).resolves.toBe(1)
+    expect(detached).toEqual(['ü'])
   })
 })

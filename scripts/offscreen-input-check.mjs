@@ -34,7 +34,8 @@
 // Cmd+Backspace) and a Cmd+Shift+Left in A; order: rounds of clicks into A, the top, B and T with
 // keys and texts after each, nothing awaited, and the top document's "abc" é Ctrl+A "x" and
 // "abc" é "d". Printed, never failures: Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
-// and the router's cost per pointer event in each document.
+// and the router's cost per pointer event in each document, and per key event (the protocol's own
+// answer, fast typing and a held key's repeat through the router; that every key lands is a check).
 //
 //   node scripts/offscreen-input-check.mjs [rounds]
 //
@@ -778,6 +779,42 @@ async function main() {
       cost[doc] = Number(((performance.now() - t0) / 30).toFixed(1))
     }
     console.log(`ms per pointer move, routed and answered (and a selection read): ${JSON.stringify(cost)}`)
+  }
+
+  // --- a key's cost on the page's session: the protocol's own answer, and through the router ---
+  // (each typed character is three key events: key down, char, key up; a held key's repeat is a
+  // key down and a char per repeat, 30 a second on a Mac). Printed: the router sends keys one at a
+  // time (page-input.ts `order`), so typing lags once three answers take longer than a keystroke.
+  {
+    await focusTop()
+    const N = 60
+    const one = async (params) => wc.debugger.sendCommand('Input.dispatchKeyEvent', params)
+    let t0 = performance.now()
+    for (let n = 0; n < N; n++) {
+      await one({ type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 })
+      await one({ type: 'char', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, text: 'a', unmodifiedText: 'a' })
+      await one({ type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 })
+    }
+    const protocolMs = (performance.now() - t0) / (3 * N)
+    await focusTop()
+    t0 = performance.now()
+    typeView('abcdefghij'.repeat(N / 10))
+    await view.readSelection()
+    const typedMs = (performance.now() - t0) / (3 * N)
+    const typed = await value()
+    await focusTop()
+    t0 = performance.now()
+    viewKey('down', 'b')
+    for (let n = 0; n < N; n++) viewKey('down', 'b', ['isautorepeat'])
+    viewKey('up', 'b')
+    await view.readSelection()
+    const repeatMs = (performance.now() - t0) / (2 * N + 3)
+    const repeated = await value()
+    console.log(
+      `ms per key event: protocol answer ${protocolMs.toFixed(2)}; through the router, typing ${typedMs.toFixed(2)} (${typed.length} of ${N} typed), ` +
+        `a held key's repeat ${repeatMs.toFixed(2)} (${repeated.length} of ${N + 1} typed)`
+    )
+    want(typed.length === N && repeated.length === N + 1, `view: fast typing typed ${typed.length} of ${N}, a held key ${repeated.length} of ${N + 1}`)
   }
 
   if (logs.length) console.log('log:', JSON.stringify(logs))

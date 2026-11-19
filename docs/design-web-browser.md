@@ -233,11 +233,24 @@ the fallback when the protocol detached:
   leaving the frame keeps selecting in it; one from the top document stays there over a frame), the owners' boxes read
   again on each event, until no button is held. When the pointer changes frame, the frame it left gets one move (over
   the owner, or outside its viewport) so its hover ends.
-- **Order.** One queue per page: mouse events to the same session are pipelined, anything else waits until every
-  command in flight was answered (a key sent while a press into a frame was on its way landed in the old focus 15
-  times in 30), each wait capped at 500 ms. A move waiting in the queue is replaced by the next (an answer to a move
-  comes with the next frame); a full queue drops moves first, never a release. A frame's session refusing (the frame
-  went) sends the event to the page's session at the top point, never to another frame.
+- **Order.** One queue per page, one step at a time, and at most one input command on its way per page across all
+  its sessions: every `Input.*` (keys, texts, edit commands, pointer events and the hover moves) goes through one
+  sender, and the step that sent it waits until it is answered or its 500 ms deadline passed before anything else
+  goes (a key sent while a press into a frame was on its way landed in the old focus 15 times in 30; a press
+  hit-tested while a move was on its way could pick a frame that move's hover covered). A pointer event does every
+  wait first and its hit test last, right before its send; after hover moves it is hit-tested again, at most twice,
+  then the page's session takes it at the top point. Keys go one at a time too: the page answers one in about
+  0.15 ms. While a step waits, moves behind it coalesce to the latest and wheel deltas sum; presses, releases, keys
+  and texts keep their order. A full queue (512) drops moves first, then lets in only a release of a press it took
+  (matched by the physical key's `code`, so Shift+A down and `a` up match, or by the button).
+- **Stalled sessions.** A session whose command missed its deadline gets nothing more until that command answers, so
+  a renderer that answers nothing holds one unanswered command, never a pile: a move for a stalled frame is dropped,
+  its press, release or wheel goes to the page's session at the top point. While the page's own session is stalled
+  its moves are dropped and the rest waits in the queue (bounded by the cap), so a page busy for a second loses no
+  key; its answer or a detach starts the queue again. A hit-test query that missed its 200 ms deadline marks its
+  session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch: an
+  answer from before a detach changes nothing. A frame's session refusing (the frame went) sends the event to the
+  page's session at the top point, never to another frame.
 
 `scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
 chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,

@@ -229,10 +229,7 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // to hear (it lets the input after the text go), never thrown here.
       insertText: (text) => {
         if (wc.isDestroyed()) return Promise.resolve()
-        return input.call(() => {
-          if (wc.isDestroyed()) return undefined
-          return wc.debugger.isAttached() ? wc.debugger.sendCommand('Input.insertText', { text }) : wc.insertText(text)
-        })
+        return input.command('Input.insertText', { text }, () => (wc.isDestroyed() ? undefined : wc.insertText(text)))
       },
       // An edit chord or a Mac line key (webview-input.ts editKeyEvent; plan 20261119-server-mode-mac,
       // decision 7): its key down with its command as the protocol's `Input.dispatchKeyEvent` on the
@@ -244,9 +241,8 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // command, moves nothing on a macOS server); the key up still goes as a key up.
       editCommand: (edit) => {
         if (wc.isDestroyed()) return Promise.resolve()
-        return input.call(() => {
+        return input.command('Input.dispatchKeyEvent', editKeyEvent(edit), () => {
           if (wc.isDestroyed()) return undefined
-          if (wc.debugger.isAttached()) return wc.debugger.sendCommand('Input.dispatchKeyEvent', editKeyEvent(edit))
           if (edit.command === 'selectAll') wc.selectAll()
           else if (edit.command === 'undo') wc.undo()
           else if (edit.command === 'redo') wc.redo()
