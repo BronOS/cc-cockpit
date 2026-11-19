@@ -358,8 +358,10 @@ function OwnerNameRow(props: {
           if (e.key === 'Enter') submit()
         }}
       />
+      {/* "Save name", not "Save": the address form above has its own Save, and two same-named buttons in one
+          section leave a person (and a screen reader's button list) guessing which saves what. */}
       <button type="button" className="primary" disabled={props.busy !== null || result === null} onClick={submit}>
-        Save
+        Save name
       </button>
     </Row>
   )
