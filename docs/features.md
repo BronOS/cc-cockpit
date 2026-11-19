@@ -402,8 +402,9 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   ended room. When you close a member's tab, the room's coordinators get a message from `system`, "<name> left: tab
   closed".
 - **`ccc room`** (inside a Claude tab): `ccc room [status] [--json]`, `join <invite>`, `leave`, `send <name|all> <text...>`
-  (or `-` for stdin; at most 20,000 characters, longer text goes in a doc), `read`, `doc ls`, `doc get <path>` and
-  `doc put <path> -`. Names are lower case (`a-z`, digits, `-`, up to 31 characters; `all`, `plugin`, `person`, `user`
+  (or `-` for stdin; at most 20,000 characters, longer text goes in a doc), `read`, `doc ls`, `doc get <path>`,
+  `doc put <path> -` and `doc append <path> -` (adds to the end; appends never lose each other's text); put and append
+  take `--file <file>` instead of `-` where there is no stdin (Code Mode's REPL). Names are lower case (`a-z`, digits, `-`, up to 31 characters; `all`, `plugin`, `person`, `user`
   and `system` are reserved). The sender is always the caller's own tab, set by main.
 - **How messages arrive (pull model):** nothing is pasted into a tab. A message waits in the member's queue and the tab
   gets a fixed pointer, "N room messages waiting: run ccc room read" ("1 room message waiting: ..." for one), and reads

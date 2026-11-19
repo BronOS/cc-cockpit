@@ -121,6 +121,8 @@ describe('logRows', () => {
     expect(e('resume')).toBe('Resumed')
     expect(e('doc-read', { by: 'person', path: 'shared/a.md' })).toBe('person read shared/a.md')
     expect(e('doc-write', { by: 'bob', path: 'shared/a.md' })).toBe('bob wrote shared/a.md')
+    expect(e('doc-write', { by: 'bob', path: 'shared/a.md', op: 'append', added: 3 })).toBe('bob appended to shared/a.md')
+    expect(e('doc-refused', { by: 'bob', op: 'append', path: 'x', reason: 'limit' })).toBe('bob: append of x refused (limit)')
     expect(e('doc-refused', { by: 'bob', op: 'put', path: 'x', reason: 'bad path' })).toBe('bob: put of x refused (bad path)')
     expect(e('trimmed', { dropped: 40 })).toBe('Older events dropped (40)')
   })

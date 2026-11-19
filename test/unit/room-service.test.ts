@@ -146,7 +146,7 @@ async function readAndAck(tabId: string): Promise<Read> {
 }
 
 describe('room socket handlers: identity and refusals', () => {
-  const commands = ['room.status', 'room.join', 'room.leave', 'room.send', 'room.read', 'room.read.ack', 'room.doc.ls', 'room.doc.get', 'room.doc.put']
+  const commands = ['room.status', 'room.join', 'room.leave', 'room.send', 'room.read', 'room.read.ack', 'room.doc.ls', 'room.doc.get', 'room.doc.put', 'room.doc.append']
 
   it('registers every room command', () => {
     const seen: string[] = []
@@ -164,7 +164,7 @@ describe('room socket handlers: identity and refusals', () => {
     }
   })
 
-  it.each(['room.leave', 'room.send', 'room.read', 'room.read.ack', 'room.doc.ls', 'room.doc.get', 'room.doc.put'])('%s refuses a tab in no room', async (cmd) => {
+  it.each(['room.leave', 'room.send', 'room.read', 'room.read.ack', 'room.doc.ls', 'room.doc.get', 'room.doc.put', 'room.doc.append'])('%s refuses a tab in no room', async (cmd) => {
     const t = claudeTab()
     await expect(call(cmd, session(t), { to: 'a', text: 'x', path: 'shared/a.md', ack: 'x' })).rejects.toThrow('this tab is in no room')
   })
@@ -609,6 +609,29 @@ describe('room.doc.*', () => {
     mkdirSync(join(dir, 'rooms', id, 'docs', 'shared'), { recursive: true })
     writeFileSync(join(dir, 'rooms', id, 'docs', 'shared', 'ctl.md'), '\x01'.repeat(200 * 1024))
     await expect(call('room.doc.get', session(t), { path: 'shared/ctl.md' })).rejects.toThrow(/too large for one ccc reply/)
+  })
+
+  it('doc append: adds to a doc through the write chain, with a put\'s access rule, the role the registry\'s', async () => {
+    const id = room()
+    const lead = claudeTab()
+    const dev = claudeTab()
+    addTo(id, lead, 'lead', true)
+    addTo(id, dev, 'dev')
+    expect(await call('room.doc.append', session(dev), { path: 'members/dev/log.md', text: 'one\n' })).toBeNull()
+    await Promise.all(['two\n', 'three\n'].map((text) => call('room.doc.append', session(dev), { path: 'members/dev/log.md', text })))
+    expect(await call('room.doc.get', session(lead), { path: 'members/dev/log.md' })).toEqual({ text: 'one\ntwo\nthree\n' })
+    // A coordinator reads a member's folder but never writes it; a member never writes shared/, whatever args say.
+    await expect(call('room.doc.append', session(lead), { path: 'members/dev/log.md', text: 'x' })).rejects.toThrow('no such doc')
+    await expect(call('room.doc.append', session(dev), { path: 'shared/x.md', text: 'x', coordinator: true })).rejects.toThrow('no such doc')
+  })
+
+  // The backlog's third point (a patch read back without its final newline): main keeps a doc's bytes both ways.
+  it.each([['a'], ['a\n'], ['a\n\n'], ['a\r\n'], ['--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n']])('put then get round-trips %j exactly', async (text) => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'lead', true)
+    await call('room.doc.put', session(t), { path: 'shared/p.md', text })
+    expect(await call('room.doc.get', session(t), { path: 'shared/p.md' })).toEqual({ text })
   })
 
   it('a refused doc answers like a missing one', async () => {

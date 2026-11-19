@@ -1,13 +1,16 @@
 // `ccc room ...` (design-rooms.md §4): the requests each command sends, what it prints, the two-step read
-// (print, then ack on the same connection), the bounded stdin of `send -` and `doc put`, and the real SocketServer with
+// (print, then ack on the same connection), the bounded stdin of `send -` and `doc put|append`, their `--file` read, and
+// the real SocketServer with
 // the room handlers answering the real client. Real Unix sockets in a temp dir under /tmp (macOS's /var/folders pushes a
 // socket path past sun_path), a plain `net` fake app where a test controls each reply.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { run, STDIN_READ_TIMEOUT_MS, type Output } from '../../src/cli/client'
+import { RoomDocs, MAX_DOC_BYTES } from '../../src/main/rooms/room-docs'
 import type { RoomTabCaller } from '../../src/main/rooms/room-service'
 import { registerRoomHandlers, type RoomCliService } from '../../src/main/socket/handlers'
 import { SocketServer } from '../../src/main/socket/socket-server'
@@ -169,6 +172,9 @@ describe('ccc room: one request per command, from the token alone', () => {
     const put = await ccc(['room', 'doc', 'put', 'shared/x.md', '-'], ok(null), stdinOf('exact\n\n'))
     expect(put.seen[0]).toMatchObject({ cmd: 'room.doc.put', args: { path: 'shared/x.md', text: 'exact\n\n' } })
     expect(put.stdout).toBe('saved shared/x.md\n')
+    const append = await ccc(['room', 'doc', 'append', 'shared/log.md', '-'], ok(null), stdinOf('- one\n'))
+    expect(append.seen[0]).toMatchObject({ cmd: 'room.doc.append', args: { path: 'shared/log.md', text: '- one\n' } })
+    expect(append.stdout).toBe('appended to shared/log.md\n')
   })
 
   it('prints main\'s refusal on stderr with exit 1', async () => {
@@ -287,6 +293,74 @@ describe('ccc room send - and doc put: stdin', () => {
     expect(await pending).toBe(1)
     expect(c.stderr()).toContain('reading stdin failed')
     expect(seen).toEqual([])
+  })
+})
+
+describe('ccc room doc put|append --file', () => {
+  // Code Mode's REPL has no stdin: `doc put -` there waited the full 40 s and exited 124. `--file` never reads stdin.
+  const never = (): PassThrough => {
+    const s = new PassThrough()
+    closers.push(() => void s.destroy())
+    return s
+  }
+
+  it('sends the file, relative to the cwd, exactly, and never reads stdin', async () => {
+    mkdirSync(join(root, 'out'))
+    writeFileSync(join(root, 'out', 'p.diff'), '\ufeff-old\n+new\n\n')
+    const put = await ccc(['room', 'doc', 'put', 'shared/p.diff', '--file', 'out/p.diff'], ok(null), never())
+    expect(put.code).toBe(0)
+    expect(put.seen[0]).toMatchObject({ cmd: 'room.doc.put', args: { path: 'shared/p.diff', text: '\ufeff-old\n+new\n\n' } })
+    expect(put.seen[0]?.args).not.toHaveProperty('file')
+    expect(put.stdout).toBe('saved shared/p.diff\n')
+    const append = await ccc(['room', 'doc', 'append', 'shared/log.md', '--file', join(root, 'out', 'p.diff')], ok(null), never())
+    expect(append.seen[0]).toMatchObject({ cmd: 'room.doc.append', args: { path: 'shared/log.md', text: '\ufeff-old\n+new\n\n' } })
+  })
+
+  it('takes an empty file and exactly the cap; follows a link to a regular file', async () => {
+    writeFileSync(join(root, 'empty'), '')
+    writeFileSync(join(root, 'max'), 'a'.repeat(MAX_DOC_BYTES))
+    symlinkSync(join(root, 'max'), join(root, 'link'))
+    for (const [name, size] of [['empty', 0], ['max', MAX_DOC_BYTES], ['link', MAX_DOC_BYTES]] as const) {
+      const r = await ccc(['room', 'doc', 'put', 'shared/x', '--file', name], ok(null), never())
+      expect(r.code, name).toBe(0)
+      expect(((r.seen[0] as Request).args.text as string).length, name).toBe(size)
+    }
+  })
+
+  it('refuses a missing file, a folder, a FIFO, a file over the cap and one not UTF-8: exit 1, nothing sent', async () => {
+    mkdirSync(join(root, 'dir'))
+    writeFileSync(join(root, 'big'), 'a'.repeat(MAX_DOC_BYTES + 1))
+    writeFileSync(join(root, 'latin1'), Buffer.from([0x63, 0x61, 0x66, 0xe9]))
+    const cases: Array<[string, string]> = [
+      ['none', 'no such file'],
+      ['dir', 'not a regular file'],
+      ['big', `over ${MAX_DOC_BYTES / 1024} KiB`],
+      ['latin1', 'not valid UTF-8']
+    ]
+    // A FIFO nobody writes to: opened without blocking and refused by fstat, never waited on.
+    if (POSIX) {
+      execFileSync('mkfifo', [join(root, 'fifo')])
+      cases.push(['fifo', 'not a regular file'])
+    }
+    const seen: Request[] = []
+    await fakeApp(seen, [])
+    for (const [name, words] of cases) {
+      for (const sub of ['put', 'append']) {
+        const c = capture()
+        const started = Date.now()
+        expect(await run(['room', 'doc', sub, 'shared/x', '--file', name], env(), never(), c.out, root), name).toBe(1)
+        expect(Date.now() - started, name).toBeLessThan(5000)
+        expect(c.stderr(), name).toContain(`ccc: room doc ${sub}: `)
+        expect(c.stderr(), name).toContain(words)
+      }
+    }
+    expect(seen).toEqual([])
+  })
+
+  it('with no tab token it refuses before reading the file', async () => {
+    const c = capture()
+    expect(await run(['room', 'doc', 'put', 'shared/x', '--file', 'none'], { CC_COCKPIT_SOCK: sock }, never(), c.out, root)).toBe(1)
+    expect(c.stderr()).toBe('ccc: ccc room needs a Claude tab (run it inside a cockpit Claude tab)\n')
   })
 })
 
@@ -476,11 +550,12 @@ describe('ccc room against the real SocketServer and the room handlers', () => {
       readAck: (caller: C, ack: unknown) => (calls.push(['readAck', caller, ack]), { acked: 1 }),
       docList: async (caller: C) => (calls.push(['docList', caller]), [{ path: 'shared/a.md', size: 3 }]),
       docGet: async (caller: C, path: unknown) => (calls.push(['docGet', caller, path]), 'doc text'),
-      docPut: async (caller: C, path: unknown, text: unknown) => void calls.push(['docPut', caller, path, text])
+      docPut: async (caller: C, path: unknown, text: unknown) => void calls.push(['docPut', caller, path, text]),
+      docAppend: async (caller: C, path: unknown, text: unknown) => void calls.push(['docAppend', caller, path, text])
     } as unknown as RoomCliService
   }
 
-  async function app(calls: Array<[string, ...unknown[]]>): Promise<void> {
+  async function app(calls: Array<[string, ...unknown[]]>, service = rooms(calls)): Promise<void> {
     const server = new SocketServer({
       path: sock,
       resolveToken: (token) => (token === TOKEN ? { kind: 'session', tabId: 'tab-1', projectId: 'p1' } : token === 'w'.repeat(64) ? { kind: 'window', projectId: 'p1' } : undefined),
@@ -488,7 +563,7 @@ describe('ccc room against the real SocketServer and the room handlers', () => {
       log: () => {},
       probeTimeoutMs: 200
     })
-    registerRoomHandlers(server, rooms(calls))
+    registerRoomHandlers(server, service)
     expect(await server.start()).toBe(true)
     closers.push(() => server.stop())
   }
@@ -509,6 +584,7 @@ describe('ccc room against the real SocketServer and the room handlers', () => {
     expect((await go(['room', 'doc', 'ls'])).stdout).toBe('shared/a.md\t3\n')
     expect((await go(['room', 'doc', 'get', 'shared/a.md'])).stdout).toBe('doc text')
     expect((await go(['room', 'doc', 'put', 'members/bob/n.md', '-'], stdinOf('memo'))).stdout).toBe('saved members/bob/n.md\n')
+    expect((await go(['room', 'doc', 'append', 'members/bob/n.md', '-'], stdinOf(' more'))).stdout).toBe('appended to members/bob/n.md\n')
     expect((await go(['room', 'leave'])).stdout).toBe('left room "T"\n')
     expect(calls).toEqual([
       ['status', caller],
@@ -519,6 +595,7 @@ describe('ccc room against the real SocketServer and the room handlers', () => {
       ['docList', caller],
       ['docGet', caller, 'shared/a.md'],
       ['docPut', caller, 'members/bob/n.md', 'memo'],
+      ['docAppend', caller, 'members/bob/n.md', ' more'],
       ['leave', caller]
     ])
   })
@@ -535,5 +612,37 @@ describe('ccc room against the real SocketServer and the room handlers', () => {
       }
     }
     expect(calls).toEqual([])
+  })
+
+  // The backlog's third point (a patch read back failed `git apply` for a missing final newline): through the real
+  // client, the real SocketServer and the real store, put then get prints the doc's bytes exactly, final newlines
+  // included, from stdin and from --file alike. (Past `run`, cli/index.ts writes stdout as is and exits only once it
+  // is flushed.) A loss seen in use came after `ccc`, in whatever captured its output.
+  it('put then get round-trips a doc exactly, final newline included, from stdin and from --file', async () => {
+    const roomId = '00000000-0000-4000-8000-0000000000aa'
+    mkdirSync(join(root, 'rooms', roomId), { recursive: true })
+    const docs = new RoomDocs({ dir: join(root, 'rooms'), logOf: () => ({ append: () => {} }) })
+    const member = { name: 'bob', coordinator: true }
+    await app([], {
+      docPut: (_c: C, path: unknown, text: unknown) => docs.put(roomId, member, path, text),
+      docAppend: (_c: C, path: unknown, text: unknown) => docs.append(roomId, member, path, text),
+      docGet: (_c: C, path: unknown) => docs.get(roomId, member, path)
+    } as unknown as RoomCliService)
+    const go = async (argv: string[], stdin = stdinOf('')): Promise<{ code: number; stdout: string }> => {
+      const c = capture()
+      const code = await run(argv, env(), stdin, c.out, root)
+      expect(c.stderr(), argv.join(' ')).toBe('')
+      return { code, stdout: c.stdout() }
+    }
+    const patch = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n'
+    for (const text of ['a', 'a\n', 'a\n\n', 'a\r\n', patch]) {
+      expect((await go(['room', 'doc', 'put', 'shared/p.md', '-'], stdinOf(text))).code).toBe(0)
+      expect((await go(['room', 'doc', 'get', 'shared/p.md'])).stdout, JSON.stringify(text)).toBe(text)
+      writeFileSync(join(root, 'p.txt'), text)
+      expect((await go(['room', 'doc', 'put', 'shared/f.md', '--file', 'p.txt'])).code).toBe(0)
+      expect((await go(['room', 'doc', 'get', 'shared/f.md'])).stdout, JSON.stringify(text)).toBe(text)
+    }
+    expect((await go(['room', 'doc', 'append', 'shared/f.md', '-'], stdinOf('+more\n'))).code).toBe(0)
+    expect((await go(['room', 'doc', 'get', 'shared/f.md'])).stdout).toBe(`${patch}+more\n`)
   })
 })

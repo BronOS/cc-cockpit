@@ -24,6 +24,12 @@ const MAX_ROOM_TITLE_CHARS = 60
  */
 const TITLE_FORBIDDEN = new Set([...'"\'`“”„‟‘’‚‛«»‹›()[]{}<>'])
 
+/**
+ * Per doc, in UTF-8 bytes: a `ccc` reply is one socket line (1 MiB) and plugin CLI I/O is 256 KiB (design §3). Here in
+ * shared so `ccc room doc put|append --file` caps its read with the store's own number (room-docs.ts re-exports it).
+ */
+export const MAX_DOC_BYTES = 256 * 1024
+
 /** The longest doc path part, in characters: under NAME_MAX (255) with room for the store's `.tmp-<rand>` suffix. */
 const MAX_PATH_PART_CHARS = 128
 

@@ -414,6 +414,12 @@ export class RoomService {
     return this.docs.put(roomId, doc, path, text)
   }
 
+  /** `ccc room doc append`: the same access and text rule as a put, through the room's one write chain (room-docs.ts). */
+  docAppend(caller: RoomTabCaller, path: unknown, text: unknown): Promise<void> {
+    const { roomId, doc } = this.docCaller(caller)
+    return this.docs.append(roomId, doc, path, text)
+  }
+
   // --- the owner (ctx.rooms, design-rooms.md §4): main built `owner` from the calling host ---
 
   create(owner: RoomOwner, opts: { title: unknown }): RoomRecord {

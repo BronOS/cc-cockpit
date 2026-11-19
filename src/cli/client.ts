@@ -9,6 +9,8 @@
 // Pure Node, no Electron: this is bundled into out/cli/index.js and started by the wrapper as
 // `ELECTRON_RUN_AS_NODE=1 electron out/cli/index.js`. It imports `socketPath()` (paths.ts) so the
 // CLI and main compute the same path, and the `connect` transport.
+import { constants as fsConstants } from 'node:fs'
+import { open as openFile, type FileHandle } from 'node:fs/promises'
 import type { Socket } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
@@ -55,6 +57,7 @@ import { formatWebGuests, formatWebKick, formatWebRole, formatWebSaved, formatWe
 import { readStdinBounded, readStdinCapped } from './stdin-read'
 import { readPassword } from './web-password'
 import { MAX_PASSWORD_LENGTH } from '../main/web/password'
+import { MAX_DOC_BYTES } from '../shared/room-names'
 
 type Env = Record<string, string | undefined>
 
@@ -515,6 +518,10 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       break
     case 'room-doc-put':
       cmd = 'room.doc.put'
+      args = { path: command.path, text: command.text ?? '' }
+      break
+    case 'room-doc-append':
+      cmd = 'room.doc.append'
       args = { path: command.path, text: command.text ?? '' }
       break
     // `ccc web` never names a project; in a tab the token goes along (the default routing above)
@@ -1003,6 +1010,8 @@ function formatResult(command: UserCommand, result: unknown): string {
     }
     case 'room-doc-put':
       return `saved ${command.path}\n`
+    case 'room-doc-append':
+      return `appended to ${command.path}\n`
     case 'web-status':
       return command.json ? `${JSON.stringify(result)}\n` : formatWebStatus(result, plainLine)
     case 'web-revoke': {
@@ -1081,6 +1090,75 @@ async function readRoomStdin(stdin: Readable, what: string, out: Output): Promis
     return { code: 1 }
   }
   return { text: read.text }
+}
+
+/** Opened without blocking: a FIFO named by `--file` would otherwise hang the open itself, past every deadline. */
+const DOC_FILE_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0)
+
+/**
+ * The text of `ccc room doc put|append <path> --file <file>` (`file` already resolved against the caller's cwd): the
+ * way for a tab with no stdin to give (Code Mode's REPL, where `-` waited the full 40 s and exited 124). A regular file
+ * only, checked by fstat on the one descriptor that is read (a FIFO, a device or a folder is refused, never waited on);
+ * at most MAX_DOC_BYTES, the store's own cap, read from that descriptor; strict UTF-8 and the encoded-size check of
+ * stdin. A link to a regular file is followed: the file is the caller's own, read with the caller's own rights. The
+ * whole read is under STDIN_READ_TIMEOUT_MS like stdin's (a hung network mount ends in exit 124, not a hang). Main
+ * still checks the real rules (the characters a doc may hold, the cap after an append) and says which one it was.
+ */
+async function readRoomDocFile(file: string, what: string, out: Output): Promise<{ text: string } | { code: number }> {
+  const read = await within(readDocFile(file), STDIN_READ_TIMEOUT_MS)
+  if (read === TIMED_OUT) {
+    out.stderr(`ccc: ${what}: ${file} could not be read within ${STDIN_READ_TIMEOUT_MS / 1000} s\n`)
+    return { code: CLI_TIMEOUT_CODE }
+  }
+  if ('problem' in read) {
+    out.stderr(`ccc: ${what}: ${file}: ${read.problem}\n`)
+    return { code: 1 }
+  }
+  let text: string
+  try {
+    // ignoreBOM keeps a leading BOM: the doc is the file's bytes exactly, as with stdin.
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.data)
+  } catch {
+    out.stderr(`ccc: ${what}: ${file} is not valid UTF-8 text\n`)
+    return { code: 1 }
+  }
+  if (encodedBytes(text) > MAX_LINE_BYTES - 4096) {
+    out.stderr(`ccc: ${what}: ${file} is too large once encoded for the app (each control character takes up to six bytes)\n`)
+    return { code: 1 }
+  }
+  return { text }
+}
+
+async function readDocFile(file: string): Promise<{ data: Buffer } | { problem: string }> {
+  let handle: FileHandle
+  try {
+    handle = await openFile(file, DOC_FILE_FLAGS)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { problem: 'no such file' }
+    // A Unix socket fails the open with ENXIO: not a file either.
+    if (code === 'ENXIO') return { problem: 'not a regular file' }
+    return { problem: errorText(err) }
+  }
+  try {
+    const st = await handle.stat()
+    if (!st.isFile()) return { problem: 'not a regular file' }
+    if (st.size > MAX_DOC_BYTES) return { problem: `over ${MAX_DOC_BYTES / 1024} KiB (a doc's limit)` }
+    // One byte past the cap from the descriptor itself: a file that grew since the fstat is refused, not cut short.
+    const buf = Buffer.alloc(MAX_DOC_BYTES + 1)
+    let got = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(buf, got, buf.length - got, got)
+      if (bytesRead === 0) break
+      got += bytesRead
+      if (got === buf.length) return { problem: `over ${MAX_DOC_BYTES / 1024} KiB (a doc's limit)` }
+    }
+    return { data: buf.subarray(0, got) }
+  } catch (err) {
+    return { problem: errorText(err) }
+  } finally {
+    await handle.close().catch(() => {})
+  }
 }
 
 const TIMED_OUT = Symbol('timed out')
@@ -1263,7 +1341,8 @@ export async function run(
       case 'room-read':
         return await runRoomRead(env, out)
       case 'room-send':
-      case 'room-doc-put': {
+      case 'room-doc-put':
+      case 'room-doc-append': {
         if (command.text !== undefined) return await runCommand(command, env, cwd, out)
         // Nothing to wait up to 40 s for stdin over: main refuses a tokenless caller anyway (and stays the authority).
         // A tab's env always has the token, app running or not, so this is never the app-closed silent exit 0.
@@ -1271,8 +1350,9 @@ export async function run(
           out.stderr('ccc: ccc room needs a Claude tab (run it inside a cockpit Claude tab)\n')
           return 1
         }
-        const what = command.kind === 'room-send' ? 'room send' : 'room doc put'
-        const read = await readRoomStdin(stdin, what, out)
+        const what = command.kind === 'room-send' ? 'room send' : command.kind === 'room-doc-put' ? 'room doc put' : 'room doc append'
+        const file = command.kind === 'room-send' ? undefined : command.file
+        const read = file !== undefined ? await readRoomDocFile(resolve(cwd, file), what, out) : await readRoomStdin(stdin, what, out)
         if ('code' in read) return read.code
         // A pipe ends its text with a newline the sender did not mean (`echo hi | ccc room send bob -`); a doc is kept exact.
         const text = command.kind === 'room-send' ? stripOneNewline(read.text) : read.text

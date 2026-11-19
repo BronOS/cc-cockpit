@@ -5,7 +5,9 @@
 // trusted: every part is checked against room-names.ts's character set, no `.` or `..`, a bounded
 // depth, and every directory on the way is lstat'd (a planted link anywhere is refused, not
 // followed). Files are read through one verified descriptor (verified-read.ts: O_NOFOLLOW, fstat,
-// the name still naming that file) and written to a temp file next to the target, then renamed.
+// the name still naming that file) and written to a temp file next to the target, then renamed. An append is the same
+// write: the old text is read inside the room's write chain and the whole new text replaces it, so two appends never
+// interleave or lose text, and the cap and the text rule hold for the doc as it ends up.
 // A refused doc answers exactly like a missing one ("blind work stays blind"): a member must not be
 // able to learn what another member's private folder holds by the error it gets.
 // Known limit (design §3): the 20 MiB cap is one total for the whole room, member folders included, so a member can
@@ -19,12 +21,12 @@ import { join } from 'node:path'
 import { readVerified } from '../verified-read'
 import { warnLog } from '../warn-log'
 import type { RoomLogType } from './room-log'
-import { isPathPart, isRoomId, isRoomName } from '../../shared/room-names'
+import { isPathPart, isRoomId, isRoomName, MAX_DOC_BYTES } from '../../shared/room-names'
 import { HIDDEN_TEXT } from '../../shared/session-name'
 import { RoomError } from './room-error'
 
-/** Per doc, in UTF-8 bytes: a `ccc` reply is one socket line (1 MiB) and plugin CLI I/O is 256 KiB (design §3). */
-export const MAX_DOC_BYTES = 256 * 1024
+/** Per doc, in UTF-8 bytes (shared/room-names.ts, where `ccc` reads it too). */
+export { MAX_DOC_BYTES }
 /** Per room, every file under `docs/` together. */
 export const MAX_ROOM_DOCS_BYTES = 20 * 1024 * 1024
 /** Parts below an area's root (`shared/` or `members/<name>/`), the file's own name included. */
@@ -147,6 +149,11 @@ const WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | 
 /** A refusal the caller sees as "no such doc"; `reason` goes to the log only. */
 class Refused extends Error {}
 
+/** What a write does with the doc there: `put` replaces it, `append` adds to its end. Both create a missing doc. */
+type WriteOp = 'put' | 'append'
+
+const BAD_TEXT = 'a doc must be UTF-8 text (no control, bidi or invisible format character but tab and line breaks, no lone CR, no lone surrogate)'
+
 export class RoomDocs {
   /** The tail of each room's write chain: one write at a time per room, in call order, so the last call wins. */
   private readonly writes = new Map<string, Promise<unknown>>()
@@ -221,20 +228,34 @@ export class RoomDocs {
 
   /** Write a doc (created or replaced), one write at a time per room. */
   async put(roomId: string, caller: RoomDocCaller, rawPath: unknown, text: unknown): Promise<void> {
-    const p = this.parse(roomId, caller, rawPath, 'put')
+    return this.queueWrite(roomId, caller, rawPath, text, 'put')
+  }
+
+  /**
+   * Add `text` to the end of a doc (created when missing), one write at a time per room: the old text is read inside
+   * the chain, so two appends land whole and in call order. The cap is the doc's size after the append, and the text
+   * rule is checked on the whole doc too (a BOM is fine at a doc's start, not in its middle).
+   */
+  async append(roomId: string, caller: RoomDocCaller, rawPath: unknown, text: unknown): Promise<void> {
+    return this.queueWrite(roomId, caller, rawPath, text, 'append')
+  }
+
+  private async queueWrite(roomId: string, caller: RoomDocCaller, rawPath: unknown, text: unknown, op: WriteOp): Promise<void> {
+    const p = this.parse(roomId, caller, rawPath, op)
     const path = docPathText(p)
-    if (!mayWrite(caller, p)) throw this.refusal(new Refused('not allowed'), roomId, caller, path, 'put')
+    if (!mayWrite(caller, p)) throw this.refusal(new Refused('not allowed'), roomId, caller, path, op)
     // Text checks only after access: a refused caller learns nothing more than "no such doc".
     if (typeof text !== 'string' || !isDocText(text)) {
-      this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op: 'put', reason: 'bad text' })
-      throw new RoomError('invalid', 'a doc must be UTF-8 text (no control, bidi or invisible format character but tab and line breaks, no lone CR, no lone surrogate)')
+      this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op, reason: 'bad text' })
+      throw new RoomError('invalid', BAD_TEXT)
     }
     const data = Buffer.from(text, 'utf8')
+    // An append's own text over the cap can never fit; the doc's size after it is checked in the chain.
     if (data.length > MAX_DOC_BYTES) {
-      this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op: 'put', reason: 'too large' })
+      this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op, reason: 'too large' })
       throw new RoomError('limit', `a doc may be at most ${MAX_DOC_BYTES} bytes`)
     }
-    const run = (this.writes.get(roomId) ?? Promise.resolve()).then(() => this.write(roomId, caller, p, path, data))
+    const run = (this.writes.get(roomId) ?? Promise.resolve()).then(() => this.write(roomId, caller, p, path, text, data, op))
     // The chain must survive a failed write, and is dropped once it is idle.
     const tail = run.catch(() => {})
     this.writes.set(roomId, tail)
@@ -244,7 +265,7 @@ export class RoomDocs {
     return run
   }
 
-  private async write(roomId: string, caller: RoomDocCaller, p: DocPath, path: string, data: Buffer): Promise<void> {
+  private async write(roomId: string, caller: RoomDocCaller, p: DocPath, path: string, text: string, piece: Buffer, op: WriteOp): Promise<void> {
     try {
       const docs = await this.docsDir(roomId, true)
       if (docs === null) throw new Refused('missing')
@@ -256,6 +277,22 @@ export class RoomDocs {
       const old = parent === null ? null : await lstatOrNull(join(parent, name))
       // A link or a folder where the doc goes is refused, never replaced: a link in the store means someone planted it.
       if (old !== null && !old.isFile()) throw new Refused(old.isSymbolicLink() ? 'symlink' : 'not-file')
+      let data = piece
+      if (op === 'append' && old !== null && parent !== null) {
+        // Inside the chain: no other write of this room runs until this one is done, so the text read is the doc's last.
+        const read = await readVerified(join(parent, name), MAX_DOC_BYTES)
+        if (!read.ok) throw new Refused(read.problem)
+        let before: string
+        try {
+          before = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(read.data)
+        } catch {
+          throw new Refused('not UTF-8')
+        }
+        // The whole doc, not only the piece: a piece's leading BOM would sit mid-doc, where it hides a line start.
+        if (!isDocText(before + text)) throw new RoomError('invalid', BAD_TEXT)
+        data = Buffer.concat([read.data, piece])
+        if (data.length > MAX_DOC_BYTES) throw new RoomError('limit', `a doc may be at most ${MAX_DOC_BYTES} bytes (after the append)`)
+      }
       // A new doc adds itself and every folder the put has to make (a deep path makes up to MAX_DOC_DEPTH + 1 of them,
       // `members/<name>` included): counting the file alone let a put of a deep path pass the cap by several entries.
       const added = old !== null ? 0 : 1 + (parent === null ? await this.missingDirs(docs, dirs) : 0)
@@ -285,14 +322,15 @@ export class RoomDocs {
         await unlink(tmp).catch(() => {})
         throw err
       }
-      this.logEvent(roomId, 'doc-write', { by: byOf(caller), path, bytes: data.length })
+      // `op` only on an append: a put's entry stays as it was (plugins read the log, sdk/types.ts RoomLogEntry).
+      this.logEvent(roomId, 'doc-write', { by: byOf(caller), path, bytes: data.length, ...(op === 'append' ? { op, added: piece.length } : {}) })
     } catch (err) {
-      throw this.refusal(err, roomId, caller, path, 'put')
+      throw this.refusal(err, roomId, caller, path, op)
     }
   }
 
   /** A checked path, or `invalid` (logged): the path's shape says nothing about what the store holds. */
-  private parse(roomId: string, caller: RoomDocCaller, rawPath: unknown, op: 'get' | 'put'): DocPath {
+  private parse(roomId: string, caller: RoomDocCaller, rawPath: unknown, op: 'get' | WriteOp): DocPath {
     if (!isRoomId(roomId)) throw new RoomError('not-found', 'no such room')
     const p = parseDocPath(rawPath)
     if (p === null) {
@@ -306,7 +344,7 @@ export class RoomDocs {
   }
 
   /** Log a refusal and turn it into the caller's error: every Refused is "no such doc"; other errors pass through. */
-  private refusal(err: unknown, roomId: string, caller: RoomDocCaller, path: string, op: 'get' | 'put'): unknown {
+  private refusal(err: unknown, roomId: string, caller: RoomDocCaller, path: string, op: 'get' | WriteOp): unknown {
     const reason = err instanceof Refused ? err.message : err instanceof RoomError ? err.code : 'error'
     this.logEvent(roomId, 'doc-refused', { by: byOf(caller), path, op, reason })
     if (err instanceof Refused) return new RoomError('not-found', NO_DOC)
