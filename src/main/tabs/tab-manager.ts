@@ -798,6 +798,11 @@ export class TabManager {
     return (this.order.get(projectId) ?? []).flatMap((t) => (t.dirtyIn !== undefined && t.page ? [t.page.title] : []))
   }
 
+  /** The same, counting only the views `inView` accepts (a guest's own views: guest-wiring.ts guestUnsavedOf). */
+  unsavedTitlesIn(projectId: string, inView: (viewId: ViewId) => boolean): string[] {
+    return (this.order.get(projectId) ?? []).flatMap((t) => (t.page && [...(t.dirtyIn ?? [])].some(inView) ? [t.page.title] : []))
+  }
+
   /**
    * Bring a saved tab back at start. Not reachable from a renderer or plugin (no IPC channel
    * maps here): `resumeId` is text from a hook payload that was saved to disk, and restore.ts

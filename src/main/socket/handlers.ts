@@ -49,7 +49,7 @@ import {
 } from '../../shared/plugin-config'
 import type { HostCliCall } from '../plugins/host-manager'
 import { displayText, linkDialogInfo, LinkRequestGate, type LinkCaller, type LinkDialogInfo } from '../plugins/link-request'
-import { MAX_HTML_BYTES, type OverlayResult } from '../overlays/overlay-manager'
+import { MAX_HTML_BYTES, type OverlayOrigin, type OverlayResult } from '../overlays/overlay-manager'
 import { rootAbsoluteUrlWarnings } from '../../shared/root-absolute-urls'
 import { PLUGIN_LIMITS_HOST_ONLY_TEXT, ROOM_READ_ACK_COMMAND } from '../../shared/protocol'
 import type { GlobalPluginLimitsView, PluginLimitsView } from '../../shared/plugin-limits'
@@ -90,12 +90,16 @@ export interface CliHandlerOptions {
   project(projectId: string): { name: string; path: string } | undefined
   /** The project window that is open now. */
   windowIdOf(projectId: string): number | undefined
-  /** Open an overlay in a window and wait for how it ended (main's OverlayManager.open). */
+  /**
+   * Open an overlay in a window and wait for how it ended (main's OverlayManager.open). `origin`: the Claude tab
+   * that ran `ccc overlay` (CliCall.tabId, main's), which decides whether a guest sees it (design-guests §9).
+   */
   openOverlay(
     windowId: number,
     spec: unknown,
     opener: string,
-    peerGone?: AbortSignal
+    peerGone?: AbortSignal,
+    origin?: OverlayOrigin
   ): Promise<OverlayResult>
 }
 
@@ -263,7 +267,8 @@ export function overlayHandler(
   return async (args, caller, peerGone) => {
     const { projectId, windowId } = openProjectOf(caller, 'overlay', options.windowIdOf)
     const spec = await specFrom(args, options.project(projectId)?.path)
-    return options.openOverlay(windowId, spec, 'cli', peerGone)
+    // A session token's tab only; a window token's overlay has no origin, so no guest ever sees it.
+    return options.openOverlay(windowId, spec, 'cli', peerGone, caller.kind === 'session' ? { tabId: caller.tabId } : undefined)
   }
 }
 

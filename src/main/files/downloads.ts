@@ -177,8 +177,12 @@ export interface DownloadsDeps {
   offers?: DownloadOfferHooks
   /** Main's server-mode flag: offers are held while no browser is attached, never refused for it. */
   server?: boolean
-  /** Whether a browser view shows the window now (the desktop's "this project is on this computer"). */
-  hasBrowserView?(windowId: number): boolean
+  /**
+   * Whether a browser view of the window can take an offer made from `originTab` now (the desktop's "this project is
+   * on this computer" otherwise): an owner's, or a write guest's that sees that tab (D-23, the rule its sink drops by).
+   * A lone read guest is no taker, so the caller gets that answer at once instead of an offer nobody can see.
+   */
+  hasBrowserView?(windowId: number, originTab?: string): boolean
   /** The project's folder (the registry's real path). */
   projectPath(projectId: string): string | undefined
   /** The window open for the project now (WindowManager.windowIdOf). */
@@ -375,7 +379,8 @@ export class Downloads {
     const resolved = await this.resolve(target, windowId)
     const server = this.deps.server === true
     const onThisComputer = `this project is on this computer: ${displayPath(resolved.named)}`
-    if (!server && this.deps.hasBrowserView?.(windowId) !== true) throw new Error(onThisComputer)
+    const originTab = typeof caller.tabId === 'string' && caller.tabId !== '' ? caller.tabId : undefined
+    if (!server && this.deps.hasBrowserView?.(windowId, originTab) !== true) throw new Error(onThisComputer)
     const common = {
       path: resolved.named,
       ...(resolved.real !== resolved.named ? { real: resolved.real } : {}),
