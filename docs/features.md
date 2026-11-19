@@ -701,12 +701,15 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   it in its own settings page. Showing a plugin is done in the cockpit window on the host (a desktop host's browser
   may only hide one; in server mode your browser may show one behind the armed confirm). A plugin that checks who is
   looking (Files and Editor do) limits what guests see and do: Files and Editor refuse a read-only guest any change and
-  keep guests inside the project folder; Editor gives read-only guests no quick chat or Ask Claude. Sessions is never
-  shown to guests (it sees every window's tabs). Usage, if you show it, shows guests the spend and rate-limit windows
-  of your whole Claude account, not only this project. A plugin that does not check: a read-only guest sees what its
-  pages show and cannot use them, a write guest uses them like you. Since a read-only guest's messages never reach such
-  a plugin, a page that asks its plugin for data when it opens shows that guest nothing until the plugin next sends on
-  its own: Usage stays blank for a read-only guest until its numbers change.
+  keep guests inside the project folder. Editor gives a read-only guest only the file of a tab shared with them: no
+  quick open, no find in files, no other file, no quick chat or Ask Claude. A write guest's click on a file in Files
+  opens it in the editor, never a preview overlay; a binary file is refused, and so are Open with rules that open a
+  terminal overlay or the system's app (a rule that opens a command in a new tab runs for them as for you). Sessions is
+  never shown to guests (it sees every window's tabs). Usage, if you show it, shows guests the spend and rate-limit windows
+  of your whole Claude account, not only this project. A plugin that does not check: a read-only guest sees what the
+  plugin pushes to its panels, slots and tabs, and nothing they click or type reaches it, so a page that asks for its
+  state first shows them nothing (Usage stays blank for a read-only guest until its numbers change); a write guest uses
+  it like you.
 - *The guest list:* the Live chip (with the number of guests here now) opens it: each guest's name, role, tabs, when
   their access ends, whether they are here, away or offline, the tab they look at and whether they are typing.
   **Read-only** / **Write** switches the role (the guest's page reconnects under the new role): Write first asks "Let
