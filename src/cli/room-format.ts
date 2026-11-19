@@ -22,7 +22,7 @@ export function formatRoomStatus(result: unknown, plain: Plain): string {
     if (!isPlainObject(m)) continue
     const tags = [m.coordinator === true ? 'coordinator' : '', m.you === true ? 'you' : ''].filter((t) => t !== '')
     const held = count(m.held)
-    lines.push(`  ${text(m.name, plain)}${tags.length > 0 ? ` (${tags.join(', ')})` : ''}: ${text(m.status, plain)}${held > 0 ? `, ${held} held` : ''}`)
+    lines.push(`  ${text(m.name, plain)}${tags.length > 0 ? ` (${tags.join(', ')})` : ''}: ${text(m.status, plain)}${held > 0 ? `, ${held} held` : ''}${held > 0 && m.status === 'idle' ? ' (stuck: nothing delivers them until someone types ccc room read in that tab)' : ''}`)
   }
   return `${lines.join('\n')}\n`
 }
@@ -34,7 +34,8 @@ const HELD_WHY: Readonly<Record<string, string>> = {
   typed: 'the person is typing in its tab',
   capped: 'it had 5 room pointers in a row; it waits for the person',
   draft: 'there is a draft in its prompt box',
-  'not-waiting': 'it is busy'
+  'not-waiting': 'it is busy',
+  idle: 'it is idle and will not take it by itself: the person types ccc room read and Enter in that tab, or clicks its count badge'
 }
 
 /** `ccc room send`: one line per recipient, saying what happened to the message. */

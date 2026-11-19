@@ -63,8 +63,14 @@ export type HeldWhy =
   | 'capped'
   /** The person's mark, but they have input in the box since the last prompt (the draft bit). */
   | 'draft'
-  /** The tab is not waiting for input (working, a permission dialog, starting, a paste in flight, ended). */
+  /** The tab is not waiting for input (working, a permission dialog, starting, a paste in flight, ended): it is busy. */
   | 'not-waiting'
+  /**
+   * The tab is `idle`: not working and not at a prompt the gate may type into, and nothing will move it by itself (a
+   * compaction outside a turn once left tabs here for 30+ min, 2026-11-19). Unlike `not-waiting`, "it will come" is
+   * false: the person types `ccc room read` in that tab, or clicks its count badge.
+   */
+  | 'idle'
 
 /** What happened for one recipient. */
 export type RecipientAnswer =
@@ -93,7 +99,7 @@ export function decide(input: { paused: boolean; entry: SessionEntry | undefined
   if (input.capped === true) return { pointer: false, why: 'capped' }
   // Untyped means no input from the person ever, so no draft either; a restored member is typed with no draft.
   if (entry.typed && entry.draft === true) return { pointer: false, why: 'draft' }
-  if (!maySend(entry)) return { pointer: false, why: 'not-waiting', status: entry.status }
+  if (!maySend(entry)) return { pointer: false, why: entry.status === 'idle' ? 'idle' : 'not-waiting', status: entry.status }
   return { pointer: true }
 }
 
@@ -376,7 +382,7 @@ interface SendWindow {
 }
 
 function heldAnswer(to: string, why: HeldWhy, status: TabStatus | undefined): RecipientAnswer {
-  return status === undefined || why !== 'not-waiting' ? { to, path: 'held', why } : { to, path: 'held', why, status }
+  return status === undefined || (why !== 'not-waiting' && why !== 'idle') ? { to, path: 'held', why } : { to, path: 'held', why, status }
 }
 
 function capText(cap: string, n: number): string {

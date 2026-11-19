@@ -458,7 +458,7 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
 - `ctx.rooms.send(id, to, text)`: a message `from plugin` to a member name or `all`, at most 20000
   characters (more goes in a doc). The answer is a `RoomSendAnswer` per recipient: `delivered`, `held`
   with `why` (`paused`, `no-tab`, `typed`, `capped`: 5 pointers in a row, held until the person steps in, `draft`,
-  `not-waiting`), `gone` or `refused` (its queue is full).
+  `not-waiting` (busy), `idle` (at rest; the person must act)), `gone` or `refused` (its queue is full).
   Counts against the room's 60 sends a minute, every sender together (`all` once per recipient). That cap
   (`roomSendsPerRoom`) and a member's own 20 a minute (`roomSendsPerMember`) are defaults the person can change for
   every plugin or for one (Settings > General > Plugin limits, Settings > Plugins > Limits, `ccc plugin limits`, at
