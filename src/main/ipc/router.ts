@@ -255,6 +255,8 @@ export interface GuestRouterDeps extends GuestDeps {
   askInfo?(windowId: number, requestId: string): { kind: GuestAskKind; info: GuestAskInfo } | undefined
   /** The name of the person behind a view of the project (the owner's D-24 name or a guest's), for filters. */
   personOf?(viewId: string | null): string | undefined
+  /** The project's folder, so a session's files reach a guest project-relative (guestSessions); absent: none do. */
+  projectRoot?(projectId: string): string | undefined
 }
 
 type Result<C extends InvokeChannel> = Res<C> | Promise<Res<C>>
@@ -342,7 +344,8 @@ export class IpcRouter {
       pluginVisible: (pluginId) => guests.pluginVisible(projectId, pluginId),
       overlayVisible: (overlayId) => deps?.overlayVisible?.(projectId, overlayId, access) === true,
       personOf: (id) => deps?.personOf?.(id),
-      tabOrder
+      tabOrder,
+      projectRoot: () => deps?.projectRoot?.(projectId)
     }
   }
 

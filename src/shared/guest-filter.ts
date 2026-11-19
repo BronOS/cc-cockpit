@@ -45,6 +45,11 @@ export interface GuestFilterContext {
   personOf(viewId: string | null): string | undefined
   /** The project's tab order now (after the change an event reports): `tabs.moved` re-indexes over it. */
   tabOrder(): readonly string[]
+  /**
+   * The project's folder (the host's path, absolute), only so a session's `files` can be made relative to it
+   * (D-33); never sent. Absent or undefined: no file reaches the guest (fail closed).
+   */
+  projectRoot?(): string | undefined
 }
 
 /** The parts of a tab the visibility rule reads (`TabInfo` and main's tab records both have them). */
@@ -108,6 +113,13 @@ export function guestTabInfo(tab: TabInfo, ctx: GuestFilterContext): TabInfo {
   delete out.sharedWith
   delete out.command
   delete out.argv
+  // A page tab's params are its plugin's `onOpen` input: the editor's is a file's host path, an outside one
+  // included (D-33). The shell draws a page tab from its title and frame, never its params, so a guest's copy has none.
+  if (tab.page !== undefined) {
+    const page = { ...tab.page }
+    delete page.params
+    out.page = page
+  }
   if (tab.flag !== undefined) out.flag = { color: tab.flag.color }
   if (tab.typedBy !== undefined) out.typedBy = { viewId: viewIdFor(tab.typedBy.viewId, ctx), device: personFor(tab.typedBy.viewId, ctx) }
   return out
@@ -163,6 +175,7 @@ export function guestTabIds(ids: readonly string[], ctx: GuestFilterContext): st
 
 /** `sessions.list` / `sessions.snapshot`: shared tabs only, no room or held count (rooms are the owner's). */
 export function guestSessions(s: SessionsSnapshot, ctx: GuestFilterContext): SessionsSnapshot {
+  const root = ctx.projectRoot?.()
   return {
     own: s.own
       .filter((d) => ctx.tabVisible(d.tabId))
@@ -170,9 +183,32 @@ export function guestSessions(s: SessionsSnapshot, ctx: GuestFilterContext): Ses
         const out = { ...d }
         delete out.room
         delete out.held
+        // D-33: the files the session touched, relative to the project; one outside it (a host path) is dropped.
+        out.files = d.files.flatMap((f) => {
+          const rel = projectRelative(f, root)
+          return rel === undefined ? [] : [rel]
+        })
+        // The queue is the owner's texts waiting for the gate (and plugins' prompts): never a guest's to read.
+        out.queue = []
         return out
       })
   }
+}
+
+/**
+ * `file` relative to `root`, or undefined when it is not strictly inside it. Pure string work (no Node here), so it
+ * fails closed: both must be absolute POSIX paths, and a `.` or `..` segment or an empty one in `file` (anything a
+ * resolve would move) is refused rather than resolved; so is a case or Unicode spelling that differs from the root's.
+ */
+export function projectRelative(file: string, root: string | undefined): string | undefined {
+  if (root === undefined || !root.startsWith('/') || !file.startsWith('/')) return undefined
+  const base = root.length > 1 && root.endsWith('/') ? root.slice(0, -1) : root
+  const prefix = base === '/' ? '/' : base + '/'
+  if (!file.startsWith(prefix)) return undefined
+  const rel = file.slice(prefix.length)
+  if (rel === '') return undefined
+  if (rel.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return undefined
+  return rel
 }
 
 /** G: `groups.get` / `groups.changed` (D-16). */

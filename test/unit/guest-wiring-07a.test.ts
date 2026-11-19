@@ -66,13 +66,14 @@ describe('guestRouterDeps', () => {
       },
       slotFrame: (projectId, frameId) => (projectId === PROJECT && frameId === 'f1' ? { info: { pluginId: 'shown.one' } } : undefined),
       trashAsks: { pluginOf: (windowId, requestId) => (windowId === WINDOW && requestId === 'trash-1' ? 'shown.one' : undefined) },
-      downloads: { offerOrigin: (windowId, requestId) => (windowId === WINDOW && requestId === 'offer-1' ? { originTab: 't1' } : undefined) }
+      downloads: { offerOrigin: (windowId, requestId) => (windowId === WINDOW && requestId === 'offer-1' ? { originTab: 't1' } : undefined) },
+      projectPath: (projectId) => (projectId === PROJECT ? '/Users/host/project' : undefined)
     }
   }
 
   it('has every GuestRouterDeps key, each answering from main', () => {
     const deps = guestRouterDeps(sources())
-    expect(Object.keys(deps).sort()).toEqual(['askInfo', 'frameOwner', 'guests', 'overlayVisible', 'personOf', 'pluginAccess', 'presence'])
+    expect(Object.keys(deps).sort()).toEqual(['askInfo', 'frameOwner', 'guests', 'overlayVisible', 'personOf', 'pluginAccess', 'presence', 'projectRoot'])
     expect(deps.frameOwner(PROJECT, 'f1')).toBe('shown.one')
     expect(deps.frameOwner(PROJECT, 'f9')).toBeUndefined()
     expect(deps.frameOwner('p2', 'f1')).toBeUndefined()
@@ -81,6 +82,8 @@ describe('guestRouterDeps', () => {
     expect(deps.askInfo(WINDOW, 'guest-close-1')).toBeUndefined()
     expect(deps.askInfo(8, 'trash-1')).toBeUndefined()
     expect(deps.personOf('web:2')).toBe('Bob')
+    expect(deps.projectRoot(PROJECT)).toBe('/Users/host/project')
+    expect(deps.projectRoot('p2')).toBeUndefined()
   })
 
   it("an overlay is visible to a guest only by its origin: a tab it sees or a plugin shown to the project's guests", () => {

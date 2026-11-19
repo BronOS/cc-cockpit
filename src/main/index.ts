@@ -2353,7 +2353,9 @@ function start(server: boolean): void {
       const windowId = views.windowOf(viewId as ViewId)
       return windowId === undefined ? undefined : downloads.offerOrigin(windowId, requestId)?.originTab
     },
-    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess))
+    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess)),
+    // Only to make a session's files project-relative for the guest (guestSessions); the path itself is never sent.
+    projectPath: (projectId) => registry.get(projectId)?.path
   }
   // Who is here and where (design-guests §10, presence.ts): joins and leaves from the web connections below;
   // selections and typing from the tab handlers, tab closes from TabManager's `closed`, a window's close below.
@@ -2780,7 +2782,8 @@ function start(server: boolean): void {
       overlays,
       slotFrame: (projectId, frameId) => layouts.slotFrame(projectId, frameId),
       trashAsks,
-      downloads
+      downloads,
+      projectPath: (projectId) => registry.get(projectId)?.path
     })
   )
 

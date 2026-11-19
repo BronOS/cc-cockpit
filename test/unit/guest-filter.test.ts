@@ -20,6 +20,7 @@ import {
   guestTyped,
   guestWindowInfo,
   pluginOfPanelKey,
+  projectRelative,
   tabVisible,
   type GuestFilterContext
 } from '../../src/shared/guest-filter'
@@ -129,6 +130,46 @@ describe('tabs (T, S)', () => {
     expect(out.own.map((s) => s.tabId)).toEqual(['t1'])
     expect(JSON.stringify(out)).not.toContain(MARKER)
     expect(out.own[0]!.held).toBeUndefined()
+  })
+
+  it("a page tab's params never reach a guest (the editor's outside path, D-33); the rest of the page stays", () => {
+    const page = { plugin: 'cockpit.editor', type: 'file', title: 'notes.md', icon: 'file', params: { path: `/Users/host/${MARKER}/notes.md`, line: 3 } }
+    const t = tab('t1', { kind: 'page', page })
+    const out = guestTab(t, ctx())!
+    expect(out.page).toEqual({ plugin: 'cockpit.editor', type: 'file', title: 'notes.md', icon: 'file' })
+    expect(JSON.stringify(guestTabs([t], ctx()))).not.toContain(MARKER)
+    // The owner's copy keeps them.
+    expect(t.page!.params).toEqual(page.params)
+  })
+
+  it('sessions: files project-relative, outside ones dropped, the queue stripped; no root: no files', () => {
+    const d: SessionDetail = {
+      tabId: 't1',
+      status: 'idle',
+      notes: [],
+      files: ['/Users/host/project/src/a.ts', `/Users/host/${MARKER}/.env`, '/Users/host/project', '/Users/host/project/../x', 'rel/b.ts', '/Users/host/projectX/c.ts'],
+      queue: [{ id: 'q1', text: MARKER, origin: 'plugin' } as never]
+    }
+    const out = guestSessions({ own: [d] }, ctx({ projectRoot: () => '/Users/host/project' }))
+    expect(out.own[0]!.files).toEqual(['src/a.ts'])
+    expect(out.own[0]!.queue).toEqual([])
+    expect(JSON.stringify(out)).not.toContain(MARKER)
+    expect(JSON.stringify(out)).not.toContain('/Users/host')
+    expect(guestSessions({ own: [d] }, ctx()).own[0]!.files).toEqual([])
+    expect(guestSessions({ own: [d] }, ctx({ projectRoot: () => undefined })).own[0]!.files).toEqual([])
+    // The input is not changed.
+    expect(d.files).toHaveLength(6)
+    expect(d.queue).toHaveLength(1)
+  })
+
+  it('projectRelative: strictly inside the root, no dot or empty segments, absolute only', () => {
+    expect(projectRelative('/p/a/b.ts', '/p')).toBe('a/b.ts')
+    expect(projectRelative('/p/a/b.ts', '/p/')).toBe('a/b.ts')
+    for (const bad of ['/p', '/p/', '/pa/b', '/p/./a', '/p/a/../../etc', '/p//a', 'p/a', '/other/a']) {
+      expect(projectRelative(bad, '/p'), bad).toBeUndefined()
+    }
+    expect(projectRelative('/p/a', 'p')).toBeUndefined()
+    expect(projectRelative('/p/a', undefined)).toBeUndefined()
   })
 })
 

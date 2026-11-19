@@ -35,6 +35,8 @@ export interface GuestRouterSources {
   trashAsks: { pluginOf(windowId: number, requestId: string): string | undefined }
   /** Downloads.offerOrigin (03b): a pending offer's origin tab. */
   downloads: { offerOrigin(windowId: number, requestId: string): { originTab?: string } | undefined }
+  /** The project's folder (the registry's record), for guestSessions' project-relative files. */
+  projectPath(projectId: string): string | undefined
 }
 
 /** The router's guest deps (IpcRouter.setGuestDeps). */
@@ -59,7 +61,8 @@ export function guestRouterDeps(s: GuestRouterSources): Required<GuestRouterDeps
     },
     // Only trash asks and download offers can be a guest's (asks/guest-asks.ts); any other id is unknown, refused.
     askInfo: askInfoFrom([trashAskSource(s.trashAsks), downloadOfferSource(s.downloads)]),
-    personOf: (viewId) => s.presence.personOf(viewId)
+    personOf: (viewId) => s.presence.personOf(viewId),
+    projectRoot: (projectId) => s.projectPath(projectId)
   }
 }
 
