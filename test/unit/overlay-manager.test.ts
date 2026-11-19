@@ -854,7 +854,7 @@ describe('html page', () => {
     // A plugin's page is a file, not an inline page; an unknown id is nothing.
     expect(m.inlinePage(plugin!.id)).toBeUndefined()
     expect(m.inlinePage('nope')).toBeUndefined()
-    const pages = new PluginPages({
+    const pages = new PluginPages({ guestProject: () => undefined, guestPluginVisible: () => false,
       pluginIds: () => [],
       deviceViews: () => [{ windowId: W1, projectId: 'p1' }],
       pluginDir: () => undefined,

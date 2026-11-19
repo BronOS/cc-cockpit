@@ -1,6 +1,7 @@
-// What `ccc web` prints (design-web.md §9.4). The reply comes from whatever owns the socket, so every
-// field is checked for its type and text goes through the caller's `plain` (control characters out)
-// before it reaches a terminal: a device name is the browser's own text.
+// What `ccc web` prints (design-web.md §9.4, design-guests §12). The reply comes from whatever owns the socket, so
+// every field is checked for its type and text goes through the caller's `plain` (control characters out)
+// before it reaches a terminal: a device name is the browser's own text, a guest name the owner's.
+import type { GuestView } from '../shared/guests'
 import { MIN_NETWORK_PASSWORD_LENGTH, type WebCliNotice, type WebCliStatus, type WebCredentialState, type WebDeviceView, type WebGatewayView } from '../shared/web-access'
 
 type Plain = (text: unknown) => string
@@ -126,4 +127,50 @@ export function formatWebSaved(result: unknown, plain: Plain): string {
   const s = (result ?? {}) as Partial<WebCliStatus>
   const start = typeof s.startFolder === 'string' ? `start folder: ${plain(s.startFolder)}\n` : ''
   return `saved\naddress: ${hostPort(s.bind, s.port, plain)}\ngateway: ${gatewayLine(s.gateway, plain)}\n${start}`
+}
+
+const GUEST_STATES: Record<string, string> = {
+  pending: 'pending',
+  live: 'here now',
+  away: 'away',
+  offline: 'offline'
+}
+
+/** A scope as the row says it: `all tabs`, or how many selected tabs (the ids are in --json). */
+function scopeText(scope: unknown): string {
+  if (scope === 'all') return 'all tabs'
+  if (Array.isArray(scope)) return scope.length === 1 ? '1 tab' : `${scope.length} tabs`
+  return 'unknown'
+}
+
+/**
+ * One guest or pending invite: id, name, role, project, scope, state, then until when (a redeemed guest) or the
+ * invite and when it expires (a pending one, whose lifetime starts only at the redeem).
+ */
+function guestLine(g: Partial<GuestView>, plain: Plain): string {
+  const head = `  ${plain(g.id)}\t${plain(g.name)}\t${plain(g.role)}\tproject ${plain(g.projectId)}\t${scopeText(g.scope)}\t${GUEST_STATES[String(g.state)] ?? plain(g.state)}`
+  if (g.state === 'pending') return `${head}\tinvite ${plain(g.inviteId)}, expires ${time(g.inviteExpiresAt)}`
+  return `${head}\t${g.until === null ? 'until removed' : `until ${time(g.until)}`}`
+}
+
+/** `ccc web guests` without `--json`: a count, then a row per guest and pending invite. */
+export function formatWebGuests(result: unknown, plain: Plain): string {
+  const rows = Array.isArray(result) ? (result as Array<Partial<GuestView>>) : []
+  if (rows.length === 0) return 'guests: none\n'
+  return `${[`guests: ${rows.length}`, ...rows.map((g) => guestLine(g ?? {}, plain))].join('\n')}\n`
+}
+
+/** `ccc web kick`: what went, by the id main resolved (and the name, for a guest). */
+export function formatWebKick(result: unknown, plain: Plain): string {
+  const r = (result ?? {}) as { guest?: unknown; invite?: unknown; name?: unknown }
+  const name = typeof r.name === 'string' ? ` ${plain(r.name)}` : ''
+  if (typeof r.guest === 'string') return `removed guest${name} (${plain(r.guest)})\n`
+  if (typeof r.invite === 'string') return `cancelled invite${name === '' ? '' : ` for${name}`} (${plain(r.invite)})\n`
+  return 'done\n'
+}
+
+/** `ccc web role`: the guest and its role now. */
+export function formatWebRole(result: unknown, plain: Plain): string {
+  const r = (result ?? {}) as { guest?: unknown; name?: unknown; role?: unknown }
+  return `guest ${plain(r.name)} (${plain(r.guest)}) now has the ${plain(r.role)} role\n`
 }

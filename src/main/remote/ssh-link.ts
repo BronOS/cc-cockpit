@@ -118,8 +118,10 @@ export interface LinkAnswers {
   passphrase?: string
 }
 
-/** What a call needs from the person before it can go on (design §5.4): passed to the picker as is. */
-/** What an SSH link can ask: never a certificate (that is a Direct guest link's, design-guests §11). */
+/**
+ * What a call needs from the person before it can go on (design §5.4): passed to the picker as is.
+ * Never a guest invite's certificate (a Direct link's, asked by RemoteService.connect).
+ */
 export type LinkNeed = Exclude<RemoteNeed, { need: 'certificate' }>
 
 /**

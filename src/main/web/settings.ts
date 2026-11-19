@@ -22,6 +22,8 @@ import { isAbsolute, resolve } from 'node:path'
 import { isPlainObject } from '../../shared/guards'
 import type { WebAccessMode, WebAccessRisk, WebAccessSettings } from '../../shared/types'
 import { WEB_RISK_ORDER, WEB_RISK_TEXT } from '../../shared/web-access'
+import { GUEST_NAME_MAX } from '../../shared/guests'
+import { plainText } from './access-log'
 
 /** Unprivileged ports only: below 1024 needs root on Linux, and port 80 would drop out of Host headers. */
 export const WEB_PORT_RANGE = { min: 1024, max: 65535 } as const
@@ -190,6 +192,9 @@ export function webAccessOf(stored: unknown): WebAccessSettings {
   // A damaged start folder (relative, not a string) reads as none: the home folder.
   const startFolder = startFolderOf(s['startFolder'])
   if (startFolder !== undefined) out.startFolder = startFolder
+  // A damaged owner name (not a string, only control characters) reads as none: "Host".
+  const ownerName = ownerNameOf(s['ownerName'])
+  if (ownerName !== undefined) out.ownerName = ownerName
   return out
 }
 
@@ -253,7 +258,22 @@ export function listenPlanOf(settings: WebAccessSettings): ListenPlan {
  */
 export type PatchResult = { ok: true; value: WebAccessSettings } | { ok: false; error: string; needsConfirm?: WebAccessRisk[] }
 
-const PATCH_KEYS = ['enabled', 'bind', 'port', 'externalOrigin', 'hosts', 'mode', 'tls', 'confirm', 'startFolder'] as const
+const PATCH_KEYS = ['enabled', 'bind', 'port', 'externalOrigin', 'hosts', 'mode', 'tls', 'confirm', 'startFolder', 'ownerName'] as const
+
+/** What guests call the owner when the setting is absent (design-guests D-24). */
+export const DEFAULT_OWNER_NAME = 'Host'
+
+/** A stored or patched owner name: plain text, at most GUEST_NAME_MAX characters; undefined when nothing is left. */
+export function ownerNameOf(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const name = plainText(raw, GUEST_NAME_MAX)
+  return name === '' ? undefined : name
+}
+
+/** The owner's name guests see now: the setting, else DEFAULT_OWNER_NAME. */
+export function ownerNameIn(settings: WebAccessSettings): string {
+  return settings.ownerName ?? DEFAULT_OWNER_NAME
+}
 
 /**
  * Whether the confirm `risk` had in `current` still covers it in `next`: the exposure it was given
@@ -368,6 +388,17 @@ export function applyWebAccessPatch(current: WebAccessSettings, patch: unknown, 
       next.tls = { certPath, keyPath }
     }
   }
+  if ('ownerName' in patch) {
+    // A label, not access: no risk, no confirm (D-24). Null or blank resets it to "Host".
+    const raw = patch['ownerName']
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      delete next.ownerName
+    } else {
+      const name = ownerNameOf(raw)
+      if (name === undefined) return { ok: false, error: 'the owner name must be text' }
+      next.ownerName = name
+    }
+  }
   if ('startFolder' in patch) {
     // Not part of what listens or who gets in (no risk, no confirm): where the folder browser starts.
     const raw = patch['startFolder']
@@ -434,6 +465,8 @@ export function storedWebAccess(previous: Partial<WebAccessSettings> | undefined
   else delete stored.confirmed
   if (next.startFolder !== undefined) stored.startFolder = next.startFolder
   else delete stored.startFolder
+  if (next.ownerName !== undefined) stored.ownerName = next.ownerName
+  else delete stored.ownerName
   return stored
 }
 

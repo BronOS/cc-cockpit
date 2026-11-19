@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as wsModule from 'ws'
-import { REMOTE_CLASS, type EventChannel, type LayoutView } from '../../src/shared/ipc'
+import { EVENT_CHANNELS, REMOTE_CLASS, type EventChannel, type LayoutView } from '../../src/shared/ipc'
 import { IpcRouter, registerOverlayHandlers, registerSessionHandlers, registerWebAccessHandlers, type ProjectContext } from '../../src/main/ipc/router'
 import { CloseAsks } from '../../src/main/sessions/close-asks'
 import { cleanSelection } from '../../src/main/webview/webview-input'
@@ -21,7 +21,9 @@ import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { ViewRegistry } from '../../src/main/views/view-registry'
 import { AccessLog } from '../../src/main/web/access-log'
 import { WebAuth } from '../../src/main/web/auth'
-import { MAX_PENDING_INVOKES, remoteEvent, SOCKET_HIGH_WATER, WebConnections, windowSnapshot, type WsLike } from '../../src/main/web/connection'
+import { MAX_PENDING_INVOKES, remoteEvent, SOCKET_HIGH_WATER, WebConnections, windowSnapshot, type ConnectionGuests, type WsLike } from '../../src/main/web/connection'
+import { guestContext } from '../../src/main/web/guest-events'
+import type { GuestAccess } from '../../src/shared/guests'
 import { DeviceStore, type WebDevice } from '../../src/main/web/devices'
 import type { TerminalSource } from '../../src/main/web/view-terminals'
 import type { MirrorView } from '../../src/main/terminals/mirror'
@@ -257,6 +259,7 @@ function setup(
     pagePaths?: (deviceId: string) => WebPagePaths
     server?: boolean
     joinOrder?: (projectId: string, tabId: string) => string[]
+    guests?: ConnectionGuests
   } = {}
 ) {
   const windows = new Map<string, number>([
@@ -276,7 +279,7 @@ function setup(
   views.addDesktop(1, desktop)
   const conns = new WebConnections({
     dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
-    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink, 'owner'),
+    addView: (windowId, viewId, sink, who) => views.addRemote(windowId, viewId, sink, who),
     windowIdOf: (projectId) => windows.get(projectId),
     snapshot:
       over.snapshot ??
@@ -295,6 +298,7 @@ function setup(
     ...(over.pagePaths ? { pagePaths: over.pagePaths } : {}),
     ...(over.server !== undefined ? { server: over.server } : {}),
     ...(over.joinOrder ? { joinOrder: over.joinOrder } : {}),
+    ...(over.guests ? { guests: over.guests } : {}),
     log: (m) => logs.push(m),
     helloTimeoutMs: 50
   })
@@ -608,6 +612,183 @@ describe('split groups in a browser view', () => {
     conns.select('web:1', 'x')
     await later()
     expect(m.joined()).toEqual(['b', 'a', 'c', 'x'])
+  })
+})
+
+
+// Guest views (design-guests §5, D-18): who a view is comes from its device at `hello`, read live; another
+// project is 4403, its own closed project 4462, a gone guest 4463; every event and the `ready` snapshot go
+// through GUEST_EVENT; the store closes a guest's views by id.
+describe('guest views', () => {
+  const GUEST: WebDevice = { id: 'gdev', name: 'Bob', createdAt: 0, lastSeenAt: 0, mode: 'guest', guestId: 'g1' }
+
+  function guestSetup(over: { access?: () => GuestAccess; visible?: (tabId: string) => boolean } = {}) {
+    const changes: Array<[string, boolean]> = []
+    let access: () => GuestAccess =
+      over.access ?? (() => ({ kind: 'guest', id: 'g1', name: 'Bob', role: 'read', projectId: 'p1', scope: ['p1-t1'] }))
+    const visible = over.visible ?? ((tabId: string) => tabId === 'p1-t1')
+    const guests: ConnectionGuests = {
+      access: (who) => (who === 'owner' ? { kind: 'owner' } : access()),
+      context: (viewId, a) =>
+        guestContext(
+          {
+            guests: { tabVisible: (_g, t) => visible(t), pluginVisible: () => false },
+            overlayVisible: () => false,
+            personOf: () => undefined,
+            tabOrder: () => ['p1-t1', 'p1-t2'],
+            ownerName: () => 'Alice'
+          },
+          viewId,
+          a
+        ),
+      viewsChanged: (id, live) => changes.push([id, live])
+    }
+    const ctx = setup({
+      guests,
+      hasTab: () => true,
+      snapshot: (() => ({
+        tabs: [{ id: 'p1-t1' } as never, { id: 'p1-t2' } as never],
+        layout: { layout: defaultLayout(), panels: [] },
+        overlays: [{ id: 'o1' } as never],
+        closeAsks: [{ requestId: 'c', tabId: 'p1-t1' }],
+        linkAsks: [{ requestId: 'l' } as never]
+      })) as never
+    })
+    return { ...ctx, changes, setAccess: (f: () => GuestAccess) => (access = f) }
+  }
+
+  it("binds a guest to its own project: ready is filtered and names the guest; the view's who is the guest", () => {
+    const g = guestSetup()
+    const { connect, conns, changes } = g
+    const ws = connect('p1', GUEST)
+    const ready = ws.frames('ready')[0] as { snapshot: Record<string, unknown> }
+    // The visible tab only, its host folder blanked (D-33: shared/guest-filter.ts guestTabInfo).
+    expect(ready.snapshot.tabs).toEqual([{ id: 'p1-t1', cwd: '' }])
+    expect(ready.snapshot.closeAsks).toEqual([])
+    expect(ready.snapshot.linkAsks).toEqual([])
+    expect(ready.snapshot.overlays).toEqual([])
+    expect(ready.snapshot.guest).toEqual({ id: 'g1', name: 'Bob', role: 'read', ownerName: 'Alice' })
+    // The registry is told who (the one whoOf: the router's access, view-access.ts, reads it; its default is the owner).
+    expect(g.views.whoOf('web:1')).toEqual({ guest: 'g1' })
+    expect(conns.guestLive('g1')).toBe(true)
+    expect(changes).toEqual([['g1', true]])
+    ws.drop()
+    expect(conns.guestLive('g1')).toBe(false)
+    expect(changes).toEqual([['g1', true], ['g1', false]])
+  })
+
+  it('another project is 4403 (open or not), checked before the window lookup', () => {
+    const { connect } = guestSetup()
+    expect(connect('p2', GUEST).closedWith?.code).toBe(CLOSE.guestProject)
+    expect(connect('nope', GUEST).closedWith?.code).toBe(CLOSE.guestProject)
+  })
+
+  it('its own project with no window is 4462; a gone guest, or no guest store, is 4463', () => {
+    const g = guestSetup()
+    g.windows.delete('p1')
+    expect(g.connect('p1', GUEST).closedWith?.code).toBe(CLOSE.projectClosed)
+    const gone = guestSetup({ access: () => ({ kind: 'revoked' }) })
+    expect(gone.connect('p1', GUEST).closedWith?.code).toBe(CLOSE.accessEnded)
+    const none = setup()
+    expect(none.connect('p1', GUEST).closedWith?.code).toBe(CLOSE.accessEnded)
+  })
+
+  it('a guest device has at most MAX_GUEST_VIEWS_PER_DEVICE views', () => {
+    const { connect } = guestSetup()
+    connect('p1', GUEST)
+    connect('p1', GUEST)
+    expect(connect('p1', GUEST).closedWith?.code).toBe(CLOSE.tooManyViews)
+  })
+
+  it('events go through GUEST_EVENT; the owner view of the same window gets them whole', () => {
+    const { connect, views } = guestSetup()
+    const guest = connect('p1', GUEST)
+    const owner = connect('p1')
+    views.toProject('p1', 'tabs.added', { id: 'p1-t2' } as never)
+    views.toProject('p1', 'tabs.added', { id: 'p1-t1' } as never)
+    views.toProject('p1', 'project.updated', { id: 'p1', name: 'P', path: '/home/me/secret', colour: undefined } as never)
+    views.toProject('p1', 'links.ask', { requestId: 'r', id: 'x', name: 'x', path: '/p', caller: 'tab' })
+    expect(guest.frames('event').map((f) => f.ch)).toEqual(['tabs.added', 'project.updated'])
+    expect((guest.frames('event')[0] as { p: { id: string } }).p.id).toBe('p1-t1')
+    expect((guest.frames('event')[1] as { p: { path: string } }).p.path).toBe('')
+    expect(owner.frames('event').map((f) => f.ch)).toEqual(['tabs.added', 'tabs.added', 'project.updated', 'links.ask'])
+  })
+
+  it('guests change nothing for the owner: every event channel reaches an owner view exactly as with no guest store', () => {
+    const withGuests = guestSetup()
+    const plain = setup({ hasTab: () => true })
+    const owner = withGuests.connect('p1')
+    const alone = plain.connect('p1')
+    withGuests.connect('p1', GUEST)
+    for (const ch of EVENT_CHANNELS) {
+      const payload = { marker: ch, tabId: 'p1-t2', id: 'p1-t2' } as never
+      withGuests.views.toProject('p1', ch, payload)
+      plain.views.toProject('p1', ch, payload)
+    }
+    expect(owner.frames('event').length).toBeGreaterThan(0)
+    expect(owner.frames('event')).toEqual(alone.frames('event'))
+  })
+
+  it('no guest frame carries a marker planted in an unshared tab, a hidden plugin, another project or the host folder', () => {
+    const MARK = 'MARKER-7f3a'
+    const g = guestSetup()
+    const guest = g.connect('p1', GUEST)
+    const send = (projectId: string, ch: EventChannel, p: unknown): void => g.views.toProject(projectId, ch, p as never)
+    // Controls: what the guest may see arrives (a filter that threw would drop these too).
+    send('p1', 'tabs.added', { id: 'p1-t1', title: 'VISIBLE-1' })
+    send('p1', 'sessions.snapshot', { own: [{ tabId: 'p1-t1', title: 'VISIBLE-2' }] })
+    // Planted.
+    send('p1', 'tabs.added', { id: 'p1-t2', title: MARK })
+    send('p1', 'sessions.snapshot', { own: [{ tabId: 'p1-t2', title: MARK }] })
+    send('p1', 'project.updated', { id: 'p1', name: 'P', path: `/home/${MARK}` })
+    send('p1', 'commands.updated', { commands: [{ id: 'hidden.plugin/x', source: 'plugin', title: MARK }, { id: 'core.a', source: 'core', title: 'VISIBLE-3' }], conflicts: [] })
+    send('p1', 'panels.reload', { pluginIds: [MARK] })
+    send('p1', 'webviews.navigated', { panelKey: `hidden.plugin/${MARK}`, url: MARK })
+    send('p1', 'links.ask', { requestId: 'r', id: MARK, name: MARK, path: MARK, caller: 'tab' })
+    send('p2', 'tabs.added', { id: 'p2-t1', title: MARK })
+    send('p2', 'project.updated', { id: 'p2', name: MARK, path: '/p2' })
+    const all = JSON.stringify(guest.frames('event')) + JSON.stringify(guest.frames('ready'))
+    expect(all).not.toContain(MARK)
+    for (const v of ['VISIBLE-1', 'VISIBLE-2', 'VISIBLE-3']) expect(all).toContain(v)
+  })
+
+  it('the next event after the guest ended closes the view 4463 instead of sending it', () => {
+    const g = guestSetup()
+    const ws = g.connect('p1', GUEST)
+    g.setAccess(() => ({ kind: 'revoked' }))
+    g.views.toProject('p1', 'tabs.added', { id: 'p1-t1' } as never)
+    expect(ws.frames('event')).toEqual([])
+    expect(ws.closedWith?.code).toBe(CLOSE.accessEnded)
+  })
+
+  it('closeGuest closes every view of that guest with the code, sockets waiting for hello too', () => {
+    const { connect, conns } = guestSetup()
+    const a = connect('p1', GUEST)
+    const waiting = connect(undefined, GUEST)
+    const owner = connect('p1')
+    expect(conns.closeGuest('g1', CLOSE.kicked, 'kicked')).toBe(2)
+    expect(a.closedWith?.code).toBe(CLOSE.kicked)
+    expect(waiting.closedWith?.code).toBe(CLOSE.kicked)
+    expect(owner.closedWith).toBeUndefined()
+  })
+
+  it('the window closing is 4462 for a guest, windowClosed for the owner', () => {
+    const { connect, views } = guestSetup()
+    const guest = connect('p1', GUEST)
+    const owner = connect('p1')
+    views.removeWindow(1)
+    expect(guest.closedWith?.code).toBe(CLOSE.projectClosed)
+    expect(owner.closedWith?.code).toBe(CLOSE.windowClosed)
+  })
+
+  it("a guest's invokes carry the guest as who (the router refuses them until 03's GUEST_CLASS)", async () => {
+    const { connect } = guestSetup()
+    const ws = connect('p1', GUEST)
+    ws.feed({ t: 'invoke', id: 1, ch: 'theme.get' })
+    await flush()
+    await flush()
+    const result = ws.frames('result')[0] as { ok: boolean }
+    expect(result.ok).toBe(false)
   })
 })
 

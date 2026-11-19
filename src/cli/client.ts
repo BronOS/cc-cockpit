@@ -51,7 +51,7 @@ import { runPluginLogs } from './plugin-logs'
 import { runPluginNew } from './plugin-new'
 import { runStatusLine } from './statusline'
 import { formatRoomDocs, formatRoomJoin, formatRoomLeave, formatRoomSend, formatRoomStatus } from './room-format'
-import { formatWebSaved, formatWebStatus } from './web-format'
+import { formatWebGuests, formatWebKick, formatWebRole, formatWebSaved, formatWebStatus } from './web-format'
 import { readStdinBounded, readStdinCapped } from './stdin-read'
 import { readPassword } from './web-password'
 import { MAX_PASSWORD_LENGTH } from '../main/web/password'
@@ -559,6 +559,31 @@ export function buildRequest(command: UserCommand, env: Env, cwd: string): Reque
       if (command.startFolder !== undefined) args.startFolder = command.startFolder === '' ? null : abs(command.startFolder)
       break
     }
+    // The guest commands (design-guests §12). The project travels in args, never as the request's routing: a
+    // `project` caller is no longer the tokenless, projectless one, and main would refuse it as host-only.
+    case 'web-invite':
+      cmd = 'web.invite'
+      args = {
+        // An id (the registry's 16 lower-case hex) goes as typed; anything else is a folder, made absolute against
+        // our cwd (main's means nothing to the caller). A folder whose name is 16 hex characters: `./<name>`.
+        project: isProjectIdShape(command.project) ? command.project : abs(command.project),
+        name: command.name,
+        role: command.role,
+        scope: command.tabs,
+        lifetime: command.lifetime
+      }
+      break
+    case 'web-guests':
+      cmd = 'web.guests'
+      break
+    case 'web-kick':
+      cmd = 'web.kick'
+      args = command.invite !== undefined ? { invite: command.invite } : { guest: command.guest }
+      break
+    case 'web-role':
+      cmd = 'web.role'
+      args = { guest: command.guest, role: command.role }
+      break
   }
   if ('error' in routing) return routing
   return { v: PROTOCOL_VERSION, id: 1, cmd, args, ...routing }
@@ -593,6 +618,17 @@ function roundTrip(socket: Socket, line: string, timeoutMs: number | undefined):
     socket.write(line)
   })
 }
+
+/** A project id's shape (main/paths.ts PROJECT_ID_PATTERN: 16 lower-case hex), checked by hand: no regex on typed text. */
+function isProjectIdShape(value: string): boolean {
+  if (value.length !== 16) return false
+  for (const ch of value) if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false
+  return true
+}
+
+/** What `ccc web invite` prints on stderr when web access listens on loopback only (D-35: a warning, the link works there). */
+export const INVITE_LOOPBACK_WARNING =
+  'web access listens on loopback only; set an external origin or a network bind so the guest can reach it'
 
 /** What `ccc web` prints, exit 1, when nothing answers on the socket. */
 export const NOT_RUNNING = 'cc-cockpit is not running'
@@ -908,6 +944,8 @@ function resultWarnings(command: UserCommand, result: unknown): string {
   // A link on stdout alone (a script reads it); what it is goes to stderr.
   if (command.kind === 'web-add-device') return `ccc: ${ADD_DEVICE_EXPIRES_TEXT}\n`
   if (command.kind === 'web-link' && command.regenerate) return 'ccc: the old link no longer works; the devices that signed in with it are signed out\n'
+  // Also with --json (where `warning` is in the object): a script that saves the JSON still leaves the person a line.
+  if (command.kind === 'web-invite') return field(result, 'warning') === 'loopback-only' ? `ccc: warning: ${INVITE_LOOPBACK_WARNING}\n` : ''
   if (command.kind !== 'plugin-link') return ''
   const warnings = ((result ?? {}) as { warnings?: unknown }).warnings
   return Array.isArray(warnings) ? warnings.map((w) => `ccc: warning: ${plainLine(w)}\n`).join('') : ''
@@ -982,6 +1020,15 @@ function formatResult(command: UserCommand, result: unknown): string {
       return `sign-in mode: ${plainLine(field(result, 'mode'))}\n`
     case 'web-set':
       return formatWebSaved(result, plainLine)
+    // The link alone on stdout (a script reads it); shown only this once, never logged by main.
+    case 'web-invite':
+      return command.json ? `${JSON.stringify(result)}\n` : `${plainLine(field(result, 'link'))}\n`
+    case 'web-guests':
+      return command.json ? `${JSON.stringify(Array.isArray(result) ? result : [])}\n` : formatWebGuests(result, plainLine)
+    case 'web-kick':
+      return formatWebKick(result, plainLine)
+    case 'web-role':
+      return formatWebRole(result, plainLine)
     case 'sessions': {
       const list = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : []
       if (command.json) return `${JSON.stringify(list)}\n`

@@ -670,7 +670,11 @@ export type InvokeFrame = { t: 'invoke'; id: number; ch: string; p: unknown }
  * the next one's of the same key: a late frame of an old load never reaches or closes the new port.
  * `m` is the panel SDK's JSON text, at most MAX_PORT_MESSAGE_LENGTH.
  */
-export type PortOpenFrame = { t: 'port.open'; key: string; nonce: number }
+/**
+ * `oneWay`: the line is host to page only (design-guests D-17, PanelPortPayload.oneWay): main drops what the page
+ * sends, and the browser shell may say so. Present only when true.
+ */
+export type PortOpenFrame = { t: 'port.open'; key: string; nonce: number; oneWay?: true }
 export type PortMsgFrame = { t: 'port.msg'; key: string; nonce: number; m: string }
 export type PortCloseFrame = { t: 'port.close'; key: string; nonce: number }
 /**

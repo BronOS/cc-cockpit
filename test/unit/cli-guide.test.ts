@@ -156,7 +156,7 @@ describe('guide drift guards', () => {
 
   it('names every ccc web subcommand of USAGE in the cli topic', () => {
     const subs = new Set([...USAGE.matchAll(/^ {2}ccc web (\S+)/gm)].map((m) => m[1] as string))
-    expect([...subs].sort()).toEqual(['add-device', 'link', 'mode', 'password', 'revoke', 'set', 'status', 'stop'])
+    expect([...subs].sort()).toEqual(['add-device', 'guests', 'invite', 'kick', 'link', 'mode', 'password', 'revoke', 'role', 'set', 'status', 'stop'])
     for (const sub of subs) expect(topic('cli'), `ccc web ${sub}`).toContain(`ccc web ${sub}`)
   })
 

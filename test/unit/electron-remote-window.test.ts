@@ -68,6 +68,11 @@ class FakeSession extends FakeEmitter {
   setDisplayMediaRequestHandler(fn: Listener): void {
     this.handlers.display = fn
   }
+  /** Every proc set, in order (clearSession sets it again). */
+  readonly verifyProcs: Listener[] = []
+  setCertificateVerifyProc(fn: Listener): void {
+    this.verifyProcs.push(fn)
+  }
 }
 
 let nextId = 10
@@ -208,9 +213,21 @@ vi.mock('electron', () => ({
   }
 }))
 
-const { ElectronRemoteWindowFactory, HOLDS_UNLOAD_SCRIPT, isRemoteWindow, progressBarValue, readCappedText, remotePartition, UNLOAD_PROBE_TIMEOUT_MS } = await import(
-  '../../src/main/remote/electron-remote-window'
-)
+const {
+  CERT_ACCEPT,
+  CERT_CHROMIUM_VERDICT,
+  CERT_REFUSE,
+  certificateSha256,
+  certificateVerdict,
+  ElectronRemoteWindowFactory,
+  HOLDS_UNLOAD_SCRIPT,
+  isRemoteWindow,
+  progressBarValue,
+  readCappedText,
+  remotePartition,
+  UNLOAD_PROBE_TIMEOUT_MS
+} = await import('../../src/main/remote/electron-remote-window')
+const { createHash } = await import('node:crypto')
 const { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } = await import('../../src/main/remote/remote-key')
 const { WEBVIEW_WORLD_ID } = await import('../../src/main/webview/webview-input')
 const { DEVICE_KEY_STORAGE } = await import('../../src/shared/web-protocol')
@@ -661,5 +678,80 @@ describe('ElectronRemoteWindowFactory: the partition', () => {
     const { ses, factory } = make()
     await factory.clearSession('s1')
     expect(ses.cleared).toEqual(['storage', 'cache'])
+  })
+})
+
+
+// A guest's pinned host certificate (design-guests §11, D-29): the partition's verify proc accepts
+// the one certificate whose DER hashes to the record's pin, for the pin's host only; everything else
+// is Chromium's own verdict (which refuses a self-signed certificate, as the page hardening does).
+describe('the certificate pin', () => {
+  /** A PEM block around `der` as Electron's Certificate.data gives it (64-character lines). */
+  function pem(der: Buffer, eol = '\n'): string {
+    const b64 = der.toString('base64')
+    const lines: string[] = []
+    for (let i = 0; i < b64.length; i += 64) lines.push(b64.slice(i, i + 64))
+    return ['-----BEGIN CERTIFICATE-----', ...lines, '-----END CERTIFICATE-----', ''].join(eol)
+  }
+  const der = Buffer.from(Array.from({ length: 700 }, (_, i) => (i * 37) % 256))
+  const other = Buffer.from(Array.from({ length: 700 }, (_, i) => (i * 11) % 256))
+  const pin = createHash('sha256').update(der).digest('hex')
+
+  it("hashes the first certificate's DER, whatever the line ends", () => {
+    expect(certificateSha256(pem(der))).toBe(pin)
+    expect(certificateSha256(pem(der, '\r\n'))).toBe(pin)
+    expect(certificateSha256(pem(der) + pem(other))).toBe(pin)
+    expect(certificateSha256('not a certificate')).toBeUndefined()
+    expect(certificateSha256('-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n')).toBeUndefined()
+  })
+
+  it('accepts the pinned certificate for its host only, refuses any other there; other hosts get Chromium\'s verdict', () => {
+    const pinned = { hostname: 'host.example', pin }
+    expect(certificateVerdict('host.example', pem(der), pinned)).toBe(CERT_ACCEPT)
+    expect(certificateVerdict('HOST.example.', pem(der), pinned)).toBe(CERT_ACCEPT)
+    // Another certificate for the pinned host: refused outright, even one Chromium would trust (D-29), never a question.
+    expect(certificateVerdict('host.example', pem(other), pinned)).toBe(CERT_REFUSE)
+    // The pinned certificate on another host (a redirect, a sub-resource): not the pin's.
+    expect(certificateVerdict('evil.example', pem(der), pinned)).toBe(CERT_CHROMIUM_VERDICT)
+    expect(certificateVerdict('', pem(der), pinned)).toBe(CERT_CHROMIUM_VERDICT)
+    // No pin: Chromium's verdict for everything.
+    expect(certificateVerdict('host.example', pem(der), undefined)).toBe(CERT_CHROMIUM_VERDICT)
+    expect(certificateVerdict('host.example', 'garbage', pinned)).toBe(CERT_REFUSE)
+    // IPv6: Chromium's host name and URL's bracketed one are the same host.
+    expect(certificateVerdict('::1', pem(der), { hostname: '[::1]', pin })).toBe(CERT_ACCEPT)
+    expect(certificateVerdict('[::1]', pem(der), { hostname: '[::1]', pin })).toBe(CERT_ACCEPT)
+  })
+
+  it("sets the partition's verify proc, reading the pin on each call, and sets it again when the partition is cleared", async () => {
+    const log: string[] = []
+    let current: { hostname: string; pin: string } | undefined = { hostname: 'host.example', pin }
+    const factory = new ElectronRemoteWindowFactory({ version: '0.17.0', log: (m) => void log.push(m) })
+    factory.session('g1', { ...sessionHooks(log), certificatePin: () => current })
+    const ses = state.sessions.get(remotePartition('g1')) as FakeSession
+    expect(ses.verifyProcs).toHaveLength(1)
+    const verdicts: unknown[] = []
+    const verify = (host: string, data: string): void => void ses.verifyProcs.at(-1)?.({ hostname: host, certificate: { data } }, (v: unknown) => verdicts.push(v))
+    verify('host.example', pem(der))
+    verify('host.example', pem(other))
+    current = undefined
+    verify('host.example', pem(der))
+    expect(verdicts).toEqual([CERT_ACCEPT, CERT_REFUSE, CERT_CHROMIUM_VERDICT])
+    // A hook that throws is Chromium's verdict, logged without the pin.
+    factory.session('g2', { ...sessionHooks(log), certificatePin: () => {
+      throw new Error('store gone')
+    } })
+    const ses2 = state.sessions.get(remotePartition('g2')) as FakeSession
+    ses2.verifyProcs[0]?.({ hostname: 'host.example', certificate: { data: pem(der) } }, (v: unknown) => verdicts.push(v))
+    expect(verdicts.at(-1)).toBe(CERT_CHROMIUM_VERDICT)
+    expect(log.some((l) => l.includes('checking a certificate failed') && !l.includes(pin))).toBe(true)
+    await factory.clearSession('g1')
+    expect(ses.verifyProcs).toHaveLength(2)
+  })
+
+  it('every remote partition gets the proc, with no pin hook too (Chromium\'s verdict)', () => {
+    const { ses } = make('plain')
+    const verdicts: unknown[] = []
+    ses.verifyProcs[0]?.({ hostname: 'host.example', certificate: { data: pem(der) } }, (v: unknown) => verdicts.push(v))
+    expect(verdicts).toEqual([CERT_CHROMIUM_VERDICT])
   })
 })

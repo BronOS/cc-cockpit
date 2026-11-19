@@ -24,6 +24,13 @@
 //    nothing answering still opens the window, on main's waiting page (RemoteWindows' gate).
 //  - Direct: the link is parsed (`parseRemoteLink`), only its origin is saved, and its token is used
 //    once for the window's sign-in. Direct never re-pairs by itself (§7).
+//  - A guest invite (design-guests §11): a Direct link with `#i=<token>[&c=<pin>]`. The record is
+//    marked `guest` and the window's first load is `<origin>/#i=<token>` (the host's page redeems it
+//    and lands on its project; the cookie it gets is kept as a Direct sign-in's). A pin (D-29) is a
+//    question first: the connect answers a `certificate` need until the answers name that same pin,
+//    and only then is the record saved, with it, as the window opens. A pin is set on a new record
+//    only: a saved guest's pin that differs from the link's is refused, never asked (Forget fixes
+//    it), and Edit cannot take an invite or move a guest's address.
 //  - One connect or open per server at a time: the server keeps one add-device token at a time
 //    (auth.ts addDeviceLink), so two at once could void each other's. Connects of new servers also go
 //    one at a time, so two Connects of one new host cannot save it twice.
@@ -38,6 +45,7 @@ import { join } from 'node:path'
 import { errorText } from '../../shared/error-text'
 import type { RemoteConnectAnswer, RemoteConnectionState, RemoteConnectRequest, RemoteEditRequest, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
 import {
+  certAnswerPin,
   checkCccOverride,
   checkSshHost,
   parseRemoteLink,
@@ -49,6 +57,7 @@ import {
   type RemoteVia
 } from '../../shared/remote-servers'
 import { warnLog } from '../warn-log'
+import { peerCertificateSha256 } from './peer-certificate'
 import { sameSettings, type RemoteServerView, type SecretResult } from './remote-servers'
 import type { RemoteOpenRequest, RemoteWindowsStore } from './remote-windows'
 import type { LinkAccepted, LinkAnswers, LinkResult, LinkState, RemoteLink, SshLinkStore } from './ssh-link'
@@ -61,7 +70,7 @@ export type { RemoteServerRecord }
 export interface RemoteServiceStore {
   list(): Promise<RemoteServerView[]>
   get(id: string): RemoteServerRecord | undefined
-  prepare(input: { name?: string; via: RemoteVia }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia }
+  prepare(input: { name?: string; via: RemoteVia; guest?: true; certPin?: string }): { record: RemoteServerRecord; saved: boolean; via: RemoteVia }
   insert(record: RemoteServerRecord): RemoteServerRecord
   edit(id: string, input: { name?: string; via: RemoteVia; forgetHostKey?: boolean }): { viaChanged: boolean; renamed: boolean; identityChanged: boolean }
   rename(id: string, name: string): void
@@ -89,6 +98,11 @@ export interface RemoteServiceOptions {
    * reads the record and secrets only through `store`, which also serves a server not saved yet.
    */
   link(serverId: string, store: SshLinkStore): RemoteLink
+  /**
+   * The SHA-256 of the certificate an https origin presents now (peer-certificate.ts by default): what a
+   * guest link's pin and the person's answer must both equal (D-29).
+   */
+  peerCertificate?(origin: string): Promise<string | undefined>
   /** My own tunnel's probe of a local port (tunnel-probe.ts `probeTunnel` by default). */
   probe?(localPort: number): Promise<TunnelProbeResult>
   /**
@@ -131,8 +145,8 @@ export function connectionOf(state: LinkState | undefined): RemoteConnectionStat
 /** A `need` met where nobody can be asked (a re-pair in the background): what to do instead. */
 export function backgroundNeedText(need: RemoteNeed, server: RemoteServerRecord): string {
   if (need.need === 'hostKey') return `the host key of ${server.name} is not trusted yet: open the server from the project picker`
+  if (need.need === 'certificate') return `the certificate of ${server.name} is not trusted yet: join again with the invite link`
   if (need.need === 'password') return `${server.name} needs its password again: open the server from the project picker`
-  if (need.need === 'certificate') return `the certificate of ${server.name} is not trusted yet: open the server from the project picker`
   return `the key ${need.path} needs its passphrase again: open the server from the project picker`
 }
 
@@ -162,11 +176,19 @@ export function notifyingStore(store: RemoteWindowsStore, changed: () => void): 
   }
 }
 
+/** A one-time token the window signs in with: an access or add-device token (`#t=`), or a guest invite's (`#i=`). */
+interface SignIn {
+  token: string
+  invite?: true
+}
+
 /** A request's settings checked into a `via`, the name, and a token to sign in with once. */
 interface Parsed {
   via: RemoteVia
   name?: string
   token?: string
+  /** A guest invite (Direct only): its token, and the host certificate's pin when the link has one. */
+  invite?: { token: string; certPin?: string }
 }
 
 /**
@@ -179,7 +201,9 @@ function parseSettings(request: RemoteServerSettings): Parsed | Failure {
   if (request.kind === 'direct') {
     const link = parseRemoteLink(request.link)
     if ('error' in link) return fail(link.error)
-    return { via: { kind: 'direct', origin: link.origin }, ...named, ...(link.token === undefined ? {} : { token: link.token }) }
+    const via: RemoteVia = { kind: 'direct', origin: link.origin }
+    if (link.guest === true) return { via, ...named, invite: { token: link.invite, ...(link.certPin === undefined ? {} : { certPin: link.certPin }) } }
+    return { via, ...named, ...(link.token === undefined ? {} : { token: link.token }) }
   }
   if (request.kind === 'tunnel') {
     const via: RemoteVia = { kind: 'tunnel', localPort: request.localPort, remotePort: request.remotePort }
@@ -189,6 +213,8 @@ function parseSettings(request: RemoteServerSettings): Parsed | Failure {
     if (text === '') return { via, ...named }
     const link = parseRemoteLink(text)
     if ('error' in link) return fail(link.error)
+    // An invite is redeemed by the host's page at its own origin, which a tunnel does not load.
+    if (link.guest === true) return fail('an invite link joins with Link: paste it there')
     if (link.origin.startsWith('https:')) {
       return fail('this server serves https; connect with Link and its address, or turn TLS off on the server: the SSH tunnel encrypts already')
     }
@@ -213,6 +239,34 @@ function parseSettings(request: RemoteServerSettings): Parsed | Failure {
     ...(ccc === '' ? {} : { ccc })
   }
   return { via, ...named }
+}
+
+/** The one-time sign-in a parsed link carries: an invite's token, or an access link's. */
+function signInOf(parsed: Parsed): SignIn | undefined {
+  if (parsed.invite !== undefined) return { token: parsed.invite.token, invite: true }
+  return parsed.token === undefined ? undefined : { token: parsed.token }
+}
+
+/**
+ * Why a link may not open a server saved at its address already, as far as guests go (undefined: it
+ * may). An invite for a server saved as the person's own, or an access link for one saved as a
+ * guest: one record cannot be both (a guest's skips the reopen, the poll and the re-pair an owner's
+ * gets). A pin the saved guest does not have is a changed certificate, and that is never a question
+ * (D-29): refused, and Forget then a new invite fixes it. An invite with no pin for a pinned guest
+ * keeps the saved pin (it still holds for the window).
+ */
+function savedGuestProblem(saved: RemoteServerRecord, parsed: Parsed): string | undefined {
+  if (parsed.invite !== undefined && saved.guest !== true) {
+    return `"${saved.name}" is saved already at this address as your own server; forget it first to join it as a guest`
+  }
+  if (parsed.invite === undefined && parsed.token !== undefined && saved.guest === true) {
+    return `"${saved.name}" is saved as a guest; forget it first to sign in with an access link`
+  }
+  const pin = parsed.invite?.certPin
+  if (pin !== undefined && pin !== saved.certSha256) {
+    return `the certificate in this invite is not the one "${saved.name}" was joined with, so it is refused; if the host changed it, forget the server and join again`
+  }
+  return undefined
 }
 
 /** The answers a link call takes (the secrets for that call only; `remember` is the service's). */
@@ -268,6 +322,7 @@ export class RemoteService {
         remembered: s.remembered,
         windows: this.options.windows.countOf(s.id)
       }
+      if (s.guest === true) info.guest = true
       if (s.via.kind === 'ssh') info.connection = connectionOf(this.links.get(s.id)?.link.state)
       return info
     })
@@ -278,11 +333,18 @@ export class RemoteService {
     if (this.disposed) return fail('the app is quitting')
     const parsed = parseSettings(request)
     if ('error' in parsed) return parsed
-    const answers = request.kind === 'ssh' ? (request.answers ?? {}) : {}
+    const answers = request.kind !== 'tunnel' && 'answers' in request ? (request.answers ?? {}) : {}
+    const invite = parsed.invite
+    const sign = signInOf(parsed)
     return this.run('connect', async () => {
       let prepared: ReturnType<RemoteServiceStore['prepare']>
       try {
-        prepared = this.options.store.prepare({ ...(parsed.name === undefined ? {} : { name: parsed.name }), via: parsed.via })
+        prepared = this.options.store.prepare({
+          ...(parsed.name === undefined ? {} : { name: parsed.name }),
+          via: parsed.via,
+          ...(invite === undefined ? {} : { guest: true as const }),
+          ...(invite?.certPin === undefined ? {} : { certPin: invite.certPin })
+        })
       } catch (err) {
         return fail(errorText(err))
       }
@@ -292,11 +354,28 @@ export class RemoteService {
         if (!sameSettings(prepared.record.via, prepared.via)) {
           return fail(`this server is saved already as "${prepared.record.name}" with other settings; use Edit to change them`)
         }
-        return this.run(id, () => this.openNow(id, undefined, parsed.token, answers))
+        const problem = savedGuestProblem(prepared.record, parsed)
+        if (problem !== undefined) return fail(problem)
+        return this.run(id, () => this.openNow(id, undefined, sign, answers))
+      }
+      // A new guest with a pin (D-29): main reads the certificate the server presents and trusts the person's
+      // answer only when it equals both the link's pin and that certificate. A server showing another
+      // certificate is refused outright (never a question); no answer yet is the question; an answer that
+      // names anything else is refused. Nothing is saved or opened before.
+      if (invite?.certPin !== undefined && parsed.via.kind === 'direct') {
+        const origin = parsed.via.origin
+        const presented = await (this.options.peerCertificate ?? peerCertificateSha256)(origin).catch(() => undefined)
+        if (presented === undefined) return fail(`could not read the certificate of ${origin}`)
+        if (presented !== invite.certPin) {
+          return fail(`the certificate of ${origin} is not the one in the invite, so it is refused; ask the host for a new invite`)
+        }
+        if (answers.certificate === undefined) return { ok: false, need: { need: 'certificate', origin, sha256: presented } }
+        const answered = certAnswerPin(answers.certificate)
+        if (answered !== invite.certPin || answered !== presented) return fail(`the certificate you trusted is not the one ${origin} shows, so it is refused`)
       }
       this.drafts.set(id, prepared.record)
       try {
-        return await this.run(id, () => this.openNow(id, undefined, parsed.token, answers))
+        return await this.run(id, () => this.openNow(id, undefined, sign, answers))
       } finally {
         this.drafts.delete(id)
       }
@@ -325,9 +404,15 @@ export class RemoteService {
     const { serverId } = request
     const parsed = parseSettings(request)
     if ('error' in parsed) return parsed
+    // An invite makes a new record (its pin is asked for once, on Connect); Edit never adopts one.
+    if (parsed.invite !== undefined) return fail('an invite link joins as a new server: paste it into Connect to server')
     return this.run(serverId, async () => {
       if (this.disposed) return fail('the app is quitting')
-      if (this.options.store.get(serverId) === undefined) return fail('this server is not saved any more')
+      const current = this.options.store.get(serverId)
+      if (current === undefined) return fail('this server is not saved any more')
+      // A guest signs in with the host's invites only: an access link would make it an owner's device
+      // in a record that skips everything an owner's gets.
+      if (current.guest === true && parsed.token !== undefined) return fail('a guest server signs in only with a new invite from its host')
       let result: { viaChanged: boolean; renamed: boolean; identityChanged: boolean }
       try {
         result = this.options.store.edit(serverId, {
@@ -346,7 +431,7 @@ export class RemoteService {
       }
       if (result.renamed) this.options.windows.refreshTitles(serverId)
       this.changed()
-      if (parsed.token !== undefined) return this.openNow(serverId, undefined, parsed.token, {})
+      if (parsed.token !== undefined) return this.openNow(serverId, undefined, { token: parsed.token }, {})
       return { ok: true, serverId }
     })
   }
@@ -438,12 +523,17 @@ export class RemoteService {
     return this.options.store.get(serverId) ?? this.drafts.get(serverId)
   }
 
-  private async openNow(serverId: string, projectId: string | undefined, token: string | undefined, answers: RemoteAnswers): Promise<RemoteConnectAnswer> {
+  private async openNow(serverId: string, projectId: string | undefined, sign: SignIn | undefined, answers: RemoteAnswers): Promise<RemoteConnectAnswer> {
+    const token = sign?.token
     try {
       if (this.disposed) return fail('the app is quitting')
       const server = this.record(serverId)
       if (server === undefined) return fail('this server is not saved any more')
-      const page = { ...(projectId === undefined ? {} : { projectId }), ...(token === undefined ? {} : { token }) }
+      const page = {
+        ...(projectId === undefined ? {} : { projectId }),
+        ...(token === undefined ? {} : { token }),
+        ...(sign?.invite === true ? { invite: true as const } : {})
+      }
       if (server.via.kind === 'direct') {
         await this.showWindow(server, { origin: server.via.origin, ...page })
         return { ok: true, serverId }

@@ -20,6 +20,12 @@ const SHELL_FORBIDDEN = [
   /require\(\s*['"]electron['"]\s*\)\s*\.\s*shell\b/
 ]
 const NOTICE_FORBIDDEN = [/['"`]app\.linkNotice['"`]/]
+/**
+ * Files that may name the channel as a key only, never send it: the guest event table (design-guests D-18)
+ * has a filter rule per channel. Each is checked to send nothing at all (KEY_ONLY_SENDS).
+ */
+const KEY_ONLY = new Set(['src/main/web/guest-events.ts'].map((p) => p.split('/').join(sep)))
+const KEY_ONLY_SENDS = [/\.\s*(send|toView|toWindow|toProject|toAll|toBrowserViews|postPort)\s*\(/]
 
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -52,12 +58,17 @@ describe('one adapter for shell.openExternal', () => {
   })
 
   it('only the adapter sends app.linkNotice', () => {
-    expect(scan(NOTICE_ALLOWED, NOTICE_FORBIDDEN)).toEqual([])
+    expect(scan(new Set([...NOTICE_ALLOWED, ...KEY_ONLY]), NOTICE_FORBIDDEN)).toEqual([])
+  })
+
+  it('a key-only file sends nothing (it may name the channel only as a table key)', () => {
+    const offending = [...KEY_ONLY].flatMap((rel) => offences(rel, readFileSync(join(ROOT, rel), 'utf8'), KEY_ONLY_SENDS))
+    expect(offending).toEqual([])
   })
 
   it('every allowed file still exists', () => {
     const all = new Set(sources(MAIN).map((p) => relative(ROOT, p)))
-    for (const f of [...SHELL_ALLOWED, ...NOTICE_ALLOWED]) expect(all.has(f), f).toBe(true)
+    for (const f of [...SHELL_ALLOWED, ...NOTICE_ALLOWED, ...KEY_ONLY]) expect(all.has(f), f).toBe(true)
   })
 
   it('catches each form it forbids and ignores comments and other members', () => {

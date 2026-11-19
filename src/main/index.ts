@@ -224,6 +224,12 @@ import { storedWebAccess, webAccessOf } from './web/settings'
 import { WebGateway } from './web/gateway'
 import { countSessions } from './web/session-counts'
 import { PluginPages } from './web/plugin-pages'
+import { GuestStore, type GuestTabInfo } from './web/guests'
+import { guestContext, type GuestContextSources } from './web/guest-events'
+import { Presence } from './web/presence'
+import { ownerNameIn } from './web/settings'
+import { guestPresence } from '../shared/guest-filter'
+import { peerCertificateSha256 } from './remote/peer-certificate'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../shared/views'
 import { lockDownSession, lockDownWebContents, NO_APP_PAGE } from './windows/permissions'
 import {
@@ -409,7 +415,16 @@ function start(server: boolean): void {
       : undefined,
     log: warnLog
   })
-  const registry = new ProjectRegistry({ dataDir, onForget: (id) => pluginSecrets.forgetProject(id) })
+  // A forgotten project ends its guests and drops its invites (GuestStore.projectRemoved, design-guests §4). Set
+  // once the guest store exists (below); a forget before that (none at start) has no guests to end.
+  const guestsForget: { project?: (id: string) => void } = {}
+  const registry = new ProjectRegistry({
+    dataDir,
+    onForget: (id) => {
+      pluginSecrets.forgetProject(id)
+      guestsForget.project?.(id)
+    }
+  })
   // One-time data migration, before any plugin host reads its settings: the core "changed files
   // shown" setting became cockpit.sessions' own app setting (settings/sessions-migration.ts).
   if (needsSessionFilesMigration(registry.app.data)) registry.app.update(migrateSessionFilesShown)
@@ -764,6 +779,8 @@ function start(server: boolean): void {
           probe,
           ready: () => loginEnvReady,
           clearSession: (serverId) => factory.clearSession(serverId),
+          // A guest invite's pin is checked against what the host presents now (D-29).
+          peerCertificate: (origin) => peerCertificateSha256(origin),
           // The key file Browse button: the native dialog as a sheet on the picker.
           pickFile: async (windowId, defaultPath) => {
             const options: OpenDialogOptions = { title: 'Choose a private key file', defaultPath, properties: ['openFile', 'showHiddenFiles'] }
@@ -2218,6 +2235,71 @@ function start(server: boolean): void {
     // Many failed sign-ins in a short time: a core notice (the desktop's, or server mode's line and in-page notice).
     alarm: (text) => coreNotices.show({ kind: 'sign-in-failures', text, title: 'cc-cockpit web access' })
   })
+  // Guests (design-guests, task 02): invites, the guest list, kicks, role and scope changes, lifetimes. Rights are
+  // read live through `access`; `who` is frozen at `hello` and kept by ViewRegistry (the one whoOf). The views it
+  // closes and the live check are the web connections' (made below: these closures run only after start).
+  // Not wired here (07a): `pluginShown` (04's PluginGuestAccessStore.visible; absent, guests see no plugin),
+  // `unsavedOf`, `notify`, the router's guest deps and TabRestorer's `remap`.
+  const guestTabOf = (tabId: string): GuestTabInfo | undefined => {
+    for (const p of registry.list()) {
+      if (windows.windowIdOf(p.id) === undefined) continue
+      const t = tabs.list(p.id).find((x) => x.id === tabId)
+      if (t === undefined) continue
+      return { projectId: p.id, ...(t.openedBy !== undefined ? { openedBy: t.openedBy } : {}), ...(t.page !== undefined ? { page: { plugin: t.page.plugin } } : {}) }
+    }
+    return undefined
+  }
+  const guestStore: GuestStore = new GuestStore({
+    devices: webDevices,
+    accessLog: webAccessLog,
+    mode: () => webAuth.mode,
+    target: () => webAccess.inviteTarget(),
+    pluginEnabled: (projectId, pluginId) => enabledIds(projectId).includes(pluginId),
+    tabOf: guestTabOf,
+    whoOfView: (viewId) => views.whoOf(viewId),
+    closeGuestViews: (guestId, code, reason) => webConnections.closeGuest(guestId, code, reason),
+    guestLive: (guestId) => webConnections.guestLive(guestId),
+    dropPageTokens: (deviceId) => pluginPages.tokens.dropDevice(deviceId),
+    log: warnLog
+  })
+  guestsForget.project = (id) => guestStore.projectRemoved(id)
+  /** What a guest view's filters read (guest-events.ts guestContext): main's live tables, never the payload. */
+  const guestSources: GuestContextSources = {
+    guests: guestStore,
+    overlayVisible: (guestId, overlayId) => {
+      const access = guestStore.access({ guest: guestId })
+      if (access.kind !== 'guest') return false
+      const windowId = windows.windowIdOf(access.projectId)
+      return (
+        windowId !== undefined &&
+        overlays.visibleTo(windowId, overlayId, (t) => guestStore.tabVisible(guestId, t), (p) => guestStore.pluginVisible(access.projectId, p))
+      )
+    },
+    personOf: (viewId) => presence.personOf(viewId),
+    tabOrder: (projectId) => tabs.list(projectId).map((t) => t.id),
+    // 03b's offer origin, for the offer's window as the view sees it.
+    downloadOrigin: (viewId, requestId) => {
+      const windowId = views.windowOf(viewId as ViewId)
+      return windowId === undefined ? undefined : downloads.offerOrigin(windowId, requestId)?.originTab
+    },
+    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess))
+  }
+  // Who is here and where (design-guests §10, presence.ts): joins and leaves from the web connections below;
+  // selections, typing and tab closes are fed by 07a (ViewSelections, view input, TabManager).
+  const presence: Presence = new Presence({
+    ownerName: () => ownerNameIn(webAccessOf(registry.app.data.webAccess)),
+    guestsOf: (projectId) => guestStore.guestsOf(projectId),
+    emit: (projectId, snapshot) => views.toProject(projectId, 'presence.changed', snapshot),
+    filterFor: (viewId, who) => {
+      if (who === 'owner') return undefined
+      const access = guestStore.access(who)
+      if (access.kind !== 'guest') return 'revoked'
+      const ctx = guestContext(guestSources, viewId, access)
+      return (s) => guestPresence(s, ctx)
+    },
+    log: warnLog
+  })
+  guestStore.onChange(() => presence.peopleChanged())
   // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
   // plugin), served only while the device has a view bound to a project the plugin is enabled in
   // (the same folder rule as `cc-plugin:`, servedPluginDir below, narrowed to that project) and an
@@ -2233,7 +2315,16 @@ function start(server: boolean): void {
     overlayPage: (overlayId) => overlays.inlinePage(overlayId),
     // out/sdk/panel.js, as the cc-plugin: handler serves it.
     sdkFile: join(__dirname, '../sdk/panel.js'),
-    log: warnLog
+    log: warnLog,
+    // A guest device's pages: its own project, visible plugins only, no inline overlays (design-guests §5, §6).
+    guestProject: (deviceId) => {
+      const device = webDevices.list().find((d) => d.id === deviceId)
+      if (device === undefined || device.mode !== 'guest') return undefined
+      if (device.guestId === undefined) return null
+      const access = guestStore.access({ guest: device.guestId })
+      return access.kind === 'guest' ? access.projectId : null
+    },
+    guestPluginVisible: (projectId, pluginId) => guestStore.pluginVisible(projectId, pluginId)
   })
   /**
    * The home folder's real path: project paths are stored resolved, so a symlinked home (or macOS
@@ -2280,6 +2371,8 @@ function start(server: boolean): void {
     accessLog: webAccessLog,
     pages: pluginPages,
     downloads,
+    // The invite redeem route, guest sessions and the guests' 404s (design-guests §4, §5).
+    guests: guestStore,
     // The renderer build next to main's (out/renderer): the web shell and its shared assets.
     shellDir: join(__dirname, '../renderer'),
     // The web picker lists what a remote view can bind to: projects with a window open now.
@@ -2336,6 +2429,8 @@ function start(server: boolean): void {
   // browsers read the card and narrow too, §9.4, §9.6).
   const webAccess = new WebAccessService({
     gateway: webGateway,
+    // None is refused while guests or invites exist (D-15).
+    guests: guestStore,
     auth: webAuth,
     read: () => registry.app.data.webAccess,
     write: (next) => {
@@ -2465,7 +2560,10 @@ function start(server: boolean): void {
       notices: () => coreNotices.list(),
       accessLog: webAccessLog,
       notice: (text) => coreNotices.show({ kind: 'access-changed', text, title: 'cc-cockpit web access' }),
-      quit: quitLikeSigterm
+      quit: quitLikeSigterm,
+      // `ccc web invite|guests|kick|role` (design-guests §12, D-25). A project by id, or by the folder of one.
+      guests: guestStore,
+      projectOf: (idOrPath) => registry.get(idOrPath)?.id ?? registry.list().find((p) => p.path === idOrPath)?.id
     })
   )
 
@@ -3298,10 +3396,9 @@ function start(server: boolean): void {
   // handler is registered; the gateway refuses upgrades until then.
   const webConnections: WebConnections = new WebConnections({
     dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
-    addView: (windowId, viewId, sink) => {
-      // 02 passes the connection's `who` here (WebConnections.addView gains it); until then every browser view is
-      // the owner's, as before guests existed. Explicit, so the gap is visible (and grep finds it).
-      const remove = views.addRemote(windowId, viewId, sink, 'owner')
+    // `who` as `hello` bound it; `addRemote` requires it (no owner default: a missed wiring fails to compile).
+    addView: (windowId, viewId, sink, who) => {
+      const remove = views.addRemote(windowId, viewId, sink, who)
       // The last browser leaving a window kept running hidden shows it again (window-manager.ts).
       return () => {
         remove()
@@ -3328,7 +3425,15 @@ function start(server: boolean): void {
     // Recorded at `hello`, before `ready` and with no event: the view's first `theme.get` answers by
     // its own appearance, so a dark browser never paints the light built-in first.
     viewScheme: (viewId, dark) => themes.viewJoined(viewId, dark),
+    viewJoined: (viewId, projectId, who) => presence.viewJoined(viewId, projectId, who),
+    // A guest's rights read live, its events filtered at this sink (guest-events.ts), its views counted.
+    guests: {
+      access: (who) => guestStore.access(who),
+      context: (viewId, access) => guestContext(guestSources, viewId, access),
+      viewsChanged: (guestId, live) => guestStore.viewsChanged(guestId, live)
+    },
     viewGone: (viewId) => {
+      presence.viewLeft(viewId)
       tabs.viewGone(viewId)
       // Its split geometry no longer stands for a screen (tab-groups.ts panesFit).
       tabGroups.viewGone(viewId)

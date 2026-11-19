@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fakeSecretStore } from '../../src/main/secrets/secret-store'
 import { AccessLog } from '../../src/main/web/access-log'
-import { SERVER_TURNED_ON_LINE, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
+import { noneBlockedText, SERVER_TURNED_ON_LINE, WebAccessService, type GatewayLike } from '../../src/main/web/access-service'
 import { WebAuth } from '../../src/main/web/auth'
 import { DeviceStore } from '../../src/main/web/devices'
 import { PasswordHasher } from '../../src/main/web/password'
@@ -337,7 +337,7 @@ describe('WebAccessService', () => {
     const hasher = new PasswordHasher({ params: { N: 1024, r: 8, p: 1 } })
     auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog, hasher, now: () => clock, log: () => undefined })
     auth.setMode('link')
-    service = new WebAccessService({
+    service = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,
@@ -369,7 +369,7 @@ describe('WebAccessService', () => {
   it('runs the headless terminals only while the settings mean the gateway listens: started before it, drained after it', async () => {
     const calls: string[] = []
     let release: (() => void) | undefined
-    const withTerminals = new WebAccessService({
+    const withTerminals = new WebAccessService({ guests: { blockingNone: () => [] },
       gateway: {
         ...gateway,
         apply: async (settings) => {
@@ -593,7 +593,7 @@ describe('WebAccessService', () => {
     })
 
     it('asks 12 characters in server mode, on loopback too', async () => {
-      const server = new WebAccessService({
+      const server = new WebAccessService({ guests: { blockingNone: () => [] },
         gateway,
         auth,
         read: () => stored,
@@ -749,6 +749,53 @@ describe('WebAccessService', () => {
       expect(service.view().risks.length).toBeGreaterThan(0)
     })
   })
+
+  // D-15: under None `authorize` falls back to the anonymous owner when no cookie matches, so a guest who
+  // drops its cookie would be the owner. Switching to None is refused while guests or invites exist.
+  describe('None with guests (D-15)', () => {
+    let blocking: string[]
+    let guarded: WebAccessService
+    beforeEach(() => {
+      blocking = ['Bob', 'Eve (invite)']
+      guarded = new WebAccessService({
+        gateway,
+        auth,
+        read: () => stored,
+        write: (next) => {
+          stored = storedWebAccess(stored as Partial<WebAccessSettings> | undefined, next)
+        },
+        emit: () => undefined,
+        terminals: { start: () => undefined, drain: async () => undefined },
+        version: '9.8.7',
+        guests: { blockingNone: () => blocking }
+      })
+    })
+    afterEach(() => guarded.dispose())
+
+    it('refuses the switch to None naming the guests, stores nothing and does not touch the gateway', async () => {
+      await expect(guarded.set({ enabled: true, mode: 'none' })).rejects.toThrow(noneBlockedText(['Bob', 'Eve (invite)']))
+      expect(noneBlockedText(['Bob', 'Eve (invite)'])).toContain('Bob, Eve (invite)')
+      expect(stored).toBeUndefined()
+      expect(applied).toEqual([])
+    })
+
+    it('goes through with no guests or invites left', async () => {
+      blocking = []
+      expect(pageOf(await guarded.set({ enabled: true, mode: 'none' })).form.mode).toBe('none')
+      expect(webAccessOf(stored).mode).toBe('none')
+    })
+
+    it('a change that keeps None (already set before the guests) is not refused', async () => {
+      stored = { enabled: true, mode: 'none' }
+      expect(pageOf(await guarded.set({ port: 8124 })).form).toMatchObject({ mode: 'none', port: 8124 })
+      expect(pageOf(await guarded.set({ mode: 'none' })).form.mode).toBe('none')
+    })
+
+    it('switching away from None never asks', async () => {
+      stored = { enabled: true, mode: 'none' }
+      expect(pageOf(await guarded.set({ mode: 'link' })).form.mode).toBe('link')
+    })
+  })
 })
 
 describe('server mode: applyWebAccessPatch (design-web.md §9.2)', () => {
@@ -841,7 +888,7 @@ describe('server mode: WebAccessService start and first lines (design-web.md §9
       disconnectDevice: () => 0,
       onConnectionsChanged: () => () => undefined
     }
-    return new WebAccessService({
+    return new WebAccessService({ guests: { blockingNone: () => [] },
       gateway,
       auth,
       read: () => stored,
