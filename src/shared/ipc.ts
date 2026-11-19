@@ -186,6 +186,11 @@ export interface TabInfo {
    */
   name?: string
   /**
+   * A Claude tab's extra environment from the plugin that opened it (ctx.sessions.open / rooms.open
+   * `env`, shared/session-options.ts SESSION_ENV): applied at every spawn, kept for restore.
+   */
+  env?: Record<string, string>
+  /**
    * The person's flag on the tab, any kind (shared/tab-flag.ts): set only through `tabs.flag` /
    * `tabs.toggleFlag` from this window, kept for restore. The renderer applies their replies.
    */

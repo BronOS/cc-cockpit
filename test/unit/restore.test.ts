@@ -169,6 +169,89 @@ describe('session names', () => {
   })
 })
 
+describe('session env', () => {
+  const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+
+  it('is saved for a Claude tab and read back with the allowlist: a bad entry is dropped and logged, not the tab', () => {
+    expect(tabRecordsOf([{ id: 'a', gen: 1, kind: 'claude', cwd: '/p', env: { [CODE_MODE]: '1' } }])).toEqual([
+      { id: 'a', kind: 'claude', cwd: '/p', env: { [CODE_MODE]: '1' } }
+    ])
+    const logs: string[] = []
+    const plan = buildRestorePlan(
+      {
+        path: projectDir,
+        tabs: [
+          rec({ kind: 'claude', env: { [CODE_MODE]: '1' } }, 1),
+          rec({ kind: 'claude', env: { [CODE_MODE]: '1', LD_PRELOAD: '/evil.so' } }, 2),
+          rec({ kind: 'claude', env: { [CODE_MODE]: 'on' } }, 3),
+          rec({ kind: 'claude', env: 'x' as never }, 4),
+          rec({ kind: 'shell', env: { [CODE_MODE]: '1' } }, 5)
+        ]
+      },
+      undefined,
+      (m) => logs.push(m)
+    )
+    expect(plan.map((t) => t.env)).toEqual([{ [CODE_MODE]: '1' }, { [CODE_MODE]: '1' }, undefined, undefined, undefined])
+    expect(logs).toHaveLength(3)
+    expect(logs[0]).toContain('LD_PRELOAD')
+    expect(logs[1]).toContain(CODE_MODE)
+  })
+
+  it('a tab that failed to restore keeps its env in the record', async () => {
+    const saved: TabRecord[][] = []
+    const restorer = new TabRestorer({ listTabs: () => [], saveTabs: (_id, r) => saved.push(r), projectPath: () => '/p', log: () => {} })
+    restorer.queue('p1', [{ kind: 'claude', resumeId: 'sess-1', env: { [CODE_MODE]: '1' } }])
+    await restorer.restore('p1', Promise.resolve(), () => {
+      throw new Error('out of ptys')
+    })
+    expect(saved.at(-1)).toEqual([{ id: expect.any(String), kind: 'claude', cwd: '/p', sessionId: 'sess-1', env: { [CODE_MODE]: '1' } }])
+  })
+
+  it('survives an app restart on disk: the resumed session starts with it again', async () => {
+    const registry = new ProjectRegistry({ dataDir, log: () => {} })
+    const project = registry.openPath(projectDir)
+    const backend = new FakePtyBackend()
+    let tabs: TabManager
+    const restorer = new TabRestorer({
+      listTabs: (id) => tabs.list(id),
+      saveTabs: (id, records) =>
+        registry.update(id, (r) => {
+          r.tabs = records
+        }),
+      projectPath: (id) => registry.get(id)?.path
+    })
+    const makeManager = (): TabManager =>
+      new TabManager({
+        backend,
+        projectPath: (id) => registry.get(id)?.path,
+        loginEnv: () => ({ PATH: '/usr/bin', SHELL: '/bin/zsh' }),
+        hooksPath: '/data/hooks.json',
+        binDir: '/data/bin',
+        sock: () => undefined,
+        onTabsChanged: (id) => restorer.tabsChanged(id),
+        emit: () => {},
+        log: () => {}
+      })
+    tabs = makeManager()
+    const claude = tabs.create(project.id, { kind: 'claude', env: { [CODE_MODE]: '1' } })
+    tabs.sessionStarted(claude.id, 'sess-7')
+    tabs.sessionPrompted(claude.id)
+    registry.flushAll()
+
+    const registry2 = new ProjectRegistry({ dataDir, log: () => {} })
+    const saved = registry2.get(project.id)!
+    expect(saved.tabs.map((t) => t.env)).toEqual([{ [CODE_MODE]: '1' }])
+    tabs = makeManager()
+    const before = backend.spawned.length
+    restorer.queue(project.id, buildRestorePlan(saved))
+    await restorer.restore(project.id, Promise.resolve(), (t) => tabs.restoreTab(project.id, t))
+    const [pty] = backend.spawned.slice(before)
+    expect(pty!.argv).toEqual(['claude', '--settings', '/data/hooks.json', '--resume', 'sess-7'])
+    expect(pty!.options.env[CODE_MODE]).toBe('1')
+    expect(tabs.list(project.id)[0]!.env).toEqual({ [CODE_MODE]: '1' })
+  })
+})
+
 describe('tab flags', () => {
   it('are saved for every kind, restored for every kind, and a damaged one is dropped, not the tab', () => {
     expect(

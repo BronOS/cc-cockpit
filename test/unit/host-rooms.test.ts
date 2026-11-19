@@ -82,6 +82,16 @@ describe('ctx.rooms (host side)', () => {
     ])
   })
 
+  it('sends an allowed env as sessions.open does, with its fast errors', async () => {
+    const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+    const { rooms, calls } = harness()
+    await rooms.open('r1', { name: 'bob', env: { [CODE_MODE]: '1' } })
+    expect(calls).toEqual([{ method: 'rooms.open', params: { pluginId: 'example.team', id: 'r1', name: 'bob', env: { [CODE_MODE]: '1' } } }])
+    await expect(rooms.open('r1', { name: 'b', env: { LD_PRELOAD: '/x.so' } })).rejects.toThrow('rooms.open: env: LD_PRELOAD is not allowed')
+    await expect(rooms.open('r1', { name: 'b', env: [] as never })).rejects.toThrow('rooms.open: env must be an object')
+    expect(calls).toHaveLength(1)
+  })
+
   it('sends beside and side as sessions.open does, with its fast errors', async () => {
     const { rooms, calls } = harness()
     await rooms.open('r1', { name: 'bob', beside: 't1', side: 'down' })

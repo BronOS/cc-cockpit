@@ -538,10 +538,15 @@ export interface OpenBeside {
   side?: 'right' | 'down'
 }
 
-/** What an open answers: `placed` is set only when `beside` was given (and the app knows it). */
+/**
+ * What an open answers: `placed` is set only when `beside` was given (and the app knows it). `env`: the
+ * names of the variables the tab was started with, set only when `ctx.sessions.open` / `ctx.rooms.open`
+ * was given an `env` and applied it; an older app ignores `env` and answers without it.
+ */
 export interface OpenedTab {
   tabId: string
   placed?: boolean
+  env?: string[]
 }
 
 /** One of the plugin's rooms (`ctx.rooms.list`). The members' messages are never in it. */
@@ -1129,9 +1134,16 @@ export interface PluginContext {
      * "Discuss in a new session"); without it the tab opens beside the one they are in, unselected.
      * `model` (`haiku`, `sonnet`, `opus` or `fable`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`) start
      * the tab with `--model` / `--effort`; absent means the person's default, anything else rejects.
-     * An older app ignores `focus`, `model` and `effort`. `beside` / `side`: see `OpenBeside`.
+     * `env` adds environment variables to the tab, from a fixed list only (each with its allowed values):
+     * `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: '1'` (Claude Code's experimental Code Mode). Any other name or
+     * value, a non-string, or more than 8 rejects the open. Unlike `model` and `effort` the tab keeps
+     * them: a restart, a resume and a restore start it with the same `env`. The answer's `env` lists the
+     * names applied.
+     * An older app ignores `focus`, `model`, `effort` and `env` (no `env` in the answer). `beside` / `side`: see `OpenBeside`.
      */
-    open(options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string } & OpenBeside): Promise<OpenedTab>
+    open(
+      options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string; env?: Record<string, string> } & OpenBeside
+    ): Promise<OpenedTab>
     /**
      * A plain shell tab in this window, the kind the person gets from "+" > shell: their login shell,
      * with no command, arguments or environment from the plugin and nothing typed into it. `cwd` must
@@ -1186,7 +1198,7 @@ export interface PluginContext {
     delete(id: string): Promise<void>
     /**
      * A new Claude tab of this window that is a member from the start, under `name` (`^[a-z][a-z0-9-]{0,30}$`, not
-     * `all`, `plugin`, `person`, `user` or `system`; unique in the room). `cwd`, `prompt`, `model` and `effort` are
+     * `all`, `plugin`, `person`, `user` or `system`; unique in the room). `cwd`, `prompt`, `model`, `effort` and `env` are
      * `ctx.sessions.open`'s, with its checks, and it counts against the same 5 tabs a minute; the tab opens
      * unselected. `beside` / `side`: see `OpenBeside` (the same checks; the new pane is never focused), and the
      * answer then has `placed`. At most 20 members a room (the default `membersPerRoom`, at most 50; the person can change it in
@@ -1195,7 +1207,15 @@ export interface PluginContext {
      */
     open(
       id: string,
-      options: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string } & OpenBeside
+      options: {
+        name: string
+        coordinator?: boolean
+        prompt?: string
+        model?: string
+        effort?: string
+        cwd?: string
+        env?: Record<string, string>
+      } & OpenBeside
     ): Promise<OpenedTab>
     /**
      * A one-time invite for `name`: hand `code` to an existing tab (through your own command), which joins by running

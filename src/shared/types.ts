@@ -71,6 +71,12 @@ export interface TabRecord {
   /** A Claude tab's name given by the person (shared/session-name.ts); shown over Claude's topic. */
   name?: string
   /**
+   * A Claude tab's extra environment a plugin opened it with (shared/session-options.ts SESSION_ENV).
+   * Plain data here (the file is user-writable): read back through savedSessionEnv, which drops an
+   * entry no longer on the list; every restore, restart and resume spawns with what is left.
+   */
+  env?: Record<string, string>
+  /**
    * The person's flag on the tab, any kind (shared/tab-flag.ts). Plain data here (the file is
    * user-writable): read back through tabFlagOf, which drops a damaged value.
    */

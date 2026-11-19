@@ -4,6 +4,7 @@
 // carrying this plugin's own id and plain data; the type checks here only give a bad call a fast error at its call
 // site, and main checks everything again. No events: a plugin that follows a room polls `log` with the `since` cursor (a `seq`).
 import type { OpenBeside, OpenedTab, PluginContext, RoomDoc, RoomInfo, RoomLogPage, RoomMember, RoomSendAnswer } from '../../sdk/types'
+import { checkSessionEnv } from '../../shared/session-options'
 import { besideOf } from './sessions'
 
 export interface RoomsApiDeps {
@@ -85,10 +86,16 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
       guardAsync(async () => {
         await ask<null>('rooms.delete', { id: text(id, 'rooms.delete', 'id') })
       }),
-    open: (id: string, opts: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string } & OpenBeside) =>
+    open: (
+      id: string,
+      opts: { name: string; coordinator?: boolean; prompt?: string; model?: string; effort?: string; cwd?: string; env?: Record<string, string> } & OpenBeside
+    ) =>
       guardAsync(() => {
         const w = 'rooms.open'
         const o = options(opts, w)
+        // sessions.open's env allowlist (SESSION_ENV) for the fast error naming the variable; main checks again.
+        const env = checkSessionEnv(o.env)
+        if (!env.ok) throw new TypeError(`${w}: ${env.reason}`)
         // Only the documented options go to main (no focus): the tab opens unselected, a split pane when `beside`.
         return ask<OpenedTab>(w, {
           id: text(id, w, 'id'),
@@ -98,7 +105,8 @@ export function createRoomsApi(deps: RoomsApiDeps): Rooms {
             prompt: optionalString(o.prompt, w, 'prompt'),
             model: optionalString(o.model, w, 'model'),
             effort: optionalString(o.effort, w, 'effort'),
-            cwd: optionalString(o.cwd, w, 'cwd')
+            cwd: optionalString(o.cwd, w, 'cwd'),
+            env: env.env === undefined ? undefined : { ...env.env }
           }),
           ...besideOf(w, o)
         })

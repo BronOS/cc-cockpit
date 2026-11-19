@@ -275,7 +275,7 @@ import type { OpenTarget } from '../external/open-external'
 import type { AppStorageApi } from './app-storage'
 import { projectSettingKey, SETTING_KEY_PREFIX, type PluginSecretsApi } from '../secrets/plugin-secrets'
 import { checkSessionName } from '../../shared/session-name'
-import { checkSessionOptions } from '../../shared/session-options'
+import { checkSessionEnv, checkSessionOptions } from '../../shared/session-options'
 import { checkCommandArgv, checkTabCommandLabel, defaultCommandTitle, TAB_COMMAND_LABEL_MAX } from '../../shared/tab-commands'
 import { resolveCwd } from '../tabs/tab-manager'
 import type { RoomOwner, RoomRecord } from '../rooms/room-registry'
@@ -494,10 +494,12 @@ export interface HostApiDeps {
    * element after `--` (claude-argv.ts); it throws for anything else. `windowId` is the host's
    * window: the tab is refused when that window closed while the login env was awaited. `focus`:
    * select the tab in that window too (ctx.sessions.open's `focus: true`); else it is only added.
+   * `env`: the tab's extra variables, already checked against SESSION_ENV (shared/session-options.ts);
+   * the tab manager checks them again and keeps them for every restart, resume and restore.
    */
   openTab(
     projectId: string,
-    options: { cwd?: string; prompt?: string; model?: string; effort?: string },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string> },
     windowId: number,
     focus?: boolean,
     place?: PluginPlacement
@@ -1576,13 +1578,20 @@ export class HostApi {
    * before the shared open budget is spent, then the spawn in the host's own window.
    */
   private async openClaude(what: string, plugin: HostApiPlugin, options: Record<string, unknown>, meta?: RpcMeta): Promise<OpenResult> {
-    const { cwd, prompt, focus, model, effort, beside, side } = options
+    const { cwd, prompt, focus, model, effort, env, beside, side } = options
     if (cwd !== undefined && typeof cwd !== 'string') throw new Error(`${what}: cwd must be a string`)
     if (focus !== undefined && typeof focus !== 'boolean') throw new Error(`${what}: focus must be a boolean`)
     // Closed lists (shared/session-options.ts), checked before the budget is spent; the values end up
     // as `--model` / `--effort` argv elements, so nothing outside the lists gets that far.
     const checked = checkSessionOptions({ model, effort })
     if (!checked.ok) throw new Error(`${what}: ${checked.reason}`)
+    // The tab's extra environment: a closed allowlist of names and values (SESSION_ENV), all or nothing,
+    // before the budget is spent. Untrusted like every option here: a Claude tab can be talked into
+    // running a plugin command that opens tabs, and a free env would let it point the new session at
+    // another API or proxy, or run code through PATH / NODE_OPTIONS / LD_PRELOAD.
+    const checkedEnv = checkSessionEnv(env)
+    if (!checkedEnv.ok) throw new Error(`${what}: ${checkedEnv.reason}`)
+    const envNames = checkedEnv.env === undefined ? undefined : Object.keys(checkedEnv.env)
     // Checked here too, before the budget is spent, so a bad cwd costs nothing; the tab manager
     // checks it again (same rule) when it spawns.
     try {
@@ -1613,7 +1622,9 @@ export class HostApi {
         ...(cwd !== undefined && cwd !== '' ? { cwd } : {}),
         ...(text !== undefined ? { prompt: text } : {}),
         ...(checked.model ? { model: checked.model } : {}),
-        ...(checked.effort ? { effort: checked.effort } : {})
+        ...(checked.effort ? { effort: checked.effort } : {}),
+        // A plain copy: the checked object has a null prototype, and an empty one means none.
+        ...(envNames !== undefined && envNames.length > 0 ? { env: { ...checkedEnv.env } } : {})
       },
       this.scope.windowId,
       // Only the host's own window, the one the tab opens in, is ever told to select it: a plugin
@@ -1621,7 +1632,10 @@ export class HostApi {
       focus === true,
       place
     )
-    return opened(tab, place)
+    // `env` in the answer only when one was given and applied: a plugin cannot read the app's version,
+    // and an older app ignores `env` and answers without it, so this is how the plugin tells the two apart.
+    const out = opened(tab, place)
+    return envNames === undefined ? out : { ...out, env: envNames }
   }
 
   /**
@@ -2862,7 +2876,7 @@ export class HostApi {
    */
   private async roomsOpen(params: unknown, meta?: RpcMeta): Promise<OpenResult> {
     this.alive()
-    const { pluginId, id, name, coordinator, cwd, prompt, model, effort, beside, side } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, id, name, coordinator, cwd, prompt, model, effort, env, beside, side } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'rooms.open')
     const rooms = this.deps.rooms
     if (!rooms) throw new Error('rooms.open: rooms are not available')
@@ -2876,7 +2890,7 @@ export class HostApi {
     } catch (err) {
       throw withMethod('rooms.open', err)
     }
-    const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort, beside, side }, meta)
+    const tab = await this.openClaude('rooms.open', plugin, { cwd, prompt, model, effort, env, beside, side }, meta)
     try {
       // Again: the plugin may have been switched off while the tab was starting, and the sweep then found no member.
       const why = this.deps.roomsOff?.(owner)
@@ -2889,7 +2903,7 @@ export class HostApi {
       this.log(`plugin ${plugin.id}: rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`)
       throw new Error(`rooms.open: tab ${tab.tabId} opened but did not join: ${errorText(err)}`, { cause: err })
     }
-    // sessions.open's answer: `placed` only when `beside` was asked.
+    // sessions.open's answer: `placed` only when `beside` was asked, `env` only when `env` was given.
     return tab
   }
 
@@ -2958,7 +2972,8 @@ export class HostApi {
 }
 
 /** What a plugin open answers: `placed` only when it asked for `beside` (absent from an older app too). */
-type OpenResult = { tabId: string; placed?: boolean }
+/** `env`: the names of the variables applied, only for a Claude open that was given one (sessions.open, rooms.open). */
+type OpenResult = { tabId: string; placed?: boolean; env?: string[] }
 
 /** ctx.rooms.log answers at most this many events (a plugin polls with the `since` cursor and pages on `more`). */
 export const MAX_ROOM_LOG_ENTRIES = 1000

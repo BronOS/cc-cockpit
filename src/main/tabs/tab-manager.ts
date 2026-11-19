@@ -12,6 +12,7 @@ import { errorText } from '../../shared/error-text'
 import type { EventChannel, IpcEventMap, TabInfo } from '../../shared/ipc'
 import type { ScreenAnswer } from '../../shared/terminal-screen'
 import { checkSessionName } from '../../shared/session-name'
+import { checkSessionEnv, savedSessionEnv } from '../../shared/session-options'
 import { applyFlagPatch, checkFlagPatch, DEFAULT_FLAG_COLOR, sameFlag, tabFlagOf, type FlagColor, type TabFlag } from '../../shared/tab-flag'
 import { sameTabRoom, tabRoomOf, type TabRoom } from '../../shared/tab-room'
 import { PLUGIN_ID_MAX_LENGTH, PLUGIN_ID_PATTERN } from '../../shared/manifest'
@@ -299,6 +300,12 @@ export interface CreateTabOptions {
   /** `--model` / `--effort` of a new Claude tab (shared/session-options.ts); never on a restart or restore. */
   model?: string
   effort?: string
+  /**
+   * A new Claude tab's extra environment (shared/session-options.ts SESSION_ENV; host-api checked it,
+   * checked again here). Unlike model and effort it stays with the tab: every restart, resume and
+   * restore spawns with it (Tab.env).
+   */
+  env?: Readonly<Record<string, string>>
 }
 
 /** A command tab's own copy of its new-tab menu entry (TabCommandsService.resolve). */
@@ -382,6 +389,11 @@ export interface RestoreTabOptions {
   room?: TabRoom
   /** Required for, and only for, kind 'page': its plugin, type, params, title, icon (re-checked here). */
   page?: PageTabSpec
+  /**
+   * A Claude tab's saved extra environment (restore.ts read it leniently; re-read here with the same
+   * allowlist): an entry no longer on it is dropped and logged, never applied. Ignored on any other kind.
+   */
+  env?: Readonly<Record<string, string>>
 }
 
 interface Tab {
@@ -400,6 +412,12 @@ interface Tab {
   command?: AnyTabCommand
   /** Kind 'claude' only: the name the person gave the tab (rename); saved and restored with it. */
   name?: string
+  /**
+   * Kind 'claude' only: the extra environment a plugin opened it with (CreateTabOptions.env), applied
+   * at every spawn of the tab (a restart, a resume) and saved and restored with it: a session started
+   * with Code Mode can only be resumed with Code Mode on.
+   */
+  env?: Readonly<Record<string, string>>
   /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
   flag?: TabFlag
   /**
@@ -608,7 +626,7 @@ export class TabManager {
   }
 
   /** Start a tab. Throws (and creates nothing) for an unknown project, a bad cwd or a failed spawn. */
-  create(projectId: string, { kind, cwd, prompt, model, effort }: CreateTabOptions): TabInfo {
+  create(projectId: string, { kind, cwd, prompt, model, effort, env }: CreateTabOptions): TabInfo {
     // Checked at run time as well: a command tab must come through createCommand, whose caller
     // looked the command up in main's settings, never through a kind someone passed along.
     if (kind !== 'claude' && kind !== 'shell') throw new Error('unknown tab kind')
@@ -616,10 +634,15 @@ export class TabManager {
     if ((model !== undefined || effort !== undefined) && kind !== 'claude') {
       throw new Error('only a Claude tab takes a model or effort')
     }
+    if (env !== undefined && kind !== 'claude') throw new Error('only a Claude tab takes an env')
+    // All or nothing, as host-api: a new tab is never started with part of what was asked.
+    const checkedEnv = checkSessionEnv(env)
+    if (!checkedEnv.ok) throw new Error(checkedEnv.reason)
     const out = this.add(projectId, kind, cwd, {
       ...(prompt === undefined ? {} : { prompt }),
       ...(model === undefined ? {} : { model }),
-      ...(effort === undefined ? {} : { effort })
+      ...(effort === undefined ? {} : { effort }),
+      ...(checkedEnv.env === undefined || Object.keys(checkedEnv.env).length === 0 ? {} : { env: checkedEnv.env })
     })
     this.changed(projectId)
     return out
@@ -771,7 +794,7 @@ export class TabManager {
    * validated it before it gets here. A Claude tab keeps the id as its own `sessionId` right
    * away, so quitting again before the SessionStart hook reports does not lose the session.
    */
-  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page }: RestoreTabOptions): TabInfo {
+  restoreTab(projectId: string, { kind, cwd, resumeId, command, name, flag, room, page, env }: RestoreTabOptions): TabInfo {
     // Re-read like the name: a bad saved flag only loses the flag. Any kind keeps one.
     const savedFlag = flag === undefined ? undefined : tabFlagOf(flag)
     const flagOpt = savedFlag === undefined ? {} : { flag: savedFlag }
@@ -798,11 +821,16 @@ export class TabManager {
     const kept = checked?.ok ? (checked.value ?? undefined) : undefined
     // Membership is a Claude tab's only; a bad saved value only loses it (tabRoomOf), like the name.
     const savedRoom = kind === 'claude' && room !== undefined ? tabRoomOf(room) : undefined
+    // A Claude tab's only, re-read with the same allowlist as an open: an entry the list no longer
+    // has is dropped and logged, never applied, and the tab still comes back with the rest.
+    const savedEnv = kind === 'claude' ? savedSessionEnv(env) : { dropped: [] }
+    if (savedEnv.dropped.length > 0) this.log(`restored tab of project ${projectId}: env dropped (not allowed): ${savedEnv.dropped.join(', ')}`)
     return this.add(projectId, kind, cwd, {
       ...(resumeId === undefined ? {} : { resumeId }),
       ...(kept === undefined ? {} : { name: kept }),
       ...flagOpt,
-      ...(savedRoom === undefined ? {} : { room: savedRoom })
+      ...(savedRoom === undefined ? {} : { room: savedRoom }),
+      ...(savedEnv.env === undefined ? {} : { env: savedEnv.env })
     })
   }
 
@@ -866,6 +894,7 @@ export class TabManager {
       name?: string
       flag?: TabFlag
       room?: TabRoom
+      env?: Readonly<Record<string, string>>
     }
   ): TabInfo {
     const root = this.projectRoot(projectId)
@@ -885,6 +914,9 @@ export class TabManager {
     // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
     if (opts.name !== undefined) tab.name = opts.name
     if (opts.flag !== undefined) tab.flag = { ...opts.flag }
+    // Before start(): the first spawn reads it like every later one. A Claude tab's only (create and
+    // restoreTab pass none for another kind; a frozen copy so nothing that kept a reference changes it).
+    if (opts.env !== undefined && kind === 'claude') tab.env = Object.freeze({ ...opts.env })
     // Before start() too: the registry binds the new id first, and the session registry's entry is
     // born typed (a restored member is the person's; TabEvent.typed).
     if (opts.room !== undefined) {
@@ -1452,6 +1484,9 @@ export class TabManager {
           : shellArgv(this.shell())
     const env = buildPtyEnv(this.options.loginEnv(), {
       binDir: this.options.binDir,
+      // A Claude tab's plugin-chosen variables, on every spawn (a new tab, a restart, a resume): a Code
+      // Mode session resumed without Code Mode would not come back as it was. Never on another kind.
+      ...(tab.kind === 'claude' && tab.env !== undefined ? { extra: tab.env } : {}),
       // Every kind gets a token and the socket: a Claude tab's is a session token, a shell or
       // command tab's a window token (resolveToken), so `ccc browser open …` or `ccc plugin link`
       // typed in a shell tab, or chained after `npm run dev &` in a command tab, reaches this
@@ -1664,6 +1699,7 @@ function info(tab: Tab): TabInfo {
   if (tab.exit) out.exit = { ...tab.exit }
   if (tab.gen === 0) out.notStarted = true
   if (tab.name !== undefined) out.name = tab.name
+  if (tab.env !== undefined) out.env = { ...tab.env }
   if (tab.flag !== undefined) out.flag = { ...tab.flag }
   if (tab.room !== undefined) out.room = { ...tab.room }
   if (tab.typedBy !== undefined) out.typedBy = { ...tab.typedBy }

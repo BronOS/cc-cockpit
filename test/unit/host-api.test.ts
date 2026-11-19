@@ -376,6 +376,46 @@ describe('sessions.open', () => {
     await expect(open('sessions.open', { pluginId: 'a.one', effort: ['low'] })).rejects.toThrow('effort must be one of')
   })
 
+  it('starts the tab with an allowed env, answers the names applied, and keeps it for a restart', async () => {
+    const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+    const open = hostA()
+    const r = (await open('sessions.open', { pluginId: 'a.one', env: { [CODE_MODE]: '1' } })) as { tabId: string; env?: string[] }
+    expect(r).toEqual({ tabId: r.tabId, env: [CODE_MODE] })
+    expect(ptyOf(r.tabId).options.env[CODE_MODE]).toBe('1')
+    expect(ptyOf(r.tabId).argv).toEqual(['claude', '--settings', '/data/hooks.json'])
+    expect(tabs.list(A).find((t) => t.id === r.tabId)?.env).toEqual({ [CODE_MODE]: '1' })
+    // No env asked: none in the answer (what an older app answers too), none in the tab.
+    const plain = (await open('sessions.open', { pluginId: 'a.one' })) as { tabId: string; env?: string[] }
+    expect(plain).toEqual({ tabId: plain.tabId })
+    expect(ptyOf(plain.tabId).options.env).not.toHaveProperty(CODE_MODE)
+    // An empty env was understood: an empty list, nothing applied.
+    const empty = (await open('sessions.open', { pluginId: 'a.one', env: {} })) as { tabId: string; env?: string[] }
+    expect(empty.env).toEqual([])
+    expect(ptyOf(empty.tabId).options.env).not.toHaveProperty(CODE_MODE)
+  })
+
+  it('refuses an env off the list before the open budget is spent, naming the variable', async () => {
+    const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+    const open = hostA()
+    const before = tabsBackend.spawned.length
+    for (const [env, message] of [
+      [{ ANTHROPIC_BASE_URL: 'https://evil' }, 'sessions.open: env: ANTHROPIC_BASE_URL is not allowed'],
+      [{ [CODE_MODE]: '1', NODE_OPTIONS: '--require /x' }, 'NODE_OPTIONS is not allowed'],
+      [{ APP_TAB_TOKEN: 'x' }, 'APP_TAB_TOKEN is not allowed'],
+      [{ [CODE_MODE]: '0' }, `sessions.open: env: ${CODE_MODE} must be "1"`],
+      [{ [CODE_MODE]: 1 }, `${CODE_MODE} must be "1"`],
+      ['CODE_MODE=1', 'sessions.open: env must be an object'],
+      [[CODE_MODE], 'env must be an object'],
+      [JSON.parse(`{"__proto__": {"PATH": "/x"}}`), '__proto__ is not allowed']
+    ] as const) {
+      await expect(open('sessions.open', { pluginId: 'a.one', env }), JSON.stringify(env)).rejects.toThrow(message)
+    }
+    expect(tabsBackend.spawned).toHaveLength(before)
+    // The whole budget is still there.
+    for (let i = 0; i < MAX_OPENS_PER_WINDOW; i++) await open('sessions.open', { pluginId: 'a.one', env: { [CODE_MODE]: '1' } })
+    await expect(open('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
+  })
+
   it('starts a Claude tab in the project with the prompt as one argv element, and tells the window', async () => {
     const open = hostA()
     const { tabId } = (await open('sessions.open', { pluginId: 'a.one', cwd: 'sub', prompt: '-rf --settings x' })) as {
@@ -2725,6 +2765,7 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
       [{ name: 'bob', coordinator: 'yes' }, 'rooms.open: coordinator must be a boolean'],
       [{ name: 'bob', model: 'gpt' }, 'rooms.open: model must be one of'],
       [{ name: 'bob', effort: 'extreme' }, 'rooms.open: effort must be one of'],
+      [{ name: 'bob', env: { PATH: '/evil' } }, 'rooms.open: env: PATH is not allowed'],
       [{ name: 'bob', cwd: '../outside' }, 'outside the project'],
       [{ name: 'bob', prompt: '/compact' }, '"/", "!", "#" or "&"']
     ] as const) {
@@ -2741,6 +2782,17 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
     await expect(call('sessions.open', { pluginId: 'a.one' })).rejects.toThrow(`more than ${MAX_OPENS_PER_WINDOW} tabs`)
     expect(tabsBackend.spawned).toHaveLength(MAX_OPENS_PER_WINDOW)
     expect(((await call('rooms.members', { pluginId: 'a.one', id })) as { name: string }[]).map((m) => m.name)).toEqual(['lead', 'bob'])
+  })
+
+  it('opens a member tab with an allowed env and answers the names applied', async () => {
+    const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+    const call = hostA()
+    const id = await newRoom(call)
+    const r = (await call('rooms.open', { pluginId: 'a.one', id, name: 'lead', env: { [CODE_MODE]: '1' } })) as { tabId: string; env?: string[] }
+    expect(r).toEqual({ tabId: r.tabId, env: [CODE_MODE] })
+    expect(ptyOf(r.tabId).options.env[CODE_MODE]).toBe('1')
+    const plain = (await call('rooms.open', { pluginId: 'a.one', id, name: 'bob' })) as { tabId: string }
+    expect(plain).toEqual({ tabId: plain.tabId })
   })
 
   it('refuses rooms.open over membersPerRoom before a tab starts, and when the cap drops while the tab starts', async () => {

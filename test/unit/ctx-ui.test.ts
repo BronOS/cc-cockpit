@@ -92,6 +92,21 @@ describe('ctx.sessions', () => {
     expect('model' in (calls[4]?.params as object)).toBe(false)
   })
 
+  it('open passes an allowed env through as plain data and rejects any other, naming the variable', async () => {
+    const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+    const { ctx, calls } = setup((c) => (c.method === 'sessions.open' ? { tabId: 't9', env: [CODE_MODE] } : []))
+    await expect(ctx.sessions.open({ env: { [CODE_MODE]: '1' } })).resolves.toEqual({ tabId: 't9', env: [CODE_MODE] })
+    expect(calls.at(-1)?.params).toMatchObject({ env: { [CODE_MODE]: '1' } })
+    expect(Object.getPrototypeOf((calls.at(-1)?.params as { env: object }).env)).toBe(Object.prototype)
+    await ctx.sessions.open({})
+    expect('env' in (calls.at(-1)?.params as object)).toBe(false)
+    const sent = calls.length
+    await expect(ctx.sessions.open({ env: { PATH: '/evil' } })).rejects.toThrow('sessions.open: env: PATH is not allowed')
+    await expect(ctx.sessions.open({ env: { [CODE_MODE]: '0' } })).rejects.toThrow(`${CODE_MODE} must be "1"`)
+    await expect(ctx.sessions.open({ env: 'x' as never })).rejects.toThrow('sessions.open: env must be an object')
+    expect(calls).toHaveLength(sent)
+  })
+
   it('openShell sends only cwd and focus, checking their types first', async () => {
     const { ctx, calls } = setup((c) => (c.method === 'sessions.openShell' ? { tabId: 't7' } : []))
     await expect(ctx.sessions.openShell({ cwd: 'src', focus: true })).resolves.toEqual({ tabId: 't7' })

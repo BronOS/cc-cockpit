@@ -13,6 +13,23 @@ describe('buildPtyEnv', () => {
     expect(env.HOME).toBe('/home/u')
   })
 
+  it('adds a Claude tab extra over the login env, under the app variables', () => {
+    // The login env's own copy is stripped (CLAUDE_CODE_*); the extra is the plugin's checked choice.
+    const env = buildPtyEnv(
+      { ...login, CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: '0' },
+      { binDir: '/data/bin', tab: { tabId: 't', token: 'tok', sock: '/s' }, extra: { CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: '1' } }
+    )
+    expect(env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE).toBe('1')
+    expect(env.APP_TAB_TOKEN).toBe('tok')
+    expect(buildPtyEnv(login, { binDir: '/b' })).not.toHaveProperty('CLAUDE_CODE_EXPERIMENTAL_CODE_MODE')
+  })
+
+  it('refuses an extra that names an app variable', () => {
+    for (const name of ['APP_TAB_TOKEN', 'APP_TAB_ID', 'CC_COCKPIT_SOCK', 'CC_COCKPIT_X', 'PATH', 'TERM', 'ELECTRON_RUN_AS_NODE']) {
+      expect(() => buildPtyEnv(login, { binDir: '/b', tab: { token: 'tok' }, extra: { [name]: 'x' } })).toThrow(name)
+    }
+  })
+
   it('uses just the bin dir when PATH is unset', () => {
     expect(buildPtyEnv({}, { binDir: '/data/bin' }).PATH).toBe('/data/bin')
   })

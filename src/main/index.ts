@@ -1193,7 +1193,7 @@ function start(server: boolean): void {
    */
   const openClaudeTab = async (
     projectId: string,
-    options: { cwd?: string; prompt?: string; model?: string; effort?: string },
+    options: { cwd?: string; prompt?: string; model?: string; effort?: string; env?: Record<string, string> },
     windowId: number,
     focus: boolean,
     place?: PluginPlacement
@@ -3880,7 +3880,8 @@ function start(server: boolean): void {
         const project = registry.get(id)
         return project ? [project] : []
       }),
-      pluginAvailable
+      pluginAvailable,
+      warnLog
     )
     // A missing project can only be relinked or forgotten from the picker's recent list. One
     // that fell out of that list (it holds 20) could never be removed and would open the

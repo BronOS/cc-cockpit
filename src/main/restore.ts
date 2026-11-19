@@ -2,7 +2,7 @@
 // start. No Electron import: the registry and the tab manager come in through small interfaces
 // so vitest drives all of it with temp dirs and fakes.
 //
-// What is saved: per project, the tabs in order (kind, cwd, Claude session id, name, flag, room) in
+// What is saved: per project, the tabs in order (kind, cwd, Claude session id, name, flag, room, env) in
 // `projects/<id>.json`; which windows were open is `openProjects` in app.json (the window manager
 // already keeps it). What comes back: Claude tabs with `claude --resume <id>` (no id yet = a
 // fresh `claude`), shell tabs fresh, command tabs NOT started (their own saved command waits for
@@ -31,6 +31,7 @@ import { randomUUID } from 'node:crypto'
 import { errorText } from '../shared/error-text'
 import type { TabInfo } from '../shared/ipc'
 import { checkSessionName } from '../shared/session-name'
+import { savedSessionEnv } from '../shared/session-options'
 import { tabFlagOf, type TabFlag } from '../shared/tab-flag'
 import { tabRoomOf, type TabRoom } from '../shared/tab-room'
 import { checkCommandArgv, checkTabCommandLabel, checkTabCommandLine } from '../shared/tab-commands'
@@ -56,6 +57,11 @@ export interface RestoredTab {
   resumeId?: string
   /** Claude tabs only: the name the person gave the tab. */
   name?: string
+  /**
+   * Claude tabs only: the extra environment a plugin opened the tab with, the entries still on the
+   * allowlist (savedSessionEnv); TabManager.restoreTab reads it again.
+   */
+  env?: Record<string, string>
   /** Command tabs only (and always): the tab's own saved copy of its entry, or a plugin's argv. */
   command?: AnyTabCommand
   /** Any kind: the person's flag, sticky across a restart like the tab itself. */
@@ -102,6 +108,7 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     if (t.openedBy !== undefined) record.openedBy = t.openedBy
     if (t.openedByName !== undefined) record.openedByName = t.openedByName
     if (t.name !== undefined) record.name = t.name
+    if (t.env !== undefined) record.env = { ...t.env }
     if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
     if (t.room !== undefined) record.room = { id: t.room.id, name: t.room.name, coordinator: t.room.coordinator, mark: t.room.mark }
     if (t.page !== undefined) Object.assign(record, pageRecordFields(t.page))
@@ -143,7 +150,8 @@ function pageRecordFields(page: PageTabSpec): Pick<TabRecord, 'plugin' | 'type' 
  */
 export function buildRestorePlan(
   project: Pick<ProjectView, 'path' | 'tabs'>,
-  pluginAvailable?: PluginAvailable
+  pluginAvailable?: PluginAvailable,
+  log?: (message: string) => void
 ): RestoredTab[] {
   const plan: RestoredTab[] = []
   const records: unknown = project.tabs
@@ -151,7 +159,7 @@ export function buildRestorePlan(
   const pagesOf = new Map<string, number>()
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room, env } = raw as Record<string, unknown>
     if (kind === 'page') {
       const page = pagePlanOf(raw as Record<string, unknown>)
       if (page === undefined) continue
@@ -201,6 +209,14 @@ export function buildRestorePlan(
       const r = tabRoomOf(room)
       if (r !== undefined) tab.room = r
     }
+    // A Claude tab's env, checked with the open's allowlist: an entry no longer on it (the list
+    // changed, or the file was edited) is dropped and logged, never applied; the tab comes back with
+    // the rest. Another kind's env is ignored: a shell or command tab never takes one.
+    if (kind === 'claude') {
+      const e = savedSessionEnv(env)
+      if (e.dropped.length > 0) log?.(`restore: a Claude tab's env dropped (not allowed): ${e.dropped.join(', ')}`)
+      if (e.env !== undefined) tab.env = { ...e.env }
+    }
     // Any kind keeps its flag; a damaged one is dropped, not the tab (tabFlagOf).
     const f = tabFlagOf(flag)
     if (f !== undefined) tab.flag = f
@@ -214,7 +230,7 @@ export function buildRestorePlan(
  * on it (a record mixing kinds is never guessed at), or a spec checkPageTabSpec refuses.
  */
 function pagePlanOf(raw: Record<string, unknown>): PageTabSpec | undefined {
-  for (const key of ['sessionId', 'label', 'command', 'argv', 'openedBy', 'openedByName', 'name']) {
+  for (const key of ['sessionId', 'label', 'command', 'argv', 'openedBy', 'openedByName', 'name', 'env']) {
     if (raw[key] !== undefined) return undefined
   }
   try {
@@ -259,11 +275,11 @@ export interface LaunchPlan {
   missing: ProjectView[]
 }
 
-export function planLaunch(projects: readonly ProjectView[], pluginAvailable?: PluginAvailable): LaunchPlan {
+export function planLaunch(projects: readonly ProjectView[], pluginAvailable?: PluginAvailable, log?: (message: string) => void): LaunchPlan {
   const plan: LaunchPlan = { open: [], missing: [] }
   for (const project of projects) {
     if (project.missing) plan.missing.push(project)
-    else plan.open.push({ project, tabs: buildRestorePlan(project, pluginAvailable), groups: project.tabGroups })
+    else plan.open.push({ project, tabs: buildRestorePlan(project, pluginAvailable, log), groups: project.tabGroups })
   }
   return plan
 }
@@ -438,6 +454,7 @@ export class TabRestorer {
     const record: TabRecord = { id: randomUUID(), kind: tab.kind, cwd }
     if (tab.resumeId !== undefined) record.sessionId = tab.resumeId
     if (tab.name !== undefined) record.name = tab.name
+    if (tab.env !== undefined) record.env = { ...tab.env }
     if (tab.flag !== undefined) record.flag = { ...tab.flag }
     if (tab.room !== undefined) record.room = { ...tab.room }
     if (tab.page !== undefined) Object.assign(record, pageRecordFields(tab.page))
@@ -498,7 +515,7 @@ export class TabRestorer {
     const path = this.options.projectPath(projectId)
     // Through buildRestorePlan like a launch: the same checks (a cwd that is gone falls back to
     // the folder, a command tab comes back not started, a shell tab never resumes).
-    this.queue(projectId, path === undefined ? [] : buildRestorePlan({ path, tabs: records }, this.options.pluginAvailable), groups)
+    this.queue(projectId, path === undefined ? [] : buildRestorePlan({ path, tabs: records }, this.options.pluginAvailable, this.log), groups)
   }
 
   /** The user closed the project's window: its tabs are gone for good, so is their record. */

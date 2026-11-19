@@ -363,12 +363,18 @@ with full Node access.
   At most 30 texts a minute per plugin by default (`sendsPerMinute`); the person can change it for every plugin or for
   one (Settings > General > Plugin limits, Settings > Plugins > Limits, `ccc plugin limits`, at most 300), and a
   refusal names the cap and its value.
-- `ctx.sessions.open({ cwd, prompt, focus, model, effort })`: a new Claude tab; the prompt is an argument, never typed.
+- `ctx.sessions.open({ cwd, prompt, focus, model, effort, env })` -> `{ tabId, placed, env }`: a new Claude tab; the prompt is an argument, never typed.
   `model` (`haiku`, `sonnet`, `opus`, `fable`) and `effort` (`low`, `medium`, `high`, `xhigh`, `max`) start it with
   `--model` / `--effort`; leave them out for the person's default, anything else rejects naming the field.
+  `env` adds environment variables to the tab from a fixed list only, each with its allowed values:
+  `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: '1'` (Claude Code's experimental Code Mode). Another name or value, a non-string
+  or more than 8 rejects the whole open, naming the variable (a tab can be talked into running your command, so a free
+  env could point the session elsewhere or run code). The tab keeps its `env`: a restart, a resume and a restore start
+  it with the same variables (a Code Mode session resumes only with Code Mode on). The answer's `env` lists the names
+  applied, and is there only when `env` was given: no `env` in the answer means an older app that ignored it.
   The tab opens unselected (the person may be typing in another one); `focus: true` selects it in the
   window, for a click the person made that means "go there" (Discuss in a new session). An older app ignores
-  `focus`, `model` and `effort`, silently: it starts the tab with the default model. At most 5 tabs a minute per
+  `focus`, `model`, `effort` and `env`, silently: it starts the tab with the default model. At most 5 tabs a minute per
   plugin by default, one budget with `openShell`, `openCommand` and `ctx.rooms.open` (`opensPerMinute`); the person
   can change it for every plugin or for one (Settings > General > Plugin limits, Settings > Plugins > Limits,
   `ccc plugin limits`, at most 60), and a refusal names the cap and its value.
@@ -425,10 +431,10 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   ended, `paused`, `members` as a count), ended ones included. No messages.
 - `ctx.rooms.end(id, { closeTabs? })`: its members leave it (their tabs stay), its invites die; the record and docs stay. `closeTabs: true` also closes, with no dialog, the tabs `rooms.open` made (not a coordinator's, an invited member's or one the person typed into) and resolves `{ closed }`.
   `ctx.rooms.delete(id)` removes an ended room with its docs and log.
-- `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, cwd, beside, side })` -> `{ tabId, placed }`: a new Claude tab
+- `ctx.rooms.open(id, { name, coordinator, prompt, model, effort, env, cwd, beside, side })` -> `{ tabId, placed, env }`: a new Claude tab
   of this window that is a member from the start. `name` matches `^[a-z][a-z0-9-]{0,30}$`, is unique in
   the room and is not `all`, `plugin`, `person`, `user` or `system`; at most 20 members a room (`membersPerRoom`: default 20, at most 50; the person can change it).
-  `prompt`, `model`, `effort` and `cwd` are `ctx.sessions.open`'s, with its checks, and the open counts against the
+  `prompt`, `model`, `effort`, `env` and `cwd` are `ctx.sessions.open`'s, with its checks (and its answer's `env`), and the open counts against the
   same 5 tabs a minute; the tab opens unselected. `beside` and `side` are the opens' above, with the same checks
   and the same `placed` (only when `beside` is given): a member can open as a split pane beside its coordinator.
   The room and the name are checked before the tab opens.

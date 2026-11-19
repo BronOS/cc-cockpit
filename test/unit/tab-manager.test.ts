@@ -985,6 +985,85 @@ describe('restoreTab', () => {
   })
 })
 
+describe('session env', () => {
+  const CODE_MODE = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
+  const SID = '0b6a3f0e-1c11-4f7e-9d0e-5b1f7a1c2d3e'
+
+  it('reaches the pty env of a new Claude tab over the login env, and is in its info', () => {
+    const tabs = manager(undefined, undefined, undefined, { PATH: '/usr/bin', SHELL: '/bin/zsh', [CODE_MODE]: '0' })
+    const tab = tabs.create(A, { kind: 'claude', env: { [CODE_MODE]: '1' } })
+    const env = backend.last.options.env
+    expect(env[CODE_MODE]).toBe('1')
+    // The app's own variables are untouched.
+    expect(env.APP_TAB_ID).toBe(tab.id)
+    expect(env.CC_COCKPIT_SOCK).toBe('/data/app.sock')
+    expect(env.PATH?.startsWith('/data/bin')).toBe(true)
+    expect(tab.env).toEqual({ [CODE_MODE]: '1' })
+    // The argv is the same as without it: env is not a flag.
+    expect(backend.last.argv).toEqual(['claude', '--settings', '/data/hooks.json'])
+  })
+
+  it('a tab without env gets none, and the login env never passes its own copy on', () => {
+    const tabs = manager(undefined, undefined, undefined, { PATH: '/usr/bin', SHELL: '/bin/zsh', [CODE_MODE]: '1' })
+    const tab = tabs.create(A, { kind: 'claude' })
+    expect(backend.last.options.env).not.toHaveProperty(CODE_MODE)
+    expect(tab.env).toBeUndefined()
+    // An empty env is none.
+    expect(tabs.create(A, { kind: 'claude', env: {} }).env).toBeUndefined()
+  })
+
+  it('is refused for anything off the list, an app variable included, and for a shell tab', () => {
+    const tabs = manager()
+    for (const env of [{ APP_TAB_TOKEN: 'x' }, { CC_COCKPIT_SOCK: '/x' }, { PATH: '/evil' }, { [CODE_MODE]: '0' }] as Record<string, string>[]) {
+      expect(() => tabs.create(A, { kind: 'claude', env })).toThrow(/env/)
+    }
+    expect(() => tabs.create(A, { kind: 'shell', env: { [CODE_MODE]: '1' } })).toThrow(/only a Claude tab/)
+    expect(backend.spawned).toEqual([])
+    expect(tabs.list(A)).toEqual([])
+  })
+
+  it('is applied again on a restart, fresh or resumed', () => {
+    const tabs = manager()
+    const tab = tabs.create(A, { kind: 'claude', env: { [CODE_MODE]: '1' }, model: 'opus' })
+    backend.last.exit(0)
+    tabs.restart(A, tab.id)
+    expect(backend.last.options.env[CODE_MODE]).toBe('1')
+    // Unlike the model: a restart never passes --model.
+    expect(backend.last.argv).toEqual(['claude', '--settings', '/data/hooks.json'])
+    tabs.sessionStarted(tab.id, SID)
+    tabs.sessionPrompted(tab.id)
+    backend.last.exit(0)
+    tabs.restart(A, tab.id)
+    expect(backend.last.argv).toEqual(['claude', '--settings', '/data/hooks.json', '--resume', SID])
+    expect(backend.last.options.env[CODE_MODE]).toBe('1')
+  })
+
+  it('a restored tab resumes with its saved env, and a bad saved entry is dropped and logged', () => {
+    const logs: string[] = []
+    const tabs = manager(undefined, undefined, undefined, undefined, undefined, undefined, (m) => logs.push(m))
+    const tab = tabs.restoreTab(A, { kind: 'claude', resumeId: SID, env: { [CODE_MODE]: '1', PATH: '/evil' } })
+    expect(backend.last.argv).toEqual(['claude', '--settings', '/data/hooks.json', '--resume', SID])
+    expect(backend.last.options.env[CODE_MODE]).toBe('1')
+    expect(backend.last.options.env.PATH).toBe('/data/bin:/usr/bin')
+    expect(tab.env).toEqual({ [CODE_MODE]: '1' })
+    expect(logs.some((m) => m.includes('env dropped') && m.includes('PATH'))).toBe(true)
+    // Restarted after the restore: still with it.
+    backend.last.exit(0)
+    tabs.restart(A, tab.id)
+    expect(backend.last.options.env[CODE_MODE]).toBe('1')
+  })
+
+  it('a restored tab whose whole env fails comes back without one; a shell tab ignores a saved env', () => {
+    const tabs = manager()
+    const tab = tabs.restoreTab(A, { kind: 'claude', env: { [CODE_MODE]: 'yes' } })
+    expect(tab.env).toBeUndefined()
+    expect(backend.last.options.env).not.toHaveProperty(CODE_MODE)
+    const shell = tabs.restoreTab(A, { kind: 'shell', env: { [CODE_MODE]: '1' } })
+    expect(shell.env).toBeUndefined()
+    expect(backend.last.options.env).not.toHaveProperty(CODE_MODE)
+  })
+})
+
 describe('Claude plugin dirs', () => {
   const CORE = '/data/claude-plugins/core'
 

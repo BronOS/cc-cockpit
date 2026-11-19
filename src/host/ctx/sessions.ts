@@ -22,7 +22,7 @@
 import type { Disposer, MachineInfo, PluginContext, RateLimits, SendResult, SessionInfo, SessionSummary } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { checkSessionName } from '../../shared/session-name'
-import { checkSessionOptions } from '../../shared/session-options'
+import { checkSessionEnv, checkSessionOptions } from '../../shared/session-options'
 import { checkCommandArgv } from '../../shared/tab-commands'
 
 type Listener = (sessions: SessionInfo[]) => void
@@ -252,14 +252,17 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         }
         return (await call('sessions.send', { pluginId, tabId, text })) as SendResult
       }),
-    open: (options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string } & BesideOptions = {}) =>
+    open: (
+      options: { cwd?: string; prompt?: string; focus?: boolean; model?: string; effort?: string; env?: Record<string, string> } & BesideOptions = {}
+    ) =>
       guardAsync(async () => {
-        const { cwd, prompt, focus, model, effort } = (options ?? {}) as {
+        const { cwd, prompt, focus, model, effort, env } = (options ?? {}) as {
           cwd?: unknown
           prompt?: unknown
           focus?: unknown
           model?: unknown
           effort?: unknown
+          env?: unknown
         }
         const beside = besideOf('sessions.open', options)
         if (cwd !== undefined && typeof cwd !== 'string') throw new TypeError('sessions.open: cwd must be a string')
@@ -270,6 +273,9 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
         // Fast error naming the field; main checks again (shared/session-options.ts).
         const checked = checkSessionOptions({ model, effort })
         if (!checked.ok) throw new TypeError(`sessions.open: ${checked.reason}`)
+        // The env allowlist too (SESSION_ENV), for the fast error naming the variable; main checks again.
+        const checkedEnv = checkSessionEnv(env)
+        if (!checkedEnv.ok) throw new TypeError(`sessions.open: ${checkedEnv.reason}`)
         // Sent only when asked for: a request without them is the same as before the options existed.
         return (await call('sessions.open', {
           pluginId,
@@ -278,6 +284,7 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
           ...(focus ? { focus: true } : {}),
           ...(checked.model ? { model: checked.model } : {}),
           ...(checked.effort ? { effort: checked.effort } : {}),
+          ...(checkedEnv.env !== undefined ? { env: { ...checkedEnv.env } } : {}),
           ...beside
         })) as OpenResult
       }),
@@ -327,7 +334,7 @@ export function createSessionsApi(deps: SessionsApiDeps): PluginContext['session
 
 /** `beside` / `side` of the three opens (split groups): the new tab beside a tab of this window. */
 type BesideOptions = { beside?: string; side?: 'right' | 'down' }
-type OpenResult = { tabId: string; placed?: boolean }
+type OpenResult = { tabId: string; placed?: boolean; env?: string[] }
 
 /**
  * The fast error for a bad `beside` / `side`; main checks again, and looks the tab up in this window

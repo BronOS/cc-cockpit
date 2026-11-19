@@ -216,7 +216,8 @@ behind it are in [design.md](design.md).
   picks one per project. The built-in viewer opens when the plugin is not active, has no listener, its listener
   fails, or it does not answer within 2 s, and for a file outside the project. A plugin whose `openFile` has
   `whenPicked: true` (the Editor) is a candidate only when the project picks it, never the default.
-- Plugins open tabs: a Claude tab with `ctx.sessions.open` (a prompt as an argument, a model and effort) and a plain
+- Plugins open tabs: a Claude tab with `ctx.sessions.open` (a prompt as an argument, a model and effort, and environment
+  variables from a fixed list, today Claude Code's experimental Code Mode, kept with the tab across restarts) and a plain
   shell tab with `ctx.sessions.openShell` (the person's "+" > shell: their login shell, with no command or environment
   from the plugin). Both take a cwd inside the project folder (checked by real path), open unselected unless the
   plugin passes `focus: true` for a click, and share one budget of 5 a minute per plugin.

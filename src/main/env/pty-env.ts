@@ -1,6 +1,7 @@
 // Builds the environment for a PTY child (a tab of any kind, or a terminal overlay) from the
 // login-shell env.
 import { delimiter } from 'node:path'
+import { isAppEnvName } from '../../shared/session-options'
 import type { Env } from './login-env'
 
 /**
@@ -27,6 +28,12 @@ export interface PtyEnvOptions {
   binDir: string
   /** The child's token and socket; absent = none (the login-env capture, a test). */
   tab?: TabEnvVars
+  /**
+   * A Claude tab's plugin-chosen variables (shared/session-options.ts SESSION_ENV, checked by the
+   * caller), added over the login env after the stripping (the list's names are `CLAUDE_CODE_*`,
+   * which the login env never passes on) and before the app's own variables, which always win.
+   */
+  extra?: Readonly<Record<string, string>>
 }
 
 /**
@@ -52,11 +59,20 @@ export function isStrippedVar(name: string): boolean {
   return name === 'CLAUDECODE' || name.startsWith('CLAUDE_CODE_') || name.startsWith('ELECTRON_')
 }
 
-export function buildPtyEnv(loginEnv: Env, { binDir, tab }: PtyEnvOptions): Record<string, string> {
+export function buildPtyEnv(loginEnv: Env, { binDir, tab, extra }: PtyEnvOptions): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(loginEnv)) {
     if (v === undefined || isStrippedVar(k)) continue
     env[k] = v
+  }
+  if (extra !== undefined) {
+    for (const [k, v] of Object.entries(extra)) {
+      // The allowlist cannot name one of the app's own variables (session-options.ts checks it at load);
+      // refused here again because this is the spawn: an extra must never shadow the tab's token,
+      // socket or PATH, whatever a later list entry or a caller passes.
+      if (isAppEnvName(k)) throw new Error(`the tab environment may not set ${k}`)
+      env[k] = v
+    }
   }
   // Avoid a trailing delimiter (an empty PATH entry means "cwd") when PATH was unset.
   env.PATH = env.PATH ? `${binDir}${delimiter}${env.PATH}` : binDir

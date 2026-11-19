@@ -334,6 +334,18 @@ plugins", design-next §4), built on the public API only:
   that is the person's (`main/sessions/terminal-reports.ts`: focus, mouse, cursor, device-attribute, DECRPM, OSC and DCS
   replies alone do not count; keys, a paste, a wheel scroll as arrows do). Only the `tabs.input` handler sets it, so a gate
   delivery never does. It survives a restart of the same tab and is not persisted.
+- **Session env**: `ctx.sessions.open` and `ctx.rooms.open` take `env`, environment variables from a closed allowlist with
+  closed values (`SESSION_ENV` in `shared/session-options.ts`; adding one is one entry with its reason). Today:
+  `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE: '1'`. A tab can be talked into running a plugin command that opens tabs, so `env` is
+  untrusted: a free one could redirect the session (`ANTHROPIC_BASE_URL`, proxies) or run code (`PATH`, `NODE_OPTIONS`,
+  `LD_PRELOAD`). A plain object of at most 8 own keys, all on the list with an allowed value, else the whole open is refused
+  before the open budget is spent; checked in the host, in `HostApi.openClaude` and again in `TabManager.create`. The
+  variables go over the login env and under the app's own (`buildPtyEnv` `extra`: a name the app sets, `CC_COCKPIT_*`,
+  `APP_TAB_*`, `PATH`, `TERM`, is refused at load and at spawn). Unlike `--model` / `--effort` the tab keeps its env
+  (`TabInfo.env`, `TabRecord.env`): every restart, resume and restore spawns with it, since a Code Mode session resumes
+  only with Code Mode on; a saved entry no longer on the list is dropped and logged on load, never applied. The open's
+  answer lists the names applied (`env`), only when `env` was given, so a plugin can tell an older app that ignored it.
+  Not shown in the tab's tooltip (it shows no model or effort either). `openShell` and `openCommand` take no env.
 - **Replacing it**: another plugin provides `sessions-strip` and appears in its pick; the panel is
   replaced by turning `cockpit.sessions` off (project or app-wide) and enabling one's own. With
   neither there is no strip and no Sessions panel; the tab dots, `ccc sessions` and notifications
