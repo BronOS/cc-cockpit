@@ -84,6 +84,9 @@ export function useRemotePrompts(): {
           need={need}
           onAnswer={(trust) => pending.resolve(trust ? { need: 'hostKey', sha256: need.sha256 } : null)}
         />
+      ) : need.need === 'certificate' ? (
+        // The D-29 certificate prompt is task 05's (no main sends this need before task 02).
+        null
       ) : (
         <SecretPrompt
           // A new prompt (another try) starts empty: the wrong text is not kept in the field.

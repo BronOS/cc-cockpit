@@ -132,6 +132,7 @@ export function connectionOf(state: LinkState | undefined): RemoteConnectionStat
 export function backgroundNeedText(need: RemoteNeed, server: RemoteServerRecord): string {
   if (need.need === 'hostKey') return `the host key of ${server.name} is not trusted yet: open the server from the project picker`
   if (need.need === 'password') return `${server.name} needs its password again: open the server from the project picker`
+  if (need.need === 'certificate') return `the certificate of ${server.name} is not trusted yet: open the server from the project picker`
   return `the key ${need.path} needs its passphrase again: open the server from the project picker`
 }
 

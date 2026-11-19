@@ -119,7 +119,8 @@ export interface LinkAnswers {
 }
 
 /** What a call needs from the person before it can go on (design §5.4): passed to the picker as is. */
-export type LinkNeed = RemoteNeed
+/** What an SSH link can ask: never a certificate (that is a Direct guest link's, design-guests §11). */
+export type LinkNeed = Exclude<RemoteNeed, { need: 'certificate' }>
 
 /**
  * What the live connection rests on that the store does not have yet: a host key trusted from an

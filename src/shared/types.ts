@@ -399,6 +399,11 @@ export interface WebAccessSettings {
    * the browser asks falls back to home with a note (main/web/list-folders.ts).
    */
   startFolder?: string
+  /**
+   * The owner's name guests see in presence and the banner (design-guests D-24): plain text, at most 60
+   * characters. Absent: "Host".
+   */
+  ownerName?: string
 }
 
 /**

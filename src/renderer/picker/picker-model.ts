@@ -402,6 +402,11 @@ export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFl
     if (flow.answers.hostKey === need.sha256) return { flow, step: { error: `the host key of ${need.address} could not be confirmed` } }
     return { flow, step: { ask: need, retry: false } }
   }
+  // A Direct guest link's certificate (D-29): asked once, like a host key; the same one again is an error.
+  if (need.need === 'certificate') {
+    if (flow.answers.certificate === need.sha256) return { flow, step: { error: `the certificate of ${need.origin} could not be confirmed` } }
+    return { flow, step: { ask: need, retry: false } }
+  }
   const name = need.need
   if (need.again === true) {
     const wrong = { ...flow.wrong, [name]: flow.wrong[name] + 1 }

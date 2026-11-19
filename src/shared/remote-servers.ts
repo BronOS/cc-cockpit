@@ -80,6 +80,12 @@ export interface RemoteAnswers {
   password?: string
   passphrase?: string
   remember?: boolean
+  /**
+   * A Direct guest link's certificate (design-guests §11, D-29): the SHA-256 (lowercase hex of the DER) the
+   * person trusted in the `certificate` prompt. Main pins it for the window and saves it with the record only
+   * after the window opened, like `hostKey`.
+   */
+  certificate?: string
 }
 
 /**
@@ -91,6 +97,12 @@ export type RemoteNeed =
   | { need: 'hostKey'; type: string; sha256: string; address: string }
   | { need: 'password'; again?: true }
   | { need: 'passphrase'; path: string; again?: true }
+  /**
+   * A Direct guest link over https (design-guests §11, D-29): the certificate the server shows, for the person
+   * to trust. `sha256`: lowercase hex of its DER; when the link carried a pin (`c=`) main asks only when they
+   * differ, and refuses a mismatch outright (no prompt). Answered with `RemoteAnswers.certificate`.
+   */
+  | { need: 'certificate'; origin: string; sha256: string }
 
 /**
  * The command My own tunnel shows (design §3, §6): `ssh -N -L 127.0.0.1:<L>:127.0.0.1:<P> <host>`,
@@ -119,6 +131,8 @@ export interface RemoteRecent {
   projectId: string
   name: string
   at: number
+  /** Opened as a guest (design-guests §11): the picker shows "Guest at <origin>". */
+  guest?: true
 }
 
 export interface RemoteServer {
@@ -141,6 +155,13 @@ export interface RemoteServer {
   localPort?: number
   /** Built-in SSH: the trusted host key (design §5.3). */
   hostKey?: RemoteHostKey
+  /**
+   * A Direct server joined with a guest invite (design-guests §11): no reopen, no machine poll, no re-pair;
+   * the picker row reads "Guest at <origin>".
+   */
+  guest?: true
+  /** Direct over https: the pinned certificate's SHA-256 (lowercase hex of the DER), D-29. */
+  certSha256?: string
 }
 
 /**
