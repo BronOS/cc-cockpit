@@ -258,6 +258,25 @@ describe('ends', () => {
     expect(s.kick(guestId)).toBe(false)
   })
 
+  it('every end calls `ended` once with the guest id (D-9: its close asks settle), and a throwing hook ends it anyway', async () => {
+    const endedIds: string[] = []
+    const s = store({ ended: (id) => void endedIds.push(id) })
+    const { token, guestId } = await invited(s)
+    redeemed(s, token)
+    expect(s.kick(guestId)).toBe(true)
+    expect(endedIds).toEqual([guestId])
+    expect(s.kick(guestId)).toBe(false)
+    expect(endedIds).toEqual([guestId])
+    const s2 = store({
+      ended: () => {
+        throw new Error('boom')
+      }
+    })
+    const second = await invited(s2)
+    expect(s2.kick(second.guestId)).toBe(true)
+    expect(s2.access({ guest: second.guestId })).toEqual({ kind: 'revoked' })
+  })
+
   it('kick of a pending guest cancels its invite', async () => {
     const s = store()
     const { token, guestId } = await invited(s)

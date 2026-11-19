@@ -26,6 +26,31 @@ function setup(send: boolean | (() => boolean) = true, timeoutMs = 1000, hold?: 
 afterEach(() => vi.useRealTimers())
 
 describe('SharedAsks (the shared-ask core)', () => {
+  it("tells the settled hook how each ask ended: answered, timed out, or gone", async () => {
+    vi.useFakeTimers()
+    const hows: Array<{ id: string; answer: unknown; why: string; name: string }> = []
+    const asks = new SharedAsks<Info, Answer>({
+      hooks: { send: () => true, settled: (_w, id, how) => void hows.push({ id, answer: how.answer, why: how.why, name: how.info.name }) },
+      prefix: 'thing',
+      refused: 'nobody',
+      timeoutMs: 1000
+    })
+    void asks.ask(1, { name: 'a' })
+    void asks.ask(1, { name: 'b' })
+    void asks.ask(2, { name: 'c' })
+    void asks.ask(3, { name: 'd' })
+    asks.answer(1, 'thing-1', 'yes')
+    asks.windowClosed(2)
+    asks.settleWhere((i) => i.name === 'd')
+    vi.advanceTimersByTime(1000)
+    expect(hows).toEqual([
+      { id: 'thing-1', answer: 'yes', why: 'answered', name: 'a' },
+      { id: 'thing-3', answer: 'nobody', why: 'gone', name: 'c' },
+      { id: 'thing-4', answer: 'nobody', why: 'gone', name: 'd' },
+      { id: 'thing-2', answer: 'nobody', why: 'timeout', name: 'b' }
+    ])
+  })
+
   it('posts the ask with a prefixed id; the first answer wins and every view hears it settled', async () => {
     const { asks, sent, settled } = setup()
     const p = asks.ask(1, { name: 'a' })
