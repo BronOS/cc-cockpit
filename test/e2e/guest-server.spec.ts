@@ -1,7 +1,7 @@
 // Guests in server mode (design-guests §12, D-25, D-28; task 07b): a person on the server invites from
 // the shell with `ccc web invite` (server mode only), the link works in a plain browser and from a raw
 // client, `ccc web guests` lists the guest and `ccc web kick` ends it (4460, within 1 s of the reply).
-// Linux only today, as every server-mode spec: written now (D-28) and run once server mode runs on macOS.
+// Runs on Linux and macOS (D-28: it waited for server mode on macOS).
 import { CLOSE, parseInviteFragment } from '../../src/shared/web-protocol'
 import { expect, test } from './fixtures'
 import { rawSocket, redeemOk, session } from './guest-fixtures'

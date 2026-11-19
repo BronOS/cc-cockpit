@@ -14,7 +14,7 @@
 // Built-in SSH and My own tunnel (remote SSH rev 2 Task 7): see the section after the Direct test; the
 // SSH server is test/fixtures/ssh-server.mjs.
 //
-// Linux only: server mode starts nowhere else.
+// Linux and macOS: server mode starts nowhere else.
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
