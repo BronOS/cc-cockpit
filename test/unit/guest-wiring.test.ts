@@ -43,6 +43,10 @@ describe("index.ts wires 02's guest deps", () => {
     expect(store).toContain('target: () => webAccess.inviteTarget()')
   })
 
+  it('a 4464 and a downgrade to read end the guest\'s downloads (D-23): the store reaches Downloads.dropDevice', () => {
+    expect(depsOf('GuestStore')).toContain('dropDownloads: (deviceId) => downloads.dropDevice(deviceId)')
+  })
+
   it("the owner's guest list follows the store: guests.changed on every change (05's chip and list read it)", () => {
     expect(INDEX).toContain("guestStore.onChange(() => views.toAll('guests.changed', guestStore.list()))")
   })

@@ -70,6 +70,8 @@ export const AWAY_MS = 60 * 60_000
 export const ACCESS_QUIET_MS = 500
 /** ...and never later than this after the first change of the run, however busy the owner is. */
 export const ACCESS_MAX_WAIT_MS = 2_000
+/** The longest one-shot timer Node keeps (a longer delay fires at once); a lifetime past it re-arms on firing. */
+const MAX_TIMER_MS = 2 ** 31 - 1
 
 /** The parts of a tab the store reads (TabManager's own record, task 07 wires it). */
 export interface GuestTabInfo {
@@ -112,6 +114,11 @@ export interface GuestStoreDeps {
   guestLive(guestId: string): boolean
   /** The guest's devices' plugin page tokens die (PluginPages.tokens.dropDevice, D-30). */
   dropPageTokens?(deviceId: string): void
+  /**
+   * The guest's devices' download links and running streams end (Downloads.dropDevice): with every 4464, and on a
+   * downgrade to read (D-23: read guests get no downloads). Absent: none (the gateway still drops them on a revoke).
+   */
+  dropDownloads?(deviceId: string): void
   /** Titles of this guest's page tabs with unsaved changes (TabManager's per (tab, view) dirty). Absent: none. */
   unsavedOf?(guestId: string): string[]
   /** A notice to the owner ("Bob joined"): core notices. Absent: none. */
@@ -255,6 +262,12 @@ export class GuestStore implements GuestService {
   /** Widening changes waiting for their one 4464 (ACCESS_QUIET_MS): when the run began and its timer. */
   private readonly pendingAccess = new Map<string, { first: number; timer: { stop(): void } }>()
   private readonly timeout: (fn: () => void, ms: number) => { stop(): void }
+  /**
+   * One timer at the nearest lifetime end: a guest's views close at its `until`, not up to SWEEP_MS later (its
+   * terminal, port and webview streams run until the views close; `access` already refuses calls past `until`).
+   * Re-armed whenever the set of lifetimes changes (a redeem, an end, a sweep) and at start.
+   */
+  private lifetimeTimer: { stop(): void } | undefined
 
   constructor(private readonly deps: GuestStoreDeps) {
     this.now = deps.now ?? Date.now
@@ -281,6 +294,8 @@ export class GuestStore implements GuestService {
 
   dispose(): void {
     this.sweeper?.stop()
+    this.lifetimeTimer?.stop()
+    this.lifetimeTimer = undefined
     for (const p of this.pendingAccess.values()) p.timer.stop()
     this.pendingAccess.clear()
   }
@@ -498,6 +513,7 @@ export class GuestStore implements GuestService {
       openedTabs: []
     })
     this.save()
+    this.armLifetime()
     this.deps.accessLog.write({ event: 'guest', device: made.device.id, name: invite.name, detail: `joined ${invite.role}` })
     this.deps.notify?.(`${invite.name} joined as a ${invite.role === 'read' ? 'read-only' : 'write'} guest`)
     this.changed()
@@ -542,6 +558,8 @@ export class GuestStore implements GuestService {
     // Every view of the guest reconnects under the new role (new view ids: a view's access never changes in its life).
     // That fresh `ready` carries any widening still waiting too, so its 4464 is not sent after it.
     this.cancelPendingAccess(g.id)
+    // A read guest has no downloads (D-23): its links and running streams end with the write role.
+    if (role === 'read') this.dropDownloadsOf(g.id)
     this.reconnect(g.id, CLOSE.roleChanged, 'role changed')
     this.changed()
     return true
@@ -566,6 +584,16 @@ export class GuestStore implements GuestService {
     const g = this.live(guestId)
     if (!g) return this.sharePendingTab(guestId, tabId, shared)
     if (g.scope === 'all') return false
+    // A tab the guest opened is visible through `openedTabs`, not its scope: unsharing it takes it from both, or
+    // the menu's untick would answer true and leave the tab shown.
+    if (!shared && g.openedTabs.includes(tabId)) {
+      g.openedTabs = g.openedTabs.filter((t) => t !== tabId)
+      g.scope = g.scope.filter((t) => t !== tabId)
+      this.save()
+      this.accessChangedFor(g.id)
+      this.changed()
+      return true
+    }
     const tab = this.deps.tabOf(tabId)
     if (shared && tab?.projectId !== g.projectId) return false
     const has = g.scope.includes(tabId)
@@ -680,6 +708,7 @@ export class GuestStore implements GuestService {
     }
     if (!widening) {
       this.cancelPendingAccess(guestId)
+      this.dropDownloadsOf(guestId)
       this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
       return
     }
@@ -691,9 +720,37 @@ export class GuestStore implements GuestService {
     const timer = this.timeout(() => {
       if (this.pendingAccess.get(guestId)?.timer !== timer) return
       this.pendingAccess.delete(guestId)
-      if (this.live(guestId)) this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
+      if (!this.live(guestId)) return
+      this.dropDownloadsOf(guestId)
+      this.reconnect(guestId, CLOSE.accessChanged, 'access changed')
     }, wait)
     this.pendingAccess.set(guestId, { first, timer })
+  }
+
+  /** The guest's download links and running streams end (a download is bound to a view these closes end). */
+  private dropDownloadsOf(guestId: string): void {
+    for (const d of this.deps.devices.devicesOfGuest(guestId)) {
+      try {
+        this.deps.dropDownloads?.(d.id)
+      } catch (err) {
+        this.deps.log(`guests: dropping downloads failed: ${String(err)}`)
+      }
+    }
+  }
+
+  /** See `lifetimeTimer`. A timer that fires a little early finds nobody ended and arms again. */
+  private armLifetime(): void {
+    this.lifetimeTimer?.stop()
+    this.lifetimeTimer = undefined
+    let next = Infinity
+    for (const g of this.data.guests) if (g.until !== null && g.until < next) next = g.until
+    if (next === Infinity) return
+    const timer = this.timeout(() => {
+      if (this.lifetimeTimer !== timer) return
+      this.lifetimeTimer = undefined
+      this.sweep()
+    }, Math.min(Math.max(0, next - this.now()), MAX_TIMER_MS))
+    this.lifetimeTimer = timer
   }
 
   private cancelPendingAccess(guestId: string): void {
@@ -726,6 +783,7 @@ export class GuestStore implements GuestService {
       this.data.guests = this.data.guests.filter((x) => x.id !== guestId)
       this.data.invites = this.data.invites.filter((i) => i.guestId !== guestId)
       this.leftAt.delete(guestId)
+      this.armLifetime()
       this.save()
       this.deps.devices.revokeGuest(guestId, `guest ended: ${why}`)
       this.deps.accessLog.write({ event: 'guest', name: g.name, detail: `ended: ${why}` })
@@ -753,6 +811,7 @@ export class GuestStore implements GuestService {
   sweep(): void {
     const now = this.now()
     for (const g of [...this.data.guests]) if (g.until !== null && g.until <= now) this.end(g.id, 'lifetime')
+    this.armLifetime()
     const sizes = [this.data.invites.length, this.data.spent.length, this.data.ended.length]
     this.data.invites = this.data.invites.filter((i) => i.expiresAt > now)
     this.data.spent = this.data.spent.filter((s) => s.until > now)

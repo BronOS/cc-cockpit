@@ -26,6 +26,7 @@ let notices: string[]
 let dropped: string[]
 let ticks: Array<() => void>
 let timers: Array<{ fn: () => void; ms: number; stopped: boolean }>
+let droppedDownloads: string[]
 let log: AccessLog
 let devices: DeviceStore
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   dropped = []
   ticks = []
   timers = []
+  droppedDownloads = []
   log = new AccessLog({ now: () => clock })
   devices = newDevices()
 })
@@ -74,6 +76,7 @@ function store(over: Partial<GuestStoreDeps> = {}): GuestStore {
     },
     guestLive: (id) => live.has(id),
     dropPageTokens: (d) => dropped.push(d),
+    dropDownloads: (d) => droppedDownloads.push(d),
     notify: (t) => notices.push(t),
     log: () => {},
     now: () => clock,
@@ -441,6 +444,83 @@ describe('changes', () => {
     s.shareTab(b.guestId, 't2', true)
     s.dispose()
     expect(armed()).toEqual([])
+  })
+
+  it('a lifetime ends at its until, not at the next sweep: one timer at the nearest end, re-armed on redeem, end and restart', async () => {
+    const s = store()
+    const day = await invited(s, { name: 'Day', lifetime: '1d' })
+    redeemed(s, day.token)
+    expect(armed()).toEqual([24 * 3600_000])
+    const forever = await invited(s, { name: 'Ever' })
+    redeemed(s, forever.token)
+    expect(armed()).toEqual([24 * 3600_000])
+    clock += 3600_000
+    const week = await invited(s, { name: 'Week', lifetime: '7d' })
+    redeemed(s, week.token)
+    // Still the day guest's end (23 h away now); the week guest's comes next.
+    expect(armed()).toEqual([23 * 3600_000])
+    clock += 23 * 3600_000
+    fireTimers()
+    expect(closed).toEqual([{ guestId: day.guestId, code: CLOSE.accessEnded }])
+    expect(armed()).toEqual([7 * 24 * 3600_000 - 24 * 3600_000 + 3600_000])
+    // A kick re-arms for whoever is left: none with an end.
+    s.kick(week.guestId)
+    expect(armed()).toEqual([])
+    // A restart arms from the saved records (a new store over the same file).
+    const later = await invited(s, { name: 'Later', lifetime: '1d' })
+    redeemed(s, later.token)
+    s.dispose()
+    timers = []
+    // A restart: a new device store and guest store over the same file.
+    devices = newDevices()
+    const s2 = store()
+    expect(armed()).toEqual([24 * 3600_000])
+    clock += 24 * 3600_000
+    closed = []
+    fireTimers()
+    expect(closed).toEqual([{ guestId: later.guestId, code: CLOSE.accessEnded }])
+    expect(s2.access({ guest: later.guestId })).toMatchObject({ kind: 'revoked' })
+  })
+
+  it('a timer that fires early ends nobody and arms again for the rest', async () => {
+    const s = store()
+    const day = await invited(s, { name: 'Day', lifetime: '1d' })
+    redeemed(s, day.token)
+    clock += 24 * 3600_000 - 5
+    fireTimers()
+    expect(closed).toEqual([])
+    expect(armed()).toEqual([5])
+  })
+
+  it('downloads end with every 4464 and on a downgrade to read (D-23), never on an upgrade', async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: ['t1'] })
+    const { deviceId } = redeemed(s, token)
+    s.shareTab(guestId, 't1', false)
+    expect(droppedDownloads).toEqual([deviceId])
+    s.shareTab(guestId, 't2', true)
+    // A widening: the downloads go with its one 4464, not before.
+    expect(droppedDownloads).toEqual([deviceId])
+    fireTimers()
+    expect(droppedDownloads).toEqual([deviceId, deviceId])
+    s.pluginAccessChanged(P)
+    expect(droppedDownloads).toHaveLength(3)
+    s.setRole(guestId, 'read')
+    expect(droppedDownloads).toHaveLength(4)
+    s.setRole(guestId, 'write')
+    expect(droppedDownloads).toHaveLength(4)
+  })
+
+  it('unsharing a tab the guest opened takes it from openedTabs too: it is no longer visible, and the views reconnect', async () => {
+    const s = store()
+    const { token, guestId } = await invited(s, { scope: ['t1'] })
+    redeemed(s, token)
+    s.noteOpenedTab(guestId, 't2')
+    expect(s.tabVisible(guestId, 't2')).toBe(true)
+    expect(s.shareTab(guestId, 't2', false)).toBe(true)
+    expect(s.tabVisible(guestId, 't2')).toBe(false)
+    expect(s.openedTabs(guestId)).toEqual([])
+    expect(closed.map((c) => c.code)).toEqual([CLOSE.accessChanged])
   })
 
   it("Share with <name> on a pending invite edits the invite's scope (no view, nothing to close); the redeem keeps it", async () => {
