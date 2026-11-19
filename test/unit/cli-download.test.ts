@@ -116,7 +116,7 @@ describe('the round trip', () => {
 })
 
 describe('the socket handler', () => {
-  const offers: Array<{ caller: { projectId: string; windowId: number }; abs: string }> = []
+  const offers: Array<{ caller: { projectId: string; windowId: number; tabId?: string }; abs: string }> = []
   const handler = downloadHandler({
     windowIdOf: (projectId) => (projectId === 'p1' ? 7 : undefined),
     offer: async (caller, abs) => {
@@ -133,7 +133,8 @@ describe('the socket handler', () => {
     await expect(call({ path: '/p/a.txt', windowId: 99, projectId: 'other' }, { kind: 'session', tabId: 't1', projectId: 'p1' })).resolves.toEqual({ text: 'offered /p/a.txt' })
     await expect(call({ path: '/p/b.txt' }, { kind: 'window', projectId: 'p1' })).resolves.toEqual({ text: 'offered /p/b.txt' })
     expect(offers).toEqual([
-      { caller: { projectId: 'p1', windowId: 7 }, abs: '/p/a.txt' },
+      // The Claude tab is the session token's (D-23: a guest sees an offer from a tab it sees); a window token has none.
+      { caller: { projectId: 'p1', windowId: 7, tabId: 't1' }, abs: '/p/a.txt' },
       { caller: { projectId: 'p1', windowId: 7 }, abs: '/p/b.txt' }
     ])
   })

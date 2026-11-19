@@ -132,6 +132,14 @@ export interface DownloadOfferHooks {
   settled(windowId: number, requestId: string): void
 }
 
+/** Who made an offer, by main's tables: the project's open window, and the Claude tab when a session token called. */
+export interface OfferCaller {
+  projectId: string
+  windowId: number
+  /** CliCall.tabId (a session token's tab); absent for a window token. Main's, never from `args`. */
+  tabId?: string
+}
+
 /** An offer's content without its id (SharedAsks adds it): distributed over the file and folder shapes. */
 type OfferInfo = DownloadOffer extends infer T ? (T extends unknown ? Omit<T, 'requestId'> : never) : never
 
@@ -146,6 +154,12 @@ export interface OfferResult {
 interface OfferRecord {
   windowId: number
   target: { projectId: string; abs: string }
+  /**
+   * The Claude tab whose `ccc download` made it (CliCall.tabId, main's, design-guests §9, D-23): a write guest is
+   * shown the offer, and may accept it, only when it sees this tab. Main-only, never in the offer's payload; absent
+   * (a window token's call) means no guest ever sees it.
+   */
+  originTab?: string
   expiresAt: number
   /** The device whose view accepted it: the only one a Try again is taken from. */
   acceptedBy?: string
@@ -298,7 +312,7 @@ export class Downloads {
    * every browser view of the window. Answers at once, never waits for the click; throws with the exit-1
    * text for a refused path, too large, the desktop with no browser view, and the limits.
    */
-  async offer(caller: { projectId: string; windowId: number }, abs: string, peerGone?: AbortSignal): Promise<OfferResult> {
+  async offer(caller: OfferCaller, abs: string, peerGone?: AbortSignal): Promise<OfferResult> {
     if (!this.deps.offers) throw new Error('downloads are not available')
     const windowId = caller.windowId
     this.sweepOffers()
@@ -349,7 +363,7 @@ export class Downloads {
   }
 
   private async offerChecked(
-    caller: { projectId: string; windowId: number },
+    caller: OfferCaller,
     abs: string,
     signal: AbortSignal
   ): Promise<OfferResult> {
@@ -398,7 +412,12 @@ export class Downloads {
     if (send?.threw) throw new Error('the offer could not be sent to the browser views')
     if (send === undefined || !this.offerAsks.isPending(windowId, send.requestId)) throw new Error(onThisComputer)
     const id = send.requestId
-    this.offers.set(id, { windowId, target, expiresAt: this.now() + this.offerMs })
+    this.offers.set(id, {
+      windowId,
+      target,
+      expiresAt: this.now() + this.offerMs,
+      ...(typeof caller.tabId === 'string' && caller.tabId !== '' ? { originTab: caller.tabId } : {})
+    })
     this.offerTimes.set(windowId, [...this.recentOffers(windowId), this.now()])
     void answered.then((answer) => {
       // Declined, run out, window closed: over. Accepted: kept for a Try again until its life ends.
@@ -450,6 +469,19 @@ export class Downloads {
   /** Cancel in a view's dialog (`downloads.answer`): settles a waiting offer for every view of the window. */
   decline(windowId: number, requestId: string): boolean {
     return this.offerAsks.answer(windowId, requestId, 'declined')
+  }
+
+  /**
+   * What a guest's sight of an offer rests on (design-guests §9, D-23): its origin tab, for an offer of `windowId`
+   * not over yet (waiting, or accepted and still in its life: a Try again). `{}` for one made with no tab (no guest
+   * sees it); undefined for an unknown, foreign or ended id. The router's `askInfo` (asks/guest-asks.ts
+   * downloadOfferSource) and the guest sink's drop read it; it never goes on the wire.
+   */
+  offerOrigin(windowId: number, requestId: string): { originTab?: string } | undefined {
+    this.sweepOffers()
+    const record = this.offers.get(requestId)
+    if (!record || record.windowId !== windowId) return undefined
+    return record.originTab === undefined ? {} : { originTab: record.originTab }
   }
 
   /** The offers still waiting in the window, oldest first (`ready`'s `downloadOffers`). Copies. */
