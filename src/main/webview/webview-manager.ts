@@ -177,7 +177,7 @@ export interface WebviewView {
   destroy(): void
   /** Server mode's off-screen view only: the page's size, CSS px (webview-input.ts checks points against it). */
   size?(): { width: number; height: number }
-  /** Server mode's off-screen view only: trusted input for the page (`sendInputEvent`), checked by webview-input.ts. */
+  /** Server mode's off-screen view only: trusted input for the page (its protocol, page-input.ts), checked by webview-input.ts. */
   sendInput?(events: readonly ElectronInputEvent[]): void
   /** Server mode's off-screen view only: committed text for the page, settled once the page has it (webview-input.ts InputTarget). */
   insertText?(text: string): Promise<unknown> | void
@@ -505,7 +505,7 @@ export class WebviewManager {
 
   /**
    * Server mode: where a browser's input for the panel goes (`webviews.input`, webview-input.ts has
-   * checked it): the live off-screen page's size and its sendInputEvent. Undefined on the desktop
+   * checked it): the live off-screen page's size and its input road. Undefined on the desktop
    * (a native view gets the keyboard and mouse itself), with no view yet, and once its page is gone.
    */
   inputTarget(windowId: number, pluginId: string, panelId: string): InputTarget | undefined {

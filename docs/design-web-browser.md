@@ -241,9 +241,12 @@ the fallback when the protocol detached:
 
 `scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
 chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,
-one at `scale(0.5)`, with the top page and the frame scrolled; Tab into the frame; the allow-listed keys the same as
-`sendInputEvent`'s; 50 rounds of clicks and typing across four documents in order. A pointer event costs about one
-frame (16 ms) to be answered, the same in the top document and in frames. Not checked: Linux, a perspective transform
+one at `scale(0.5)`, with the top page and the frame scrolled; a same-site frame, and a cross-site one inside a scrolled
+same-site frame; a link dragged; Tab into the frame; the allow-listed keys the same as `sendInputEvent`'s; 50 rounds of
+clicks and typing across four documents in order. A pointer event costs about one frame (16 ms) to be answered, the
+same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
+by the whole delta (a 120 px wheel moved a 60 px tall box by 120, `sendInputEvent`'s by 60, its height), as a trackpad
+does; the page itself scrolls the same distance either way. Not checked: Linux, a perspective transform
 (approximated by its corners), a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
 by its own CSS `zoom`.
 

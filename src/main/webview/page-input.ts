@@ -36,10 +36,10 @@
 //              that started in the top document stays there over a frame), the owners' boxes read
 //              again on each event (the page may scroll under a drag); released when no button is
 //              held, or by a move with none held (a release that never came).
-//   hover      when the pointer goes to another session without capture, the one it left gets one
-//              move first: over the owner when it is an ancestor of the new frame (its hover is the
-//              iframe element, as in a real browser), else outside its viewport (-1, -1), so its
-//              hover ends (mouseout, mouseleave) instead of sticking.
+//   hover      when the pointer goes to another session without capture, every frame it left gets
+//              one move outside its viewport (-1, -1) first, so its hover ends (mouseout, mouseleave)
+//              instead of sticking, and every ancestor of the new frame one over the owner it now
+//              hovers (the iframe element, as in a real browser).
 //   order      one queue per page, run one step at a time (`pump`). Mouse events to the same session
 //              are pipelined (their order is that widget's input queue); anything else (another
 //              session, a key, a call) first waits for every command in flight to be answered: a
@@ -429,7 +429,7 @@ export class PageInputRouter implements ChildFrameObserver {
     const event = step.event
     const route = await this.routeOf(event)
     if (route.session !== this.road) await this.drain()
-    if (!this.capture && this.hover && this.hover.session !== route.session) await this.leave(this.hover.session, route, event)
+    if (!this.capture && this.hover && this.hover.session !== route.session) await this.leave(this.hover, route, event)
     this.road = route.session
     this.hover = route
     this.track(this.dispatch(route, event))
@@ -561,15 +561,27 @@ export class PageInputRouter implements ChildFrameObserver {
   }
 
   /**
-   * The pointer moved from `from` to another session without capture: one move to `from` so its
-   * hover follows (see `hover` at the top of the file). Waited for, so its cursor comes first.
+   * The pointer moved from `from`'s route to another session without capture: each frame of the old
+   * chain that is not on the new one gets a move outside its viewport, deepest first (B, then A,
+   * when the pointer goes from B in A straight to the top document), and each ancestor on the new
+   * chain a move over the owner it now hovers (see `hover` at the top of the file). Each waited for,
+   * so the new frame's cursor comes last.
    */
-  private async leave(from: string, to: Route, event: MouseEvent): Promise<void> {
-    if (from !== '' && !this.frames.has(from)) return
-    const at = to.links.findIndex((l) => l.parent === from)
-    const point = at >= 0 ? (to.points[at] as { x: number; y: number }) : { x: -1, y: -1 }
-    const params = { type: 'mouseMoved', x: point.x, y: point.y, modifiers: protocolModifiers(event.modifiers), button: 'none', buttons: 0, clickCount: 0, pointerType: 'mouse' }
-    await this.within(this.query('Input.dispatchMouseEvent', params, from), STEP_TIMEOUT_MS)
+  private async leave(from: Route, to: Route, event: MouseEvent): Promise<void> {
+    const modifiers = protocolModifiers(event.modifiers)
+    const moveTo = async (session: string, x: number, y: number): Promise<void> => {
+      if (session !== '' && !this.frames.has(session)) return
+      const params = { type: 'mouseMoved', x, y, modifiers, button: 'none', buttons: 0, clickCount: 0, pointerType: 'mouse' }
+      await this.within(this.query('Input.dispatchMouseEvent', params, session), STEP_TIMEOUT_MS)
+    }
+    const next = new Set(['', ...to.links.map((l) => l.session)])
+    const old = ['', ...from.links.map((l) => l.session)]
+    for (const session of old.reverse()) if (!next.has(session)) await moveTo(session, -1, -1)
+    for (let i = 0; i < to.links.length; i++) {
+      const link = to.links[i] as Link
+      const point = to.points[i] as { x: number; y: number }
+      await moveTo(link.parent, point.x, point.y)
+    }
   }
 
   /** Send one mouse event on its route; a refusal falls back (see `fallback` at the top of the file). */

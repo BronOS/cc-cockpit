@@ -753,7 +753,7 @@ describe("the browser's side (web/webview-stream.ts)", () => {
 
   // Plan 20261119-server-mode-mac, decision 7: the edit chords main turns into commands must reach
   // main at all. No default shell chord takes them on either platform (a person may still bind one).
-  it('forwards the edit chords: no default shell command holds Ctrl/Cmd+A, Z, Shift+Z or Ctrl+Y', () => {
+  it('forwards the edit chords and line keys: no default shell command holds Ctrl/Cmd+A, Z, Shift+Z, Ctrl+Y, Cmd+arrows or Cmd+Backspace', () => {
     for (const platform of ['darwin', 'linux'] as const) {
       const keys = new Set(
         new CommandRegistry(platform, () => ({}))
@@ -771,7 +771,13 @@ describe("the browser's side (web/webview-stream.ts)", () => {
         keyEvent('z', { metaKey: true }),
         keyEvent('Z', { ctrlKey: true, shiftKey: true }),
         keyEvent('Z', { metaKey: true, shiftKey: true }),
-        keyEvent('y', { ctrlKey: true })
+        keyEvent('y', { ctrlKey: true }),
+        // The Mac line keys (docs/backlog/streamed-mac-line-edit-keys.md).
+        keyEvent('ArrowLeft', { metaKey: true }),
+        keyEvent('ArrowRight', { metaKey: true, shiftKey: true }),
+        keyEvent('ArrowUp', { metaKey: true }),
+        keyEvent('ArrowDown', { metaKey: true, shiftKey: true }),
+        keyEvent('Backspace', { metaKey: true })
       ]
       for (const e of chords) expect(`${platform} ${e.key} ${webviewKeyAction(e, isCommand)}`).toBe(`${platform} ${e.key} forward`)
       // The table is real: a default chord of the shell is the shell's.

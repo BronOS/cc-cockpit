@@ -4,8 +4,10 @@
 // WebviewInput (webview-input.ts) with esbuild, makes a view the way server mode does (its page
 // protocol attached and auto-attaching frames, webview-hardening.ts), and loads a top page on
 // 127.0.0.1 (scrollable) holding a cross-site iframe on localhost (A, scrollable) that holds another
-// on [::1] (B), and a second localhost iframe at scale(0.5) (T): three sites, each frame its own
-// process with site isolation (checked). Each document logs the trusted events it gets.
+// on [::1] (B), a second localhost iframe at scale(0.5) (T), a same-site iframe (S) and a same-site
+// one (W, scrollable) holding a localhost iframe (X): three sites, each cross-site frame its own
+// process with site isolation, S and W in the top's (checked). Each document logs the trusted
+// events it gets.
 //
 // Roads, each into the top document and A:
 //   raw       `webContents.sendInputEvent`;
@@ -22,7 +24,8 @@
 // Then through the view road, every one a failure when it misses: the same checks in B and T; a
 // double click; a drag that leaves A (the selection follows to the end, A gets the release, the top
 // nothing) and one from the top document over A (the top keeps it); hover leaving a frame (mouseout
-// there); a scrolled top page and a scrolled A (B under both); Tab from the top field into A and
+// there); a scrolled top page and a scrolled A (B under both); S, and X under W scrolled (typing,
+// a wheel); a link dragged in the top and in A, then a click and keys (nothing stalls); Tab from the top field into A and
 // plain keys, a text and an edit chord landing there; every allow-listed key against the raw road
 // (the page's key, code and keyCode, and what it types); a prevented plain key down typing nothing;
 // undo, redo, a prevented chord, one undo per group (the top document, as before); the editing
@@ -103,16 +106,20 @@ async function loadModules() {
 function page(port, role) {
   const frames =
     role === 'top'
-      ? `<iframe id="A" src="http://localhost:${port}/?role=frame"></iframe><iframe id="T" src="http://localhost:${port}/?role=xform"></iframe>`
+      ? `<iframe id="A" src="http://localhost:${port}/?role=frame"></iframe><iframe id="T" src="http://localhost:${port}/?role=xform"></iframe>` +
+        `<iframe id="S" src="/?role=same"></iframe><iframe id="W" src="/?role=wrap"></iframe>`
       : role === 'frame'
         ? `<iframe id="B" src="http://[::1]:${port}/?role=nested"></iframe>`
-        : ''
+        : role === 'wrap'
+          ? `<iframe id="X" src="http://localhost:${port}/?role=inner"></iframe>`
+          : ''
   return `<!doctype html><meta charset="utf-8">
 <style>html,body{margin:0} body{height:3000px} input{position:absolute;left:10px;top:10px;width:200px;height:30px;font:16px monospace}
 #box{position:absolute;left:10px;top:50px;width:200px;height:60px;overflow:auto} #box div{height:2000px}
 #l{position:absolute;left:250px;top:10px} textarea{position:absolute;left:300px;top:10px;width:250px;height:80px;font:12px monospace;white-space:pre}
 iframe{position:absolute;border:0} #A{left:0;top:200px;width:600px;height:300px} #T{left:650px;top:200px;width:300px;height:300px;transform:scale(0.5);transform-origin:0 0}
-#B{left:300px;top:100px;width:280px;height:180px}</style>
+#B{left:300px;top:100px;width:280px;height:180px} #S{left:650px;top:400px;width:300px;height:110px}
+#W{left:0;top:520px;width:600px;height:170px} #X{left:300px;top:40px;width:280px;height:120px}</style>
 <input id="i" autocomplete="off" value=""><div id="box"><div>scroll</div></div><a id="l" href="#x">a link</a><textarea id="t"></textarea>${frames}
 <script>
   window.__log = []
@@ -143,9 +150,14 @@ const within = (p, ms, fallback) => Promise.race([p, sleep(ms).then(() => fallba
 
 /** Each document's own points (its CSS px): the field, the box, the link. */
 const LOCAL = { input: [20, 25], box: [60, 80], link: [260, 18] }
-/** Where a document's own point is in the top page's viewport (top page scrolled by `scroll`, A by `frameScroll`). */
-function toTop(doc, [x, y], { scroll = 0, frameScroll = 0 } = {}) {
+/**
+ * Where a document's own point is in the top page's viewport (the top page scrolled by `scroll`, A
+ * by `frameScroll`, W by `wrapScroll`). S and W are same-site (the top's process), X in W cross-site.
+ */
+function toTop(doc, [x, y], { scroll = 0, frameScroll = 0, wrapScroll = 0 } = {}) {
   if (doc === 'top') return [x, y - scroll]
+  if (doc === 'same') return [650 + x, 400 + y - scroll]
+  if (doc === 'inner') return [300 + x, 520 + 40 + y - wrapScroll - scroll]
   if (doc === 'frame') return [x, 200 + y - frameScroll - scroll]
   if (doc === 'nested') return [300 + x, 200 + 100 + y - frameScroll - scroll]
   return [650 + x / 2, 200 + y / 2 - scroll] // xform: scale(0.5) from its top left
@@ -198,13 +210,14 @@ async function main() {
       const a = targetInfos.find((t) => t.type === 'iframe' && t.url === `http://localhost:${port}/?role=frame`)
       childSession = a && sessions.get(a.targetId)
     }
-    if (docs.top && docs.frame && docs.nested && docs.xform && childSession) break
+    if (docs.top && docs.frame && docs.nested && docs.xform && docs.same && docs.wrap && docs.inner && childSession) break
     await sleep(100)
   }
   const failures = []
-  if (!docs.frame || !docs.nested || !docs.xform || !childSession) failures.push('a frame never loaded or was never attached')
+  if (!docs.frame || !docs.nested || !docs.xform || !docs.same || !docs.wrap || !docs.inner || !childSession) failures.push('a frame never loaded or was never attached')
   const pids = Object.fromEntries(Object.entries(docs).map(([k, f]) => [k, f.osProcessId]))
-  if (new Set([pids.top, pids.frame, pids.nested]).size !== 3 || pids.xform === pids.top) failures.push(`the frames share processes (no site isolation): ${JSON.stringify(pids)}`)
+  if (new Set([pids.top, pids.frame, pids.nested]).size !== 3 || pids.xform === pids.top || pids.inner === pids.top) failures.push(`the frames share processes (no site isolation): ${JSON.stringify(pids)}`)
+  if (pids.same !== pids.top || pids.wrap !== pids.top) failures.push(`a same-site frame has its own process: ${JSON.stringify(pids)}`)
   console.log(`processes: ${JSON.stringify(pids)}; protocol attached: ${wc.debugger.isAttached()}`)
   if (failures.length) {
     console.log('\nFAIL:\n  ' + failures.join('\n  '))
@@ -215,7 +228,7 @@ async function main() {
   const state = (doc) => js(doc, '__state()')
   const DOCS = ['top', 'frame', 'nested', 'xform']
   const reset = async () => {
-    for (const d of DOCS) await js(d, '__reset()')
+    for (const d of [...DOCS, 'same', 'wrap', 'inner']) await js(d, '__reset()')
     await sleep(80)
   }
   const settle = (ms = 150) => sleep(ms)
@@ -448,6 +461,45 @@ async function main() {
     const top = await state('top')
     console.log(`scrolled top ${scroll}, A ${frameScroll}: A ${JSON.stringify(f.value)}, B ${JSON.stringify(n.value)}, top ${JSON.stringify(top.value)}`)
     want(f.value === 'fa' && n.value === 'nb' && top.value === '', `view: scrolled top ${scroll} / A ${frameScroll}: A ${JSON.stringify(f.value)}, B ${JSON.stringify(n.value)}`)
+  }
+
+  // --- same-process frames: a same-site iframe S, and a cross-site X inside a same-site W, W scrolled ---
+  for (const wrapScroll of [0, 20]) {
+    await reset()
+    await js('wrap', `scrollTo(0, ${wrapScroll})`)
+    await sleep(80)
+    click(roads.view, at('same', LOCAL.input))
+    typeView('sa')
+    click(roads.view, at('inner', LOCAL.input, { wrapScroll }))
+    typeView('xb')
+    roads.view.wheel(...at('inner', LOCAL.box, { wrapScroll }), 120)
+    await settle(400)
+    const same = await state('same')
+    const inner = await state('inner')
+    const top = await state('top')
+    console.log(`same-process: S ${JSON.stringify(same.value)}; X in W (W scrolled ${wrapScroll}) ${JSON.stringify(inner.value)}, its box scrolled ${inner.scroll}; top ${JSON.stringify(top.value)}`)
+    want(same.value === 'sa' && inner.value === 'xb' && inner.scroll > 0 && top.value === '', `view: same-process frames (W scrolled ${wrapScroll}): S ${JSON.stringify(same.value)}, X ${JSON.stringify(inner.value)} ${inner.scroll}`)
+  }
+
+  // --- dragging a link (a native drag), in the top and in A: the release comes, nothing stalls ---
+  for (const doc of ['top', 'frame']) {
+    await reset()
+    const [lx, ly] = at(doc, LOCAL.link)
+    roads.view.mouse('move', lx, ly)
+    roads.view.mouse('down', lx, ly)
+    roads.view.mouse('move', lx + 15, ly + 10, true)
+    roads.view.mouse('move', lx + 40, ly + 30, true)
+    roads.view.mouse('up', lx + 40, ly + 30)
+    click(roads.view, at(doc, LOCAL.input))
+    typeView('ok')
+    let s
+    for (let k = 0; k < 20; k++) {
+      await settle(100)
+      s = await state(doc)
+      if (s.value === 'ok') break
+    }
+    console.log(`link drag in ${doc}: then typed ${JSON.stringify(s.value)}`)
+    want(s.value === 'ok', `view: after a link drag in ${doc} the click and keys did not land (${JSON.stringify(s.value)})`)
   }
 
   // --- Tab from the top field into A, then plain keys, a text and an edit chord there ---

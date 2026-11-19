@@ -4,7 +4,8 @@
 // The browser draws the off-screen page on a canvas and sends what the person does over it, in
 // the page's CSS px (the browser undid its letterbox and the frame's scale, web/webview-stream.ts).
 // Everything here is untrusted text from a socket, and what comes out is *trusted* input to a page
-// (`webContents.sendInputEvent`: a click the page cannot tell from a real one), so:
+// (the page's DevTools protocol through page-input.ts, `sendInputEvent` once it detached: a click
+// the page cannot tell from a real one), so:
 //
 //   who        only a current viewer of the panel (webview-viewers.ts): a browser view of the panel's
 //              own window that shows it now. The router resolved the panel key through the caller's
@@ -30,8 +31,10 @@
 //              would paste whatever another page or session left in it (review finding).
 //
 // Mapping (checked headless, Electron 45.1.0): mouseMove / mouseDown / mouseUp / mouseWheel /
-// keyDown / keyUp / char. A wheel's deltas are negated: Chromium's wheel delta is positive
-// scrolling up, the DOM's positive scrolling down. A key down that types (webviewKeyChar: a
+// keyDown / keyUp / char, Electron's input events: `sendInputEvent`'s own shape, which the view's
+// router (page-input.ts) turns one for one into the protocol's `Input.dispatchMouseEvent` and
+// `Input.dispatchKeyEvent` while the page's protocol is attached. A wheel's deltas are negated:
+// Chromium's wheel delta is positive scrolling up, the DOM's positive scrolling down. A key down that types (webviewKeyChar: a
 // printable key, Space, Enter as '\r', with no Ctrl, Meta or Alt) is followed by its `char`: a raw
 // key down inserts nothing. Held buttons travel as the `leftbuttondown`-style modifiers on moves,
 // so a page's drag code sees `buttons` (selection by drag works without, `buttons` reads 0).
@@ -68,10 +71,11 @@
 // Order (design-web-browser.md §4.2): everything one browser view sends for one panel (pointer,
 // wheel, keys, inserted text, select choices) reaches the page in the order the person produced
 // it, through one lane per view and panel (PressLane) shared by the three channels. The browser
-// sends them in that order (web/webview-stream.ts InputQueue); main keeps it. Input events and text
-// take different roads into the page, though: `sendInputEvent` goes through the widget's input
-// pipe and the renderer's input queue, while a text or a choice is a separate call whose own
-// promise says when the page has it. The e2e typing 'héllo ü' got "hlélo ü" and "éhllo ü" about one
+// sends them in that order (web/webview-stream.ts InputQueue); main keeps it, and the view's router
+// keeps it across the page's protocol sessions (page-input.ts: one queue per page, a key waits for
+// a press into a frame to be answered). Input events and text could take different roads into the
+// page, though: input events go through the widget's input pipe and the renderer's input queue,
+// while a text or a choice is a separate call whose own promise says when the page has it. The e2e typing 'héllo ü' got "hlélo ü" and "éhllo ü" about one
 // run in ten with main's calls in the right order (logged): Electron's `webContents.insertText` is
 // an IPC to the renderer that a key sent just before or after it can overtake. So the view inserts
 // text on the input pipe itself (electron-offscreen-webview.ts: the protocol's `Input.insertText`,
@@ -81,14 +85,16 @@
 //
 // Edit chords (plan 20261119-server-mode-mac, decision 7; design-web.md §9.15 S6): the key down of
 // Ctrl or Cmd alone with A, Z, Shift+Z or Ctrl+Y (shared/webview-keys.ts editCommandOf) goes as one
-// `editCommand` item instead of a sendInputEvent key down: the view sends it as the protocol's
+// `editCommand` item instead of a plain key down: the view sends it as the protocol's
 // `Input.dispatchKeyEvent` carrying `selectAll`, `undo` or `redo` (editKeyEvent). On a macOS server
 // a key event alone runs none of them (Chromium takes them from the menu and the responder chain,
 // which an off-screen page has not), so before this a browser's Cmd+A selected nothing. The page
 // still sees the key down, and preventing it keeps the page's own undo (the command does not run);
 // the key down travels the input pipe like the rest; and, like a text, the lane holds what follows
 // until the command's promise settles. Its key up is a plain key up. A target with no `editCommand`
-// gets the plain key down, as before.
+// gets the plain key down, as before. The Mac line keys (Cmd with an arrow or Backspace, with Shift
+// for the arrows) are edit chords the same way, each with AppKit's command (moveToLeftEndOfLine, ...,
+// deleteToBeginningOfLine): a key event alone moved and deleted nothing there either.
 //
 // Pure: no Electron (the view's sendInput, insertText, editCommand, readSelection, hitSelect and
 // chooseSelect are injected), clock, timers and popup ids injected.
@@ -197,7 +203,7 @@ export type WebviewInputEvent =
   | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers: InputModifier[] }
   | { kind: 'key'; type: 'down' | 'up'; key: string; modifiers: InputModifier[] }
 
-/** What goes to `webContents.sendInputEvent` (structurally Electron's MouseInputEvent & co). */
+/** Electron's input events (structurally its MouseInputEvent & co): the view's router maps them to the protocol, `sendInputEvent` takes them as they are. */
 export type ElectronInputEvent =
   | { type: 'mouseMove'; x: number; y: number; modifiers: InputModifier[] }
   | { type: 'mouseDown' | 'mouseUp'; x: number; y: number; button: PointerButton; clickCount: number; modifiers: InputModifier[] }
@@ -350,7 +356,7 @@ function point(v: number, side: number): number {
   return Math.max(0, Math.min(Math.max(0, side - 1), Math.round(v)))
 }
 
-/** The sendInputEvent calls for one checked event on a page of `size`. */
+/** The input events for one checked event on a page of `size`. */
 export function toElectronEvents(event: WebviewInputEvent, size: PlaceSize): ElectronInputEvent[] {
   const modifiers = event.modifiers
   if (event.kind === 'key') {
@@ -420,7 +426,7 @@ export function cursorEvent(panel: WebviewPanelOf, type: unknown): { panelKey: s
   return { panelKey: `${panel.pluginId}/${panel.panelId}`, cursor: webviewCursor(type) }
 }
 
-/** Where a panel's input goes: its off-screen page's size, its sendInputEvent, its text and selection. */
+/** Where a panel's input goes: its off-screen page's size, its input road, its text and selection. */
 export interface InputTarget {
   size(): PlaceSize
   send(events: readonly ElectronInputEvent[]): void

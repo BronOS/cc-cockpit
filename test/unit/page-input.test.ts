@@ -277,12 +277,14 @@ describe('PageInputRouter', () => {
     expect(s.mice()).toEqual([
       ['A', 'mousePressed', 20, 25],
       ['A', 'mouseReleased', 20, 25],
-      // Leaving A for B (B is under A, so A's hover is B's owner): one move to A at its point.
+      // Into B under A: each ancestor hovers the owner it is over (the top A's, A B's).
+      ['', 'mouseMoved', 320, 325],
       ['A', 'mouseMoved', 320, 125],
       ['B', 'mousePressed', 20, 25],
       ['B', 'mouseReleased', 20, 25],
-      // Leaving B for the top: B's hover ends outside its viewport.
+      // From B straight to the top: B's hover ends, then A's (deepest first), outside their viewports.
       ['B', 'mouseMoved', -1, -1],
+      ['A', 'mouseMoved', -1, -1],
       ['', 'mousePressed', 20, 25]
     ])
     // Keys follow focus on the page's session, never a frame's.
