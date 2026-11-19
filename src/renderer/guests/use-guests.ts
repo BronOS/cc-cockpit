@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from 'react'
 import type { GuestView, PresenceSnapshot } from '../../shared/guests'
+import type { WebAccessMode } from '../../shared/types'
 import { isGuestView, isServerView, isWebShell } from '../shell-kind'
 import { newerSnapshot } from './presence-model'
 
@@ -97,21 +98,30 @@ export function isOwnerView(): boolean {
   return !isGuestView()
 }
 
+/** Web access as the Share button reads it: whether it is on, and its sign-in mode once read. */
+export interface WebAccessState {
+  on: boolean
+  /** Undefined until read, or where the read is refused (a desktop host's browser): main still refuses. */
+  mode: WebAccessMode | undefined
+}
+
 /**
- * Whether web access is on, for the Share button: a browser view is on it by definition; the desktop
- * reads its setting (`settings.webAccess`) at first, on every `webAccess.changed` and whenever
- * `refresh` changes (TopStrip passes its `inert`, which drops when the settings screen closes, where
- * the switch is).
+ * Web access for the Share button: a browser view is on it by definition; the desktop reads its setting
+ * (`settings.webAccess`) at first, on every `webAccess.changed` and whenever `refresh` changes (TopStrip
+ * passes its `inert`, which drops when the settings screen closes, where the switch is). The sign-in mode
+ * is read on the desktop and in a server's browser (which may read the card), so sign-in None hides Share
+ * (D-1: guests need a sign-in mode).
  */
-export function useWebAccessOn(refresh: unknown): boolean {
-  const [on, setOn] = useState(isWebShell())
+export function useWebAccessState(refresh: unknown): WebAccessState {
+  const [state, setState] = useState<WebAccessState>(() => ({ on: isWebShell(), mode: undefined }))
   useEffect(() => {
-    if (isWebShell() || isGuestView()) return
+    // A desktop host's browser cannot invite (canWidenGuests) and main refuses it the card: no read.
+    if (isGuestView() || (isWebShell() && !isServerView())) return
     let live = true
     const read = (): void => {
       window.cockpit.invoke('settings.webAccess').then(
         (view) => {
-          if (live) setOn(view.form.enabled)
+          if (live) setState({ on: isWebShell() || view.form.enabled, mode: view.form.mode })
         },
         () => undefined
       )
@@ -123,5 +133,5 @@ export function useWebAccessOn(refresh: unknown): boolean {
       off()
     }
   }, [refresh])
-  return on
+  return state
 }

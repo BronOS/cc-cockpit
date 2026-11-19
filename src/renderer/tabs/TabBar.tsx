@@ -23,7 +23,7 @@ import { FlagSwatch } from './FlagSwatch'
 import { currentGuest, viewAccessHint } from '../shell-kind'
 import { PresenceAvatars } from '../guests/PresenceAvatars'
 import { avatarsForTab, presenceLines, selfPersonId } from '../guests/presence-model'
-import { shareItems, tabControls } from '../guests/tab-access-model'
+import { guestNameOf, shareItems, tabControls } from '../guests/tab-access-model'
 import { canWidenGuests, useGuests, usePresence, useProjectId } from '../guests/use-guests'
 
 /** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
@@ -170,6 +170,8 @@ export function TabBar(props: {
   activeId: string | null
   onSelect: (tabId: string) => void
   onClose: (tabId: string) => void
+  /** The owner's "Share with <guest>" toggle (`guests.shareTab`); TabsPane shows main's refusal. */
+  onShare: (guestId: string, guestName: string, tabId: string, shared: boolean) => void
   onCreate: (kind: 'claude' | 'shell') => void
   /** A user entry of the [+] menu, by level and id: main looks its command up. */
   onCreateCommand: (level: TabCommandLevel, entryId: string) => void
@@ -526,7 +528,7 @@ export function TabBar(props: {
     const where = commandTooltip(tab) ?? (status?.title ? `${status.title}\n${tab.cwd}` : tab.cwd)
     // Guests: who opened it (a write guest, D-21) and who is here, typing, typed last (presence).
     const here = presenceLines(presence, tab.id, selfId)
-    const guestLines = [openedByGuestLine(tab), ...here].filter((l) => l !== undefined)
+    const guestLines = [openedByGuestLine(tab, (id) => guestNameOf(id, guests, presence, currentGuest())), ...here].filter((l) => l !== undefined)
     const avatars = avatarsForTab(presence, tab.id, selfId)
     const flag = tab.flag
     const room = roomMarker(tab, status)
@@ -938,8 +940,8 @@ export function TabBar(props: {
                 role="menuitemcheckbox"
                 aria-checked={item.checked}
                 onClick={() => {
-                  // A refusal (the guest left meanwhile) changes nothing; the list says what holds.
-                  window.cockpit.invoke('guests.shareTab', { guestId: item.guestId, tabId: menu.tabId, shared: !item.checked }).catch(() => undefined)
+                  // A refusal (the guest left, the invite went meanwhile) changes nothing; TabsPane says so in one line.
+                  props.onShare(item.guestId, item.name, menu.tabId, !item.checked)
                 }}
               >
                 <span className="menu-check" aria-hidden="true">

@@ -13,6 +13,7 @@ import {
   type GuestLifetime
 } from '../../shared/guests'
 import type { PluginView, TabInfo } from '../../shared/ipc'
+import type { WebAccessMode } from '../../shared/types'
 import type { GuestRole } from '../../shared/views'
 import { tabLabel } from '../tabs/tab-label'
 
@@ -87,6 +88,23 @@ export function inviteErrorText(error: GuestInviteError, name: string): string {
     case 'full':
       return 'The list of devices is full. Revoke a device in Settings › General › Web access first.'
   }
+}
+
+/**
+ * Why the dialog cannot invite at all, shown as it opens with Create disabled: sign-in None (D-1; main
+ * refuses `none-mode` anyway). Undefined while the mode is unknown (the read failed or is pending).
+ */
+export function inviteBlockedText(mode: WebAccessMode | undefined): string | undefined {
+  return mode === 'none' ? inviteErrorText('none-mode', '') : undefined
+}
+
+/**
+ * What may close the dialog now. While the invite is being made, nothing (closing would lose the one-time
+ * link main is about to answer with, the invite made all the same); once the link shows, only Done (an Esc
+ * meant for a field must not drop a link that is shown once).
+ */
+export function inviteDismiss(state: { busy: boolean; linkShown: boolean }): { esc: boolean; cancel: boolean } {
+  return { esc: !state.busy && !state.linkShown, cancel: !state.busy }
 }
 
 /** Control characters (C0, DEL, C1) and the line and paragraph separators: a name is one plain line. */

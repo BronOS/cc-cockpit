@@ -3,7 +3,7 @@
 // the unit tests (plain Node) cover it. The desktop picker's Servers section (remote servers,
 // design-remote-desktop.md §3) takes its labels, order and grouping from here too.
 import type { ProjectSummary, RemoteConnectRequest, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
-import { checkSshHost, parseRemoteLink, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
+import { certFingerprintText, checkSshHost, parseRemoteLink, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
 
 /**
  * `path` with the home folder written as `~` (`/Users/me/src/app` -> `~/src/app`). Only a whole
@@ -421,6 +421,15 @@ export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFl
     return { flow, step: { error: name === 'password' ? 'the server did not take the password' : `the passphrase did not open ${need.path}` } }
   }
   return { flow, step: { ask: need, retry: false } }
+}
+
+/**
+ * The certificate prompt's fingerprint (D-29): main's lowercase hex shown as browsers show it, colon-separated
+ * upper-case pairs (shared/remote-servers.ts `certFingerprintText`), so the person can compare it with the
+ * host's own Settings or a browser's certificate viewer. Display only: the answer carries main's own value.
+ */
+export function certificateFingerprint(need: { sha256: string }): string {
+  return certFingerprintText(need.sha256)
 }
 
 /**

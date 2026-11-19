@@ -70,6 +70,7 @@ import { chordTarget, type ChordSource } from './frame-focus'
 import { FocusGiveBack, type CloseCause } from './focus-give-back'
 import { shellAllows } from './guest-shell'
 import { DEFAULT_OWNER_NAME, GuestCloseNotices, type GuestCloseNotice } from './guest-close'
+import { shareRefusedText } from '../guests/tab-access-model'
 
 /**
  * `tabs.list` is the desktop's re-attach point after a page load and resets PTY flow control in
@@ -843,6 +844,19 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       window.cockpit.invoke('tabs.reorder', { tabId, toIndex }).then(() => {
         dispatch({ type: 'moved', tabId, toIndex })
       })
+    )
+  }
+
+  // The owner's "Share with <guest>" (design-guests §7): main answers false when nothing changed (the guest
+  // left, the invite was used or expired meanwhile), which the strip says in one line; the menu's ticks come
+  // from `guests.changed` either way.
+  const share = (guestId: string, guestName: string, tabId: string, shared: boolean): void => {
+    setError(null)
+    window.cockpit.invoke('guests.shareTab', { guestId, tabId, shared }).then(
+      (ok) => {
+        if (!ok) setError(shareRefusedText(guestName, shared))
+      },
+      (err: unknown) => setError(ipcErrorMessage(err))
     )
   }
 
@@ -1683,6 +1697,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           activeId={state.keysOff ? null : state.activeId}
           onSelect={selectFromStrip}
           onClose={requestClose}
+          onShare={share}
           onCreate={create}
           onCreateCommand={createCommand}
           commands={menuCommands}

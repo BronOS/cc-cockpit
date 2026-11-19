@@ -1,9 +1,10 @@
 // D-9 (design-guests §7, spec-review 6): a write guest closes only the tabs it opened; its Close on any
 // other shared tab asks the owner. Main answers that `tabs.close` with `{ asked: true }` and shows every
 // owner view an approval (`tabs.guestCloseAsk`, ShellNotices' GuestCloseConfirm); the tab then closes
-// (`tabs.removed` reaches the guest too) or stays. Main tells the guest nothing more (no settled event
-// goes to guests), so the guest's notice says "Asked <owner> to close <title>." until the tab goes, and
-// once main's own wait (60 s, a timeout keeps the tab) must be over, "<owner> kept the tab open.".
+// (`tabs.removed` reaches the guest too) or stays. Main tells the asking guest's views the outcome
+// (`tabs.guestCloseDone { tabId, closed }`, also `closed: false` on its 60 s timeout), so the notice says
+// "Asked <owner> to close <title>." until then and "<owner> kept the tab open." at once on a Keep open. Our
+// own wait (GUEST_CLOSE_WAIT_MS) stays as the fallback for an answer lost to a reconnect.
 //
 // The texts and the notices' timing, DOM-free so unit tests run them in plain Node (TabsPane draws them).
 // Every text is plain text (React escapes it): a tab title and a guest's name are other people's words.
@@ -59,6 +60,8 @@ const realTimers: GuestCloseTimers = {
 export class GuestCloseNotices {
   private list: readonly GuestCloseNotice[] = []
   private readonly timers = new Map<string, unknown>()
+  /** The owner's name each waiting notice was asked of, for its kept-open line. */
+  private readonly owners = new Map<string, string>()
   private disposed = false
 
   constructor(
@@ -74,21 +77,40 @@ export class GuestCloseNotices {
   asked(tabId: string, title: string, owner: string): void {
     if (this.disposed) return
     this.stop(tabId)
+    this.owners.set(tabId, owner)
     this.set([...this.list.filter((n) => n.tabId !== tabId), { tabId, kind: 'asked', text: askedCloseText(owner, title) }])
     this.timers.set(
       tabId,
       this.clock.setTimeout(() => {
         this.timers.delete(tabId)
-        if (!this.list.some((n) => n.tabId === tabId && n.kind === 'asked')) return
-        this.set(this.list.map((n) => (n.tabId === tabId ? { tabId, kind: 'kept', text: keptOpenText(owner) } : n)))
-        this.timers.set(
-          tabId,
-          this.clock.setTimeout(() => {
-            this.timers.delete(tabId)
-            this.drop(tabId)
-          }, KEPT_OPEN_SHOW_MS)
-        )
+        this.keep(tabId)
       }, GUEST_CLOSE_WAIT_MS)
+    )
+  }
+
+  /**
+   * Main's `tabs.guestCloseDone` for this guest: `closed` drops the notice (`tabs.removed` would too, maybe
+   * later), Keep open (or main's timeout) turns it into the kept-open line at once. A tab with no waiting
+   * notice (already answered, dismissed, or asked from another view of this guest) changes nothing.
+   */
+  answered(tabId: string, closed: boolean): void {
+    if (this.disposed) return
+    if (closed) this.drop(tabId)
+    else this.keep(tabId)
+  }
+
+  /** A waiting notice becomes "<owner> kept the tab open.", which goes by itself after KEPT_OPEN_SHOW_MS. */
+  private keep(tabId: string): void {
+    if (!this.list.some((n) => n.tabId === tabId && n.kind === 'asked')) return
+    this.stop(tabId)
+    const owner = this.owners.get(tabId) ?? DEFAULT_OWNER_NAME
+    this.set(this.list.map((n) => (n.tabId === tabId ? { tabId, kind: 'kept', text: keptOpenText(owner) } : n)))
+    this.timers.set(
+      tabId,
+      this.clock.setTimeout(() => {
+        this.timers.delete(tabId)
+        this.drop(tabId)
+      }, KEPT_OPEN_SHOW_MS)
     )
   }
 
@@ -100,6 +122,7 @@ export class GuestCloseNotices {
   /** The person dismissed a notice. */
   drop(tabId: string): void {
     this.stop(tabId)
+    this.owners.delete(tabId)
     if (!this.list.some((n) => n.tabId === tabId)) return
     this.set(this.list.filter((n) => n.tabId !== tabId))
   }

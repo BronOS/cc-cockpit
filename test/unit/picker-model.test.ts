@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CERTIFICATE_HINT,
+  certificateFingerprint,
   serverViaText as guestViaText,
   withAnswer as withAnswer05,
   canConnect,
@@ -433,6 +434,13 @@ describe('a guest invite in the desktop picker (design-guests §11, D-29)', () =
 
   it('says what Trust means', () => {
     expect(CERTIFICATE_HINT).toContain('only this certificate')
+  })
+
+  it('shows the fingerprint as colon-separated upper-case pairs, as browsers show it', () => {
+    const hex = '0a1b'.repeat(16)
+    const shown = certificateFingerprint({ sha256: hex })
+    expect(shown).toBe(Array.from({ length: 16 }, () => '0A:1B').join(':'))
+    expect(shown.split(':')).toHaveLength(32)
   })
 })
 

@@ -50,12 +50,15 @@ export function openedByLine(tab: TabInfo): string | undefined {
 }
 
 /**
- * "Opened by guest Ada" for a tab a write guest opened (D-21), the owner's tooltip line; undefined
- * for any other tab. Main sets `openedByGuest` from the caller it bound, never from a payload, and
- * strips nothing a guest may not see (the name is the owner's own typed guest name).
+ * "Opened by guest Ada" for a tab a write guest opened (D-21), the tooltip line; undefined for any other
+ * tab. Main sets `openedByGuest` (the guest's id) from the caller it bound, never from a payload; the
+ * name comes from `nameOf` (the guest list or presence, guests/tab-access-model.ts `guestNameOf`), and a
+ * guest no list knows any more is "a guest", never its raw id.
  */
-export function openedByGuestLine(tab: TabInfo): string | undefined {
-  return tab.openedByGuest !== undefined && tab.openedByGuest !== '' ? `Opened by guest ${tab.openedByGuest}` : undefined
+export function openedByGuestLine(tab: TabInfo, nameOf: (guestId: string) => string | undefined = () => undefined): string | undefined {
+  if (tab.openedByGuest === undefined || tab.openedByGuest === '') return undefined
+  const name = nameOf(tab.openedByGuest)
+  return name !== undefined && name !== '' ? `Opened by guest ${name}` : 'Opened by a guest'
 }
 
 /**

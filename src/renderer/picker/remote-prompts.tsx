@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom'
 import type { RemoteConnectAnswer } from '../../shared/ipc'
 import type { RemoteAnswers, RemoteNeed } from '../../shared/remote-servers'
 import { ApprovalDialog } from '../notices/ApprovalDialog'
-import { CERTIFICATE_HINT, newPromptFlow, promptStep, withAnswer, type PromptAnswer } from './picker-model'
+import { CERTIFICATE_HINT, certificateFingerprint, newPromptFlow, promptStep, withAnswer, type PromptAnswer } from './picker-model'
 
 /** A run's end: main's answer, the picker's own error (a secret wrong twice), or the person's Cancel. */
 export type PromptedAnswer = RemoteConnectAnswer | { ok: false; cancelled: true }
@@ -162,7 +162,7 @@ function CertificatePrompt(props: { need: Extract<RemoteNeed, { need: 'certifica
         <dd data-testid="remote-cert-origin">{need.origin}</dd>
         <dt>Certificate (SHA-256)</dt>
         <dd>
-          <code data-testid="remote-cert-fingerprint">{need.sha256}</code>
+          <code data-testid="remote-cert-fingerprint">{certificateFingerprint(need)}</code>
         </dd>
       </dl>
       <p className="remote-prompt-hint">{CERTIFICATE_HINT}</p>
