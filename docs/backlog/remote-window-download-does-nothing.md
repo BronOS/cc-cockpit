@@ -11,13 +11,15 @@ window showed nothing and saved nothing, while the server sent the file.
 Cause found and fixed: the click gate heard clicks through `input-event`, which sees the main frame's widget only. The
 Files panel is a sandboxed plugin frame that Electron 45 runs out of process (checked: own pid, a DevTools click there
 fires no `input-event` but does fire `before-mouse-event`), so every Download from a panel was refused as "no click".
-The e2e passed only on its earlier main-frame click on the Files button. Now `before-mouse-event` feeds the download
-click (`downloadClick`), every save and refusal is a log line and a notice in the window's page as well as the native
+The e2e passed only on its earlier main-frame click on the Files button. Now `before-mouse-event` feeds the
+click and `before-input-event` its keys (the focus moves' gate too), every save and refusal is a log line and a notice in the window's page as well as the native
 one, and a notification that fails is logged.
 
 Still unverified (needs a real pointer on a packaged, ad-hoc signed build):
 - the save itself on macOS: ~/Downloads access (TCC prompt, or a denial, which shows as "the download was interrupted"),
   the hard link into ~/Downloads;
+- that a real key typed in a plugin panel reaches `before-input-event` (a DevTools key skips that pre-handler, and
+  osascript may not send keys here): type in the Files panel's filter, then trigger "This computer"; it must not focus;
 - whether native notices show at all for the ad-hoc signed app (`a notification did not show: <error>` in the log says
   they do not).
 

@@ -233,14 +233,6 @@ class FakeView implements RemoteWindowView {
     this.hooks.input('click')
   }
 
-  /**
-   * The person clicked in a plugin's panel (an out-of-process frame): the adapter's `before-mouse-event`
-   * hears it, its `input-event` does not (Files › Download is such a click).
-   */
-  frameClick(): void {
-    this.hooks.downloadClick()
-  }
-
   /** The person pressed a key in the page. */
   key(): void {
     this.hooks.input('key')
@@ -2054,30 +2046,13 @@ describe('RemoteWindows: downloads', () => {
     expect(notices).toEqual([{ text: 'A download was not saved: it did not start in a window of this server' }])
   })
 
-  it("a click in a plugin's panel (Files › Download) lets a download save, and never vouches for a focus move", async () => {
-    // The reported "Download does nothing": the click is in the Files panel's frame, which the
-    // adapter hears only through `downloadClick` (electron-remote-window.ts).
-    const focused: number[] = []
-    windows = new RemoteWindows({
-      ...t.options,
-      focusLocal: () => (focused.push(1), true),
-      downloads: { dir: () => dir, notice: (text, saved) => void notices.push(saved === undefined ? { text } : { text, saved }) }
-    })
+  it('a saved download logs its start and end and shows the notice in the page too', async () => {
     const view = await openWindow()
-    view.commit(`${ORIGIN}/?project=p1`)
-    await flush()
-    view.frameClick()
-    expect(view.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
-    expect(focused).toEqual([])
-    const item = new FakeItem([D_URL], 'report.pdf')
-    expect(start(item, view)).toBe(true)
-    item.write('hello')
-    item.end('completed')
-    await vi.waitFor(() => expect(notices).toEqual([{ text: 'Saved report.pdf to Downloads', saved: join(dir, 'report.pdf') }]))
+    expect((await saveOne(view, 'report.pdf')).text).toBe('Saved report.pdf to Downloads')
     expect(view.notices).toEqual(['Saved report.pdf to Downloads'])
     expect(t.logs).toContain('remote s1: saving a download as report.pdf')
     expect(t.logs).toContain('remote s1: saved a download as report.pdf')
-    // One click, one download, as a main-frame click.
+    // One click, one download.
     expect(start(new FakeItem([D_URL], 'again.pdf'), view)).toBe(false)
     expect(t.logs).toContain('remote s1: cancelled a download: no click of the person in the window before it')
     expect(view.notices.at(-1)).toBe('again.pdf was not saved: click Download again')

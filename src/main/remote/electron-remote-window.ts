@@ -435,17 +435,23 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       if (type === 'mouseUp' || type === 'gestureTap') hooks.input('click')
       else if (type === 'rawKeyDown' || type === 'keyDown' || type === 'char') hooks.input('key')
     })
-    // A released mouse button anywhere in the page, for the download click gate only (remote-windows.ts
-    // "Downloads"). `input-event` above observes the main frame's widget alone: a plugin's panel is a
-    // sandboxed frame, which Chromium (Electron 45) puts in a process of its own, and a click there
-    // never reaches it. Files › Download is such a click, so every download from a panel was refused
-    // as "no click" (the e2e passed only because its click on the Files button, in the main frame, was
-    // still within DOWNLOAD_CLICK_MS). `before-mouse-event` is emitted at the root, before Chromium
-    // routes the event to a frame, out-of-process ones included; like `input-event` it sees only what
-    // the person sends, never a script's `click()`. It never feeds the focus moves' `clickedAt`: a key
-    // typed in such a frame is not seen either, so it could not take that click back.
+    // The same from a plugin's panel. `input-event` above observes the main frame's widget alone: a
+    // plugin's panel is a sandboxed frame, which Chromium (Electron 45) puts in a process of its own,
+    // and neither a click nor a key there reaches it. Files › Download is such a click, so every
+    // download from a panel was refused as "no click" (the e2e passed only because its click on the
+    // Files button, in the main frame, was still within DOWNLOAD_CLICK_MS), and a key typed in a
+    // panel never took a click back from the focus moves. `before-mouse-event` is emitted at the root,
+    // before Chromium routes the event to a frame, out-of-process ones included; `before-input-event`
+    // is the webContents' key pre-handler, which sees the focused frame's keys too (page-tab-keys.ts
+    // relies on it for the editor's frames; not run here with a real keyboard: a DevTools key skips
+    // the pre-handler). Like `input-event` they see only what the person sends, never a script's
+    // `click()`. A main-frame click or key is reported twice, which changes nothing.
     wc.on('before-mouse-event', (_event, mouse) => {
-      if (mouse.type === 'mouseUp') hooks.downloadClick()
+      if (mouse.type === 'mouseUp') hooks.input('click')
+    })
+    wc.on('before-input-event', (_event, input) => {
+      const type: string = input.type
+      if (type === 'rawKeyDown' || type === 'keyDown' || type === 'char') hooks.input('key')
     })
     win.on('focus', () => hooks.focused())
     // Main's own close (`close` below: Forget, quit, a project the server closed) is final and never

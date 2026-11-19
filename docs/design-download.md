@@ -225,12 +225,12 @@ runs its own client and can skip all of §2), so every gate is the desktop's, de
   log line naming each URL's origin (never the token) and the server's, and a notice within the refusal budget below.
 - **A person's click.** A pointer click in that window within `DOWNLOAD_CLICK_MS` (5 s, Chromium's activation span, so
   the shell's own check of §2.1 and this one agree), in its own field (keys never set it) and consumed per download. It
-  is heard through `before-mouse-event` (`hooks.downloadClick`), emitted at the root before Chromium routes the event:
+  is heard through `before-mouse-event` (`hooks.input('click')`), emitted at the root before Chromium routes the event:
   Download is clicked in the Files panel, a sandboxed plugin frame that Electron 45 puts in its own process, and
-  `input-event` (`hooks.input('click')`, the main frame's widget only) never hears a click there. The first version used
+  `input-event` (the main frame's widget only) never hears a click there. The first version used
   `input-event` alone and refused every Download from a panel (the e2e passed on its earlier click on the Files button).
-  Only the download gate takes it: the focus moves' `clickedAt` stays `input-event`'s, since a key typed in such a frame
-  is not heard either and could not take the click back. Past it the item is cancelled and a native notice says "not saved: click
+  The page-driven focus moves take the same click, and a key typed in such a frame takes it back from them through
+  `before-input-event` (the webContents' key pre-handler, frames included). Past it the item is cancelled and a native notice says "not saved: click
   Download again"; the shell's "ready — Download" notice is that fresh click after a slow walk.
 - **One at a time and a budget.** One active download per server; at most 3 per 10 s per server (a `Budget` like
   `MAX_PAGE_ACTIONS`); a further one cancelled.

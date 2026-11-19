@@ -262,7 +262,6 @@ function windowHooks(log: string[], hold = false): RemoteWindowHooks {
     loaded: () => void log.push('loaded'),
     focused: () => void log.push('focused'),
     input: (kind) => void log.push(`input ${kind}`),
-    downloadClick: () => void log.push('download click'),
     closed: () => void log.push('closed')
   }
 }
@@ -381,17 +380,19 @@ describe('ElectronRemoteWindowFactory: the window', () => {
     expect(log.filter((l) => l.startsWith('input'))).toEqual(['input click', 'input click', 'input key', 'input key', 'input key'])
   })
 
-  it("a click in a plugin's panel (an out-of-process frame) counts for a download, never as the focus moves' click", () => {
+  it("a click or a key in a plugin's panel (an out-of-process frame) is reported like one in the main frame", () => {
     // The reported "Files › Download does nothing": Electron 45 puts a sandboxed plugin frame in a
     // process of its own, and a click there reaches `before-mouse-event` (emitted at the root) but
     // never `input-event` (the main frame's widget only; checked against Electron 45 with a sandboxed
-    // frame and a DevTools-dispatched click). Before the fix nothing heard it, so the download gate
-    // saw no click and refused every Download from the Files panel.
+    // frame and a DevTools-dispatched click). Keys typed there reach `before-input-event` (the
+    // webContents' pre-handler, frames included: page-tab-keys.ts relies on it), never `input-event`.
+    // Both feed the one `input` hook: the download gate and the page-driven focus moves alike.
     const { wc, log } = make()
     for (const type of ['mouseDown', 'mouseMove', 'mouseUp', 'mouseWheel', 'mouseEnter', 'mouseLeave', 'contextMenu']) {
       wc.emit('before-mouse-event', prevented(), { type, x: 10, y: 10 })
     }
-    expect(log.filter((l) => l.startsWith('input') || l === 'download click')).toEqual(['download click'])
+    for (const type of ['keyDown', 'keyUp', 'rawKeyDown', 'char']) wc.emit('before-input-event', prevented(), { type, key: 'a' })
+    expect(log.filter((l) => l.startsWith('input'))).toEqual(['input click', 'input key', 'input key', 'input key'])
   })
 
   it("shows main's notice in the page in its own isolated world, as text only, nothing when closed", () => {

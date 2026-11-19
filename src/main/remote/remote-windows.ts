@@ -132,8 +132,8 @@
 //  - the person's pointer click in that window within DOWNLOAD_CLICK_MS (Chromium's activation span,
 //    so the shell's own check and this one agree), in its own field: a key never sets it nor takes it
 //    back (unlike the page-driven moves' `clickedAt`: a download moves no focus, so there is no Enter
-//    to misplace). It is heard anywhere in the page (`downloadClick`, a plugin's out-of-process frame
-//    included: Files › Download is clicked in one, where `input` never hears it). One click, one
+//    to misplace). It is heard anywhere in the page, a plugin's out-of-process frame included
+//    (Files › Download is clicked in one; electron-remote-window.ts). One click, one
 //    download: it is used up at this gate, whatever follows;
 //  - one active download per server and DESKTOP_DOWNLOAD_BURST per DESKTOP_DOWNLOAD_BURST_MS (a
 //    `Budget`), shared by the server's windows, and a declared size within DESKTOP_DOWNLOAD_MAX_BYTES.
@@ -432,16 +432,11 @@ export interface RemoteWindowHooks {
   /** The window got the focus (the machine chip's click focuses the server's most recently focused one). */
   focused(): void
   /**
-   * The person's input reached the page: a pointer click (a mouse button released, a tap) or a key
-   * pressed. Only a click vouches for a page-driven focus move (see the header).
+   * The person's input reached the page, a plugin's out-of-process frame included: a pointer click
+   * (a mouse button released, a tap) or a key pressed. Only a click vouches for a page-driven focus
+   * move (see the header); the same click may be reported twice, which changes nothing.
    */
   input(kind: 'click' | 'key'): void
-  /**
-   * The person released a mouse button anywhere in the page, a plugin's out-of-process frame
-   * included (where `input` never hears of it): the download click gate's evidence only, never the
-   * focus moves' (a key typed in such a frame is not seen either, so it could not take the click back).
-   */
-  downloadClick(): void
   /**
    * The person asked to close the window (its close button, Alt+F4), never main's own `close`. True
    * holds it: main closes the window itself once it decided (see "Unsaved page tabs" in the header).
@@ -836,9 +831,6 @@ export class RemoteWindows {
         if (made.rec === undefined || made.rec.closed) return
         made.rec.clickedAt = kind === 'click' ? this.now() : undefined
         if (kind === 'click') made.rec.downloadClickAt = this.now()
-      },
-      downloadClick: () => {
-        if (made.rec !== undefined && !made.rec.closed) made.rec.downloadClickAt = this.now()
       },
       closeRequested: () => made.rec !== undefined && this.closeRequested(made.rec),
       closed: () => {
