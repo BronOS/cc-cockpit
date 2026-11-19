@@ -233,7 +233,7 @@ export interface DeviceStoreOptions {
 
 export type RevokedListener = (ids: readonly string[]) => void
 /** The records of the devices just revoked or expired, as they were (the guest store ends their guests). */
-export type DroppedListener = (gone: readonly WebDevice[], event: 'revoke' | 'expired') => void
+export type DroppedListener = (gone: readonly WebDevice[], event: 'revoke' | 'expired', secretHashOf: (id: string) => string | undefined) => void
 
 export class DeviceStore {
   private readonly file: JsonFile<WebAccessFileData>
@@ -578,7 +578,7 @@ export class DeviceStore {
     const records = gone.map(publicOf)
     for (const listener of this.droppedListeners) {
       try {
-        listener(records, event)
+        listener(records, event, (id) => gone.find((d) => d.id === id)?.secretHash)
       } catch {
         // As above.
       }

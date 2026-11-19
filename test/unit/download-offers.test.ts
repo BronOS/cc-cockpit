@@ -513,6 +513,34 @@ describe('offers: guests (D-23)', () => {
     expect(JSON.stringify(offers)).not.toContain('t1')
   })
 
+  it('the origin is known while the offer is sent (a guest view\'s sink reads it during the send), and gone if the send fails', async () => {
+    const seenInSend: Array<string | undefined> = []
+    const d: Downloads = make({
+      offers: {
+        send: (windowId, offer) => {
+          seenInSend.push(d.originOf(offer.requestId))
+          offers.push({ windowId, offer })
+          return true
+        },
+        settled: () => {}
+      }
+    })
+    await d.offer({ ...CALLER, tabId: 't1' }, write(join(proj, 'a.txt')))
+    expect(seenInSend).toEqual(['t1'])
+    const failing: Downloads = make({
+      offers: {
+        send: (_w, offer) => {
+          seenInSend.push(failing.originOf(offer.requestId))
+          throw new Error('sink gone')
+        },
+        settled: () => {}
+      }
+    })
+    await expect(failing.offer({ ...CALLER, tabId: 't2' }, write(join(proj, 'b.txt')))).rejects.toThrow()
+    expect(seenInSend).toEqual(['t1', 't2'])
+    expect(failing.pendingOffers(WINDOW)).toEqual([])
+  })
+
   it("a guest's accept of an offer from a tab it cannot see is refused and settles nothing for the owner", async () => {
     const g = guests(writeGuest, [])
     const d = make(g.deps)

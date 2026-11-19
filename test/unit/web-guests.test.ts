@@ -263,22 +263,27 @@ describe('ends', () => {
     const a = await invited(s, { name: 'A' })
     const b = await invited(s, { name: 'B' })
     const da = redeemed(s, a.token)
-    redeemed(s, b.token)
+    const db = redeemed(s, b.token)
     devices.revoke(da.deviceId, 'from the card')
     expect(s.access({ guest: a.guestId })).toEqual({ kind: 'revoked' })
     expect(s.access({ guest: b.guestId }).kind).toBe('guest')
+    // The device was gone before the guest ended: its cookie still reads "ended" (D-32), not the sign-in form.
+    expect(s.endedCookie([da.cookie])).toBe(true)
+    expect(s.endedCookie([db.cookie])).toBe(false)
     devices.revokeAll('revoke all')
     expect(s.access({ guest: b.guestId })).toEqual({ kind: 'revoked' })
+    expect(s.endedCookie([db.cookie])).toBe(true)
     expect(s.list()).toEqual([])
   })
 
   it('an idle guest device expiring ends the guest (one device per invite: it could never come back)', async () => {
     const s = store()
     const { token, guestId } = await invited(s, { lifetime: 'forever' })
-    redeemed(s, token)
+    const { cookie } = redeemed(s, token)
     clock += DEVICE_IDLE_MS + 1
     devices.list()
     expect(s.access({ guest: guestId })).toEqual({ kind: 'revoked' })
+    expect(s.endedCookie([cookie])).toBe(true)
   })
 
   it("revoking the owner's link devices never ends a guest", async () => {

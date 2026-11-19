@@ -1168,7 +1168,9 @@ export class WebGateway {
     if (device) this.trusted(req.socket)
     const reply: WebSessionReply = { mode: this.deps.auth.mode ?? 'link', device: device ? { id: device.id, name: device.name } : null }
     if (guest && guest !== 'revoked') reply.guest = { name: guest.name, role: guest.role, project: guest.projectId }
-    if (!device && this.deps.guests?.endedCookie(cookieValues(req.headers.cookie, DEVICE_COOKIE)) === true) reply.guestEnded = true
+    // Ended: a tombstoned cookie (its device is gone), or a guest device whose guest just ended (a lifetime over
+    // before the sweep revoked the device): either way the page says "your access ended", never the sign-in form.
+    if (guest === 'revoked' || (!device && this.deps.guests?.endedCookie(cookieValues(req.headers.cookie, DEVICE_COOKIE)) === true)) reply.guestEnded = true
     this.json(res, host, 200, reply)
   }
 

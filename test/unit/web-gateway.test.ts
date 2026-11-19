@@ -1767,9 +1767,12 @@ describe('guests', () => {
     const accessLog = new AccessLog()
     const devices = new DeviceStore({ filePath: join(dir, 'web-access.json'), accessLog })
     const auth = new WebAuth({ devices, secrets: fakeSecretStore(), accessLog })
+    // The guest store's clock only (the device store keeps real time): a lifetime can end before any sweep.
+    const clock = { t: Date.now() }
     const guests = new GuestStore({
       devices,
       accessLog,
+      now: () => clock.t,
       mode: () => auth.mode,
       target: () => ({ origin, loopbackOnly: true }),
       tabOf: () => undefined,
@@ -1795,15 +1798,15 @@ describe('guests', () => {
     })
     gateway = gw
     await gw.apply(webAccessOf({ enabled: true, port, mode: 'link' }))
-    const invite = async (name = 'Bob'): Promise<{ token: string; guestId: string }> => {
-      const a = await guests.invite('p1', { name, role: 'read', scope: 'all', lifetime: 'forever' })
+    const invite = async (name = 'Bob', lifetime: '1d' | '7d' | 'forever' = 'forever'): Promise<{ token: string; guestId: string }> => {
+      const a = await guests.invite('p1', { name, role: 'read', scope: 'all', lifetime })
       if (!a.ok) throw new Error(a.error)
       return { token: a.link.split('#i=')[1] as string, guestId: a.guestId }
     }
     const redeem = (token: unknown, extra: Record<string, string> = {}) =>
       post(port, { path: INVITE_PATH, headers: { Host: host, Origin: origin, 'Content-Type': 'application/json', ...extra }, body: JSON.stringify({ token }) })
     const get = (path: string, cookie: string, key: string) => http(port, { path, headers: { Host: host, Cookie: cookie, [DEVICE_KEY_HEADER]: key } })
-    return { port, host, origin, guests, auth, devices, logs, invite, redeem, get }
+    return { port, host, origin, guests, auth, devices, logs, invite, redeem, get, clock }
   }
 
   it('redeems once: a guest cookie and key, the project; a second redeem is 410 used', async () => {
@@ -1878,5 +1881,19 @@ describe('guests', () => {
     expect(session.device).toBeNull()
     expect(session.guestEnded).toBe(true)
     expect(await upgrade(g.port, { Host: g.host, Origin: g.origin, Cookie: cookie, 'Sec-WebSocket-Protocol': `${WS_PROTOCOL}, ${WS_KEY_PROTOCOL_PREFIX}${key}` })).toBe(401)
+  })
+
+  it('a lifetime over before the sweep: the device is still there, and the session already says ended (D-32)', async () => {
+    const g = await guestSetup()
+    const { token, guestId } = await g.invite('Bob', '1d')
+    const res = await g.redeem(token)
+    const cookie = String(res.headers['set-cookie']).split(';')[0] as string
+    const key = (JSON.parse(res.body) as { key: string }).key
+    g.clock.t += 24 * 3600_000
+    expect(g.devices.devicesOfGuest(guestId)).toHaveLength(1)
+    const session = JSON.parse((await g.get(SESSION_PATH, cookie, key)).body) as WebSessionReply
+    expect(session.device).toBeNull()
+    expect(session).not.toHaveProperty('guest')
+    expect(session.guestEnded).toBe(true)
   })
 })

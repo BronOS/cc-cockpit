@@ -251,7 +251,7 @@ export class GuestStore implements GuestService {
     const before = this.data.guests.length
     this.data.guests = this.data.guests.filter((g) => deps.devices.devicesOfGuest(g.id).length > 0)
     if (before !== this.data.guests.length) this.save()
-    deps.devices.onDropped((gone, event) => this.dropped(gone, event))
+    deps.devices.onDropped((gone, event, secretHashOf) => this.dropped(gone, event, secretHashOf))
     const every = deps.setInterval ?? ((fn, ms) => {
       const t = setInterval(fn, ms)
       t.unref?.()
@@ -637,17 +637,21 @@ export class GuestStore implements GuestService {
    * closes them as "signed out"), then its devices are revoked (the gateway drops their sockets, page
    * tokens and downloads), their cookies tombstoned, the record and any invite for it removed.
    */
-  private end(guestId: string, why: EndWhy): void {
+  private end(guestId: string, why: EndWhy, gone: ReadonlyArray<{ deviceId: string; secretHash: string }> = []): void {
     const g = this.data.guests.find((x) => x.id === guestId)
     if (!g || this.ending.has(guestId)) return
     this.ending.add(guestId)
     try {
       this.reconnect(guestId, END_CODE[why], why)
       const now = this.now()
+      // Tombstones for the devices still live (a kick, a lifetime) and for those already gone (a revoke in the
+      // device list, Revoke all, an idle expiry: `dropped` hands their hashes in), so every end says "ended".
+      const stones = [...gone]
       for (const d of this.deps.devices.devicesOfGuest(guestId)) {
         const secretHash = this.deps.devices.secretHashOf(d.id)
-        if (secretHash !== undefined) this.data.ended.push({ deviceId: d.id, secretHash, until: now + ENDED_TOMBSTONE_MS })
+        if (secretHash !== undefined) stones.push({ deviceId: d.id, secretHash })
       }
+      for (const s of stones) this.data.ended.push({ deviceId: s.deviceId, secretHash: s.secretHash, until: now + ENDED_TOMBSTONE_MS })
       this.data.ended = this.data.ended.slice(-MAX_ENDED_TOMBSTONES)
       this.data.guests = this.data.guests.filter((x) => x.id !== guestId)
       this.data.invites = this.data.invites.filter((i) => i.guestId !== guestId)
@@ -662,12 +666,16 @@ export class GuestStore implements GuestService {
   }
 
   /** Devices revoked or expired elsewhere (the device list, Revoke all, idle expiry): their guests end. */
-  private dropped(gone: readonly WebDevice[], event: 'revoke' | 'expired'): void {
+  private dropped(gone: readonly WebDevice[], event: 'revoke' | 'expired', secretHashOf: (id: string) => string | undefined): void {
     for (const d of gone) {
       if (d.guestId === undefined || this.ending.has(d.guestId)) continue
       if (!this.data.guests.some((g) => g.id === d.guestId)) continue
       if (this.deps.devices.devicesOfGuest(d.guestId).length > 0) continue
-      this.end(d.guestId, event === 'expired' ? 'expired' : 'revoked')
+      const stones = gone.flatMap((x) => {
+        const secretHash = x.guestId === d.guestId ? secretHashOf(x.id) : undefined
+        return secretHash === undefined ? [] : [{ deviceId: x.id, secretHash }]
+      })
+      this.end(d.guestId, event === 'expired' ? 'expired' : 'revoked', stones)
     }
   }
 
