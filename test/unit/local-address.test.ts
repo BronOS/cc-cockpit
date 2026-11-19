@@ -136,9 +136,19 @@ describe('LocalAddressCheck', () => {
     const t = setup({ 'example.com': ['93.184.216.34', '2606:2800:220:1::'], 'devbox.lan': ['10.0.20.115'] })
     expect(await t.check.allows('example.com')).toBe(true)
     expect(await t.check.allows('devbox.lan')).toBe(true)
-    // A trailing dot is the same name.
-    expect(await t.check.allows('example.com.')).toBe(true)
     expect(t.lookups).toEqual(['example.com', 'devbox.lan'])
+  })
+
+  it('resolves an absolute name (trailing dot) as written, never through the search domains', async () => {
+    // With search domain corp.example, `printer` is printer.corp.example (another machine) while the
+    // absolute `printer.` is what Chromium resolves for `http://printer.:3000/`.
+    const t = setup({ printer: ['10.0.20.40'], 'printer.': ['127.0.0.1'] })
+    expect(await t.check.allows('printer.')).toBe(false)
+    expect(await t.check.allows('printer')).toBe(true)
+    expect(t.lookups).toEqual(['printer.', 'printer'])
+    // Each form has its own cache entry.
+    expect(t.check.allows('printer.')).toBe(false)
+    expect(t.check.allows('printer')).toBe(true)
   })
 
   it('judges IP literals with no lookup, synchronously', () => {
@@ -224,6 +234,25 @@ describe('LocalAddressCheck', () => {
     t.deferred[0]?.resolve(['93.184.216.34'])
     await flush()
     expect(t.lookups.at(-1)).toBe('queued.example')
+  })
+
+  it('keeps one timed verdict per pending name, however many requests ask', async () => {
+    const t = setup()
+    t.manual()
+    const asks = Array.from({ length: 1000 }, () => t.check.allows('hung.example'))
+    expect(t.lookups).toEqual(['hung.example'])
+    expect(t.timers.delays).toEqual([LOOKUP_TIMEOUT_MS])
+    t.timers.fireAll()
+    for (const ask of asks) expect(await ask).toBe(false)
+    // Past the timeout, while the lookup still hangs: refused at once, no new timer, no new lookup.
+    expect(await t.check.allows('hung.example')).toBe(false)
+    expect(t.timers.delays).toHaveLength(1)
+    expect(t.timers.pending.size).toBe(0)
+    expect(t.lookups).toHaveLength(1)
+    // Once it ends, the name is judged afresh from its answer.
+    t.deferred[0]?.resolve(['93.184.216.34'])
+    await flush()
+    expect(t.check.allows('hung.example')).toBe(true)
   })
 
   it('refuses at once when the queue is full', async () => {

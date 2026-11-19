@@ -267,8 +267,10 @@ export function allowRemoteRequest(url: string, origin: string | undefined): boo
  * rule alone, with no lookup, as before: the tunnel origin IS `127.0.0.1:<L>`, a Direct server may be on
  * this machine's own LAN address, and the web client's own traffic (and main's own requests through the
  * partition) must never wait on DNS. Left open by that: a Direct server's own name rebinding to loopback
- * reaches a local listener on that one port. Synchronous unless a lookup is needed; the promise never
- * rejects.
+ * reaches a local listener on that one port. "Own" is the server's scheme pair (http with ws, https with
+ * wss) on its exact host name and effective port: `URL.host` drops a default port, so comparing it
+ * would let `https://<ip>/` (443) pass as a server on `http://<ip>` (80). Synchronous unless a lookup is
+ * needed; the promise never rejects.
  */
 export function checkRemoteRequest(url: string, origin: string | undefined, local: LocalAddressCheck): boolean | Promise<boolean> {
   const target = parsed(url)
@@ -276,9 +278,29 @@ export function checkRemoteRequest(url: string, origin: string | undefined, loca
   const scheme = target.protocol
   if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') return true
   const own = origin === undefined ? undefined : parsed(origin)
-  if (own !== undefined && target.host === own.host) return allowRemoteRequest(url, origin)
+  if (own !== undefined && isOwnEndpoint(target, own)) return allowRemoteRequest(url, origin)
   if (!allowRemoteRequest(url, origin)) return false
   return local.allows(target.hostname)
+}
+
+function isSecureScheme(protocol: string): boolean {
+  return protocol === 'https:' || protocol === 'wss:'
+}
+
+/** `url`'s port, with the scheme's default filled in (`URL.port` is empty for a default port). */
+function effectivePort(url: URL): string {
+  if (url.port !== '') return url.port
+  return isSecureScheme(url.protocol) ? '443' : '80'
+}
+
+/** Whether `target` is server origin `own`'s endpoint: same host name and effective port, same scheme pair. */
+function isOwnEndpoint(target: URL, own: URL): boolean {
+  if (own.protocol !== 'http:' && own.protocol !== 'https:') return false
+  return (
+    target.hostname === own.hostname &&
+    effectivePort(target) === effectivePort(own) &&
+    isSecureScheme(target.protocol) === isSecureScheme(own.protocol)
+  )
 }
 
 /** Whether `url` is on `origin` exactly (scheme, host and port). */

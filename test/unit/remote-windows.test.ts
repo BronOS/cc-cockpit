@@ -156,6 +156,26 @@ describe('the rules', () => {
     expect(checkRemoteRequest('http://127.0.0.1:7330/', lan, local)).toBe(false)
   })
 
+  it('exempts only the server own scheme pair on its effective port (default ports filled in)', async () => {
+    const local = fakeLocalAddresses()
+    // `URL.host` drops a default port: http://<ip> (80) and https://<ip> (443) both have host `<ip>`.
+    const own = `http://${OWN_LAN}`
+    expect(checkRemoteRequest(`${own}/`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`ws://${OWN_LAN}/ws`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`http://${OWN_LAN}:80/`, own, local)).toBe(true)
+    expect(checkRemoteRequest(`https://${OWN_LAN}/`, own, local)).toBe(false)
+    expect(checkRemoteRequest(`wss://${OWN_LAN}/ws`, own, local)).toBe(false)
+    // The same for a name resolving to this machine: port 443 of it is checked, and refused.
+    const named = 'http://mylan.example'
+    expect(checkRemoteRequest(`${named}/`, named, local)).toBe(true)
+    expect(await checkRemoteRequest('https://mylan.example/', named, local)).toBe(false)
+    expect(await checkRemoteRequest('wss://mylan.example/ws', named, local)).toBe(false)
+    // An https server: its wss socket is exempt, plain http on 443 is not.
+    const secure = `https://${OWN_LAN}`
+    expect(checkRemoteRequest(`wss://${OWN_LAN}/ws`, secure, local)).toBe(true)
+    expect(checkRemoteRequest(`http://${OWN_LAN}:443/`, secure, local)).toBe(false)
+  })
+
   it('pins navigation to the server origin', () => {
     expect(allowRemoteNavigation(`${ORIGIN}/?project=p`, ORIGIN)).toBe(true)
     expect(allowRemoteNavigation('http://127.0.0.1:4101/', ORIGIN)).toBe(false)
