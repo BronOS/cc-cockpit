@@ -245,16 +245,38 @@ test('web access: a desktop window that is left and focused again does not take 
     // The desktop window is left and focused again, its terminal's textarea focused with it, the
     // way a window manager hands focus back: no press, no key. Both the real window calls and the
     // page's own events (a headless run may not move focus at all).
+    //
+    // Nobody at the desktop means no user activation there either: a textarea focus with one is a
+    // gesture focus (a Tab key) and takes, as designed (TerminalSession.onTermFocus). On macOS the
+    // textarea's focus below is a real focus event (`win.blur()` moves the page's focus to the top
+    // strip's Open project… button and `win.focus()` does not put it back; on Linux the textarea keeps
+    // it and the call is a no-op), so two things must not fake an activation:
+    // - page.evaluate itself: Playwright runs it with `userGesture: true`. The page's events go through
+    //   CDP's Runtime.evaluate without one instead;
+    // - the spec's own click on New tab › Shell above: Chromium keeps a page's transient activation
+    //   for 5 s, and the browser is up within that here. Wait until it has lapsed.
+    const cdp = await page.context().newCDPSession(page)
+    const noGesture = async (expression: string): Promise<unknown> => {
+      const reply = (await cdp.send('Runtime.evaluate', { expression, userGesture: false, returnByValue: true })) as {
+        result: { value?: unknown }
+        exceptionDetails?: unknown
+      }
+      if (reply.exceptionDetails) throw new Error(`desktop page: ${JSON.stringify(reply.exceptionDetails)}`)
+      return reply.result.value
+    }
+    await expect.poll(() => noGesture('navigator.userActivation.isActive'), { timeout: 10_000 }).toBe(false)
     await cockpit.app.evaluate(({ BrowserWindow }) => {
       const win = BrowserWindow.getAllWindows()[0]
       win?.blur()
       win?.focus()
     })
-    await page.evaluate(() => {
+    await noGesture(`{
       window.dispatchEvent(new Event('blur'))
       window.dispatchEvent(new Event('focus'))
-      document.querySelector<HTMLTextAreaElement>('.terminal-view:not([hidden]) .xterm-helper-textarea')?.focus()
-    })
+      document.querySelector('.terminal-view:not([hidden]) .xterm-helper-textarea')?.focus()
+    }`)
+    expect(await noGesture('navigator.userActivation.isActive')).toBe(false)
+    await cdp.detach()
     // Time for a take to reach main and the pty, had there been one (tabs.fit is at once).
     await page.waitForTimeout(1000)
     expect(await ptySize(browser, 'sb')).toBe(before)
