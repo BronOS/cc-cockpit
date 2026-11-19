@@ -223,7 +223,7 @@ test.afterEach(async () => {
 });
 
 test("server mode: a file pane in a group mounts no frame in the hidden page; Close all with a dirty file asks in the browser", async () => {
-  test.skip(process.platform !== "linux", "server mode is Linux only");
+  test.skip(process.platform === "win32", "server mode does not run on Windows");
   test.setTimeout(150_000);
   server = await launchServer({
     env: { CC_COCKPIT_NO_BUNDLED: "" },

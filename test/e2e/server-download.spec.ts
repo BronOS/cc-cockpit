@@ -11,7 +11,7 @@ import { filesTree, pluginActive, savedDownload, treeRow, zipNames } from './dow
 import { expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser } from './web-fixtures'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 const BYTES = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 11 + 5) % 256))
 

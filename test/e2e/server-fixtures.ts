@@ -25,7 +25,7 @@
 // headless process, `firstWindow()` resolves to the hidden page (the project shell, `.tabs-pane`)
 // and the hooks on `__ccTest` answer (`serverMode()` is true), so server specs may use `cockpit.hook`.
 import { expect } from '@playwright/test'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
@@ -220,6 +220,39 @@ export function secondLaunch(
   folder: string,
   answer: 'stop' | 'cancel'
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; pid: number | undefined; files: string[] }> {
+  const child = spawnOnDataDir(holder, [folder], { [SECOND_LAUNCH_ANSWER_ENV]: answer }, 'ignore')
+  const pid = child.pid
+  return new Promise((done) =>
+    child.once('exit', (code, signal) => {
+      const files = launchProfiles(pid).flatMap((d) => readdirSync(join(tmpdir(), d)))
+      done({ code, signal, pid, files })
+    })
+  )
+}
+
+/**
+ * `cc-cockpit --server <folder>` typed while `holder` (a desktop or a server) holds the data dir, on
+ * macOS, where a server that loses the lock refuses (`HELD_LINE`, exit 1) instead of handing its argv
+ * over. Resolves with the exit and everything it printed.
+ */
+export function serverLaunchOnHeldDir(
+  holder: Cockpit,
+  folder: string
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; output: string }> {
+  const child = spawnOnDataDir(holder, ['--server', folder], {}, 'pipe')
+  let output = ''
+  child.stdout?.on('data', (d: Buffer) => (output += d.toString()))
+  child.stderr?.on('data', (d: Buffer) => (output += d.toString()))
+  return new Promise((done) => child.once('exit', (code, signal) => done({ code, signal, output })))
+}
+
+/** A desktop Electron process of this repo's build on the holder's data dir, with the suite's display and a test run's env. */
+function spawnOnDataDir(
+  holder: Cockpit,
+  args: string[],
+  extraEnv: Record<string, string>,
+  stdio: 'ignore' | 'pipe'
+): ChildProcess {
   const repo = resolve(__dirname, '../..')
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) {
@@ -229,22 +262,10 @@ export function secondLaunch(
     if (k.startsWith('CC_COCKPIT_') || k.startsWith('APP_TAB_') || k === 'CLAUDE_CONFIG_DIR') continue
     env[k] = v
   }
-  Object.assign(env, {
-    CC_COCKPIT_DATA_DIR: holder.dataDir,
-    CC_COCKPIT_TEST: '1',
-    [SECOND_LAUNCH_ANSWER_ENV]: answer,
-    HOME: join(holder.root, 'home')
-  })
+  Object.assign(env, { CC_COCKPIT_DATA_DIR: holder.dataDir, CC_COCKPIT_TEST: '1', HOME: join(holder.root, 'home') }, extraEnv)
   // The electron package's main export, in Node, is the binary's path.
   const electronPath = createRequire(__filename)('electron') as string
-  const child = spawn(electronPath, [join(repo, 'out/main/index.js'), folder], { cwd: repo, env, stdio: 'ignore' })
-  const pid = child.pid
-  return new Promise((done) =>
-    child.once('exit', (code, signal) => {
-      const files = launchProfiles(pid).flatMap((d) => readdirSync(join(tmpdir(), d)))
-      done({ code, signal, pid, files })
-    })
-  )
+  return spawn(electronPath, [join(repo, 'out/main/index.js'), ...args], { cwd: repo, env, stdio })
 }
 
 /** The private profile dirs (second-launch.ts `privateLaunchProfile`) of the launch with `pid` in the temp dir. */

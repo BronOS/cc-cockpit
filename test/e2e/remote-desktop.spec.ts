@@ -28,7 +28,7 @@ import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { addDeviceLink, ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { sshKeyPair } from '../fakes/ssh-keys'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 /** The remote window showing `origin`'s page (open, not the picker or a project window). */
 /** Every file under `dir`, recursively (symlinks not followed). */
@@ -169,7 +169,7 @@ test('Direct: pair with a one-time link, work in the remote window, relaunch sig
     // Group in the desktop table and New Claude Tab in the web table, and with no tabs both open one.
     // The desktop's in-Group chord is unit-tested in web-keys.test.ts.)
     await remote.locator('.tabs-pane').click()
-    await remote.keyboard.press('Control+T')
+    await remote.keyboard.press('ControlOrMeta+T')
     await expect(remote.getByRole('tab')).toHaveCount(1)
     await expect(remote.getByRole('tab').first()).toHaveText(/^Claude/)
 
@@ -716,7 +716,8 @@ test('Built-in SSH: Trust, password not remembered, a revoke re-pairs once, an s
     const res = await ccc(server, ['web', 'revoke', '--', first[0]!.id])
     expect(res.code, res.stderr).toBe(0)
     expect((await status(server)).devices).toHaveLength(0)
-    await remote.reload()
+    // No reload from here: the revoke closes the page's socket and the page reloads itself, so a reload of
+    // the spec's own raced it (ERR_ABORTED, or a second pairing on macOS). The page's own load is the one.
     await expect.poll(async () => (await status(server)).devices.length, { timeout: 60_000 }).toBe(1)
     expect((await status(server)).devices[0]!.id).not.toBe(first[0]!.id)
     await remote.locator('.tabs-pane').waitFor({ timeout: 30_000 })

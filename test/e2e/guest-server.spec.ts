@@ -8,7 +8,7 @@ import { rawSocket, redeemOk, session } from './guest-fixtures'
 import { ccc, launchServer, type Server } from './server-fixtures'
 import { openBrowser } from './web-fixtures'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only (D-28: until it runs on macOS)')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 let server: Server | undefined
 test.afterEach(async () => {

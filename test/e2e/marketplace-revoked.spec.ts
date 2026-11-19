@@ -116,9 +116,8 @@ test('a revocation in the cache keeps a plugin from activating at startup, with 
       await second.close({ keepFiles: true })
     }
 
-    // Server mode runs on Linux only (main/server-mode.ts refuses elsewhere: "server mode runs on Linux
-    // only"), as the server specs' own skips say; the desktop half above stands on its own.
-    if (process.platform !== 'linux') return
+    // Server mode does not run on Windows; the desktop half above stands on its own there.
+    if (process.platform === 'win32') return
 
     // The same cached revocation in server mode (design-web.md §9.9): the notice is a stdout line with
     // the plugin id only, none of the index's text, and `ccc web status` lists it; no OS notification

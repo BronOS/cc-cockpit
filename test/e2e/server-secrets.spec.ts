@@ -11,7 +11,7 @@ import type { WebCliStatus } from '../../src/shared/web-access'
 import { ccc, expectMainAlive, launchServer, type Server } from './server-fixtures'
 import { openBrowser, openProjectInBrowser, type WebBrowser } from './web-fixtures'
 
-test.skip(process.platform !== 'linux', 'server mode runs on Linux only')
+test.skip(process.platform === 'win32', 'server mode does not run on Windows')
 
 const PASSWORD = 'correct horse battery staple'
 
