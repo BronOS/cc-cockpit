@@ -34,7 +34,7 @@ test('qa walk: invite dialog texts, read guest shell, upgrade, write guest saves
     await c.newTab('claude')
     await c.waitForTerminalText('FAKE-CLAUDE banner')
     await pluginActive(c, 'cockpit.files')
-    const web = await enableWebAccess(c)
+    await enableWebAccess(c)
     await invoke(c, 'settings.pluginGuestAccessSet', { pluginId: 'cockpit.files', target: 'app', value: 'shown' })
     await invoke(c, 'settings.pluginGuestAccessSet', { pluginId: 'cockpit.editor', target: 'app', value: 'shown' })
 
@@ -143,68 +143,107 @@ test('qa walk: invite dialog texts, read guest shell, upgrade, write guest saves
     await shot(page, 'guest-kicked')
     await expect.poll(async () => (await guestList(c)).length).toBe(0)
 
-    // None mode refuses invites (D-1).
+    // None mode refuses invites (D-1). Q3: the dialog stays reachable and says why at once, Create disabled.
     await invoke(c, 'settings.webAccessSet', { value: { mode: 'none' } })
+    await expect.poll(async () => JSON.stringify(await invoke(c, 'settings.webAccess'))).toContain('"mode":"none"')
+    await expect(c.page.getByRole('button', { name: 'Share' }), 'no Share entry under None: the reason cannot be seen (Q3)').toHaveCount(1)
     await c.page.getByRole('button', { name: 'Share' }).click()
-    await expect(c.page.getByTestId('guest-invite-dialog')).toBeVisible()
-    await shot(c.page, 'owner-invite-none-mode')
-    console.log('QA none mode dialog:\n' + (await c.page.getByTestId('guest-invite-dialog').innerText()))
-    console.log('QA web access mode now:', JSON.stringify(((await invoke<Record<string, unknown>>(c, 'settings.webAccess')) as { mode?: unknown }).mode ?? '?'))
     const nd = c.page.getByTestId('guest-invite-dialog')
-    await nd.getByRole('textbox').first().fill('Nora')
-    await nd.getByRole('button', { name: 'Create invite' }).click()
-    await expect.poll(async () => (await nd.innerText()).length).toBeGreaterThan(0)
-    await c.page.waitForTimeout(1000)
-    await shot(c.page, 'owner-invite-none-mode-create')
-    console.log('QA none mode after Create:\n' + (await nd.innerText()))
-    console.log('QA guests after None create:', JSON.stringify(await guestList(c)))
+    await expect(nd).toContainText('Guests need a sign-in mode')
+    await expect(nd.getByRole('button', { name: 'Create invite' })).toBeDisabled()
+    await shot(c.page, 'reverify-owner-invite-none-mode')
+    expect(await guestList(c)).toEqual([])
   } finally {
     await guest?.close()
     await close()
   }
 })
 
-test("qa: a write guest's Files Edit click and the owner's own: does an overlay open on the owner's screen?", async () => {
+test("qa re-verify: a write guest's file click opens its own editor tab, nothing on the owner's screen; a binary file is refused on the guest's side", async () => {
   test.setTimeout(150_000)
   const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_NO_BUNDLED: '' } })
   let guest: WebBrowser | undefined
   try {
     writeFileSync(join(c.projectDir, 'a.txt'), 'aaa\n')
-    writeFileSync(join(c.projectDir, 'b.txt'), 'bbb\n')
+    writeFileSync(join(c.projectDir, 'blob.bin'), Buffer.from([0, 1, 2, 0, 255, 254, 0, 0, 7, 0]))
+    await c.newTab('claude')
+    await c.waitForTerminalText('FAKE-CLAUDE banner')
     await pluginActive(c, 'cockpit.files')
     const web = await enableWebAccess(c)
+    expect(web.origin).toBeTruthy()
+    // Q3 control on a fresh app: the Share entry in link mode, under None, and back.
+    const shareBtn = c.page.getByRole('button', { name: 'Share' })
+    await expect(shareBtn).toHaveCount(1)
+    await invoke(c, 'settings.webAccessSet', { value: { mode: 'none' } })
+    await expect.poll(async () => JSON.stringify(await invoke(c, 'settings.webAccess'))).toContain('"mode":"none"')
+    await c.page.waitForTimeout(1000)
+    const underNone = await shareBtn.count()
+    console.log('QA fresh app: Share buttons under None =', underNone)
+    if (underNone > 0) {
+      await shareBtn.click()
+      const nd = c.page.getByTestId('guest-invite-dialog')
+      console.log('QA fresh None dialog has the reason:', (await nd.innerText()).includes('Guests need a sign-in mode'), 'Create disabled:', await nd.getByRole('button', { name: 'Create invite' }).isDisabled())
+      await nd.getByRole('button', { name: 'Cancel' }).click()
+    }
+    await invoke(c, 'settings.webAccessSet', { value: { mode: 'link' } })
+    await expect(shareBtn).toHaveCount(1)
     await invoke(c, 'settings.pluginGuestAccessSet', { pluginId: 'cockpit.files', target: 'app', value: 'shown' })
     await invoke(c, 'settings.pluginGuestAccessSet', { pluginId: 'cockpit.editor', target: 'app', value: 'shown' })
-    const answer = await c.hook<{ ok: boolean; link: string }>('guestInvite', c.projectDir, { name: 'Wes', role: 'write', scope: 'all', lifetime: '1d' })
+    const answer = await c.hook<{ ok: boolean; link: string; guestId: string }>('guestInvite', c.projectDir, { name: 'Wes', role: 'write', scope: 'all', lifetime: '1d' })
     guest = await openBrowser(answer.link)
     const { page } = guest
     await expect(page.getByTestId('guest-banner')).toHaveAttribute('data-role', 'write', { timeout: 20_000 })
-    const overlays = (): Promise<string[]> => c.page.locator('.overlay').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? '?'))
-    expect(await overlays()).toEqual([])
+    const ownerOverlays = c.page.locator('.overlay')
+    await expect(ownerOverlays).toHaveCount(0)
 
-    // The guest clicks Edit on a.txt.
+    // Q1: the guest clicks a text file: its own editor tab opens; the owner's screen gets no overlay.
     if (!(await page.locator('section.panel[aria-label="Files"]').isVisible())) await page.getByRole('button', { name: /^Files/ }).first().click()
     const gf = page.frameLocator('section.panel[aria-label="Files"] iframe')
     await gf.getByText('a.txt').click()
-    await gf.getByText('Edit', { exact: true }).first().click()
     await expect(page.getByRole('tab', { name: /a\.txt/ })).toBeVisible({ timeout: 10_000 })
-    await expect.poll(overlays, { timeout: 4000 }).not.toEqual([]).catch(() => {})
-    const afterGuest = await overlays()
-    console.log('QA owner overlays after the guest Edit click:', JSON.stringify(afterGuest))
-    console.log('QA guest overlays:', JSON.stringify(await page.locator('.overlay').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))))
-    await shot(c.page, 'owner-after-guest-edit-click')
-    if (afterGuest.length) await c.page.locator('.overlay').getByRole('button', { name: /close/i }).last().click()
-    await expect.poll(overlays).toEqual([])
+    await expect(c.page.getByRole('tab', { name: /a\.txt/ })).toBeVisible({ timeout: 10_000 })
+    await c.page.waitForTimeout(1500) // an absence: give a late overlay its chance (it came before the tab in the bug)
+    await shot(c.page, 'reverify-owner-after-guest-file-click')
+    await expect(ownerOverlays, 'an overlay opened on the owner screen from a guest click').toHaveCount(0)
+    await expect(page.locator('.overlay')).toHaveCount(0)
 
-    // Control: the owner clicks Edit on b.txt in its own Files panel.
-    if (!(await c.page.locator('section.panel[aria-label="Files"]').isVisible())) await c.page.getByRole('button', { name: /^Files/ }).first().click()
-    const of = c.page.frameLocator('section.panel[aria-label="Files"] iframe')
-    console.log('QA owner overlays before own click:', JSON.stringify(await overlays()))
-    await of.getByText('b.txt').click()
-    await of.getByText('Edit', { exact: true }).first().click({ timeout: 5000 }).catch((e) => console.log('QA owner Edit click failed', String(e).slice(0, 120)))
-    await expect.poll(overlays, { timeout: 4000 }).not.toEqual([]).catch(() => {})
-    console.log('QA owner overlays after the owner Edit click:', JSON.stringify(await overlays()))
-    await shot(c.page, 'owner-after-own-edit-click')
+    // Q4: a tab the guest opens itself (New tab > Shell): the owner's strip names the guest, never its id.
+    const ownerCount = (await c.hook<unknown[]>('tabs', c.projectDir)).length
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Shell' }).click()
+    await expect.poll(async () => (await c.hook<unknown[]>('tabs', c.projectDir)).length).toBe(ownerCount + 1)
+    const tabs = await c.hook<Array<{ id: string; openedByGuest?: string }>>('tabs', c.projectDir)
+    console.log('QA openedByGuest values:', JSON.stringify(tabs.map((t) => t.openedByGuest ?? null)))
+    const labels = await c.page.getByRole('tab').evaluateAll((els) => els.map((e) => [e.getAttribute('title'), e.getAttribute('aria-label'), (e as HTMLElement).innerText].join(' / ')))
+    console.log('QA owner tab labels:', JSON.stringify(labels))
+    const guestTab = c.page.getByRole('tab').last()
+    await guestTab.hover()
+    await c.page.waitForTimeout(800)
+    const tips = await c.page.locator('[role=tooltip], .tooltip').allInnerTexts()
+    console.log('QA tooltip on the guest tab:', JSON.stringify(tips))
+    await shot(c.page, 'reverify-owner-guest-tab-hover')
+    const all = labels.join(' ') + ' ' + tips.join(' ')
+    expect(all, 'the opened-by label names the guest').toContain('Wes')
+    expect(all, 'the opened-by label shows the guest id').not.toContain(answer.guestId)
+
+    // New: a binary file: refused with a clear line for the guest, nothing for the owner, no new tab.
+    const before = (await c.hook<unknown[]>('tabs', c.projectDir)).length
+    const guestTextBefore = await page.locator('body').innerText()
+    await gf.getByText('blob.bin').click()
+    let shown = ''
+    await expect
+      .poll(async () => {
+        const t = (await page.locator('body').innerText()) + '\n' + (await gf.locator('body').innerText().catch(() => ''))
+        shown = t.split('\n').filter((l) => !guestTextBefore.includes(l) && /binary|text|open|can.?t|cannot/i.test(l)).join(' | ')
+        return shown.length > 0
+      }, { timeout: 8000 })
+      .toBe(true)
+    console.log('QA guest line for the binary file:', shown)
+    await shot(page, 'reverify-guest-binary-click')
+    await c.page.waitForTimeout(1500)
+    await shot(c.page, 'reverify-owner-after-binary-click')
+    await expect(ownerOverlays).toHaveCount(0)
+    expect((await c.hook<unknown[]>('tabs', c.projectDir)).length).toBe(before)
   } finally {
     await guest?.close()
     await close()

@@ -1,7 +1,6 @@
 // qa-chloe blind verify (not for merge): edge cases. Switching to None with a guest in is refused (D-15);
 // two parallel redeems of one invite make one device; a socket without the guest's cookie is never in;
 // presence keeps a read guest's view of an unshared tab to "elsewhere".
-import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import type { CockpitApi } from '../../src/shared/ipc'
 import { PROTOCOL_VERSION, socketProtocols, WS_PATH } from '../../src/shared/web-protocol'
@@ -91,7 +90,7 @@ test('qa: None refused with a guest in; parallel redeems; no cookie, no entry; p
     const wyn = people.find((p) => p.name === 'Wyn')!
     console.log('QA read guest sees Wyn:', JSON.stringify(wyn))
     expect(wyn.tabId).toBeNull()
-    expect.soft(wyn.typing, 'typing in a tab the read guest cannot see is visible to it').toBe(false)
+    expect(wyn.typing, 'typing in a tab the read guest cannot see is visible to it').toBe(false)
     const snap = (await rawInvoke(r, 'presence.get')).v as { lastTyped: Record<string, string> }
     expect(Object.keys(snap.lastTyped)).not.toContain(b.id)
     expect((await guestList(c)).length).toBe(2)
