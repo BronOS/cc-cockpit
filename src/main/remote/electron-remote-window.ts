@@ -185,6 +185,45 @@ export const HOLDS_UNLOAD_SCRIPT =
 /** How long that answer may take before the close goes ahead (a hung or crashed page answers nothing). */
 export const UNLOAD_PROBE_TIMEOUT_MS = 1_000
 
+/** How long a notice of main's stays in a remote window's page (a click on it dismisses it sooner). */
+export const PAGE_NOTICE_MS = 12_000
+
+/** At most this many of main's notices at once in a page; past it the oldest goes. */
+export const MAX_PAGE_NOTICES = 3
+
+/**
+ * Main's own notice in a remote window's page, as source text: a box in a corner with `text` as
+ * `textContent` (the text is embedded as a JSON string literal, so it is never markup or code), gone
+ * after PAGE_NOTICE_MS or a click. Run in main's isolated world (REMOTE_KEY_WORLD_ID): the page shares
+ * the DOM and could remove the box, which only hides what its own download got. Styles are set through
+ * the CSSOM, which the page's CSP does not block. The native notice is not enough on its own: an
+ * ad-hoc signed macOS build may not be allowed to show one at all, and the person may have turned
+ * them off (the reported "Download does nothing").
+ */
+export function pageNoticeScript(text: string): string {
+  return `(() => { try {
+  const text = ${JSON.stringify(text)};
+  let box = document.getElementById('cc-desktop-notices');
+  if (box === null) {
+    box = document.createElement('div');
+    box.id = 'cc-desktop-notices';
+    box.setAttribute('role', 'status');
+    box.setAttribute('aria-live', 'polite');
+    Object.assign(box.style, { position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483647', display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: 'min(420px, calc(100vw - 32px))' });
+    (document.body ?? document.documentElement).appendChild(box);
+  }
+  const row = document.createElement('div');
+  row.textContent = text;
+  row.title = 'cc-cockpit desktop: click to dismiss';
+  Object.assign(row.style, { background: '#2b2826', color: '#f4f1ee', border: '1px solid #5a534e', borderRadius: '6px', padding: '10px 12px', font: '13px/1.4 system-ui, sans-serif', boxShadow: '0 4px 16px rgba(0,0,0,0.35)', cursor: 'pointer', overflowWrap: 'anywhere' });
+  const drop = () => { row.remove(); if (box.childElementCount === 0) box.remove(); };
+  row.addEventListener('click', drop);
+  box.appendChild(row);
+  while (box.childElementCount > ${MAX_PAGE_NOTICES}) box.firstElementChild.remove();
+  setTimeout(drop, ${PAGE_NOTICE_MS});
+} catch {} })()`
+}
+
 /** The partitions this adapter prepared (isRemoteWindow). */
 const remoteSessions = new WeakSet<Session>()
 
@@ -417,6 +456,24 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       if (type === 'mouseUp' || type === 'gestureTap') hooks.input('click')
       else if (type === 'rawKeyDown' || type === 'keyDown' || type === 'char') hooks.input('key')
     })
+    // The same from a plugin's panel. `input-event` above observes the main frame's widget alone: a
+    // plugin's panel is a sandboxed frame, which Chromium (Electron 45) puts in a process of its own,
+    // and neither a click nor a key there reaches it. Files › Download is such a click, so every
+    // download from a panel was refused as "no click" (the e2e passed only because its click on the
+    // Files button, in the main frame, was still within DOWNLOAD_CLICK_MS), and a key typed in a
+    // panel never took a click back from the focus moves. `before-mouse-event` is emitted at the root,
+    // before Chromium routes the event to a frame, out-of-process ones included; `before-input-event`
+    // is the webContents' key pre-handler, which sees the focused frame's keys too (page-tab-keys.ts
+    // relies on it for the editor's frames; not run here with a real keyboard: a DevTools key skips
+    // the pre-handler). Like `input-event` they see only what the person sends, never a script's
+    // `click()`. A main-frame click or key is reported twice, which changes nothing.
+    wc.on('before-mouse-event', (_event, mouse) => {
+      if (mouse.type === 'mouseUp') hooks.input('click')
+    })
+    wc.on('before-input-event', (_event, input) => {
+      const type: string = input.type
+      if (type === 'rawKeyDown' || type === 'keyDown' || type === 'char') hooks.input('key')
+    })
     win.on('focus', () => hooks.focused())
     // Main's own close (`close` below: Forget, quit, a project the server closed) is final and never
     // reported; it stays made, since Electron's quit closes the window again after closeAll did. Any
@@ -470,6 +527,12 @@ export class ElectronRemoteWindowFactory implements RemoteWindowFactory {
       },
       setProgress: (value) => {
         if (!win.isDestroyed()) win.setProgressBar(progressBarValue(value))
+      },
+      // Main's own isolated world, never the page's: the text goes in as a JSON string and lands as
+      // `textContent`, so a file name from the server can never be markup.
+      showNotice: (text) => {
+        if (win.isDestroyed() || wc.isDestroyed()) return
+        wc.executeJavaScriptInIsolatedWorld(REMOTE_KEY_WORLD_ID, [{ code: pageNoticeScript(text) }]).catch(() => undefined)
       },
       close: () => {
         if (win.isDestroyed()) return

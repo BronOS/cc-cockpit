@@ -246,7 +246,7 @@ describe('a placement cancelled mid-copy', () => {
     await writeFile(f.path(), big)
     f.complete()
     await vi.waitFor(() => expect(outcomes).toHaveLength(1))
-    expect(outcomes[0]).toEqual({ failed: NO_QUARANTINE_TEXT })
+    expect(outcomes[0]).toEqual({ failed: NO_QUARANTINE_TEXT, placement: true })
     expect(await readdir(dir)).toEqual([])
   })
 

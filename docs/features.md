@@ -1034,8 +1034,9 @@ a server you did not name is `Server 1`, `Server 2` and so on (never its address
 **Downloads.** The remote window runs the server's page, so Files › Download and `ccc download` work as in a browser
 (see "Web access" › "Downloads"); this app saves the result straight into your Downloads folder, with no save dialog. A
 name already there gets " (1)", " (2)"; a leading dot and control characters are dropped from the name (a server cannot
-save `.zshrc`). A native notice says "Saved report.pdf to Downloads" with Show in Finder / Show in folder; nothing is ever
-opened. The window's download bar shows progress, and closing the window cancels what is running. The server's page is not
+save `.zshrc`). A native notice says "Saved report.pdf to Downloads" with Show in Finder / Show in folder, and the same text shows a
+few seconds in a corner of the window (macOS may not show this app's native notices at all); nothing is ever opened.
+Every save and refusal is also a line in the app's log. The window's download bar shows progress, and closing the window cancels what is running. The server's page is not
 trusted: this app saves only after your click in that window (within 5 seconds of it; otherwise "not saved: click
 Download again"), one download at a time per server, at most 3 per 10 seconds, at most 4 GiB each (a bigger one is
 cancelled and its partial deleted), only from that server's own download address. A partial is kept under a hidden

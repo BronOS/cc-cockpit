@@ -946,6 +946,10 @@ test('Direct: a click on Download saves to the desktop Downloads with a notice; 
     const row = tree.locator('.row', { has: tree.locator('.name', { hasText: /^fetched\.bin$/ }) })
     await expect(row).toBeVisible({ timeout: 20_000 })
     const menu = tree.getByRole('menu')
+    // Past DOWNLOAD_CLICK_MS since the click on the Files button (in the main frame): only the clicks
+    // in the panel's frame, out of process, may vouch for the download. The first version heard only
+    // main-frame clicks and passed here on that earlier one, while a person's Download did nothing.
+    await new Promise((r) => setTimeout(r, 6_000))
     await row.click({ button: 'right' })
     await menu.getByRole('menuitem', { name: 'Download', exact: true }).click()
 

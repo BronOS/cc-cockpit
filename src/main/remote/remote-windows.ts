@@ -128,19 +128,25 @@
 // can skip every check of the web client) is held to the desktop's own gates (`download`), in order:
 //  - the item is the server's own download link: `<origin>/d/<token>` on the server's current origin,
 //    nothing redirected (`getURLChain()` one entry), started by a live window of this server. Anything
-//    else (a `blob:`, a `data:`, another origin, an unknown page) is cancelled with a log line only, as
-//    every download was before: the page can start those at will, so a notice each would be spam;
+//    else (a `blob:`, a `data:`, another origin, an unknown page) is cancelled, with a log line naming
+//    the URLs' origins (never the token) beside the server's: what tells a page and a saved origin
+//    that disagree;
 //  - the person's pointer click in that window within DOWNLOAD_CLICK_MS (Chromium's activation span,
 //    so the shell's own check and this one agree), in its own field: a key never sets it nor takes it
 //    back (unlike the page-driven moves' `clickedAt`: a download moves no focus, so there is no Enter
-//    to misplace). One click, one download: it is used up at this gate, whatever follows;
+//    to misplace). It is heard anywhere in the page, a plugin's out-of-process frame included
+//    (Files › Download is clicked in one; electron-remote-window.ts). One click, one
+//    download: it is used up at this gate, whatever follows;
 //  - one active download per server and DESKTOP_DOWNLOAD_BURST per DESKTOP_DOWNLOAD_BURST_MS (a
 //    `Budget`), shared by the server's windows, and a declared size within DESKTOP_DOWNLOAD_MAX_BYTES.
-// A refusal past the origin gate gets a native notice in main's own words ("not saved: click Download
-// again"), at most DESKTOP_DOWNLOAD_BURST per burst span per server, the rest logged: a page can fire
-// `/d/` links with no click, and must not fill the screen with notices. What a save then does (the
+// Every refusal is a log line and, at most DESKTOP_DOWNLOAD_BURST per burst span per server, a notice
+// in main's own words ("not saved: click Download again"), the rest logged only: a page can fire `/d/`
+// links or blobs with no click, and must not fill the screen with notices. What a save then does (the
 // temp name, the byte cap, the exclusive link to the sanitised name) is remote-downloads.ts's; its
-// outcome is a notice too, the saved one with Show in Finder / Show in folder. Closing the window
+// outcome is a log line and a notice too, the saved one with Show in Finder / Show in folder. Each
+// notice is native and also shown in the window's page (`showNotice`, main's isolated world): an
+// ad-hoc signed macOS build may not be allowed to show native ones, and a download that said nothing
+// either way was the reported "Download does nothing". Closing the window
 // cancels its downloads and removes their partials. Desktop only: there are no remote windows in
 // server mode.
 
@@ -162,7 +168,7 @@ import { overlayUrlOf } from '../overlays/overlay-manager'
 import { MAX_OPENS_PER_VIEW, OPEN_WINDOW_MS, OpenBudget } from '../webview/open-budget'
 import { warnLog } from '../warn-log'
 import { RemoteCookie, type RemoteCookieJar, type RemoteCookieStore } from './remote-cookie'
-import { startSave, type ActiveSave, type RemoteDownloadItem } from './remote-downloads'
+import { startSave, type ActiveSave, type DownloadOutcome, type RemoteDownloadItem } from './remote-downloads'
 import { isOriginKey } from './remote-key'
 import type { LocalAddressCheck } from './local-address'
 import { TUNNEL_RETRY_MS, type LoadGate } from './tunnel-probe'
@@ -331,6 +337,36 @@ export function isRemoteDownload(chain: readonly string[], origin: string | unde
 export const DESKTOP_LOCAL_PARAM = 'cc-desktop'
 
 /**
+ * A download's URL chain for a log line: each URL's origin (or its scheme alone, for a `blob:` or a
+ * `data:`) and what its path is, never the path itself: a `/d/` path carries the one-use token.
+ */
+export function downloadChainText(chain: readonly string[]): string {
+  if (chain.length === 0) return 'no URL'
+  const parts = chain.slice(0, 4).map((url) => {
+    const u = parsed(url)
+    if (u === undefined) return 'an unreadable URL'
+    // A `blob:` URL has its maker's origin; it is still the page's own bytes, never the server's link.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return u.protocol
+    // `isDownloadUrl` narrows its argument (`url is string`), so the prefix is read first.
+    const underD = u.pathname.startsWith('/d/')
+    const path = isDownloadUrl(u.pathname) ? '/d/<token>' : underD ? '/d/<malformed>' : 'another path'
+    return `${u.origin} ${path}${u.search === '' ? '' : ' with a query'}${u.hash === '' ? '' : ' with a fragment'}`
+  })
+  const more = chain.length > 4 ? `, ${chain.length - 4} more` : ''
+  return `${chain.length === 1 ? '1 URL' : `${chain.length} URLs, redirected`}: ${parts.join(' -> ')}${more}`
+}
+
+/**
+ * A save's outcome as the server's page may read it in main's notice (`showNotice`): `name` is the
+ * name the page asked for, sanitised; a numbered final name and a placement reason are the desktop's.
+ */
+export function pageOutcomeText(name: string, outcome: DownloadOutcome): string {
+  if ('saved' in outcome) return `Saved ${name} to Downloads`
+  if (outcome.placement === true) return `${name} was not saved: it could not be placed in Downloads (the desktop's notice says why)`
+  return `${name} was not saved: ${outcome.failed}`
+}
+
+/**
  * Whether a navigation is the "This computer" chip's (`cc-desktop=local` on the server's origin, any
  * path, from any page). Only that one parameter is read: the rest of the URL means nothing here.
  */
@@ -442,8 +478,9 @@ export interface RemoteWindowHooks {
   /** The window got the focus (the machine chip's click focuses the server's most recently focused one). */
   focused(): void
   /**
-   * The person's input reached the page: a pointer click (a mouse button released, a tap) or a key
-   * pressed. Only a click vouches for a page-driven focus move (see the header).
+   * The person's input reached the page, a plugin's out-of-process frame included: a pointer click
+   * (a mouse button released, a tap) or a key pressed. Only a click vouches for a page-driven focus
+   * move (see the header); the same click may be reported twice, which changes nothing.
    */
   input(kind: 'click' | 'key'): void
   /**
@@ -495,6 +532,11 @@ export interface RemoteWindowView {
   holdsUnload(): Promise<boolean>
   /** The window's progress bar (dock, taskbar): a fraction, unknown size, or none (cleared). */
   setProgress(value: number | 'indeterminate' | undefined): void
+  /**
+   * Main's own notice in the window's page, as plain text, for a while (a download saved or refused:
+   * the native notice may never show, see "Downloads" in the header). Nothing for a closed window.
+   */
+  showNotice(text: string): void
   /** Close the window, with no question: main's own close is final. */
   close(): void
 }
@@ -1350,41 +1392,56 @@ export class RemoteWindows {
     const state = this.servers.get(serverId)
     const rec = webContentsId === undefined ? undefined : this.byWebContents.get(webContentsId)
     if (downloads === undefined || state === undefined || rec === undefined || rec.closed || rec.serverId !== serverId) {
-      this.log(`remote ${serverId}: cancelled a download: not from a window of this server`)
-      return false
-    }
-    if (!isRemoteDownload(item.urlChain(), state.origin)) {
-      this.log(`remote ${serverId}: cancelled a download: not the server's own download link`)
+      this.log(`remote ${serverId}: cancelled a download: not from a window of this server (${downloadChainText(item.urlChain())})`)
+      // No window to show it in: the native notice alone, within the server's notice budget.
+      if (downloads !== undefined && state !== undefined && state.refusalNotices.take(this.now())) {
+        downloads.notice('A download was not saved: it did not start in a window of this server')
+      }
       return false
     }
     const name = desktopSaveName(item.filename())
+    if (!isRemoteDownload(item.urlChain(), state.origin)) {
+      // The origins, never the token: what tells a page and a saved origin that disagree (host, port,
+      // scheme) or a redirect from a `blob:` the page made.
+      return this.refuseDownload(
+        state,
+        rec,
+        `${name} was not saved: it is not this server's own download link`,
+        `not the server's own download link (${downloadChainText(item.urlChain())}; the server's origin is ${state.origin})`
+      )
+    }
     const now = this.now()
     const clicked = rec.downloadClickAt
     // One click, one download: used up here, whatever the gates below decide.
     rec.downloadClickAt = undefined
     if (clicked === undefined || now - clicked < 0 || now - clicked > DOWNLOAD_CLICK_MS) {
-      return this.refuseDownload(state, serverId, `${name} was not saved: click Download again`, 'no click of the person just before')
+      return this.refuseDownload(
+        state,
+        rec,
+        `${name} was not saved: click Download again`,
+        clicked === undefined ? 'no click of the person in the window before it' : `the person's last click was ${now - clicked} ms before it`
+      )
     }
     if (state.saving.size >= DESKTOP_DOWNLOAD_ACTIVE_MAX) {
-      return this.refuseDownload(state, serverId, `${name} was not saved: another download from this server is still saving`, 'one is saving')
+      return this.refuseDownload(state, rec, `${name} was not saved: another download from this server is still saving`, 'one is saving')
     }
     if (!state.downloadBudget.take(now)) {
       return this.refuseDownload(
         state,
-        serverId,
+        rec,
         `${name} was not saved: too many downloads at once; click Download again in a moment`,
         `past ${DESKTOP_DOWNLOAD_BURST} in ${DESKTOP_DOWNLOAD_BURST_MS / 1000} s`
       )
     }
     if (item.totalBytes() > DESKTOP_DOWNLOAD_MAX_BYTES) {
-      return this.refuseDownload(state, serverId, `${name} was not saved: it is larger than ${downloadSizeText(DESKTOP_DOWNLOAD_MAX_BYTES)}`, 'over the byte cap')
+      return this.refuseDownload(state, rec, `${name} was not saved: it is larger than ${downloadSizeText(DESKTOP_DOWNLOAD_MAX_BYTES)}`, 'over the byte cap')
     }
     let dir: string
     try {
       dir = downloads.dir()
     } catch (err) {
       this.log(`remote ${serverId}: no Downloads folder: ${errorText(err)}`)
-      return this.refuseDownload(state, serverId, `${name} was not saved: the Downloads folder is not available`, 'no Downloads folder')
+      return this.refuseDownload(state, rec, `${name} was not saved: the Downloads folder is not available`, 'no Downloads folder')
     }
     const entry: { rec: WindowRecord; save: ActiveSave } = {
       rec,
@@ -1397,20 +1454,33 @@ export class RemoteWindows {
         },
         done: (outcome) => {
           state.saving.delete(entry)
-          if ('saved' in outcome) downloads.notice(`Saved ${basename(outcome.saved)} to Downloads`, outcome.saved)
-          else downloads.notice(`${name} was not saved: ${outcome.failed}`)
+          const text = 'saved' in outcome ? `Saved ${basename(outcome.saved)} to Downloads` : `${name} was not saved: ${outcome.failed}`
+          this.log(`remote ${serverId}: ${'saved' in outcome ? `saved a download as ${basename(outcome.saved)}` : `a download was not saved: ${outcome.failed}`}`)
+          if ('saved' in outcome) downloads.notice(text, outcome.saved)
+          else downloads.notice(text)
+          // The page shares the box's DOM: only what it already knows, the name it asked for (never the
+          // numbered one, which would say a file of its chosen name is in Downloads) and no placement
+          // reason (the folder's contents). The native notice and the log keep the details.
+          if (!rec.closed) rec.view.showNotice(pageOutcomeText(name, outcome))
         },
         log: this.log
       })
     }
+    this.log(`remote ${serverId}: saving a download as ${name}`)
     state.saving.add(entry)
     return true
   }
 
-  /** A download refused past the origin gate: a log line, and a notice within the server's notice budget. */
-  private refuseDownload(state: ServerState, serverId: string, text: string, why: string): false {
-    this.log(`remote ${serverId}: cancelled a download: ${why}`)
-    if (state.refusalNotices.take(this.now())) this.options.downloads?.notice(text)
+  /**
+   * A download refused (anything from a window of the server): a log line, and within the server's
+   * notice budget a native notice and one in the window's page (the native one may never show).
+   */
+  private refuseDownload(state: ServerState, rec: WindowRecord, text: string, why: string): false {
+    this.log(`remote ${rec.serverId}: cancelled a download: ${why}`)
+    if (state.refusalNotices.take(this.now())) {
+      this.options.downloads?.notice(text)
+      if (!rec.closed) rec.view.showNotice(text)
+    }
     return false
   }
 

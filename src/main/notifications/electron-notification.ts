@@ -11,8 +11,11 @@
 //     is the person's choice in System Settings).
 //   - `silent: true` drops the OS sound (Linux sends the `suppress-sound` hint, which daemons may
 //     ignore); absent leaves the platform's default, as before.
-//   - `failed` (macOS, Windows) means it never showed: treated as closed.
+//   - `failed` (macOS, Windows) means it never showed: treated as closed, and logged with the OS's
+//     error, since nothing else tells it from a notice the person dismissed (an ad-hoc signed macOS
+//     build may not be allowed to show any; a remote window's download then said nothing at all).
 import { Notification } from 'electron'
+import { warnLog } from '../warn-log'
 import type { NativeNotice, NoticeBackend, NoticeSpec } from './notifier'
 
 export class ElectronNoticeBackend implements NoticeBackend {
@@ -28,6 +31,10 @@ export class ElectronNoticeBackend implements NoticeBackend {
       ...(spec.actionLabel !== undefined ? { actions: [{ type: 'button' as const, text: spec.actionLabel }] } : {}),
       ...(spec.persistent ? { timeoutType: 'never' as const } : {})
     })
+    // Logged when the notice is made, not in onClose: Notifier.show (a refused or failed download,
+    // most notices) never listens for the close, and its failures said nothing. The OS's error only:
+    // a notice's text may be a plugin's (a mail subject), never logged.
+    n.on('failed', (_event, error) => warnLog(`a notification did not show: ${String(error)}`))
     return {
       show: () => n.show(),
       close: () => n.close(),
