@@ -10,8 +10,9 @@ fails on master, or depends on load and run order (each was checked alone on bot
 - split-views :267 and :297, plus split-plugin :132, split-resize and split-restore. In setup, `typeLine`'s click on
   `.terminal-view:not([hidden]) .xterm` (`test/e2e/fixtures.ts:236`) times out with "element is not visible". This
   comes right after `waitForTerminalText` read the shell's ready line, on the second new shell tab after `setSize`.
-  Measured alone under load: master 5/28, guest branch 7/28. Likely fix: a fixture-side wait for a visible, sized
-  xterm.
+  Measured alone under load: master 5/28, guest branch 7/28. Likely cause (dev-alice's diagnosis): with two shell
+  tabs, `.terminal-view:not([hidden]) .xterm` can resolve to the other tab's terminal, which is not visible, so the
+  fixture should target the selected pane's terminal rather than wait longer.
 - overlay-toolbar :125 and :196, and overlays:345 (focus).
 - rooms:110 (Stop poll).
 - marketplace-revoked:35 (launch EPERM).
