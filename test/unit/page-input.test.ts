@@ -180,6 +180,8 @@ function fakePage() {
   const held: Array<{ sent: Sent; resolve: (v: unknown) => void }> = []
   const opts = {
     hold: false,
+    /** Input on these sessions is held (never answered until resolved by hand) even when `hold` is off. */
+    holdSessions: new Set<string>(),
     refuse: new Set<string>(),
     hang: new Set<string>(),
     hitAlways: undefined as number | undefined,
@@ -194,7 +196,7 @@ function fakePage() {
       if (opts.refuse.has(session)) return Promise.reject(new Error('No session with given id'))
       sent.push(entry)
       opts.onSent?.(entry)
-      if (opts.hold) return new Promise((resolve) => void held.push({ sent: entry, resolve }))
+      if (opts.hold || opts.holdSessions.has(session)) return new Promise((resolve) => void held.push({ sent: entry, resolve }))
       return Promise.resolve({})
     }
     queries.push({ method, session })
@@ -260,7 +262,13 @@ function setup() {
   }
   const mice = (): Array<[string, string, number, number]> =>
     page.sent.filter((s) => s.method === 'Input.dispatchMouseEvent').map((s) => [s.session, s.params.type as string, s.params.x as number, s.params.y as number])
-  return { page, router, fallback, logs, frame, flush, fire, mice, detach: () => (attached = false), timers }
+  /** Unanswered input commands per session ('' the page's). */
+  const unanswered = (): Map<string, number> => {
+    const by = new Map<string, number>()
+    for (const h of page.held) by.set(h.sent.session, (by.get(h.sent.session) ?? 0) + 1)
+    return by
+  }
+  return { page, router, fallback, logs, frame, flush, fire, mice, unanswered, detach: () => (attached = false), attach: () => (attached = true), timers }
 }
 
 const down = (x: number, y: number, button: 'left' | 'right' = 'left'): ElectronInputEvent => ({ type: 'mouseDown', x, y, button, clickCount: 1, modifiers: [] })
@@ -659,5 +667,204 @@ describe('PageInputRouter', () => {
     await s.flush()
     expect(s.mice()).toEqual([['', 'mousePressed', 20, 225]])
     expect(s.page.queries).toEqual([])
+  })
+})
+
+// The two codex reviews of the router's scheduling (round 1 of 833e290, round 2 of 0cbc4ec), one
+// test per scenario, by the review's own words. Each failed on 0cbc4ec unless its comment says so.
+describe('PageInputRouter scheduling: review scenarios', () => {
+  /** Answer everything from here on, held commands included, until the queue has run out. */
+  const answerAll = async (s: ReturnType<typeof setup>): Promise<void> => {
+    s.page.opts.hold = false
+    s.page.opts.holdSessions.clear()
+    for (let n = 0; n < 4000; n++) {
+      for (const h of s.page.held.splice(0)) h.resolve({})
+      await new Promise((r) => setImmediate(r))
+    }
+  }
+
+  // Round 2, MUST 1: "With eight unanswered moves to A, a press hit-tests A and waits for capacity. A
+  // pending move opens an overlay and answers; the press still dispatches into obscured A."
+  it('the press waiting for capacity into an obscured frame: hit-tested only once the move before it answered', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    s.router.input([move(20, 225)])
+    await s.flush()
+    s.router.input([down(20, 225)])
+    await s.flush()
+    // The press waits for the move's answer: nothing else unanswered meanwhile.
+    expect(s.mice()).toEqual([['A', 'mouseMoved', 20, 25]])
+    // A's hover opened an overlay over its owner, then the move answered.
+    s.page.owners.set('', [])
+    s.page.opts.hold = false
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice().filter((m) => m[1] === 'mousePressed')).toEqual([['', 'mousePressed', 20, 225]])
+  })
+
+  it('the press waiting for capacity into an obscured frame: after eight unanswered moves it never goes to A', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    for (let n = 0; n < 8; n++) {
+      s.router.input([move(20 + n, 225)])
+      await s.flush()
+      s.fire()
+      await s.flush()
+    }
+    s.router.input([down(20, 225)])
+    await s.flush()
+    s.page.owners.set('', [])
+    s.page.opts.hold = false
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(s.mice().filter((m) => m[1] === 'mousePressed')).toEqual([['', 'mousePressed', 20, 225]])
+  })
+
+  // Round 2, MUST 2: "Press Shift+A, release Shift, then release A: down is "A", up is "a". At
+  // capacity, that legitimate release is dropped, leaving the page's key down."
+  it('Shift+A release dropped at the cap: a release matches its press by the physical key', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    s.router.input([{ type: 'keyDown', keyCode: 'A', modifiers: ['shift'] }, keyDown('c')])
+    await s.flush()
+    const many: ElectronInputEvent[] = []
+    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('d'))
+    s.router.input([...many, { type: 'keyUp', keyCode: 'a', modifiers: [] }])
+    await answerAll(s)
+    expect(s.page.sent.filter((x) => x.params.type === 'keyUp').map((x) => x.params.code)).toEqual(['KeyA'])
+  })
+
+  // Round 2, MUST 3: "Synthetic hover dispatches bypass both room() and track(). Saturate A, move to
+  // the parent, then repeatedly move toward A. Hover commands accumulate while actual moves drop."
+  it('hover dispatches uncounted: never more than one unanswered command on any session, hover moves included', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    for (let n = 0; n < 12; n++) {
+      s.router.input([move(20 + n, 225)])
+      await s.flush()
+      s.fire()
+      await s.flush()
+      s.router.input([move(20 + n, 25)])
+      await s.flush()
+      s.fire()
+      await s.flush()
+    }
+    expect(Math.max(...s.unanswered().values())).toBe(1)
+  })
+
+  // Round 2, MUST (additional): "Eight unanswered moves followed by a press hold every later
+  // key/event forever while attached. Deadlines fire, but merely restart the loop."
+  it('permanent blockage after eight unanswered moves plus a press: a frame that never answers holds nothing else', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('A')
+    for (let n = 0; n < 8; n++) {
+      s.router.input([move(20 + n, 225)])
+      await s.flush()
+      s.fire()
+      await s.flush()
+    }
+    s.router.input([down(20, 225), up(20, 225), keyDown('q')])
+    for (let n = 0; n < 3; n++) {
+      await s.flush()
+      s.fire()
+    }
+    await s.flush()
+    // A gets nothing more (it still owes an answer); the press and release go to the page session
+    // at the top point, the key on the page session as always.
+    expect(s.page.sent.filter((x) => x.session === '' && x.method === 'Input.dispatchKeyEvent').map((x) => x.params.key)).toEqual(['q'])
+    expect(s.mice().filter((m) => m[1] !== 'mouseMoved')).toEqual([
+      ['', 'mousePressed', 20, 225],
+      ['', 'mouseReleased', 20, 225]
+    ])
+    expect(s.unanswered().get('A')).toBe(1)
+  })
+
+  // Round 2, MUST (additional): "lost() clears the map, not its retained sets. An old dispatch
+  // answering afterward decrements the reset pendingChanges to −1. A new press raises it to zero,
+  // allowing subsequent pointer routing to skip the required drain."
+  it('a late answer after lost() corrupting order: a move after a press still waits for that press', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    s.router.input([down(20, 225)])
+    await s.flush()
+    const old = s.page.held.shift()
+    s.detach()
+    s.router.input([up(20, 225)])
+    expect(s.fallback).toEqual([up(20, 225)])
+    s.attach()
+    s.router.input([down(20, 225)])
+    await s.flush()
+    old?.resolve({})
+    await s.flush()
+    s.router.input([move(30, 225, true)])
+    await s.flush()
+    // The new press is unanswered: the move waits for it.
+    expect(s.mice()).toEqual([
+      ['A', 'mousePressed', 20, 25],
+      ['A', 'mousePressed', 20, 25]
+    ])
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice().at(-1)).toEqual(['A', 'mouseMoved', 30, 25])
+  })
+
+  // Round 1, MUST 1: "A preceding wheel can scroll that frame away during the drain ... Dispatch
+  // still targets the previously selected child." Fixed in 0cbc4ec (its test above, "routes a
+  // pointer event only after the press, release or wheel in flight was answered", passes there
+  // too); this is the same with a move in flight, which 0cbc4ec still routed past.
+  it('stale target during drain: a press is hit-tested after the move in flight answered', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    s.router.input([move(20, 226), down(20, 225)])
+    await s.flush()
+    expect(s.mice()).toEqual([['A', 'mouseMoved', 20, 26]])
+    // The page scrolled A away meanwhile (a scroll-on-hover), then the move answered.
+    s.page.owners.set('', [{ node: 7, frameId: 'T-A', box: rect(0, -100, 600, 300), width: 600, height: 300 }])
+    s.page.opts.hold = false
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice().filter((m) => m[1] === 'mousePressed')).toEqual([['', 'mousePressed', 20, 225]])
+  })
+
+  // Round 1, MUST 2: "A probe queued 2,048 releases despite the 512-step cap." Fixed in 0cbc4ec for
+  // stray releases (the test above, "a full queue drops moves first", passes there); a key released
+  // over and over after one press still matches it once only.
+  it('unbounded releases: one press lets one release past the cap, not every release of that key', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    s.router.input([keyDown('c'), keyDown('e')])
+    await s.flush()
+    const many: ElectronInputEvent[] = []
+    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('d'))
+    const ups: ElectronInputEvent[] = []
+    for (let n = 0; n < 50; n++) ups.push({ type: 'keyUp', keyCode: 'c', modifiers: [] })
+    s.router.input([...many, ...ups])
+    await answerAll(s)
+    expect(s.page.sent.filter((x) => x.params.type === 'keyUp' && x.params.code === 'KeyC')).toHaveLength(1)
+  })
+
+  // Round 1, MUST 3: "Continuous pointer input to one session never calls drain() ... A probe produced
+  // 500 pending dispatches and zero queued steps." 0cbc4ec capped it at eight per session.
+  it('unbounded pending: a page that answers nothing has at most one unanswered command', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    for (let n = 0; n < 40; n++) {
+      s.router.input([move(n, n)])
+      await s.flush()
+      s.fire()
+    }
+    s.router.input([{ type: 'mouseWheel', x: 5, y: 5, deltaX: 0, deltaY: -120, modifiers: [] }, keyDown('a')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    expect(s.page.held).toHaveLength(1)
   })
 })
