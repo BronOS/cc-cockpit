@@ -50,17 +50,30 @@ class FakeSession extends FakeEmitter {
 
 class FakeDebugger extends FakeEmitter {
   attachedWith: string | undefined
-  readonly commands: Array<{ method: string; params: unknown }> = []
+  readonly commands: Array<{ method: string; params: unknown; sessionId?: string }> = []
+  /** A test's own answer to a command (a refusal, a throw, one that never answers); undefined: the default. */
+  answer: ((method: string, sessionId: string | undefined) => Promise<unknown> | undefined) | undefined
   attach(version: string): void {
     this.attachedWith = version
   }
   isAttached(): boolean {
     return this.attachedWith !== undefined
   }
-  sendCommand(method: string, params?: unknown): Promise<unknown> {
-    this.commands.push({ method, params })
+  sendCommand(method: string, params?: unknown, sessionId?: string): Promise<unknown> {
+    // The session only when one was named: the page's own commands carry none.
+    this.commands.push(sessionId === undefined ? { method, params } : { method, params, sessionId })
+    const own = this.answer?.(method, sessionId)
+    if (own) return own
     // A refusal: the protocol said no, or the page closed under the command.
     return state.refuse ? Promise.reject(new Error(`${method} refused`)) : Promise.resolve({})
+  }
+  /** The commands sent on one child session. */
+  sentOn(sessionId: string): string[] {
+    return this.commands.filter((c) => c.sessionId === sessionId).map((c) => c.method)
+  }
+  /** A child target attached by the auto-attach (`parent`: the session it was attached from, '' the page's). */
+  attachChild(sessionId: string, type: string, parent = ''): void {
+    this.emit('message', {}, 'Target.attachedToTarget', { sessionId, targetInfo: { type, targetId: `T-${sessionId}`, url: '' }, waitingForDebugger: true }, parent)
   }
 }
 
@@ -227,7 +240,7 @@ const { isOffscreenWindow, OffscreenWebviewFactory, OFFSCREEN_INITIAL_SIZE, OFFS
   '../../src/main/webview/electron-offscreen-webview'
 )
 const { ElectronWebviewFactory } = await import('../../src/main/webview/electron-webview')
-const { PRINT_DISABLED_SOURCE } = await import('../../src/main/webview/webview-hardening')
+const { CHILD_SETUP_TIMEOUT_MS, PRINT_DISABLED_SOURCE } = await import('../../src/main/webview/webview-hardening')
 
 function events(over: Partial<WebviewEvents> = {}): WebviewEvents & { log: string[] } {
   const log: string[] = []
@@ -368,21 +381,149 @@ describe('OffscreenWebviewFactory', () => {
     expect(wc.debugger.commands).toEqual([
       { method: 'Page.enable', params: undefined },
       { method: 'Page.setInterceptFileChooserDialog', params: { enabled: true, cancel: true } },
-      { method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: PRINT_DISABLED_SOURCE, runImmediately: true } }
+      { method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: PRINT_DISABLED_SOURCE, runImmediately: true } },
+      { method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } }
     ])
     expect(wc.calls.some((c) => c.startsWith('load'))).toBe(false)
   })
 
-  it('disables print for good: a no-op the page can neither overwrite nor delete', () => {
+  // Security review: a cross-site iframe runs in another process the page's session does not
+  // reach. Each one is auto-attached paused, gets the same cancels on its own session, then runs.
+  it('gives every cross-site frame, nested ones too, the page\'s cancels before it runs', async () => {
+    const { wc, logs } = make()
+    wc.debugger.commands.length = 0
+    wc.debugger.attachChild('S1', 'iframe')
+    // A frame inside that frame, attached from the child's session.
+    wc.debugger.attachChild('S2', 'iframe', 'S1')
+    await settle()
+    const cancels = ['Page.enable', 'Page.setInterceptFileChooserDialog', 'Page.addScriptToEvaluateOnNewDocument', 'Target.setAutoAttach']
+    for (const id of ['S1', 'S2']) {
+      // The resume comes last, after every cancel answered.
+      expect(wc.debugger.sentOn(id)).toEqual([...cancels, 'Runtime.runIfWaitingForDebugger'])
+      expect(wc.debugger.commands.filter((c) => c.sessionId === id).slice(0, 4).map((c) => c.params)).toEqual([
+        undefined,
+        { enabled: true, cancel: true },
+        { source: PRINT_DISABLED_SOURCE, runImmediately: true },
+        { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }
+      ])
+    }
+    // Nothing more on the page's own session, nothing logged.
+    expect(wc.debugger.commands.every((c) => c.sessionId !== undefined)).toBe(true)
+    expect(logs).toEqual([])
+  })
+
+  it('resumes a worker or any other non-frame target untouched', async () => {
+    const { wc } = make()
+    wc.debugger.commands.length = 0
+    for (const [id, type] of [['W1', 'worker'], ['W2', 'service_worker'], ['W3', 'shared_storage_worklet'], ['W4', '']] as const) {
+      wc.debugger.attachChild(id, type)
+    }
+    // An attach with no session to talk to: nothing to resume.
+    wc.debugger.emit('message', {}, 'Target.attachedToTarget', { targetInfo: { type: 'iframe' } }, '')
+    // Other protocol events pass by.
+    wc.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'F', mode: 'selectSingle' }, '')
+    await settle()
+    expect(wc.debugger.commands).toEqual(
+      ['W1', 'W2', 'W3', 'W4'].map((sessionId) => ({ method: 'Runtime.runIfWaitingForDebugger', params: undefined, sessionId }))
+    )
+  })
+
+  it('still resumes a frame whose cancels were refused or threw, and logs each failure', async () => {
+    const { wc, logs } = make()
+    wc.debugger.commands.length = 0
+    wc.debugger.answer = (method, sessionId) => {
+      if (sessionId !== 'S1') return undefined
+      if (method === 'Page.enable') throw new Error('thrown at once')
+      if (method !== 'Runtime.runIfWaitingForDebugger') return Promise.reject(new Error('No session with given id'))
+      return undefined
+    }
+    wc.debugger.attachChild('S1', 'iframe')
+    await settle()
+    expect(wc.debugger.sentOn('S1').at(-1)).toBe('Runtime.runIfWaitingForDebugger')
+    expect(logs).toEqual([
+      'webview: Page.enable (child frame) failed: thrown at once',
+      'webview: Page.setInterceptFileChooserDialog (child frame) failed: No session with given id',
+      'webview: Page.addScriptToEvaluateOnNewDocument (child frame) failed: No session with given id',
+      'webview: Target.setAutoAttach (child frame) failed: No session with given id'
+    ])
+    // The resume refused too: said, never thrown.
+    logs.length = 0
+    wc.debugger.answer = (method) => (method === 'Runtime.runIfWaitingForDebugger' ? Promise.reject(new Error('gone')) : undefined)
+    wc.debugger.attachChild('S2', 'worker')
+    await settle()
+    expect(logs).toEqual(['webview: Runtime.runIfWaitingForDebugger (child frame) failed: gone'])
+  })
+
+  it('resumes a frame whose cancels never answer after CHILD_SETUP_TIMEOUT_MS, and says so', async () => {
+    vi.useFakeTimers()
+    try {
+      const { wc, logs } = make()
+      wc.debugger.answer = (method) => (method === 'Page.addScriptToEvaluateOnNewDocument' ? new Promise(() => {}) : undefined)
+      wc.debugger.attachChild('S1', 'iframe')
+      await vi.advanceTimersByTimeAsync(CHILD_SETUP_TIMEOUT_MS - 1)
+      expect(wc.debugger.sentOn('S1')).not.toContain('Runtime.runIfWaitingForDebugger')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(wc.debugger.sentOn('S1').at(-1)).toBe('Runtime.runIfWaitingForDebugger')
+      expect(logs).toEqual([`webview: a child frame's cancels took over ${CHILD_SETUP_TIMEOUT_MS} ms; resuming it anyway`])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /** PRINT_DISABLED_SOURCE run as Chromium runs it, on a fake page: `window` and `Document` its globals. */
+  function lockedPage(): { page: { print?: () => void }; doc: { execCommand: (...a: unknown[]) => unknown }; printed: () => number; executed: unknown[][] } {
     let printed = 0
+    const executed: unknown[][] = []
     const page: { print?: () => void } = { print: () => void printed++ }
-    // The script as Chromium runs it, with `window` the page's global.
-    new Function('window', PRINT_DISABLED_SOURCE)(page)
+    class FakeDocument {
+      execCommand(...args: unknown[]): unknown {
+        executed.push(args)
+        return true
+      }
+    }
+    new Function('window', 'Document', PRINT_DISABLED_SOURCE)(page, FakeDocument)
+    return { page, doc: new FakeDocument(), printed: () => printed, executed }
+  }
+
+  it('disables print for good: a no-op the page can neither overwrite nor delete', () => {
+    const { page, printed } = lockedPage()
     page.print?.()
-    expect(printed).toBe(0)
+    expect(printed()).toBe(0)
     expect(Object.getOwnPropertyDescriptor(page, 'print')).toMatchObject({ writable: false, configurable: false })
     // A module is strict code, where a failed delete throws (sloppy page code gets false).
     expect(() => delete page.print).toThrow(TypeError)
+  })
+
+  it("refuses execCommand('print') in any case and passes every other command through unchanged", () => {
+    const { doc, executed } = lockedPage()
+    expect([doc.execCommand('print'), doc.execCommand('PrInT'), doc.execCommand('PRINT', false)]).toEqual([false, false, false])
+    expect(executed).toEqual([])
+    expect(doc.execCommand('copy')).toBe(true)
+    expect(doc.execCommand('insertText', false, 'x')).toBe(true)
+    expect(executed).toEqual([['copy'], ['insertText', false, 'x']])
+    // Locked like print: neither replaced nor deleted.
+    const proto = Object.getPrototypeOf(doc) as object
+    expect(Object.getOwnPropertyDescriptor(proto, 'execCommand')).toMatchObject({ writable: false, configurable: false })
+  })
+
+  it("cannot be talked into execCommand('print') by a two-faced command or a replaced toLowerCase", () => {
+    const { doc, executed } = lockedPage()
+    // Stringified once: the string checked is the string passed on.
+    let calls = 0
+    const twoFaced = { toString: () => (calls++ === 0 ? 'copy' : 'print') }
+    doc.execCommand(twoFaced)
+    expect(executed).toEqual([['copy']])
+    // The page's own toLowerCase is not the one the check uses.
+    const lower = String.prototype.toLowerCase
+    String.prototype.toLowerCase = function () {
+      return 'copy'
+    }
+    try {
+      expect(doc.execCommand('Print')).toBe(false)
+    } finally {
+      String.prototype.toLowerCase = lower
+    }
+    expect(executed).toEqual([['copy']])
   })
 
   it('still makes the view when the protocol cannot be attached, and says so', () => {
@@ -413,7 +554,8 @@ describe('OffscreenWebviewFactory', () => {
       expect(logs).toEqual([
         'webview: Page.enable failed: Page.enable refused',
         'webview: Page.setInterceptFileChooserDialog failed: Page.setInterceptFileChooserDialog refused',
-        'webview: Page.addScriptToEvaluateOnNewDocument failed: Page.addScriptToEvaluateOnNewDocument refused'
+        'webview: Page.addScriptToEvaluateOnNewDocument failed: Page.addScriptToEvaluateOnNewDocument refused',
+        'webview: Target.setAutoAttach failed: Target.setAutoAttach refused'
       ])
       // Refused because the page closed under them: nothing to say.
       logs.length = 0

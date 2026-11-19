@@ -9,9 +9,10 @@
 // - `disableDialogs: true`, always: under Ozone headless a JS dialog (alert, confirm, prompt) in
 //   the page aborts main (SIGTRAP, spike 2026-11-11), ending every project on the server. With it
 //   `alert` returns at once, `confirm` is false, `prompt` throws in the page.
-// - cancelOffscreenNativeUi (webview-hardening.ts): file choosers, the File System Access pickers
-//   and print() cancelled, since nobody can answer them here and a desktop portal on the session
-//   bus would show them on the server's desktop (print blocking the page until answered).
+// - cancelOffscreenNativeUi (webview-hardening.ts): file choosers, the File System Access pickers,
+//   print() and execCommand('print') cancelled in every frame, cross-site ones included, since
+//   nobody can answer them here and a desktop portal on the session bus would show them on the
+//   server's desktop (print blocking the page until answered).
 // - Sized explicitly: under the headless platform the window starts 1x1 whatever `width` and
 //   `height` say (spike), so the size is set right after creation and on every setBounds. Only the
 //   size counts; there is no screen position.
@@ -238,9 +239,9 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
 
   /**
    * Destroy every live view's window (main's `before-quit`). Electron's own quit closes each window,
-   * and a close waits for the page: one whose renderer is blocked (a cross-site sub-frame's print
-   * held by a desktop portal, the one case the hardening does not cover, design-web-browser.md §2)
-   * would never answer and hold the quit up until systemd's SIGKILL. destroy does not wait. The
+   * and a close waits for the page: one whose renderer is blocked (a print or chooser held by a
+   * desktop portal, should a cancel ever miss one, design-web-browser.md §2) would never answer and
+   * hold the quit up until systemd's SIGKILL. destroy does not wait. The
    * manager hears each go (`gone`) as when the page crashed.
    */
   destroyAll(): void {
