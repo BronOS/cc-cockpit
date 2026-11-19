@@ -225,7 +225,10 @@ const {
   progressBarValue,
   readCappedText,
   remotePartition,
-  UNLOAD_PROBE_TIMEOUT_MS
+  UNLOAD_PROBE_TIMEOUT_MS,
+  pageNoticeScript,
+  PAGE_NOTICE_MS,
+  MAX_PAGE_NOTICES
 } = await import('../../src/main/remote/electron-remote-window')
 const { createHash } = await import('node:crypto')
 const { KEY_READ_TIMEOUT_MS, READ_KEY_SCRIPT, REMOTE_KEY_WORLD_ID } = await import('../../src/main/remote/remote-key')
@@ -259,6 +262,7 @@ function windowHooks(log: string[], hold = false): RemoteWindowHooks {
     loaded: () => void log.push('loaded'),
     focused: () => void log.push('focused'),
     input: (kind) => void log.push(`input ${kind}`),
+    downloadClick: () => void log.push('download click'),
     closed: () => void log.push('closed')
   }
 }
@@ -375,6 +379,38 @@ describe('ElectronRemoteWindowFactory: the window', () => {
       wc.emit('input-event', {}, { type })
     }
     expect(log.filter((l) => l.startsWith('input'))).toEqual(['input click', 'input click', 'input key', 'input key', 'input key'])
+  })
+
+  it("a click in a plugin's panel (an out-of-process frame) counts for a download, never as the focus moves' click", () => {
+    // The reported "Files › Download does nothing": Electron 45 puts a sandboxed plugin frame in a
+    // process of its own, and a click there reaches `before-mouse-event` (emitted at the root) but
+    // never `input-event` (the main frame's widget only; checked against Electron 45 with a sandboxed
+    // frame and a DevTools-dispatched click). Before the fix nothing heard it, so the download gate
+    // saw no click and refused every Download from the Files panel.
+    const { wc, log } = make()
+    for (const type of ['mouseDown', 'mouseMove', 'mouseUp', 'mouseWheel', 'mouseEnter', 'mouseLeave', 'contextMenu']) {
+      wc.emit('before-mouse-event', prevented(), { type, x: 10, y: 10 })
+    }
+    expect(log.filter((l) => l.startsWith('input') || l === 'download click')).toEqual(['download click'])
+  })
+
+  it("shows main's notice in the page in its own isolated world, as text only, nothing when closed", () => {
+    const { view, wc, win } = make()
+    const text = 'a"b</div><img src=x onerror=alert(1)>.txt was not saved: click Download again'
+    view.showNotice(text)
+    expect(wc.scripts).toEqual([{ world: REMOTE_KEY_WORLD_ID, code: pageNoticeScript(text) }])
+    const code = pageNoticeScript(text)
+    // The text is one JSON string literal set as textContent, never markup.
+    expect(code).toContain(`const text = ${JSON.stringify(text)};`)
+    expect(code).toContain('row.textContent = text;')
+    expect(code).not.toContain('innerHTML')
+    expect(code).toContain(`setTimeout(drop, ${PAGE_NOTICE_MS})`)
+    expect(code).toContain(`> ${MAX_PAGE_NOTICES})`)
+    // It parses as a script.
+    expect(() => new Function(code)).not.toThrow()
+    win.destroyed = true
+    view.showNotice(text)
+    expect(wc.scripts).toHaveLength(1)
   })
 
   it('drives the window: load, reload, focus, title, plain-text error, close', () => {

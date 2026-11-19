@@ -221,10 +221,16 @@ The window runs the server's web client, so §2 is unchanged; the change is the 
 (`electron-remote-window.ts`, today `preventDefault` for everything). The page is an untrusted site (a compromised server
 runs its own client and can skip all of §2), so every gate is the desktop's, decided in `remote-windows.ts` (testable):
 - **Origin.** The item's URL is the window's current server origin with a `/d/` path, `getURLChain()` one entry, the
-  `webContents` a remote window of that server; anything else (`blob:`, `data:`, a streamed page's own) cancelled as now.
+  `webContents` a remote window of that server; anything else (`blob:`, `data:`, a streamed page's own) cancelled, with a
+  log line naming each URL's origin (never the token) and the server's, and a notice within the refusal budget below.
 - **A person's click.** A pointer click in that window within `DOWNLOAD_CLICK_MS` (5 s, Chromium's activation span, so
-  the shell's own check of §2.1 and this one agree), recorded by the existing `hooks.input('click')` in its own field
-  (keys never set it) and consumed per download. Past it the item is cancelled and a native notice says "not saved: click
+  the shell's own check of §2.1 and this one agree), in its own field (keys never set it) and consumed per download. It
+  is heard through `before-mouse-event` (`hooks.downloadClick`), emitted at the root before Chromium routes the event:
+  Download is clicked in the Files panel, a sandboxed plugin frame that Electron 45 puts in its own process, and
+  `input-event` (`hooks.input('click')`, the main frame's widget only) never hears a click there. The first version used
+  `input-event` alone and refused every Download from a panel (the e2e passed on its earlier click on the Files button).
+  Only the download gate takes it: the focus moves' `clickedAt` stays `input-event`'s, since a key typed in such a frame
+  is not heard either and could not take the click back. Past it the item is cancelled and a native notice says "not saved: click
   Download again"; the shell's "ready — Download" notice is that fresh click after a slow walk.
 - **One at a time and a budget.** One active download per server; at most 3 per 10 s per server (a `Budget` like
   `MAX_PAGE_ACTIONS`); a further one cancelled.
@@ -238,7 +244,12 @@ runs its own client and can skip all of §2), so every gate is the desktop's, de
   hex>`); on `completed` main links it exclusively to the final name (`fs.link`, `EEXIST` never overwritten and never
   followed, then `name (1).ext`, up to `(99)`), unlinks the temp, and on any failure, cancel or interrupt deletes it.
 - **Never opened.** A native notice with main's own text and path ("Saved report.pdf to Downloads"), whose action is Show
-  in Finder / Show in folder (`showItemInFolder` through `electron-shell.ts`); failures and cancels get one too. Progress
+  in Finder / Show in folder (`showItemInFolder` through `electron-shell.ts`); failures and cancels get one too. Each
+  outcome and refusal is also a log line and a notice in the window's page for a few seconds (`showNotice`, a box
+  drawn in main's isolated world as `textContent`): an ad-hoc signed macOS build may not be allowed to show native
+  notices, and a notification that fails is logged (`electron-notification.ts`). The page shares that box's DOM, so it
+  names only the name the page asked for (never the numbered one: that would tell the server which names are in
+  Downloads) and no placement reason (`pageOutcomeText`). Progress
   on the dock and taskbar (`setProgressBar`); closing the window cancels its items.
 - **Quarantine.** Task 1 checks that a packaged macOS build sets `com.apple.quarantine` on what the item saves; if not,
   names `runnableByName` matches are refused on the Mac. Linux saves with no exec bit.

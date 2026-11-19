@@ -211,6 +211,11 @@ class FakeView implements RemoteWindowView {
   setProgress(value: number | 'indeterminate' | undefined): void {
     this.progress.push(value)
   }
+  /** Main's notices in the page, in order. */
+  readonly notices: string[] = []
+  showNotice(text: string): void {
+    this.notices.push(text)
+  }
   close(): void {
     if (this.closed) return
     this.closed = true
@@ -226,6 +231,14 @@ class FakeView implements RemoteWindowView {
   /** The person clicked in the page (a mouse button released), as the adapter reports it. */
   click(): void {
     this.hooks.input('click')
+  }
+
+  /**
+   * The person clicked in a plugin's panel (an out-of-process frame): the adapter's `before-mouse-event`
+   * hears it, its `input-event` does not (Files › Download is such a click).
+   */
+  frameClick(): void {
+    this.hooks.downloadClick()
   }
 
   /** The person pressed a key in the page. */
@@ -1995,7 +2008,7 @@ describe('RemoteWindows: downloads', () => {
     expect(view.progress).toEqual(['indeterminate', 'indeterminate', undefined])
   })
 
-  it('cancels, with no notice, anything but the server own link from its own live window', async () => {
+  it('cancels anything but the server own link from its own live window: a log line naming the origins, never the token, and notices within the budget', async () => {
     const view = await openWindow()
     const other = await openWindow('d1', 'https://box.example')
     const cases: Array<[FakeItem, FakeView | undefined]> = [
@@ -2018,8 +2031,56 @@ describe('RemoteWindows: downloads', () => {
     // A window that is gone.
     view.close()
     expect(start(new FakeItem([D_URL], 'a.txt'), view)).toBe(false)
-    expect(notices).toEqual([])
-    expect(t.logs.filter((l) => l.includes('cancelled a download'))).toHaveLength(cases.length + 1)
+    const cancelled = t.logs.filter((l) => l.includes('cancelled a download'))
+    expect(cancelled).toHaveLength(cases.length + 1)
+    expect(cancelled.some((l) => l.includes(TOKEN))).toBe(false)
+    expect(cancelled[0]).toBe(`remote s1: cancelled a download: not the server's own download link (1 URL: blob:; the server's origin is ${ORIGIN})`)
+    expect(cancelled[2]).toBe(
+      `remote s1: cancelled a download: not the server's own download link (1 URL: http://127.0.0.1:4101 /d/<token>; the server's origin is ${ORIGIN})`
+    )
+    expect(cancelled[4]).toContain(`(2 URLs, redirected: ${ORIGIN} another path -> ${ORIGIN} /d/<token>;`)
+    expect(cancelled[5]).toBe(`remote s1: cancelled a download: not from a window of this server (1 URL: ${ORIGIN} /d/<token>)`)
+    // The page can start these at will: a notice each only within the server's notice budget, in the
+    // window too (the native one may never show).
+    const refused = "a.txt was not saved: it is not this server's own download link"
+    expect(notices.map((n) => n.text)).toEqual(Array.from({ length: DESKTOP_DOWNLOAD_BURST }, () => refused))
+    expect(view.notices).toEqual(Array.from({ length: DESKTOP_DOWNLOAD_BURST }, () => refused))
+    expect(other.notices).toEqual([])
+  })
+
+  it('a download from no window of the server gets the native notice alone', async () => {
+    await openWindow()
+    expect(start(new FakeItem([D_URL], 'a.txt'), undefined)).toBe(false)
+    expect(notices).toEqual([{ text: 'A download was not saved: it did not start in a window of this server' }])
+  })
+
+  it("a click in a plugin's panel (Files › Download) lets a download save, and never vouches for a focus move", async () => {
+    // The reported "Download does nothing": the click is in the Files panel's frame, which the
+    // adapter hears only through `downloadClick` (electron-remote-window.ts).
+    const focused: number[] = []
+    windows = new RemoteWindows({
+      ...t.options,
+      focusLocal: () => (focused.push(1), true),
+      downloads: { dir: () => dir, notice: (text, saved) => void notices.push(saved === undefined ? { text } : { text, saved }) }
+    })
+    const view = await openWindow()
+    view.commit(`${ORIGIN}/?project=p1`)
+    await flush()
+    view.frameClick()
+    expect(view.hooks.allowNavigation(`${ORIGIN}/?cc-desktop=local`)).toBe(false)
+    expect(focused).toEqual([])
+    const item = new FakeItem([D_URL], 'report.pdf')
+    expect(start(item, view)).toBe(true)
+    item.write('hello')
+    item.end('completed')
+    await vi.waitFor(() => expect(notices).toEqual([{ text: 'Saved report.pdf to Downloads', saved: join(dir, 'report.pdf') }]))
+    expect(view.notices).toEqual(['Saved report.pdf to Downloads'])
+    expect(t.logs).toContain('remote s1: saving a download as report.pdf')
+    expect(t.logs).toContain('remote s1: saved a download as report.pdf')
+    // One click, one download, as a main-frame click.
+    expect(start(new FakeItem([D_URL], 'again.pdf'), view)).toBe(false)
+    expect(t.logs).toContain('remote s1: cancelled a download: no click of the person in the window before it')
+    expect(view.notices.at(-1)).toBe('again.pdf was not saved: click Download again')
   })
 
   it('cancels with a notice when the person did not click just before, or the click is used up', async () => {
@@ -2189,8 +2250,20 @@ describe('RemoteWindows: downloads', () => {
     expect(readFileSync(target, 'utf8')).toBe('keep')
     expect(lstatSync(join(dir, 'report (1).pdf')).isSymbolicLink()).toBe(true)
     expect(readFileSync(join(dir, 'report (2).pdf'), 'utf8')).toBe('theirs')
+    // The page's notice names what it asked for: a numbered name would tell the server which of its
+    // chosen names are already in Downloads (the page shares the notice's DOM).
+    expect(view.notices).toEqual(['Saved report.pdf to Downloads'])
     // No temp left behind.
     expect(readdirSync(dir).filter((n) => n.startsWith('.'))).toEqual([])
+  })
+
+  it("a placement failure's reason stays out of the page's notice", async () => {
+    const view = await openWindow()
+    for (let n = 0; n <= MAX_NAME_NUMBER; n++) writeFileSync(join(dir, numberedName('a.txt', n)), '')
+    const notice = await saveOne(view, 'a.txt')
+    expect(notice.text).toContain('are taken in Downloads')
+    expect(view.notices).toEqual(["a.txt was not saved: it could not be placed in Downloads (the desktop's notice says why)"])
+    expect(t.logs.some((l) => l.startsWith('remote s1: a download was not saved:') && l.includes('are taken in Downloads'))).toBe(true)
   })
 
   it('fails, removing the temp, when every numbered name is taken', async () => {

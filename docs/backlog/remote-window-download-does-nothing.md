@@ -1,23 +1,27 @@
 ---
 worth: yes
-where: src/main/remote/remote-windows.ts:112
+where: src/main/remote/electron-remote-window.ts:447
 added: 2026-11-19
 ---
-# download in a remote window does nothing on the desktop
+# download in a remote window: verify the fix on a packaged Mac
 
-Reported by Oleg: in the desktop's remote window (a server opened through Remote servers), Files › Download on a
-file shows nothing, while the server side was checked and does send the file. Expected: the file lands in the
-desktop's Downloads folder and a notice says so (Show in Finder).
+Reported by Oleg (packaged 0.23.0 on macOS, Direct link to `http://10.0.20.115:7330`): Files › Download in the remote
+window showed nothing and saved nothing, while the server sent the file.
 
-Where to look first, in the order the window's gates run (design-download.md §3.3, comment at the `where` line):
-- the origin gate cancels with a log line only and no notice: anything not `<current server origin>/d/<token>` with
-  a one-entry URL chain (a redirect, another origin, e.g. a tunnel or SSH loopback port the page and the link
-  disagree on) is dropped silently by design. Main's log says which.
-- the click gate (`DOWNLOAD_CLICK_MS`) and the burst budget refuse with a native notice; if macOS notifications are
-  off for the app, those refusals and the saved notice are invisible too, and the file may already be in Downloads.
-- the save (`remote-downloads.ts`): the macOS no-hard-link refusal, the temp `.cc-download-*` then the exclusive
-  link.
+Cause found and fixed: the click gate heard clicks through `input-event`, which sees the main frame's widget only. The
+Files panel is a sandboxed plugin frame that Electron 45 runs out of process (checked: own pid, a DevTools click there
+fires no `input-event` but does fire `before-mouse-event`), so every Download from a panel was refused as "no click".
+The e2e passed only on its earlier main-frame click on the Files button. Now `before-mouse-event` feeds the download
+click (`downloadClick`), every save and refusal is a log line and a notice in the window's page as well as the native
+one, and a notification that fails is logged.
 
-Unknown: which connection kind (built-in SSH, My own tunnel, Direct) and whether the build was packaged; CLAUDE.md
-lists remote downloads as never run on a packaged Mac. First step: reproduce, then read main's log line for that
-click and check `~/Downloads`.
+Still unverified (needs a real pointer on a packaged, ad-hoc signed build):
+- the save itself on macOS: ~/Downloads access (TCC prompt, or a denial, which shows as "the download was interrupted"),
+  the hard link into ~/Downloads;
+- whether native notices show at all for the ad-hoc signed app (`a notification did not show: <error>` in the log says
+  they do not).
+
+Check: run `/Applications/cc-cockpit.app/Contents/MacOS/cc-cockpit` from Terminal (a Finder launch keeps no main log),
+Download a file, and read the `remote <id>: ...download...` lines: `saving a download as`, then `saved a download as` or
+`a download was not saved: <why>`, or `cancelled a download: <why>`. No line at all means `will-download` never fired.
+Close this item when a Download lands in ~/Downloads with the in-window notice.

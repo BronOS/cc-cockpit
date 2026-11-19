@@ -222,7 +222,12 @@ export async function placeDownload(temp: string, dir: string, name: string, opt
 }
 
 /** How a save ended: the final path, or the reason it did not save (main's own words, for the notice). */
-export type DownloadOutcome = { saved: string } | { failed: string }
+/**
+ * How a save ended. `placement`: it failed while placing the completed file in Downloads (the names
+ * taken, a write error), a reason that speaks of the folder's contents, so it is never shown to the
+ * server's page (remote-windows.ts `showNotice`).
+ */
+export type DownloadOutcome = { saved: string } | { failed: string; placement?: true }
 
 export interface SaveOptions {
   item: RemoteDownloadItem
@@ -323,7 +328,7 @@ export function startSave(options: SaveOptions): ActiveSave {
           return
         }
         options.log(`remote download: could not place ${name}: ${errorText(err)}`)
-        finish({ failed: err instanceof PlaceError ? err.message : 'it could not be written to Downloads' })
+        finish({ failed: err instanceof PlaceError ? err.message : 'it could not be written to Downloads', placement: true })
       }
     )
   })
