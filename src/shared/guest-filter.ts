@@ -346,7 +346,9 @@ export function guestPresence(s: PresenceSnapshot, ctx: GuestFilterContext): Pre
         delete out.elsewhere
         return out
       }
-      return { ...p, tabId: null, elsewhere: true as const }
+      // Typing on a tab this guest cannot see is that tab's activity: the guest learns only that the person is
+      // elsewhere, never when they type there.
+      return { ...p, tabId: null, elsewhere: true as const, typing: false }
     }),
     lastTyped
   }

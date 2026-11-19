@@ -717,7 +717,7 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   invite) and `ccc web role <guest id|name> read|write` (`write` in server mode only); they work on a desktop too.
   Revoke all in the devices list includes guests, and turning web access off disconnects them.
 - *Presence:* every view shows who is here (avatars on the tabs: who looks at it, who is typing, who typed last); a
-  guest sees others only on tabs it can see ("elsewhere" otherwise). Your name there is **Your name for guests** in
+  guest sees others only on tabs it can see ("elsewhere" otherwise, never typing). Your name there is **Your name for guests** in
   Settings › General › Web access (default "Host"). Nothing of it is saved or given to plugins.
 - *When access ends:* a kick shows the guest "<your name> removed you." and clears their terminals; a lifetime's end
   "Your access ended."; a closed project "The host closed this project." (the page retries); a role switch reconnects their page with a line naming the new
