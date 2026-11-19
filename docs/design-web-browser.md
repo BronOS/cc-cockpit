@@ -244,8 +244,11 @@ the fallback when the protocol detached:
   and texts keep their order. A full queue (512) drops moves first, then lets in only a release of a press it took
   (matched by the physical key's `code`, so Shift+A down and `a` up match, or by the button).
 - **Stalled sessions.** A session whose command missed its deadline gets nothing more until that command answers, so
-  a renderer that answers nothing holds one unanswered command, never a pile: a move for a stalled frame is dropped,
-  its press, release or wheel goes to the page's session at the top point. While the page's own session is stalled
+  a renderer that answers nothing holds one unanswered command, never a pile; that command no longer counts toward
+  the page's one on its way (a stalled frame holds itself, not the page). A move for a stalled frame is dropped, its
+  press or wheel goes to the page's session at the top point. A release always goes where its press went: a frame
+  that got a press and then stalled is owed the release, sent once it answers (dropped if the frame or the
+  attachment goes); an edit command's key down counts as a press for the queue's cap like any key. While the page's own session is stalled
   its moves are dropped and the rest waits in the queue (bounded by the cap), so a page busy for a second loses no
   key; its answer or a detach starts the queue again. A hit-test query that missed its 200 ms deadline marks its
   session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch: an

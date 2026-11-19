@@ -59,9 +59,11 @@
 //              order. The queue holds MAX_QUEUED_STEPS: past it moves go first, and then only a release
 //              of a press it took (by the physical key, `code`, or the button) gets in.
 //   stalled    a session whose command missed its deadline gets no other until that one answers (so a
-//              renderer that answers nothing holds one unanswered command, never a pile): a move for a
-//              stalled frame is dropped, a press, release or wheel goes to the page's session at the
-//              top point. While the page's session is stalled its moves are dropped and the rest
+//              renderer that answers nothing holds one unanswered command, never a pile), and that
+//              command no longer counts toward the page's one on its way: a stalled frame holds itself,
+//              not the page. A move for a stalled frame is dropped, a press or wheel goes to the page's
+//              session at the top point. A release goes where its press went (`pressedAt`): to a
+//              stalled frame it is owed and sent once that frame answers, in the same attachment. While the page's session is stalled its moves are dropped and the rest
 //              waits in the queue (the pump idle, no timer: by the queue's caps), so a page busy for a
 //              second loses no key; its answer, or a detach, starts the pump again. A hit test's query
 //              that missed ROUTE_TIMEOUT_MS likewise: that session is asked nothing until it answers.
@@ -336,8 +338,19 @@ type Step =
     }
   | { kind: 'call'; run: () => unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void; blocking: boolean }
 
-/** How one `Input.*` command ended for the step that sent it (the answer itself goes to `sent`). */
-type Outcome = 'answered' | 'refused' | 'late'
+/**
+ * How one `Input.*` command ended for the step that sent it (the answer itself goes to `sent`):
+ * `stale` when the attachment changed before it ended, so its step does nothing more with it (review
+ * finding: a refusal from before a detach was replayed by sendInputEvent into the new page).
+ */
+type Outcome = 'answered' | 'refused' | 'late' | 'stale'
+
+/** A release a stalled frame is owed (its press reached it): sent once it answers, in that attachment. */
+interface OwedRelease {
+  session: string
+  epoch: number
+  params: Record<string, unknown>
+}
 
 /** What the pump does after a step: next, the same step again (a new attachment), or wait (`parked`). */
 type StepEnd = 'done' | 'again' | 'park'
@@ -391,6 +404,16 @@ export class PageInputRouter implements ChildFrameObserver {
   /** The last mouse event's route (for the hover moves when the pointer changes session). */
   private hover: Route | undefined
   private capture: { links: Link[]; buttons: number } | undefined
+  /**
+   * Where each held button's press went (its session and route): its release goes there too, so a
+   * frame that got a press always gets its release (review finding: a frame that was late answering
+   * the press lost the release to the page's session, and kept the button down).
+   */
+  private readonly pressedAt = new Map<'left' | 'middle' | 'right', Route>()
+  /** Releases owed to stalled frames, by session and button (one per button at most). */
+  private readonly owed = new Map<string, Map<string, OwedRelease>>()
+  /** Owed releases whose frame answered: the pump sends them before the next queued step. */
+  private owedReady: OwedRelease[] = []
   private readonly warned = new Set<string>()
   private readonly timers: RouterTimers
 
@@ -416,6 +439,9 @@ export class PageInputRouter implements ChildFrameObserver {
       this.frames.delete(id)
       this.stalled.delete(id)
       this.queryStalled.delete(id)
+      this.owed.delete(id)
+      this.owedReady = this.owedReady.filter((o) => o.session !== id)
+      for (const [button, route] of this.pressedAt) if (route.session === id) this.pressedAt.delete(button)
       for (const f of this.frames.values()) if (f.parent === id) gone.push(f.sessionId)
     }
   }
@@ -513,15 +539,27 @@ export class PageInputRouter implements ChildFrameObserver {
     return true
   }
 
-  /** Run the queue, one step at a time; each step's own command is answered (or late) before the next. */
+  /**
+   * Run the queue, one step at a time; each step's own command is answered (or late) before the next.
+   * Owed releases go first. A step that must wait for the stalled page session parks the pump; every
+   * wake (the stall cleared, a release owed, a detach) calls `pump`, and the park itself checks again
+   * that its reason still holds, since a wake that came while the pump was still running found it
+   * busy and returned (review finding: a lost wakeup left a key queued with nothing to restart it).
+   */
   private async pump(): Promise<void> {
     if (this.pumping) return
-    // Parked on the page's stalled session: its answer (or a detach) restarts the pump, not new input.
-    if (this.parked && this.stalled.has('') && this.deps.attached()) return
+    if (this.parked && this.mustPark()) return
     this.parked = false
     this.pumping = true
     try {
-      for (let step = this.queue.shift(); step; step = this.queue.shift()) {
+      for (;;) {
+        const owed = this.owedReady.shift()
+        if (owed) {
+          await this.sendOwed(owed)
+          continue
+        }
+        const step = this.queue.shift()
+        if (!step) return
         let end: StepEnd = 'done'
         try {
           end = await this.run(step)
@@ -531,7 +569,7 @@ export class PageInputRouter implements ChildFrameObserver {
         if (end === 'done') continue
         // Out of the queue while it ran (so no merge touched it): back at the head.
         this.queue.unshift(step)
-        if (end === 'park') {
+        if (end === 'park' && this.mustPark()) {
           this.parked = true
           return
         }
@@ -539,6 +577,30 @@ export class PageInputRouter implements ChildFrameObserver {
     } finally {
       this.pumping = false
     }
+  }
+
+  /** Whether the head step still has to wait: the page's session stalled, attached, no owed release to send. */
+  private mustPark(): boolean {
+    return this.stalled.has('') && this.deps.attached() && this.owedReady.length === 0
+  }
+
+  /** One owed release to the frame that answered (dropped if that frame or the attachment went). */
+  private async sendOwed(owed: OwedRelease): Promise<void> {
+    if (owed.epoch !== this.epoch || !this.deps.attached() || !this.frames.has(owed.session)) return
+    if (this.stalled.has(owed.session)) {
+      this.oweTo(owed)
+      return
+    }
+    await this.sendInput(owed.session, 'Input.dispatchMouseEvent', owed.params).outcome
+  }
+
+  private oweTo(owed: OwedRelease): void {
+    let byButton = this.owed.get(owed.session)
+    if (!byButton) {
+      byButton = new Map()
+      this.owed.set(owed.session, byButton)
+    }
+    byButton.set(String(owed.params.button), owed)
   }
 
   private async run(step: Step): Promise<StepEnd> {
@@ -568,6 +630,7 @@ export class PageInputRouter implements ChildFrameObserver {
         return 'done'
       }
       if (this.stalled.has('')) return 'park'
+      // A refusal in this attachment only: `stale` (a detach meanwhile) replays nothing.
       if ((await this.sendInput('', 'Input.dispatchKeyEvent', params).outcome) === 'refused') this.pageRefused(step.event)
       return 'done'
     }
@@ -580,8 +643,13 @@ export class PageInputRouter implements ChildFrameObserver {
    */
   private async runMouse(event: MouseEvent): Promise<StepEnd> {
     const epoch = this.epoch
-    let route = this.deliverable(await this.routeOf(event), event)
+    const found = await this.routeOf(event)
     if (epoch !== this.epoch) return 'again'
+    if (event.type === 'mouseUp') {
+      const end = await this.releaseToPress(event, found, epoch)
+      if (end) return end
+    }
+    let route = this.deliverable(found, event)
     if (!route) return 'done'
     // A hover move can change the page under the point (an overlay that opens on hover, an owner set
     // to `pointer-events: none`): hit-tested again after it, at most MAX_RETESTS times, then the
@@ -610,6 +678,7 @@ export class PageInputRouter implements ChildFrameObserver {
     let target = route
     if (target.session === '' && this.stalled.has('')) return event.type === 'mouseMove' ? 'done' : 'park'
     const outcome = await this.sendInput(target.session, 'Input.dispatchMouseEvent', protocolMouseEvent(event, target.x, target.y)).outcome
+    if (outcome === 'stale') return 'done'
     if (outcome === 'refused') {
       if (target.session === '') {
         this.pageRefused(event)
@@ -625,6 +694,36 @@ export class PageInputRouter implements ChildFrameObserver {
     if (epoch !== this.epoch) return 'done'
     this.hover = target
     this.captureAfter(target, event)
+    if (event.type === 'mouseDown') this.pressedAt.set(event.button, target)
+    return 'done'
+  }
+
+  /**
+   * A release whose press went to a frame goes to that frame (`pressedAt`), at its point there (the
+   * capture's route), or at the press's point when the route lost it (the box could not be read): a
+   * frame that got a press always gets its release. A stalled frame is owed it (sent once it answers,
+   * in this attachment). Undefined: no frame press for this button (or that frame went), routed as any.
+   */
+  private async releaseToPress(event: Extract<MouseEvent, { button: unknown }>, found: Route, epoch: number): Promise<StepEnd | undefined> {
+    const press = this.pressedAt.get(event.button)
+    this.pressedAt.delete(event.button)
+    if (!press || press.session === '' || !this.frames.has(press.session)) return undefined
+    const at = found.session === press.session ? found : press
+    const params = protocolMouseEvent(event, at.x, at.y)
+    this.captureAfter(at, event)
+    if (this.stalled.has(press.session)) {
+      this.oweTo({ session: press.session, epoch, params })
+      return 'done'
+    }
+    const outcome = await this.sendInput(press.session, 'Input.dispatchMouseEvent', params).outcome
+    if (outcome === 'refused' && epoch === this.epoch) {
+      // The frame went: the page's session at the top point, as for any refused frame command.
+      this.warn('frame', "webview: a frame's protocol refused input; it went to the page instead")
+      if (!this.stalled.has('') && (await this.sendInput('', 'Input.dispatchMouseEvent', protocolMouseEvent(event, event.x, event.y)).outcome) === 'refused') {
+        this.pageRefused(event)
+      }
+    }
+    if (epoch === this.epoch) this.hover = at
     return 'done'
   }
 
@@ -640,10 +739,12 @@ export class PageInputRouter implements ChildFrameObserver {
   }
 
   /**
-   * The one sender of `Input.*` commands, the hover moves included. The pump never has two on their
-   * way: `outcome` settles when the command is answered, refused or late (STEP_TIMEOUT_MS, a timer
-   * per command, cleared by the answer), and the step that sent it waits for that. Late: the session
-   * is stalled (gets no other command) until this one answers. `sent` is the protocol's own answer.
+   * The one sender of `Input.*` commands, the hover moves included. The contract: at most one command
+   * on its way per page, not counting the one each stalled session still owes (a stalled session is
+   * held, not the page: a frame that never answers must not block the rest). `outcome` settles when
+   * the command is answered, refused or late (STEP_TIMEOUT_MS, a timer per command, cleared by the
+   * answer), or `stale` in a later attachment, and the step that sent it waits for that. Late: the
+   * session is stalled (gets no other command) until this one answers. `sent` is the protocol's own answer.
    */
   private sendInput(session: string, method: InputMethod, params: Record<string, unknown>): { sent: Promise<unknown>; outcome: Promise<Outcome> } {
     const epoch = this.epoch
@@ -657,22 +758,27 @@ export class PageInputRouter implements ChildFrameObserver {
       let over = false
       const timer = this.timers.set(() => {
         over = true
-        if (epoch === this.epoch) {
-          this.stalled.set(session, sent)
-          this.warn('stalled', 'webview: the page or a frame did not answer input in time; it gets no more until it does')
-        }
+        if (epoch !== this.epoch) return done('stale')
+        this.stalled.set(session, sent)
+        this.warn('stalled', 'webview: the page or a frame did not answer input in time; it gets no more until it does')
         done('late')
       }, STEP_TIMEOUT_MS)
       const end = (result: Outcome): void => {
         if (!over) {
           over = true
           this.timers.clear(timer)
-          done(result)
+          done(epoch === this.epoch ? result : 'stale')
           return
         }
-        // A late answer: the session takes input again, only in the attachment it was sent in.
+        // A late answer: the session takes input again, only in the attachment it was sent in, and
+        // gets the releases it was owed meanwhile first.
         if (epoch !== this.epoch || this.stalled.get(session) !== sent) return
         this.stalled.delete(session)
+        const owed = this.owed.get(session)
+        if (owed) {
+          this.owed.delete(session)
+          this.owedReady.push(...owed.values())
+        }
         void this.pump()
       }
       sent.then(
@@ -711,6 +817,9 @@ export class PageInputRouter implements ChildFrameObserver {
     this.hover = undefined
     this.stalled.clear()
     this.queryStalled.clear()
+    this.pressedAt.clear()
+    this.owed.clear()
+    this.owedReady = []
     this.parked = false
   }
 
@@ -719,8 +828,10 @@ export class PageInputRouter implements ChildFrameObserver {
     const top = topRoute(event)
     if (this.capture && event.type !== 'mouseWheel') {
       if (event.type === 'mouseMove' && heldButtons(event.modifiers) === 0) {
-        // A move with no button held: the release went missing (the browser lost it). No capture.
+        // A move with no button held: the release went missing (the browser lost it). No capture, and
+        // no release owed to where the presses went (none is coming).
         this.capture = undefined
+        this.pressedAt.clear()
       } else {
         const links = this.capture.links
         if (links.length === 0) return top
@@ -942,6 +1053,12 @@ export class PageInputRouter implements ChildFrameObserver {
 
 /** A press or a release's identity for the queue's cap: the physical key (`code`) or the button. */
 function pressKey(step: Step): { id: string; release: boolean } | undefined {
+  // An edit command's key down (Cmd+Left, Ctrl+A, ...) is a press too: its key up comes as a key
+  // (review finding: it was not counted, so its key up was dropped past the cap).
+  if (step.kind === 'command' && step.method === 'Input.dispatchKeyEvent') {
+    const { type, code } = step.params
+    return (type === 'rawKeyDown' || type === 'keyDown') && typeof code === 'string' && code !== '' ? { id: `key:${code}`, release: false } : undefined
+  }
   if (step.kind === 'key' && (step.event.type === 'keyDown' || step.event.type === 'keyUp')) {
     return { id: `key:${webviewKeyInfo(step.event.keyCode)?.code ?? step.event.keyCode}`, release: step.event.type === 'keyUp' }
   }
