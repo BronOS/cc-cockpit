@@ -134,6 +134,12 @@ behind it are in [design.md](design.md).
   status line command, which passes the plan's 5-hour and weekly usage, the session's cost and its context fill to
   plugins (`ctx.sessions.rateLimits`, `SessionInfo.costUsd` / `contextPercent`) and then runs your own status line from
   your Claude settings, so it looks as before. Turning it off applies to tabs started afterwards.
+- Keep the computer awake while Claude is working (on by default; Settings > General > Claude sessions): while any
+  Claude tab in any window is working, the computer does not idle-sleep; it may sleep again a minute after the last one
+  stops. A tab waiting for your permission does not count. The display can still sleep, and closing a laptop's lid or
+  choosing Sleep still sleeps it. macOS shows the hold in `pmset -g assertions`; Windows uses `SetThreadExecutionState`;
+  Linux asks logind or the desktop's screensaver service over the session bus, so on a server with no session bus it
+  may do nothing. A browser of a desktop shows the switch but cannot change it; a server's browsers can.
 - Sending text into a session through a gate (see limitations), with queueing while Claude is busy.
 - Typing in a Claude tab takes it over from plugins: once you type or paste there, plugins can no longer send text into it and their queued texts are dropped (clicks, focus and terminal replies do not count; Discuss with Claude still works).
 - Zones with movable, collapsible panels (move or hide one from the "…" in its header or a
@@ -1211,6 +1217,11 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   (plugins and `ccc sessions` see status `needs-permission` with that tool). It ends when Claude
   reports the tool done, not on a key; a cancelled question (Esc) keeps showing until Claude's
   next turn, and a background subagent's tool call while the dialog is up shows "working".
+- Keep awake and an interrupted turn: a turn you interrupt with Esc sends no Stop hook, so the tab keeps showing
+  "working" until its next prompt. Keep awake stops counting it once Claude Code reports it has sat at its prompt
+  (about a minute later), so the computer may sleep about two minutes after the interrupt. Should that report not
+  come, a working tab with no hook event for 30 minutes stops counting; a turn that thinks that long without a single
+  tool call loses the hold the same way.
 - Closing a whole project window, or quitting, does not ask, even with running tabs. With a browser attached to the
   window, closing it asks "Close for everyone" (the browser is told the window closed) or "Keep running for <device>":
   the window is hidden and its tabs keep running for the browser. Opening the project again (the project picker,

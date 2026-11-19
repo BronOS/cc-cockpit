@@ -1203,6 +1203,7 @@ export interface ProjectSettingsHandlerDeps {
   setClaudeTabOnOpen(value: unknown): void
   setSessionGist(value: unknown): void
   setStatusLineUsage(value: unknown): void
+  setKeepAwake(value: unknown): void
   setDiscussPrompt(value: unknown): void
   /** This window's own project (ProjectSettingsService.setDiscussPrompt checks the value). */
   setProjectDiscussPrompt(projectId: string, value: unknown): void
@@ -1225,7 +1226,7 @@ export interface ProjectSettingsHandlerDeps {
   setTabCommands(projectId: string, level: unknown, entries: unknown): TabCommandEntry[]
 }
 
-export function registerProjectSettingsHandlers(router: IpcRouter, deps: ProjectSettingsHandlerDeps): void {
+export function registerProjectSettingsHandlers(router: IpcRouter, deps: ProjectSettingsHandlerDeps, options: { server?: boolean } = {}): void {
   router.handleProject('settings.project', (ctx) => deps.projectView(ctx.projectId))
   router.handleProject('settings.projectPluginEnable', (ctx, payload) => {
     const p = fields('settings.projectPluginEnable', payload)
@@ -1263,6 +1264,13 @@ export function registerProjectSettingsHandlers(router: IpcRouter, deps: Project
   })
   router.handleProject('settings.statusLineUsageSet', (_ctx, payload) => {
     deps.setStatusLineUsage(fields('settings.statusLineUsageSet', payload).value)
+  })
+  // `adapted`: whether the host's computer may idle-sleep is the person's at that computer. A browser of a desktop is
+  // refused (turning it on keeps the host up, and reachable, for longer); in server mode a browser is the only screen
+  // and may. Decided by the view main bound the call to and main's own flag, like plugins.globalLimits.set.
+  router.handleProject('settings.keepAwakeSet', (_ctx, payload, view) => {
+    if ((view.remote && options.server !== true) || !isOwner(view)) throw new Error('settings.keepAwakeSet: refused for a browser view outside server mode')
+    deps.setKeepAwake(fields('settings.keepAwakeSet', payload).value)
   })
   router.handleProject('settings.discussPromptSet', (_ctx, payload) => {
     deps.setDiscussPrompt(fields('settings.discussPromptSet', payload).value)

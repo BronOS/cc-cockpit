@@ -2,7 +2,8 @@
 // keybinding overrides, what a tab does when its process exits (`tabExit`) and whether a project
 // that opens empty gets a Claude tab (`claudeTabOnOpen`), whether Haiku writes a gist of each Claude
 // session (`sessionGist`, main/sessions/session-gist.ts), whether Claude tabs report their usage
-// through the status line (`statusLineUsage`, main/hooks/hooks-file.ts), whether a plugin notification with `sound`
+// through the status line (`statusLineUsage`, main/hooks/hooks-file.ts), whether the computer is kept from idle
+// sleep while a Claude tab works (`keepAwake`, main/power/keep-awake.ts), whether a plugin notification with `sound`
 // chimes (`notificationSounds`, main/notifications/notifier.ts ChimeGate) and with which sound
 // (`notificationSound`, shared/notify-sound.ts; system files in main/notifications/system-sounds.ts), whether closing a running tab asks first
 // (`confirmTabClose`), which end of a tab its close button sits at (`tabCloseSide`), whether the side
@@ -41,6 +42,7 @@ import type { ViewId } from '../../shared/views'
 import type { BlurSupport, WindowBackground } from '../../shared/window-background'
 import { MIN_TERMINAL_WIDTH_RANGE, minTerminalWidthOf, zoneAutoHideOf } from '../../shared/zone-auto-hide'
 import type { CommandRegistry } from '../commands/command-registry'
+import { keepAwakeOf } from '../power/keep-awake'
 import { tabCommandsOf } from '../tabs/tab-commands'
 import { storedTerminalFontFields, terminalFontOf, terminalFontPatchOf } from './terminal-font'
 import { storedWindowBackgroundFields, windowBackgroundOf, windowBackgroundPatchOf } from './window-background'
@@ -93,6 +95,10 @@ export interface AppearanceDeps {
    * restarted ones); running tabs keep what they started with, and main drops their reports while off.
    */
   statusLineUsageChanged(): void
+  /** `app.json` › `keepAwake`, as stored (unvalidated). */
+  keepAwake: { get(): unknown; set(next: boolean): void }
+  /** Keep awake was turned on or off: release the hold at once, or take it when a tab works (KeepAwake.settingChanged). */
+  keepAwakeChanged(): void
   /** `app.json` › `notificationSounds`, as stored (unvalidated). Read at each chime, so it needs no event. */
   notificationSounds: { get(): unknown; set(next: boolean): void }
   /**
@@ -209,6 +215,7 @@ export class AppearanceService {
       claudeTabOnOpen: claudeTabOnOpenOf(this.deps.claudeTabOnOpen.get()),
       sessionGist: sessionGistOf(this.deps.sessionGist.get()),
       statusLineUsage: statusLineUsageOf(this.deps.statusLineUsage.get()),
+      keepAwake: keepAwakeOf(this.deps.keepAwake.get()),
       discussPrompt: discussPromptOf(this.deps.discussPrompt.get()) ?? '',
       notificationSounds: notificationSoundsOf(this.deps.notificationSounds.get()),
       notificationSound: notificationSoundOf(this.deps.notificationSound.get()),
@@ -270,6 +277,14 @@ export class AppearanceService {
     const before = statusLineUsageOf(this.deps.statusLineUsage.get())
     this.deps.statusLineUsage.set(value)
     if (before !== value) this.deps.statusLineUsageChanged()
+  }
+
+  /** Keep the computer from idle sleep while a Claude tab works (true), or not; the hold follows at once. */
+  setKeepAwake(value: unknown): void {
+    if (typeof value !== 'boolean') throw new Error('give true or false')
+    const before = keepAwakeOf(this.deps.keepAwake.get())
+    this.deps.keepAwake.set(value)
+    if (before !== value) this.deps.keepAwakeChanged()
   }
 
   /** Save the global Discuss prompt, checked strictly (text within the cap); nothing is stored on a refusal. */

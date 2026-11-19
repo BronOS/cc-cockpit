@@ -283,6 +283,7 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'settings.claudeTabOnOpenSet': NO,
   'settings.sessionGistSet': NO,
   'settings.statusLineUsageSet': NO,
+  'settings.keepAwakeSet': NO,
   'settings.discussPromptSet': NO,
   'settings.projectDiscussPromptSet': NO,
   'settings.notificationSoundsSet': NO,

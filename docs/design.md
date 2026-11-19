@@ -35,7 +35,7 @@ they left core (removed in 2026-10); what stays is what only main can do: `ctx.s
 secret settings field and the optional `ctx.oauth` helper (§6). The Claude status *view* (the
 Sessions panel, the other windows' strip in the top bar) fails them too and left the renderer in
 0.10 for the bundled `cockpit.sessions` plugin; the session registry, hooks, status, the send gate,
-the title reader, gist, restore and the tab strip's dots stay (§3).
+the title reader, gist, keep awake, restore and the tab strip's dots stay (§3).
 
 ### Phase 1 scope
 
@@ -441,6 +441,27 @@ plugins", design-next §4), built on the public API only:
   emitted on change like any field) and, in the scope `all` summaries, `{ color }` only: the note is
   the person's words and stays with the tab's window. `cockpit.sessions` shows a Flagged group at
   the top of the Sessions panel and the colour on its strip entries.
+
+**Keep awake.** While any Claude tab of any window is *working*, main holds one Electron
+`powerSaveBlocker` of type `prevent-app-suspension` (app setting `keepAwake`, Settings › General › Claude
+sessions, on by default: absent or anything but `false` is on). `main/power/keep-awake.ts` recomputes it
+from the session registry on every change and releases it a minute after the last tab stops working
+(between tools a tab stays *working*; the minute covers the gaps between turns: a queued text, a quick
+follow-up, a short prompt). *Needs permission* does not count: nothing runs while a prompt waits, and
+counting it would keep an unattended computer up all night for a prompt nobody answers. Nor does an
+interrupted turn (Esc fires no Stop, so the tab stays *working*): an `idle_prompt` Notification while
+*working* leaves the status alone and sets `SessionEntry.idleAtPrompt` (dropped by the next hook but a
+Notification), and a *working* tab with no hook for 30 minutes (`KEEP_AWAKE_SILENT_MS`,
+`SessionRegistry.lastActivityAt`) stops counting too. Turning the
+setting off releases at once; on with a tab working holds at once. The write (`settings.keepAwakeSet`) is
+`adapted`: the desktop page and a server's browsers, never a desktop's browser. The blocker goes through
+`PowerHolds` (`main/power/power-holds.ts`), one Electron blocker per hold, so macOS server mode's whole-run
+hold (`docs/plans/20261119-server-mode-mac.md`, decision 4) and this one never release each other's;
+`powerSaveBlocker` itself is only in `main/power/electron-power.ts` (grep test). What it does: an IOPM
+no-idle-sleep assertion on macOS (`pmset -g assertions`), `SetThreadExecutionState` on Windows, a session
+bus inhibitor on Linux (logind or the desktop's screensaver service; with no session bus, as on a
+headless server, it may do nothing). The display may still sleep; a lid close or a Sleep the person
+picks still sleeps the computer.
 
 **Restore.** Main saves each project's tabs (kind, cwd, `session_id`, order; a Claude tab's name;
 any tab's flag; a command tab's own label and command); on next start Claude tabs reopen with `claude --resume <id>`, shell tabs start

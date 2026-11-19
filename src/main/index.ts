@@ -7,8 +7,9 @@
 // behind ctx.files.reveal / openWithSystem / trash; `safeStorage` is used only through
 // `secrets/secret-store.ts`; `dialog` only in `dialogs/electron-dialog.ts`, and never called in server
 // mode); `shell.openExternal` only in `external/electron-open-external.ts`, reached through the
-// openExternal adapter (`external/open-external.ts`), never on the server in server mode), never from
-// logic modules that unit tests load.
+// openExternal adapter (`external/open-external.ts`), never on the server in server mode;
+// `powerSaveBlocker` only in `power/electron-power.ts`, reached through `power/power-holds.ts`), never
+// from logic modules that unit tests load.
 // Unit tests run in plain Node, where `node-pty` (built for the Electron ABI) does not even load;
 // logic modules take these capabilities through interfaces and tests pass fakes. Only the
 // Playwright e2e run exercises the real adapters.
@@ -164,6 +165,9 @@ import { CloseAsks, closeWillAsk } from './sessions/close-asks'
 import { routeOpenFile, routeProjectFile, type OpenFileRouteDeps } from './sessions/open-file'
 import { runGist } from './sessions/gist-run'
 import { SessionGist } from './sessions/session-gist'
+import { electronPowerSaveBackend } from './power/electron-power'
+import { KeepAwake, keepAwakeOf } from './power/keep-awake'
+import { PowerHolds } from './power/power-holds'
 import { prepareText } from './sessions/send-gate'
 import { SessionRegistry } from './sessions/session-registry'
 import {
@@ -2114,6 +2118,16 @@ function start(server: boolean): void {
       })
     }
   })
+  // Keep the computer from idle sleep while any Claude tab of any window works (app setting, on by
+  // default; main/power/keep-awake.ts). `powerHolds` is the one way to a power save blocker
+  // (power-holds.ts): macOS server mode's whole-run hold (docs/plans/20261119-server-mode-mac.md,
+  // decision 4) takes its own `powerHolds.hold('server-mode')`, so neither can release the other's.
+  const powerHolds = new PowerHolds(electronPowerSaveBackend, warnLog)
+  const keepAwake = new KeepAwake({
+    sessions,
+    holds: powerHolds,
+    enabled: () => keepAwakeOf(registry.app.data.keepAwake)
+  })
   // Web access's headless terminals (design-web.md §5.2): a worker thread holding a copy of every
   // tab's terminal, started only while web access is on (webAccess below), so off costs nothing.
   // The worker is the build's out/main/mirror-worker.js, next to this file (electron.vite.config.ts).
@@ -3117,6 +3131,15 @@ function start(server: boolean): void {
       }
     },
     statusLineUsageChanged: rewriteHooksFile,
+    keepAwake: {
+      get: () => registry.app.data.keepAwake,
+      set: (next) => {
+        registry.app.update((a) => {
+          a.keepAwake = next
+        })
+      }
+    },
+    keepAwakeChanged: () => keepAwake.settingChanged(),
     notificationSounds: {
       get: () => registry.app.data.notificationSounds,
       set: (next) => {
@@ -3314,6 +3337,7 @@ function start(server: boolean): void {
     setClaudeTabOnOpen: (value) => appearance.setClaudeTabOnOpen(value),
     setSessionGist: (value) => appearance.setSessionGist(value),
     setStatusLineUsage: (value) => appearance.setStatusLineUsage(value),
+    setKeepAwake: (value) => appearance.setKeepAwake(value),
     setDiscussPrompt: (value) => appearance.setDiscussPrompt(value),
     setProjectDiscussPrompt: (projectId, value) => projectSettings.setDiscussPrompt(projectId, value),
     setNotificationSounds: (value) => appearance.setNotificationSounds(value),
@@ -3344,7 +3368,7 @@ function start(server: boolean): void {
       appMenu.refresh()
       return stored
     }
-  })
+  }, { server })
 
   registerPanelHandlers(router, {
     connect: (projectId, viewId, panelKey, nonce) => panelPorts.connect(projectId, viewId, panelKey, nonce),
@@ -4084,6 +4108,7 @@ function start(server: boolean): void {
     void webGateway.stop()
     void terminalMirror.stop()
     sessionGist.dispose()
+    keepAwake.dispose()
     rateLimits.dispose()
     sessions.dispose()
     // Members stay members with no tab (design-rooms.md §1 "Restart"); then the room stop's ack timers stop.

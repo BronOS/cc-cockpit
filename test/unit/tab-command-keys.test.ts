@@ -159,6 +159,8 @@ describe('binding an entry in Settings (AppearanceService.setKey)', () => {
       sessionGistChanged: () => {},
       statusLineUsage: { get: () => undefined, set: () => {} },
       statusLineUsageChanged: () => {},
+      keepAwake: { get: () => undefined, set: () => {} },
+      keepAwakeChanged: () => {},
       notificationSounds: { get: () => undefined, set: () => {} },
       notificationSound: { get: () => undefined, set: () => {}, systemHas: async () => false },
       confirmTabClose: { get: () => undefined, set: () => {} },

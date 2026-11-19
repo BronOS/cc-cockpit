@@ -100,6 +100,8 @@ describe('REMOTE_CLASS drift', () => {
     'settings.projectOpen',
     // Raising a plugin's caps widens what it may do on the host (design-rooms.md §6): a server's browsers only.
     'plugins.limits.set',
+    // Whether the host's computer may idle-sleep while Claude works: the person's at that computer, or a server's browser.
+    'settings.keepAwakeSet',
     // The person's room mark and the held badge (design-rooms.md §5): let room text into a typed tab, so a server's
     // browsers only, like the approvals.
     'tabs.roomMark',

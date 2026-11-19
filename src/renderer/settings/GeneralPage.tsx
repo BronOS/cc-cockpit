@@ -30,7 +30,7 @@ const saveGlobalLimits = (payload: LimitsSave): Promise<GlobalPluginLimitsView> 
  * Settings › General (design-next §5.1): how the app behaves, app-wide. What a tab does when its
  * process exits, whether a project that opens empty gets a Claude tab, whether closing a running tab
  * asks first, whether the side zones give way to a narrow terminal and at what width, whether Haiku
- * writes a gist of each Claude session, whether plugin notifications ring a sound and which
+ * writes a gist of each Claude session, whether the computer stays awake while Claude works, whether plugin notifications ring a sound and which
  * (NotificationSoundRow), the app-wide entries of the new-tab menu, the global plugin limits (each plugin's
  * own override is on Settings › Plugins), the `ccc` command line, and the update notice. How the window looks is Appearance; the keys are Keybindings.
  */
@@ -181,6 +181,24 @@ export function GeneralPage(): React.JSX.Element {
                   onChange={(e) => {
                     const value = e.target.checked
                     void run('statusLineUsage', () => window.cockpit.invoke('settings.statusLineUsageSet', { value })).then(reload)
+                  }}
+                />
+              </Row>
+              {/* `adapted` (main/ipc/router.ts): a browser of a desktop sees it but cannot change it; a server's may. */}
+              <Row
+                label="Keep the computer awake while Claude is working"
+                htmlFor={`${id}-keep-awake`}
+                help={`While any Claude tab in any window is working, the computer does not go to sleep on its own; it may sleep again a minute after the last one stops. The display can still sleep, and closing a laptop's lid or choosing Sleep still sleeps it. A tab waiting for your permission does not count.${
+                  isWebShell() && !isServerView() ? ' Change it on the computer itself.' : ''
+                }`}
+              >
+                <Switch
+                  id={`${id}-keep-awake`}
+                  checked={data.keepAwake}
+                  disabled={busy !== null || (isWebShell() && !isServerView())}
+                  onChange={(e) => {
+                    const value = e.target.checked
+                    void run('keepAwake', () => window.cockpit.invoke('settings.keepAwakeSet', { value })).then(reload)
                   }}
                 />
               </Row>

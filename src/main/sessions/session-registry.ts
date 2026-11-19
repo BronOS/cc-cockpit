@@ -113,6 +113,13 @@ export class SessionRegistry {
    * (a fresh entry) must not lose it.
    */
   private readonly activeTabs = new Map<string, string>()
+  /**
+   * tabId -> when (Date.now()) its process started or it last had a sign of life: any hook event the socket
+   * delivered, or the key that answered a prompt. Read by keep awake only (lastActivityAt), whose fallback stops
+   * counting a `working` tab that has had none for a long while (main/power/keep-awake.ts). Kept apart from the
+   * entries so stamping it changes nothing anyone else sees: no new entry, no change event, no snapshot.
+   */
+  private readonly activity = new Map<string, number>()
 
   constructor(private readonly options: SessionRegistryOptions) {
     this.interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
@@ -145,6 +152,7 @@ export class SessionRegistry {
     // otherwise (setRoom). The draft bit does not: the new process's input box starts empty.
     if (prev?.room !== undefined) next.room = { ...prev.room }
     if (prev?.held !== undefined) next.held = prev.held
+    this.activity.set(tab.tabId, Date.now())
     this.set(prev, next)
   }
 
@@ -246,6 +254,8 @@ export class SessionRegistry {
     // a draft of a marked tab, and an untyped tab has no draft); a badge click or Discuss on top of a
     // draft counts, which is the person's act anyway. Read before apply: the submit clears the bit.
     const personPrompt = event === 'UserPromptSubmit' && this.entries.get(tabId)?.draft === true
+    // Before apply, so a subscriber hearing this hook's change reads the fresh time.
+    if (this.entries.has(tabId)) this.activity.set(tabId, Date.now())
     const applied = this.apply(tabId, ev)
     if (applied && personPrompt) this.notify(this.promptListeners, tabId, 'person-prompt')
     return applied
@@ -334,7 +344,11 @@ export class SessionRegistry {
       if (next !== entry) this.set(entry, next, dropped)
       this.notify(this.inputListeners, tabId, 'person-input')
     }
-    if (isAnswerKey(data)) this.apply(tabId, { type: 'answer' })
+    if (isAnswerKey(data)) {
+      // The person answered a prompt: the tool runs now, and its time counts from here (lastActivityAt).
+      if (this.entries.get(tabId)?.status === 'needs-permission') this.activity.set(tabId, Date.now())
+      this.apply(tabId, { type: 'answer' })
+    }
   }
 
   /**
@@ -353,6 +367,7 @@ export class SessionRegistry {
     this.clearDeliveryTimer(tabId)
     this.clearSettleTimer(tabId)
     this.titles.delete(tabId)
+    this.activity.delete(tabId)
     this.entries.delete(tabId)
     const change: SessionChange = { tabId, entry: undefined, prev }
     if (prev.queue.length > 0) {
@@ -500,6 +515,11 @@ export class SessionRegistry {
 
   get(tabId: string): SessionEntry | undefined {
     return this.entries.get(tabId)
+  }
+
+  /** When `tabId` started or last had a hook or an answer key (Date.now()); keep awake's fallback only. */
+  lastActivityAt(tabId: string): number | undefined {
+    return this.activity.get(tabId)
   }
 
   list(): SessionEntry[] {

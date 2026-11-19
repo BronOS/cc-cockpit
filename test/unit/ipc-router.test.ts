@@ -1812,7 +1812,7 @@ describe('registerServiceHandlers (with ServiceChoices)', () => {
 })
 
 describe('registerProjectSettingsHandlers', () => {
-  function projectSettingsSetup(): { ipc: FakeIpcMain; calls: unknown[][] } {
+  function projectSettingsSetup(options: { server?: boolean } = {}): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
     const { ipc, router } = setup()
     const calls: unknown[][] = []
     const rec =
@@ -1830,13 +1830,14 @@ describe('registerProjectSettingsHandlers', () => {
       setProjectColor: rec('setProjectColor', 'blue'),
       setDiscussPrompt: rec('setDiscussPrompt', undefined),
       setProjectDiscussPrompt: rec('setProjectDiscussPrompt', undefined),
-      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, statusLineUsage: true, discussPrompt: '', notificationSounds: true, notificationSound: 'builtin:chime', zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
+      appearance: rec('appearance', { themes: [], selected: null, current: 'light', keys: [], tabExit: 'close-clean' as const, claudeTabOnOpen: true, sessionGist: false, statusLineUsage: true, keepAwake: true, discussPrompt: '', notificationSounds: true, notificationSound: 'builtin:chime', zoneAutoHide: true, minTerminalWidth: 720, confirmTabClose: true, tabCloseSide: 'right' as const, terminalFont: { ...DEFAULT_TERMINAL_FONT }, windowBackground: { transparent: false, opacity: 85, blur: true, area: 'window' as const }, blurSupport: 'vibrancy' as const, tabCommands: [] }),
       setTheme: rec('setTheme', undefined),
       setKey: rec('setKey', undefined),
       setTabExit: rec('setTabExit', undefined),
       setClaudeTabOnOpen: rec('setClaudeTabOnOpen', undefined),
       setSessionGist: rec('setSessionGist', undefined),
       setStatusLineUsage: rec('setStatusLineUsage', undefined),
+      setKeepAwake: rec('setKeepAwake', undefined),
       setNotificationSounds: rec('setNotificationSounds', undefined),
       notificationSoundOptions: async (...args) =>
         rec('notificationSoundOptions', [{ label: 'Built-in', sounds: [{ id: 'builtin:chime', name: 'Chime' }] }])(...args),
@@ -1852,14 +1853,14 @@ describe('registerProjectSettingsHandlers', () => {
       setWindowBackground: rec('setWindowBackground', undefined),
       setTabCommands: rec('setTabCommands', [])
     }
-    registerProjectSettingsHandlers(router, deps)
-    return { ipc, calls }
+    registerProjectSettingsHandlers(router, deps, options)
+    return { ipc, router, calls }
   }
 
   it('is for project windows only: the picker is refused on every channel', async () => {
     const { ipc, calls } = projectSettingsSetup()
     const channels = [...ipc.handlers.keys()]
-    expect(channels).toHaveLength(26)
+    expect(channels).toHaveLength(27)
     for (const channel of channels) {
       await expect(ipc.invoke(channel, 13, [{}])).rejects.toThrow(/not a project window/)
     }
@@ -1926,6 +1927,23 @@ describe('registerProjectSettingsHandlers', () => {
       ['setStatusLineUsage', false],
       ['setStatusLineUsage', 'no']
     ])
+  })
+
+  // `adapted` (REMOTE_CLASS): whether the host may idle-sleep is the person's at that computer. A desktop's browser is
+  // refused before the service is reached; the desktop page and a server's browser pass the value on as unknown.
+  it("keep awake: the desktop and a server's browser pass it on, never a desktop's browser", async () => {
+    const desktop = projectSettingsSetup()
+    const browser = webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:5', 'owner')
+    await desktop.ipc.invoke('settings.keepAwakeSet', 11, [{ value: false }])
+    await desktop.ipc.invoke('settings.keepAwakeSet', 12, [{ value: 'no' }])
+    await expect(desktop.router.dispatch(browser, 'settings.keepAwakeSet', { value: true })).rejects.toThrow(/outside server mode/)
+    expect(desktop.calls).toEqual([
+      ['setKeepAwake', false],
+      ['setKeepAwake', 'no']
+    ])
+    const server = projectSettingsSetup({ server: true })
+    await server.router.dispatch(browser, 'settings.keepAwakeSet', { value: true })
+    expect(server.calls).toEqual([['setKeepAwake', true]])
   })
 
   it('passes the zone auto-hide choice and the minimum terminal width on as unknown for the service to check', async () => {
