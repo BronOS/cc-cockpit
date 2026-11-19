@@ -95,17 +95,19 @@ next prompt in your tab, their click on the badge, or their Resume of the room. 
 the gate's pastes and the Stop pointers both count toward the room's auto-pause. A message that reaches you within a second of your
 session starting waits and is offered when that second ends, under the same rules.
 
-**The person's own typing comes first.** A tab the person has typed in gets no pointer at all unless
-they marked it "Deliver room messages automatically" (a setting on the tab that only the person
-can change); its messages are held, a badge shows the count, and the person's click on it delivers the
-pointer. A marked tab with a half-typed prompt gets no paste either. So a `held` answer to your
+**The person's own typing comes first.** Every tab joins a room marked "Deliver room messages
+automatically" (a setting on the tab that only the person can change), so the pointer reaches it even
+after the person typed in it. When the person turns the mark off, a tab they have typed in gets no
+pointer at all; its messages are held, a badge shows the count, and the person's click on it delivers
+the pointer. A marked tab with a half-typed prompt gets no paste either. So a `held` answer to your
 `send` is normal: the recipient has the message and reads it when it next runs `ccc room read`. You
 can always read your own queue yourself, whatever the pointer rules say.
 
 A room can be **paused** by the person (or by itself after 100 deliveries with no input from the
 person: a loop guard): nothing is delivered then, but `send` still queues and `read` still works. When
 the app restarts, a room comes back paused (nothing is delivered until the person resumes it) and its
-members count as typed: a restored member gets pointers again only once the person marks its tab.
+members count as typed: a restored member keeps the mark it had, so one the person had turned off
+gets pointers again only once the person marks its tab.
 If the person removes you, closes your tab or the plugin ends the room, you are out and `ccc room`
 says you are in no room. When the person closes a member's tab, every coordinator gets a message from `system`,
 `<name> left: tab closed`; a removal by the person or the plugin tells nobody.

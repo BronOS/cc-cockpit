@@ -414,11 +414,17 @@ room join <invite>`); you never build one, but you see and steer it. A tab is in
   Stop hook (a blocked Stop that keeps Claude working; at most 5 in a row, then the badge holds it until your next
   prompt, your Resume of the room or your click on the badge) or, when Claude is waiting for input, as one paste. A
   message sent in the second after a tab starts waits and is offered when that second ends.
-- **Typed tabs and the mark:** a tab you have typed into gets no pointer on its own: its messages are held and the badge
-  shows the count. Click the badge to paste the pointer yourself, or set the mark to let the room deliver to that tab.
-  The mark is yours alone (no plugin, hook or `ccc` can set it) and belongs to that tab in that room. While you have
-  an unsubmitted draft in a marked tab, nothing is pasted; the badge then offers "Deliver anyway", which adds the
-  pointer to whatever is in the box. Clearing the mark delivers nothing.
+- **Typed tabs and the mark:** every tab joins a room with the mark on, your own tabs included, so a key you press in
+  a member tab (an arrow, a scroll, a permission answer) does not stop its room messages. With the mark on, a message
+  reaches the tab even after you typed in it: still only as the pointer, the text only through that tab's own `ccc room
+  read`, and never on top of something you have not sent yet. That is a deliberate trade: a member that read a hostile
+  page can then make the pointer appear in a tab you work in. Turn the mark off in the tab menu when you want that tab's
+  own conversation kept out of the room: a tab you have typed into then gets no pointer on its own, its messages are
+  held and the badge shows the count; click the badge to paste the pointer yourself, or turn the mark back on. Only you
+  change the mark (no plugin, hook or `ccc` can set or clear it), and it belongs to that tab in that room: joining
+  another room starts marked again, and a restart keeps what you set. While you have an unsubmitted draft in a marked
+  tab, nothing is pasted; the badge then offers "Deliver anyway", which adds the pointer to whatever is in the box.
+  Clearing the mark delivers nothing.
 - **Pause:** Pause in the room dialog holds all delivery. A room pauses itself after 100 deliveries with no input from you
   in any member tab. After a restart (or Settings › Window's "Reopen window") a room comes back paused, with its members
   restored (they count as typed); resume it in the dialog. Closing the project's window ends its rooms' memberships, as

@@ -1,7 +1,8 @@
 # Rooms: messages and shared docs between Claude tabs (design)
 
 Status: revision 2 (2026-11-14): the brainstorm's design with Oleg, revised after a Fable review (findings applied, three
-taken to Oleg). A core communication layer for Claude tabs: a plugin puts tabs in a room; members message each other and
+taken to Oleg). Revision 3 (2026-11-19, Oleg): the mark starts on at every join (§2 "The mark"), a deliberate loosening
+of the typed-tab rule. A core communication layer for Claude tabs: a plugin puts tabs in a room; members message each other and
 share docs through `ccc room`, with main setting every identity and enforcing every rule. Plus the per-plugin caps as the
 person's setting. Comes from the team-workflow experiment (`~/Projects/team-experiment`, plugin `bronos.team`), whose
 mailbox files, background waiter and run-dir doc layer it replaces; that plugin keeps only the workflow policy. Backlog
@@ -9,7 +10,8 @@ items folded in (and deleted): the core tab message bus and the plugin `sessions
 
 Decisions taken in the brainstorm:
 - **Who makes rooms:** plugins only (host API). The person sees rooms and can remove members, never builds one.
-- **Delivery:** a pull model: the Stop hook prints only a pointer; typed tabs need the person's mark (§2).
+- **Delivery:** a pull model: the Stop hook prints only a pointer; typed tabs need the person's mark (§2), which is on
+  from the join since revision 3.
 - **Docs:** in app data (`<data>/rooms/<id>/docs/`), outside every project; the plugin exports when it wants.
 - **Doc access:** a fixed scheme (a shared area, a private folder per member), no rule language.
 - **Scope:** messages and docs in one release, minimal UI, plus the configurable caps.
@@ -26,6 +28,12 @@ log capped; renamed from "groups" (taken by split-terminal tab groups, `src/shar
 typed-tab rule above accepted; the `ccc plugin limits` write kept, shell-only and documented as not a boundary; the
 name "rooms". Cut from v1 (YAGNI): `doc share` (a coordinator reads a private doc and puts it in `shared/`), the
 a Settings › Rooms page, `onEvent` (`log` with `since` covers it), a cap on open tabs at once.
+
+Revision 3 (2026-11-19, Oleg's decision): a join starts **marked**, for every member, the person's own tabs included.
+With the mark off by default, any key in a member tab (an arrow, a wheel scroll in Claude's full-screen view, a
+permission answer) made it typed and silently held every room message to it behind the badge: in team runs one stray
+key blocked a member. Everything else about the mark stays (the person's alone after the join, bound to (tab, room),
+held by the draft bit, Pause / Resume / Remove unchanged); §2 "The mark" says what this loosens and why.
 
 ## 1. Model and membership
 
@@ -87,7 +95,8 @@ plugin/core origins do not apply.
 
 A **typed tab without the mark** gets neither: its messages are held and a badge shows the count on the tab. A click on
 the badge pastes the pointer through the send gate as the person's own act. (A member that read a hostile page must not
-continue the person's own turn; `typed` is the person's.)
+continue the person's own turn; `typed` is the person's.) Since revision 3 a tab is in this state only when the person
+turned its mark off (or a tab record saved before revision 3 is restored unmarked): a join starts marked.
 
 **The Stop pointer** is not a Stop: main reduces a Stop it answered with a block to `working` and does not deliver the
 gate's head (`status-reducer.ts` sets `waiting` on every Stop; `send-gate.ts` delivers at Stop). `ccc` acks the block
@@ -113,9 +122,19 @@ of the room; an untyped member gets no prompt from the person, so for it the bad
 after 100 deliveries with no input from the person in any member tab; the person resumes it. Send caps: 20 a minute per
 member, 60 per room (configurable, §6). **Pause** in the room view holds all delivery.
 
-**The mark** ("Deliver room messages automatically") is the person's alone: written only from the shell page (top
-frame, the sender's own tabs), like the flag; no host API, hook or `ccc` path. It is bound to (tab, room) and cleared
-when the tab leaves or the room ends, so a marked tab that joins another room is not auto-delivered. The toggle and the
+**The mark** ("Deliver room messages automatically") is **on when a tab joins a room**, for every member, the person's
+own tabs included. The one writer of that initial value is main's own join path (`TabManager.setRoom`, after
+`RoomRegistry.addMember` or `redeem`), as a constant: no plugin field, invite, `ccc` argument or hook payload decides it.
+After the join it is the person's alone: changed only from the shell page (top frame, the sender's own tabs), like the
+flag; no host API, hook or `ccc` path. **This is a deliberate loosening of the typed-tab rule** (revision 3, Oleg's
+call): with the mark on, a room message, which may come from a member that read a hostile page, reaches a tab the
+person typed in. It still arrives only as the fixed pointer, the text enters only through that tab's own
+`ccc room read`, fenced with a nonce, and the draft bit keeps the pointer off any unsent text. The person turns the mark
+off per tab when they want their own conversation kept out of the room. The reason for the loosening: with the mark
+off by default, any key in a member tab made it typed and silently held all its room traffic behind the badge. The
+mark is bound to (tab, room) and dropped when the tab leaves or the room ends; a tab that then joins another room starts
+marked again, so the person's "off" in one room does not carry into the next (a coordinator change of the same member
+keeps it). A restart restores the mark from the tab record as saved (a restore is not a join). The toggle and the
 badge's click carry the room id and member name the strip showed; main refuses the toggle (and answers the click
 `no-room`) when the tab's membership differs by then, so a request that waited while the tab moved never marks or
 delivers into the other room. **Draft bit:** set
@@ -255,8 +274,9 @@ Rules (for CLAUDE.md's implementation patterns):
 - No pulling tabs in: a member is a tab the plugin opened into the room or a tab that ran an invite itself.
 - Pull only: hooks and the gate carry a fixed pointer, never room text; room text enters a session only through that
   session's own `ccc room read`, fenced with a nonce; the core skill says it is never the person and grants nothing.
-- A typed tab gets nothing without the person's mark; the mark is bound to (tab, room) and held by the draft bit.
-- The mark, Pause, Resume and Remove are the person's; no plugin or hook path.
+- A typed tab gets nothing without the person's mark; the mark is on at every join (main's constant, revision 3: a
+  deliberate loosening, §2), bound to (tab, room) and held by the draft bit.
+- Changing the mark, Pause, Resume and Remove are the person's; no plugin or hook path.
 - Docs: no paths out of the store, no links (`O_NOFOLLOW` + `fstat`), caps, refused equals missing.
 - Not a boundary: tabs run as the person's OS user. The rules prevent mistakes and make an injected tab's reach through
   a room advisory text behind a pointer, not the person's voice; the docs say so.
@@ -268,9 +288,9 @@ reloads rooms paused and rematches members from the tab records.
 
 Testing: unit tests with fakes for the registry and membership, invite expiry, the saved membership across a restore,
 each delivery path (Stop pointer, gate pointer, badge), the blocked-Stop status and gate rule, the ack, the per-tab
-block cap and the auto-pause, the mark binding and the draft bit, the fence nonce, every doc rule (links, `..`, caps,
-refused equals missing), the send caps and their overrides, persistence; grep tests (the mark written only from the
-shell page; hook output only from the Stop pointer and the existing SessionStart print); the fake `claude` emulates
+block cap and the auto-pause, the mark binding (on at every join, kept across a restore) and the draft bit, the fence nonce, every doc rule (links, `..`, caps,
+refused equals missing), the send caps and their overrides, persistence; grep tests (the mark changed only from the
+shell page, the join's initial value a constant; hook output only from the Stop pointer and the existing SessionStart print); the fake `claude` emulates
 `decision: block`, `stop_hook_active` and the cap of 8; e2e: a plugin opens two tabs that exchange a message and a doc,
 and one Stop pointer through the real `ccc` start (the budget); drift tests for the guide and the core skill.
 

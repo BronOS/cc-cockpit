@@ -58,13 +58,14 @@ export function heldBadge(tab: TabInfo, detail: SessionDetail | undefined): Held
   if (held === undefined || !Number.isInteger(held) || held < 1) return undefined
   const what = held === 1 ? '1 room message waiting' : `${held} room messages waiting`
   // The reason the person would otherwise have to guess: a typed tab without the mark gets no pointer of its own
-  // (design-rooms.md §2), so the count waits for them; any other tab gets it at its next chance.
+  // (design-rooms.md §2), so the count waits for them; any other tab gets it at its next chance. A join starts marked,
+  // so an unmarked member is one the person turned off (or a record saved before that default): the text says it is off.
   // A marked typed tab: the gate pastes only while nothing the person typed may be unsent (the draft bit, which the
   // strip cannot see), so "waits for input" alone would promise a delivery that may not come.
   const typed = detail?.typed === true
   const why =
     typed && !tab.room.mark
-      ? `Held: you typed in this tab, so room messages wait for you. Turn on "${MARK_LABEL}" in the tab menu to let them in.`
+      ? `Held: you typed in this tab and "${MARK_LABEL}" is off, so room messages wait for you. Turn it on in the tab menu to let them in.`
       : typed
         ? 'Claude gets them when it next stops, or when it waits for input with nothing you typed unsent.'
         : 'Claude gets them when it next stops or waits for input.'

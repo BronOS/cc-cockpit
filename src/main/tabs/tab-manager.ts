@@ -361,7 +361,7 @@ export interface TabEvent {
   /**
    * The tab is the person's from its start: a restored room member (design-rooms.md §1 "Restart":
    * `typed` is not saved, and the restored session is the person's), so the session registry's
-   * entry is born typed and its room's messages wait for the person's mark.
+   * entry is born typed and its room's messages reach it only through the restored mark (or the badge).
    */
   typed?: true
 }
@@ -1034,15 +1034,20 @@ export class TabManager {
   /**
    * The tab joined a room (the room service, after RoomRegistry.addMember or redeem): main-internal,
    * never reached from IPC, a plugin or a hook with a payload's membership. A Claude tab of
-   * `projectId` only. A new membership starts unmarked, so a mark the person gave for one room never
-   * carries into another (design-rooms.md §2 "The mark"). Saved with the tab and told to every view.
+   * `projectId` only. A new membership starts MARKED, for every member, the person's own tabs included
+   * (design-rooms.md §2 "The mark", a deliberate loosening): with it off, a stray key in a member tab (an arrow, a
+   * wheel scroll in Claude's full-screen view, a permission answer) silently held all its room traffic behind the
+   * badge. The initial value is this constant, never an argument: no plugin, hook or `ccc` input decides it, and only
+   * the person changes it afterwards (setRoomMark). The draft bit still keeps the pointer off unsent text. A mark the
+   * person cleared in one room does not carry into another: the next join starts marked again.
+   * Saved with the tab and told to every view.
    */
   setRoom(projectId: string, tabId: string, room: { id: string; name: string; coordinator: boolean }): TabRoom {
     const tab = this.require(projectId, tabId)
     if (tab.kind !== 'claude') throw new Error('only a Claude tab can be in a room')
-    const next = tabRoomOf({ id: room.id, name: room.name, coordinator: room.coordinator, mark: false })
+    const next = tabRoomOf({ id: room.id, name: room.name, coordinator: room.coordinator, mark: true })
     if (next === undefined) throw new Error('not a valid room membership')
-    // The same room and name keeps the mark (a coordinator change is not a new membership).
+    // The same room and name keeps the mark (a coordinator change is not a new membership): the person's "off" stays.
     if (tab.room?.id === next.id && tab.room.name === next.name) next.mark = tab.room.mark
     this.storeRoom(tab, next)
     return { ...next }
@@ -1056,10 +1061,11 @@ export class TabManager {
 
   /**
    * The person's mark on a member tab of `projectId` ("Deliver room messages automatically",
-   * design-rooms.md §2). The ONLY writer of the mark, for the shell page's `tabs.roomMark` IPC alone
-   * (the flag's pattern, setFlag): a mark lets room messages into a tab the person typed in, so a
-   * plugin, hook or `ccc` path that could set it would make it worthless. Throws for a tab in no
-   * room. Returns the mark as stored.
+   * design-rooms.md §2). The only writer of the mark after a join (setRoom gives a new membership its fixed
+   * initial value, on), for the shell page's `tabs.roomMark` IPC alone (the flag's pattern, setFlag): a mark
+   * lets room messages into a tab the person typed in, and clearing it is how the person keeps their own
+   * conversation out of the room, so a plugin, hook or `ccc` path that could set or clear it would make it
+   * worthless. Throws for a tab in no room. Returns the mark as stored.
    */
   setRoomMark(projectId: string, tabId: string, mark: unknown): boolean {
     const tab = this.require(projectId, tabId)

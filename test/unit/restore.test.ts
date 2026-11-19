@@ -425,7 +425,7 @@ describe('room membership', () => {
         log: () => {}
       })
 
-    // Run 1: a plugin opened two tabs into its room; the person marked one.
+    // Run 1: a plugin opened two tabs into its room (a join starts marked); the person turned lead's mark off.
     const rooms1 = new RoomRegistry({ dir: roomsDir, log: () => {} })
     tabs = makeManager(rooms1)
     const room = rooms1.create(owner, { title: 'Team' })
@@ -435,7 +435,7 @@ describe('room membership', () => {
       const m = rooms1.addMember(owner, room.id, { tabId: tab.id, name, coordinator })
       tabs.setRoom(project.id, tab.id, { id: m.roomId, name: m.name, coordinator: m.coordinator })
     }
-    tabs.setRoomMark(project.id, dev.id, true)
+    tabs.setRoomMark(project.id, lead.id, false)
     registry.flushAll()
     // Quit: nothing written from here on, the tabs go with the app, the members stay.
     restorer.freeze()

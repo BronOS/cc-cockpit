@@ -65,7 +65,7 @@ export interface SessionDetail {
   queue: QueuedItem[]
   /**
    * The tab's room (design-rooms.md §5), as SessionInfo.room: the strip's marker and its tooltip. Absent: in no room.
-   * The tab's own mark is in TabInfo.room, which main writes only on the person's `tabs.roomMark`.
+   * The tab's own mark is in TabInfo.room: on at the join, then changed only on the person's `tabs.roomMark`.
    */
   room?: { title: string; name: string; coordinator: boolean }
   /** Room messages waiting for this member (above 0 only): the held badge's count. */
@@ -197,7 +197,8 @@ export interface TabInfo {
   flag?: TabFlag
   /**
    * A Claude tab's room membership and the person's mark (shared/tab-room.ts): set by main's room
-   * service, the mark only by the person from this window; kept for restore. Absent = in no room.
+   * service (a join starts marked), the mark changed only by the person from this window; kept for restore.
+   * Absent = in no room.
    */
   room?: TabRoom
   /**
@@ -1708,7 +1709,8 @@ export interface IpcInvokeMap {
   'tabs.toggleFlag': { req: { tabId: string }; res: TabFlag | null }
   /**
    * The person's room mark on a member tab ("Deliver room messages automatically", design-rooms.md §2): only from the
-   * shell page of the tab's own project window, the one way the mark is ever written (TabManager.setRoomMark).
+   * shell page of the tab's own project window, the one way the mark is ever changed (TabManager.setRoomMark; a join
+   * only gives it its fixed initial value, on).
    * Answers the mark as stored; the tab reaches every view as `tabs.added` (main emits it, the reply adds nothing).
    * `room`: the membership the menu showed (tab-room.ts TabRoomRef); refused when the tab's current one differs (stale).
    */

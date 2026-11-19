@@ -10,8 +10,9 @@
 //      private doc answers exactly like a missing one.
 //   2. carol, working on a prompt, gets a message (held, not waiting); her Stop is answered with the pointer through
 //      the real `ccc hook Stop` (inside its budget), she reads in the continued turn and stays `working` meanwhile.
-//   3. bob sends alice (typed, no mark) a message: only the badge, no paste and no Stop block; the person's mark on
-//      her tab delivers the pointer and she reads.
+//   3. the person turns alice's mark off (every join starts marked, design-rooms.md §2); bob sends alice (typed, no
+//      mark) a message: only the badge, no paste and no Stop block; the person's mark on her tab delivers the pointer
+//      and she reads.
 //   4. restart: the members come back on their new tab ids, typed, and the room comes back paused.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -132,6 +133,8 @@ test('a plugin room through the real ccc: gate pointer, Stop pointer, typed tab 
     await expect
       .poll(async () => (await tabsOf(c)).map((t) => t.room?.name), { timeout: 15_000 })
       .toEqual(['alice', 'bob', 'carol'])
+    // Every join starts marked (design-rooms.md §2 "The mark"), set by main, never by the plugin.
+    expect((await tabsOf(c)).map((t) => t.room?.mark)).toEqual([true, true, true])
     // Waiting, and past the gate's settle window after SessionStart (a send inside it is held, then offered when it ends:
     // room-service.test.ts covers that; here bob's answer is to say `delivered`).
     for (const name of ['alice', 'bob', 'carol']) {
@@ -206,8 +209,14 @@ test('a plugin room through the real ccc: gate pointer, Stop pointer, typed tab 
     expect(c.pastes()).toEqual([paste(pointerText(1)), paste('start on the task')])
     expect((await entryOf(c, 'carol')).typed).toBe(false)
 
-    // 3. alice is typed and has no mark: bob's message for her is held behind the badge, nothing is pasted.
+    // 3. The person turns alice's mark off (to keep her own conversation out of the room): alice is typed and has no
+    // mark, so bob's message for her is held behind the badge, nothing is pasted.
     expect((await entryOf(c, 'alice')).typed).toBe(true)
+    const markItem = c.page.getByRole('menuitemcheckbox', { name: 'Deliver room messages automatically' })
+    await memberTab(c, 'alice').getByRole('tab').click({ button: 'right' })
+    await expect(markItem).toHaveAttribute('aria-checked', 'true')
+    await markItem.click()
+    await expect.poll(async () => (await tabsOf(c)).find((t) => t.room?.name === 'alice')?.room).toMatchObject({ mark: false })
     await typeIn(c, 'bob', '/ccc room send alice hello from bob')
     await expect.poll(() => cccRuns(runLog, bob, 'room', 'send').length).toBe(1)
     expect(cccRuns(runLog, bob, 'room', 'send')[0]!.stdout).toContain('alice: held (')
@@ -225,7 +234,8 @@ test('a plugin room through the real ccc: gate pointer, Stop pointer, typed tab 
 
     // The person's mark on her tab: what is held goes in at once, as the pointer, and her turn reads it.
     await memberTab(c, 'alice').getByRole('tab').click({ button: 'right' })
-    await c.page.getByRole('menuitemcheckbox', { name: 'Deliver room messages automatically' }).click()
+    await expect(markItem).toHaveAttribute('aria-checked', 'false')
+    await markItem.click()
     await expect.poll(async () => (await tabsOf(c)).find((t) => t.room?.name === 'alice')?.room).toMatchObject({ mark: true })
     await expect.poll(() => c.pastes()).toHaveLength(3)
     expect(c.pastes()[2]).toBe(paste(pointerText(1)))

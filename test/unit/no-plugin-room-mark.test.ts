@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest'
 
 // The room mark ("Deliver room messages automatically", design-rooms.md §2) is the person's alone, like the tab flag:
 // it lets room messages into a tab the person typed in, so a plugin, hook or `ccc` path that could set it would make
-// it worthless. Its one writer is TabManager.setRoomMark, reached only from the shell page's `tabs.roomMark` (the
-// registerRoomStripHandlers in ipc/room-handlers.ts, wired in index.ts). The held badge's click (`rooms.deliverHeld`) pastes into a
+// it worthless. Its one writer after a join is TabManager.setRoomMark, reached only from the shell page's `tabs.roomMark` (the
+// registerRoomStripHandlers in ipc/room-handlers.ts, wired in index.ts). A join (TabManager.setRoom, main's room service)
+// gives a new membership the fixed initial value, on (design-rooms.md §2, a deliberate loosening): a constant, never
+// an argument, so no plugin, hook or `ccc` input decides it. The held badge's click (`rooms.deliverHeld`) pastes into a
 // typed tab as the person's act, so it gets the same rule. Checked on code lines (a comment may name them).
 
 const ROOT = join(__dirname, '..', '..')
@@ -93,6 +95,20 @@ describe('the room mark and the badge are reached only from the shell page', () 
       expect(['src/shared/ipc.ts', 'src/main/ipc/room-handlers.ts'].includes(file) || file.startsWith('src/renderer/'), file).toBe(true)
     }
     expect(filesOf(found)).toContain('src/main/ipc/room-handlers.ts')
+  })
+
+  it('a join sets the initial mark from a constant, never from its arguments', () => {
+    const lines = codeLines(readFileSync(join(ROOT, 'src', 'main', 'tabs', 'tab-manager.ts'), 'utf8')).map((l) => l.text)
+    const open = lines.findIndex((t) => /^\s+setRoom\(projectId: string, tabId: string, room: \{ id: string; name: string; coordinator: boolean \}\): TabRoom \{$/.test(t))
+    expect(open, 'setRoom signature (no mark in its room argument)').toBeGreaterThan(0)
+    const close = lines.findIndex((t, i) => i > open && t === '  }')
+    const body = lines.slice(open + 1, close).join('\n')
+    // The one place the join names the mark: the literal, or the same membership keeping the person's own value.
+    expect(body.match(/\bmark\b/g)).toHaveLength(3)
+    expect(body).toContain('mark: true })')
+    expect(body).toContain('next.mark = tab.room.mark')
+    // The `room` argument's mark (a field a caller could smuggle in) is never read.
+    expect(body.replaceAll('tab.room.mark', '')).not.toMatch(/\broom\.mark\b/)
   })
 
   it('no plugin, host, hook, socket or CLI code names the mark writer, the badge or their channels', () => {

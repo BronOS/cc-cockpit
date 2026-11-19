@@ -1,7 +1,8 @@
 // Rooms: the tab strip's room parts (design-rooms.md §5). A fixture plugin (room-strip) makes a room and opens
 // its member bob; the strip shows the marker, a message held for a typed tab shows the badge, its click pastes the
 // fixed pointer as the person's act (and says why when it cannot, with "Deliver anyway" for a possible draft), and the
-// person's mark is set and cleared from the tab's context menu, stored on the tab by main; setting it delivers at once.
+// person's mark (on from the join, design-rooms.md §2) is cleared and set from the tab's context menu, stored on the tab
+// by main; setting it delivers at once.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -29,7 +30,7 @@ const seen = (c: Cockpit): { opened?: { tabId: string }; sent?: unknown; error?:
   JSON.parse(readFileSync(join(c.root, 'home', 'room-strip.json'), 'utf8'))
 const tabRoom = async (c: Cockpit): Promise<TabInfo['room']> => (await c.hook<TabInfo[]>('tabs', c.projectDir))[0]?.room
 
-test('a member tab shows its marker; the held badge delivers the pointer; the mark is set from the tab menu', async ({ cockpit }) => {
+test('a member tab shows its marker; the held badge delivers the pointer; the mark is cleared and set from the tab menu', async ({ cockpit }) => {
   await cockpit.hook('linkPlugin', FIXTURE)
   await cockpit.hook('enablePlugin', cockpit.projectDir, PLUGIN)
   await expect
@@ -39,12 +40,21 @@ test('a member tab shows its marker; the held badge delivers the pointer; the ma
   expect(seen(cockpit).error).toBeUndefined()
   await expect.poll(async () => (await entry(cockpit)).status, { timeout: 15_000 }).toBe('waiting')
 
-  // The marker: the member's name, the room and name in its tooltip.
+  // The marker: the member's name, the room and name in its tooltip; the join started marked, which it says too.
   const tab = cockpit.page.locator('.tab').first()
   const marker = tab.locator('.tab-room')
   await expect(marker).toHaveText('bob')
-  await expect(marker).toHaveAttribute('title', 'Room "Strip test" as bob')
+  await expect(marker).toHaveAttribute('title', 'Room "Strip test" as bob\nRoom messages are delivered automatically')
   await expect(tab.locator('.tab-held')).toHaveCount(0)
+  expect(await tabRoom(cockpit)).toMatchObject({ name: 'bob', mark: true })
+
+  // The person turns the mark off from the tab menu, to keep this tab's own conversation out of the room.
+  const menuItem = cockpit.page.getByRole('menuitemcheckbox', { name: 'Deliver room messages automatically' })
+  await tab.getByRole('tab').click({ button: 'right' })
+  await expect(menuItem).toHaveAttribute('aria-checked', 'true')
+  await menuItem.click()
+  await expect.poll(() => tabRoom(cockpit)).toMatchObject({ name: 'bob', mark: false })
+  await expect(marker).toHaveAttribute('title', 'Room "Strip test" as bob')
 
   // The person takes the tab over and ends a turn with nothing left in the box: a line that schedules the Stop, then a
   // prompt (its UserPromptSubmit clears the draft bit the keys set), then the Stop on its own.
@@ -100,7 +110,6 @@ test('a member tab shows its marker; the held badge delivers the pointer; the ma
 
   // The mark, from the tab menu: stored on the tab by main, shown checked, in the marker's tooltip. Turned on while the
   // tab waits with no draft, what is held goes in at once, not at the next Stop.
-  const menuItem = cockpit.page.getByRole('menuitemcheckbox', { name: 'Deliver room messages automatically' })
   await tab.getByRole('tab').click({ button: 'right' })
   await expect(menuItem).toHaveAttribute('aria-checked', 'false')
   await menuItem.click()

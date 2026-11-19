@@ -224,12 +224,14 @@ describe('room.join and room.leave', () => {
     const id = room()
     const t = claudeTab()
     const { code } = service.invite(owner, id, { name: 'scout', coordinator: true })
-    expect(await call('room.join', session(t), { invite: code, name: 'boss', tabId: 'other' })).toEqual({
+    // `mark: false` from the caller is never read: the `ccc` path cannot clear (or set) the person's mark.
+    expect(await call('room.join', session(t), { invite: code, name: 'boss', tabId: 'other', mark: false })).toEqual({
       title: 'Team',
       name: 'scout',
       coordinator: true
     })
-    expect(tabs.roomOf(P1, t)).toEqual({ id, name: 'scout', coordinator: true, mark: false })
+    // A join starts marked (design-rooms.md §2 "The mark"): the main-side default, never the invite's or the args'.
+    expect(tabs.roomOf(P1, t)).toEqual({ id, name: 'scout', coordinator: true, mark: true })
     expect(sessions.get(t)?.room).toEqual({ title: 'Team', name: 'scout', coordinator: true })
     expect(service.registry.memberOf(t)).toEqual({ roomId: id, name: 'scout', coordinator: true })
   })
@@ -388,6 +390,8 @@ describe('room.send', () => {
       const c = tabs.create(P1, { kind: 'claude' }).id
       addTo(id, a, 'alice')
       addTo(id, b, 'bob')
+      // A join starts marked: the person turns bob's mark off (else the draft bit alone would hold it here).
+      tabs.setRoomMark(P1, b, false)
       sessions.userInput(P1, b, 'x')
       sessions.applyHook(b, 'SessionStart', { source: 'startup' })
       sessions.applyHook(c, 'SessionStart', { source: 'startup' })
@@ -639,7 +643,7 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     const id = room()
     const t = claudeTab()
     addTo(id, t, 'alice', true)
-    expect(tabs.roomOf(P1, t)).toEqual({ id, name: 'alice', coordinator: true, mark: false })
+    expect(tabs.roomOf(P1, t)).toEqual({ id, name: 'alice', coordinator: true, mark: true })
     expect(sessions.get(t)?.room).toEqual({ title: 'Team', name: 'alice', coordinator: true })
     const shell = tabs.create(P1, { kind: 'shell' })
     expect(() => addTo(id, shell.id, 'sh')).toThrow(/only a Claude tab/)
@@ -891,13 +895,14 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     const id = room()
     const t = claudeTab()
     addTo(id, t, 'alice')
-    // The person types and submits: typed, no draft, waiting again.
+    // The join started marked; the person turns it off, then types and submits: typed, no draft, waiting again.
+    tabs.setRoomMark(P1, t, false)
     sessions.userInput(P1, t, 'x')
     sessions.applyHook(t, 'UserPromptSubmit', { prompt: 'x' })
     sessions.applyHook(t, 'Stop', {})
     service.sendAsPlugin(owner, id, 'alice', 'x')
     expect(writes).toEqual([])
-    // Never set, the offer still holds it.
+    // Off, the offer still holds it.
     service.markTurnedOn(t)
     expect(writes).toEqual([])
     service.pause(id)
@@ -915,6 +920,95 @@ describe('owner and person calls keep the tab record and SessionInfo in step', (
     const id = room()
     expect(service.log(owner, id).entries.map((e) => e.type)).toEqual(['create'])
     expect(() => service.log({ pluginId: 'example.other', projectId: P1 }, id)).toThrow('no such room')
+  })
+})
+
+// design-rooms.md §2 "The mark": a join starts marked, for every member (the person's own tabs included), so a stray
+// key in a member tab no longer holds its room traffic behind the badge. The draft bit, the person's "off" and the
+// (tab, room) binding still hold; only the person changes the mark after the join.
+describe('the mark starts on at a join', () => {
+  /** The person types in `t` and submits: typed, no draft, waiting for input again. */
+  const typedAndSubmitted = (t: string): void => {
+    sessions.userInput(P1, t, 'x')
+    sessions.applyHook(t, 'UserPromptSubmit', { prompt: 'x' })
+    sessions.applyHook(t, 'Stop', {})
+  }
+
+  it('a typed, marked member with no draft gets the pointer pasted through the gate while waiting', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    typedAndSubmitted(t)
+    expect(sessions.get(t)?.typed).toBe(true)
+    expect(service.sendAsPlugin(owner, id, 'alice', 'x')).toEqual([{ to: 'alice', path: 'delivered' }])
+    expect(writes).toEqual([{ tabId: t, data: paste(pointerText(1)) }])
+  })
+
+  it('the person typing after joining (a stray key, nothing submitted) holds it as a draft; "Deliver anyway" is theirs', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    sessions.userInput(P1, t, 'x')
+    expect(service.sendAsPlugin(owner, id, 'alice', 'x')).toEqual([{ to: 'alice', path: 'held', why: 'draft' }])
+    expect(writes).toEqual([])
+    expect(sessions.get(t)?.held).toBe(1)
+    expect(service.deliverHeld(t)).toEqual({ delivered: false, why: 'draft' })
+    expect(writes).toEqual([])
+    expect(service.deliverHeld(t, { overDraft: true })).toEqual({ delivered: true })
+    expect(writes).toEqual([{ tabId: t, data: paste(pointerText(1)) }])
+  })
+
+  it('the person turning it off holds a typed member behind the badge as before', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    tabs.setRoomMark(P1, t, false)
+    typedAndSubmitted(t)
+    expect(service.sendAsPlugin(owner, id, 'alice', 'x')).toEqual([{ to: 'alice', path: 'held', why: 'typed' }])
+    expect(writes).toEqual([])
+    // Nor at its Stop: no block for a typed tab without the mark.
+    working(t)
+    expect(service.stop.stop(t, { stop_hook_active: false })).toBeUndefined()
+  })
+
+  it('an untyped member is unaffected: it got the pointer before and still does', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    tabs.setRoomMark(P1, t, false)
+    expect(service.sendAsPlugin(owner, id, 'alice', 'x')).toEqual([{ to: 'alice', path: 'delivered' }])
+  })
+
+  it('leaving and joining another room (or the same one again) starts marked again, whatever the person set before', async () => {
+    const first = room()
+    const t = claudeTab()
+    addTo(first, t, 'alice')
+    tabs.setRoomMark(P1, t, false)
+    await call('room.leave', session(t))
+    expect(tabs.roomOf(P1, t)).toBeUndefined()
+    const second = room('Other')
+    const { code } = service.invite(owner, second, { name: 'scout' })
+    await call('room.join', session(t), { invite: code })
+    expect(tabs.roomOf(P1, t)).toEqual({ id: second, name: 'scout', coordinator: false, mark: true })
+    // And it delivers: the tab is typed and has nothing unsent.
+    typedAndSubmitted(t)
+    expect(service.sendAsPlugin(owner, second, 'scout', 'x')).toEqual([{ to: 'scout', path: 'delivered' }])
+    // A room's end drops the membership with the mark; a new room starts marked too.
+    tabs.setRoomMark(P1, t, false)
+    service.end(owner, second)
+    const third = room('Third')
+    addTo(third, t, 'alice')
+    expect(tabs.roomOf(P1, t)?.mark).toBe(true)
+  })
+
+  it('a restore keeps the stored mark, off included (a restore is not a join)', () => {
+    const id = room()
+    const t = claudeTab()
+    addTo(id, t, 'alice')
+    tabs.closeProject(P1)
+    const restored = tabs.restoreTab(P1, { kind: 'claude', room: { id, name: 'alice', coordinator: false, mark: false } })
+    expect(tabs.roomOf(P1, restored.id)).toEqual({ id, name: 'alice', coordinator: false, mark: false })
+    expect(sessions.get(restored.id)?.typed).toBe(true)
   })
 })
 
@@ -1110,9 +1204,8 @@ describe('the Stop decision through the hook handlers', () => {
     service.sendAsPlugin(owner, id, 'alice', 'x')
     for (let i = 0; i < MAX_STOP_BLOCKS_IN_A_ROW; i++) expect(hook(t, { stop_hook_active: i > 0 })).not.toBeNull()
     expect(hook(t, { stop_hook_active: true })).toBeNull()
-    // The person types and submits: the tab is now typed, so it needs the mark to be continued.
+    // The person types and submits: the tab is now typed, and its mark (on since the join) lets it be continued.
     sessions.userInput(P1, t, 'x')
-    tabs.setRoomMark(P1, t, true)
     sessions.applyHook(t, 'UserPromptSubmit', { prompt: 'x' })
     expect(hook(t, { stop_hook_active: false })).not.toBeNull()
   })

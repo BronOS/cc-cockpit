@@ -339,10 +339,12 @@ Rooms (messages and shared docs between Claude tabs, plus the per-plugin caps th
   `ccc hook Stop` acks the block, then prints it, all inside `STOP_HOOK_BUDGET_MS` (2 s, `cli/client.ts`); a connection that
   closes unacked means nothing was printed, so main applies the plain Stop and offers the pointer again (`RoomStop.closedUnacked`,
   `unblocked`). The gate path honours the per-tab Stop cap too (held `why` `capped`), so a loop cannot run through pastes.
-- The room mark (`Deliver room messages automatically`) is the person's alone, like the tab flag: written only from the
-  shell page (top frame, own tabs), grep-tested, bound to (tab, room), held by the draft bit; never a host API, hook or
-  `ccc` path. Pause, Resume and Remove are the person's too. Membership and the mark live in the tab record; a restart
-  restores members as typed and rooms paused.
+- The room mark (`Deliver room messages automatically`) is ON at every join (`TabManager.setRoom`, main's constant, never
+  an argument: a deliberate loosening, design-rooms.md §2, so a stray key does not silently hold a member), then the
+  person's alone, like the tab flag: changed only from the shell page (top frame, own tabs), grep-tested, bound to (tab,
+  room) (a new membership starts marked again), held by the draft bit; never a host API, hook or `ccc` path. Pause,
+  Resume and Remove are the person's too. Membership and the mark live in the tab record; a restart restores the mark as
+  saved, members as typed and rooms paused.
 - Room identity comes from the caller's tab token or the host's own plugin, never a payload; a plugin acts only on its
   own rooms in its own window and can never pull a tab in (an invite is redeemed by the tab itself). Rooms end with
   their plugin, and room calls are refused while the plugin is off.

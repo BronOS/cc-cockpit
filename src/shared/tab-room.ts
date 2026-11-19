@@ -5,8 +5,10 @@
 // (RoomRegistry.rebind), never by the tab id, and lost when the room no longer has it.
 //
 // `mark` ("Deliver room messages automatically") is the person's alone, like the flag (tab-flag.ts):
-// written only by TabManager.setRoomMark from the shell page; no host API, hook or `ccc` path. It is
-// bound to (tab, room): a new membership starts unmarked and leaving drops it with the membership.
+// changed only by TabManager.setRoomMark from the shell page; no host API, hook or `ccc` path. It is
+// bound to (tab, room): a new membership starts marked (TabManager.setRoom's fixed initial value, design-rooms.md
+// §2: a deliberate loosening, so a stray key does not silently hold a member's traffic) and leaving drops it with the
+// membership, so the person's "off" for one room never carries into the next.
 //
 // The projects file is user-writable, so the saved value is read leniently: anything off loses the
 // membership (the tab still comes back), never the tab.
@@ -28,7 +30,8 @@ export function tabRoomOf(raw: unknown): TabRoom | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
   const { id, name, coordinator, mark } = raw as Record<string, unknown>
   if (!isRoomId(id) || !isRoomName(name) || typeof coordinator !== 'boolean') return undefined
-  // A damaged mark is no mark: it lets messages into a tab the person typed in, so only an explicit true counts.
+  // A damaged mark is no mark: it lets messages into a tab the person typed in, so only an explicit true counts. A
+  // join starts marked, but a saved record read back is the person's last word on it (or damage), never a new join.
   return { id, name, coordinator, mark: mark === true }
 }
 

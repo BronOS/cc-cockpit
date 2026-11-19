@@ -1689,14 +1689,15 @@ describe('room membership', () => {
     return { tabs, calls, rooms, started, changed, logs }
   }
 
-  it('joins a Claude tab unmarked, tells the lifecycle, saves and tells every view', () => {
+  // design-rooms.md §2 "The mark": a join starts marked (a stray key must not silently hold a member's traffic).
+  it('joins a Claude tab marked, tells the lifecycle, saves and tells every view', () => {
     const { tabs, rooms, changed } = rig()
     const tab = tabs.create(A, { kind: 'claude' })
     events.length = 0
-    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: true })).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: false })
-    expect(tabs.list(A)[0]!.room).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: false })
-    expect(tabs.roomOf(A, tab.id)).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: false })
-    expect(rooms).toEqual([[tab.id, { id: ROOM, name: 'alice', coordinator: true, mark: false }]])
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: true })).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: true })
+    expect(tabs.list(A)[0]!.room).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: true })
+    expect(tabs.roomOf(A, tab.id)).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: true })
+    expect(rooms).toEqual([[tab.id, { id: ROOM, name: 'alice', coordinator: true, mark: true }]])
     expect(changed).toContain(A)
     expect(events.map((e) => e.channel)).toEqual(['tabs.added'])
     // Another project's window does not see the tab.
@@ -1721,37 +1722,45 @@ describe('room membership', () => {
     expect(() => tabs.setRoomMark(A, tab.id, true)).toThrow(/in no room/)
     tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
     for (const bad of ['yes', 1, null, undefined]) expect(() => tabs.setRoomMark(A, tab.id, bad), String(bad)).toThrow(/true or false/)
+    // The join started marked: the person turns it off, then on again.
+    expect(tabs.roomOf(A, tab.id)?.mark).toBe(true)
     changed.length = 0
+    events.length = 0
+    expect(tabs.setRoomMark(A, tab.id, false)).toBe(false)
+    expect(events.map((e) => e.channel)).toEqual(['tabs.added'])
+    expect(tabs.roomOf(A, tab.id)?.mark).toBe(false)
+    expect(rooms.at(-1)).toEqual([tab.id, { id: ROOM, name: 'alice', coordinator: false, mark: false }])
+    expect(changed).toEqual([A])
+    // The same mark again changes nothing.
+    tabs.setRoomMark(A, tab.id, false)
+    expect(changed).toEqual([A])
     events.length = 0
     expect(tabs.setRoomMark(A, tab.id, true)).toBe(true)
     expect(events.map((e) => e.channel)).toEqual(['tabs.added'])
-    expect(tabs.roomOf(A, tab.id)?.mark).toBe(true)
     expect(rooms.at(-1)).toEqual([tab.id, { id: ROOM, name: 'alice', coordinator: false, mark: true }])
-    expect(changed).toEqual([A])
-    // The same mark again changes nothing.
-    tabs.setRoomMark(A, tab.id, true)
-    expect(changed).toEqual([A])
+    expect(changed).toEqual([A, A])
     expect(() => tabs.setRoomMark(B, tab.id, false)).toThrow(/unknown tab/)
   })
 
-  it('clears the mark on another room, keeps it for the same membership, and drops both on leave', () => {
+  it('starts every new membership marked, keeps the person\'s mark for the same membership, and drops both on leave', () => {
     const { tabs, rooms } = rig()
     const tab = tabs.create(A, { kind: 'claude' })
     tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false })
-    tabs.setRoomMark(A, tab.id, true)
-    // A coordinator change of the same member is not a new membership.
-    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: true }).mark).toBe(true)
-    // Another name in the same room, or another room, is: the mark goes.
-    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'bob', coordinator: false }).mark).toBe(false)
-    tabs.setRoomMark(A, tab.id, true)
-    expect(tabs.setRoom(A, tab.id, { id: OTHER, name: 'bob', coordinator: false }).mark).toBe(false)
-    tabs.setRoomMark(A, tab.id, true)
+    tabs.setRoomMark(A, tab.id, false)
+    // A coordinator change of the same member is not a new membership: the person's "off" stays.
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: true }).mark).toBe(false)
+    // Another name in the same room, or another room, is: it starts marked again (an "off" given for one room is
+    // bound to that room, design-rooms.md §2).
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'bob', coordinator: false }).mark).toBe(true)
+    tabs.setRoomMark(A, tab.id, false)
+    expect(tabs.setRoom(A, tab.id, { id: OTHER, name: 'bob', coordinator: false }).mark).toBe(true)
+    tabs.setRoomMark(A, tab.id, false)
     tabs.clearRoom(A, tab.id)
     expect(tabs.roomOf(A, tab.id)).toBeUndefined()
     expect(tabs.list(A)[0]!.room).toBeUndefined()
     expect(rooms.at(-1)).toEqual([tab.id, null])
-    // A later join starts unmarked.
-    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false }).mark).toBe(false)
+    // A later join, after the person turned the mark off and the tab left, starts marked.
+    expect(tabs.setRoom(A, tab.id, { id: ROOM, name: 'alice', coordinator: false }).mark).toBe(true)
     // clearRoom of a tab in no room, or an unknown one, is a no-op.
     const n = rooms.length
     tabs.clearRoom(A, tabs.create(A, { kind: 'claude' }).id)
@@ -1797,6 +1806,13 @@ describe('room membership', () => {
     // The registry's coordinator flag wins over the saved one; the mark is the saved one.
     expect(tab.room).toEqual({ id: ROOM, name: 'alice', coordinator: true, mark: true })
     expect(started).toEqual([expect.objectContaining({ tabId: tab.id, typed: true })])
+  })
+
+  it('a restore is not a join: a saved "off" comes back off (the person\'s choice survives a restart)', () => {
+    const { tabs } = rig({ bound: { coordinator: false } })
+    const tab = tabs.restoreTab(A, { kind: 'claude', room: { id: ROOM, name: 'alice', coordinator: false, mark: false } })
+    expect(tab.room).toEqual({ id: ROOM, name: 'alice', coordinator: false, mark: false })
+    expect(tabs.roomOf(A, tab.id)?.mark).toBe(false)
   })
 
   it('a restored tab whose room no longer has the member comes back in no room and not typed', () => {

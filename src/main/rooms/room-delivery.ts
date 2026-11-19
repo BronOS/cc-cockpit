@@ -51,7 +51,10 @@ export type HeldWhy =
   | 'paused'
   /** The member has no tab now (its window or the app went away; a restore binds it again). */
   | 'no-tab'
-  /** The person typed in the tab and gave it no mark: the badge shows the count, their click delivers. */
+  /**
+   * The person typed in the tab and its mark is off (they turned it off: a join starts it on): the badge shows the
+   * count, their click delivers.
+   */
   | 'typed'
   /**
    * The tab had MAX_STOP_BLOCKS_IN_A_ROW Stop pointers in a row (room-stop.ts): held behind the badge until the

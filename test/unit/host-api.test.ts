@@ -2766,14 +2766,16 @@ describe('ctx.rooms (rooms.*, design-rooms.md §4)', () => {
       effort: 'high',
       cwd: 'sub',
       // Never read: a room tab opens unselected.
-      focus: true
+      focus: true,
+      // Never read: the mark is the person's; a join starts it on (design-rooms.md §2), no plugin field decides it.
+      mark: false
     })) as { tabId: string }
     expect(ptyOf(tabId).argv).toEqual([
       'claude', '--settings', '/data/hooks.json', '--model', 'sonnet', '--effort', 'high', '--', ' read your kickoff'
     ])
     expect(ptyOf(tabId).options.cwd).toBe(join(projA, 'sub'))
     expect(announced).toEqual([{ projectId: A, tab: expect.objectContaining({ id: tabId }), windowId: WIN_A }])
-    expect(tabs.roomOf(A, tabId)).toEqual(expect.objectContaining({ id, name: 'lead', coordinator: true, mark: false }))
+    expect(tabs.roomOf(A, tabId)).toEqual(expect.objectContaining({ id, name: 'lead', coordinator: true, mark: true }))
     expect(registry.get(tabId)?.room).toEqual(expect.objectContaining({ title: 'Review', name: 'lead', coordinator: true }))
     expect(await call('rooms.members', { pluginId: 'a.one', id })).toEqual([{ name: 'lead', coordinator: true, tabId, held: 0 }])
 
