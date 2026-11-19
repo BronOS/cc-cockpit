@@ -206,6 +206,21 @@ export interface OverlayManagerOptions {
    * is skipped if it were). Absent or empty: no browser is attached, so the page waits for one.
    */
   browserViews?(windowId: number): ViewId[]
+  /**
+   * Whether a view is the owner's (ViewRegistry.whoOf, design-guests §9): a guest's view never holds an html
+   * overlay's page (its posts carry the opener's data). Absent: every view is (no guests).
+   */
+  ownerView?(viewId: ViewId): boolean
+}
+
+/**
+ * What opened an overlay (design-guests §9, spec-review 16): the tab a `ccc` call came from (CliCall.tabId, main's)
+ * or the plugin that opened it. Main's own, never a payload's; a guest sees an overlay only when it sees one of
+ * them, and one with neither (the desktop's own menu, an unknown caller) is hidden from guests.
+ */
+export interface OverlayOrigin {
+  tabId?: string
+  pluginId?: string
 }
 
 /** What a type-button provider is told about an overlay (the SDK's OverlayInfo). */
@@ -398,6 +413,8 @@ interface Overlay {
   html?: string
   /** Who asked (a plugin id, `cli`, ...): only for the log, never an authority. */
   opener: string
+  /** What opened it, for guests (OverlayOrigin); absent: hidden from every guest. */
+  origin?: OverlayOrigin
   settle: (result: OverlayResult) => void
   view?: UrlView
   /**
@@ -529,10 +546,11 @@ export class OverlayManager {
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
     pluginId?: string,
-    view?: ViewId
+    view?: ViewId,
+    origin?: OverlayOrigin
   ): Promise<OverlayResult> {
     try {
-      return this.start(windowId, spec, opener, peerGone, channel, pluginId, view)
+      return this.start(windowId, spec, opener, peerGone, channel, pluginId, view, origin)
     } catch (err) {
       return Promise.reject(toError(err))
     }
@@ -559,7 +577,8 @@ export class OverlayManager {
     peerGone?: AbortSignal,
     channel?: OverlayChannel,
     pluginId?: string,
-    view?: ViewId
+    view?: ViewId,
+    origin?: OverlayOrigin
   ): Promise<OverlayResult> {
     const parsed = parseOverlaySpec(spec)
     // By main's own flag, before anything is created (whoever opens it: the CLI, a plugin, a menu).
@@ -589,6 +608,9 @@ export class OverlayManager {
     }
     if (parsed.discuss !== undefined) overlay.discussSpec = parsed.discuss
     if (pluginId !== undefined) overlay.pluginId = pluginId
+    // A plugin's open is that plugin's even with no explicit origin; the CLI's needs the caller's tab (07).
+    const from = { ...(origin?.tabId === undefined ? {} : { tabId: origin.tabId }), ...((origin?.pluginId ?? pluginId) === undefined ? {} : { pluginId: origin?.pluginId ?? pluginId }) }
+    if (from.tabId !== undefined || from.pluginId !== undefined) overlay.origin = from
     if (parsed.type) {
       overlay.type = parsed.type
       overlay.buttonsKey = randomUUID()
@@ -598,7 +620,7 @@ export class OverlayManager {
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
     if (parsed.kind === 'html') {
       const origin =
-        view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) ? view : undefined
+        view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) && this.ownerView(view) ? view : undefined
       // Server mode: never the hidden page; no browser at all leaves it waiting (holder undefined).
       this.hold(overlay, origin ?? (this.options.server === true ? this.browserHolder(windowId) : desktopViewId(windowId)))
     }
@@ -768,9 +790,13 @@ export class OverlayManager {
    * Server mode: the browser view of `windowId` to hold a page (the last to act, else the first
    * attached), never `except` (the view leaving) nor a desktop view; undefined when none is attached.
    */
+  private ownerView(viewId: ViewId): boolean {
+    return this.options.ownerView?.(viewId) ?? true
+  }
+
   private browserHolder(windowId: number, except?: ViewId): ViewId | undefined {
     for (const viewId of this.options.browserViews?.(windowId) ?? []) {
-      if (viewId === except || !isRemoteViewId(viewId)) continue
+      if (viewId === except || !isRemoteViewId(viewId) || !this.ownerView(viewId)) continue
       if (this.options.isViewLive?.(viewId, windowId) ?? true) return viewId
     }
     return undefined
@@ -916,6 +942,24 @@ export class OverlayManager {
     if (rest.length > 0) this.pty.write(overlay.id, rest)
     // A view that measured the overlay and is visible takes the size at once (debounce 0).
     if (isPersonInput(rest)) this.sizes.typed(overlay.id, viewId)
+  }
+
+  /**
+   * Whether a guest sees the overlay (design-guests §9): opened from a tab it sees, or by a plugin it sees; one
+   * with no origin never. The router's `overlayVisible` (07 wires it with the guest's live checks).
+   */
+  visibleTo(windowId: number, overlayId: string, tabVisible: (tabId: string) => boolean, pluginVisible: (pluginId: string) => boolean): boolean {
+    const origin = this.find(windowId, overlayId)?.origin
+    if (!origin) return false
+    if (origin.tabId !== undefined) return tabVisible(origin.tabId)
+    return origin.pluginId !== undefined && pluginVisible(origin.pluginId)
+  }
+
+  /** A write guest's view measured a terminal overlay (D-14): remembered for its explicit take (typing) only. */
+  guestResize(windowId: number, overlayId: string, cols: number, rows: number, viewId: ViewId): void {
+    const overlay = this.find(windowId, overlayId)
+    if (overlay?.info.kind !== 'terminal') return
+    this.sizes.report(overlay.id, viewId, cols, rows, true)
   }
 
   /** A view measured a terminal overlay: remembered; the pty takes it when that view sizes it (input). */

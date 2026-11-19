@@ -35,7 +35,7 @@
 // CallView, never a payload), panels are main's (LayoutService.webviewPanel, never a payload).
 
 import { errorText } from '../../shared/error-text'
-import type { ViewId } from '../../shared/views'
+import type { GuestRole, ViewId } from '../../shared/views'
 import { warnLog } from '../warn-log'
 
 /** Smallest side, CSS px, a report is clamped to: a sliver of a panel still gets a usable page. */
@@ -103,6 +103,11 @@ interface ViewerState {
   size: PlaceSize
   /** Activity order (a report or a claim): an owner leaving hands the size to the latest. */
   at: number
+  /**
+   * A guest's view (design-guests §8, spec-review 14): `read` is a viewer and never the size owner; `write` owns
+   * only by a claim (press, key, text, Fit) or as the first viewer while no owner's view watches. Absent: the owner.
+   */
+  guest?: GuestRole
 }
 
 interface PanelState {
@@ -110,6 +115,8 @@ interface PanelState {
   /** Current viewers, in join order. */
   viewers: Map<ViewId, ViewerState>
   owner: ViewId | undefined
+  /** The owner took the size by a claim (claimOwner), not by joining first: an owner's view joining keeps out. */
+  claimed: boolean
   /** The size the owner wants (applied, or waiting for the throttle). */
   want: PlaceSize | undefined
   /** The size last given to deps.setSize. */
@@ -147,7 +154,7 @@ export class WebviewViewers {
    * A browser view's placement report for a panel of its own window. Visible, not hidden and with
    * an area: the view is (or stays) a viewer at the clamped size; otherwise it leaves the panel.
    */
-  report(panel: WebviewPanelOf, viewId: ViewId, report: PlaceReport): void {
+  report(panel: WebviewPanelOf, viewId: ViewId, report: PlaceReport, guest?: GuestRole): void {
     const width = clampSide(report.width)
     const height = clampSide(report.height)
     const key = keyOf(panel.windowId, panel.pluginId, panel.panelId)
@@ -158,15 +165,32 @@ export class WebviewViewers {
     const size = { width, height }
     let state = this.panels.get(key)
     if (!state) {
-      state = { panel: { ...panel }, viewers: new Map(), owner: undefined, want: undefined, applied: undefined, appliedAt: undefined, timer: undefined }
+      state = {
+        panel: { ...panel },
+        viewers: new Map(),
+        owner: undefined,
+        claimed: false,
+        want: undefined,
+        applied: undefined,
+        appliedAt: undefined,
+        timer: undefined
+      }
       this.panels.set(key, state)
     }
-    const joined = !state.viewers.has(viewId)
-    state.viewers.set(viewId, { size, at: ++this.clock })
+    const known = state.viewers.get(viewId)
+    const joined = known === undefined
+    // Sticky: a view's `who` is frozen at hello, so a view that once reported as a guest's stays one.
+    const role = known?.guest ?? guest
+    state.viewers.set(viewId, role === undefined ? { size, at: ++this.clock } : { size, at: ++this.clock, guest: role })
     if (joined) {
       const first = state.viewers.size === 1
-      // An owner is always a viewer (it is handed on when it leaves), so only a first one sets it.
-      if (state.owner === undefined) this.setOwner(state, viewId)
+      // An owner is always a viewer (it is handed on when it leaves), so only a first one sets it. A read guest
+      // never owns; a write guest owns by joining only while no owner's view watches, and an owner's view that
+      // joins takes the size back from a guest that did not claim it (spec-review 14).
+      const ownerGuest = state.owner === undefined ? undefined : state.viewers.get(state.owner)?.guest
+      if (state.owner === undefined ? role !== 'read' : role === undefined && ownerGuest !== undefined && !state.claimed) {
+        this.setOwner(state, viewId)
+      }
       // The size first, so a view the first viewer makes (a deferred load) starts at that size.
       if (first) this.call(() => this.deps.setViewed(panel.windowId, panel.pluginId, panel.panelId, true))
       this.emit({ kind: 'added', panel: state.panel, viewId })
@@ -183,9 +207,11 @@ export class WebviewViewers {
     const state = this.panels.get(keyOf(panel.windowId, panel.pluginId, panel.panelId))
     const viewer = state?.viewers.get(viewId)
     if (!state || !viewer) return
+    // A read guest never takes the size (D-14); the router refuses its claims before this anyway.
+    if (viewer.guest === 'read') return
     viewer.at = ++this.clock
     if (state.owner === viewId) return
-    this.setOwner(state, viewId)
+    this.setOwner(state, viewId, true)
   }
 
   /**
@@ -270,16 +296,24 @@ export class WebviewViewers {
     let next: ViewId | undefined
     let at = -1
     for (const [id, v] of state.viewers) {
-      if (v.at > at) {
+      // Handed on only to an owner's view (D-14, as the terminals' fallback): a guest takes the size by its
+      // own act only. None: nobody owns it and the page keeps the size it has.
+      if (v.guest === undefined && v.at > at) {
         next = id
         at = v.at
       }
     }
     if (next !== undefined) this.setOwner(state, next)
+    else {
+      state.owner = undefined
+      state.claimed = false
+      this.emit({ kind: 'owner', panel, viewId: undefined })
+    }
   }
 
-  private setOwner(state: PanelState, viewId: ViewId): void {
+  private setOwner(state: PanelState, viewId: ViewId, claimed = false): void {
     state.owner = viewId
+    state.claimed = claimed
     this.emit({ kind: 'owner', panel: state.panel, viewId })
     const viewer = state.viewers.get(viewId)
     if (viewer) this.want(state, viewer.size)

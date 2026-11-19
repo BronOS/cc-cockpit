@@ -63,6 +63,11 @@ export interface CloseAskHooks {
    * window with one view would.
    */
   viewsOf?(windowId: number): readonly ViewId[]
+  /**
+   * Whether a view is the owner's (ViewRegistry.whoOf, design-guests §9): a guest's view never gets a close ask
+   * (askVisible), so it is left out of "every live view declined". Absent: every view counts.
+   */
+  ownerView?(viewId: ViewId): boolean
 }
 
 /** One pending ask as the views get it (the `sessions.closeAsk` payload, and `ready`'s list). */
@@ -175,7 +180,8 @@ export class CloseAsks {
   private settleIfAllDeclined(requestId: string, ask: PendingAsk): void {
     // Without a view list a decline is the window's answer (one view). A view that joined after the
     // ask went out has not declined: it got the ask in `ready` and may still show it.
-    const views = this.hooks.viewsOf?.(ask.windowId)
+    const ownerView = this.hooks.ownerView
+    const views = this.hooks.viewsOf?.(ask.windowId)?.filter((v) => ownerView === undefined || ownerView(v))
     if (views === undefined || views.every((v) => ask.declined.has(v))) this.settle(requestId, false)
   }
 

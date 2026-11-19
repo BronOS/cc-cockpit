@@ -308,6 +308,12 @@ export interface TabRestorerOptions {
    * not restored (tests that do not care).
    */
   restoreGroups?(projectId: string, saved: unknown, idMap: ReadonlyMap<string, string>): void
+  /**
+   * After a restore spawned its tabs, with the same map (design-guests §7, spec-review 1): every holder of saved tab
+   * ids follows them to the new ones (02's GuestStore.remap: selected scopes and opened tabs). Called once per
+   * restore run, after the groups; a throw is logged and costs only that holder. Absent: nobody listens.
+   */
+  onRestored?(projectId: string, idMap: ReadonlyMap<string, string>): void
   /** The project's folder (ProjectRegistry.get): the cwd saved for a tab that failed to restore. */
   projectPath(projectId: string): string | undefined
   /**
@@ -430,6 +436,11 @@ export class TabRestorer {
           this.options.restoreGroups?.(projectId, groups, idMap)
         } catch (err) {
           this.log(`cannot restore the split groups of project ${projectId}: ${errorText(err)}`)
+        }
+        try {
+          this.options.onRestored?.(projectId, idMap)
+        } catch (err) {
+          this.log(`restore of project ${projectId}: a listener of the new tab ids failed: ${errorText(err)}`)
         }
         this.tabsChanged(projectId)
       })
