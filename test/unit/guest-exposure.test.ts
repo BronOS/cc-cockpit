@@ -12,7 +12,8 @@ describe('guestExposure', () => {
 
   it('a plugin that does not check access: read-only guests watch through a one-way line, write guests use it like the owner', () => {
     const e = guestExposure({ aware: false })
-    expect(e.read).toMatch(/cannot use them/)
+    expect(e.read).toMatch(/^Sees what the plugin pushes to its panels, slots and tabs; a page that asks for its state first shows nothing\. /)
+    expect(e.read).toMatch(/does not reach the plugin/)
     expect(e.write).toMatch(/like you/)
     expect(e.summary).toMatch(/Does not check/)
   })

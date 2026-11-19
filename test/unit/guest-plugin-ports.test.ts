@@ -35,8 +35,12 @@ function mainHub(access: Record<string, GuestAccess>, port: (pluginId: string, r
     toRenderer: (viewId, payload) => void renderer.push({ viewId, payload }),
     reload: () => {},
     close: (p) => p.close(),
-    slotFrame: (projectId, frameId) =>
-      projectId === 'p1' && frameId === 's1' ? ({ info: { id: 's1', pluginId: 'a.one', type: 'strip' }, host: { kind: 'panel' } } as never) : undefined,
+    // s1: a.one's frame in its own panel; s2: a.one's frame in hidden b.two's panel; s3: a.one's in the top bar.
+    slotFrame: (projectId, frameId) => {
+      if (projectId !== 'p1') return undefined
+      const host = { s1: { kind: 'panel', pluginId: 'a.one', panelId: 'board' }, s2: { kind: 'panel', pluginId: 'b.two', panelId: 'board' }, s3: { kind: 'app', place: 'top-bar' } }[frameId as 's1']
+      return host ? ({ info: { id: frameId, pluginId: 'a.one', type: 'strip' }, host } as never) : undefined
+    },
     slotToHost: (_p, open) => (slots.push(open), true),
     pageTab: (projectId, tabId) =>
       projectId === 'p1' && tabId === '11111111-1111-4111-8111-111111111111' ? { id: tabId, pluginId: 'a.one', type: 'file' } : undefined,
@@ -101,6 +105,17 @@ describe('main: guest views and plugin ports (panel-ports.ts)', () => {
     expect(m.hub.connectSettingsPage('p1', 'web:3', 'a.one', 'app', 3)).toBe(false)
     expect(m.hub.connectSettingsPage('p1', 'web:1', 'a.one', 'app', 4)).toBe(true)
     expect(m.settings).toHaveLength(1)
+  })
+
+  it("refuses a guest a slot frame a hidden plugin's panel placed, though its provider is shown; an app slot and the owner are unchanged", () => {
+    const m = mainHub(access, port)
+    expect(m.hub.connectSlot('p1', 'web:2', 's2', 1)).toBe(false)
+    expect(m.hub.connectSlot('p1', 'web:3', 's2', 2)).toBe(false)
+    expect(m.slots).toEqual([])
+    expect(m.hub.connectSlot('p1', 'web:3', 's3', 3)).toBe(true)
+    expect(m.hub.connectSlot('p1', 'web:1', 's2', 4)).toBe(true)
+    expect(m.hub.connectSlot('p1', 'desktop:1', 's2', 5)).toBe(true)
+    expect(m.slots).toHaveLength(3)
   })
 
   it('fails closed: with guests unwired a guest view is refused, an owner view and the desktop still connect', () => {

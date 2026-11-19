@@ -337,9 +337,14 @@ export class PanelPortHub<P> {
     // From here on the ids are main's own strings (the record's), not the renderer's.
     const id = frame.info.id
     const pluginId = frame.info.pluginId
-    // The provider's visibility decides (the frame shows the provider's page, not the host panel's plugin).
+    // The provider's visibility decides the line (the frame shows the provider's page, not the host panel's
+    // plugin)...
     const line = this.viewLine(projectId, viewId, pluginId)
     if (line === undefined) return false
+    // ...and a frame a panel placed is only there while that panel is: a guest's layout leaves out a hidden
+    // plugin's panels with their slots (guest-filter.ts guestLayout), so its frame ids must not connect either.
+    // An app slot (the top bar) has no host panel: the provider alone, as guestLayout's appSlots.
+    if (frame.host.kind === 'panel' && frame.host.pluginId !== pluginId && this.viewLine(projectId, viewId, frame.host.pluginId) === undefined) return false
     if (!this.withinCap(projectId, viewId, pluginId, slotPortKey(id))) return false
     // Its page loaded again in this view: the provider's instance for the old load goes first.
     // The same frame in another view is another instance and stays.
