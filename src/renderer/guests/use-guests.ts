@@ -67,7 +67,12 @@ export function useProjectId(): string | undefined {
     let live = true
     projectIdRead ??= window.cockpit.invoke('window.info').then(
       (info) => (info.kind === 'project' ? info.project.id : undefined),
-      () => undefined
+      () => {
+        // Not cached: a failed read (the host away for a moment) must not leave the page without its
+        // project for good; the next hook that mounts asks again.
+        projectIdRead = undefined
+        return undefined
+      }
     )
     void projectIdRead.then((value) => {
       if (live) setId(value)

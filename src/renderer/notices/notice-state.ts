@@ -121,8 +121,10 @@ export function canAllowLink(webShell: boolean): boolean {
  * only, with trashDenyOnlyNote. The owner's views are unchanged (main decides theirs, `!view.remote ||
  * server`). A hint: main re-checks the role and the host at answer time.
  */
-export function trashMayAllow(env: { guest: boolean; server: boolean }): boolean {
-  return !env.guest || env.server
+export function trashMayAllow(env: { guest: boolean; server: boolean; write?: boolean }): boolean {
+  // A read-only guest never answers (main sends it no trash ask at all); a write guest Allows only in
+  // server mode (D-10).
+  return !env.guest || (env.server && env.write === true)
 }
 
 /** Beside a guest's Deny-only trash ask: who can move it. */

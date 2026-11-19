@@ -511,7 +511,7 @@ function TrashConfirm(): React.JSX.Element | null {
   }
   // A guest on a desktop host may only Deny (D-10): its Allow would be ignored, so none is offered.
   const guest = currentGuest()
-  const denyOnly = !trashMayAllow({ guest: guest !== undefined, server: isServerView() })
+  const denyOnly = !trashMayAllow({ guest: guest !== undefined, server: isServerView(), write: guest?.role === 'write' })
   return (
     <ApprovalDialog
       key={ask.requestId}

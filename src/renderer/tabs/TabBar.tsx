@@ -24,7 +24,7 @@ import { currentGuest, viewAccessHint } from '../shell-kind'
 import { PresenceAvatars } from '../guests/PresenceAvatars'
 import { avatarsForTab, presenceLines, selfPersonId } from '../guests/presence-model'
 import { shareItems, tabControls } from '../guests/tab-access-model'
-import { useGuests, usePresence, useProjectId } from '../guests/use-guests'
+import { canWidenGuests, useGuests, usePresence, useProjectId } from '../guests/use-guests'
 
 /** A tab being dragged along the strip: where it started, how far it moved, where it would land. */
 interface TabDrag {
@@ -930,7 +930,7 @@ export function TabBar(props: {
           ))}
           {/* The owner's "Share with <guest>" (design-guests §7): one per selected-tabs guest of the project,
               checked by the guest's scope in `guests.changed`, which main sends again after the toggle. */}
-          {(controls.menu.has('share') ? shareItems(guests, projectId, menuTab) : []).map((item, i) => (
+          {(controls.menu.has('share') ? shareItems(guests, projectId, menuTab, canWidenGuests()) : []).map((item, i) => (
             <Fragment key={item.guestId}>
               {i === 0 && <div role="separator" className="menu-separator" />}
               <button

@@ -41,7 +41,9 @@ describe('emptyTabsText', () => {
 describe('trash asks for guests (D-10)', () => {
   it('a guest on a desktop host may only Deny; in server mode it may Allow; owners are unchanged', () => {
     expect(trashMayAllow({ guest: true, server: false })).toBe(false)
-    expect(trashMayAllow({ guest: true, server: true })).toBe(true)
+    expect(trashMayAllow({ guest: true, server: true, write: true })).toBe(true)
+    expect(trashMayAllow({ guest: true, server: true, write: false })).toBe(false)
+    expect(trashMayAllow({ guest: true, server: true })).toBe(false)
     expect(trashMayAllow({ guest: false, server: false })).toBe(true)
     expect(trashMayAllow({ guest: false, server: true })).toBe(true)
     expect(trashDenyOnlyNote('Oleg')).toBe('Only Oleg can move it to the Trash')

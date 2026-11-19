@@ -66,9 +66,20 @@ function scopeHas(scope: GuestScope, tabId: string): boolean {
  * the toggle with a new list), not `TabInfo.sharedWith`, which can lag behind it by an event. An
  * all-tabs guest has no entry (it sees every tab already); none before the first list arrived.
  */
-export function shareItems(guests: readonly GuestView[] | null, projectId: string | undefined, tab: TabInfo): ShareItem[] {
+export function shareItems(
+  guests: readonly GuestView[] | null,
+  projectId: string | undefined,
+  tab: TabInfo,
+  /**
+   * Whether this view may widen a guest's scope (`canWidenGuests`, D-11): sharing widens, unsharing
+   * narrows. An owner browser of a desktop host may only unshare, so it is offered only the checked
+   * entries (main refuses a share from it regardless).
+   */
+  canWiden = true
+): ShareItem[] {
   if (projectId === undefined || guests === null) return []
   return guests
     .filter((g) => g.projectId === projectId && g.scope !== 'all')
     .map((g) => ({ guestId: g.id, label: `Share with ${g.name}`, checked: scopeHas(g.scope, tab.id) }))
+    .filter((item) => canWiden || item.checked)
 }
