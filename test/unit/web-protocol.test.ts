@@ -276,7 +276,7 @@ function setup(
   views.addDesktop(1, desktop)
   const conns = new WebConnections({
     dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
-    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
+    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink, 'owner'),
     windowIdOf: (projectId) => windows.get(projectId),
     snapshot:
       over.snapshot ??
@@ -468,7 +468,7 @@ describe('handshake', () => {
   it('a bind that throws closes the socket with `failed` instead of escaping the message listener', () => {
     const { connect, views, logs } = setup()
     // The id the next connection mints is taken: ViewRegistry.addRemote throws on it.
-    views.addRemote(1, 'web:1', { send: () => {}, isClosed: () => false })
+    views.addRemote(1, 'web:1', { send: () => {}, isClosed: () => false }, 'owner')
     let ws: FakeWs | undefined
     expect(() => (ws = connect('p1'))).not.toThrow()
     expect(ws?.closedWith?.code).toBe(CLOSE.failed)

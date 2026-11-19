@@ -259,7 +259,7 @@ describe('CloseAsks through the ViewRegistry (two views of one window)', () => {
     const web = sink()
     const other = sink()
     registry.addDesktop(1, desktop)
-    registry.addRemote(1, 'web:1', web)
+    registry.addRemote(1, 'web:1', web, 'owner')
     registry.addDesktop(2, other)
     const shared = new CloseAsks({
       send: (windowId, ask) => registry.toWindow(windowId, 'sessions.closeAsk', ask),

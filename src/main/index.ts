@@ -3299,7 +3299,9 @@ function start(server: boolean): void {
   const webConnections: WebConnections = new WebConnections({
     dispatch: (caller, channel, payload, live) => router.dispatch(caller, channel, payload, live),
     addView: (windowId, viewId, sink) => {
-      const remove = views.addRemote(windowId, viewId, sink)
+      // 02 passes the connection's `who` here (WebConnections.addView gains it); until then every browser view is
+      // the owner's, as before guests existed. Explicit, so the gap is visible (and grep finds it).
+      const remove = views.addRemote(windowId, viewId, sink, 'owner')
       // The last browser leaving a window kept running hidden shows it again (window-manager.ts).
       return () => {
         remove()

@@ -91,8 +91,10 @@ export class ViewRegistry<P = unknown> {
    * A remote view of a window, under the id the gateway minted (`remoteViewId`). The returned
    * function removes it (the socket closed); a later view with another id is not touched by it.
    * `who`: the owner or a guest, as the connection's `hello` bound it (web/connection.ts); never changes.
+   * Required, with no default: a caller that forgot it would make every guest's view the owner's to the router,
+   * the asks and the sizes (the authority rests on it), so a call without it does not compile.
    */
-  addRemote(windowId: number, viewId: ViewId, sink: ViewSink<P>, who: Who = 'owner'): () => void {
+  addRemote(windowId: number, viewId: ViewId, sink: ViewSink<P>, who: Who): () => void {
     if (this.views.has(viewId)) throw new Error(`view ${viewId} is already registered`)
     const entry = { windowId, sink, who }
     this.views.set(viewId, entry)

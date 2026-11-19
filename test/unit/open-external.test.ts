@@ -44,9 +44,9 @@ function world(): World {
   views.addDesktop(1, w.desk1)
   views.addDesktop(2, w.desk2)
   views.addDesktop(3, w.desk3)
-  views.addRemote(1, remoteViewId(1), w.web1)
-  views.addRemote(1, remoteViewId(2), w.web2)
-  views.addRemote(2, remoteViewId(3), w.web3)
+  views.addRemote(1, remoteViewId(1), w.web1, 'owner')
+  views.addRemote(1, remoteViewId(2), w.web2, 'owner')
+  views.addRemote(2, remoteViewId(3), w.web3, 'owner')
   return w
 }
 

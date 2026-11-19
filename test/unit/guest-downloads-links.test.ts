@@ -72,6 +72,45 @@ describe('Downloads.offerOrigin (D-23)', () => {
     expect(d.offerOrigin(WINDOW, 'offer-999')).toBeUndefined()
   })
 
+  it('the origin is readable during the send (a guest sink filters the live offer then), and gone when the send fails', async () => {
+    const during: unknown[] = []
+    const d: Downloads = new Downloads({
+      hooks: { start: () => true, failed: () => undefined },
+      offers: {
+        send: (windowId, offer) => {
+          during.push(d.offerOrigin(windowId, offer.requestId))
+          return true
+        },
+        settled: () => undefined
+      },
+      hasBrowserView: () => true,
+      projectPath: (id) => (id === PROJECT ? proj : undefined),
+      windowOf: (id) => (id === PROJECT ? WINDOW : undefined),
+      dataDir: join(tmp, 'data'),
+      env: { home: join(tmp, 'home'), platform: 'linux' }
+    })
+    await d.offer({ projectId: PROJECT, windowId: WINDOW, tabId: 't1' }, join(proj, 'a.txt'))
+    expect(during).toEqual([{ originTab: 't1' }])
+    const failing: Downloads = new Downloads({
+      hooks: { start: () => true, failed: () => undefined },
+      offers: {
+        send: (windowId, offer) => {
+          during.push(failing.offerOrigin(windowId, offer.requestId))
+          throw new Error('sink gone')
+        },
+        settled: () => undefined
+      },
+      hasBrowserView: () => true,
+      projectPath: (id) => (id === PROJECT ? proj : undefined),
+      windowOf: (id) => (id === PROJECT ? WINDOW : undefined),
+      dataDir: join(tmp, 'data'),
+      env: { home: join(tmp, 'home'), platform: 'linux' }
+    })
+    await expect(failing.offer({ projectId: PROJECT, windowId: WINDOW, tabId: 't2' }, join(proj, 'a.txt'))).rejects.toThrow()
+    expect(during).toEqual([{ originTab: 't1' }, { originTab: 't2' }])
+    expect(failing.pendingOffers(WINDOW)).toEqual([])
+  })
+
   it('an empty tab id is no tab', async () => {
     const d = downloads()
     const { requestId } = await d.offer({ projectId: PROJECT, windowId: WINDOW, tabId: '' }, join(proj, 'a.txt'))
@@ -240,7 +279,7 @@ describe('link notices for guests', () => {
     const owner = new Sink()
     const guestSink = new Sink()
     views.addDesktop(1, desk)
-    views.addRemote(1, OWNER_VIEW, owner)
+    views.addRemote(1, OWNER_VIEW, owner, 'owner')
     views.addRemote(1, GUEST_VIEW, guestSink, { guest: 'g' })
     const system: string[] = []
     const open = createOpenExternal({

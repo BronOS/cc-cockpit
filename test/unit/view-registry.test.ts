@@ -62,7 +62,7 @@ describe('ViewRegistry', () => {
     const desktop = new FakeSink()
     const remote = new FakeSink()
     expect(views.addDesktop(1, desktop)).toBe('desktop:1')
-    views.addRemote(1, remoteViewId(1), remote)
+    views.addRemote(1, remoteViewId(1), remote, 'owner')
     views.toProject('p1', 'tabs.select', { tabId: 't1' })
     expect(desktop.events).toEqual([{ channel: 'tabs.select', payload: { tabId: 't1' } }])
     expect(remote.events).toEqual([{ channel: 'tabs.select', payload: { tabId: 't1' } }])
@@ -76,7 +76,7 @@ describe('ViewRegistry', () => {
     const twoRemote = new FakeSink()
     views.addDesktop(1, one)
     views.addDesktop(2, two)
-    views.addRemote(2, remoteViewId(7), twoRemote)
+    views.addRemote(2, remoteViewId(7), twoRemote, 'owner')
     views.toProject('p1', 'layout.updated', 'a')
     views.toWindow(2, 'window.state', 'b')
     // A project with no window reaches nobody.
@@ -94,9 +94,9 @@ describe('ViewRegistry', () => {
     const closed = new FakeSink()
     const elsewhere = new FakeSink()
     views.addDesktop(1, desktop)
-    views.addRemote(1, remoteViewId(1), acting)
-    views.addRemote(1, remoteViewId(2), other)
-    views.addRemote(1, remoteViewId(3), closed)
+    views.addRemote(1, remoteViewId(1), acting, 'owner')
+    views.addRemote(1, remoteViewId(2), other, 'owner')
+    views.addRemote(1, remoteViewId(3), closed, 'owner')
     views.addDesktop(2, elsewhere)
     closed.closed = true
     views.toOthers(1, 'web:1', 'tabs.removed', { tabId: 't1', gen: 1 })
@@ -116,7 +116,7 @@ describe('ViewRegistry', () => {
     const sinks = [new FakeSink(), new FakeSink(), new FakeSink()]
     views.addDesktop(1, sinks[0]!)
     views.addDesktop(9, sinks[1]!) // a picker: no project
-    views.addRemote(1, remoteViewId(2), sinks[2]!)
+    views.addRemote(1, remoteViewId(2), sinks[2]!, 'owner')
     views.toAll('theme.changed', { kind: 'dark' })
     for (const s of sinks) expect(s.events).toEqual([{ channel: 'theme.changed', payload: { kind: 'dark' } }])
   })
@@ -129,8 +129,8 @@ describe('ViewRegistry', () => {
     const closed = new FakeSink()
     views.addDesktop(1, desk)
     views.addDesktop(9, picker)
-    views.addRemote(1, remoteViewId(2), web)
-    views.addRemote(1, remoteViewId(3), closed)
+    views.addRemote(1, remoteViewId(2), web, 'owner')
+    views.addRemote(1, remoteViewId(3), closed, 'owner')
     closed.closed = true
     const asked: string[] = []
     views.toEach('theme.changed', (id) => {
@@ -153,9 +153,9 @@ describe('ViewRegistry', () => {
     const web3 = new FakeSink()
     views.addDesktop(1, desk1)
     views.addDesktop(2, desk2)
-    views.addRemote(1, remoteViewId(1), web1)
-    views.addRemote(1, remoteViewId(2), web2)
-    views.addRemote(2, remoteViewId(3), web3)
+    views.addRemote(1, remoteViewId(1), web1, 'owner')
+    views.addRemote(1, remoteViewId(2), web2, 'owner')
+    views.addRemote(2, remoteViewId(3), web3, 'owner')
     expect(views.toBrowserViews(1, 'app.linkNotice', { url: 'https://a/' })).toBe(2)
     expect(web1.events).toEqual([{ channel: 'app.linkNotice', payload: { url: 'https://a/' } }])
     expect(web2.events).toHaveLength(1)
@@ -177,7 +177,7 @@ describe('ViewRegistry', () => {
     const desktop = new FakeSink()
     const remote = new FakeSink()
     views.addDesktop(1, desktop)
-    views.addRemote(1, remoteViewId(3), remote)
+    views.addRemote(1, remoteViewId(3), remote, 'owner')
     expect(views.toView('web:3', 'tabs.select', { tabId: 't2' })).toBe(true)
     expect(views.toView('web:4', 'tabs.select', { tabId: 't2' })).toBe(false)
     expect(desktop.events).toEqual([])
@@ -189,7 +189,7 @@ describe('ViewRegistry', () => {
     const desktop = new FakeSink()
     const remote = new FakeSink()
     views.addDesktop(1, desktop)
-    views.addRemote(1, remoteViewId(1), remote)
+    views.addRemote(1, remoteViewId(1), remote, 'owner')
     remote.closed = true
     expect(views.toWindow(1, 'sessions.closeAsk', { requestId: 1, tabId: 't' })).toBe(true)
     expect(remote.events).toEqual([])
@@ -207,7 +207,7 @@ describe('ViewRegistry', () => {
     const fine = new FakeSink()
     broken.broken = true
     views.addDesktop(1, broken)
-    views.addRemote(1, remoteViewId(1), fine)
+    views.addRemote(1, remoteViewId(1), fine, 'owner')
     expect(views.toWindow(1, 'prefs.changed', {})).toBe(true)
     expect(fine.events).toHaveLength(1)
     expect(log).toEqual(['event prefs.changed to view desktop:1 failed: render frame was disposed'])
@@ -218,13 +218,13 @@ describe('ViewRegistry', () => {
     const desktop = new FakeSink()
     const remote = new FakeSink()
     views.addDesktop(1, desktop)
-    const remove = views.addRemote(1, remoteViewId(1), remote)
+    const remove = views.addRemote(1, remoteViewId(1), remote, 'owner')
     remove()
     views.toWindow(1, 'window.state', 1)
     expect(remote.events).toEqual([])
     // A second remove is harmless, and does not touch a later view under the same id.
     const later = new FakeSink()
-    views.addRemote(1, remoteViewId(1), later)
+    views.addRemote(1, remoteViewId(1), later, 'owner')
     remove()
     expect(views.viewsOf(1)).toEqual(['desktop:1', 'web:1'])
     views.removeWindow(1)
@@ -247,9 +247,9 @@ describe('ViewRegistry', () => {
         seenDuring.push(views.viewsOf(1))
         throw new Error('socket gone')
       }
-    })
-    views.addRemote(1, remoteViewId(2), { send: () => undefined, isClosed: () => false, windowClosed: () => told.push('web:2') })
-    views.addRemote(2, remoteViewId(3), { send: () => undefined, isClosed: () => false, windowClosed: () => told.push('web:3') })
+    }, 'owner')
+    views.addRemote(1, remoteViewId(2), { send: () => undefined, isClosed: () => false, windowClosed: () => told.push('web:2') }, 'owner')
+    views.addRemote(2, remoteViewId(3), { send: () => undefined, isClosed: () => false, windowClosed: () => told.push('web:3') }, 'owner')
     views.removeWindow(1)
     expect(seenDuring).toEqual([[]])
     expect(told).toEqual(['web:2'])
@@ -259,8 +259,8 @@ describe('ViewRegistry', () => {
 
   it('refuses a remote view id that is already registered', () => {
     const views = registry()
-    views.addRemote(1, remoteViewId(1), new FakeSink())
-    expect(() => views.addRemote(2, remoteViewId(1), new FakeSink())).toThrow(/already registered/)
+    views.addRemote(1, remoteViewId(1), new FakeSink(), 'owner')
+    expect(() => views.addRemote(2, remoteViewId(1), new FakeSink(), 'owner')).toThrow(/already registered/)
   })
 
   it('posts a port to exactly the view named', () => {
@@ -270,7 +270,7 @@ describe('ViewRegistry', () => {
     const remote = new FakeSink()
     views.addDesktop(1, one)
     views.addDesktop(2, two)
-    views.addRemote(2, remoteViewId(1), remote)
+    views.addRemote(2, remoteViewId(1), remote, 'owner')
     const port = { name: 'p' }
     views.postPort('desktop:2', 'panels.port', { panelKey: 'a/b', nonce: 1 }, port)
     expect(two.ports).toEqual([{ channel: 'panels.port', payload: { panelKey: 'a/b', nonce: 1 }, port }])
@@ -283,7 +283,7 @@ describe('ViewRegistry', () => {
     const closed = new FakeSink()
     closed.closed = true
     views.addDesktop(1, closed)
-    views.addRemote(1, remoteViewId(1), new FakeSink(false))
+    views.addRemote(1, remoteViewId(1), new FakeSink(false), 'owner')
     const port = { name: 'p' }
     expect(() => views.postPort('desktop:1', 'panels.port', {}, port)).toThrow(/gone/)
     expect(() => views.postPort('desktop:5', 'panels.port', {}, port)).toThrow(/gone/)
@@ -298,8 +298,8 @@ describe('ViewRegistry', () => {
       const one = new FrameSink()
       const two = new FrameSink()
       views.addDesktop(1, new FakeSink())
-      views.addRemote(1, remoteViewId(1), one)
-      views.addRemote(1, remoteViewId(2), two)
+      views.addRemote(1, remoteViewId(1), one, 'owner')
+      views.addRemote(1, remoteViewId(2), two, 'owner')
       expect(views.frameToView('web:2', frame)).toBe(true)
       expect(two.frames).toEqual([frame])
       expect(one.frames).toEqual([])
@@ -329,9 +329,9 @@ describe('ViewRegistry', () => {
       const closed = new FrameSink()
       const broken = new FrameSink()
       broken.throws = true
-      views.addRemote(1, remoteViewId(1), closed)
-      views.addRemote(1, remoteViewId(2), new FakeSink())
-      views.addRemote(1, remoteViewId(3), broken)
+      views.addRemote(1, remoteViewId(1), closed, 'owner')
+      views.addRemote(1, remoteViewId(2), new FakeSink(), 'owner')
+      views.addRemote(1, remoteViewId(3), broken, 'owner')
       closed.closed = true
       expect(views.frameToView('web:9', frame)).toBe(false)
       expect(views.frameToView('web:1', frame)).toBe(false)
@@ -344,7 +344,7 @@ describe('ViewRegistry', () => {
     it('an oversize frame is not sent and the view stays registered', () => {
       const views = registry()
       const sink = new FrameSink()
-      views.addRemote(1, remoteViewId(1), sink)
+      views.addRemote(1, remoteViewId(1), sink, 'owner')
       expect(views.frameToView('web:1', new Uint8Array(MAX_WEBVIEW_FRAME_BYTES + 1))).toBe(false)
       expect(sink.frames).toEqual([])
       expect(views.viewsOf(1)).toEqual(['web:1'])
@@ -354,8 +354,8 @@ describe('ViewRegistry', () => {
     it('frameDrained follows the socket backlog, and is false for a view that cannot take frames', () => {
       const views = registry()
       const sink = new FrameSink()
-      views.addRemote(1, remoteViewId(1), sink)
-      views.addRemote(1, remoteViewId(2), new FakeSink())
+      views.addRemote(1, remoteViewId(1), sink, 'owner')
+      views.addRemote(1, remoteViewId(2), new FakeSink(), 'owner')
       expect(views.frameDrained('web:1')).toBe(true)
       sink.buffered = FRAME_DRAINED_BYTES
       expect(views.frameDrained('web:1')).toBe(true)
@@ -367,5 +367,19 @@ describe('ViewRegistry', () => {
       expect(views.frameDrained('web:2')).toBe(false)
       expect(views.frameDrained('web:9')).toBe(false)
     })
+  })
+})
+
+describe('who (design-guests §2, task 03c)', () => {
+  it('addRemote has no owner default: who is required, and a JS caller that leaves it out is never the owner', () => {
+    const views = new ViewRegistry<FakePort>({ windowIdOf: () => undefined, log: () => undefined })
+    views.addRemote(1, remoteViewId(1), new FakeSink(), 'owner')
+    views.addRemote(1, remoteViewId(2), new FakeSink(), { guest: 'g1' })
+    // @ts-expect-error who is required: a call that forgot it must not compile (it made every guest the owner)
+    views.addRemote(1, remoteViewId(3), new FakeSink())
+    expect(views.whoOf(remoteViewId(1))).toBe('owner')
+    expect(views.whoOf(remoteViewId(2))).toEqual({ guest: 'g1' })
+    expect(views.whoOf(remoteViewId(3))).not.toBe('owner')
+    expect(views.ownerRemoteViews(1)).toEqual([remoteViewId(1)])
   })
 })

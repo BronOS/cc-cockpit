@@ -176,7 +176,7 @@ function setup() {
   const gone: string[] = []
   const conns = new WebConnections({
     dispatch: (caller, ch, payload, live) => router.dispatch(caller, ch, payload, live),
-    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink),
+    addView: (windowId, viewId, sink) => views.addRemote(windowId, viewId, sink, 'owner'),
     windowIdOf: (projectId) => windows.get(projectId),
     snapshot: () => ({ tabs: [], layout: LAYOUT, overlays: [], closeAsks: [], linkAsks: [] }),
     mirror: { join: () => undefined },
