@@ -4,6 +4,7 @@ import {
   serverViaText as guestViaText,
   withAnswer as withAnswer05,
   canConnect,
+  connectRequest,
   connectSettings,
   editFields,
   emptyConnectFields,
@@ -432,5 +433,21 @@ describe('a guest invite in the desktop picker (design-guests §11, D-29)', () =
 
   it('says what Trust means', () => {
     expect(CERTIFICATE_HINT).toContain('only this certificate')
+  })
+})
+
+describe('connectRequest (what the Connect form sends with a run\'s answers)', () => {
+  const pin = 'ab'.repeat(32)
+  it("a Direct guest invite carries the trusted certificate (D-29): dropping it made main ask again and the run fail", () => {
+    const link = { kind: 'direct' as const, link: 'https://host:7330/#i=tok&c=' + pin }
+    expect(connectRequest(link, { certificate: pin })).toEqual({ ...link, answers: { certificate: pin } })
+    expect(connectRequest(link, undefined)).toEqual(link)
+  })
+
+  it('SSH carries its answers; a tunnel never does', () => {
+    const ssh = { kind: 'ssh' as const, host: 'box' }
+    expect(connectRequest(ssh, { password: 'x' })).toEqual({ ...ssh, answers: { password: 'x' } })
+    const tunnel = { kind: 'tunnel' as const, localPort: 7331, remotePort: 7330 }
+    expect(connectRequest(tunnel, { certificate: pin })).toEqual(tunnel)
   })
 })

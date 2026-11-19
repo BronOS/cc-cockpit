@@ -2360,6 +2360,9 @@ function start(server: boolean): void {
     log: warnLog
   })
   guestStore.onChange(() => presence.peopleChanged())
+  // The owner's chip and guest list (05's use-guests.ts read guests.list once, then this): every view, guest views
+  // drop it at their sink (GUEST_EVENT 'drop'), and the page keeps its own project's rows.
+  guestStore.onChange(() => views.toAll('guests.changed', guestStore.list()))
   // Plugin files and inline overlays for remote views (design-web.md §5.5): a token per (device,
   // plugin), served only while the device has a view bound to a project the plugin is enabled in
   // (the same folder rule as `cc-plugin:`, servedPluginDir below, narrowed to that project) and an
@@ -3656,6 +3659,16 @@ function start(server: boolean): void {
           setTheme: (id: string | null) => themes.setActive(id ?? undefined),
           // main's server flag for the run (server-mode.ts): the server-mode harness checks it.
           serverMode: () => server,
+          // Guests (design-guests §3, spec-review 29): an invite through the invite dialog's own service
+          // (GuestStore.invite, what guests.invite calls, with its checks), the guest list and a kick, so a
+          // spec can make a guest without driving the dialog (only the hand-test spec drives it).
+          guestInvite: async (path: string, req: Parameters<GuestStore['invite']>[1]) => {
+            const project = projectAt(path)
+            if (!project) throw new Error(`guestInvite: no project at ${path}`)
+            return guestStore.invite(project.id, req)
+          },
+          guests: () => guestStore.list(),
+          guestKick: (guestId: string) => guestStore.kick(guestId),
           // The folder remote windows save downloads to in a test run (`<data>/Downloads`, made on the
           // first save), never the developer's own; the remote-window e2e reads what landed there.
           remoteDownloadsDir: () => testDownloadsDir,

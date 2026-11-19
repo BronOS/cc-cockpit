@@ -2,7 +2,7 @@
 // is shown, what the filter keeps, where the keyboard highlight goes, how old a row is. DOM-free so
 // the unit tests (plain Node) cover it. The desktop picker's Servers section (remote servers,
 // design-remote-desktop.md §3) takes its labels, order and grouping from here too.
-import type { ProjectSummary, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
+import type { ProjectSummary, RemoteConnectRequest, RemoteServerInfo, RemoteServerSettings } from '../../shared/ipc'
 import { checkSshHost, parseRemoteLink, tunnelCommand, type RemoteAnswers, type RemoteNeed, type RemoteRecent, type RemoteVia, type SshAuth } from '../../shared/remote-servers'
 
 /**
@@ -429,6 +429,15 @@ export function promptStep(flow: PromptFlow, need: RemoteNeed): { flow: PromptFl
  */
 export const CERTIFICATE_HINT =
   'The host uses its own certificate, which this computer cannot check. Trust it only if the invite came to you from the host. This app then accepts only this certificate for this address; a different one is refused.'
+
+/**
+ * The `remote.connect` request for the Connect form's settings and a prompt run's answers: SSH carries
+ * them (host key, password, passphrase), Direct too (a guest invite's certificate, D-29: dropping it
+ * made main ask again and the run end in "could not be confirmed"), a tunnel never asks.
+ */
+export function connectRequest(settings: RemoteServerSettings, answers: RemoteAnswers | undefined): RemoteConnectRequest {
+  return settings.kind !== 'tunnel' && answers !== undefined ? { ...settings, answers } : settings
+}
 
 /**
  * A server's label under its name: a guest's Direct record reads "Guest at <origin>" (design-guests §11),

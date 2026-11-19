@@ -573,7 +573,8 @@ a browser attached asks "Close for everyone" or "Keep running".
 - *Desktop confirm*: the browser shows a code; type it into the request card on the desktop to allow it.
 - *None*: no sign-in, anyone who reaches the address is in. Only for a proxy that signs people in. Revoke means nothing.
 
-Whoever is signed in is the person at the keyboard: a shell and Claude on this computer, plugin accounts, files. The
+Whoever is signed in is the person at the keyboard: a shell and Claude on this computer, plugin accounts, files (a
+guest's device is the exception: see Guests below). The
 Host and Origin checks, the device cookie and the log (sign-ins and revokes, never terminal text) apply in every mode.
 
 A signed-in browser holds two things: the device cookie, and a device key the page keeps in its own storage for this
@@ -639,6 +640,111 @@ download starts at once in the view you clicked, with no question; your browser 
   the gateway cut running downloads. A browser's own pause of more than a minute ends one (no resume). Nothing is opened
   after it is saved, and the browser's and the OS's warnings about program files still apply.
 - *The desktop:* a local project's own window has no Download (the file is on that computer; Reveal is there).
+
+**Guests.** Invite another person into one project: a friend or a colleague who watches (**Read-only**) or pairs with
+you (**Write**), from a plain browser or from their own cc-cockpit app. A guest is a web device of its own kind, bound
+to one project, a role and the tabs you share; everything else of your cockpit stays out of their reach: other
+projects, the tabs you did not share, every plugin you did not show to guests, settings, web access and devices,
+notices, approvals that are yours. Design and reasons: [design-guests.md](design-guests.md).
+- *Before you invite:* web access must be on with sign-in Access link, Password or Desktop confirm; under None an
+  invite is refused, and switching to None is refused while any guest or invite exists, naming them (with None a guest
+  who dropped their cookie would be you). The guest must reach the address: on a LAN that is a network bind with a
+  certificate (https), or plain http with its confirm, which sends the guest's cookie and keystrokes unencrypted; over
+  the internet a tunnel you run to the web access port (Tailscale Funnel, cloudflared, ngrok) with "External address"
+  set to its public origin, so the link carries that address. TLS ends at cloudflared's and ngrok's servers (they see
+  the cookie and terminal text), at this computer with Funnel. An invite made while web access listens on this computer
+  only is made anyway, with a warning that nobody else can open it yet.
+- *Invite from the app:* with web access on, the project window's top bar has **Share** (once the project has guests
+  or invites it becomes the **Live** chip, whose list has **Invite…**). **Invite a guest** asks for a name (what you and
+  others see, plain text, at most 60 characters, unique among the guests here), the role, **All tabs, now and later**
+  or **Selected tabs** (ticked from the project's tabs), and **Access lasts** 1 day (the default), 7 days or **Until
+  removed**. It lists the plugins guests see now, with **Change in Settings**, and says "Scrollback from before now is
+  visible in shared tabs." **Create invite** shows the link once with Copy: the app keeps only a hash of it, so a lost
+  link means a new invite. A link works once and expires 24 hours after it was made if nobody opened it; the lifetime
+  counts from when the guest joins. Choosing Write shows the warning in full: a write guest can run anything as you.
+- *Invite from a shell* (server mode only; on a desktop invites are made in the app window):
+  `ccc web invite --project <id|path> --name <name> --role read|write [--tabs all|<id>,<id>] [--lifetime 1d|7d|forever]`
+  prints the link alone on stdout, never logged (`--json` adds the invite and guest ids and the expiry). In server
+  mode your browser may also invite and switch a guest to write, behind the same armed confirm as other approvals;
+  that is the one widening of access a browser may make.
+- *Joining:* the guest opens the link in a browser (a browser signed in as you is refused: "This browser is signed in
+  as the host. Open the invite in a private window."); the page posts the token once, gets a guest device and clears
+  the address bar. One device per invite: a second device needs another invite for the same person; one device may
+  have the project open in 2 browser tabs at once. A used, expired or broken link says so and asks for a new invite.
+- *What a guest sees:* the shared tabs live (terminal output, Claude's status on the tab strip, page tabs such as the
+  editor's files when shared), the panels of plugins you show to guests, a banner "Guest · read-only — <your name>'s
+  cc-cockpit" with who else is here, and "Nothing shared right now" when no tab is. Sharing a tab shares its
+  scrollback. Your other projects, unshared tabs (and their status, asks and overlays), hidden plugins' panels, pages
+  and URLs, the sessions strip, notices and sounds, rooms, your folder paths and the project's settings never reach a
+  guest; a guessed address answers as if it did not exist. Tabs a hidden plugin opened are not shared even with All
+  tabs. A guest has no settings, layout, flag, rename or room controls.
+- *Read-only guests* type nothing (keys, mouse and paste do not reach the terminal), never change a terminal's size,
+  get no downloads, approvals, quick chat or Ask Claude, and cannot open tabs or files (they read the page tabs you
+  share). A plugin that does not check who is looking gets their clicks dropped (they see it, they cannot use it).
+- *Write guests* type into the shared tabs (which includes answering Claude's permission prompts), open Claude and
+  shell tabs (at most 4 at a time; they join that guest's tabs and every all-tabs guest's, carry the guest's name in
+  the tooltip, and stay when the guest leaves), close the tabs they opened (closing one of yours asks you: **Close tab**
+  or **Keep open**, kept open after a minute with no answer), edit and save files, use quick chat and Ask Claude (your
+  account and quota), and download files to their own device (Files › Download while Files is shown to guests, and
+  `ccc download` offers started from a shared tab). They answer a Trash confirm in server mode; on a desktop a guest's
+  Allow is ignored (Deny only, as for your own browser). A terminal's size moves to a write guest only when they type or
+  use Fit to this screen, never by opening or clicking a tab. Their typing counts as a person's typing (`typed`), so
+  plugins stop pasting into that tab. **A write guest has your shell**: typing in a shared tab runs commands here as
+  you, and from a shell they can read your files, mail and plugin data and give themselves lasting access (a new
+  device, an SSH key). Kicking ends their session, not what they ran. Invite only someone you would hand your unlocked
+  laptop.
+- *Plugins:* hidden from guests by default, bundled ones included. Each plugin's card in Settings › Plugins has a
+  **Guests** choice (Hidden, Shown app-wide) with what showing it gives read-only and write guests; a project overrides
+  it in its own settings page. Showing a plugin is done in the cockpit window on the host (a desktop host's browser
+  may only hide one; in server mode your browser may show one behind the armed confirm). A plugin that checks who is
+  looking (Files and Editor do) limits what guests see and do: Files and Editor refuse a read-only guest any change and
+  keep guests inside the project folder; Editor gives read-only guests no quick chat or Ask Claude. Sessions is never
+  shown to guests (it sees every window's tabs). Usage, if you show it, shows guests the spend and rate-limit windows
+  of your whole Claude account, not only this project. A plugin that does not check: a read-only guest sees what its
+  pages show and cannot use them, a write guest uses them like you.
+- *The guest list:* the Live chip (with the number of guests here now) opens it: each guest's name, role, tabs, when
+  their access ends, whether they are here, away or offline, the tab they look at and whether they are typing.
+  **Read-only** / **Write** switches the role (the guest's page reconnects under the new role): Write first asks "Let
+  <name> type in shared tabs?" with the write warning and **Allow write**; making a guest read-only applies at once, but
+  says so first when they have unsaved editor changes, since those are lost; **Kick** removes a guest,
+  **Revoke invite** cancels one not used yet. A selected-tabs guest is given another tab from the tab's menu, **Share
+  with <name>**. From a shell: `ccc web guests [--json]`, `ccc web kick <guest id|name>` (`--invite <id>` for an
+  invite) and `ccc web role <guest id|name> read|write` (`write` in server mode only); they work on a desktop too.
+  Revoke all in the devices list includes guests, and turning web access off disconnects them.
+- *Presence:* every view shows who is here (avatars on the tabs: who looks at it, who is typing, who typed last); a
+  guest sees others only on tabs it can see ("elsewhere" otherwise). Your name there is **Your name for guests** in
+  Settings › General › Web access (default "Host"). Nothing of it is saved or given to plugins.
+- *When access ends:* a kick shows the guest "<your name> removed you." and clears their terminals; a lifetime's end
+  "Your access ended."; a closed project "The host closed this project." (the page retries); a role switch reconnects their page with a line naming the new
+  role, a change of shared tabs or shown plugins reconnects it. A guest whose access ended who opens the address again
+  gets "Your guest access ended. Ask the host for a new invite.", never your sign-in form. Guests survive a restart of
+  the app until their lifetime ends; forgetting the project removes its guests. What a guest already saw cannot be
+  recalled; a kick closes their connections at once.
+- *Joining from another cc-cockpit app:* the guest pastes the invite link into **Connect to server…** › **Link** in
+  their app's picker; the project opens in a Remote servers window, listed as "Guest at <address>". When your web access
+  serves https with its own (self-signed) certificate, the link carries that certificate's fingerprint: their app asks
+  once, **Trust this certificate?** with the address and the SHA-256 fingerprint, and then accepts only that certificate
+  for that address. A different certificate is refused with no question; Forget, then a new invite, fixes it. A guest's
+  server entry signs in only with invites and keeps the invite's address (no automatic reopen, no session counts in
+  the strip).
+
+**Known limitations (guests)**
+- No turn-taking: you and a write guest typing in one tab at once interleave, and both can answer the same permission
+  prompt. Presence shows who is typing and who typed last.
+- A kick stops what the guest receives next; what they saw, copied or ran stays. A write guest's commands can outlive
+  the kick (a started program, a new device or key): treat what a write guest could reach as exposed.
+- A role switch or a change of shared tabs or plugins reconnects the guest's page (a blink); a downgrade loses the
+  guest's unsaved editor changes.
+- A plugin whose page asks its plugin for its state first shows a read-only guest nothing unless the plugin checks who
+  is looking.
+- Guests get no notices, sounds or desktop notifications; plugins do not see presence.
+- Nothing logs what a guest did; `web-access.log` has only the invites, joins, role and scope changes and ends, by the
+  guest's name and device (never the link).
+- Joining from another cc-cockpit app over a self-signed certificate is tested end to end against a host on this same
+  computer only, not one on another machine. Server-mode guest specs (a `ccc web invite` link end to end) wait for
+  server mode on macOS; only the unit tests ran for them.
+- In the guest's own app, a guest window that the host's page sends to the picker stays open with a message instead of
+  closing (a page may not move the focus without a click).
 
 ## Server mode
 
@@ -711,10 +817,10 @@ saved tabs). `ccc open <path>` from a server shell opens one too. A click on a s
 bar's strip takes the browser tab to that project with that session's tab selected.
 
 **`ccc web`** is run from a shell on the server, outside cc-cockpit (a Claude, shell or command tab is refused): `status
-[--json]`, `revoke <id>|--all`, `link [--regenerate]`, `add-device`, `password` (from stdin, or asked twice with no
+[--json]`, `revoke <id>|--all`, `invite`, `guests`, `kick` and `role` (see "Web access" › "Guests"), `link [--regenerate]`, `add-device`, `password` (from stdin, or asked twice with no
 echo on a terminal, never an argument), `mode link|password|none`, `set` (bind, port, origin, hosts, TLS, `--confirm`,
 and `--start-folder` for the folder browser, `''` for home) and `stop`. A network bind with plain http, or with no sign-in, applies only with its `--confirm`, as the Settings
-confirm does on the desktop. On a desktop `ccc web` answers only `status` and `revoke`. `ccc guide cli` has the
+confirm does on the desktop. On a desktop `ccc web` answers only `status`, `revoke`, `guests`, `kick` and `role … read`. `ccc guide cli` has the
 details. The wrapper is `<data>/bin/ccc` (`~/.config/cc-cockpit/bin/ccc` on Linux); the app offers no install in server
 mode, so start prints that path.
 
@@ -734,13 +840,14 @@ go to `~/.claude/.credentials.json` and stay. For a box that must never need tha
 both as under Web access above. A LAN bind works with the same confirms.
 
 **What differs from a desktop**
-- Approvals are in the browser, by any signed-in device. A plugin link (`ccc plugin link`, code that runs as you) and
+- Approvals are in the browser, by any of your signed-in devices (a guest's only as "Web access" › "Guests" says). A plugin link (`ccc plugin link`, code that runs as you) and
   the Trash confirm ask in an in-page dialog: Allow is never the default, Enter does nothing, the dialog takes no
   keyboard focus from a terminal, and Allow works only after the dialog has been visible for about a second. A browser
   can also browse the server's folders and open one (or a recent project), relink or forget a missing project, close a
   project for everyone, revoke and disconnect
   devices, read the web access card and finish a plugin's OAuth sign-in. It cannot add or widen access (mode, bind,
-  secrets, new devices): those are `ccc web`.
+  secrets, new devices): those are `ccc web`. Guests are the one exception: your browser may invite a guest and switch
+  one to write, behind the same armed confirm.
 - Nothing is shown on the server's screen. A link opens as a notice you click; a folder dialog, "Reveal in the file
   manager", "Open with the system" and URL overlays are refused ("not available in server mode"); the Browser panel works,
   streamed (below).
@@ -877,7 +984,8 @@ A server updated to a release with device keys (see Web access) drops devices si
 included: an SSH server pairs again by itself on the next open; a Direct server needs a fresh link (Edit).
 
 **Connect Direct.** Choose **Link** and paste the access link the server printed, or one from `ccc web add-device`
-(`https://server.example.com/#t=…`). A plain `http` link to a network address is not encrypted: the form says so
+(`https://server.example.com/#t=…`), or a guest invite link someone sent you (`#i=…`, see "Web access" › "Guests":
+it may be a desktop cockpit, not only a server). A plain `http` link to a network address is not encrypted: the form says so
 first, and connects only on a second click (**Connect anyway**).
 
 **Edit.** A server's menu has **Edit**: change the host, user, port, sign-in, `ccc` path, ports or name. A changed host

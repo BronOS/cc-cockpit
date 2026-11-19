@@ -22,6 +22,7 @@ import type { RemoteAnswers } from '../../shared/remote-servers'
 import { ipcErrorMessage } from '../ipc-error'
 import {
   canConnect,
+  connectRequest,
   connectSettings,
   editFields,
   emptyConnectFields,
@@ -93,8 +94,8 @@ export function ConnectForm(props: {
     setError(null)
     const call = (answers: RemoteAnswers | undefined): Promise<RemoteConnectAnswer> => {
       if (editing === undefined) {
-        // Answers ride on an SSH connect only (the other kinds never ask).
-        return window.cockpit.invoke('remote.connect', settings.kind === 'ssh' && answers !== undefined ? { ...settings, answers } : settings)
+        // Answers ride on an SSH or a Direct connect (a tunnel never asks).
+        return window.cockpit.invoke('remote.connect', connectRequest(settings, answers))
       }
       // Edit saves; a `need` after it (a link signing in) is answered by opening the saved server
       // with the answers, which is what Edit's own sign-in would have done (plan Task 5, IPC note).

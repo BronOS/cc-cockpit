@@ -153,8 +153,8 @@ their own browser. They apply in every auth mode, None included:
   the proxy's name). Blocks DNS rebinding of a loopback or LAN port.
 - **Origin check** on the WebSocket upgrade and every state-changing POST (sign-in included): `Origin` must be the
   external origin. On loopback, cookies ignore ports and every `localhost:*` page is same-site, so this check, not
-  `SameSite`, is the control that matters; the code says so where it checks. (A future desktop client sends no
-  Origin: it gets a bearer handshake of its own, §10.)
+  `SameSite`, is the control that matters; the code says so where it checks. (A desktop client came as Remote
+  servers' Direct window, a sandboxed page that sends `Origin` like a browser, so it needed no handshake of its own, §10.)
 - **Secrets**: compared in constant time, stored hashed. Failed attempts are slowed (a token bucket with a delay),
   never locked out: a lockout lets anyone who can reach the address keep the person out. Never keyed by peer
   address: behind `tailscale serve` or a proxy every peer is 127.0.0.1. The waiting queue is capped, so a sustained
@@ -229,8 +229,8 @@ can read them and use them. While either choice is on, the desktop's top bar sho
 ### 4.4 Sharing
 
 - **Your own new device**: scan the QR code on the desktop (the one-time "add a device" code, or the access link).
-- **Another person** comes with multi-user (§10): an invite link that works once, expires and is tied to a person and
-  a role. Not in v1.
+- **Another person** is a guest (§10, [design-guests.md](design-guests.md)): an invite link that works once, expires
+  and is tied to a person, a role, one project and its shared tabs.
 - A long-lived shared link is the access link itself; regenerating it is how to take it back.
 
 ## 5. Live mirror
@@ -1079,23 +1079,37 @@ What server mode gives up, and what stands in:
 
 macOS and Windows; relink and forget from the browser; `ccc web` writes on the desktop (a Files "Download" item is built, `docs/design-download.md`); more than one person (§10).
 
-## 10. Toward pair development (after v1)
+## 10. Guests (pair development)
 
-What v1 keeps open, and what multi-user adds:
-- **Identity.** `Caller.who` is the person in v1; multi-user adds people (an invite per person, not a device code),
-  shown as presence on tabs and panels.
-- **A desktop as a client.** The desktop renderer uses the network bridge for a remote project (a "connect to…"
-  entry next to open folder); the rest of the shell is the same code.
-- **Input turn-taking** in a shared Claude tab: who holds the keyboard, "Bob is typing", a request to take over;
-  `typed` and the send gate stay per tab.
-- **Plugin data is the host owner's.** Gmail, Jira, Chat panels show the owner's accounts. A guest sees a plugin
-  only if the owner shares it, per plugin, off by default; a guest never gets the owner's secrets, `ccc` socket or
-  plugin settings.
-- **Permissions**: view-only guests, and which channels a guest's class allows. A guest who can type or prompt Claude
-  in a shared tab has the owner's shell; "never gets the owner's secrets" holds only for view-only guests, and they
-  still see terminal text.
-- **A desktop client** sends no `Origin`: it signs in with a bearer handshake of its own, never by relaxing the
-  Origin check for browsers.
+Built after v1 as guests; the design is [design-guests.md](design-guests.md), user docs are
+[features.md](features.md) "Web access" › "Guests". The model in short:
+- **A guest is a web device** of sign-in mode `'guest'` (`devices.ts`, with a `guestId`), minted only by redeeming a
+  one-use invite (`POST /auth/invite`, its own attempt bucket; the token, 256 bits in the link's `#i=` fragment, is
+  stored only as its SHA-256). A new mode value, so an older build drops the device rather than reading it as the
+  owner. Never under sign-in None: `authorize()` falls back to the anonymous owner there.
+- **Identity is frozen, rights are live.** The connection binds `who` (`'owner'` or `{ guest: id }`) at `hello` and
+  registers the view with it (`ViewRegistry.addRemote(..., who)`, `whoOf`); the guest's role (`read` / `write`),
+  project and tab scope are read on every call, event, port frame and HTTP route through `GuestStore.access`, so a
+  kick, a role switch or a lifetime's end holds at once. `isOwner(view)` replaces `view.remote` (or
+  `server && view.remote`) as "the person" at every authority site (§9.6's "any signed-in device" now means any owner
+  device; a grep test lists the transport-only `.remote` sites).
+- **Inbound**: `GUEST_CLASS` (`shared/guest-class.ts`) gives every invoke channel `no`, `read` or `write` plus a target
+  extractor (tab, panel, frame, plugin, overlay, group, ask), checked by the router after `remoteAllowed`: it can only
+  narrow `REMOTE_CLASS`; unknown and malformed are refused.
+- **Outbound**: `GUEST_EVENT` (`main/web/guest-events.ts`) is `drop`, `pass` or a filter per event channel, applied at
+  the guest connection's one sink (`WebConnection.event`); the `ready` snapshot, `paths`, ports (one-way for read
+  guests of plugins that do not declare `guests.aware`), `/p/` `/o/` `/d/` and the gateway's JSON routes have their
+  own filters at their own points. Both tables are full mapped types over the channel unions, so a new channel without
+  a guest row fails to compile; the gateway's refusals to guests answer 404.
+- **Close codes** (`CLOSE`, `shared/web-protocol.ts`): 4403 another project (final), 4460 kicked (final, terminals
+  cleared), 4461 role changed and 4464 scope or plugin visibility changed (reconnect at once to a fresh `ready`), 4462
+  project closed (retried), 4463 access ended (final). A role switch gives the guest new view ids, so a view's access
+  never changes during its life.
+- **Heartbeat**: guest sockets are pinged every 10 s (`GUEST_HEARTBEAT_MS`), not 30, so the owner's list and presence
+  see a gone guest within two intervals.
+- **A desktop as a client** came as Remote servers' Direct window (`design-remote-desktop.md`): a sandboxed page that
+  sends `Origin` and keeps the cookie and key like a browser, so no bearer handshake was needed. A guest's own app
+  joins through it with the invite link, pinning a self-signed host certificate from the link's `c=` (D-29).
 
 ## 11. Open questions
 

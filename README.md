@@ -36,6 +36,9 @@ tested).
   client (agent, keys or password), your own tunnel or a pasted link, one window per project, and the top bar's strip has a chip per server with its session counts; see [docs/features.md](docs/features.md#remote-servers).
 - **Rooms.** A plugin can put Claude tabs in a room where they message each other and share documents (`ccc room`); you see
   the badge, the room and its log, and decide what reaches a tab you type in; see [docs/features.md](docs/features.md#rooms).
+- **Guests.** Invite someone into one project, read-only or able to type, from a browser or their own cc-cockpit: they
+  see only the tabs you share and the plugins you show to guests, and you can switch their role or kick them at any time
+  ("Web access" › "Guests" in [docs/features.md](docs/features.md#web-access)).
 - **A built-in browser panel.** `ccc browser open <url|file>` shows a page, a local file or a dev server next to the
   terminal.
 - **A file tree.** The Files panel shows the whole project; open any file to read it, note it and discuss it with
