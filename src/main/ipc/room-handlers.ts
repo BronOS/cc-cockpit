@@ -4,7 +4,7 @@
 import type { DeliverHeldAnswer, TabRoomRef } from '../../shared/tab-room'
 import { MAX_ID_CHARS } from '../../shared/room-names'
 import type { RoomView } from '../../shared/room-view'
-import { fields, tabIdOf, type CallView, type IpcRouter } from './router'
+import { fields, isOwner, tabIdOf, type CallView, type IpcRouter } from './router'
 
 /**
  * What the tab strip's room parts need from main (design-rooms.md §2 "The mark", §5): the person's acts on a member tab
@@ -91,7 +91,8 @@ function sameRoom(current: TabRoomRef, expected: TabRoomRef): boolean {
  * browsers are the person (the approvals rule); decided by the view main bound, never the payload.
  */
 function personOnly(server: boolean, channel: string, view: CallView): void {
-  if (view.remote && !server) throw new Error(`${channel}: refused for a browser view outside server mode`)
+  // A guest is never the person here (design-guests §4, spec-review 15): rooms are the owner's, in any mode.
+  if ((view.remote && !server) || !isOwner(view)) throw new Error(`${channel}: refused for a browser view outside server mode`)
 }
 
 /**
@@ -147,9 +148,14 @@ export interface RoomViewHandlerDeps {
  * screen (design-web.md §9.9, as ctx.files.reveal).
  */
 export function registerRoomViewHandlers(router: IpcRouter, deps: RoomViewHandlerDeps): void {
-  router.handleProject('rooms.view', (ctx, payload) => deps.view(ctx.projectId, roomIdOf('rooms.view', payload)))
+  // The room UI is the owner's (design-guests §4: GUEST_CLASS `no`, checked again here).
+  router.handleProject('rooms.view', (ctx, payload, view) => {
+    if (!isOwner(view)) throw new Error('rooms.view: refused')
+    return deps.view(ctx.projectId, roomIdOf('rooms.view', payload))
+  })
 
-  router.handleProject('rooms.doc', (ctx, payload) => {
+  router.handleProject('rooms.doc', (ctx, payload, view) => {
+    if (!isOwner(view)) throw new Error('rooms.doc: refused')
     const path = stringField('rooms.doc', payload, 'path')
     return deps.doc(ctx.projectId, roomIdOf('rooms.doc', payload), path)
   })
@@ -183,7 +189,7 @@ export function registerRoomViewHandlers(router: IpcRouter, deps: RoomViewHandle
   })
 
   router.handleProject('rooms.reveal', (ctx, payload, view) => {
-    if (view.remote) throw new Error('rooms.reveal: refused for a browser view')
+    if (view.remote || !isOwner(view)) throw new Error('rooms.reveal: refused for a browser view')
     if (deps.server) throw new Error('rooms.reveal: refused in server mode (the host has no screen)')
     return deps.reveal(ctx.projectId, roomIdOf('rooms.reveal', payload))
   })

@@ -93,6 +93,12 @@ export class SharedAsks<Info extends object, Answer> {
     return true
   }
 
+  /** What the pending ask `requestId` of `windowId` is about (a copy); undefined for an unknown, settled or foreign id. */
+  infoOf(windowId: number, requestId: string): (Info & { requestId: string }) | undefined {
+    const entry = this.pending.get(requestId)
+    return entry?.windowId === windowId ? { ...entry.info } : undefined
+  }
+
   /** The asks still waiting in `windowId`, oldest first (`ready`'s list). Copies. */
   pendingFor(windowId: number): Array<Info & { requestId: string }> {
     const out: Array<Info & { requestId: string }> = []

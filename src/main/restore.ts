@@ -74,6 +74,8 @@ export interface RestoredTab {
   room?: TabRoom
   /** Page tabs only (and always): plugin, type, params, title, icon, checked (checkPageTabSpec). */
   page?: PageTabSpec
+  /** Claude and shell tabs only: the guest whose act opened it (D-21); TabManager.restoreTab reads it again. */
+  openedByGuest?: string
 }
 
 /**
@@ -109,6 +111,7 @@ export function tabRecordsOf(tabs: readonly TabInfo[]): TabRecord[] {
     if (t.openedByName !== undefined) record.openedByName = t.openedByName
     if (t.name !== undefined) record.name = t.name
     if (t.env !== undefined) record.env = { ...t.env }
+    if (t.openedByGuest !== undefined) record.openedByGuest = t.openedByGuest
     if (t.flag !== undefined) record.flag = t.flag.note === undefined ? { color: t.flag.color } : { color: t.flag.color, note: t.flag.note }
     if (t.room !== undefined) record.room = { id: t.room.id, name: t.room.name, coordinator: t.room.coordinator, mark: t.room.mark }
     if (t.page !== undefined) Object.assign(record, pageRecordFields(t.page))
@@ -159,7 +162,7 @@ export function buildRestorePlan(
   const pagesOf = new Map<string, number>()
   for (const raw of records as unknown[]) {
     if (typeof raw !== 'object' || raw === null) continue
-    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room, env } = raw as Record<string, unknown>
+    const { kind, cwd, sessionId, label, command, argv, openedBy, openedByName, name, flag, room, env, openedByGuest } = raw as Record<string, unknown>
     if (kind === 'page') {
       const page = pagePlanOf(raw as Record<string, unknown>)
       if (page === undefined) continue
@@ -220,6 +223,10 @@ export function buildRestorePlan(
     // Any kind keeps its flag; a damaged one is dropped, not the tab (tabFlagOf).
     const f = tabFlagOf(flag)
     if (f !== undefined) tab.flag = f
+    // D-21: a guest's Claude or shell tab stays the guest's across a restart; a damaged value is dropped.
+    if ((kind === 'claude' || kind === 'shell') && typeof openedByGuest === 'string' && openedByGuest.length > 0 && openedByGuest.length <= 64) {
+      tab.openedByGuest = openedByGuest
+    }
     plan.push(tab)
   }
   return plan
@@ -301,6 +308,12 @@ export interface TabRestorerOptions {
    * not restored (tests that do not care).
    */
   restoreGroups?(projectId: string, saved: unknown, idMap: ReadonlyMap<string, string>): void
+  /**
+   * After a restore spawned its tabs, with the same map (design-guests §7, spec-review 1): every holder of saved tab
+   * ids follows them to the new ones (02's GuestStore.remap: selected scopes and opened tabs). Called once per
+   * restore run, after the groups; a throw is logged and costs only that holder. Absent: nobody listens.
+   */
+  onRestored?(projectId: string, idMap: ReadonlyMap<string, string>): void
   /** The project's folder (ProjectRegistry.get): the cwd saved for a tab that failed to restore. */
   projectPath(projectId: string): string | undefined
   /**
@@ -424,6 +437,11 @@ export class TabRestorer {
         } catch (err) {
           this.log(`cannot restore the split groups of project ${projectId}: ${errorText(err)}`)
         }
+        try {
+          this.options.onRestored?.(projectId, idMap)
+        } catch (err) {
+          this.log(`restore of project ${projectId}: a listener of the new tab ids failed: ${errorText(err)}`)
+        }
         this.tabsChanged(projectId)
       })
       const done = run.finally(() => {
@@ -457,6 +475,7 @@ export class TabRestorer {
     if (tab.env !== undefined) record.env = { ...tab.env }
     if (tab.flag !== undefined) record.flag = { ...tab.flag }
     if (tab.room !== undefined) record.room = { ...tab.room }
+    if (tab.openedByGuest !== undefined) record.openedByGuest = tab.openedByGuest
     if (tab.page !== undefined) Object.assign(record, pageRecordFields(tab.page))
     if (tab.command !== undefined) {
       record.label = tab.command.label

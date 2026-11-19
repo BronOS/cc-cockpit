@@ -16,7 +16,7 @@
 
 import { errorText } from '../../shared/error-text'
 import type { EventChannel } from '../../shared/ipc'
-import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
+import { desktopViewId, isRemoteViewId, type ViewId, type Who } from '../../shared/views'
 import { FRAME_DRAINED_BYTES } from '../../shared/web-protocol'
 import { warnLog } from '../warn-log'
 
@@ -66,6 +66,8 @@ export interface ViewRegistryOptions {
 interface ViewEntry<P> {
   readonly windowId: number
   readonly sink: ViewSink<P>
+  /** Who the view is (design-guests §2): frozen at `hello`; the desktop page and the hidden page are the owner. */
+  readonly who: Who
 }
 
 export class ViewRegistry<P = unknown> {
@@ -81,17 +83,18 @@ export class ViewRegistry<P = unknown> {
    */
   addDesktop(windowId: number, sink: DesktopViewSink<P>): ViewId {
     const id = desktopViewId(windowId)
-    this.views.set(id, { windowId, sink })
+    this.views.set(id, { windowId, sink, who: 'owner' })
     return id
   }
 
   /**
    * A remote view of a window, under the id the gateway minted (`remoteViewId`). The returned
    * function removes it (the socket closed); a later view with another id is not touched by it.
+   * `who`: the owner or a guest, as the connection's `hello` bound it (web/connection.ts); never changes.
    */
-  addRemote(windowId: number, viewId: ViewId, sink: ViewSink<P>): () => void {
+  addRemote(windowId: number, viewId: ViewId, sink: ViewSink<P>, who: Who = 'owner'): () => void {
     if (this.views.has(viewId)) throw new Error(`view ${viewId} is already registered`)
-    const entry = { windowId, sink }
+    const entry = { windowId, sink, who }
     this.views.set(viewId, entry)
     return () => {
       if (this.views.get(viewId) === entry) this.views.delete(viewId)
@@ -119,6 +122,32 @@ export class ViewRegistry<P = unknown> {
         this.logLine(`view ${id}: window close failed: ${errorText(err)}`)
       }
     }
+  }
+
+  /**
+   * Who a live view is (design-guests §2, spec-review 5): the owner or `{ guest }`; undefined for a view that is
+   * gone or never was. The role behind a guest is read live elsewhere (views/view-access.ts).
+   */
+  whoOf(viewId: ViewId): Who | undefined {
+    const entry = this.views.get(viewId)
+    return entry === undefined || entry.sink.isClosed() ? undefined : entry.who
+  }
+
+  /**
+   * Whether a window has a live browser view of the owner's (D-31): a guest joining never turns the owner's own
+   * native dialogs into in-page ones (asks/shared-asks.ts chooseAsk's `hasRemoteView`).
+   */
+  hasOwnerRemoteView(windowId: number): boolean {
+    return this.ownerRemoteViews(windowId).length > 0
+  }
+
+  /** The window's live browser views of the owner's, in attach order (no desktop view, no guest's). */
+  ownerRemoteViews(windowId: number): ViewId[] {
+    const out: ViewId[] = []
+    for (const [id, entry] of this.views) {
+      if (entry.windowId === windowId && isRemoteViewId(id) && entry.who === 'owner' && !entry.sink.isClosed()) out.push(id)
+    }
+    return out
   }
 
   /** The ids of a window's live views, the desktop view first. */

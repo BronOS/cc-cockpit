@@ -10,6 +10,11 @@
 //
 // With web access off a window has one view, and this is exactly the old rule: the active tab is
 // what the window last selected.
+//
+// A guest's view (design-guests §7) keeps its own selection too (presence shows where each person is), but
+// never acts for the project: its select or keys never set the active tab, it is never `lastActing` (server
+// mode's overlay holder), and its going away hands nothing back. Otherwise Discuss and every plugin would
+// retarget to a guest's click.
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
 
 export interface ViewSelectionsDeps {
@@ -32,8 +37,8 @@ export const EXIT_FOCUS_TYPED_MS = 1500
 const RECENT_CAP = 32
 
 export class ViewSelections {
-  /** viewId -> its project and the tab it shows. Map order: least to most recently acting. */
-  private readonly byView = new Map<ViewId, { projectId: string; tabId: string }>()
+  /** viewId -> its project and the tab it shows. Map order: least to most recently acting. `guest`: a guest's view. */
+  private readonly byView = new Map<ViewId, { projectId: string; tabId: string; guest?: true }>()
   /** viewId -> the tabs it selected or typed into, most recent first (capped; stale ids are harmless). */
   private readonly recent = new Map<ViewId, string[]>()
   /** viewId -> the tab the person last typed into there, and when (main's clock). */
@@ -58,6 +63,25 @@ export class ViewSelections {
   }
 
   /**
+   * A guest's view shows `tabId` (design-guests §7): remembered as that view's selection (presence, the exit
+   * focus), never the project's active tab. The router checked the tab is one the guest sees.
+   */
+  guestActed(projectId: string, viewId: ViewId, tabId: string): void {
+    if (!this.deps.isTab(projectId, tabId)) return
+    this.byView.delete(viewId)
+    this.byView.set(viewId, { projectId, tabId, guest: true })
+    const recent = this.recent.get(viewId) ?? []
+    if (recent[0] !== tabId) this.recent.set(viewId, [tabId, ...recent.filter((t) => t !== tabId)].slice(0, RECENT_CAP))
+  }
+
+  /** A write guest typed into `tabId` (view-input.ts guestViewInputHandler): as `guestActed`, timed for the exit focus. */
+  guestTyped(projectId: string, viewId: ViewId, tabId: string): void {
+    if (!this.deps.isTab(projectId, tabId)) return
+    this.guestActed(projectId, viewId, tabId)
+    this.typedAt.set(viewId, { tabId, at: this.now() })
+  }
+
+  /**
    * The person typed into `tabId` in `viewId` (view-input.ts, only for input that counts as theirs:
    * isPersonInput, the same signal as SessionInfo.typed). Acting, as `acted`, and remembered with
    * the time for the exit focus.
@@ -77,7 +101,12 @@ export class ViewSelections {
    * and every other close, is left keys-off as before. Decided from main's own record of who typed
    * where and when, never from anything a page says. Returns the selects to send, one per view.
    */
-  exitFocus(projectId: string, closedTabId: string, panes: readonly string[]): Array<{ viewId: ViewId; tabId: string }> {
+  exitFocus(
+    projectId: string,
+    closedTabId: string,
+    panes: readonly string[],
+    guestSees?: (viewId: ViewId, tabId: string) => boolean
+  ): Array<{ viewId: ViewId; tabId: string }> {
     const out: Array<{ viewId: ViewId; tabId: string }> = []
     if (panes.length === 0) return out
     const now = this.now()
@@ -85,7 +114,11 @@ export class ViewSelections {
       if (sel.projectId !== projectId || sel.tabId !== closedTabId) continue
       const typed = this.typedAt.get(viewId)
       if (typed?.tabId !== closedTabId || now - typed.at > EXIT_FOCUS_TYPED_MS || now < typed.at) continue
-      const tabId = (this.recent.get(viewId) ?? []).find((t) => panes.includes(t)) ?? panes[0]!
+      // A guest's view is handed only a pane it sees (design-guests §7): never a hidden member's id. With no
+      // way to ask (`guestSees` absent) it is left keys-off, as every other view of the close is.
+      const own = sel.guest === true ? (guestSees ? panes.filter((t) => guestSees(viewId, t)) : []) : panes
+      if (own.length === 0) continue
+      const tabId = (this.recent.get(viewId) ?? []).find((t) => own.includes(t)) ?? own[0]!
       out.push({ viewId, tabId })
     }
     return out
@@ -102,7 +135,8 @@ export class ViewSelections {
    */
   lastActing(candidates: readonly ViewId[]): ViewId | undefined {
     let last: ViewId | undefined
-    for (const viewId of this.byView.keys()) if (candidates.includes(viewId)) last = viewId
+    // A guest's view never holds for the project (design-guests §7): not the server's overlay holder.
+    for (const [viewId, sel] of this.byView) if (sel.guest !== true && candidates.includes(viewId)) last = viewId
     return last
   }
 
@@ -117,9 +151,11 @@ export class ViewSelections {
     const gone = this.byView.get(viewId)
     if (!gone) return
     this.byView.delete(viewId)
+    // A guest's view never set the active tab, so its going hands nothing back.
+    if (gone.guest === true) return
     let next: string | undefined
     for (const s of this.byView.values()) {
-      if (s.projectId === gone.projectId && this.deps.isTab(s.projectId, s.tabId)) next = s.tabId
+      if (s.guest !== true && s.projectId === gone.projectId && this.deps.isTab(s.projectId, s.tabId)) next = s.tabId
     }
     if (next !== undefined) this.deps.setActive(gone.projectId, next)
   }
