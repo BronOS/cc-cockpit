@@ -1087,20 +1087,22 @@ Plan `docs/plans/20261119-server-mode-mac.md` task T0, 2026-11-19, branch `serve
 `setActivationPolicy('accessory')` and `disableHardwareAcceleration()` before `ready` (the policy call does not throw
 there), `powerSaveBlocker.start('prevent-app-suspension')` after it, the project window never shown, its page with
 `backgroundThrottling: false`. Every run on a temp data dir with `CC_COCKPIT_TEST=1`, fake secrets, the harness's env
-scrub and `--use-mock-keychain`; no keychain prompt was seen. The gate and the probes stay off master (T1 and T3 build
+scrub; the plain spawns (S1, S4, S3) also had `--use-mock-keychain`, the two short `launchServer` runs did not. No run
+stalled; nobody watched the screen for a keychain prompt. The gate and the probes stay off master (T1 and T3 build
 the real start). S2 is the owner's (O1) and is not here.
 
-**Harness caveat.** Under Playwright (`launchServer`), the hidden page reports `visible` and `document.hasFocus()` true
-even with default throttling: Playwright's attach emulates focus, so it cannot see throttling. S1 and S4 were measured
-on a plain spawn of `out/` with no debugger attached; a probe in main installed timers in main and in the page once
+**Harness.** Under Playwright (`launchServer`) the hidden page read `visible` with `document.hasFocus()` true, with and
+without default throttling; on a plain spawn it read `visible` with `hasFocus()` false. To keep Playwright's attach
+(which emulates focus) out of the numbers, S1 and S4 were measured on a plain spawn of `out/` with no debugger attached; a probe in main installed timers in main and in the page once
 (`executeJavaScript`) and read them back only at the end. The browser was the e2e browser fixture (another process).
 
 **S1, never shown and unthrottled: held.** Run A (decisions 1 and 4) and control B (default `backgroundThrottling`,
 no blocker), side by side, each with a Claude tab, a shell tab and the Browser panel opened once from a browser, then
 10.5 minutes with nothing touching the server:
 - the page is `visible` (`document.hidden` false, no `visibilitychange` event) in **both** runs, `hasFocus()` false;
-  `isVisible()` false for every window and `app.dock.isVisible()` false. A never-shown window's page is not hidden on
-  macOS, so `backgroundThrottling: false` changes nothing measurable here; it stays as the guard decision 1 names;
+  `isVisible()` false for every window and `app.dock.isVisible()` false. For this window as built (a never-shown
+  `BrowserWindow`), the page was not hidden; the cause was not isolated (no control with `paintWhenInitiallyHidden:
+  false`), and `backgroundThrottling: false` changed nothing measurable here; it stays as the guard decision 1 names;
 - page timers, worst gap per minute over 11 minutes (intensive throttling would start at 5): a 1 s `setInterval`
   1001-1003 ms, a chained 100 ms `setTimeout` 106-109 ms (A) and 106-110 ms (B). Main: 1002-1034 ms and 106-227 ms;
 - `tabs.screenAsk` after the idle: the mirror worker ended as a crash, the hidden page got both tabs' asks within 3 ms
@@ -1113,12 +1115,13 @@ stock bundle, and LaunchServices routes by bundle, so `open -a` on the stock one
 - At start: `activate` count 0 after 5 s on the plain spawn, and 0 under Playwright (`launchServer`, two runs);
   LaunchServices type `UIElement`; the pid holds a `NoIdleSleepAssertion` named "Electron".
 - `open -a <copy>`: no new process (the bundle's main processes by `ps -A -o pid=,comm=` unchanged), `activate` fired
-  once with `hasVisibleWindows` false, about 5 s after the call; a second `open -a` fired it again. No window became
+  once with `hasVisibleWindows` false (its latency was not measured: the script reads after a fixed 5 s); a second `open -a` fired it again. No window became
   visible. SIGTERM afterwards: exit 0, nothing left.
 - **Not held: the run stops being Dock-less.** After the routed launch LaunchServices lists the pid as `Foreground`
   (it was `UIElement`) and `app.dock.isVisible()` is true; 30 s later still `Foreground`. Nothing in the cockpit
   changed the policy (`WindowManager.activate` returns at once in server mode). So the reopen gives the server a Dock
-  icon and menu bar for the rest of the run, which decisions 1 and 3 do not cover. Not tried: putting the policy back
+  icon and menu bar for the rest of the run, which decisions 1 and 3 do not cover. During at least one of these runs
+  `loginwindow` was frontmost (the screen locked), which O1 should repeat unlocked. Not tried: putting the policy back
   after `activate`. Finder, Spotlight and a Dock click were not tried; the packaged bundle's routing is O1's.
 
 **S4, sleep and App Nap: partly measured.**

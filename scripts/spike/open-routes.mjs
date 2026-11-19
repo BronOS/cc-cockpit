@@ -5,6 +5,7 @@
 // the pid's LaunchServices type, its pmset assertion and the `activate` lines main prints (`activateLine`, a
 // substring; the spike's main prints "SPIKE activate"). Usage:
 //   node scripts/spike/open-routes.mjs <path/to/Copy.app> [activateLine]
+// Needs a build of out/ where darwin `--server` starts (T1, or the T0 gate); master's server refuses on darwin.
 import { execFileSync, spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, openSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -51,7 +52,7 @@ const child = spawn(exe, [join(REPO, 'out/main/index.js'), '--server', '--use-mo
 const activates = () => readFileSync(logPath, 'utf8').split('\n').filter((l) => l.includes(activateLine)).length
 const report = {}
 try {
-  for (let i = 0; i < 60; i++) { try { if ((await fetch(`http://127.0.0.1:${port}/`)).status === 200) break } catch {} ; await sleep(500) }
+  for (let i = 0; i < 60; i++) { try { if ((await fetch(`http://127.0.0.1:${port}/`)).status === 200) break } catch { /* not up yet */ } ; await sleep(500) }
   await sleep(5000) // settle
   report.start = { pid: child.pid, mains: mains().filter((p) => !before.includes(p)), type: lsType(child.pid), assertion: assertion(child.pid), activates: activates() }
   writeFileSync(join(probe, 'dump'), ''); await sleep(2500)
@@ -72,7 +73,7 @@ try {
   for (let i = 0; i < 20 && child.exitCode === null; i++) await sleep(250)
   report.exit = { code: child.exitCode, signal: child.signalCode, left: mains().filter((p) => !before.includes(p)) }
   // A process `open` started (a routing failure) is ours to end.
-  for (const pid of report.exit.left) { try { process.kill(pid, 'SIGTERM') } catch {} }
+  for (const pid of report.exit.left) { try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ } }
   report.log = readFileSync(logPath, 'utf8').split('\n').filter((l) => l.includes('SPIKE') || /rror/.test(l)).slice(-20)
   console.log(JSON.stringify(report, null, 1))
   rmSync(root, { recursive: true, force: true })
