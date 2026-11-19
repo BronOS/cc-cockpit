@@ -177,7 +177,7 @@ function fakePage() {
   const owners = new Map<string, FakeOwner[]>()
   const sent: Sent[] = []
   const queries: Array<{ method: string; session: string }> = []
-  const held: Array<{ sent: Sent; resolve: (v: unknown) => void }> = []
+  const held: Array<{ sent: Sent; resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
   const opts = {
     hold: false,
     /** Input on these sessions is held (never answered until resolved by hand) even when `hold` is off. */
@@ -196,7 +196,7 @@ function fakePage() {
       if (opts.refuse.has(session)) return Promise.reject(new Error('No session with given id'))
       sent.push(entry)
       opts.onSent?.(entry)
-      if (opts.hold || opts.holdSessions.has(session)) return new Promise((resolve) => void held.push({ sent: entry, resolve }))
+      if (opts.hold || opts.holdSessions.has(session)) return new Promise((resolve, reject) => void held.push({ sent: entry, resolve, reject }))
       return Promise.resolve({})
     }
     queries.push({ method, session })
@@ -1016,5 +1016,157 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     s.detach()
     await expect(s.router.command('Input.insertText', { text: 'ü' }, () => detached.push('ü'))).resolves.toBe(1)
     expect(detached).toEqual(['ü'])
+  })
+})
+
+// The third codex review (of c1c623f): four musts and a should, one test each.
+describe('PageInputRouter scheduling: review 3', () => {
+  // MUST: "keys A then B; A's deadline fires, A answers in the next microtask; B returns park, A's
+  // answer clears the stall and calls pump(), which returns because pumping is true; the running pump
+  // then parks unconditionally and B waits with no outstanding command or timer."
+  it('lost wakeup while parking: a stall cleared while the next step parks still lets it go', async () => {
+    for (let delay = 0; delay < 8; delay++) {
+      const s = setup()
+      s.page.opts.hold = true
+      s.router.input([keyDown('a'), keyDown('b')])
+      await s.flush()
+      const a = s.page.held.shift()
+      s.page.opts.hold = false
+      s.fire()
+      for (let n = 0; n < delay; n++) await Promise.resolve()
+      a?.resolve({})
+      await s.flush()
+      expect([delay, s.page.sent.map((x) => x.params.key)]).toEqual([delay, ['a', 'b']])
+    }
+  })
+
+  // MUST: "left press to frame A, A's answer withheld past the deadline, then the release goes only
+  // to the page session and capture is cleared; when A answers, nobody sends A its mouseReleased."
+  it('a stalled frame loses its release: the release is owed to A and sent once A answers the press', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('A')
+    s.router.input([down(20, 225)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.router.input([up(30, 230)])
+    await s.flush()
+    // Nothing to the page session (it never got the press).
+    expect(s.mice()).toEqual([['A', 'mousePressed', 20, 25]])
+    s.page.opts.holdSessions.clear()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['A', 'mousePressed', 20, 25],
+      ['A', 'mouseReleased', 30, 30]
+    ])
+    expect(s.page.sent.at(-1)?.params).toMatchObject({ button: 'left', buttons: 0 })
+  })
+
+  it("a stalled frame's release when its box cannot be read: owed at the press point", async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.holdSessions.add('A')
+    s.router.input([down(20, 225)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    s.page.owners.set('', [])
+    s.router.input([up(30, 230)])
+    await s.flush()
+    s.page.opts.holdSessions.clear()
+    s.page.held.shift()?.resolve({})
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['A', 'mousePressed', 20, 25],
+      ['A', 'mouseReleased', 20, 25]
+    ])
+  })
+
+  it("an owed release is dropped when A detaches or the protocol does", async () => {
+    for (const end of ['frame', 'protocol'] as const) {
+      const s = setup()
+      s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+      s.page.opts.holdSessions.add('A')
+      s.router.input([down(20, 225)])
+      await s.flush()
+      s.fire()
+      await s.flush()
+      s.router.input([up(30, 230)])
+      await s.flush()
+      if (end === 'frame') s.router.frameDetached('A')
+      else {
+        s.detach()
+        s.router.reset()
+        s.attach()
+      }
+      s.page.held.shift()?.resolve({})
+      await s.flush()
+      expect([end, s.mice()]).toEqual([end, [['A', 'mousePressed', 20, 25]]])
+    }
+  })
+
+  // MUST: "edit-command keydowns (Cmd+ArrowLeft through command('Input.dispatchKeyEvent', ...)) are not
+  // recorded as pressed, so their keyup is dropped past the cap."
+  it('an edit command key down counts as pressed: its key up passes the cap', async () => {
+    const s = setup()
+    s.page.opts.hold = true
+    void s.router.command(
+      'Input.dispatchKeyEvent',
+      { type: 'rawKeyDown', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37, modifiers: 4, commands: ['moveToLeftEndOfLine'] },
+      () => undefined
+    )
+    await s.flush()
+    const many: ElectronInputEvent[] = []
+    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('d'))
+    s.router.input([...many, { type: 'keyUp', keyCode: 'Left', modifiers: ['meta'] }])
+    s.page.opts.hold = false
+    for (let n = 0; n < 4000; n++) {
+      for (const h of s.page.held.splice(0)) h.resolve({})
+      await new Promise((r) => setImmediate(r))
+    }
+    expect(s.page.sent.filter((x) => x.params.type === 'keyUp').map((x) => x.params.code)).toEqual(['ArrowLeft'])
+  })
+
+  // MUST: "send A's keydown, detach and reattach, then reject the original command before its
+  // deadline; sendInput.end() resolves refused without an epoch check and pageRefused() replays the
+  // old key through sendInputEvent into the new page. Same missing guard on the page-session
+  // mouse-refusal path."
+  it('old-epoch rejection injects input: a refusal from before a detach replays nothing', async () => {
+    for (const event of [keyDown('a'), down(5, 5)]) {
+      const s = setup()
+      s.page.opts.hold = true
+      s.router.input([event])
+      await s.flush()
+      const old = s.page.held.shift()
+      s.detach()
+      s.router.reset()
+      s.attach()
+      old?.reject(new Error('target closed'))
+      await s.flush()
+      expect([event.type, s.fallback]).toEqual([event.type, []])
+    }
+  })
+
+  // SHOULD: rule 2's contract. At most one command on its way per page, except those of stalled
+  // sessions: a command that missed its deadline no longer holds the others (it holds its own session
+  // only), so a frame that never answers cannot block the page.
+  it('one command on its way per page, stalled sessions excepted', async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.page.opts.hold = true
+    s.router.input([down(20, 225), keyDown('q'), keyDown('r')])
+    await s.flush()
+    // The press is on its way: nothing else is.
+    expect(s.page.held.map((h) => h.sent.session)).toEqual(['A'])
+    s.fire()
+    await s.flush()
+    // A is stalled (its press still unanswered); the page goes on with one command of its own.
+    expect(s.page.held.map((h) => `${h.sent.session} ${h.sent.params.key ?? h.sent.params.type}`)).toEqual(['A mousePressed', ' q'])
+    const q = s.page.held.pop()
+    q?.resolve({})
+    await s.flush()
+    expect(s.page.held.map((h) => `${h.sent.session} ${h.sent.params.key ?? h.sent.params.type}`)).toEqual(['A mousePressed', ' r'])
   })
 })
