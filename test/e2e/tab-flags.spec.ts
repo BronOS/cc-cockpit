@@ -62,6 +62,12 @@ test('flag a tab red with a note: stripe, tooltip, switcher, All tabs, crowded s
     const { page } = c
     await c.newTab('claude')
     await c.waitForTerminalText('FAKE-CLAUDE banner')
+    // Settled at "waiting" before it is flagged: a flagged Claude tab that becomes waiting in the
+    // background pulses (the stripe's height animates), and its SessionStart hook can land after the
+    // flag (seen on macOS: a stripe 3.00781px tall).
+    await expect
+      .poll(async () => (await c.hook<Array<{ status: string }>>('sessions', c.projectDir))[0]?.status, { timeout: 15_000 })
+      .toBe('waiting')
     await c.newTab('shell')
     await expect(page.getByRole('tab')).toHaveCount(2)
 
