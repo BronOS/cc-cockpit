@@ -29,11 +29,13 @@
 //   browsers' cursor; with no sink they are dropped. Input comes back through sendInput
 //   (`sendInputEvent`, checked by webview-input.ts), text through insertText and edit chords
 //   through editCommand (both on the page's protocol while it is attached).
-// - Input reaches the top document only: neither `sendInputEvent` nor the page session's
-//   `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` routes into an out-of-process
-//   (cross-site) iframe of an off-screen page; the top document gets the event, its target the
-//   IFRAME element (scripts/offscreen-input-check.mjs, macOS, Electron 45.1.0, 2026-11-19).
-//   docs/backlog/streamed-clicks-miss-cross-site-iframes.md has what would reach one.
+// - Pointer input reaches the top document only: neither `sendInputEvent` nor the page session's
+//   `Input.dispatchMouseEvent` routes into an out-of-process (cross-site) iframe of an off-screen
+//   page; the top document gets the event, its target the IFRAME element. Keys differ once focus
+//   is in such a frame (by Tab): `sendInputEvent` keys land on the top document's body, while the
+//   page session's key events (the edit chords below) and `Input.insertText` follow focus into the
+//   frame (scripts/offscreen-input-check.mjs, macOS, Electron 45.1.0, 2026-11-19;
+//   docs/backlog/streamed-clicks-miss-cross-site-iframes.md).
 import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'

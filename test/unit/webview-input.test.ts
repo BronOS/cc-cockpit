@@ -31,6 +31,8 @@ import {
 } from '../../src/main/webview/webview-input'
 import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webview-viewers'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
+import { CommandRegistry } from '../../src/main/commands/command-registry'
+import { chordFromEvent, type KeyEventLike } from '../../src/shared/keys'
 import { REMOTE_CLASS, type WebviewInputEventWire } from '../../src/shared/ipc'
 import { MAX_FRAME_BYTES } from '../../src/shared/web-protocol'
 import { editCommandOf, isClipboardChord, WEBVIEW_CURSORS, webviewCursor, webviewKeyChar, webviewKeyCode } from '../../src/shared/webview-keys'
@@ -692,6 +694,34 @@ describe("the browser's side (web/webview-stream.ts)", () => {
     // Not keys of the page: modifiers alone, an IME's composition, a dead key, non-ASCII text (Task 8).
     for (const e of [keyEvent('Shift', { shiftKey: true }), keyEvent('Control'), keyEvent('a', { isComposing: true }), keyEvent('Process'), keyEvent('Dead'), keyEvent('é')]) {
       expect(webviewKeyAction(e, noCommands)).toBe('ignore')
+    }
+  })
+
+  // Plan 20261119-server-mode-mac, decision 7: the edit chords main turns into commands must reach
+  // main at all. No default shell chord takes them on either platform (a person may still bind one).
+  it('forwards the edit chords: no default shell command holds Ctrl/Cmd+A, Z, Shift+Z or Ctrl+Y', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      const keys = new Set(
+        new CommandRegistry(platform, () => ({}))
+          .view('')
+          .commands.flatMap((c) => (c.key === undefined ? [] : [c.key]))
+      )
+      const isCommand = (e: KeyEventLike): boolean => {
+        const chord = chordFromEvent(e)
+        return chord !== null && keys.has(chord)
+      }
+      const chords = [
+        keyEvent('a', { ctrlKey: true }),
+        keyEvent('a', { metaKey: true }),
+        keyEvent('z', { ctrlKey: true }),
+        keyEvent('z', { metaKey: true }),
+        keyEvent('Z', { ctrlKey: true, shiftKey: true }),
+        keyEvent('Z', { metaKey: true, shiftKey: true }),
+        keyEvent('y', { ctrlKey: true })
+      ]
+      for (const e of chords) expect(`${platform} ${e.key} ${webviewKeyAction(e, isCommand)}`).toBe(`${platform} ${e.key} forward`)
+      // The table is real: a default chord of the shell is the shell's.
+      expect(webviewKeyAction(keyEvent('t', platform === 'darwin' ? { metaKey: true } : { ctrlKey: true }), isCommand)).toBe('shell')
     }
   })
 
