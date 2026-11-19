@@ -11,7 +11,7 @@ import {
   GUEST_SHOW_DESKTOP_ONLY,
   guestAccessOf,
   guestChange,
-  guestExposureLine,
+  guestExposureLines,
   guestOverrideNote,
   guestShowAskText,
   type GuestShell,
@@ -893,7 +893,9 @@ function PluginGuests(props: { plugin: PluginView; busy: string | null; run: Act
         </Select>
       </div>
       <div className="settings-item-foot settings-item-meta" data-testid="plugin-guests-text">
-        {guestExposureLine(access)}
+        {guestExposureLines(access).map((line) => (
+          <div key={line}>{line}</div>
+        ))}
       </div>
       {note !== undefined && (
         <div className="settings-item-foot settings-item-meta" data-testid="plugin-guests-override">

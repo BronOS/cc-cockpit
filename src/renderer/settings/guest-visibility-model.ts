@@ -6,6 +6,7 @@
 // and resolves visibility with its own `guestVisibility` (shared/guest-access.ts), never with ours.
 import type { PluginView } from '../../shared/ipc'
 import type { GuestAccessResult, GuestVisibility } from '../../shared/guest-access'
+import { guestExposure } from '../../shared/guest-exposure'
 
 /** PluginView.guestAccess with the stored values the page edits. */
 export type PluginGuestAccess = NonNullable<PluginView['guestAccess']>
@@ -22,28 +23,28 @@ export function guestAccessOf(plugin: Pick<PluginView, 'guestAccess'>): PluginGu
 export const GUEST_VISIBILITY_LABEL: Record<GuestVisibility, string> = { hidden: 'Hidden', shown: 'Shown' }
 
 /** A plugin that sees every window's sessions and does not check the viewer: always hidden (`blocked`). */
-export const GUEST_BLOCKED_TEXT = "Shows other projects' sessions; never shown to guests."
+export const GUEST_BLOCKED_TEXT = guestExposure({ aware: false, blocked: 'all-windows' }).summary
 
 /**
- * What showing the plugin exposes (spec-review 18): core's own words from `aware` and the port kind
- * guests get (shared/guest-access.ts `guestPort`), never the manifest's text (a plugin's own claim of
- * what it shows is the one thing the owner cannot check). Not aware: read guests get a one-way port
- * (watch only), write guests a full one (D-17).
+ * What showing the plugin exposes (spec-review 18): the shared generic text (shared/guest-exposure.ts,
+ * task 04's, from `aware` and the port each role gets), never the manifest's text (a plugin's own claim
+ * of what it shows is the one thing the owner cannot check). One string, for the armed confirm.
  */
-export function guestExposureText(aware: boolean): string {
-  return aware
-    ? "Guests see this plugin's panels; the plugin is told whether each viewer is a read-only or write guest."
-    : 'Guests see what its panels show. It is not guest-aware: read-only guests can only watch it, write guests can use it as you do.'
+export function guestExposureText(access: Pick<PluginGuestAccess, 'aware' | 'blocked'>): string {
+  const e = guestExposure(access)
+  if (access.blocked !== undefined) return e.summary
+  return `${e.summary} Read-only guests: ${e.read} Write guests: ${e.write}`
 }
 
 /**
- * The Plugins page's line under the control: the blocked reason, or what showing exposes ("If shown:"
- * while the app-wide value hides it, so the line never reads as if guests saw it now).
+ * The Plugins page's lines under the control: the blocked reason alone, or the summary ("If shown:"
+ * while the app-wide value hides it, so it never reads as if guests saw it now) and one line per role.
  */
-export function guestExposureLine(access: PluginGuestAccess): string {
-  if (access.blocked !== undefined) return GUEST_BLOCKED_TEXT
-  const text = guestExposureText(access.aware)
-  return appGuestValue(access) === 'shown' ? text : `If shown: ${text}`
+export function guestExposureLines(access: PluginGuestAccess): string[] {
+  const e = guestExposure(access)
+  if (access.blocked !== undefined) return [e.summary]
+  const summary = appGuestValue(access) === 'shown' ? e.summary : `If shown: ${e.summary}`
+  return [summary, `Read-only guests: ${e.read}`, `Write guests: ${e.write}`]
 }
 
 /** Why Shown is off in a browser view of a desktop cockpit (main refuses a widening from it, design §16.2). */
@@ -162,5 +163,5 @@ export function guestShowAskText(name: string, access: PluginGuestAccess, target
     target === 'app'
       ? "Every project's guests get it, except in a project that hides it under This Project."
       : "This project's guests get it."
-  return { title: `Show ${name} to guests?`, body: `${guestExposureText(access.aware)} ${reach}`, allowLabel: 'Show to guests' }
+  return { title: `Show ${name} to guests?`, body: `${guestExposureText(access)} ${reach}`, allowLabel: 'Show to guests' }
 }

@@ -11,7 +11,7 @@ import {
   guestAccessOf,
   guestChange,
   guestEffectiveText,
-  guestExposureLine,
+  guestExposureLines,
   guestExposureText,
   guestOverrideNote,
   guestShowAskText,
@@ -22,6 +22,7 @@ import {
   type GuestShell,
   type PluginGuestAccess
 } from '../../src/renderer/settings/guest-visibility-model'
+import { guestExposure } from '../../src/shared/guest-exposure'
 
 const DESKTOP: GuestShell = { webShell: false, serverView: false }
 const SERVER: GuestShell = { webShell: true, serverView: true }
@@ -31,9 +32,10 @@ function access(over: Partial<PluginGuestAccess> = {}): PluginGuestAccess {
   return { effective: 'hidden', source: 'default', aware: false, ...over }
 }
 
-const AWARE = "Guests see this plugin's panels; the plugin is told whether each viewer is a read-only or write guest."
-const NOT_AWARE =
-  'Guests see what its panels show. It is not guest-aware: read-only guests can only watch it, write guests can use it as you do.'
+const AWARE_E = guestExposure({ aware: true })
+const NOT_AWARE_E = guestExposure({ aware: false })
+const AWARE = `${AWARE_E.summary} Read-only guests: ${AWARE_E.read} Write guests: ${AWARE_E.write}`
+const NOT_AWARE = `${NOT_AWARE_E.summary} Read-only guests: ${NOT_AWARE_E.read} Write guests: ${NOT_AWARE_E.write}`
 
 describe('guestAccessOf', () => {
   it('reads an absent field as hidden by default, not aware', () => {
@@ -46,15 +48,20 @@ describe('guestAccessOf', () => {
 })
 
 describe('texts', () => {
-  it('names what showing exposes from aware alone (no manifest text)', () => {
-    expect(guestExposureText(true)).toBe(AWARE)
-    expect(guestExposureText(false)).toBe(NOT_AWARE)
+  it('names what showing exposes with the shared generic text (no manifest text)', () => {
+    expect(guestExposureText({ aware: true })).toBe(AWARE)
+    expect(guestExposureText({ aware: false })).toBe(NOT_AWARE)
+    expect(guestExposureText({ aware: false, blocked: 'all-windows' })).toBe(GUEST_BLOCKED_TEXT)
   })
-  it('the card line: blocked reason, the text while shown, "If shown" while hidden', () => {
-    expect(guestExposureLine(access({ blocked: 'all-windows', appValue: 'shown' }))).toBe(GUEST_BLOCKED_TEXT)
-    expect(GUEST_BLOCKED_TEXT).toBe("Shows other projects' sessions; never shown to guests.")
-    expect(guestExposureLine(access({ appValue: 'shown', effective: 'shown', source: 'app', aware: true }))).toBe(AWARE)
-    expect(guestExposureLine(access())).toBe(`If shown: ${NOT_AWARE}`)
+  it('the card lines: blocked reason alone, summary and a line per role, "If shown" while hidden', () => {
+    expect(guestExposureLines(access({ blocked: 'all-windows', appValue: 'shown' }))).toEqual([GUEST_BLOCKED_TEXT])
+    expect(GUEST_BLOCKED_TEXT).toBe(guestExposure({ aware: false, blocked: 'all-windows' }).summary)
+    expect(guestExposureLines(access({ appValue: 'shown', effective: 'shown', source: 'app', aware: true }))).toEqual([
+      AWARE_E.summary,
+      `Read-only guests: ${AWARE_E.read}`,
+      `Write guests: ${AWARE_E.write}`
+    ])
+    expect(guestExposureLines(access())[0]).toBe(`If shown: ${NOT_AWARE_E.summary}`)
   })
   it('names a project override under the app control, never for a blocked plugin', () => {
     expect(guestOverrideNote(access({ source: 'app', appValue: 'shown', effective: 'shown' }))).toBeUndefined()
