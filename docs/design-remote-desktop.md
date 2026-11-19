@@ -220,7 +220,10 @@ The desktop picker (`src/renderer/picker/ProjectPicker.tsx`) gets a **Servers** 
     page tabs"); main's own closes and loads never ask.
   - Through a tunnel (either kind) the page's origin is loopback, and its requests carry cookies to any `127.0.0.1` port
     (cookies ignore ports): `webRequest.onBeforeRequest` cancels requests to any loopback host other than the server's
-    own origin.
+    own origin. By name (`localhost`, the loopback literals) and by address: main resolves any other host name
+    (`dns.lookup`, cached briefly, fail closed) and cancels when an address is loopback, unspecified or one of this
+    machine's interface addresses (`local-address.ts`); Chromium's Local Network Access stops none of these in Electron
+    45. Chromium resolves again for the real request, so a rebinding name can still slip between the two lookups.
   - Remote windows are excluded from the app's `browser-window-created` and `focus` handlers (`index.ts`), as
     `isOffscreenWindow` excludes off-screen webviews.
 - **Notifications.** The web client's in-page notices and chime work as in a browser. HTML5 `Notification` is not

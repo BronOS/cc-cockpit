@@ -9,7 +9,9 @@
 //  - Requests (`allowRemoteRequest`): the page's origin may be `http://127.0.0.1:<L>` (the SSH
 //    tunnel), and cookies ignore ports, so a request to another loopback port would carry the
 //    device cookie to whatever local process listens there. Every loopback host but the server's own
-//    origin is cancelled; with a Direct server on a real address, every loopback host is.
+//    origin is cancelled; with a Direct server on a real address, every loopback host is. By name
+//    first (`isLoopbackHost`), then by address (`checkRemoteRequest`, local-address.ts): a DNS name
+//    resolving to loopback or to one of this machine's own addresses is cancelled too.
 //  - Top-level navigation and redirects stay on the server's origin (`allowRemoteNavigation`);
 //    a page-opened window is never one of ours: an http(s) link goes to the person's browser under
 //    the webview panels' open budget (open-budget.ts, one per server), anything else is dropped.
@@ -162,6 +164,7 @@ import { warnLog } from '../warn-log'
 import { RemoteCookie, type RemoteCookieJar, type RemoteCookieStore } from './remote-cookie'
 import { startSave, type ActiveSave, type RemoteDownloadItem } from './remote-downloads'
 import { isOriginKey } from './remote-key'
+import type { LocalAddressCheck } from './local-address'
 import { TUNNEL_RETRY_MS, type LoadGate } from './tunnel-probe'
 
 /** Pairings in a row with no device seen in between before the window shows the error. */
@@ -255,6 +258,27 @@ export function allowRemoteRequest(url: string, origin: string | undefined): boo
   if (own === undefined || !isLoopbackHost(own.hostname)) return false
   if (target.host !== own.host) return false
   return own.protocol === 'https:' ? scheme === 'https:' || scheme === 'wss:' : scheme === 'http:' || scheme === 'ws:'
+}
+
+/**
+ * `allowRemoteRequest`, then the address rule (local-address.ts): a request that passes the name rule
+ * and does not go to the server's own host and port is refused when its host is, or resolves to, this
+ * machine (loopback, unspecified, one of its interface addresses). The own origin is decided by the name
+ * rule alone, with no lookup, as before: the tunnel origin IS `127.0.0.1:<L>`, a Direct server may be on
+ * this machine's own LAN address, and the web client's own traffic (and main's own requests through the
+ * partition) must never wait on DNS. Left open by that: a Direct server's own name rebinding to loopback
+ * reaches a local listener on that one port. Synchronous unless a lookup is needed; the promise never
+ * rejects.
+ */
+export function checkRemoteRequest(url: string, origin: string | undefined, local: LocalAddressCheck): boolean | Promise<boolean> {
+  const target = parsed(url)
+  if (target === undefined) return false
+  const scheme = target.protocol
+  if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') return true
+  const own = origin === undefined ? undefined : parsed(origin)
+  if (own !== undefined && target.host === own.host) return allowRemoteRequest(url, origin)
+  if (!allowRemoteRequest(url, origin)) return false
+  return local.allows(target.hostname)
 }
 
 /** Whether `url` is on `origin` exactly (scheme, host and port). */
@@ -455,8 +479,11 @@ export interface RemoteWindowView {
 
 /** What a server's partition reports, and what it asks main to decide. */
 export interface RemoteSessionHooks {
-  /** A request the page (or anything in the partition) is about to send: may it go out? */
-  allowRequest(url: string): boolean
+  /**
+   * A request the page (or anything in the partition) is about to send: may it go out? A promise when
+   * main has to resolve the host first (`checkRemoteRequest`); it never rejects.
+   */
+  allowRequest(url: string): boolean | Promise<boolean>
   /** A GET to SESSION_PATH from the page of WebContents `webContentsId` completed (a re-pair trigger). */
   sessionRequestCompleted(webContentsId: number): void
   /**
@@ -518,6 +545,11 @@ export interface RemoteWindowsTimers {
 export interface RemoteWindowsOptions {
   factory: RemoteWindowFactory
   store: RemoteWindowsStore
+  /**
+   * The address half of the loopback block (local-address.ts; `checkRemoteRequest`). Required: a
+   * security check, so no option leaves it out (tests pass one with a fake resolver).
+   */
+  localAddresses: LocalAddressCheck
   /** An http(s) link a page asked to open: the person's own browser (main's `createOpenExternal`). */
   openExternal(url: string): Promise<void> | void
   /** A one-time add-device token for an SSH server (`addDeviceToken` over the server's built-in SSH link). */
@@ -928,7 +960,7 @@ export class RemoteWindows {
     const existing = this.servers.get(serverId)
     if (existing !== undefined) return existing
     const session = this.options.factory.session(serverId, {
-      allowRequest: (url) => allowRemoteRequest(url, this.servers.get(serverId)?.origin),
+      allowRequest: (url) => checkRemoteRequest(url, this.servers.get(serverId)?.origin, this.options.localAddresses),
       sessionRequestCompleted: (webContentsId) => {
         const rec = this.byWebContents.get(webContentsId)
         if (rec === undefined || rec.serverId !== serverId) return
