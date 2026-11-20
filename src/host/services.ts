@@ -824,14 +824,6 @@ export class ServiceRegistry {
   }
 
   /**
-   * `ctx.services.callers()` for `pluginId`: the consumers of the live `call` frames of the current
-   * chain, outermost first (A -> B -> C: inside C, [A, B]). The same gate as `caller`: the innermost
-   * frame must be a live call into `pluginId` itself (else this code is not serving the chain: a
-   * timer after settle, or another plugin's code running in someone else's frame), and an outer frame
-   * counts only while every frame after it is live (`liveChain`'s tail rule), so a stale outer
-   * frame never names a consumer that is already gone. Empty outside any frame.
-   */
-  /**
    * Whether `pluginId` is one of this host's plugins now (its declarations are set from its activate, every
    * plugin's, until it unloads): an overlay's sources are filtered to these before anything else, so ids that
    * name nothing never use up a bound and push a real source out (docs/design-overlay-views.md §4).
@@ -840,6 +832,14 @@ export class ServiceRegistry {
     return this.specs.has(pluginId)
   }
 
+  /**
+   * `ctx.services.callers()` for `pluginId`: the consumers of the live `call` frames of the current
+   * chain, outermost first (A -> B -> C: inside C, [A, B]). The same gate as `caller`: the innermost
+   * frame must be a live call into `pluginId` itself (else this code is not serving the chain: a
+   * timer after settle, or another plugin's code running in someone else's frame), and an outer frame
+   * counts only while every frame after it is live (`liveChain`'s tail rule), so a stale outer
+   * frame never names a consumer that is already gone. Empty outside any frame.
+   */
   callers(pluginId: string): string[] {
     const frames = this.chain.getStore()
     const last = frames?.[frames.length - 1]

@@ -3712,7 +3712,8 @@ function start(server: boolean): void {
     copyLoaded: (windowId, overlayId, viewId, copy) => overlays.copyLoaded(windowId, overlayId, viewId, copy),
     copyMessage: (windowId, overlayId, viewId, copy, text) => overlays.copyMessage(windowId, overlayId, viewId, copy, text),
     copyResult: (windowId, overlayId, viewId, copy, value) => overlays.copyResult(windowId, overlayId, viewId, copy, value),
-    releaseCopy: (windowId, overlayId, viewId, copy, options) => overlays.releaseCopy(windowId, overlayId, viewId, copy, options),
+    releaseCopy: (windowId, overlayId, viewId, copy) => overlays.releaseCopy(windowId, overlayId, viewId, copy),
+    guestHide: (windowId, overlayId, viewId) => overlays.guestHide(windowId, overlayId, viewId),
     // A guest's size report is remembered for its explicit take only (D-14).
     guestResize: (windowId, overlayId, cols, rows, viewId) => overlays.guestResize(windowId, overlayId, cols, rows, viewId)
   })

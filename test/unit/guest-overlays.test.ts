@@ -478,7 +478,8 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
       copyLoaded: (w, o, v, c) => m.copyLoaded(w, o, v, c),
       copyMessage: (w, o, v, c, text) => m.copyMessage(w, o, v, c, text),
       copyResult: (w, o, v, c, value) => m.copyResult(w, o, v, c, value),
-      releaseCopy: (w, o, v, c, options) => m.releaseCopy(w, o, v, c, options)
+      releaseCopy: (w, o, v, c) => m.releaseCopy(w, o, v, c),
+      guestHide: (w, o, v) => m.guestHide(w, o, v)
     })
     const channel: OverlayChannel = {
       onMessage: (message, view, copy) => void heard.push(['message', message, view, copy]),
@@ -594,7 +595,7 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     expect(m.infos(W1)).toHaveLength(2)
   })
 
-  it("a write guest's close ends the overlay for everyone (D-2); a read guest's close is refused (its ✕ is a release)", async () => {
+  it("a write guest's close ends the overlay for everyone (D-2); a read guest's close is refused (its ✕ is a hide)", async () => {
     const { pv, call, outcome, results, m } = setup()
     expect(await outcome(call('web:5', 'overlays.close', { overlayId: pv }))).toBe('refused')
     expect(m.isPerView(W1, pv)).toBe(true)
@@ -603,12 +604,12 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     expect(m.isPerView(W1, pv)).toBe(false)
   })
 
-  it("a read guest's release is its hide: off its stack on every view, refused on a reconnect's new view, other guests unchanged", async () => {
+  it("a read guest's hide: off its stack on every view, refused on a reconnect's new view, other guests unchanged", async () => {
     const { m, pv, plain, call, outcome, events, sink, heard } = setup()
     const a = (await call('web:5', 'overlays.ready', { overlayId: pv })) as { copy: string }
     const w = (await call('web:6', 'overlays.ready', { overlayId: pv })) as { copy: string }
     events.length = 0
-    expect(await call('web:5', 'overlays.release', { overlayId: pv, copy: a.copy })).toBe(true)
+    expect(await call('web:5', 'overlays.release', { overlayId: pv, copy: a.copy, hide: true })).toBe(true)
     expect(heard.at(-1)).toEqual(['disconnect', 'web:5', a.copy])
     expect(m.hiddenFrom(W1, pv, 'gR')).toBe(true)
     // The list went out again; the read guest's filter drops the overlay, the write guest's keeps it.
@@ -633,14 +634,64 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     const a = (await call('web:5', 'overlays.ready', { overlayId: pv })) as { copy: string }
     const b = (await call('web:7', 'overlays.ready', { overlayId: pv })) as { copy: string }
     events.length = 0
-    await call('web:5', 'overlays.release', { overlayId: pv, copy: a.copy })
+    await call('web:5', 'overlays.release', { overlayId: pv, copy: a.copy, hide: true })
     const hides = events.filter((e) => e[1] === 'overlays.hide')
-    expect(hides).toEqual([['web:7', 'overlays.hide', { overlayId: pv, copy: b.copy }]])
+    // The caller's own view gets one too (its shell already took the overlay off; a no-op there).
+    expect(hides).toEqual([
+      ['web:5', 'overlays.hide', { overlayId: pv, copy: a.copy }],
+      ['web:7', 'overlays.hide', { overlayId: pv, copy: b.copy }]
+    ])
     // Sent after the copy was released and the overlay hidden from that guest: the sink still passes its own copy's hide,
     // and never another view's.
-    expect(guestEvent('overlays.hide', hides[0]![2], sink('web:7'))).toEqual({ overlayId: pv, copy: b.copy })
-    expect(guestEvent('overlays.hide', hides[0]![2], sink('web:6'))).toBeUndefined()
+    expect(guestEvent('overlays.hide', hides[1]![2], sink('web:7'))).toEqual({ overlayId: pv, copy: b.copy })
+    expect(guestEvent('overlays.hide', hides[1]![2], sink('web:6'))).toBeUndefined()
     expect(m.copies(W1, pv)).toEqual([])
+  })
+
+  // Task 5 review: release and hide are separate (docs/design-overlay-views.md §5).
+  it("a read guest's plain release only lets go: no hide, the same view connects again", async () => {
+    const { m, pv, call, heard } = setup()
+    const a = (await call('web:5', 'overlays.ready', { overlayId: pv })) as { copy: string }
+    expect(await call('web:5', 'overlays.release', { overlayId: pv, copy: a.copy })).toBe(true)
+    expect(heard.at(-1)).toEqual(['disconnect', 'web:5', a.copy])
+    expect(m.hiddenFrom(W1, pv, 'gR')).toBe(false)
+    expect(((await call('web:5', 'overlays.ready', { overlayId: pv })) as { copy?: string }).copy).toBeDefined()
+    // A plain release still needs its copy.
+    await expect(call('web:5', 'overlays.release', { overlayId: pv })).rejects.toThrow(/copy is required/)
+  })
+
+  // A ✕ before ready, while a dropped copy reloads, or after a cap refusal is the same call with no live copy;
+  // a `none` port (no copy at all) is overlay-manager.test.ts's guestHide case.
+  it("a read guest's ✕ from a view with no live copy still hides, and holds on a reconnect", async () => {
+    const { m, pv, call, outcome, events, heard } = setup()
+    // The same guest's other view has a copy; the ✕ comes from a view that has none, naming no copy.
+    const b = (await call('web:7', 'overlays.ready', { overlayId: pv })) as { copy: string }
+    events.length = 0
+    expect(await call('web:5', 'overlays.release', { overlayId: pv, hide: true })).toBe(true)
+    expect(m.hiddenFrom(W1, pv, 'gR')).toBe(true)
+    // The other view's copy goes with overlays.hide, the opener hears it, and the list goes out again.
+    expect(events.filter((e) => e[1] === 'overlays.hide')).toEqual([['web:7', 'overlays.hide', { overlayId: pv, copy: b.copy }]])
+    expect(heard.at(-1)).toEqual(['disconnect', 'web:7', b.copy])
+    expect(events.some((e) => e[1] === 'overlays.updated')).toBe(true)
+    // It holds: a second hide and a reconnect's connect are refused at the gate (no longer the guest's overlay).
+    expect(await outcome(call('web:5', 'overlays.release', { overlayId: pv, hide: true }))).toBe('refused')
+    expect(await outcome(call('web:7', 'overlays.ready', { overlayId: pv }))).toBe('refused')
+    expect(m.connectCopy(W1, pv, 'web:7')).toEqual({ ok: false, reason: 'not-allowed' })
+    expect(m.copies(W1, pv)).toEqual([])
+  })
+
+  it("hide is a read guest's only: refused for the owner and a write guest, nothing recorded; a bad value refused", async () => {
+    const { m, pv, call, outcome } = setup()
+    const own = (await call('web:3', 'overlays.ready', { overlayId: pv })) as { copy: string }
+    const w = (await call('web:6', 'overlays.ready', { overlayId: pv })) as { copy: string }
+    expect(await outcome(call('web:3', 'overlays.release', { overlayId: pv, copy: own.copy, hide: true }))).toBe('refused')
+    expect(await outcome(call('web:6', 'overlays.release', { overlayId: pv, copy: w.copy, hide: true }))).toBe('refused')
+    expect(m.hiddenFrom(W1, pv, 'gW')).toBe(false)
+    expect(m.copies(W1, pv).map((c) => c.view)).toEqual(['web:3', 'web:6'])
+    for (const hide of [false, 'yes', 1]) {
+      expect(await outcome(call('web:5', 'overlays.release', { overlayId: pv, copy: 'c', hide })), String(hide)).toBe('refused')
+    }
+    expect(m.hiddenFrom(W1, pv, 'gR')).toBe(false)
   })
 
   it("the opener's hide of a guest's copy is recorded for that guest; of an owner's copy it only releases", async () => {

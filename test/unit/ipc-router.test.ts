@@ -2598,6 +2598,16 @@ describe('overlays: per-view copies through the router', () => {
     await expect(desktop('overlays.release', { overlayId: pv })).rejects.toThrow(/copy is required/)
   })
 
+  // Task 5 review: hide is a read guest's (guest-overlays.test.ts); the owner closes, so a hide from it is refused.
+  it("overlays.release { hide: true } from an owner's view is refused, and its copy stays", async () => {
+    const { m, pv, desktop, web3 } = copiesSetup()
+    const a = (await desktop('overlays.ready', { overlayId: pv })) as { copy: string }
+    const b = (await web3('overlays.ready', { overlayId: pv })) as { copy: string }
+    await expect(desktop('overlays.release', { overlayId: pv, copy: a.copy, hide: true })).rejects.toThrow(/hide is a read guest's/)
+    await expect(web3('overlays.release', { overlayId: pv, hide: true })).rejects.toThrow(/hide is a read guest's/)
+    expect(m.copies(1, pv).map((c) => c.copy)).toEqual([a.copy, b.copy])
+  })
+
   // The guest rows themselves (read, own copy, perView only) are guest-overlays.test.ts's, with guest deps wired.
   it('a guest cannot release a copy while no guest deps are wired (fail closed)', async () => {
     const { router, pv } = copiesSetup()

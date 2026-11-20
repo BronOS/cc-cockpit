@@ -130,10 +130,14 @@ never taken from a plugin's arguments alone:
   nothing for old plugins; `overlays.message` events reach a guest for its own copies only; `overlays.take` stays `no`.
   Read guests follow the panel rule (D-17): a plugin that is not `guests.aware` gives a read guest a one-way copy.
 - **✕ and results** (D-2). `overlays.close` stays guest `write`: a write guest's ✕ closes the overlay for everyone. A read
-  guest's ✕ hides that guest's copies, in the shell: the copy unloads (main gets the release), the overlay leaves that
-  view's stack, and it does not come back for that overlay. A page's `{ result }` is accepted from owner views only; in
-  a read guest's shell it is turned into that hide before any channel (`overlays.result` stays `write`, so a forged one
-  is refused by class); from a write guest it closes for everyone with no result.
+  guest's ✕ hides that guest's copies: the shell sends `overlays.release { overlayId, hide: true }` (the copy optional),
+  main records the hide for that guest (the view it bound, never the payload's), with or without a live copy in that
+  view, releases the guest's copies on all its views (`overlays.hide` to each), and the overlay does not come back for
+  that guest. Release and hide are separate: a plain `overlays.release { copy }` (unmount, reload) only lets go, for
+  every caller, a read guest's included; `hide` from the owner or a write guest is refused (they close). A page's
+  `{ result }` is accepted from owner views only; in a read guest's shell it is turned into that hide before any
+  channel (`overlays.result` stays `write`, so a forged one is refused by class); from a write guest it closes for
+  everyone with no result.
 
 ## 6. The Reviewer
 

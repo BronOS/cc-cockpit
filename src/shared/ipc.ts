@@ -1628,11 +1628,12 @@ export interface IpcInvokeMap {
   /**
    * The shell let go of its copy of a `perView` overlay (the page unmounted or reloads): the opener hears
    * the disconnect. Only the calling view's own live copy (main checks the copy against the view it bound
-   * the call to); false otherwise. From a READ guest it is that guest's ✕ and records a hide for the guest
-   * (docs/design-overlay-views.md §5): the overlay leaves every view of that guest for good, so its shell sends
-   * it only for its ✕ or a page result, never on unmount or reload (the next `overlays.ready` replaces a copy).
+   * the call to); false otherwise. A plain release, from any caller, never hides.
+   * `hide: true`: a READ guest's ✕ or page result (docs/design-overlay-views.md §5, D-2): main records a hide for
+   * that guest (the bound view's, never the payload's), with or without a live copy (`copy` then not needed):
+   * the overlay leaves every view of that guest for good. Refused from the owner and a write guest (they close).
    */
-  'overlays.release': { req: { overlayId: string; copy: string }; res: boolean }
+  'overlays.release': { req: { overlayId: string; copy?: string; hide?: true }; res: boolean }
   /**
    * "Take over" on an html overlay held by another view of the window (design-web.md §5.4): the
    * page moves to the calling view and loads there, as on a reload (the opener's posts wait for its

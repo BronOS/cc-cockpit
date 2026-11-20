@@ -84,7 +84,7 @@ External review: sol / high
 - Main per overlay (perView): `copies: Map<copyId, { view, live, joined, ready, loaded, outbox }>`, `via: Set<pluginId>`,
   `hiddenFor: Set<viewId>` (read guests' hides). Copy id: random 128-bit hex, never reused.
 - Channels: `overlays.ready` answers `{ copy }`; `overlays.loaded`, `.message`, `.result` take `copy`; new invoke
-  `overlays.release { overlayId, copy }` (REMOTE `adapted`, GUEST `read` with the overlay target); new event
+  `overlays.release { overlayId, copy?, hide? }` (REMOTE `adapted`, GUEST `read` with the overlay target); new event
   `overlays.hide { overlayId, copy }` to the copy's view (from `handle.hide`). Each new channel gets its `REMOTE_CLASS`,
   `GUEST_CLASS` and `GUEST_EVENT` rows in the same change.
 - Limits: per-copy outbox 100 messages / 8 MiB (string length, as today); overflow of a not-ready copy drops and reloads
@@ -240,6 +240,8 @@ External review: sol / high
   once), as panels (D-17)
 - [x] read guest's hide: `overlays.release` from a read guest also records the hide for that view (the overlay leaves
   its stack and does not come back); a write guest's `overlays.close` closes for everyone (D-2)
+- [x] ➕ (Task 5 review) `overlays.release { hide: true }` is the hide, plain release only lets go for every caller;
+  the hide holds with no live copy (`guestHide`), and is refused for the owner and a write guest
 - [x] tests: each widened row refuses a non-`perView` overlay, a forged copy id, another view's copy, a hidden `via`
   plugin; read vs write guest close and hide; one-way copy for a non-aware plugin
 - [x] run tests - must pass before task 6
@@ -260,10 +262,11 @@ External review: sol / high
   opener's posts still flow. The guest sink checks a copy's view through `OverlayManager.copyViewOf` (live copies
   plus the last 32 released, since `overlays.hide` goes out after its copy is released); `overlays.message` and
   `.reload` also need the overlay still visible, `.hide` does not.
-- ⚠️ Task 8: a read guest's `overlays.release` IS its hide (recorded for good). The shell of a read guest must send it
-  only for its ✕ or a page `{ result }`, never on unmount or reload: a reload relies on the next `overlays.ready`
-  replacing the view's copy (connectCopy drops the old one), and an unmount because the overlay ended needs no
-  release. Owner and write guest shells release as Task 2's note says.
+- ⚠️ Task 8 (changed by the Task 5 review fix): release and hide are separate. Every shell, a read guest's included,
+  sends a plain `overlays.release { overlayId, copy }` on unmount and reload (it only lets go); a read guest's ✕ or
+  page `{ result }` sends `overlays.release { overlayId, hide: true }` (copy optional: main records the hide for the
+  guest of the bound view with or without a live copy, `OverlayManager.guestHide`). `hide` from the owner or a write
+  guest is refused (they close with `overlays.close`), so the shell must never send it there.
 - ⚠️ Task 8: a perView overlay a shared tab opened whose opener plugin is hidden from guests is in the guest's list
   (the tab rule) but its `overlays.ready` answers `{ refused: 'not-allowed' }` (port `none`): the shell needs a state
   for that (the reworded note, not a spinner).
@@ -331,7 +334,8 @@ External review: sol / high
 - [ ] a `perView` overlay loads its own copy in every eligible view: connect returns the copy id, every page call
   carries it, a reload or reconnect is a new copy; the hidden page never renders one
 - [ ] per-copy loader cleared by that copy's `loaded`
-- [ ] read guest: ✕ and a page `{ result }` become `overlays.release` (hide) before any channel; `overlays.hide` from
+- [ ] read guest: ✕ and a page `{ result }` become `overlays.release { hide: true }` before any channel (unmount and
+  reload send a plain release, for every caller); `overlays.hide` from
   main removes the copy; a write guest's ✕ is `overlays.close`
 - [ ] non-`perView` guest note: "Open on <owner>'s screen. <Plugin> does not show its windows to guests." (owner views
   keep HeldElsewhere with Take over)

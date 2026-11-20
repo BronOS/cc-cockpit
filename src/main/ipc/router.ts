@@ -2456,11 +2456,13 @@ export interface OverlayHandlerDeps {
   copyMessage?(windowId: number, overlayId: string, viewId: ViewId, copy: string, text: string): boolean
   /** OverlayManager.copyResult: owner views only, `viewId`'s live copy only. */
   copyResult?(windowId: number, overlayId: string, viewId: ViewId, copy: string, value: unknown): boolean
+  /** OverlayManager.releaseCopy: `viewId`'s own live copy only, let go (never a hide). */
+  releaseCopy?(windowId: number, overlayId: string, viewId: ViewId, copy: string): boolean
   /**
-   * OverlayManager.releaseCopy: `viewId`'s own live copy only. `hide`: a read guest's release, which is its ✕
-   * (docs/design-overlay-views.md §5): the hide is recorded for that guest too.
+   * OverlayManager.guestHide: a read guest's hide (`overlays.release { hide: true }`, its ✕ or page result),
+   * recorded for the guest `viewId` belongs to, with or without a live copy there. Without it a hide is refused.
    */
-  releaseCopy?(windowId: number, overlayId: string, viewId: ViewId, copy: string, options?: { hide?: boolean }): boolean
+  guestHide?(windowId: number, overlayId: string, viewId: ViewId): boolean
 }
 
 /**
@@ -2584,16 +2586,27 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     deps.loaded(ctx.windowId, overlayId, view.viewId)
   })
 
-  // The calling view's own copy only: the manager matches the copy against the view main bound the call to,
-  // so a view cannot release another's. A read guest's release is its ✕ (D-2: it can only hide its own copy),
-  // so the hide is recorded with it, by the role main read live for this call; a write guest's ✕ is
-  // overlays.close, and its release (an unmount, a reload) only lets go.
+  // Plain: the calling view's own copy only, let go (an unmount, a reload), for every caller: the manager matches
+  // the copy against the view main bound the call to, so a view cannot release another's.
+  // `hide: true`: a read guest's ✕ or page result (D-2: it can only hide the overlay from itself), recorded for
+  // that guest by the role main read live for this call and the view it bound, never the payload's (a copy named
+  // is not needed and not read: the hide holds with no live copy too). Refused for the owner and a write guest,
+  // not ignored: their ✕ is overlays.close (for everyone, D-2) and the owner's views get every overlay (D-1), so
+  // a hide from them is a shell bug that should show.
   router.handleProject('overlays.release', (ctx, payload, view) => {
     const overlayId = overlayIdOf('overlays.release', payload)
     refuseGuestHolder('overlays.release', ctx, view, overlayId)
+    const { hide } = fields('overlays.release', payload)
+    if (hide !== undefined && hide !== true) throw new Error('overlays.release: hide must be true or absent')
+    if (hide === true) {
+      if (guestCall(view, 'overlays.release')?.role !== 'read') {
+        throw new Error("overlays.release: hide is a read guest's; the owner and a write guest close with overlays.close")
+      }
+      if (!deps.guestHide) throw new Error('overlays.release: hide is not available')
+      return deps.guestHide(ctx.windowId, overlayId, view.viewId)
+    }
     const copy = requireCopy('overlays.release', copyOf('overlays.release', payload))
-    const hide = guestCall(view, 'overlays.release')?.role === 'read'
-    return deps.releaseCopy?.(ctx.windowId, overlayId, view.viewId, copy, hide ? { hide: true } : undefined) ?? false
+    return deps.releaseCopy?.(ctx.windowId, overlayId, view.viewId, copy) ?? false
   })
 
   // The calling view's own id from the router, never a view named in the payload.

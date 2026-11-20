@@ -1396,19 +1396,15 @@ export class OverlayManager {
   }
 
   /**
-   * The shell let go of a copy (its page unmounted or reloads, a read guest hid it): the opener hears
-   * its disconnect. True when it was `viewId`'s live copy; anything else (gone, replaced, another
-   * view's, made up) is a no-op, logged once per overlay so a looping page is one line.
-   *
-   * `hide` (the router's, for a read guest's release, docs/design-overlay-views.md §5): the release is that
-   * guest's ✕, so the hide is recorded too (recordHide): the overlay leaves every view of that guest and does
-   * not come back, on a list or a reconnect. Only for a live copy of `viewId`: a made-up id hides nothing.
+   * The shell let go of a copy (its page unmounted or reloads): the opener hears its disconnect. Only a
+   * release, for every caller, a read guest's included: a hide is its own call (guestHide). True when it was
+   * `viewId`'s live copy; anything else (gone, replaced, another view's, made up) is a no-op, logged once per
+   * overlay so a looping page is one line.
    */
-  releaseCopy(windowId: number, overlayId: string, viewId: ViewId, copy: unknown, options?: { hide?: boolean }): boolean {
+  releaseCopy(windowId: number, overlayId: string, viewId: ViewId, copy: unknown): boolean {
     const found = this.liveCopy(windowId, overlayId, viewId, copy)
     if (found) {
       this.dropCopy(found.overlay, found.copy)
-      if (options?.hide === true) this.recordHide(found.overlay, viewId)
       return true
     }
     const perView = this.find(windowId, overlayId)?.perView
@@ -1526,6 +1522,28 @@ export class OverlayManager {
    */
   isPerView(windowId: number, overlayId: unknown): boolean {
     return this.find(windowId, overlayId)?.perView !== undefined
+  }
+
+  /**
+   * A read guest's hide (its ✕ or its page's result: `overlays.release { hide: true }`, the router's, which
+   * checked the role live; docs/design-overlay-views.md §5, D-2): recorded under the guest `viewId` belongs to
+   * (recordHide), so the overlay leaves every view of that guest, their copies released with `overlays.hide`, and
+   * does not come back on a list or a reconnect. With or without a live copy in `viewId`: a ✕ while the copy was
+   * dropped and reloads, was refused at the cap, or before `overlays.ready` answered must still hide. A hide only
+   * narrows the caller's own access, so no copy id is needed, and no port either: an overlay in the guest's list
+   * whose opener's guest port is `none` (a shared tab's, its opener hidden) has no copy to connect, yet its ✕
+   * must take it off. Whether the guest may see the overlay at all is the router's gate (the overlay target,
+   * guest-wiring.ts overlayVisible) before this. Never for an owner's view. True when the guest has it hidden.
+   */
+  guestHide(windowId: number, overlayId: string, viewId: ViewId): boolean {
+    const overlay = this.find(windowId, overlayId)
+    const perView = overlay?.perView
+    if (!overlay || !perView || this.ownerView(viewId)) return false
+    const guest = this.options.guestOf?.(viewId)
+    if (guest === undefined) return false
+    if (perView.hiddenFrom.has(guest)) return true
+    this.recordHide(overlay, viewId)
+    return true
   }
 
   /**

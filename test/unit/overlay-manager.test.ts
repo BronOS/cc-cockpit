@@ -2521,7 +2521,7 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     toView = []
     reloads = []
   })
-  function pvManager(opts: { server?: boolean; log?: (m: string) => void } = {}): OverlayManager {
+  function pvManager(opts: { server?: boolean; log?: (m: string) => void; guestOf?: (viewId: string) => string | undefined } = {}): OverlayManager {
     const { log, ...rest } = opts
     return new OverlayManager({
       ownerView: (viewId) => !guests.has(viewId),
@@ -2629,6 +2629,31 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
     expect(m.infos(W1)[0]).not.toHaveProperty('waiting')
     expect(heard.map((h) => h[0])).toEqual(['connect'])
+  })
+
+  // Task 5 review: a read guest's hide (overlays.release { hide }) holds with no live copy and no port.
+  it("guestHide records a guest's hide with no copy and a `none` port; never an owner view's or a non-perView overlay's", () => {
+    const m = pvManager({ guestOf: (v) => (guests.has(v) ? 'g1' : undefined) })
+    const { id } = openPv(m)
+    guests.add('web:7')
+    guests.add('web:8')
+    // mayConnectCopy refuses web:7 (port `none`): no copy could ever connect, the ✕ still hides.
+    expect(m.connectCopy(W1, id, 'web:7')).toEqual({ ok: false, reason: 'not-allowed' })
+    expect(m.guestHide(W1, id, D)).toBe(false)
+    expect(m.guestHide(W1, id, 'web:3')).toBe(false)
+    expect(m.hiddenFrom(W1, id, 'g1')).toBe(false)
+    // The same guest's other view has a copy: it goes with the hide.
+    allowed.add('web:8')
+    const other = connect(m, id, 'web:8')
+    expect(m.guestHide(W1, id, 'web:7')).toBe(true)
+    expect(m.hiddenFrom(W1, id, 'g1')).toBe(true)
+    expect(m.copies(W1, id)).toEqual([])
+    expect(toView).toContainEqual({ viewId: 'web:8', channel: 'overlays.hide', payload: { overlayId: id, copy: other } })
+    // It holds: a reconnect of the same guest is refused even where the port allows it; a repeat is true.
+    expect(m.connectCopy(W1, id, 'web:8')).toEqual({ ok: false, reason: 'not-allowed' })
+    expect(m.guestHide(W1, id, 'web:7')).toBe(true)
+    const plain = openPv(m, false)
+    expect(m.guestHide(W1, plain.id, 'web:7')).toBe(false)
   })
 
   it('a guest view connects only when mayConnectCopy says so; owner views always may', () => {
