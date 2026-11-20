@@ -295,7 +295,7 @@ export interface OverlayInfo {
   readonly opener: string
 }
 
-/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info and, as `from`, who clicked (view, access, a guest's `person`; set by main from the connection it bound, never the page; docs/design-overlay-views.md). */
+/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info and, as `from`, who clicked (view, access, a guest's `person`; set by main from the connection it bound, never the page; docs/design-overlay-views.md). An older app never sends `from`. */
 export interface OverlayTypeButton extends OverlayButton {
   run: (overlay: OverlayInfo, from: ViewFrom) => unknown | Promise<{ close?: true } | void>
 }
@@ -371,6 +371,7 @@ export interface OverlayHandle {
    * `copy` names the posting copy of a `perView` overlay (absent otherwise: one page, its holder).
    * The listener runs in the posting view (a link or focus it opens without naming a view shows
    * there), but answer by `from`: `post(reply, { copy: from.copy })`, `ctx.openExternal(url, { view: from.view })`.
+   * An older app never sends `from` (the listener gets the message alone): read it as `from?.view`.
    */
   onMessage(listener: (message: JsonValue, from: ViewFrom & { copy?: string }) => void): Disposer
   /**
@@ -378,7 +379,10 @@ export interface OverlayHandle {
    * from the connection it bound (view, access, `person`) plus the copy id it minted; never from the page. Send
    * the copy its starting state with `post(msg, { copy: from.copy })`. A reload, a reconnect or a view coming
    * back is a new copy (the old one's `onDisconnect` first). While connected, the copy's view is in `ctx.views`.
-   * Accepted on any html overlay; only a `perView` one ever connects. See docs/design-overlay-views.md.
+   * Accepted on any html overlay; only a `perView` one ever connects. A listener added later first hears every
+   * copy already connected (each in its copy's view, before `onConnect` returns), as `ctx.views.onChange`
+   * replays, so registering after an await misses none. An older app has none of `onConnect`, `onDisconnect`,
+   * `hide` and `addSources`: check `typeof handle.onConnect === 'function'`. See docs/design-overlay-views.md.
    */
   onConnect(listener: (from: ViewFrom & { copy: string }) => void): Disposer
   /** A copy went away (its view left, reloaded, was hidden or lost access). Same `from` as its `onConnect`. */
@@ -405,14 +409,16 @@ export interface OverlayHandle {
   focus(): void
   /**
    * A click on one of the buttons the spec (or `setButtons`) gave, by its `id`, with `from`: who clicked (any
-   * view, a write guest's included; the app's word). Dropped when the overlay ends.
+   * view, a write guest's included; the app's word). Dropped when the overlay ends. An older app never sends
+   * `from`.
    */
   onButton(id: string, handler: (from: ViewFrom) => unknown): Disposer
   /** Replace the opener's buttons (a "Mark read" that became "Mark unread"). Same rules as `buttons` in the spec. A no-op once the overlay ended. */
   setButtons(buttons: OverlayButton[]): void
   /**
    * Answer Discuss with Claude with the context text to send (within 5 s), or `null` for none. A
-   * throw or a timeout shows its error to the person and sends nothing. `from`: whose Send it was.
+   * throw or a timeout shows its error to the person and sends nothing. `from`: whose Send it was (an older app
+   * never sends it).
    */
   onDiscuss(handler: (from: ViewFrom) => Promise<{ text: string } | null> | { text: string } | null): Disposer
   /**

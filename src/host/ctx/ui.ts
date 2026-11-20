@@ -456,8 +456,9 @@ function copyIdOf(raw: unknown): string | undefined {
 /**
  * The open overlay handles of every plugin of one host, keyed `<pluginId>/<handle>`, and the routing of main's
  * overlay events and requests to their listeners. Every one carries `from` (docs/design-overlay-views.md §3),
- * main's word for who acted, checked here (views.ts viewFromOf): a missing or malformed one drops the event or
- * refuses the request, never reads as the owner. Each listener runs in the acting view (origin-view.ts), so
+ * main's word for who acted, checked here (views.ts viewFromOf): a missing or malformed one drops a message or a
+ * connect and refuses a request, never reads as the owner. A disconnect does not read its own `from`: it runs
+ * with its connect's (dropping it would leave the copy's ctx.views line behind). Each listener runs in the acting view (origin-view.ts), so
  * what it opens or focuses without naming a view shows there; plugins should still answer by `from`.
  *
  * Listeners are called one at a time, in the order added, each with its own copy of `from` and of the
@@ -609,8 +610,10 @@ export class OverlayLinks {
     let copy: string | undefined
     if (link.perView) {
       copy = copyIdOf(rawCopy)
-      // Only a live copy of that view: a stale or unannounced one (main drops those too) is nobody.
-      if (copy === undefined || link.copies.get(copy)?.view !== view) return
+      // Only a live copy of that view: a stale or unannounced one (main drops those too) is nobody. Looked up
+      // first: from the desktop page `view` is undefined, and so is a missing copy's view (the Task 7 review).
+      const live = copy === undefined ? undefined : link.copies.get(copy)
+      if (!live || live.view !== view) return
     } else if (rawCopy !== undefined) {
       return
     }
@@ -665,6 +668,19 @@ export class OverlayLinks {
       this.runCopyListeners(link, link.disconnectListeners, live.from, live.view, copy, 'onDisconnect')
     } finally {
       live.release()
+    }
+  }
+
+  /**
+   * A new onConnect listener first hears every copy already live (as ctx.views.onChange replays its views), each
+   * dispatched in that copy's view, before onConnect returns: a plugin that registers after an await still sends
+   * every copy its starting state. Copies in the order main announced them.
+   */
+  replayConnects(link: OverlayLink, listener: CopyListener): void {
+    const once = new Set([listener])
+    for (const [copy, live] of [...link.copies]) {
+      if (!link.copies.has(copy) || !link.connectListeners.has(listener)) break
+      this.runCopyListeners(link, once, live.from, live.view, copy, 'onConnect')
     }
   }
 
@@ -894,7 +910,11 @@ export function createUiApi(
         htmlOnly('onConnect')
         if (typeof listener !== 'function') throw new TypeError('overlay onConnect needs a function')
         // Accepted on any html overlay so one plugin's code runs on either kind; only a perView one connects.
-        return listen((l) => l.connectListeners, (from: ViewFrom & { copy: string }) => listener(from))
+        const entry = (from: ViewFrom & { copy: string }): void => listener(from)
+        const dispose = listen((l) => l.connectListeners, entry)
+        // The copies already up hear it now (replayConnects), so a late listener misses none.
+        if (link && !link.ended && link.connectListeners.has(entry)) overlays.replayConnects(link, entry)
+        return dispose
       },
       onDisconnect: (listener: (from: ViewFrom & { copy: string }) => void): Disposer => {
         htmlOnly('onDisconnect')

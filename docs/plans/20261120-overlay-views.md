@@ -334,8 +334,9 @@ External review: sol / high
   undefined })` is a broadcast everywhere, so `post(reply, { copy: from.copy })` works for both kinds. `onConnect` /
   `onDisconnect` are accepted on any html overlay (never fire without perView) and throw on other kinds like `onMessage`.
 - ⚠️ `from` is parsed fail-closed in one place (`ctx/views.ts` `viewFromOf`, used by `ui.ts` and `overlay-buttons.ts`):
-  the same view as the envelope, an access `tagAccess` accepts, `person` only a guest's (1-60 chars). A message,
-  connect or disconnect with a missing or malformed `from` is dropped (logged), a click or Discuss refused. The plugin
+  the same view as the envelope, an access `tagAccess` accepts, `person` only a guest's (1-60 chars). A message or a
+  connect with a missing or malformed `from` is dropped (logged), a click or Discuss refused; a disconnect runs with
+  its connect's `from` and never reads its own (Task 7 review: dropping it would leave the ctx.views line). The plugin
   sees `from.view === 'desktop'` for the desktop page (main sends `view` absent), as panels do; `ctx.openExternal(url,
   { view: 'desktop' })` routes to the host's own window's desktop page (the Task 6 review fix commit).
 - ⚠️ a perView message is delivered only for a copy the host was told of by `overlay.connect`, from that copy's view;

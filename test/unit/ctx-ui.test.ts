@@ -957,6 +957,39 @@ describe('ctx.overlay per-view copies', () => {
     expect(heard).toHaveLength(2)
   })
 
+  it("a desktop message naming an unknown or gone copy is dropped (the desktop's view and a missing copy's are both undefined)", () => {
+    const { contexts, ctx, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const heard: unknown[] = []
+    overlay.onMessage((m, from) => heard.push([m, from]))
+    const msg = (copy: string, message: unknown): void =>
+      contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message, copy, from: OWNER })
+    msg('never', 1)
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'd1', from: OWNER })
+    msg('d1', 2)
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'd1', from: OWNER })
+    msg('d1', 3)
+    expect(heard).toEqual([[2, { view: 'desktop', access: 'owner', copy: 'd1' }]])
+  })
+
+  it('a late onConnect first hears every live copy, each in its own view, before it returns; a gone copy is not replayed', () => {
+    const { contexts, ctx, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'd1', from: OWNER })
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c3', view: 'web:3', from: ANN })
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c4', view: 'web:4', from: BO })
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'c4', view: 'web:4', from: BO })
+    const heard: unknown[] = []
+    overlay.onConnect((from) => heard.push([from, currentView()]))
+    expect(heard).toEqual([
+      [{ view: 'desktop', access: 'owner', copy: 'd1' }, undefined],
+      [{ ...ANN, copy: 'c3' }, 'web:3']
+    ])
+    // Later connects reach it as usual, once.
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c5', view: 'web:5', from: { view: 'web:5', access: 'owner' } })
+    expect(heard).toHaveLength(3)
+  })
+
   it("onButton and onDiscuss get who acted, in that view; a Discuss with no valid from is refused", async () => {
     const { contexts, ctx, open } = perViewSetup()
     const { overlay, handle } = open(ctx)

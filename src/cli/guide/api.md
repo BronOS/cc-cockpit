@@ -244,7 +244,8 @@ with full Node access.
 - Who acted, on every overlay: `onMessage((message, from) => …)`, `onButton(id, (from) => …)`,
   `onDiscuss((from) => …)` and a type button's `run(info, from)` get `from: { view, access, person? }` (the view
   is `'desktop'` or `web:<n>`, `person` a guest's invite name), set by the app from the connection, never by the
-  page; the listener also runs in that view. Answer by it: `ctx.openExternal(url, { view: from.view })`.
+  page; the listener also runs in that view. Answer by it: `ctx.openExternal(url, { view: from.view })`. An
+  older app never sends `from`: read it as `from?.view`.
 - Per-view copies (manifest `"overlays": { "perView": true }`, `plugins` topic): every view that shows an html
   overlay loads its own copy of the page. `onConnect((from) => …)` hears a copy come up (`from.copy`, an opaque
   id; a reload is a new copy), `onDisconnect((from) => …)` it go; send each copy its starting state from
@@ -252,7 +253,10 @@ with full Node access.
   broadcasts only after your first post to it). `onMessage`'s `from.copy` names the copy that posted.
   `hide({ copy })` hides one copy in its view (a read guest's close; it holds for that guest), while `close()`
   ends the overlay for everyone. A connected copy's view is in `ctx.views`. On an overlay without `perView`,
-  `post(m, { copy })` (a defined copy) and `hide` throw; `copy: undefined` is a plain `post`.
+  `post(m, { copy })` (a defined copy) and `hide` throw; `copy: undefined` is a plain `post`. An `onConnect`
+  added later first hears every copy already connected (as `ctx.views.onChange` replays), so registering after
+  an await misses none. An older app has none of `onConnect`, `onDisconnect`, `hide` and `addSources`: check
+  `typeof handle.onConnect === 'function'`.
 - `handle.addSources(pluginIds)`: this overlay now also shows content another plugin asked for, so a guest
   sees it only when those plugins are shown to guests too. Inside a service call the app does this itself for
   `start`, `post` and `setButtons` (the caller chain, `ctx.services.callers()`); for content you show later,
