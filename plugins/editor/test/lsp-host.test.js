@@ -582,7 +582,10 @@ test('initialize never answered: cancelled and killed at the timeout (60 s by de
   assert.deepEqual(f.s.sent.filter((m) => m.method === '$/cancelRequest').map((m) => m.params.id), [init.id])
   await until(() => allClosed(f), 5000, 'child closed')
   assert.equal(f.s.children[0].signalCode, 'SIGKILL')
-  assert.equal(f.startCount(), 1)
+  // Started once, never restarted, counted by the host's own spawns: under load the kill at 150 ms
+  // can come before node has even run the fake's first line, so the fake's `.starts` file may say 0
+  // (a flake seen once; a 5 ms timeout makes it every time).
+  assert.equal(f.s.spawned.length, 1)
   assert.equal(f.got('initialized').length, 0)
 
   // The seam changes nothing outside tests: a server given no timeout waits INITIALIZE_TIMEOUT_MS.
