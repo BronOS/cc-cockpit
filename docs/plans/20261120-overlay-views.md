@@ -436,16 +436,28 @@ External review: sol / high
   `plugins/reviewer/overlay/review.bundle.js` (via `npm run build:reviewer`)
 - Modify: `plugins/reviewer/test/review.test.js`, `plugins/reviewer/test/host.test.js`
 
-- [ ] the draft is the host's: pages send note ops (add with a page-local tag, change, delete by host id, `global`);
+- [x] the draft is the host's: pages send note ops (add with a page-local tag, change, delete by host id, `global`);
   the host assigns ids, answers the adding copy with tag → id, applies, saves, broadcasts the change; read guests'
   ops dropped
-- [ ] each note keeps `author` from `from.person` (absent = owner); `lib/review.js` cleaning keeps it; the page shows it
-- [ ] Discuss sends the shared draft; on delivery removes only notes unchanged since the snapshot, and `global` only if
+- [x] each note keeps `author` from `from.person` (absent = owner); `lib/review.js` cleaning keeps it; the page shows it
+- [x] Discuss sends the shared draft; on delivery removes only notes unchanged since the snapshot, and `global` only if
   unchanged
-- [ ] rebuild the bundle (`npm run build:reviewer`; the byte-compare test passes)
-- [ ] tests: concurrent adds from two copies get distinct ids; author kept through save/load; forged author ignored;
+- [x] rebuild the bundle (`npm run build:reviewer`; the byte-compare test passes)
+- [x] tests: concurrent adds from two copies get distinct ids; author kept through save/load; forged author ignored;
   Discuss keeps notes added or edited meanwhile; read guest op dropped
-- [ ] run `npm run test:plugins` and `npm test` - must pass before task 12
+- [x] run `npm run test:plugins` and `npm test` - must pass before task 12
+
+- ➕ notes from Task 11 (3221c8d) and Task 10's review fixes (dd19161): page -> host `note-add {tag, note}`,
+  `note-change {id|tag, text}`, `note-delete {id|tag}`, `global {text}`, `draft-sync` / `draft-unsaved` on
+  `draft-request`; host -> page `note-added {tag, note}` to the adder, `note`, `note-deleted`, `global` to every other
+  copy, `ack`, `draft-error`. Deviation: change and delete also accept the sender's own tag before its id arrives (a
+  note typed and closed with Esc at once would lose its text). Host mints ids; page ids and authors are ignored; a
+  guest note's `author` is `from.person` ('Guest' if missing), shown as "by <name>", kept on edit by others. Discuss
+  waits up to 1.5 s for every editing copy to sync, snapshots the host draft, clears only notes unchanged in the
+  newest ask of every screen that asked; the text sent to Claude names no authors. `addNote` / `removeNotes` are still
+  refused while a review is open. Late copies get one folded update (all hidden parts, last status) plus assets; a
+  preview keeps its Buffer and re-chunks per request; the owner's Original/Reader choice is kept like layout. Not run
+  in an e2e yet: other copies' changes, refused adds, read-only copies, author labels (Task 13).
 
 ### Task 12: Docs and the guide [model: sonnet]
 
