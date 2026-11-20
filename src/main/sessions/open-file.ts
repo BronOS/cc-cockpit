@@ -45,8 +45,9 @@ export interface OpenFileRouteDeps {
    * Ask the plugin's host to take the open; true only when it did, within the ack bound. `tabId` is
    * absent for a ctx.files.open without a (valid) tab. `view`: the remote view the open started in
    * (the calling plugin's origin view, HostApi originOf), so the taker's listeners act there.
+   * `requestedBy`: the plugin whose ctx.files.open it is (main's word), absent for a person's click.
    */
-  deliver(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId }): Promise<boolean>
+  deliver(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId; requestedBy?: string }): Promise<boolean>
   /** Core's viewer (openDiff); it re-checks the tab and the file itself. */
   builtin(caller: { windowId: number; projectId: string }, tabId: string, file: string): Promise<boolean>
   /**
@@ -226,13 +227,17 @@ export async function resolveProjectFile(projectDir: string, path: unknown): Pro
  * error (a tab that closed meanwhile is ordinary, and a foreign id learns nothing either way).
  * The picked plugin may be the caller itself: its own onOpen listener then gets the file, as for a click.
  * `view` as for routeOpenFile: the remote view the caller acted for, handed on to the taker.
+ * `requestedBy`: the calling plugin as HostApi bound it, handed on to the taker (`OpenFileRequest.requestedBy`)
+ * so an overlay it opens for the file counts as shown for that plugin too (docs/design-overlay-views.md §4).
+ * routeOpenFile (a person's click relayed by the Sessions panel) has none: that content is the project's own.
  */
 export async function routeProjectFile(
   deps: OpenFileRouteDeps,
   caller: { windowId: number; projectId: string },
   path: unknown,
   tabId?: string,
-  view?: ViewId
+  view?: ViewId,
+  requestedBy?: string
 ): Promise<'plugin' | 'builtin'> {
   const windowStill = (): void => {
     if (deps.windowOf(caller.projectId) !== caller.windowId) throw new Error('the project window is gone')
@@ -264,7 +269,8 @@ export async function routeProjectFile(
       taken = await deps.deliver(caller.projectId, pluginId, {
         path: rel,
         ...(tab !== undefined ? { tabId: tab } : {}),
-        ...(view !== undefined ? { view } : {})
+        ...(view !== undefined ? { view } : {}),
+        ...(requestedBy !== undefined ? { requestedBy } : {})
       })
     } catch (err) {
       log(`files.open: handing a file to ${pluginId} failed: ${errorText(err)}`)

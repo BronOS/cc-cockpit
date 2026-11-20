@@ -111,16 +111,19 @@ describe('REMOTE_CLASS drift', () => {
     'rooms.pause',
     'rooms.resume',
     'rooms.remove',
-    'rooms.removeAnswer',
-    // A perView overlay's copy is released by its own view only (docs/design-overlay-views.md §5): main matches
-    // the copy against the view it bound the call to.
-    'overlays.release'
+    'rooms.removeAnswer'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })
 
   // The Move to Trash confirm (files/trash-asks.ts): a trash started from a browser is answered there.
   // A sign-in's end (§9.9): main sends it to a window's browsers in server mode only, like app.linkNotice.
+  // A perView overlay's copy is released by its own view only (docs/design-overlay-views.md §5): main matches the copy
+  // against the view it bound the call to, as for overlays.ready / loaded / message / result.
+  it.each(['overlays.release'])('%s is yes', (channel) => {
+    expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
+  })
+
   it.each(['app.linkNotice', 'oauth.signInEnded'])('%s is yes', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('yes')
   })

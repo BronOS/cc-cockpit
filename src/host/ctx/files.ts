@@ -144,18 +144,28 @@ function checkSystemPath(method: string, path: unknown, allowRoot: boolean): voi
 
 /**
  * Main's `files.open` params, checked (main built them; the shapes are verified anyway). `tabId` is
- * optional: absent for a ctx.files.open that named no tab of this project.
+ * optional: absent for a ctx.files.open that named no tab of this project. `requestedBy`: the plugin
+ * whose ctx.files.open main routed here (main bound it to that plugin's call), absent for a click.
  */
-export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string; view?: ViewId } {
-  const { pluginId, path, tabId, view: rawView } = (params ?? {}) as Record<string, unknown>
+export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string; view?: ViewId; requestedBy?: string } {
+  const { pluginId, path, tabId, view: rawView, requestedBy } = (params ?? {}) as Record<string, unknown>
   if (typeof pluginId !== 'string' || typeof path !== 'string' || (tabId !== undefined && typeof tabId !== 'string')) {
     throw new Error('files.open: pluginId and path must be strings, tabId a string when present')
+  }
+  if (requestedBy !== undefined && (typeof requestedBy !== 'string' || requestedBy === '')) {
+    throw new Error('files.open: requestedBy must be a plugin id when present')
   }
   // `view`: the remote view the open started in. One main did not mint is refused, never read as
   // the desktop's (as slots.ts does); main then opens its built-in viewer.
   const view = viewIdOf(rawView)
   if (rawView !== undefined && view === undefined) throw new Error('files.open: view is not a view id')
-  return { pluginId, path, ...(tabId !== undefined ? { tabId } : {}), ...(view !== undefined ? { view } : {}) }
+  return {
+    pluginId,
+    path,
+    ...(tabId !== undefined ? { tabId } : {}),
+    ...(view !== undefined ? { view } : {}),
+    ...(requestedBy !== undefined ? { requestedBy } : {})
+  }
 }
 
 /**
@@ -166,7 +176,7 @@ export function parseOpenFile(params: unknown): { pluginId: string; path: string
  */
 export async function runOpenListeners(
   listeners: Iterable<Listener>,
-  req: { path: string; tabId?: string; view?: ViewId },
+  req: { path: string; tabId?: string; view?: ViewId; requestedBy?: string },
   log: (message: string) => void,
   waitMs = OPEN_LISTENER_WAIT_MS
 ): Promise<boolean> {
@@ -181,11 +191,19 @@ export async function runOpenListeners(
       list.map((listener) => {
         // Through a resolved promise, so a synchronous throw lands in the same catch as a rejection.
         const run = Promise.resolve()
-          // No `tabId` key at all when there is none, so `'tabId' in req` agrees with the type.
+          // No `tabId` / `requestedBy` key at all when there is none, so `'tabId' in req` agrees with the type.
           .then(() =>
             dispatchInView(
               req.view,
-              () => listener(Object.freeze(req.tabId !== undefined ? { path: req.path, tabId: req.tabId } : { path: req.path })),
+              () =>
+                listener(
+                  Object.freeze({
+                    path: req.path,
+                    ...(req.tabId !== undefined ? { tabId: req.tabId } : {}),
+                    // Provenance: a perView taker passes it to handle.addSources before the content leaves.
+                    ...(req.requestedBy !== undefined ? { requestedBy: req.requestedBy } : {})
+                  })
+                ),
               // Logged below, where the outcome is read.
               () => undefined
             )

@@ -415,6 +415,8 @@ export class HostContexts {
       typeButtonsUsed: () => {
         rt.typeButtonsUsed = true
       },
+      // An overlay call's `via` (docs/design-overlay-views.md §4): the chain ctx.services.callers() answers.
+      callers: () => deps.services?.()?.callers(spec.id) ?? [],
       logError: (m) => logAs('error', m)
     })
 

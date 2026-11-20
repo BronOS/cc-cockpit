@@ -191,18 +191,38 @@ External review: sol / high
 - Modify: `test/unit/overlay-manager.test.ts`, `test/unit/ctx-ui.test.ts`, `test/unit/host-api.test.ts`,
   `test/unit/guest-overlays.test.ts`
 
-- [ ] host: every overlay call (`start`, `post`, title, buttons) made inside a service frame sends the frame's
+- [x] host: every overlay call (`start`, `post`, title, buttons) made inside a service frame sends the frame's
   `callers()` chain; `handle.addSources(ids)` sends ids (validated as known plugin ids of this host)
-- [ ] main: `via` only grows; `visibleTo` requires the opener and every `via` plugin visible (or a shared-tab origin, as
+- [x] main: `via` only grows; `visibleTo` requires the opener and every `via` plugin visible (or a shared-tab origin, as
   today); applies to `perView` and non-`perView` overlays (closes the 0.24.0 title leak)
-- [ ] growth: when `via` gains a plugin hidden from a guest with copies, release that guest's copies and drop their
+- [x] growth: when `via` gains a plugin hidden from a guest with copies, release that guest's copies and drop their
   queues in the same synchronous step, before the triggering post is delivered; the overlay leaves that guest's list
-- [ ] `files.open`: main passes `requestedBy` (the calling plugin main bound, never the payload; absent for core clicks
+- [x] `files.open`: main passes `requestedBy` (the calling plugin main bound, never the payload; absent for core clicks
   and a tab's `ccc`) on the taker's open event
-- [ ] tests: A → B → Reviewer attributes A and B; deferred `addSources`; a hidden `via` plugin hides the overlay and its
+- [x] tests: A → B → Reviewer attributes A and B; deferred `addSources`; a hidden `via` plugin hides the overlay and its
   title from a guest; growth on a live overlay releases the guest's copy before delivery; `requestedBy` set and absent
   cases; the shared-tab origin rule unchanged
-- [ ] run tests - must pass before task 5
+- [x] run tests - must pass before task 5
+- ⚠️ wire shapes: `overlay.open` / `overlay.post` / `overlay.setButtons` take `via?: string[]` (the host's
+  `ctx.services.callers()` at the call site, sent only when non-empty; there is no title-update RPC, a title is set at
+  open only), and the new RPC `overlay.addSources { pluginId, handle, ids } -> boolean`. Main keeps only this host's
+  plugin ids (`HostApi.overlaySources`), refuses a non-array or more than `MAX_OVERLAY_SOURCES` (32,
+  `shared/overlay-buttons.ts`), and grows the set through `HostApiDeps.addOverlaySources` →
+  `OverlayManager.addSources` before the post or buttons are delivered (refused when that dep is not wired). Sources
+  named before the overlay exists collect in the handle's live set (`OverlayLink.via`), which the manager reads at
+  creation (`OverlayStartOptions.via`), so the first `overlays.updated` already honours them. `via` lives on the
+  overlay record, never in `OverlayInfo`.
+- ⚠️ (Task 3 review) `overlays.release` is REMOTE_CLASS `yes`, not `adapted` as Technical Details says: its handler binds
+  the copy to the caller's view like ready/loaded/message/result and does nothing different for a remote view. Task 5
+  widens its GUEST_CLASS only.
+- ⚠️ Task 5: growth re-asks `mayConnectCopy` for every non-owner copy and releases the ones it refuses (with
+  `overlays.hide` to that view); so the wiring that replaces `mayConnectCopy: () => false` in index.ts must go through
+  `OverlayManager.visibleTo` (the router's `overlayVisible`), or growth would not hide anything. The `overlays.hide`
+  event a growth sends is guest `drop` until Task 5 widens it; the guest's list loses the overlay anyway through the
+  re-sent `overlays.updated`.
+- ⚠️ Task 7: the host already sends `via` on open/post/setButtons and implements `handle.addSources` (any kind, not
+  html-only); keep both when the handle is reworked. Task 10: `ctx.files.onOpen` requests carry `requestedBy` only for
+  a plugin's `ctx.files.open` (routeProjectFile); `ctx.sessions.openFile` (routeOpenFile, the person's click) never does.
 
 ### Task 5: Guest rows, filters and the read guest's hide [model: opus]
 

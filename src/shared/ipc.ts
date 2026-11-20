@@ -2740,8 +2740,8 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'overlays.ready': 'yes',
   'overlays.loaded': 'yes',
   // A copy of a perView overlay is released only by its own view (docs/design-overlay-views.md §5): main
-  // matches the copy against the view it bound the call to, never a view or owner from the payload.
-  'overlays.release': 'adapted',
+  // matches the copy against the view it bound the call to, as for ready/loaded/message/result.
+  'overlays.release': 'yes',
   // To the one view whose copy it names (OverlayManager.hideCopy, reloadCopy), like its messages.
   'overlays.hide': 'yes',
   'overlays.reload': 'yes',

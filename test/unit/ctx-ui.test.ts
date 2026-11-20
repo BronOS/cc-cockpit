@@ -6,7 +6,9 @@ import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ct
 import { currentView } from '../../src/host/ctx/origin-view'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
-import type { OverlaySpec, PluginContext } from '../../src/sdk/types'
+import { ServiceRegistry } from '../../src/host/services'
+import { MAX_OVERLAY_SOURCES } from '../../src/shared/overlay-buttons'
+import type { OverlayHandle, OverlaySpec, PluginContext } from '../../src/sdk/types'
 import { hostSpec } from '../fakes/host-spec'
 import { memoryPortPair, type MemoryPort } from '../fakes/memory-port'
 
@@ -769,6 +771,83 @@ describe('ctx.overlay.start', () => {
     expect(heard).toEqual([])
     overlay.post({ a: 1 })
     expect(calls.map((c) => c.method)).toEqual(['overlay.open'])
+  })
+})
+
+// Provenance (docs/design-overlay-views.md §4, D-4): overlay calls made inside a service call carry the caller chain
+// as `via`; handle.addSources sends a deferred fill's sources. main checks both again (host-api.ts).
+describe('ctx.overlay provenance (via, addSources)', () => {
+  /** A real registry: a.three (A) calls a.two (B), which calls a.one (the Reviewer), whose method opens an overlay. */
+  function chain() {
+    const calls: Call[] = []
+    const registry = new ServiceRegistry({ activationOf: () => Promise.resolve({ state: 'active' }), isActivating: () => false, log: () => {} })
+    const contexts = new HostContexts({
+      log: () => {},
+      call: async (method, params) => {
+        calls.push({ method, params })
+        // overlay.open stays open (the overlay is up), every other request answers true.
+        return method === 'overlay.open' ? new Promise(() => {}) : true
+      },
+      services: () => registry
+    })
+    registry.setSpec({ id: 'a.one', services: { provides: { review: 1 } } })
+    registry.setSpec({ id: 'a.two', services: { provides: { mail: 1 }, uses: { review: 1 } } })
+    registry.setSpec({ id: 'a.three', services: { uses: { mail: 1 } } })
+    const rev = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js' }))
+    const mail = contexts.create(hostSpec({ id: 'a.two', dir: '/p/two', main: 'h.js' }))
+    const app = contexts.create(hostSpec({ id: 'a.three', dir: '/p/three', main: 'h.js' }))
+    return { calls, rev, mail, app }
+  }
+  const of = (calls: Call[], method: string): Record<string, unknown>[] => calls.filter((c) => c.method === method).map((c) => c.params as Record<string, unknown>)
+
+  it('A -> B -> Reviewer: open, post and setButtons inside the call carry [A, B]; a later post outside it carries none', async () => {
+    const { calls, rev, mail, app } = chain()
+    let handle!: OverlayHandle
+    rev.services.provide('review', {
+      show: () => {
+        handle = rev.overlay.start({ kind: 'html', file: 'review.html', title: 'Re: salary' })
+        handle.post({ content: 'the mail' })
+        handle.setButtons([{ id: 'archive', label: 'Archive' }])
+        return 'shown'
+      }
+    })
+    const review = mail.services.use('review')
+    mail.services.provide('mail', { open: () => review.show!() })
+    await expect(app.services.use('mail').open!()).resolves.toBe('shown')
+    expect(of(calls, 'overlay.open')[0]).toMatchObject({ pluginId: 'a.one', via: ['a.three', 'a.two'] })
+    expect(of(calls, 'overlay.post')[0]).toMatchObject({ message: { content: 'the mail' }, via: ['a.three', 'a.two'] })
+    expect(of(calls, 'overlay.setButtons')[0]).toMatchObject({ via: ['a.three', 'a.two'] })
+    // The call settled: the chain is gone, so a later post names nobody (a deferred fill uses addSources).
+    handle.post({ more: 1 })
+    expect(of(calls, 'overlay.post')[1]).toEqual({ pluginId: 'a.one', handle: of(calls, 'overlay.open')[0]!.handle, message: { more: 1 } })
+  })
+
+  it("a plugin's own overlay (no service call) sends no via key at all", () => {
+    const { calls, rev } = chain()
+    const handle = rev.overlay.start({ kind: 'html', file: 'review.html' })
+    handle.post({ a: 1 })
+    expect('via' in of(calls, 'overlay.open')[0]!).toBe(false)
+    expect('via' in of(calls, 'overlay.post')[0]!).toBe(false)
+  })
+
+  it('deferred addSources: strings only, each once, capped; any kind; refused for a non-array; a no-op when nothing is left', async () => {
+    const { calls, rev, mail } = chain()
+    // Recorded while B's call was live, used later (the Reviewer keeps it with the stored content).
+    let kept: string[] = []
+    rev.services.provide('review', { prepare: () => void (kept = rev.services.callers()) })
+    await mail.services.use('review').prepare!()
+    expect(kept).toEqual(['a.two'])
+    const term = rev.overlay.start({ kind: 'terminal', argv: ['less'] })
+    term.addSources!([...kept, 'a.two', 5 as never, '', 'a.three'])
+    const many = Array.from({ length: MAX_OVERLAY_SOURCES + 5 }, (_, i) => `p.${i}`)
+    term.addSources!(many)
+    const sent = of(calls, 'overlay.addSources')
+    expect(sent[0]).toEqual({ pluginId: 'a.one', handle: of(calls, 'overlay.open')[0]!.handle, ids: ['a.two', 'a.three'] })
+    expect((sent[1]!.ids as string[]).length).toBe(MAX_OVERLAY_SOURCES)
+    expect(() => term.addSources!('a.two' as never)).toThrow('needs an array')
+    term.addSources!([])
+    term.addSources!([7 as never])
+    expect(of(calls, 'overlay.addSources')).toHaveLength(2)
   })
 })
 

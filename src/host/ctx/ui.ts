@@ -6,7 +6,7 @@
 //                                      plugin's own folder, read by main); resolves when it closes
 //   overlay.start(spec)                the same overlay as a handle: { result, post, onMessage, close,
 //                                      focus, onButton, setButtons, onDiscuss,
-//                                      setDiscussPrimary }; open(spec) is
+//                                      setDiscussPrimary, addSources }; open(spec) is
 //                                      start(spec).result
 //   overlay.buttons(type, provider)    buttons on every overlay of that type (host/overlay-buttons.ts)
 //   panels.post / panels.onMessage     over the panel's MessagePort
@@ -31,6 +31,12 @@
 // `overlay.message` events come back with it and OverlayLinks hands them to that handle's
 // listeners, in the view of the page that posted (`view`, origin-view.ts) as for panels. Once the
 // overlay ended, post/close do nothing and the listeners are dropped.
+//
+// Provenance (docs/design-overlay-views.md §4, D-4): an overlay call made inside a service call (start,
+// post, setButtons; a title is only set at start) carries `via`, the service caller chain
+// (ctx.services.callers(), read at the plugin's call site), so main counts the overlay as shown for those
+// plugins too and hides it from a guest who may not see one of them. `handle.addSources(ids)` is the same
+// for content the plugin shows later, after the call settled (the chain is empty by then).
 import { randomUUID } from 'node:crypto'
 import type {
   BadgeValue,
@@ -47,7 +53,7 @@ import type {
   ViewFrom
 } from '../../sdk/types'
 import { MAX_DISCUSS_TEXT } from '../../shared/discuss'
-import { parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
+import { MAX_OVERLAY_SOURCES, parseOverlayButtons, parseOverlayExtras } from '../../shared/overlay-buttons'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../shared/overlay-message'
 import { parsePanelHeader } from '../../shared/panel-header'
 import { isAppSlotType, parseSlotPlacements } from '../../shared/slots'
@@ -577,6 +583,24 @@ export interface UiApiDeps {
   slotsUsed?(): void
   /** Where a failed fire-and-forget request (badge, panels.header) is reported. */
   logError(message: string): void
+  /**
+   * The service caller chain the plugin's code runs in now (ServiceRegistry.callers, outermost first),
+   * sent as an overlay call's `via`. Absent, or one that throws: none.
+   */
+  callers?(): string[]
+}
+
+/**
+ * Sources as main takes them: strings only, each once, at most MAX_OVERLAY_SOURCES (the rest dropped;
+ * main checks every id against its host's plugins again).
+ */
+function cleanSources(ids: readonly unknown[]): string[] {
+  const out = new Set<string>()
+  for (const id of ids) {
+    if (out.size >= MAX_OVERLAY_SOURCES) break
+    if (typeof id === 'string' && id !== '') out.add(id)
+  }
+  return [...out]
 }
 
 /** A declared html panel: panels.post/onMessage on a webview panel would go nowhere (no port ever comes). */
@@ -607,8 +631,21 @@ export function createUiApi(
 ): Pick<PluginContext, 'panels' | 'badge' | 'overlay'> {
   const { pluginId, ports, overlays, actions } = deps
 
+  /** `{ via }` for the call being made now (the service chain at this call site), nothing outside a service call. */
+  const viaNow = (): { via?: string[] } => {
+    let chain: string[]
+    try {
+      chain = cleanSources(deps.callers?.() ?? [])
+    } catch {
+      chain = []
+    }
+    return chain.length > 0 ? { via: chain } : {}
+  }
+
   const start = (spec: OverlaySpec): OverlayHandle => {
     const html = typeof spec === 'object' && spec !== null && (spec as { kind?: unknown }).kind === 'html'
+    // Read here, synchronously at the plugin's call site, while its service frame is the current one.
+    const openVia = viaNow()
     /** Made when the request goes out (below); stays undefined when the call is refused first. */
     let link: OverlayLink | undefined
     const result = deps.guardAsync(async () => {
@@ -623,7 +660,7 @@ export function createUiApi(
         // synchronously, inside start(), so a post right after start() reaches main behind it.
         return (await deps.call(
           'overlay.open',
-          { pluginId, spec, handle: link.handle },
+          { pluginId, spec, handle: link.handle, ...openVia },
           { timeoutMs: Infinity }
         )) as OverlayResult
       } finally {
@@ -646,7 +683,7 @@ export function createUiApi(
         if (!link || link.ended) return
         deps.alive()
         overlayMessageText(message)
-        send('overlay.post', { pluginId, handle: link.handle, message })
+        send('overlay.post', { pluginId, handle: link.handle, message, ...viaNow() })
       },
       onMessage: (listener: PageListener): Disposer => {
         htmlOnly('onMessage')
@@ -690,7 +727,17 @@ export function createUiApi(
         deps.alive()
         // Fire and forget like post; main checks the list again and applies it to this plugin's
         // overlay of this handle only (held until the overlay exists). The port keeps order.
-        send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean })
+        send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean, ...viaNow() })
+      },
+      // Any kind (a terminal overlay has a title too). Checked at the call site; main keeps only this host's plugins.
+      addSources: (pluginIds: string[]): void => {
+        if (!Array.isArray(pluginIds)) throw new TypeError('overlay addSources needs an array of plugin ids')
+        const ids = cleanSources(pluginIds)
+        if (!link || link.ended || ids.length === 0) return
+        deps.alive()
+        // Fire and forget like post, and on the same port before it: a post after this call reaches main
+        // after the sources grew, so the content it carries never reaches a guest who may not see them.
+        send('overlay.addSources', { pluginId, handle: link.handle, ids })
       },
       setDiscussPrimary: (on: boolean): void => {
         if (typeof on !== 'boolean') throw new TypeError('setDiscussPrimary needs a boolean')

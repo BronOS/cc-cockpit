@@ -404,6 +404,19 @@ describe('resolveProjectFile / routeProjectFile (ctx.files.open)', () => {
     expect(delivered).toEqual([{ projectId: P, pluginId: 'a.tree', req: { path: 'src/a.ts', view: 'web:2' } }])
   })
 
+  it("hands the calling plugin to the taker as requestedBy (docs/design-overlay-views.md §4); none when not given", async () => {
+    const { deps, delivered } = setup()
+    await routeProjectFile(deps, caller, 'src/a.ts', undefined, undefined, 'a.mail')
+    await routeProjectFile(deps, caller, 'src/a.ts', 't1', 'web:2', 'a.mail')
+    await routeProjectFile(deps, caller, 'src/a.ts', 'nope')
+    expect(delivered.map((d) => d.req)).toEqual([
+      { path: 'src/a.ts', requestedBy: 'a.mail' },
+      { path: 'src/a.ts', tabId: 't1', view: 'web:2', requestedBy: 'a.mail' },
+      { path: 'src/a.ts' }
+    ])
+    expect('requestedBy' in delivered[2]!.req).toBe(false)
+  })
+
   it('passes a tab of this project on, and drops a foreign or unknown one without an error', async () => {
     const { deps, delivered } = setup()
     await routeProjectFile(deps, caller, 'src/a.ts', 't1')
@@ -647,6 +660,20 @@ describe('ctx.files.onOpen (host)', () => {
       [{ path: 'src/a.ts' }, 'web:2'],
       [{ path: 'src/a.ts' }, undefined]
     ])
+  })
+
+  it("passes main's requestedBy on (provenance for what the taker shows); a click carries none", async () => {
+    const { contexts, ctx } = setup()
+    const seen: unknown[] = []
+    ctx.files.onOpen((req) => void seen.push(req))
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts', requestedBy: 'a.mail' })).resolves.toBe(true)
+    await expect(contexts.openFile({ pluginId: 'a.rev', path: 'src/a.ts', tabId: 't1' })).resolves.toBe(true)
+    expect(seen).toEqual([{ path: 'src/a.ts', requestedBy: 'a.mail' }, { path: 'src/a.ts', tabId: 't1' }])
+    expect('requestedBy' in (seen[1] as object)).toBe(false)
+    expect(Object.isFrozen(seen[0])).toBe(true)
+    for (const bad of [5, '', null]) {
+      await expect(contexts.openFile({ pluginId: 'a.rev', path: 'a', requestedBy: bad })).rejects.toThrow('requestedBy must be a plugin id')
+    }
   })
 
   it('acks false with no listener, after the disposer, for another plugin, and after deactivate', async () => {

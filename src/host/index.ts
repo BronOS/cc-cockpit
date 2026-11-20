@@ -14,9 +14,11 @@
 //   plugin.unload { pluginId }              -> null               deactivate one plugin, keep the rest
 //   cli.run    { pluginId, name, argv, stdin, cwd, tabId?, callId } -> { stdout, stderr, code }
 //                                                                  run a ctx.cli.register handler (`ccc <name>`)
-//   files.open { pluginId, path, tabId?, view? } -> boolean       a Sessions panel file click (or a
+//   files.open { pluginId, path, tabId?, view?, requestedBy? } -> boolean  a Sessions panel file click (or a
 //                                                                  ctx.files.open main routed here) for
-//                                                                  ctx.files.onOpen (true: taken)
+//                                                                  ctx.files.onOpen (true: taken);
+//                                                                  `requestedBy`: the plugin whose
+//                                                                  ctx.files.open it is (main's word)
 //   overlay.buttons { key, info }           -> button[]           the type buttons for a typed overlay
 //                                                                  (ctx.overlay.buttons, host/overlay-buttons.ts)
 //   overlay.buttonClick { source, ..., view?, from } -> { close } | null  a toolbar click: the opener's onButton

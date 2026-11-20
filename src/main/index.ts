@@ -1974,6 +1974,9 @@ function start(server: boolean): void {
         openOverlay(windowId, spec, opener, peerGone, channel, pluginId, view, undefined, options),
       postOverlay: (windowId, overlayId, text, options) => overlays.post(windowId, overlayId, text, options),
       hideOverlayCopy: (windowId, overlayId, copy) => overlays.hideCopy(windowId, overlayId, copy),
+      // Provenance (docs/design-overlay-views.md §4): HostApi checked the ids; the manager grows `via` and
+      // releases guest copies that may no longer see the overlay before the call's content is delivered.
+      addOverlaySources: (windowId, overlayId, ids) => overlays.addSources(windowId, overlayId, ids),
       // Who is behind a view, read live on every overlay event (`from`: access and a guest's name). `guestStore`
       // is defined below; this runs only once an overlay is open.
       viewAccess: (viewId) => guestStore.whoAccess(viewId),
@@ -1990,7 +1993,8 @@ function start(server: boolean): void {
       updateTheme: (id, theme) => themes.update(id, theme),
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
-      openFile: (caller, path, tabId, view) => routeProjectFile(openFileRoute, caller, path, tabId, view),
+      // `requestedBy`: the plugin HostApi checked the request for, the taker's provenance (never a payload's).
+      openFile: (caller, path, tabId, view, requestedBy) => routeProjectFile(openFileRoute, caller, path, tabId, view, requestedBy),
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget, and
       // names its own window and the view main knows the plugin acted for.
       openExternal,

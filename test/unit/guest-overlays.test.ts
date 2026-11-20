@@ -4,7 +4,17 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { GUEST_ORIGIN_OVERLAY_REFUSAL, OverlayManager, type OverlayResult, type UrlView, type UrlViewFactory } from '../../src/main/overlays/overlay-manager'
+import {
+  GUEST_ORIGIN_OVERLAY_REFUSAL,
+  OverlayManager,
+  type OverlayChannel,
+  type OverlayResult,
+  type UrlView,
+  type UrlViewFactory
+} from '../../src/main/overlays/overlay-manager'
+import { guestEvent, type GuestEventContext } from '../../src/main/web/guest-events'
+import { guestOverlays } from '../../src/shared/guest-filter'
+import type { OverlayInfo } from '../../src/shared/ipc'
 import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 const W1 = 1
@@ -186,5 +196,183 @@ describe('guestResize', () => {
     m.guestResize(W1, 'nope', 40, 10, GUEST)
     m.guestResize(2, id, 40, 10, GUEST)
     expect(backend.last.resizes).toEqual([])
+  })
+})
+
+// Provenance (docs/design-overlay-views.md §4, D-4): `via`, the plugins an overlay was opened or filled for. A guest gets
+// it (copies, title, list entry, terminal data) only when the opener and every `via` plugin are visible to it.
+describe('provenance (via)', () => {
+  /** The guest sees the Reviewer (a.rev) and a.vis; a.gmail is hidden from it. */
+  const shown = (p: string): boolean => p === 'a.rev' || p === 'a.vis'
+  const pv = { kind: 'html', src: 'cc-plugin://a.rev/review.html' }
+
+  /** A guest connection's filter context whose overlay rule is the manager's own (index.ts guestSources). */
+  function guestCtx(m: OverlayManager): GuestEventContext {
+    return {
+      viewId: GUEST,
+      access: { kind: 'guest', id: 'g1', name: 'Bob', role: 'write', projectId: 'p1', scope: { kind: 'all' } as never },
+      tabVisible: (t) => t === 't1',
+      pluginVisible: shown,
+      overlayVisible: (id) => m.visibleTo(W1, id, (t) => t === 't1', shown),
+      personOf: () => undefined,
+      tabOrder: () => [],
+      downloadOrigin: () => undefined,
+      ownerName: () => 'Oleg'
+    }
+  }
+
+  it("a plugin's own overlay with no via is unchanged: visible when the opener is", () => {
+    const m = manager()
+    swallow(m.open(W1, { ...terminal, cwd: dir }, 'plugin a.rev', undefined, undefined, 'a.rev'))
+    expect(m.visibleTo(W1, idOf(m), no, shown)).toBe(true)
+  })
+
+  it('A -> B -> Reviewer: both callers count; hidden when either is hidden, shown when all are', () => {
+    const m = manager()
+    swallow(m.open(W1, { ...terminal, cwd: dir }, 'plugin a.rev', undefined, undefined, 'a.rev', undefined, undefined, { via: ['a.vis', 'a.gmail'] }))
+    const id = idOf(m)
+    expect(m.visibleTo(W1, id, yes, shown)).toBe(false)
+    expect(m.visibleTo(W1, id, no, (p) => shown(p) || p === 'a.gmail')).toBe(true)
+    expect(m.visibleTo(W1, id, no, (p) => p === 'a.rev' || p === 'a.gmail')).toBe(false)
+  })
+
+  it('addSources only grows (a source cannot be taken back), ignores the opener and repeats, and answers whether it grew', () => {
+    const m = manager()
+    swallow(m.open(W1, { ...terminal, cwd: dir }, 'plugin a.rev', undefined, undefined, 'a.rev'))
+    const id = idOf(m)
+    expect(m.addSources(W1, id, ['a.rev'])).toBe(false)
+    expect(m.addSources(W1, id, ['a.vis'])).toBe(true)
+    expect(m.addSources(W1, id, ['a.vis', 'a.rev'])).toBe(false)
+    expect(m.visibleTo(W1, id, no, shown)).toBe(true)
+    expect(m.addSources(W1, id, ['a.gmail'])).toBe(true)
+    expect(m.visibleTo(W1, id, no, shown)).toBe(false)
+    expect(m.addSources(W1, 'nope', ['a.gmail'])).toBe(false)
+    expect(m.addSources(2, id, ['a.gmail'])).toBe(false)
+  })
+
+  it('the shared-tab origin rule is unchanged; a via on one would still narrow it (fail closed)', () => {
+    const m = manager()
+    swallow(m.open(W1, { ...terminal, cwd: dir }, 'cli', undefined, undefined, undefined, undefined, { tabId: 't1' }))
+    const id = idOf(m)
+    expect(m.visibleTo(W1, id, (t) => t === 't1', no)).toBe(true)
+    expect(m.visibleTo(W1, id, no, yes)).toBe(false)
+    m.addSources(W1, id, ['a.gmail'])
+    expect(m.visibleTo(W1, id, (t) => t === 't1', shown)).toBe(false)
+  })
+
+  it("the 0.24.0 leak: a hidden plugin's overlay shown in the Reviewer never reaches a guest, title, data and list included", () => {
+    const sent: Array<{ channel: string; payload: unknown }> = []
+    const m = manager({ emit: (_w, channel, payload) => void sent.push({ channel, payload }) })
+    // Non-perView (one holder), as 0.24.0's Reviewer: the title is the mail's subject.
+    swallow(m.open(W1, { ...terminal, cwd: dir, title: 'Re: salary' }, 'plugin a.rev', undefined, undefined, 'a.rev', undefined, undefined, { via: ['a.gmail'] }))
+    const id = idOf(m)
+    const g = guestCtx(m)
+    // Hidden from the very first listing (via is on the record before `changed`).
+    const updated = sent.filter((e) => e.channel === 'overlays.updated')
+    expect(updated).toHaveLength(1)
+    expect((updated[0]!.payload as OverlayInfo[])[0]!.title).toBe('Re: salary')
+    for (const e of updated) expect(guestEvent('overlays.updated', e.payload, g)).toEqual([])
+    expect(guestEvent('overlays.data', { overlayId: id, data: 'Dear Oleg' }, g)).toBeUndefined()
+    // The `ready` snapshot's overlays (guestSnapshot) and the router's overlays.list go through the same filter.
+    expect(guestOverlays(m.infos(W1), g)).toEqual([])
+    // The Reviewer's own overlay beside it still reaches the guest.
+    swallow(m.open(W1, { ...terminal, cwd: dir, title: 'diff a.ts' }, 'plugin a.rev', undefined, undefined, 'a.rev'))
+    const own = idOf(m)
+    expect((guestEvent('overlays.updated', m.infos(W1), g) as OverlayInfo[]).map((o) => o.id)).toEqual([own])
+    expect(guestEvent('overlays.data', { overlayId: own, data: 'x' }, g)).toEqual({ overlayId: own, data: 'x' })
+  })
+
+  it('growth on a non-perView overlay sends the list again, which the guest filter now drops it from', () => {
+    const sent: Array<{ channel: string; payload: unknown }> = []
+    const m = manager({ emit: (_w, channel, payload) => void sent.push({ channel, payload }) })
+    swallow(m.open(W1, { ...page, title: 'diff' }, 'plugin a.rev', undefined, { onMessage: () => {} }, 'a.rev'))
+    const id = idOf(m)
+    const g = guestCtx(m)
+    expect((guestEvent('overlays.updated', sent.at(-1)!.payload, g) as OverlayInfo[]).map((o) => o.id)).toEqual([id])
+    sent.length = 0
+    expect(m.addSources(W1, id, ['a.gmail'])).toBe(true)
+    expect(sent.map((e) => e.channel)).toEqual(['overlays.updated'])
+    expect(guestEvent('overlays.updated', sent[0]!.payload, g)).toEqual([])
+    // Nothing new: no emit.
+    expect(m.addSources(W1, id, ['a.gmail'])).toBe(false)
+    expect(sent).toHaveLength(1)
+  })
+
+  it("growth on a live perView overlay releases the guest's copy and drops its queue before the post that grew it is delivered", () => {
+    const log: string[] = []
+    const m = manager({
+      ownerView: (v) => v !== GUEST,
+      isViewLive: () => true,
+      // Task 5's rule in short: a guest may load a copy only while the overlay is visible to it.
+      mayConnectCopy: (w, o) => m.visibleTo(w, o, no, shown),
+      emit: (_w, channel) => void log.push(`emit ${channel}`),
+      emitToView: (viewId, channel, payload) => {
+        const p = payload as { message?: string }
+        log.push(`${viewId} ${channel}${p.message !== undefined ? ` ${p.message}` : ''}`)
+        return true
+      }
+    })
+    const channel: OverlayChannel = {
+      onMessage: () => {},
+      onConnect: (copy, view) => void log.push(`connect ${view}`),
+      onDisconnect: (copy, view) => void log.push(`disconnect ${view}`)
+    }
+    swallow(m.open(W1, pv, 'plugin a.rev', undefined, channel, 'a.rev', undefined, undefined, { perView: true }))
+    const id = idOf(m)
+    const own = m.connectCopy(W1, id, OWNER)
+    const guest = m.connectCopy(W1, id, GUEST)
+    if (!own.ok || !guest.ok) throw new Error('refused')
+    m.copyReady(W1, id, OWNER, own.copy)
+    // The guest's page is not up yet: its starting state waits in its queue.
+    m.post(W1, id, '"start-guest"', { copy: guest.copy })
+    m.post(W1, id, '"start-owner"', { copy: own.copy })
+    log.length = 0
+    // What host-api does for a post carrying a new source: grow first, then post, in one synchronous step.
+    m.addSources(W1, id, ['a.gmail'])
+    m.post(W1, id, '"the mail"')
+    expect(log).toEqual([`disconnect ${GUEST}`, `${GUEST} overlays.hide`, 'emit overlays.updated', `${OWNER} overlays.message "the mail"`])
+    // Its queue went with it: its page coming up now gets nothing, and it cannot connect again.
+    expect(m.copyReady(W1, id, GUEST, guest.copy)).toBe(false)
+    expect(m.copies(W1, id).map((c) => c.view)).toEqual([OWNER])
+    expect(m.connectCopy(W1, id, GUEST)).toEqual({ ok: false, reason: 'not-allowed' })
+    expect(log.filter((l) => l.startsWith(`${GUEST} overlays.message`))).toEqual([])
+  })
+
+  it("growth to a source the guest sees keeps its copy; an owner's copies are never released", () => {
+    const released: string[] = []
+    const m = manager({
+      ownerView: (v) => v !== GUEST,
+      isViewLive: () => true,
+      mayConnectCopy: (w, o) => m.visibleTo(w, o, no, shown),
+      emitToView: () => true
+    })
+    swallow(m.open(W1, pv, 'plugin a.rev', undefined, { onMessage: () => {}, onDisconnect: (_c, v) => void released.push(v) }, 'a.rev', undefined, undefined, { perView: true }))
+    const id = idOf(m)
+    for (const v of ['desktop:1', OWNER, GUEST]) expect(m.connectCopy(W1, id, v).ok).toBe(true)
+    m.addSources(W1, id, ['a.vis'])
+    expect(released).toEqual([])
+    m.addSources(W1, id, ['a.gmail'])
+    expect(released).toEqual([GUEST])
+    expect(m.copies(W1, id).map((c) => c.view)).toEqual(['desktop:1', OWNER])
+  })
+
+  it('with no mayConnectCopy wired (or one that throws), growth releases every guest copy (fail closed)', () => {
+    const released: string[] = []
+    let admit = true
+    const m = manager({
+      ownerView: (v) => v !== GUEST,
+      isViewLive: () => true,
+      mayConnectCopy: () => {
+        if (admit) return true
+        throw new Error('boom')
+      },
+      emitToView: () => true
+    })
+    swallow(m.open(W1, pv, 'plugin a.rev', undefined, { onMessage: () => {}, onDisconnect: (_c, v) => void released.push(v) }, 'a.rev', undefined, undefined, { perView: true }))
+    const id = idOf(m)
+    expect(m.connectCopy(W1, id, GUEST).ok).toBe(true)
+    admit = false
+    m.addSources(W1, id, ['a.vis'])
+    expect(released).toEqual([GUEST])
   })
 })

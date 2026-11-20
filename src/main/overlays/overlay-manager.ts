@@ -245,6 +245,13 @@ export interface OverlayStartOptions {
    * overlay gets per-view copies instead of one holder. Ignored for the other kinds.
    */
   perView?: boolean
+  /**
+   * Provenance (docs/design-overlay-views.md §4, D-4): the plugins this overlay is opened for, the opener's
+   * service caller chain at its open plus any `addSources` / chained post made before the overlay existed.
+   * host-api checked them (this host's plugins only). Set on the record before the overlay is first listed,
+   * so no `overlays.updated` ever carries its title to a guest who may not see one of them. Any kind.
+   */
+  via?: Iterable<string>
 }
 
 /** Why `connectCopy` refused (the shell retries `cap` later; the others are final for that view). */
@@ -487,6 +494,13 @@ interface Overlay {
   opener: string
   /** What opened it, for guests (OverlayOrigin); absent: hidden from every guest. */
   origin?: OverlayOrigin
+  /**
+   * The origin's `via` (docs/design-overlay-views.md §4, D-4): the plugins the overlay was opened or
+   * filled for (a mail Gmail asks the Reviewer to show). Only ever grows (`addSources`); a guest gets the
+   * overlay only when the origin rule passes AND every plugin here is visible to it (`visibleTo`). Never
+   * in `info`: which plugins asked is main's to judge with, not the renderer's to show.
+   */
+  via: Set<string>
   settle: (result: OverlayResult) => void
   view?: UrlView
   /**
@@ -706,6 +720,7 @@ export class OverlayManager {
       windowId,
       info: infoOf(id, parsed, pluginId),
       opener,
+      via: new Set(),
       settle,
       pageReady: false,
       outbox: new OverlayOutbox(),
@@ -722,6 +737,8 @@ export class OverlayManager {
     // A plugin's open is that plugin's even with no explicit origin; the CLI's needs the caller's tab (07).
     const from = { ...(origin?.tabId === undefined ? {} : { tabId: origin.tabId }), ...((origin?.pluginId ?? pluginId) === undefined ? {} : { pluginId: origin?.pluginId ?? pluginId }) }
     if (from.tabId !== undefined || from.pluginId !== undefined) overlay.origin = from
+    // Before the first `changed` below: the overlay's first listing already honours whom it is opened for.
+    for (const id of options?.via ?? []) if (typeof id === 'string' && id !== '' && id !== overlay.origin?.pluginId) overlay.via.add(id)
     if (parsed.type) {
       overlay.type = parsed.type
       overlay.buttonsKey = randomUUID()
@@ -1077,13 +1094,61 @@ export class OverlayManager {
 
   /**
    * Whether a guest sees the overlay (design-guests §9): opened from a tab it sees, or by a plugin it sees; one
-   * with no origin never. The router's `overlayVisible` (07 wires it with the guest's live checks).
+   * with no origin never. The router's `overlayVisible` (07 wires it with the guest's live checks), and through
+   * it guest-filter's `guestOverlays` / `guestByOverlay` (the list, `overlays.data`, the `ready` snapshot).
+   *
+   * And every plugin of `via` must be visible too (docs/design-overlay-views.md §4, D-4): an overlay opened
+   * or filled for a plugin hidden from the guest shows that plugin's content, so the guest gets neither its
+   * copies nor its title (0.24.0 leaked a mail's subject: Gmail's mail in the Reviewer counted as the
+   * Reviewer's). Checked for a tab origin too: a `ccc` overlay never has a `via`, so that rule is unchanged,
+   * and one that ever did would fail closed.
    */
   visibleTo(windowId: number, overlayId: string, tabVisible: (tabId: string) => boolean, pluginVisible: (pluginId: string) => boolean): boolean {
-    const origin = this.find(windowId, overlayId)?.origin
-    if (!origin) return false
-    if (origin.tabId !== undefined) return tabVisible(origin.tabId)
-    return origin.pluginId !== undefined && pluginVisible(origin.pluginId)
+    const overlay = this.find(windowId, overlayId)
+    const origin = overlay?.origin
+    if (!overlay || !origin) return false
+    const opened = origin.tabId !== undefined ? tabVisible(origin.tabId) : origin.pluginId !== undefined && pluginVisible(origin.pluginId)
+    if (!opened) return false
+    for (const pluginId of overlay.via) if (!pluginVisible(pluginId)) return false
+    return true
+  }
+
+  /**
+   * Provenance grows (docs/design-overlay-views.md §4 "Growth on a live overlay"): the overlay is now also
+   * shown for these plugins (a chained post, `handle.addSources`, a main-routed open's `requestedBy`).
+   * host-api checked the ids against its host's plugins; the set only grows, so a call can only narrow who
+   * sees the overlay, never widen it. When it grew, in this one synchronous step and before the caller
+   * delivers the post or buttons that carried the new content: every copy of a view that is not the
+   * owner's and that `mayConnectCopy` no longer admits is released (its queue dropped, the opener hears its
+   * disconnect, its view gets `overlays.hide`), and the window's list goes out again, which the guest
+   * filter (`visibleTo`) now drops this overlay from. True when the set grew.
+   */
+  addSources(windowId: number, overlayId: string, pluginIds: Iterable<string>): boolean {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return false
+    let grew = false
+    for (const id of pluginIds) {
+      if (typeof id !== 'string' || id === '' || id === overlay.origin?.pluginId || overlay.via.has(id)) continue
+      overlay.via.add(id)
+      grew = true
+    }
+    if (!grew) return false
+    if (overlay.perView) {
+      for (const copy of [...overlay.perView.copies.values()]) {
+        // The desktop page is always the owner's (D-1); a remote view by main's own record.
+        if (!isRemoteViewId(copy.view) || this.ownerView(copy.view)) continue
+        // Fail closed: no rule wired, or one that throws, admits no guest copy (as connectCopy).
+        let admitted = false
+        try {
+          admitted = this.options.mayConnectCopy?.(overlay.windowId, overlay.id, copy.view) === true
+        } catch (err) {
+          this.log(`overlay ${overlay.id}: checking view ${copy.view} after its sources grew failed: ${String(err)}`)
+        }
+        if (!admitted) this.hideCopyRecord(overlay, copy)
+      }
+    }
+    this.changed(overlay.windowId)
+    return true
   }
 
   /** A write guest's view measured a terminal overlay (D-14): remembered for its explicit take (typing) only. */
@@ -1418,6 +1483,12 @@ export class OverlayManager {
     const overlay = this.find(windowId, overlayId)
     const c = typeof copy === 'string' ? overlay?.perView?.copies.get(copy) : undefined
     if (!overlay || !c?.live) return false
+    this.hideCopyRecord(overlay, c)
+    return true
+  }
+
+  /** hideCopy's work on a live copy: released, then `overlays.hide` to its view only (also addSources' release). */
+  private hideCopyRecord(overlay: Overlay, c: OverlayCopy): void {
     // Out first: anything the page still sends for it from here on is a stale copy's, dropped.
     this.dropCopy(overlay, c)
     const payload = { overlayId: overlay.id, copy: c.id }
@@ -1428,7 +1499,6 @@ export class OverlayManager {
     } catch (err) {
       this.log(`overlay ${overlay.id}: telling view ${c.view} to hide its copy failed: ${String(err)}`)
     }
-    return true
   }
 
   /** The perView overlay's copy `copy` if it is `viewId`'s and live (the one binding rule, §5 "Copy binding"). */

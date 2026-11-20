@@ -67,17 +67,25 @@
 //                                                                app slot type, checked again here
 //                                                                (shared/slots.ts); null clears them. The
 //                                                                layout service resolves the providers.
-//   overlay.open    { pluginId, spec, handle? } -> OverlayResult on this project's window; `handle`
+//   overlay.open    { pluginId, spec, handle?, via? } -> OverlayResult on this project's window; `handle`
 //                                                                (ctx.overlay.start) names the overlay
-//                                                                in the three calls below
-//   overlay.post    { pluginId, handle, message, copy? } -> boolean  to that html overlay's page; `copy`
+//                                                                in the calls below
+//   overlay.post    { pluginId, handle, message, copy?, via? } -> boolean  to that html overlay's page; `copy`
 //                                                                (a perView overlay only, else refused): to
 //                                                                that one copy, false when it is gone
+//                                                                `via` (open, post, setButtons): the plugins
+//                                                                the call is made for, the service caller
+//                                                                chain (docs/design-overlay-views.md §4);
+//                                                                only this host's plugins are kept, the
+//                                                                overlay's set only grows, and it grows
+//                                                                before the post or buttons go out
+//   overlay.addSources { pluginId, handle, ids } -> boolean      the same growth for a deferred fill
+//                                                                (handle.addSources)
 //   overlay.hide    { pluginId, handle, copy } -> boolean        a perView overlay's copy leaves its own view
 //                                                                (released; `overlays.hide` to that view only)
 //   overlay.close   { pluginId, handle }       -> boolean        dismiss it (false: it already ended)
 //   overlay.focus   { pluginId, handle }       -> boolean        bring it to the top of the window's stack
-//   overlay.setButtons { pluginId, handle, buttons } -> boolean  replace that overlay's opener buttons
+//   overlay.setButtons { pluginId, handle, buttons, via? } -> boolean  replace that overlay's opener buttons
 //                                                                (checked again, shared/overlay-buttons.ts)
 //   overlay.discussPrimary { pluginId, handle, on } -> boolean   Discuss drawn as the primary button or not
 //   overlay.discussable { pluginId, handle, on } -> boolean      that overlay's opener has an onDiscuss
@@ -108,7 +116,9 @@
 //                                                                pick (open-file.ts routeProjectFile: the path
 //                                                                checked against THIS project's folder, a tabId
 //                                                                kept only when it is this project's; `via` is
-//                                                                'plugin' or 'builtin'); no manifest declaration
+//                                                                'plugin' or 'builtin'); no manifest declaration.
+//                                                                The taker's open event carries `requestedBy`:
+//                                                                the plugin this request was checked for
 //   openExternal    { pluginId, url }          -> null           the system browser on an http(s) link
 //                                                                (shared/web-url.ts checkWebUrl: no other
 //                                                                scheme, no user:pass@, 2048 chars); the
@@ -273,6 +283,7 @@ import {
 } from '../overlays/overlay-manager'
 import {
   MAX_OVERLAY_BUTTONS,
+  MAX_OVERLAY_SOURCES,
   OVERLAY_CLICK_TIMEOUT_MS,
   parseOverlayButtons,
   type CleanOverlayButton,
@@ -617,8 +628,12 @@ export interface HostApiDeps {
     pluginId?: string,
     /** The live remote view of this window the request came from (originOf): an html page opens there. */
     view?: ViewId,
-    /** `perView`: the opener's manifest says `overlays.perView` (HostApiPlugin), main's word, never the spec's. */
-    options?: { perView?: boolean }
+    /**
+     * `perView`: the opener's manifest says `overlays.perView` (HostApiPlugin), main's word, never the spec's.
+     * `via`: the plugins it is opened for (OverlayStartOptions.via), checked here; a live set, read when the
+     * manager creates the overlay, so sources added while the open still waits are counted from the start.
+     */
+    options?: { perView?: boolean; via?: Iterable<string> }
   ): Promise<OverlayResult>
   /**
    * OverlayManager.post. Without it (and closeOverlay) ctx.overlay.start's post/close are refused. `copy`:
@@ -627,6 +642,12 @@ export interface HostApiDeps {
   postOverlay?(windowId: number, overlayId: string, text: string, options?: { copy?: string }): boolean
   /** OverlayManager.hideCopy (handle.hide). Without it the request is refused. */
   hideOverlayCopy?(windowId: number, overlayId: string, copy: string): boolean
+  /**
+   * OverlayManager.addSources: the overlay is also shown for these plugins (checked here). Synchronous, and
+   * called before the post or buttons that carry their content. Without it any call naming sources is refused
+   * (fail closed: content for a hidden plugin must never go out unattributed).
+   */
+  addOverlaySources?(windowId: number, overlayId: string, pluginIds: string[]): boolean
   /**
    * Who is behind a view of this host's window, read live (GuestStore.whoAccess): the `access` and a guest's
    * `person` on what an overlay's opener hears (`from`). Without it every remote view reads as unknown, so its
@@ -663,8 +684,16 @@ export interface HostApiDeps {
    * ctx.files.open (open-file.ts routeProjectFile with main's open-file route): `caller` is this
    * host's scope, `path` and `tabId` the plugin's, checked there. Without it files.open is refused.
    * `view`: the live remote view the plugin acted for (originOf), handed on to the plugin that opens it.
+   * `requestedBy`: the plugin the request was checked for (this host's, main's word, never the payload's),
+   * handed on to the taker as provenance (docs/design-overlay-views.md §4 "Requests main routes").
    */
-  openFile?(caller: { windowId: number; projectId: string }, path: string, tabId?: string, view?: ViewId): Promise<'plugin' | 'builtin'>
+  openFile?(
+    caller: { windowId: number; projectId: string },
+    path: string,
+    tabId?: string,
+    view?: ViewId,
+    requestedBy?: string
+  ): Promise<'plugin' | 'builtin'>
   /**
    * ctx.openExternal: hand an already checked http(s) URL to the openExternal adapter
    * (external/open-external.ts) for this host's window and the view the plugin acted for: the system
@@ -817,6 +846,12 @@ interface OverlayLink {
   /** The opener's manifest says `overlays.perView`: posts may name a copy, and `hide` is offered. */
   perView: boolean
   /**
+   * Provenance (docs/design-overlay-views.md §4): the sources named while the overlay did not exist yet
+   * (open's `via`, then posts, buttons and addSources before onCreated). Handed to the manager as this live
+   * set, so it is read when the overlay is created, before its first listing.
+   */
+  via: Set<string>
+  /**
    * perView: copy id -> the `from` its connect went out with. Its disconnect reuses it (the view may be gone
    * from the registry by then, so a live lookup would read it as revoked), and goes out only when its connect did.
    */
@@ -907,12 +942,12 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
   return out
 }
 
-/** `err` with the method in front, kept as the cause (the messages it wraps hold no values). */
 /** A view for a host message: a remote view's id, nothing for the desktop page (the port tag's convention). */
 function remoteView(view: ViewId | undefined): { view?: ViewId } {
   return view !== undefined && isRemoteViewId(view) ? { view } : {}
 }
 
+/** `err` with the method in front, kept as the cause (the messages it wraps hold no values). */
 function withMethod(what: string, err: unknown): Error {
   return new Error(`${what}: ${errorText(err)}`, { cause: err })
 }
@@ -1095,6 +1130,7 @@ export class HostApi {
       'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
       'overlay.hide': (params) => this.overlayHide(params),
+      'overlay.addSources': (params) => this.overlayAddSources(params),
       'overlay.close': (params) => this.overlayClose(params),
       'overlay.focus': (params) => this.overlayFocus(params),
       'overlay.setButtons': (params) => this.overlaySetButtons(params),
@@ -2120,7 +2156,8 @@ export class HostApi {
     let via: 'plugin' | 'builtin'
     try {
       // As for sessions.openFile: the taker's listeners run in the view the plugin acted for.
-      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId, this.originOf(meta))
+      // `plugin.id`: the plugin this request was checked for, the taker's `requestedBy` (never from the payload).
+      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId, this.originOf(meta), plugin.id)
     } catch (err) {
       throw withMethod('files.open', err)
     }
@@ -2295,8 +2332,9 @@ export class HostApi {
     this.alive()
     // Read now, before any await: the view is checked against the window as it is at the request.
     const view = this.originOf(meta)
-    const { pluginId, spec, handle } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, spec, handle, via: rawVia } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'overlay.open')
+    const via = new Set(this.overlaySources(rawVia, 'overlay.open'))
     if (handle !== undefined && (typeof handle !== 'string' || !HANDLE_RE.test(handle))) {
       throw new Error('overlay: handle must be 1 to 64 letters, digits or dashes')
     }
@@ -2320,7 +2358,7 @@ export class HostApi {
     const perView = plugin.overlaysPerView === true
     let channel: OverlayChannel | undefined
     if (linkKey !== undefined) {
-      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false, perView, copies: new Map() }
+      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false, perView, via, copies: new Map() }
       this.overlayLinks.set(linkKey, link)
       const pid = plugin.id
       channel = {
@@ -2414,7 +2452,9 @@ export class HostApi {
           channel,
           plugin.id,
           view,
-          { perView }
+          // The live set: posts and addSources that arrive during the awaits before the manager creates the
+          // overlay land in it and are counted from its first listing.
+          { perView, via }
         )
       } catch (err) {
         // The manager rejects only before it creates anything (a bad argv or url, a program that
@@ -2454,6 +2494,7 @@ export class HostApi {
     const { link, rest } = this.overlayLink(params, 'overlay.post')
     const copy = rest.copy
     if (copy !== undefined && typeof copy !== 'string') throw new Error('overlay.post: copy must be a string')
+    const via = this.overlaySources(rest.via, 'overlay.post')
     let text: string | undefined
     try {
       text = JSON.stringify(rest.message)
@@ -2471,9 +2512,12 @@ export class HostApi {
     if (link.overlayId === undefined) {
       // No copy exists before the overlay does, so a post to one names nothing: dropped, as for a gone copy.
       if (copy !== undefined) return false
+      for (const id of via) link.via.add(id)
       link.pending.push(text)
       return true
     }
+    // Before the post, in the same step: a guest copy that may not see the new source is gone first.
+    this.growSources(link, link.overlayId, via, 'overlay.post')
     return copy === undefined
       ? this.deps.postOverlay(this.scope.windowId, link.overlayId, text)
       : this.deps.postOverlay(this.scope.windowId, link.overlayId, text, { copy })
@@ -2542,13 +2586,63 @@ export class HostApi {
   private overlaySetButtons(params: unknown): boolean {
     const { link, rest } = this.overlayLink(params, 'overlay.setButtons')
     const buttons = parseOverlayButtons(rest.buttons)
+    const via = this.overlaySources(rest.via, 'overlay.setButtons')
     if (!link) return false
     if (!this.deps.setOverlayButtons) throw new Error('overlay.setButtons: not available')
     if (link.overlayId === undefined) {
+      for (const id of via) link.via.add(id)
       link.buttons = buttons
       return true
     }
+    // Before the buttons: their labels are what the call shows for those plugins.
+    this.growSources(link, link.overlayId, via, 'overlay.setButtons')
     return this.deps.setOverlayButtons(this.scope.windowId, link.overlayId, buttons)
+  }
+
+  /**
+   * handle.addSources(ids): a deferred fill (docs/design-overlay-views.md §4): the overlay now also shows content
+   * asked for by these plugins, recorded before that content leaves. Ids that are not this host's plugins are
+   * dropped (they can only narrow who sees the overlay, never widen it, but a made-up id names nothing). Held
+   * in the handle's set until the overlay exists. False for an overlay that ended or that this plugin did not open.
+   */
+  private overlayAddSources(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.addSources')
+    if (!Array.isArray(rest.ids)) throw new Error('overlay.addSources: ids must be an array')
+    const ids = this.overlaySources(rest.ids, 'overlay.addSources')
+    if (!link) return false
+    if (link.overlayId === undefined) {
+      for (const id of ids) link.via.add(id)
+      return true
+    }
+    this.growSources(link, link.overlayId, ids, 'overlay.addSources')
+    return true
+  }
+
+  /**
+   * The sources an overlay call names (`via`, addSources' `ids`): absent is none; anything but an array of at
+   * most MAX_OVERLAY_SOURCES entries is refused; entries that are not one of this host's plugins are dropped
+   * (main's own list, so nothing outside this project's host can be named), duplicates once.
+   */
+  private overlaySources(raw: unknown, what: string): string[] {
+    if (raw === undefined) return []
+    if (!Array.isArray(raw)) throw new Error(`${what}: via must be an array of plugin ids`)
+    if (raw.length > MAX_OVERLAY_SOURCES) throw new Error(`${what}: more than ${MAX_OVERLAY_SOURCES} sources`)
+    const out = new Set<string>()
+    for (const id of raw) if (typeof id === 'string' && this.scope.plugins.some((p) => p.id === id)) out.add(id)
+    return [...out]
+  }
+
+  /**
+   * Grow an open overlay's sources in the manager, synchronously, before the caller delivers anything. Nothing
+   * to add is a no-op; sources with no manager call wired refuse the call, since what follows is content for
+   * those plugins and must never go out unattributed (fail closed).
+   */
+  private growSources(link: OverlayLink, overlayId: string, ids: string[], what: string): void {
+    const fresh = ids.filter((id) => !link.via.has(id))
+    if (fresh.length === 0) return
+    if (!this.deps.addOverlaySources) throw new Error(`${what}: overlay sources are not available`)
+    this.deps.addOverlaySources(this.scope.windowId, overlayId, fresh)
+    for (const id of fresh) link.via.add(id)
   }
 
   /**
