@@ -109,9 +109,11 @@ export async function openVerified(real: string, expect?: Pick<Stats, 'dev' | 'i
     let detail: string | undefined
     if (!st.isFile()) {
       problem = 'not-file'
-      // The descriptor's number too: a regular file whose fstat says FIFO or socket would mean the
-      // number was closed under us and reused (a double close elsewhere in the process).
-      detail = `fstat on fd ${handle.fd} saw mode ${modeText(st.mode)}`
+      // The descriptor's number and inode too: a regular file whose fstat says FIFO or socket, on
+      // another inode than the caller's stat saw, would mean the number was closed under us and
+      // reused (a double close elsewhere in the process), not the file changing.
+      const was = expect === undefined ? '' : ` (the check saw ${expect.dev}:${expect.ino})`
+      detail = `fstat on fd ${handle.fd} saw mode ${modeText(st.mode)}, inode ${st.dev}:${st.ino}${was}`
     } else if (expect !== undefined && !sameFile(st, expect)) problem = 'changed'
     else if (!(await namesFile(real, st))) problem = 'changed'
     if (problem === undefined) return { ok: true, handle, stat: st }

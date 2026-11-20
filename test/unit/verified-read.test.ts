@@ -70,7 +70,7 @@ describe('readVerified', () => {
     rmSync(target.real)
     expect(spawnSync('mkfifo', [target.real]).status).toBe(0)
     // The detail names the check that answered and the mode it saw (a FIFO), for the log.
-    expect(await readVerified(target.real, 1024)).toEqual({ ok: false, problem: 'not-file', detail: expect.stringMatching(/^fstat on fd \d+ saw mode 0o10\d{3}$/) })
+    expect(await readVerified(target.real, 1024)).toEqual({ ok: false, problem: 'not-file', detail: expect.stringMatching(/^fstat on fd \d+ saw mode 0o10\d{3}, inode \d+:\d+$/) })
   })
 
   it('refuses a file over the cap and a file that is gone', async () => {
@@ -114,8 +114,8 @@ describe('openVerified', () => {
   it('refuses a FIFO without blocking, a device and a Unix socket', async () => {
     const fifo = join(folder, 'fifo')
     expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
-    expect(await openVerified(fifo)).toEqual({ ok: false, problem: 'not-file', detail: expect.stringMatching(/^fstat on fd \d+ saw mode 0o10\d{3}$/) })
-    expect(await openVerified('/dev/null')).toEqual({ ok: false, problem: 'not-file', detail: expect.stringMatching(/^fstat on fd \d+ saw mode 0o20\d{3}$/) })
+    expect(await openVerified(fifo)).toEqual({ ok: false, problem: 'not-file', detail: expect.stringMatching(/^fstat on fd \d+ saw mode 0o10\d{3}, inode \d+:\d+$/) })
+    expect(await openVerified('/dev/null')).toEqual({ ok: false, problem: 'not-file', detail: expect.stringMatching(/^fstat on fd \d+ saw mode 0o20\d{3}, inode \d+:\d+$/) })
     const sock = join(folder, 's.sock')
     const server = createServer()
     await new Promise<void>((resolve) => server.listen(sock, resolve))
