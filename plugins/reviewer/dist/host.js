@@ -84,15 +84,20 @@ const MAX_TITLE_CHARS = 200
 // How long openReview waits for the overlay to be refused before it counts it as shown. A refusal
 // comes back in one host-to-main round trip, far under this (the editor waits the same).
 const OPEN_SETTLE_MS = 500
-// The page posts its draft on every change, so Esc (which closes without asking the page) loses
+// The pages send their note ops on every change, so Esc (which closes without asking a page) loses
 // no keystroke; storage writes are coalesced to one per this many ms, and flushed when it closes.
 const DRAFT_SAVE_MS = 300
 // How much of a queued review's start must be in the tab's next prompt to count as delivered.
 const MATCH_CHARS = 120
-// Discuss asks the page for its newest draft (it posts one on every change, so the host's copy is
-// at most a keystroke behind); past this wait the host's copy goes. Far under the app's 5 s bound
-// on the onDiscuss answer.
+// Discuss first asks every copy that edits to say it has sent all its ops (a page sends each change at
+// once, but on its own port, which a toolbar click does not wait for, so the host's draft can be a
+// keystroke behind); past this wait the host's draft goes as it is. Far under the app's 5 s bound on
+// the onDiscuss answer.
 const DRAFT_REQUEST_MS = 1500
+// The page-local tags a copy's adds named, remembered per copy so a change or delete it sends before the
+// id came back still finds its note; past this many the oldest are forgotten (a page's tag is answered
+// within a round trip, so only a page that adds and deletes without end gets there).
+const MAX_COPY_TAGS = 1000
 // main refuses a Discuss tab id over this many chars (src/shared/overlay-buttons.ts): a longer
 // caller's wish is dropped, not a refused overlay.
 const MAX_TAB_ID = 100
@@ -146,6 +151,8 @@ const ACCESS = ['owner', 'write', 'read']
 const viewerOf = (from) =>
   from && typeof from === 'object' && ACCESS.includes(from.access) && typeof from.copy === 'string' && from.copy !== '' && typeof from.view === 'string' ? from : null
 const isOwner = (from) => from.access === 'owner'
+// Who may change the notes (D-3): the owner and write guests; a read guest's copy shows them only.
+const canNote = (from) => from.access === 'owner' || from.access === 'write'
 
 /**
  * `sides` as a guest's copy gets them: no host path (design-guests D-33). A file review's and a preview's
@@ -272,7 +279,9 @@ exports.activate = (ctx) => {
     handle.onConnect((from) => {
       const v = viewerOf(from)
       if (!v || page.copies.has(v.copy)) return
-      const c = { id: v.copy, from: v, content: false, errorPage: false }
+      // `inited`: its init went out, so it holds the draft and takes the notes' live changes (a file
+      // review's page never asks for content, so `content` cannot say that).
+      const c = { id: v.copy, from: v, content: false, errorPage: false, inited: false, tags: new Map(), refused: false }
       page.copies.set(c.id, c)
       page.greet(c)
     })
@@ -318,7 +327,8 @@ exports.activate = (ctx) => {
 
   /**
    * One file's draft, read-modify-write at a time: addNote's own calls and a queued Discuss's delete of
-   * the sent notes never interleave on the stored value. The page's own drafts are kept apart another way:
+   * the sent notes never interleave on the stored value. An open review's draft (the host's, written from
+   * its copies' note ops) is kept apart another way:
    * addNote is refused while a review is open or being opened (`isReviewing`), and showReview waits for
    * the notes in flight before it reads the draft.
    */
@@ -536,8 +546,9 @@ exports.activate = (ctx) => {
    * prompt before the send: the same review sent twice is not mistaken for this one's delivery. No
    * plugin API reports a queued item's fate, hence the prompt match.
    */
-  function watchQueued({ what, draftKey, path, tabId, text, sentDraft, prevPrompt, kept }) {
-    const want = promptStart(text)
+  function watchQueued({ what, draftKey, path, tabId, texts, sentDraft, prevPrompt, kept }) {
+    // Each Discuss ask's text (two screens may each have asked): the delivered one is one of them.
+    const wants = texts.map(promptStart)
     let over = false
     const end = () => {
       over = true
@@ -547,15 +558,13 @@ exports.activate = (ctx) => {
     const check = async (list) => {
       if (over) return
       const s = list.find((x) => x.tabId === tabId)
-      if (s && s.lastPrompt !== prevPrompt && promptText(s.lastPrompt).includes(want)) {
+      if (s && s.lastPrompt !== prevPrompt && wants.some((want) => promptText(s.lastPrompt).includes(want))) {
         end()
         // Only what was sent goes (by note id and text, the global note when unchanged): a note added since
         // (the editor's addNote works while the overlay is closed) or an edit from a reopened review stays.
         const gone = await serialNotes(draftKey, async () => {
-          const sent = review.cleanDraft(sentDraft)
           const now = review.cleanDraft(await ctx.storage.get(draftKey))
-          const was = new Set(sent.notes.map((n) => `${n.id}\0${n.text}`))
-          const left = { global: now.global === sent.global ? '' : now.global, notes: now.notes.filter((n) => !was.has(`${n.id}\0${n.text}`)) }
+          const left = review.subtractSent(now, sentDraft)
           if (left.notes.length === now.notes.length && left.global === now.global) return false
           if (review.isEmpty(left)) await ctx.storage.delete(draftKey)
           else await ctx.storage.set(draftKey, left)
@@ -821,6 +830,9 @@ exports.activate = (ctx) => {
         out.sides = guestSides(out.sides)
         out.canAct = false
       }
+      // A read guest's copy draws no note editing (no Add note, read-only texts, no delete); the host drops
+      // its ops anyway. Absent for the owner and a write guest, so the owner's init is as it was.
+      if (!canNote(c.from)) out.canNote = false
       return out
     }
     // A prepared overlay (its loader showing) is filled instead of a new one started; its title, type
@@ -882,8 +894,9 @@ exports.activate = (ctx) => {
       for (const msg of msgs) page.each(msg, (c) => c.content)
     }
     open.set(openKey, entry)
-    // Drafts arrive on every change: Esc closes the overlay without asking the page, so the last
-    // posted draft is what Close keeps. Writes are coalesced: `pending` is the newest draft not
+    // The draft is the host's (design-overlay-views §6, D-3): every copy that may edit sends note ops on
+    // each change (applyOp), and Esc closes the overlay without asking a page, so the draft as the last op
+    // left it is what Close keeps. Writes are coalesced: `pending` is the newest draft not
     // written yet, and flush() queues it behind the writes before it. A failed write is shown in
     // the page while it is open (draft-error, cleared by draft-saved once a later write works) and
     // in a notice when the overlay closes with it unresolved: the failure used to be only logged,
@@ -902,19 +915,26 @@ exports.activate = (ctx) => {
     }
     markDiscuss(draft)
     let saveError = null // why the newest text is not stored; null while it is
-    let failed = null // the draft whose write failed (retried once at close); null for a draftProblem
-    // Discuss's asks for the page's newest draft, answered by its next `draft` (or `draft-unsaved`).
+    let failed = null // the draft whose write failed (retried once at close)
+    // Discuss's waits for the editing copies to say all their ops are out (`draft-sync`).
     const draftWaiters = new Set()
-    // What the last Discuss ask handed the app: { draft, text, cut, prompts } (prompts: each tab's
-    // lastPrompt then, so a queued review's delivery is told from the prompt before it).
-    let discussed = null
-    // The draft is the owner's until Task 11 (shared notes): its errors, its saves and Discuss's asks go to
-    // the owner's copies only, and only theirs are heard.
-    const toOwners = (msg) => page.each(msg, (c) => isOwner(c.from))
+    // What the newest Discuss ask of each view handed the app: view -> { draft, text, cut, prompts }
+    // (prompts: each tab's lastPrompt then, so a queued review's delivery is told from the prompt before
+    // it), the newest ask last. An ask whose send never happened (a refused send) is replaced by that
+    // view's next one; two screens that both asked leave two, and since the app's answer does not say
+    // which was sent, a delivery clears only what both sent.
+    const asks = new Map()
+    // The copies that hold the draft (their init went out) and may change it: they get its save errors
+    // and Discuss's sync asks. A read guest's copy sees the notes and nothing about saving them.
+    const editors = (c) => c.inited && canNote(c.from)
+    const toEditors = (msg) => page.each(msg, editors)
+    // A note change to every other copy that holds the draft (never back to its sender: a late echo of an
+    // older keystroke would overwrite what the person typed since).
+    const toOthers = (msg, origin) => page.each(msg, (c) => c.inited && c !== origin)
     const draftErrorText = () => `Draft not saved: ${saveError}. The last saved draft is kept.`
     const showSaveError = (why) => {
       saveError = why
-      toOwners({ type: 'draft-error', message: draftErrorText() })
+      toEditors({ type: 'draft-error', message: draftErrorText() })
     }
     const write = (value) => (review.isEmpty(value) ? ctx.storage.delete(draftKey) : ctx.storage.set(draftKey, value))
     function flush() {
@@ -927,7 +947,7 @@ exports.activate = (ctx) => {
           write(value).then(
             () => {
               failed = null
-              if (saveError) toOwners({ type: 'draft-saved' })
+              if (saveError) toEditors({ type: 'draft-saved' })
               saveError = null
               notesChanged(subject.path)
             },
@@ -944,20 +964,90 @@ exports.activate = (ctx) => {
     flushers.add(flush)
 
     /**
-     * The newest draft (raw, as posted) of the owner's copies, or the host's copy when none answers in
-     * time; at once with no owner copy up (a guest's draft is not the review's).
+     * Resolves once every editing copy up now said its ops are all out (`draft-sync`: it answers after the
+     * ops it sent before, on the same port), or after DRAFT_REQUEST_MS; at once with none up. Rejects when
+     * an owner's copy holds text it could not send (`draft-unsaved`: over its size cap), as Discuss did
+     * before notes were shared; a guest's unsent text is its own and does not stop the owner's Discuss.
      */
-    function requestDraft() {
+    function syncCopies() {
       return new Promise((resolve, reject) => {
+        const waiting = new Set([...page.copies.values()].filter(editors).map((c) => c.id))
         const w = {
-          resolve: (d) => (clearTimeout(w.timer), draftWaiters.delete(w), resolve(d)),
+          waiting,
+          resolve: () => (clearTimeout(w.timer), draftWaiters.delete(w), resolve()),
           reject: (e) => (clearTimeout(w.timer), draftWaiters.delete(w), reject(e)),
-          timer: setTimeout(() => w.resolve(draft), DRAFT_REQUEST_MS),
+          timer: setTimeout(() => w.resolve(), DRAFT_REQUEST_MS),
         }
-        if (![...page.copies.values()].some((c) => isOwner(c.from))) return w.resolve(draft)
+        if (!waiting.size) return w.resolve()
         draftWaiters.add(w)
-        toOwners({ type: 'draft-request' })
+        page.each({ type: 'draft-request' }, (c) => waiting.has(c.id))
       })
+    }
+
+    const mintId = () => {
+      const ids = new Set(draft.notes.map((n) => n.id))
+      let id
+      do id = `n${Date.now().toString(36)}${noteSeq++}`
+      while (ids.has(id))
+      return id
+    }
+    /**
+     * A note op of copy `c` (design-overlay-views §6): applied to the one draft by review.applyNoteOp,
+     * saved, and told to every other copy that holds the draft; the adding copy gets its tag's id. Read
+     * guests' ops are dropped (their copy draws no editing either). The author is main's `from.person` for a
+     * guest and none for the owner, never anything the page says. An op whose result would lose text is
+     * refused and only its sender told (an add, with its tag, so that page drops the note).
+     */
+    function applyOp(m, from, c) {
+      if (!canNote(from) || !c.inited) return
+      try {
+        applyOpNow(m, from, c)
+      } finally {
+        // Each text op of a copy is acked to it, applied or not, in order with what the host sends it: while
+        // the copy has one unacked, another copy's text for the same note (or the comment) is older than its
+        // own and is not shown there, so the copy shows what the host ends up with (last writer wins).
+        // By the id, also for a change the page named by its tag: the page has the id by then (note-added
+        // went out before this ack).
+        if (m.type === 'note-change') page.postTo(c, { type: 'ack', id: typeof m.id === 'string' ? m.id : typeof m.tag === 'string' ? c.tags.get(m.tag) || null : null })
+        else if (m.type === 'global') page.postTo(c, { type: 'ack', global: true })
+      }
+    }
+    function applyOpNow(m, from, c) {
+      let op = m
+      if ((m.type === 'note-change' || m.type === 'note-delete') && typeof m.id !== 'string') {
+        // A note this copy added before its id came back: named by its own tag, only within this copy.
+        op = { ...m, id: typeof m.tag === 'string' ? c.tags.get(m.tag) : undefined }
+      }
+      const r = review.applyNoteOp(draft, op, { author: isOwner(from) ? null : review.authorName(from.person) || 'Guest', mintId })
+      if (r.ignored) return
+      if (r.problem) {
+        c.refused = true
+        const what = m.type === 'note-add' ? 'Note not added' : 'Not saved'
+        page.postTo(c, { type: 'draft-error', message: `${what}: ${r.problem}.`, ...(m.type === 'note-add' ? { tag: m.tag } : {}) })
+        return
+      }
+      draft = r.draft
+      if (m.type === 'note-add') {
+        c.tags.set(m.tag, r.note.id)
+        if (c.tags.size > MAX_COPY_TAGS) c.tags.delete(c.tags.keys().next().value)
+        page.postTo(c, { type: 'note-added', tag: m.tag, note: r.note })
+        toOthers({ type: 'note', note: r.note }, c)
+      } else if (m.type === 'note-change') {
+        toOthers({ type: 'note', note: r.note }, c)
+      } else if (m.type === 'note-delete') {
+        toOthers({ type: 'note-deleted', id: op.id }, c)
+      } else {
+        toOthers({ type: 'global', text: draft.global }, c)
+      }
+      // The copy's earlier refusal is over (unless a save is failing: that message stays).
+      if (c.refused) {
+        c.refused = false
+        if (!saveError) page.postTo(c, { type: 'draft-saved' })
+      }
+      markDiscuss(draft)
+      pending = draft
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(flush, DRAFT_SAVE_MS)
     }
 
     /** Opens `url` on the device of the view that asked (§6: a guest's click opens on the guest's own screen). */
@@ -967,31 +1057,19 @@ exports.activate = (ctx) => {
     // What each page message does, by the access main filled in `from` (design-overlay-views §6's table).
     const onPageMessage = (m, from, c) => {
       const owner = isOwner(from)
-      if (m.type === 'draft') {
-        // A guest's note edits are dropped for now; Task 11 makes the notes shared (write guests' ops
-        // applied, with their author). Dropped before the waiters, so a guest's draft is never Discuss's.
-        if (!owner) return
-        for (const w of [...draftWaiters]) w.resolve(m.draft)
-        // A draft cleanDraft would cut is not stored (storing it, or sending it and deleting the
-        // draft, dropped the rest): the last good one stays, and the page says why.
-        const problem = review.draftProblem(m.draft)
-        if (problem) {
-          flush()
-          saving = saving.then(() => {
-            failed = null
-            showSaveError(problem)
-          })
-          return
+      if (m.type === 'note-add' || m.type === 'note-change' || m.type === 'note-delete' || m.type === 'global') {
+        applyOp(m, from, c)
+      } else if (m.type === 'draft-sync' || m.type === 'draft-unsaved') {
+        // A copy's answer to Discuss's sync ask. Only an owner's unsent text stops the Discuss.
+        for (const w of [...draftWaiters]) {
+          if (!w.waiting.has(c.id)) continue
+          if (m.type === 'draft-unsaved' && owner) {
+            w.reject(new Error('the draft is too large to send: shorten or delete a note first'))
+            continue
+          }
+          w.waiting.delete(c.id)
+          if (!w.waiting.size) w.resolve()
         }
-        draft = review.cleanDraft(m.draft)
-        markDiscuss(draft)
-        pending = draft
-        clearTimeout(saveTimer)
-        saveTimer = setTimeout(flush, DRAFT_SAVE_MS)
-      } else if (m.type === 'draft-unsaved') {
-        if (!owner) return
-        // The page's own size check refused the draft: Discuss would send an older one.
-        for (const w of [...draftWaiters]) w.reject(new Error('the draft is too large to send: shorten or delete a note first'))
       } else if (m.type === 'layout' && LAYOUTS.includes(m.layout)) {
         // The owner's app-wide pref; a guest's switch stays in its own copy (the page already switched).
         if (!owner) return
@@ -1053,15 +1131,16 @@ exports.activate = (ctx) => {
       }
     }
 
-    // The app's Discuss with Claude asks for the context (5 s): the review text built from the
-    // page's newest draft. Empty is fine (real-work feedback 9): build() then asks Claude to discuss
-    // the file or the text. A draft the host would cut, or one the page could not post, throws: the
-    // popover shows why and nothing is sent. The app adds `About:`, the type line and the note.
-    handle.onDiscuss(async () => {
-      const raw = await requestDraft()
-      const problem = review.draftProblem(raw)
-      if (problem) throw new Error(`not sent: ${problem}`)
-      const sent = review.cleanDraft(raw)
+    // The app's Discuss with Claude asks for the context (5 s): the review text built from the shared
+    // draft, once the editing copies' ops in flight are in (syncCopies). Empty is fine (real-work
+    // feedback 9): build() then asks Claude to discuss the file or the text. An owner's copy holding text
+    // it could not send throws: the popover shows why and nothing is sent. The app adds `About:`, the
+    // type line and the note.
+    handle.onDiscuss(async (from) => {
+      await syncCopies()
+      // The shared draft as it is now (applyOp never changes a draft in place, so this snapshot stays
+      // what was sent, whatever comes after).
+      const sent = draft
       const { text, cut } = subject.build(sent)
       const prompts = new Map()
       try {
@@ -1069,7 +1148,10 @@ exports.activate = (ctx) => {
       } catch (e) {
         ctx.log.warn(`sessions.list: ${e.message}`)
       }
-      discussed = { draft: sent, text, cut, prompts }
+      // An older app gives no `from`: its asks count as one view's.
+      const view = from && typeof from.view === 'string' ? from.view : ''
+      asks.delete(view)
+      asks.set(view, { draft: sent, text, cut, prompts })
       return { text }
     })
 
@@ -1077,14 +1159,17 @@ exports.activate = (ctx) => {
     // The page posts drafts as soon as it has its init: the listener above is in place first.
     page.fill({
       greet: (c) => {
+        // Marked before the post: a page may answer its init at once (an op in the same turn).
+        c.inited = true
         if (!page.postTo(c, initFor(c))) {
+          c.inited = false
           // Only a draft grown since the open's size check gets here: this copy says so, the others live.
           // Its Close follows the error page's rule (makePage).
           c.errorPage = true
           page.postTo(c, { type: 'failed', message: `${what} is too large to show here (with its draft).`, retry: false })
           return
         }
-        if (saveError && isOwner(c.from)) page.postTo(c, { type: 'draft-error', message: draftErrorText() })
+        if (saveError && canNote(c.from)) page.postTo(c, { type: 'draft-error', message: draftErrorText() })
       },
       message: onPageMessage,
     })
@@ -1125,7 +1210,7 @@ exports.activate = (ctx) => {
     /** Stores the full draft whenever Claude may not have all of it; says whether that worked. */
     async function keep(value, kept) {
       try {
-        await ctx.storage.set(draftKey, value)
+        await write(value)
         return kept
       } catch (e) {
         ctx.log.error(`draft save: ${e.message}`)
@@ -1134,32 +1219,38 @@ exports.activate = (ctx) => {
     }
 
     /**
-     * The app sent the review ({ kind: 'discussed', tabId, queued }): the draft goes once all of it
-     * reached Claude. A review cut to fit keeps the whole draft (deleting it lost the unsent part),
-     * and the person is told; a queued one keeps it until the tab takes it (watchQueued).
+     * The app sent the review ({ kind: 'discussed', tabId, queued }): what it sent goes from the draft once
+     * all of it reached Claude, and only that (review.subtractSent: the notes unchanged since the snapshot,
+     * the comment if unchanged), so a note added or edited on another screen while the popover was up
+     * stays. A review cut to fit keeps the whole draft (deleting it lost the unsent part), and the person
+     * is told; a queued one keeps it until the tab takes it (watchQueued). What is kept is the draft as it
+     * is now, never the snapshot (which would write over the notes added since).
      */
     async function sentToClaude(res) {
-      const sent = discussed
-      if (!sent) return // no context was asked for, so this is not the reviewer's text: keep the draft
-      if (sent.cut) {
-        ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_CONTEXT} characters. ${await keep(sent.draft, 'The full draft is kept.')}`)
+      const asked = [...asks.values()]
+      if (!asked.length) return // no context was asked for, so this is not the reviewer's text: keep the draft
+      const sent = review.commonSent(asked.map((a) => a.draft))
+      if (asked.some((a) => a.cut)) {
+        ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_CONTEXT} characters. ${await keep(draft, 'The full draft is kept.')}`)
         return
       }
       if (res.queued) {
         const KEPT = 'The draft is kept until Claude gets it.'
-        const kept = await keep(sent.draft, KEPT)
-        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, text: sent.text, sentDraft: sent.draft, prevPrompt: sent.prompts.get(res.tabId), kept: kept === KEPT })
+        const kept = await keep(draft, KEPT)
+        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, texts: asked.map((a) => a.text), sentDraft: sent, prevPrompt: asked.at(-1).prompts.get(res.tabId), kept: kept === KEPT })
         return
       }
-      // All of it reached Claude: only now does the draft go. A failed delete only leaves it.
-      await ctx.storage.delete(draftKey).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
+      // All of it reached Claude: only now does what it sent go. A failed write only leaves it.
+      const left = review.subtractSent(draft, sent)
+      draft = left
+      await serialNotes(draftKey, () => write(left)).catch((e) => ctx.log.warn(`draft delete: ${e.message}`))
       notesChanged(subject.path)
     }
 
     const done = handle.result
       .then(async (res) => {
         await flush()
-        for (const w of [...draftWaiters]) w.resolve(draft)
+        for (const w of [...draftWaiters]) w.resolve()
         if (res && res.kind === 'discussed' && typeof res.tabId === 'string') return sentToClaude(res)
         // Close, Esc, ✕: nothing is sent and the draft stays.
         return closedUnsaved()
@@ -1274,7 +1365,7 @@ exports.activate = (ctx) => {
     },
     // Additive in v1 (feature 'notes'): one more line note on a file's working-tree side, in the same
     // stored draft the overlay reads when it opens, so the note is there at the next review and in what
-    // Discuss sends. Refused while that file's review is open (its page owns the draft and would write
+    // Discuss sends. Refused while that file's review is open (its draft is the open review's and would write
     // over the note: the person adds it there), when the draft is full or too large, and for any input
     // the page's own note box would not take. Resolves { id }.
     async addNote(rel, note) {
@@ -1311,7 +1402,7 @@ exports.activate = (ctx) => {
     // Ask Claude) go, as the notes of a review Discuss delivered do (watchQueued): only those
     // whose id and text still match what the caller read, so a note edited or added since stays; the
     // global comment is never touched (notes() does not give it, so no caller sent it). A draft left with
-    // nothing in it is deleted. Refused while that file's review is open (its page owns the draft and
+    // nothing in it is deleted. Refused while that file's review is open (its draft is the open review's and
     // would write the notes back), as addNote is. Resolves { removed } (0: nothing matched).
     async removeNotes(rel, list) {
       try {
