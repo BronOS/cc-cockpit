@@ -1,5 +1,5 @@
 ---
-worth: later
+worth: no
 where: src/shared/webview-keys.ts
 added: 2026-11-19
 ---
@@ -20,3 +20,8 @@ Electron 45.1.0, 2026-11-19). Left:
   server Blink's own Mac key bindings do these; a Linux Blink has none for Alt. Mapping them to `moveWordLeft`,
   `moveWordRight`, `deleteWordBackward` needs the viewer's platform: from a Windows or Linux browser Alt+Left is
   Back. The decision is whether main may trust a viewer-reported platform for this (it only picks an edit command).
+
+**Decided 2026-11-20 (Oleg): don't fix.** On a Linux server these keys keep the Linux meaning, and Ctrl+E / Ctrl+K stay
+unmapped on every server; main does not take a viewer-reported platform for key handling. Kept so a review that finds the
+same gap (the check script still probes them) does not reopen it; `docs/features.md` ("Server mode" › "The Browser
+panel") states the limit.
