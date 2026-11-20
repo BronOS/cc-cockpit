@@ -248,6 +248,9 @@ External review: sol / high
 - [ ] non-`perView` guest note: "Open on <owner>'s screen. <Plugin> does not show its windows to guests." (owner views
   keep HeldElsewhere with Take over)
 - [ ] tests for the pure model parts (copy state per view, hide, note text); existing overlay tests pass
+- [ ] ➕ (Task 2 review) a ready copy whose emit to its view fails is dropped with no `reloadCopy` (`overlay-manager.ts`
+  ~1441): the shell must notice a copy it no longer gets (an `overlays.hide`, a reload, or a reconnect on the view's
+  next `overlays.list`) and connect again, so a transient emit failure never leaves a stuck page
 - [ ] run tests - must pass before task 9
 
 ### Task 9: Plugins page says whether a plugin's windows reach guests [model: sonnet]
