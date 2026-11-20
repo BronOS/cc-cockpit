@@ -1,7 +1,7 @@
 # Overlays in every view (guests included)
 
-Status: decided (Oleg, 2026-11-20, §8); revised after an independent review (codex sol/high, 12 findings, all taken:
-§4 provenance, §5 lifecycle and limits, §6 the Reviewer). Next: a plan. Builds on design-web.md §5.4 (an html overlay's
+Status: decided (Oleg, 2026-11-20, §8); revised after two independent reviews (codex sol/high: 12 findings, then 5
+still open and 6 new, all taken; D-4 settled the provenance scope). Next: a plan. Builds on design-web.md §5.4 (an html overlay's
 page in one view, Take over) and design-guests.md §9 and §16.3 (the `overlays.*` row: "a guest never holds an html
 overlay"), which this reverses for `perView` overlays; design-guests.md gets a pointer here.
 
@@ -62,26 +62,37 @@ bound, never from a page or a payload:
   `from.view`; it never relies on where its listener runs (the origin-view hint has a 10 s cap and expires to the owner's
   machine, `origin-view.ts:78`, `open-external.ts:93`).
 - `handle.close()` stays "close for everyone"; a `perView` plugin calls it only for an owner's or a write guest's request
-  (D-2). There is no plugin call to hide one copy: a read guest's hide is the shell's (§5).
+  (D-2). `handle.hide({ copy })` hides one copy in its own view (the overlay leaves that view's stack, as a read guest's
+  ✕ does); the Reviewer uses it for a read guest's in-page Close.
 
-Non-`perView` plugins see no change: the extra arguments are present and name the holder.
+`from` always names the actual caller, for every plugin, `perView` or not: a toolbar click or Discuss from any view (a
+write guest's included) carries that view and its access, never the holder's. Messages from a non-`perView` page come
+only from its holder, as today.
 
-## 4. Provenance: whose content an overlay shows
+## 4. Whose content an overlay shows (D-4)
 
-An overlay is shown to a guest only when **every plugin whose content it carries** is visible to that guest (or it came
-from a shared tab, as today). Main keeps that set per overlay as `origin.via`, only ever growing, never from a plugin's
-arguments alone:
+An overlay opened or filled **for** another plugin counts as that plugin's too: a guest gets it (its copies, its title,
+its entry in the stack) only when the opener **and every plugin it was opened or filled for** are visible to that
+guest, or when it came from a shared tab, as today. Main keeps that set per overlay as `origin.via`, only ever growing,
+never taken from a plugin's arguments alone:
 
-- The plugin host adds the service caller chain of the frame any overlay call is made in (`start`, `post`, buttons,
-  title): `ctx.services` already binds the consumer per call (`caller`). Content that arrives in a service call and is
-  shown in it is covered automatically.
-- Deferred fills leave the frame (`caller` is empty once the call settles, `services.ts:819`; events never carry it,
-  `:424`), so a provider that shows a consumer's content later attributes it itself: `handle.addSource(pluginId)`, with
-  `pluginId` read from `ctx.services.caller` while the call was live. The Reviewer does this for `prepare` → `annotate`
-  by key and for the page's `content` handshake (content is stored with the consumer that sent it).
-- Fail closed: a `perView` overlay of a plugin that provides a service, opened outside any service frame and never
-  attributed, is not shown to guests until its first content is attributed. The guide's provider rules say so; like
-  `caller`, it is a contract between plugins in one host, not a boundary.
+- **Inside a service call.** The plugin host adds the whole caller chain of the service frame any overlay call is made
+  in (`start`, `post`, title, buttons): for A → B → Reviewer, both A and B. `ctx.services` already binds the consumer
+  per call (`caller`, the innermost); the host keeps the chain it already walks and exposes it as
+  `ctx.services.callers()`.
+- **Deferred fills.** `caller` is empty once the call settles (`services.ts:819`) and events never carry it (`:424`), so
+  a provider that shows a request's content later records the chain while the call is live and attributes it before
+  that content leaves: `handle.addSources(ctx.services.callers())`. The Reviewer does this in `prepare` and `annotate`
+  (keyed fills) and keeps the chain with the stored content, so the page's later `content` request is already covered.
+- **A plugin's own content** (the Reviewer's diff of a file from its own command or a tab's `ccc`) has no `via`: it is
+  the opener's, shown when the opener is. No quarantine.
+- **Growth on a live overlay.** When `via` grows to include a plugin hidden from a guest that has copies, main releases
+  that guest's copies and drops their queued messages in the same synchronous step, before the post that carried the
+  new content is delivered to anyone; the overlay leaves that guest's stack.
+- **Scope**, said in the docs and on the Plugins page: this follows what other plugins ask a plugin to show. It does not
+  follow data a plugin fetches from another plugin and shows as its own (a visible plugin calling a hidden plugin's
+  service and displaying the answer): showing a plugin shows what it displays, as with panels today. Like `caller`, it is
+  a contract between plugins in one host, not a boundary.
 - The same set gates `overlays.updated` / `overlays.data` for non-`perView` overlays, which closes the 0.24.0 title leak.
 
 ## 5. Main and the shell
@@ -92,6 +103,17 @@ arguments alone:
   page would otherwise pass `shell-kind.ts:57`). A copy is registered on the page's port connect and released on unmount,
   reload, view gone or guest kicked (the shell tells main; main also drops a view's copies when the view goes), with the
   view joining and leaving `ctx.views` membership as panels do (`ui.ts:222`).
+- **Copy binding.** The shell's connect for a copy returns the copy id main minted; every later page → main call for it
+  (`loaded`, `message`, `result`, release) carries that id, and main accepts it only from the view the copy belongs to
+  and only while it is that view's live copy. Traffic from a replaced copy (a reload, a reconnect) is dropped, never
+  applied to its successor.
+- **Starting state before broadcasts.** A new copy joins broadcasts (`post` with no `copy`) with the plugin's first post
+  addressed to it, the starting state its `onConnect` sends; broadcasts before that are not queued for it. The host runs
+  one listener at a time and its posts reach main in order, so that starting state already reflects every earlier
+  broadcast and nothing arrives before it.
+- **Loading per copy.** A copy's `loaded` clears that copy's loader only (drawn state is per copy, in its own shell);
+  one copy's report, a guest's included, never clears another's. `info.loading` stays as today for non-`perView`
+  overlays.
 - **Limits.** Each copy's outbox (only while that copy is not ready) has today's bounds (100 messages, 8 MiB counted as
   today, by string length). Today an overflow throws to the plugin (`overlay-manager.ts:331`); for a fan-out that would
   let one slow copy fail every post, so a copy whose queue overflows is dropped and reloaded as a new copy (the plugin
@@ -118,13 +140,15 @@ handshake itself, so it would stay blank).
   `onConnect`, prepared (loading or failed) overlays included.
 - **Guest-safe payloads.** What a guest copy gets is projected: no host path (`sides` carries `root`, `host.js:472`,
   sent whole in `init`, `:643`; design-guests D-33), file names relative to the project only.
-- **Shared notes** (D-3). The draft is the host's: a page sends note edits (add, change, delete by note id) and the host
-  applies them, saves, and posts the change to every copy. Each note keeps `author` from `from.person` (absent = the
-  owner), stored through the draft cleaning (`lib/review.js:133` keeps the field), never taken from the page. `global`
-  is one text, last writer wins. Read guests' edits are dropped.
+- **Shared notes** (D-3). The draft is the host's: a page sends note edits and the host applies them, saves, and posts
+  the change to every copy. Note ids are the host's: a page's add carries a page-local tag, the host assigns the id and
+  answers the adding copy with the tag → id pair, and change and delete name host ids only (pages mint ids from a
+  millisecond clock and a local counter today, `review.js:540`, so two copies could collide). Each note keeps `author`
+  from `from.person` (absent = the owner), stored through the draft cleaning (`lib/review.js:133` keeps the field),
+  never taken from the page. `global` is one text, last writer wins. Read guests' edits are dropped.
 - **Discuss** sends the shared draft (write guests and the owner, as today). On delivery it removes only the notes it
-  sent, unchanged since the snapshot; notes added or edited meanwhile stay (today it deletes the whole draft,
-  `host.js:918`).
+  sent that are unchanged since the snapshot, and `global` only if it too is unchanged; anything added or edited
+  meanwhile stays (today it deletes the whole draft, `host.js:918`).
 
 What the host does with each page message, by `from.access` (the host decides, never the page):
 
@@ -137,7 +161,7 @@ What the host does with each page message, by `from.access` (the host decides, n
 | `view` (Original / Reader for a mail; re-emitted on the service) | re-emitted | that copy only | that copy only |
 | `action` (a consumer's button: Gmail archive, Inbox Done; re-emitted on the service) | re-emitted | dropped, not drawn | dropped, not drawn |
 | `open-url`, `open-link` | `ctx.openExternal(url, { view: from.view })` | same, on the guest's device | same, on the guest's device |
-| `close` (the page's own close, the failure page's too, `host.js:261`) | `handle.close()` | `handle.close()` (D-2) | nothing (the shell's hide covers it) |
+| `close` (the page's own close, the failure page's too, `host.js:261`) | `handle.close()` | `handle.close()` (D-2) | `handle.hide({ copy: from.copy })` |
 
 Toolbar buttons other plugins add by type (Inbox's Done on a mail) keep today's guest rule (shown to a guest only when
 that plugin is visible to it, pressed only by a write guest) and now get `from`, so a plugin can decide more narrowly.
@@ -155,6 +179,9 @@ Plugins page, where a plugin is shown to guests, says whether its windows (overl
   included; a read guest's ✕ hides only that guest's copy.
 - **D-3 Reviewer notes: shared, write guests edit too.** Owner and write guests add and edit notes live, merged per
   note, each note with its author; read guests see them and cannot edit. Discuss sends the one shared set.
+- **D-4 Content opened for a hidden plugin: hidden from guests.** An overlay another plugin asked for (a mail Gmail opens
+  in the Reviewer) reaches a guest only if that plugin is shown to guests too. Not followed: a plugin that copies a
+  hidden plugin's data into its own window, the same as panels; the docs say so (§4).
 
 ## 9. Not in this change
 
