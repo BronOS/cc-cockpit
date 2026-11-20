@@ -456,6 +456,8 @@ interface Ev {
   tag: number
   /** Pointer events: the page point the viewer aimed at. */
   px?: number
+  /** The layout epoch at hand-in. */
+  layoutAt?: number
   py?: number
   /** Keys, commands, texts: the spelling the sink sees. */
   entry: string
@@ -549,6 +551,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const covered = new Set<FrameName>()
   const big = new Map<FrameName, { bw: number; bh: number; skew: number }>()
   let bigOn = false
+  /** Counts layout changes (boxes, scroll, covers): a step whose hit test saw one change is excused the wrong-child check (ruling 2026-11-19 #8). */
+  let layoutEpoch = 0
   const modes = new Map<DocName, Mode>(DOCS.map((d) => [d, 'fast']))
   const qmodes = new Map<DocName, QueryMode>(DOCS.map((d) => [d, 'fast']))
   const sessionOf = new Map<DocName, Session>()
@@ -605,7 +609,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       const dy = y + s.y
       if (dx < rx || dx >= rx + rw || dy < ry || dy >= ry + rh) continue
       const e = effects.get(f.name)
-      if (e !== 'none') dirty.add(doc)
+      if (e !== 'none') {
+        dirty.add(doc)
+        layoutEpoch++
+      }
       if (e === 'cover') covered.add(f.name)
       else if (e === 'uncover') covered.delete(f.name)
       else if (e === 'flip') {
@@ -822,7 +829,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         const tag = tagOf(x, y)
         let found = byTag.get(tag)
         // The big frame scales the point 100 times, so a tag in its fractions is gone: the earliest unsent event of that kind with an aim.
-        if (!found && bigOn && session && (session.doc === 'A' || session.doc === 'B')) {
+        if (!found && bigOn && session && (session.doc === 'A' || session.doc === 'B') && !(x < 0 && y < 0)) {
           const kind = type === 'mousePressed' ? 'down' : type === 'mouseWheel' ? 'wheel' : type === 'mouseMoved' ? 'move' : 'up'
           found = evs.find((e) => e.kind === kind && e.attempts === 0 && e.px !== undefined && e.px >= 48 && e.px <= 52 && (e.py as number) >= 248 && (e.py as number) <= 252 && (kind !== 'up' || e.rid === `button:${String(p.button)}`))
         }
@@ -990,7 +997,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
    */
   function wrongChild(ev: Ev, session: Session | undefined): void {
     const b = big.get('A')
-    if (!bigOn || !b || !session || session.doc !== 'B' || ev.px === undefined || ev.py === undefined) return
+    if (!bigOn || !b || !session || session.doc !== 'B' || ev.px === undefined || ev.py === undefined || ev.layoutAt !== layoutEpoch) return
     const sp = scroll.get('page') as { x: number; y: number }
     if (sp.x !== 0 || sp.y !== 0 || (scroll.get('A') as { x: number; y: number }).x !== 0 || (scroll.get('A') as { x: number; y: number }).y !== 0) return
     const [rx, ry, rw, rh] = rects.get('A') as [number, number, number, number]
@@ -1113,6 +1120,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     ev.n = ++evSeq
     ev.epoch = gen
     ev.at = clock.now
+    ev.layoutAt = layoutEpoch
     evs.push(ev)
     if (ev.tag !== 0) byTag.set(ev.tag, ev)
     if (ev.kind === 'text' || ev.kind === 'cmd' || ev.kind === 'call') byEntry.set(ev.entry, ev)
@@ -1429,11 +1437,13 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         qmodes.set(action.doc, action.mode)
         break
       case 'box': {
+        layoutEpoch++
         const r = rects.get(action.frame) as [number, number, number, number]
         rects.set(action.frame, [Math.max(0, r[0] + action.dx), Math.max(0, r[1] + action.dy), r[2], r[3]])
         break
       }
       case 'scroll':
+        layoutEpoch++
         scroll.set(action.doc, { x: action.x, y: action.y })
         break
       case 'effect':
@@ -1468,6 +1478,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         faultRate = action.rate
         break
       case 'bigframe':
+        layoutEpoch++
         rects.set('A', [0, 200, 100, 100])
         rects.set('B', [4995, 4000, 1005, 2000])
         big.set('A', { bw: 10000, bh: 10000, skew: 0.4 })
@@ -1479,11 +1490,15 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         bigOn = false
         break
       case 'rendererGone':
-        router.rendererGone()
+        // Ruling 2026-11-19 #8: account before the call (it pumps synchronously and may start a new delivery on the healthy renderer).
+        // Ruling 2026-11-19 #9: the call stall is the renderer's too: rendererGone ends a hung call (no longer outstanding).
+        callHung.length = 0
+        callsOut = 0
         hung.length = 0
         detachedOut = 0
         detachedHang = false
         barrier = undefined
+        router.rendererGone()
         break
       case 'arm':
         armed = { ...action }
@@ -1504,10 +1519,16 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
     detachedHang = false
     for (const h of hung.splice(0)) h()
-    for (const h of callHung.splice(0)) h()
     for (const c of commands) if (!c.answered) c.resolve({})
     await clock.advance(0)
     for (let i = 0; i < 4; i++) await clock.advance(1000)
+    // Ruling 2026-11-19 #8: hung calls are released repeatedly until quiescence (a second one only starts after the first is released).
+    for (let i = 0; i < 60; i++) {
+      const more = callHung.length > 0
+      for (const h of callHung.splice(0)) h()
+      await clock.advance(600)
+      if (!more && callHung.length === 0) break
+    }
     const heldButtons = new Set<Button>()
     const heldKeys = new Map<string, InputModifier[]>()
     for (const action of script) {
