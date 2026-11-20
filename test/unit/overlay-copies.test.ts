@@ -68,6 +68,13 @@ describe("an html overlay's body in this view", () => {
     expect(htmlBodyOf(html({ perView: true }), owner, 'not-allowed')).toEqual({ kind: 'none' })
   })
 
+  it('a perView page this view has no path to (its opener hidden from the guest) is the note at once, never a frame', () => {
+    const noPath = { ...guest, hasPage: () => false }
+    expect(htmlBodyOf(html({ perView: true }), noPath)).toEqual({ kind: 'note', text: "Open on Oleg's screen." })
+    expect(htmlBodyOf(html({ perView: true }), { ...owner, hasPage: () => false })).toEqual({ kind: 'none' })
+    expect(htmlBodyOf(html({ perView: true }), { ...guest, hasPage: () => true })).toEqual({ kind: 'page' })
+  })
+
   it('any other overlay: the holder the page, the owner elsewhere Take over, a guest the note', () => {
     const held = html({ heldBy: { viewId: 'web:1', device: 'Phone' }, pluginTitle: 'Gmail' })
     expect(htmlBodyOf(held, browser)).toEqual({ kind: 'page' })

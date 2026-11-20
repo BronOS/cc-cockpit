@@ -77,11 +77,16 @@ export interface HtmlBodyShell {
   guest?: { ownerName: string }
   /** Whether this view holds a non-perView page (shell-kind holdsPage). */
   holds(heldBy: PageHolder | undefined): boolean
+  /**
+   * Whether this view can load a page at `src` (page-paths.ts shellPageUrl): a guest gets no path for a plugin hidden
+   * from it, and its frame would then never load, connect or be refused. Absent: always.
+   */
+  hasPage?(src: string): boolean
 }
 
 /**
  * The body of an html overlay here. A perView one loads its own copy in every eligible view, never in the hidden
- * page; a final refusal of this view's connect (`refused`) shows a guest the note (a shared tab's overlay whose
+ * page; a final refusal of this view's connect (`refused`), or no path to its page here, shows a guest the note (a shared tab's overlay whose
  * opener is hidden from it is in its list, but has no copy for it) and an owner view nothing. Any other overlay
  * has one holder: the holder shows the page (unless it is waiting for a browser), the owner's other views where it
  * is with Take over, and a guest the note.
@@ -90,6 +95,9 @@ export function htmlBodyOf(overlay: OverlayInfo, shell: HtmlBodyShell, refused?:
   const note = (): HtmlBody => ({ kind: 'note', text: guestNoteText(shell.guest?.ownerName ?? '', overlay.pluginTitle) })
   if (overlay.perView === true) {
     if (shell.hiddenPage) return { kind: 'none' }
+    // No path to the page here (a shared tab's overlay whose opener is hidden from this guest): the same answer as
+    // main's `not-allowed`, decided before a frame that could never connect would show its loader for good.
+    if (overlay.kind === 'html' && shell.hasPage?.(overlay.src) === false) refused ??= 'not-allowed'
     if (refused === undefined) return { kind: 'page' }
     return shell.guest !== undefined && refused === 'not-allowed' ? note() : { kind: 'none' }
   }

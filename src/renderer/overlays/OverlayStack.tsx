@@ -15,6 +15,7 @@ import { closeActionOf, htmlBodyOf, type CopyLineState } from './overlay-copies'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
 import { urlViewBounds, type ToolbarEntry } from './overlay-toolbar'
 import { TerminalOverlay } from './TerminalOverlay'
+import { shellPageUrl } from '../web/page-paths'
 
 /**
  * A terminal overlay's keystrokes, acks and size, through the overlay channels; a guest's gated like a
@@ -188,7 +189,12 @@ export function OverlayStack(props: {
   }, [topId, topKind, topPerView])
 
   const guest = currentGuest()
-  const bodyShell = { hiddenPage: isHiddenPage(), holds: holdsPage, ...(guest ? { guest: { ownerName: guest.ownerName } } : {}) }
+  const bodyShell = {
+    hiddenPage: isHiddenPage(),
+    holds: holdsPage,
+    hasPage: (src: string) => shellPageUrl(src) !== undefined,
+    ...(guest ? { guest: { ownerName: guest.ownerName } } : {})
+  }
 
   return (
     <>
