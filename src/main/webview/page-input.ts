@@ -129,7 +129,7 @@
 //              the frame an earlier script ran in (a handle, `ScriptFrame`, bound to that session's
 //              Lane, never to an id another session could take), `scriptInFocus` in the deepest
 //              focused cross-site frame (main walks `document.activeElement` down, an IFRAME's
-//              `frameId` from `DOM.describeNode`, a same-site frame's document looked into by the
+//              `frameId` from `DOM.describeNode`, a same-origin frame's document looked into by the
 //              script), else the top document. The top document's run is the adapter's
 //              (`isolated`, executeJavaScriptInIsolatedWorld in WEBVIEW_WORLD_ID, as before); a
 //              frame's is `Runtime.evaluate` in an isolated world `Page.createIsolatedWorld` makes on
@@ -187,8 +187,9 @@ export const FRAME_WORLD_NAME = 'cc-cockpit'
 const FOCUS_OBJECT_GROUP = 'cc-cockpit-focus'
 /**
  * Run in a document's isolated world by the focus walk: the element holding the focus there (into
- * open shadow roots and same-site frames, whose documents the script can read) when it is a frame
- * owner it cannot look into (a cross-site frame: main resolves it, `DOM.describeNode`), else null.
+ * open shadow roots and same-origin frames, whose documents the script can read) when it is a frame
+ * owner it cannot look into (a cross-origin frame: main resolves it, `DOM.describeNode`; a same-site
+ * cross-origin one is no cross-site frame's, see focusedLane), else null.
  */
 const FOCUSED_FRAME_SCRIPT = `(() => {
   let el = document.activeElement;
@@ -1023,7 +1024,8 @@ export class PageInputRouter implements ChildFrameObserver {
     for (let depth = 0; depth < MAX_FRAME_DEPTH && this.hasChildren(lane); depth++) {
       // Its cross-site children now: one that goes before the walk resolves the focus to it drops the
       // read (it, not its parent, held the focus), where an owner that never was one (a same-site
-      // frame's, or a frame not ready yet) is no cross-site frame's: its parent's document is read.
+      // cross-origin frame's, which stays in process, or a frame not ready yet) is no cross-site
+      // frame's: its parent's document is read.
       const children = [...this.frames.values()].filter((f) => f.parent === lane && f.ready)
       // The page's main frame is the tree's root (its id read there); the bracket as `evaluate`'s.
       const frame = await this.frameLoader(lane, lane === this.page ? undefined : lane.targetId, run)
