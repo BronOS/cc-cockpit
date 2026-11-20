@@ -918,12 +918,17 @@ exports.activate = (ctx) => {
     let failed = null // the draft whose write failed (retried once at close)
     // Discuss's waits for the editing copies to say all their ops are out (`draft-sync`).
     const draftWaiters = new Set()
-    // What the newest Discuss ask of each view handed the app: view -> { draft, text, cut, prompts }
+    // What the newest Discuss ask of each view handed the app: view -> { draft, text, cut, prompts, seq }
     // (prompts: each tab's lastPrompt then, so a queued review's delivery is told from the prompt before
     // it), the newest ask last. An ask whose send never happened (a refused send) is replaced by that
     // view's next one; two screens that both asked leave two, and since the app's answer does not say
-    // which was sent, a delivery clears only what both sent.
+    // which was sent, a delivery clears only what both sent. Whether it was cut and the prompt before it
+    // come from the delivered ask alone: main asks one Discuss at a time per overlay (`discussing`) and
+    // sends right after the answer, so the delivered text is the ask that started last (`seq`, taken at
+    // the call: an ask that timed out may still record after a newer one). A refused or older ask's `cut`
+    // must not mark an uncut delivered review as cut.
     const asks = new Map()
+    let askSeq = 0
     // The copies that hold the draft (their init went out) and may change it: they get its save errors
     // and Discuss's sync asks. A read guest's copy sees the notes and nothing about saving them.
     const editors = (c) => c.inited && canNote(c.from)
@@ -1137,6 +1142,7 @@ exports.activate = (ctx) => {
     // it could not send throws: the popover shows why and nothing is sent. The app adds `About:`, the
     // type line and the note.
     handle.onDiscuss(async (from) => {
+      const seq = ++askSeq
       await syncCopies()
       // The shared draft as it is now (applyOp never changes a draft in place, so this snapshot stays
       // what was sent, whatever comes after).
@@ -1151,12 +1157,12 @@ exports.activate = (ctx) => {
       // An older app gives no `from`: its asks count as one view's.
       const view = from && typeof from.view === 'string' ? from.view : ''
       asks.delete(view)
-      asks.set(view, { draft: sent, text, cut, prompts })
+      asks.set(view, { draft: sent, text, cut, prompts, seq })
       return { text }
     })
 
     // Every copy up now (prepare's loader, its error page) gets its init, later ones on their connect.
-    // The page posts drafts as soon as it has its init: the listener above is in place first.
+    // A page may send note ops as soon as it has its init: the listener above is in place first.
     page.fill({
       greet: (c) => {
         // Marked before the post: a page may answer its init at once (an op in the same turn).
@@ -1230,14 +1236,15 @@ exports.activate = (ctx) => {
       const asked = [...asks.values()]
       if (!asked.length) return // no context was asked for, so this is not the reviewer's text: keep the draft
       const sent = review.commonSent(asked.map((a) => a.draft))
-      if (asked.some((a) => a.cut)) {
+      const delivered = asked.reduce((a, b) => (b.seq > a.seq ? b : a))
+      if (delivered.cut) {
         ctx.notify(`Review of ${what} was too long and was cut at ${review.MAX_CONTEXT} characters. ${await keep(draft, 'The full draft is kept.')}`)
         return
       }
       if (res.queued) {
         const KEPT = 'The draft is kept until Claude gets it.'
         const kept = await keep(draft, KEPT)
-        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, texts: asked.map((a) => a.text), sentDraft: sent, prevPrompt: asked.at(-1).prompts.get(res.tabId), kept: kept === KEPT })
+        watchQueued({ what, draftKey, path: subject.path, tabId: res.tabId, texts: asked.map((a) => a.text), sentDraft: sent, prevPrompt: delivered.prompts.get(res.tabId), kept: kept === KEPT })
         return
       }
       // All of it reached Claude: only now does what it sent go. A failed write only leaves it.

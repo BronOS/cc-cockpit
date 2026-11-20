@@ -44,3 +44,101 @@ test('another copy\'s notes: added, changed by id, deleted; a refused add drops 
   assert.equal(dropTagged(notes, '~3'), true)
   assert.deepEqual(notes.map((n) => n.id), ['n2'])
 })
+
+test('convergence: an echo older than this page\'s unacked text is not taken; after the acks the next one is', async () => {
+  const { NoteSync } = await load()
+  const sync = new NoteSync()
+  const n = { id: 'n1', text: 'mine, typed twice' }
+  const notes = [n]
+  sync.sentChange(n)
+  sync.sentChange(n)
+  // Another copy's text the host applied before this page's two ops: older, dropped.
+  assert.equal(sync.remoteNote(notes, { id: 'n1', text: 'theirs' }), null)
+  sync.ack(notes, { id: 'n1' })
+  assert.equal(sync.remoteNote(notes, { id: 'n1', text: 'theirs' }), null, 'one op still out')
+  sync.ack(notes, { id: 'n1' })
+  sync.ack(notes, { id: 'n1' }) // a stray ack is harmless
+  assert.equal(sync.remoteNote(notes, { id: 'n1', text: 'theirs, later' }), 'changed')
+  assert.equal(n.text, 'theirs, later')
+  assert.equal(sync.remoteNote(notes, { id: 'n2', text: 'new' }), 'added')
+  assert.deepEqual(notes.map((x) => x.id), ['n1', 'n2'])
+})
+
+test('convergence: a note deleted here stays gone; one deleted elsewhere leaves `unsent` and `inflight`', async () => {
+  const { NoteSync } = await load()
+  const sync = new NoteSync()
+  const a = { id: 'a', text: 'x' }
+  const b = { id: 'b', text: 'y' }
+  const notes = [a, b]
+  // Deleted here: a late edit from another copy does not bring it back.
+  notes.splice(0, 1)
+  sync.deleted(a)
+  assert.equal(sync.remoteNote(notes, { id: 'a', text: 'edited elsewhere' }), null)
+  assert.deepEqual(notes.map((x) => x.id), ['b'])
+  // Held back while over the cap, then deleted on another screen: nothing left to send for it.
+  sync.unsent.add(b)
+  sync.sentChange(b)
+  assert.equal(sync.remoteDelete(notes, 'b'), true)
+  assert.equal(sync.unsent.size, 0)
+  assert.equal(sync.inflight.size, 0)
+  assert.equal(sync.remoteDelete(notes, 'b'), false)
+})
+
+test('convergence: the comment from another copy waits for this page\'s acks and clears its held-back text', async () => {
+  const { NoteSync } = await load()
+  const sync = new NoteSync()
+  const draft = { global: 'mine', notes: [] }
+  sync.sentGlobal()
+  assert.equal(sync.remoteGlobal(draft, 'theirs'), false)
+  assert.equal(draft.global, 'mine')
+  sync.ack(draft.notes, { global: true })
+  sync.unsent.add('global')
+  assert.equal(sync.remoteGlobal(draft, 'theirs'), true)
+  assert.equal(draft.global, 'theirs')
+  assert.equal(sync.unsent.has('global'), false)
+  assert.equal(sync.remoteGlobal(draft, 42), false)
+  sync.sentGlobal()
+  sync.reset()
+  assert.equal(sync.remoteGlobal(draft, 'after init'), true)
+})
+
+test('convergence: an add acked between an echo and a remote delete moves the located range and the focus to the host id', async () => {
+  const { NoteSync, tagOf, ackAdd, remapNoteId } = await load()
+  const sync = new NoteSync()
+  const tag = tagOf(3)
+  const mine = { id: tag, tag, text: 'pending' }
+  const notes = [{ id: 'x', text: 'other' }, mine]
+  const located = new Map([[tag, { start: 1, end: 4 }]])
+  let focused = tag
+  // Typed before the id came: the change went out by the tag (counted against the note object).
+  sync.sentChange(mine)
+  const r = ackAdd(notes, tag, { id: 'n9', author: 'Ann' })
+  focused = remapNoteId(located, focused, r.oldId, r.note.id)
+  assert.equal(focused, 'n9')
+  assert.deepEqual([...located.keys()], ['n9'])
+  assert.equal(remapNoteId(located, 'x', 'gone', 'n10'), 'x')
+  // The echo of another copy's older text for the now-named note is still behind this page's op.
+  assert.equal(sync.remoteNote(notes, { id: 'n9', text: 'old' }), null)
+  sync.ack(notes, { id: 'n9' })
+  assert.equal(sync.remoteNote(notes, { id: 'n9', text: 'newer' }), 'changed')
+  assert.equal(sync.remoteDelete(notes, 'x'), true)
+  assert.deepEqual(notes.map((n) => [n.id, n.text]), [['n9', 'newer']])
+})
+
+test('the size check: an error over the cap, none once another copy shrank the draft', async () => {
+  const { draftSizeError, NoteSync } = await load()
+  const sync = new NoteSync()
+  const draft = { global: '', notes: [{ id: 'a', text: 'x'.repeat(200) }, { id: 'b', text: 'y' }] }
+  assert.match(draftSizeError(draft, 150), /^Draft not saved: it is too large \(\d+ of 150 characters\)/)
+  sync.remoteDelete(draft.notes, 'a')
+  assert.equal(draftSizeError(draft, 150), '')
+})
+
+test('the page runs the size check again on each of the other copies\' changes (a "too large" copy recovers)', () => {
+  const page = require('node:fs').readFileSync(path.join(__dirname, '../src/page/review.js'), 'utf8')
+  for (const fn of ['onRemoteNote', 'onRemoteDelete', 'onRemoteGlobal']) {
+    const body = page.slice(page.indexOf(`function ${fn}(`), page.indexOf('\n}\n', page.indexOf(`function ${fn}(`)))
+    assert.match(body, /recheckSize\(\)/, fn)
+  }
+  assert.match(page, /function answerDraftRequest\(\)[\s\S]*?saveState\.tooLarge \|\| unsent\.size/)
+})

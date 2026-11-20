@@ -167,7 +167,8 @@ What the host does with each page message, by `from.access` (the host decides, n
 
 | Page message | Owner | Write guest | Read guest |
 |---|---|---|---|
-| note edits, `global`, `draft-unsaved` | applied, saved, sent to all copies | same, author = guest | dropped |
+| note edits, `global` | applied, saved, sent to all copies | same, author = guest | dropped |
+| `draft-unsaved` (Discuss's sync answer: text over the copy's size cap held back) | Discuss refused | that copy's unsent text left out; Discuss goes on (a guest must not be able to block the owner's Discuss with an oversized draft) | dropped |
 | `layout`, `split` (the owner's app-wide prefs in `ctx.appStorage`) | saved | that copy only, not saved | that copy only, not saved |
 | `content` (load the page's content) | yes | yes, projected | yes, projected |
 | `retry` (asks the consumer again: a service `action` with no `from`) | yes | dropped, button not drawn | dropped, not drawn |

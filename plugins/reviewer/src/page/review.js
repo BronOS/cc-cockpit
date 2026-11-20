@@ -83,7 +83,7 @@ import { markdownHtml, initialMarkdownView, markdownText } from './markdown.mjs'
 import { markHtmlLines, mdRangeLines, htmlRangeLines } from './html-lines.mjs'
 import { startBytes, formatSize } from './bytes.mjs'
 import { showPdfIn, pdfSelection, scrollToPage } from './pdf.js'
-import { tagOf, addOp, changeOp, deleteOp, ackAdd, upsertNote, removeNote, dropTagged } from './note-ops.mjs'
+import { tagOf, addOp, changeOp, deleteOp, ackAdd, dropTagged, draftSizeError, NoteSync, remapNoteId } from './note-ops.mjs'
 
 /* global ccPanel */
 
@@ -251,23 +251,25 @@ function showSaveState() {
   $('draft-error').hidden = !msg
 }
 
-// The texts this page did not send while its draft was over the size cap (note objects; `global` for
-// the comment): sent with the next op that fits, since a change carries the whole text.
-const unsent = new Set()
-// The text ops this page sent that the host has not acked yet (note object -> count; the comment's), and the
-// notes deleted here. While one is out, another copy's text for that note is older than this page's (the host
-// applies this page's after it) and is not shown; a deleted note does not come back with another copy's edit.
-const inflight = new Map()
-let globalInflight = 0
-const deletedHere = new Set()
+// The convergence state (note-ops.mjs NoteSync): the text ops out and not yet acked, the notes deleted here,
+// and `unsent`, the texts held back while the draft was over the size cap (sent with the next op that fits,
+// since a change carries the whole text).
+const sync = new NoteSync()
+const unsent = sync.unsent
 
 function sendChange(n) {
   ccPanel.post(changeOp(n))
-  inflight.set(n, (inflight.get(n) || 0) + 1)
+  sync.sentChange(n)
 }
 function sendGlobal() {
   ccPanel.post({ type: 'global', text: state.draft.global })
-  globalInflight++
+  sync.sentGlobal()
+}
+
+/** The size check run again: also for another copy's change, which can shrink (or grow) the draft here. */
+function recheckSize() {
+  saveState.tooLarge = draftSizeError(state.draft, DRAFT_JSON_MAX)
+  showSaveState()
 }
 
 /**
@@ -278,10 +280,7 @@ function sendGlobal() {
  */
 function postOp(op, what) {
   if (!state.canNote) return false
-  const size = JSON.stringify(state.draft).length
-  saveState.tooLarge =
-    size > DRAFT_JSON_MAX ? `Draft not saved: it is too large (${size} of ${DRAFT_JSON_MAX} characters). Shorten or delete a note; the last saved draft is kept.` : ''
-  showSaveState()
+  recheckSize()
   if (saveState.tooLarge && op.type !== 'note-delete' && op.type !== 'note-add') {
     if (what) unsent.add(what)
     return false
@@ -704,8 +703,7 @@ function renderNotes(focusId) {
       del.setAttribute('aria-label', 'Delete note')
       del.addEventListener('click', () => {
         state.draft.notes = state.draft.notes.filter((x) => x !== n)
-        unsent.delete(n)
-        deletedHere.add(n.id)
+        sync.deleted(n)
         postOp(deleteOp(n))
         renderNotes()
         refreshHighlights()
@@ -1617,29 +1615,19 @@ function onNoteAdded(m) {
   const r = ackAdd(state.draft.notes, m.tag, m.note)
   if (!r) return
   // The maps keyed by the note's id follow it from its tag to the host's id.
-  if (located.has(r.oldId)) {
-    located.set(r.note.id, located.get(r.oldId))
-    located.delete(r.oldId)
-  }
-  if (focusedNote === r.oldId) focusedNote = r.note.id
+  focusedNote = remapNoteId(located, focusedNote, r.oldId, r.note.id)
   if (r.note.author) renderNotesKeepingFocus()
 }
 
 function onAck(m) {
-  if (m.global === true) {
-    globalInflight = Math.max(0, globalInflight - 1)
-    return
-  }
-  const n = typeof m.id === 'string' ? state.draft.notes.find((x) => x.id === m.id) : null
-  if (n && inflight.get(n) > 1) inflight.set(n, inflight.get(n) - 1)
-  else if (n) inflight.delete(n)
+  sync.ack(state.draft.notes, m)
 }
 
+// Each of the other copies' changes runs the size check again: a copy that showed "too large" recovers
+// when another screen shrinks the draft (Add note unblocked, Discuss no longer answered `draft-unsaved`).
 function onRemoteNote(m) {
-  if (!m.note || deletedHere.has(m.note.id)) return
-  const mine = state.draft.notes.find((x) => x.id === m.note.id)
-  if (mine && inflight.get(mine)) return // this page's newer text is on its way
-  const what = upsertNote(state.draft.notes, m.note)
+  const what = sync.remoteNote(state.draft.notes, m.note)
+  if (what) recheckSize()
   if (what === 'added') renderNotesKeepingFocus()
   else if (what === 'changed') {
     const n = state.draft.notes.find((x) => x.id === m.note.id)
@@ -1652,13 +1640,14 @@ function onRemoteNote(m) {
 }
 
 function onRemoteDelete(m) {
-  if (removeNote(state.draft.notes, m.id)) renderNotesKeepingFocus()
+  if (!sync.remoteDelete(state.draft.notes, m.id)) return
+  recheckSize()
+  renderNotesKeepingFocus()
 }
 
 function onRemoteGlobal(m) {
-  if (typeof m.text !== 'string' || globalInflight) return
-  state.draft.global = m.text
-  unsent.delete('global')
+  if (!sync.remoteGlobal(state.draft, m.text)) return
+  recheckSize()
   setValueKeepingCaret($('global'), m.text)
 }
 
@@ -1681,8 +1670,7 @@ function init(m) {
   state.canNote = m.canNote !== false
   document.body.classList.toggle('read-only', !state.canNote)
   $('global').readOnly = !state.canNote
-  inflight.clear()
-  globalInflight = 0
+  sync.reset()
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
   state.canOpenLinks = m.canOpenLinks === true
   // A guest's copy (`canAct: false`): the caller's buttons are not the guest's to press (the host drops
