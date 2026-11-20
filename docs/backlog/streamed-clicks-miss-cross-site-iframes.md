@@ -22,8 +22,10 @@ proven on macOS and the Linux VM, Electron 45.1.0, 2026-11-20, by `scripts/offsc
   the frame element's content quad (`DOM.getContentQuads`, the router's three-corner rule), and bind the popup's
   `ScriptFrame` to (lane, frame id, loaderId) so the choice runs there or nowhere.
 - A sandboxed iframe (allow-scripts only) that Chromium isolates in its own process (Electron 45.1.0 does on macOS
-  and Linux, `scripts/offscreen-input-check.mjs` D, 2026-11-20): copy works in it on both, and on macOS its select
-  gets a popup, but on the Linux VM the press goes to the page (no popup). Not looked into; the check prints it.
+  and Linux, `scripts/offscreen-input-check.mjs` D, 2026-11-20): copy worked in it on both, and on macOS its select
+  got a popup, but in the one Linux VM run the press went to the page (no popup). One observation, not looked into;
+  the check prints it. Next step: press D's select a second time on the VM; a popup then means the frame's first
+  script missed the 50 ms hit deadline (a world made cold), none means a real gap in the route to that frame.
 - A same-origin iframe under a transform other than a translation (scale, rotation, skew, 3D, `zoom`, an SVG
   ancestor): the scripts refuse it (no popup; the press goes to the page), since the DOM gives no box corners to
   invert through. The route above (`DOM.getContentQuads` on the frame element) would map it exactly.

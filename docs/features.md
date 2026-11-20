@@ -1042,8 +1042,8 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
 - *What does not:* file uploads (a file input does nothing), downloads, drag and drop into the page, sound, camera and
   other permissions, and URL overlays (`ccc overlay --url`, still refused). The page's own `alert`, `confirm` and
   `prompt` are silenced (`alert` returns at once, `confirm` answers no, `prompt` throws in the page). A `<select>`
-  inside a same-site but cross-origin iframe (another port or subdomain of the same site), a sandboxed iframe kept in
-  the page's process, a same-origin iframe that is scaled, rotated or otherwise transformed beyond a move, or a closed
+  inside a same-site but cross-origin iframe (another port or subdomain of the same site), a sandboxed iframe (one
+  kept in the page's process always; an isolated one was seen keyboard-only on a Linux server), a same-origin iframe that is scaled, rotated or otherwise transformed beyond a move, or a closed
   shadow root, and a `multiple` or `size` > 1 list, are keyboard-only (focus it, arrows, Enter); text selected inside
   such a frame is not copied by Ctrl/Cmd+C or cut. A Mac's Option+arrows and
   Option+Backspace (by word) work only on a macOS server, and a Mac's Ctrl+E and Ctrl+K on none. A touch drag on a phone

@@ -317,8 +317,8 @@ the fallback when the protocol detached:
 
 `scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19; the Linux VM, headless, 2026-11-20): click, double click, typing, edit
 chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,
-one at `scale(0.5)`, with the top page and the frame scrolled; a same-site frame, and a cross-site one inside a scrolled
-same-site frame; a link dragged; Tab into the frame; the allow-listed keys the same as `sendInputEvent`'s; 50 rounds of
+one at `scale(0.5)`, with the top page and the frame scrolled; a same-origin frame, and a cross-site one inside a scrolled
+same-origin frame; a link dragged; Tab into the frame; the allow-listed keys the same as `sendInputEvent`'s; 50 rounds of
 clicks and typing across four documents in order. A pointer event costs about one frame to be answered (16 ms on
 macOS, 33 ms on the Linux VM), the same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
 by the whole delta (a 120 px wheel moved a 60 px tall box by 120, `sendInputEvent`'s by 60, its height), as a trackpad
@@ -458,7 +458,7 @@ page's input there two route deadlines at most (200 ms for the route, 200 ms for
 stalled from then on and asked nothing more; a copy read waits at most 500 ms for its frame part. A page with no
 cross-site frame sends no new protocol command. Proven under Electron
 (`scripts/offscreen-input-check.mjs`, macOS and the Linux VM, 2026-11-20): a select in a cross-site frame, one nested in
-it, one at `scale(0.5)` and one in a cross-site frame inside a same-site one (that frame scrolled) opens the popup with
+it, one at `scale(0.5)` and one in a cross-site frame inside a same-origin one (that frame scrolled) opens the popup with
 its options over the select, the press reaches no document, the select holds the focus (each frame above it its frame),
 and a choice sets the value and fires `input` and `change` there only; a double-clicked word and a field's selected
 text in each of those documents is what the read returns.
@@ -492,10 +492,11 @@ Keyboard-only still: a select inside a same-site but cross-origin iframe, or a s
 `allow-same-origin` that Chromium keeps in its parent's process (their documents are unreadable from the isolated
 world, and the router has no route into them: it would need a world made in that frame by its id on the owning
 session, backlog `streamed-clicks-miss-cross-site-iframes.md`), a same-origin frame under a transform other than a
-translation, a closed shadow root (a sandboxed frame Chromium isolates in its own process is reached as a cross-site
-one: copy works there on macOS and Linux, its select popup on macOS only, the press going to the page on the Linux VM,
-not looked into), and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on
-itself. Text selected inside those frames is not read for copy (the read takes the document holding the frame
+translation, a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on
+itself. A sandboxed frame Chromium isolates in its own process (Electron 45.1.0 does, macOS and Linux) is reached as a
+cross-site one: copy worked there in both runs of the check (2026-11-20), and its select got a popup on macOS, but in
+the one Linux VM run the press went to the page instead (not looked into: backlog
+`streamed-clicks-miss-cross-site-iframes.md`). Text selected inside those frames is not read for copy (the read takes the document holding the frame
 element). Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS `zoom`.
 
 ## 5. Limits
