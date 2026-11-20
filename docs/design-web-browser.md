@@ -492,7 +492,9 @@ Keyboard-only still: a select inside a same-site but cross-origin iframe, or a s
 `allow-same-origin` that Chromium keeps in its parent's process (their documents are unreadable from the isolated
 world, and the router has no route into them: it would need a world made in that frame by its id on the owning
 session, backlog `streamed-clicks-miss-cross-site-iframes.md`), a same-origin frame under a transform other than a
-translation, a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on
+translation, a closed shadow root (a sandboxed frame Chromium isolates in its own process is reached as a cross-site
+one: copy works there on macOS and Linux, its select popup on macOS only, the press going to the page on the Linux VM,
+not looked into), and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on
 itself. Text selected inside those frames is not read for copy (the read takes the document holding the frame
 element). Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS `zoom`.
 

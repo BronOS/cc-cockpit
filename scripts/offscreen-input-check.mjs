@@ -47,7 +47,8 @@
 // keys and texts after each, nothing awaited, and the top document's "abc" é Ctrl+A "x" and
 // "abc" é "d". Printed, never failures: a select and a selection in O and D (keyboard-only where
 // main's scripts do not reach: O's document is unreadable from the isolated world; D's process is
-// printed, an isolated sandboxed frame is reached as a cross-site one), Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
+// printed, an isolated sandboxed frame is reached as a cross-site one: copy there on macOS and Linux,
+// a select popup on macOS only, 2026-11-20), Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
 // and the router's cost per pointer event in each document, and per key event (the protocol's own
 // answer, fast typing and a held key's repeat through the router; that every key lands is a check).
 //
