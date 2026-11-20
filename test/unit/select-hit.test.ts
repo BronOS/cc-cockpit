@@ -11,8 +11,10 @@ import {
   chooseScript,
   HIT_TIMEOUT_MS,
   hitScript,
+  MAX_FRAME_ANCESTORS,
   MAX_HELD_EVENTS,
   MAX_OPTION_LABEL,
+  MAX_SAME_ORIGIN_DEPTH,
   MAX_SELECT_OPTIONS,
   newSelectId,
   parseHitResult,
@@ -109,16 +111,93 @@ class FakeEvent {
 /** A page whose elementFromPoint answers `at`; one context, so the isolated world's globals persist. */
 function world(at: unknown) {
   const calls: Array<[number, number]> = []
-  const context = createContext({
-    document: {
-      elementFromPoint: (x: number, y: number) => {
-        calls.push([x, y])
-        return at
-      }
-    },
-    Event: FakeEvent
-  })
+  const document = {
+    elementFromPoint: (x: number, y: number) => {
+      calls.push([x, y])
+      return at
+    }
+  }
+  // The select found there lives in this document (chooseScript checks its document is the script's).
+  const found = (at as { closest?: (q: string) => unknown } | null)?.closest?.('select')
+  if (found && typeof found === 'object' && !('ownerDocument' in found)) Object.assign(found, { ownerDocument: document })
+  const context = createContext({ document, Event: FakeEvent })
   return { run: (code: string): unknown => runInContext(code, context), calls, context }
+}
+
+// A same-origin frame tree: documents whose elementFromPoint answers what is placed in them, frame
+// elements with their box (border box at left/top, border and padding as [left, top, right, bottom]),
+// computed style, ancestors and window, as the isolated world reads them.
+type Box = [number, number, number, number]
+interface FakeDoc {
+  at: unknown
+  calls: Array<[number, number]>
+  elementFromPoint(x: number, y: number): unknown
+  defaultView: { getComputedStyle(el: unknown): Record<string, string>; frameElement: unknown } | null
+}
+function fakeDoc(at: unknown = null): FakeDoc {
+  const doc: FakeDoc = {
+    at,
+    calls: [],
+    elementFromPoint(x: number, y: number) {
+      doc.calls.push([x, y])
+      return doc.at
+    },
+    defaultView: {
+      getComputedStyle: (el: unknown) => ({ ...((el as { style?: Record<string, string> }).style ?? {}) }),
+      frameElement: null
+    }
+  }
+  return doc
+}
+function fakeFrame(
+  owner: FakeDoc,
+  child: FakeDoc | null,
+  spec: { left?: number; top?: number; width?: number; height?: number; border?: Box; padding?: Box; style?: Record<string, string>; parentElement?: unknown } = {}
+) {
+  const { left = 100, top = 200, width = 300, height = 150 } = spec
+  const [bl, bt, br, bb] = spec.border ?? [0, 0, 0, 0]
+  const [pl, pt, pr, pb] = spec.padding ?? [0, 0, 0, 0]
+  const outerW = width + bl + br + pl + pr
+  const outerH = height + bt + bb + pt + pb
+  const frame = {
+    tagName: 'IFRAME',
+    namespaceURI: 'http://www.w3.org/1999/xhtml',
+    shadowRoot: null,
+    isConnected: true,
+    closest: () => null,
+    ownerDocument: owner,
+    parentElement: spec.parentElement ?? null,
+    contentDocument: child as unknown,
+    contentWindow: { innerWidth: width, innerHeight: height },
+    style: {
+      borderLeftWidth: `${bl}px`,
+      borderTopWidth: `${bt}px`,
+      paddingLeft: `${pl}px`,
+      paddingTop: `${pt}px`,
+      paddingRight: `${pr}px`,
+      paddingBottom: `${pb}px`,
+      transform: 'none',
+      ...spec.style
+    },
+    offsetWidth: Math.round(outerW),
+    offsetHeight: Math.round(outerH),
+    clientWidth: width + pl + pr,
+    clientHeight: height + pt + pb,
+    getBoundingClientRect: () => ({ left, top, width: outerW, height: outerH })
+  }
+  if (child?.defaultView) child.defaultView.frameElement = frame
+  return frame
+}
+/** A world whose document is `top` (a fakeDoc), one context as world(). */
+function frameWorld(top: FakeDoc) {
+  const context = createContext({ document: top, Event: FakeEvent })
+  return (code: string): unknown => runInContext(code, context)
+}
+/** A select placed in `doc` (its rectangle in that document's viewport). */
+function selectIn(doc: FakeDoc) {
+  const select = Object.assign(fakeSelect({ selectedIndex: 0 }), { ownerDocument: doc })
+  doc.at = select
+  return select
 }
 
 describe('hitScript and chooseScript (run in the isolated world)', () => {
@@ -165,7 +244,7 @@ describe('hitScript and chooseScript (run in the isolated world)', () => {
     expect(world(self).run(hitScript(1, 1, ID))).toBeNull()
   })
 
-  it('is null for anything that is no single-choice, enabled select (an iframe included)', () => {
+  it('is null for anything that is no single-choice, enabled select (a frame it cannot read included)', () => {
     expect(world(null).run(hitScript(1, 1, ID))).toBeNull()
     expect(world({ tagName: 'IFRAME', shadowRoot: null, closest: () => null }).run(hitScript(1, 1, ID))).toBeNull()
     expect(world(fakeSelect({ disabled: true })).run(hitScript(1, 1, ID))).toBeNull()
@@ -234,6 +313,183 @@ describe('hitScript and chooseScript (run in the isolated world)', () => {
     expect(() => chooseScript('A'.repeat(32), 1)).toThrow(/bad popup id/)
     expect(() => hitScript(Number.NaN, 1, ID)).toThrow(/bad number/)
     expect(() => chooseScript(ID, Infinity)).toThrow(/bad number/)
+  })
+})
+
+describe('hitScript and chooseScript in same-origin frames (design-web-browser.md §4.4)', () => {
+  it("steps into a same-origin frame through its border and padding; the rectangle comes back in the script's document", () => {
+    const top = fakeDoc()
+    const child = fakeDoc()
+    const select = selectIn(child)
+    // Uneven border and padding (left 3 + 4, top 5 + 6), so a mix-up of sides shows.
+    top.at = fakeFrame(top, child, { left: 100, top: 200, border: [3, 5, 2, 1], padding: [4, 6, 8, 9] })
+    const run = frameWorld(top)
+    const result = run(hitScript(150, 260, ID))
+    expect(top.calls).toEqual([[150, 260]])
+    expect(child.calls).toEqual([[150 - 107, 260 - 211]])
+    // fakeSelect's rectangle is (10, 20) 150x24 in the child's viewport.
+    expect(result).toMatchObject({ select: true, rect: { x: 117, y: 231, width: 150, height: 24 } })
+    expect(select.focused).toBe(true)
+    expect(run(chooseScript(ID, 2))).toBe(true)
+    expect(select.selectedIndex).toBe(2)
+    expect(select.events).toEqual(['input bubbles 2', 'change bubbles 2'])
+  })
+
+  it('steps through nested same-origin frames, the offsets summed both ways', () => {
+    const top = fakeDoc()
+    const mid = fakeDoc()
+    const leaf = fakeDoc()
+    const select = selectIn(leaf)
+    top.at = fakeFrame(top, mid, { left: 50, top: 60, border: [2, 2, 2, 2] })
+    mid.at = fakeFrame(mid, leaf, { left: 10, top: 20, padding: [1, 3, 1, 3] })
+    const run = frameWorld(top)
+    expect(run(hitScript(100, 120, ID))).toMatchObject({ select: true, rect: { x: 10 + 52 + 11, y: 20 + 62 + 23 } })
+    expect(mid.calls).toEqual([[48, 58]])
+    expect(leaf.calls).toEqual([[37, 35]])
+    expect(run(chooseScript(ID, 1))).toBe(true)
+    expect(select.selectedIndex).toBe(1)
+  })
+
+  it('a translated frame is stepped into (its rectangle has the translation); its point the same way', () => {
+    const styles: Array<Record<string, string>> = [{ transform: 'matrix(1, 0, 0, 1, 30, -12.5)' }, { translate: '30px -12.5px' }, { zoom: '1', rotate: 'none', scale: 'none', offsetPath: 'none' }]
+    for (const style of styles) {
+      const top = fakeDoc()
+      const child = fakeDoc()
+      selectIn(child)
+      top.at = fakeFrame(top, child, { left: 130, top: 187.5, style })
+      expect(frameWorld(top)(hitScript(140, 200, ID))).toMatchObject({ select: true, rect: { x: 140, y: 207.5 } })
+      expect(child.calls).toEqual([[10, 12.5]])
+    }
+  })
+
+  it('stops at a frame it cannot read (cross-origin, sandboxed, throwing): no hit, nothing below asked', () => {
+    for (const content of [null, undefined]) {
+      const top = fakeDoc()
+      top.at = fakeFrame(top, null)
+      ;(top.at as { contentDocument: unknown }).contentDocument = content
+      expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+    }
+    const top = fakeDoc()
+    const child = fakeDoc()
+    selectIn(child)
+    const frame = fakeFrame(top, child)
+    Object.defineProperty(frame, 'contentDocument', {
+      get() {
+        throw new Error('SecurityError')
+      }
+    })
+    top.at = frame
+    expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+    expect(child.calls).toEqual([])
+  })
+
+  it('refuses a frame under any transform it cannot invert exactly: no popup, nothing below asked', () => {
+    const refused: Array<Record<string, string>> = [
+      { transform: 'matrix(0.5, 0, 0, 0.5, 0, 0)' },
+      { transform: 'matrix(0.999848, 0.0174524, -0.0174524, 0.999848, 0, 0)' },
+      { transform: 'matrix(1, 0, 0.2, 1, 0, 0)' },
+      { transform: 'matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 40, 1)' },
+      { rotate: '1deg' },
+      { scale: '1.5' },
+      { translate: '10px 0px 40px' },
+      { offsetPath: 'path("M 0 0 L 100 100")' },
+      { zoom: '2' }
+    ]
+    for (const style of refused) {
+      const top = fakeDoc()
+      const child = fakeDoc()
+      selectIn(child)
+      top.at = fakeFrame(top, child, { style })
+      expect(frameWorld(top)(hitScript(150, 260, ID)), JSON.stringify(style)).toBeNull()
+      expect(child.calls).toEqual([])
+    }
+  })
+
+  it('refuses a transformed ancestor (through a shadow host and a slot), an SVG one, and a box drawn at another size', () => {
+    const scaled = { style: { transform: 'matrix(2, 0, 0, 2, 0, 0)' }, namespaceURI: 'http://www.w3.org/1999/xhtml', parentElement: null }
+    const shadowRoot = { host: scaled }
+    const slot = { style: {}, namespaceURI: 'http://www.w3.org/1999/xhtml', parentElement: null, parentNode: shadowRoot }
+    const inShadow = { style: {}, namespaceURI: 'http://www.w3.org/1999/xhtml', assignedSlot: slot, parentElement: null }
+    const svg = { style: {}, namespaceURI: 'http://www.w3.org/2000/svg', parentElement: null }
+    for (const parentElement of [scaled, inShadow, svg]) {
+      const top = fakeDoc()
+      const child = fakeDoc()
+      selectIn(child)
+      top.at = fakeFrame(top, child, { parentElement })
+      expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+      expect(child.calls).toEqual([])
+    }
+    // Drawn larger than laid out (a scale no style named), or a viewport not the content box's size.
+    const top = fakeDoc()
+    const child = fakeDoc()
+    selectIn(child)
+    const frame = fakeFrame(top, child)
+    frame.offsetWidth = 150
+    top.at = frame
+    expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+    const frame2 = fakeFrame(top, child)
+    frame2.contentWindow.innerWidth = 600
+    top.at = frame2
+    expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+    // A fractional box: offsetWidth is rounded, a pixel's difference is no refusal.
+    const top3 = fakeDoc()
+    const child3 = fakeDoc()
+    selectIn(child3)
+    top3.at = fakeFrame(top3, child3, { width: 300.4 })
+    expect(frameWorld(top3)(hitScript(150, 260, ID))).toMatchObject({ select: true })
+  })
+
+  it(`steps at most ${MAX_SAME_ORIGIN_DEPTH} frames down and checks at most ${MAX_FRAME_ANCESTORS} boxes up`, () => {
+    const build = (levels: number) => {
+      const docs = [fakeDoc()]
+      for (let i = 0; i < levels; i++) {
+        const child = fakeDoc()
+        ;(docs[i] as FakeDoc).at = fakeFrame(docs[i] as FakeDoc, child, { left: 0, top: 0 })
+        docs.push(child)
+      }
+      selectIn(docs[levels] as FakeDoc)
+      return docs
+    }
+    expect(frameWorld(build(MAX_SAME_ORIGIN_DEPTH)[0] as FakeDoc)(hitScript(5, 5, ID))).toMatchObject({ select: true })
+    expect(frameWorld(build(MAX_SAME_ORIGIN_DEPTH + 1)[0] as FakeDoc)(hitScript(5, 5, ID))).toBeNull()
+    let parent: unknown = null
+    for (let i = 0; i < MAX_FRAME_ANCESTORS; i++) parent = { style: {}, namespaceURI: 'http://www.w3.org/1999/xhtml', parentElement: parent }
+    const top = fakeDoc()
+    const child = fakeDoc()
+    selectIn(child)
+    top.at = fakeFrame(top, child, { parentElement: parent })
+    expect(frameWorld(top)(hitScript(150, 260, ID))).toBeNull()
+  })
+
+  it('chooses nothing once the frame navigated, was replaced or removed, or its document left (a same-origin frame keeps the world)', () => {
+    const cases: Array<(frame: ReturnType<typeof fakeFrame>, child: FakeDoc) => void> = [
+      (frame) => {
+        frame.contentDocument = fakeDoc()
+      },
+      (frame) => {
+        frame.isConnected = false
+      },
+      (_frame, child) => {
+        child.defaultView = null
+      },
+      (_frame, child) => {
+        if (child.defaultView) child.defaultView.frameElement = null
+      }
+    ]
+    for (const change of cases) {
+      const top = fakeDoc()
+      const child = fakeDoc()
+      const select = selectIn(child)
+      const frame = fakeFrame(top, child)
+      top.at = frame
+      const run = frameWorld(top)
+      expect(run(hitScript(150, 260, ID))).toMatchObject({ select: true })
+      change(frame, child)
+      // The select itself still reads connected (to its own, now frameless, document).
+      expect(run(chooseScript(ID, 1))).toBe(false)
+      expect(select.selectedIndex).toBe(0)
+      expect(select.events).toEqual([])
+    }
   })
 })
 

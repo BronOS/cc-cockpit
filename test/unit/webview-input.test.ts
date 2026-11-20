@@ -17,6 +17,7 @@ import {
   MAX_SELECTION_CHARS,
   MAX_TEXT_BYTES,
   SELECTION_SCRIPT,
+  MAX_FOCUS_STEPS,
   type InputModifier,
   INPUT_BURST,
   INPUT_RATE,
@@ -1208,11 +1209,14 @@ describe('cleanSelection', () => {
 describe('SELECTION_SCRIPT (run in the isolated world)', () => {
   /** Runs the script against a fake DOM, as the isolated world would. */
   function run(activeElement: unknown, selection: string | null): unknown {
-    return runInNewContext(SELECTION_SCRIPT, {
-      document: { activeElement },
-      getSelection: () => (selection === null ? null : { toString: () => selection })
-    })
+    return runInNewContext(SELECTION_SCRIPT, { document: doc(activeElement, selection) })
   }
+  /** A document: its focused element and its own selection. */
+  function doc(activeElement: unknown, selection: string | null) {
+    return { activeElement, getSelection: () => (selection === null ? null : { toString: () => selection }) }
+  }
+  /** A focused frame element holding `content` (null: a document the isolated world cannot read). */
+  const frame = (content: unknown, tag = 'IFRAME') => ({ tagName: tag, contentDocument: content })
   const field = (tag: string, type: string, value: string, start: number, end: number) => ({
     tagName: tag,
     type,
@@ -1250,6 +1254,40 @@ describe('SELECTION_SCRIPT (run in the isolated world)', () => {
       selectionEnd: 0
     }
     expect(run(email, 'from the document')).toBe('from the document')
+  })
+
+  it("follows the focus into same-origin frames and reads the innermost document's selection or field", () => {
+    // A word selected in a same-origin frame: the top's own selection is empty, the frame's holds it.
+    expect(run(frame(doc({ tagName: 'BODY' }, 'inner word')), '')).toBe('inner word')
+    // Two levels, through a shadow root holding the frame, and a FRAME of a frameset.
+    const leaf = doc(field('INPUT', 'text', 'deep field', 5, 10), 'not this')
+    expect(run(frame(doc(frame(leaf), 'nor this')), 'nor the top')).toBe('field')
+    expect(run({ tagName: 'MY-EMBED', shadowRoot: { activeElement: frame(doc({ tagName: 'BODY' }, 'shadowed')) } }, '')).toBe('shadowed')
+    expect(run(frame(doc({ tagName: 'BODY' }, 'framed'), 'frame'), '')).toBe('framed')
+    // A password field in a frame is still never read.
+    expect(run(frame(doc(field('INPUT', 'password', 'hunter2', 0, 7), 'hunter2')), 'top')).toBe('')
+    // The frame's document holds no focus of its own: its selection all the same.
+    expect(run(frame(doc(null, 'no focus')), '')).toBe('no focus')
+  })
+
+  it("stops at a frame it cannot read (cross-origin, sandboxed, throwing) and reads that document's selection", () => {
+    expect(run(frame(null), 'the top')).toBe('the top')
+    const throwing = {
+      tagName: 'IFRAME',
+      get contentDocument(): unknown {
+        throw new Error('SecurityError')
+      }
+    }
+    expect(run(throwing, 'the top')).toBe('the top')
+    // A frame inside a same-origin one that cannot be read: the same-origin one's selection.
+    expect(run(frame(doc(frame(null), 'middle')), 'top')).toBe('middle')
+  })
+
+  it(`follows the focus at most ${MAX_FOCUS_STEPS} steps (a page cannot make the read loop)`, () => {
+    // A frame whose document's focus is itself: the walk ends at the cap and reads that document.
+    const loop: { tagName: string; contentDocument: unknown } = { tagName: 'IFRAME', contentDocument: null }
+    loop.contentDocument = doc(loop, 'looped')
+    expect(run(loop, 'top')).toBe('looped')
   })
 
   it(`cuts the text to ${MAX_SELECTION_CHARS} units before it leaves the page`, () => {
