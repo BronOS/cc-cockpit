@@ -1172,8 +1172,12 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   /** A detached road as Electron's: it lands a little later (an IPC), so a router that does not wait for it reorders. */
   let detachedHang = false
   let callsOut = 0
+  /** Calls outstanding on the current renderer (a renderer-gone ends them: their late settling changes nothing). */
+  const liveCalls = new Set<Ev>()
   const callHung: Array<() => void> = []
   let detachedOut = 0
+  /** Detached deliveries outstanding on the current renderer (a renderer-gone ends them: their late settling changes nothing). */
+  const liveDetached = new Set<object>()
   const hung: Array<() => void> = []
   const detachedRoad = (entry: string, n: number, down?: string) => (): Promise<void> => {
     const ev = byEntry.get(entry)
@@ -1185,12 +1189,15 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       if (ev.attempts === 1) startBarrier(ev)
     }
     // C9 (O4): unsettled detached-road deliveries are bounded (the router moves on at its deadline, and must not pile them up).
-    detachedOut++
+    const token = {}
+    liveDetached.add(token)
+    detachedOut = liveDetached.size
     if (detachedOut > 1) violate('C9', 'detached-outstanding', `${detachedOut} detached-road deliveries unsettled (${entry}); the contract allows one`)
     if (detachedHang) {
       return new Promise((resolve) => {
         hung.push(() => {
-          detachedOut--
+          liveDetached.delete(token)
+          detachedOut = liveDetached.size
           resolve()
         })
       })
@@ -1198,7 +1205,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     return new Promise((resolve) =>
       clock.set(
         () => {
-          detachedOut--
+          liveDetached.delete(token)
+          detachedOut = liveDetached.size
           if (ev) endBarrier(ev)
           resolve()
           resolutionPoint()
@@ -1399,12 +1407,14 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           deliver(ev, 'fallback', '')
           if (action.blocking) startBarrier(ev)
           // C5 / C9 (O4): a call counts as outstanding until it settles; one at most (a call past its deadline stalls its road like a command).
-          callsOut++
+          liveCalls.add(ev)
+          callsOut = liveCalls.size
           if (callsOut > 1) violate('C9', 'calls-outstanding', `${callsOut} calls outstanding (call ${n})`)
           if (action.ms < 0) {
             return new Promise((resolve) => {
               callHung.push(() => {
-                callsOut--
+                liveCalls.delete(ev)
+                callsOut = liveCalls.size
                 endBarrier(ev)
                 resolve(n)
               })
@@ -1413,7 +1423,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           return new Promise((resolve) =>
             clock.set(
               () => {
-                callsOut--
+                liveCalls.delete(ev)
+                callsOut = liveCalls.size
                 endBarrier(ev)
                 resolve(n)
                 resolutionPoint()
@@ -1493,8 +1504,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         // Ruling 2026-11-19 #8: account before the call (it pumps synchronously and may start a new delivery on the healthy renderer).
         // Ruling 2026-11-19 #9: the call stall is the renderer's too: rendererGone ends a hung call (no longer outstanding).
         callHung.length = 0
+        liveCalls.clear()
         callsOut = 0
         hung.length = 0
+        liveDetached.clear()
         detachedOut = 0
         detachedHang = false
         barrier = undefined
@@ -1522,13 +1535,16 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (const c of commands) if (!c.answered) c.resolve({})
     await clock.advance(0)
     for (let i = 0; i < 4; i++) await clock.advance(1000)
-    // Ruling 2026-11-19 #8: hung calls are released repeatedly until quiescence (a second one only starts after the first is released).
-    for (let i = 0; i < 60; i++) {
-      const more = callHung.length > 0
+    // Ruling 2026-11-19 #8: hung calls are released repeatedly until true quiescence: nothing hung, outstanding, queued or timed.
+    let quiet = false
+    for (let i = 0; i < 300 && !quiet; i++) {
       for (const h of callHung.splice(0)) h()
+      for (const h of hung.splice(0)) h()
+      for (const c of commands) if (!c.answered) c.resolve({})
       await clock.advance(600)
-      if (!more && callHung.length === 0) break
+      quiet = callHung.length === 0 && hung.length === 0 && callsOut === 0 && detachedOut === 0 && queueOf().length === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)
     }
+    if (!quiet) violate('C9', 'stuck-queue', `quiescence never reached after 300 release rounds (calls ${callHung.length}/${callsOut}, detached ${hung.length}/${detachedOut}, queued ${queueOf().length}, timers ${clock.routerTimers()}, open commands ${commands.filter((c) => !c.answered && !c.detached && c.gen === gen).length})`)
     const heldButtons = new Set<Button>()
     const heldKeys = new Map<string, InputModifier[]>()
     for (const action of script) {
