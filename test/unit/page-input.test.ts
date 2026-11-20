@@ -2312,7 +2312,78 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
   })
 })
 
-describe('PageInputRouter: ruling 2026-11-20 #13', () => {
+describe('PageInputRouter: rulings 2026-11-20 #12 and #13', () => {
+  // Ruling #12 (fuzz seeds 65, 23): a top run's answer is handed over only under the epoch its call
+  // was queued under. The reset lands 0 to 7 microtasks after the top run answered: early, between the
+  // answer and the script's own check; later, between that check and the hand-over (`runCall`'s gate);
+  // later still, after the hand-over (the value stands: it was handed over under its own epoch). Checked
+  // at the router's own moment, as the fuzz's oracle does: the step's resolve, wrapped as it is queued.
+  it('#12: a top run that answers around a new attachment: never handed over as a value under another epoch', async () => {
+    type CallStep = { kind: string; epoch: number; resolve?: (v: unknown) => void }
+    const runs: Array<{ name: string; frames: boolean; go: (r: PageInputRouter) => Promise<unknown> }> = [
+      { name: 'scriptAt', frames: false, go: (r) => r.scriptAt(20, 30, () => 'hit') },
+      { name: 'scriptInFocus, no frame', frames: false, go: (r) => r.scriptInFocus('sel') },
+      // A frame, but the focus is in the top document: the walk ends at the page, then the top run.
+      { name: 'scriptInFocus, after a walk', frames: true, go: (r) => r.scriptInFocus('sel') },
+      // scriptIn on the top document's handle (from a scriptAt answered under the same attachment).
+      {
+        name: 'scriptIn',
+        frames: false,
+        go: async (r) => {
+          const hit = await r.scriptAt(1, 1, () => 'first')
+          return r.scriptIn(hit!.frame, 'choose')
+        }
+      }
+    ]
+    for (const how of ['reset', 'rendererGone'] as const) {
+      for (let hops = 0; hops < 8; hops++) {
+        for (const c of runs) {
+          const s = setup()
+          scripts(s)
+          if (c.frames) s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+          const what = `${c.name}, ${how}, ${hops} hops`
+          const internals = s.router as unknown as { push(step: CallStep): boolean }
+          const push = internals.push.bind(s.router)
+          const handed: Array<{ queued: number; now: number; value: unknown }> = []
+          internals.push = (step: CallStep): boolean => {
+            const resolve = step.resolve
+            if (step.kind === 'call' && resolve) {
+              step.resolve = (v: unknown): void => {
+                handed.push({ queued: step.epoch, now: s.router.inputEpoch(), value: v })
+                resolve(v)
+              }
+            }
+            return push(step)
+          }
+          s.top.answer = (code) => {
+            if (code === 'first') return Promise.resolve('top:first')
+            const value = Promise.resolve(`top:${code}`)
+            let p: Promise<unknown> = value
+            for (let i = 0; i < hops; i++) p = p.then(() => undefined)
+            void p.then(() => (how === 'reset' ? s.router.reset() : s.router.rendererGone()))
+            return value
+          }
+          await c.go(s.router)
+          await s.flush()
+          // The reset came (the epoch moved), and every value handed over was under its own epoch.
+          expect(s.router.inputEpoch(), what).toBe(1)
+          expect(handed.length, what).toBe(c.name === 'scriptIn' ? 2 : 1)
+          for (const h of handed) if (h.value !== undefined) expect(h.now, what).toBe(h.queued)
+          // A reset before the router's own continuation ran: dropped (by the script's check or the gate).
+          if (hops === 0) expect(handed.at(-1)?.value, what).toBeUndefined()
+        }
+      }
+    }
+  })
+
+  it('#12: a top run answered under its own attachment still resolves its value', async () => {
+    const s = setup()
+    const hit = await s.router.scriptAt(20, 30, () => 'hit')
+    expect(hit?.value).toBe('top:hit')
+    await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBe('top:choose')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBe('top:sel')
+  })
+
   // Ruling #13 (fuzz seeds 1042, 16720, 4016): the pump waited, detached, for the call on its way before a
   // script's call, the protocol came back meanwhile, and the script went by the detached road's branch,
   // which holds nothing after a 'route' call: the key behind it went while its frame's script ran.
