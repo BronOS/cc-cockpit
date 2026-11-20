@@ -2470,3 +2470,48 @@ test('a screen that asks Discuss again replaces its earlier ask: a send that nev
   assert.deepEqual(notices, [], 'no "was cut" from the abandoned ask')
   host.deactivate()
 })
+
+test('another screen\'s cut ask that was never sent does not mark the delivered, uncut review as cut', async () => {
+  const { store, notices, h } = await sharedReview()
+  h.connect(OWNER_WEB)
+  // The web screen asks while the draft is too long (cut); its send is refused.
+  h.say({ type: 'draft', draft: { global: '', notes: Array.from({ length: 10 }, (_, i) => ({ id: `l${i}`, ...lineNote('x'.repeat(4000)) })) } })
+  await h.discussFn(OWNER_WEB)
+  // The desktop shortens the draft and asks: this one is delivered, whole.
+  h.say({ type: 'draft', draft: { global: 'short now', notes: [{ id: 'a', ...lineNote('one') }] } })
+  await h.discussFn(OWNER)
+  h.end({ kind: 'discussed', tabId: 't1', queued: false })
+  await wait(50)
+  assert.deepEqual(notices, [], 'no "was cut" from the other screen\'s ask')
+  host.deactivate()
+})
+
+test('a queued delivery is told from the prompt before the delivered ask, not from an older ask recorded later', async () => {
+  const tab = { tabId: 't1', status: 'working', lastPrompt: 'older' }
+  const changes = []
+  let calls = 0
+  // The second ask's sessions lookup is slow and sees 'older': that ask (main timed it out) records after
+  // the newer, delivered one.
+  const list = async () => {
+    if (calls++ !== 1) return [{ ...tab }]
+    await wait(100)
+    return [{ ...tab, lastPrompt: 'older' }]
+  }
+  const { store, h } = await sharedReview({ sessions: { list, onChange: (l) => (changes.push(l), () => {}) } })
+  h.connect(OWNER_WEB)
+  h.say({ type: 'draft', draft: { global: '', notes: [{ id: 'a', ...lineNote('sent') }] } })
+  const { text } = await h.discussFn(OWNER)
+  // The same review was sent before: the tab's last prompt is already this text.
+  tab.lastPrompt = `About: Review: a.js\nFile: a.js\n\n${text}`
+  const slow = h.discussFn(OWNER_WEB)
+  await wait(10)
+  await h.discussFn(OWNER) // the delivered ask: it saw this text as the prompt before it
+  await slow
+  h.end({ kind: 'discussed', tabId: 't1', queued: true })
+  await wait(50)
+  // The tab still shows the prompt from before the delivered ask: not this review's delivery yet.
+  changes[0]([{ ...tab }])
+  await wait(30)
+  assert.equal(store.get('draft:a.js').notes.length, 1, 'kept until a newer prompt carries it')
+  host.deactivate()
+})
