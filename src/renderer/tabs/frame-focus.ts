@@ -277,9 +277,12 @@ export function watchShellEvidence(win: EventTarget, doc: EventTarget, pointer: 
   // there: a mount-time steal while the person types can put a character into the page (an editor's
   // buffer, then its autosave). The gap is a few ms; nothing typed before the blur is replayed.
   win.addEventListener('blur', () => later(() => sinks.check()))
-  const moved = (e: Event): void => {
+  const recorded = (e: Event): void => {
     const { clientX, clientY } = e as PointerEvent
     pointer.moved(clientX, clientY)
+  }
+  const moved = (e: Event): void => {
+    recorded(e)
     // The shell sees the pointer again: a frame blurred for want of evidence takes it back (the
     // position just recorded is the evidence for its next click).
     sinks.endPassThrough()
@@ -292,16 +295,26 @@ export function watchShellEvidence(win: EventTarget, doc: EventTarget, pointer: 
   // pane header under the resting pointer gave way to the frame's pane, and a page's `focus()` then kept
   // the keyboard while they typed in that field. A real event of the person's between shell elements
   // brings its own event at the same spot right after the boundary events, which is what counts: a
-  // move's `pointermove`, a press's `pointerdown`, a release's `pointerup` (measured, Electron 45: the
-  // second click on a blurred frame letting the pointer through, its press routed into the frame and its
-  // release into the shell's pane, gets `pointerout`, `pointerover`, `pointerup` there and no move; that
-  // release is the evidence the click picks the pane with). Measured too: with the pointer resting inside
+  // move's `pointermove`, a press's `pointerdown`, a release's `pointerup` (measured, Electron 45: a
+  // click whose press went into a frame and whose release reached the shell's pane, the frame letting
+  // the pointer through by then, gets `pointerout`, `pointerover`, `pointerup` there and no move; that
+  // release is evidence, below). Measured too: with the pointer resting inside
   // a cross-site frame, a re-layout's boundary events carried the last position the shell saw, not the
   // pointer's, so the position check alone held there; the `relatedTarget` rule does not rest on that.
   // A wheel in place is the person's act and counts.
+  //
+  // A release is evidence but never ends a pass-through: it is the tail of a press, and a press the
+  // shell saw already ended it at its `pointerdown`. One with no press seen is the refused click's own
+  // release. A person's release comes long after the press; the check runs a task after the press's
+  // window `blur`, refuses the frame and lets the pointer through, and the release then can land on the
+  // shell's pane (measured, Electron 45: a release held until after the refusal reached the shell's pane
+  // in about half the e2e's runs, and in the rest never reached the shell). When it ended the
+  // pass-through, the frame took the pointer back, the person's next press on it went into the frame
+  // again with no shell event, and with a key typed in between that click was refused too, and so on
+  // (the e2e's "second click on a blurred frame" flake, 2 runs in 8, was that ordering).
   win.addEventListener('pointermove', moved, true)
   win.addEventListener('pointerdown', moved, true)
-  win.addEventListener('pointerup', moved, true)
+  win.addEventListener('pointerup', recorded, true)
   win.addEventListener(
     'pointerout',
     (e) => {

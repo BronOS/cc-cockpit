@@ -161,7 +161,8 @@ describe('pointer evidence', () => {
       win.dispatchEvent(new Event('keydown'))
       expect(p.keyAfterPointer()).toBe(true)
     }
-    expect(calls).toEqual(['through', 'through', 'through', 'through', 'through'])
+    // Every one but the release ends a pass-through (a release is the tail of a press: see the next test).
+    expect(calls).toEqual(['through', 'through', 'through', 'through'])
     // A focus within the shell voids the pointer and tells the pool; one on a frame (or none) does not.
     win.dispatchEvent(at('pointermove', 150, 80))
     expect(p.keyAfterPointer()).toBe(false)
@@ -171,7 +172,7 @@ describe('pointer evidence', () => {
     frameTarget = false
     doc.dispatchEvent(new Event('focusin'))
     expect(p.keyAfterPointer()).toBe(true)
-    expect(calls.slice(6)).toEqual(['focused'])
+    expect(calls.slice(5)).toEqual(['focused'])
     // The window's blur: the check runs a task later, not in the blur itself.
     calls.length = 0
     win.dispatchEvent(new Event('blur'))
@@ -249,7 +250,38 @@ describe('pointer evidence', () => {
     win.dispatchEvent(out(500, 320, header))
     expect(p.keyAfterPointer()).toBe(true)
     win.dispatchEvent(Object.assign(new Event('pointerup'), { clientX: 500, clientY: 320 }))
-    expect([p.keyAfterPointer(), p.near(viewportRect({ left: 490, top: 310, width: 20, height: 20 })), calls]).toEqual([false, true, ['through', 'through']])
+    expect([p.keyAfterPointer(), p.near(viewportRect({ left: 490, top: 310, width: 20, height: 20 })), calls]).toEqual([false, true, ['through']])
+  })
+
+  it("the refused click's own release keeps the frame letting the pointer through, so the next press on it reaches the pane", async () => {
+    // The e2e's flake (editor-split.spec.ts, 2 runs in 8): the press went into the frame, the blur's check
+    // refused it and let the pointer through, and the release (a person's comes long after that task)
+    // landed on the shell's pane. Ending the pass-through there sent the next press into the frame again.
+    const t = pool()
+    t.frames.sync([entry(TAB_A)])
+    t.frames.show([TAB_A], TAB_A)
+    t.frames.place([boxOf(TAB_A, 0)])
+    await settle()
+    t.el(TAB_A).fire()
+    const win = new EventTarget()
+    const p = new PointerEvidence(() => 1000)
+    watchShellEvidence(win, new EventTarget(), p, {
+      check: () => undefined,
+      endPassThrough: () => t.frames.endPassThrough(),
+      shellFocused: () => t.frames.shellFocused(),
+      isFrame: () => false,
+      later: (fn) => fn()
+    })
+    // The press went into A's frame; the check refused it and let the pointer through; then the release.
+    t.frames.passThrough(TAB_A)
+    win.dispatchEvent(new Event('keydown'))
+    win.dispatchEvent(Object.assign(new Event('pointerup'), { clientX: 50, clientY: 100 }))
+    expect([t.frames.passesThrough(TAB_A), t.el(TAB_A).through]).toEqual([true, true])
+    // The release is still evidence for a click into the frame.
+    expect([p.near(t.frames.frameRects().get(TAB_A) ?? null), p.fresh(), p.keyAfterPointer()]).toEqual([true, true, false])
+    // The person's next press reaches the shell's pane through the frame: the frame takes the pointer back.
+    win.dispatchEvent(Object.assign(new Event('pointerdown'), { clientX: 50, clientY: 100 }))
+    expect([t.frames.passesThrough(TAB_A), t.el(TAB_A).through]).toEqual([false, false])
   })
 
   it('the last position is fresh for POINTER_FRESH_MS', () => {

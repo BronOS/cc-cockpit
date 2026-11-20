@@ -28,11 +28,3 @@ Every run of the 2026-11-20 pass (branch `backlog/e2e-flakes-2`) was made with t
   as the control, after `win.blur()` / `win.focus()`, which must still move it to the button. If a real path moves
   it, restore the terminal's focus on the window's focus when the page's focus went to the strip with no press or
   key, without a gesture (a gesture focus takes the terminal size) and from nothing a page can trigger.
-- **editor-split.spec.ts:274, the second click on a blurred frame.** "the shell decides which frame has the keys"
-  failed 1 run in 4 to 8 (locked), at `focusedPanes … toHaveAttribute('data-focused-pane', file)`, with the
-  2026-11-20 evidence rule and the one before it alike (old 2 of 8; new 1 of 8 and 1 of 3). Logged: the press goes
-  into the frame although it lets the pointer through (`pointer-events: none`), so the window blurs; only the release
-  reaches the shell's pane (`pointerout`, `pointerover`, `pointerup`), and that release is the only evidence. The
-  check runs a task after the blur and Playwright's `mouse.up` is a separate call, so the check can decide before the
-  release is seen, and refuse. Unknown whether it happens unlocked. Either the press should reach the pane (why the
-  browser still routes it to the frame), or a check at a blur should wait for a press still down to end.

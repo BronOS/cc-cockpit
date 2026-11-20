@@ -260,9 +260,13 @@ test('the shell decides which frame has the keys: a frame focusing itself beside
     await page.mouse.move(line.x + 10, line.y + line.height / 2)
     await page.keyboard.type('m')
     await page.waitForTimeout(800)
+    // The press is held until the shell has refused the frame, as a person's is (their release comes
+    // long after the check a task past the window's blur): the release then can reach the shell's pane
+    // through the blurred frame and must not take the pass-through away (the next press goes there).
     await page.mouse.down()
+    await expect(focusedPanes(page)).toHaveCount(0)
     await page.mouse.up()
-    await expect.poll(() => keysInFrame(page)).toBe(false)
+    expect(await keysInFrame(page)).toBe(false)
     expect(await domFocusInTerminal(page)).toBe(false)
     // The view is keys off (the final review's MAJOR): no outline, so no pane looks like it has them.
     await expect(focusedPanes(page)).toHaveCount(0)
