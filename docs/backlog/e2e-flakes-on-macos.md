@@ -36,3 +36,6 @@ Seen 2026-11-20 (overlays in every view release work):
   b51a181 by addressing the new tab's own pane). Found by a pattern scan, not a check of every spec.
 - **`folder-walk.test.ts` under load:** its `afterEach` `rmSync` hit vitest's 10 s timeout three times while an e2e run or
   another full run used the machine; it passes alone.
+- **A Dock icon on the darwin server, once** (2026-11-20, the 0.25.1 run, load average ~10): `server-mode.spec.ts:35`
+  failed `expectMainAlive` with `dock: true` after 1.8 s; three reruns of the spec passed 22/22. In the same full run 10
+  unit files (installer, rooms, tab-manager, session-gist, ...) and 3 plugin tests failed under that load and passed alone.
