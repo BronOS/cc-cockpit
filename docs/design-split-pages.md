@@ -164,8 +164,9 @@ while the person types. When `activeElement` is the frame of tab T, it counts on
   another element of the shell, or at the position already recorded, is no move and counts for nothing: Chromium sends
   one when the shell scrolls or lays out again under a resting pointer (measured on macOS: focusing a shell field
   scrolled the document and revived stale evidence), and a real event of the person's between shell elements brings its
-  own `pointermove`, `pointerdown` or `pointerup` at the same spot (measured: the second click on a blurred frame
-  letting the pointer through gets only boundary events and a `pointerup` in the shell). Measured with the pointer resting inside a cross-site frame: a re-layout's boundary
+  own `pointermove`, `pointerdown` or `pointerup` at the same spot (measured: a click whose press went into a frame and
+  whose release reached the shell's pane, the frame letting the pointer through by then, gets only boundary events and a
+  `pointerup` in the shell). Measured with the pointer resting inside a cross-site frame: a re-layout's boundary
   events then carry the last position the shell saw, not the pointer's.
 
 *Measured, Electron 45:* the shell gets no event at all as the pointer goes into a cross-site frame (no `pointerout`,
@@ -199,7 +200,10 @@ itself at load (below), so the steal needs a page that does. The check itself (`
 way to focus anything but a frame's pane (`pick`, only ever a page tab); unit tests hold it to that for a hint, a
 frame's own focus and a hint loop. The blurred frame then lets
 the pointer through to its pane (`pointer-events: none` on the iframe, `PageFrames.passThrough`) until the shell next
-sees the pointer move, press or wheel: the person's next press on it, even without moving, lands on the shell's pane
+sees the pointer move, press or wheel. A release does not end it: the refused click's own release comes after the check
+(a person's click lasts longer than the task the check waits) and can land on the shell's pane, and when it ended the
+pass-through the next press went into the frame again and, with a key typed between, was refused again (the e2e flake of
+2026-11-20). So the person's next press on it, even without moving, lands on the shell's pane
 body and picks the pane (its `mousedown` default is prevented so the frame keeps the keyboard), and their next move
 gives fresh pointer evidence for a click into the frame. A click the shell could not prove costs one more click, never
 a key in the wrong pane. Nor a chord on the wrong pane (the final review's MAJOR): a refusal also puts the view keys off
