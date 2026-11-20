@@ -36,7 +36,12 @@
 //      res.write): main's delay meanwhile and the zip's throughput. The flood runs for the whole zip.
 //      The tree is one 16 MiB file (half Claude-like text, half random bytes) listed 64 times under
 //      different names, so the disk holds 16 MiB, not 1 GiB; the phase throws when nothing was zipped.
-// Exits 1 when phase 1's, 5's, 6's or 7's p99 delay is over the limit, so a change that puts parsing back
+//   8. many streamed webviews (backlog offscreen-frame-area-cap): N animated pages at once (one fake
+//      viewer each, the flood beside them) at 30 fps: main's p99/max delay, frames encoded per second
+//      and bytes per second. With the 4th argument `sweep` it first prints the table without the
+//      budget (N = 1, 4, 8, 12 at 1280x800 and 1920x1080, informational); always it runs 12 pages
+//      at 1920x1080 under the real FrameBudget (src/main/webview/frame-budget.ts), which must pass.
+// Exits 1 when phase 1's, 5's, 6's, 7's or 8's p99 delay is over the limit, so a change that puts parsing back
 // on main, or lets frames take main from the terminals, fails the bench.
 //
 // It runs as Electron's main process (the off-screen page needs Electron): started with node, it
@@ -76,6 +81,7 @@ const args = JSON.parse(process.env.CC_TERMINAL_BENCH_ARGS ?? '[]')
 const TABS = Number(args[0] ?? 8)
 const SECONDS = Number(args[1] ?? 5)
 const P99_LIMIT_MS = Number(args[2] ?? 20)
+const SWEEP = args[3] === 'sweep'
 /** The fake viewer's socket drains at this many bytes per second (a good Wi-Fi or a LAN). */
 const VIEWER_RATE = 8 * 1024 * 1024
 const COLS = 120
@@ -434,6 +440,90 @@ async function streamed(lib, width, height) {
   return r
 }
 
+/** Phase 8: `n` animated pages (one viewer each) with the flood beside them, with or without the budget. */
+async function streamedMany(lib, n, width, height, budgeted) {
+  const { FrameStream, WebviewViewers, FRAME_DRAINED_BYTES, FrameBudget } = lib
+  const sockets = new Map()
+  const viewers = new WebviewViewers({ setViewed: () => undefined, setSize: () => undefined, log: (m) => console.log(m) })
+  const stream = new FrameStream({
+    viewers,
+    sendFrame: (viewId, frame) => sockets.get(viewId)?.send(frame),
+    drained: (viewId) => (sockets.get(viewId)?.bufferedAmount() ?? 0) <= FRAME_DRAINED_BYTES,
+    now: () => performance.now(),
+    log: (m) => console.log(m)
+  })
+  const budget = budgeted ? new FrameBudget(() => performance.now()) : undefined
+  const cost = { paints: 0, encodes: 0, encodeMs: 0 }
+  const timed = (img) => ({
+    isEmpty: () => img.isEmpty(),
+    getSize: () => img.getSize(),
+    resize: (o) => {
+      const t0 = performance.now()
+      const out = img.resize(o)
+      cost.encodeMs += performance.now() - t0
+      return timed(out)
+    },
+    toJPEG: (q) => {
+      const t0 = performance.now()
+      const out = img.toJPEG(q)
+      cost.encodes++
+      cost.encodeMs += performance.now() - t0
+      return out
+    }
+  })
+  const pages = []
+  for (let i = 0; i < n; i++) {
+    const panel = { windowId: 1, pluginId: 'bench.browser', panelId: 'browser' + i }
+    const viewer = 'web:' + i
+    sockets.set(viewer, new FakeSocket())
+    const win = new BrowserWindow({ show: false, width, height, useContentSize: true, frame: false, webPreferences: { offscreen: true, disableDialogs: true, sandbox: true, contextIsolation: true } })
+    win.setContentSize(width, height)
+    win.webContents.setFrameRate(30)
+    const detach = stream.attach(panel, { invalidate: () => win.webContents.invalidate() })
+    budget?.add('p' + i, { setRate: (r) => win.webContents.setFrameRate(r) }, width, height)
+    budget?.setViewed('p' + i, true)
+    win.webContents.on('paint', (_e, _d, image) => {
+      cost.paints++
+      budget?.paint('p' + i)
+      stream.paint(panel, timed(image))
+    })
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(ANIMATED_PAGE))
+    viewers.report(panel, viewer, { width, height, visible: true, hidden: false })
+    pages.push({ win, detach, viewer })
+  }
+  const timer = budget ? setInterval(() => budget.evaluate(), 250) : undefined
+  // The budget needs a second of paints to see the pages animate, then a moment to settle.
+  await new Promise((r) => setTimeout(r, budgeted ? 2500 : 500))
+  Object.assign(cost, { paints: 0, encodes: 0, encodeMs: 0 })
+  for (const s of sockets.values()) {
+    s.frames = 0
+    s.bytes = 0
+  }
+  const count = { posted: 0 }
+  const r = await measure(SECONDS, () => floodTick(count))
+  const seconds = SECONDS + r.drainedMs / 1000
+  let frames = 0
+  let bytes = 0
+  for (const s of sockets.values()) {
+    frames += s.frames
+    bytes += s.bytes
+  }
+  if (timer) clearInterval(timer)
+  for (const p of pages) {
+    viewers.viewGone(p.viewer)
+    p.detach()
+    p.win.destroy()
+  }
+  stream.dispose()
+  const res = { ...r, n, size: `${width}x${height}`, budgeted }
+  console.log(
+    `\n8. ${n} streamed ${res.size} webviews${budgeted ? ' under the budget' : ''} + flooded: ${(cost.paints / seconds).toFixed(0)} paints/s, ${(frames / seconds).toFixed(0)} frames/s encoded and sent, ` +
+      `${mib(bytes / seconds)} MiB/s; encode ${((cost.encodeMs / (seconds * 1000)) * 100).toFixed(0)}% of main`
+  )
+  console.log(`   ${line(r)}`)
+  return res
+}
+
 async function main() {
   // --- the real mirror and worker, the real frame stream ------------------------------------------
   // Under node_modules so the bundles' require('@xterm/...') resolves from the repo.
@@ -445,6 +535,7 @@ async function main() {
     contents: [
       "export { FrameStream } from './src/main/webview/frame-stream'",
       "export { WebviewViewers } from './src/main/webview/webview-viewers'",
+      "export { FrameBudget, BUDGET_AREA_RATE } from './src/main/webview/frame-budget'",
       "export { FRAME_DRAINED_BYTES } from './src/shared/web-protocol'"
     ].join('\n')
   })
@@ -463,7 +554,7 @@ async function main() {
   ids = Array.from({ length: TABS }, (_, i) => `tab${i}`)
   for (const id of ids) mirror.spawned(id, COLS, ROWS)
 
-  let flood, streams, joins, zipRun
+  let flood, streams, joins, zipRun, many
   try {
     // 1. flooded
     const count = { posted: 0 }
@@ -506,6 +597,11 @@ async function main() {
     // 7. a 1 GiB zip streaming beside the flooded tabs
     zipRun = await zipDownload(zipLib, tmp)
 
+    // 8. N animated pages at once
+    many = []
+    if (SWEEP) for (const [w, h] of [[1280, 800], [1920, 1080]]) for (const n of [1, 4, 8, 12]) await streamedMany(frames, n, w, h, false)
+    many.push(await streamedMany(frames, 12, 1920, 1080, true))
+
   } finally {
     mirror.stop()
     rmSync(tmp, { recursive: true, force: true })
@@ -527,6 +623,11 @@ async function main() {
     const pass = zipRun.p99 / 1e6 <= P99_LIMIT_MS
     ok &&= pass
     console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with a 1 GiB zip download p99 ${ms(zipRun.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
+  }
+  for (const r of many) {
+    const pass = r.p99 / 1e6 <= P99_LIMIT_MS
+    ok &&= pass
+    console.log(`${pass ? 'PASS' : 'FAIL'}: flooded with ${r.n} streamed ${r.size} webviews under the budget p99 ${ms(r.p99)} ms ${pass ? '<=' : '>'} ${P99_LIMIT_MS} ms`)
   }
   return ok ? 0 : 1
 }

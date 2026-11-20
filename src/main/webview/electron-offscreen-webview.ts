@@ -40,6 +40,7 @@ import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewP
 import { webviewKeyCode } from '../../shared/webview-keys'
 import { editKeyEvent, SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
 import { PageInputRouter } from './page-input'
+import { FrameBudget } from './frame-budget'
 import { chooseScript, hitScript } from './select-hit'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
@@ -49,6 +50,8 @@ export const OFFSCREEN_INITIAL_SIZE = { width: 1280, height: 800 } as const
 export const OFFSCREEN_MAX_SIDE = 4096
 /** Frames per second at most while painting (design-web-browser.md §3.3). */
 export const OFFSCREEN_FRAME_RATE = 30
+/** How often the app-wide frame budget (frame-budget.ts) re-decides the animating pages' rates. */
+const BUDGET_EVALUATE_MS = 250
 
 /** Where an off-screen view's output goes (the frame stream, the browsers' cursor). */
 export interface OffscreenSink {
@@ -107,6 +110,9 @@ function sideOf(n: number): number | undefined {
 export class OffscreenWebviewFactory implements WebviewViewFactory {
   private readonly sessions: WebviewSessions
   /** The live views' windows (describe, destroyAll); each removes itself on destroy. */
+  /** Lowers the rates of animating pages together when their painted area per second is too much (frame-budget.ts). */
+  private readonly budget = new FrameBudget(() => Date.now())
+  private budgetTimer: ReturnType<typeof setInterval> | undefined
   private readonly live = new Map<BrowserWindow, { info(): OffscreenWindowInfo; destroy(): void }>()
 
   constructor(
@@ -173,11 +179,17 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       rendererPid = pid
     })
     wc.setFrameRate(OFFSCREEN_FRAME_RATE)
+    const budgetId = String(wc.id)
+    this.budget.add(budgetId, { setRate: (rate) => !wc.isDestroyed() && wc.setFrameRate(rate) }, size.width, size.height)
+    this.budgetTimer ??= setInterval(() => this.budget.evaluate(), BUDGET_EVALUATE_MS).unref()
     // Hidden until the manager says a browser shows it, like the desktop view's zero bounds.
     let painting = false
     wc.stopPainting()
     let sink: OffscreenSink | undefined
-    wc.on('paint', (_event, dirty, image) => sink?.paint(dirty, image))
+    wc.on('paint', (_event, dirty, image) => {
+      this.budget.paint(budgetId)
+      sink?.paint(dirty, image)
+    })
     wc.on('cursor-changed', (_event, type) => sink?.cursor(type))
 
     let destroyed = false
@@ -186,6 +198,11 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       destroyed = true
       sink = undefined
       this.live.delete(win)
+      this.budget.remove(budgetId)
+      if (this.live.size === 0 && this.budgetTimer) {
+        clearInterval(this.budgetTimer)
+        this.budgetTimer = undefined
+      }
       if (!owner.isDestroyed()) owner.removeListener('closed', destroy)
       // destroy, not close: a page whose renderer is blocked (a print the portal still holds,
       // spike) never answers a close; destroy frees it at once. `destroyed` on its WebContents
@@ -222,11 +239,13 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
         if (width === undefined || height === undefined) return
         if (width === size.width && height === size.height) return
         size = { width, height }
+        this.budget.resize(budgetId, width, height)
         win.setContentSize(width, height)
       },
       setVisible: (visible: boolean) => {
         if (wc.isDestroyed() || visible === painting) return
         painting = visible
+        this.budget.setViewed(budgetId, visible)
         if (visible) {
           wc.startPainting()
           wc.invalidate()
