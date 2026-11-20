@@ -767,6 +767,12 @@ export class OverlayManager {
     }
     if (parsed.discuss !== undefined) overlay.discussSpec = parsed.discuss
     if (pluginId !== undefined) overlay.pluginId = pluginId
+    // The opener's name for the note a guest sees where the page is not shown (docs/design-overlay-views.md §7:
+    // "<Plugin> does not show its windows to guests"); main's own record, kept for a guest only while the
+    // plugin is visible to it (guest-filter.ts guestOverlays).
+    if (pluginId !== undefined && parsed.kind === 'html') {
+      overlay.info = { ...overlay.info, pluginId, pluginTitle: this.options.pluginTitle?.(pluginId) ?? pluginId }
+    }
     // A plugin's open is that plugin's even with no explicit origin; the CLI's needs the caller's tab (07).
     const from = { ...(origin?.tabId === undefined ? {} : { tabId: origin.tabId }), ...((origin?.pluginId ?? pluginId) === undefined ? {} : { pluginId: origin?.pluginId ?? pluginId }) }
     if (from.tabId !== undefined || from.pluginId !== undefined) overlay.origin = from
@@ -1392,7 +1398,9 @@ export class OverlayManager {
     const r = this.connectCopy(windowId, overlayId, viewId)
     if (!r.ok) return { refused: r.reason }
     this.copyReady(windowId, overlayId, viewId, r.copy)
-    return { copy: r.copy }
+    // The copy's loader is the shell's to draw (the info has none for perView): gone already for a `ready: 'load'`
+    // overlay, else at that copy's `overlays.loaded`.
+    return this.copyState(windowId, overlayId, viewId, r.copy)?.loaded === true ? { copy: r.copy, loaded: true } : { copy: r.copy }
   }
 
   /**
@@ -1682,6 +1690,13 @@ export class OverlayManager {
     if (this.options.emitToView) {
       if (this.options.emitToView(copy.view, 'overlays.message', payload)) return true
       this.dropCopy(overlay, copy)
+      // A view still there whose send threw (not a closed one, which is going) would keep a page with no copy:
+      // asked to reload it, it connects again as a new copy (the shell's one reconnect rule, OverlayStack).
+      try {
+        this.options.reloadCopy?.(copy.view, overlay.windowId, overlay.id, copy.id)
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: asking view ${copy.view} to reload its copy failed: ${String(err)}`)
+      }
       return false
     }
     // No per-view addressing (no web access wiring): the window's one page routes it by `copy`.

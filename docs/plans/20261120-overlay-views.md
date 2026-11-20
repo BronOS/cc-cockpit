@@ -355,19 +355,37 @@ External review: sol / high
 - Modify: the renderer overlay tests (`test/unit/follow-overlays.test.ts`, `overlay-toolbar.test.ts`, or a new
   `test/unit/overlay-copies.test.ts` for the pure parts)
 
-- [ ] a `perView` overlay loads its own copy in every eligible view: connect returns the copy id, every page call
+- [x] a `perView` overlay loads its own copy in every eligible view: connect returns the copy id, every page call
   carries it, a reload or reconnect is a new copy; the hidden page never renders one
-- [ ] per-copy loader cleared by that copy's `loaded`
-- [ ] read guest: ✕ and a page `{ result }` become `overlays.release { hide: true }` before any channel (unmount and
+- [x] per-copy loader cleared by that copy's `loaded`
+- [x] read guest: ✕ and a page `{ result }` become `overlays.release { hide: true }` before any channel (unmount and
   reload send a plain release, for every caller); `overlays.hide` from
   main removes the copy; a write guest's ✕ is `overlays.close`
-- [ ] non-`perView` guest note: "Open on <owner>'s screen. <Plugin> does not show its windows to guests." (owner views
+- [x] non-`perView` guest note: "Open on <owner>'s screen. <Plugin> does not show its windows to guests." (owner views
   keep HeldElsewhere with Take over)
-- [ ] tests for the pure model parts (copy state per view, hide, note text); existing overlay tests pass
-- [ ] ➕ (Task 2 review) a ready copy whose emit to its view fails is dropped with no `reloadCopy` (`overlay-manager.ts`
+- [x] tests for the pure model parts (copy state per view, hide, note text); existing overlay tests pass
+- [x] ➕ (Task 2 review) a ready copy whose emit to its view fails is dropped with no `reloadCopy` (`overlay-manager.ts`
   ~1441): the shell must notice a copy it no longer gets (an `overlays.hide`, a reload, or a reconnect on the view's
   next `overlays.list`) and connect again, so a transient emit failure never leaves a stuck page
-- [ ] run tests - must pass before task 9
+- [x] run tests - must pass before task 9
+- ➕ main tells the shell what it could not know: `window.info.hiddenPage` (server mode's desktop view, the router's
+  `server` flag and the view it bound; shell-kind `markHiddenPage` in App.tsx before the shell mounts), the ready
+  answer's `loaded: true` for a `ready: 'load'` copy (a `manual` one's loader goes at its `overlays.loaded`), and
+  `OverlayInfo.pluginId` / `pluginTitle` on a plugin's html overlay (the note's name; `guestOverlays` keeps both only
+  while that plugin is visible to the guest, so a shared tab's overlay with a hidden opener names no plugin)
+- ➕ reconnect rule (overlay-copies.ts header): every frame load is a new copy (a reconnect remounts the web shell, a
+  desktop reload lists again); `overlays.reload` of the live copy loads the page again; main now also sends
+  `overlays.reload` when a message to a live copy's view fails (`deliverToCopy`), so a view whose send threw gets
+  its page back; `cap` and a failed `overlays.ready` are asked again on the same load with a 1 s doubling backoff
+  (max 10 s, the cap window); the page's posts answering false are never a signal (one-way copies)
+- ⚠️ a final refusal (`not-allowed`, `unknown`, ...) holds for that overlay in this view until the shell remounts:
+  a guest whose plugin the owner shows later sees the note until its next reconnect or reload
+- ⚠️ an owner view's hide (the opener's `handle.hide` of an owner copy) is kept only in that shell (OverlayStack
+  `hiddenHere`), so a reload of that page brings the overlay back there (D-1: main records none for owners)
+- ⚠️ Task 13: no plugin is perView until Task 10, so the copy path ran only in unit tests (overlay-copies.test.ts);
+  the e2e run here (overlays.spec.ts, web-access-plugins.spec.ts) covers non-perView overlays only. Task 13 must
+  drive a perView page end to end: copy per view, the `manual` loader, a read guest's ✕ and page result (hide), a
+  write guest's ✕ (close for all), the guest note for a non-perView overlay, and the hidden page loading none
 
 ### Task 9: Plugins page says whether a plugin's windows reach guests [model: sonnet]
 

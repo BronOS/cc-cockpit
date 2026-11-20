@@ -444,6 +444,16 @@ describe('core handlers', () => {
     await expect(ipc.invoke('window.info', 13)).resolves.toEqual({ kind: 'picker', home: '/Users/me', openFolderKey: 'meta+o' })
   })
 
+  // docs/design-overlay-views.md §5: server mode's desktop page is the hidden page and loads no perView copy.
+  it('window.info marks the hidden page in server mode only, from the view main bound, never a browser view', async () => {
+    const server = core({ server: true })
+    expect(await server.ipc.invoke('window.info', 12, [{ projectId: PROJECT_A }])).toMatchObject({ kind: 'project', hiddenPage: true })
+    const web = await server.router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner'), 'window.info', undefined)
+    expect(web).not.toHaveProperty('hiddenPage')
+    expect(await core().ipc.invoke('window.info', 12, [{ projectId: PROJECT_A }])).not.toHaveProperty('hiddenPage')
+    expect(await server.ipc.invoke('window.info', 13)).not.toHaveProperty('hiddenPage')
+  })
+
   it('window.info and the picker list carry a project colour, and never a damaged one', async () => {
     const colored = new Map([
       [PROJECT_A, { ...view(PROJECT_A, 'alpha'), color: 'teal' as const }],

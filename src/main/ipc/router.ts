@@ -692,6 +692,9 @@ export function webUrlOf(value: unknown): string {
 export function registerCoreHandlers(router: IpcRouter, deps: CoreHandlerDeps): void {
   router.handleWindow('window.info', (ctx, _payload, view): WindowInfo => {
     const info = windowInfo(ctx)
+    // Server mode's desktop view is the hidden page: told so, it never loads a perView overlay's copy
+    // (docs/design-overlay-views.md §5). By main's flag and the view it bound, never a payload.
+    if (info.kind === 'project' && deps.server === true && !view.remote && isOwner(view)) info.hiddenPage = true
     // D-33: a guest gets the project as { id, name, colour }, never the host's path or record.
     return isOwner(view) ? info : guestWindowInfo(info)
   })

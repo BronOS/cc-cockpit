@@ -2817,6 +2817,19 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(sent().at(-1)).toEqual(['web:1', again, '"fresh"'])
   })
 
+  it("connectReady's answer says whether the copy's loader is gone already: a `load` overlay yes, a `manual` one not until its loaded", () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    expect(m.connectReady(W1, id, 'web:1')).toEqual({ copy: expect.any(String), loaded: true })
+    m.open(W1, { ...page, ready: 'manual' }, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView: true })
+    const manual = m.infos(W1).at(-1)!.id
+    const answer = m.connectReady(W1, manual, 'web:1')
+    expect(answer).toEqual({ copy: expect.any(String) })
+    const copy = (answer as { copy: string }).copy
+    expect(m.copyLoaded(W1, manual, 'web:1', copy)).toBe(true)
+    expect(m.copyState(W1, manual, 'web:1', copy)?.loaded).toBe(true)
+  })
+
   it("the size bound overflows a copy too, and a targeted post's overflow does not throw", () => {
     const m = pvManager()
     const { id } = openPv(m)
@@ -2831,7 +2844,7 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(m.copies(W1, id)).toEqual([])
   })
 
-  it('a ready copy whose view dropped (viewGone not run yet) is released, not queued for ever', () => {
+  it('a ready copy whose view could not take a message is released, not queued for ever, and its view asked to reload it', () => {
     const m = pvManager()
     const { id } = openPv(m)
     const a = connect(m, id, 'web:1')
@@ -2841,7 +2854,9 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(m.post(W1, id, '"lost"', { copy: a })).toBe(false)
     expect(heard.at(-1)).toEqual(['disconnect', a, 'web:1'])
     expect(m.copies(W1, id)).toEqual([])
-    expect(reloads).toEqual([])
+    // A view still there (its send threw) reloads the page as a new copy (Task 8's reconnect rule); a gone one
+    // simply does not get the event.
+    expect(reloads).toEqual([['web:1', W1, id, a]])
   })
 
   it('connects per (overlay, view) are capped like panel ports; another view keeps its budget', () => {

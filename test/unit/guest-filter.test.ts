@@ -277,6 +277,16 @@ describe('overlays', () => {
     expect(got).toEqual([{ id: 'pv', kind: 'html', title: 't', size: 'default', perView: true, loading: true }])
     expect(got[0]!.heldBy).toBeUndefined()
   })
+  // §7: the guest's note names the opener only while that plugin is visible to it (a shared tab's overlay can
+  // have a hidden opener).
+  it("keeps the opener's id and name only while that plugin is visible", () => {
+    const html = (id: string, pluginId: string): OverlayInfo =>
+      ({ id, kind: 'html', title: 't', size: 'default', src: `cc-plugin://${pluginId}/p.html`, pluginId, pluginTitle: MARKER }) as OverlayInfo
+    const got = guestOverlays([html('shown', 'a.files'), html('hidden', 'bronos.gmail')], ctx({ overlayVisible: () => true }))
+    expect(got[0]).toMatchObject({ pluginId: 'a.files', pluginTitle: MARKER })
+    expect(got[1]).not.toHaveProperty('pluginId')
+    expect(got[1]).not.toHaveProperty('pluginTitle')
+  })
 })
 
 describe('the project (D-33)', () => {

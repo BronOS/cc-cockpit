@@ -298,8 +298,14 @@ export function guestOverlays(list: readonly OverlayInfo[], ctx: GuestFilterCont
   return list
     .filter((o) => ctx.overlayVisible(o.id))
     .map((o) => {
-      const { typeButtons, discuss, heldBy, ...rest } = o
+      const { typeButtons, discuss, heldBy, pluginId, pluginTitle, ...rest } = o
       const out: OverlayInfo = { ...rest }
+      // The opener's name for the guest's note (design-overlay-views §7) only while it is visible: a shared tab's
+      // overlay may have a hidden opener, and the note then names no plugin.
+      if (pluginId !== undefined && ctx.pluginVisible(pluginId)) {
+        out.pluginId = pluginId
+        if (pluginTitle !== undefined) out.pluginTitle = pluginTitle
+      }
       if (typeButtons !== undefined) out.typeButtons = typeButtons.filter((b) => ctx.pluginVisible(b.pluginId))
       if (discuss !== undefined && ctx.access.role === 'write' && (discuss.tabId === undefined || ctx.tabVisible(discuss.tabId))) {
         out.discuss = discuss

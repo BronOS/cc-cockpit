@@ -110,6 +110,11 @@ export type WindowInfo =
       /** In full screen when the page loaded (a restored full-screen window); later: 'window.state'. */
       fullScreen?: boolean
       /**
+       * Server mode's hidden page (main's `server` flag and the desktop view, design-web.md §9): nobody looks at it,
+       * so it loads no copy of a perView overlay's page (docs/design-overlay-views.md §5). Never sent to a browser view.
+       */
+      hiddenPage?: true
+      /**
        * Main made this window transparent (AppSettings.windowBackground.transparent when it was
        * created). Fixed for the window's life: Electron cannot change it on an open window, so the
        * page draws its see-through backgrounds from this, never from the current setting.
@@ -1069,13 +1074,23 @@ export type OverlayInfo = OverlayInfoBody & {
    * per copy, OverlayManager.copyState).
    */
   perView?: true
+  /**
+   * An html overlay a plugin opened: that plugin (main's record) and its name, for the note a guest sees where the
+   * page is not shown to it (docs/design-overlay-views.md §7). A guest gets them only while the plugin is visible to it.
+   */
+  pluginId?: string
+  pluginTitle?: string
 }
 
 /** Why main gave a view no copy of a `perView` overlay (OverlayManager.connectCopy; `cap`: try again later). */
 export type OverlayCopyRefusal = 'unknown' | 'not-per-view' | 'hidden-page' | 'not-allowed' | 'cap'
 
-/** `overlays.ready`'s answer for a `perView` overlay: the calling view's new copy, or why it has none. */
-export type OverlayReadyAnswer = { copy: string } | { refused: OverlayCopyRefusal }
+/**
+ * `overlays.ready`'s answer for a `perView` overlay: the calling view's new copy, or why it has none. `loaded`: that
+ * copy's loader is gone already (a `ready: 'load'` overlay); absent, the shell shows it until the page's
+ * `ccPanel.ready()` (`overlays.loaded`).
+ */
+export type OverlayReadyAnswer = { copy: string; loaded?: true } | { refused: OverlayCopyRefusal }
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
 export interface IpcInvokeMap {

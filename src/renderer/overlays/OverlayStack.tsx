@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { OverlayInfo } from '../../shared/ipc'
 import { registerHandlers } from '../commands/keybindings'
-import { HeldElsewhere } from '../plugins/HeldElsewhere'
+import { GuestOverlayNote, HeldElsewhere } from '../plugins/HeldElsewhere'
 import { usePrefs } from '../prefs/prefs-store'
-import { holdsPage, isWebShell, viewAccessHint } from '../shell-kind'
+import { currentGuest, holdsPage, isHiddenPage, isWebShell, viewAccessHint } from '../shell-kind'
 import { shellAllows } from '../tabs/guest-shell'
 import { gateTerminalIo } from '../tabs/terminal-access'
 import { SessionRegistry, type TerminalIo } from '../tabs/terminal-session'
@@ -11,6 +11,7 @@ import { DiscussButton } from './DiscussPopover'
 import type { DiscussTab } from './discuss-tabs'
 import { domOrder, followOverlays, listOnce } from './follow-overlays'
 import { HtmlOverlay } from './HtmlOverlay'
+import { closeActionOf, htmlBodyOf, type CopyLineState } from './overlay-copies'
 import { OverlayLoader, OverlayToolbar } from './OverlayToolbar'
 import { urlViewBounds, type ToolbarEntry } from './overlay-toolbar'
 import { TerminalOverlay } from './TerminalOverlay'
@@ -37,7 +38,17 @@ function rawOverlayIo(overlayId: string): TerminalIo {
   }
 }
 
-function closeOverlay(overlayId: string): void {
+/**
+ * ✕ or a close key (closeActionOf, D-2): a read guest's on a perView overlay hides its own copies
+ * (`overlays.release { hide: true }`; main then drops the overlay from this guest's list); anyone else's closes it
+ * for everyone, a write guest's included.
+ */
+function closeOverlay(overlay: Pick<OverlayInfo, 'id' | 'perView'>): void {
+  const overlayId = overlay.id
+  if (closeActionOf(overlay, viewAccessHint()) === 'hide') {
+    window.cockpit.invoke('overlays.release', { overlayId, hide: true }).catch((err: unknown) => console.warn('overlay hide failed', err))
+    return
+  }
   window.cockpit.invoke('overlays.close', { overlayId }).catch(() => {})
 }
 
@@ -80,7 +91,18 @@ export function OverlayStack(props: {
   /** The window's selected tab: Discuss preselects it when it is a Claude tab. */
   activeTabId: string | null
 }): React.JSX.Element {
-  const [{ stack, order }, setView] = useState<{ stack: OverlayInfo[]; order: string[] }>({ stack: [], order: [] })
+  const [{ stack: listed, order }, setView] = useState<{ stack: OverlayInfo[]; order: string[] }>({ stack: [], order: [] })
+  /**
+   * Overlays main hid in this view only (`overlays.hide` of this view's perView copy): off this view's stack until
+   * main drops them. A guest's hide main also records and filters out of its list; an owner view's it does not
+   * (D-1: every owner view gets every overlay), so this is the one record of it, kept for this mount.
+   */
+  const [hiddenHere, setHiddenHere] = useState<ReadonlySet<string>>(() => new Set())
+  /** This view's copy of each perView overlay: its loader, or a final refusal of its connect (CopyLine). */
+  const [copyStates, setCopyStates] = useState<Readonly<Record<string, CopyLineState>>>({})
+  // What this view shows: main's stack less what was hidden here. Everything below (the top, the keys, the count
+  // that makes the content below inert) reads this one.
+  const stack = useMemo(() => (hiddenHere.size === 0 ? listed : listed.filter((o) => !hiddenHere.has(o.id))), [listed, hiddenHere])
   const { tabCloseSide } = usePrefs()
   /** The overlay whose toolbar "…" menu is open, if any: a url overlay hides its view meanwhile. */
   const [menuOpenFor, setMenuOpenFor] = useState<string | undefined>(undefined)
@@ -103,7 +125,15 @@ export function OverlayStack(props: {
     // An update that lands before the list answer wins over it (follow-overlays.ts).
     const offUpdated = followOverlays(
       { list: listOverlays, onUpdated: (listener) => window.cockpit.on('overlays.updated', listener) },
-      (next) => setView((prev) => ({ stack: next, order: domOrder(prev.order, next) })),
+      (next) => {
+        setView((prev) => ({ stack: next, order: domOrder(prev.order, next) }))
+        // A hide or a copy's state outlives nothing: dropped once main's stack no longer has the overlay.
+        const live = new Set(next.map((o) => o.id))
+        setHiddenHere((prev) => ([...prev].every((id) => live.has(id)) ? prev : new Set([...prev].filter((id) => live.has(id)))))
+        setCopyStates((prev) =>
+          Object.keys(prev).every((id) => live.has(id)) ? prev : Object.fromEntries(Object.entries(prev).filter(([id]) => live.has(id)))
+        )
+      },
       (err) => console.warn('overlays.list failed', err)
     )
     return () => {
@@ -137,6 +167,7 @@ export function OverlayStack(props: {
   const top = stack.at(-1)
   const topId = top?.id
   const topKind = top?.kind
+  const topPerView = top?.perView === true
   const topEl = useRef<HTMLDivElement>(null)
   // A layout effect: the handlers must change with the DOM, before the next key is handled. With
   // a passive effect a key pressed right after a new overlay appeared would still find the old
@@ -148,13 +179,16 @@ export function OverlayStack(props: {
     // behind the overlay must not reach the tab's terminal. The page gets keys once the user
     // clicks into it. (A terminal overlay focuses its xterm; main gives a url view native focus.)
     if (topKind === 'html') topEl.current?.focus()
-    const close = (): void => closeOverlay(topId)
+    const close = (): void => closeOverlay({ id: topId, ...(topPerView ? { perView: true as const } : {}) })
     return registerHandlers(
       topKind === 'terminal'
         ? { 'overlay.closeTop': close }
         : { 'overlay.closeTop': close, 'overlay.pop': close }
     )
-  }, [topId, topKind])
+  }, [topId, topKind, topPerView])
+
+  const guest = currentGuest()
+  const bodyShell = { hiddenPage: isHiddenPage(), holds: holdsPage, ...(guest ? { guest: { ownerName: guest.ownerName } } : {}) }
 
   return (
     <>
@@ -164,11 +198,13 @@ export function OverlayStack(props: {
         const overlay = stack[i]
         if (!overlay) return null
         const active = i === stack.length - 1
-        // An html overlay's page lives in one view (design-web.md §5.4): in the others, the device
-        // that has it and Take over, and no loader (the loading is the holder's).
-        const elsewhere =
-          overlay.kind === 'html' && !holdsPage(overlay.heldBy) ? (overlay.heldBy?.device ?? 'Desktop') : undefined
-        const loading = overlay.loading === true && elsewhere === undefined
+        // An html overlay (htmlBodyOf): a perView one loads its own copy here, with its own loader (copyStates);
+        // any other's page lives in one view (design-web.md §5.4), the owner's others show where it is with Take
+        // over and no loader (the loading is the holder's), a guest the note (§7).
+        const copy = copyStates[overlay.id]
+        const body = overlay.kind === 'html' ? htmlBodyOf(overlay, bodyShell, copy?.refused) : undefined
+        const loading =
+          body === undefined ? overlay.loading === true : body.kind === 'page' && (overlay.perView === true ? copy?.loading !== false : overlay.loading === true)
         return (
           <div
             key={overlay.id}
@@ -193,7 +229,7 @@ export function OverlayStack(props: {
               // A read guest's clicks would be refused (`overlays.button` is write-class): no buttons to press.
               overlay={shellAllows(viewAccessHint()).write ? overlay : { ...overlay, buttons: undefined, typeButtons: undefined }}
               closeSide={tabCloseSide}
-              onClose={() => closeOverlay(overlay.id)}
+              onClose={() => closeOverlay(overlay)}
               onButton={(entry) => buttonClicked(overlay.id, entry)}
               onMenuOpenChange={(open) =>
                 setMenuOpenFor((cur) => (open ? overlay.id : cur === overlay.id ? undefined : cur))
@@ -218,18 +254,22 @@ export function OverlayStack(props: {
               {overlay.kind === 'terminal' && (
                 <TerminalOverlay overlayId={overlay.id} active={active} sessions={terms} />
               )}
-              {overlay.kind === 'html' && elsewhere === undefined && overlay.waiting !== true && (
-                <HtmlOverlay overlayId={overlay.id} title={overlay.title} src={overlay.src} />
+              {overlay.kind === 'html' && body?.kind === 'page' && (
+                <HtmlOverlay
+                  overlayId={overlay.id}
+                  title={overlay.title}
+                  src={overlay.src}
+                  perView={overlay.perView === true}
+                  onCopyState={(state) => setCopyStates((prev) => ({ ...prev, [overlay.id]: state }))}
+                  onHidden={() => setHiddenHere((prev) => new Set(prev).add(overlay.id))}
+                />
               )}
-              {elsewhere !== undefined && (
-                viewAccessHint() === 'owner' ? (
-                  <HeldElsewhere device={elsewhere} className="overlay-held-elsewhere" onTakeOver={() => takeOverlay(overlay.id)} />
-                ) : (
-                  // `overlays.take` is guest `no`: a guest is told where it is, with no Take over to press.
-                  <div className="held-elsewhere overlay-held-elsewhere" role="status" data-testid="held-elsewhere">
-                    <span className="held-elsewhere-text">Open on {elsewhere}</span>
-                  </div>
-                )
+              {body?.kind === 'held' && (
+                <HeldElsewhere device={body.device} className="overlay-held-elsewhere" onTakeOver={() => takeOverlay(overlay.id)} />
+              )}
+              {body?.kind === 'note' && (
+                // `overlays.take` is guest `no`: a guest is told where it is and why, with nothing to press.
+                <GuestOverlayNote text={body.text} />
               )}
               {overlay.kind === 'url' && (
                 <UrlBody
