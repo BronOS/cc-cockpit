@@ -433,13 +433,23 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const keyDowns = new Map<string, number>()
   const keyUps = new Map<string, number>()
   /**
-   * Rule 7 for the synthetic hover exits: the exit last sent (a move outside a frame's viewport) and
-   * the highest tag its step's event can have (the steps still queued come after it). If its session
-   * goes before the router sends anything more, the step is stale there: no pointer event of it (tag
-   * up to `bound`: pointer events keep their order) is to be delivered.
+   * Rule 7 for every pointer command to a frame but a release, the synthetic hover moves (an exit
+   * outside its viewport, a move over the owner it now hovers) included: the command last sent and the highest
+   * tag its step's event can have (the steps still queued come after it). If its session goes before
+   * the router's continuation of that command runs, the step is stale there: no pointer event of it
+   * (tag up to `bound`: pointer events keep their order) is to be delivered, and its press or wheel
+   * is lost with the session. The continuation's start is seen through the command's deadline
+   * timer: cleared at its answer just before the continuation is queued (the window closes one
+   * microtask later, so a detach landing right before the continuation counts), or fired (the
+   * window closes just after it).
    */
-  let exitFor: { session: Session; bound: number } | undefined
+  let exitFor: { session: Session; bound: number; timer?: unknown } | undefined
+  let exitTimerPending: typeof exitFor
   let deadExitBound = 0
+  /** Wheels handed in and not delivered yet (a merge delivers several at once), by tag. */
+  let wheelPending: Array<{ tag: number; dy: number }> = []
+  /** A queued move or wheel that others merged into (by its tag): the first tag merged in it. */
+  const firstTagOf = new Map<number, number>()
   let lastHandedTag = 0
   /** Rule 9: a refusal the router saw (its session still there when it went on) is logged. */
   let pendingRefusal: Session | undefined
@@ -522,10 +532,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (withTrace) trace.push(`  t=${clock.now} send ${id || 'page'} ${method} ${JSON.stringify(p)}`)
     // The router went on from the refusal (to the page, attached or not): the frame going now changes nothing.
     justRefused = undefined
-    if (exitFor) {
-      if (exitFor.session.ended) deadExitBound = Math.max(deadExitBound, exitFor.bound)
-      exitFor = undefined
-    }
+    exitFor = undefined
     if (pendingRefusal) {
       if (!pendingRefusal.ended) refusalSeen = true
       pendingRefusal = undefined
@@ -575,7 +582,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       // Rule 5: presses, moves and wheels never reorder (moves coalesce to the latest).
       if (tag < lastPointerTag) violate('pointer-order', `${String(p.type)} tag ${tag} after tag ${lastPointerTag}`)
       lastPointerTag = Math.max(lastPointerTag, tag)
-      if (tag <= deadExitBound) violate('stale-exit-continued', `${String(p.type)} tag ${tag} sent to ${id || 'page'} after its hover exit's session went`)
+      if (tag <= deadExitBound) violate('stale-exit-continued', `${String(p.type)} tag ${tag} sent to ${id || 'page'} after a command of its step went to a session that went`)
       if (p.type === 'mousePressed' && noReplay.has(tag)) violate('dead-replay', `the press tag ${tag}, refused by a session that went or an older attachment, sent again to ${id || 'page'}`)
       // Rule 3: a press or wheel into a frame is hit-tested after the last hover move that changed a
       // document on its way (not under capture, which follows the press).
@@ -585,10 +592,17 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         }
       }
     }
-    if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseWheel') wheelOut += p.deltaY as number
-    if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseMoved' && p.x === -1 && p.y === -1 && session && session.doc !== 'page') {
+    if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseWheel') {
+      wheelOut += p.deltaY as number
+      const tag = tagOf(p.x as number, p.y as number)
+      wheelPending = wheelPending.filter((w) => w.tag > tag)
+    }
+    // Not a release: a lost release sent ahead of a move is an event of its own, the move goes on.
+    if (method === 'Input.dispatchMouseEvent' && p.type !== 'mouseReleased' && session && session.doc !== 'page') {
       const queued = queueOf().find((st) => st.kind === 'mouse' && typeof st.event?.x === 'number')
-      exitFor = { session, bound: queued?.event ? tagOf(queued.event.x as number, queued.event.y as number) - 1 : lastHandedTag }
+      const first = queued?.event ? tagOf(queued.event.x as number, queued.event.y as number) : undefined
+      exitFor = { session, bound: first !== undefined ? (firstTagOf.get(first) ?? first) - 1 : lastHandedTag }
+      exitTimerPending = exitFor
     }
     const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: false, resolve: () => {}, reject: () => {} }
     commands.push(c)
@@ -696,9 +710,13 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       // refused one in this attachment; a key never (a refused key is dropped).
       // sendInputEvent only while detached: a refusal while attached is dropped, never sent this way.
       if (attached) violate('fallback-while-attached', `${JSON.stringify(event)} by sendInputEvent while attached`)
-      if (event.type === 'mouseWheel') wheelOut -= event.deltaY
+      if (event.type === 'mouseWheel') {
+        wheelOut -= event.deltaY
+        const tag = tagOf(event.x, event.y)
+        wheelPending = wheelPending.filter((w) => w.tag > tag)
+      }
       if ((event.type === 'mouseDown' || event.type === 'mouseMove' || event.type === 'mouseWheel') && tagOf(event.x, event.y) <= deadExitBound) {
-        violate('stale-exit-continued', `${event.type} tag ${tagOf(event.x, event.y)} by sendInputEvent after its hover exit's session went`)
+        violate('stale-exit-continued', `${event.type} tag ${tagOf(event.x, event.y)} by sendInputEvent after a command of its step went to a session that went`)
       }
       if (event.type === 'mouseDown' && noReplay.has(tagOf(event.x, event.y))) violate('dead-replay', `the press tag ${tagOf(event.x, event.y)} sent again by sendInputEvent`)
       if (event.type === 'keyDown' || event.type === 'keyUp' || event.type === 'char') {
@@ -720,8 +738,25 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       if (/input step failed|held back/.test(message)) violate('router-log', message)
     },
     timers: {
-      set: (fn, ms) => clock.set(fn, ms, true),
-      clear: (h) => clock.clear(h)
+      set: (fn, ms) => {
+        const watch = exitTimerPending
+        exitTimerPending = undefined
+        const h = clock.set(
+          () => {
+            fn()
+            if (watch) queueMicrotask(() => closeExit(watch))
+          },
+          ms,
+          true
+        )
+        if (watch) watch.timer = h
+        return h
+      },
+      clear: (h) => {
+        const watch = exitFor
+        if (watch && watch.timer === h) queueMicrotask(() => closeExit(watch))
+        clock.clear(h)
+      }
     }
   })
 
@@ -738,8 +773,15 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     const before = queueOf().length
     const room = before < MAX_QUEUED_STEPS || queueOf().some(isQMove)
     const wasEligible = press ? eligible.has(press.id) : false
+    const lastBefore = queueOf()[before - 1]
     fn()
     const now = queueOf()
+    // A move or wheel merged into the one queued before it: the merged step carries the newest tag.
+    const lastNow = now[now.length - 1]
+    if (now.length === before && lastBefore && lastNow && lastNow !== lastBefore && typeof lastNow.event?.x === 'number' && typeof lastBefore.event?.x === 'number') {
+      const older = tagOf(lastBefore.event.x, lastBefore.event.y as number)
+      firstTagOf.set(tagOf(lastNow.event.x, lastNow.event.y as number), firstTagOf.get(older) ?? older)
+    }
     let pastCap = false
     if (press?.release) {
       if (before >= MAX_QUEUED_STEPS) pastCap = now.some((st) => st.event === press.ref || st.params === press.ref)
@@ -753,6 +795,18 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       eligible.add(press.id)
     }
     if (now.length > Math.max(before, MAX_QUEUED_STEPS) + (pastCap ? 1 : 0)) violate('queue-over-cap', `the queue went from ${before} to ${now.length} (cap ${MAX_QUEUED_STEPS})`)
+  }
+  function closeExit(watch: NonNullable<typeof exitFor>): void {
+    if (exitFor !== watch) return
+    if (watch.session.ended) {
+      deadExitBound = Math.max(deadExitBound, watch.bound)
+      // The step is dropped (rule 7): its press or wheel is lost with the session, as a refused one.
+      const from = lastPointerTag
+      for (const tag of clientPressTags) if (tag >= from && tag <= watch.bound && (pressTags.get(tag) ?? 0) < 1) lostPresses.add(tag)
+      for (const w of wheelPending) if (w.tag >= from && w.tag <= watch.bound) wheelIn -= w.dy
+      wheelPending = wheelPending.filter((w) => w.tag < from || w.tag > watch.bound)
+    }
+    exitFor = undefined
   }
   function countKey(map: Map<string, number> | undefined, code: unknown, by = 1): void {
     if (map && typeof code === 'string') map.set(code, (map.get(code) ?? 0) + by)
@@ -891,11 +945,13 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     resetPending = false
     for (const s of [...sessionOf.values()]) endSession(s, rejectPending)
     gen++
+    // What the reset finds queued (the pump may take a step at once, by a detached road).
+    const queued = [...queueOf()]
     router.reset()
     keyDowns.clear()
     keyUps.clear()
     eligible.clear()
-    for (const step of queueOf()) {
+    for (const step of queued) {
       const k = stepPress(step)
       if (k?.release) eligible.delete(k.id)
       else if (k) eligible.add(k.id)
@@ -939,6 +995,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       case 'wheel': {
         const t = nextTag()
         wheelIn += action.dy
+        wheelPending.push({ tag: t.tag, dy: action.dy })
         handIn(() => router.input([{ type: 'mouseWheel', x: action.x + t.fx, y: action.y + t.fy, deltaX: 0, deltaY: -action.dy, modifiers: [] }]))
         break
       }

@@ -254,20 +254,23 @@ the fallback when the protocol detached:
   press or wheel goes to the page's session at the top point. A release always goes where its press went: a frame
   that got a press and then stalled is owed the release, sent once it answers (dropped if the frame or the
   attachment goes), and gets nothing new before it; an edit command's key down counts as a press for the queue's cap
-  like any key. While the page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
+  like any key, and a reset forgets the presses of the attachment that went (only those still queued admit a release
+  past the cap). While the page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
   presses, releases, wheels and owed releases wait in the queue in order (bounded by the cap; no hit test runs), moves
   are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
   answered; its answer or a detach starts the queue again. A hit-test query that missed its 200 ms deadline marks its
   session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch and
   each session its own lifetime: every continuation (an answer, a refusal, a deadline, a hover move's end, a hit
-  test) of an older attachment or of a session that went changes nothing, requeues nothing and replays nothing, and
-  the router keeps nothing of a session that went. A live frame's session refusing (the frame went) sends the event to the
+  test) of an older attachment or of a session that went changes nothing, requeues nothing and replays nothing (a hover
+  move whose frame went before its step goes on ends that step: the event is dropped), and the router keeps nothing
+  of a session that went; a live frame refusing a hover move is logged and the event routed again. A live frame's session refusing (the frame went) sends the event to the
   page's session at the top point, never to another frame (a release is dropped instead; a press sent there owes its
   release there); a refusal from a frame that already went sends nothing anywhere. Whatever the page's own session
   refuses (a pointer event, key, text or edit command) is dropped and logged once (a text or command's caller hears the
   rejection), never run by another road, which could land in a later attachment or after the input behind it; a
   refused press records nothing (its release is dropped too) and a refused release clears its press. The
-  detached roads serve only a protocol detached when the step runs, in order (what follows a text waits for it). A seeded randomized test
+  detached roads serve only a protocol detached when the step runs, in order (what follows a text, an edit command or
+  a blocking call such as a select's choice waits for it, `STEP_TIMEOUT_MS` at most). A seeded randomized test
   (`page-input.fuzz.test.ts`, `FUZZ_SEEDS` for a long run) checks these rules on every send and at quiescence, with
   sessions that answer late, never or refuse, frames that detach, hover effects, the protocol lost (also between two
   microtasks of the router's continuations) and detached roads that answer late, each delivery checked against the

@@ -1554,7 +1554,7 @@ describe('PageInputRouter scheduling: review 6', () => {
     finish()
     await s.flush()
     expect(order).toEqual(['choice'])
-    expect(s.fallback.map((e) => e.type)).toEqual(['keyDown', 'char'])
+    expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
   })
 
   // SHOULD: "Deliver KeyA down; reset/reconnect; stall the new page and fill its queue with 512
@@ -1577,5 +1577,25 @@ describe('PageInputRouter scheduling: review 6', () => {
     await answerAll(s)
     expect(s.page.sent.filter((x) => x.params.type === 'keyUp').map((x) => x.params.code)).toEqual([])
     expect(s.mice().filter((m) => m[1] === 'mouseReleased')).toEqual([])
+  })
+
+  // Found by the oracle above while fixing it: a key down sent by sendInputEvent while detached is
+  // the page's all the same, so its key up passes the cap once attached again (it was forgotten).
+  it('a key down sent while detached: its key up still passes the cap after the protocol is back', async () => {
+    const s = setup()
+    s.detach()
+    s.router.input([keyDown('a')])
+    expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
+    s.attach()
+    s.page.opts.hold = true
+    s.router.input([keyDown('c')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    const many: ElectronInputEvent[] = []
+    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('d'))
+    s.router.input([...many, { type: 'keyUp', keyCode: 'a', modifiers: [] }])
+    await answerAll(s)
+    expect(s.page.sent.filter((x) => x.params.type === 'keyUp').map((x) => x.params.code)).toEqual(['KeyA'])
   })
 })
