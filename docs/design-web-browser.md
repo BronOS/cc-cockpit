@@ -161,6 +161,18 @@ A frame is the whole visible page, JPEG (quality about 75; PNG never: 10x the si
 - **Rate.** `setFrameRate` 30 while a browser shows the view; the encoder takes the newest image only (a slow encode
   never builds a backlog); an empty (0x0) first paint after `startPainting` is skipped. A view with no viewer (no browser shows the panel, or its only browsers are hidden tabs)
   stops painting.
+- **Frame budget** (`frame-budget.ts`, backlog item `offscreen-frame-area-cap`, closed). The encode budget above caps
+  encoding, but a page's paints cost main before that (the compositor's readback), so many big animating pages still
+  starved it. Main sums width x height x 30 fps over the pages that have a viewer and painted at least 3 times in the
+  last second; past `BUDGET_AREA_RATE` (250 Mpx/s) it sets one shared `setFrameRate` on those pages
+  (`budget / summed area`, never under 5 fps, evaluated every 250 ms) and puts a page back to 30 when it stops
+  animating, loses its viewer or closes. Decided in main only; the adapter just makes the call. Measured 2026-11-20 on the
+  Debian VM (16 cores, Electron 45.1.0, `node scripts/web-terminal-bench.mjs 8 4 20 sweep`, the 8-tab flood beside N
+  animated pages with a viewer each), main's p99 without the budget, at 1280x800 / 1920x1080: N=1 5.7 / 8.4 ms,
+  N=4 6.2 / 9.9, N=8 6.7 / 12.4, N=12 7.5 / 36.5 (max 95 ms). The knee is between 500 and 750 Mpx/s; 250 Mpx/s is
+  4 pages of 1920x1080 at 30 fps. With it, 12 pages at 1920x1080 run at 12 fps and the bench's phase 8 measured p99 13.7 ms
+  (limit 20; a 400 Mpx/s trial gave 17.2 ms, too little margin). A real browser and a busier host may differ: the
+  constant is one line.
 - **One frame in flight per browser view.** A browser view gets the next frame only after the previous one left the
   socket (`bufferedAmount` at most 64 KiB, `FRAME_DRAINED_BYTES`); `ws` has no drain event, so main polls it with one
   app-wide 16 ms timer, armed only while a viewer waits for its socket or a paint for the budget; meanwhile a newer frame replaces the pending one. With the per-frame size
