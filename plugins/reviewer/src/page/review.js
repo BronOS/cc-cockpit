@@ -1442,7 +1442,7 @@ function onUpdate(m) {
 }
 
 function onAction(button) {
-  if (button.disabled) return
+  if (button.disabled || document.body.classList.contains('no-actions')) return
   button.disabled = true
   button.classList.add('busy')
   setStatus('')
@@ -1517,6 +1517,10 @@ function init(m) {
   state.draft = m.draft || { global: '', notes: [] }
   state.layout = m.layout === 'unified' ? 'unified' : 'split'
   state.canOpenLinks = m.canOpenLinks === true
+  // A guest's copy (`canAct: false`): the caller's buttons are not the guest's to press (the host drops
+  // them too). Hidden by CSS, not left out of the DOM, so the text, and with it every note's anchor, is
+  // the same in every copy.
+  document.body.classList.toggle('no-actions', m.canAct === false)
   state.split = clampSplit(m.split)
   $('layout').textContent = state.layout === 'split' ? 'Unified' : 'Side by side'
   const s = state.sides

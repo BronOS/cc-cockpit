@@ -305,6 +305,8 @@ button.link.outdated { color: var(--cc-fg-muted); text-align: left; }
 /* A caller's button (feature 'actions'), in any document: the component sheet draws it; busy while its
    caller answers. A region update() hid. */
 .doc-body button.doc-action.busy { opacity: .6; cursor: progress; }
+/* A guest's copy: the caller's buttons are the owner's (init `canAct: false`). */
+body.no-actions .doc-body button.doc-action { display: none; }
 .doc-body [data-part][hidden] { display: none !important; }
 
 /* annotate's `originals` (feature 'original', app 0.13.0): the Original view. The caller's message as
