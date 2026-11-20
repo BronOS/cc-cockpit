@@ -54,6 +54,12 @@ export function isRemoteViewId(id: ViewId): boolean {
   return viewIdOf(id) !== undefined
 }
 
+/**
+ * The `view` a plugin sees for its window's desktop page (`ViewFrom.view`, ctx.views' key) and names it by
+ * (`ctx.openExternal(url, { view })`): never a window id, so main resolves it to the asking host's own window.
+ */
+export const PLUGIN_DESKTOP_VIEW = 'desktop'
+
 /** The desktop window's own view id. */
 export function desktopViewId(windowId: number): ViewId {
   return `desktop:${windowId}`

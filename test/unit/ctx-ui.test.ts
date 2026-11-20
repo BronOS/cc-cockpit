@@ -3,14 +3,18 @@
 // arrive with Task 28).
 import { describe, expect, it } from 'vitest'
 import { HostContexts, type ContextDeps, type LogLevel } from '../../src/host/ctx'
-import { currentView } from '../../src/host/ctx/origin-view'
+import { carryView, currentView } from '../../src/host/ctx/origin-view'
 import type { PanelPort } from '../../src/host/ctx/ui'
 import { MAX_OVERLAY_MESSAGE_LENGTH } from '../../src/shared/overlay-message'
 import { ServiceRegistry } from '../../src/host/services'
 import { MAX_OVERLAY_SOURCES } from '../../src/shared/overlay-buttons'
 import type { OverlayHandle, OverlaySpec, PluginContext } from '../../src/sdk/types'
+import type { ViewId } from '../../src/shared/views'
 import { hostSpec } from '../fakes/host-spec'
 import { memoryPortPair, type MemoryPort } from '../fakes/memory-port'
+
+/** main's `from` for the desktop page (the owner's, `view` absent on the wire; docs/design-overlay-views.md §3). */
+const OWNER = { access: 'owner' } as const
 
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 10; i++) await Promise.resolve()
@@ -585,22 +589,22 @@ describe('ctx.overlay.start', () => {
 
     const heard: unknown[] = []
     const off = overlay.onMessage((m) => heard.push(m))
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 1 } })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 1 }, from: OWNER })
     // Another plugin's id with the same handle names nothing; nor does an unknown handle.
-    contexts.handleEvent('overlay.message', { pluginId: 'a.two', handle, message: { n: 'x' } })
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle: 'nope', message: { n: 'y' } })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.two', handle, message: { n: 'x' }, from: OWNER })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle: 'nope', message: { n: 'y' }, from: OWNER })
     expect(heard).toEqual([{ n: 1 }])
     off()
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 2 } })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 2 }, from: OWNER })
     expect(heard).toEqual([{ n: 1 }])
 
     // A remote view's page: its listeners run in that view (origin-view.ts); a view main did not
     // mint is dropped, never read as the desktop's.
     const views: unknown[] = []
     const offView = overlay.onMessage(() => views.push(currentView()))
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 1, view: 'web:4' })
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 2 })
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 3, view: 'desktop:1' })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 1, view: 'web:4', from: { view: 'web:4', access: 'owner' } })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 2, from: OWNER })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 3, view: 'desktop:1', from: OWNER })
     expect(views).toEqual(['web:4', undefined])
     offView()
 
@@ -614,7 +618,7 @@ describe('ctx.overlay.start', () => {
     overlay.close()
     overlay.focus()
     expect(calls.length).toBe(before)
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 3 } })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: { n: 3 }, from: OWNER })
     expect(heard).toEqual([{ n: 1 }])
     expect(typeof overlay.onMessage(() => {})).toBe('function')
   })
@@ -669,7 +673,7 @@ describe('ctx.overlay.start', () => {
     const { contexts, ctx, calls, logs } = pending()
     const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })
     const handle = handleOf(calls)
-    const ask = (): Promise<unknown> => contexts.overlayDiscuss({ pluginId: 'a.one', handle })
+    const ask = (): Promise<unknown> => contexts.overlayDiscuss({ pluginId: 'a.one', handle, from: OWNER })
     await expect(ask()).resolves.toBeNull()
     const order: string[] = []
     overlay.onDiscuss(() => {
@@ -690,18 +694,18 @@ describe('ctx.overlay.start', () => {
     offB()
     await expect(ask()).resolves.toEqual({ text: 'never asked' })
     // Another plugin's id with this handle names nothing.
-    await expect(contexts.overlayDiscuss({ pluginId: 'a.two', handle })).resolves.toBeNull()
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.two', handle, from: OWNER })).resolves.toBeNull()
     await expect(contexts.overlayDiscuss({ pluginId: 'a.one' })).rejects.toThrow(/bad handle/)
     const second = ctx.overlay.start({ kind: 'url', url: 'https://example.com/' })
     const handle2 = (calls.filter((c) => c.method === 'overlay.open')[1]?.params as { handle: string }).handle
     const offThrow = second.onDiscuss(() => {
       throw new Error('no draft')
     })
-    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle: handle2 })).rejects.toThrow('no draft')
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle: handle2, from: OWNER })).rejects.toThrow('no draft')
     expect(logs).toContainEqual({ pluginId: 'a.one', level: 'error', text: 'an overlay onDiscuss handler threw: no draft' })
     offThrow()
     second.onDiscuss(() => ({ txt: 'x' }) as never)
-    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle: handle2 })).rejects.toThrow(/\{ text \} or null/)
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle: handle2, from: OWNER })).rejects.toThrow(/\{ text \} or null/)
   })
 
   it('focus asks main to bring it to the front, for any kind', async () => {
@@ -767,10 +771,313 @@ describe('ctx.overlay.start', () => {
     const heard: unknown[] = []
     overlay.onMessage((m) => heard.push(m))
     contexts.dispose('a.one')
-    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle: handleOf(calls), message: 1 })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle: handleOf(calls), message: 1, from: OWNER })
     expect(heard).toEqual([])
     overlay.post({ a: 1 })
     expect(calls.map((c) => c.method)).toEqual(['overlay.open'])
+  })
+})
+
+// Per-view copies (docs/design-overlay-views.md §3, plan Task 7): a perView plugin's html overlay hears each view's
+// copy connect and go, gets `from` (and `copy`) on every message, button and Discuss, posts to one copy or all, and
+// hides one; the copy's view is a line of ctx.views while it is connected. main is a recording fake `call`, wrapped
+// in carryView as host/index.ts does, so a request names the view of the listener it was made in.
+describe('ctx.overlay per-view copies', () => {
+  interface ViewCall extends Call {
+    view?: string
+  }
+
+  function perViewSetup(): {
+    contexts: HostContexts
+    ctx: PluginContext
+    plain: PluginContext
+    calls: ViewCall[]
+    logs: { pluginId: string; level: LogLevel; text: string }[]
+    open: (c: PluginContext) => { overlay: OverlayHandle; handle: string }
+  } {
+    const calls: ViewCall[] = []
+    const logs: { pluginId: string; level: LogLevel; text: string }[] = []
+    const contexts = new HostContexts({
+      log: (pluginId, level, text) => logs.push({ pluginId, level, text }),
+      call: carryView(async (method: string, params: unknown, options?: { timeoutMs?: number; view?: ViewId }) => {
+        calls.push({ method, params, ...(options?.view !== undefined ? { view: options.view } : {}) })
+        // overlay.open stays open (the overlay is up), every other request answers true.
+        return method === 'overlay.open' ? new Promise(() => {}) : true
+      })
+    })
+    const ctx = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js', panels: ['board'], overlaysPerView: true }))
+    const plain = contexts.create(hostSpec({ id: 'a.two', dir: '/p/two', main: 'h.js' }))
+    const open = (c: PluginContext): { overlay: OverlayHandle; handle: string } => {
+      const overlay = c.overlay.start({ kind: 'html', file: 'review.html' })
+      const handle = (calls.filter((x) => x.method === 'overlay.open').at(-1)?.params as { handle: string }).handle
+      return { overlay, handle }
+    }
+    return { contexts, ctx, plain, calls, logs, open }
+  }
+
+  const ANN = { view: 'web:3', access: 'read', person: 'Ann' } as const
+  const BO = { view: 'web:4', access: 'write', person: 'Bo' } as const
+
+  it('a reload is the old copy going, then a new copy: onDisconnect then onConnect, each with from and its copy', () => {
+    const { contexts, ctx, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const order: unknown[] = []
+    overlay.onConnect((from) => order.push(['connect', from, currentView(), ctx.views.access(from.view)]))
+    overlay.onDisconnect((from) => order.push(['disconnect', from, currentView(), ctx.views.access(from.view)]))
+    const ev = (event: string, copy: string, from: object, view?: string): void =>
+      contexts.handleEvent(event, { pluginId: 'a.one', handle, copy, ...(view !== undefined ? { view } : {}), from })
+    ev('overlay.connect', 'c1', ANN, 'web:3')
+    // A repeated connect of a live copy, and a disconnect of a copy never announced: nothing.
+    ev('overlay.connect', 'c1', ANN, 'web:3')
+    ev('overlay.disconnect', 'zz', ANN, 'web:3')
+    // The reload: main sends the old copy's disconnect, then the new copy's connect.
+    ev('overlay.disconnect', 'c1', { view: 'web:3', access: 'read' }, 'web:3')
+    ev('overlay.connect', 'c2', ANN, 'web:3')
+    expect(order).toEqual([
+      // Joined ctx.views before the listener ran; the listener runs in the copy's view.
+      ['connect', { ...ANN, copy: 'c1' }, 'web:3', 'read'],
+      // The connect's own from (main's disconnect may come when the view is gone), still a view while it runs.
+      ['disconnect', { ...ANN, copy: 'c1' }, 'web:3', 'read'],
+      ['connect', { ...ANN, copy: 'c2' }, 'web:3', 'read']
+    ])
+  })
+
+  it('post goes to one copy with { copy }, to every copy without; a bad copy throws at the call site', () => {
+    const { ctx, calls, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    overlay.post({ init: 1 }, { copy: 'c1' })
+    overlay.post({ all: 1 })
+    overlay.post({ all: 2 }, { copy: undefined })
+    overlay.post({ all: 3 }, {})
+    expect(calls.slice(1).map((c) => c.params)).toEqual([
+      { pluginId: 'a.one', handle, message: { init: 1 }, copy: 'c1' },
+      { pluginId: 'a.one', handle, message: { all: 1 } },
+      { pluginId: 'a.one', handle, message: { all: 2 } },
+      { pluginId: 'a.one', handle, message: { all: 3 } }
+    ])
+    for (const bad of [5, '', null]) expect(() => overlay.post({ a: 1 }, { copy: bad as never }), String(bad)).toThrow(/copy must be/)
+    expect(() => overlay.post({ a: 1 }, null as never)).toThrow(/options must be an object/)
+    expect(calls).toHaveLength(5)
+  })
+
+  it('hide sends that copy; a hide without a copy throws', () => {
+    const { ctx, calls, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    overlay.hide({ copy: 'c1' })
+    expect(calls.at(-1)).toEqual({ method: 'overlay.hide', params: { pluginId: 'a.one', handle, copy: 'c1' } })
+    expect(() => overlay.hide(undefined as never)).toThrow(/options must be an object/)
+    expect(() => overlay.hide({} as never)).toThrow(/copy must be/)
+    expect(calls).toHaveLength(2)
+  })
+
+  it("a copy's view joins ctx.views with main's access while connected (counted with the plugin's panel lines); from carries the guest's person", () => {
+    const { contexts, ctx, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const changes: unknown[] = []
+    ctx.views.onChange((e) => changes.push(e))
+    const persons: unknown[] = []
+    overlay.onConnect((from) => persons.push(from.person))
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'd1', from: OWNER })
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'g1', view: 'web:4', from: BO })
+    expect(ctx.views.access('desktop')).toBe('owner')
+    expect(ctx.views.access('web:4')).toBe('write')
+    // A panel of the plugin open in the guest's view too: the view stays known until both lines end.
+    const [hostEnd] = memoryPortPair()
+    contexts.attachPanelPort('a.one', 'board', { postMessage: (m: string) => hostEnd.postMessage(m), onMessage: (l) => hostEnd.onMessage(l), close() {} }, 'web:4', 'write')
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'g1', view: 'web:4', from: BO })
+    expect(ctx.views.access('web:4')).toBe('write')
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'd1', from: OWNER })
+    expect(ctx.views.access('desktop')).toBeUndefined()
+    expect(persons).toEqual([undefined, 'Bo'])
+    expect(changes).toEqual([
+      { view: 'desktop', access: 'owner' },
+      { view: 'web:4', access: 'write' },
+      { view: 'desktop', access: undefined }
+    ])
+  })
+
+  it("a closed overlay ends its copies' lines in ctx.views and drops every listener", async () => {
+    let end!: (r: unknown) => void
+    const calls: Call[] = []
+    const contexts = new HostContexts({
+      log: () => {},
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return method === 'overlay.open' ? new Promise((resolve) => (end = resolve)) : true
+      }
+    })
+    const ctx = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js', overlaysPerView: true }))
+    const overlay = ctx.overlay.start({ kind: 'html', file: 'review.html' })
+    const handle = (calls[0]?.params as { handle: string }).handle
+    const heard: unknown[] = []
+    overlay.onConnect((from) => heard.push(from.copy))
+    overlay.onDisconnect((from) => heard.push(`-${from.copy}`))
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c1', view: 'web:3', from: ANN })
+    expect(ctx.views.access('web:3')).toBe('read')
+    end({ kind: 'dismissed' })
+    await overlay.result
+    expect(ctx.views.access('web:3')).toBeUndefined()
+    // Ended: events reach no listener, and the copy members are inert.
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'c1', view: 'web:3', from: ANN })
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c2', view: 'web:3', from: ANN })
+    expect(heard).toEqual(['c1'])
+    expect(ctx.views.access('web:3')).toBeUndefined()
+    const before = calls.length
+    overlay.post({ a: 1 }, { copy: 'c2' })
+    overlay.hide({ copy: 'c2' })
+    expect(calls).toHaveLength(before)
+    expect(typeof overlay.onConnect(() => {})).toBe('function')
+  })
+
+  it('messages carry from and copy; one from an unknown copy, another view\'s copy or with no valid from is dropped', () => {
+    const { contexts, ctx, logs, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const heard: unknown[] = []
+    overlay.onMessage((m, from) => heard.push([m, from]))
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c3', view: 'web:3', from: ANN })
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c4', view: 'web:4', from: BO })
+    const msg = (copy: unknown, view: string | undefined, from: unknown, message: unknown = 1): void =>
+      contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message, copy, ...(view !== undefined ? { view } : {}), from })
+    msg('c3', 'web:3', ANN, { note: 'a' })
+    msg('c4', 'web:4', BO, { note: 'b' })
+    msg('zz', 'web:3', ANN)
+    // c4 is web:4's copy: a message naming it from web:3 is nobody's.
+    msg('c4', 'web:3', ANN)
+    msg(undefined, 'web:3', ANN)
+    msg('c3', 'web:3', undefined)
+    msg('c3', 'web:3', { view: 'web:3', access: 'owner', person: 'Ann' })
+    expect(heard).toEqual([
+      [{ note: 'a' }, { ...ANN, copy: 'c3' }],
+      [{ note: 'b' }, { ...BO, copy: 'c4' }]
+    ])
+    expect(logs.filter((l) => /no valid sender/.test(l.text))).toHaveLength(2)
+    // A gone copy's late message: dropped too.
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'c3', view: 'web:3', from: ANN })
+    msg('c3', 'web:3', ANN)
+    expect(heard).toHaveLength(2)
+  })
+
+  it("onButton and onDiscuss get who acted, in that view; a Discuss with no valid from is refused", async () => {
+    const { contexts, ctx, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const got: unknown[] = []
+    overlay.onButton('done', (from) => void got.push(['button', from, currentView()]))
+    overlay.onDiscuss((from) => {
+      got.push(['discuss', from, currentView()])
+      return { text: `by ${from.person ?? 'owner'}` }
+    })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'done', view: 'web:4', from: BO })
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle, view: 'web:4', from: BO })).resolves.toEqual({ text: 'by Bo' })
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle, from: OWNER })).resolves.toEqual({ text: 'by owner' })
+    expect(got).toEqual([
+      ['button', BO, 'web:4'],
+      ['discuss', BO, 'web:4'],
+      ['discuss', { view: 'desktop', access: 'owner' }, undefined]
+    ])
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle, view: 'web:4' })).rejects.toThrow(/bad from/)
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle, view: 'web:4', from: OWNER })).rejects.toThrow(/bad from/)
+    await expect(contexts.overlayDiscuss({ pluginId: 'a.one', handle, view: 'nope', from: OWNER })).rejects.toThrow(/bad view/)
+    expect(got).toHaveLength(3)
+  })
+
+  it('a throwing or rejecting listener is logged and the next one still runs; the host goes on', async () => {
+    const { contexts, ctx, logs, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const ran: string[] = []
+    overlay.onConnect(() => {
+      throw new Error('connect broke')
+    })
+    overlay.onConnect(async () => {
+      await Promise.resolve()
+      throw new Error('async connect broke')
+    })
+    overlay.onConnect((from) => void ran.push(`connect ${from.copy}`))
+    overlay.onDisconnect(() => {
+      throw new Error('disconnect broke')
+    })
+    overlay.onDisconnect((from) => void ran.push(`disconnect ${from.copy}`))
+    overlay.onMessage(() => {
+      throw new Error('message broke')
+    })
+    overlay.onMessage((m) => void ran.push(`message ${String(m)}`))
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c1', view: 'web:3', from: ANN })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 'hi', copy: 'c1', view: 'web:3', from: ANN })
+    contexts.handleEvent('overlay.disconnect', { pluginId: 'a.one', handle, copy: 'c1', view: 'web:3', from: ANN })
+    await flush()
+    expect(ran).toEqual(['connect c1', 'message hi', 'disconnect c1'])
+    // The view's line ended even though a disconnect listener threw.
+    expect(ctx.views.access('web:3')).toBeUndefined()
+    expect(logs.map((l) => l.text)).toEqual(
+      expect.arrayContaining([
+        'an overlay onConnect listener threw: connect broke',
+        'an overlay onConnect listener failed: async connect broke',
+        'an overlay onDisconnect listener threw: disconnect broke',
+        'an overlay onMessage listener threw: message broke'
+      ])
+    )
+  })
+
+  it('disposers remove listeners; a disposed plugin drops its copies from ctx.views', () => {
+    const { contexts, ctx, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    const heard: unknown[] = []
+    const off = overlay.onConnect((from) => heard.push(from.copy))
+    off()
+    off()
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c1', view: 'web:3', from: ANN })
+    expect(heard).toEqual([])
+    expect(ctx.views.access('web:3')).toBe('read')
+    contexts.dispose('a.one')
+    // Re-created, the plugin knows of no view: its old overlay's copy went with it.
+    const again = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js', overlaysPerView: true }))
+    expect(again.views.access('web:3')).toBeUndefined()
+  })
+
+  it("dispatch in the copy's view: a call made from inside onMessage without a view aims at that view (the origin hint)", async () => {
+    const { contexts, ctx, calls, open } = perViewSetup()
+    const { overlay, handle } = open(ctx)
+    overlay.onMessage((m, from) => {
+      void ctx.openExternal('https://example.com/hint')
+      void ctx.openExternal('https://example.com/addressed', { view: from.view === 'desktop' ? undefined : from.view })
+      overlay.post({ ack: m }, { copy: from.copy })
+    })
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c3', view: 'web:3', from: ANN })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 1, copy: 'c3', view: 'web:3', from: ANN })
+    await flush()
+    const opens = calls.filter((c) => c.method === 'openExternal')
+    expect(opens).toEqual([
+      { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/hint' }, view: 'web:3' },
+      { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/addressed', view: 'web:3' }, view: 'web:3' }
+    ])
+    expect(calls.find((c) => c.method === 'overlay.post')?.params).toEqual({ pluginId: 'a.one', handle, message: { ack: 1 }, copy: 'c3' })
+  })
+
+  it('a plugin without perView: the same API, one page; post { copy } and hide throw, copies never connect', () => {
+    const { contexts, plain, calls, open } = perViewSetup()
+    const { overlay, handle } = open(plain)
+    expect(() => overlay.post({ a: 1 }, { copy: 'c1' })).toThrow(/"overlays": \{ "perView": true \}.*one page/)
+    expect(() => overlay.hide({ copy: 'c1' })).toThrow(/use close\(\)/)
+    // Generic code that answers by from.copy still works: undefined is a broadcast.
+    overlay.post({ a: 1 }, { copy: undefined })
+    expect(calls.at(-1)?.params).toEqual({ pluginId: 'a.two', handle, message: { a: 1 } })
+    const heard: unknown[] = []
+    overlay.onConnect((from) => heard.push(['connect', from]))
+    overlay.onDisconnect((from) => heard.push(['disconnect', from]))
+    overlay.onMessage((m, from) => heard.push([m, from]))
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.two', handle, copy: 'c1', view: 'web:3', from: ANN })
+    expect(plain.views.access('web:3')).toBeUndefined()
+    // Its holder's messages, with who posted and no copy; one naming a copy is nobody's.
+    contexts.handleEvent('overlay.message', { pluginId: 'a.two', handle, message: 1, view: 'web:4', from: BO })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.two', handle, message: 2, from: OWNER })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.two', handle, message: 3, copy: 'c1', view: 'web:3', from: ANN })
+    expect(heard).toEqual([
+      [1, BO],
+      [2, { view: 'desktop', access: 'owner' }]
+    ])
+    // Not html: the copy members throw like post and onMessage.
+    const term = plain.overlay.start({ kind: 'terminal', argv: ['tig'] })
+    expect(() => term.onConnect(() => {})).toThrow('only an html overlay')
+    expect(() => term.hide({ copy: 'c1' })).toThrow('only an html overlay')
   })
 })
 

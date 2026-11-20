@@ -27,6 +27,9 @@ const button = (id: string, run: OverlayTypeButton['run'] = () => {}, extra: Par
   ...extra
 })
 
+/** main's `from` for a click on the desktop page (the owner's; docs/design-overlay-views.md §3). */
+const OWNER = { access: 'owner' } as const
+
 afterEach(() => {
   vi.useRealTimers()
 })
@@ -103,19 +106,19 @@ describe('OverlayButtonRegistry', () => {
       })
     ])
     const item = info({ source: 'p.mail', id: 't1' }, 'inbox-item')
-    await reg.list({ key: 'k', info: item })
-    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'read', info: item })).resolves.toBeNull()
+    await reg.list({ key: 'k', info: item, from: OWNER })
+    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'read', info: item, from: OWNER })).resolves.toBeNull()
     expect(runs[0]?.type.data).toEqual({ source: 'p.mail', id: 't1' })
-    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'done', info: item })).resolves.toEqual({ close: true })
-    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'fail', info: item })).rejects.toThrow('no network')
+    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'done', info: item, from: OWNER })).resolves.toEqual({ close: true })
+    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'fail', info: item, from: OWNER })).rejects.toThrow('no network')
     expect(logs.at(-1)).toMatchObject({ pluginId: 'p.mail', text: expect.stringMatching(/"fail" failed: no network/) })
     // Not asked again yet: "unread" is not a button of that overlay.
-    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'unread', info: item })).rejects.toThrow(/no button "unread"/)
-    await reg.list({ key: 'k', info: item })
-    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'unread', info: item })).resolves.toBeNull()
+    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'unread', info: item, from: OWNER })).rejects.toThrow(/no button "unread"/)
+    await reg.list({ key: 'k', info: item, from: OWNER })
+    await expect(reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'unread', info: item, from: OWNER })).resolves.toBeNull()
     // Another overlay's key, another plugin's id: nothing to run.
-    await expect(reg.click({ key: 'k2', pluginId: 'p.mail', buttonId: 'done', info: item })).rejects.toThrow(/no button/)
-    await expect(reg.click({ key: 'k', pluginId: 'p.other', buttonId: 'done', info: item })).rejects.toThrow(/no button/)
+    await expect(reg.click({ key: 'k2', pluginId: 'p.mail', buttonId: 'done', info: item, from: OWNER })).rejects.toThrow(/no button/)
+    await expect(reg.click({ key: 'k', pluginId: 'p.other', buttonId: 'done', info: item, from: OWNER })).rejects.toThrow(/no button/)
   })
 
   it('ended drops the runs, also of an answer that comes back after it', async () => {
@@ -127,7 +130,7 @@ describe('OverlayButtonRegistry', () => {
     reg.ended({ key: 'k' })
     release()
     await pending
-    await expect(reg.click({ key: 'k', pluginId: 'p.one', buttonId: 'a', info: info() })).rejects.toThrow(/no button/)
+    await expect(reg.click({ key: 'k', pluginId: 'p.one', buttonId: 'a', info: info(), from: OWNER })).rejects.toThrow(/no button/)
   })
 
   it("removePlugin (its ctx ended) takes its providers and runs, also from an ask under way; a disposer removes one", async () => {
@@ -142,9 +145,66 @@ describe('OverlayButtonRegistry', () => {
     release()
     expect((await pending).map((b) => b.pluginId)).toEqual(['p.two', 'p.three'])
     reg.removePlugin('p.three')
-    await expect(reg.click({ key: 'k', pluginId: 'p.three', buttonId: 'c', info: info() })).rejects.toThrow(/no button/)
+    await expect(reg.click({ key: 'k', pluginId: 'p.three', buttonId: 'c', info: info(), from: OWNER })).rejects.toThrow(/no button/)
     off()
     expect(await reg.list({ key: 'k', info: info() })).toEqual([])
+  })
+
+  it("a run gets who clicked (from, main's word: a fresh object each time); a one-argument run still works", async () => {
+    const { reg } = registry()
+    const got: unknown[][] = []
+    reg.register('p.mail', 'inbox-item', () => [
+      button('done', (o, from) => {
+        got.push([o.title, { ...from }])
+        // A run cannot change what the next click is told.
+        ;(from as { access: string }).access = 'owner'
+      }),
+      button('old', ((o: OverlayInfo) => void got.push(['old', o.title])) as OverlayTypeButton['run'])
+    ])
+    const item = info({ source: 'p.mail', id: 't1' }, 'inbox-item')
+    await reg.list({ key: 'k', info: item })
+    const guest = { view: 'web:3', access: 'write', person: 'Ann' }
+    await reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'done', info: item, view: 'web:3', from: guest })
+    await reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'done', info: item, view: 'web:3', from: guest })
+    await reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'done', info: item, from: OWNER })
+    await reg.click({ key: 'k', pluginId: 'p.mail', buttonId: 'old', info: item, from: OWNER })
+    expect(got).toEqual([
+      ['src/x.ts', { view: 'web:3', access: 'write', person: 'Ann' }],
+      ['src/x.ts', { view: 'web:3', access: 'write', person: 'Ann' }],
+      // The desktop page is 'desktop', as for panels.
+      ['src/x.ts', { view: 'desktop', access: 'owner' }],
+      ['old', 'src/x.ts']
+    ])
+  })
+
+  it('a click with no from, or one that does not fit its view, is refused: it never runs as the owner', async () => {
+    const { reg } = registry()
+    let runs = 0
+    reg.register('p.one', 'file', () => [button('a', () => void runs++)])
+    await reg.list({ key: 'k', info: info() })
+    const bad: Array<[unknown, unknown]> = [
+      [undefined, undefined],
+      [undefined, null],
+      [undefined, 'owner'],
+      [undefined, {}],
+      // A guest's role on the desktop page, a person on the owner, a from naming another view.
+      [undefined, { access: 'write' }],
+      [undefined, { access: 'owner', person: 'Ann' }],
+      ['web:3', { access: 'owner' }],
+      ['web:3', { view: 'web:4', access: 'owner' }],
+      [undefined, { view: 'web:3', access: 'owner' }],
+      ['web:3', { view: 'web:3', access: 'admin' }],
+      ['web:3', { view: 'web:3', access: 'read', person: '' }],
+      ['web:3', { view: 'web:3', access: 'read', person: 'x'.repeat(61) }],
+      ['web:3', { view: 'web:3', access: 'read', person: 5 }]
+    ]
+    for (const [view, from] of bad) {
+      await expect(
+        reg.click({ key: 'k', pluginId: 'p.one', buttonId: 'a', info: info(), ...(view !== undefined ? { view } : {}), from }),
+        JSON.stringify([view, from])
+      ).rejects.toThrow(/bad from/)
+    }
+    expect(runs).toBe(0)
   })
 
   it('refuses a bad registration and a malformed request', async () => {
@@ -154,7 +214,7 @@ describe('OverlayButtonRegistry', () => {
     await expect(reg.list({ key: '', info: info() })).rejects.toThrow(/bad key/)
     await expect(reg.list({ key: 'k', info: info({}, 'BAD') })).rejects.toThrow(/type name/)
     await expect(reg.list({ key: 'k', info: { ...(info() as object), title: 5 } })).rejects.toThrow(/title/)
-    await expect(reg.click({ key: 'k', pluginId: 5, buttonId: 'a', info: info() })).rejects.toThrow(/bad button/)
+    await expect(reg.click({ key: 'k', pluginId: 5, buttonId: 'a', info: info(), from: OWNER })).rejects.toThrow(/bad button/)
   })
 })
 
@@ -194,10 +254,10 @@ describe('through the host (HostContexts)', () => {
     let clicked = 0
     ctx.overlay.buttons('file', () => [button('edit', () => void clicked++)])
     await expect(contexts.overlayButtons({ key: 'k', info: info() })).resolves.toEqual([{ pluginId: 'a.one', id: 'edit', label: 'EDIT' }])
-    await expect(contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info() })).resolves.toBeNull()
+    await expect(contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), from: OWNER })).resolves.toBeNull()
     expect(clicked).toBe(1)
     contexts.handleEvent('overlay.ended', { key: 'k' })
-    await expect(contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info() })).rejects.toThrow()
+    await expect(contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), from: OWNER })).rejects.toThrow()
     await expect(contexts.overlayButtonClick({ source: 'page', key: 'k' })).rejects.toThrow(/source/)
   })
 
@@ -214,12 +274,12 @@ describe('through the host (HostContexts)', () => {
       throw new Error('second broke')
     })
     overlay.onButton('other', () => order.push('other'))
-    await expect(contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star' })).resolves.toBeNull()
+    await expect(contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', from: OWNER })).resolves.toBeNull()
     expect(order).toEqual(['first'])
     expect(logs.some((l) => /second broke/.test(l.text))).toBe(true)
     // Another plugin's id or handle runs nothing.
-    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.two', handle, buttonId: 'other' })
-    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle: 'nope', buttonId: 'other' })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.two', handle, buttonId: 'other', from: OWNER })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle: 'nope', buttonId: 'other', from: OWNER })
     expect(order).toEqual(['first'])
 
     overlay.setButtons([{ id: 'unstar', label: 'Unstar', primary: true }])
@@ -227,13 +287,35 @@ describe('through the host (HostContexts)', () => {
     expect(calls.at(-1)).toEqual({ method: 'overlay.setButtons', params: { pluginId: 'a.one', handle, buttons: [{ id: 'unstar', label: 'Unstar', primary: true }] } })
   })
 
+  it("the opener's onButton gets who clicked (from), each handler its own copy; a click without one runs nothing", async () => {
+    const { contexts, ctx, calls } = setup()
+    const overlay = ctx.overlay.start({ kind: 'url', url: 'https://example.com/', buttons: [{ id: 'star', label: 'Star' }] })
+    const handle = (calls[0]?.params as { handle: string }).handle
+    const got: unknown[] = []
+    overlay.onButton('star', (from) => {
+      got.push({ ...from })
+      ;(from as { access: string }).access = 'owner'
+    })
+    overlay.onButton('star', (from) => void got.push(from))
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 'web:2', from: { view: 'web:2', access: 'read', person: 'Bo' } })
+    expect(got).toEqual([
+      { view: 'web:2', access: 'read', person: 'Bo' },
+      { view: 'web:2', access: 'read', person: 'Bo' }
+    ])
+    await expect(contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star' })).rejects.toThrow(/bad from/)
+    await expect(
+      contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 'web:2', from: { access: 'read' } })
+    ).rejects.toThrow(/bad from/)
+    expect(got).toHaveLength(2)
+  })
+
   it("a remote view's click runs the handler in that view (origin-view.ts); a view main never mints is refused", async () => {
     const { contexts, ctx, calls } = setup()
     const views: unknown[] = []
     ctx.overlay.buttons('file', () => [button('edit', () => void views.push(currentView()))])
     await contexts.overlayButtons({ key: 'k', info: info() })
-    await contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), view: 'web:5' })
-    await contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info() })
+    await contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), view: 'web:5', from: { view: 'web:5', access: 'owner' } })
+    await contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), from: OWNER })
     await expect(
       contexts.overlayButtonClick({ source: 'type', key: 'k', pluginId: 'a.one', buttonId: 'edit', info: info(), view: 'nope' })
     ).rejects.toThrow(/bad view/)
@@ -243,8 +325,8 @@ describe('through the host (HostContexts)', () => {
       await Promise.resolve()
       views.push(currentView())
     })
-    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 'web:6' })
-    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star' })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 'web:6', from: { view: 'web:6', access: 'write', person: 'Ann' } })
+    await contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', from: OWNER })
     await expect(contexts.overlayButtonClick({ source: 'opener', pluginId: 'a.one', handle, buttonId: 'star', view: 7 })).rejects.toThrow(/bad view/)
     expect(views).toEqual(['web:5', undefined, 'web:6', undefined])
   })

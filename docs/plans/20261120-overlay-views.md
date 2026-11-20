@@ -313,15 +313,32 @@ External review: sol / high
 - Modify: `src/host/ctx/ui.ts`, `src/host/overlay-buttons.ts`
 - Modify: `test/unit/ctx-ui.test.ts`, `test/unit/host-overlay-buttons.test.ts`
 
-- [ ] `OverlayHandle`: `onConnect`, `onDisconnect`, `onMessage(m, from & { copy })`, `post(m, { copy? })`,
+- [x] `OverlayHandle`: `onConnect`, `onDisconnect`, `onMessage(m, from & { copy })`, `post(m, { copy? })`,
   `hide({ copy })`, `addSources`; listeners for a copy's messages run dispatched in that copy's view (as today for
   remote views) but plugins get `from`
-- [ ] the copy's view joins and leaves `ctx.views` membership as panel lines do (`ui.ts:222`)
-- [ ] `onButton`, `onDiscuss` and type buttons' `run(info, from)` receive `from` for every plugin
-- [ ] non-`perView` handles: same API surface, messages only from the holder, as today
-- [ ] tests: connect/disconnect order on reload, `post` to one copy, `ctx.views` membership, `from` on buttons and
+- [x] the copy's view joins and leaves `ctx.views` membership as panel lines do (`ui.ts:222`)
+- [x] `onButton`, `onDiscuss` and type buttons' `run(info, from)` receive `from` for every plugin
+- [x] non-`perView` handles: same API surface, messages only from the holder, as today
+- [x] tests: connect/disconnect order on reload, `post` to one copy, `ctx.views` membership, `from` on buttons and
   Discuss, non-`perView` unchanged
-- [ ] run tests - must pass before task 8
+- [x] run tests - must pass before task 8
+- ➕ the host needs the manifest flag for the call-site throws: `HostPluginSpec.overlaysPerView` (`host/loader.ts`
+  parses it, `host-manager.ts` `buildSpec` sends it, `UiApiDeps.overlaysPerView`); a perView handle is html AND the
+  flag, as in the manager. `post({ copy })` (a defined copy) and `hide` throw on any other overlay; `post(m, { copy:
+  undefined })` is a broadcast everywhere, so `post(reply, { copy: from.copy })` works for both kinds. `onConnect` /
+  `onDisconnect` are accepted on any html overlay (never fire without perView) and throw on other kinds like `onMessage`.
+- ⚠️ `from` is parsed fail-closed in one place (`ctx/views.ts` `viewFromOf`, used by `ui.ts` and `overlay-buttons.ts`):
+  the same view as the envelope, an access `tagAccess` accepts, `person` only a guest's (1-60 chars). A message,
+  connect or disconnect with a missing or malformed `from` is dropped (logged), a click or Discuss refused. The plugin
+  sees `from.view === 'desktop'` for the desktop page (main sends `view` absent), as panels do; `ctx.openExternal(url,
+  { view: 'desktop' })` routes to the host's own window's desktop page (the Task 6 review fix commit).
+- ⚠️ a perView message is delivered only for a copy the host was told of by `overlay.connect`, from that copy's view;
+  any other overlay's message naming a copy is dropped. The disconnect's listeners get the connect's `from`.
+  `ctx.views` keeps access only (the SDK's `views` has no person; `person` is on `from`). The view joins before the
+  `onConnect` listeners run and leaves after the `onDisconnect` ones; the overlay ending (`result` settles, the
+  plugin disposed) releases every remaining copy's line with no `onDisconnect`.
+- ⚠️ Task 10: register `onConnect` right after `ctx.overlay.start` (a connect is not replayed to a later listener);
+  listeners are called one at a time in the order added, each with its own `from` object.
 
 ### Task 8: Shell: one copy per view, hide, and the reworded note [model: opus]
 

@@ -10,7 +10,9 @@
 // each button with the id of the plugin whose ctx registered the provider. That id comes from the
 // registration, never from what a provider returns. The `run` functions stay here, keyed by
 // overlay key, plugin and button id; a click comes back as `overlay.buttonClick { key, pluginId,
-// buttonId, info }` and runs the one main named. Main asks again after every click and on the
+// buttonId, info, view?, from }` and runs the one main named with the info and `from` (who clicked: view,
+// access, a guest's person; main fills it from the connection it bound, and a missing or malformed one refuses
+// the click, never reads as the owner). Main asks again after every click and on the
 // opener's setButtons, and each answer replaces the overlay's runs.
 //
 // `key` is main's per-overlay key for this, not the overlay id (that never leaves main). Main sends
@@ -23,10 +25,11 @@
 // `opener` is the exception: main fills it from the plugin it accepted the open for (typeQuery in
 // overlay-manager.ts), so a source can refuse its buttons on an overlay another plugin opened for
 // one of its items.
-import type { Disposer, JsonValue, OverlayInfo, OverlayTypeButton } from '../sdk/types'
+import type { Disposer, JsonValue, OverlayInfo, OverlayTypeButton, ViewFrom } from '../sdk/types'
 import { errorText } from '../shared/error-text'
 import { viewIdOf } from '../shared/views'
 import { dispatchInView } from './ctx/origin-view'
+import { viewFromOf } from './ctx/views'
 import { within } from '../shared/timeout'
 import {
   MAX_OVERLAY_BUTTONS,
@@ -44,9 +47,8 @@ const MAX_TITLE_LENGTH = 200
 const MAX_OPENER_LENGTH = 200
 
 type Provider = (o: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>
-// Task 1 only widened the SDK's `run` with `from`; main does not send it yet (a later task), so the host still
-// calls with the info alone and the cast keeps typecheck green until then.
-type Run = (info: OverlayInfo) => unknown
+// `from`: who clicked (docs/design-overlay-views.md §3, main's word). A run written for one argument still works.
+type Run = OverlayTypeButton['run']
 
 interface Registration {
   readonly pluginId: string
@@ -173,17 +175,19 @@ export class OverlayButtonRegistry {
   }
 
   /**
-   * main's `overlay.buttonClick { key, pluginId, buttonId, info }`: run that button with the
-   * overlay's info. `{ close: true }` when its run asked for it, else null. A run that throws is
+   * main's `overlay.buttonClick { key, pluginId, buttonId, info, view?, from }`: run that button with the
+   * overlay's info and `from` (a fresh object per click), in the clicking view. `{ close: true }` when its run asked for it, else null. A run that throws is
    * logged in its plugin's log and the error goes back to main (the button is idle again there).
    */
   async click(params: unknown): Promise<{ close: true } | null> {
-    const { key: rawKey, pluginId, buttonId, info: rawInfo, view: rawView } = (params ?? {}) as Record<string, unknown>
+    const { key: rawKey, pluginId, buttonId, info: rawInfo, view: rawView, from: rawFrom } = (params ?? {}) as Record<string, unknown>
     const key = keyOf(rawKey, 'overlay.buttonClick')
     if (typeof pluginId !== 'string' || typeof buttonId !== 'string') throw new Error('overlay.buttonClick: bad button')
     // The remote view whose toolbar was clicked; one main did not mint is refused, never read as the desktop's.
     const view = viewIdOf(rawView)
     if (rawView !== undefined && view === undefined) throw new Error('overlay.buttonClick: bad view')
+    const from: ViewFrom | undefined = viewFromOf(rawFrom, view)
+    if (!from) throw new Error('overlay.buttonClick: bad from')
     const info = infoOf(rawInfo)
     const run = this.runs.get(key)?.get(`${pluginId}/${buttonId}`)
     if (!run) throw new Error(`overlay.buttonClick: ${pluginId} has no button "${buttonId}" on that overlay now`)
@@ -191,7 +195,7 @@ export class OverlayButtonRegistry {
     try {
       // Through a resolved promise: a run that throws synchronously lands in the same catch.
       // In the clicking view (origin-view.ts): what the run opens or focuses shows on that screen.
-      result = await Promise.resolve().then(() => dispatchInView(view, () => run(info), () => undefined))
+      result = await Promise.resolve().then(() => dispatchInView(view, () => run(info, { ...from }), () => undefined))
     } catch (err) {
       this.log(pluginId, `overlay button "${buttonId}" failed: ${errorText(err)}`)
       throw err
@@ -228,7 +232,7 @@ export class OverlayButtonRegistry {
       return clean.map((button, i) => {
         const run = list[i]!.run
         if (typeof run !== 'function') throw new TypeError(`${what}: button "${button.id}" has no run function`)
-        return { button, run: run as unknown as Run }
+        return { button, run: run as Run }
       })
     } catch (err) {
       this.log(reg.pluginId, `${what}: the provider's answer is skipped: ${errorText(err)}`)

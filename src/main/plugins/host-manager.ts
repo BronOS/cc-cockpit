@@ -1300,6 +1300,8 @@ export class HostManager {
       ...(p.openFile !== undefined ? { openFile: true } : {}),
       ...(p.settingsPage !== undefined ? { settingsPage: [...p.settingsPage.scopes] } : {}),
       ...(seesAllSessions(p) ? { sessionsAll: true } : {}),
+      // The host's handle needs it for `post { copy }` and `hide` (HostApiPlugin.overlaysPerView is main's copy).
+      ...(p.overlaysPerView === true ? { overlaysPerView: true } : {}),
       settings: {
         project: settings.project as HostPluginSpec['settings']['project'],
         app: settings.app as HostPluginSpec['settings']['app']

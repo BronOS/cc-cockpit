@@ -165,7 +165,7 @@ export class HostContexts {
     this.sessions = new SessionsHub((pluginId, m) => deps.log(pluginId, 'error', m))
     this.views = new HostViews((pluginId, m) => deps.log(pluginId, 'error', m))
     this.ports = new PanelPorts((pluginId, m) => deps.log(pluginId, 'warn', m), this.views)
-    this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m))
+    this.overlays = new OverlayLinks((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.typeButtons = new OverlayButtonRegistry((pluginId, m) => deps.log(pluginId, 'warn', m))
     this.actions = new PanelActions((pluginId, m) => deps.log(pluginId, 'error', m), this.views)
     this.webviews = new WebviewHub((pluginId, m) => deps.log(pluginId, 'error', m))
@@ -413,6 +413,7 @@ export class HostContexts {
       guardAsync,
       ports: this.ports,
       overlays: this.overlays,
+      overlaysPerView: spec.overlaysPerView === true,
       actions: this.actions,
       headerUsed: () => {
         rt.headerUsed = true
@@ -769,6 +770,11 @@ export class HostContexts {
     if (event === 'overlay.message') {
       // Keyed by plugin and handle; a handle of a disposed copy was dropped with it.
       this.overlays.handleEvent(params)
+      return
+    }
+    if (event === 'overlay.connect' || event === 'overlay.disconnect') {
+      // A perView overlay's copy came or went (ctx/ui.ts OverlayLinks): the same keying.
+      this.overlays.handleCopyEvent(event, params)
       return
     }
     if (event === 'panel.action') {

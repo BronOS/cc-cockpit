@@ -33,8 +33,8 @@
 //   overlay.message { pluginId, handle, message, view?, copy?, from }  an html overlay's page posted (ctx.overlay.start)
 //   overlay.connect / overlay.disconnect { pluginId, handle, copy, view?, from }  a perView overlay's copy came or went
 // `from` { view?, access, person? } is who acted, main's own (docs/design-overlay-views.md §3; host-api.ts says
-// how it is read): not surfaced to plugins yet (Task 7 of docs/plans/20261120-overlay-views.md), the connect
-// and disconnect events are ignored until then.
+// how it is read): the plugin's listeners get it with `view: 'desktop'` for the desktop page, as panels do, and
+// a missing or malformed one drops the event or refuses the request (ctx/ui.ts OverlayLinks, ctx/views.ts).
 //   panel.action { pluginId, panelId, actionId, view? }   a click on a panel header action (ctx.panels.onAction)
 // A `view` (a remote view main minted) names the browser the click or page message came from: the
 // plugin code it reaches runs in it (ctx/origin-view.ts), so what that code opens or focuses shows

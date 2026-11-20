@@ -1,6 +1,7 @@
 // ctx.views (guests, design-guests §6, §16.5): the views each plugin's pages are open in, and who is
 // behind each one, learned ONLY from main's port tags (panel, slot and page tab ports; host/index.ts parses
-// them). A page's own claim (its `ccPanel.view`) is a UI hint and never reaches here.
+// them) and main's `overlay.connect` / `.disconnect` for a perView overlay's copies (ui.ts OverlayLinks, whose
+// `from` main fills the same way). A page's own claim (its `ccPanel.view`) is a UI hint and never reaches here.
 //
 //   access    main tags every port with its view's access: `owner` (the desktop page, an owner's view) or a
 //             guest's role (`read` | `write`); a tag without one is refused, never read as the owner. Fixed for a
@@ -15,9 +16,10 @@
 //
 // Per plugin: a plugin learns only of views its own pages are open in.
 
-import type { Disposer, ViewAccess } from '../../sdk/types'
+import type { Disposer, ViewAccess, ViewFrom } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
-import type { ViewId } from '../../shared/views'
+import { GUEST_NAME_MAX } from '../../shared/guests'
+import { PLUGIN_DESKTOP_VIEW, type ViewId } from '../../shared/views'
 
 export type ViewChange = { view: string; access: ViewAccess | undefined }
 type Listener = (e: ViewChange) => void
@@ -32,6 +34,24 @@ export function tagAccess(raw: unknown, view: ViewId | undefined): ViewAccess | 
   if (raw === 'owner') return 'owner'
   if (view === undefined) return null
   return raw === 'read' || raw === 'write' ? raw : null
+}
+
+/**
+ * `from` of main's overlay events and requests (`{ view?, access, person? }`, docs/design-overlay-views.md §3) as a
+ * plugin gets it, checked against the envelope's `view` (already parsed by the caller): the same view (both absent
+ * for the desktop page), an access as tagAccess reads it, and `person` only a guest's (an invite name within
+ * GUEST_NAME_MAX). Undefined for anything else: the caller drops the event or refuses the request, never reading
+ * a broken `from` as the owner's. The desktop page is PLUGIN_DESKTOP_VIEW, as for panels.
+ */
+export function viewFromOf(raw: unknown, view: ViewId | undefined): ViewFrom | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const { view: fromView, access: rawAccess, person } = raw as Record<string, unknown>
+  if (fromView !== view) return undefined
+  const access = tagAccess(rawAccess, view)
+  if (access === null) return undefined
+  if (person === undefined) return { view: view ?? PLUGIN_DESKTOP_VIEW, access }
+  if (access === 'owner' || typeof person !== 'string' || person === '' || person.length > GUEST_NAME_MAX) return undefined
+  return { view: view ?? PLUGIN_DESKTOP_VIEW, access, person }
 }
 
 /** Lower of two accesses (owner > write > read): two lines of one view disagreeing is main's bug; the lesser wins. */

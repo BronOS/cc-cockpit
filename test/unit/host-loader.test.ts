@@ -548,6 +548,11 @@ describe('parsePluginSpecs', () => {
     expect(parsePluginSpecs({ plugins: [{ ...good, sessionsAll: true }] })[0]?.sessionsAll).toBe(true)
     expect(parsePluginSpecs({ plugins: [{ ...good, sessionsAll: false }] })[0]?.sessionsAll).toBeUndefined()
     expect(() => parsePluginSpecs({ plugins: [{ ...good, sessionsAll: 'yes' }] })).toThrow('sessionsAll must be a boolean')
+    // overlaysPerView (the manifest's `overlays.perView`, ctx/ui.ts): the same rule.
+    expect(parsePluginSpecs({ plugins: [good] })[0]?.overlaysPerView).toBeUndefined()
+    expect(parsePluginSpecs({ plugins: [{ ...good, overlaysPerView: true }] })[0]?.overlaysPerView).toBe(true)
+    expect(parsePluginSpecs({ plugins: [{ ...good, overlaysPerView: false }] })[0]?.overlaysPerView).toBeUndefined()
+    expect(() => parsePluginSpecs({ plugins: [{ ...good, overlaysPerView: 1 }] })).toThrow('overlaysPerView must be a boolean')
     // services: absent is none (left out of the spec); present, it is kept as main sent it.
     expect(parsePluginSpecs({ plugins: [good] })[0]?.services).toBeUndefined()
     const services = { provides: { triage: 1 }, uses: { mail: 2 } }

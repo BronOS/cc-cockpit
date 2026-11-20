@@ -357,32 +357,44 @@ export interface OverlayHandle {
    * html only (throws for another kind): send JSON to the page, where `ccPanel.onMessage` hears
    * it. Queued until the page has loaded. At most 1,040,384 chars of JSON (1 MiB less 8 KiB for
    * the transport); a larger one throws a RangeError. A no-op once the overlay ended.
-   */
-  /**
-   * html only (throws for another kind): hear what the page posts without a `result` key (the
-   * overlay stays open). Listeners are dropped when the overlay ends.
-   */
-  onMessage(listener: (message: JsonValue, from: ViewFrom & { copy: string }) => void): Disposer
-  /**
-   * `perView` plugins (manifest `overlays.perView`): a view's copy of this overlay connected (its page is
-   * ready). `from` is filled by main from the connection it bound (view, access, `person`) plus the copy id
-   * main minted; never from the page. Reply with `post(msg, { copy })`. See docs/design-overlay-views.md.
-   */
-  onConnect?(listener: (from: ViewFrom & { copy: string }) => void): Disposer
-  /** A copy went away (its view left, was hidden or lost access). Same `from` as `onConnect`. See docs/design-overlay-views.md. */
-  onDisconnect?(listener: (from: ViewFrom & { copy: string }) => void): Disposer
-  /**
-   * With `copy`, post to that one copy only (main refuses a copy id it did not mint for this overlay).
-   * Without it, to every copy that joined broadcasts. See docs/design-overlay-views.md.
+   *
+   * `perView` plugins (manifest `"overlays": { "perView": true }`): without `copy` (or with `copy: undefined`), to
+   * every copy that joined broadcasts (a copy joins with your first post addressed to it, the starting state your
+   * `onConnect` sends); with `{ copy }` (a `from.copy` you were given), to that one copy, dropped once it is gone.
+   * A `copy` on any other overlay throws: it has one page. See docs/design-overlay-views.md.
    */
   post(message: JsonValue, options?: { copy?: string }): void
-  /** Hide one view's copy (a read guest's close); the overlay stays for the others. Main-checked. See docs/design-overlay-views.md. */
-  hide?(options: { copy: string }): void
   /**
-   * Record that this overlay's content now also comes from these plugins (a deferred fill), so a guest
-   * sees it only when all of them are visible to it (provenance, D-4). See docs/design-overlay-views.md.
+   * html only (throws for another kind): hear what the page posts without a `result` key (the
+   * overlay stays open). Listeners are dropped when the overlay ends. `from` is who posted (view,
+   * access, a guest's `person`), filled by the app from the connection it bound, never by the page;
+   * `copy` names the posting copy of a `perView` overlay (absent otherwise: one page, its holder).
+   * The listener runs in the posting view (a link or focus it opens without naming a view shows
+   * there), but answer by `from`: `post(reply, { copy: from.copy })`, `ctx.openExternal(url, { view: from.view })`.
    */
-  addSources?(pluginIds: string[]): void
+  onMessage(listener: (message: JsonValue, from: ViewFrom & { copy?: string }) => void): Disposer
+  /**
+   * `perView` plugins: a view's copy of this overlay connected (its page is ready). `from` is filled by the app
+   * from the connection it bound (view, access, `person`) plus the copy id it minted; never from the page. Send
+   * the copy its starting state with `post(msg, { copy: from.copy })`. A reload, a reconnect or a view coming
+   * back is a new copy (the old one's `onDisconnect` first). While connected, the copy's view is in `ctx.views`.
+   * Accepted on any html overlay; only a `perView` one ever connects. See docs/design-overlay-views.md.
+   */
+  onConnect(listener: (from: ViewFrom & { copy: string }) => void): Disposer
+  /** A copy went away (its view left, reloaded, was hidden or lost access). Same `from` as its `onConnect`. */
+  onDisconnect(listener: (from: ViewFrom & { copy: string }) => void): Disposer
+  /**
+   * `perView` plugins: hide one copy in its own view (a read guest's close); the overlay stays for the others.
+   * A guest's hide holds for every view of that guest, for the overlay's life. Throws on any other overlay
+   * (use `close()`). See docs/design-overlay-views.md.
+   */
+  hide(options: { copy: string }): void
+  /**
+   * Record that this overlay's content now also comes from these plugins (a deferred fill: call it with
+   * `ctx.services.callers()` while the request is live, or a file open's `requestedBy`), so a guest sees it
+   * only when all of them are shown to guests (provenance, D-4). Any kind. See docs/design-overlay-views.md.
+   */
+  addSources(pluginIds: string[]): void
   /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
   close(): void
   /**
@@ -391,13 +403,16 @@ export interface OverlayHandle {
    * once it ended.
    */
   focus(): void
-  /** A click on one of the buttons the spec (or `setButtons`) gave, by its `id`. Dropped when the overlay ends. */
+  /**
+   * A click on one of the buttons the spec (or `setButtons`) gave, by its `id`, with `from`: who clicked (any
+   * view, a write guest's included; the app's word). Dropped when the overlay ends.
+   */
   onButton(id: string, handler: (from: ViewFrom) => unknown): Disposer
   /** Replace the opener's buttons (a "Mark read" that became "Mark unread"). Same rules as `buttons` in the spec. A no-op once the overlay ended. */
   setButtons(buttons: OverlayButton[]): void
   /**
    * Answer Discuss with Claude with the context text to send (within 5 s), or `null` for none. A
-   * throw or a timeout shows its error to the person and sends nothing.
+   * throw or a timeout shows its error to the person and sends nothing. `from`: whose Send it was.
    */
   onDiscuss(handler: (from: ViewFrom) => Promise<{ text: string } | null> | { text: string } | null): Disposer
   /**
