@@ -142,8 +142,17 @@ function makeScript(seed: number): Action[] {
       attached.add(f)
     }
   }
+  const slotAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
   const capAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
   for (let i = 0; i < length; i++) {
+    if (i === slotAt && held.size === 0 && !keys.has('Tab')) {
+      // C7 / C9: a key and a button held, the page stalled, the queue filled, then the same ups over and over (one release slot per record).
+      out.push({ a: 'key', type: 'down', key: 'Tab', mods: [] }, { a: 'down', x: 500, y: 650, button: 'left', held: ['left'] }, { a: 'mode', doc: 'page', mode: 'never' })
+      out.push({ a: 'key', type: 'down', key: 'x', mods: [] }, { a: 'burst', n: 200 + Math.floor(r() * 100) })
+      for (let k = 0; k < 6; k++) out.push({ a: 'key', type: 'up', key: 'Tab', mods: [] }, { a: 'up', x: 500, y: 650, button: 'left', held: [] })
+      out.push({ a: 'key', type: 'up', key: 'x', mods: [] }, { a: 'mode', doc: 'page', mode: 'fast' })
+      continue
+    }
     if (i === capAt && held.size === 0 && !keys.has('Tab')) {
       // C7 / C5: a button pressed, a move holding no button (the release owed), the page stalled, the queue filled past its cap, then the viewer's up.
       out.push({ a: 'down', x: 500, y: 650, button: 'left', held: ['left'] }, { a: 'move', x: 500, y: 650, held: [] }, { a: 'mode', doc: 'page', mode: 'never' })
@@ -423,8 +432,8 @@ interface Ev {
   sum: number
   /** Delivery attempts (a refused one counts: C2). */
   attempts: number
-  /** A release for a record on a session that was stalled while a later event was delivered (C5 holds it back). */
-  passedStalled?: boolean
+  /** A char whose key down was refused: C7 drops it with the down. */
+  droppedWithDown?: boolean
   /** The first attempt went to a live frame that refused: one more, to the page at the top point, is allowed. */
   redirectOk: boolean
   /** Why it may never be sent: a named cause of this event (never an interval). */
@@ -447,6 +456,8 @@ interface Rec {
   n: number
   /** A no-button move was delivered while this was live: its release is owed. */
   owed: boolean
+  /** An up already admitted past the cap for it (C7: one release slot per record). */
+  slot?: boolean
   /** The command that made it (a refusal within its deadline deletes it again). */
   by?: Command
 }
@@ -641,11 +652,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     ev.redirectOk = false
     // C4: delivered in enqueue order (moves are not in the list), past no open barrier.
     if (ev.kind !== 'move') {
-      // C5 over C4: a session whose command missed its deadline gets nothing more until it answers, so a release for a record
-      // there is passed by later events (the one place the two clauses meet; see the report).
-      const stalled = new Set(commands.filter((c) => !c.answered && !c.detached && c.gen === gen && c.session !== '' && clock.now - c.sentAt >= STEP_TIMEOUT_MS).map((c) => c.session))
-      if (stalled.size > 0) for (const e of evs) if (e.release && e.attempts === 0 && e.n < ev.n && [...stalled].some((sid) => records.get(e.rid)?.session === sid)) e.passedStalled = true
-      if (ev.n < lastN && !ev.passedStalled) violate('C4', 'order', `${describe(ev)} delivered after #${lastN}`)
+      // C5 / C4 (ruling 2026-11-19 #2): a stalled session's release is sent at once, in enqueue order, never parked behind later events.
+      if (ev.n < lastN) violate('C4', 'order', `${describe(ev)} delivered after #${lastN}`)
       lastN = Math.max(lastN, ev.n)
       if (barrier && barrier.ev !== ev && ev.n > barrier.ev.n && clock.now - barrier.startAt < STEP_TIMEOUT_MS) {
         violate('C4', 'barrier', `${describe(ev)} delivered while ${describe(barrier.ev)} holds the barrier (since t=${barrier.startAt})`)
@@ -774,6 +782,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         if (id !== '') violate('C1', 'key-to-frame', `${method} to ${id}`)
         if (isClipboardShape(p)) violate('C3', 'clipboard', JSON.stringify(p))
         ev = p.__tag !== undefined ? byEntry.get(`c:${String(p.__tag)}`) : unsentKey(`${keyEntry(String(p.type), p.code)}:${Number(p.modifiers ?? 0)}`)
+        if (ev?.droppedWithDown) violate('C7', 'char-after-refused-down', `${describe(ev)} delivered though its key down was refused`)
         if (ev) {
           deliver(ev, 'protocol', id)
           const code = typeof p.code === 'string' && p.code !== '' ? p.code : ''
@@ -854,6 +863,11 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (seen && ev && session && session.doc !== 'page' && method === 'Input.dispatchMouseEvent') ev.redirectOk = true
           // C7: a refused down made no press (within its deadline, the router saw it).
           if (seen) for (const r of allRecs()) if (r.by === c) endRecord(r, 'refusal')
+          // C7: a refused key down drops its paired char too.
+          if (seen && method === 'Input.dispatchKeyEvent' && (p.type === 'rawKeyDown' || p.type === 'keyDown')) {
+            const pair = keyPending.get(`${keyEntry('char', p.code)}:${Number(p.modifiers ?? 0)}`)?.find((e) => e.attempts === 0 && e.epoch === gen && e.excuse === undefined)
+            if (pair) pair.droppedWithDown = true
+          }
           // C7: a live frame that refuses is a frame going for its other records (its ups are dropped, cause: the frame's refusal).
           if (seen && session && session.doc !== 'page' && method === 'Input.dispatchMouseEvent') for (const r of allRecs()) if (r.session === id) endRecord(r, 'frame refused')
           reject(new Error('No session with given id'))
@@ -1012,7 +1026,14 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     // C7 / C5: past the cap only an up that matches a live record is admitted.
     if (ev.release && before >= MAX_QUEUED_STEPS && taken && !liveRec && !queuedDown) violate('C7', 'past-cap-admission', `${describe(ev)} admitted past the cap with no live record (nor a queued down) for ${ev.rid}`)
     const admittedUp = ev.release && before >= MAX_QUEUED_STEPS && taken
+    // C7 / C9 (O4), ruling 2026-11-19 #2: admitting an up past the cap consumes its record's one release slot; a second one is not admitted.
+    if (admittedUp && liveRec) {
+      const rec = records.get(ev.rid)
+      if (rec?.slot) violate('C7', 'second-up-past-cap', `${describe(ev)} admitted past the cap, the record of ${ev.rid} had its release slot already (queue ${queueOf().length})`)
+      else if (rec) rec.slot = true
+    }
     // C9 / O4: the queue never passes its cap but by an admitted up.
+    if (queueOf().length > MAX_QUEUED_STEPS + allRecs().length + 1) violate('C9', 'queue-over-cap-records', `the queue holds ${queueOf().length}, past the cap ${MAX_QUEUED_STEPS} plus ${allRecs().length} live records`)
     if (queueOf().length > Math.max(before, MAX_QUEUED_STEPS) + (admittedUp ? 1 : 0)) violate('C9', 'queue-over-cap', `the queue went from ${before} to ${queueOf().length} (cap ${MAX_QUEUED_STEPS})`)
   }
   function inQueueTag(tag: number): boolean {
@@ -1331,7 +1352,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     // C3: a viewer event never sent is a violation unless its own named excuse says why.
     for (const ev of evs) {
       if (ev.attempts > 0) continue
-      const excuse = ev.excuse ?? (ev.capDropped ? 'the cap' : ev.epoch < gen ? 'an epoch change' : undefined)
+      const excuse = ev.excuse ?? (ev.droppedWithDown ? 'its key down was refused' : ev.capDropped ? 'the cap' : ev.epoch < gen ? 'an epoch change' : undefined)
       if (excuse !== undefined) continue
       // C3: move coalescing: a move superseded by a later move (named: the later move handed in).
       if (ev.kind === 'move' && evs.some((e) => e.kind === 'move' && e.n > ev.n)) continue
