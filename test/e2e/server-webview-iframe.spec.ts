@@ -10,7 +10,9 @@
 // frames' pids differ before any input). Each document logs its trusted presses and releases; the
 // cases read the documents through main (`executeJavaScript` on each frame of the off-screen page),
 // never by pixels, and change nothing there but clearing a log: focus and carets come from the
-// clicks and keys under test.
+// clicks and keys under test. The iframe also holds a `<select>` (below its field, after it in the
+// order, clear of the drag case's press), for the dropdown the browser draws for a select main found
+// in the frame (design-web-browser.md §4.4).
 import { createServer, type Server as HttpServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { expect, test, type Locator, type Page } from '@playwright/test'
@@ -37,9 +39,12 @@ const DOC_SCRIPT = `window.__log = []
 for (const t of ['mousedown', 'mouseup']) document.addEventListener(t, (e) => { if (e.isTrusted) __log.push(t + ':' + (e.target.id || e.target.tagName)) }, true)
 const rect = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height } }
 const i = document.getElementById('i')
+const s = document.getElementById('s')
+window.__chg = []
+if (s) for (const t of ['input', 'change']) s.addEventListener(t, () => __chg.push(t + ':' + s.value))
 window.__state = () => ({ ready: document.readyState, value: i.value, sel: [i.selectionStart, i.selectionEnd],
   active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null,
-  input: rect(i), frame: rect(document.getElementById('A')), log: __log.slice() })
+  input: rect(i), frame: rect(document.getElementById('A')), select: rect(s), sv: s ? s.value : null, chg: __chg.slice(), log: __log.slice() })
 window.__clear = () => { __log.length = 0 }`
 
 const STYLE = `html,body{margin:0;height:100%}
@@ -52,8 +57,9 @@ const topPage = (frameUrl: string): string => `<!doctype html><meta charset="utf
 <input id="i" autocomplete="off"><iframe id="A" src="${frameUrl}"></iframe>
 <script>${DOC_SCRIPT}</script>`
 const FRAME_PAGE = `<!doctype html><meta charset="utf-8"><title>frame</title>
-<style>${STYLE} body{background:#dde}</style>
+<style>${STYLE} body{background:#dde} select{position:absolute;left:10px;top:50px;width:150px;height:30px;margin:0;font:16px monospace}</style>
 <input id="i" autocomplete="off">
+<select id="s"><option value="apple">Apple</option><option value="banana">Banana</option><option value="cherry">Cherry</option></select>
 <script>${DOC_SCRIPT}</script>`
 
 interface Rect {
@@ -70,6 +76,9 @@ interface DocState {
   active: string | null
   input: Rect
   frame: Rect | null
+  select: Rect | null
+  sv: string | null
+  chg: string[]
   log: string[]
 }
 type Role = 'top' | 'frame'
@@ -298,5 +307,35 @@ test('server mode, cross-site iframe: typing in its field, then clicking the top
   // Nothing awaited between: the order is the router's promise.
   await expectValues(f, 'top text', 'frame text')
   expect((await f.state('top')).active).toBe('i')
+  await expectMainAlive(server!)
+})
+
+test("server mode, cross-site iframe: its select opens the browser's dropdown over it, and a choice sets the value there", async () => {
+  test.setTimeout(120_000)
+  const f = await openFixture()
+  const frame = (await f.state('top')).frame!
+  const select = (await f.state('frame')).select!
+  // The select's place in the browser: the input layer's origin, the iframe's, the select's in it.
+  const at = { x: f.origin.x + frame.x + select.x, y: f.origin.y + frame.y + select.y }
+  await f.page.mouse.click(at.x + select.w / 2, at.y + select.h / 2)
+  const menu = f.section.getByRole('listbox', { name: 'Choose an option' })
+  await expect(menu).toBeVisible({ timeout: 10_000 })
+  await expect(menu.getByRole('option')).toHaveText(['Apple', 'Banana', 'Cherry'])
+  await expect(menu.getByRole('option', { name: 'Apple' })).toHaveAttribute('aria-selected', 'true')
+  // Under the select (its rectangle mapped from the frame to the top page by main), as wide.
+  const m = await menu.boundingBox()
+  expect(m, 'the dropdown has a box').not.toBeNull()
+  expect(Math.abs(m!.x - at.x), `dropdown x ${m!.x}, select x ${at.x}`).toBeLessThanOrEqual(2)
+  expect(Math.abs(m!.y - (at.y + select.h)), `dropdown y ${m!.y}, select bottom ${at.y + select.h}`).toBeLessThanOrEqual(2)
+  // The press opened the dropdown instead of reaching either document.
+  expect((await f.state('frame')).log).toEqual([])
+  expect((await f.state('top')).log).toEqual([])
+  await menu.getByRole('option', { name: 'Banana' }).click()
+  await expect(menu).toHaveCount(0)
+  await expect.poll(async () => (await f.state('frame')).sv, { timeout: 10_000 }).toBe('banana')
+  expect((await f.state('frame')).chg).toEqual(['input:banana', 'change:banana'])
+  // The select kept the focus in the frame, and the top page's is the iframe (as after a click there).
+  expect((await f.state('frame')).active).toBe('s')
+  expect((await f.state('top')).active).toBe('A')
   await expectMainAlive(server!)
 })

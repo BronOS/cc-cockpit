@@ -43,11 +43,11 @@ import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, ERR_ABORTED, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
 import { webviewKeyCode } from '../../shared/webview-keys'
 import { editKeyEvent, InputDroppedError, SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
-import { PageInputRouter } from './page-input'
+import { PageInputRouter, type ScriptFrame } from './page-input'
 import { HungNavigationWatch, type ProbeAnswer, type WatchedNavigation } from './hung-navigation'
 import { killRenderer, rendererOsPid } from './renderer-kill'
 import { FrameBudget } from './frame-budget'
-import { chooseScript, hitScript } from './select-hit'
+import { chooseScript, hitScript, SelectFrames, selectHitInTop } from './select-hit'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
 /** The page's size before any browser reported one (CSS px; a common laptop browser area). */
@@ -165,8 +165,13 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       fallback: (event) => {
         if (!wc.isDestroyed()) wc.sendInputEvent(event)
       },
+      // main's scripts in the top document: its isolated world, as the selection read and the select
+      // hit test always ran (a cross-site frame's is made on its own session by the router).
+      isolated: (code) => (wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code }])),
       log: this.log
     })
+    // The frame each popup's select was found in (select-hit.ts): its answer goes there only.
+    const selectFrames = new SelectFrames<ScriptFrame>()
     cancelOffscreenNativeUi(wc, this.log, input)
     const navigation = webviewNavigation(wc)
     const hung = new HungNavigationWatch({
@@ -385,25 +390,30 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
         }, epoch)
       },
       // The page's selection, read in main's own isolated world (webview-input.ts SELECTION_SCRIPT):
-      // the page's scripts cannot see the read nor stand in for what it calls. After the input
-      // queued before it (the router's queue), without holding what comes after.
-      readSelection: () =>
-        wc.isDestroyed()
-          ? Promise.resolve(undefined)
-          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: SELECTION_SCRIPT }])), false),
-      // A select popup the page does not paint (select-hit.ts): what is under a press, and the
-      // browser's answer, in the same isolated world (the element is kept there between the two).
-      // Both on the router's call road (ruling 2026-11-19 #11: a press on a hung page started one
-      // unanswered script each); the hit test holds nothing after it, and a press waits
-      // HIT_TIMEOUT_MS at most for it. The answer in its place among the input.
+      // the page's scripts cannot see the read nor stand in for what it calls. In the deepest focused
+      // cross-site frame (main finds it), else the top document (page-input.ts scriptInFocus). After
+      // the input queued before it (the router's queue), without holding what comes after.
+      readSelection: () => (wc.isDestroyed() ? Promise.resolve(undefined) : input.scriptInFocus(SELECTION_SCRIPT)),
+      // A select popup the page does not paint (select-hit.ts): what is under a press, in the
+      // document the router's own route for that press picks (a cross-site frame's included, its
+      // rectangle mapped to the top page), and the browser's answer in the same document's isolated
+      // world (the element is kept there between the two; a frame gone or replaced meanwhile
+      // chooses nothing). Both on the router's call road (ruling 2026-11-19 #11: a press on a hung
+      // page started one unanswered script each); a press waits HIT_TIMEOUT_MS at most for the hit
+      // test. The answer in its place among the input.
       hitSelect: (x, y, id, epoch) =>
         wc.isDestroyed()
           ? Promise.resolve(undefined)
-          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }])), false, epoch),
-      chooseSelect: (id, index, epoch) =>
-        wc.isDestroyed()
-          ? Promise.resolve(false)
-          : input.call(() => (wc.isDestroyed() ? false : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: chooseScript(id, index) }])), true, epoch),
+          : input.scriptAt(x, y, (fx, fy) => hitScript(fx, fy, id), epoch).then((hit) => {
+              if (!hit) return undefined
+              selectFrames.remember(id, hit.frame)
+              return selectHitInTop(hit.value, hit.toTop)
+            }),
+      chooseSelect: (id, index, epoch) => {
+        const frame = selectFrames.take(id)
+        if (wc.isDestroyed() || !frame) return Promise.resolve(false)
+        return input.scriptIn(frame, chooseScript(id, index), epoch).then((chose) => chose === true)
+      },
       invalidate: () => {
         if (!wc.isDestroyed()) wc.invalidate()
       }

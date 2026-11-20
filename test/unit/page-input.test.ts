@@ -8,16 +8,19 @@
 // Chromium's own routing is proven under Electron by scripts/offscreen-input-check.mjs.
 import { describe, expect, it } from 'vitest'
 import {
+  FRAME_WORLD_NAME,
   MAX_QUEUED_STEPS,
   MAX_RETESTS,
   PageInputRouter,
   pointInFrame,
   protocolKeyEvent,
   protocolMouseEvent,
+  rectFromFrame,
+  rectToTop,
   ROUTE_TIMEOUT_MS,
   STEP_TIMEOUT_MS
 } from '../../src/main/webview/page-input'
-import type { ElectronInputEvent } from '../../src/main/webview/webview-input'
+import { InputDroppedError, type ElectronInputEvent } from '../../src/main/webview/webview-input'
 import { webviewKeyInfo } from '../../src/shared/webview-keys'
 
 const rect = (x: number, y: number, w: number, h: number): number[] => [x, y, x + w, y, x + w, y + h, x, y + h]
@@ -197,7 +200,9 @@ function fakePage() {
     refuse: new Set<string>(),
     hang: new Set<string>(),
     hitAlways: undefined as number | undefined,
-    onSent: undefined as ((sent: Sent) => void) | undefined
+    onSent: undefined as ((sent: Sent) => void) | undefined,
+    /** A query's own answer (main's scripts: isolated worlds, evaluations); undefined: the layout's. */
+    answer: undefined as ((method: string, params: Record<string, unknown>, session: string) => Promise<unknown> | undefined) | undefined
   }
   const send = (method: string, params: Record<string, unknown> | undefined, sessionId?: string): Promise<unknown> => {
     const session = sessionId ?? ''
@@ -213,6 +218,8 @@ function fakePage() {
     }
     queries.push({ method, session })
     if (opts.hang.has(method)) return new Promise(() => {})
+    const own = opts.answer?.(method, p, session)
+    if (own) return own
     if (opts.holdQueries) {
       return new Promise((resolve, reject) => {
         heldQueries.push({ method, session, answer: () => resolve(query(method, p, session)), reject })
@@ -252,11 +259,18 @@ function setup() {
   const timers = new Map<number, () => void>()
   let next = 0
   let attached = true
+  /** The top document's scripts (the adapter's isolated world) and what they answer. */
+  const tops: string[] = []
+  const top = { answer: (code: string): Promise<unknown> => Promise.resolve(`top:${code}`) }
   const router = new PageInputRouter({
     send: page.send,
     attached: () => attached,
     fallback: (e) => void fallback.push(e),
     log: (m) => void logs.push(m),
+    isolated: (code) => {
+      tops.push(code)
+      return top.answer(code)
+    },
     timers: {
       set: (fn) => {
         timers.set(++next, fn)
@@ -288,7 +302,7 @@ function setup() {
     for (const h of page.held) by.set(h.sent.session, (by.get(h.sent.session) ?? 0) + 1)
     return by
   }
-  return { page, router, fallback, logs, frame, flush, fire, mice, unanswered, detach: () => (attached = false), attach: () => (attached = true), timers }
+  return { page, router, fallback, logs, frame, flush, fire, mice, unanswered, detach: () => (attached = false), attach: () => (attached = true), timers, tops, top }
 }
 
 const down = (x: number, y: number, button: 'left' | 'right' = 'left'): ElectronInputEvent => ({ type: 'mouseDown', x, y, button, clickCount: 1, modifiers: [] })
@@ -1755,5 +1769,328 @@ describe('PageInputRouter scheduling: review 6', () => {
     s.router.input([...many, { type: 'keyUp', keyCode: 'a', modifiers: [] }])
     await answerAll(s)
     expect(s.page.sent.filter((x) => x.params.type === 'keyUp').map((x) => x.params.code)).toEqual(['KeyA'])
+  })
+})
+
+describe('rectFromFrame / rectToTop', () => {
+  const box = (content: number[], border: number[], width: number, height: number) => ({ content, border, width, height })
+
+  it("maps a frame's rectangle into its parent through the content box (a border, a scale)", () => {
+    const bordered = box(rect(8, 208, 600, 300), rect(0, 200, 616, 316), 616, 316)
+    expect(rectFromFrame(bordered, { x: 10, y: 120, width: 150, height: 24 })).toEqual({ x: 18, y: 328, width: 150, height: 24 })
+    const scaled = box(rect(650, 200, 150, 150), rect(650, 200, 150, 150), 300, 300)
+    expect(rectFromFrame(scaled, { x: 10, y: 120, width: 150, height: 24 })).toEqual({ x: 655, y: 260, width: 75, height: 12 })
+  })
+
+  it('takes the bounding box of a rotated frame, and is the inverse of pointInFrame', () => {
+    const q = [400, 100, 400, 300, 300, 300, 300, 100]
+    const rotated = box(q, q, 200, 100)
+    const all = rectFromFrame(rotated, { x: 0, y: 0, width: 200, height: 100 }) as { x: number; y: number; width: number; height: number }
+    expect(all.x).toBeCloseTo(300)
+    expect(all.y).toBeCloseTo(100)
+    expect(all.width).toBeCloseTo(100)
+    expect(all.height).toBeCloseTo(200)
+    // A rectangle's corner mapped up, then that point mapped down again: the same frame point.
+    const corner = rectFromFrame(rotated, { x: 50, y: 10, width: 0, height: 0 }) as { x: number; y: number }
+    const back = pointInFrame(rotated, corner.x, corner.y) as { x: number; y: number }
+    expect(back.x).toBeCloseTo(50)
+    expect(back.y).toBeCloseTo(10)
+  })
+
+  it('refuses what pointInFrame refuses (a perspective quad, a flat box) and a rectangle that is none', () => {
+    const q = [0, 0, 100, 0, 200, 200, 0, 200]
+    expect(rectFromFrame(box(q, q, 200, 200), { x: 0, y: 0, width: 10, height: 10 })).toBeUndefined()
+    expect(rectFromFrame(box(rect(0, 0, 10, 10), rect(0, 0, 10, 10), 0, 10), { x: 0, y: 0, width: 1, height: 1 })).toBeUndefined()
+    const ok = box(rect(0, 0, 100, 100), rect(0, 0, 100, 100), 100, 100)
+    for (const bad of [undefined, null, 'x', { x: 0, y: 0, width: -1, height: 1 }, { x: Number.NaN, y: 0, width: 1, height: 1 }, { x: 0, y: 0, width: 1 }, { x: 1e9, y: 0, width: 1, height: 1 }]) {
+      expect(rectFromFrame(ok, bad), JSON.stringify(bad)).toBeUndefined()
+    }
+  })
+
+  it('rectToTop goes up from the deepest owner; with none it only checks the rectangle', () => {
+    const a = box(rect(0, 200, 600, 300), rect(0, 200, 600, 300), 600, 300)
+    const b = box(rect(300, 100, 280, 180), rect(300, 100, 280, 180), 280, 180)
+    const r = rectToTop([a, b], { x: 10, y: 120, width: 150, height: 24 })
+    expect(r && Object.values(r).map((n) => Math.round(n * 1000) / 1000)).toEqual([310, 420, 150, 24])
+    expect(rectToTop([], { x: 1, y: 2, width: 3, height: 4 })).toEqual({ x: 1, y: 2, width: 3, height: 4 })
+    expect(rectToTop([], { x: 1, y: 2 })).toBeUndefined()
+    expect(rectToTop([a, { content: [1] }], { x: 1, y: 2, width: 3, height: 4 })).toBeUndefined()
+  })
+})
+
+/**
+ * main's scripts on the fake sessions, answered as Chromium does (checked under Electron 45.1.0 with
+ * a probe, 2026-11-20): `Page.createIsolatedWorld` gives the session's current document a context
+ * (the same one again while it lives), a `Runtime.evaluate` with any other context id is refused (a
+ * new document), by value the session's own answer to the code, by reference (the focus walk) the
+ * frame owner holding that document's focus (`focus`, a target id) or null.
+ */
+function scripts(s: ReturnType<typeof setup>) {
+  const contexts = new Map<string, number>()
+  let next = 100
+  const calls: Array<{ method: string; session: string; params: Record<string, unknown> }> = []
+  const focus = new Map<string, string>()
+  const held = new Map<string, Array<() => void>>()
+  const opts = {
+    /** Each session's answer to a script by value. */
+    value: (session: string, code: string): unknown => `${session || 'page'}:${code}`,
+    throws: new Set<string>(),
+    /** Methods held per `${session} ${method}` until `release` (a frame that goes meanwhile). */
+    hold: new Set<string>()
+  }
+  const contextOf = (session: string): number => {
+    let id = contexts.get(session)
+    if (id === undefined) contexts.set(session, (id = ++next))
+    return id
+  }
+  const answer = (method: string, p: Record<string, unknown>, session: string): Promise<unknown> | undefined => {
+    const scriptMethod = ['Page.createIsolatedWorld', 'Runtime.evaluate', 'Page.getFrameTree', 'Runtime.releaseObjectGroup'].includes(method) || (method === 'DOM.describeNode' && 'objectId' in p)
+    if (!scriptMethod) return undefined
+    calls.push({ method, session, params: p })
+    const compute = (): unknown => {
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'MAIN' } } }
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: contextOf(session) }
+      if (method === 'DOM.describeNode') return { node: { nodeName: 'IFRAME', frameId: String(p.objectId).slice('obj-'.length) } }
+      if (method === 'Runtime.releaseObjectGroup') return {}
+      if (p.contextId !== contexts.get(session)) throw new Error('Cannot find context with specified id')
+      if (opts.throws.has(session)) return { result: { type: 'object', subtype: 'error' }, exceptionDetails: { text: 'Uncaught' } }
+      if (p.returnByValue === false) {
+        const owner = focus.get(session)
+        return { result: owner ? { type: 'object', subtype: 'node', objectId: `obj-${owner}` } : { type: 'object', subtype: 'null', value: null } }
+      }
+      return { result: { value: opts.value(session, String(p.expression)) } }
+    }
+    const run = (): Promise<unknown> => {
+      try {
+        return Promise.resolve(compute())
+      } catch (err) {
+        return Promise.reject(err)
+      }
+    }
+    const key = `${session} ${method}`
+    if (!opts.hold.has(key)) return run()
+    return new Promise((resolve, reject) => {
+      const list = held.get(key) ?? []
+      list.push(() => run().then(resolve, reject))
+      held.set(key, list)
+    })
+  }
+  s.page.opts.answer = answer
+  return {
+    calls,
+    focus,
+    opts,
+    /** The frame's document replaced (a navigation in its process): a new context, the old one refused. */
+    navigate: (session: string) => void contexts.delete(session),
+    release: (key: string) => {
+      for (const go of held.get(key)?.splice(0) ?? []) go()
+    },
+    /** The script methods each session got, in order. */
+    on: (session: string) => calls.filter((c) => c.session === session).map((c) => c.method)
+  }
+}
+
+describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", () => {
+  it('a page with no cross-site frame: every script in the top document, no protocol command', async () => {
+    const s = setup()
+    const hit = await s.router.scriptAt(20, 30, (x, y) => `hit ${x} ${y}`)
+    expect(hit?.value).toBe('top:hit 20 30')
+    expect(hit?.toTop({ x: 1, y: 2, width: 3, height: 4 })).toEqual({ x: 1, y: 2, width: 3, height: 4 })
+    await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBe('top:choose')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBe('top:sel')
+    expect(s.tops).toEqual(['hit 20 30', 'choose', 'sel'])
+    expect(s.page.queries).toEqual([])
+  })
+
+  it("scriptAt: the press's own route (the deepest frame under it), an isolated world made on that frame's session, the rectangle mapped back", async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.frame('B', 'A', 9, rect(300, 100, 280, 180), 280, 180)
+    const hit = await s.router.scriptAt(330, 330, (x, y) => `hit ${x} ${y}`)
+    // The code got B's own point: (330, 330) is (330, 130) in A, (30, 30) in B.
+    expect(hit?.value).toBe('B:hit 30 30')
+    const mapped = hit?.toTop({ x: 10, y: 120, width: 150, height: 24 })
+    expect(mapped && Object.values(mapped).map((n) => Math.round(n * 1000) / 1000)).toEqual([310, 420, 150, 24])
+    expect(sc.calls).toEqual([
+      { method: 'Page.createIsolatedWorld', session: 'B', params: { frameId: 'T-B', worldName: FRAME_WORLD_NAME, grantUniveralAccess: false } },
+      { method: 'Runtime.evaluate', session: 'B', params: { expression: 'hit 30 30', contextId: 101, returnByValue: true, awaitPromise: false, silent: true } }
+    ])
+    // Never in the top document, no input command.
+    expect(s.tops).toEqual([])
+    expect(s.page.sent).toEqual([])
+    // The answer later, in the same frame (the same world), by its handle.
+    await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBe('B:choose')
+    expect(sc.on('B').slice(2)).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    // A point outside every frame: the top document, at the top point.
+    const top = await s.router.scriptAt(620, 20, (x, y) => `hit ${x} ${y}`)
+    expect(top?.value).toBe('top:hit 620 20')
+  })
+
+  it('scriptAt follows what the press would get: a frame that owes an answer sends the press, and the script, to the top', async () => {
+    const s = setup()
+    scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    // A press into A that A never answers: A is stalled once its deadline passed.
+    s.page.opts.holdSessions.add('A')
+    s.router.input([down(20, 220)])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    const hit = await s.router.scriptAt(30, 230, (x, y) => `hit ${x} ${y}`)
+    expect(hit?.value).toBe('top:hit 30 230')
+  })
+
+  it('scriptIn runs only in its own frame: gone, replaced under the same session id, or a new document → nothing, nowhere else', async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    const hit = await s.router.scriptAt(20, 220, () => 'hit')
+    expect(hit?.value).toBe('A:hit')
+    // A new document in A (same session): its context is new, the old one refused; what the hit kept
+    // there is the old document's, so the choice finds nothing (here: the script is not even run).
+    sc.navigate('A')
+    sc.opts.value = (session, code) => (code === 'choose' ? `${session}:found nothing` : '')
+    await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBe('A:found nothing')
+    // A gone: dropped, no command anywhere, not the top document.
+    const before = sc.calls.length
+    s.router.frameDetached('A')
+    await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBeUndefined()
+    // Another frame attached under the same session id: still the old handle's frame, which went.
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBeUndefined()
+    expect(sc.calls.length).toBe(before)
+    expect(s.tops).toEqual([])
+  })
+
+  it('a frame that goes, or whose document is replaced, mid-script: dropped (no value), never run in the top document', async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    // Gone while its evaluation is on its way.
+    sc.opts.hold.add('A Runtime.evaluate')
+    const gone = s.router.scriptAt(20, 220, () => 'hit')
+    await s.flush()
+    expect(sc.on('A')).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    s.router.frameDetached('A')
+    sc.release('A Runtime.evaluate')
+    await expect(gone).resolves.toBeUndefined()
+    // Replaced between its world and its evaluation: the context is refused.
+    s.page.owners.set('', [])
+    s.frame('C', '', 8, rect(0, 200, 600, 300), 600, 300)
+    sc.opts.hold.clear()
+    sc.opts.hold.add('C Page.createIsolatedWorld')
+    const replaced = s.router.scriptAt(20, 220, () => 'hit')
+    await s.flush()
+    sc.release('C Page.createIsolatedWorld')
+    sc.navigate('C')
+    await expect(replaced).resolves.toBeUndefined()
+    // A script that threw: dropped too.
+    sc.opts.hold.clear()
+    sc.opts.throws.add('C')
+    await expect(s.router.scriptAt(20, 220, () => 'hit')).resolves.toBeUndefined()
+    expect(s.tops).toEqual([])
+  })
+
+  it("a frame's script holds the input after it until it is answered; past its deadline it is dropped and the frame stalled", async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    sc.opts.hold.add('A Runtime.evaluate')
+    const late = s.router.scriptAt(20, 220, () => 'hit')
+    s.router.input([keyDown('a')])
+    await s.flush()
+    // No input command while A's evaluation is on its way (one outstanding per session, C9).
+    expect(s.page.sent).toEqual([])
+    s.fire()
+    await expect(late).resolves.toBeUndefined()
+    await s.flush()
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
+    // A owes that answer: a press there goes to the page at the top point, a script there is dropped.
+    s.router.input([down(20, 220), up(20, 220)])
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['', 'mousePressed', 20, 220],
+      ['', 'mouseReleased', 20, 220]
+    ])
+    expect((await s.router.scriptAt(20, 220, () => 'hit'))?.value).toBe('top:hit')
+    // Its answer comes: A takes input again.
+    sc.release('A Runtime.evaluate')
+    await s.flush()
+    s.router.input([down(20, 220)])
+    await s.flush()
+    expect(s.mice().at(-1)).toEqual(['A', 'mousePressed', 20, 20])
+  })
+
+  it('a script in the top document holds nothing after it (as before)', async () => {
+    for (const run of [(r: PageInputRouter) => r.scriptAt(5, 5, () => 'hit'), (r: PageInputRouter) => r.scriptInFocus('sel')]) {
+      const s = setup()
+      s.top.answer = () => new Promise(() => {})
+      void run(s.router)
+      s.router.input([keyDown('a')])
+      await s.flush()
+      expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
+    }
+  })
+
+  it('scriptInFocus: main walks the focus down to the deepest focused cross-site frame, else the top document', async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.frame('B', 'A', 9, rect(300, 100, 280, 180), 280, 180)
+    sc.focus.set('', 'T-A')
+    sc.focus.set('A', 'T-B')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBe('B:sel')
+    expect(sc.on('')).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate', 'DOM.describeNode', 'Runtime.releaseObjectGroup'])
+    expect(sc.calls.find((c) => c.session === '' && c.method === 'Page.createIsolatedWorld')?.params).toMatchObject({ frameId: 'MAIN', worldName: FRAME_WORLD_NAME })
+    expect(sc.calls.find((c) => c.session === '' && c.method === 'Runtime.evaluate')?.params).toMatchObject({ returnByValue: false, contextId: 101 })
+    // B has no cross-site child: no walk there, the read only.
+    expect(sc.on('B')).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    // Every evaluation names its isolated context (never the main world).
+    expect(sc.calls.filter((c) => c.method === 'Runtime.evaluate').every((c) => typeof c.params.contextId === 'number')).toBe(true)
+    expect(s.tops).toEqual([])
+    // Focus in A itself: A's selection.
+    sc.focus.delete('A')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBe('A:sel')
+    // No frame focused, or a frame owner that is no cross-site frame's (a same-site one): the top document.
+    sc.focus.delete('')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBe('top:sel')
+    sc.focus.set('', 'T-same-site')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBe('top:sel')
+    expect(s.tops).toEqual(['sel', 'sel'])
+  })
+
+  it('scriptInFocus: the focused frame going mid-walk drops the read (no copy), never reads the top document', async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    sc.focus.set('', 'T-A')
+    sc.opts.hold.add(' DOM.describeNode')
+    const read = s.router.scriptInFocus('sel')
+    await s.flush()
+    s.router.frameDetached('A')
+    s.page.owners.set('', [])
+    sc.release(' DOM.describeNode')
+    await expect(read).resolves.toBeUndefined()
+    // And mid-read in the frame itself.
+    s.frame('A2', '', 8, rect(0, 200, 600, 300), 600, 300)
+    sc.focus.set('', 'T-A2')
+    sc.opts.hold.clear()
+    sc.opts.hold.add('A2 Runtime.evaluate')
+    const again = s.router.scriptInFocus('sel')
+    await s.flush()
+    s.router.reset()
+    sc.release('A2 Runtime.evaluate')
+    await expect(again).resolves.toBeUndefined()
+    expect(s.tops).toEqual([])
+  })
+
+  it('a script asked under an attachment that ended is rejected as dropped', async () => {
+    const s = setup()
+    const epoch = s.router.inputEpoch()
+    s.router.reset()
+    await expect(s.router.scriptAt(1, 1, () => 'hit', epoch)).rejects.toBeInstanceOf(InputDroppedError)
+    await expect(s.router.scriptInFocus('sel', epoch)).rejects.toBeInstanceOf(InputDroppedError)
+    expect(s.tops).toEqual([])
   })
 })

@@ -818,6 +818,12 @@ describe('OffscreenWebviewFactory', () => {
     await expect(view.hitSelect?.(3, 4, id)).resolves.toBeNull()
     await view.chooseSelect?.(id, 1)
     expect(wc.calls).toEqual([`world ${WEBVIEW_WORLD_ID} 1`, `world ${WEBVIEW_WORLD_ID} 1`])
+    // An answer is bound to the document its hit ran in, once: a second answer, or one for an id no
+    // hit gave, runs nowhere (no top-document fallback for a frame's select).
+    wc.calls.length = 0
+    await expect(view.chooseSelect?.(id, 1)).resolves.toBe(false)
+    await expect(view.chooseSelect?.('d'.repeat(32), 1)).resolves.toBe(false)
+    expect(wc.calls).toEqual([])
     view.destroy()
     wc.calls.length = 0
     await expect(view.hitSelect?.(3, 4, id)).resolves.toBeUndefined()
