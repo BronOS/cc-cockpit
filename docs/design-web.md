@@ -960,6 +960,16 @@ none to show it on). §9.15 S1 measured the page `visible` with unthrottled time
 ### 9.9 Other desktop-only pieces
 
 - **ccc offer** (`ccc.offer`, index.ts:1982): skipped. It opened a modal on the hidden page and left its root inert.
+- **Claude Code offer** (`claude.offer`, `hooks/claude-offer.ts`): unlike the ccc offer it reaches the browsers, since a
+  server with no Claude Code is the case it exists for. The once-per-launch claim goes to the first owner browser view
+  that asks, never the hidden page (which asks first and does not spend it) or a guest (`GUEST_CLASS` `no`); its
+  channels `claude.offer`, `claude.install` and `settings.claudeOfferSet` are `adapted` (the desktop page on a desktop,
+  an owner browser on a server, `mayAskClaudeOffer` over main's flag, `view.remote` and `isOwner`), and Install in a new
+  tab runs main's fixed installer command in a command tab on the server; its exit-0 re-check and the early-exit
+  "not found" notice reach the window's browsers as in-page notices (never a guest: `notices.show` is dropped for
+  them). Main also writes one core notice line
+  (`claude-code`, stdout and `ccc web status`, plain text with no link, not an in-page kind) at start when `claude` is
+  not found, behind the same gate ("Don't ask again", the test-run opt-in).
 - **Notifications.** `ctx.notify` and `ccc notify` go to an in-page notice: a `NoticeBackend` in
   `notifications/notifier.ts`, so `Notifier.wait` and the click action keep working, in server mode only (the desktop
   keeps §6.1). It reaches every browser view of the plugin's window; the text is plain text, its length and the queue

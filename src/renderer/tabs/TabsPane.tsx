@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import type { CccCommandView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
+import type { CccCommandView, ClaudeCodeView, ProjectSummary, TabCommandMenu, TabInfo } from '../../shared/ipc'
 import type { TabCommandLevel } from '../../shared/types'
 import type { FlagPatch } from '../../shared/tab-flag'
 import type { TabRoomRef } from '../../shared/tab-room'
@@ -48,6 +48,7 @@ import { groupTitle } from './strip-groups'
 import { UnlistedCloseAsks } from './close-ask-wait'
 import { CloseTabApproval, CloseTabDialog } from './CloseTabDialog'
 import { CccOfferDialog } from './CccOfferDialog'
+import { ClaudeOfferDialog } from './ClaudeOfferDialog'
 import { PageTabDiscussDialog } from './PageTabDiscussDialog'
 import { DiscussCooldown, discussMayOpen, groupDiscussPreselect } from './page-tab-discuss-model'
 import { setPageTabDiscussHandler } from './PageTabArea'
@@ -253,11 +254,18 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // The start-up "Install the ccc command?" (main decides once per launch, ccc-offer.ts): the link's
   // view while the dialog is up, null otherwise.
   const [cccOffer, setCccOffer] = useState<CccCommandView | null>(null)
+  // The start-up "Claude Code was not found" (main decides once per launch, claude-offer.ts): its view
+  // while the dialog is up. Asked before the ccc offer, which waits for it (`claudeAsked`), so the two
+  // never stack: without Claude Code the Claude tabs that `ccc` serves cannot start at all.
+  const [claudeOffer, setClaudeOffer] = useState<ClaudeCodeView | null>(null)
+  const [claudeAsked, setClaudeAsked] = useState(false)
+  // Either start-up dialog is up: one modal state for the inert zones, the shell layer and the keys.
+  const offering = cccOffer !== null || claudeOffer !== null
   // Read by the key handler and focusActive like confirmFor: modal, no command runs meanwhile.
   const offerShown = useRef(false)
   useEffect(() => {
-    offerShown.current = cccOffer !== null
-  }, [cccOffer])
+    offerShown.current = offering
+  }, [offering])
   // Ask Claude's question box over a page tab (design-editor.md §4): the tab it asks about, null when
   // no box is up. Modal like the ccc offer (the key handler and focusActive read the ref).
   // `preferred`: the Claude tab this view showed last when the box opened (it sends there by default).
@@ -289,15 +297,34 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     if (active?.kind === 'claude') lastClaude.current = active.id
   }, [state.activeId, state.tabs])
   useEffect(() => {
-    // The ccc offer installs a command on the host: the owner's own.
+    // Claude Code on the host is the owner's (main also refuses a guest, and decides which view may be asked:
+    // never a server's hidden page). Null or a refusal: nothing to ask, so the ccc offer may come.
     if (!shellAllows(access).ownerTools) return
+    let cancelled = false
+    window.cockpit.invoke('claude.offer').then(
+      (view) => {
+        if (cancelled) return
+        if (view) setClaudeOffer(view)
+        else setClaudeAsked(true)
+      },
+      () => { if (!cancelled) setClaudeAsked(true) }
+    )
+    return () => { cancelled = true }
+  }, [access])
+  useEffect(() => {
+    // The ccc offer installs a command on the host: the owner's own. Only once the Claude Code question is over.
+    // `claudeOffer !== null` too, so this page never asks while its own Claude Code dialog is up (main also
+    // holds the ccc claim for that dialog's view app-wide, ClaudeOffer.cccMayAsk). `access` is fixed per mount;
+    // a remount (or StrictMode's double effect in dev) asks again, and a claim spent by the dropped first call
+    // is lost for the launch, as the ccc offer's is.
+    if (!claudeAsked || claudeOffer !== null || !shellAllows(access).ownerTools) return
     let cancelled = false
     window.cockpit.invoke('ccc.offer').then(
       (view) => { if (!cancelled && view) setCccOffer(view) },
       () => undefined
     )
     return () => { cancelled = true }
-  }, [access])
+  }, [access, claudeAsked, claudeOffer])
   // The window key handler is registered once; it reads the palette's state through this ref.
   const paletteOpen = useRef(false)
   // Whether an overlay covers the window (OverlayStack reports it); read by the key handler.
@@ -1235,8 +1262,8 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   // on the way, the ccc offer, the settings screen): the switcher goes, or its keys would answer
   // the modal's buttons and a release would switch tabs behind it.
   useEffect(() => {
-    if (confirm !== null || cccOffer !== null || discussOpen || roomOpen || settingsOpen) endSwitcher(undefined, 'auto')
-  }, [confirm, cccOffer, discussOpen, roomOpen, settingsOpen, endSwitcher])
+    if (confirm !== null || offering || discussOpen || roomOpen || settingsOpen) endSwitcher(undefined, 'auto')
+  }, [confirm, offering, discussOpen, roomOpen, settingsOpen, endSwitcher])
   // A tab closed or added while the switcher is open: keep the list to the tabs that exist, the
   // highlight on the same tab where it can be, and give up when nothing is left to switch to.
   useEffect(() => {
@@ -1414,9 +1441,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   )
   const wasOffering = useRef(false)
   useEffect(() => {
-    if (wasOffering.current && cccOffer === null) giveBack('person')
-    wasOffering.current = cccOffer !== null
-  }, [cccOffer, giveBack])
+    if (wasOffering.current && !offering) giveBack('person')
+    wasOffering.current = offering
+  }, [offering, giveBack])
   // The last overlay went and took the focused element with it (focus is on body, where Esc
   // reaches nothing): the keyboard goes back to the settings screen when it is under it (a cli
   // login runs over it), else to the tab the user was in. Queued from an effect, after the commit
@@ -1434,7 +1461,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
     settingsOpen ||
       covered ||
       confirm !== null ||
-      cccOffer !== null ||
+      offering ||
       discussOpen ||
       roomOpen ||
       paletteCommands !== null ||
@@ -1691,9 +1718,9 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
         titleBar={inPageTitleBar}
         fullScreen={fullScreen}
         slots={layout.appSlots}
-        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen} />
-      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen} />}
-      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen}>
+        onOpenProject={openProject} onOpenSettings={toggleSettings} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen} />
+      {chrome.updateNotice && <UpdateNotice inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen} />}
+      <Zones controller={layout} inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen}>
         <TabBar
           tabs={state.tabs}
           // D18: with the keys off no pane is focused, and no tab shows as the selected one either.
@@ -1776,7 +1803,7 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
           // SplitArea renders the page tabs' PageTabArea itself: it holds the tree and a live
           // divider drag's sizes, which place the frames (design-split-pages.md §2).
           listed={state.listed}
-          inert={settingsOpen || covered || confirm !== null || cccOffer !== null || discussOpen || roomOpen}
+          inert={settingsOpen || covered || confirm !== null || offering || discussOpen || roomOpen}
           access={access}
         />
       </Zones>
@@ -1849,6 +1876,15 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
       )}
       {roomFor !== null && <RoomDialog key={roomFor} roomId={roomFor} live={own} onClose={() => setRoomFor(null)} />}
       {cccOffer && <CccOfferDialog view={cccOffer} onDone={() => setCccOffer(null)} />}
+      {claudeOffer && (
+        <ClaudeOfferDialog
+          view={claudeOffer}
+          onDone={() => {
+            setClaudeOffer(null)
+            setClaudeAsked(true)
+          }}
+        />
+      )}
       {discussFor !== null && discussTab && (
         <PageTabDiscussDialog
           key={discussFor.tabId}

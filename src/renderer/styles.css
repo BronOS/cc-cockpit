@@ -1420,6 +1420,31 @@ body.shell-dragging .page-tab-frame {
   align-self: center;
   color: var(--cc-fg-muted);
 }
+/* "Claude Code was not found" (ClaudeOfferDialog): the close dialog's frame, wider for the commands; the
+   command lines reuse the picker's `.connect-command` row with its Copy button. */
+.confirm-dialog.claude-offer {
+  width: min(560px, 92vw);
+}
+.claude-offer .connect-command {
+  margin: 0 0 10px;
+}
+.claude-offer-others {
+  color: var(--cc-fg-muted);
+  font-size: var(--cc-text-sm);
+}
+.claude-offer-others code {
+  font-family: var(--cc-font-mono);
+  user-select: text;
+}
+.claude-offer-docs .link-button {
+  padding: 0;
+  font: inherit;
+  color: var(--cc-accent, inherit);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 /* Claude status. The dot colours are theme variables; the fallbacks are for a theme (a plugin's)
    that does not define them. Spacing comes from the row it sits in (gap), not the dot. */

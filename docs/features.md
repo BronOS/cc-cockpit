@@ -1269,7 +1269,25 @@ Settings > General > Command line > "Install ccc command" symlinks
 `~/.local/bin/ccc` to the wrapper in the data dir (an existing different `ccc` is left alone;
 make sure `~/.local/bin` is on your PATH). At start-up, when nothing is at that path, the first project window asks once per
 launch whether to install it (Yes / No, "Don't ask again"); the same Settings group has "Offer to install at start-up" to turn it
-back on. Not asked when it is installed, when something else is there, or in a test run. Commands:
+back on. Not asked when it is installed, when something else is there, or in a test run.
+
+Before that question (app-wide: the ccc question waits until this one is answered, so two windows never show both), when Claude Code itself (`claude`) is not on the PATH the Claude tabs get (the login shell's
+PATH, as a tab spawns with it), the first project window says so once per launch: "Claude Code was not found", with the
+official install command and Copy (`curl -fsSL https://claude.ai/install.sh | bash` on macOS and Linux, the PowerShell
+`irm https://claude.ai/install.ps1 | iex` on Windows), the other ways as text (Homebrew, npm with Node.js 22+), a link
+to the setup docs and **Install in a new tab**: a command tab running that installer in front of you, which you can
+stop, kept open after it ends so its output can be read; when it ends with 0 the app reads the login shell's environment
+again (so a profile that adds `~/.local/bin` once it exists counts with no restart) and says whether new Claude tabs will
+find `claude` (a notification on the desktop; on a server an in-page notice in the window's browsers and a stdout line).
+The button is armed about a second after the dialog is seen. Settings > General > Claude Code shows the same command,
+Copy and Install in a new tab (or the PATH line) for after the dialog was declined, and a Claude tab that ends within
+two seconds of its start while `claude` is not found brings one notice per launch pointing there. The app never installs Claude Code by itself, and the command is
+fixed in the app. When the installer's launcher (`~/.local/bin/claude`) is there but its folder is not on that PATH,
+the dialog says so and gives the `export PATH=...` line instead (the login PATH is read at start: restart the app after
+fixing it). "Don't ask again" or Settings > General > Claude Code > "Offer to install Claude Code at start-up" turns it
+off. In server mode the first owner browser view gets the dialog (never a guest), Install runs the installer on the
+server, and the server also prints one line (in `ccc web status` too). Not asked in a test run. No Install button on
+Windows, where the app has no tab to run it in. Commands:
 
 ```
 ccc open <path>                          open (or focus) a folder as a project

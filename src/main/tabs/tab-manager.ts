@@ -427,6 +427,13 @@ interface Tab {
   env?: Readonly<Record<string, string>>
   /** The guest whose act opened it (CreateTabOptions.openedByGuest, D-21). */
   openedByGuest?: string
+  /**
+   * Kind 'command' only: a clean exit never closes it (closesOnExit), whatever `tabExit` says. main's
+   * Claude Code installer tab (claude-offer.ts): its output (where the launcher went, a PATH hint) is
+   * what the person opened it to read, and a successful run exits 0. Not saved: a restored copy is
+   * not started, and its Restart is the person's own run.
+   */
+  keepOpen?: true
   /** Any kind: the person's flag (setFlag / toggleFlag); saved and restored with the tab. */
   flag?: TabFlag
   /**
@@ -661,11 +668,12 @@ export class TabManager {
   /**
    * Start a command tab in the project folder: the login shell runs `command.command`
    * (commandArgv), the tab is titled `command.label`. The caller (index.ts) got both from
-   * TabCommandsService.resolve, i.e. from the user's own settings by entry id; no IPC or plugin
-   * path hands text here. The tab keeps this copy: editing the entry later changes nothing here.
+   * TabCommandsService.resolve, i.e. from the user's own settings by entry id, or is main's Claude
+   * Code installer (claude-offer.ts: a constant main picked by platform, with `keepOpen`); no IPC or
+   * plugin path hands text here. The tab keeps this copy: editing the entry later changes nothing here.
    */
-  createCommand(projectId: string, command: TabCommand): TabInfo {
-    const out = this.add(projectId, 'command', undefined, { command: tabCommand(command) })
+  createCommand(projectId: string, command: TabCommand, { keepOpen = false }: { keepOpen?: boolean } = {}): TabInfo {
+    const out = this.add(projectId, 'command', undefined, { command: tabCommand(command), ...(keepOpen ? { keepOpen } : {}) })
     this.changed(projectId)
     return out
   }
@@ -912,6 +920,7 @@ export class TabManager {
       room?: TabRoom
       env?: Readonly<Record<string, string>>
       openedByGuest?: string
+      keepOpen?: boolean
     }
   ): TabInfo {
     const root = this.projectRoot(projectId)
@@ -928,6 +937,7 @@ export class TabManager {
       resumeFailed: false
     }
     if (opts.command) tab.command = opts.command
+    if (opts.keepOpen === true && kind === 'command') tab.keepOpen = true
     // Set before start() so the registry's entry is born with it (a restored tab shows its name at once).
     if (opts.name !== undefined) tab.name = opts.name
     if (opts.flag !== undefined) tab.flag = { ...opts.flag }
@@ -1701,6 +1711,7 @@ export class TabManager {
    * restarted tab.
    */
   private closesOnExit(tab: Tab, code: number, signal: number | null): boolean {
+    if (tab.keepOpen) return false
     if (tab.kind === 'shell') {
       if (signal !== null) return false
       if (this.now() - tab.spawnedAt < (this.options.shellMinLifeMs ?? SHELL_MIN_LIFE_MS)) return false

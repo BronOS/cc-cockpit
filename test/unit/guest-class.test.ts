@@ -57,7 +57,7 @@ describe('GUEST_CLASS', () => {
       'tabs.commands', 'tabs.screen', 'rooms.doc', 'rooms.pause', 'overlays.take', 'overlays.message', 'sessions.closeAnswer',
       'groups.place', 'groups.area', 'notices.click', 'settingsPage.connect', 'guests.list', 'guests.invite', 'guests.kick',
       'guests.setRole', 'guests.setScope', 'guests.shareTab', 'guests.revokeInvite', 'settings.pluginGuestAccessSet',
-      'tabs.guestCloseAnswer'
+      'tabs.guestCloseAnswer', 'settings.claudeStatus', 'settings.claudeOfferSet', 'claude.offer', 'claude.install'
     ]
     for (const channel of never) expect(GUEST_CLASS[channel].cls, channel).toBe('no')
   })

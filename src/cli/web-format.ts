@@ -69,7 +69,8 @@ const NOTICE_KINDS: Record<string, string> = {
   revoked: 'plugin revoked',
   update: 'update',
   'sign-in-failures': 'failed sign-ins',
-  'access-changed': 'access changed'
+  'access-changed': 'access changed',
+  'claude-code': 'Claude Code'
 }
 
 /** A core notice: when, what it is, its line; a new device also says whose sign-in `web-access.log` has. */

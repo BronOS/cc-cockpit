@@ -10,6 +10,7 @@ import {
   registerPageTabHandlers,
   registerSettingsPageHandlers,
   registerCccCommandHandlers,
+  registerClaudeCodeHandlers,
   registerWebAccessHandlers,
   registerRemoteServerHandlers,
   registerNoticeHandlers,
@@ -45,7 +46,7 @@ import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
 import { REMOTE_SECRETS_UNAVAILABLE_TEXT, type WebAccessIndicator, type WebAccessView } from '../../src/shared/web-access'
 import type { ProjectView } from '../../src/shared/types'
 import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
-import { REMOTE_CLASS } from '../../src/shared/ipc'
+import { REMOTE_CLASS, type ClaudeCodeView, type TabInfo } from '../../src/shared/ipc'
 
 type Listener = (event: IpcEventLike, ...args: unknown[]) => unknown
 
@@ -2081,13 +2082,97 @@ describe('registerCccCommandHandlers', () => {
       status: () => (calls.push('status'), view),
       install: async () => (calls.push('install'), { ...view, state: 'installed' }),
       setOffer: (v) => void calls.push(`offer ${v}`),
-      offer: () => null
+      offer: (viewId) => (calls.push(`ccc offer ${viewId}`), null)
     })
     await expect(ipc.invoke('settings.cccInstall', 13, [{}])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
     expect(await ipc.invoke('settings.cccStatus', 11)).toEqual(view)
     expect(await ipc.invoke('settings.cccInstall', 11, [{ path: '/etc/passwd' }])).toMatchObject({ state: 'installed' })
     expect(calls).toEqual(['status', 'install'])
+    // The asking view, for the hold while the Claude Code question is up in another window.
+    await ipc.invoke('ccc.offer', 11)
+    expect(calls).toEqual(['status', 'install', 'ccc offer desktop:1'])
+  })
+})
+
+// Claude Code (main/hooks/claude-offer.ts): the start-up question, "Don't ask again" and the installer tab are `adapted`.
+// The desktop page on the desktop; in server mode the owner's browser, never the hidden page; never a guest. main
+// decides from the view it bound and its own flag; the install reads nothing of the payload.
+describe('registerClaudeCodeHandlers', () => {
+  const A_CTX = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+  const view: ClaudeCodeView = {
+    state: 'missing',
+    launcher: '/h/.local/bin/claude',
+    binDir: '/h/.local/bin',
+    command: 'curl -fsSL https://claude.ai/install.sh | bash',
+    docsUrl: 'https://code.claude.com/docs/en/setup',
+    others: [],
+    installInTab: true,
+    offerAtStart: true
+  }
+  function claudeSetup(server: boolean): { ipc: FakeIpcMain; router: IpcRouter; calls: unknown[][] } {
+    const { ipc, router } = setup()
+    const calls: unknown[][] = []
+    registerClaudeCodeHandlers(router, {
+      server,
+      status: () => view,
+      setOffer: (value) => void calls.push(['setOffer', value]),
+      // Records who asked; answers like a claim that says yes to anyone it is handed.
+      offer: (caller, viewId) => (calls.push(['offer', caller, viewId]), view),
+      install: async (projectId, windowId, viewId) => {
+        calls.push(['install', projectId, windowId, viewId])
+        return { id: 't1', kind: 'command', cwd: '/w', gen: 1 } satisfies TabInfo
+      }
+    })
+    return { ipc, router, calls }
+  }
+
+  it('desktop: its own page sets, asks and installs; the payload names nothing', async () => {
+    const { ipc, calls } = claudeSetup(false)
+    expect(await ipc.invoke('settings.claudeStatus', 11)).toEqual(view)
+    await ipc.invoke('settings.claudeOfferSet', 11, [{ value: false }])
+    await expect(ipc.invoke('settings.claudeOfferSet', 11, [{ value: 'no' }])).rejects.toThrow(/must be a boolean/)
+    expect(await ipc.invoke('claude.offer', 11)).toEqual(view)
+    await ipc.invoke('claude.install', 11, [{ command: 'rm -rf ~', projectId: PROJECT_B }])
+    expect(calls).toEqual([
+      ['setOffer', false],
+      ['offer', { remote: false, owner: true }, 'desktop:1'],
+      ['install', PROJECT_A, 1, 'desktop:1']
+    ])
+    await expect(ipc.invoke('claude.install', 13)).rejects.toThrow(/not a project window/)
+  })
+
+  it("desktop: a browser view of the owner is refused the set and the install, and asks as a browser (main's claim says no)", async () => {
+    const { router, calls } = claudeSetup(false)
+    const browser = webCaller(A_CTX, 'web:5', 'owner')
+    await expect(router.dispatch(browser, 'settings.claudeOfferSet', { value: false })).rejects.toThrow(/refused for this view/)
+    await expect(router.dispatch(browser, 'claude.install', undefined)).rejects.toThrow(/refused for this view/)
+    await router.dispatch(browser, 'claude.offer', undefined)
+    expect(calls).toEqual([['offer', { remote: true, owner: true }, 'web:5']])
+  })
+
+  it("server: the owner's browser sets and installs on the server; the hidden page may not install", async () => {
+    const { ipc, router, calls } = claudeSetup(true)
+    const browser = webCaller(A_CTX, 'web:5', 'owner')
+    await router.dispatch(browser, 'settings.claudeOfferSet', { value: false })
+    await router.dispatch(browser, 'claude.install', undefined)
+    await expect(ipc.invoke('claude.install', 11)).rejects.toThrow(/refused for this view/)
+    await expect(ipc.invoke('settings.claudeOfferSet', 11, [{ value: true }])).rejects.toThrow(/refused for this view/)
+    expect(calls).toEqual([
+      ['setOffer', false],
+      ['install', PROJECT_A, 1, 'web:5']
+    ])
+  })
+
+  it('a guest is refused every channel before the handler, in either mode', async () => {
+    for (const server of [false, true]) {
+      const { router, calls } = claudeSetup(server)
+      const guest = webCaller(A_CTX, 'web:7', { guest: 'g1' })
+      for (const channel of ['settings.claudeStatus', 'settings.claudeOfferSet', 'claude.offer', 'claude.install']) {
+        await expect(router.dispatch(guest, channel, { value: false }), channel).rejects.toThrow(/refused/)
+      }
+      expect(calls).toEqual([])
+    }
   })
 })
 

@@ -264,9 +264,10 @@ export const MIN_NETWORK_PASSWORD_LENGTH = 12
 export interface WebCliNotice {
   /**
    * `sign-in-failures`: many failed sign-ins in a short time (main/web/auth.ts); `access-changed`: a
-   * `ccc web` write changed who may get in (link, add-device, password, mode, set).
+   * `ccc web` write changed who may get in (link, add-device, password, mode, set); `claude-code`: Claude Code is
+   * not found where Claude tabs look for it, or the installer tab's re-check (main/hooks/claude-offer.ts).
    */
-  kind: 'new-device' | 'revoked' | 'update' | 'sign-in-failures' | 'access-changed'
+  kind: 'new-device' | 'revoked' | 'update' | 'sign-in-failures' | 'access-changed' | 'claude-code'
   text: string
   /** Epoch ms. */
   at: number
