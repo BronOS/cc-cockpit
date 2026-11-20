@@ -1134,6 +1134,6 @@ async function readPluginJson(dir: string, rel: string, maxBytes: number): Promi
   const root = await fs.realpath(dir)
   // The real path resolveInside checked, read through a verified descriptor (not the link).
   const file = await readInside(root, rel, maxBytes)
-  if (!file.ok) throw new Error(`${rel}${insideReadProblemText(file.problem, maxBytes)}`)
+  if (!file.ok) throw new Error(`${rel}${insideReadProblemText(file.problem, maxBytes, file.detail)}`)
   return JSON.parse(file.data.toString('utf8')) as unknown
 }

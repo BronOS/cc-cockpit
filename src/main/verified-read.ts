@@ -35,7 +35,12 @@ export type VerifiedProblem =
   | 'changed'
   | 'too-large'
 
-export type VerifiedRead = { ok: true; data: Buffer } | { ok: false; problem: VerifiedProblem }
+/**
+ * `detail` on a refusal: which call answered and what it saw (an errno, a file mode), for the log.
+ * A plain regular file was refused as `not-file` at about 1 bundled-plugin start in 110 on macOS
+ * (backlog e2e-flakes-on-macos) and the message alone could not say which of the checks it was.
+ */
+export type VerifiedRead = { ok: true; data: Buffer } | { ok: false; problem: VerifiedProblem; detail?: string }
 
 /** The words of a VerifiedProblem, for a log line or an error message. */
 export function verifiedProblemText(problem: VerifiedProblem): string {
@@ -63,7 +68,14 @@ function isDarwinEopnotsupp(err: unknown): boolean {
   return process.platform === 'darwin' && (err as NodeJS.ErrnoException).errno === -102
 }
 
-export type VerifiedOpen = { ok: true; handle: FileHandle; stat: Stats } | { ok: false; problem: Exclude<VerifiedProblem, 'too-large'> }
+export type VerifiedOpen =
+  | { ok: true; handle: FileHandle; stat: Stats }
+  | { ok: false; problem: Exclude<VerifiedProblem, 'too-large'>; detail?: string }
+
+/** A file mode in octal (`0o100644` a regular file, `0o10644` a FIFO, `0o140755` a socket). */
+export function modeText(mode: number): string {
+  return `0o${mode.toString(8)}`
+}
 
 /**
  * `real` (absolute, already realpath'd and checked by the caller) opened through one verified
@@ -86,18 +98,25 @@ export async function openVerified(real: string, expect?: Pick<Stats, 'dev' | 'i
     // A Unix socket cannot be opened as a file (Linux ENXIO, macOS EOPNOTSUPP): not a file, not an error.
     // On macOS libuv has no name for that errno (102, not its ENOTSUP 45), so Node reports
     // "Unknown system error -102" with no usable `code` (seen on the macos-15 CI runner).
-    if (code === 'ENXIO' || code === 'EOPNOTSUPP' || isDarwinEopnotsupp(err)) return { ok: false, problem: 'not-file' }
+    if (code === 'ENXIO' || code === 'EOPNOTSUPP' || isDarwinEopnotsupp(err)) {
+      return { ok: false, problem: 'not-file', detail: `open failed: ${code ?? 'no code'} (errno ${(err as NodeJS.ErrnoException).errno})` }
+    }
     throw err
   }
   try {
     const st = await handle.stat()
     let problem: 'not-file' | 'changed' | undefined
-    if (!st.isFile()) problem = 'not-file'
-    else if (expect !== undefined && !sameFile(st, expect)) problem = 'changed'
+    let detail: string | undefined
+    if (!st.isFile()) {
+      problem = 'not-file'
+      // The descriptor's number too: a regular file whose fstat says FIFO or socket would mean the
+      // number was closed under us and reused (a double close elsewhere in the process).
+      detail = `fstat on fd ${handle.fd} saw mode ${modeText(st.mode)}`
+    } else if (expect !== undefined && !sameFile(st, expect)) problem = 'changed'
     else if (!(await namesFile(real, st))) problem = 'changed'
     if (problem === undefined) return { ok: true, handle, stat: st }
     await handle.close().catch(() => {})
-    return { ok: false, problem }
+    return detail === undefined ? { ok: false, problem } : { ok: false, problem, detail }
   } catch (err) {
     // fstat failing (EIO): the descriptor must not leak with the throw.
     await handle.close().catch(() => {})

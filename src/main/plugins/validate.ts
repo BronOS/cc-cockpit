@@ -20,7 +20,7 @@ import {
 } from '../../shared/manifest'
 import { SLOT_HEIGHT_MAX, SLOT_HEIGHT_MIN, isAppSlotType } from '../../shared/slots'
 import { within } from '../path-within'
-import { readVerified, verifiedProblemText, type VerifiedProblem } from '../verified-read'
+import { modeText, readVerified, verifiedProblemText, type VerifiedProblem } from '../verified-read'
 import { readSkillFiles } from './skill-files'
 
 export type ManifestValidation = { ok: true; manifest: PluginManifest } | { ok: false; errors: string[] }
@@ -88,10 +88,13 @@ const manifestValidator: ValidateFunction = new Ajv({ allErrors: true, logger: f
  */
 export type InsideProblem = 'missing' | 'outside' | 'root' | 'not-file'
 
-/** `dev`/`ino`: the file the check saw, for readVerified's `expect` (verified-read.ts). */
+/**
+ * `dev`/`ino`: the file the check saw, for readVerified's `expect` (verified-read.ts). `detail` on a
+ * `root` or `not-file` refusal: which check answered and what it saw, for the log (see VerifiedRead).
+ */
 export type InsideResolution =
   | { ok: true; real: string; size: number; dev: number; ino: number }
-  | { ok: false; problem: InsideProblem }
+  | { ok: false; problem: InsideProblem; detail?: string }
 
 /**
  * `rel` resolved inside `realRoot` (which must be a realpath): the target's real path and size, or
@@ -110,18 +113,20 @@ export async function resolveInside(realRoot: string, rel: string): Promise<Insi
     return { ok: false, problem: 'missing' }
   }
   if (!within(realRoot, real)) return { ok: false, problem: 'outside' }
-  if (real === realRoot) return { ok: false, problem: 'root' }
+  if (real === realRoot) return { ok: false, problem: 'root', detail: `${rel} resolved to the folder itself` }
   let stats: Stats
   try {
     stats = await fs.stat(real)
   } catch {
     return { ok: false, problem: 'missing' }
   }
-  if (!stats.isFile()) return { ok: false, problem: 'not-file' }
+  if (!stats.isFile()) return { ok: false, problem: 'not-file', detail: `stat saw mode ${modeText(stats.mode)}` }
   return { ok: true, real, size: stats.size, dev: stats.dev, ino: stats.ino }
 }
 
-export type InsideRead = { ok: true; real: string; data: Buffer } | { ok: false; problem: InsideProblem | VerifiedProblem }
+export type InsideRead =
+  | { ok: true; real: string; data: Buffer }
+  | { ok: false; problem: InsideProblem | VerifiedProblem; detail?: string }
 
 /**
  * resolveInside, then the file's bytes through a verified descriptor (verified-read.ts): what is
@@ -152,12 +157,15 @@ export function fileProblemText(problem: InsideProblem): string {
 
 /**
  * A readInside refusal as the tail of a message about the file (`plugin.json` + this): the
- * resolveInside wording after a colon, the size cap, or what changed during the read.
+ * resolveInside wording after a colon, the size cap, or what changed during the read; then the
+ * refusal's `detail` in brackets when it has one (kept: such a refusal is rare and the reason, which
+ * the installer logs, is the only evidence of which check answered).
  */
-export function insideReadProblemText(problem: InsideProblem | VerifiedProblem, maxBytes: number): string {
+export function insideReadProblemText(problem: InsideProblem | VerifiedProblem, maxBytes: number, detail?: string): string {
+  const tail = detail === undefined ? '' : ` (${detail})`
   if (problem === 'too-large') return ` is larger than ${maxBytes} bytes`
-  if (problem === 'outside' || problem === 'root' || problem === 'missing' || problem === 'not-file') return `: ${fileProblemText(problem)}`
-  return ` ${verifiedProblemText(problem)}`
+  if (problem === 'outside' || problem === 'root' || problem === 'missing' || problem === 'not-file') return `: ${fileProblemText(problem)}${tail}`
+  return ` ${verifiedProblemText(problem)}${tail}`
 }
 
 /** Why `rel` (already syntax-checked) is not an acceptable file inside `realRoot`, or null (resolveInside). */
@@ -398,7 +406,7 @@ export async function loadManifest(pluginDir: string): Promise<ManifestValidatio
   } catch (err) {
     return { ok: false, errors: [`plugin.json cannot be read: ${(err as Error).message}`] }
   }
-  if (!file.ok) return { ok: false, errors: [`plugin.json${insideReadProblemText(file.problem, MAX_MANIFEST_BYTES)}`] }
+  if (!file.ok) return { ok: false, errors: [`plugin.json${insideReadProblemText(file.problem, MAX_MANIFEST_BYTES, file.detail)}`] }
   const text = file.data.toString('utf8')
   let raw: unknown
   try {
