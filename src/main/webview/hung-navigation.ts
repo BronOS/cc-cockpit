@@ -51,7 +51,7 @@ export interface HungNavigationDeps {
   probe(): Promise<ProbeAnswer>
   /** Kill `pid` if it is still the page's renderer; false when nothing was killed. */
   kill(pid: number): boolean
-  /** Start `nav` again (after the old renderer is gone); settles as the load does. */
+  /** Start `nav` again (the old renderer is gone and the router has reset); settles as the load does. */
   retry(nav: WatchedNavigation): Promise<void>
   /** The page was killed and `nav` started again: tell the viewers. */
   restarted(nav: WatchedNavigation): void
@@ -112,12 +112,17 @@ export class HungNavigationWatch {
   /** A kill that is out: the navigation to start again once the renderer is gone, and the give-up timer. */
   private killing: { target: Watch; timer: unknown } | undefined
   private disposed = false
+  /** Bumped by every start: a retry runs only if no navigation started since its renderer went. */
+  private generation = 0
+  /** The retry waiting for its turn (after the router's reset), and the navigation it is for. */
+  private pendingRetry: { target: Watch; timer: unknown } | undefined
 
   constructor(private readonly deps: HungNavigationDeps) {}
 
   /** main is about to start `nav` on the page: watch it. Call before the navigation call. */
   start(nav: WatchedNavigation): WatchedHandle {
     const watch = new Watch(nav, this.deps.pid(), this.deps.now())
+    this.generation++
     if (this.disposed) {
       watch.finish(undefined)
       return watch
@@ -160,13 +165,28 @@ export class HungNavigationWatch {
     const nav = k.target.nav
     this.deps.log(`webview: the page did not answer while a ${nav.kind} waited; its renderer was killed and the ${nav.kind} started again`)
     this.deps.restarted(nav)
-    let retry: Promise<void>
-    try {
-      retry = this.deps.retry(nav)
-    } catch (err) {
-      retry = Promise.reject(err instanceof Error ? err : new Error(String(err)))
-    }
-    k.target.finish(retry)
+    // Not in this event: the input router hears the same `render-process-gone` after this listener
+    // and resets, and the retry goes after that. A navigation started in between (the person's, or a
+    // plugin's load B) stands: the retry of the killed one would overwrite it (codex review), so it
+    // runs only if the generation is still the one of the gone.
+    const gen = this.generation
+    const target = k.target
+    const timer = this.deps.setTimer(() => {
+      if (this.pendingRetry?.timer !== timer) return
+      this.pendingRetry = undefined
+      if (this.generation !== gen) {
+        target.finish(Promise.resolve())
+        return
+      }
+      let retry: Promise<void>
+      try {
+        retry = this.deps.retry(nav)
+      } catch (err) {
+        retry = Promise.reject(err instanceof Error ? err : new Error(String(err)))
+      }
+      target.finish(retry)
+    }, 0)
+    this.pendingRetry = { target, timer }
     return true
   }
 
@@ -178,6 +198,11 @@ export class HungNavigationWatch {
       this.deps.clearTimer(this.killing.timer)
       this.killing.target.finish(undefined)
       this.killing = undefined
+    }
+    if (this.pendingRetry) {
+      this.deps.clearTimer(this.pendingRetry.timer)
+      this.pendingRetry.target.finish(undefined)
+      this.pendingRetry = undefined
     }
   }
 

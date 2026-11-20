@@ -4,6 +4,14 @@
 // systemd-coredump (Debian) the renderer sits in `do_exit` for 40 s and more writing its core before
 // `render-process-gone` fires, while a navigation sent meanwhile never commits. A SIGKILL writes no
 // core (and ends one being written: gone 4 ms later, Debian VM, Electron 45.1.0).
+//
+// Accepted residuals (codex review):
+// - A renderer process may also host frames of another page of the same partition (process per
+//   site, a same-site out-of-process iframe). Those frames are already frozen by the spinning main
+//   thread they share, and the kill does what Chrome's "Page unresponsive: Exit page" does to them.
+// - PID reuse between the re-read and `process.kill`: the renderer would have to exit, be reaped by
+//   main and have its pid handed to a new process within those microseconds. Node has no pidfd
+//   signal to close that gap; accepted.
 import type { WebContents } from 'electron'
 
 /** The page's renderer process id now; 0 when it has none (gone, or between two). */

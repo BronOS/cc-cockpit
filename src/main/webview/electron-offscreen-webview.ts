@@ -185,17 +185,16 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
             err instanceof InputDroppedError ? 'replaced' : err instanceof Error && err.message === 'webview: input queue full' ? 'no-answer' : 'unsure'
         ),
       kill: (pid) => killRenderer(wc, pid),
-      // After the router's reset (its listener runs in the same `render-process-gone`), and never
-      // watched again: one kill per navigation.
-      retry: (nav: WatchedNavigation) =>
-        new Promise<void>((resolve) => setImmediate(resolve)).then(() => {
-          if (wc.isDestroyed()) return undefined
-          if (nav.kind === 'load') return navigation.load(nav.url)
-          if (nav.kind === 'reload') navigation.reload()
-          else if (nav.kind === 'back') navigation.back()
-          else navigation.forward()
-          return undefined
-        }),
+      // The watch calls it a turn after `render-process-gone` (after the router's reset), and only
+      // if no navigation started since. Never watched again: one kill per navigation.
+      retry: (nav: WatchedNavigation) => {
+        if (wc.isDestroyed()) return Promise.resolve()
+        if (nav.kind === 'load') return navigation.load(nav.url)
+        if (nav.kind === 'reload') navigation.reload()
+        else if (nav.kind === 'back') navigation.back()
+        else navigation.forward()
+        return Promise.resolve()
+      },
       restarted: () => events.restarted?.(),
       log: this.log
     })

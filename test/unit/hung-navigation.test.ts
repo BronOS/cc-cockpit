@@ -93,6 +93,9 @@ describe('HungNavigationWatch', () => {
     await h.advance(1000)
     expect(h.did).toEqual(['probe', 'kill 4242'])
     expect(h.watch.gone()).toBe(true)
+    // The notice at once; the retry a turn later, after the input router's reset.
+    expect(h.did).toEqual(['probe', 'kill 4242', 'notice reload'])
+    await h.advance(0)
     expect(h.did).toEqual(['probe', 'kill 4242', 'notice reload', 'retry reload'])
     const outcome = await handle.outcome()
     expect(outcome?.retry).toBeInstanceOf(Promise)
@@ -107,6 +110,7 @@ describe('HungNavigationWatch', () => {
     const handle = h.watch.start({ kind: 'load', url: 'https://b.test/' })
     await h.advance(HANG)
     h.watch.gone()
+    await h.advance(0)
     const retry = (await handle.outcome())?.retry
     expect(h.did.at(-1)).toBe('retry load https://b.test/')
     let settled = false
@@ -190,6 +194,7 @@ describe('HungNavigationWatch', () => {
     await h.advance(1 + PROBE_WAIT_MS)
     expect(h.did).toEqual(['probe', 'kill 4242'])
     h.watch.gone()
+    await h.advance(0)
     expect(h.did.at(-1)).toBe('retry load https://b.test/')
   })
 
@@ -202,11 +207,43 @@ describe('HungNavigationWatch', () => {
     expect(second.killed()).toBe(true)
     expect((await first.outcome())?.retry).toBeInstanceOf(Promise)
     expect(h.watch.gone()).toBe(true)
+    await h.advance(0)
     expect(h.did).toEqual(['probe', 'kill 4242', 'notice load', 'retry load https://c.test/'])
     expect((await second.outcome())?.retry).toBeInstanceOf(Promise)
     // One kill: nothing is armed for it.
     await h.advance(WATCH_MAX_MS)
     expect(h.did.filter((d) => d.startsWith('kill'))).toEqual(['kill 4242'])
+  })
+
+  // Codex review: the retry waits a turn after the gone; a navigation started in between (load B)
+  // must stand, not be overwritten by the retry of the killed one.
+  it('a navigation started between the gone and the retry stands; the killed one is not retried', async () => {
+    const h = harness()
+    const a = h.watch.start({ kind: 'load', url: 'https://a.test/' })
+    await h.advance(HANG)
+    expect(h.watch.gone()).toBe(true)
+    h.setPid(0)
+    const b = h.watch.start({ kind: 'load', url: 'https://b.test/' })
+    await h.advance(0)
+    expect(h.did).toEqual(['probe', 'kill 4242', 'notice load'])
+    // The killed load settles as superseded (resolved), B is watched on its own.
+    expect((await a.outcome())?.retry).toBeInstanceOf(Promise)
+    expect(b.killed()).toBe(false)
+    await h.advance(WATCH_MAX_MS)
+    expect(h.did.filter((d) => d.startsWith('retry'))).toEqual([])
+    expect(h.timers.size).toBe(0)
+  })
+
+  it('dispose between the gone and the retry runs no retry', async () => {
+    const h = harness()
+    const a = h.watch.start({ kind: 'reload' })
+    await h.advance(HANG)
+    h.watch.gone()
+    h.watch.dispose()
+    await h.advance(1000)
+    expect(h.did.filter((d) => d.startsWith('retry'))).toEqual([])
+    expect(await a.outcome()).toBeUndefined()
+    expect(h.timers.size).toBe(0)
   })
 
   it('kills the pid read when the navigation started, never one read later', async () => {
@@ -262,6 +299,7 @@ describe('HungNavigationWatch', () => {
     await h.advance(HANG)
     h.watch.ended()
     expect(h.watch.gone()).toBe(true)
+    await h.advance(0)
     expect(h.did.at(-1)).toBe('retry reload')
   })
 
