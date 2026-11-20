@@ -86,6 +86,10 @@ export function draftSizeError(draft, max) {
  *   acked. While one is out, another copy's text for it is older than this page's (the host applies this
  *   page's after it) and is not taken.
  * - `deletedHere`: ids deleted on this page; another copy's late edit does not bring one back.
+ * - `deletedTags`: notes this page added and deleted before the host's id came (the delete went out by the
+ *   tag, and the host applies it). The answer (`note-added`) names the id, which joins `deletedHere`: else
+ *   another copy's edit of that note, made before the delete reached the host, came in as a new note here,
+ *   and the delete's echo never comes back to the copy that sent it, so the deleted note stayed on screen.
  * - `unsent`: texts held back while the draft was over the size cap (note objects; 'global' for the comment).
  */
 export class NoteSync {
@@ -93,6 +97,7 @@ export class NoteSync {
     this.inflight = new Map()
     this.globalInflight = 0
     this.deletedHere = new Set()
+    this.deletedTags = new Set()
     this.unsent = new Set()
   }
 
@@ -110,10 +115,29 @@ export class NoteSync {
     this.globalInflight++
   }
 
-  /** This page deleted note `n`. */
+  /** This page deleted note `n`: by its id, or by its tag while that is pending (added() gives the id). */
   deleted(n) {
     this.unsent.delete(n)
-    this.deletedHere.add(n.id)
+    if (isPending(n)) this.deletedTags.add(n.tag)
+    else this.deletedHere.add(n.id)
+  }
+
+  /**
+   * The host's answer to this page's add (`note-added`): ackAdd's { note, oldId }, or null. For a note
+   * deleted here before the answer came, the host's id is kept as deleted (`deletedTags`) and null returned.
+   */
+  added(notes, tag, hostNote) {
+    if (this.deletedTags.delete(tag)) {
+      if (hostNote && typeof hostNote.id === 'string') this.deletedHere.add(hostNote.id)
+      return null
+    }
+    return ackAdd(notes, tag, hostNote)
+  }
+
+  /** The host refused this page's add (`draft-error` with its tag): no id will come for it. dropTagged's answer. */
+  refused(notes, tag) {
+    this.deletedTags.delete(tag)
+    return dropTagged(notes, tag)
   }
 
   /** The host's ack of one text op: `{ global: true }` or `{ id }`. */

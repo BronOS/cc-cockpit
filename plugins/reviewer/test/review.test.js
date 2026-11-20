@@ -623,16 +623,15 @@ test('applyNoteOp: an add gets the minted id and the given author (never the pag
   assert.ok(applyNoteOp(d0, { type: 'note-add', tag: '~3', note: { side: 'new', from: 0, to: 0, quote: '', text: '' } }, { mintId }).problem)
 })
 
-test('commonSent and subtractSent: a delivery clears the notes unchanged in every snapshot, the comment only when unchanged', () => {
-  const { commonSent, subtractSent } = require('../dist/lib/review')
+test('subtractSent: a delivery clears the notes unchanged since its snapshot, the comment only when unchanged', () => {
+  const { subtractSent } = require('../dist/lib/review')
   const n = (id, text) => ({ id, side: 'new', from: 1, to: 1, quote: '', text })
-  const a = { global: 'g', notes: [n('1', 'one'), n('2', 'two')] }
-  const b = { global: 'g2', notes: [n('1', 'one'), n('2', 'two, edited'), n('3', 'three')] }
-  const sent = commonSent([a, b])
-  assert.deepEqual(sent, { global: null, notes: [n('1', 'one')] })
-  const now = { global: 'g2', notes: [n('1', 'one'), n('2', 'two, edited'), n('3', 'three'), n('4', 'four')] }
-  assert.deepEqual(subtractSent(now, sent), { global: 'g2', notes: [n('2', 'two, edited'), n('3', 'three'), n('4', 'four')] })
-  // One snapshot: what it sent goes, the comment too when unchanged; an edit since keeps its note.
-  assert.deepEqual(subtractSent({ global: 'g', notes: [n('1', 'one'), n('2', 'two!')] }, commonSent([a])), { global: '', notes: [n('2', 'two!')] })
-  assert.deepEqual(subtractSent({ global: 'g, more', notes: [] }, commonSent([a])), { global: 'g, more', notes: [] })
+  const sent = { global: 'g', notes: [n('1', 'one'), n('2', 'two')] }
+  const now = { global: 'g2', notes: [n('1', 'one'), n('2', 'two, edited'), n('3', 'three')] }
+  assert.deepEqual(subtractSent(now, sent), { global: 'g2', notes: [n('2', 'two, edited'), n('3', 'three')] })
+  // What it sent goes, the comment too when unchanged; an edit since keeps its note.
+  assert.deepEqual(subtractSent({ global: 'g', notes: [n('1', 'one'), n('2', 'two!')] }, sent), { global: '', notes: [n('2', 'two!')] })
+  assert.deepEqual(subtractSent({ global: 'g, more', notes: [] }, sent), { global: 'g, more', notes: [] })
+  // A `sent.global` of null never matches.
+  assert.deepEqual(subtractSent({ global: 'g', notes: [] }, { global: null, notes: [] }), { global: 'g', notes: [] })
 })

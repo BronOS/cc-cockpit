@@ -84,6 +84,37 @@ test('convergence: a note deleted here stays gone; one deleted elsewhere leaves 
   assert.equal(sync.remoteDelete(notes, 'b'), false)
 })
 
+test('convergence: a note deleted before its add was answered stays gone when another copy\'s edit of it comes', async () => {
+  const { NoteSync, tagOf, deleteOp } = await load()
+  const sync = new NoteSync()
+  const tag = tagOf(7)
+  const mine = { id: tag, tag, text: 'oops' }
+  const notes = [{ id: 'x', text: 'other' }, mine]
+  // Page A adds, then deletes by the tag before the host's answer.
+  assert.deepEqual(deleteOp(mine), { type: 'note-delete', tag })
+  notes.splice(1, 1)
+  sync.deleted(mine)
+  // Copy B edited the host's note before A's delete reached the host: A gets the answer, then B's edit.
+  assert.equal(sync.added(notes, tag, { id: 'n5', text: 'oops' }), null)
+  assert.equal(sync.remoteNote(notes, { id: 'n5', text: 'edited by B' }), null)
+  assert.deepEqual(notes.map((n) => n.id), ['x'])
+  // The tag is spent; a refused add forgets its tag too and drops the page's note.
+  assert.equal(sync.deletedTags.size, 0)
+  const other = { id: tagOf(8), tag: tagOf(8), text: '' }
+  notes.push(other)
+  assert.equal(sync.refused(notes, tagOf(8)), true)
+  assert.deepEqual(notes.map((n) => n.id), ['x'])
+  const gone = { id: tagOf(9), tag: tagOf(9), text: '' }
+  sync.deleted(gone)
+  assert.equal(sync.refused(notes, tagOf(9)), false)
+  assert.equal(sync.deletedTags.size, 0)
+  // A note not deleted is answered as ackAdd does.
+  const kept = { id: tagOf(10), tag: tagOf(10), text: 'kept' }
+  notes.push(kept)
+  assert.deepEqual(sync.added(notes, tagOf(10), { id: 'n6' }), { note: kept, oldId: tagOf(10) })
+  assert.equal(sync.remoteNote(notes, { id: 'n6', text: 'kept, edited by B' }), 'changed')
+})
+
 test('convergence: the comment from another copy waits for this page\'s acks and clears its held-back text', async () => {
   const { NoteSync } = await load()
   const sync = new NoteSync()

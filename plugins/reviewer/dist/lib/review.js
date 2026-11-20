@@ -836,22 +836,6 @@ function applyNoteOp(d, op, { author = null, mintId } = {}) {
 }
 
 /**
- * What every snapshot in `drafts` sent alike: the notes in all of them with the same id and text, and the
- * comment when it is the same in all (else null: never cleared). Two screens can each ask Discuss for the
- * context and the app's answer does not say which one it sent, so a delivery clears only what all sent.
- */
-function commonSent(drafts) {
-  const list = drafts.map(cleanDraft)
-  if (!list.length) return { global: null, notes: [] }
-  const keyOf = (n) => `${n.id}\0${n.text}`
-  const rest = list.slice(1).map((d) => new Set(d.notes.map(keyOf)))
-  return {
-    global: list.every((d) => d.global === list[0].global) ? list[0].global : null,
-    notes: list[0].notes.filter((n) => rest.every((s) => s.has(keyOf(n)))),
-  }
-}
-
-/**
  * `now` with what a delivered review `sent` taken out: only the notes unchanged since (the same id and
  * text), and the comment only when it too is unchanged (a `sent.global` of null never matches). Anything
  * added or edited meanwhile, on another screen or by the editor's addNote, stays.
@@ -1156,7 +1140,6 @@ module.exports = {
   isEmpty,
   authorName,
   applyNoteOp,
-  commonSent,
   subtractSent,
   MAX_AUTHOR,
   MAX_NOTE_ID,
