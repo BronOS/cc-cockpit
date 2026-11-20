@@ -19,16 +19,20 @@
 //                                                                  ctx.files.onOpen (true: taken)
 //   overlay.buttons { key, info }           -> button[]           the type buttons for a typed overlay
 //                                                                  (ctx.overlay.buttons, host/overlay-buttons.ts)
-//   overlay.buttonClick { source, ..., view? } -> { close } | null  a toolbar click: the opener's onButton
+//   overlay.buttonClick { source, ..., view?, from } -> { close } | null  a toolbar click: the opener's onButton
 //                                                                  or a type button's run
-//   overlay.discuss { pluginId, handle }    -> { text } | null    Discuss with Claude: the handle's onDiscuss
+//   overlay.discuss { pluginId, handle, view?, from } -> { text } | null  Discuss with Claude: the handle's onDiscuss
 //   pageTab.discuss { pluginId, id, view? } -> { text } | null    Ask Claude from a page tab: that view's onDiscuss
 // Events from main:
 //   settings   { pluginId, project, app }     new validated settings (ctx.onSettingsChange)
 //   sessions   { sessions: SessionInfo[] }    this project's Claude tabs changed (ctx.sessions.onChange)
 //   sessions.rateLimits { rateLimits }        the account's plan usage changed (ctx.sessions.onRateLimits)
 //   cli.cancel { callId }                     main gave up on a cli.run (Ctrl+C, timeout): abort its signal
-//   overlay.message { pluginId, handle, message, view? }  an html overlay's page posted (ctx.overlay.start)
+//   overlay.message { pluginId, handle, message, view?, copy?, from }  an html overlay's page posted (ctx.overlay.start)
+//   overlay.connect / overlay.disconnect { pluginId, handle, copy, view?, from }  a perView overlay's copy came or went
+// `from` { view?, access, person? } is who acted, main's own (docs/design-overlay-views.md §3; host-api.ts says
+// how it is read): not surfaced to plugins yet (Task 7 of docs/plans/20261120-overlay-views.md), the connect
+// and disconnect events are ignored until then.
 //   panel.action { pluginId, panelId, actionId, view? }   a click on a panel header action (ctx.panels.onAction)
 // A `view` (a remote view main minted) names the browser the click or page message came from: the
 // plugin code it reaches runs in it (ctx/origin-view.ts), so what that code opens or focuses shows
@@ -46,7 +50,8 @@
 //   tabs.openPage { pluginId, type, params?, title, icon?, focus? } -> { tabId }, tabs.list { pluginId, type } -> PageTabInfo[],
 //   tabs.setTitle { pluginId, tabId, title, icon? } -> null (ctx.tabs, a page tab's setTitle; main checks the type and the tab),
 //   badge { pluginId, panelId, value }, panels.header { pluginId, panelId, header }, overlay.open { pluginId, spec, handle } (no timeout; see
-//   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message }, overlay.close { pluginId, handle },
+//   src/main/plugins/host-api.ts), overlay.post { pluginId, handle, message, copy? }, overlay.close { pluginId, handle },
+//   overlay.hide { pluginId, handle, copy } (a perView overlay's copy leaves its own view),
 //   overlay.setButtons { pluginId, handle, buttons } (the opener's buttons, checked again in main),
 //   overlay.discussable { pluginId, handle, on } (the handle has an onDiscuss handler: Discuss shows),
 //   files.open { pluginId, path, tabId? } -> { via } (ctx.files.open; main routes it like a click),

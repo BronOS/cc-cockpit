@@ -20,6 +20,7 @@ import type {
   NotificationSoundData,
   NotificationSoundGroup,
   OverlayInfo,
+  OverlayReadyAnswer,
   PluginSettingsSaveResult,
   PluginView,
   ProjectSettingsView,
@@ -2431,8 +2432,29 @@ export interface OverlayHandlerDeps {
    * `viewId` (the caller main bound): the plugin's handlers run in it when it is a remote view.
    */
   button(windowId: number, overlayId: string, click: OverlayButtonClick, viewId: ViewId): boolean
-  /** Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again); `guest`: a guest's (03e). */
-  discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest): Promise<DiscussAnswer>
+  /**
+   * Discuss with Claude's Send (OverlayManager.discuss checks the overlay and target again); `guest`: a guest's
+   * (03e). `viewId`: the caller main bound, always passed (the opener's onDiscuss hears who asked, an owner's
+   * browser included, docs/design-overlay-views.md §3).
+   */
+  discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest, viewId?: ViewId): Promise<DiscussAnswer>
+  /**
+   * Per-view copies (docs/design-overlay-views.md §5). `perView` is main's own flag for an open overlay of the
+   * window (OverlayManager.isPerView): when true, `ready`, `loaded`, `message` and `result` go to the copy
+   * calls below with the calling view's copy, never to the holder's. Absent: no overlay is perView and the
+   * copy calls are never made (an older wiring keeps today's channels exactly).
+   */
+  perView?(windowId: number, overlayId: string): boolean
+  /** The page's port is up in `viewId`: mint its copy and mark it ready (OverlayManager.connectCopy + copyReady). */
+  connectCopy?(windowId: number, overlayId: string, viewId: ViewId): OverlayReadyAnswer
+  /** OverlayManager.copyLoaded: that copy's loader only. */
+  copyLoaded?(windowId: number, overlayId: string, viewId: ViewId, copy: string): boolean
+  /** OverlayManager.copyMessage: dropped unless `copy` is `viewId`'s live copy. */
+  copyMessage?(windowId: number, overlayId: string, viewId: ViewId, copy: string, text: string): boolean
+  /** OverlayManager.copyResult: owner views only, `viewId`'s live copy only. */
+  copyResult?(windowId: number, overlayId: string, viewId: ViewId, copy: string, value: unknown): boolean
+  /** OverlayManager.releaseCopy: `viewId`'s own live copy only. */
+  releaseCopy?(windowId: number, overlayId: string, viewId: ViewId, copy: string): boolean
 }
 
 /**
@@ -2492,28 +2514,62 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     deps.setBounds(ctx.windowId, overlayIdOf('overlays.bounds', payload), { x, y, width, height })
   })
 
-  router.handleProject('overlays.result', (ctx, payload, view) =>
-    deps.result(
-      ctx.windowId,
-      overlayIdOf('overlays.result', payload),
-      fields('overlays.result', payload).value,
-      view.viewId
-    )
-  )
+  // A perView overlay (docs/design-overlay-views.md §5 "Copy binding") is told apart by main's own flag, never
+  // by whether the payload carries a `copy`: its page calls must name the calling view's copy (refused without
+  // one), and the manager accepts that copy only from the view main bound the call to, while it is that view's
+  // live copy. Any other overlay keeps the holder's calls; a `copy` there names nothing and is dropped.
+  const perView = (windowId: number, overlayId: string): boolean => deps.perView?.(windowId, overlayId) === true
+
+  router.handleProject('overlays.result', (ctx, payload, view) => {
+    const overlayId = overlayIdOf('overlays.result', payload)
+    const { value } = fields('overlays.result', payload)
+    const copy = copyOf('overlays.result', payload)
+    if (perView(ctx.windowId, overlayId)) {
+      return deps.copyResult?.(ctx.windowId, overlayId, view.viewId, requireCopy('overlays.result', copy), value) ?? false
+    }
+    if (copy !== undefined) return false
+    return deps.result(ctx.windowId, overlayId, value, view.viewId)
+  })
 
   // Only to the opener of an overlay of the SENDER's window (the manager looks the id up there).
   router.handleProject('overlays.message', (ctx, payload, view) => {
     const message = fields('overlays.message', payload).message
     if (typeof message !== 'string') throw new Error('overlays.message: message must be a string')
-    return deps.message(ctx.windowId, overlayIdOf('overlays.message', payload), message, view.viewId)
+    const overlayId = overlayIdOf('overlays.message', payload)
+    const copy = copyOf('overlays.message', payload)
+    if (perView(ctx.windowId, overlayId)) {
+      return deps.copyMessage?.(ctx.windowId, overlayId, view.viewId, requireCopy('overlays.message', copy), message) ?? false
+    }
+    if (copy !== undefined) return false
+    return deps.message(ctx.windowId, overlayId, message, view.viewId)
   })
 
-  router.handleProject('overlays.ready', (ctx, payload, view) => {
-    deps.ready(ctx.windowId, overlayIdOf('overlays.ready', payload), view.viewId)
+  // A perView overlay's page connects here: main mints the calling view's copy (the opener hears it) and
+  // answers its id, which every later call of that page names. Any other overlay answers nothing, as before.
+  router.handleProject('overlays.ready', (ctx, payload, view): OverlayReadyAnswer | undefined => {
+    const overlayId = overlayIdOf('overlays.ready', payload)
+    if (perView(ctx.windowId, overlayId)) return deps.connectCopy?.(ctx.windowId, overlayId, view.viewId) ?? { refused: 'not-allowed' }
+    deps.ready(ctx.windowId, overlayId, view.viewId)
+    return undefined
   })
 
   router.handleProject('overlays.loaded', (ctx, payload, view) => {
-    deps.loaded(ctx.windowId, overlayIdOf('overlays.loaded', payload), view.viewId)
+    const overlayId = overlayIdOf('overlays.loaded', payload)
+    const copy = copyOf('overlays.loaded', payload)
+    if (perView(ctx.windowId, overlayId)) {
+      deps.copyLoaded?.(ctx.windowId, overlayId, view.viewId, requireCopy('overlays.loaded', copy))
+      return
+    }
+    if (copy !== undefined) return
+    deps.loaded(ctx.windowId, overlayId, view.viewId)
+  })
+
+  // The calling view's own copy only: the manager matches the copy against the view main bound the call to,
+  // so a view cannot release another's (a guest's is refused by its class before this, Task 5 widens it).
+  router.handleProject('overlays.release', (ctx, payload, view) => {
+    const overlayId = overlayIdOf('overlays.release', payload)
+    const copy = requireCopy('overlays.release', copyOf('overlays.release', payload))
+    return deps.releaseCopy?.(ctx.windowId, overlayId, view.viewId, copy) ?? false
   })
 
   // The calling view's own id from the router, never a view named in the payload.
@@ -2538,8 +2594,8 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     const overlayId = overlayIdOf('overlays.discuss', payload)
     const t = (target ?? {}) as Record<string, unknown>
     const guest = router.discussGuest('overlays.discuss', ctx, view)
-    const send = (to: DiscussTarget): Promise<DiscussAnswer> =>
-      guest === undefined ? deps.discuss(ctx.windowId, overlayId, to) : deps.discuss(ctx.windowId, overlayId, to, guest)
+    // The caller's view always goes too: the opener hears who asked, an owner's browser included.
+    const send = (to: DiscussTarget): Promise<DiscussAnswer> => deps.discuss(ctx.windowId, overlayId, to, guest, view.viewId)
     if (t.kind === 'new') return send({ kind: 'new' })
     if (t.kind === 'tab' && typeof t.tabId === 'string') return send({ kind: 'tab', tabId: t.tabId })
     throw new Error('overlays.discuss: target must be { kind: "tab", tabId } or { kind: "new" }')
@@ -2694,6 +2750,19 @@ function overlayIdOf(channel: string, payload: unknown): string {
   const overlayId = fields(channel, payload).overlayId
   if (typeof overlayId !== 'string') throw new Error(`${channel}: overlayId must be a string`)
   return overlayId
+}
+
+/** A page call's `copy` (a perView overlay's copy id): a string, or absent. */
+function copyOf(channel: string, payload: unknown): string | undefined {
+  const copy = fields(channel, payload).copy
+  if (copy !== undefined && typeof copy !== 'string') throw new Error(`${channel}: copy must be a string`)
+  return copy
+}
+
+/** A perView overlay's page call must name its copy (docs/design-overlay-views.md §5 "Copy binding"). */
+function requireCopy(channel: string, copy: string | undefined): string {
+  if (copy === undefined) throw new Error(`${channel}: copy is required for an overlay shown in every view`)
+  return copy
 }
 
 /**

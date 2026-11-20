@@ -61,9 +61,11 @@ import {
   type EventChannel,
   type IpcEventMap,
   type OverlayButtonInfo,
+  type OverlayCopyRefusal,
   type OverlayInfo,
   type OverlayInfoBody,
   type OverlayKind,
+  type OverlayReadyAnswer,
   type OverlaySize
 } from '../../shared/ipc'
 import { chordFromEvent } from '../../shared/keys'
@@ -246,7 +248,7 @@ export interface OverlayStartOptions {
 }
 
 /** Why `connectCopy` refused (the shell retries `cap` later; the others are final for that view). */
-export type CopyRefusal = 'unknown' | 'not-per-view' | 'hidden-page' | 'not-allowed' | 'cap'
+export type CopyRefusal = OverlayCopyRefusal
 
 /** A copy as `copyState` / `copies` show it (no outbox). */
 export interface CopyState {
@@ -430,9 +432,11 @@ export interface OverlayChannel {
   onButton?(buttonId: string, view?: ViewId): Promise<unknown>
   /**
    * Discuss with Claude asks the opener's `onDiscuss` handlers for the context (`{ text }` or null).
-   * Asked only once the opener said it has a handler (setDiscussHandler).
+   * Asked only once the opener said it has a handler (setDiscussHandler). `view` as for onButton: the
+   * remote view whose Send it was (the router's caller, an owner's browser included), absent for the
+   * desktop's, so the opener knows who asked (docs/design-overlay-views.md §3).
    */
-  onDiscuss?(): Promise<unknown>
+  onDiscuss?(view?: ViewId): Promise<unknown>
 }
 
 /** Re-exported: a dismissed terminal overlay's program gets SIGKILL after this (PtyService.terminate). */
@@ -1278,6 +1282,19 @@ export class OverlayManager {
   }
 
   /**
+   * A perView page's `overlays.ready` (docs/design-overlay-views.md §5): its port is up, so its copy is
+   * minted (connectCopy: the opener hears it and may answer with its starting state, queued until now)
+   * and made ready at once (copyReady: the queue drains, in order). The answer is the channel's: the
+   * copy id every later call of that page names, or why the view has none.
+   */
+  connectReady(windowId: number, overlayId: string, viewId: ViewId): OverlayReadyAnswer {
+    const r = this.connectCopy(windowId, overlayId, viewId)
+    if (!r.ok) return { refused: r.reason }
+    this.copyReady(windowId, overlayId, viewId, r.copy)
+    return { copy: r.copy }
+  }
+
+  /**
    * The shell let go of a copy (its page unmounted or reloads, a read guest hid it): the opener hears
    * its disconnect. True when it was `viewId`'s live copy; anything else (gone, replaced, another
    * view's, made up) is a no-op, logged once per overlay so a looping page is one line.
@@ -1378,6 +1395,40 @@ export class OverlayManager {
   /** Every live copy of a perView overlay (empty for an unknown overlay or one that is not perView). */
   copies(windowId: number, overlayId: string): CopyState[] {
     return [...(this.find(windowId, overlayId)?.perView?.copies.values() ?? [])].map(stateOf)
+  }
+
+  /**
+   * Whether `overlayId` is an open `perView` overlay of this window: the router's switch between the
+   * copy calls and the holder's (main's own flag from the opener's manifest, never a payload's `copy`).
+   */
+  isPerView(windowId: number, overlayId: unknown): boolean {
+    return this.find(windowId, overlayId)?.perView !== undefined
+  }
+
+  /**
+   * The opener hides one copy in its own view (handle.hide: the Reviewer's read guest's in-page Close,
+   * docs/design-overlay-views.md §3): the copy is released (the opener hears its disconnect) and
+   * `overlays.hide` goes to that copy's view only, which unloads it and takes the overlay off its stack.
+   * Looked up by the copy id alone: the opener names copies, not views, and the view is the copy's own
+   * record. Released even when the view cannot take the event (it is going anyway). False for an
+   * overlay that is gone or not perView, or a copy that is not live. Recording the hide so the overlay
+   * stays off that view's stack is the read guest's rule (Task 5 of the plan), not this call's.
+   */
+  hideCopy(windowId: number, overlayId: string, copy: unknown): boolean {
+    const overlay = this.find(windowId, overlayId)
+    const c = typeof copy === 'string' ? overlay?.perView?.copies.get(copy) : undefined
+    if (!overlay || !c?.live) return false
+    // Out first: anything the page still sends for it from here on is a stale copy's, dropped.
+    this.dropCopy(overlay, c)
+    const payload = { overlayId: overlay.id, copy: c.id }
+    try {
+      if (this.options.emitToView) this.options.emitToView(c.view, 'overlays.hide', payload)
+      // No per-view addressing (no web access wiring): the window's one page routes it by `copy`.
+      else this.options.emit(overlay.windowId, 'overlays.hide', payload)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: telling view ${c.view} to hide its copy failed: ${String(err)}`)
+    }
+    return true
   }
 
   /** The perView overlay's copy `copy` if it is `viewId`'s and live (the one binding rule, §5 "Copy binding"). */
@@ -1582,8 +1633,12 @@ export class OverlayManager {
    * project folder (DiscussSessionBudget: 5 a minute per window), the overlay closes as
    * `{ kind: 'discussed', tabId, queued }` and the tab is selected in the window (an overlay
    * dismissed while the new session opens has already answered `dismissed`). Never rejects.
+   *
+   * `viewId`: the view whose Send it was (the router's caller, never a payload's): the opener's
+   * `onDiscuss` hears it, an owner's browser included (it used to act as the desktop). Absent: a
+   * guest's own view, else the desktop's. Which view selects the tab afterwards stays `guest`'s rule.
    */
-  async discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest): Promise<DiscussAnswer> {
+  async discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest, viewId?: ViewId): Promise<DiscussAnswer> {
     const overlay = this.find(windowId, overlayId)
     if (!overlay?.info.discuss) return { ok: false, error: 'Discuss is not available on this overlay' }
     const sessions = this.options.discuss
@@ -1596,7 +1651,10 @@ export class OverlayManager {
     try {
       let context: string | undefined
       if (overlay.discussHandler && overlay.channel?.onDiscuss) {
-        const ask = overlay.channel.onDiscuss.bind(overlay.channel)
+        const caller = viewId ?? guest?.viewId
+        const view = caller !== undefined && isRemoteViewId(caller) ? caller : undefined
+        const onDiscuss = overlay.channel.onDiscuss.bind(overlay.channel)
+        const ask = (): Promise<unknown> => onDiscuss(view)
         let answer: unknown
         try {
           answer = await within(Promise.resolve().then(ask), DISCUSS_ASK_MS, `onDiscuss took longer than ${DISCUSS_ASK_MS / 1000} s`)

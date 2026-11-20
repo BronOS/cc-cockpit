@@ -320,6 +320,8 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'overlays.message': NO,
   'overlays.ready': NO,
   'overlays.loaded': NO,
+  // A guest holds no copy yet: Task 5 of docs/plans/20261120-overlay-views.md widens it (read, own copy only).
+  'overlays.release': NO,
   'overlays.take': NO,
   'webviews.placement': NO,
   'tabs.commands': NO,

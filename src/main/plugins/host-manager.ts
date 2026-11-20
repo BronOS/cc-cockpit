@@ -224,6 +224,8 @@ export interface HostPlugin {
   access?: PluginManifest['access']
   /** The ids of the manifest's `contributes.themes`: the only themes ctx.themes.set may replace. */
   themes?: string[]
+  /** The manifest says `overlays.perView`: its html overlays get one copy per view (HostApiPlugin.overlaysPerView). */
+  overlaysPerView?: boolean
 }
 
 /**
@@ -1176,7 +1178,8 @@ export class HostManager {
               panelSlots: panelSlotsOf(runnable.find((p) => p.id === s.id)),
               themes: [...(runnable.find((p) => p.id === s.id)?.themes ?? [])],
               pageTabs: [...(s.pageTabTypes ?? [])],
-              ...(s.sessionsAll === true ? { sessionsAll: true } : {})
+              ...(s.sessionsAll === true ? { sessionsAll: true } : {}),
+              ...(runnable.find((p) => p.id === s.id)?.overlaysPerView === true ? { overlaysPerView: true } : {})
             })),
             // The record's own count (runCli), read at the navigate: in server mode a webview
             // navigate made while one of the plugin's `ccc` commands runs loads at once.
@@ -1401,7 +1404,9 @@ export class HostManager {
       panelSlots: panelSlotsOf(next),
       themes: [...(next.themes ?? [])],
       pageTabs: [...(spec.pageTabTypes ?? [])],
-      ...(spec.sessionsAll === true ? { sessionsAll: true } : {})
+      ...(spec.sessionsAll === true ? { sessionsAll: true } : {}),
+      // A dev reload may turn it on or off: the next open reads the reloaded manifest's word.
+      ...(next.overlaysPerView === true ? { overlaysPerView: true } : {})
     })
     let state: unknown
     try {

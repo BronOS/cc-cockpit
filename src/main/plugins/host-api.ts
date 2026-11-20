@@ -70,7 +70,11 @@
 //   overlay.open    { pluginId, spec, handle? } -> OverlayResult on this project's window; `handle`
 //                                                                (ctx.overlay.start) names the overlay
 //                                                                in the three calls below
-//   overlay.post    { pluginId, handle, message } -> boolean     to that html overlay's page
+//   overlay.post    { pluginId, handle, message, copy? } -> boolean  to that html overlay's page; `copy`
+//                                                                (a perView overlay only, else refused): to
+//                                                                that one copy, false when it is gone
+//   overlay.hide    { pluginId, handle, copy } -> boolean        a perView overlay's copy leaves its own view
+//                                                                (released; `overlays.hide` to that view only)
 //   overlay.close   { pluginId, handle }       -> boolean        dismiss it (false: it already ended)
 //   overlay.focus   { pluginId, handle }       -> boolean        bring it to the top of the window's stack
 //   overlay.setButtons { pluginId, handle, buttons } -> boolean  replace that overlay's opener buttons
@@ -151,8 +155,16 @@
 //                                                                machine-status.ts; only to a host running a
 //                                                                plugin with the `access` declaration)
 //   webview.navigated { pluginId, panelId, url, title }          a view this host drives committed a page
-//   overlay.message { pluginId, handle, message, view? }         that overlay's page posted (not a result;
-//                                                                `view`: a remote view's page)
+//   overlay.message { pluginId, handle, message, view?, copy?, from }  that overlay's page posted (not a
+//                                                                result; `view`: a remote view's page; `copy`:
+//                                                                a perView overlay's copy that posted)
+//   overlay.connect { pluginId, handle, copy, view?, from }      a perView overlay's copy is up: the plugin
+//                                                                answers with a post to that copy
+//   overlay.disconnect { pluginId, handle, copy, view?, from }   that copy is gone (its connect's `from`)
+//   `from` { view?, access, person? } is who acted (docs/design-overlay-views.md §3), main's own: `view` a
+//   remote view's id (absent: the desktop page), `access` that view's ('owner', or a guest's role, read live
+//   from the guest store), `person` a guest's invite name (absent for the owner). A revoked or unknown remote
+//   view gets nothing: its message is dropped, its click or Discuss refused (never read as the owner's).
 //   panel.action    { pluginId, panelId, actionId, view? }       a click on a header action this host set
 //                                                                (panelAction: current, not busy/disabled;
 //                                                                `view`: a remote view's click)
@@ -160,11 +172,12 @@
 //   overlay.buttons { key, info }              -> button[]       the type buttons of a typed overlay
 //                                                                (each with its plugin id: one of this
 //                                                                host's, or the button is refused)
-//   overlay.buttonClick { source: 'opener', pluginId, handle, buttonId, view? } | { source: 'type',
-//                         key, pluginId, buttonId, info, view? } -> { close } | null   a click, 30 s
-//                         bound (`view`: the remote view whose toolbar was clicked)
+//   overlay.buttonClick { source: 'opener', pluginId, handle, buttonId, view?, from } | { source: 'type',
+//                         key, pluginId, buttonId, info, view?, from } -> { close } | null   a click, 30 s
+//                         bound (`view`: the remote view whose toolbar was clicked; `from` as above)
 //   overlay.ended   { key } (event)                              that typed overlay went
-//   overlay.discuss { pluginId, handle }       -> { text } | null  Discuss asks the opener for context, 5 s
+//   overlay.discuss { pluginId, handle, view?, from } -> { text } | null  Discuss asks the opener for
+//                                                                context, 5 s (`from`: whose Send it was)
 // and one event the host sends (host-manager routes it to contextDisposed):
 //   plugin.disposed { pluginId }                                 that plugin's ctx ended: its ctx.oauth calls,
 //                                                                its webviews, its overlays, its panel
@@ -225,7 +238,8 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import { MAX_RPC_MESSAGE_LENGTH, type RpcHandler, type RpcMeta } from '../../host/rpc'
-import { isRemoteViewId, type ViewId } from '../../shared/views'
+import { isRemoteViewId, type ViewAccess, type ViewId } from '../../shared/views'
+import type { GuestAccess } from '../../shared/guests'
 import { DOWNLOAD_PLUGIN_MAX, DOWNLOAD_PLUGIN_WINDOW_MS } from '../../shared/downloads'
 import { DOWNLOAD_DESKTOP_TEXT, DOWNLOAD_NO_ORIGIN_TEXT } from '../files/downloads'
 import type {
@@ -602,10 +616,23 @@ export interface HostApiDeps {
     channel?: OverlayChannel,
     pluginId?: string,
     /** The live remote view of this window the request came from (originOf): an html page opens there. */
-    view?: ViewId
+    view?: ViewId,
+    /** `perView`: the opener's manifest says `overlays.perView` (HostApiPlugin), main's word, never the spec's. */
+    options?: { perView?: boolean }
   ): Promise<OverlayResult>
-  /** OverlayManager.post. Without it (and closeOverlay) ctx.overlay.start's post/close are refused. */
-  postOverlay?(windowId: number, overlayId: string, text: string): boolean
+  /**
+   * OverlayManager.post. Without it (and closeOverlay) ctx.overlay.start's post/close are refused. `copy`:
+   * a perView overlay's copy (the manager drops a gone one).
+   */
+  postOverlay?(windowId: number, overlayId: string, text: string, options?: { copy?: string }): boolean
+  /** OverlayManager.hideCopy (handle.hide). Without it the request is refused. */
+  hideOverlayCopy?(windowId: number, overlayId: string, copy: string): boolean
+  /**
+   * Who is behind a view of this host's window, read live (GuestStore.whoAccess): the `access` and a guest's
+   * `person` on what an overlay's opener hears (`from`). Without it every remote view reads as unknown, so its
+   * page messages are dropped and its clicks and Discuss refused (fail closed: never the owner's by default).
+   */
+  viewAccess?(viewId: ViewId): GuestAccess
   /** OverlayManager.close. */
   closeOverlay?(windowId: number, overlayId: string): boolean
   /** OverlayManager.focus. Without it ctx.overlay.start's focus is refused. */
@@ -707,6 +734,22 @@ export interface HostApiPlugin {
   themes?: readonly string[]
   /** The types of its manifest `contributes.tabs`: the only page tabs ctx.tabs may open or list. Absent is none. */
   pageTabs?: readonly string[]
+  /**
+   * The manifest says `overlays.perView` (docs/design-overlay-views.md §2): its html overlays get one copy per
+   * view (OverlayManager `{ perView }`), and its posts may name a copy. Absent is false.
+   */
+  overlaysPerView?: boolean
+}
+
+/**
+ * Who acted on an overlay, as the host gets it (docs/design-overlay-views.md §3): the panel port tag's shape
+ * (`view` only for a remote view, absent for the desktop page; `access` always) plus a guest's `person`.
+ */
+export interface OverlayFrom {
+  view?: ViewId
+  access: ViewAccess
+  /** A guest's invite name (GuestStore's record, the owner's own text); absent for the owner. */
+  person?: string
 }
 
 /**
@@ -771,6 +814,13 @@ interface OverlayLink {
   discuss?: boolean
   /** setDiscussPrimary() came before the overlay existed: applied as soon as it does (the last one). */
   discussPrimary?: boolean
+  /** The opener's manifest says `overlays.perView`: posts may name a copy, and `hide` is offered. */
+  perView: boolean
+  /**
+   * perView: copy id -> the `from` its connect went out with. Its disconnect reuses it (the view may be gone
+   * from the registry by then, so a live lookup would read it as revoked), and goes out only when its connect did.
+   */
+  copies: Map<string, OverlayFrom>
 }
 
 /**
@@ -858,6 +908,11 @@ export function sessionInfoOf(e: SessionEntry, active = false): SessionInfo {
 }
 
 /** `err` with the method in front, kept as the cause (the messages it wraps hold no values). */
+/** A view for a host message: a remote view's id, nothing for the desktop page (the port tag's convention). */
+function remoteView(view: ViewId | undefined): { view?: ViewId } {
+  return view !== undefined && isRemoteViewId(view) ? { view } : {}
+}
+
 function withMethod(what: string, err: unknown): Error {
   return new Error(`${what}: ${errorText(err)}`, { cause: err })
 }
@@ -1039,6 +1094,7 @@ export class HostApi {
       'tabs.close': (params) => this.closePageTab(params),
       'overlay.open': (params, meta) => this.overlay(params, meta),
       'overlay.post': (params) => this.overlayPost(params),
+      'overlay.hide': (params) => this.overlayHide(params),
       'overlay.close': (params) => this.overlayClose(params),
       'overlay.focus': (params) => this.overlayFocus(params),
       'overlay.setButtons': (params) => this.overlaySetButtons(params),
@@ -2261,9 +2317,10 @@ export class HostApi {
     this.openOverlays.set(plugin.id, open + 1)
     // Registered before the first await too: the host sends its first posts right behind this
     // request, and they must find the handle (and wait in it) while the file is being checked.
+    const perView = plugin.overlaysPerView === true
     let channel: OverlayChannel | undefined
     if (linkKey !== undefined) {
-      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false }
+      const link: OverlayLink = { pending: new OverlayOutbox(), closing: false, perView, copies: new Map() }
       this.overlayLinks.set(linkKey, link)
       const pid = plugin.id
       channel = {
@@ -2296,15 +2353,44 @@ export class HostApi {
         },
         // A click on one of its own buttons: to this host, this plugin and this handle only.
         // `view`: the remote view whose toolbar was clicked (main's id): the handlers run in it.
-        onButton: (buttonId, view) =>
-          this.hostCall('overlay.buttonClick', { source: 'opener', pluginId: pid, handle, buttonId, ...(view !== undefined ? { view } : {}) }),
+        // `from`: who clicked, read now (a view that is gone or revoked clicks nothing).
+        onButton: (buttonId, view) => {
+          const from = this.overlayFrom(view)
+          if (!from) return Promise.reject(new Error('overlay.buttonClick: the clicking view is gone'))
+          return this.hostCall('overlay.buttonClick', { source: 'opener', pluginId: pid, handle, buttonId, ...remoteView(view), from })
+        },
         // Discuss with Claude's context: to this host, this plugin and this handle only (the
-        // manager bounds it to 5 s too and checks the answer's shape).
-        onDiscuss: () => this.hostCall('overlay.discuss', { pluginId: pid, handle }, DISCUSS_ASK_MS),
+        // manager bounds it to 5 s too and checks the answer's shape). `from`: whose Send it was.
+        onDiscuss: (view) => {
+          const from = this.overlayFrom(view)
+          if (!from) return Promise.reject(new Error('the view that asked is gone'))
+          return this.hostCall('overlay.discuss', { pluginId: pid, handle, ...remoteView(view), from }, DISCUSS_ASK_MS)
+        },
         // A dying host (revoked) gets nothing more; the overlay is dismissed when it is gone.
         // `view` (a remote view's page) only as main's own id: the host runs the listeners in it.
-        onMessage: (message, view) => {
-          if (!this.revoked) this.emit('overlay.message', { pluginId: pid, handle, message, ...(view !== undefined ? { view } : {}) })
+        // `copy`: the perView copy that posted (the manager checked it is that view's live one).
+        onMessage: (message, view, copy) => {
+          if (this.revoked) return
+          const from = this.overlayFrom(view)
+          if (!from) return
+          this.emit('overlay.message', { pluginId: pid, handle, message, ...remoteView(view), ...(copy !== undefined ? { copy } : {}), from })
+        },
+        // perView: a view's copy is up (any view, the desktop's included: `from` says which). The plugin
+        // answers with a post to that copy; one whose view is unknown or revoked is never announced, so
+        // the plugin cannot address it and it never joins broadcasts.
+        onConnect: (copy, view) => {
+          if (this.revoked) return
+          const from = this.overlayFrom(view)
+          if (!from) return
+          link.copies.set(copy, from)
+          this.emit('overlay.connect', { pluginId: pid, handle, copy, ...remoteView(view), from })
+        },
+        // The `from` its connect carried: the view may already be out of the registry (viewGone).
+        onDisconnect: (copy) => {
+          const from = link.copies.get(copy)
+          link.copies.delete(copy)
+          if (this.revoked || !from) return
+          this.emit('overlay.disconnect', { pluginId: pid, handle, copy, ...(from.view !== undefined ? { view: from.view } : {}), from })
         }
       }
     }
@@ -2327,7 +2413,8 @@ export class HostApi {
           peerGone,
           channel,
           plugin.id,
-          view
+          view,
+          { perView }
         )
       } catch (err) {
         // The manager rejects only before it creates anything (a bad argv or url, a program that
@@ -2365,6 +2452,8 @@ export class HostApi {
    */
   private overlayPost(params: unknown): boolean {
     const { link, rest } = this.overlayLink(params, 'overlay.post')
+    const copy = rest.copy
+    if (copy !== undefined && typeof copy !== 'string') throw new Error('overlay.post: copy must be a string')
     let text: string | undefined
     try {
       text = JSON.stringify(rest.message)
@@ -2376,12 +2465,49 @@ export class HostApi {
       throw new Error(`overlay.post: message of ${text.length} chars exceeds ${MAX_OVERLAY_MESSAGE_LENGTH}`)
     }
     if (!link) return false
+    // A copy names one view's page of a perView overlay; any other overlay has none to name.
+    if (copy !== undefined && !link.perView) throw new Error('overlay.post: copy is only for an overlay shown in every view (overlays.perView)')
     if (!this.deps.postOverlay) throw new Error('overlay.post: overlay messages are not available')
     if (link.overlayId === undefined) {
+      // No copy exists before the overlay does, so a post to one names nothing: dropped, as for a gone copy.
+      if (copy !== undefined) return false
       link.pending.push(text)
       return true
     }
-    return this.deps.postOverlay(this.scope.windowId, link.overlayId, text)
+    return copy === undefined
+      ? this.deps.postOverlay(this.scope.windowId, link.overlayId, text)
+      : this.deps.postOverlay(this.scope.windowId, link.overlayId, text, { copy })
+  }
+
+  /**
+   * handle.hide({ copy }): that copy of a perView overlay leaves its own view (the Reviewer's read guest's
+   * in-page Close, docs/design-overlay-views.md §3). Main releases it (the plugin hears its disconnect) and
+   * sends `overlays.hide` to that copy's view only. False for an overlay that ended, one still being created
+   * (no copy yet) or a copy that is gone; refused for an overlay that is not perView.
+   */
+  private overlayHide(params: unknown): boolean {
+    const { link, rest } = this.overlayLink(params, 'overlay.hide')
+    if (typeof rest.copy !== 'string') throw new Error('overlay.hide: copy must be a string')
+    if (!link) return false
+    if (!link.perView) throw new Error('overlay.hide: only an overlay shown in every view (overlays.perView) has copies to hide')
+    if (!this.deps.hideOverlayCopy) throw new Error('overlay.hide: not available')
+    if (link.overlayId === undefined) return false
+    return this.deps.hideOverlayCopy(this.scope.windowId, link.overlayId, rest.copy)
+  }
+
+  /**
+   * Who acted, for an overlay's opener (OverlayFrom): `view` main's own id, a remote one or absent / a
+   * desktop id for the desktop page (always the owner). A remote view's access is read live from the guest
+   * store; undefined (the event dropped, the call refused) for one that is unknown, revoked, or when main
+   * wired no lookup: never the owner's by default.
+   */
+  private overlayFrom(view: ViewId | undefined): OverlayFrom | undefined {
+    if (view === undefined || !isRemoteViewId(view)) return { access: 'owner' }
+    const access = this.deps.viewAccess?.(view)
+    if (access?.kind === 'owner') return { view, access: 'owner' }
+    // A guest of another project has no business here (its views are bound to its own project's window).
+    if (access?.kind === 'guest' && access.projectId === this.scope.projectId) return { view, access: access.role, person: access.name }
+    return undefined
   }
 
   /** ctx.overlay.start's close: dismiss it (its result resolves as dismissed). */
@@ -2481,13 +2607,17 @@ export class HostApi {
       },
       click: async (key, pluginId, buttonId, query, view) => {
         const plugin = this.plugin(pluginId, 'overlay.buttonClick')
+        // Who clicked (OverlayFrom), read now: a view that is gone or revoked clicks nothing.
+        const from = this.overlayFrom(view)
+        if (!from) throw new Error('overlay.buttonClick: the clicking view is gone')
         const answer = await this.hostCall('overlay.buttonClick', {
           source: 'type',
           key,
           pluginId: plugin.id,
           buttonId,
           info: query,
-          ...(view !== undefined ? { view } : {})
+          ...remoteView(view),
+          from
         })
         return { close: (answer as { close?: unknown } | null)?.close === true }
       },

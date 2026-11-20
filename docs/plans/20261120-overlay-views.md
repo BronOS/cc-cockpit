@@ -144,22 +144,44 @@ External review: sol / high
 - Modify: `src/shared/ipc.ts`, `src/main/ipc/router.ts`, `src/main/plugins/host-api.ts`, `src/main/overlays/overlay-manager.ts`
 - Modify: `test/unit/host-api.test.ts`, the router tests that cover `overlays.*`, `test/unit/overlay-manager.test.ts`
 
-- [ ] `overlays.ready` answers `{ copy }` for `perView` overlays; `loaded`, `message`, `result` carry `copy`; add
+- [x] `overlays.ready` answers `{ copy }` for `perView` overlays; `loaded`, `message`, `result` carry `copy`; add
   `overlays.release` (invoke) and `overlays.hide` (event) with their `REMOTE_CLASS` rows
-- [ ] the caller's view travels router → manager → host for messages, buttons, Discuss and type buttons, owner views
+- [x] the caller's view travels router → manager → host for messages, buttons, Discuss and type buttons, owner views
   included (today `:1235`, `:1276` lose it); host-api's RPC events carry `from` `{ view, access, person? }`, with
   `person` = the guest's invite name from main's `GuestStore`, absent for the owner
-- [ ] host-api RPCs for `post { copy? }`, `hide { copy }` (event to that copy's view), connect/disconnect events to the host
-- [ ] ➕ wire Task 2's manager API: `open(..., origin, { perView })` from the opener's manifest; `connectCopy` /
+- [x] host-api RPCs for `post { copy? }`, `hide { copy }` (event to that copy's view), connect/disconnect events to the host
+- [x] ➕ wire Task 2's manager API: `open(..., origin, { perView })` from the opener's manifest; `connectCopy` /
   `copyReady` (or one `overlays.ready` doing both, answering `{ copy }` or the `CopyRefusal`), `copyLoaded`, `copyMessage`,
   `copyResult`, `releaseCopy` (all `(windowId, overlayId, view, copy, ...)`), `post(..., { copy })`; the channel's
   `onConnect(copy, view)` / `onDisconnect(copy, view)` / `onMessage(message, view?, copy)` to the host; the options
   `mayConnectCopy` (owner views never asked; guests by Task 5) and `reloadCopy(view, windowId, overlayId, copy)`, which
   needs an event to that view (e.g. `overlays.reload`, with its REMOTE_CLASS / GUEST_EVENT rows) for Task 8's shell. The
   `overlays.message` event already carries `copy` for a perView overlay; the shell must route by it (Task 8)
-- [ ] tests: an owner browser's Discuss and button carry its view (not the desktop); a guest's carries its `person`;
+- [x] tests: an owner browser's Discuss and button carry its view (not the desktop); a guest's carries its `person`;
   `post` to a gone copy is dropped; `hide` reaches only that copy's view
-- [ ] run tests - must pass before task 4
+- [x] ➕ (Task 2 review) `copyResult` refuses an admitted guest copy and an owner copy's result ends every copy; posts
+  inside `onConnect` queue and drain in order, inside `onDisconnect` are dropped; a throwing listener breaks nothing
+- [x] run tests - must pass before task 4
+- ⚠️ wire shapes Task 7 consumes (host-api.ts header): events `overlay.message { pluginId, handle, message, view?, copy?,
+  from }`, `overlay.connect` / `overlay.disconnect { pluginId, handle, copy, view?, from }`; requests
+  `overlay.buttonClick { ..., view?, from }` (opener and type) and `overlay.discuss { pluginId, handle, view?, from }`;
+  RPCs from the host `overlay.post { ..., copy? }` and `overlay.hide { pluginId, handle, copy }`. `from` is
+  `{ view?, access, person? }` in the panel port tag's convention: `view` only for a `web:n` view, absent = the
+  desktop page (owner); never `desktop:<n>`. The top-level `view?` stays for `dispatchInView`. `from` is read live
+  through HostApiDeps `viewAccess` (`guestStore.whoAccess`; `person` = `GuestAccess.name`, the invite name), and a
+  revoked, unknown or other-project view is dropped (message, connect) or refused (click, Discuss), never the owner;
+  a disconnect reuses its connect's `from` (the view may be gone from the registry). The host ignores
+  `overlay.connect` / `.disconnect` until Task 7.
+- ⚠️ the perView flag reaches HostApi as `HostApiPlugin.overlaysPerView` (index.ts `HostPlugin` → host-manager's launch
+  and `updatePlugin`); the router branches on `OverlayManager.isPerView`, never on a payload's `copy`: a perView page
+  call without `copy` throws, a `copy` on any other overlay is dropped (false / no-op). `overlays.ready` for perView is
+  `OverlayManager.connectReady` (connect + ready) and answers `{ copy }` or `{ refused }`. `overlays.reload
+  { overlayId, copy }` is the new event behind `reloadCopy` (REMOTE `yes`, GUEST_EVENT `drop`).
+- ⚠️ Task 5: `overlays.release` is guest `no`, `overlays.hide` / `.reload` events are guest `drop`, and index.ts wires
+  `mayConnectCopy: () => false`; all three widen there. `hideCopy` only releases and emits: nothing records the hide,
+  so the next `overlays.updated` / reconnect would bring the overlay back to that view (Task 5 records it).
+- ⚠️ Task 8: the host's starting-state post for a new copy can reach the shell (`overlays.message { copy }`) before the
+  `overlays.ready` reply that names that copy: buffer messages by copy id until the reply arrives.
 
 ### Task 4: Provenance (`via`), requestedBy and the title-leak fix [model: opus]
 

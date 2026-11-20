@@ -111,7 +111,10 @@ describe('REMOTE_CLASS drift', () => {
     'rooms.pause',
     'rooms.resume',
     'rooms.remove',
-    'rooms.removeAnswer'
+    'rooms.removeAnswer',
+    // A perView overlay's copy is released by its own view only (docs/design-overlay-views.md §5): main matches
+    // the copy against the view it bound the call to.
+    'overlays.release'
   ])('%s is adapted', (channel) => {
     expect(REMOTE_CLASS[channel as keyof typeof REMOTE_CLASS]).toBe('adapted')
   })

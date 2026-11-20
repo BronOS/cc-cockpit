@@ -45,7 +45,9 @@ import { DEFAULT_TERMINAL_FONT } from '../../src/shared/terminal-font'
 import { REMOTE_SECRETS_UNAVAILABLE_TEXT, type WebAccessIndicator, type WebAccessView } from '../../src/shared/web-access'
 import type { ProjectView } from '../../src/shared/types'
 import { OAUTH_PASTE_REFUSED } from '../../src/shared/oauth-paste'
-import { REMOTE_CLASS } from '../../src/shared/ipc'
+import { REMOTE_CLASS, type InvokeChannel } from '../../src/shared/ipc'
+import { OverlayManager, type OverlayChannel } from '../../src/main/overlays/overlay-manager'
+import { FakePtyBackend } from '../fakes/fake-pty-backend'
 
 type Listener = (event: IpcEventLike, ...args: unknown[]) => unknown
 
@@ -2367,13 +2369,23 @@ describe('registerOverlayHandlers', () => {
         calls.push(['button', windowId, overlayId, click, viewId])
         return true
       },
-      discuss: (windowId, overlayId, target) => {
-        calls.push(['discuss', windowId, overlayId, target])
+      discuss: (windowId, overlayId, target, _guest, viewId) => {
+        calls.push(['discuss', windowId, overlayId, target, viewId])
         return Promise.resolve({ ok: true, tabId: 't1', queued: false })
       }
     })
     return { ipc, router, calls }
   }
+
+  it("an owner browser's Discuss names its own view (the caller main bound), not the desktop", async () => {
+    const { router, calls } = overlaySetup()
+    await router.dispatch(webCaller({ kind: 'project', windowId: 1, projectId: PROJECT_A }, 'web:3', 'owner'), 'overlays.discuss', {
+      overlayId: 'o1',
+      target: { kind: 'new' },
+      viewId: 'web:9'
+    })
+    expect(calls).toEqual([['discuss', 1, 'o1', { kind: 'new' }, 'web:3']])
+  })
 
   it("a remote view's terminal overlay input and size are its own; its acks never reach the PTY's flow", async () => {
     const { router, calls } = overlaySetup()
@@ -2431,9 +2443,9 @@ describe('registerOverlayHandlers', () => {
       // An opener click carries no plugin id: the opener is the overlay's own.
       ['button', 1, 'o1', { source: 'opener', buttonId: 'b' }, 'desktop:1'],
       ['button', 2, 'o2', { source: 'type', pluginId: 'p.one', buttonId: 'edit' }, 'desktop:2'],
-      // A clean target: only the fields of its kind.
-      ['discuss', 1, 'o1', { kind: 'tab', tabId: 't1' }],
-      ['discuss', 2, 'o2', { kind: 'new' }]
+      // A clean target: only the fields of its kind; the caller's view always goes with it.
+      ['discuss', 1, 'o1', { kind: 'tab', tabId: 't1' }, 'desktop:1'],
+      ['discuss', 2, 'o2', { kind: 'new' }, 'desktop:2']
     ])
   })
 
@@ -2469,6 +2481,142 @@ describe('registerOverlayHandlers', () => {
       await expect(ipc.invoke(channel, 11, args), channel).rejects.toThrow()
     }
     expect(calls).toEqual([])
+  })
+})
+
+// docs/design-overlay-views.md §5: a perView overlay's page calls go through the router to the real manager's copies.
+describe('overlays: per-view copies through the router', () => {
+  const A_WIN = { kind: 'project', windowId: 1, projectId: PROJECT_A } as const
+  function copiesSetup() {
+    const { ipc, router } = setup()
+    const heard: unknown[][] = []
+    const legacy: string[] = []
+    const m = new OverlayManager({
+      ownerView: () => true,
+      backend: new FakePtyBackend(),
+      views: {
+        create: () => {
+          throw new Error('no url overlays here')
+        },
+        focusWindow: () => {}
+      },
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: () => {},
+      emitToView: () => true,
+      isViewLive: (viewId, windowId) => windowId === 1 && (viewId === 'web:3' || viewId === 'web:4'),
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    const channel: OverlayChannel = {
+      onMessage: (message, view, copy) => heard.push(['message', message, view, copy]),
+      onConnect: (copy, view) => heard.push(['connect', copy, view]),
+      onDisconnect: (copy, view) => heard.push(['disconnect', copy, view])
+    }
+    registerOverlayHandlers(router, {
+      list: (w, v) => m.list(w, v),
+      close: (w, o) => m.close(w, o),
+      input: () => {},
+      resize: () => {},
+      ack: () => {},
+      setBounds: () => {},
+      result: (w, o, value, v) => {
+        legacy.push('result')
+        return m.result(w, o, value, v)
+      },
+      message: (w, o, text, v) => {
+        legacy.push('message')
+        return m.pageMessage(w, o, text, v)
+      },
+      ready: (w, o, v) => {
+        legacy.push('ready')
+        m.pageReady(w, o, v)
+      },
+      loaded: (w, o, v) => {
+        legacy.push('loaded')
+        m.pageLoaded(w, o, v)
+      },
+      take: (w, v, o) => m.take(w, v, o),
+      button: (w, o, click, v) => m.buttonClick(w, o, click, v),
+      discuss: (w, o, t, g, v) => m.discuss(w, o, t, g, v),
+      perView: (w, o) => m.isPerView(w, o),
+      connectCopy: (w, o, v) => m.connectReady(w, o, v),
+      copyLoaded: (w, o, v, c) => m.copyLoaded(w, o, v, c),
+      copyMessage: (w, o, v, c, text) => m.copyMessage(w, o, v, c, text),
+      copyResult: (w, o, v, c, value) => m.copyResult(w, o, v, c, value),
+      releaseCopy: (w, o, v, c) => m.releaseCopy(w, o, v, c)
+    })
+    const result = m.open(1, { kind: 'html', html: '<p>x</p>' }, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView: true })
+    const pv = m.infos(1).at(-1)!.id
+    void m.open(1, { kind: 'html', html: '<p>y</p>' }, 'plugin a.one', undefined, channel, 'a.one')
+    const plain = m.infos(1).at(-1)!.id
+    const desktop = (channel: InvokeChannel, payload: unknown): Promise<unknown> => ipc.invoke(channel, 11, [payload])
+    const browser = (viewId: string) => (channel: InvokeChannel, payload: unknown): Promise<unknown> =>
+      Promise.resolve().then(() => router.dispatch(webCaller(A_WIN, viewId, 'owner'), channel, payload))
+    return { m, heard, legacy, pv, plain, result, desktop, web3: browser('web:3'), web4: browser('web:4'), router }
+  }
+
+  it("ready answers each view's own copy; loaded, message and result must name it and count from that view only", async () => {
+    const { m, heard, legacy, pv, result, desktop, web3 } = copiesSetup()
+    const a = (await desktop('overlays.ready', { overlayId: pv })) as { copy: string }
+    const b = (await web3('overlays.ready', { overlayId: pv })) as { copy: string }
+    expect(a.copy).toMatch(/^[0-9a-f]{32}$/)
+    expect(b.copy).not.toBe(a.copy)
+    expect(m.copies(1, pv).map((c) => [c.view, c.ready])).toEqual([['desktop:1', true], ['web:3', true]])
+    await expect(web3('overlays.message', { overlayId: pv, message: '{"n":1}', copy: b.copy })).resolves.toBe(true)
+    expect(heard.at(-1)).toEqual(['message', { n: 1 }, 'web:3', b.copy])
+    // Another view's copy named from this view: dropped, never heard as that view's.
+    await expect(web3('overlays.message', { overlayId: pv, message: '"forged"', copy: a.copy })).resolves.toBe(false)
+    await expect(web3('overlays.result', { overlayId: pv, value: 1, copy: a.copy })).resolves.toBe(false)
+    // A perView page call without its copy is refused outright.
+    await expect(web3('overlays.message', { overlayId: pv, message: '"x"' })).rejects.toThrow(/copy is required/)
+    await expect(desktop('overlays.loaded', { overlayId: pv })).rejects.toThrow(/copy is required/)
+    await expect(desktop('overlays.result', { overlayId: pv, value: 1 })).rejects.toThrow(/copy is required/)
+    await expect(desktop('overlays.message', { overlayId: pv, message: '"x"', copy: 7 })).rejects.toThrow(/copy must be a string/)
+    await desktop('overlays.loaded', { overlayId: pv, copy: a.copy })
+    expect(heard.filter((h) => h[0] === 'message')).toHaveLength(1)
+    // The holder's calls are never reached for a perView overlay.
+    expect(legacy).toEqual([])
+    await expect(desktop('overlays.result', { overlayId: pv, value: { ok: 1 }, copy: a.copy })).resolves.toBe(true)
+    await expect(result).resolves.toEqual({ kind: 'value', value: { ok: 1 } })
+  })
+
+  it("overlays.release lets go of the caller's own copy only; another view's is refused", async () => {
+    const { m, heard, pv, desktop, web3, web4 } = copiesSetup()
+    const a = (await desktop('overlays.ready', { overlayId: pv })) as { copy: string }
+    const b = (await web3('overlays.ready', { overlayId: pv })) as { copy: string }
+    await expect(web4('overlays.release', { overlayId: pv, copy: b.copy })).resolves.toBe(false)
+    await expect(desktop('overlays.release', { overlayId: pv, copy: b.copy, viewId: 'web:3' })).resolves.toBe(false)
+    expect(m.copies(1, pv).map((c) => c.copy)).toEqual([a.copy, b.copy])
+    // An owner's browser releases its own (the channel is `adapted`: decided by the view main bound).
+    await expect(web3('overlays.release', { overlayId: pv, copy: b.copy })).resolves.toBe(true)
+    await expect(desktop('overlays.release', { overlayId: pv, copy: a.copy })).resolves.toBe(true)
+    expect(heard.filter((h) => h[0] === 'disconnect')).toEqual([
+      ['disconnect', b.copy, 'web:3'],
+      ['disconnect', a.copy, 'desktop:1']
+    ])
+    await expect(desktop('overlays.release', { overlayId: pv })).rejects.toThrow(/copy is required/)
+  })
+
+  it('a guest cannot release a copy (guest class no until Task 5)', async () => {
+    const { router, pv } = copiesSetup()
+    await expect(
+      Promise.resolve().then(() => router.dispatch(webCaller(A_WIN, 'web:4', { guest: 'g1' }), 'overlays.release', { overlayId: pv, copy: 'c' }))
+    ).rejects.toThrow()
+  })
+
+  it('a non-perView overlay keeps the holder calls exactly; a copy there names nothing', async () => {
+    const { m, heard, legacy, plain, desktop } = copiesSetup()
+    await expect(desktop('overlays.ready', { overlayId: plain })).resolves.toBeUndefined()
+    await expect(desktop('overlays.message', { overlayId: plain, message: '"held"' })).resolves.toBe(true)
+    expect(heard.at(-1)).toEqual(['message', 'held', undefined, undefined])
+    await expect(desktop('overlays.message', { overlayId: plain, message: '"x"', copy: 'c' })).resolves.toBe(false)
+    await expect(desktop('overlays.result', { overlayId: plain, value: 1, copy: 'c' })).resolves.toBe(false)
+    await desktop('overlays.loaded', { overlayId: plain, copy: 'c' })
+    await desktop('overlays.loaded', { overlayId: plain })
+    await expect(desktop('overlays.release', { overlayId: plain, copy: 'c' })).resolves.toBe(false)
+    expect(legacy).toEqual(['ready', 'message', 'loaded'])
+    expect(m.copies(1, plain)).toEqual([])
   })
 })
 

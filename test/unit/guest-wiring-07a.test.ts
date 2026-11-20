@@ -378,7 +378,12 @@ describe("index.ts wires 07a's guest deps", () => {
     expect(INDEX).toContain("if (tab) views.toView(view, 'tabs.added', tab)\n      views.toView(view, 'tabs.select', { tabId })")
     expect(INDEX).toContain("if (gen !== undefined) sendToProject(projectId, 'tabs.removed', { tabId, gen })")
     expect(INDEX).toContain('discuss: (caller, tabId, question, target, guest) => pageTabDiscuss.discuss(caller, tabId, question, target, guest),')
-    expect(INDEX).toContain('discuss: (windowId, overlayId, target, guest) => overlays.discuss(windowId, overlayId, target, guest),')
+    // The caller's view goes too (docs/design-overlay-views.md §3): the opener hears who asked.
+    expect(INDEX).toContain('discuss: (windowId, overlayId, target, guest, viewId) => overlays.discuss(windowId, overlayId, target, guest, viewId),')
+    // docs/design-overlay-views.md §3, §5: who acted is read live from the guest store; a guest gets no copy until Task 5.
+    expect(INDEX).toContain('viewAccess: (viewId) => guestStore.whoAccess(viewId),')
+    expect(block('new OverlayManager({')).toContain('mayConnectCopy: () => false,')
+    expect(block('registerOverlayHandlers(router, {')).toContain('perView: (windowId, overlayId) => overlays.isPerView(windowId, overlayId),')
     expect(INDEX).toContain("else if (target !== 'none') views.toView(target.viewId, 'tabs.select', { tabId })")
     // 03e (D-9): the outcome reaches the asking guest's own views only; an ended guest's asks settle.
     expect(INDEX).toContain("if (who !== undefined && who !== 'owner' && who.guest === guestId) views.toView(viewId, channel, payload)")

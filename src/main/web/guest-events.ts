@@ -162,6 +162,9 @@ export const GUEST_EVENT: { readonly [E in EventChannel]: GuestEventRule<E> } = 
   'overlays.data': guestByOverlay,
   // A guest never holds an html overlay (design §16.3): its page messages are the holder's.
   'overlays.message': 'drop',
+  // A guest holds no copy of a perView overlay yet (Task 5 of docs/plans/20261120-overlay-views.md passes its own).
+  'overlays.hide': 'drop',
+  'overlays.reload': 'drop',
   'commands.updated': guestCommands,
   'panels.reload': guestPanelsReload,
   'webviews.navigated': guestByPanel,

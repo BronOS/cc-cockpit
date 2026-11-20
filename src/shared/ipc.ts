@@ -1071,6 +1071,12 @@ export type OverlayInfo = OverlayInfoBody & {
   perView?: true
 }
 
+/** Why main gave a view no copy of a `perView` overlay (OverlayManager.connectCopy; `cap`: try again later). */
+export type OverlayCopyRefusal = 'unknown' | 'not-per-view' | 'hidden-page' | 'not-allowed' | 'cap'
+
+/** `overlays.ready`'s answer for a `perView` overlay: the calling view's new copy, or why it has none. */
+export type OverlayReadyAnswer = { copy: string } | { refused: OverlayCopyRefusal }
+
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
 export interface IpcInvokeMap {
   /** Which window is asking. Always answered from the sender, never from a payload. */
@@ -1596,20 +1602,35 @@ export interface IpcInvokeMap {
     req: { overlayId: string; x: number; y: number; width: number; height: number }
     res: void
   }
-  /** An html overlay's page posted its result; it closes with `{ kind: 'value', value }`. */
-  'overlays.result': { req: { overlayId: string; value: unknown }; res: boolean }
+  /**
+   * An html overlay's page posted its result; it closes with `{ kind: 'value', value }`. `copy`: the
+   * calling view's copy of a `perView` overlay (required there, OverlayReadyAnswer), owner views only.
+   */
+  'overlays.result': { req: { overlayId: string; value: unknown; copy?: string }; res: boolean }
   /**
    * A plugin's html overlay page posted a message without a `result` key (one JSON text, as its
-   * port carried it): main hands it to the opener of that overlay only. False when dropped.
+   * port carried it): main hands it to the opener of that overlay only. False when dropped. `copy`:
+   * the calling view's copy of a `perView` overlay (required there; a stale one is dropped).
    */
-  'overlays.message': { req: { overlayId: string; message: string }; res: boolean }
-  /** That page has its port now (every page load): main sends the opener's queued posts. */
-  'overlays.ready': { req: { overlayId: string }; res: void }
+  'overlays.message': { req: { overlayId: string; message: string; copy?: string }; res: boolean }
+  /**
+   * That page has its port now (every page load): main sends the opener's queued posts. For a `perView`
+   * overlay (docs/design-overlay-views.md §5) this is the copy's connect too: main mints the calling view's
+   * copy, the opener hears it, and the answer names it (`{ copy }`) or says why not (`{ refused }`; `cap`
+   * is worth a retry later). Undefined for any other overlay, as before.
+   */
+  'overlays.ready': { req: { overlayId: string }; res: OverlayReadyAnswer | undefined }
   /**
    * That page says it has drawn its content (`ccPanel.ready()`, or `{ type: 'ready' }` on an inline
-   * page's port): the loader of a `ready: 'manual'` overlay goes.
+   * page's port): the loader of a `ready: 'manual'` overlay goes. `copy`: as for `overlays.message`.
    */
-  'overlays.loaded': { req: { overlayId: string }; res: void }
+  'overlays.loaded': { req: { overlayId: string; copy?: string }; res: void }
+  /**
+   * The shell let go of its copy of a `perView` overlay (the page unmounted or reloads): the opener hears
+   * the disconnect. Only the calling view's own live copy (main checks the copy against the view it bound
+   * the call to); false otherwise.
+   */
+  'overlays.release': { req: { overlayId: string; copy: string }; res: boolean }
   /**
    * "Take over" on an html overlay held by another view of the window (design-web.md §5.4): the
    * page moves to the calling view and loads there, as on a reload (the opener's posts wait for its
@@ -2086,6 +2107,17 @@ export interface IpcEventMap {
    * hands it to that copy's page only, so a replaced copy's late message never reaches its successor.
    */
   'overlays.message': { overlayId: string; message: string; copy?: string }
+  /**
+   * The opener hid this view's copy of a `perView` overlay (handle.hide: a read guest's own Close): main
+   * released it already; the shell unloads it and takes the overlay off this view's stack. Sent to the
+   * copy's view only.
+   */
+  'overlays.hide': { overlayId: string; copy: string }
+  /**
+   * Main dropped this view's copy (its queue overflowed before its page came up): the shell reloads the
+   * page, which connects again as a new copy. Sent to the copy's view only.
+   */
+  'overlays.reload': { overlayId: string; copy: string }
   /** The project's commands changed (a plugin registered or dropped one): replace the key table. */
   'commands.updated': CommandsView
   /**
@@ -2298,6 +2330,7 @@ export const INVOKE_CHANNELS = [
   'overlays.message',
   'overlays.ready',
   'overlays.loaded',
+  'overlays.release',
   'overlays.take',
   'overlays.button',
   'overlays.discuss',
@@ -2398,6 +2431,8 @@ export const EVENT_CHANNELS = [
   'overlays.updated',
   'overlays.data',
   'overlays.message',
+  'overlays.hide',
+  'overlays.reload',
   'commands.updated',
   'panels.reload',
   'webviews.navigated',
@@ -2704,6 +2739,12 @@ export const REMOTE_CLASS: Readonly<Record<InvokeChannel | EventChannel, RemoteC
   'overlays.message': 'yes',
   'overlays.ready': 'yes',
   'overlays.loaded': 'yes',
+  // A copy of a perView overlay is released only by its own view (docs/design-overlay-views.md §5): main
+  // matches the copy against the view it bound the call to, never a view or owner from the payload.
+  'overlays.release': 'adapted',
+  // To the one view whose copy it names (OverlayManager.hideCopy, reloadCopy), like its messages.
+  'overlays.hide': 'yes',
+  'overlays.reload': 'yes',
   'overlays.take': 'yes',
   'overlays.button': 'yes',
   'overlays.discuss': 'yes',

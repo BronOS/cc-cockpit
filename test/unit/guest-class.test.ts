@@ -49,6 +49,13 @@ describe('GUEST_CLASS', () => {
     }
   })
 
+  // docs/design-overlay-views.md §5: a guest holds no copy of a perView overlay until Task 5 of its plan widens these.
+  it('a guest cannot connect, talk through or release an overlay copy yet', () => {
+    for (const channel of ['overlays.ready', 'overlays.loaded', 'overlays.message', 'overlays.release'] as const) {
+      expect(GUEST_CLASS[channel].cls, channel).toBe('no')
+    }
+  })
+
   it('keeps the riskiest channels away from guests (design §4)', () => {
     const never: InvokeChannel[] = [
       'links.answer', 'oauth.paste', 'plugins.limits.set', 'plugins.globalLimits.set', 'projects.close',

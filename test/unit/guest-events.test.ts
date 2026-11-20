@@ -80,6 +80,14 @@ describe('guestEvent', () => {
     }
   })
 
+  // docs/design-overlay-views.md §5: no guest copy yet (Task 5 of its plan passes a guest its own copies' events).
+  it("drops a perView overlay copy's hide and reload until guests hold copies", () => {
+    for (const name of ['overlays.hide', 'overlays.reload'] as const) {
+      expect(GUEST_EVENT[name], name).toBe('drop')
+      expect(guestEvent(name, { overlayId: 'o', copy: 'c' }, ctx()), name).toBeUndefined()
+    }
+  })
+
   it('drops what is the owner\'s: terminals, notices, link asks, access, the guest list', () => {
     for (const name of ['notices.show', 'notices.gone', 'links.ask', 'webAccess.changed', 'guests.changed', 'tabs.data', 'rooms.changed', 'sessions.closeAsk', 'tabs.guestCloseAsk', 'overlays.message', 'window.state']) {
       expect(GUEST_EVENT[name as keyof typeof GUEST_EVENT], name).toBe('drop')
