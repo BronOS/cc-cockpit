@@ -916,6 +916,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (!input) {
       if (method === 'DOM.getNodeForLocation') dirty.delete(doc)
       const mode = qmodes.get(doc) as QueryMode
+      // C5, ruling 2026-11-19 #10: no query to a stalled session (an await of its past its deadline); a late query stalls like a command.
+      const stalledOn = liveAwaits().find((a) => a.session === id && clock.now - a.at >= (a.kind.startsWith('Input.') ? STEP_TIMEOUT_MS : ROUTE_TIMEOUT_MS))
+      if (stalledOn) violate('C5', 'query-to-stalled', `${method} to ${id || 'page'}, stalled by ${stalledOn.kind} since t=${stalledOn.at}`)
       const aw = trackAwait(method, id)
       const hang = hangRate > 0 && hangRng() < hangRate
       return new Promise((resolve, reject) => {
@@ -1202,6 +1205,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     session: string
     gen: number
     settled: boolean
+    at: number
   }
   const awaits = new Set<Await>()
   const hungAwaits: Array<() => void> = []
@@ -1221,7 +1225,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
    * live session, 1 plus the releases owed to it (live records there, and releases outstanding); plus 1 detached; plus 1 call.
    */
   const trackAwait = (kind: string, session: string): Await => {
-    const aw: Await = { kind, session, gen, settled: false }
+    const aw: Await = { kind, session, gen, settled: false, at: clock.now }
     awaits.add(aw)
     const live = liveAwaits()
     const sessionsLive = new Set(live.map((a) => a.session))
@@ -1574,7 +1578,22 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         detachedOut = 0
         detachedHang = false
         barrier = undefined
-        router.rendererGone()
+        // Ruling 2026-11-19 #11: rendererGone is a full reset (everything lost() does): an epoch change (queued items dropped with cause
+        // epoch, records deleted, session stalls cleared); the old sessions never answer and are not counted. A new renderer's page
+        // session and frames follow when the protocol is attached.
+        busy++
+        try {
+          for (const sess of [...sessionOf.values()]) endSession(sess, false)
+          gen++
+          for (const rec of allRecs()) endRecord(rec, 'epoch')
+          router.rendererGone()
+          if (attached) {
+            newPage()
+            for (const f of FRAME_NAMES) attachFrame(f, true)
+          }
+        } finally {
+          busy--
+        }
         break
       case 'arm':
         armed = { ...action }
