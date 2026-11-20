@@ -213,7 +213,9 @@ function makeScript(seed: number): Action[] {
           out.push({ a: 'key', type: 'up', key, mods })
         }
       } else {
-        const key = pick(r, KEYS.filter((k) => !keys.has(k)))
+        const free = KEYS.filter((k) => !keys.has(k))
+        if (free.length === 0) continue
+        const key = pick(r, free)
         const mods = pick(r, MOD_SETS)
         keys.set(key, mods)
         out.push({ a: 'key', type: 'down', key, mods })
@@ -517,7 +519,6 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   let refusedAnswers = 0
   let refusalLogs = 0
   /** C6: hit tests of the page's document since the last viewer pointer event was delivered, when nothing disturbed them. */
-  let pageHitTests = 0
   let exitsSince = 0
   let disturbed = false
   const pageCommands = (): Command[] => commands.filter((c) => c.session === '' && c.gen === gen && !c.detached && !c.answered)
@@ -679,6 +680,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const recordDown = (ev: Ev | undefined, rid: string, session: string, by?: Command): void => {
     tombs.delete(rid)
     const old = records.get(rid)
+    // C7 (ruling 2026-11-19 #3): one record per key code: a key down on a live code is a repeat and keeps the record. A button down
+    // on a live button first sends the old record's owed release (it stays live until then).
+    if (old && rid.startsWith('key:')) return
     if (old) stale.push(old)
     records.set(rid, { id: rid, session, n: ev?.n ?? 0, owed: false, by })
   }
@@ -727,8 +731,11 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
     const input = method.startsWith('Input.')
     // C6, ruling 2026-11-19: only re-tests caused by a synthetic hover exit count (a re-test after a park is required).
-    if (method === 'DOM.getNodeForLocation' && id === '' && exitsSince > 0) pageHitTests++
-    if (method === 'Input.dispatchMouseEvent' && String(p.type) === 'mouseMoved' && (p.x as number) < 0 && (p.y as number) < 0) exitsSince++
+    if (method === 'Input.dispatchMouseEvent' && String(p.type) === 'mouseMoved' && (p.x as number) < 0 && (p.y as number) < 0) {
+      exitsSince++
+      // A re-test is caused by an exit: at most MAX_RETESTS exits for one step, then the page session (parks are not counted).
+      if (!disturbed && exitsSince > MAX_RETESTS) violate('C6', 'retests', `${exitsSince} hover exits for one pointer step`)
+    }
     // Which viewer event is this (if any), and the checks of its delivery.
     let ev: Ev | undefined
     let createdRecord = false
@@ -769,8 +776,6 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (ev.kind === 'up') recordUp(ev, ev.rid, 'protocol', id)
           if (ev.kind === 'wheel') routeCheck(type, session, id, tag)
           // C6: after a hover exit the hit test runs again at most 2 times (3 tests in all), then the page session.
-          if (!disturbed && pageHitTests > MAX_RETESTS) violate('C6', 'retests', `${pageHitTests} hit tests of the page before ${describe(ev)}`)
-          pageHitTests = 0
           exitsSince = 0
           disturbed = false
         } else if (type === 'mouseReleased') {
@@ -840,7 +845,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       })
     }
     const live = commands.filter((c) => !c.answered && !c.detached && c.gen === gen && !(docOfSession(c.session)?.ended ?? true) && docOfSession(c.session)?.gen === gen)
-    if (live.some((c) => c.session === id)) violate('C5', 'session-busy', `${method} ${String(p.type ?? '')} to ${id || 'page'}, which owes an answer`)
+    // C5 (ruling 2026-11-19 #2): a stalled session takes the owed release of each of its live records at once.
+    const owedRelease = String(p.type) === 'mouseReleased' && live.filter((c) => c.session === id).every((c) => clock.now - c.sentAt >= STEP_TIMEOUT_MS)
+    if (!owedRelease && live.some((c) => c.session === id)) violate('C5', 'session-busy', `${method} ${String(p.type ?? '')} to ${id || 'page'}, which owes an answer`)
     const inFlight = live.filter((c) => clock.now - c.sentAt < STEP_TIMEOUT_MS)
     if (inFlight.length > 0) violate('C5', 'two-in-flight', `${method} ${String(p.type ?? '')} to ${id || 'page'} while ${inFlight[0]!.session || 'page'} ${String(inFlight[0]!.params.type ?? '')} is on its way`)
     const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: false, resolve: () => {}, reject: () => {} }
@@ -865,8 +872,12 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (seen) for (const r of allRecs()) if (r.by === c) endRecord(r, 'refusal')
           // C7: a refused key down drops its paired char too.
           if (seen && method === 'Input.dispatchKeyEvent' && (p.type === 'rawKeyDown' || p.type === 'keyDown')) {
-            const pair = keyPending.get(`${keyEntry('char', p.code)}:${Number(p.modifiers ?? 0)}`)?.find((e) => e.attempts === 0 && e.epoch === gen && e.excuse === undefined)
-            if (pair) pair.droppedWithDown = true
+            // Every char paired with it: those handed in after the down and before the next down of that key.
+            const chars = keyPending.get(`${keyEntry('char', p.code)}:${Number(p.modifiers ?? 0)}`) ?? []
+            const downs = keyPending.get(`${keyEntry(String(p.type), p.code)}:${Number(p.modifiers ?? 0)}`) ?? []
+            const next = downs.find((e) => e.attempts === 0 && ev && e.n > ev.n)
+            for (const pair of chars) if (ev && pair.attempts === 0 && pair.n > ev.n && (!next || pair.n < next.n) && pair.epoch === gen) pair.droppedWithDown = true
+
           }
           // C7: a live frame that refuses is a frame going for its other records (its ups are dropped, cause: the frame's refusal).
           if (seen && session && session.doc !== 'page' && method === 'Input.dispatchMouseEvent') for (const r of allRecs()) if (r.session === id) endRecord(r, 'frame refused')
@@ -909,7 +920,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (!list) return undefined
     while (list.length > 0 && list[0]!.attempts > 0) list.shift()
     // Ruling 2026-11-19: never steal from an excused event: the earliest unexcused candidate in enqueue order, this epoch first.
-    const open = list.filter((e) => e.attempts === 0 && e.excuse === undefined)
+    const open = list.filter((e) => e.attempts === 0 && e.excuse === undefined && !e.capDropped && !e.droppedWithDown)
     return open.find((e) => e.epoch === gen) ?? open[0]
   }
 
@@ -1137,6 +1148,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     const s = sessionOf.get(name)
     if (!s || s.doc === 'page') return
     disturbed = true
+    exitsSince = 0
     // The frame and every frame under it.
     const gone: Session[] = [s]
     for (let i = 0; i < gone.length; i++) {
@@ -1165,6 +1177,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (!attached) return
     attached = false
     disturbed = true
+    exitsSince = 0
     // Every session of this attachment refuses from now on (Electron's debugger).
     for (const c of commands) if (!c.answered && rejectPending) c.reject(new Error('Debugger is not attached'))
     for (const s of [...sessionOf.values()]) endSession(s, false)
