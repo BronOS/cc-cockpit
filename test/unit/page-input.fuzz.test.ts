@@ -21,9 +21,30 @@
 // px, so a point mapped into a frame keeps them), so an event can be told apart wherever it lands.
 // Keys go the way WebviewInput.accept sends them (clipboard chords dropped, edit chords as commands).
 // The protocol is always told of a loss at once (`reset`): an epoch is a `reset()` call.
+//
+// main's scripts (`scriptAt`, `scriptIn`, `scriptInFocus`) are interleaved with all of it, from a PRNG
+// stream of their own (so a seed's other actions are the ones it had before; 30% of seeds get none and
+// run exactly as before). Each script is a ledger event too (kind 'script', its place on the queue: C4,
+// O3) with a record of its own: when its call started on the call road (read off the router's
+// `runCall`), every evaluation and top run it made, and how it settled. Its code carries `#s<n>#`, so
+// each `Runtime.evaluate` and top run (`deps.isolated`) names its call. Each document of the fake world
+// has a loaderId and an isolated world's context id: `navigate` replaces it (a new loaderId; `keep`, the
+// old context id still answers: a cross-process swap), `sflip` does so right as a script's query is
+// answered (mid-run), and each script query and top run can hang, refuse, answer late or be malformed.
+// The checks are the merge bar's O1 to O4 mapped onto scripts; each names its outcome.
 import { describe, it } from 'vitest'
-import { MAX_QUEUED_STEPS, MAX_RETESTS, PageInputRouter, ROUTE_TIMEOUT_MS, STEP_TIMEOUT_MS } from '../../src/main/webview/page-input'
 import {
+  FRAME_WORLD_NAME,
+  MAX_QUEUED_STEPS,
+  MAX_RETESTS,
+  PageInputRouter,
+  ROUTE_TIMEOUT_MS,
+  STEP_TIMEOUT_MS,
+  type FrameScriptResult,
+  type ScriptFrame
+} from '../../src/main/webview/page-input'
+import {
+  InputDroppedError,
   editCommandOfEvent,
   editKeyEvent,
   isClipboardKeyEvent,
@@ -59,6 +80,10 @@ type FrameName = 'A' | 'B' | 'C' | 'D'
 type DocName = 'page' | FrameName
 /** A hover side effect on a frame owner: a move over it covers it (an overlay), uncovers it, or flips. */
 type Effect = 'none' | 'cover' | 'uncover' | 'flip'
+/** How a document answers main's script queries: well, malformed (half of them), late (past STEP_TIMEOUT_MS) or never. */
+type SMode = 'ok' | 'malformed' | 'late' | 'never'
+/** How the top document's runner (`deps.isolated`) answers: odd, a value of a shape nobody expects. */
+type TopMode = 'fast' | 'slow' | 'late' | 'hang' | 'reject' | 'throw' | 'odd'
 
 export type Action =
   | { a: 'move'; x: number; y: number; held: Button[] }
@@ -96,6 +121,21 @@ export type Action =
   | { a: 'hang'; on: boolean }
   /** Hand-written: at the `skip`th resolution point from now (-1: the answer of the next hover exit), `after` microtasks later, detach a frame or lose the protocol (and attach again). */
   | { a: 'arm'; skip: number; after: number; then: 'detach' | 'relose' | 'lose'; frame: FrameName }
+  /** main's scripts; `stale`: handed back the epoch the last `epochmark` saw (an attachment that may have ended). */
+  | { a: 'scriptAt'; x: number; y: number; stale: boolean }
+  /** `pick`: which handle a scriptAt answered, newest first (-1: a forged handle, never one the router made). */
+  | { a: 'scriptIn'; pick: number; stale: boolean }
+  | { a: 'scriptInFocus'; stale: boolean }
+  /** The element holding a document's focus: a cross-site frame's owner, a same-site frame's ('same'), or none. */
+  | { a: 'focus'; doc: DocName; to: FrameName | 'same' | 'none' }
+  /** The document replaced (a new loaderId); `keep`: the old context id still answers (a cross-process swap). */
+  | { a: 'navigate'; doc: DocName; keep: boolean }
+  | { a: 'smode'; doc: DocName; mode: SMode }
+  | { a: 'topmode'; mode: TopMode }
+  /** From here on each script query's answer first replaces its document with this probability (a loaderId change mid-run). */
+  | { a: 'sflip'; rate: number }
+  /** Remember the router's epoch now (`inputEpoch()`), for a later `stale` script. */
+  | { a: 'epochmark' }
 
 interface FrameDef {
   name: FrameName
@@ -135,10 +175,42 @@ function pointOf(r: () => number): { x: number; y: number } {
   return { x: Math.max(0, Math.floor(base[0]! + x - 3 + r() * (w + 6))), y: Math.max(0, Math.floor(base[1]! + y - 3 + r() * (h + 6))) }
 }
 
+/** One of main's script calls or a change to the world they run in, from the scripts' own PRNG stream. */
+function scriptActions(r: () => number): Action[] {
+  const p = r()
+  const stale = r() < 0.12
+  if (p < 0.24) {
+    const out: Action[] = [{ a: 'scriptAt', ...pointOf(r), stale }]
+    // Often the choice after the hit test (a select's), on the handle it answered.
+    if (r() < 0.4) out.push({ a: 'advance', ms: pick(r, [0, 1, 30, 250, 600]) }, { a: 'scriptIn', pick: 0, stale: false })
+    return out
+  }
+  if (p < 0.36) return [{ a: 'scriptIn', pick: r() < 0.1 ? -1 : Math.floor(r() * 4), stale }]
+  if (p < 0.54) return [{ a: 'scriptInFocus', stale }]
+  if (p < 0.66) {
+    const doc = pick(r, ['page', 'page', 'A', 'C'] as const)
+    const kids = FRAMES.filter((f) => f.parent === doc).map((f) => f.name)
+    return [{ a: 'focus', doc, to: r() < 0.75 ? pick(r, kids) : pick(r, ['same', 'none'] as const) }]
+  }
+  if (p < 0.78) return [{ a: 'navigate', doc: pick(r, DOCS), keep: r() < 0.5 }]
+  if (p < 0.85) return [{ a: 'smode', doc: pick(r, DOCS), mode: pick(r, ['ok', 'ok', 'malformed', 'late', 'never'] as const) }]
+  if (p < 0.92) return [{ a: 'topmode', mode: pick(r, ['fast', 'fast', 'slow', 'late', 'hang', 'reject', 'throw', 'odd'] as const) }]
+  if (p < 0.96) return [{ a: 'sflip', rate: pick(r, [0, 0.05, 0.2] as const) }]
+  return [{ a: 'epochmark' }]
+}
+
 /** One seed's script: a viewer's events (paired presses and releases, sometimes a release lost) and the world around them. */
 function makeScript(seed: number): Action[] {
   const r = prng(seed)
+  // main's scripts from a stream of their own: the other actions of a seed stay what they were.
+  const rs = prng(seed ^ 0x3c6ef372)
+  const scriptRate = rs() < 0.3 ? 0 : pick(rs, [0.04, 0.1, 0.2] as const)
   const out: Action[] = []
+  if (scriptRate > 0) {
+    if (rs() < 0.6) out.push({ a: 'focus', doc: 'page', to: pick(rs, ['A', 'C'] as const) })
+    if (rs() < 0.4) out.push({ a: 'focus', doc: 'A', to: 'B' }, { a: 'focus', doc: 'C', to: 'D' })
+    if (rs() < 0.3) out.push({ a: 'sflip', rate: pick(rs, [0.05, 0.2] as const) })
+  }
   const held = new Set<Button>()
   const keys = new Map<string, InputModifier[]>()
   const stress = r() < 0.05
@@ -159,6 +231,7 @@ function makeScript(seed: number): Action[] {
   const goneAt = !stress && r() < 0.06 ? Math.floor(r() * length) : -1
   const capAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
   for (let i = 0; i < length; i++) {
+    if (scriptRate > 0 && rs() < scriptRate) out.push(...scriptActions(rs))
     if (i === slotAt && held.size === 0 && !keys.has('Tab')) {
       // C7 / C9: a key and a button held, the page stalled, the queue filled, then the same ups over and over (one release slot per record).
       out.push({ a: 'key', type: 'down', key: 'Tab', mods: [] }, { a: 'down', x: 500, y: 650, button: 'left', held: ['left'] }, { a: 'mode', doc: 'page', mode: 'never' })
@@ -441,11 +514,13 @@ function isClipboardShape(params: Record<string, unknown>): boolean {
 interface RunResult {
   violations: Violation[]
   trace: string[]
+  /** How main's scripts settled (FUZZ_STATS=1 prints the sums: a run whose scripts never answer from a frame proves little). */
+  outcomes: { frame: number; top: number; undefined: number; rejected: number }
 }
 
 // --- the ledger ---------------------------------------------------------------------------------
 
-type EvKind = 'move' | 'down' | 'up' | 'wheel' | 'key' | 'text' | 'cmd' | 'call'
+type EvKind = 'move' | 'down' | 'up' | 'wheel' | 'key' | 'text' | 'cmd' | 'call' | 'script'
 
 /** One viewer event, from its hand-in on: what the oracle owes it (C3) and what happened to it. */
 interface Ev {
@@ -699,7 +774,16 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     const reject = faultRng() < 0.5
     // Most often the frame whose answer this is (the hover exit's own frame going is the dangerous case).
     const aim = faultRng() < 0.7 ? target : undefined
+    // main's scripts (codex review 2026-11-20: a reset or the renderer going between a run's end and its continuation): in runs with
+    // scripts a fault is sometimes the renderer going, or the answering session's document replaced, from a stream of their own.
+    const scriptFault = scriptsOn ? goneRng() : 1
     afterHops(busy > 0 ? Math.max(1, offset) : offset, () => {
+      if (scriptFault < 0.2) {
+        if (withTrace) trace.push(`  t=${clock.now} fault after ${offset}: renderer gone`)
+        disturbed = true
+        return rendererGoneNow()
+      }
+      if (scriptFault < 0.35 && target && !target.ended) return replaceDoc(target, goneRng() < 0.5)
       if (withTrace) trace.push(`  t=${clock.now} fault after ${offset}: ${choice < 0.5 ? `detach ${frame}` : choice < 0.85 ? 'lose+reattach' : 'lose'}`)
       disturbed = true
       if (!attached) return reattach()
@@ -716,7 +800,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
 
   // --- the sink's view: every delivery of a viewer event, by any road -------------------------------
 
-  const describe = (ev: Ev): string => `${ev.kind}#${ev.n}${ev.kind === 'key' || ev.kind === 'cmd' || ev.kind === 'text' ? ` ${ev.entry}` : ` tag ${ev.tag}`} (enqueued t=${ev.at} epoch ${ev.epoch})`
+  const describe = (ev: Ev): string => `${ev.kind}#${ev.n}${ev.kind === 'key' || ev.kind === 'cmd' || ev.kind === 'text' || ev.kind === 'script' ? ` ${ev.entry}` : ` tag ${ev.tag}`} (enqueued t=${ev.at} epoch ${ev.epoch})`
 
   /** C1, C2, C4 for one delivery of a ledger event; `road`: the protocol (to `sessionId`) or the detached road. */
   const deliver = (ev: Ev, road: 'protocol' | 'fallback', sessionId: string): void => {
@@ -919,18 +1003,23 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       // C5, ruling 2026-11-19 #10: no query to a stalled session (an await of its past its deadline); a late query stalls like a command.
       const stalledOn = liveAwaits().find((a) => a.session === id && clock.now - a.at >= (a.kind.startsWith('Input.') ? STEP_TIMEOUT_MS : ROUTE_TIMEOUT_MS))
       if (stalledOn) violate('C5', 'query-to-stalled', `${method} to ${id || 'page'}, stalled by ${stalledOn.kind} since t=${stalledOn.at}`)
+      // main's scripts: a script query's own checks (O1 to O4), made before it counts as outstanding.
+      const sq = isScriptQuery(method, p) ? scriptQuery(method, p, id, session) : undefined
       const aw = trackAwait(method, id)
+      if (sq) aw.script = true
       const hang = hangRate > 0 && hangRng() < hangRate
+      const smode: SMode = sq ? (smodes.get(doc) as SMode) : 'ok'
+      const compute = (): unknown => (sq ? answerScript(session, method, p, sq) : answerQuery(doc, method, p))
       return new Promise((resolve, reject) => {
         const answer = (): void => {
           aw.settled = true
           try {
-            resolve(answerQuery(doc, method, p))
+            resolve(compute())
           } catch (err) {
             reject(err)
           }
         }
-        if (hang || mode === 'never') {
+        if (hang || mode === 'never' || smode === 'never') {
           hungAwaits.push(answer)
           return
         }
@@ -940,14 +1029,14 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
             if (mode === 'reject') reject(new Error('No session with given id'))
             else {
               try {
-                resolve(answerQuery(doc, method, p))
+                resolve(compute())
               } catch (err) {
                 reject(err)
               }
             }
             resolutionPoint(session)
           },
-          mode === 'late' ? ROUTE_TIMEOUT_MS + 1 : mode === 'slow' ? 30 : 0,
+          smode === 'late' ? STEP_TIMEOUT_MS + 1 : mode === 'late' ? ROUTE_TIMEOUT_MS + 1 : mode === 'slow' ? 30 : 0,
           false
         )
       })
@@ -965,6 +1054,11 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (outstanding > 1 + owedSlots) violate('C9', 'session-outstanding', `${outstanding} commands outstanding at ${id || 'page'} (live records there: ${owedSlots})`)
     const inFlight = live.filter((c) => clock.now - c.sentAt < STEP_TIMEOUT_MS)
     if (inFlight.length > 0) violate('C5', 'two-in-flight', `${method} ${String(p.type ?? '')} to ${id || 'page'} while ${inFlight[0]!.session || 'page'} ${String(inFlight[0]!.params.type ?? '')} is on its way`)
+    // O3 (C5, ruling 2026-11-19 #10: one outstanding command or query per session): an input command never goes to a session while
+    // a script's query there is unanswered, but an owed release to a session that query stalled (ruling #2; ROUTE_TIMEOUT_MS is the
+    // shortest deadline a script query has).
+    const overScript = liveAwaits().find((a) => a.script && a.session === id && !(String(p.type) === 'mouseReleased' && clock.now - a.at >= ROUTE_TIMEOUT_MS))
+    if (overScript) violate('O3', 'input-over-script', `${method} ${String(p.type ?? '')} to ${id || 'page'} while the script query ${overScript.kind} (t=${overScript.at}) is unanswered there`)
     const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: false, resolve: () => {}, reject: () => {} }
     commands.push(c)
     if (createdRecord) {
@@ -1067,6 +1161,505 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     return open.find((e) => e.epoch === gen) ?? open[0] ?? list.find((e) => e.attempts === 0 && e.droppedWithDown && e.epoch === gen)
   }
 
+  // --- main's scripts (scriptAt, scriptIn, scriptInFocus) -------------------------------------------
+
+  type ScriptKind = 'at' | 'in' | 'focus'
+  /** One top run (`deps.isolated`): a call on the call road. `abandoned`: its renderer went and it never settles. */
+  interface TopRun {
+    sc: ScriptCall
+    at: number
+    settled: boolean
+    settledAt?: number
+    value?: unknown
+    failed?: unknown
+    abandoned?: boolean
+    go: (ok: boolean) => void
+  }
+  /** One `Runtime.evaluate` by value of a script; `seq` orders its answer among its session's frame-tree reads. */
+  interface EvalRec {
+    session: Session
+    seq: number
+    answered: boolean
+    loader?: string
+    value?: unknown
+  }
+  /** A `scriptAt` answer's frame (`src`: where it ran), or a forged handle the router never made. */
+  interface Handle {
+    obj: object
+    src: Session | 'top' | 'forged'
+  }
+  interface ScriptCall {
+    n: number
+    kind: ScriptKind
+    ev: Ev
+    /** The attachment it is of (handed in, or the stale one handed back). */
+    epoch: number
+    stale: boolean
+    x: number
+    y: number
+    handle?: Handle
+    pushed: boolean
+    /** Its call's run began (the router's `runCall`), and the world then (O1's excuses, see `sigAt`). */
+    started?: number
+    sigAt?: string
+    sigFocus?: string
+    /** The router resolved or rejected it (its step's own resolve); `settled`: the caller's promise did. */
+    routerSettled: boolean
+    settled: boolean
+    tops: TopRun[]
+    evals: EvalRec[]
+    /** A malformed answer came during its run (the focus walk cannot tell one from "no cross-site frame focused"). */
+    malformed: boolean
+    /** Its top run began: the router lets what follows go on (`release`). */
+    released: boolean
+  }
+  interface DocState {
+    loader: string
+    ctx: number
+    /** Frame-tree reads, evaluations and replacements of this session's document, in answer order. */
+    log: Array<{ seq: number; kind: 'tree' | 'eval' | 'change'; loader?: string }>
+  }
+  interface ScriptQuery {
+    sc?: ScriptCall
+    rec?: EvalRec
+  }
+  /** A thrown script's or a refused evaluation's value: nothing the router may resolve equals it. */
+  const DROPPED = Symbol('dropped')
+  const scriptCalls = new Map<number, ScriptCall>()
+  let scriptSeq = 0
+  /** The script being handed in (its step is the next call `push` gets). */
+  let pendingScript: ScriptCall | undefined
+  const stepScript = new WeakMap<object, ScriptCall>()
+  /** scriptAt's answers, newest last (a few: the oracle's own, bounded). */
+  const handles: Handle[] = []
+  const focusOf = new Map<DocName, FrameName | 'same'>()
+  const docStates = new Map<Session, DocState>()
+  let loaderSeq = 0
+  let ctxSeq = 0
+  let logSeq = 0
+  const smodes = new Map<DocName, SMode>(DOCS.map((d) => [d, 'ok']))
+  let topMode: TopMode = 'fast'
+  let sflipRate = 0
+  const sRng = prng(seed ^ 0x7f4a7c15)
+  /** Top runs of the live renderer, unsettled (C5 / C9: with the harness's calls, at most one). */
+  const liveTop = new Set<TopRun>()
+  const topHung: TopRun[] = []
+  let savedEpoch = 0
+  const scriptsOn = script.some((a) => a.a === 'scriptAt' || a.a === 'scriptIn' || a.a === 'scriptInFocus')
+  /** The renderer going and documents replaced at resolution points too, only in runs with scripts (the others keep their faults). */
+  const goneRng = prng(seed ^ 0x1b873593)
+  const outcomes = { frame: 0, top: 0, undefined: 0, rejected: 0 }
+
+  const stateOf = (s: Session): DocState => {
+    let st = docStates.get(s)
+    if (!st) docStates.set(s, (st = { loader: `L${++loaderSeq}`, ctx: ++ctxSeq, log: [] }))
+    return st
+  }
+  /** A new document in `s`'s frame: a new loaderId; a new context id too unless `keep` (a cross-process swap). */
+  const replaceDoc = (s: Session, keep: boolean): void => {
+    const st = stateOf(s)
+    st.loader = `L${++loaderSeq}`
+    if (!keep) st.ctx = ++ctxSeq
+    st.log.push({ seq: ++logSeq, kind: 'change', loader: st.loader })
+    if (withTrace) trace.push(`  t=${clock.now} document of ${s.id || 'page'} replaced (${st.loader}${keep ? ', context kept' : ''})`)
+  }
+  const markerOf = (code: unknown): number | undefined => {
+    const m = /#s(\d+)#/.exec(String(code))
+    return m ? Number(m[1]) : undefined
+  }
+  const isScriptQuery = (method: string, p: Record<string, unknown>): boolean =>
+    method === 'Page.getFrameTree' || method === 'Page.createIsolatedWorld' || method === 'Runtime.evaluate' || method === 'Runtime.releaseObjectGroup' || (method === 'DOM.describeNode' && 'objectId' in p)
+  /** The script whose walk sends an unmarked query: the newest started, not settled, not released (one walk at a time). */
+  const activeScript = (): ScriptCall | undefined => {
+    let best: ScriptCall | undefined
+    for (const sc of scriptCalls.values()) if (sc.started !== undefined && !sc.routerSettled && !sc.released && (!best || sc.n > best.n)) best = sc
+    return best
+  }
+  const sessionSig = (): string => `${gen}|${[...sessionOf].map(([d, s]) => `${d}:${s.id}:${s.ready ? 1 : 0}:${s.ended ? 1 : 0}`).join(',')}`
+  /** What a press's route depends on: sessions, boxes, scroll, covers (layoutEpoch counts each change). */
+  const sigAt = (): string => `${sessionSig()}|${layoutEpoch}|${[...covered].join('')}|${bigOn}`
+  /** What the focus walk depends on: sessions and the focus. */
+  const sigFocus = (): string => `${sessionSig()}|${[...focusOf].map(([d, f]) => `${d}>${f}`).join(',')}`
+  const ancestry = (doc: DocName): FrameDef[] => {
+    const out: FrameDef[] = []
+    for (let d: DocName = doc; d !== 'page'; ) {
+      const f = FRAMES.find((g) => g.name === d) as FrameDef
+      out.unshift(f)
+      d = f.parent
+    }
+    return out
+  }
+  /** The top page's viewport point (x, y) in `doc`'s own viewport (translates only: the big frame is excluded). */
+  const pointIn = (doc: DocName, x: number, y: number): { x: number; y: number } => {
+    let px = x
+    let py = y
+    for (const f of ancestry(doc)) {
+      const s = scroll.get(f.parent) as { x: number; y: number }
+      const [rx, ry] = rects.get(f.name) as [number, number, number, number]
+      px -= rx - s.x
+      py -= ry - s.y
+    }
+    return { x: px, y: py }
+  }
+  /** The sessions under (x, y), the page first: as the fake's hit-test answers give them (first owner in FRAMES order, a cover stops it). */
+  const chainAt = (x: number, y: number): Session[] => {
+    const page = sessionOf.get('page')
+    if (!page) return []
+    const out: Session[] = [page]
+    let doc: DocName = 'page'
+    let px = x
+    let py = y
+    for (let depth = 0; depth < 8; depth++) {
+      const s = scroll.get(doc) as { x: number; y: number }
+      const dx = Math.floor(px + s.x)
+      const dy = Math.floor(py + s.y)
+      const next = FRAMES.find((f) => {
+        if (f.parent !== doc) return false
+        const [rx, ry, rw, rh] = rects.get(f.name) as [number, number, number, number]
+        return dx >= rx && dx < rx + rw && dy >= ry && dy < ry + rh
+      })
+      if (!next || covered.has(next.name)) break
+      const child = sessionOf.get(next.name)
+      if (!child || child.ended || !child.ready) break
+      const [rx, ry] = rects.get(next.name) as [number, number, number, number]
+      px -= rx - s.x
+      py -= ry - s.y
+      doc = next.name
+      out.push(child)
+    }
+    return out
+  }
+  /** The sessions a live button record holds (the router's capture is the first of them; the oracle does not order them). */
+  const captureSessions = (): { any: boolean; sessions: Set<Session> } => {
+    const out = new Set<Session>()
+    let any = false
+    for (const rec of allRecs()) {
+      if (!rec.id.startsWith('button:')) continue
+      any = true
+      const s = rec.session === '' || rec.session === 'detached' ? sessionOf.get('page') : sessions.get(rec.session)
+      if (s) out.add(s)
+    }
+    return { any, sessions: out }
+  }
+  /** The focus walk's answer by the fake's own world: the page, then each focused ready cross-site child, deepest last. */
+  const focusChain = (): Session[] => {
+    const page = sessionOf.get('page')
+    if (!page) return []
+    const out: Session[] = [page]
+    let doc: DocName = 'page'
+    for (let depth = 0; depth < 8; depth++) {
+      const kids = FRAMES.filter((f) => f.parent === doc).some((f) => {
+        const s = sessionOf.get(f.name)
+        return s !== undefined && !s.ended && s.ready
+      })
+      if (!kids) break
+      const to = focusOf.get(doc)
+      if (to === undefined || to === 'same') break
+      const s = sessionOf.get(to)
+      if (!s || s.ended || !s.ready) break
+      doc = to
+      out.push(s)
+    }
+    return out
+  }
+  const nameOf = (src: Session | 'top' | 'forged' | undefined): string => (src === undefined ? 'nothing' : typeof src === 'string' ? src : `${src.id || 'page'} (${src.doc}, epoch ${src.gen})`)
+
+  /** The checks of one query of a script's walk or run, as it is sent (before it counts as outstanding). */
+  const scriptQuery = (method: string, p: Record<string, unknown>, id: string, session: Session | undefined): ScriptQuery => {
+    const marker = method === 'Runtime.evaluate' ? markerOf(p.expression) : undefined
+    const sc = marker !== undefined ? scriptCalls.get(marker) : activeScript()
+    const where = `${method} to ${id || 'page'}${sc ? ` for script#${sc.n} (${sc.kind})` : ''}`
+    if (withTrace) trace.push(`  t=${clock.now} script query ${where}`)
+    // O2 / O1: a script's query goes only to a live session of the attachment it was queued under.
+    if (!session) violate('O1', 'script-unknown-session', where)
+    else if (session.gen !== gen) violate('O2', 'script-old-attachment', `${where}: a session of epoch ${session.gen}, now ${gen}`)
+    else if (session.ended) violate('O1', 'script-dead-session', `${where}: that session went`)
+    // O3 (C5, ruling 2026-11-19 #10): one outstanding command or query per session; a script's query never overlaps one.
+    const busy = liveAwaits().find((a) => a.session === id)
+    if (busy) violate('O3', 'script-overlap', `${where} while ${busy.kind} (t=${busy.at}) is unanswered there`)
+    if (!sc) {
+      violate('O4', 'script-query-orphan', `${where}: no script's walk is running`)
+      return {}
+    }
+    // O4: nothing of a script once it settled (or let what follows go: its run is the top document's then).
+    if (sc.routerSettled || sc.released) violate('O4', 'script-query-after-end', `${where}: it ${sc.routerSettled ? 'settled' : 'ran in the top document'} already`)
+    // O2: every protocol command of a script goes out under the epoch it was queued under.
+    if (sc.epoch !== gen || sc.stale) violate('O2', 'script-query-epoch', `${where} under epoch ${gen}, queued under ${sc.epoch}`)
+    // O1: never the main world (an evaluation always names its isolated world's context).
+    if (method === 'Runtime.evaluate' && typeof p.contextId !== 'number') violate('O1', 'script-main-world', `${where} with no context id`)
+    if (method === 'Page.createIsolatedWorld' && p.worldName !== FRAME_WORLD_NAME) violate('O1', 'script-main-world', `${where} names world ${String(p.worldName)}`)
+    if (marker === undefined || !session) return { sc }
+    const rec: EvalRec = { session, seq: 0, answered: false }
+    sc.evals.push(rec)
+    evalTarget(sc, session, String(p.expression))
+    return { sc, rec }
+  }
+
+  /** O1: the document a script's evaluation runs in is the one its call picked. */
+  const evalTarget = (sc: ScriptCall, session: Session, expr: string): void => {
+    const what = `script#${sc.n} (${sc.kind}) evaluated in ${nameOf(session)}`
+    if (sc.kind === 'in') {
+      // scriptIn: the handle's frame, never another (nor any frame for a forged or top handle).
+      if (sc.handle?.src !== session) violate('O1', 'script-in-other-frame', `${what}; its handle is ${nameOf(sc.handle?.src)}`)
+      return
+    }
+    if (sc.kind === 'at') {
+      // Accepted (contract): a page that covers or moves a frame while a hit test is in flight. Checked only with the world as it
+      // was when the call started; the big frame's projective map is C6's own check.
+      if (bigOn || sc.sigAt !== sigAt()) return
+      // scriptAt: the press's own route. Under capture (any button record) the captor's frame or the top; else the frames under
+      // the point, the page down to the deepest (a query refused or late stops the route at a parent: what the press would get).
+      const cap = captureSessions()
+      const chain = chainAt(sc.x, sc.y)
+      const allowed = cap.any ? cap.sessions : new Set(chain)
+      if (!allowed.has(session)) {
+        violate('O1', 'script-at-wrong-frame', `${what}; ${cap.any ? `the capture holds ${[...cap.sessions].map(nameOf).join(', ')}` : `under (${sc.x}, ${sc.y}) are ${chain.map(nameOf).join(' > ')}`}`)
+        return
+      }
+      // The point in that document's own CSS px.
+      const at = /#s\d+#(.*),(.*)$/.exec(expr)
+      const want = pointIn(session.doc, sc.x, sc.y)
+      if (!at || Math.abs(Number(at[1]) - want.x) > 1e-6 || Math.abs(Number(at[2]) - want.y) > 1e-6) {
+        violate('O1', 'script-at-point', `${what} got the point (${at?.[1]}, ${at?.[2]}), the press's point there is (${want.x}, ${want.y})`)
+      }
+      return
+    }
+    // Accepted (contract): a page moving focus (or a frame coming or going) while the walk is in flight. Checked only unchanged.
+    if (sc.sigFocus !== sigFocus()) return
+    const chain = focusChain()
+    const target = chain[chain.length - 1]
+    // scriptInFocus: the deepest focused cross-site frame. A malformed answer during the walk cannot be told from "no cross-site
+    // frame focused there", so the walk may stop at an ancestor on the focus chain (nearest ruling: the safe direction is the top
+    // document; that ancestor holds the focused frame); never a frame off the chain.
+    if (sc.malformed ? !chain.includes(session) : session !== target) {
+      violate('O1', 'script-focus-wrong-frame', `${what}; the focus is in ${nameOf(target)} (chain ${chain.map(nameOf).join(' > ')})${sc.malformed ? ', a malformed answer came' : ''}`)
+    }
+  }
+
+  /** The fake's answer to a script query, as Chromium's (see page-input.test.ts `scripts`), malformed when its document's mode says. */
+  const answerScript = (session: Session | undefined, method: string, p: Record<string, unknown>, sq: ScriptQuery): unknown => {
+    if (!session || session.ended) throw new Error('No session with given id')
+    const st = stateOf(session)
+    // The document replaced right as this answer is made: a loaderId change mid-run.
+    if (sflipRate > 0 && sRng() < sflipRate) replaceDoc(session, sRng() < 0.5)
+    const bad = smodes.get(session.doc) === 'malformed' && sRng() < 0.5
+    const k = Math.floor(sRng() * 4)
+    if (bad && sq.sc) sq.sc.malformed = true
+    const frameId = session.id === '' ? 'MAIN' : `T-${session.id}`
+    if (method === 'Page.getFrameTree') {
+      st.log.push({ seq: ++logSeq, kind: 'tree', loader: bad ? undefined : st.loader })
+      if (bad) return [null, { frameTree: 'x' }, { frameTree: { frame: { id: frameId } } }, { frameTree: { frame: { id: frameId, loaderId: '' } } }][k]
+      return { frameTree: { frame: { id: frameId, loaderId: st.loader }, childFrames: [{ frame: { id: `same-site-${session.doc}`, loaderId: 'LS' } }] } }
+    }
+    if (method === 'Page.createIsolatedWorld') {
+      if (p.frameId !== frameId) throw new Error('No frame for given id found')
+      if (bad) return [null, {}, { executionContextId: String(st.ctx) }, { executionContextId: st.ctx + 100000 }][k]
+      return { executionContextId: st.ctx }
+    }
+    if (method === 'Runtime.evaluate') {
+      // A context id of another document (or another session's) is refused, as Chromium does.
+      if (p.contextId !== st.ctx) throw new Error('Cannot find context with specified id')
+      if (p.returnByValue === false) {
+        const owner = focusOf.get(session.doc)
+        if (bad) return [null, { result: { objectId: 42 } }, { result: {} }, { result: { type: 'object' }, exceptionDetails: { text: 'Uncaught' } }][k]
+        return { result: owner ? { type: 'object', subtype: 'node', objectId: `obj-${owner}` } : { type: 'object', subtype: 'null', value: null } }
+      }
+      const value = `${session.id || 'page'}|${st.loader}|${String(p.expression)}`
+      const answer = bad ? [null, { result: 5 }, { result: { value }, exceptionDetails: { text: 'Uncaught' } }, { result: { value: { odd: value } } }][k] : { result: { value } }
+      const rec = sq.rec
+      if (rec) {
+        rec.answered = true
+        rec.seq = ++logSeq
+        rec.loader = st.loader
+        const a = answer as { result?: { value?: unknown }; exceptionDetails?: unknown } | null
+        rec.value = a === null || a.exceptionDetails !== undefined ? DROPPED : a.result?.value
+        st.log.push({ seq: rec.seq, kind: 'eval', loader: st.loader })
+      }
+      return answer
+    }
+    if (method === 'DOM.describeNode') {
+      const owner = String(p.objectId).replace(/^obj-/, '')
+      const s = (FRAME_NAMES as readonly string[]).includes(owner) ? sessionOf.get(owner as FrameName) : undefined
+      const fid = owner === 'same' ? 'same-site-frame' : s ? `T-${s.id}` : `T-none-${owner}`
+      if (bad) return [null, { node: null }, { node: { frameId: 5 } }, { node: {} }][k]
+      return { node: { nodeName: 'IFRAME', frameId: fid } }
+    }
+    return bad ? null : {}
+  }
+
+  /**
+   * O1 (the loaderId bracket): the evaluation `e` answered between two frame-tree reads of its session that named the same
+   * document, the one it ran in (loaderIds never repeat, so no replacement came between them).
+   */
+  const bracketed = (e: EvalRec): boolean => {
+    let before: { loader?: string } | undefined
+    let after: { loader?: string } | undefined
+    for (const l of stateOf(e.session).log) {
+      if (l.kind !== 'tree') continue
+      if (l.seq < e.seq) before = l
+      else if (l.seq > e.seq && !after) after = l
+    }
+    return before?.loader !== undefined && before.loader === after?.loader && before.loader === e.loader
+  }
+
+  /** A script's call began on the call road: its place among the input (C4 / O3) and its barrier. */
+  const scriptStarted = (sc: ScriptCall): void => {
+    sc.started = clock.now
+    sc.sigAt = sigAt()
+    sc.sigFocus = sigFocus()
+    if (withTrace) trace.push(`  t=${clock.now} script#${sc.n} (${sc.kind}) starts`)
+    // O2: a script handed an attachment that ended never runs.
+    if (sc.stale) violate('O2', 'script-stale-ran', `script#${sc.n} (${sc.kind}) handed epoch ${sc.epoch} ran under ${gen}`)
+    // C1 (O2), C2, C4 (O3): under its own epoch, once, in its place among the input.
+    deliver(sc.ev, 'fallback', '')
+    // C4 (O3): what follows waits until it lets go (its top run) or settles; scriptIn's call is blocking (STEP_TIMEOUT_MS).
+    startBarrier(sc.ev)
+  }
+
+  /** The router resolved or rejected a script (its step's own resolve: the checks at the router's own moment). */
+  const routerSettled = (sc: ScriptCall, v: unknown, rejected: boolean): void => {
+    sc.routerSettled = true
+    endBarrier(sc.ev)
+    if (withTrace) trace.push(`  t=${clock.now} script#${sc.n} (${sc.kind}) ${rejected ? `rejected (${String(v)})` : v === undefined ? 'dropped (undefined)' : 'answered'}`)
+    if (rejected) {
+      outcomes.rejected++
+      return
+    }
+    if (v === undefined) {
+      outcomes.undefined++
+      return
+    }
+    const what = `script#${sc.n} (${sc.kind}, queued under epoch ${sc.epoch})`
+    const value = sc.kind === 'at' ? (v as FrameScriptResult).value : v
+    // O2: never resolved as a value once its attachment ended (undefined, or InputDroppedError).
+    if (router.inputEpoch() !== sc.epoch || sc.stale) {
+      // Named by where the value came from: the top document's run is the adapter's (TOP_FRAME: "whatever the attachment").
+      violate('O2', sc.released ? 'script-top-value-after-end' : 'script-value-after-end', `${what} resolved with a value from ${sc.released ? `the top document (top run at t=${sc.tops[sc.tops.length - 1]?.at})` : 'a frame'} under epoch ${router.inputEpoch()}`)
+    }
+    let src: Session | 'top' | undefined
+    if (sc.released) {
+      src = 'top'
+      outcomes.top++
+      const top = sc.tops[sc.tops.length - 1]
+      if (!top || !top.settled || top.failed !== undefined || !Object.is(top.value, value)) violate('O1', 'script-value-from-nowhere', `${what} resolved a value its top run did not answer`)
+    } else {
+      outcomes.frame++
+      const e = [...sc.evals].reverse().find((x) => x.answered)
+      if (!e) violate('O1', 'script-value-from-nowhere', `${what} resolved a value, and no evaluation of it was answered`)
+      else {
+        src = e.session
+        if (!Object.is(e.value, value)) violate('O1', 'script-value-mismatch', `${what} resolved ${JSON.stringify(value)}, its evaluation in ${nameOf(e.session)} answered ${String(e.value === DROPPED ? 'an exception or nothing' : JSON.stringify(e.value))}`)
+        // O1: a result from a frame whose loaderId changed is dropped.
+        if (!bracketed(e)) violate('O1', 'script-loader-changed', `${what} resolved a value from ${nameOf(e.session)} (ran in ${e.loader}), not bracketed by two reads of that document: ${stateOf(e.session).log.map((l) => `${l.kind}${l.seq}:${l.loader ?? '?'}`).join(' ')}`)
+      }
+    }
+    if (sc.kind === 'in' && src !== undefined && src !== sc.handle?.src) violate('O1', 'script-in-other-frame', `${what} answered from ${nameOf(src)}, its handle is ${nameOf(sc.handle?.src)}`)
+    if (sc.kind !== 'at' || src === undefined) return
+    const result = v as FrameScriptResult
+    handles.push({ obj: result.frame as unknown as object, src })
+    if (handles.length > 6) handles.shift()
+    // O1: its rectangles mapped through the boxes of the frames it ran in (translates: the frame's origin in the top page).
+    if (!bigOn && sc.sigAt === sigAt()) {
+      const o = src === 'top' ? { x: 0, y: 0 } : pointIn(src.doc, 0, 0)
+      const got = result.toTop({ x: 0, y: 0, width: 10, height: 10 })
+      const want = { x: -o.x, y: -o.y, width: 10, height: 10 }
+      if (!got || Math.abs(got.x - want.x) > 1e-6 || Math.abs(got.y - want.y) > 1e-6 || Math.abs(got.width - 10) > 1e-6 || Math.abs(got.height - 10) > 1e-6) {
+        violate('O1', 'script-at-totop', `${what} from ${nameOf(src)} maps (0, 0, 10, 10) to ${JSON.stringify(got)}, the frame is at (${want.x}, ${want.y})`)
+      }
+    }
+  }
+
+  /** The caller's view: how the promise settled (a rejection is one of the named causes). */
+  const watchScript = (sc: ScriptCall, p: Promise<unknown>): void => {
+    p.then(
+      (v) => {
+        sc.settled = true
+        if (sc.stale) violate('O2', 'script-stale-answered', `script#${sc.n} (${sc.kind}) handed epoch ${sc.epoch} answered ${v === undefined ? 'undefined' : 'a value'}, not InputDroppedError`)
+      },
+      (err: unknown) => {
+        sc.settled = true
+        const fromTop = sc.tops.some((t) => t.failed === err)
+        const dropped = err instanceof InputDroppedError && (sc.stale || gen !== sc.epoch)
+        const full = err instanceof Error && /queue full/.test(err.message) && sc.ev.capDropped
+        if (!fromTop && !dropped && !full) violate('O4', 'script-rejected', `script#${sc.n} (${sc.kind}) rejected with ${String(err)} (epoch ${gen}, queued under ${sc.epoch})`)
+      }
+    )
+  }
+
+  /** The top document's runner (`deps.isolated`, executeJavaScriptInIsolatedWorld): a call on the call road. */
+  const topRun = (code: string): Promise<unknown> => {
+    const n = markerOf(code)
+    const sc = n === undefined ? undefined : scriptCalls.get(n)
+    if (withTrace) trace.push(`  t=${clock.now} top run ${code} (${topMode})`)
+    if (!sc) {
+      violate('O1', 'top-run-unknown', code)
+      return Promise.resolve(undefined)
+    }
+    const what = `script#${sc.n} (${sc.kind})`
+    // O2: a top run goes out only under the epoch its script was queued under.
+    if (gen !== sc.epoch || sc.stale) violate('O2', 'script-top-epoch', `${what} ran in the top document under epoch ${gen}, queued under ${sc.epoch}`)
+    if (sc.started === undefined || sc.routerSettled) violate('O4', 'script-top-outside-call', `${what} ran in the top document ${sc.started === undefined ? 'before its call started' : 'after it settled'}`)
+    // O1: one document per script, never a frame's evaluation and a top run both.
+    if (sc.evals.some((e) => e.answered)) violate('O1', 'script-two-documents', `${what} ran in the top document after an evaluation in ${nameOf(sc.evals[0]?.session)}`)
+    if (sc.kind === 'in' && sc.handle?.src !== 'top') violate('O1', 'script-in-ran-top', `${what} ran in the top document; its handle is ${nameOf(sc.handle?.src)}`)
+    if (sc.kind === 'focus' && !sc.malformed && sc.sigFocus === sigFocus() && focusChain().length > 1) {
+      violate('O1', 'script-focus-ran-top', `${what} ran in the top document; the focus is in ${nameOf(focusChain().at(-1))}`)
+    }
+    sc.released = true
+    if (sc.kind !== 'in') endBarrier(sc.ev)
+    const mode = topMode
+    const value = mode === 'odd' ? pick(sRng, [undefined, null, 0, { odd: true }]) : `top|${gen}|${code}`
+    const run: TopRun = { sc, at: clock.now, settled: false, go: () => {} }
+    sc.tops.push(run)
+    liveTop.add(run)
+    // C5 / C9 (O4): the call road holds one call at a time; a top run is one (with the harness's own calls).
+    if (liveCalls.size + liveTop.size > 1) violate('C9', 'calls-outstanding', `${liveCalls.size + liveTop.size} calls outstanding (the top run of ${what})`)
+    if (mode === 'throw') {
+      const err = new Error('top threw')
+      run.settled = true
+      run.settledAt = clock.now
+      run.failed = err
+      liveTop.delete(run)
+      throw err
+    }
+    return new Promise((resolve, reject) => {
+      run.go = (ok: boolean): void => {
+        if (run.settled || run.abandoned) return
+        run.settled = true
+        run.settledAt = clock.now
+        liveTop.delete(run)
+        if (withTrace) trace.push(`  t=${clock.now} top run of ${what} ${ok ? 'answers' : 'refused'}`)
+        if (ok) {
+          run.value = value
+          resolve(value)
+        } else {
+          const err = new Error('top refused')
+          run.failed = err
+          reject(err)
+        }
+        resolutionPoint()
+      }
+      if (mode === 'hang') return void topHung.push(run)
+      clock.set(() => run.go(mode !== 'reject'), mode === 'slow' ? 30 : mode === 'late' ? STEP_TIMEOUT_MS + 1 : 0, false)
+    })
+  }
+
+  /** O4: a started script settles within its frame part's deadlines, and at once after its top run answered. */
+  const checkScriptBounds = (): void => {
+    for (const sc of scriptCalls.values()) {
+      if (sc.settled || sc.started === undefined) continue
+      if (sc.released) {
+        // A top run is bounded only by the adapter (the contract's Accepted: a call hung forever parks what follows).
+        const top = sc.tops[sc.tops.length - 1]
+        if (top?.settled && clock.now > (top.settledAt as number)) violate('O4', 'script-unsettled', `script#${sc.n} (${sc.kind}) has not settled since its top run answered at t=${top.settledAt}`)
+        continue
+      }
+      // scriptAt: the route's deadline, then the frame script's (ROUTE_TIMEOUT_MS each); scriptIn and scriptInFocus: STEP_TIMEOUT_MS.
+      const bound = sc.kind === 'at' ? 2 * ROUTE_TIMEOUT_MS : STEP_TIMEOUT_MS
+      if (clock.now > sc.started + bound) violate('O4', 'script-unsettled', `script#${sc.n} (${sc.kind}) started at t=${sc.started} and has not settled ${bound} ms later`)
+    }
+  }
+
   const fallback: ElectronInputEvent[] = []
   // A router that spins (a step that never ends and never waits) would hang the run: counted, then stopped.
   let turns = 0
@@ -1117,6 +1710,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       if (/refused/.test(message)) refusalLogs++
       if (/input step failed|held back/.test(message)) violate('C3', 'router-log', message)
     },
+    isolated: (code) => topRun(code),
     timers: {
       set: (fn, ms) =>
         clock.set(
@@ -1130,6 +1724,37 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       clear: (h) => clock.clear(h)
     }
   })
+
+  // A script's step is the router's own closure, so the oracle reads two moments off the call road: the step as it is queued (its
+  // resolve wrapped, to check a value at the router's own moment) and the call's run beginning (`runCall`). Nothing else is changed.
+  type CallStep = { kind: string; run?: unknown; resolve?: (v: unknown) => void; reject?: (e: unknown) => void }
+  const internals = router as unknown as { push(step: CallStep): boolean; runCall(step: CallStep): unknown }
+  const push0 = internals.push.bind(router)
+  internals.push = (step: CallStep): boolean => {
+    const sc = pendingScript
+    if (!sc || step.kind !== 'call' || typeof step.run !== 'function' || !step.resolve || !step.reject) return push0(step)
+    pendingScript = undefined
+    sc.ev.ref = step.run as object
+    stepScript.set(step.run as object, sc)
+    const resolve = step.resolve
+    const reject = step.reject
+    step.resolve = (v: unknown): void => {
+      routerSettled(sc, v, false)
+      resolve(v)
+    }
+    step.reject = (e: unknown): void => {
+      routerSettled(sc, e, true)
+      reject(e)
+    }
+    sc.pushed = push0(step)
+    return sc.pushed
+  }
+  const runCall0 = internals.runCall.bind(router)
+  internals.runCall = (step: CallStep): unknown => {
+    const sc = typeof step.run === 'function' ? stepScript.get(step.run as object) : undefined
+    if (sc) scriptStarted(sc)
+    return runCall0(step)
+  }
 
   /** The router's queue (read only: what is taken and not run yet; only to see whether a hand-in was taken, the cap). */
   function queueOf(): QStep[] {
@@ -1206,6 +1831,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     gen: number
     settled: boolean
     at: number
+    /** A query of one of main's scripts (O3: never overlaps an input command on its session). */
+    script?: boolean
   }
   const awaits = new Set<Await>()
   const hungAwaits: Array<() => void> = []
@@ -1403,6 +2030,44 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (const f of FRAME_NAMES) attachFrame(f, true)
   }
 
+  /** The renderer goes (`router.rendererGone()`): the old detached calls never settle, a healthy one replaces it. */
+  function rendererGoneNow(): void {
+    // Ruling 2026-11-19 #8: account before the call (it pumps synchronously and may start a new delivery on the healthy renderer).
+    // Ruling 2026-11-19 #9: the call stall is the renderer's too: rendererGone ends a hung call (no longer outstanding).
+    callHung.length = 0
+    liveCalls.clear()
+    callsOut = 0
+    hung.length = 0
+    liveDetached.clear()
+    detachedOut = 0
+    detachedHang = false
+    barrier = undefined
+    // main's scripts: a top run of the renderer that went is no longer outstanding (ruling #9). Half of them never settle (the
+    // adapter's "never settles for a page gone"), half are refused now (its "rejects").
+    topHung.length = 0
+    for (const run of [...liveTop]) {
+      liveTop.delete(run)
+      if (sRng() < 0.5) run.abandoned = true
+      else clock.set(() => run.go(false), 0, false)
+    }
+    // Ruling 2026-11-19 #11: rendererGone is a full reset (everything lost() does): an epoch change (queued items dropped with cause
+    // epoch, records deleted, session stalls cleared); the old sessions never answer and are not counted. A new renderer's page
+    // session and frames follow when the protocol is attached.
+    busy++
+    try {
+      for (const sess of [...sessionOf.values()]) endSession(sess, false)
+      gen++
+      for (const rec of allRecs()) endRecord(rec, 'epoch')
+      router.rendererGone()
+      if (attached) {
+        newPage()
+        for (const f of FRAME_NAMES) attachFrame(f, true)
+      }
+    } finally {
+      busy--
+    }
+  }
+
   const play = async (action: Action): Promise<void> => {
     if (withTrace) trace.push(`t=${clock.now} ${JSON.stringify(action)}`)
     switch (action.a) {
@@ -1473,7 +2138,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           // C5 / C9 (O4): a call counts as outstanding until it settles; one at most (a call past its deadline stalls its road like a command).
           liveCalls.add(ev)
           callsOut = liveCalls.size
-          if (callsOut > 1) violate('C9', 'calls-outstanding', `${callsOut} calls outstanding (call ${n})`)
+          // A script's top run is a call on the same road (main's scripts).
+          if (callsOut + liveTop.size > 1) violate('C9', 'calls-outstanding', `${callsOut + liveTop.size} calls outstanding (call ${n})`)
           if (action.ms < 0) {
             return new Promise((resolve) => {
               callHung.push(() => {
@@ -1504,6 +2170,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       }
       case 'advance':
         await clock.advance(action.ms)
+        checkScriptBounds()
         return
       case 'mode':
         modes.set(action.doc, action.mode)
@@ -1568,40 +2235,73 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         bigOn = false
         break
       case 'rendererGone':
-        // Ruling 2026-11-19 #8: account before the call (it pumps synchronously and may start a new delivery on the healthy renderer).
-        // Ruling 2026-11-19 #9: the call stall is the renderer's too: rendererGone ends a hung call (no longer outstanding).
-        callHung.length = 0
-        liveCalls.clear()
-        callsOut = 0
-        hung.length = 0
-        liveDetached.clear()
-        detachedOut = 0
-        detachedHang = false
-        barrier = undefined
-        // Ruling 2026-11-19 #11: rendererGone is a full reset (everything lost() does): an epoch change (queued items dropped with cause
-        // epoch, records deleted, session stalls cleared); the old sessions never answer and are not counted. A new renderer's page
-        // session and frames follow when the protocol is attached.
-        busy++
-        try {
-          for (const sess of [...sessionOf.values()]) endSession(sess, false)
-          gen++
-          for (const rec of allRecs()) endRecord(rec, 'epoch')
-          router.rendererGone()
-          if (attached) {
-            newPage()
-            for (const f of FRAME_NAMES) attachFrame(f, true)
-          }
-        } finally {
-          busy--
-        }
+        rendererGoneNow()
         break
       case 'arm':
         armed = { ...action }
         break
+      case 'scriptAt':
+      case 'scriptIn':
+      case 'scriptInFocus': {
+        const n = ++scriptSeq
+        const kind: ScriptKind = action.a === 'scriptAt' ? 'at' : action.a === 'scriptIn' ? 'in' : 'focus'
+        const ev = blank('script')
+        ev.entry = `s:${n}`
+        const epochArg = action.stale ? savedEpoch : undefined
+        const sc: ScriptCall = { n, kind, ev, epoch: epochArg ?? gen, stale: epochArg !== undefined && epochArg !== gen, x: 0, y: 0, pushed: false, routerSettled: false, settled: false, tops: [], evals: [], malformed: false, released: false }
+        if (action.a === 'scriptAt') {
+          // Half a px off the grid: an owner's edge is whole px, and the router's affine map of a whole point can land a hair
+          // under it (109.99999999999997), which the fake's floor puts on the other side (the oracle's own hit test is exact).
+          sc.x = action.x + 0.5
+          sc.y = action.y + 0.5
+        }
+        if (action.a === 'scriptIn') {
+          sc.handle = action.pick < 0 || handles.length === 0 ? { obj: Object.freeze({}), src: 'forged' } : handles[handles.length - 1 - (action.pick % handles.length)]
+        }
+        scriptCalls.set(n, sc)
+        const code = `#s${n}#`
+        if (withTrace) trace.push(`  script#${n} (${kind})${sc.handle ? ` handle ${nameOf(sc.handle.src)}` : ''}${epochArg !== undefined ? ` epoch ${epochArg}` : ''}`)
+        pendingScript = sc
+        hand(ev, () => {
+          const p =
+            action.a === 'scriptAt'
+              ? router.scriptAt(sc.x, sc.y, (x, y) => `${code}${x},${y}`, epochArg)
+              : action.a === 'scriptIn'
+                ? router.scriptIn((sc.handle as Handle).obj as unknown as ScriptFrame, code, epochArg)
+                : router.scriptInFocus(code, epochArg)
+          watchScript(sc, p)
+        })
+        pendingScript = undefined
+        // C3: a script handed an attachment that ended is rejected and never queued (cause: an epoch change).
+        if (!sc.pushed && sc.stale) ev.excuse = 'an epoch change'
+        break
+      }
+      case 'focus':
+        if (action.to === 'none') focusOf.delete(action.doc)
+        else focusOf.set(action.doc, action.to)
+        break
+      case 'navigate': {
+        const s = sessionOf.get(action.doc)
+        if (s && !s.ended) replaceDoc(s, action.keep)
+        break
+      }
+      case 'smode':
+        smodes.set(action.doc, action.mode)
+        break
+      case 'topmode':
+        topMode = action.mode
+        break
+      case 'sflip':
+        sflipRate = action.rate
+        break
+      case 'epochmark':
+        savedEpoch = router.inputEpoch()
+        break
     }
     await clock.advance(0)
-    // C9 (O4): queued steps with nothing outstanding and no timer while the renderer is live are a stuck queue.
-    if (queueOf().length > 0 && liveAwaits().length === 0 && liveDetached.size === 0 && liveCalls.size === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)) {
+    checkScriptBounds()
+    // C9 (O4): queued steps with nothing outstanding and no timer while the renderer is live are a stuck queue (a script's top run is a call).
+    if (queueOf().length > 0 && liveAwaits().length === 0 && liveDetached.size === 0 && liveCalls.size === 0 && liveTop.size === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)) {
       violate('C9', 'stuck-queue-live', `${queueOf().length} steps queued with nothing outstanding and no timer, after ${action.a}`)
     }
   }
@@ -1618,6 +2318,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       qmodes.set(d, 'fast')
     }
     detachedHang = false
+    topMode = 'fast'
+    sflipRate = 0
+    for (const d of DOCS) smodes.set(d, 'ok')
     for (const h of hung.splice(0)) h()
     for (const c of commands) if (!c.answered) c.resolve({})
     await clock.advance(0)
@@ -1628,9 +2331,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       for (const h of callHung.splice(0)) h()
       for (const h of hung.splice(0)) h()
       for (const h of hungAwaits.splice(0)) h()
+      for (const run of topHung.splice(0)) run.go(true)
       for (const c of commands) if (!c.answered) c.resolve({})
       await clock.advance(600)
-      quiet = hungAwaits.length === 0 && liveAwaits().length === 0 && callHung.length === 0 && hung.length === 0 && callsOut === 0 && detachedOut === 0 && queueOf().length === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)
+      quiet = hungAwaits.length === 0 && liveAwaits().length === 0 && callHung.length === 0 && topHung.length === 0 && liveTop.size === 0 && hung.length === 0 && callsOut === 0 && detachedOut === 0 && queueOf().length === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)
     }
     if (!quiet) violate('C9', 'stuck-queue', `quiescence never reached after 300 release rounds (calls ${callHung.length}/${callsOut}, detached ${hung.length}/${detachedOut}, queued ${queueOf().length}, timers ${clock.routerTimers()}, open commands ${commands.filter((c) => !c.answered && !c.detached && c.gen === gen).length})`)
     const heldButtons = new Set<Button>()
@@ -1682,10 +2386,18 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (const ref of sessionRefs(router)) if (!live.has(ref)) violate('C9', 'dead-session-held', `the router still holds ${ref}`)
     for (const [name, size] of collectionSizes(router)) if (size > live.size + allRecs().length + 4) violate('C9', 'unbounded', `${name} holds ${size} with ${live.size} live frames and ${allRecs().length} live records`)
     if (unhandled.length > 0) violate('C9', 'unhandled-rejection', String(unhandled[0]))
+    // O4: every script settled: dropped, answered or rejected; but one whose top run's renderer went and never answered (nearest
+    // ruling 2026-11-19 #9: that call is the renderer's, and the adapter may never settle for a page gone).
+    for (const sc of scriptCalls.values()) {
+      if (sc.settled || sc.tops.some((t) => t.abandoned)) continue
+      violate('O4', 'script-never-settled', `script#${sc.n} (${sc.kind}) ${sc.started === undefined ? (sc.pushed ? 'queued and never run' : 'never queued') : `started at t=${sc.started}`} has not settled at quiescence`)
+    }
+    // O4: the handles' map (`scriptFrames`) keeps no frame alive: a WeakMap (collectionSizes cannot see one, so its kind is checked).
+    if (scriptsOn && !((router as unknown as { scriptFrames?: unknown }).scriptFrames instanceof WeakMap)) violate('O4', 'handles-held', 'the router keeps its script handles in something other than a WeakMap')
   } finally {
     process.off('unhandledRejection', onUnhandled)
   }
-  return { violations, trace }
+  return { violations, trace, outcomes }
 }
 
 function modBits(m: readonly InputModifier[]): number {
@@ -1759,11 +2471,13 @@ describe('PageInputRouter, randomized against its rules', () => {
       const seeds = ONE_SEED === undefined ? Array.from({ length: SEEDS }, (_, i) => i + 1) : [ONE_SEED]
       const started = Date.now()
       const failures = new Map<string, { seed: number; detail: string; count: number }>()
+      const stats = { frame: 0, top: 0, undefined: 0, rejected: 0 }
       for (const seed of seeds) {
         // FUZZ_SCRIPT: one script of actions (JSON) instead of the seed's, to try a case by hand.
         const script = process.env.FUZZ_SCRIPT !== undefined ? (JSON.parse(process.env.FUZZ_SCRIPT) as Action[]) : makeScript(seed)
-        const { violations, trace } = await runScript(seed, script, process.env.FUZZ_SCRIPT !== undefined)
+        const { violations, trace, outcomes } = await runScript(seed, script, process.env.FUZZ_SCRIPT !== undefined)
         if (process.env.FUZZ_SCRIPT !== undefined) console.log(trace.join('\n'))
+        for (const k of Object.keys(stats) as Array<keyof typeof stats>) stats[k] += outcomes[k]
         const once = new Set<string>()
         for (const v of violations) {
           if (once.has(v.id)) continue
@@ -1773,6 +2487,7 @@ describe('PageInputRouter, randomized against its rules', () => {
           else failures.set(v.id, { seed, detail: v.detail, count: 1 })
         }
       }
+      if (process.env.FUZZ_STATS !== undefined) console.log(`main's scripts settled: ${JSON.stringify(stats)}`)
       if (failures.size > 0) {
         const lines: string[] = []
         for (const [id, f] of failures) {
