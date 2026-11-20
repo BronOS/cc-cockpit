@@ -284,7 +284,8 @@ the fallback when the protocol detached:
   owed changes nothing. The renderer going (`render-process-gone`, `destroyed`, or the main frame's `did-navigate`
   into another process) is a full reset as well: after a crash and a reload the old renderer's commands never answer
   and the debugger stays attached (Electron, 2026-11-19), so only that lets input reach the new page. A page that spins
-  forever commits no reload or navigation at all (Chromium's own: the old renderer must run its unload first), so the
+  forever commits no reload and no same-site navigation (Chromium's own: the old renderer must run its unload first;
+  a cross-site one commits into another process by itself), so the
   adapter watches main's own reload, load, back and forward (`hung-navigation.ts`): one not ended after 3 s while the
   page answers no probe within 2 s (main's isolated-world script, on the call road below) gets the renderer SIGKILLed
   (`renderer-kill.ts`: the pid read when the navigation started, only if still the page's) and goes again once it is

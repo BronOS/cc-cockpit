@@ -1,6 +1,7 @@
 // The hung-page watchdog of a streamed page (server mode, design-web-browser.md §4.1): a page whose
-// script never yields (`for (;;) {}`) commits no reload and no navigation at all, since the old
-// renderer must run its unload first. `did-start-navigation` fires and then nothing: no `did-navigate`,
+// script never yields (`for (;;) {}`) commits no reload and no same-site navigation, since the old
+// renderer must run its unload first (a cross-site one commits into another process by itself).
+// `did-start-navigation` fires and then nothing: no `did-navigate`,
 // no `unresponsive`, no `render-process-gone`, the same renderer pid for as long as it was watched
 // (Electron 45, macOS and Linux, scripts/offscreen-input-check.mjs). A desktop Chrome offers "Page
 // unresponsive: Exit page"; nobody is at a server's screen. So main does it: a navigation main started

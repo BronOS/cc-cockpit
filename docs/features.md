@@ -1042,8 +1042,8 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   an embedded cross-site frame is not copied by Ctrl/Cmd+C (the top page's is). A touch drag on a phone
   is a mouse drag. A link that opens a new window (`window.open`,
   `target="_blank"`) becomes a link notice to click; it never opens a tab by itself.
-- *A page that hangs:* a page whose script never stops (a busy loop) takes no input and commits no reload or navigation
-  by itself. When a reload, an address-bar load, Back or Forward has not got anywhere after about 3 s and the page
+- *A page that hangs:* a page whose script never stops (a busy loop) takes no input, and a reload or a load of the same
+  site goes nowhere by itself. When a reload, an address-bar load, Back or Forward has not got anywhere after about 3 s and the page
   answers nothing for 2 s more, the server stops the page's process and loads that page again, and your browser shows
   "A page in the <plugin> panel stopped answering, so cc-cockpit restarted it." What you typed into the hung page is
   dropped. Without a reload or a navigation nothing is restarted: a page that crashed on a Linux server whose crashes

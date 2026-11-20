@@ -831,13 +831,14 @@ async function main() {
   // --- a renderer that spins forever, then (a) a reload and (b) a cross-site navigation ---
   // A command or call the spinning page never answers stalls its road until it settles or the
   // renderer goes (rulings 2026-11-19 #7, #9, #11). A spinning renderer commits no reload and no
-  // navigation by itself (Electron 45, macOS and Linux: 45 s waited; no unresponsive, no
+  // same-site navigation by itself (Electron 45, macOS and Linux: 45 s waited; no unresponsive, no
   // render-process-gone, the main frame's process the same), so the adapter's hung-page watchdog
-  // (hung-navigation.ts) kills it a few seconds into (a) and (b) and starts the navigation again; (c)
-  // is a kill of this script's own, then a reload; (d) a crash (on Linux one that dumps core, which
-  // alone holds the renderer 40 s), then a reload. After each the typing must reach the new page
-  // within a few seconds. Printed: which events fire, what the pending promises do, and the main
-  // frame's process.
+  // (hung-navigation.ts) kills it a few seconds into (a) the reload and (b2) the same-site load and
+  // starts the navigation again; (b), cross-site, commits into another process by itself. (c) is a
+  // kill of this script's own, then a reload; (d) a crash (on Linux one that dumps core, which alone
+  // holds the renderer 40 s), then a reload. After each the typing must reach the new page within a
+  // few seconds, and after (a) the page's setup must still be there (the view outlived its
+  // renderer). Printed: which events fire, what the pending promises do, and the main frame's process.
   {
     const SPIN_WAIT_MS = 20_000
     const events = []
@@ -908,6 +909,32 @@ async function main() {
     await view.load(`http://127.0.0.1:${port}/?role=spin`)
     note('spin page loaded')
     await spinThen('reload', async () => view.reload())
+    // The view outlived its renderer: the page's protocol, the print lock in the new document's main
+    // world (installed through that protocol, webview-hardening.ts), a chooser still cancelled, the
+    // frame rate, and paints still reaching a sink.
+    {
+      const lock = await within(
+        wc.mainFrame.executeJavaScript('Object.getOwnPropertyDescriptor(window, "print")?.configurable === false && window.print.toString().indexOf("native") < 0'),
+        2000,
+        'no answer'
+      )
+      let chooser = false
+      const onChooser = () => (chooser = true)
+      wc.debugger.on('message', (_e, method) => method === 'Page.fileChooserOpened' && onChooser())
+      await within(wc.mainFrame.executeJavaScript('(() => { const f = document.createElement("input"); f.type = "file"; document.body.append(f); f.click(); return true })()', true), 2000)
+      await sleep(300)
+      let painted = 0
+      view.setSink({ paint: () => painted++, cursor: (type) => (cursor = type) })
+      view.setVisible(true)
+      view.invalidate()
+      await sleep(300)
+      note(`after the restart: protocol ${wc.debugger.isAttached()}, print locked ${lock}, chooser intercepted ${chooser}, frame rate ${wc.getFrameRate()}, paints ${painted}`)
+      want(wc.debugger.isAttached(), 'spin reload: the page\'s protocol is detached after the watchdog\'s restart')
+      want(lock === true, `spin reload: window.print is not locked in the new page (${JSON.stringify(lock)})`)
+      want(chooser, 'spin reload: a file chooser of the new page was not intercepted')
+      want(wc.getFrameRate() === 30, `spin reload: frame rate ${wc.getFrameRate()} after the restart`)
+      want(painted > 0, 'spin reload: no paint reached the sink after the restart')
+    }
     await spinThen('cross-site', async () => {
       void within(
         view.load(`http://localhost:${port}/?role=spin`).then(

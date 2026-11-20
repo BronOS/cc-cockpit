@@ -1,6 +1,6 @@
 ---
-worth: maybe
-where: src/main/webview/electron-offscreen-webview.ts
+worth: later
+where: src/main/webview/electron-offscreen-webview.ts:224
 added: 2026-11-20
 ---
 # off-screen pages: a crash on a core-dumping Linux host holds the page and its input about 40 s
