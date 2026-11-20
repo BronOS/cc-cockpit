@@ -79,6 +79,8 @@ class FakeDebugger extends FakeEmitter {
 
 class FakeWebContents extends FakeEmitter {
   destroyed = false
+  /** The main frame's renderer process (a navigation may commit into another). */
+  readonly mainFrame = { osProcessId: 100 }
   webrtcPolicy = ''
   openHandler: ((d: { url: string }) => { action: string }) | undefined
   readonly calls: string[] = []
@@ -630,21 +632,104 @@ describe('OffscreenWebviewFactory', () => {
   })
 
   // Task 7: a browser's checked input (webview-input.ts) goes to the page as trusted input, and
-  // never focuses or shows the window to get there.
-  it('sends input with sendInputEvent, in order, and nothing once the page is gone', () => {
+  // never focuses or shows the window to get there. On the page's protocol while it is attached
+  // (page-input.ts: keys follow focus into a cross-site frame), sendInputEvent once it detached.
+  it('sends input on the page protocol in order, by sendInputEvent once detached, and nothing once the page is gone', async () => {
     const { view, wc, win } = make()
     wc.calls.length = 0
+    const before = wc.debugger.commands.length
     view.sendInput([
       { type: 'mouseDown', x: 1, y: 1, button: 'left', clickCount: 1, modifiers: [] },
       { type: 'keyDown', keyCode: 'a', modifiers: [] },
       { type: 'char', keyCode: 'a', modifiers: [] }
     ])
-    expect(wc.calls).toEqual(['input mouseDown', 'input keyDown', 'input char'])
+    await vi.waitFor(() => expect(wc.debugger.commands.length).toBe(before + 3))
+    expect(wc.debugger.commands.slice(before).map((c) => [c.method, (c.params as { type: string }).type, c.sessionId])).toEqual([
+      ['Input.dispatchMouseEvent', 'mousePressed', undefined],
+      ['Input.dispatchKeyEvent', 'rawKeyDown', undefined],
+      ['Input.dispatchKeyEvent', 'char', undefined]
+    ])
+    expect(wc.calls).toEqual([])
+    // Detached: sendInputEvent, at once, as before the router.
+    wc.debugger.attachedWith = undefined
+    view.sendInput([
+      { type: 'mouseDown', x: 1, y: 1, button: 'left', clickCount: 1, modifiers: [] },
+      { type: 'keyDown', keyCode: 'a', modifiers: [] },
+      { type: 'char', keyCode: 'a', modifiers: [] }
+    ])
+    // The first left press is still held (at the page), so the second sends its lost release first
+    // (C7 of the router contract), by the same road.
+    expect(wc.calls).toEqual(['input mouseUp', 'input mouseDown', 'input keyDown', 'input char'])
     expect(win.forbidden).toEqual([])
     view.destroy()
     wc.calls.length = 0
     view.sendInput([{ type: 'mouseMove', x: 1, y: 1, modifiers: [] }])
+    await settle()
     expect(wc.calls).toEqual([])
+  })
+
+  // The router's frames come from the hardening's own auto-attach (no second debugger): a frame is
+  // routed to once it was resumed, and no longer once it detached.
+  it('routes a click over a ready cross-site frame to its session, and to the page once it detached', async () => {
+    const { view, wc } = make()
+    // The page: a cross-site frame (target F1, session S1) whose owner box is at (0, 200), 600x300.
+    wc.debugger.answer = (method, sessionId) => {
+      if (sessionId !== undefined) return undefined
+      if (method === 'Page.getLayoutMetrics') return Promise.resolve({ cssLayoutViewport: { pageX: 0, pageY: 0 } })
+      if (method === 'DOM.getNodeForLocation') return Promise.resolve({ backendNodeId: 7 })
+      if (method === 'DOM.describeNode') return Promise.resolve({ node: { nodeName: 'IFRAME', frameId: 'T-S1' } })
+      if (method === 'DOM.getBoxModel') {
+        const quad = [0, 200, 600, 200, 600, 500, 0, 500]
+        return Promise.resolve({ model: { content: quad, border: quad, width: 600, height: 300 } })
+      }
+      return undefined
+    }
+    wc.debugger.attachChild('S1', 'iframe')
+    await vi.waitFor(() => expect(wc.debugger.sentOn('S1')).toContain('Runtime.runIfWaitingForDebugger'))
+    await settle()
+    const mark = wc.debugger.commands.length
+    view.sendInput([{ type: 'mouseDown', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] }])
+    await vi.waitFor(() => expect(wc.debugger.commands.slice(mark).some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(true))
+    const press = wc.debugger.commands.slice(mark).find((c) => c.method === 'Input.dispatchMouseEvent')
+    expect(press?.sessionId).toBe('S1')
+    expect(press?.params).toMatchObject({ type: 'mousePressed', x: 20, y: 25 })
+    // Gone: its release goes nowhere (a release goes only where its press went, and the page got
+    // none), and what comes after goes to the page.
+    wc.debugger.emit('message', {}, 'Target.detachedFromTarget', { sessionId: 'S1', targetId: 'T-S1' }, '')
+    const mark2 = wc.debugger.commands.length
+    view.sendInput([
+      { type: 'mouseUp', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] },
+      { type: 'mouseDown', x: 20, y: 225, button: 'left', clickCount: 1, modifiers: [] }
+    ])
+    await vi.waitFor(() => expect(wc.debugger.commands.slice(mark2).some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(true))
+    const next = wc.debugger.commands.slice(mark2).filter((c) => c.method === 'Input.dispatchMouseEvent')
+    expect(next.map((c) => [c.sessionId, (c.params as { type?: unknown } | undefined)?.type])).toEqual([[undefined, 'mousePressed']])
+    expect(next[0]?.params).toMatchObject({ x: 20, y: 225 })
+    expect(wc.calls.filter((c) => c.startsWith('input'))).toEqual([])
+  })
+
+  // Ruling 2026-11-19 #11 (real Electron: after a crash and a reload the old renderer's commands never
+  // answered and the debugger stayed attached, so no key reached the new page).
+  it('resets the input router when the renderer goes or the main frame commits into another process', async () => {
+    const { view, wc } = make()
+    wc.emit('did-navigate')
+    // The renderer answers no key from now on.
+    wc.debugger.answer = (method) => (method === 'Input.dispatchKeyEvent' ? new Promise(() => {}) : undefined)
+    const keys = (): unknown[] => wc.debugger.commands.filter((c) => c.method === 'Input.dispatchKeyEvent').map((c) => (c.params as { key?: unknown }).key)
+    view.sendInput([{ type: 'keyDown', keyCode: 'a', modifiers: [] }, { type: 'keyDown', keyCode: 'b', modifiers: [] }])
+    await vi.waitFor(() => expect(keys()).toEqual(['a']))
+    // A navigation in the same process changes nothing: 'b' still waits for 'a'.
+    wc.emit('did-navigate')
+    await settle()
+    expect(keys()).toEqual(['a'])
+    // Into another process: what the old one owed is dropped ('b' with it), the next key goes at once.
+    wc.mainFrame.osProcessId = 101
+    wc.emit('did-navigate')
+    view.sendInput([{ type: 'keyDown', keyCode: 'c', modifiers: [] }])
+    await vi.waitFor(() => expect(keys()).toEqual(['a', 'c']))
+    wc.emit('render-process-gone', {}, { reason: 'killed' })
+    view.sendInput([{ type: 'keyDown', keyCode: 'd', modifiers: [] }])
+    await vi.waitFor(() => expect(keys()).toEqual(['a', 'c', 'd']))
   })
 
   // Task 8: committed text goes in as an IME commit; the selection is read in main's isolated world.
@@ -691,9 +776,12 @@ describe('OffscreenWebviewFactory', () => {
       { method: 'Input.dispatchKeyEvent', params: editKeyEvent(redo) }
     ])
     expect(wc.calls).toEqual([])
-    // A protocol refusing the command: the rejection is the lane's (it lets the rest go), not thrown here.
+    // A protocol refusing the command: the rejection is the lane's (it lets the rest go), not thrown
+    // here, and no other road runs it (review 5: a fallback after a refusal could land in a later
+    // attachment or after the input behind it).
     state.refuse = true
     await expect(view.editCommand?.(undo)).rejects.toThrow(/refused/)
+    expect(wc.calls).toEqual([])
     state.refuse = false
     // Detached: the webContents commands, no key event, settled at once.
     wc.debugger.attachedWith = undefined

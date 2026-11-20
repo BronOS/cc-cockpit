@@ -30,6 +30,7 @@ import {
   type WebviewInputEvent
 } from '../../src/main/webview/webview-input'
 import { WebviewViewers, type WebviewPanelOf } from '../../src/main/webview/webview-viewers'
+import { PageInputRouter } from '../../src/main/webview/page-input'
 import { WebviewManager, type WebviewView } from '../../src/main/webview/webview-manager'
 import { CommandRegistry } from '../../src/main/commands/command-registry'
 import { chordFromEvent, type KeyEventLike } from '../../src/shared/keys'
@@ -411,6 +412,60 @@ describe('edit chords: selectAll, undo and redo as commands', () => {
     for (const k of ['c', 'x', 'v']) expect(editCommandOf(k, mods('control'))).toBeUndefined()
   })
 
+  // docs/backlog/streamed-mac-line-edit-keys.md: a Mac's line keys run nothing as a key event on a
+  // macOS server; Cmd alone with an arrow or Backspace carries AppKit's command for it.
+  it('editCommandOf: Cmd alone (Shift for the arrows) with an arrow or Backspace is the Mac line command', () => {
+    expect(editCommandOf('ArrowLeft', mods('meta'))).toBe('moveToLeftEndOfLine')
+    expect(editCommandOf('ArrowRight', mods('meta'))).toBe('moveToRightEndOfLine')
+    expect(editCommandOf('ArrowLeft', mods('meta', 'shift'))).toBe('moveToLeftEndOfLineAndModifySelection')
+    expect(editCommandOf('ArrowRight', mods('meta', 'shift'))).toBe('moveToRightEndOfLineAndModifySelection')
+    expect(editCommandOf('ArrowUp', mods('meta'))).toBe('moveToBeginningOfDocument')
+    expect(editCommandOf('ArrowDown', mods('meta'))).toBe('moveToEndOfDocument')
+    expect(editCommandOf('ArrowUp', mods('meta', 'shift'))).toBe('moveToBeginningOfDocumentAndModifySelection')
+    expect(editCommandOf('ArrowDown', mods('meta', 'shift'))).toBe('moveToEndOfDocumentAndModifySelection')
+    expect(editCommandOf('Backspace', mods('meta'))).toBe('deleteToBeginningOfLine')
+    // Not: Cmd+Shift+Backspace, Ctrl+arrows (a word on Windows and Linux), Alt with them (a word on
+    // a Mac, a key event does it), Cmd+Alt (a shell chord), Ctrl+Cmd, Delete, Home.
+    expect(editCommandOf('Backspace', mods('meta', 'shift'))).toBeUndefined()
+    for (const k of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Backspace']) {
+      expect(editCommandOf(k, mods('control'))).toBeUndefined()
+      expect(editCommandOf(k, mods('alt'))).toBeUndefined()
+      expect(editCommandOf(k, mods('meta', 'alt'))).toBeUndefined()
+      expect(editCommandOf(k, mods('meta', 'control'))).toBeUndefined()
+      expect(editCommandOf(k, mods())).toBeUndefined()
+    }
+    expect(editCommandOf('Delete', mods('meta'))).toBeUndefined()
+    expect(editCommandOf('Home', mods('meta'))).toBeUndefined()
+  })
+
+  it("editKeyEvent: a line key's rawKeyDown carries the named key's code and Windows key code", () => {
+    expect(editKeyEvent({ type: 'editCommand', command: 'moveToLeftEndOfLineAndModifySelection', key: 'ArrowLeft', modifiers: ['meta', 'shift'] })).toEqual({
+      type: 'rawKeyDown',
+      key: 'ArrowLeft',
+      code: 'ArrowLeft',
+      windowsVirtualKeyCode: 37,
+      modifiers: 12,
+      autoRepeat: false,
+      commands: ['moveToLeftEndOfLineAndModifySelection']
+    })
+    expect(editKeyEvent({ type: 'editCommand', command: 'deleteToBeginningOfLine', key: 'Backspace', modifiers: ['meta'] })).toMatchObject({
+      key: 'Backspace',
+      code: 'Backspace',
+      windowsVirtualKeyCode: 8,
+      modifiers: 4,
+      commands: ['deleteToBeginningOfLine']
+    })
+    expect(editKeyEvent({ type: 'editCommand', command: 'moveToEndOfDocument', key: 'ArrowDown', modifiers: ['meta'] })).toMatchObject({ code: 'ArrowDown', windowsVirtualKeyCode: 40 })
+  })
+
+  it('a line key goes as its command through the lane; a clipboard chord in the same call still does not', async () => {
+    const s = commandSetup(() => Promise.resolve())
+    expect(s.input.accept(PANEL, 'web:1', [key('ArrowLeft', 'down', ['meta']), key('v', 'down', ['meta']), key('ArrowLeft', 'up', ['meta'])])).toBe(2)
+    await s.flush()
+    expect(s.order).toEqual(['command moveToLeftEndOfLine', 'keyUp Left'])
+    expect(s.commands).toEqual([{ type: 'editCommand', command: 'moveToLeftEndOfLine', key: 'ArrowLeft', modifiers: ['meta'] }])
+  })
+
   it("editKeyEvent: S6's rawKeyDown with the letter's code, the modifier bits and the one command", () => {
     expect(editKeyEvent({ type: 'editCommand', command: 'redo', key: 'Z', modifiers: ['meta', 'shift'] })).toEqual({
       type: 'rawKeyDown',
@@ -699,7 +754,7 @@ describe("the browser's side (web/webview-stream.ts)", () => {
 
   // Plan 20261119-server-mode-mac, decision 7: the edit chords main turns into commands must reach
   // main at all. No default shell chord takes them on either platform (a person may still bind one).
-  it('forwards the edit chords: no default shell command holds Ctrl/Cmd+A, Z, Shift+Z or Ctrl+Y', () => {
+  it('forwards the edit chords and line keys: no default shell command holds Ctrl/Cmd+A, Z, Shift+Z, Ctrl+Y, Cmd+arrows or Cmd+Backspace', () => {
     for (const platform of ['darwin', 'linux'] as const) {
       const keys = new Set(
         new CommandRegistry(platform, () => ({}))
@@ -717,7 +772,13 @@ describe("the browser's side (web/webview-stream.ts)", () => {
         keyEvent('z', { metaKey: true }),
         keyEvent('Z', { ctrlKey: true, shiftKey: true }),
         keyEvent('Z', { metaKey: true, shiftKey: true }),
-        keyEvent('y', { ctrlKey: true })
+        keyEvent('y', { ctrlKey: true }),
+        // The Mac line keys (docs/backlog/streamed-mac-line-edit-keys.md).
+        keyEvent('ArrowLeft', { metaKey: true }),
+        keyEvent('ArrowRight', { metaKey: true, shiftKey: true }),
+        keyEvent('ArrowUp', { metaKey: true }),
+        keyEvent('ArrowDown', { metaKey: true, shiftKey: true }),
+        keyEvent('Backspace', { metaKey: true })
       ]
       for (const e of chords) expect(`${platform} ${e.key} ${webviewKeyAction(e, isCommand)}`).toBe(`${platform} ${e.key} forward`)
       // The table is real: a default chord of the shell is the shell's.
@@ -1261,5 +1322,97 @@ describe('textChunks (a paste into insertText calls)', () => {
   it(`stops at ${MAX_TEXT_CHUNKS} calls`, () => {
     expect(textChunks('x'.repeat(10), 2, 3)).toEqual(['xx', 'xx', 'xx'])
     expect(textChunks('x'.repeat(TEXT_CHUNK_UNITS * (MAX_TEXT_CHUNKS + 5)))).toHaveLength(MAX_TEXT_CHUNKS)
+  })
+})
+
+describe('input held in webview-input carries its attachment', () => {
+  // Codex (merge bar O2): input held here (a press behind its select hit test, keys behind a text)
+  // went into the router under the attachment after a reset. It carries the one it came under, and
+  // the router drops it (C1, cause epoch). The target is a real PageInputRouter on a fake protocol.
+  function routed() {
+    const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => 0 })
+    const timers = new Map<number, () => void>()
+    let next = 0
+    const manual = { set: (fn: () => void) => (timers.set(++next, fn), next), clear: (h: unknown) => void timers.delete(h as number) }
+    const sent: string[] = []
+    let holdKeys = false
+    const router = new PageInputRouter({
+      send: (method, params) => {
+        if (!method.startsWith('Input.')) return Promise.resolve({})
+        const p = params as { type?: string; key?: string; text?: string }
+        sent.push(method === 'Input.insertText' ? `text ${String(p.text)}` : `${String(p.type)}${p.key === undefined ? '' : ' ' + p.key}`)
+        return holdKeys && method === 'Input.dispatchKeyEvent' ? new Promise(() => {}) : Promise.resolve({})
+      },
+      attached: () => true,
+      fallback: () => {},
+      log: () => {},
+      timers: manual
+    })
+    const hits: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
+    const input = new WebviewInput({
+      isViewer: (panel, viewId) => viewers.isViewer(panel, viewId),
+      claimOwner: (panel, viewId) => viewers.claimOwner(panel, viewId),
+      target: () => ({
+        size: () => ({ width: 800, height: 600 }),
+        epoch: () => router.inputEpoch(),
+        send: (events, epoch) => router.input(events, epoch),
+        insertText: (text, epoch) => router.command('Input.insertText', { text }, () => undefined, epoch),
+        // Already running in the page (not in the router's queue): a reset does not reject it.
+        hitSelect: () => new Promise((resolve, reject) => void hits.push({ resolve, reject }))
+      }),
+      pushSelect: () => {},
+      timers: manual,
+      now: () => 0
+    })
+    viewers.report(PANEL, 'web:1', shown, 'owner')
+    const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+    const fire = (): void => {
+      const fns = [...timers.values()]
+      timers.clear()
+      for (const fn of fns) fn()
+    }
+    return { input, router, sent, hits, flush, fire, hold: (on: boolean) => (holdKeys = on) }
+  }
+  const release = { kind: 'pointer', type: 'up', x: 10, y: 10, button: 'left', clickCount: 1 }
+
+  it('a press held for a hit test already running when the attachment ends is dropped, never delivered into the next', async () => {
+    const { input, router, sent, hits, flush } = routed()
+    input.accept(PANEL, 'web:1', [down(10, 10), release, key('a')])
+    expect(hits).toHaveLength(1)
+    router.reset()
+    // The hit test answers after the reset ("no select"): the press, its release and the key came
+    // under the attachment that ended.
+    hits[0]?.resolve(null)
+    await flush()
+    expect(sent).toEqual([])
+    // Input of the new attachment goes as usual.
+    input.accept(PANEL, 'web:1', [down(20, 20)])
+    hits[1]?.resolve(null)
+    await flush()
+    expect(sent).toEqual(['mousePressed'])
+  })
+
+  it('input held behind a text the reset dropped is dropped too, never delivered into the next', async () => {
+    const { input, router, sent, flush, fire, hold } = routed()
+    // A key the page never answers, then a text queued behind it in the router, then keys held here
+    // behind the text.
+    hold(true)
+    input.accept(PANEL, 'web:1', [key('a')])
+    expect(input.acceptText(PANEL, 'web:1', 'é')).toBe(true)
+    input.accept(PANEL, 'web:1', [key('b')])
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a'])
+    hold(false)
+    // The reset rejects the queued text (InputDroppedError): the held 'b' came under that attachment.
+    router.reset()
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a'])
+    // The old key's deadline (the step that sent it waits for it), then a key of the new attachment.
+    fire()
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a'])
+    input.accept(PANEL, 'web:1', [key('c')])
+    await flush()
+    expect(sent).toEqual(['rawKeyDown a', 'rawKeyDown c', 'char c'])
   })
 })

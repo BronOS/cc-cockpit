@@ -4,7 +4,8 @@
 // The browser draws the off-screen page on a canvas and sends what the person does over it, in
 // the page's CSS px (the browser undid its letterbox and the frame's scale, web/webview-stream.ts).
 // Everything here is untrusted text from a socket, and what comes out is *trusted* input to a page
-// (`webContents.sendInputEvent`: a click the page cannot tell from a real one), so:
+// (the page's DevTools protocol through page-input.ts, `sendInputEvent` once it detached: a click
+// the page cannot tell from a real one), so:
 //
 //   who        only a current viewer of the panel (webview-viewers.ts): a browser view of the panel's
 //              own window that shows it now. The router resolved the panel key through the caller's
@@ -30,8 +31,10 @@
 //              would paste whatever another page or session left in it (review finding).
 //
 // Mapping (checked headless, Electron 45.1.0): mouseMove / mouseDown / mouseUp / mouseWheel /
-// keyDown / keyUp / char. A wheel's deltas are negated: Chromium's wheel delta is positive
-// scrolling up, the DOM's positive scrolling down. A key down that types (webviewKeyChar: a
+// keyDown / keyUp / char, Electron's input events: `sendInputEvent`'s own shape, which the view's
+// router (page-input.ts) turns one for one into the protocol's `Input.dispatchMouseEvent` and
+// `Input.dispatchKeyEvent` while the page's protocol is attached. A wheel's deltas are negated:
+// Chromium's wheel delta is positive scrolling up, the DOM's positive scrolling down. A key down that types (webviewKeyChar: a
 // printable key, Space, Enter as '\r', with no Ctrl, Meta or Alt) is followed by its `char`: a raw
 // key down inserts nothing. Held buttons travel as the `leftbuttondown`-style modifiers on moves,
 // so a page's drag code sees `buttons` (selection by drag works without, `buttons` reads 0).
@@ -68,10 +71,11 @@
 // Order (design-web-browser.md §4.2): everything one browser view sends for one panel (pointer,
 // wheel, keys, inserted text, select choices) reaches the page in the order the person produced
 // it, through one lane per view and panel (PressLane) shared by the three channels. The browser
-// sends them in that order (web/webview-stream.ts InputQueue); main keeps it. Input events and text
-// take different roads into the page, though: `sendInputEvent` goes through the widget's input
-// pipe and the renderer's input queue, while a text or a choice is a separate call whose own
-// promise says when the page has it. The e2e typing 'héllo ü' got "hlélo ü" and "éhllo ü" about one
+// sends them in that order (web/webview-stream.ts InputQueue); main keeps it, and the view's router
+// keeps it across the page's protocol sessions (page-input.ts: one queue per page, a key waits for
+// a press into a frame to be answered). Input events and text could take different roads into the
+// page, though: input events go through the widget's input pipe and the renderer's input queue,
+// while a text or a choice is a separate call whose own promise says when the page has it. The e2e typing 'héllo ü' got "hlélo ü" and "éhllo ü" about one
 // run in ten with main's calls in the right order (logged): Electron's `webContents.insertText` is
 // an IPC to the renderer that a key sent just before or after it can overtake. So the view inserts
 // text on the input pipe itself (electron-offscreen-webview.ts: the protocol's `Input.insertText`,
@@ -81,14 +85,16 @@
 //
 // Edit chords (plan 20261119-server-mode-mac, decision 7; design-web.md §9.15 S6): the key down of
 // Ctrl or Cmd alone with A, Z, Shift+Z or Ctrl+Y (shared/webview-keys.ts editCommandOf) goes as one
-// `editCommand` item instead of a sendInputEvent key down: the view sends it as the protocol's
+// `editCommand` item instead of a plain key down: the view sends it as the protocol's
 // `Input.dispatchKeyEvent` carrying `selectAll`, `undo` or `redo` (editKeyEvent). On a macOS server
 // a key event alone runs none of them (Chromium takes them from the menu and the responder chain,
 // which an off-screen page has not), so before this a browser's Cmd+A selected nothing. The page
 // still sees the key down, and preventing it keeps the page's own undo (the command does not run);
 // the key down travels the input pipe like the rest; and, like a text, the lane holds what follows
 // until the command's promise settles. Its key up is a plain key up. A target with no `editCommand`
-// gets the plain key down, as before.
+// gets the plain key down, as before. The Mac line keys (Cmd with an arrow or Backspace, with Shift
+// for the arrows) are edit chords the same way, each with AppKit's command (moveToLeftEndOfLine, ...,
+// deleteToBeginningOfLine): a key event alone moved and deleted nothing there either.
 //
 // Pure: no Electron (the view's sendInput, insertText, editCommand, readSelection, hitSelect and
 // chooseSelect are injected), clock, timers and popup ids injected.
@@ -102,6 +108,7 @@ import {
   webviewCursor,
   webviewKeyChar,
   webviewKeyCode,
+  webviewKeyInfo,
   type WebviewEditCommand
 } from '../../shared/webview-keys'
 import type { ViewId } from '../../shared/views'
@@ -196,7 +203,7 @@ export type WebviewInputEvent =
   | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number; modifiers: InputModifier[] }
   | { kind: 'key'; type: 'down' | 'up'; key: string; modifiers: InputModifier[] }
 
-/** What goes to `webContents.sendInputEvent` (structurally Electron's MouseInputEvent & co). */
+/** Electron's input events (structurally its MouseInputEvent & co): the view's router maps them to the protocol, `sendInputEvent` takes them as they are. */
 export type ElectronInputEvent =
   | { type: 'mouseMove'; x: number; y: number; modifiers: InputModifier[] }
   | { type: 'mouseDown' | 'mouseUp'; x: number; y: number; button: PointerButton; clickCount: number; modifiers: InputModifier[] }
@@ -296,12 +303,12 @@ export function editCommandOfEvent(event: WebviewInputEvent): WebviewEditCommand
 export interface EditCommandInput {
   type: 'editCommand'
   command: WebviewEditCommand
-  /** The DOM key the browser named (`a`, `Z`, `y`): a letter, editCommandOf checked it. */
+  /** The DOM key the browser named (`a`, `Z`, `y`, `ArrowLeft`, `Backspace`): editCommandOf checked it. */
   key: string
   modifiers: InputModifier[]
 }
 
-/** The protocol's modifier bits (`Input.dispatchKeyEvent`): Alt 1, Ctrl 2, Meta/Cmd 4, Shift 8. */
+/** The protocol's modifier bits (`Input.dispatchKeyEvent`, `Input.dispatchMouseEvent`): Alt 1, Ctrl 2, Meta/Cmd 4, Shift 8. */
 const PROTOCOL_MODIFIER_BITS: ReadonlyMap<InputModifier, number> = new Map([
   ['alt', 1],
   ['control', 2],
@@ -309,23 +316,42 @@ const PROTOCOL_MODIFIER_BITS: ReadonlyMap<InputModifier, number> = new Map([
   ['shift', 8]
 ])
 
+/** The protocol's modifier bits of a list of Electron modifiers (held buttons and autorepeat are no bits). */
+/**
+ * The router's rejection of a step it dropped because the protocol was reset or the renderer went
+ * (page-input.ts `lost`): what waited on it belongs to the attachment that ended, so it is dropped
+ * too, never delivered into the next one (codex, O2: a press held for its select hit test went into
+ * the new attachment once the dropped call rejected).
+ */
+export class InputDroppedError extends Error {
+  constructor() {
+    super('webview: input dropped (the protocol was reset)')
+    this.name = 'InputDroppedError'
+  }
+}
+
+export function protocolModifiers(modifiers: readonly InputModifier[]): number {
+  let bits = 0
+  for (const m of modifiers) bits |= PROTOCOL_MODIFIER_BITS.get(m) ?? 0
+  return bits
+}
+
 /**
  * The `Input.dispatchKeyEvent` params for an edit chord's key down: a `rawKeyDown` (no text: the
- * chord types nothing) with the letter's US `code` and Windows key code, the modifiers as bits, and
- * the one command. The letter's case follows Shift, as a real keyboard's `key` does. S6 (design-web.md
+ * chord types nothing) with the key's US `code` and Windows key code, the modifiers as bits, and
+ * the one command. A letter's case follows Shift, as a real keyboard's `key` does. S6 (design-web.md
  * §9.15) checked exactly this shape on an unfocused off-screen page.
  */
 export function editKeyEvent(input: EditCommandInput): Record<string, unknown> {
   const shift = input.modifiers.includes('shift')
-  const upper = input.key.toUpperCase()
-  let modifiers = 0
-  for (const m of input.modifiers) modifiers |= PROTOCOL_MODIFIER_BITS.get(m) ?? 0
+  const letter = input.key.length === 1
+  const info = webviewKeyInfo(letter ? (shift ? input.key.toUpperCase() : input.key.toLowerCase()) : (webviewKeyCode(input.key) ?? ''))
   return {
     type: 'rawKeyDown',
-    key: shift ? upper : input.key.toLowerCase(),
-    code: `Key${upper}`,
-    windowsVirtualKeyCode: upper.charCodeAt(0),
-    modifiers,
+    key: info?.key ?? input.key,
+    code: info?.code ?? '',
+    windowsVirtualKeyCode: info?.keyCode ?? 0,
+    modifiers: protocolModifiers(input.modifiers),
     autoRepeat: input.modifiers.includes('isautorepeat'),
     commands: [input.command]
   }
@@ -343,7 +369,7 @@ function point(v: number, side: number): number {
   return Math.max(0, Math.min(Math.max(0, side - 1), Math.round(v)))
 }
 
-/** The sendInputEvent calls for one checked event on a page of `size`. */
+/** The input events for one checked event on a page of `size`. */
 export function toElectronEvents(event: WebviewInputEvent, size: PlaceSize): ElectronInputEvent[] {
   const modifiers = event.modifiers
   if (event.kind === 'key') {
@@ -413,29 +439,36 @@ export function cursorEvent(panel: WebviewPanelOf, type: unknown): { panelKey: s
   return { panelKey: `${panel.pluginId}/${panel.panelId}`, cursor: webviewCursor(type) }
 }
 
-/** Where a panel's input goes: its off-screen page's size, its sendInputEvent, its text and selection. */
+/** Where a panel's input goes: its off-screen page's size, its input road, its text and selection. */
 export interface InputTarget {
   size(): PlaceSize
-  send(events: readonly ElectronInputEvent[]): void
+  /**
+   * The page's input attachment now (page-input.ts `inputEpoch`): input held here carries the one
+   * it came under, and the router drops what carries an older one (C1, cause epoch). Absent: none
+   * is carried (every call is taken as current).
+   */
+  epoch?(): number
+  /** `epoch`: the attachment the events came under (absent: now). The same for the calls below. */
+  send(events: readonly ElectronInputEvent[], epoch?: number): void
   /**
    * Committed text into the page's focused field (absent: the view takes no text). A promise that
    * settles once the page has it: the lane holds later input until then.
    */
-  insertText?(text: string): Promise<unknown> | void
+  insertText?(text: string, epoch?: number): Promise<unknown> | void
   /** SELECTION_SCRIPT's result in WEBVIEW_WORLD_ID; rejects or never settles for a page that is gone or hung. */
   readSelection?(): Promise<unknown>
   /**
    * select-hit.ts hitScript at page CSS px (x, y) in WEBVIEW_WORLD_ID, keeping the select under
    * `id` (absent: presses go to the page unasked). Rejects or never settles for a gone or hung page.
    */
-  hitSelect?(x: number, y: number, id: string): Promise<unknown>
+  hitSelect?(x: number, y: number, id: string, epoch?: number): Promise<unknown>
   /** select-hit.ts chooseScript for popup `id` in WEBVIEW_WORLD_ID (null: forget it). */
-  chooseSelect?(id: string, index: number | null): Promise<unknown>
+  chooseSelect?(id: string, index: number | null, epoch?: number): Promise<unknown>
   /**
    * An edit chord's key down with its command (editKeyEvent; absent: the chord goes as a plain key
    * down). A promise that settles once the page has it: the lane holds later input until then.
    */
-  editCommand?(input: EditCommandInput): Promise<unknown> | void
+  editCommand?(input: EditCommandInput, epoch?: number): Promise<unknown> | void
 }
 
 /** Timers for the selection debounce (tests drive them by hand). */
@@ -473,10 +506,21 @@ type PressEvent = Extract<ElectronInputEvent, { type: 'mouseDown' | 'mouseUp' }>
 /** One item of a lane: an input event, an edit command, a committed text or a select choice, in the order they came. */
 type QueuedInput = ElectronInputEvent | EditCommandInput | { type: 'insertText'; text: string } | { type: 'choose'; id: string; index: number | null }
 
+/**
+ * An item and the page's input attachment it came under (InputTarget `epoch`): held input that goes
+ * later carries it, so what came before a reset or a renderer change is dropped by the router, never
+ * delivered into the next one (codex, O2: a press held for a hit test that was already running, and
+ * input held behind a text whose wait was rejected, went under the new attachment).
+ */
+interface Carried {
+  input: QueuedInput
+  epoch: number | undefined
+}
+
 /** What a lane waits for before the rest of its input goes. */
 type LaneWait =
-  /** A left press's hit-test: its press (held), its popup id. */
-  | { kind: 'hit'; seq: number; timer: unknown; press: PressEvent; selectId: string }
+  /** A left press's hit-test: its press (held, with its attachment), its popup id. */
+  | { kind: 'hit'; seq: number; timer: unknown; press: PressEvent; pressEpoch: number | undefined; selectId: string }
   /** A text, a choice or an edit command the page has not confirmed yet. */
   | { kind: 'page'; seq: number; timer: unknown }
 
@@ -486,8 +530,8 @@ interface PressLane {
   panel: WebviewPanelOf
   viewId: ViewId
   wait: LaneWait | undefined
-  /** Events, texts and choices that came while the lane waited, in order. */
-  held: QueuedInput[]
+  /** Events, texts and choices that came while the lane waited, in order, each with its attachment. */
+  held: Carried[]
   /** The last left press went to a popup: its release (the next left mouseUp) does not go either. */
   dropRelease: boolean
 }
@@ -646,7 +690,9 @@ export class WebviewInput {
   }
 
   /** Checked, mapped input for the page, behind whatever the lane waits for. */
-  private deliver(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: QueuedInput[]): void {
+  private deliver(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, inputs: QueuedInput[]): void {
+    const epoch = target.epoch?.()
+    const events = inputs.map((input): Carried => ({ input, epoch }))
     const lane = this.lanes.get(viewId)?.get(laneIdOf(panel))
     if (lane?.wait) {
       // Over the cap the newest go: a browser of ours sends a few per animation frame.
@@ -663,22 +709,32 @@ export class WebviewInput {
    * after the events before it, and the rest waits for the page to confirm it (startPageWait). A
    * release owed to a popup is dropped.
    */
-  private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly QueuedInput[], lane: PressLane | undefined): void {
+  private run(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, events: readonly Carried[], lane: PressLane | undefined): void {
     let out: ElectronInputEvent[] = []
+    // The attachment of what is in `out` (one send per run of the same one).
+    let outEpoch: number | undefined
     const canHit = target.hitSelect !== undefined && this.deps.pushSelect !== undefined
+    const emit = (e: ElectronInputEvent, epoch: number | undefined): void => {
+      if (out.length > 0 && epoch !== outEpoch) {
+        this.send(panel, viewId, target, out, outEpoch)
+        out = []
+      }
+      outEpoch = epoch
+      out.push(e)
+    }
     for (let i = 0; i < events.length; i++) {
-      const event = events[i] as QueuedInput
+      const { input: event, epoch } = events[i] as Carried
       if (event.type === 'insertText' || event.type === 'choose' || event.type === 'editCommand') {
-        this.send(panel, viewId, target, out)
+        this.send(panel, viewId, target, out, outEpoch)
         out = []
         let pending: Promise<unknown> | void
         try {
           pending =
             event.type === 'insertText'
-              ? target.insertText?.(event.text)
+              ? target.insertText?.(event.text, epoch)
               : event.type === 'editCommand'
-                ? target.editCommand?.(event)
-                : target.chooseSelect?.(event.id, event.index)
+                ? target.editCommand?.(event, epoch)
+                : target.chooseSelect?.(event.id, event.index, epoch)
         } catch {
           pending = undefined
         }
@@ -695,8 +751,8 @@ export class WebviewInput {
         // A new press: whatever release a popup was owed is moot (it never came, or came before).
         if (lane) lane.dropRelease = false
         if (canHit) {
-          this.send(panel, viewId, target, out)
-          this.startHit(panel, viewId, target, event, events.slice(i + 1))
+          this.send(panel, viewId, target, out, outEpoch)
+          this.startHit(panel, viewId, target, event, epoch, events.slice(i + 1))
           return
         }
       } else if (left && lane?.dropRelease) {
@@ -704,17 +760,17 @@ export class WebviewInput {
         continue
       } else if (lane?.dropRelease && event.type === 'mouseMove' && event.modifiers.includes('leftbuttondown')) {
         // The page never saw that press: no drag of it either.
-        out.push({ ...event, modifiers: event.modifiers.filter((m) => m !== 'leftbuttondown') })
+        emit({ ...event, modifiers: event.modifiers.filter((m) => m !== 'leftbuttondown') }, epoch)
         continue
       }
-      out.push(event)
+      emit(event, epoch)
     }
-    this.send(panel, viewId, target, out)
+    this.send(panel, viewId, target, out, outEpoch)
   }
 
-  private send(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, out: readonly ElectronInputEvent[]): void {
+  private send(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, out: readonly ElectronInputEvent[], epoch: number | undefined): void {
     if (out.length === 0) return
-    target.send(out)
+    target.send(out, epoch)
     if (out.some((e) => e.type === 'mouseUp' || e.type === 'keyDown')) this.selectionMayChange(panel, viewId)
   }
 
@@ -734,12 +790,13 @@ export class WebviewInput {
   }
 
   /** Hold `rest` until the page has the text, choice or edit command `pending` is for (or PAGE_WAIT_MS passes). */
-  private startPageWait(panel: WebviewPanelOf, viewId: ViewId, pending: Promise<unknown>, rest: readonly QueuedInput[]): void {
+  private startPageWait(panel: WebviewPanelOf, viewId: ViewId, pending: Promise<unknown>, rest: readonly Carried[]): void {
     const lane = this.lane(panel, viewId)
     const seq = ++this.waitSeq
     lane.held = rest.slice(0, MAX_HELD_EVENTS)
     lane.wait = { kind: 'page', seq, timer: this.timers.set(() => this.pageDone(lane, seq), PAGE_WAIT_MS) }
-    // A rejection (a page gone or navigated meanwhile) lets the rest go all the same.
+    // A rejection (a page gone or navigated meanwhile) lets the rest go all the same: each item with
+    // its own attachment, so the router drops what came under one that ended.
     pending.then(
       () => this.pageDone(lane, seq),
       () => this.pageDone(lane, seq)
@@ -759,20 +816,21 @@ export class WebviewInput {
   }
 
   /** Hold `press` and `rest` while the page says what is under the press (or HIT_TIMEOUT_MS passes). */
-  private startHit(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, press: PressEvent, rest: QueuedInput[]): void {
+  private startHit(panel: WebviewPanelOf, viewId: ViewId, target: InputTarget, press: PressEvent, pressEpoch: number | undefined, rest: Carried[]): void {
     const lane = this.lane(panel, viewId)
     const seq = ++this.waitSeq
     const selectId = (this.deps.newSelectId ?? newSelectId)()
     lane.held = rest.slice(0, MAX_HELD_EVENTS)
-    lane.wait = { kind: 'hit', seq, press, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
+    lane.wait = { kind: 'hit', seq, press, pressEpoch, selectId, timer: this.timers.set(() => this.hitDone(lane, seq, undefined), HIT_TIMEOUT_MS) }
     let pending: Promise<unknown>
     try {
-      pending = (target.hitSelect as NonNullable<InputTarget['hitSelect']>)(press.x, press.y, selectId)
+      pending = (target.hitSelect as NonNullable<InputTarget['hitSelect']>)(press.x, press.y, selectId, pressEpoch)
     } catch {
       this.hitDone(lane, seq, undefined)
       return
     }
-    // A page that went or failed: the press goes on as a click (hitDone with nothing).
+    // A page that went or failed: the press goes on as a click (hitDone with nothing), with its own
+    // attachment (one that ended meanwhile: the router drops it).
     pending.then(
       (raw) => this.hitDone(lane, seq, raw),
       () => this.hitDone(lane, seq, undefined)
@@ -793,8 +851,10 @@ export class WebviewInput {
     const target = this.deps.target(lane.panel)
     if (!target) return
     const select = parseHitResult(raw)
-    // A view that stopped viewing the panel meanwhile gets no popup: the press goes as it came.
-    if (select && this.deps.pushSelect && this.deps.isViewer(lane.panel, lane.viewId)) {
+    // A view that stopped viewing the panel meanwhile gets no popup: the press goes as it came. Nor
+    // does a press of an attachment that ended (its select is the old page's; the router drops it).
+    const current = hit.pressEpoch === undefined || target.epoch?.() === hit.pressEpoch
+    if (select && current && this.deps.pushSelect && this.deps.isViewer(lane.panel, lane.viewId)) {
       this.popups.set(lane.viewId, lane.id, select, hit.selectId)
       lane.dropRelease = true
       this.deps.pushSelect(lane.viewId, { panelKey: panelKeyOf(lane.panel), id: hit.selectId, ...select })
@@ -803,7 +863,7 @@ export class WebviewInput {
     }
     // Not a select: the press goes first, then what waited for it; a press among those is asked
     // about in turn. Not through run for the press itself: it would be hit-tested again.
-    this.send(lane.panel, lane.viewId, target, [hit.press])
+    this.send(lane.panel, lane.viewId, target, [hit.press], hit.pressEpoch)
     this.run(lane.panel, lane.viewId, target, held, lane)
   }
 

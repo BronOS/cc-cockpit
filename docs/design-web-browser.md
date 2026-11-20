@@ -208,11 +208,105 @@ release); anything malformed refuses the whole call. The browser's outbox sends 
 coalesced and wheels summed; click counts are its own (`ClickCounter`: a PointerEvent's `detail` is 0); a blur releases
 held keys, a pointercancel held buttons. Modifiers are Electron's lower-case names (`shift`, `control`, `alt`, `meta`,
 `leftbuttondown`, ..., `isautorepeat`); held buttons travel on moves (without them a page's `buttons` reads 0); wheel
-deltas are negated for Chromium. Main maps the events to `sendInputEvent` (`mouseMove`, `mouseDown`, `mouseUp`,
+deltas are negated for Chromium. Main maps the events to Electron's input events (`mouseMove`, `mouseDown`, `mouseUp`,
 `mouseWheel`, `keyDown`, `keyUp`, `char`), except the key down of an edit chord (Ctrl or Cmd alone with A, Z, Shift+Z,
-or Ctrl+Y: `editCommandOf`), which goes as the page protocol's `Input.dispatchKeyEvent` carrying `selectAll`, `undo` or
-`redo` (a key event alone runs none of them on a macOS server; the page still sees the key down and can prevent it;
-plan 20261119-server-mode-mac, decision 7). It accepts them only from a current viewer (`server && view.remote`, the panel
+or Ctrl+Y) or a Mac line key (Cmd alone with Left/Right, Up/Down, each with Shift too, and Cmd+Backspace;
+`editCommandOf`), which carries its command (`selectAll`, `undo`, `redo`, `moveToLeftEndOfLine`, ...,
+`deleteToBeginningOfLine`: AppKit's names for those keys): a key event alone runs none of them on a macOS server; the
+page still sees the key down and can prevent it (plan 20261119-server-mode-mac, decision 7). The off-screen view sends
+them all on the page's DevTools protocol through one router per page (`page-input.ts`), with `sendInputEvent` only as
+the fallback when the protocol detached:
+
+- **Keys, text and commands** go on the page's own session (`Input.dispatchKeyEvent` one for one with the key down,
+  `char` and key up, `code` and Windows key code from the allow-list's table; `Input.insertText`): they follow focus into
+  a cross-site iframe, which `sendInputEvent` keys never reach.
+- **Pointer events** go to the session of the deepest cross-site (out-of-process) frame under the point, the point in
+  that frame's own CSS px: neither `sendInputEvent` nor the page's session reaches such a frame of an off-screen page
+  (the top document gets the event, its target the IFRAME element). The child sessions are the ones the hardening
+  auto-attaches (§2); a frame takes input once resumed. Per level main asks the renderer what is under the point
+  (`DOM.getNodeForLocation`, document px: the level's scroll added), whether it owns a child target
+  (`DOM.describeNode`'s `frameId`), and its content box (`DOM.getBoxModel`, a viewport quad: transforms included), and
+  maps the point through the quad and the frame's untransformed size. Clipping, overlays and `pointer-events` are the
+  renderer's own hit test; a point on the owner's border or padding stays with the parent; a box that does not hold the
+  point (a scroll read gone stale) is read once more, then the parent takes it. No cache: one hit test per event, none
+  on a page without cross-site frames. After a press the frame that got it captures the moves and the release (a drag
+  leaving the frame keeps selecting in it; one from the top document stays there over a frame), the owners' boxes read
+  again on each event, until no button is held. Press records are the router's only press state: every road that
+  delivers a key's or a button's down (the protocol to the page or a frame, or a detached road) makes one of where it
+  went, one per key code and per button (a key down on a held code is a repeat that keeps it; a button down on a held
+  button first sends the old press's release), every ending deletes it (its up, a refused down, its frame going, a new
+  attachment), and the up goes there
+  and nowhere else, exactly once: an up with no record (its down went nowhere: a new attachment, a full queue) is
+  dropped, so no session gets a release it was not pressed for, and one whose frame went is dropped with it. A press
+  a detached road took whose up comes once the protocol is back goes to the page's session. A move without a button still
+  pressed, or a press of a button still pressed, means the viewer's release went missing: that release is sent then,
+  to its press's session. When the pointer changes frame, the frame it left gets one move (over the owner, or outside
+  its viewport) so its hover ends.
+- **Order.** One queue per page, one step at a time, and at most one input command on its way per page across all
+  its sessions: every `Input.*` (keys, texts, edit commands, pointer events, the hover moves and the lost releases)
+  goes through one sender, which holds the rest of this contract too, and the step that sent it waits until it is answered or its 500 ms deadline passed before anything else
+  goes (a key sent while a press into a frame was on its way landed in the old focus 15 times in 30; a press
+  hit-tested while a move was on its way could pick a frame that move's hover covered). A pointer event does every
+  wait first and its hit test last, right before its send; after hover moves it is hit-tested again, at most twice,
+  then the page's session takes it at the top point. Keys go one at a time too: the page answers one in about
+  0.15 ms. While a step waits, moves behind it coalesce to the latest and wheel deltas sum; presses, releases, keys
+  and texts keep their order. A full queue (512) drops moves first, then lets in only an up that matches a live press
+  record (matched by the physical key's `code`, so Shift+A down and `a` up match, or by the button), one per record:
+  repeated ups for one held key never grow the queue. A refused key down drops its `char` too.
+- **Stalled sessions.** A session whose command missed its deadline gets nothing more until every such command of it
+  answered (a later command's answer never stands in for an earlier one's), so
+  a renderer that answers nothing holds one unanswered command, never a pile; that command no longer counts toward
+  the page's one on its way (a stalled frame holds itself, not the page). A move for a stalled frame is dropped, its
+  press or wheel goes to the page's session at the top point. A release always goes where its press went: a frame
+  that got a press and then stalled still gets the release, at once and in order (one per press, on its way like any
+  command), never parked behind later input (a parked release let a later key go first); an edit command's key down is
+  a press like any key. While the page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
+  presses, releases and wheels wait in the queue in order (bounded by the cap; no hit test runs), moves
+  are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
+  answered; its answer or a reset starts the queue again. A hit-test query that missed its 200 ms deadline stalls its
+  session exactly as a late command does, and a stalled session is asked no query (one command or query outstanding
+  per session). The detached road is a session too: a text, edit
+  command or blocking call there that missed its deadline holds everything after it on that road, in order, until it
+  settles or the renderer goes (`render-process-gone`, `destroyed`); the stall is the renderer's, so a reset drops what
+  waits but keeps it, and at most one is outstanding across attachments; a deadline or answer the renderer that went
+  owed changes nothing. The renderer going (`render-process-gone`, `destroyed`, or the main frame's `did-navigate`
+  into another process) is a full reset as well: after a crash and a reload the old renderer's commands never answer
+  and the debugger stays attached (Electron, 2026-11-19), so only that lets input reach the new page. A page that spins
+  forever commits no reload or navigation at all (Chromium's own; main would have to kill its renderer, backlog). The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
+  selection read; every isolated-world script main runs for the page goes this way) is one at a time too, attached or not: the next call waits for the one on its way, and past its
+  deadline holds what follows it until it settles or the renderer goes (that stall is the renderer's too). A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
+  only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken
+  in, and each session its own lifetime. The one sender checks both synchronously right before it sends, so no wait
+  inside a step can carry it across: a step of an older attachment sends nothing by any road, and a pointer event
+  whose frame went goes to the page's session at the top point (never dropped, never to another frame; a hover move
+  or a release for it goes nowhere). Every continuation (an answer, a refusal, a deadline, a hit test) of an older
+  attachment or of a session that went changes nothing, requeues nothing and replays nothing, and the router keeps
+  nothing of a session that went; a live frame refusing a hover move is logged and the event routed again. A live frame's session refusing (the frame went) sends the event to the
+  page's session at the top point, never to another frame (a release is dropped instead; a press sent there owes its
+  release there); a refusal from a frame that already went sends nothing anywhere. Whatever the page's own session
+  refuses (a pointer event, key, text or edit command) is dropped and logged once (a text or command's caller hears the
+  rejection), never run by another road, which could land in a later attachment or after the input behind it; a
+  refused press records nothing (its release is dropped too) and a refused release clears its press. The
+  detached roads go through the same sender and serve only a protocol detached when the step runs, in order (what follows a text, an edit command or
+  a blocking call such as a select's choice waits for it, `STEP_TIMEOUT_MS` at most). A seeded randomized test
+  (`page-input.fuzz.test.ts`, `FUZZ_SEEDS` for a long run) checks these rules on every send and at quiescence, with
+  sessions that answer late, never or refuse, frames that detach, hover effects, the protocol lost (also between two
+  microtasks of the router's continuations) and detached roads that answer late, each delivery checked against the
+  attachment it lands in.
+
+`scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
+chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,
+one at `scale(0.5)`, with the top page and the frame scrolled; a same-site frame, and a cross-site one inside a scrolled
+same-site frame; a link dragged; Tab into the frame; the allow-listed keys the same as `sendInputEvent`'s; 50 rounds of
+clicks and typing across four documents in order. A pointer event costs about one frame (16 ms) to be answered, the
+same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
+by the whole delta (a 120 px wheel moved a 60 px tall box by 120, `sendInputEvent`'s by 60, its height), as a trackpad
+does; the page itself scrolls the same distance either way. A frame under a perspective transform (its box no
+parallelogram within half a px of the frame's own, measured in the frame's px, not the screen's) is not routed into:
+its parent takes the event. Not checked: Linux, a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
+by its own CSS `zoom`.
+
+It accepts them only from a current viewer (`server && view.remote`, the panel
 resolved through the caller's layout), allows 600 events per second per view (a token bucket; over-rate input is
 dropped silently) and key names only from the fixed allow-list in `src/shared/webview-keys.ts`. A press, a key or text
 makes the sender the size owner. The page's cursor (`cursor-changed`) goes to the viewers as `webviews.cursor` (a name
@@ -297,8 +391,9 @@ to the clicking view only; the id is main's (one per view and panel, taken once)
 element is found again through a `WeakRef` kept under the id in the isolated world's globals. The browser draws a
 `role="listbox"` dropdown (arrows, Home/End, type-ahead, Enter or Space, Escape). The page sees the select take the
 focus and an untrusted `input` and `change`, not the mouse events of that click. Right and middle presses are never
-held. Keyboard-only still: a select inside an iframe (`elementFromPoint` stops at the frame element; a cross-origin
-frame's document is not ours to walk) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
+held. Keyboard-only still: a select inside an iframe (`elementFromPoint` stops at the frame element; a cross-site
+frame's document would need an isolated world per child session, `Page.createIsolatedWorld`, not done; the click
+reaches the frame, whose popup then opens unpainted; whether the keyboard works it there was not checked) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
 paints and takes clicks on itself. Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS
 `zoom`.
 

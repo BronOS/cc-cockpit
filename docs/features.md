@@ -1030,14 +1030,16 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   and bandwidth. The page has one size, like a terminal: the last screen you clicked, typed or scrolled in sets it, and
   another screen shows the same picture letterboxed; "Fit to this screen" (in the panel's toolbar) takes the size of the
   screen you are on. A panel nobody shows (closed, or its browser tab in the background) stops painting.
-- *What works:* click, double click, drag, scroll, keys (letters with shortcuts, Enter, Tab, arrows, F-keys; the
-  shell's own chords stay with the shell), typing including IME, dead keys and non-ASCII text, paste (Ctrl/Cmd+V),
+- *What works:* click, double click, drag, scroll, keys (letters with shortcuts, Enter, Tab, arrows, F-keys, a Mac's
+  Cmd+arrows and Cmd+Backspace; the shell's own chords stay with the shell), all of it inside embedded cross-site
+  frames too (a video player, a sign-in or payment form), typing including IME, dead keys and non-ASCII text, paste (Ctrl/Cmd+V),
   copy and cut (Ctrl/Cmd+C/X: the page's selection goes to your clipboard), and `<select>` dropdowns (the browser
   draws its own list; the page sees focus, `input` and `change`, not the mouse events of that click).
 - *What does not:* file uploads (a file input does nothing), downloads, drag and drop into the page, sound, camera and
   other permissions, and URL overlays (`ccc overlay --url`, still refused). The page's own `alert`, `confirm` and
   `prompt` are silenced (`alert` returns at once, `confirm` answers no, `prompt` throws in the page). A `<select>`
-  inside an iframe, a `multiple` or `size` > 1 list is keyboard-only (focus it, arrows, Enter). A touch drag on a phone
+  inside an iframe, a `multiple` or `size` > 1 list is keyboard-only (focus it, arrows, Enter); text selected inside
+  an embedded cross-site frame is not copied by Ctrl/Cmd+C (the top page's is). A touch drag on a phone
   is a mouse drag. A link that opens a new window (`window.open`,
   `target="_blank"`) becomes a link notice to click; it never opens a tab by itself.
 - *Limits:* at most 4 pages per project and 12 per app (a `ccc browser open` past that is refused with the reason).

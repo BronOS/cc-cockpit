@@ -26,20 +26,20 @@
 //   `startPainting` plus `invalidate` when one does, so a full frame comes at once (an idle page
 //   paints nothing by itself, spike).
 // - `paint` and `cursor-changed` go to the view's sink (setSink), for the frame stream and the
-//   browsers' cursor; with no sink they are dropped. Input comes back through sendInput
-//   (`sendInputEvent`, checked by webview-input.ts), text through insertText and edit chords
-//   through editCommand (both on the page's protocol while it is attached).
-// - Pointer input reaches the top document only: neither `sendInputEvent` nor the page session's
-//   `Input.dispatchMouseEvent` routes into an out-of-process (cross-site) iframe of an off-screen
-//   page; the top document gets the event, its target the IFRAME element. Keys differ once focus
-//   is in such a frame (by Tab): `sendInputEvent` keys land on the top document's body, while the
-//   page session's key events (the edit chords below) and `Input.insertText` follow focus into the
-//   frame (scripts/offscreen-input-check.mjs, macOS, Electron 45.1.0, 2026-11-19;
-//   docs/backlog/streamed-clicks-miss-cross-site-iframes.md).
+//   browsers' cursor; with no sink they are dropped. Input comes back through sendInput (checked
+//   and mapped by webview-input.ts), text through insertText and edit chords through editCommand.
+// - Input goes on the page's DevTools protocol (attached by cancelOffscreenNativeUi), through one
+//   PageInputRouter per page (page-input.ts): keys, text and edit chords on the page's session
+//   (they follow focus into a cross-site iframe), each pointer event on the session of the deepest
+//   cross-site frame under it (neither `sendInputEvent` nor the page's session reaches such a
+//   frame of an off-screen page), all in one order. `sendInputEvent` and the webContents calls are
+//   only the fallback for a page whose protocol detached (scripts/offscreen-input-check.mjs).
 import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
 import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
+import { webviewKeyCode } from '../../shared/webview-keys'
 import { editKeyEvent, SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
+import { PageInputRouter } from './page-input'
 import { chooseScript, hitScript } from './select-hit'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
 
@@ -67,7 +67,9 @@ export interface OffscreenWebviewView extends WebviewView {
   /** Ask the page for a full frame (a new viewer with no frame to show yet). No-op once gone. */
   invalidate(): void
   /** Trusted input for the page (`sendInputEvent`), as webview-input.ts checked and mapped it. No-op once gone. */
-  sendInput(events: readonly ElectronInputEvent[]): void
+  sendInput(events: readonly ElectronInputEvent[], epoch?: number): void
+  /** The page's input attachment now (page-input.ts inputEpoch). */
+  inputEpoch(): number
 }
 
 /** One live off-screen view's window, as the test hook `offscreenWebviews` reports it. */
@@ -134,7 +136,42 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
     let size: { width: number; height: number } = { ...OFFSCREEN_INITIAL_SIZE }
     win.setContentSize(size.width, size.height)
     hardenWebContents(wc, events)
-    cancelOffscreenNativeUi(wc, this.log)
+    // The page's input road (page-input.ts): its protocol, the child frames' sessions the cancels
+    // auto-attach, and sendInputEvent once the protocol is gone.
+    const input = new PageInputRouter({
+      send: (method, params, sessionId) => (sessionId === undefined ? wc.debugger.sendCommand(method, params) : wc.debugger.sendCommand(method, params, sessionId)),
+      attached: () => !wc.isDestroyed() && wc.debugger.isAttached(),
+      fallback: (event) => {
+        if (!wc.isDestroyed()) wc.sendInputEvent(event)
+      },
+      log: this.log
+    })
+    cancelOffscreenNativeUi(wc, this.log, input)
+    // The renderer gone or replaced: what it owed never answers, so the router resets (ruling
+    // 2026-11-19 #11; real Electron: after a crash and a reload the old commands never answered and the
+    // debugger stayed attached). Replaced also when the main frame commits into another process, even
+    // if the old one never exits; `did-start-navigation` is too early (it still shows the old process).
+    let rendererPid: number | undefined
+    const mainPid = (): number | undefined => {
+      try {
+        return wc.isDestroyed() ? undefined : wc.mainFrame.osProcessId
+      } catch {
+        // Between two documents: "Render frame was disposed before WebFrameMain could be accessed".
+        return undefined
+      }
+    }
+    wc.on('render-process-gone', () => {
+      // The next commit's process is the new renderer's, never a change to reset for again.
+      rendererPid = undefined
+      input.rendererGone()
+    })
+    wc.on('destroyed', () => input.rendererGone())
+    wc.on('did-navigate', () => {
+      const pid = mainPid()
+      if (pid === undefined) return
+      if (rendererPid !== undefined && pid !== rendererPid) input.rendererGone()
+      rendererPid = pid
+    })
     wc.setFrameRate(OFFSCREEN_FRAME_RATE)
     // Hidden until the manager says a browser shows it, like the desktop view's zero bounds.
     let painting = false
@@ -203,52 +240,69 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       },
       size: () => ({ ...size }),
       // A browser's pointer, wheel and keys, checked and mapped by webview-input.ts (main's only
-      // path here: `webviews.input` from a viewer). Never focuses the window: off-screen input
-      // reaches the page without it (spike).
-      sendInput: (events) => {
+      // path here: `webviews.input` from a viewer), routed by the page's PageInputRouter. Never
+      // focuses the window: off-screen input reaches the page without it (spike).
+      // `epoch`: the input attachment the events came under (webview-input.ts carries it for held
+      // input); the router drops what came under one that ended.
+      inputEpoch: () => input.inputEpoch(),
+      sendInput: (events, epoch) => {
         if (wc.isDestroyed()) return
-        for (const event of events) wc.sendInputEvent(event)
+        input.input(events, epoch)
       },
       // A browser's committed text (an IME, a dead key, non-ASCII, a paste; webview-input.ts has
       // checked and cleaned it): into the focused field as an IME commit, nothing when none is.
-      // Through the page's protocol (attached by cancelOffscreenNativeUi), whose `Input.insertText`
-      // is an IME commit on the widget's input pipe: the renderer queues it behind the keys
-      // sendInputEvent already sent, and it settles once the page has it. `webContents.insertText`
-      // is an IPC of its own to the renderer, which a key sent just before or after it overtook
-      // (the e2e typed 'héllo ü' as "hlélo ü" and "éhllo ü", about one run in ten); it is only the
-      // fallback for a view whose protocol detached. A rejection is the lane's to hear (it lets
-      // the input after the text go), never thrown here.
-      insertText: (text) => {
+      // The protocol's `Input.insertText` on the page's session, in its place among the keys (the
+      // router's queue) and settled once the page has it; it follows focus into a cross-site frame.
+      // `webContents.insertText` is an IPC of its own to the renderer, which a key sent just before
+      // or after it overtook (the e2e typed 'héllo ü' as "hlélo ü" and "éhllo ü", about one run in
+      // ten); it is only the fallback for a view whose protocol detached. A rejection is the lane's
+      // to hear (it lets the input after the text go), never thrown here.
+      insertText: (text, epoch) => {
         if (wc.isDestroyed()) return Promise.resolve()
-        return wc.debugger.isAttached() ? wc.debugger.sendCommand('Input.insertText', { text }) : wc.insertText(text)
+        return input.command('Input.insertText', { text }, () => (wc.isDestroyed() ? undefined : wc.insertText(text)), epoch)
       },
-      // An edit chord (webview-input.ts editKeyEvent; plan 20261119-server-mode-mac, decision 7):
-      // its key down with `selectAll`, `undo` or `redo` as the protocol's `Input.dispatchKeyEvent`
-      // on the page's session (attached by cancelOffscreenNativeUi). S6 (design-web.md §9.15): it
-      // runs on the never-focused page, the page sees the key down and preventing it stops the
-      // command, and it keeps its place behind keys sendInputEvent sent just before (100 of 100),
-      // settling once the page has it. Only for a view whose protocol detached:
-      // `webContents.selectAll` / `undo` / `redo`, which the page's key down never precedes (so a
-      // page that handles the chord itself cannot keep its own undo there) and which, an IPC of
-      // their own, a key sent around them may overtake; the key up still goes as a key up.
-      editCommand: (input) => {
+      // An edit chord or a Mac line key (webview-input.ts editKeyEvent; plan 20261119-server-mode-mac,
+      // decision 7): its key down with its command as the protocol's `Input.dispatchKeyEvent` on the
+      // page's session, in the router's queue. S6 (design-web.md §9.15): it runs on the never-focused
+      // page, the page sees the key down and preventing it stops the command, settling once the
+      // page has it. Only for a view whose protocol detached: `webContents.selectAll` / `undo` /
+      // `redo` (which the page's key down never precedes, so a page that handles the chord itself
+      // cannot keep its own undo there), and a line key as a plain key down (which, as before the
+      // command, moves nothing on a macOS server); the key up still goes as a key up.
+      editCommand: (edit, epoch) => {
         if (wc.isDestroyed()) return Promise.resolve()
-        if (wc.debugger.isAttached()) return wc.debugger.sendCommand('Input.dispatchKeyEvent', editKeyEvent(input))
-        if (input.command === 'selectAll') wc.selectAll()
-        else if (input.command === 'undo') wc.undo()
-        else wc.redo()
-        return Promise.resolve()
+        return input.command('Input.dispatchKeyEvent', editKeyEvent(edit), () => {
+          if (wc.isDestroyed()) return undefined
+          if (edit.command === 'selectAll') wc.selectAll()
+          else if (edit.command === 'undo') wc.undo()
+          else if (edit.command === 'redo') wc.redo()
+          else {
+            const keyCode = webviewKeyCode(edit.key)
+            if (keyCode !== undefined) wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers: edit.modifiers })
+          }
+          return undefined
+        }, epoch)
       },
       // The page's selection, read in main's own isolated world (webview-input.ts SELECTION_SCRIPT):
-      // the page's scripts cannot see the read nor stand in for what it calls.
+      // the page's scripts cannot see the read nor stand in for what it calls. After the input
+      // queued before it (the router's queue), without holding what comes after.
       readSelection: () =>
-        wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: SELECTION_SCRIPT }]),
+        wc.isDestroyed()
+          ? Promise.resolve(undefined)
+          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: SELECTION_SCRIPT }])), false),
       // A select popup the page does not paint (select-hit.ts): what is under a press, and the
       // browser's answer, in the same isolated world (the element is kept there between the two).
-      hitSelect: (x, y, id) =>
-        wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }]),
-      chooseSelect: (id, index) =>
-        wc.isDestroyed() ? Promise.resolve(false) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: chooseScript(id, index) }]),
+      // Both on the router's call road (ruling 2026-11-19 #11: a press on a hung page started one
+      // unanswered script each); the hit test holds nothing after it, and a press waits
+      // HIT_TIMEOUT_MS at most for it. The answer in its place among the input.
+      hitSelect: (x, y, id, epoch) =>
+        wc.isDestroyed()
+          ? Promise.resolve(undefined)
+          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }])), false, epoch),
+      chooseSelect: (id, index, epoch) =>
+        wc.isDestroyed()
+          ? Promise.resolve(false)
+          : input.call(() => (wc.isDestroyed() ? false : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: chooseScript(id, index) }])), true, epoch),
       invalidate: () => {
         if (!wc.isDestroyed()) wc.invalidate()
       }

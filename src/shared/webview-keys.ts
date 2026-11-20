@@ -18,25 +18,105 @@
 
 import type { KeyEventLike } from './keys'
 
+/**
+ * Named keys: DOM `key`, Electron's keyCode, the DOM `code` and the Windows virtual key code (the
+ * `keyCode` a page reads, and what Blink's own editing key table matches on). The last two are for
+ * the page protocol's `Input.dispatchKeyEvent` (main/webview/page-input.ts), which, unlike
+ * sendInputEvent, derives neither from the key name.
+ */
+const NAMED_KEYS: ReadonlyArray<readonly [string, string, string, number]> = [
+  ['Enter', 'Enter', 'Enter', 13],
+  ['Tab', 'Tab', 'Tab', 9],
+  ['Backspace', 'Backspace', 'Backspace', 8],
+  ['Delete', 'Delete', 'Delete', 46],
+  ['Escape', 'Escape', 'Escape', 27],
+  ['Insert', 'Insert', 'Insert', 45],
+  ['Home', 'Home', 'Home', 36],
+  ['End', 'End', 'End', 35],
+  ['PageUp', 'PageUp', 'PageUp', 33],
+  ['PageDown', 'PageDown', 'PageDown', 34],
+  ['ArrowUp', 'Up', 'ArrowUp', 38],
+  ['ArrowDown', 'Down', 'ArrowDown', 40],
+  ['ArrowLeft', 'Left', 'ArrowLeft', 37],
+  ['ArrowRight', 'Right', 'ArrowRight', 39],
+  [' ', 'Space', 'Space', 32],
+  ...Array.from({ length: 12 }, (_, i): [string, string, string, number] => [`F${i + 1}`, `F${i + 1}`, `F${i + 1}`, 112 + i])
+]
+
 /** Named keys (DOM `key`) and Electron's keyCode for each. */
-const NAMED: ReadonlyMap<string, string> = new Map([
-  ['Enter', 'Enter'],
-  ['Tab', 'Tab'],
-  ['Backspace', 'Backspace'],
-  ['Delete', 'Delete'],
-  ['Escape', 'Escape'],
-  ['Insert', 'Insert'],
-  ['Home', 'Home'],
-  ['End', 'End'],
-  ['PageUp', 'PageUp'],
-  ['PageDown', 'PageDown'],
-  ['ArrowUp', 'Up'],
-  ['ArrowDown', 'Down'],
-  ['ArrowLeft', 'Left'],
-  ['ArrowRight', 'Right'],
-  [' ', 'Space'],
-  ...Array.from({ length: 12 }, (_, i): [string, string] => [`F${i + 1}`, `F${i + 1}`])
+const NAMED: ReadonlyMap<string, string> = new Map(NAMED_KEYS.map(([key, electron]) => [key, electron]))
+
+/** A key as the page protocol names it: DOM `key`, `code` and Windows virtual key code. */
+export interface WebviewKeyInfo {
+  key: string
+  code: string
+  keyCode: number
+}
+
+/** Electron's keyCode of a named key → its protocol names. */
+const NAMED_BY_ELECTRON: ReadonlyMap<string, WebviewKeyInfo> = new Map(
+  NAMED_KEYS.map(([key, electron, code, keyCode]) => [electron, { key, code, keyCode }])
+)
+
+/**
+ * The US-layout key of each printable ASCII character that is not a letter or a digit: its `code`
+ * and virtual key code (`!` is Shift+1, `"` Shift+'), as sendInputEvent maps them (checked headless,
+ * see the top of the file).
+ */
+const PUNCTUATION: ReadonlyMap<string, readonly [string, number]> = new Map([
+  ['`', ['Backquote', 192]],
+  ['~', ['Backquote', 192]],
+  ['-', ['Minus', 189]],
+  ['_', ['Minus', 189]],
+  ['=', ['Equal', 187]],
+  ['+', ['Equal', 187]],
+  ['[', ['BracketLeft', 219]],
+  ['{', ['BracketLeft', 219]],
+  [']', ['BracketRight', 221]],
+  ['}', ['BracketRight', 221]],
+  ['\\', ['Backslash', 220]],
+  ['|', ['Backslash', 220]],
+  [';', ['Semicolon', 186]],
+  [':', ['Semicolon', 186]],
+  ["'", ['Quote', 222]],
+  ['"', ['Quote', 222]],
+  [',', ['Comma', 188]],
+  ['<', ['Comma', 188]],
+  ['.', ['Period', 190]],
+  ['>', ['Period', 190]],
+  ['/', ['Slash', 191]],
+  ['?', ['Slash', 191]],
+  ['!', ['Digit1', 49]],
+  ['@', ['Digit2', 50]],
+  ['#', ['Digit3', 51]],
+  ['$', ['Digit4', 52]],
+  ['%', ['Digit5', 53]],
+  ['^', ['Digit6', 54]],
+  ['&', ['Digit7', 55]],
+  ['*', ['Digit8', 56]],
+  ['(', ['Digit9', 57]],
+  [')', ['Digit0', 48]]
 ])
+
+/**
+ * The protocol's names for an Electron keyCode as webviewKeyCode gives it (a printable ASCII
+ * character as itself, a named key by Electron's name), or for the text of a `char` event ('\r' is
+ * Enter's): undefined for anything else. A letter keeps its case as the `key` (the browser's, Caps
+ * Lock included); its `code` and virtual key code are the letter key's.
+ */
+export function webviewKeyInfo(keyCode: string): WebviewKeyInfo | undefined {
+  if (keyCode === '\r') return NAMED_BY_ELECTRON.get('Enter')
+  if (keyCode === ' ') return NAMED_BY_ELECTRON.get('Space')
+  if (isPrintableKey(keyCode)) {
+    const c = keyCode.charCodeAt(0)
+    const upper = keyCode.toUpperCase()
+    if (upper >= 'A' && upper <= 'Z') return { key: keyCode, code: `Key${upper}`, keyCode: upper.charCodeAt(0) }
+    if (c >= 0x30 && c <= 0x39) return { key: keyCode, code: `Digit${keyCode}`, keyCode: c }
+    const punct = PUNCTUATION.get(keyCode)
+    return punct ? { key: keyCode, code: punct[0], keyCode: punct[1] } : undefined
+  }
+  return NAMED_BY_ELECTRON.get(keyCode)
+}
 
 /** Longest DOM key name in the table (`ArrowRight`): a longer string is no key, unread. */
 export const MAX_KEY_NAME_LENGTH = 10
@@ -71,7 +151,29 @@ export function webviewKeyChar(key: string, mods: { control: boolean; meta: bool
 }
 
 /** An editing command a key down carries to a streamed page (editCommandOf). */
-export type WebviewEditCommand = 'selectAll' | 'undo' | 'redo'
+export type WebviewEditCommand =
+  | 'selectAll'
+  | 'undo'
+  | 'redo'
+  // Cmd with an arrow or Backspace: a Mac's line and document commands.
+  | 'moveToLeftEndOfLine'
+  | 'moveToRightEndOfLine'
+  | 'moveToLeftEndOfLineAndModifySelection'
+  | 'moveToRightEndOfLineAndModifySelection'
+  | 'moveToBeginningOfDocument'
+  | 'moveToEndOfDocument'
+  | 'moveToBeginningOfDocumentAndModifySelection'
+  | 'moveToEndOfDocumentAndModifySelection'
+  | 'deleteToBeginningOfLine'
+
+/** Cmd (alone, or with Shift for the arrows) plus the key → the command a Mac's text field runs. */
+const CMD_KEYS: ReadonlyMap<string, readonly [WebviewEditCommand, WebviewEditCommand | undefined]> = new Map([
+  ['ArrowLeft', ['moveToLeftEndOfLine', 'moveToLeftEndOfLineAndModifySelection']],
+  ['ArrowRight', ['moveToRightEndOfLine', 'moveToRightEndOfLineAndModifySelection']],
+  ['ArrowUp', ['moveToBeginningOfDocument', 'moveToBeginningOfDocumentAndModifySelection']],
+  ['ArrowDown', ['moveToEndOfDocument', 'moveToEndOfDocumentAndModifySelection']],
+  ['Backspace', ['deleteToBeginningOfLine', undefined]]
+])
 
 /**
  * The editing command a key down stands for, or undefined (plan 20261119-server-mode-mac, decision
@@ -83,9 +185,21 @@ export type WebviewEditCommand = 'selectAll' | 'undo' | 'redo'
  * insensitively: a browser names Shift+Z `Z`. Shift with A or Y is no command (Ctrl+Shift+A is a
  * page's own shortcut, if anything). Copy, cut and paste are never here (isClipboardChord: never
  * forwarded at all).
+ *
+ * And a Mac's line keys, for the same reason (docs/backlog/streamed-mac-line-edit-keys.md, probed
+ * with scripts/offscreen-input-check.mjs: the key event alone moved and deleted nothing): Cmd alone
+ * (no Ctrl, no Alt) with Left/Right → the line's left or right end, Up/Down → the document's start or
+ * end, each with Shift → the `AndModifySelection` form, and Cmd+Backspace → delete to the line's
+ * start (Cmd+Shift+Backspace is none). The names are AppKit's default bindings for those keys (as
+ * Playwright's Mac key table has them), which Blink runs as editing commands. A key down carrying a
+ * command runs the command instead of Blink's own key binding (never both), so sending it on a
+ * Linux server too doubles nothing; only Cmd reaches here, which a Windows or Linux browser hardly
+ * sends (the Super key). Ctrl+arrows (a word on Windows and Linux) stay plain keys.
  */
 export function editCommandOf(key: string, mods: { control: boolean; meta: boolean; alt: boolean; shift: boolean }): WebviewEditCommand | undefined {
   if (mods.control === mods.meta || mods.alt) return undefined
+  const line = mods.meta ? CMD_KEYS.get(key) : undefined
+  if (line) return mods.shift ? line[1] : line[0]
   const letter = key.length === 1 ? key.toLowerCase() : ''
   if (letter === 'a') return mods.shift ? undefined : 'selectAll'
   if (letter === 'z') return mods.shift ? 'redo' : 'undo'
