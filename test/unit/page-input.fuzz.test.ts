@@ -52,7 +52,7 @@ type Button = 'left' | 'middle' | 'right'
 const BUTTONS: readonly Button[] = ['left', 'right', 'middle']
 const BUTTON_MOD: Readonly<Record<Button, InputModifier>> = { left: 'leftbuttondown', right: 'rightbuttondown', middle: 'middlebuttondown' }
 /** How a session answers each input command. */
-type Mode = 'fast' | 'slow' | 'late' | 'never' | 'reject'
+type Mode = 'fast' | 'slow' | 'late' | 'never' | 'reject' | 'ooo' | 'latereject'
 /** How a session answers each hit-test query (slow: within the route's deadline, so a late input answer can land mid-hit-test). */
 type QueryMode = 'fast' | 'slow' | 'late' | 'never' | 'reject'
 type FrameName = 'A' | 'B' | 'C' | 'D'
@@ -84,6 +84,8 @@ export type Action =
   | { a: 'reattach' }
   /** From here on, at each resolution point the fault injector fires with this probability. */
   | { a: 'faults'; rate: number }
+  /** The detached road (`wc.insertText` and the others) never settles from now on, or settles again. */
+  | { a: 'hang'; on: boolean }
   /** Hand-written: at the `skip`th resolution point from now (-1: the answer of the next hover exit), `after` microtasks later, detach a frame or lose the protocol (and attach again). */
   | { a: 'arm'; skip: number; after: number; then: 'detach' | 'relose' | 'lose'; frame: FrameName }
 
@@ -143,6 +145,7 @@ function makeScript(seed: number): Action[] {
     }
   }
   const slotAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
+  const hangAt = !stress && r() < 0.08 ? Math.floor(r() * length) : -1
   const capAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
   for (let i = 0; i < length; i++) {
     if (i === slotAt && held.size === 0 && !keys.has('Tab')) {
@@ -151,6 +154,13 @@ function makeScript(seed: number): Action[] {
       out.push({ a: 'key', type: 'down', key: 'x', mods: [] }, { a: 'burst', n: 200 + Math.floor(r() * 100) })
       for (let k = 0; k < 6; k++) out.push({ a: 'key', type: 'up', key: 'Tab', mods: [] }, { a: 'up', x: 500, y: 650, button: 'left', held: [] })
       out.push({ a: 'key', type: 'up', key: 'x', mods: [] }, { a: 'mode', doc: 'page', mode: 'fast' })
+      continue
+    }
+    if (i === hangAt) {
+      // C9: the protocol lost and the renderer unresponsive: repeated texts must not pile up unsettled detached calls.
+      out.push({ a: 'lose', rejectPending: false }, { a: 'hang', on: true })
+      for (let k = 0; k < 6; k++) out.push({ a: 'text' }, { a: 'advance', ms: 501 })
+      out.push({ a: 'hang', on: false }, { a: 'reattach' })
       continue
     }
     if (i === capAt && held.size === 0 && !keys.has('Tab')) {
@@ -227,7 +237,7 @@ function makeScript(seed: number): Action[] {
     } else if (p < 0.75) {
       out.push({ a: 'advance', ms: pick(r, ADVANCES) })
     } else if (p < 0.81) {
-      out.push({ a: 'mode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'slow', 'late', 'late', 'never', 'reject'] as const) })
+      out.push({ a: 'mode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'slow', 'late', 'late', 'never', 'reject', 'ooo', 'ooo', 'latereject'] as const) })
     } else if (p < 0.83) {
       out.push({ a: 'qmode', doc: pick(r, DOCS), mode: pick(r, ['fast', 'fast', 'slow', 'slow', 'late', 'never', 'reject'] as const) })
     } else if (p < 0.86) {
@@ -853,6 +863,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     // C5 (ruling 2026-11-19 #2): a stalled session takes the owed release of each of its live records at once.
     const owedRelease = String(p.type) === 'mouseReleased' && live.filter((c) => c.session === id).every((c) => clock.now - c.sentAt >= STEP_TIMEOUT_MS)
     if (!owedRelease && live.some((c) => c.session === id)) violate('C5', 'session-busy', `${method} ${String(p.type ?? '')} to ${id || 'page'}, which owes an answer`)
+    // C5 / C9 (O4): a session never holds more than 1 + its live records' owed releases outstanding commands.
+    const outstanding = live.filter((c) => c.session === id).length + 1
+    const owedSlots = allRecs().filter((r) => r.session === id).length
+    if (outstanding > 1 + owedSlots) violate('C9', 'session-outstanding', `${outstanding} commands outstanding at ${id || 'page'} (live records there: ${owedSlots})`)
     const inFlight = live.filter((c) => clock.now - c.sentAt < STEP_TIMEOUT_MS)
     if (inFlight.length > 0) violate('C5', 'two-in-flight', `${method} ${String(p.type ?? '')} to ${id || 'page'} while ${inFlight[0]!.session || 'page'} ${String(inFlight[0]!.params.type ?? '')} is on its way`)
     const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: false, resolve: () => {}, reject: () => {} }
@@ -876,7 +890,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           // C7: a refused down made no press (within its deadline, the router saw it).
           if (seen) for (const r of allRecs()) if (r.by === c) endRecord(r, 'refusal')
           // C7: a refused key down drops its paired char too.
-          if (seen && method === 'Input.dispatchKeyEvent' && (p.type === 'rawKeyDown' || p.type === 'keyDown')) {
+          // (A late refusal, past the deadline, drops it as well.)
+          if (method === 'Input.dispatchKeyEvent' && (p.type === 'rawKeyDown' || p.type === 'keyDown')) {
             // Every char paired with it: those handed in after the down and before the next down of that key.
             const chars = keyPending.get(`${keyEntry('char', p.code)}:${Number(p.modifiers ?? 0)}`) ?? []
             const downs = keyPending.get(`${keyEntry(String(p.type), p.code)}:${Number(p.modifiers ?? 0)}`) ?? []
@@ -893,8 +908,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       c.resolve = () => settle(true)
       c.reject = () => settle(false)
       if (mode === 'never') return
-      const delay = mode === 'slow' ? 300 : mode === 'late' ? STEP_TIMEOUT_MS + LATE[commands.length % LATE.length]! : 0
-      clock.set(() => settle(mode !== 'reject'), delay, false)
+      // 'ooo': answers out of order (a later command answers before an earlier one); 'latereject': refused past the deadline.
+      const delay = mode === 'slow' ? 300 : mode === 'late' || mode === 'latereject' ? STEP_TIMEOUT_MS + LATE[commands.length % LATE.length]! : mode === 'ooo' ? [620, 540, 900, 100, 700, 30][commands.length % 6]! : 0
+      clock.set(() => settle(mode !== 'reject' && mode !== 'latereject'), delay, false)
     })
   }
 
@@ -926,7 +942,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     while (list.length > 0 && list[0]!.attempts > 0) list.shift()
     // Ruling 2026-11-19: never steal from an excused event: the earliest unexcused candidate in enqueue order, this epoch first.
     const open = list.filter((e) => e.attempts === 0 && e.excuse === undefined && !e.capDropped && !e.droppedWithDown)
-    return open.find((e) => e.epoch === gen) ?? open[0]
+    return open.find((e) => e.epoch === gen) ?? open[0] ?? list.find((e) => e.attempts === 0 && e.droppedWithDown && e.epoch === gen)
   }
 
   const fallback: ElectronInputEvent[] = []
@@ -1058,6 +1074,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const blank = (kind: EvKind): Ev => ({ n: 0, kind, epoch: 0, at: 0, tag: 0, entry: '', release: false, rid: '', held: [], sum: 0, attempts: 0, redirectOk: false, capDropped: false })
 
   /** A detached road as Electron's: it lands a little later (an IPC), so a router that does not wait for it reorders. */
+  let detachedHang = false
+  let detachedOut = 0
+  const hung: Array<() => void> = []
   const detachedRoad = (entry: string, n: number, down?: string) => (): Promise<void> => {
     const ev = byEntry.get(entry)
     if (attached) violate('C8', 'detached-road-while-attached', `${entry} by its detached road while attached`)
@@ -1067,9 +1086,21 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       if (down !== undefined && ev.attempts === 1) recordDown(ev, down, 'detached')
       if (ev.attempts === 1) startBarrier(ev)
     }
+    // C9 (O4): unsettled detached-road deliveries are bounded (the router moves on at its deadline, and must not pile them up).
+    detachedOut++
+    if (detachedOut > 2) violate('C9', 'detached-outstanding', `${detachedOut} detached-road deliveries unsettled (${entry})`)
+    if (detachedHang) {
+      return new Promise((resolve) => {
+        hung.push(() => {
+          detachedOut--
+          resolve()
+        })
+      })
+    }
     return new Promise((resolve) =>
       clock.set(
         () => {
+          detachedOut--
           if (ev) endBarrier(ev)
           resolve()
           resolutionPoint()
@@ -1321,6 +1352,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       case 'reattach':
         reattach()
         break
+      case 'hang':
+        detachedHang = action.on
+        break
       case 'faults':
         faultRate = action.rate
         break
@@ -1341,6 +1375,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       modes.set(d, 'fast')
       qmodes.set(d, 'fast')
     }
+    detachedHang = false
+    for (const h of hung.splice(0)) h()
     for (const c of commands) if (!c.answered) c.resolve({})
     await clock.advance(0)
     for (let i = 0; i < 4; i++) await clock.advance(1000)
