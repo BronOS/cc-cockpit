@@ -4030,6 +4030,12 @@ function start(server: boolean): void {
             if (!project) throw new Error(`no project for ${path}`)
             return projectSettings.saveSettings(project.id, pluginId, values, secrets)
           },
+          // The split geometry the project's views reported, which main judges a plugin's `beside` by
+          // (tab-groups.ts panesFit): a spec computes the placements to expect from the window it got.
+          splitGeometries: (path: string) => {
+            const project = projectAt(path)
+            return project ? tabGroups.viewAreas(project.id) : []
+          },
           // The plugin commands registered in a project's command table, and running one.
           pluginCommands: (path: string) => {
             const project = projectAt(path)

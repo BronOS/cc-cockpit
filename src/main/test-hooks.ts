@@ -13,7 +13,8 @@
 // pluginPanels, panelStatus), the overlay stack (openOverlay, overlayResult, overlays, focusOverlay),
 // `ccc notify` and ctx.notify (notifications, notificationDetails, clickNotification,
 // dismissNotification, chimes, chimeSounds), the plugin hosts (linkPlugin, enablePlugin, hostStatus,
-// savePluginProjectSettings, pluginCommands, runPluginCommand) and the remote windows' Downloads folder
+// savePluginProjectSettings, pluginCommands, runPluginCommand), the split geometry the views reported
+// (splitGeometries) and the remote windows' Downloads folder
 // (remoteDownloadsDir: a test run saves under the data dir, never to the developer's Downloads) and the
 // guests (guestInvite through the invite dialog's own service, guests, guestKick).
 

@@ -154,14 +154,14 @@ describe('pointer evidence', () => {
       later: (fn) => void tasks.push(fn)
     })
     const at = (type: string, x: number, y: number): Event => Object.assign(new Event(type), { clientX: x, clientY: y })
-    for (const [i, type] of ['pointermove', 'pointerdown', 'pointerout', 'wheel'].entries()) {
+    for (const [i, type] of ['pointermove', 'pointerdown', 'pointerup', 'pointerout', 'wheel'].entries()) {
       now += 10
       win.dispatchEvent(at(type, 150 + i, 80))
       expect([p.near(rect), p.fresh(), p.keyAfterPointer()]).toEqual([true, true, false])
       win.dispatchEvent(new Event('keydown'))
       expect(p.keyAfterPointer()).toBe(true)
     }
-    expect(calls).toEqual(['through', 'through', 'through', 'through'])
+    expect(calls).toEqual(['through', 'through', 'through', 'through', 'through'])
     // A focus within the shell voids the pointer and tells the pool; one on a frame (or none) does not.
     win.dispatchEvent(at('pointermove', 150, 80))
     expect(p.keyAfterPointer()).toBe(false)
@@ -171,7 +171,7 @@ describe('pointer evidence', () => {
     frameTarget = false
     doc.dispatchEvent(new Event('focusin'))
     expect(p.keyAfterPointer()).toBe(true)
-    expect(calls.slice(5)).toEqual(['focused'])
+    expect(calls.slice(6)).toEqual(['focused'])
     // The window's blur: the check runs a task later, not in the blur itself.
     calls.length = 0
     win.dispatchEvent(new Event('blur'))
@@ -209,6 +209,47 @@ describe('pointer evidence', () => {
     win.dispatchEvent(new Event('keydown'))
     win.dispatchEvent(at('pointerdown', 151, 80))
     expect([p.keyAfterPointer(), calls]).toEqual([false, ['through', 'through']])
+  })
+
+  it('a pointerout into another element of the shell is no move, wherever it says the pointer is', () => {
+    const win = new EventTarget()
+    let now = 1000
+    const p = new PointerEvidence(() => now)
+    const calls: string[] = []
+    watchShellEvidence(win, new EventTarget(), p, {
+      check: () => void calls.push('check'),
+      endPassThrough: () => void calls.push('through'),
+      shellFocused: () => void calls.push('focused'),
+      isFrame: () => false,
+      later: (fn) => fn()
+    })
+    const header = new EventTarget()
+    const out = (x: number, y: number, relatedTarget: EventTarget | null): Event =>
+      Object.assign(new Event('pointerout'), { clientX: x, clientY: y, relatedTarget })
+    // The pointer came in over the shell, then the person typed; stale by the time the panes re-render.
+    win.dispatchEvent(Object.assign(new Event('pointermove'), { clientX: 150, clientY: 80 }))
+    win.dispatchEvent(new Event('keydown'))
+    now += POINTER_FRESH_MS + 1
+    calls.length = 0
+    // A re-layout's boundary event at a position the shell never recorded (the pointer resting inside a
+    // frame) names the element now under it: it revives nothing and ends no passThrough.
+    win.dispatchEvent(out(400, 300, header))
+    expect([p.keyAfterPointer(), p.fresh(), p.near(viewportRect({ left: 390, top: 290, width: 100, height: 100 })), calls]).toEqual([
+      true,
+      false,
+      false,
+      []
+    ])
+    // Out of the document (relatedTarget null) is the pointer moving.
+    win.dispatchEvent(out(400, 300, null))
+    expect([p.keyAfterPointer(), p.fresh(), calls]).toEqual([false, true, ['through']])
+    // A click whose press went into a frame and whose release reaches the shell's pane gets boundary
+    // events and the pointerup there, no move: the release is what counts.
+    win.dispatchEvent(new Event('keydown'))
+    win.dispatchEvent(out(500, 320, header))
+    expect(p.keyAfterPointer()).toBe(true)
+    win.dispatchEvent(Object.assign(new Event('pointerup'), { clientX: 500, clientY: 320 }))
+    expect([p.keyAfterPointer(), p.near(viewportRect({ left: 490, top: 310, width: 20, height: 20 })), calls]).toEqual([false, true, ['through', 'through']])
   })
 
   it('the last position is fresh for POINTER_FRESH_MS', () => {

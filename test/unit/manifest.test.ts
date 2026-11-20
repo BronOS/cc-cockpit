@@ -283,6 +283,13 @@ describe('loadManifest', () => {
     expect(await loadManifest(dir)).toEqual({ ok: false, errors: ['plugin.json: resolves outside the plugin folder'] })
   })
 
+  it('says which check refused a plugin.json that is not a file, and what it saw', async () => {
+    // The reason is logged; a refused bundled manifest (backlog e2e-flakes-on-macos) needs it to tell
+    // the stat check from the verified open's.
+    mkdirSync(join(dir, 'plugin.json'))
+    expect(await loadManifest(dir)).toEqual({ ok: false, errors: [expect.stringMatching(/^plugin\.json: is not a file \(stat saw mode 0o40\d{3}\)$/)] })
+  })
+
   it('reports a missing folder', async () => {
     expect(await loadManifest(join(dir, 'nope'))).toEqual({ ok: false, errors: ['plugin folder not found'] })
   })

@@ -4,6 +4,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
+import { autoZoomed, type SplitGeometry } from '../../src/shared/pane-zoom'
+import type { PaneNode } from '../../src/shared/tab-groups'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
 import { focusedPanes, splitArea, groupsOf, leaves, newTaggedShell, paneShowing, paneText, roomyDesktop, tabsOf, typeInPane, visiblePanes, waitPaneText } from './split-fixtures'
 
@@ -161,13 +163,20 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     const anchor = await newTaggedShell(cockpit, 'pa')
     writeFileSync(join(cockpit.root, 'home', 'anchor.txt'), anchor.id)
     writeFileSync(join(cockpit.root, 'home', 'column-count.txt'), '7')
+    // Main judges each placement by the geometry the desktop view reported (tab-groups.ts panesFit); the
+    // window is a fixed size, so it must be the same before the column and after it (a cell re-measured
+    // in between would make the expectation below judge another screen than main did).
+    const geometry = (): Promise<Array<SplitGeometry & { remote: boolean }>> => cockpit.hook('splitGeometries', cockpit.projectDir)
+    await expect.poll(async () => (await geometry()).length).toBe(1)
+    const before = await geometry()
     const n = logged(cockpit).length
     await cockpit.hook('runPluginCommand', cockpit.projectDir, `${PLUGIN}/open-column`)
     await expect.poll(() => logged(cockpit).length, { timeout: 30_000 }).toBe(n + 1)
     const entry = logged(cockpit)[n] as unknown as { placed: boolean[]; error?: string }
     expect(entry.error).toBeUndefined()
+    expect(await geometry()).toEqual(before)
     const [width, height] = await page.evaluate(() => [window.innerWidth, window.innerHeight])
-    console.log('column placed:', JSON.stringify(entry.placed), 'window:', JSON.stringify([width, height]))
+    console.log('column placed:', JSON.stringify(entry.placed), 'window:', JSON.stringify([width, height]), 'geometry:', JSON.stringify(before))
     // The column is the panes placed before the first refusal. A pane opened after it goes beside the
     // refused one, which opened as a plain tab, so it starts a group of its own, not shown here.
     const refused = entry.placed.indexOf(false)
@@ -177,16 +186,38 @@ test('a column of plugin panes opened back to back is never auto-zoomed on the d
     await expect(visiblePanes(page)).toHaveCount(1 + placedCount)
     await expect(splitArea(page)).not.toHaveAttribute('data-zoom', 'auto')
     await expect(page.getByText(/zoomed \(\d+ hidden\)/)).toHaveCount(0)
-    // Six fit a 1900x1000 window by the view's own rule (main judges with the geometry the page reported, not its
-    // cell approximation, which refused the sixth: 8 rows a pane against its 6 + 2 of chrome). A seventh would leave
-    // each pane under AUTO_ZOOM_CELLS' 6 rows, so the view would zoom: it opens plain (and the cap of 8 is not why).
-    // A macOS screen can be shorter than 1000 points (a 14" MacBook gives the window about 865 inside),
-    // and the rule then fits fewer: the exact count is checked only where the window got its height.
+    // And the count is the view's own rule on the window this run got: the group as placed is not zoomed
+    // there, and one pane more below the last (the refused one) would be. A seventh never fits (each pane
+    // under AUTO_ZOOM_CELLS' 6 rows), so the cap of 8 is not why one is refused.
+    expect(refused).not.toBe(-1)
+    const { area, cell } = before[0]!
+    const group = (await groupsOf(page)).groups.find((g) => leaves(g.root).includes(anchor.id))!
+    const column = leaves(group.root).filter((t) => t !== anchor.id)
+    expect(column).toHaveLength(placedCount)
+    expect(autoZoomed(group.root, area, cell)).toBe(false)
+    expect(autoZoomed(withPaneBelow(group.root, column.at(-1)!), area, cell)).toBe(true)
+    // Six fit a 1900x1000 window (main judges with the geometry the page reported, not its cell
+    // approximation, which refused the sixth: 8 rows a pane against its 6 + 2 of chrome). A macOS screen
+    // can be shorter than 1000 points (a 14" MacBook gives the window about 865 inside), and the rule
+    // above then fits fewer; the fixed count stays as a cross-check where the window got its height.
     if (height! >= 950) expect(entry.placed).toEqual([true, true, true, true, true, true, false])
-    else expect(refused).toBeGreaterThanOrEqual(1)
     const shot = await page.screenshot({ path: testInfo.outputPath('column.png') })
     if (process.env.SAVE_SHOT) writeFileSync(process.env.SAVE_SHOT, shot)
   } finally {
     await close()
   }
 })
+
+/** `root` with one more pane below `tabId`: joined to its column (even shares), or a column of two made of it. */
+function withPaneBelow(root: PaneNode, tabId: string): PaneNode {
+  const extra: PaneNode = { tab: 'one-more' }
+  const visit = (node: PaneNode): PaneNode => {
+    if ('tab' in node) return node.tab === tabId ? { id: 'one-more-split', dir: 'column', children: [node, extra], sizes: [0.5, 0.5] } : node
+    if (node.dir === 'column' && node.children.some((c) => 'tab' in c && c.tab === tabId)) {
+      const children = [...node.children, extra]
+      return { ...node, children, sizes: children.map(() => 1 / children.length) }
+    }
+    return { ...node, children: node.children.map(visit) }
+  }
+  return visit(root)
+}
