@@ -397,7 +397,7 @@ External review: sol / high
   on the owner's screen; for a plugin others open things in (the Reviewer), the D-4 sentence: things another plugin
   opens in it reach guests only when that plugin is shown too
 - [x] tests for the text per case
-- [ ] run tests - must pass before task 10
+- [x] run tests - must pass before task 10
 
 ### Task 10: Reviewer: perView, replayable state, guest projection, access table [model: opus]
 
