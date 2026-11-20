@@ -68,13 +68,25 @@ test('a plugin panel renders, round-trips a message through its host, gets the t
   await cockpit.hook('setTheme', 'light')
   await expect.poll(() => cssVar(pluginFrame(page, 'panel.html'), '--cc-bg')).toBe('#faf8f6')
 
-  // Thin scrollbars from the SDK's bar sheet (the shell adopts the same one); macOS keeps its own.
-  if (process.platform !== 'darwin') {
-    const width = (f: Frame | undefined): Promise<string | null> =>
-      f ? f.evaluate<string>(`getComputedStyle(document.body).scrollbarWidth`).catch(() => null) : Promise.resolve(null)
-    await expect.poll(() => width(pluginFrame(page, 'panel.html'))).toBe('thin')
-    expect(await page.evaluate(() => getComputedStyle(document.body).scrollbarWidth)).toBe('thin')
-  }
+  // Thin scrollbars from the SDK's bar sheet (the shell adopts the same one). On macOS only while the
+  // bars are classic (a mouse connected and "Show scroll bars" on Automatic): the expected value
+  // follows this machine's bars, measured the way the SDK does (a probe no sheet reaches).
+  const width = (f: Frame | undefined): Promise<string | null> =>
+    f ? f.evaluate<string>(`getComputedStyle(document.body).scrollbarWidth`).catch(() => null) : Promise.resolve(null)
+  const classic = await page.evaluate(`(() => {
+    const host = document.createElement('div')
+    host.style.cssText = 'position:fixed;left:-1000px;top:-1000px;width:0;height:0'
+    const probe = document.createElement('div')
+    probe.style.cssText = 'width:100px;height:100px;overflow:scroll;scrollbar-width:auto;scrollbar-color:auto'
+    host.attachShadow({ mode: 'open' }).appendChild(probe)
+    document.documentElement.appendChild(host)
+    const bar = probe.offsetWidth - probe.clientWidth
+    host.remove()
+    return bar > 0
+  })()`)
+  const expected = process.platform !== 'darwin' || classic ? 'thin' : 'auto'
+  await expect.poll(() => width(pluginFrame(page, 'panel.html'))).toBe(expected)
+  expect(await page.evaluate(() => getComputedStyle(document.body).scrollbarWidth)).toBe(expected)
 
   // The host restarts: the old port died with it, the page reloads and talks to the new host.
   await cockpit.hook('enablePlugin', cockpit.projectDir, 'test.panels')

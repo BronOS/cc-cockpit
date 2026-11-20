@@ -15,8 +15,9 @@
 //                                                 `ccPanel.view.access`. Both are UI hints only: the
 //                                                 plugin's host learns the access from main's tag.
 //   { type: 'cc-plugin.theme', theme: { kind, vars }, mac }   the app's theme, again on every change;
-//                                                 `mac` is the shell's platform (no scrollbar rule there:
-//                                                 the edge shadows only, scroll-edges-core.ts)
+//                                                 `mac` is the shell's platform (there the scrollbar
+//                                                 rule is on only while the page measures classic bars,
+//                                                 scroll-edges-core.ts)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
 //                                                 the port); from then on `ccPanel.slot` exists
 //   { type: 'cc-plugin.tab', tab: { type }, keys? } the page is a page tab of that type (sent before every
@@ -113,7 +114,15 @@ export interface ThemeRoot {
  */
 export interface BaseStyles {
   install(css: string): void
+  /** Turns an installed sheet off or on again, keeping its place (the bars on macOS). */
+  enable?(css: string, on: boolean): void
 }
+
+/**
+ * Says whether the page's bars are classic: `onChange` at once and on every change (watchClassicBars
+ * in scroll-edges.ts, in the browser).
+ */
+export type ClassicBarsWatch = (onChange: (classic: boolean) => void) => void
 
 /**
  * The document's adopted sheets with the SDK's in front, in the order they were installed. A sheet
@@ -124,7 +133,7 @@ export function sdkSheetsFirst<T>(sdk: readonly T[], current: readonly T[]): T[]
   return [...sdk, ...current.filter((sheet) => !sdk.includes(sheet))]
 }
 
-// The scrollbar and edge-shadow sheets (edges-only scrolling) live in scroll-edges-core.ts, shared
+// The scrollbar and edge-fade sheets (edges-only scrolling) live in scroll-edges-core.ts, shared
 // with the shell; the page script that marks scroll containers for them is scroll-edges.ts.
 export { BASE_SCROLLBAR_CSS, SCROLL_EDGES_CSS }
 
@@ -338,7 +347,9 @@ export class PanelClient {
       chord?: string
       code?: string
       early?: true
-    }) => void
+    }) => void,
+    /** macOS only: whether the bars are classic, which turns the scrollbar sheet on (see installBaseStyles). */
+    private readonly classicBars?: ClassicBarsWatch
   ) {
     const theme = {
       onChange: (listener: (theme: PanelTheme) => void): (() => void) => {
@@ -361,7 +372,7 @@ export class PanelClient {
         this.warn(`could not install the component styles: ${errorText(err)}`)
       }
     }
-    // The edge shadows go on at once, on every platform (macOS too); only the bars wait for the
+    // The edge fade goes on at once, on every platform (macOS too); only the bars wait for the
     // theme, which says whether this is macOS.
     if (styles) {
       try {
@@ -583,11 +594,29 @@ export class PanelClient {
     }
   }
 
+  /**
+   * The bar sheet, once, on the first theme. On macOS it is on only while the page's own bars are
+   * classic (a mouse connected and "Show scroll bars" on Automatic, or Always): overlay bars already
+   * hide at rest, and the sheet would turn them classic. The page measures its own document, and the
+   * sheet keeps its place while off. With no way to measure or to switch it, macOS gets no sheet.
+   */
   private installBaseStyles(mac: boolean): void {
-    if (this.baseStyled || mac || !this.styles) return
+    const styles = this.styles
+    if (this.baseStyled || !styles) return
+    if (mac && (!this.classicBars || !styles.enable)) return
     this.baseStyled = true
     try {
-      this.styles.install(BASE_SCROLLBAR_CSS)
+      styles.install(BASE_SCROLLBAR_CSS)
+      if (!mac) return
+      const enable = styles.enable!.bind(styles)
+      enable(BASE_SCROLLBAR_CSS, false)
+      this.classicBars!((classic) => {
+        try {
+          enable(BASE_SCROLLBAR_CSS, classic)
+        } catch (err) {
+          this.warn(`could not switch the base styles: ${errorText(err)}`)
+        }
+      })
     } catch (err) {
       this.warn(`could not install the base styles: ${errorText(err)}`)
     }
