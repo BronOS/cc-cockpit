@@ -577,6 +577,8 @@ export class SettingsService {
     if (p.state.ok && p.manifest?.contributes?.settings?.page?.scopes.includes('app') === true) view.settingsPage = true
     if (p.source.kind === 'bundled') view.offInAllProjects = offAppWide(p, this.deps.bundledOff.get())
     if (seesAllSessions(p.manifest)) view.seesAllSessions = true
+    if (p.manifest?.overlays?.perView === true) view.overlaysPerView = true
+    if (Object.keys(p.manifest?.services?.provides ?? {}).length > 0) view.providesServices = true
     // Bundled plugins too: they ship their logo card (electron-builder.yml filters) like a listed plugin.
     if (hasOwnPreview(p.dir)) view.preview = true
     if (p.source.kind === 'git' && p.marketplace !== undefined) view.marketplace = p.marketplace

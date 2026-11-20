@@ -393,10 +393,10 @@ External review: sol / high
 - Modify: `src/renderer/settings/PluginsPage.tsx` (and its model file if the text is computed there)
 - Modify: the Plugins page tests
 
-- [ ] where a plugin is shown to guests, one line: its windows (overlays) are shown to guests too (`perView`) or stay
+- [x] where a plugin is shown to guests, one line: its windows (overlays) are shown to guests too (`perView`) or stay
   on the owner's screen; for a plugin others open things in (the Reviewer), the D-4 sentence: things another plugin
   opens in it reach guests only when that plugin is shown too
-- [ ] tests for the text per case
+- [x] tests for the text per case
 - [ ] run tests - must pass before task 10
 
 ### Task 10: Reviewer: perView, replayable state, guest projection, access table [model: opus]

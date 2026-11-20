@@ -12,6 +12,7 @@ import {
   guestAccessOf,
   guestChange,
   guestExposureLines,
+  guestWindowLines,
   guestOverrideNote,
   guestShowAskText,
   type GuestShell,
@@ -893,7 +894,7 @@ function PluginGuests(props: { plugin: PluginView; busy: string | null; run: Act
         </Select>
       </div>
       <div className="settings-item-foot settings-item-meta" data-testid="plugin-guests-text">
-        {guestExposureLines(access).map((line) => (
+        {[...guestExposureLines(access), ...guestWindowLines(plugin)].map((line) => (
           <div key={line}>{line}</div>
         ))}
       </div>

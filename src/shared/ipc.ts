@@ -641,6 +641,13 @@ export interface PluginView {
    * project of every window's Claude tabs (design-next §4.1). Shown on the plugin's row. Absent: no.
    */
   seesAllSessions?: true
+  /**
+   * The manifest says `overlays.perView` (docs/design-overlay-views.md §2): its windows get a copy on each guest's
+   * screen. From main's manifest, never the page's guess; the Plugins page words the guest line from it.
+   */
+  overlaysPerView?: true
+  /** The manifest provides at least one service (`services.provides`): other plugins may open things in it (D-4). */
+  providesServices?: true
   /** A folder or git plugin has its own `preview.png` at its root, shown through `cc-plugin://<id>/preview.png`. */
   preview?: true
   /**
