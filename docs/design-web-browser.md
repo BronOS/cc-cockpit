@@ -369,8 +369,9 @@ the input layer has focus.
   change it (a mouse up or key down that went to the page, or inserted text), debounced 100 ms, latest wins,
   deduplicated, read from an isolated world (`executeJavaScriptInIsolatedWorld`, world id **1717**, `WEBVIEW_WORLD_ID`:
   not 0, the main world, nor 999, Electron's own contextIsolation world; one read in flight per view and panel), in
-  the deepest focused cross-site frame when one holds the focus (its own isolated world, §4.4), else the top document:
-  `getSelection()`, or for a focused text `<input>`/`<textarea>` its selected value slice (never a password field).
+  the deepest focused cross-site frame when one holds the focus (its own isolated world, §4.4), else the top document,
+  the script following the focus on down into same-origin frames (§4.4) and reading the innermost document:
+  its `getSelection()`, or for a focused text `<input>`/`<textarea>` its selected value slice (never a password field).
   The script slices before returning, main caps the text near 256 KB of encoded bytes and strips control characters (a
   selection of control characters, JSON-escaped, could otherwise exceed the socket's frame limit and close the browser
   view, terminals included). The browser keeps the latest and sets it in its `copy` event, only when it is non-empty
@@ -437,7 +438,7 @@ rectangle is no popup and the press goes as a click. The popup id is bound in ma
 router's session object, never its id, which a new attachment can reuse), so the choice runs there or nowhere: a frame
 gone, replaced or owing an answer chooses nothing, never in another document. The copy read (§4.2) runs in the deepest
 focused cross-site frame, which main finds: per level with cross-site children, `document.activeElement` read in that
-document's isolated world (into open shadow roots and same-site frames' documents), and when it is a frame owner the
+document's isolated world (into open shadow roots and same-origin frames' documents), and when it is a frame owner the
 script cannot look into, its `frameId` from `DOM.describeNode` names the child session; no focused frame owner, the
 top document. A focused frame that goes mid-walk, or mid-read, drops the read (no copy), never reads its parent. Accepted
 for now: a page script that moves the focus from frame A to B during the walk's remaining round trips leaves the read in
@@ -462,10 +463,38 @@ its options over the select, the press reaches no document, the select holds the
 and a choice sets the value and fires `input` and `change` there only; a double-clicked word and a field's selected
 text in each of those documents is what the read returns.
 
-Keyboard-only still: a select inside a same-site iframe (`elementFromPoint` stops at the frame element, and the route
-of such a press is the top document's) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
-paints and takes clicks on itself. Text selected inside a same-site iframe is not read for copy (the read takes the top
-document's own selection). Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS `zoom`.
+**In a same-origin iframe** (2026-11-20, `select-hit.ts`, `SELECTION_SCRIPT` in `webview-input.ts`): a same-origin frame
+is in its parent's process, so the router's route for a press there ends in the document holding the frame element
+(the top's, or a cross-site frame's), where `elementFromPoint` stops at that element. The scripts step on down
+themselves, in the same isolated world: through `iframe.contentDocument`, which the isolated world can read for a
+same-origin frame only (null for a cross-origin one, same-site or not, and for a sandboxed one without
+`allow-same-origin`: the walk stops there, as before), at most 16 frames deep. The hit test moves the point into the
+frame's viewport by the frame element's content box (its bounding rectangle plus its left and top border and padding;
+the frame's own scroll is already in its viewport coordinates) and adds the same offsets back to the select's rectangle,
+which the router then maps from that document to the top page as for any frame. The DOM gives no corners of a
+transformed box (the router's three-corner parallelogram for a cross-site frame reads them from the protocol), so only
+an exact inverse is taken: every box from the frame element up to its document's root at most translated (a 2D
+translation matrix, no `rotate` or `scale`, a `translate` with no z, no `offset-path`, `zoom` 1, no SVG ancestor; at
+most 512 boxes), its drawn size its layout size and its viewport its content box's size, each within a pixel. Anything
+else is refused: no popup, the press goes to the page as a click (a popup over the wrong place would be worse). The
+kept select may sit in a child document the world outlives (a same-origin frame that navigates keeps its parent's
+world), so the choice walks from the select's document back up to the script's own and chooses nothing unless each
+frame element is still connected and still holds that document. The copy read follows `document.activeElement` through
+open shadow roots and same-origin frames (at most 64 steps) and reads the innermost document's field or selection;
+the router's focus walk already looked through same-origin frames for a cross-site owner (`FOCUSED_FRAME_SCRIPT`), so a
+same-origin frame under a cross-site one is read from that frame's world. Proven under Electron
+(`scripts/offscreen-input-check.mjs`, 2026-11-20): select, copy and cut in a same-origin frame of the top page (one
+scrolled, one with an uneven border and padding and scrolled) and in one inside a cross-site frame; a same-origin frame
+at `scale(0.5)` gets no popup and its press reaches the page; a cross-site frame that navigates while its popup is open
+ignores the old popup's choice, and its new document's select works.
+
+Keyboard-only still: a select inside a same-site but cross-origin iframe, or a sandboxed one without
+`allow-same-origin` that Chromium keeps in its parent's process (their documents are unreadable from the isolated
+world, and the router has no route into them: it would need a world made in that frame by its id on the owning
+session, backlog `streamed-clicks-miss-cross-site-iframes.md`), a same-origin frame under a transform other than a
+translation, a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page paints and takes clicks on
+itself. Text selected inside those frames is not read for copy (the read takes the document holding the frame
+element). Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS `zoom`.
 
 ## 5. Limits
 
