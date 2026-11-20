@@ -914,13 +914,19 @@ async function main() {
     // (c) What main can do about such a page: kill its renderer, then reload. SIGKILL, never
     // forcefullyCrashRenderer: on Linux that crash dumps core (systemd-coredump, a renderer's core is
     // large), and the process sits in do_exit for 40 to 50 s before render-process-gone fires (Debian
-    // VM, Electron 45: 46 s and 42 s; the reload asked meanwhile waited for it, so the new page came
-    // after the 20 s this case waits). A SIGKILL writes no core: gone at once on Linux and macOS.
+    // VM, Electron 45: 46 s and 42 s; a reload asked while it was dying never committed, so the new
+    // page never came within the 20 s this case waits). A SIGKILL writes no core: gone at once on
+    // Linux and macOS.
     let gone = 0
     wc.on('render-process-gone', () => gone++)
     const kill = async (label) => {
       const before = gone
       const pid = wc.getOSProcessId()
+      // 0 once the renderer is gone: process.kill(0) would kill this script's whole process group.
+      if (!(pid > 0)) {
+        note(`${label}: no renderer to kill (os pid ${pid})`)
+        return
+      }
       process.kill(pid, 'SIGKILL')
       const t1 = performance.now()
       while (gone === before && performance.now() - t1 < 10_000) await sleep(50)
