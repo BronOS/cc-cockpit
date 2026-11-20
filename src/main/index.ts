@@ -34,7 +34,7 @@ import { join } from 'node:path'
 import { BUILD_VERSION } from '../shared/app-version'
 import { errorText } from '../shared/error-text'
 import { isPlainObject } from '../shared/guards'
-import { PANEL_PORT_CHANNEL, type EventChannel, type OverlayInfo, type TabCreateRequest, type TabInfo, type UpdateState } from '../shared/ipc'
+import { PANEL_PORT_CHANNEL, type EventChannel, type TabCreateRequest, type TabInfo, type UpdateState } from '../shared/ipc'
 import { notificationSoundOf } from '../shared/notify-sound'
 import { chosenServerName } from '../shared/remote-servers'
 import { liveChildren } from './child-registry'
@@ -1260,7 +1260,8 @@ function start(server: boolean): void {
     emit: (windowId, channel, payload) => {
       // A webview panel's native view would paint over the overlay (and over a url overlay's own
       // view): the window's views hide while its stack is not empty, before the page draws it.
-      if (channel === 'overlays.updated') webviews.setWindowCovered(windowId, (payload as OverlayInfo[]).length > 0)
+      // An overlay the opener hid from the desktop's copy is off that stack, so it does not count (coversDesktop).
+      if (channel === 'overlays.updated') webviews.setWindowCovered(windowId, overlays.coversDesktop(windowId))
       sendToWindow(windowId, channel, payload)
     },
     // An html overlay's page lives in one view (design-web.md §5.4): its messages go there only.
@@ -1301,7 +1302,7 @@ function start(server: boolean): void {
       const who = views.whoOf(viewId)
       return who === undefined || who === 'owner' ? undefined : who.guest
     },
-    // A copy dropped for an overflowing queue: that view's shell reloads its page as a new copy (Task 8).
+    // A not-ready copy dropped for an overflowing queue: that view's shell reloads its page as a new copy (Task 8).
     reloadCopy: (viewId, _windowId, overlayId, copy) => {
       views.toView(viewId, 'overlays.reload', { overlayId, copy })
     }

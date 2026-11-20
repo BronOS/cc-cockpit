@@ -2844,7 +2844,7 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(m.copies(W1, id)).toEqual([])
   })
 
-  it('a ready copy whose view could not take a message is released, not queued for ever, and its view asked to reload it', () => {
+  it('a ready copy whose view could not take a message is released, not queued for ever, with no reload', () => {
     const m = pvManager()
     const { id } = openPv(m)
     const a = connect(m, id, 'web:1')
@@ -2854,9 +2854,46 @@ describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)
     expect(m.post(W1, id, '"lost"', { copy: a })).toBe(false)
     expect(heard.at(-1)).toEqual(['disconnect', a, 'web:1'])
     expect(m.copies(W1, id)).toEqual([])
-    // A view still there (its send threw) reloads the page as a new copy (Task 8's reconnect rule); a gone one
-    // simply does not get the event.
-    expect(reloads).toEqual([['web:1', W1, id, a]])
+    // That sink fails only for a closed view, so a reload over it could never arrive: none is sent, and the
+    // view's next connect is a new copy.
+    expect(reloads).toEqual([])
+    gone.delete('web:1')
+    expect(connect(m, id, 'web:1')).not.toBe(a)
+  })
+
+  it("the opener's hide of the desktop's copy uncovers the desktop while another view still shows it; a new copy covers again", () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const d = connect(m, id, D)
+    connect(m, id, 'web:1')
+    expect(m.coversDesktop(W1)).toBe(true)
+    const before = events.length
+    expect(m.hideCopy(W1, id, d)).toBe(true)
+    expect(m.coversDesktop(W1)).toBe(false)
+    // The list went out again, so main's listener decides covering anew.
+    expect(events.slice(before).some((e) => e.channel === 'overlays.updated')).toBe(true)
+    expect(m.infos(W1).map((o) => o.id)).toEqual([id])
+    const after = events.length
+    connect(m, id, D)
+    expect(m.coversDesktop(W1)).toBe(true)
+    expect(events.slice(after).some((e) => e.channel === 'overlays.updated')).toBe(true)
+    // The desktop view going clears it too (its hide is per view, never per person).
+    expect(m.hideCopy(W1, id, m.copies(W1, id).find((c) => c.view === D)!.copy)).toBe(true)
+    expect(m.coversDesktop(W1)).toBe(false)
+    m.viewGone(D)
+    expect(m.coversDesktop(W1)).toBe(true)
+  })
+
+  it('a non-perView overlay always covers the desktop; hiding a browser copy leaves the desktop covered', () => {
+    const m = pvManager()
+    openPv(m, false)
+    expect(m.coversDesktop(W1)).toBe(true)
+    const m2 = pvManager()
+    const { id } = openPv(m2)
+    const w = connect(m2, id, 'web:1')
+    expect(m2.hideCopy(W1, id, w)).toBe(true)
+    expect(m2.coversDesktop(W1)).toBe(true)
+    expect(m2.coversDesktop(W2)).toBe(false)
   })
 
   it('connects per (overlay, view) are capped like panel ports; another view keeps its budget', () => {

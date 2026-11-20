@@ -245,9 +245,10 @@ export interface OverlayManagerOptions {
    */
   guestOf?(viewId: ViewId): string | undefined
   /**
-   * Main dropped a copy for its view (its queue overflowed, see `deliverToCopy`): that view's shell
-   * reloads the page, which connects again as a new copy. Absent: the copy is only dropped, and the
-   * view's page stays as it is until it reconnects by itself.
+   * Main dropped a not-ready copy for its view (its queue overflowed, see `deliverToCopy`): that view's
+   * shell reloads the page, which connects again as a new copy. Only for the overflow: a ready copy whose
+   * send failed gets none, since that sink fails only for a closed view. Absent: the copy is only dropped,
+   * and the view's page stays as it is until it reconnects by itself.
    */
   reloadCopy?(viewId: ViewId, windowId: number, overlayId: string, copy: string): void
 }
@@ -614,6 +615,13 @@ interface PerViewState {
    */
   hiddenFrom: Set<string>
   /**
+   * Owner views whose copy the opener hid (`hideCopy` of an owner's copy): the shell keeps the overlay off that
+   * view's stack (OverlayStack `hiddenHere`), so the desktop's webview panels must not stay covered for it
+   * (`coversDesktop`). Per view, not per person (D-1: the owner's other views still show it); cleared by that
+   * view's next connect (a reload is a new copy, shown again) and when the view goes.
+   */
+  ownerHidden: Set<ViewId>
+  /**
    * The views of the most recently released copies (copy id -> view, oldest first, RETIRED_COPIES at most): an
    * `overlays.hide` or `overlays.reload` goes out right after its copy is released, and the guest sink checks the
    * copy against the receiving view by this record (copyViewOf), never by the payload alone.
@@ -788,7 +796,7 @@ export class OverlayManager {
     if (parsed.kind === 'html' && options?.perView === true) {
       // No holder: each view's copy has its own loader (copyState), so the window-wide one never shows,
       // and nothing here may stamp `heldBy` or `waiting` (no view is "the" page's, D-1).
-      overlay.perView = { copies: new Map(), connects: new Map(), staleLogged: false, hiddenFrom: new Set(), retired: new Map() }
+      overlay.perView = { copies: new Map(), connects: new Map(), staleLogged: false, hiddenFrom: new Set(), ownerHidden: new Set(), retired: new Map() }
       const info = { ...overlay.info, perView: true as const }
       delete info.loading
       overlay.info = info
@@ -934,6 +942,7 @@ export class OverlayManager {
     // Its copies of perView overlays go first, whatever the view (the opener hears each disconnect).
     for (const overlay of [...this.byId.values()]) {
       if (!overlay.perView) continue
+      overlay.perView.ownerHidden.delete(viewId)
       for (const copy of [...overlay.perView.copies.values()]) if (copy.view === viewId) this.dropCopy(overlay, copy)
     }
     // A desktop view goes with its window (whose overlays close with it): only its hidden mark here.
@@ -1370,6 +1379,8 @@ export class OverlayManager {
     }
     if (!this.withinCopyCap(overlay, overlay.perView, viewId)) return { ok: false, reason: 'cap' }
     for (const old of [...overlay.perView.copies.values()]) if (old.view === viewId) this.dropCopy(overlay, old)
+    // A new copy of an owner view the opener had hidden it from: shown there again, so it covers again.
+    if (overlay.perView.ownerHidden.delete(viewId)) this.changed(windowId)
     const copy: OverlayCopy = {
       id: randomBytes(16).toString('hex'),
       view: viewId,
@@ -1570,6 +1581,11 @@ export class OverlayManager {
     if (!overlay || !c?.live) return false
     this.hideCopyRecord(overlay, c)
     if (!this.ownerView(c.view)) this.recordHide(overlay, c.view)
+    else if (overlay.perView && !overlay.perView.ownerHidden.has(c.view)) {
+      // The shell takes it off that view's stack: the window's covered state is decided again (coversDesktop).
+      overlay.perView.ownerHidden.add(c.view)
+      this.changed(overlay.windowId)
+    }
     return true
   }
 
@@ -1589,6 +1605,17 @@ export class OverlayManager {
    */
   openerPluginOf(windowId: number, overlayId: unknown): string | undefined {
     return this.find(windowId, overlayId)?.pluginId
+  }
+
+  /**
+   * Whether the window's desktop view shows any overlay: one the opener hid from the desktop's copy
+   * (`ownerHidden`) is off that view's stack, so it does not keep the desktop's webview panels hidden
+   * (webviews.setWindowCovered). Server mode never covers (its webviews are streamed), so only the desktop counts.
+   */
+  coversDesktop(windowId: number): boolean {
+    const desktop = desktopViewId(windowId)
+    // The stack `overlays.updated` carries (infos), so the decision matches the list it goes out with.
+    return (this.stacks.get(windowId) ?? []).some((o) => o.perView?.ownerHidden.has(desktop) !== true)
   }
 
   /**
@@ -1665,9 +1692,11 @@ export class OverlayManager {
    * One message for one copy: out now when its port is up, else into its outbox. Never throws. A full
    * outbox (a page that never comes up while the opener keeps posting) drops that copy and has its view
    * reload the page as a new copy, whose starting state comes from the opener's onConnect again; the
-   * other copies are untouched. A ready copy whose view cannot take the event (it dropped, viewGone not
-   * run yet) is dropped too: unlike a holder's, its queue would never be drained again (copyReady comes
-   * only once per copy), and the view's next page connects as a new copy anyway.
+   * other copies are untouched. A ready copy whose view cannot take the event is dropped too, with no
+   * reload: unlike a holder's, its queue would never be drained again (copyReady comes only once per copy).
+   * That send fails only for a closed view (a browser's sink never throws: filters, oversize frames and slow
+   * sockets return true or close the socket; the desktop's send throws once its page is destroyed), so a
+   * reload over the same sink could never arrive; the view's next connect is a new copy.
    */
   private deliverToCopy(overlay: Overlay, copy: OverlayCopy, text: string): boolean {
     if (!copy.live) return false
@@ -1690,13 +1719,6 @@ export class OverlayManager {
     if (this.options.emitToView) {
       if (this.options.emitToView(copy.view, 'overlays.message', payload)) return true
       this.dropCopy(overlay, copy)
-      // A view still there whose send threw (not a closed one, which is going) would keep a page with no copy:
-      // asked to reload it, it connects again as a new copy (the shell's one reconnect rule, OverlayStack).
-      try {
-        this.options.reloadCopy?.(copy.view, overlay.windowId, overlay.id, copy.id)
-      } catch (err) {
-        this.log(`overlay ${overlay.id}: asking view ${copy.view} to reload its copy failed: ${String(err)}`)
-      }
       return false
     }
     // No per-view addressing (no web access wiring): the window's one page routes it by `copy`.

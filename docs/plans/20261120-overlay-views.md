@@ -374,14 +374,18 @@ External review: sol / high
   `OverlayInfo.pluginId` / `pluginTitle` on a plugin's html overlay (the note's name; `guestOverlays` keeps both only
   while that plugin is visible to the guest, so a shared tab's overlay with a hidden opener names no plugin)
 - ➕ reconnect rule (overlay-copies.ts header): every frame load is a new copy (a reconnect remounts the web shell, a
-  desktop reload lists again); `overlays.reload` of the live copy loads the page again; main now also sends
-  `overlays.reload` when a message to a live copy's view fails (`deliverToCopy`), so a view whose send threw gets
-  its page back; `cap` and a failed `overlays.ready` are asked again on the same load with a 1 s doubling backoff
+  desktop reload lists again); `overlays.reload` of the live copy loads the page again (main sends it only for a not-ready
+  copy's overflow; a failed send to a ready copy gets none, since that sink fails only for a closed view, Task 8
+  review); `cap` and a failed `overlays.ready` are asked again on the same load with a 1 s doubling backoff
   (max 10 s, the cap window); the page's posts answering false are never a signal (one-way copies)
 - ⚠️ a final refusal (`not-allowed`, `unknown`, ...) holds for that overlay in this view until the shell remounts:
   a guest whose plugin the owner shows later sees the note until its next reconnect or reload
 - ⚠️ an owner view's hide (the opener's `handle.hide` of an owner copy) is kept only in that shell (OverlayStack
   `hiddenHere`), so a reload of that page brings the overlay back there (D-1: main records none for owners)
+- ➕ (Task 8 review) main records an owner hide per view (`PerViewState.ownerHidden`, cleared by that view's next
+  connect or its going) only for covering: `OverlayManager.coversDesktop` leaves out an overlay hidden from the
+  desktop's copy, so the desktop's webview panels (`webviews.setWindowCovered`) show again while a browser still has
+  it; server mode never covers (streamed webviews), so browser views need nothing
 - ⚠️ Task 13: no plugin is perView until Task 10, so the copy path ran only in unit tests (overlay-copies.test.ts);
   the e2e run here (overlays.spec.ts, web-access-plugins.spec.ts) covers non-perView overlays only. Task 13 must
   drive a perView page end to end: copy per view, the `manual` loader, a read guest's ✕ and page result (hide), a
