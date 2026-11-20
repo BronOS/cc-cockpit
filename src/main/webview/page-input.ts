@@ -630,7 +630,8 @@ export class PageInputRouter implements ChildFrameObserver {
   /**
    * Whether an up of `id` may pass the cap: a live press record of it whose one release slot no up
    * already queued took (C7, ruling 2026-11-19 #2: repeated ups for one held key grew the queue by
-   * thousands past its cap). Ups queued after a queued down are that down's, not a record's.
+   * thousands past its cap). Every queued up of `id` takes a slot, wherever it stands, so the queue
+   * passes its cap by at most one step per live record.
    */
   private slotFree(id: string): boolean {
     let slots = 0
@@ -638,9 +639,7 @@ export class PageInputRouter implements ChildFrameObserver {
     for (const st of this.queue) {
       if (slots === 0) break
       const k = pressKey(st)
-      if (k?.id !== id) continue
-      if (!k.release) break
-      slots--
+      if (k?.id === id && k.release) slots--
     }
     return slots > 0
   }
