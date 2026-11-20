@@ -212,6 +212,26 @@ describe('CopyLine: one view’s copy across the loads of its frame', () => {
     expect(manual.states).toEqual([{ loading: false }])
   })
 
+  // Codex review, finding 7: a `manual` page that draws while an image still holds the frame's `load` back says
+  // ready() before the load attaches; dropped, its loader stayed up for good.
+  it("a ready() before the frame's load attaches is kept for that load: one loaded for its copy, the loader gone, across a cap retry", async () => {
+    const h = harness()
+    h.line.pageDrawn()
+    expect(h.calls).toEqual([])
+    h.line.attach(h.port)
+    expect(h.calls).toEqual([['ready']])
+    await h.answer({ refused: 'cap' })
+    h.timers.at(-1)!.fn()
+    await h.answer({ copy: 'c1' })
+    expect(h.calls).toEqual([['ready'], ['ready'], ['loaded', 'c1']])
+    expect(h.states.at(-1)).toEqual({ loading: false })
+    // Once only: the next load starts with its loader up again.
+    h.line.attach(h.port)
+    await h.answer({ copy: 'c2' })
+    expect(h.calls.filter((c) => c[0] === 'loaded')).toEqual([['loaded', 'c1']])
+    expect(h.states.at(-1)).toEqual({ loading: true })
+  })
+
   it('a page load after another is a new copy; the old one is released, a late answer for an ended load too', async () => {
     const h = harness()
     const end1 = h.line.attach(h.port)

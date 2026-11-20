@@ -726,6 +726,26 @@ describe("03e A, B: a guest's Discuss (IpcRouter.discussGuest, openGuestTab)", (
     expect(() => router.discussGuest('pageTabs.discuss', CTX, { viewId: 'web:5', who: { guest: 'gW' }, remote: true })).toThrow(/refused/)
   })
 
+  it("an overlay's Discuss gets seesOverlay: the one overlay rule over the access read live; none without the overlay; fail closed", () => {
+    const { router, guests, setRole } = setup()
+    let visible = true
+    router.setGuestDeps(guestDeps(guests, { overlayVisible: (projectId, overlayId, access) => visible && projectId === PROJECT_A && overlayId === 'o1' && access.id === 'gW' }))
+    expect(router.discussGuest('pageTabs.discuss', CTX, viewOf('gW'))!.seesOverlay).toBeUndefined()
+    const g = router.discussGuest('overlays.discuss', CTX, viewOf('gW'), 'o1')!
+    expect(g.seesOverlay!()).toBe(true)
+    // `via` grew with a plugin hidden from the guest (or the guest hid it): no longer seen.
+    visible = false
+    expect(g.seesOverlay!()).toBe(false)
+    visible = true
+    expect(router.discussGuest('overlays.discuss', CTX, viewOf('gW'), 'o2')!.seesOverlay!()).toBe(false)
+    setRole('read')
+    expect(g.seesOverlay!()).toBe(false)
+    setRole('write')
+    // No rule wired: never seen.
+    router.setGuestDeps(guestDeps(guests, { overlayVisible: undefined }))
+    expect(g.seesOverlay!()).toBe(false)
+  })
+
   it("a Discuss new session counts against the guest's cap with the opens in flight, is noted as its tab, and closes if access ended", async () => {
     const { router, guests, setRole } = setup()
     const g = router.discussGuest('overlays.discuss', CTX, viewOf('gW'))!

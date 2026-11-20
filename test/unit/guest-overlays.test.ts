@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   GUEST_ORIGIN_OVERLAY_REFUSAL,
   OverlayManager,
+  type DiscussSessions,
   type OverlayChannel,
   type OverlayResult,
   type UrlView,
@@ -16,6 +17,7 @@ import { guestEvent, type GuestEventContext } from '../../src/main/web/guest-eve
 import { mayConnectCopyOf, overlayCopyPortOf, overlayVisibleOf, type OverlayCopySources } from '../../src/main/guest-wiring'
 import type { GuestService } from '../../src/main/ipc/guest-deps'
 import { IpcRouter, registerOverlayHandlers, webCaller, type IpcMainLike } from '../../src/main/ipc/router'
+import { GUEST_DISCUSS_REFUSED } from '../../src/main/overlays/discuss'
 import { guestOverlays } from '../../src/shared/guest-filter'
 import type { GuestAccess, GuestOnlyAccess } from '../../src/shared/guests'
 import type { InvokeChannel, OverlayInfo } from '../../src/shared/ipc'
@@ -407,7 +409,7 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     return { kind: 'revoked' }
   }
 
-  function setup(opts: { aware?: boolean } = {}) {
+  function setup(opts: { aware?: boolean; discuss?: DiscussSessions; tabs?: ReadonlySet<string> } = {}) {
     const logs: string[] = []
     const heard: unknown[][] = []
     const events: Array<[string, string, unknown]> = []
@@ -415,7 +417,7 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     const shown = new Set(['a.rev'])
     const guests = {
       access: accessOf,
-      tabVisible: () => false,
+      tabVisible: (_g: string, tabId: string) => opts.tabs?.has(tabId) === true,
       pluginVisible: (_p: string, id: string) => shown.has(id)
     } as unknown as GuestService
     const windowIdOf = (p: string): number | undefined => (p === PROJECT ? W1 : undefined)
@@ -449,7 +451,8 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
         events.push([viewId, channel, payload])
         return true
       },
-      log: (l) => void logs.push(l)
+      log: (l) => void logs.push(l),
+      ...(opts.discuss ? { discuss: opts.discuss } : {})
     })
     const router = new IpcRouter(
       { handle: () => {} } as IpcMainLike,
@@ -481,10 +484,16 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
       releaseCopy: (w, o, v, c) => m.releaseCopy(w, o, v, c),
       guestHide: (w, o, v) => m.guestHide(w, o, v)
     })
+    /** The opener's Discuss answer, held until the test lets it go (`answer`). */
+    let answer: ((value: unknown) => void) | undefined
     const channel: OverlayChannel = {
       onMessage: (message, view, copy) => void heard.push(['message', message, view, copy]),
       onConnect: (copy, view) => void heard.push(['connect', view, copy]),
-      onDisconnect: (copy, view) => void heard.push(['disconnect', view, copy])
+      onDisconnect: (copy, view) => void heard.push(['disconnect', view, copy]),
+      onDiscuss: (view) => {
+        heard.push(['discuss', view])
+        return new Promise((resolve) => (answer = resolve))
+      }
     }
     const results: Array<Promise<OverlayResult>> = []
     const openPv = (via?: string[], ready?: 'manual'): string => {
@@ -519,8 +528,79 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
         ownerName: () => 'Oleg'
       }
     }
-    return { m, pv, plain, openPv, results, call, outcome, heard, events, logs, shown, sink }
+    const answerDiscuss = (value: unknown): void => answer?.(value)
+    return { m, pv, plain, openPv, results, call, outcome, heard, events, logs, shown, sink, answerDiscuss }
   }
+
+  // Codex review, finding 3: a write guest's Discuss awaits the opener's context; if `via` grew meanwhile with a
+  // plugin hidden from the guest (its copy released), that context is the hidden plugin's and must not be sent.
+  describe("a write guest's Discuss re-checks the overlay after the opener's await", () => {
+    function discussSetup() {
+      const sent: Array<[string, string, string | undefined]> = []
+      const opened: string[] = []
+      const sessions: DiscussSessions = {
+        isClaudeTab: (_w, tabId) => tabId === 't1',
+        notReady: () => false,
+        send: (tabId, text, _origin, guestId) => {
+          sent.push([tabId, text, guestId])
+          return { delivered: true }
+        },
+        openSession: async (_w, prompt) => {
+          opened.push(prompt)
+          return { tabId: 'n1' }
+        },
+        selectTab: () => {}
+      }
+      const f = setup({ discuss: sessions, tabs: new Set(['t1']) })
+      // The opener has an onDiscuss handler: Discuss shows on the overlay.
+      f.m.setDiscussHandler(W1, f.pv, true)
+      return { ...f, sent, opened }
+    }
+
+    it('via grows with a hidden plugin during the await: refused, nothing sent, the overlay still open and Discuss free again', async () => {
+      const { m, pv, call, sent, heard, answerDiscuss, results } = discussSetup()
+      await call('web:6', 'overlays.ready', { overlayId: pv })
+      const pending = call('web:6', 'overlays.discuss', { overlayId: pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(heard).toContainEqual(['discuss', 'web:6']))
+      // The opener shows a.gmail's mail now: the guest's copy goes in the same step.
+      expect(m.addSources(W1, pv, ['a.gmail'])).toBe(true)
+      expect(m.copies(W1, pv).map((c) => c.view)).toEqual([])
+      answerDiscuss({ text: 'Re: salary, the mail body' })
+      await expect(pending).resolves.toEqual({ ok: false, error: GUEST_DISCUSS_REFUSED })
+      expect(sent).toEqual([])
+      expect(m.infos(W1).map((o) => o.id)).toContain(pv)
+      let settled = false
+      void results[0]!.then(() => (settled = true))
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      // `discussing` was reset: the owner's own Discuss still goes (a hidden plugin is no bar to the owner).
+      const owner = call('web:3', 'overlays.discuss', { overlayId: pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(heard).toContainEqual(['discuss', 'web:3']))
+      answerDiscuss({ text: 'Re: salary' })
+      await expect(owner).resolves.toMatchObject({ ok: true, tabId: 't1' })
+      expect(sent).toHaveLength(1)
+      expect(sent[0]![2]).toBeUndefined()
+    })
+
+    it('no growth: the same guest Discuss is sent, tagged as the guest\'s (the control)', async () => {
+      const { pv, call, sent, heard, answerDiscuss } = discussSetup()
+      const pending = call('web:6', 'overlays.discuss', { overlayId: pv, target: { kind: 'tab', tabId: 't1' } })
+      await vi.waitFor(() => expect(heard).toContainEqual(['discuss', 'web:6']))
+      answerDiscuss({ text: 'the diff' })
+      await expect(pending).resolves.toMatchObject({ ok: true, tabId: 't1' })
+      expect(sent).toHaveLength(1)
+      expect(sent[0]![0]).toBe('t1')
+      expect(sent[0]![2]).toBe('gW')
+    })
+
+    it("a guest object with no overlay check (an unwired path) is refused before the opener is asked (fail closed)", async () => {
+      const { m, pv, sent, heard } = discussSetup()
+      const guest = { id: 'gW', viewId: 'web:6' as ViewId, allowed: () => true, openTab: async () => null }
+      await expect(m.discuss(W1, pv, { kind: 'tab', tabId: 't1' }, guest, 'web:6')).resolves.toEqual({ ok: false, error: GUEST_DISCUSS_REFUSED })
+      expect(heard.filter((h) => h[0] === 'discuss')).toEqual([])
+      expect(sent).toEqual([])
+    })
+  })
 
   it('a read and a write guest each connect their own copy of a perView overlay; the opener hears each with its view', async () => {
     const { m, pv, call, heard } = setup()

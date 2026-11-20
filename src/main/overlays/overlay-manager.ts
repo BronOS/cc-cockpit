@@ -83,7 +83,15 @@ import { isPanelHeaderIcon } from '../../shared/panel-header'
 import { within } from '../../shared/timeout'
 import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
-import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget, type DiscussGuest } from './discuss'
+import {
+  composeDiscuss,
+  deliverDiscuss,
+  discussContextOf,
+  discussTargetProblem,
+  DiscussSessionBudget,
+  GUEST_DISCUSS_REFUSED,
+  type DiscussGuest
+} from './discuss'
 import { PtyService } from '../pty/pty-service'
 import { CONNECT_WINDOW_MS, MAX_CONNECTS_PER_PANEL } from '../plugins/panel-ports'
 import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
@@ -1871,12 +1879,27 @@ export class OverlayManager {
    * `viewId`: the view whose Send it was (the router's caller, never a payload's): the opener's
    * `onDiscuss` hears it, an owner's browser included (it used to act as the desktop). Absent: a
    * guest's own view, else the desktop's. Which view selects the tab afterwards stays `guest`'s rule.
+   *
+   * A guest's Discuss is re-checked after every await, right before the send (codex review, finding 3): still this
+   * write guest and the overlay still visible to it (`guest.seesOverlay`, the one overlay rule over the access read
+   * live). While the opener was asked, `via` may have grown with a plugin hidden from the guest (its copy released,
+   * addSources), and the context that comes back is that plugin's: it must not reach a shared tab. A guest with no
+   * `seesOverlay` is refused (fail closed), in the one text that names no plugin.
    */
   async discuss(windowId: number, overlayId: string, target: DiscussTarget, guest?: DiscussGuest, viewId?: ViewId): Promise<DiscussAnswer> {
     const overlay = this.find(windowId, overlayId)
     if (!overlay?.info.discuss) return { ok: false, error: 'Discuss is not available on this overlay' }
     const sessions = this.options.discuss
     if (!sessions) return { ok: false, error: 'Discuss is not available' }
+    const guestSees = (): boolean => {
+      if (guest === undefined) return true
+      try {
+        return guest.seesOverlay?.() === true
+      } catch {
+        return false
+      }
+    }
+    if (!guestSees()) return { ok: false, error: GUEST_DISCUSS_REFUSED }
     // Checked again after the opener answered: the tab may have closed (or restarted) meanwhile.
     const early = discussTargetProblem(sessions, windowId, target)
     if (early) return { ok: false, error: early }
@@ -1901,10 +1924,22 @@ export class OverlayManager {
       }
       // The overlay may have closed while the opener was asked: nothing to discuss any more.
       if (this.byId.get(overlay.id) !== overlay) return { ok: false, error: 'The overlay closed' }
+      // A guest's right to the overlay, again after the opener's await (its context may be a hidden plugin's now).
+      if (!guestSees()) return { ok: false, error: GUEST_DISCUSS_REFUSED }
       const text = composeDiscuss({ title: overlay.info.title, type: overlay.type, context, prompt: sessions.prompt?.(windowId) })
       const late = discussTargetProblem(sessions, windowId, target)
       if (late) return { ok: false, error: late }
-      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, guest)
+      // And in the same synchronous step as the send: deliverDiscuss asks `allowed` right before it sends or opens.
+      const checked: DiscussGuest | undefined =
+        guest === undefined
+          ? undefined
+          : {
+              id: guest.id,
+              viewId: guest.viewId,
+              allowed: (to) => guestSees() && guest.allowed(to),
+              openTab: (liveTabs, create, idOf, close) => guest.openTab(liveTabs, create, idOf, close)
+            }
+      const sent = await deliverDiscuss(sessions, this.discussSessions, windowId, target, text, checked)
       if (!sent.ok) return sent
       const { tabId, queued } = sent
       // The person may dismiss the overlay while a new session opens. The session already has the

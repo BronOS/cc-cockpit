@@ -88,13 +88,17 @@ never taken from a plugin's arguments alone:
   a provider that shows a request's content later records the chain while the call is live and attributes it before
   that content leaves: `handle.addSources(ctx.services.callers())`. The Reviewer does this in `prepare` and `annotate`
   (keyed fills) and keeps the chain with the stored content, so the page's later `content` request is already covered.
-- **Requests main routes.** `ctx.files.open(path)` from another plugin reaches the project's open-file pick through main
-  (`host-api.ts:2067` → the taker's `ctx.files.onOpen`, `host.js:945`), outside any service chain, and main drops the
-  requester today. Main passes it on: the open event gains `requestedBy` (the plugin id main bound to the calling host
-  call, never the payload; absent for core's own clicks and a tab's `ccc`), and a `perView` taker attributes it with
-  `handle.addSources([requestedBy])` before the content leaves. Any later main-routed "show this" path does the same.
-- **A plugin's own content** (the Reviewer's diff of a file from its own command, a core click on a changed file, a
-  tab's `ccc`) has no `via`: it is the opener's, shown when the opener is. No quarantine.
+- **Requests main routes.** `ctx.files.open(path)` and `ctx.sessions.openFile(tabId, path)` from another plugin reach the
+  project's open-file pick through main (`host-api.ts` → the taker's `ctx.files.onOpen`), outside any service chain, and
+  main dropped the requester. Main passes it on: the open event gains `requestedBy: string[]`, the whole chain, outermost
+  first and the immediate requester last. The host sends the call site's `ctx.services.callers()` as `via` (hidden A →
+  shown B's service → B's open: `[A]`), main checks it as an overlay call's `via` (this host's plugins only, unknown
+  ids dropped, refused whole past the bound, never cut) and appends the plugin it bound to the call: `[A, B]`. Absent
+  when no plugin asked (a tab's `ccc`); a Sessions panel click names its plugin (`cockpit.sessions`), as any plugin's
+  call does. A `perView` taker attributes it with `handle.addSources(requestedBy)` before the content leaves. Any later
+  main-routed "show this" path does the same (codex review of the branch, findings 1 and 2).
+- **A plugin's own content** (the Reviewer's diff of a file from its own command, a tab's `ccc`) has no `via`: it is
+  the opener's, shown when the opener is. No quarantine.
 - **Growth on a live overlay.** When `via` grows to include a plugin hidden from a guest that has copies, main releases
   that guest's copies and drops their queued messages in the same synchronous step, before the post that carried the
   new content is delivered to anyone; the overlay leaves that guest's stack.

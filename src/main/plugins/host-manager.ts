@@ -828,7 +828,7 @@ export class HostManager {
    * caller passed one of this project's tabs; the params then carry no `tabId` at all. `view`: the
    * remote view the open started in; the plugin's listeners run in it.
    */
-  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId; requestedBy?: string }): Promise<boolean> {
+  async openFile(projectId: string, pluginId: string, req: { path: string; tabId?: string; view?: ViewId; requestedBy?: readonly string[] }): Promise<boolean> {
     const rec = this.hosts.get(projectId)
     const rpc = rec?.rpc
     if (!rec || !rpc || !rec.proc || rec.stopping || !rec.ran.has(pluginId) || rec.reloading.has(pluginId)) return false
@@ -841,7 +841,7 @@ export class HostManager {
           path: req.path,
           ...(req.tabId !== undefined ? { tabId: req.tabId } : {}),
           ...(req.view !== undefined ? { view: req.view } : {}),
-          ...(req.requestedBy !== undefined ? { requestedBy: req.requestedBy } : {})
+          ...(req.requestedBy !== undefined ? { requestedBy: [...req.requestedBy] } : {})
         },
         { timeoutMs: OPEN_FILE_ACK_MS }
       )

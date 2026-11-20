@@ -2223,7 +2223,8 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     await expect(m.discuss(W1, openOne(), { kind: 'tab', tabId: 't1' }, undefined, desktopViewId(W1))).resolves.toMatchObject({ ok: true })
     await expect(m.discuss(W1, openOne(), { kind: 'tab', tabId: 't1' })).resolves.toMatchObject({ ok: true })
     // A guest's Send with no explicit view: the guest's own.
-    const guest = { id: 'g1', viewId: 'web:8', allowed: () => true, openTab: () => Promise.resolve(null) }
+    // seesOverlay: the router's overlay check (an overlay's guest without one is refused, fail closed).
+    const guest = { id: 'g1', viewId: 'web:8', allowed: () => true, seesOverlay: () => true, openTab: () => Promise.resolve(null) }
     await expect(m.discuss(W1, openOne(), { kind: 'tab', tabId: 't1' }, guest)).resolves.toMatchObject({ ok: true })
     expect(views).toEqual(['web:3', undefined, undefined, 'web:8'])
     // The owner's browser selects as before (project-wide): only the opener learned the view.
@@ -2275,7 +2276,7 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     const sessions = fakeSessions()
     const m = withDiscuss(sessions)
     let allowed = true
-    const guest = { id: 'g1', viewId: 'web:9' as const, allowed: () => allowed, openTab: () => Promise.reject(new Error('no')) }
+    const guest = { id: 'g1', viewId: 'web:9' as const, allowed: () => allowed, seesOverlay: () => true, openTab: () => Promise.reject(new Error('no')) }
     const ch = opener(async () => {
       allowed = false
       return { text: 'ctx' }

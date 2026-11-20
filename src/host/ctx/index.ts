@@ -405,6 +405,13 @@ export class HostContexts {
         await call('openExternal', { pluginId: spec.id, url, ...(view !== undefined ? { view } : {}) })
       })
 
+    // The service caller chain at a call site (docs/design-overlay-views.md §4): an overlay call's `via`, and a
+    // main-routed file open's (ctx.files.open, ctx.sessions.openFile), which main hands the taker as `requestedBy`.
+    const callers = (): string[] => deps.services?.()?.callers(spec.id) ?? []
+    // Sources are this host's plugins only (main keeps only those too): filtered before any bound, never cut.
+    // No registry (a test host): no filter, so cleanSources throws past its floor instead.
+    const isHostPlugin = deps.services === undefined ? undefined : (id: string) => deps.services?.().knows(id) === true
+
     const ui = createUiApi({
       pluginId: spec.id,
       panels: spec.panels,
@@ -428,10 +435,8 @@ export class HostContexts {
         rt.typeButtonsUsed = true
       },
       // An overlay call's `via` (docs/design-overlay-views.md §4): the chain ctx.services.callers() answers.
-      callers: () => deps.services?.()?.callers(spec.id) ?? [],
-      // Sources are this host's plugins only (main keeps only those too): filtered before any bound, never cut.
-      // No registry (a test host): no filter, so cleanSources throws past its floor instead.
-      isHostPlugin: deps.services === undefined ? undefined : (id) => deps.services?.().knows(id) === true,
+      callers,
+      isHostPlugin,
       logError: (m) => logAs('error', m)
     })
 
@@ -504,7 +509,16 @@ export class HostContexts {
           rt.webviewUsed = true
         }
       }),
-      sessions: createSessionsApi({ pluginId: spec.id, call, alive, guardAsync, hub: this.sessions, sessionsAll: spec.sessionsAll === true }),
+      sessions: createSessionsApi({
+        pluginId: spec.id,
+        call,
+        alive,
+        guardAsync,
+        hub: this.sessions,
+        sessionsAll: spec.sessionsAll === true,
+        callers,
+        isHostPlugin
+      }),
       // Plain RPCs: rooms live in main (they span the tabs main owns), nothing is kept in the host.
       rooms: createRoomsApi({ pluginId: spec.id, call, guardAsync }),
       commands: Object.freeze({ register }),
@@ -515,7 +529,9 @@ export class HostContexts {
         alive,
         call,
         guardAsync,
-        listeners: rt.openListeners
+        listeners: rt.openListeners,
+        callers,
+        isHostPlugin
       }),
       services: Object.freeze({
         provide: (name: string, impl: Record<string, (...args: never[]) => unknown>) => {

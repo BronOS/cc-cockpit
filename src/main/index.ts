@@ -1963,7 +1963,8 @@ function start(server: boolean): void {
       // ctx.sessions.rename: HostApi checked the tab is this project's and the name.
       renameTab: (projectId, tabId, name) => tabs.rename(projectId, tabId, name),
       // ctx.sessions.openFile: a session card's file click (the recorded-file check is routeOpenFile's).
-      openSessionFile: (caller, tabId, file, view) => routeOpenFile(openFileRoute, caller, tabId, file, view),
+      // `requestedBy`: the plugins HostApi checked the request for, the taker's provenance (never a payload's).
+      openSessionFile: (caller, tabId, file, view, requestedBy) => routeOpenFile(openFileRoute, caller, tabId, file, view, requestedBy),
       // ctx.sessions.open({ focus: true }): the plugin opened it for a click the person made (a
       // "new session" button), so the window shows it.
       openTab: (projectId, options, windowId, focus, place, view) => openClaudeTab(projectId, options, windowId, focus === true, place, view),
@@ -2030,7 +2031,7 @@ function start(server: boolean): void {
       updateTheme: (id, theme) => themes.update(id, theme),
       webview: webviews,
       // ctx.files.open: the click's route below (defined later; this runs only once a host exists).
-      // `requestedBy`: the plugin HostApi checked the request for, the taker's provenance (never a payload's).
+      // `requestedBy`: the plugins HostApi checked the request for, the taker's provenance (never a payload's).
       openFile: (caller, path, tabId, view, requestedBy) => routeProjectFile(openFileRoute, caller, path, tabId, view, requestedBy),
       // ctx.openExternal: HostApi checked the URL (shared/web-url.ts) and the plugin's budget, and
       // names its own window and the view main knows the plugin acted for (or the one it named, checked).

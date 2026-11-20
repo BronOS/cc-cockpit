@@ -776,7 +776,7 @@ export interface UiApiDeps {
  * accepts; ids that name nothing are dropped before they could use up anything. With no filter wired, a list
  * past MAX_OVERLAY_SOURCES throws at the call site (fail closed) rather than lose an id.
  */
-function cleanSources(ids: readonly unknown[], isHostPlugin?: (id: string) => boolean): string[] {
+export function cleanSources(ids: readonly unknown[], isHostPlugin?: (id: string) => boolean): string[] {
   const out = new Set<string>()
   for (const id of ids) {
     if (typeof id !== 'string' || id === '') continue
@@ -787,6 +787,22 @@ function cleanSources(ids: readonly unknown[], isHostPlugin?: (id: string) => bo
     throw new RangeError(`overlay sources: more than ${MAX_OVERLAY_SOURCES} plugin ids`)
   }
   return [...out]
+}
+
+/**
+ * The service caller chain the plugin's code runs in now, as main takes it (cleanSources): an overlay call's `via`,
+ * and the `via` of a main-routed file open (ctx.files.open, ctx.sessions.openFile), which main hands the taker as
+ * `requestedBy`. Read at the plugin's call site, before any await. A `callers` that throws is none; a list that
+ * cannot be sent whole throws at the call site (fail closed).
+ */
+export function callerChainNow(callers?: () => string[], isHostPlugin?: (id: string) => boolean): string[] {
+  let raw: string[]
+  try {
+    raw = callers?.() ?? []
+  } catch {
+    raw = []
+  }
+  return cleanSources(raw, isHostPlugin)
 }
 
 /** A declared html panel: panels.post/onMessage on a webview panel would go nowhere (no port ever comes). */
@@ -819,14 +835,7 @@ export function createUiApi(
 
   /** `{ via }` for the call being made now (the service chain at this call site), nothing outside a service call. */
   const viaNow = (): { via?: string[] } => {
-    let raw: string[]
-    try {
-      raw = deps.callers?.() ?? []
-    } catch {
-      raw = []
-    }
-    // Outside the try: a list that cannot be sent whole throws at the plugin's call site (fail closed).
-    const chain = cleanSources(raw, deps.isHostPlugin)
+    const chain = callerChainNow(deps.callers, deps.isHostPlugin)
     return chain.length > 0 ? { via: chain } : {}
   }
 
@@ -966,7 +975,7 @@ export function createUiApi(
         send('overlay.setButtons', { pluginId, handle: link.handle, buttons: clean, ...viaNow() })
       },
       // Any kind (a terminal overlay has a title too). Checked at the call site; main keeps only this host's plugins.
-      addSources: (pluginIds: string[]): void => {
+      addSources: (pluginIds: readonly string[]): void => {
         if (!Array.isArray(pluginIds)) throw new TypeError('overlay addSources needs an array of plugin ids')
         const ids = cleanSources(pluginIds, deps.isHostPlugin)
         if (!link || link.ended || ids.length === 0) return

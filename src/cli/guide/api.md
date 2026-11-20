@@ -260,8 +260,8 @@ with full Node access.
 - `handle.addSources(pluginIds)`: this overlay now also shows content another plugin asked for, so a guest
   sees it only when those plugins are shown to guests too. Inside a service call the app does this itself for
   `start`, `post` and `setButtons` (the caller chain, `ctx.services.callers()`); for content you show later,
-  keep `ctx.services.callers()` from the live call, or a file open's `requestedBy` (`ctx.files.onOpen`), and
-  call `addSources` with it before you post that content.
+  keep `ctx.services.callers()` from the live call, or a file open's `requestedBy` list (`ctx.files.onOpen`),
+  and call `addSources` with it before you post that content.
   A plugin that shows other plugins' content in a window (a viewer service) must do this: a guest of a plugin
   shown to guests would otherwise see what a hidden plugin asked it to show. Data you fetch from another plugin and
   show as your own is not followed. Declare `"overlays": { "perView": true }` in `plugin.json` first (`plugins` topic).
@@ -511,8 +511,11 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
   it throws. `listener({ path, tabId })` gets the file relative to the project folder (`src/a.ts`,
   `/` separators, never outside the project) and the Claude tab whose list was clicked; both come
   from the app. `tabId` is absent when the open did not come from a tab (a `ctx.files.open` call
-  without one), so check it before use. `requestedBy` is the plugin whose `ctx.files.open` it is (the app's
-  record, absent for a click or a tab's `ccc`): pass it to the overlay's `addSources` before showing the file.
+  without one), so check it before use. `requestedBy` is the list of plugins whose request it is (the app's
+  record): the one that called `ctx.files.open` or `ctx.sessions.openFile` last, the service callers it ran in
+  before it, outermost first (`['a.mail', 'a.tree']`); absent when no plugin asked (a tab's `ccc`). A click in the
+  Sessions panel names that panel's plugin. Pass the whole list to the overlay's `addSources` before showing the
+  file: `handle.addSources(requestedBy ?? [])`.
   Opens reach the plugin only when the project uses it to open files: it is the
   only enabled plugin declaring `openFile`, or the one picked in Settings > This Project ("Plugin used
   to open files", where "Built-in viewer" is also a choice); with `whenPicked` only the pick

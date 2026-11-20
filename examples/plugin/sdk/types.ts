@@ -398,7 +398,7 @@ export interface OverlayHandle {
    * `ctx.services.callers()` while the request is live, or a file open's `requestedBy`), so a guest sees it
    * only when all of them are shown to guests (provenance, D-4). Any kind. See docs/design-overlay-views.md.
    */
-  addSources(pluginIds: string[]): void
+  addSources(pluginIds: readonly string[]): void
   /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
   close(): void
   /**
@@ -734,10 +734,13 @@ export interface OpenFileRequest {
    */
   readonly tabId?: string
   /**
-   * The plugin whose call or click caused a main-routed open, set by main (never a payload); absent
-   * otherwise. Provenance for overlays opened for it. See docs/design-overlay-views.md.
+   * The plugins whose request this open is, set by main (never a payload): the plugin that called
+   * `ctx.files.open` or `ctx.sessions.openFile` last, and before it the service caller chain it called
+   * in, outermost first (hidden A calls B's service, B opens the file: `['a', 'b']`). Absent when no
+   * plugin asked. Provenance for overlays opened for it: pass it whole to `handle.addSources`. See
+   * docs/design-overlay-views.md.
    */
-  readonly requestedBy?: string
+  readonly requestedBy?: readonly string[]
 }
 
 /** Where `ctx.files.open` sent the file: the project's open-file plugin, or the app's built-in viewer. */

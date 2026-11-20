@@ -401,23 +401,41 @@ export class IpcRouter {
   /**
    * A guest caller's Discuss (03e A, B; overlays/discuss.ts DiscussGuest), undefined for the owner. `allowed` reads
    * the access live (still this project's write guest, still seeing a tab target), false on any doubt; `openTab` is
-   * openGuestTab, so a Discuss new session is one of the guest's D-21 tabs.
+   * openGuestTab, so a Discuss new session is one of the guest's D-21 tabs. `overlayId` (an overlay's Discuss): the
+   * guest also gets `seesOverlay`, the one overlay rule (`overlayVisible`, guest-wiring.ts overlayVisibleOf) over the
+   * access read live, false on any doubt or with no rule wired (fail closed).
    */
-  discussGuest(channel: string, ctx: ProjectContext, view: CallView): DiscussGuest | undefined {
+  discussGuest(channel: string, ctx: ProjectContext, view: CallView, overlayId?: string): DiscussGuest | undefined {
     const access = guestCall(view, channel)
     if (!access) return undefined
+    const now = (): GuestOnlyAccess | undefined => {
+      const live = this.guestAccessNow(channel, ctx, view)
+      return live !== undefined && live.id === access.id ? live : undefined
+    }
     return {
       id: access.id,
       viewId: view.viewId,
       allowed: (target) => {
         try {
-          const now = this.guestAccessNow(channel, ctx, view)
-          if (!now || now.id !== access.id) return false
-          return target.kind === 'new' || this.guestService()?.tabVisible(now.id, target.tabId) === true
+          const live = now()
+          if (!live) return false
+          return target.kind === 'new' || this.guestService()?.tabVisible(live.id, target.tabId) === true
         } catch {
           return false
         }
       },
+      ...(overlayId !== undefined
+        ? {
+            seesOverlay: () => {
+              try {
+                const live = now()
+                return live !== undefined && this.guestDeps?.overlayVisible?.(ctx.projectId, overlayId, live) === true
+              } catch {
+                return false
+              }
+            }
+          }
+        : {}),
       openTab: (liveTabs, create, idOf, close) => this.openGuestTab(channel, ctx, view, access, liveTabs, create, idOf, close)
     }
   }
@@ -2673,7 +2691,8 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     const { target } = fields('overlays.discuss', payload)
     const overlayId = overlayIdOf('overlays.discuss', payload)
     const t = (target ?? {}) as Record<string, unknown>
-    const guest = router.discussGuest('overlays.discuss', ctx, view)
+    // A guest's also re-checks it still sees the overlay after every await (the manager asks `seesOverlay`).
+    const guest = router.discussGuest('overlays.discuss', ctx, view, overlayId)
     // The caller's view always goes too: the opener hears who asked, an owner's browser included.
     const send = (to: DiscussTarget): Promise<DiscussAnswer> => deps.discuss(ctx.windowId, overlayId, to, guest, view.viewId)
     if (t.kind === 'new') return send({ kind: 'new' })

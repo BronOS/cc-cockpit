@@ -18,8 +18,9 @@
 //                                                                window; the declaration, focus's budget
 //   sessions.close  { pluginId, tabId }        -> { closed }     a Claude tab of THIS project, through the
 //                                                                person's close path (the dialog may ask)
-//   sessions.openFile { pluginId, tabId, path } -> null          a file main recorded for a tab of THIS
-//                                                                project, routed like the panel's click
+//   sessions.openFile { pluginId, tabId, path, via? } -> null    a file main recorded for a tab of THIS
+//                                                                project, routed like the panel's click;
+//                                                                `requestedBy` as for files.open
 //   sessions.rename { pluginId, tabId, name }  -> null           name (1-60 chars, no control/bidi/format chars) or
 //                                                                null for Claude's title; a tab of THIS project
 //   sessions.send   { pluginId, tabId, text }  -> SendResult     a tab of THIS project, through the gate
@@ -112,12 +113,14 @@
 //   webview.navigate { pluginId, panelId, target } -> null      a webview panel the plugin declares, in this
 //   webview.back|forward|reload { pluginId, panelId } -> null    window only (webview-manager.ts decides
 //   webview.current { pluginId, panelId }      -> { url, title } what a target may be and where a page may go)
-//   files.open      { pluginId, path, tabId? } -> { via }        a project file through the project's open-file
+//   files.open      { pluginId, path, tabId?, via? } -> { via }  a project file through the project's open-file
 //                                                                pick (open-file.ts routeProjectFile: the path
 //                                                                checked against THIS project's folder, a tabId
 //                                                                kept only when it is this project's; `via` is
 //                                                                'plugin' or 'builtin'); no manifest declaration.
 //                                                                The taker's open event carries `requestedBy`:
+//                                                                the request's `via` (the service caller
+//                                                                chain, checked as for overlay calls), then
 //                                                                the plugin this request was checked for
 //   openExternal    { pluginId, url, view? }   -> null           the system browser on an http(s) link
 //                                                                (shared/web-url.ts checkWebUrl: no other
@@ -489,8 +492,16 @@ export interface HostApiDeps {
    * The Sessions panel's file click (open-file.ts routeOpenFile): false when the tab is not the
    * caller's project's or the file is not one main recorded for it. Without it ctx.sessions.openFile is refused.
    * `view`: the live remote view the plugin acted for (originOf), handed on to the plugin that opens it.
+   * `requestedBy`: the plugins the request was checked for (requesterChain: this host's, main's word, the calling
+   * plugin last), handed on to the taker as provenance (docs/design-overlay-views.md §4 "Requests main routes").
    */
-  openSessionFile?(caller: { windowId: number; projectId: string }, tabId: string, file: string, view?: ViewId): Promise<boolean>
+  openSessionFile?(
+    caller: { windowId: number; projectId: string },
+    tabId: string,
+    file: string,
+    view?: ViewId,
+    requestedBy?: readonly string[]
+  ): Promise<boolean>
   /**
    * Name a tab of `projectId` (TabManager.rename, which checks the name again; the registry and the
    * saved record follow). Without it ctx.sessions.rename is refused.
@@ -691,15 +702,16 @@ export interface HostApiDeps {
    * ctx.files.open (open-file.ts routeProjectFile with main's open-file route): `caller` is this
    * host's scope, `path` and `tabId` the plugin's, checked there. Without it files.open is refused.
    * `view`: the live remote view the plugin acted for (originOf), handed on to the plugin that opens it.
-   * `requestedBy`: the plugin the request was checked for (this host's, main's word, never the payload's),
-   * handed on to the taker as provenance (docs/design-overlay-views.md §4 "Requests main routes").
+   * `requestedBy`: the plugins the request was checked for (requesterChain: the service caller chain the host
+   * sent, this host's plugins only, then the calling plugin main bound, last), handed on to the taker as
+   * provenance (docs/design-overlay-views.md §4 "Requests main routes").
    */
   openFile?(
     caller: { windowId: number; projectId: string },
     path: string,
     tabId?: string,
     view?: ViewId,
-    requestedBy?: string
+    requestedBy?: readonly string[]
   ): Promise<'plugin' | 'builtin'>
   /**
    * ctx.openExternal: hand an already checked http(s) URL to the openExternal adapter
@@ -1594,10 +1606,12 @@ export class HostApi {
    */
   private async sessionFile(params: unknown, meta?: RpcMeta): Promise<null> {
     this.alive()
-    const { pluginId, tabId, path } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, tabId, path, via } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'sessions.openFile')
     this.ownTab(tabId, 'sessions.openFile')
     if (typeof path !== 'string' || path === '') throw new Error('sessions.openFile: path must be a non-empty string')
+    // Before the budget: a malformed chain is refused whole and spends nothing.
+    const requestedBy = this.requesterChain(plugin.id, via, 'sessions.openFile')
     if (!this.deps.openSessionFile) throw new Error('sessions.openFile: opening files is not available')
     if (!this.sessionFiles.take(plugin.id)) {
       throw new Error(
@@ -1607,8 +1621,10 @@ export class HostApi {
     let opened: boolean
     try {
       // The view the plugin acted for goes to the plugin that opens the file (a browser's click opens there).
+      // `requestedBy`: this plugin and the chain it called in, so a hidden plugin cannot have a tab's file shown to
+      // guests through a taker they see (the taker attributes them all, D-4).
       const caller = { windowId: this.scope.windowId, projectId: this.scope.projectId }
-      opened = await this.deps.openSessionFile(caller, tabId, path, this.originOf(meta))
+      opened = await this.deps.openSessionFile(caller, tabId, path, this.originOf(meta), requestedBy)
     } catch (err) {
       this.sessionFiles.refund(plugin.id)
       throw withMethod('sessions.openFile', err)
@@ -2159,10 +2175,12 @@ export class HostApi {
    */
   private async filesOpen(params: unknown, meta?: RpcMeta): Promise<{ via: 'plugin' | 'builtin' }> {
     this.alive()
-    const { pluginId, path, tabId } = (params ?? {}) as Record<string, unknown>
+    const { pluginId, path, tabId, via: rawVia } = (params ?? {}) as Record<string, unknown>
     const plugin = this.plugin(pluginId, 'files.open')
     if (typeof path !== 'string' || path === '') throw new Error('files.open: path must be a non-empty string')
     if (tabId !== undefined && typeof tabId !== 'string') throw new Error('files.open: tabId must be a string')
+    // Before the budget: a malformed chain is refused whole and spends nothing.
+    const requestedBy = this.requesterChain(plugin.id, rawVia, 'files.open')
     if (!this.deps.openFile) throw new Error('files.open: opening files is not available')
     if (!this.fileOpens.take(plugin.id)) {
       throw new Error(`files.open: more than ${MAX_FILE_OPENS_PER_WINDOW} files in ${FILE_OPEN_WINDOW_MS / 1000} s`)
@@ -2170,8 +2188,8 @@ export class HostApi {
     let via: 'plugin' | 'builtin'
     try {
       // As for sessions.openFile: the taker's listeners run in the view the plugin acted for.
-      // `plugin.id`: the plugin this request was checked for, the taker's `requestedBy` (never from the payload).
-      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId, this.originOf(meta), plugin.id)
+      // `requestedBy`: the chain the host sent, checked, then `plugin.id`, the plugin this request was checked for.
+      via = await this.deps.openFile({ windowId: this.scope.windowId, projectId: this.scope.projectId }, path, tabId, this.originOf(meta), requestedBy)
     } catch (err) {
       throw withMethod('files.open', err)
     }
@@ -2684,6 +2702,18 @@ export class HostApi {
     const out = new Set<string>()
     for (const id of raw) if (typeof id === 'string' && this.scope.plugins.some((p) => p.id === id)) out.add(id)
     return [...out]
+  }
+
+  /**
+   * A main-routed file open's `requestedBy` (ctx.files.open, ctx.sessions.openFile; docs/design-overlay-views.md §4
+   * "Requests main routes"): the service caller chain the host sent as `via`, checked like an overlay's sources
+   * (overlaySources: this host's plugins only, unknown ids dropped, refused whole past the bound, never cut), outermost
+   * first, then the calling plugin main bound, always present and always last (an earlier mention of it, a chain
+   * that came back into it, is dropped so the immediate requester ends the list). Hidden A -> shown B's service ->
+   * B's open is [A, B]: the taker attributes both, so a guest who may not see A never gets what A asked for.
+   */
+  private requesterChain(pluginId: string, rawVia: unknown, what: string): string[] {
+    return [...this.overlaySources(rawVia, what).filter((id) => id !== pluginId), pluginId]
   }
 
   /**

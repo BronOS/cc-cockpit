@@ -2246,16 +2246,18 @@ test('the owner\'s Original | Reader choice is kept: a reload or another copy st
   host.deactivate()
 })
 
-test('provenance: a file opened for another plugin (requestedBy) is attributed to it; a click of the person\'s is not', async () => {
+test('provenance: a file opened for other plugins (the requestedBy chain) is attributed to all of them; an open no plugin asked for is not', async () => {
   const f = setup({ editorAvailable: false })
   let onOpen
   f.ctx.files.onOpen = (fn) => ((onOpen = fn), () => {})
   f.ctx.overlay.start = () => pageHandle(f)
   host.activate(f.ctx)
-  const opened = onOpen({ path: 'a.js', requestedBy: 'example.tree' })
+  // Hidden A called B's service, B opened the file: main hands the whole chain, the caller last.
+  const opened = onOpen({ path: 'a.js', requestedBy: ['example.mail', 'example.tree'] })
   await wait(OPEN_WAIT)
   const h = f.handles[0]
-  assert.deepEqual(h.sources, [['example.tree'], ['example.tree']], 'at the fill and again for the owner copy')
+  const chain = ['example.mail', 'example.tree']
+  assert.deepEqual(h.sources, [chain, chain], 'at the fill and again for the owner copy')
   assert.ok(h.events.findIndex((e) => e[0] === 'sources') < h.events.findIndex((e) => e[2] === 'init'))
   h.end({ kind: 'dismissed' })
   await opened

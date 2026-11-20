@@ -173,6 +173,13 @@ export class CopyLine {
   private held: string[] = []
   /** The page said it has drawn before its copy was known. */
   private drawn = false
+  /**
+   * The page said it has drawn while no load was attached: its `ccPanel.ready()` (a page message) can come before
+   * the frame's `load` event, which is what attaches the load (an image still loading holds `load` back). Kept for
+   * the next attach only (codex review, finding 7: dropped, it left the copy's loader up for good). PluginFrame
+   * passes on messages from its frame's current page only, and a reload is a new frame (HtmlOverlay's generation key).
+   */
+  private drawnUnattached = false
   private attempt = 0
   private timer: unknown
   private current: CopyLineState = { loading: true }
@@ -181,10 +188,14 @@ export class CopyLine {
 
   /** A load of the frame has its port: ask for this view's copy. Returns the load's end (release). */
   attach(port: CopyPagePort): () => void {
+    const drawnEarly = this.phase === 'idle' && this.drawnUnattached
     this.end()
+    this.drawnUnattached = false
     const visit = ++this.visit
     this.port = port
     this.attempt = 0
+    // Read by `answered` like a ready that came while the copy was asked for (and kept across a `cap` retry).
+    this.drawn = drawnEarly
     this.report({ loading: true })
     this.ask()
     return () => {
@@ -242,6 +253,7 @@ export class CopyLine {
       this.deps.loaded(this.copy)
       this.report({ loading: false })
     } else if (this.phase === 'asking' || this.phase === 'waiting') this.drawn = true
+    else if (this.phase === 'idle') this.drawnUnattached = true
   }
 
   /**

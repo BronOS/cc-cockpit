@@ -3645,7 +3645,7 @@ describe('overlay provenance (via) and requestedBy', () => {
   })
 
   it("files.open hands the route the calling plugin main bound as requestedBy, never one from the payload", async () => {
-    const asked: Array<string | undefined> = []
+    const asked: Array<readonly string[] | undefined> = []
     deps.openFile = async (_caller, _path, _tabId, _view, requestedBy) => {
       asked.push(requestedBy)
       return 'plugin'
@@ -3653,6 +3653,44 @@ describe('overlay provenance (via) and requestedBy', () => {
     const call = hostA()
     await call('files.open', { pluginId: 'a.two', path: 'src/a.ts', requestedBy: 'a.one' })
     await call('files.open', { pluginId: 'a.one', path: 'src/a.ts' })
-    expect(asked).toEqual(['a.two', 'a.one'])
+    expect(asked).toEqual([['a.two'], ['a.one']])
+  })
+
+  it('files.open: a chain through a service is attributed in full, outermost first and the caller last; checked like via', async () => {
+    const asked: Array<readonly string[] | undefined> = []
+    deps.openFile = async (_caller, _path, _tabId, _view, requestedBy) => {
+      asked.push(requestedBy)
+      return 'plugin'
+    }
+    const { call } = setup()
+    // Hidden a.two called shown a.three's service, which opened the file: both, a.three last.
+    await call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: ['a.two'] })
+    // Not this host's plugins: dropped, never trusted; duplicates once; the caller itself named earlier moves last.
+    await call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: ['b.other', 'a.three', 'a.two', 'a.two', 'a.one'] })
+    expect(asked).toEqual([
+      ['a.two', 'a.three'],
+      ['a.two', 'a.one', 'a.three']
+    ])
+    // Malformed or past the bound: refused whole before anything is routed or spent, never cut (fail closed).
+    await expect(call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: 'a.two' })).rejects.toThrow('via must be an array')
+    const tooMany = Array.from({ length: MAX_OVERLAY_SOURCES + 1 }, () => 'a.two')
+    await expect(call('files.open', { pluginId: 'a.three', path: 'src/a.ts', via: tooMany })).rejects.toThrow('more than')
+    expect(asked).toHaveLength(2)
+  })
+
+  it("sessions.openFile carries its requester and the chain to the taker; a refused chain spends nothing", async () => {
+    const asked: Array<readonly string[] | undefined> = []
+    deps.openSessionFile = async (_caller, _tabId, _file, _view, requestedBy) => {
+      asked.push(requestedBy)
+      return true
+    }
+    const mine = tabs.create(A, { kind: 'claude' })
+    const { call } = setup()
+    await expect(call('sessions.openFile', { pluginId: 'a.two', tabId: mine.id, path: 'a.ts' })).resolves.toBeNull()
+    await expect(call('sessions.openFile', { pluginId: 'a.three', tabId: mine.id, path: 'a.ts', via: ['a.two', 'b.other'] })).resolves.toBeNull()
+    await expect(call('sessions.openFile', { pluginId: 'a.three', tabId: mine.id, path: 'a.ts', via: { a: 1 } })).rejects.toThrow(
+      'via must be an array'
+    )
+    expect(asked).toEqual([['a.two'], ['a.two', 'a.three']])
   })
 })

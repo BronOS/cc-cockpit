@@ -1303,9 +1303,10 @@ exports.activate = (ctx) => {
     ctx.files.onOpen(async ({ path, tabId, requestedBy }) => {
       // Throwing before the overlay is up hands the click to the built-in viewer (binary, too
       // big, unreadable); after that, awaiting the overlay keeps the click ours. `requestedBy` (set by
-      // main: the plugin whose ctx.files.open this is, outside any service call) is attributed before
-      // the file's content leaves, so a guest who may not see that plugin never gets it (D-4).
-      const sources = typeof requestedBy === 'string' && requestedBy !== '' ? [requestedBy] : []
+      // main: the plugins whose ctx.files.open or ctx.sessions.openFile this is, the service chain it
+      // was made in first, the caller last) is attributed whole before the file's content leaves, so a
+      // guest who may not see one of them never gets it (D-4).
+      const sources = Array.isArray(requestedBy) ? requestedBy.filter((id) => typeof id === 'string' && id !== '') : []
       const { done } = await openReview(path, { tabId, sources })
       await done
     }),

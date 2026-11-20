@@ -1167,6 +1167,28 @@ describe('ctx.overlay provenance (via, addSources)', () => {
     expect(of(calls, 'overlay.post')[1]).toEqual({ pluginId: 'a.one', handle: of(calls, 'overlay.open')[0]!.handle, message: { more: 1 } })
   })
 
+  // Codex review, findings 1 and 2: a main-routed file open carries the call site's chain as `via` (main appends the
+  // caller and hands the taker the whole list as `requestedBy`).
+  it('A -> B: ctx.files.open and ctx.sessions.openFile inside B\'s service method send [A]; outside a call, no via key', async () => {
+    const { calls, mail, app } = chain()
+    mail.services.provide('mail', {
+      open: async () => {
+        // The fake answers `true`, not `{ via }`: only what was sent matters here.
+        await mail.files.open('src/a.ts').catch(() => undefined)
+        await mail.sessions.openFile('t1', '/p/a.ts')
+        return 'opened'
+      }
+    })
+    await expect(app.services.use('mail').open!()).resolves.toBe('opened')
+    expect(of(calls, 'files.open')[0]).toEqual({ pluginId: 'a.two', path: 'src/a.ts', via: ['a.three'] })
+    expect(of(calls, 'sessions.openFile')[0]).toEqual({ pluginId: 'a.two', tabId: 't1', path: '/p/a.ts', via: ['a.three'] })
+    calls.length = 0
+    await mail.files.open('src/a.ts').catch(() => undefined)
+    await mail.sessions.openFile('t1', '/p/a.ts')
+    expect('via' in of(calls, 'files.open')[0]!).toBe(false)
+    expect('via' in of(calls, 'sessions.openFile')[0]!).toBe(false)
+  })
+
   it("a plugin's own overlay (no service call) sends no via key at all", () => {
     const { calls, rev } = chain()
     const handle = rev.overlay.start({ kind: 'html', file: 'review.html' })

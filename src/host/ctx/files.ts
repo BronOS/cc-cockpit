@@ -29,6 +29,7 @@ import type { Disposer, OpenFileRequest, PluginContext } from '../../sdk/types'
 import { errorText } from '../../shared/error-text'
 import { viewIdOf, type ViewId } from '../../shared/views'
 import { dispatchInView } from './origin-view'
+import { callerChainNow } from './ui'
 
 /** How long a listener's promise may take to reject and still count as a failure. */
 export const OPEN_LISTENER_WAIT_MS = 1_000
@@ -47,6 +48,14 @@ export interface FilesApiDeps {
   guardAsync<T>(body: () => Promise<T>): Promise<T>
   /** This plugin's listeners (owned by the runtime, so dispose drops them with it). */
   listeners: Set<Listener>
+  /**
+   * The service caller chain at the call site (ServiceRegistry.callers, outermost first): `ctx.files.open` sends it
+   * as `via`, and main hands the taker the chain plus this plugin as `requestedBy` (docs/design-overlay-views.md §4).
+   * Absent: none.
+   */
+  callers?(): string[]
+  /** Whether an id is one of this host's plugins (as for overlay sources, ui.ts cleanSources). */
+  isHostPlugin?(pluginId: string): boolean
 }
 
 export function createFilesApi(deps: FilesApiDeps): PluginContext['files'] {
@@ -73,10 +82,14 @@ export function createFilesApi(deps: FilesApiDeps): PluginContext['files'] {
         }
         const tabId: unknown = options?.tabId
         if (tabId !== undefined && typeof tabId !== 'string') throw new TypeError('files.open: tabId must be a string')
+        // Read before the first await, while the service call this runs in is live: hidden A -> shown B's service ->
+        // this open is A's request too, so the taker attributes both (main appends this plugin itself).
+        const chain = callerChainNow(deps.callers, deps.isHostPlugin)
         const answer = (await deps.call('files.open', {
           pluginId: deps.pluginId,
           path,
-          ...(tabId !== undefined ? { tabId } : {})
+          ...(tabId !== undefined ? { tabId } : {}),
+          ...(chain.length > 0 ? { via: chain } : {})
         })) as { via?: unknown } | null
         const via = answer?.via
         if (via !== 'plugin' && via !== 'builtin') throw new Error('files.open: unexpected answer from the app')
@@ -144,17 +157,23 @@ function checkSystemPath(method: string, path: unknown, allowRoot: boolean): voi
 
 /**
  * Main's `files.open` params, checked (main built them; the shapes are verified anyway). `tabId` is
- * optional: absent for a ctx.files.open that named no tab of this project. `requestedBy`: the plugin
- * whose ctx.files.open main routed here (main bound it to that plugin's call), absent for a click.
+ * optional: absent for a ctx.files.open that named no tab of this project. `requestedBy`: the plugins
+ * whose request main routed here (a ctx.files.open or ctx.sessions.openFile and the service caller chain
+ * it was made in, outermost first, the calling plugin last; main bound them), absent for a request no
+ * plugin made. A malformed one is refused, never cut or dropped (it only narrows who sees what follows).
  */
-export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string; view?: ViewId; requestedBy?: string } {
-  const { pluginId, path, tabId, view: rawView, requestedBy } = (params ?? {}) as Record<string, unknown>
+export function parseOpenFile(params: unknown): { pluginId: string; path: string; tabId?: string; view?: ViewId; requestedBy?: string[] } {
+  const { pluginId, path, tabId, view: rawView, requestedBy: rawBy } = (params ?? {}) as Record<string, unknown>
   if (typeof pluginId !== 'string' || typeof path !== 'string' || (tabId !== undefined && typeof tabId !== 'string')) {
     throw new Error('files.open: pluginId and path must be strings, tabId a string when present')
   }
-  if (requestedBy !== undefined && (typeof requestedBy !== 'string' || requestedBy === '')) {
-    throw new Error('files.open: requestedBy must be a plugin id when present')
+  if (
+    rawBy !== undefined &&
+    (!Array.isArray(rawBy) || rawBy.length === 0 || !rawBy.every((id) => typeof id === 'string' && id !== ''))
+  ) {
+    throw new Error('files.open: requestedBy must be a non-empty list of plugin ids when present')
   }
+  const requestedBy = rawBy === undefined ? undefined : [...(rawBy as string[])]
   // `view`: the remote view the open started in. One main did not mint is refused, never read as
   // the desktop's (as slots.ts does); main then opens its built-in viewer.
   const view = viewIdOf(rawView)
@@ -176,7 +195,7 @@ export function parseOpenFile(params: unknown): { pluginId: string; path: string
  */
 export async function runOpenListeners(
   listeners: Iterable<Listener>,
-  req: { path: string; tabId?: string; view?: ViewId; requestedBy?: string },
+  req: { path: string; tabId?: string; view?: ViewId; requestedBy?: readonly string[] },
   log: (message: string) => void,
   waitMs = OPEN_LISTENER_WAIT_MS
 ): Promise<boolean> {
@@ -201,7 +220,8 @@ export async function runOpenListeners(
                     path: req.path,
                     ...(req.tabId !== undefined ? { tabId: req.tabId } : {}),
                     // Provenance: a perView taker passes it to handle.addSources before the content leaves.
-                    ...(req.requestedBy !== undefined ? { requestedBy: req.requestedBy } : {})
+                    // A copy per listener, frozen: one listener cannot change what the next one is told.
+                    ...(req.requestedBy !== undefined ? { requestedBy: Object.freeze([...req.requestedBy]) } : {})
                   })
                 ),
               // Logged below, where the outcome is read.

@@ -40,6 +40,14 @@ export interface DiscussGuest {
   viewId: ViewId
   /** Still a write guest of the project that sees `target` (a tab) now; false on any doubt. */
   allowed(target: DiscussTarget): boolean
+  /**
+   * An overlay's Discuss (IpcRouter.discussGuest with the overlay): still this write guest, and the overlay still
+   * visible to it (guest-wiring.ts overlayVisibleOf: its origin, every plugin of its `via`, its hides), read live.
+   * The opener's context may arrive after `via` grew with a plugin hidden from the guest (its copy released), and
+   * that plugin's content must not reach a shared tab through the guest's Send (codex review, finding 3). Absent on
+   * an overlay's Discuss: refused (OverlayManager.discuss, fail closed).
+   */
+  seesOverlay?(): boolean
   openTab<T>(liveTabs: readonly string[], create: () => Promise<T>, idOf: (tab: T) => string, close: (tabId: string) => void): Promise<T | null>
 }
 
