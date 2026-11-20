@@ -1229,7 +1229,8 @@ export class PageInputRouter implements ChildFrameObserver {
     this.callOut = out
     const timer = this.timers.set(() => {
       out.late = true
-      this.warn('call', 'webview: the page did not answer a call in time; the next call waits for it')
+      // The stall's own key: the set of warnings stays as small as it was (one per kind of trouble).
+      this.warn('stalled', 'webview: the page did not answer a call in time; the next call waits for it')
       fire()
     }, STEP_TIMEOUT_MS)
     const end = (): void => {
