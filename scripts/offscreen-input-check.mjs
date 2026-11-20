@@ -217,6 +217,10 @@ async function main() {
     await sleep(100)
   }
   const failures = []
+  // Rows that miss on a Linux server for a known reason (printed, not failed): a Linux Blink has no
+  // Alt word bindings, so the Mac's Option word keys do nothing there (backlog
+  // streamed-mac-line-edit-keys.md). On darwin the same rows still fail.
+  const linuxKeyLimits = []
   if (!docs.frame || !docs.nested || !docs.xform || !docs.same || !docs.wrap || !docs.inner || !childSession) failures.push('a frame never loaded or was never attached')
   const pids = Object.fromEntries(Object.entries(docs).map(([k, f]) => [k, f.osProcessId]))
   if (new Set([pids.top, pids.frame, pids.nested]).size !== 3 || pids.xform === pids.top || pids.inner === pids.top) failures.push(`the frames share processes (no site isolation): ${JSON.stringify(pids)}`)
@@ -657,7 +661,11 @@ async function main() {
     const expectedHere = typeof expected === 'string' && expected.startsWith('Linux: ') ? (process.platform === 'darwin' ? undefined : expected.slice(7)) : expected
     const label = `${[...mods, key].join('+')}`
     const ok = expectedHere === undefined ? '' : String(got) === String(expectedHere) ? 'ok' : 'MISS'
-    if (ok === 'MISS') failures.push(`view: key ${label} gave ${JSON.stringify(got)}, a Mac's field gives ${JSON.stringify(expectedHere)}`)
+    if (ok === 'MISS') {
+      const text = `view: key ${label} gave ${JSON.stringify(got)}, a Mac's field gives ${JSON.stringify(expectedHere)}`
+      if (process.platform !== 'darwin' && mods.includes('alt')) linuxKeyLimits.push(text)
+      else failures.push(text)
+    }
     console.log(`  key ${label.padEnd(22)} ${what} ${JSON.stringify(got)}${expectedHere === undefined ? '' : ` (want ${JSON.stringify(expectedHere)})`} ${ok}`)
   }
 
@@ -911,16 +919,34 @@ async function main() {
         SPIN_WAIT_MS
       )
     }, true)
-    // (c) What main can do about such a page: crash its renderer, then reload.
+    // (c) What main can do about such a page: kill its renderer, then reload. SIGKILL, never
+    // forcefullyCrashRenderer: on Linux that crash dumps core (systemd-coredump, a renderer's core is
+    // large), and the process sits in do_exit for 40 to 50 s before render-process-gone fires (Debian
+    // VM, Electron 45: 46 s and 42 s; a reload asked while it was dying never committed, so the new
+    // page never came within the 20 s this case waits). A SIGKILL writes no core: gone at once on
+    // Linux and macOS.
+    let gone = 0
+    wc.on('render-process-gone', () => gone++)
+    const kill = async (label) => {
+      const before = gone
+      const pid = wc.getOSProcessId()
+      // 0 once the renderer is gone: process.kill(0) would kill this script's whole process group.
+      if (!(pid > 0)) {
+        note(`${label}: no renderer to kill (os pid ${pid})`)
+        return
+      }
+      process.kill(pid, 'SIGKILL')
+      const t1 = performance.now()
+      while (gone === before && performance.now() - t1 < 10_000) await sleep(50)
+      note(`${label}: renderer ${pid} killed, render-process-gone ${gone > before ? `after ${Math.round(performance.now() - t1)} ms` : 'not within 10 s'}`)
+    }
     if (navigated === 0 || (await field()) === 'unresponsive') {
-      wc.forcefullyCrashRenderer()
-      await sleep(500)
+      await kill('before (c)')
       await within(view.load(`http://127.0.0.1:${port}/?role=spin`).catch(() => {}), 10000)
-      note('crashed and loaded again before (c)')
+      note('killed and loaded again before (c)')
     }
     await spinThen('crash, reload', async () => {
-      wc.forcefullyCrashRenderer()
-      await sleep(500)
+      await kill('(c)')
       view.reload()
     })
     await sleep(2000)
@@ -929,6 +955,7 @@ async function main() {
   }
 
   if (logs.length) console.log('log:', JSON.stringify(logs))
+  if (linuxKeyLimits.length) console.log('known limitation (a Linux Blink has no Alt word bindings; backlog streamed-mac-line-edit-keys.md):\n  ' + linuxKeyLimits.join('\n  '))
   view.destroy()
   owner.destroy()
   server.close()
