@@ -627,6 +627,11 @@ export class TabGroups {
     views.set(viewId, { area: { ...geometry.area }, cell: { ...geometry.cell }, remote: isRemoteViewId(viewId) })
   }
 
+  /** The split geometry each view of the project reported, as panesFit judges by it (a test hook's read). */
+  viewAreas(projectId: string): Array<SplitGeometry & { remote: boolean }> {
+    return [...(this.areas.get(projectId)?.values() ?? [])].map((g) => ({ area: { ...g.area }, cell: { ...g.cell }, remote: g.remote }))
+  }
+
   /** The view is gone (its socket or window closed): its geometry no longer stands for a screen anyone looks at. */
   viewGone(viewId: ViewId): void {
     for (const [projectId, views] of this.areas) {
