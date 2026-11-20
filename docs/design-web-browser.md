@@ -233,7 +233,9 @@ the fallback when the protocol detached:
   leaving the frame keeps selecting in it; one from the top document stays there over a frame), the owners' boxes read
   again on each event, until no button is held. Press records are the router's only press state: every road that
   delivers a key's or a button's down (the protocol to the page or a frame, or a detached road) makes one of where it
-  went, every ending deletes it (its up, a refused down, its frame going, a new attachment), and the up goes there
+  went, one per key code and per button (a key down on a held code is a repeat that keeps it; a button down on a held
+  button first sends the old press's release), every ending deletes it (its up, a refused down, its frame going, a new
+  attachment), and the up goes there
   and nowhere else, exactly once: an up with no record (its down went nowhere: a new attachment, a full queue) is
   dropped, so no session gets a release it was not pressed for, and one whose frame went is dropped with it. A press
   a detached road took whose up comes once the protocol is back goes to the page's session. A move without a button still

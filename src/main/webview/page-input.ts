@@ -496,9 +496,9 @@ export class PageInputRouter implements ChildFrameObserver {
   /** The command on its way and not late yet (at most one per page: `sendInput`). */
   private onWay: object | undefined
   /**
-   * The press records (keys and buttons), oldest first; the first button one is the capture. A key
-   * pressed again before its up (Shift+A, then Ctrl+A) has two, one per up to come (an autorepeat
-   * down adds none: the same press).
+   * The press records (keys and buttons), oldest first, at most one per key code and per button
+   * (ruling 2026-11-19 #3: a key down on a live code is a repeat; a button down on a held button first
+   * sends the old press's release); the first button one is the capture.
    */
   private records: Press[] = []
   /** The key down the page's session just refused (`key:<code>`): its `char`, next in the queue, is dropped too. */
@@ -701,7 +701,7 @@ export class PageInputRouter implements ChildFrameObserver {
       const { sent } = this.sendInput(step.epoch, { road: 'detached', run: step.detached })
       sent.then(step.resolve, step.reject)
       const key = pressKey(step)
-      if (key) this.record({ id: key.id, lane: 'detached', links: [], x: 0, y: 0 })
+      if (key) this.keyRecord(key.id, 'detached')
       await this.within(sent, STEP_TIMEOUT_MS)
       return
     }
@@ -722,7 +722,7 @@ export class PageInputRouter implements ChildFrameObserver {
         if (event.type === 'keyUp') {
           // An up with no record is dropped (its down went nowhere).
           if (!this.unrecord(this.newest(id))) return
-        } else if (!event.modifiers.includes('isautorepeat') || !this.newest(id)) this.record({ id, lane: 'detached', links: [], x: 0, y: 0 })
+        } else this.keyRecord(id, 'detached')
       }
       road(event)
       return
@@ -762,7 +762,7 @@ export class PageInputRouter implements ChildFrameObserver {
       const { sent, outcome, lane } = this.sendInput(step.epoch, { road: 'protocol', lane: this.page, method: step.method, params: step.params })
       sent.then(step.resolve, step.reject)
       const key = pressKey(step)
-      const press = key && lane ? this.record({ id: key.id, lane, links: [], x: 0, y: 0 }) : undefined
+      const press = key && lane ? this.keyRecord(key.id, lane) : undefined
       if ((await outcome) === 'refused') {
         this.unrecord(press)
         this.pageRefused()
@@ -781,8 +781,7 @@ export class PageInputRouter implements ChildFrameObserver {
       // A key up goes for its record only (and ends it); one with no record is dropped.
       if (step.event.type === 'keyUp' && !this.unrecord(this.newest(id))) return 'done'
       const { outcome, lane } = this.sendInput(step.epoch, { road: 'protocol', lane: this.page, method: 'Input.dispatchKeyEvent', params })
-      const repeat = step.event.modifiers.includes('isautorepeat') && this.newest(id) !== undefined
-      if (step.event.type === 'keyDown' && lane && !repeat) press = this.record({ id, lane, links: [], x: 0, y: 0 })
+      if (step.event.type === 'keyDown' && lane) press = this.keyRecord(id, lane)
       // Refused: dropped, never by sendInputEvent (the same reasons); a refused down records nothing.
       if ((await outcome) === 'refused') {
         this.unrecord(press)
@@ -799,6 +798,15 @@ export class PageInputRouter implements ChildFrameObserver {
   private record(press: Press): Press {
     this.records.push(press)
     return press
+  }
+
+  /**
+   * A key down's record, or none when its code already has a live one: that down is a repeat and
+   * keeps the record (C7, ruling 2026-11-19 #3: one live record per key code), so one up ends it and
+   * a second up past the cap finds no slot.
+   */
+  private keyRecord(id: string, lane: Lane | 'detached'): Press | undefined {
+    return this.newest(id) ? undefined : this.record({ id, lane, links: [], x: 0, y: 0 })
   }
 
   /** Ends a record; false when it was not there (ended already, or none). */
@@ -1274,22 +1282,36 @@ export class PageInputRouter implements ChildFrameObserver {
     const modifiers = protocolModifiers(event.modifiers)
     const next = new Set<Lane>([this.page, ...to.links.map((l) => l.lane)])
     const old = [this.page, ...from.links.map((l) => l.lane)]
-    const steps: Array<[Lane, number, number]> = []
-    for (const lane of old.reverse()) if (!next.has(lane)) steps.push([lane, -1, -1])
+    const steps: Array<[Lane, number, number, boolean]> = []
+    for (const lane of old.reverse()) if (!next.has(lane)) steps.push([lane, -1, -1, true])
     for (let i = 0; i < to.links.length; i++) {
       const point = to.points[i] as { x: number; y: number }
-      steps.push([(to.links[i] as Link).parent, point.x, point.y])
+      steps.push([(to.links[i] as Link).parent, point.x, point.y, false])
     }
-    for (const [lane, x, y] of steps) {
+    for (const [lane, x, y, exit] of steps) {
       if (epoch !== this.epoch || this.page.stalled) return
       if (lane !== this.page && lane.live && !this.open(lane)) continue
       const params = { type: 'mouseMoved', x, y, modifiers, button: 'none', buttons: 0, clickCount: 0, pointerType: 'mouse' }
       const outcome = await this.sendInput(epoch, { road: 'protocol', lane, method: 'Input.dispatchMouseEvent', params }).outcome
+      if (epoch !== this.epoch) return
+      // The frame left has its exit: the hover no longer holds it, so a step that parks here (the
+      // page's session stalled) and runs again does not send it a second one (a late page sent
+      // one frame three exits for one press).
+      if (exit) this.hoverAbove(lane)
       if (outcome === 'refused') {
         if (lane === this.page) this.pageRefused()
         else this.frameRefused(lane)
       }
     }
+  }
+
+  /** The hover with `lane` and the frames under it taken off its chain (they had their exit). */
+  private hoverAbove(lane: Lane): void {
+    const hover = this.hover
+    if (!hover) return
+    const chain = [this.page, ...hover.links.map((l) => l.lane)]
+    const k = chain.indexOf(lane)
+    if (k > 0) this.hover = { lane: chain[k - 1] as Lane, links: hover.links.slice(0, k - 1) }
   }
 
   /** The page's own session refused: logged once and dropped, never sent by another road while attached. */
