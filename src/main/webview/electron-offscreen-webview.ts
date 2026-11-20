@@ -145,9 +145,31 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       log: this.log
     })
     cancelOffscreenNativeUi(wc, this.log, input)
-    // A detached delivery the renderer owed never settles once it is gone: the router stops waiting.
-    wc.on('render-process-gone', () => input.rendererGone())
+    // The renderer gone or replaced: what it owed never answers, so the router resets (ruling
+    // 2026-11-19 #11; real Electron: after a crash and a reload the old commands never answered and the
+    // debugger stayed attached). Replaced also when the main frame commits into another process, even
+    // if the old one never exits; `did-start-navigation` is too early (it still shows the old process).
+    let rendererPid: number | undefined
+    const mainPid = (): number | undefined => {
+      try {
+        return wc.isDestroyed() ? undefined : wc.mainFrame.osProcessId
+      } catch {
+        // Between two documents: "Render frame was disposed before WebFrameMain could be accessed".
+        return undefined
+      }
+    }
+    wc.on('render-process-gone', () => {
+      // The next commit's process is the new renderer's, never a change to reset for again.
+      rendererPid = undefined
+      input.rendererGone()
+    })
     wc.on('destroyed', () => input.rendererGone())
+    wc.on('did-navigate', () => {
+      const pid = mainPid()
+      if (pid === undefined) return
+      if (rendererPid !== undefined && pid !== rendererPid) input.rendererGone()
+      rendererPid = pid
+    })
     wc.setFrameRate(OFFSCREEN_FRAME_RATE)
     // Hidden until the manager says a browser shows it, like the desktop view's zero bounds.
     let painting = false
@@ -265,10 +287,13 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
           : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: SELECTION_SCRIPT }])), false),
       // A select popup the page does not paint (select-hit.ts): what is under a press, and the
       // browser's answer, in the same isolated world (the element is kept there between the two).
-      // The hit-test runs at once (a press waits HIT_TIMEOUT_MS at most for it, and the router's
-      // queue may hold moves waiting for a frame); the answer in its place among the input.
+      // Both on the router's call road (ruling 2026-11-19 #11: a press on a hung page started one
+      // unanswered script each); the hit test holds nothing after it, and a press waits
+      // HIT_TIMEOUT_MS at most for it. The answer in its place among the input.
       hitSelect: (x, y, id) =>
-        wc.isDestroyed() ? Promise.resolve(undefined) : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }]),
+        wc.isDestroyed()
+          ? Promise.resolve(undefined)
+          : input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: hitScript(x, y, id) }])), false),
       chooseSelect: (id, index) =>
         wc.isDestroyed()
           ? Promise.resolve(false)

@@ -263,13 +263,17 @@ the fallback when the protocol detached:
   a press like any key. While the page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
   presses, releases and wheels wait in the queue in order (bounded by the cap; no hit test runs), moves
   are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
-  answered; its answer or a reset starts the queue again. A hit-test query that missed its 200 ms deadline marks its
-  session the same way for queries (the event goes on unrouted). The detached road is a session too: a text, edit
+  answered; its answer or a reset starts the queue again. A hit-test query that missed its 200 ms deadline stalls its
+  session exactly as a late command does, and a stalled session is asked no query (one command or query outstanding
+  per session). The detached road is a session too: a text, edit
   command or blocking call there that missed its deadline holds everything after it on that road, in order, until it
   settles or the renderer goes (`render-process-gone`, `destroyed`); the stall is the renderer's, so a reset drops what
   waits but keeps it, and at most one is outstanding across attachments; a deadline or answer the renderer that went
-  owed changes nothing. The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
-  selection read) is one at a time too, attached or not: the next call waits for the one on its way, and past its
+  owed changes nothing. The renderer going (`render-process-gone`, `destroyed`, or the main frame's `did-navigate`
+  into another process) is a full reset as well: after a crash and a reload the old renderer's commands never answer
+  and the debugger stays attached (Electron, 2026-11-19), so only that lets input reach the new page. A page that spins
+  forever commits no reload or navigation at all (Chromium's own; main would have to kill its renderer, backlog). The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
+  selection read; every isolated-world script main runs for the page goes this way) is one at a time too, attached or not: the next call waits for the one on its way, and past its
   deadline holds what follows it until it settles or the renderer goes (that stall is the renderer's too). A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
   only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken
   in, and each session its own lifetime. The one sender checks both synchronously right before it sends, so no wait

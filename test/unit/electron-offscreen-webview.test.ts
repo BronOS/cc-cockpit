@@ -79,6 +79,8 @@ class FakeDebugger extends FakeEmitter {
 
 class FakeWebContents extends FakeEmitter {
   destroyed = false
+  /** The main frame's renderer process (a navigation may commit into another). */
+  readonly mainFrame = { osProcessId: 100 }
   webrtcPolicy = ''
   openHandler: ((d: { url: string }) => { action: string }) | undefined
   readonly calls: string[] = []
@@ -704,6 +706,30 @@ describe('OffscreenWebviewFactory', () => {
     expect(next.map((c) => [c.sessionId, (c.params as { type?: unknown } | undefined)?.type])).toEqual([[undefined, 'mousePressed']])
     expect(next[0]?.params).toMatchObject({ x: 20, y: 225 })
     expect(wc.calls.filter((c) => c.startsWith('input'))).toEqual([])
+  })
+
+  // Ruling 2026-11-19 #11 (real Electron: after a crash and a reload the old renderer's commands never
+  // answered and the debugger stayed attached, so no key reached the new page).
+  it('resets the input router when the renderer goes or the main frame commits into another process', async () => {
+    const { view, wc } = make()
+    wc.emit('did-navigate')
+    // The renderer answers no key from now on.
+    wc.debugger.answer = (method) => (method === 'Input.dispatchKeyEvent' ? new Promise(() => {}) : undefined)
+    const keys = (): unknown[] => wc.debugger.commands.filter((c) => c.method === 'Input.dispatchKeyEvent').map((c) => (c.params as { key?: unknown }).key)
+    view.sendInput([{ type: 'keyDown', keyCode: 'a', modifiers: [] }, { type: 'keyDown', keyCode: 'b', modifiers: [] }])
+    await vi.waitFor(() => expect(keys()).toEqual(['a']))
+    // A navigation in the same process changes nothing: 'b' still waits for 'a'.
+    wc.emit('did-navigate')
+    await settle()
+    expect(keys()).toEqual(['a'])
+    // Into another process: what the old one owed is dropped ('b' with it), the next key goes at once.
+    wc.mainFrame.osProcessId = 101
+    wc.emit('did-navigate')
+    view.sendInput([{ type: 'keyDown', keyCode: 'c', modifiers: [] }])
+    await vi.waitFor(() => expect(keys()).toEqual(['a', 'c']))
+    wc.emit('render-process-gone', {}, { reason: 'killed' })
+    view.sendInput([{ type: 'keyDown', keyCode: 'd', modifiers: [] }])
+    await vi.waitFor(() => expect(keys()).toEqual(['a', 'c', 'd']))
   })
 
   // Task 8: committed text goes in as an IME commit; the selection is read in main's isolated world.

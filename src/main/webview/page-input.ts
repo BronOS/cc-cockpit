@@ -356,9 +356,8 @@ interface Lane {
    * still unanswered, so repeated clicks piled up unanswered presses).
    */
   stalled: object | undefined
+  /** Its commands and hit-test queries past their deadlines, unanswered (ruling 2026-11-19 #10: a late query stalls it the same). */
   readonly late: Set<object>
-  /** The same for a hit test's query: the session is asked nothing until it answers. */
-  queryStalled: object | undefined
   /** A frame's: its target id (a frame's id is its target's), its parent, whether it was resumed. */
   readonly targetId: string
   readonly parent: Lane | undefined
@@ -366,7 +365,7 @@ interface Lane {
 }
 
 function newLane(id: string, epoch: number, targetId = '', parent?: Lane): Lane {
-  return { id, epoch, live: true, stalled: undefined, late: new Set(), queryStalled: undefined, targetId, parent, ready: id === '' }
+  return { id, epoch, live: true, stalled: undefined, late: new Set(), targetId, parent, ready: id === '' }
 }
 
 /** One link of a route: the owner element (`owner`, a backend node id) in `parent` of the frame `lane`. */
@@ -593,10 +592,14 @@ export class PageInputRouter implements ChildFrameObserver {
   }
 
   /**
-   * The page's renderer went or was replaced (`render-process-gone`, `destroyed`): a detached
-   * delivery it owed will never settle, so the detached road takes input again (ruling 2026-11-19 #7).
+   * The page's renderer went or was replaced (`render-process-gone`, `destroyed`, a main-frame
+   * navigation into another process): a full reset (ruling 2026-11-19 #11). What its sessions owed
+   * never answers (real Electron: after a crash and a reload the old commands never answered and the
+   * debugger stayed attached, so the page's session stayed stalled and no key reached the new page),
+   * so everything `lost()` drops goes, and the detached and call stalls with it.
    */
   rendererGone(): void {
+    this.lost()
     this.renderer++
     this.detachedStall = undefined
     this.detachedWake?.()
@@ -1395,7 +1398,9 @@ export class PageInputRouter implements ChildFrameObserver {
    */
   private async query(method: string, params: Record<string, unknown> | undefined, lane: Lane, run: RouteRun): Promise<unknown> {
     if (run.cancelled || run.epoch !== this.epoch || !lane.live) throw new RouteDropped()
-    if (lane.queryStalled) return undefined
+    // A session that owes an answer (a command's or a query's) is asked nothing (ruling 2026-11-19 #10:
+    // one outstanding per session; fuzz: a frame stalled by a mouse event still got getLayoutMetrics).
+    if (lane.stalled) return undefined
     let sent: Promise<unknown>
     try {
       sent = lane.id === '' ? this.deps.send(method, params) : this.deps.send(method, params, lane.id)
@@ -1482,7 +1487,8 @@ export class PageInputRouter implements ChildFrameObserver {
   /**
    * A hit test within ROUTE_TIMEOUT_MS, else undefined (the event goes on unrouted). At the deadline
    * the walk is dropped (its next query throws) and the session whose query is on its way is asked
-   * nothing more until it answers (`queryStalled`): one unanswered query per session at most.
+   * nothing more, no command and no query, until it answers: a late query stalls it as a late command
+   * does (ruling 2026-11-19 #10; fuzz: a hung getLayoutMetrics, then a mouse event to the page).
    */
   private bounded(walk: (run: RouteRun) => Promise<Route | undefined>): Promise<Route | undefined> {
     const run: RouteRun = { epoch: this.epoch, cancelled: false }
@@ -1492,9 +1498,14 @@ export class PageInputRouter implements ChildFrameObserver {
         const q = run.current
         if (q && !q.answered && run.epoch === this.epoch && q.lane.live) {
           const lane = q.lane
-          lane.queryStalled = q.token
+          lane.late.add(q.token)
+          lane.stalled = q.token
+          this.warn('stalled', 'webview: the page or a frame did not answer input in time; it gets no more until it does')
+          // As a late command's answer (sendInput): the session takes input again once all its late ones answered.
           const clear = (): void => {
-            if (lane.queryStalled === q.token) lane.queryStalled = undefined
+            if (!lane.late.delete(q.token) || lane.late.size > 0) return
+            lane.stalled = undefined
+            if (lane.live && lane.epoch === this.epoch) void this.pump()
           }
           q.sent.then(clear, clear)
         }

@@ -820,10 +820,10 @@ async function main() {
   }
 
   // --- a renderer that spins forever, then (a) a reload and (b) a cross-site navigation ---
-  // Rulings 2026-11-19 #7 and #9 keep the detached and call stalls past a reconnect until they settle
-  // or the renderer goes, and a command the spinning page never answers stalls its session: the
-  // typing after the reload or navigation must still reach the new page within a few seconds.
-  // Printed: which events fire, what the pending promises do, and the main frame's process.
+  // A command or call the spinning page never answers stalls its road until it settles or the
+  // renderer goes (rulings 2026-11-19 #7, #9, #11): after (c), a crash and a reload, the typing must
+  // reach the new page within a few seconds. Printed: which events fire, what the pending promises
+  // do, and the main frame's process.
   {
     // Measured (Electron 45, macOS): a spinning renderer never commits a reload or a cross-site
     // navigation (45 s waited; no unresponsive, no render-process-gone, the main frame's process the same).
@@ -868,7 +868,10 @@ async function main() {
       return false
     }
     const field = () => within(Promise.resolve().then(() => wc.mainFrame.executeJavaScript('document.getElementById("i") ? document.getElementById("i").value : ""')).catch(() => 'no frame'), 1000, 'unresponsive')
-    const spinThen = async (label, go) => {
+    // (a) and (b) are Chromium's own: a spinning renderer commits no navigation, so there is no new
+    // page to type into; main would have to kill it (backlog). Reported, never a failure.
+    const limits = []
+    const spinThen = async (label, go, known = false) => {
       await within(wc.mainFrame.executeJavaScript('window.__arm = true'), 3000)
       note(`${label}: click (the page spins 30 ms later)`)
       click(roads.view, LOCAL.input)
@@ -890,12 +893,15 @@ async function main() {
       const typed = await waitFor(async () => (await field()).includes('ok'), 5000)
       const got = await field()
       note(`${label}: typed after ${Math.round(performance.now() - t1)} ms: ${JSON.stringify(got)}`)
-      want(typed && got === 'ok', `spin ${label}: the typing after it did not reach the new page within 5 s (${JSON.stringify(got)})`)
+      const text = `spin ${label}: the typing after it did not reach the new page within 5 s (${JSON.stringify(got)})`
+      if (known) {
+        if (!(typed && got === 'ok')) limits.push(text)
+      } else want(typed && got === 'ok', text)
       return got
     }
     await view.load(`http://127.0.0.1:${port}/?role=spin`)
     note('spin page loaded')
-    await spinThen('reload', async () => view.reload())
+    await spinThen('reload', async () => view.reload(), true)
     await spinThen('cross-site', async () => {
       void within(
         view.load(`http://localhost:${port}/?role=spin`).then(
@@ -904,7 +910,7 @@ async function main() {
         ),
         SPIN_WAIT_MS
       )
-    })
+    }, true)
     // (c) What main can do about such a page: crash its renderer, then reload.
     if (navigated === 0 || (await field()) === 'unresponsive') {
       wc.forcefullyCrashRenderer()
@@ -919,6 +925,7 @@ async function main() {
     })
     await sleep(2000)
     console.log('spin then reload / navigate:\n  ' + events.join('\n  '))
+    if (limits.length) console.log('known limitation (Chromium: a spinning renderer commits no navigation; backlog):\n  ' + limits.join('\n  '))
   }
 
   if (logs.length) console.log('log:', JSON.stringify(logs))

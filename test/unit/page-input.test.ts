@@ -569,23 +569,29 @@ describe('PageInputRouter', () => {
     expect(s.mice()).toEqual([['', 'mouseMoved', 7, 7]])
   })
 
-  it('a hit test that never answers sends the event to the page session after ROUTE_TIMEOUT_MS', async () => {
+  // Ruling 2026-11-19 #10: a late query stalls its session exactly as a late command does (fuzz: a
+  // hung getLayoutMetrics, then the event sent to that page session anyway).
+  it('a hit-test query that misses ROUTE_TIMEOUT_MS stalls its session: nothing more goes to it until it answers', async () => {
     const s = setup()
     s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
-    s.page.opts.hang.add('DOM.getNodeForLocation')
+    s.page.opts.holdQueries = true
     s.router.input([down(20, 225)])
     await s.flush()
-    expect(s.mice()).toEqual([])
+    expect(s.page.heldQueries.map((q) => q.method)).toEqual(['Page.getLayoutMetrics'])
     expect(ROUTE_TIMEOUT_MS).toBeLessThan(STEP_TIMEOUT_MS)
     s.fire()
     await s.flush()
-    expect(s.mice()).toEqual([['', 'mousePressed', 20, 225]])
-    // That session owes the query: the next events ask it nothing (no timer, no second query) until it answers.
     s.router.input([up(20, 225), down(20, 226)])
     await s.flush()
+    // No command and no second query to the page's session, and no timer left.
+    expect(s.mice()).toEqual([])
+    expect(s.page.queries).toHaveLength(1)
     expect(s.timers.size).toBe(0)
-    expect(s.page.queries.filter((q) => q.method === 'DOM.getNodeForLocation')).toHaveLength(1)
-    expect(s.mice().map((m) => m[0])).toEqual(['', '', ''])
+    s.page.opts.holdQueries = false
+    for (const q of s.page.heldQueries.splice(0)) q.answer()
+    await s.flush()
+    // Answered: the press is hit-tested anew and goes where the point is, then the rest in order.
+    expect(s.mice().map((m) => `${m[0]} ${m[1]}`)).toEqual(['A mousePressed', 'A mouseReleased', 'A mousePressed'])
   })
 
   it('one command at a time: a move waits for the one before it; moves waiting coalesce, wheels sum', async () => {
@@ -1593,8 +1599,9 @@ describe('PageInputRouter scheduling: review 6', () => {
     expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
   })
 
-  // Rulings 2026-11-19 #5 and #7: a detached delivery that misses its deadline stalls the detached
-  // road until it settles or the renderer goes; a reset drops what waits but keeps the stall.
+  // Rulings 2026-11-19 #5, #7 and #11: a detached delivery that misses its deadline stalls the detached
+  // road until it settles or the renderer goes; a reset drops what waits but keeps the stall; the
+  // renderer going is a full reset (what waited is dropped) and ends the stall.
   it('detached: a text that never settles holds the next one, across a reset, until the renderer goes', async () => {
     const s = setup()
     s.detach()
@@ -1611,7 +1618,12 @@ describe('PageInputRouter scheduling: review 6', () => {
     expect(s.fallback).toEqual([])
     s.router.rendererGone()
     await s.flush()
-    expect(roads).toEqual(['a', 'b'])
+    // What waited was the gone renderer's: dropped. The new one's input goes at once.
+    expect(roads).toEqual(['a'])
+    void s.router.command('Input.insertText', { text: 'd' }, () => (roads.push('d'), 'd')).catch(() => {})
+    s.router.input([keyDown('e')])
+    await s.flush()
+    expect(roads).toEqual(['a', 'd'])
     expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
   })
 
@@ -1656,20 +1668,23 @@ describe('PageInputRouter scheduling: review 6', () => {
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
   })
 
-  // Ruling 2026-11-19 #9: the call stall is the renderer's; the renderer going ends it.
-  it('the renderer going ends a hung call: what waited goes on, and its late settling changes nothing', async () => {
+  // Rulings 2026-11-19 #9 and #11: the call stall is the renderer's; the renderer going ends it (and
+  // drops what waited, a full reset).
+  it('the renderer going ends a hung call: the next call goes at once, and the old one settling changes nothing', async () => {
     const s = setup()
     const ran: string[] = []
     let finishOld = (): void => {}
     let finishNew = (): void => {}
     void s.router.call(() => (ran.push('old'), new Promise<void>((r) => (finishOld = r))))
-    void s.router.call(() => (ran.push('new'), new Promise<void>((r) => (finishNew = r))), false)
-    void s.router.call(() => (ran.push('last'), 'ok'))
+    const waited = s.router.call(() => (ran.push('waited'), 'never'))
     await s.flush()
     s.fire()
     await s.flush()
     expect(ran).toEqual(['old'])
     s.router.rendererGone()
+    await expect(waited).rejects.toThrow('reset')
+    void s.router.call(() => (ran.push('new'), new Promise<void>((r) => (finishNew = r))), false)
+    void s.router.call(() => (ran.push('last'), 'ok'))
     await s.flush()
     expect(ran).toEqual(['old', 'new'])
     // The old call settling now does not stand in for the new one.
