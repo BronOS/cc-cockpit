@@ -655,7 +655,9 @@ describe('OffscreenWebviewFactory', () => {
       { type: 'keyDown', keyCode: 'a', modifiers: [] },
       { type: 'char', keyCode: 'a', modifiers: [] }
     ])
-    expect(wc.calls).toEqual(['input mouseDown', 'input keyDown', 'input char'])
+    // The first left press is still held (at the page), so the second sends its lost release first
+    // (C7 of the router contract), by the same road.
+    expect(wc.calls).toEqual(['input mouseUp', 'input mouseDown', 'input keyDown', 'input char'])
     expect(win.forbidden).toEqual([])
     view.destroy()
     wc.calls.length = 0

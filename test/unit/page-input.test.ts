@@ -691,7 +691,9 @@ describe('PageInputRouter', () => {
     await s.flush()
     s.detach()
     s.router.input([move(30, 225, true), up(30, 225)])
-    expect(s.fallback).toEqual([move(30, 225, true), up(30, 225)])
+    // The press went to frame A, which no detached road reaches: its up goes to A or nowhere, never
+    // to the page (C7, the router contract), so only the move goes.
+    expect(s.fallback).toEqual([move(30, 225, true)])
     // A call runs its own fallback.
     await expect(s.router.call(() => 'fallback text')).resolves.toBe('fallback text')
   })
@@ -836,8 +838,11 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     await s.flush()
     const old = s.page.held.shift()
     s.detach()
+    s.router.reset()
     s.router.input([up(20, 225)])
-    expect(s.fallback).toEqual([up(20, 225)])
+    // The attachment went and its press records with it (C7: an epoch change deletes them): the up
+    // has nothing to match, dropped.
+    expect(s.fallback).toEqual([])
     // A new attachment: its frames are announced anew (new sessions).
     s.attach()
     s.page.owners.set('', [])
@@ -991,7 +996,7 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a', 'b', 'c'])
   })
 
-  it('a detach while keys wait for the stalled page session: they go by sendInputEvent', async () => {
+  it('a detach while keys wait for the stalled page session: they are dropped with the attachment', async () => {
     const s = setup()
     s.page.opts.hold = true
     s.router.input([keyDown('a'), keyDown('b')])
@@ -1001,7 +1006,8 @@ describe('PageInputRouter scheduling: review scenarios', () => {
     s.detach()
     s.router.reset()
     await s.flush()
-    expect(s.fallback).toEqual([keyDown('b')])
+    // C1 (the router contract): a step of an attachment that went sends nothing, by any road.
+    expect(s.fallback).toEqual([])
   })
 
   it('a text or an edit command goes through the router: in order, one at a time, the detached road while detached', async () => {
@@ -1504,7 +1510,10 @@ describe('PageInputRouter scheduling: review 6', () => {
   // MUST: "Hover A, then press outside A. Refuse A's synthetic exit; after sendInput settles its
   // outcome, detach A in a microtask before moveTo resumes. moveTo ignores the outcome and checks
   // only epoch/page stall, so the dead session's continuation still dispatches the waiting press."
-  it("a hover exit whose session went before the step goes on: the step is stale, nothing of it is sent", async () => {
+  // Superseded by C1 of the router contract: a pointer event whose target frame went is sent to the
+  // page's session at the top point, never dropped and never to a frame. The press was hit-tested to
+  // the page: it goes there, once, and nothing goes by sendInputEvent.
+  it('a hover exit whose session went before the step goes on: the press still goes to the page, once', async () => {
     for (const microtasks of [0, 1]) {
       const s = setup()
       s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
@@ -1519,7 +1528,7 @@ describe('PageInputRouter scheduling: review 6', () => {
       if (microtasks === 0) s.router.frameDetached('A')
       else queueMicrotask(() => s.router.frameDetached('A'))
       await s.flush()
-      expect([microtasks, s.mice().filter((m) => m[1] === 'mousePressed')]).toEqual([microtasks, []])
+      expect([microtasks, s.mice().filter((m) => m[1] === 'mousePressed')]).toEqual([microtasks, [['', 'mousePressed', 20, 25]]])
       expect(s.fallback).toEqual([])
     }
   })
