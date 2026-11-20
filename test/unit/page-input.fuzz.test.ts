@@ -507,6 +507,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   let refusalLogs = 0
   /** C6: hit tests of the page's document since the last viewer pointer event was delivered, when nothing disturbed them. */
   let pageHitTests = 0
+  let exitsSince = 0
   let disturbed = false
   const pageCommands = (): Command[] => commands.filter((c) => c.session === '' && c.gen === gen && !c.detached && !c.answered)
   const pageStalled = (): boolean => attached && pageCommands().some((c) => clock.now - c.sentAt >= STEP_TIMEOUT_MS)
@@ -650,10 +651,12 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         violate('C4', 'barrier', `${describe(ev)} delivered while ${describe(barrier.ev)} holds the barrier (since t=${barrier.startAt})`)
       }
     }
+    // C7, ruling 2026-11-19: an up is sent iff the model has a live record for it; every up with no live record when a later event
+    // is delivered is dropped and excused (cause: no record), per event. A record-backed up that is not sent stays a violation.
+    if (ev.kind !== 'move') for (const e of evs) if (e.release && e.attempts === 0 && e.n < ev.n && e.excuse === undefined && !allRecs().some((r) => r.id === e.rid)) e.excuse = 'no record'
     // C7: a no-button move delivered with a record live and owing its release marks the record.
     if (ev.kind === 'move') for (const rec of allRecs()) if (rec.id.startsWith('button:') && !ev.held.includes(rec.id.slice(7) as Button)) rec.owed = true
-    // C7: ends of owed releases: whatever is delivered after the move must find them sent.
-    if (ev.kind !== 'move') for (const rec of allRecs()) if (rec.owed && rec.n < ev.n) violate('C7', 'owed-release-missing', `${rec.id} (session ${rec.session || 'page'}) still live after a no-button move, at ${describe(ev)}`)
+    // C7 owed releases: checked at quiescence only (ruling 2026-11-19: a release held for a stalled frame may be passed by later events).
   }
 
   const startBarrier = (ev: Ev): void => {
@@ -675,8 +678,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const endRecord = (rec: Rec, cause: string): void => {
     unlink(rec)
     if (!records.has(rec.id)) tombs.set(rec.id, cause)
-    for (const ev of evs) if (ev.release && ev.rid === rec.id && ev.attempts === 0 && ev.n > rec.n && ev.excuse === undefined) ev.excuse = `record gone (${cause})`
-  }
+      }
   /** C7: the up of a record goes to the record's session exactly once and deletes it. */
   /** Removes a record (the newest of its id gives way to the latest superseded one). */
   function unlink(rec: Rec): void {
@@ -716,7 +718,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       pendingRefusal = undefined
     }
     const input = method.startsWith('Input.')
-    if (method === 'DOM.getNodeForLocation' && id === '') pageHitTests++
+    // C6, ruling 2026-11-19: only re-tests caused by a synthetic hover exit count (a re-test after a park is required).
+    if (method === 'DOM.getNodeForLocation' && id === '' && exitsSince > 0) pageHitTests++
+    if (method === 'Input.dispatchMouseEvent' && String(p.type) === 'mouseMoved' && (p.x as number) < 0 && (p.y as number) < 0) exitsSince++
     // Which viewer event is this (if any), and the checks of its delivery.
     let ev: Ev | undefined
     let createdRecord = false
@@ -757,8 +761,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (ev.kind === 'up') recordUp(ev, ev.rid, 'protocol', id)
           if (ev.kind === 'wheel') routeCheck(type, session, id, tag)
           // C6: after a hover exit the hit test runs again at most 2 times (3 tests in all), then the page session.
-          if (!disturbed && pageHitTests > MAX_RETESTS + 1) violate('C6', 'retests', `${pageHitTests} hit tests of the page before ${describe(ev)}`)
+          if (!disturbed && pageHitTests > MAX_RETESTS) violate('C6', 'retests', `${pageHitTests} hit tests of the page before ${describe(ev)}`)
           pageHitTests = 0
+          exitsSince = 0
           disturbed = false
         } else if (type === 'mouseReleased') {
           recordUp(undefined, `button:${String(p.button)}`, 'protocol', id)
@@ -889,7 +894,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     const list = keyPending.get(entry)
     if (!list) return undefined
     while (list.length > 0 && list[0]!.attempts > 0) list.shift()
-    return list.find((e) => e.attempts === 0 && e.epoch === gen) ?? list[0]
+    // Ruling 2026-11-19: never steal from an excused event: the earliest unexcused candidate in enqueue order, this epoch first.
+    const open = list.filter((e) => e.attempts === 0 && e.excuse === undefined)
+    return open.find((e) => e.epoch === gen) ?? open[0]
   }
 
   const fallback: ElectronInputEvent[] = []
@@ -986,14 +993,6 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     // A down taken into the queue and not run yet is the record in the making (its up may pass the cap with it).
     const queuedDown = ev.release && before >= MAX_QUEUED_STEPS && evs.some((e) => !e.release && e.rid === ev.rid && e.epoch === gen && e.attempts === 0 && e.kind !== 'up' && inQueue(e))
     if (ev.release) ev.recAtHandIn = records.get(ev.rid)?.session
-    const tomb = ev.release ? tombs.get(ev.rid) : undefined
-    if (tomb !== undefined) ev.excuse = `record gone (${tomb})`
-    // A release the viewer has no press for (more ups than downs of this id so far) has nothing to match; a stray release is the router's to drop.
-    if (ev.release) {
-      let held = 0
-      for (const e of evs) if (e !== ev && e.rid === ev.rid && e.rid !== '') held += e.release ? -1 : 1
-      if (held <= 0 && ev.excuse === undefined) ev.excuse = 'a release with no press handed in'
-    }
     fn()
     const taken = ev.attempts > 0 || inQueue(ev)
     // C3: move coalescing and wheel summing, named per event, from what the queue did to its tail.
@@ -1022,11 +1021,13 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const blank = (kind: EvKind): Ev => ({ n: 0, kind, epoch: 0, at: 0, tag: 0, entry: '', release: false, rid: '', held: [], sum: 0, attempts: 0, redirectOk: false, capDropped: false })
 
   /** A detached road as Electron's: it lands a little later (an IPC), so a router that does not wait for it reorders. */
-  const detachedRoad = (entry: string, n: number) => (): Promise<void> => {
+  const detachedRoad = (entry: string, n: number, down?: string) => (): Promise<void> => {
     const ev = byEntry.get(entry)
     if (attached) violate('C8', 'detached-road-while-attached', `${entry} by its detached road while attached`)
     if (ev) {
       deliver(ev, 'fallback', '')
+      // C7: every road that delivers a down makes a record (ruling 2026-11-19: a command's key down by the detached road too).
+      if (down !== undefined && ev.attempts === 1) recordDown(ev, down, 'detached')
       if (ev.attempts === 1) startBarrier(ev)
     }
     return new Promise((resolve) =>
@@ -1070,7 +1071,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       ev.entry = `c:${tag}`
       ev.ref = params
       ev.rid = typeof code === 'string' && code !== '' ? `key:${code}` : ''
-      hand(ev, () => void router.command('Input.dispatchKeyEvent', params, detachedRoad(`c:${tag}`, tag)).then(() => {}, () => {}))
+      hand(ev, () => void router.command('Input.dispatchKeyEvent', params, detachedRoad(`c:${tag}`, tag, ev.rid !== '' && ['rawKeyDown', 'keyDown'].includes(String((params as { type?: unknown }).type)) ? ev.rid : undefined)).then(() => {}, () => {}))
       return
     }
     for (const e of toElectronEvents(event, { width: 1000, height: 700 })) {
@@ -1334,15 +1335,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       if (excuse !== undefined) continue
       // C3: move coalescing: a move superseded by a later move (named: the later move handed in).
       if (ev.kind === 'move' && evs.some((e) => e.kind === 'move' && e.n > ev.n)) continue
-      // C7: an up whose down this very ledger shows never sent (for a cause of its own) has no record to match.
-      if (ev.release) {
-        const down = [...evs].reverse().find((e) => e.kind === 'down' && e.rid === ev.rid && e.n < ev.n)
-        if (down && down.attempts === 0 && (down.excuse !== undefined || down.capDropped || down.epoch < gen)) continue
-        if (ev.kind === 'key') {
-          const keyDown = [...evs].reverse().find((e) => (e.kind === 'key' || e.kind === 'cmd') && !e.release && e.rid === ev.rid && e.n < ev.n)
-          if (keyDown && keyDown.attempts === 0 && (keyDown.excuse !== undefined || keyDown.capDropped || keyDown.epoch < gen)) continue
-        }
-      }
+      // C7, ruling 2026-11-19: an up with no live record in the model at the end is dropped (cause: no record).
+      if (ev.release && !allRecs().some((r) => r.id === ev.rid)) continue
       // The detached-road press whose up never came is C7's own line (the up must reach the page after a reattach).
       const detachedUp = ev.release && ev.recAtHandIn === 'detached'
       violate(detachedUp ? 'C7' : 'C3', detachedUp ? 'detached-road-up-lost' : `lost-${ev.kind}`, `${describe(ev)} was never sent and has no excuse${ev.recAtHandIn !== undefined ? ` (record at ${ev.recAtHandIn || 'page'})` : ''}`)
