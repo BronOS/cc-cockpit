@@ -662,12 +662,16 @@ not abbreviated to `~`.
 
 **Panels** are sandboxed iframes (`sandbox="allow-scripts"`, no same-origin, strict CSP) loaded
 from the plugin's files, talking to their plugin backend through a `MessagePort` that main hands
-over. The core injects the theme's CSS variables into every panel. The SDK also adopts a constructable
-stylesheet with thin themed scrollbars (`:where()`, zero specificity, so a plugin's CSS wins; a constructable
-sheet needs no CSP change), and, installed first, the component stylesheet `src/sdk/components.css` (`?raw` import,
-every rule in `@layer cc` so a plugin's own rule wins; the shell's `styles.css` imports the same file; `ccc guide style`);
-the theme message carries `mac` and the rule is skipped on macOS, where overlay
-scrollbars already fit. The shell has the same rule in `styles.css`, scoped by `html[data-platform]`.
+over. The core injects the theme's CSS variables into every panel. The SDK also adopts constructable
+stylesheets (no CSP change): first the component stylesheet `src/sdk/components.css` (`?raw` import,
+every rule in `@layer cc` so a plugin's own rule wins; the shell's `styles.css` imports the same file; `ccc guide style`),
+then edges-only scrolling (`src/sdk/scroll-edges-core.ts`, layer `cc.scroll`, `:where()` selectors): an edge-shadow sheet
+on every platform and a bar sheet (thin, transparent at rest) that waits for the theme message, which carries `mac`, and is
+skipped on macOS, where overlay scrollbars already hide at rest. A page script (`scroll-edges.ts`) marks scroll containers
+(`data-cc-scroller`, from computed overflow, re-read per batch of DOM changes), the element scrolling
+(`data-cc-scrolling`, 1 s) and the one whose bar the pointer is within 24px of (`data-cc-scroll-near`); the shadows are
+scroll-driven animations of two registered numbers, so nothing runs on the scroll path. The shell adopts the same sheets and
+runs the same script (`startShellScrolling`).
 
 **Overlay stack.** Opened by plugins (API), the CLI and the user's overlay entries of the new-tab
 menu (§3 Custom commands); covers the whole window (on macOS, everything under the in-page title bar); overlays stack.

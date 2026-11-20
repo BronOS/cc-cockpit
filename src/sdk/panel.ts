@@ -35,12 +35,14 @@
 // script with no `require` in out/sdk/panel.js.
 import componentsCss from './components.css?raw'
 import { PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
+import { startScrollEdges } from './scroll-edges'
 
 // The SDK's stylesheets are constructable ones: not inline <style>s, and the plugin CSP's
 // style-src ('unsafe-inline') allows them anyway, so no CSP change. Missing support: no base styles.
-// In install order (components at once, the scrollbars on the first theme), all before the page's
-// own adopted sheets. The components are in `@layer cc`, so any unlayered page rule beats them;
-// the scrollbar rule is zero-specificity, so a page's own sheet wins on it as well.
+// In install order (components and scroll edges at once, the scrollbars on the first theme), all
+// before the page's own adopted sheets. The components are in `@layer cc`, so any unlayered page rule
+// beats them; the scroll sheets are in its sub-layer `cc.scroll` with zero-specificity selectors, so
+// the components and the page's own sheets win on them as well.
 const sdkSheets: CSSStyleSheet[] = []
 const client = new PanelClient(
   document.documentElement.style,
@@ -83,5 +85,9 @@ window.addEventListener(
 // A page tab's window got the keyboard: the shell is told, as it sees no event when the keyboard moves
 // from frame to frame, and decides whether it may stay (design-split-pages.md §4). Before any page script.
 window.addEventListener('focus', () => client.windowFocused())
+
+// Edges-only scrolling (scroll-edges.ts): marks the page's scroll containers, the one scrolling and
+// the one whose bar the pointer is near, for the sheets above.
+startScrollEdges(window)
 
 Object.defineProperty(window, 'ccPanel', { value: client.api, enumerable: true })

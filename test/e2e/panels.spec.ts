@@ -68,7 +68,7 @@ test('a plugin panel renders, round-trips a message through its host, gets the t
   await cockpit.hook('setTheme', 'light')
   await expect.poll(() => cssVar(pluginFrame(page, 'panel.html'), '--cc-bg')).toBe('#faf8f6')
 
-  // Thin themed scrollbars from the SDK's base stylesheet (and the shell's own rule); macOS keeps its own.
+  // Thin scrollbars from the SDK's bar sheet (the shell adopts the same one); macOS keeps its own.
   if (process.platform !== 'darwin') {
     const width = (f: Frame | undefined): Promise<string | null> =>
       f ? f.evaluate<string>(`getComputedStyle(document.body).scrollbarWidth`).catch(() => null) : Promise.resolve(null)
