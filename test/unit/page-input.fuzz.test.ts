@@ -84,6 +84,12 @@ export type Action =
   | { a: 'reattach' }
   /** From here on, at each resolution point the fault injector fires with this probability. */
   | { a: 'faults'; rate: number }
+  /** A frame A seen at 100x100 px with a 10,000x10,000 viewport, its quad skewed by 0.4 px, and a child B at (4995, 4000) size 1005x2000. */
+  | { a: 'bigframe' }
+  /** The big frame is gone again (A and B back at their usual boxes). */
+  | { a: 'bigoff' }
+  /** The renderer goes (`router.rendererGone()`): the old detached calls never settle, a healthy one replaces it. */
+  | { a: 'rendererGone' }
   /** The detached road (`wc.insertText` and the others) never settles from now on, or settles again. */
   | { a: 'hang'; on: boolean }
   /** Hand-written: at the `skip`th resolution point from now (-1: the answer of the next hover exit), `after` microtasks later, detach a frame or lose the protocol (and attach again). */
@@ -146,6 +152,8 @@ function makeScript(seed: number): Action[] {
   }
   const slotAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
   const hangAt = !stress && r() < 0.08 ? Math.floor(r() * length) : -1
+  const bigAt = !stress && r() < 0.06 ? Math.floor(r() * length) : -1
+  const goneAt = !stress && r() < 0.06 ? Math.floor(r() * length) : -1
   const capAt = !stress && r() < 0.1 ? Math.floor(r() * length) : -1
   for (let i = 0; i < length; i++) {
     if (i === slotAt && held.size === 0 && !keys.has('Tab')) {
@@ -154,6 +162,20 @@ function makeScript(seed: number): Action[] {
       out.push({ a: 'key', type: 'down', key: 'x', mods: [] }, { a: 'burst', n: 200 + Math.floor(r() * 100) })
       for (let k = 0; k < 6; k++) out.push({ a: 'key', type: 'up', key: 'Tab', mods: [] }, { a: 'up', x: 500, y: 650, button: 'left', held: [] })
       out.push({ a: 'key', type: 'up', key: 'x', mods: [] }, { a: 'mode', doc: 'page', mode: 'fast' })
+      continue
+    }
+    if (i === bigAt) {
+      // C1 / C6 (O1): a near-parallelogram quad over a large viewport: the child under the TRUE projective point, never another.
+      const px = 50 + Math.floor(r() * 3) - 1
+      out.push({ a: 'attach', frame: 'A', ready: true }, { a: 'attach', frame: 'B', ready: true }, { a: 'bigframe' })
+      out.push({ a: 'move', x: px, y: 250, held: [] }, { a: 'down', x: px, y: 250 + Math.floor(r() * 3) - 1, button: pick(r, BUTTONS), held: [] }, { a: 'wheel', x: px, y: 250, dy: 40 }, { a: 'advance', ms: 1500 }, { a: 'bigoff' })
+      continue
+    }
+    if (i === goneAt) {
+      // C9 (O4): the renderer goes before, at or after a detached delivery's deadline: no stall may be left behind.
+      out.push({ a: 'lose', rejectPending: false }, { a: 'hang', on: true }, { a: 'text' }, { a: 'advance', ms: pick(r, [0, 100, 499, 500, 501]) })
+      out.push({ a: 'rendererGone' }, { a: 'hang', on: false }, { a: 'advance', ms: pick(r, [10, 700]) })
+      out.push({ a: 'key', type: 'down', key: 'q', mods: [] }, { a: 'key', type: 'up', key: 'q', mods: [] }, { a: 'text' }, { a: 'advance', ms: 700 }, { a: 'reattach' })
       continue
     }
     if (i === hangAt) {
@@ -233,7 +255,7 @@ function makeScript(seed: number): Action[] {
     } else if (p < 0.63) {
       out.push({ a: 'text' })
     } else if (p < 0.645) {
-      out.push({ a: 'call', blocking: r() < 0.7, ms: pick(r, [0, 10, 600]) })
+      out.push({ a: 'call', blocking: r() < 0.7, ms: pick(r, [0, 10, 600, -1]) })
     } else if (p < 0.75) {
       out.push({ a: 'advance', ms: pick(r, ADVANCES) })
     } else if (p < 0.81) {
@@ -432,6 +454,9 @@ interface Ev {
   at: number
   /** Pointer events: the tag in the fractions of the point. */
   tag: number
+  /** Pointer events: the page point the viewer aimed at. */
+  px?: number
+  py?: number
   /** Keys, commands, texts: the spelling the sink sees. */
   entry: string
   /** A key or button up (a release): matches a press record by `rid`. */
@@ -476,6 +501,38 @@ interface Rec {
 
 // --- one run --------------------------------------------------------------------------------------
 
+/** The (u, v) fractions of a point in a quad (clockwise from the top left) under the true projective map of the unit square. */
+function unproject(q: readonly number[], x: number, y: number): { u: number; v: number } | undefined {
+  const [x0, y0, x1, y1, x2, y2, x3, y3] = q as [number, number, number, number, number, number, number, number]
+  const sx = x0 - x1 + x2 - x3
+  const sy = y0 - y1 + y2 - y3
+  let g = 0
+  let h = 0
+  if (sx !== 0 || sy !== 0) {
+    const dx1 = x1 - x2
+    const dx2 = x3 - x2
+    const dy1 = y1 - y2
+    const dy2 = y3 - y2
+    const den = dx1 * dy2 - dx2 * dy1
+    g = (sx * dy2 - dx2 * sy) / den
+    h = (dx1 * sy - sx * dy1) / den
+  }
+  const a = x1 - x0 + g * x1
+  const b = x3 - x0 + h * x3
+  const d = y1 - y0 + g * y1
+  const e = y3 - y0 + h * y3
+  // x (g u + h v + 1) = a u + b v + x0, and likewise for y: a 2x2 system in (u, v).
+  const m00 = a - g * x
+  const m01 = b - h * x
+  const m10 = d - g * y
+  const m11 = e - h * y
+  const det = m00 * m11 - m01 * m10
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return undefined
+  const r0 = x - x0
+  const r1 = y - y0
+  return { u: (r0 * m11 - m01 * r1) / det, v: (m00 * r1 - r0 * m10) / det }
+}
+
 async function runScript(seed: number, script: readonly Action[], withTrace = false): Promise<RunResult> {
   const violations: Violation[] = []
   const trace: string[] = []
@@ -490,6 +547,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   const rects = new Map<FrameName, [number, number, number, number]>(FRAMES.map((f) => [f.name, [...f.rect] as [number, number, number, number]]))
   const effects = new Map<FrameName, Effect>(FRAME_NAMES.map((f) => [f, 'none']))
   const covered = new Set<FrameName>()
+  const big = new Map<FrameName, { bw: number; bh: number; skew: number }>()
+  let bigOn = false
   const modes = new Map<DocName, Mode>(DOCS.map((d) => [d, 'fast']))
   const qmodes = new Map<DocName, QueryMode>(DOCS.map((d) => [d, 'fast']))
   const sessionOf = new Map<DocName, Session>()
@@ -580,8 +639,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       const [rx, ry, rw, rh] = rects.get(f.name) as [number, number, number, number]
       const x = rx - s.x
       const y = ry - s.y
-      const quad = [x, y, x + rw, y, x + rw, y + rh, x, y + rh]
-      return { model: { content: quad, border: quad, width: rw, height: rh } }
+      const b = big.get(f.name)
+      const quad = b ? [x, y, x + rw, y, x + rw + b.skew, y + rh, x, y + rh] : [x, y, x + rw, y, x + rw, y + rh, x, y + rh]
+      return { model: { content: quad, border: quad, width: b?.bw ?? rw, height: b?.bh ?? rh } }
     }
     return {}
   }
@@ -760,7 +820,12 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         const x = p.x as number
         const y = p.y as number
         const tag = tagOf(x, y)
-        const found = byTag.get(tag)
+        let found = byTag.get(tag)
+        // The big frame scales the point 100 times, so a tag in its fractions is gone: the earliest unsent event of that kind with an aim.
+        if (!found && bigOn && session && (session.doc === 'A' || session.doc === 'B')) {
+          const kind = type === 'mousePressed' ? 'down' : type === 'mouseWheel' ? 'wheel' : type === 'mouseMoved' ? 'move' : 'up'
+          found = evs.find((e) => e.kind === kind && e.attempts === 0 && e.px !== undefined && e.px >= 48 && e.px <= 52 && (e.py as number) >= 248 && (e.py as number) <= 252 && (kind !== 'up' || e.rid === `button:${String(p.button)}`))
+        }
         if (type === 'mouseMoved') {
           // A synthetic hover move (an exit, or a move over the owner) is no viewer event; the viewer's own move has its tag.
           // (Under capture the viewer's own move may land at negative frame coordinates; the exit is (-1, -1), tag 0.)
@@ -780,6 +845,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         }
         if (ev) {
           deliver(ev, 'protocol', id)
+          wrongChild(ev, session)
           if (ev.kind === 'wheel' && Math.abs((p.deltaY as number) - ev.sum) > 1e-9) violate('C3', 'wheel-sum', `${describe(ev)} sent with deltaY ${String(p.deltaY)}, its events sum to ${ev.sum}`)
           if (ev.kind === 'down') {
             // C6: a viewer press is hit-tested after the last hover move that changed a document on its way.
@@ -918,6 +984,24 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     })
   }
 
+  /**
+   * C1 / C6 (O1): with the big skewed frame A, a pointer delivered to its child B must lie, at the TRUE projective point of the
+   * viewer's aim, inside B (the router's affine map from three corners puts it elsewhere on a near-parallelogram quad).
+   */
+  function wrongChild(ev: Ev, session: Session | undefined): void {
+    const b = big.get('A')
+    if (!bigOn || !b || !session || session.doc !== 'B' || ev.px === undefined || ev.py === undefined) return
+    const sp = scroll.get('page') as { x: number; y: number }
+    if (sp.x !== 0 || sp.y !== 0 || (scroll.get('A') as { x: number; y: number }).x !== 0 || (scroll.get('A') as { x: number; y: number }).y !== 0) return
+    const [rx, ry, rw, rh] = rects.get('A') as [number, number, number, number]
+    const q = [rx, ry, rx + rw, ry, rx + rw + b.skew, ry + rh, rx, ry + rh]
+    const t = unproject(q, ev.px, ev.py)
+    if (!t) return
+    const [bx, by, bw, bh] = rects.get('B') as [number, number, number, number]
+    const tx = t.u * b.bw
+    const ty = t.v * b.bh
+    if (tx < bx || tx >= bx + bw || ty < by || ty >= by + bh) violate('C1', 'wrong-child', `${describe(ev)} aimed at (${ev.px}, ${ev.py}) went to B, but its true point in A is (${tx.toFixed(1)}, ${ty.toFixed(1)}), outside B`)
+  }
   /** C6: a press or wheel into a frame comes after the hit test that follows the last hover move changing a document on its way. */
   function routeCheck(type: string, session: Session | undefined, id: string, tag: number): void {
     if (!session || session.doc === 'page' || capturing()) return
@@ -1079,6 +1163,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
 
   /** A detached road as Electron's: it lands a little later (an IPC), so a router that does not wait for it reorders. */
   let detachedHang = false
+  let callsOut = 0
+  const callHung: Array<() => void> = []
   let detachedOut = 0
   const hung: Array<() => void> = []
   const detachedRoad = (entry: string, n: number, down?: string) => (): Promise<void> => {
@@ -1245,6 +1331,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         const ev = blank('move')
         ev.tag = t.tag
         ev.held = action.held
+        ev.px = action.x
+        ev.py = action.y
         const e: ElectronInputEvent = { type: 'mouseMove', x: action.x + t.fx, y: action.y + t.fy, modifiers: mods(action.held) }
         ev.ref = e
         hand(ev, () => router.input([e]))
@@ -1256,6 +1344,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         const ev = blank(action.a)
         ev.tag = t.tag
         ev.release = action.a === 'up'
+        ev.px = action.x
+        ev.py = action.y
         ev.rid = `button:${action.button}`
         const event: ElectronInputEvent = { type: action.a === 'down' ? 'mouseDown' : 'mouseUp', x: action.x + t.fx, y: action.y + t.fy, button: action.button, clickCount: 1, modifiers: mods(action.held) }
         ev.ref = event
@@ -1267,6 +1357,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         const ev = blank('wheel')
         ev.tag = t.tag
         ev.sum = action.dy
+        ev.px = action.x
+        ev.py = action.y
         const e: ElectronInputEvent = { type: 'mouseWheel', x: action.x + t.fx, y: action.y + t.fy, deltaX: 0, deltaY: -action.dy, modifiers: [] }
         ev.ref = e
         hand(ev, () => router.input([e]))
@@ -1298,9 +1390,22 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (withTrace) trace.push(`  t=${clock.now} call ${n}`)
           deliver(ev, 'fallback', '')
           if (action.blocking) startBarrier(ev)
+          // C5 / C9 (O4): a call counts as outstanding until it settles; one at most (a call past its deadline stalls its road like a command).
+          callsOut++
+          if (callsOut > 1) violate('C9', 'calls-outstanding', `${callsOut} calls outstanding (call ${n})`)
+          if (action.ms < 0) {
+            return new Promise((resolve) => {
+              callHung.push(() => {
+                callsOut--
+                endBarrier(ev)
+                resolve(n)
+              })
+            })
+          }
           return new Promise((resolve) =>
             clock.set(
               () => {
+                callsOut--
                 endBarrier(ev)
                 resolve(n)
                 resolutionPoint()
@@ -1362,6 +1467,24 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       case 'faults':
         faultRate = action.rate
         break
+      case 'bigframe':
+        rects.set('A', [0, 200, 100, 100])
+        rects.set('B', [4995, 4000, 1005, 2000])
+        big.set('A', { bw: 10000, bh: 10000, skew: 0.4 })
+        bigOn = true
+        break
+      case 'bigoff':
+        for (const f of ['A', 'B'] as const) rects.set(f, [...(FRAMES.find((d) => d.name === f) as FrameDef).rect] as [number, number, number, number])
+        big.clear()
+        bigOn = false
+        break
+      case 'rendererGone':
+        router.rendererGone()
+        hung.length = 0
+        detachedOut = 0
+        detachedHang = false
+        barrier = undefined
+        break
       case 'arm':
         armed = { ...action }
         break
@@ -1381,6 +1504,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
     detachedHang = false
     for (const h of hung.splice(0)) h()
+    for (const h of callHung.splice(0)) h()
     for (const c of commands) if (!c.answered) c.resolve({})
     await clock.advance(0)
     for (let i = 0; i < 4; i++) await clock.advance(1000)
@@ -1403,6 +1527,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (let i = 0; i < 6; i++) await clock.advance(1000)
 
     // Quiescence.
+    // C9 (O4): with the renderer live nothing stays queued with no timer and no outstanding delivery.
+    if (queueOf().length > 0) violate('C9', 'stuck-queue', `${queueOf().length} steps still queued at quiescence`)
     // C9: no timers left, nothing unanswered.
     if (clock.routerTimers() > 0) violate('C9', 'timers-left', `${clock.routerTimers()} router timers pending`)
     const unanswered = commands.filter((c) => !c.answered && c.gen === gen && !c.detached && !(docOfSession(c.session)?.ended ?? true))
