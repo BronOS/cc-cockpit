@@ -34,12 +34,18 @@
 //   cross-site frame under it (neither `sendInputEvent` nor the page's session reaches such a
 //   frame of an off-screen page), all in one order. `sendInputEvent` and the webContents calls are
 //   only the fallback for a page whose protocol detached (scripts/offscreen-input-check.mjs).
+// - A hung page (a script that never yields) commits no navigation: the reload, load, back and
+//   forward main starts are watched (hung-navigation.ts), and one that stalls while the page answers
+//   no probe gets the renderer SIGKILLed (renderer-kill.ts) and goes again once it is gone. That kill's
+//   `render-process-gone` is not the manager's `gone` (the view stays, with its viewers and history).
 import { BrowserWindow, type NativeImage, type Rectangle } from 'electron'
 import type { ViewBounds } from '../overlays/overlay-manager'
-import { cancelOffscreenNativeUi, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
+import { cancelOffscreenNativeUi, ERR_ABORTED, hardenWebContents, webviewNavigation, webviewPreferences, WebviewSessions, type ServePreview } from './webview-hardening'
 import { webviewKeyCode } from '../../shared/webview-keys'
-import { editKeyEvent, SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
+import { editKeyEvent, InputDroppedError, SELECTION_SCRIPT, WEBVIEW_WORLD_ID, type ElectronInputEvent } from './webview-input'
 import { PageInputRouter } from './page-input'
+import { HungNavigationWatch, type ProbeAnswer, type WatchedNavigation } from './hung-navigation'
+import { killRenderer, rendererOsPid } from './renderer-kill'
 import { FrameBudget } from './frame-budget'
 import { chooseScript, hitScript } from './select-hit'
 import type { WebviewEvents, WebviewView, WebviewViewFactory } from './webview-manager'
@@ -141,7 +147,16 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
     const wc = win.webContents
     let size: { width: number; height: number } = { ...OFFSCREEN_INITIAL_SIZE }
     win.setContentSize(size.width, size.height)
-    hardenWebContents(wc, events)
+    // The hung-page watchdog's own kill (below) is not a crash the manager drops the view for: its
+    // retry loads into a new renderer of the same page. Any other `render-process-gone`, and
+    // `destroyed`, go to the manager as before. (`hung` is made below; no event fires before.)
+    hardenWebContents(wc, {
+      ...events,
+      gone: () => {
+        if (!wc.isDestroyed() && hung.gone()) return
+        events.gone()
+      }
+    })
     // The page's input road (page-input.ts): its protocol, the child frames' sessions the cancels
     // auto-attach, and sendInputEvent once the protocol is gone.
     const input = new PageInputRouter({
@@ -153,6 +168,46 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       log: this.log
     })
     cancelOffscreenNativeUi(wc, this.log, input)
+    const navigation = webviewNavigation(wc)
+    const hung = new HungNavigationWatch({
+      setTimer: (run, ms) => setTimeout(run, ms),
+      clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+      now: () => Date.now(),
+      pid: () => rendererOsPid(wc),
+      // main's own script in its isolated world, on the router's call road (ruling 2026-11-19 #11):
+      // it waits behind a call the hung page never answered, which is no answer either. A reset
+      // meanwhile (InputDroppedError) means the renderer was replaced: nothing to kill. A full queue is
+      // a page that took no input for a long while.
+      probe: () =>
+        input.call(() => (wc.isDestroyed() ? undefined : wc.executeJavaScriptInIsolatedWorld(WEBVIEW_WORLD_ID, [{ code: '1' }])), false).then(
+          (): ProbeAnswer => 'answered',
+          (err: unknown): ProbeAnswer =>
+            err instanceof InputDroppedError ? 'replaced' : err instanceof Error && err.message === 'webview: input queue full' ? 'no-answer' : 'unsure'
+        ),
+      kill: (pid) => killRenderer(wc, pid),
+      // After the router's reset (its listener runs in the same `render-process-gone`), and never
+      // watched again: one kill per navigation.
+      retry: (nav: WatchedNavigation) =>
+        new Promise<void>((resolve) => setImmediate(resolve)).then(() => {
+          if (wc.isDestroyed()) return undefined
+          if (nav.kind === 'load') return navigation.load(nav.url)
+          if (nav.kind === 'reload') navigation.reload()
+          else if (nav.kind === 'back') navigation.back()
+          else navigation.forward()
+          return undefined
+        }),
+      restarted: () => events.restarted?.(),
+      log: this.log
+    })
+    // The watched navigation is over: a commit (a new document or in-page) or a failure of the main
+    // frame. ERR_ABORTED is not its end: the watched one superseded an older one, whose abort comes after.
+    wc.on('did-navigate', () => hung.ended())
+    wc.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+      if (isMainFrame) hung.ended()
+    })
+    wc.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+      if (isMainFrame && errorCode !== ERR_ABORTED) hung.ended()
+    })
     // The renderer gone or replaced: what it owed never answers, so the router resets (ruling
     // 2026-11-19 #11; real Electron: after a crash and a reload the old commands never answered and the
     // debugger stayed attached). Replaced also when the main frame commits into another process, even
@@ -197,6 +252,7 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       if (destroyed) return
       destroyed = true
       sink = undefined
+      hung.dispose()
       this.live.delete(win)
       this.budget.remove(budgetId)
       if (this.live.size === 0 && this.budgetTimer) {
@@ -226,7 +282,34 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
     })
 
     return {
-      ...webviewNavigation(wc),
+      ...navigation,
+      // main's own navigations, watched (see the top of the file). A load the watch killed and
+      // started again settles as the new one does, not with the kill's ERR_FAILED (navigate would
+      // report a page that then loaded as failed).
+      load: (url: string) => {
+        const watched = hung.start({ kind: 'load', url })
+        return navigation.load(url).catch(async (err: unknown) => {
+          if (!watched.killed()) throw err
+          const retried = await watched.outcome()
+          if (retried === undefined) throw err
+          return retried.retry
+        })
+      },
+      reload: () => {
+        if (wc.isDestroyed()) return
+        hung.start({ kind: 'reload' })
+        navigation.reload()
+      },
+      back: () => {
+        if (wc.isDestroyed() || !wc.navigationHistory.canGoBack()) return
+        hung.start({ kind: 'back' })
+        navigation.back()
+      },
+      forward: () => {
+        if (wc.isDestroyed() || !wc.navigationHistory.canGoForward()) return
+        hung.start({ kind: 'forward' })
+        navigation.forward()
+      },
       // Never focused (nothing here is ever handed the keyboard), so the manager never thinks an
       // off-screen view took it from the shell page.
       isFocused: () => false,

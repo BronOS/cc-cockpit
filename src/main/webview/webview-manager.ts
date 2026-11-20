@@ -156,6 +156,12 @@ export interface WebviewEvents {
   chord(chord: string, code?: string): boolean
   /** The page went away by itself (renderer crash or kill); the view is to be dropped. */
   gone(): void
+  /**
+   * Server mode's off-screen view only: the page answered nothing while a navigation main started
+   * waited, so its renderer was killed and the navigation started again (hung-navigation.ts). The
+   * view stays; its viewers get a notice.
+   */
+  restarted?(): void
 }
 
 /** A webview panel's native view (a WebContentsView in the real app). */
@@ -243,6 +249,11 @@ export interface WebviewManagerDeps {
    * the budget). Default: none.
    */
   partitionClosed?(partition: string): void
+  /**
+   * A view's page was restarted by the hung-page watchdog (WebviewEvents.restarted): index.ts tells
+   * the window's browsers in main's own words. Default: none.
+   */
+  pageRestarted?(owner: WebviewOwner): void
   /** The user's home folder (os.homedir() in the app, a temp dir in tests). */
   homeDir(): string
   /** A fresh token (tests pin it); default `t` + 128 random bits in hex. */
@@ -723,6 +734,10 @@ export class WebviewManager {
         this.navigated(rec)
       },
       chord: (chord, code) => this.deps.chord?.(owner.windowId, chord, code) ?? false,
+      restarted: () => {
+        const rec = current()
+        if (rec) this.deps.pageRestarted?.({ ...rec.owner })
+      },
       gone: () => {
         // The page crashed or was killed (also fires after our own destroy: then it is no longer
         // the record). The next navigate makes a new view.

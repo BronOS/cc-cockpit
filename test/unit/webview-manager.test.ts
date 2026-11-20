@@ -429,6 +429,22 @@ describe('WebviewManager', () => {
     expect(external.at(-1)).toBe('https://o.example/later')
   })
 
+  // The hung-page watchdog restarted the page (hung-navigation.ts): main tells the window's browsers
+  // with the view's own owner, and the view stays (not a gone).
+  it('passes a watchdog restart on with the view\'s owner, and keeps the view', async () => {
+    const restarted: WebviewOwner[] = []
+    const withNotice = new WebviewManager({ ...managerDeps, pageRestarted: (o) => void restarted.push(o) })
+    await withNotice.navigate(owner(), 'https://example.com/')
+    const view = views.at(-1) as FakeView
+    view.events.restarted?.()
+    expect(restarted).toEqual([owner()])
+    expect(view.destroyed).toBe(false)
+    // A view that is no longer the panel's says nothing.
+    withNotice.destroyPlugin(WIN, 'a.one')
+    view.events.restarted?.()
+    expect(restarted).toHaveLength(1)
+  })
+
   it('reports committed pages to the latest navigate\'s listener', async () => {
     const seen: WebviewPage[] = []
     await manager.navigate(owner(), 'https://example.com/', (p) => seen.push(p))

@@ -186,7 +186,8 @@ async function main() {
     navigated: () => {},
     loadFailed: (url, error) => logs.push(`load failed ${url} ${error}`),
     chord: () => false,
-    gone: () => logs.push('gone')
+    gone: () => logs.push('gone'),
+    restarted: () => logs.push('restarted')
   })
   const wc = webContents.getAllWebContents().find((w) => w.isOffscreen())
   const sessions = new Map()
@@ -829,12 +830,15 @@ async function main() {
 
   // --- a renderer that spins forever, then (a) a reload and (b) a cross-site navigation ---
   // A command or call the spinning page never answers stalls its road until it settles or the
-  // renderer goes (rulings 2026-11-19 #7, #9, #11): after (c), a crash and a reload, the typing must
-  // reach the new page within a few seconds. Printed: which events fire, what the pending promises
-  // do, and the main frame's process.
+  // renderer goes (rulings 2026-11-19 #7, #9, #11). A spinning renderer commits no reload and no
+  // navigation by itself (Electron 45, macOS and Linux: 45 s waited; no unresponsive, no
+  // render-process-gone, the main frame's process the same), so the adapter's hung-page watchdog
+  // (hung-navigation.ts) kills it a few seconds into (a) and (b) and starts the navigation again; (c)
+  // is a kill of this script's own, then a reload; (d) a crash (on Linux one that dumps core, which
+  // alone holds the renderer 40 s), then a reload. After each the typing must reach the new page
+  // within a few seconds. Printed: which events fire, what the pending promises do, and the main
+  // frame's process.
   {
-    // Measured (Electron 45, macOS): a spinning renderer never commits a reload or a cross-site
-    // navigation (45 s waited; no unresponsive, no render-process-gone, the main frame's process the same).
     const SPIN_WAIT_MS = 20_000
     const events = []
     const t0 = performance.now()
@@ -876,10 +880,7 @@ async function main() {
       return false
     }
     const field = () => within(Promise.resolve().then(() => wc.mainFrame.executeJavaScript('document.getElementById("i") ? document.getElementById("i").value : ""')).catch(() => 'no frame'), 1000, 'unresponsive')
-    // (a) and (b) are Chromium's own: a spinning renderer commits no navigation, so there is no new
-    // page to type into; main would have to kill it (backlog). Reported, never a failure.
-    const limits = []
-    const spinThen = async (label, go, known = false) => {
+    const spinThen = async (label, go) => {
       await within(wc.mainFrame.executeJavaScript('window.__arm = true'), 3000)
       note(`${label}: click (the page spins 30 ms later)`)
       click(roads.view, LOCAL.input)
@@ -901,15 +902,12 @@ async function main() {
       const typed = await waitFor(async () => (await field()).includes('ok'), 5000)
       const got = await field()
       note(`${label}: typed after ${Math.round(performance.now() - t1)} ms: ${JSON.stringify(got)}`)
-      const text = `spin ${label}: the typing after it did not reach the new page within 5 s (${JSON.stringify(got)})`
-      if (known) {
-        if (!(typed && got === 'ok')) limits.push(text)
-      } else want(typed && got === 'ok', text)
+      want(typed && got === 'ok', `spin ${label}: the typing after it did not reach the new page within 5 s (${JSON.stringify(got)})`)
       return got
     }
     await view.load(`http://127.0.0.1:${port}/?role=spin`)
     note('spin page loaded')
-    await spinThen('reload', async () => view.reload(), true)
+    await spinThen('reload', async () => view.reload())
     await spinThen('cross-site', async () => {
       void within(
         view.load(`http://localhost:${port}/?role=spin`).then(
@@ -918,8 +916,9 @@ async function main() {
         ),
         SPIN_WAIT_MS
       )
-    }, true)
-    // (c) What main can do about such a page: kill its renderer, then reload. SIGKILL, never
+    })
+    // (c) This script's own kill, then a reload (the watchdog sees a navigation with no renderer:
+    // nothing to kill). SIGKILL, never
     // forcefullyCrashRenderer: on Linux that crash dumps core (systemd-coredump, a renderer's core is
     // large), and the process sits in do_exit for 40 to 50 s before render-process-gone fires (Debian
     // VM, Electron 45: 46 s and 42 s; a reload asked while it was dying never committed, so the new
@@ -945,13 +944,20 @@ async function main() {
       await within(view.load(`http://127.0.0.1:${port}/?role=spin`).catch(() => {}), 10000)
       note('killed and loaded again before (c)')
     }
-    await spinThen('crash, reload', async () => {
+    await spinThen('kill, reload', async () => {
       await kill('(c)')
+      view.reload()
+    })
+    // (d) A crash, then a reload. On macOS the renderer is gone at once; on a Linux host that pipes
+    // cores to systemd-coredump it sits in do_exit 40 s and more, and the reload sent meanwhile is
+    // the watchdog's (its SIGKILL ends the dump: gone 4 ms later, Debian VM).
+    await spinThen('crash, reload', async () => {
+      wc.forcefullyCrashRenderer()
+      await sleep(500)
       view.reload()
     })
     await sleep(2000)
     console.log('spin then reload / navigate:\n  ' + events.join('\n  '))
-    if (limits.length) console.log('known limitation (Chromium: a spinning renderer commits no navigation; backlog):\n  ' + limits.join('\n  '))
   }
 
   if (logs.length) console.log('log:', JSON.stringify(logs))
