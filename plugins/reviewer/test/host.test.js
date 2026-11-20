@@ -1407,6 +1407,10 @@ test('an image or a PDF opens as a preview: the init has no bytes; they come onc
   for (const m of rest) assert.ok(JSON.stringify(m).length <= PAGE_MESSAGE_MAX)
   h.say({ type: 'content' })
   assert.equal(h.posts.length, 1 + rest.length) // once
+  // Another copy gets the same bytes, chunked again from the kept Buffer (not kept as base64).
+  const other = h.connect(OWNER_WEB)
+  h.sayAs(OWNER_WEB, { type: 'content' })
+  assert.deepEqual(other.slice(1), rest)
   // No diff for a preview: git only says whether the path is in the last commit (the head line).
   for (const a of f.execs.filter((a) => a[0] === 'git')) assert.match(a.slice(1).join(' '), /^(rev-parse --is-inside-work-tree|rev-parse --verify --quiet HEAD|cat-file -e HEAD:\.\/.*)$/)
   host.deactivate()
@@ -1814,7 +1818,8 @@ test('a late copy is rebuilt: the newest draft and layout in its init, then its 
   assert.equal(h.inboxOf(READER.copy).at(-1).status, 'Again')
   assert.deepEqual(types(late), ['init'])
   h.sayAs(WRITER, { type: 'content' })
-  assert.deepEqual(late.slice(-4).map((m) => m.type + (m.status ? `:${m.status}` : '')), ['assets-done', 'update:Loaded', 'asset', 'update:Again'])
+  // Folded: one update with the sum so far (the last status), then its assets.
+  assert.deepEqual(late.slice(-3).map((m) => m.type + (m.status ? `:${m.status}` : '')), ['assets-done', 'update:Again', 'asset'])
   // A copy that went is sent nothing more.
   h.disconnect(READER.copy)
   const ev = h.events.length
@@ -2079,6 +2084,95 @@ test('provenance: prepare and annotate attribute their caller chains before the 
   chain = ['example.late', 'example.mail']
   await f.provided.reviewer.update({ key: 'gmail:t1', status: 'x' })
   assert.deepEqual(h.sources.at(-1), [...all, 'example.late'])
+  host.deactivate()
+})
+
+test('provenance: fail() attributes its caller chain before the error page goes out, a late copy re-asserts it', async () => {
+  const f = setup({ editorAvailable: false })
+  const caller = { id: 'example.mail' }
+  withServices(f, caller)
+  let chain = ['example.inbox', 'example.mail']
+  f.ctx.services.callers = () => chain
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.prepare({ key: 'gmail:t1', title: 'Mail' })
+  await wait(0) // the owner's copy is up, on the loader
+  const h = f.handles[0]
+  h.events.length = 0
+  chain = ['example.failer', 'example.mail']
+  assert.deepEqual(await f.provided.reviewer.fail({ key: 'gmail:t1', message: 'offline' }), { failed: true })
+  const all = ['example.inbox', 'example.mail', 'example.failer']
+  const attributed = h.events.findIndex((e) => e[0] === 'sources' && e[1].includes('example.failer'))
+  const failed = h.events.findIndex((e) => e[0] === 'post' && e[2] === 'failed')
+  assert.ok(attributed >= 0 && attributed < failed, 'attributed before the error page went out')
+  chain = []
+  h.events.length = 0
+  h.connect(WRITER)
+  assert.deepEqual(h.events[0], ['sources', all])
+  assert.equal(h.events[1][2], 'failed')
+  host.deactivate()
+})
+
+test('provenance: the open service attributes its caller chain before the file\'s content leaves', async () => {
+  const f = setup({ editorAvailable: false })
+  f.ctx.services.callers = () => ['example.tree']
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.open('a.js')
+  const h = f.handles[0]
+  assert.deepEqual(h.sources[0], ['example.tree'])
+  const attributed = h.events.findIndex((e) => e[0] === 'sources')
+  assert.ok(attributed >= 0 && attributed < h.events.findIndex((e) => e[2] === 'init'))
+  host.deactivate()
+})
+
+test('update replay is folded: a late copy gets one update (every hidden part, the last status) and the assets, however many calls came', async () => {
+  const f = setup({ editorAvailable: false })
+  withServices(f, { id: 'example.mail' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<p><img data-asset="r1" alt="Hero"></p>', key: 'gmail:t1', kind: 'mail' })
+  const h = f.handles[0]
+  h.say({ type: 'content' })
+  await f.provided.reviewer.update({ key: 'gmail:t1', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png', dataUrl: PNG }], hide: ['images-bar'] })
+  for (let i = 0; i < 50; i++) await f.provided.reviewer.update({ key: 'gmail:t1', status: `Synced ${i}` })
+  await f.provided.reviewer.update({ key: 'gmail:t1', hide: ['quoted'] })
+  // The live copy got every one as it came.
+  assert.equal(h.posts.filter((m) => m.type === 'update').length, 52)
+  const late = h.connect(OWNER_WEB)
+  h.sayAs(OWNER_WEB, { type: 'content' })
+  const after = late.slice(late.findIndex((m) => m.type === 'assets-done') + 1)
+  assert.deepEqual(after, [
+    { type: 'update', assets: [{ id: 'r1', name: 'hero.png', mime: 'image/png' }], hide: ['images-bar', 'quoted'], status: 'Synced 49' },
+    { type: 'asset', id: 'r1', dataUrl: PNG },
+  ])
+  // A status cleared ('') is kept as cleared.
+  await f.provided.reviewer.update({ key: 'gmail:t1', status: '' })
+  const late2 = h.connect(WRITER)
+  h.sayAs(WRITER, { type: 'content' })
+  assert.equal(late2.find((m) => m.type === 'update').status, '')
+  host.deactivate()
+})
+
+test('the owner\'s Original | Reader choice is kept: a reload or another copy starts on it; a guest\'s switch is its copy\'s only', async () => {
+  const f = setup({ editorAvailable: false })
+  withServices(f, { id: 'example.mail' })
+  f.ctx.overlay.start = () => pageHandle(f)
+  host.activate(f.ctx)
+  await f.provided.reviewer.annotate({ title: 'Mail', html: '<div data-original="m1"></div>', originals: [{ id: 'm1', html: '<p>o</p>' }], view: 'original', key: 'gmail:t1' })
+  const h = f.handles[0]
+  assert.equal(h.posts[0].sides.view, 'original')
+  h.connect(READER)
+  h.sayAs(READER, { type: 'view', view: 'reader' })
+  assert.equal(h.connect(OWNER_WEB)[0].sides.view, 'original', 'a guest\'s switch is not the overlay\'s')
+  h.say({ type: 'view', view: 'reader' })
+  for (const from of [WRITER, READER]) {
+    if (from === READER) h.disconnect(READER.copy)
+    const init = h.connect(from).at(-1) // a reconnected copy's inbox keeps what it had before
+    assert.equal(init.type, 'init')
+    assert.equal(init.sides.view, 'reader')
+    assertNoHostPath([init], f.ctx.projectDir)
+  }
   host.deactivate()
 })
 

@@ -626,7 +626,9 @@ exports.activate = (ctx) => {
         what: p.path,
         overlayTitle: overlayTitle(p.kind === 'pdf' ? 'PDF: ' : 'Image: ', p.path),
         sides,
-        after: review.previewChunks(p.kind, p.mime, p.bytes),
+        // Chunked again on each copy's content request: the raw bytes (at most 25 MiB) are what the overlay
+        // keeps, not their base64 messages (about 33 MiB), so three open PDFs do not hold 100 MB of strings.
+        after: () => review.previewChunks(p.kind, p.mime, p.bytes),
         type: { name: 'file', data: { path: p.path } },
         build: (d) => review.buildReview(d, sides, review.MAX_CONTEXT, { named: false }),
         tooLarge: `${p.path} is too large to show (with its saved draft)`,
@@ -739,7 +741,8 @@ exports.activate = (ctx) => {
    * running (a listener still running after 1 s counts as handled) while a service caller does
    * not wait for the person. `subject`: openKey (one overlay per key), draftKey, what (named in
    * notices), overlayTitle, sides, after (messages posted when the page asks for them with
-   * { type: 'content' }, each within the page message limit; may be absent), type (the overlay's
+   * { type: 'content' }, each within the page message limit, or a function that makes them for each
+   * request; may be absent), type (the overlay's
    * type, or null for none), openUrl (the caller's url for the header's "Open in browser" button;
    * absent or null: none), companionUrl (the same for the companion's icon), companion (true: the
    * page shows a companion and gets the person's divider position), links (review.linkSet of the
@@ -813,8 +816,9 @@ exports.activate = (ctx) => {
     const initFor = (c) => {
       const out = { ...init, draft, layout }
       if (subject.companion) out.split = split
+      if (subject.originals) out.sides = { ...sides, view: docView }
       if (!isOwner(c.from)) {
-        out.sides = guestSides(sides)
+        out.sides = guestSides(out.sides)
         out.canAct = false
       }
       return out
@@ -834,10 +838,22 @@ exports.activate = (ctx) => {
       throw new files.ReviewError(`the review overlay did not open: ${e.message}`)
     }
     // The content each copy asks for once it has its init ({ type: 'content' }), kept for the overlay's
-    // life (it can be 10 MiB): a copy that connects later, reloads or reconnects asks again. Then every
-    // update() so far, in order, so a late copy has the same images, hidden parts and status.
-    const after = subject.after && subject.after.length ? subject.after : []
-    const updates = []
+    // life: a copy that connects later, reloads or reconnects asks again. An annotation's is its parts
+    // and assets (2 MiB of html, 8 MiB of images, the originals and the details); a preview's is a
+    // function that chunks its kept bytes again for each request (openPreview). Then update()'s state
+    // so far, folded into one `update` and its assets (`replay`): a late copy has the same images,
+    // hidden parts and status, and a caller that sets a status every few seconds does not grow the list.
+    const afterOf = () => (typeof subject.after === 'function' ? subject.after() : subject.after && subject.after.length ? subject.after : [])
+    const hasAfter = typeof subject.after === 'function' || (subject.after && subject.after.length > 0)
+    const replay = { declared: [], assets: [], hide: new Set(), status: null }
+    const replayed = () => {
+      if (!replay.declared.length && !replay.hide.size && replay.status === null) return []
+      return [{ type: 'update', assets: replay.declared, hide: [...replay.hide], ...(replay.status !== null ? { status: replay.status } : {}) }, ...replay.assets]
+    }
+    // The owner's Original | Reader choice (feature 'original'), kept like layout and split, so a reload or
+    // the owner's other screen starts on it (a guest's copy starts on it too); a guest's switch stays in its
+    // own copy. The caller's `view` until the owner switches.
+    let docView = subject.originals ? sides.view : null
     let settle
     const opening = new Promise((resolve, reject) => (settle = { resolve, reject }))
     opening.catch(() => {}) // observed by focusExisting only when a second open comes in the wait
@@ -857,7 +873,12 @@ exports.activate = (ctx) => {
         { type: 'update', assets: assets.map(({ id, name, mime }) => ({ id, name, mime })), hide: u.hide, ...(u.status !== null ? { status: u.status } : {}) },
         ...assets.map(({ id, dataUrl }) => ({ type: 'asset', id, dataUrl })),
       ]
-      updates.push(...msgs)
+      // Live copies get each update as it comes; the replay keeps their sum (assets are bounded by the budget,
+      // hide is a set, the status the last one; '' clears it, so it is kept too).
+      replay.declared.push(...msgs[0].assets)
+      replay.assets.push(...msgs.slice(1))
+      for (const name of u.hide) replay.hide.add(name)
+      if (u.status !== null) replay.status = u.status
       for (const msg of msgs) page.each(msg, (c) => c.content)
     }
     open.set(openKey, entry)
@@ -1004,10 +1025,11 @@ exports.activate = (ctx) => {
           ctx.log.warn(`action ${m.id}: ${e.message}`)
         }
       } else if (m.type === 'view' && owner && subject.originals && review.VIEWS.includes(m.view)) {
-        // The owner switched between the Original and the Reader view (feature 'original'): told to
-        // every consumer like an action, with the key and the caller, so the caller can remember it
-        // (the Gmail plugin keeps it per sender). The page has already switched; a guest's switch
-        // stays in its own copy.
+        // The owner switched between the Original and the Reader view (feature 'original'): kept as the
+        // overlay's (docView: what a reload or a later copy starts on), and told to every consumer like an
+        // action, with the key and the caller, so the caller can remember it (the Gmail plugin keeps it per
+        // sender). The page has already switched; a guest's switch stays in its own copy.
+        docView = m.view
         try {
           ctx.services.emit('reviewer', 'view', { key: subject.key, view: m.view, caller: subject.caller })
         } catch (e) {
@@ -1018,15 +1040,16 @@ exports.activate = (ctx) => {
         // bytes carry no host path). A post that fails is logged and the page lives without it (an
         // image shows its alt text after assets-done).
         c.content = true
-        if (!after.length && !updates.length) return
+        const late = replayed()
+        if (!hasAfter && !late.length) return
         try {
           page.attribute()
         } catch (e) {
           ctx.log.warn(`overlay sources: ${e.message}; no content sent`) // fail closed
           return
         }
-        for (const msg of after) page.postTo(c, msg)
-        for (const msg of updates) page.postTo(c, msg)
+        for (const msg of afterOf()) page.postTo(c, msg)
+        for (const msg of late) page.postTo(c, msg)
       }
     }
 
