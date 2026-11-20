@@ -14,9 +14,14 @@ import {
   claudeInstallArgv,
   claudeInstallTab,
   claudeInstalledNotice,
+  CLAUDE_FAST_EXIT_MS,
+  CLAUDE_TAB_FAILED_NOTICE,
+  claudeInstallOverride,
   claudeLauncherPath,
   claudeMissingNotice,
   claudeOfferAllowed,
+  claudeStartNotice,
+  claudeTabFailureNotice,
   isExecutableFile,
   mayAskClaudeOffer
 } from '../../src/main/hooks/claude-offer'
@@ -192,6 +197,30 @@ describe('ClaudeOffer: once per launch', () => {
     expect(offer.claim({ remote: false, owner: true })).toBe(true)
   })
 
+  it('holds the ccc claim for the dialog\'s view until the question is settled, app-wide', async () => {
+    const offer = make()
+    expect(await offer.cccMayAsk('desktop:2')).toBe(true) // nothing claimed yet
+    expect(offer.claim({ remote: false, owner: true })).toBe(true)
+    let other: boolean | undefined
+    void offer.cccMayAsk('desktop:2').then((v) => (other = v))
+    await Promise.resolve()
+    expect(other).toBeUndefined() // waits while the claim's answer is computed
+    offer.settle('desktop:1')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(other).toBe(false) // another window: the dialog's window takes it after its dialog closes
+    expect(await offer.cccMayAsk('desktop:1')).toBe(true)
+  })
+
+  it('frees the ccc claim when nothing was offered, or when the gate kept the claim shut', async () => {
+    const offer = make()
+    offer.claim({ remote: false, owner: true })
+    offer.settle(null)
+    expect(await offer.cccMayAsk('desktop:2')).toBe(true)
+    const shut = make({ enabled: () => false })
+    shut.claim({ remote: false, owner: true })
+    expect(await shut.cccMayAsk('desktop:2')).toBe(true)
+  })
+
   it('not in a test run unless the spec asks; not after "Don\'t ask again" (read at the claim)', () => {
     expect(make({ testRun: true }).claim({ remote: false, owner: true })).toBe(false)
     expect(make({ testRun: true, forced: true }).claim({ remote: false, owner: true })).toBe(true)
@@ -210,10 +239,63 @@ describe('notices', () => {
     expect(claudeMissingNotice('found', '/h/.local/bin/claude')).toBeUndefined()
   })
 
-  it('the re-check after the installer says what new Claude tabs will find', () => {
-    expect(claudeInstalledNotice('found', '/l')).toMatch(/new Claude tabs will use it/)
-    expect(claudeInstalledNotice('off-path', '/l')).toMatch(/not on the PATH/)
-    expect(claudeInstalledNotice('missing', '/l')).toMatch(/still not found/)
+  it('the server line points at Settings, which stays true after the dialog was declined', () => {
+    expect(claudeMissingNotice('missing', '/h/.local/bin/claude')).toMatch(/Settings › Claude Code/)
+  })
+
+  it('the re-check after the installer says what new Claude tabs will find, with no host path', () => {
+    expect(claudeInstalledNotice('found')).toMatch(/new Claude tabs will use it/)
+    expect(claudeInstalledNotice('off-path')).toMatch(/not on the PATH.*restart cc-cockpit/)
+    expect(claudeInstalledNotice('missing')).toMatch(/still not found/)
+    for (const state of ['found', 'off-path', 'missing'] as const) expect(claudeInstalledNotice(state)).not.toMatch(/\/(home|Users)\//)
+  })
+})
+
+describe('the server start line (claudeStartNotice): server only, behind the offer gate', () => {
+  const gate = { testRun: false, forcedByTest: false, enabled: true }
+  const launcher = '/h/.local/bin/claude'
+  it('says so on a server with no claude', () => {
+    expect(claudeStartNotice({ server: true, gate, state: 'missing', launcher })).toBe(claudeMissingNotice('missing', launcher))
+    expect(claudeStartNotice({ server: true, gate, state: 'off-path', launcher })).toContain(launcher)
+  })
+  it('says nothing on the desktop, when found, after "Don\'t ask again", or in a test run that did not opt in', () => {
+    expect(claudeStartNotice({ server: false, gate, state: 'missing', launcher })).toBeUndefined()
+    expect(claudeStartNotice({ server: true, gate, state: 'found', launcher })).toBeUndefined()
+    expect(claudeStartNotice({ server: true, gate: { ...gate, enabled: false }, state: 'missing', launcher })).toBeUndefined()
+    expect(claudeStartNotice({ server: true, gate: { ...gate, testRun: true }, state: 'missing', launcher })).toBeUndefined()
+    expect(claudeStartNotice({ server: true, gate: { ...gate, testRun: true, forcedByTest: true }, state: 'missing', launcher })).toBeDefined()
+  })
+})
+
+describe('a Claude tab that ends right after its start (claudeTabFailureNotice)', () => {
+  const base = { livedMs: 300, state: 'missing' as const, shown: false, allowed: true }
+  it('notices an early exit while claude is not found or off the PATH', () => {
+    expect(claudeTabFailureNotice(base)).toBe(true)
+    expect(claudeTabFailureNotice({ ...base, state: 'off-path' })).toBe(true)
+    expect(claudeTabFailureNotice({ ...base, livedMs: CLAUDE_FAST_EXIT_MS })).toBe(true)
+  })
+  it('not for a later exit, a found claude, a second time, or a gate that is shut', () => {
+    expect(claudeTabFailureNotice({ ...base, livedMs: CLAUDE_FAST_EXIT_MS + 1 })).toBe(false)
+    expect(claudeTabFailureNotice({ ...base, state: 'found' })).toBe(false)
+    expect(claudeTabFailureNotice({ ...base, shown: true })).toBe(false)
+    expect(claudeTabFailureNotice({ ...base, allowed: false })).toBe(false)
+  })
+  it('the notice is plain text pointing at Settings', () => {
+    expect(CLAUDE_TAB_FAILED_NOTICE).toBe('Claude Code was not found. Settings › Claude Code has the install command.')
+  })
+})
+
+describe('the installer stand-in (claudeInstallOverride): a test run only', () => {
+  const env = { CC_COCKPIT_TEST: '1', CC_COCKPIT_CLAUDE_INSTALL_COMMAND: 'echo fake' }
+  it('is honoured in an unpackaged test run', () => {
+    expect(claudeInstallOverride(env, false)).toBe('echo fake')
+  })
+  it('is refused outside a test run, in a packaged app, or when empty: the constant runs', () => {
+    expect(claudeInstallOverride({ CC_COCKPIT_CLAUDE_INSTALL_COMMAND: 'echo fake' }, false)).toBeUndefined()
+    expect(claudeInstallOverride(env, true)).toBeUndefined()
+    expect(claudeInstallOverride({ ...env, CC_COCKPIT_TEST: 'yes' }, false)).toBeUndefined()
+    expect(claudeInstallOverride({ ...env, CC_COCKPIT_CLAUDE_INSTALL_COMMAND: '' }, false)).toBeUndefined()
+    expect(claudeInstallTab('linux', claudeInstallOverride(env, true))).toEqual({ label: 'Install Claude Code', command: CLAUDE_INSTALL_POSIX })
   })
 })
 

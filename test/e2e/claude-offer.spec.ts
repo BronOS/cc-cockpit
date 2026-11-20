@@ -17,6 +17,7 @@ const NO_CLAUDE = {
 }
 
 test('not found: the dialog shows the install command, Copy copies it, Install opens a kept installer tab', async () => {
+  test.setTimeout(90_000)
   const { cockpit: c, close } = await launchCockpit({ env: NO_CLAUDE })
   const saved = await c.app.evaluate(({ clipboard }) => clipboard.readText())
   try {
@@ -27,11 +28,13 @@ test('not found: the dialog shows the install command, Copy copies it, Install o
     await expect(dialog).toContainText('brew install --cask claude-code')
     await expect(dialog).toContainText('npm install -g @anthropic-ai/claude-code@latest')
     await expect(dialog.getByRole('button', { name: 'Not now' })).toBeFocused()
-    await c.page.screenshot({ path: process.env.CLAUDE_OFFER_SHOT ?? join(c.root, 'claude-offer.png') })
+    // Its own timeout: an Electron screenshot waiting for a frame must fail here, by name, not as the test's.
+    await c.page.screenshot({ path: process.env.CLAUDE_OFFER_SHOT ?? join(c.root, 'claude-offer.png'), timeout: 10_000 })
 
     await dialog.getByRole('button', { name: 'Copy the install command' }).click()
-    await expect.poll(() => c.app.evaluate(({ clipboard }) => clipboard.readText())).toBe(INSTALL)
+    // 'Copied' lasts 1.5 s: read it before the clipboard poll.
     await expect(dialog.getByRole('button', { name: 'Copy the install command' })).toHaveText('Copied')
+    await expect.poll(() => c.app.evaluate(({ clipboard }) => clipboard.readText())).toBe(INSTALL)
 
     await dialog.getByRole('button', { name: 'Install in a new tab' }).click()
     await expect(c.page.getByRole('alertdialog')).toHaveCount(0)
@@ -69,11 +72,48 @@ test('not found: asked before the ccc offer, never both at once; Don\'t ask agai
   }
 })
 
-test('found: no dialog (the harness PATH has the fake claude first)', async () => {
-  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_CLAUDE_OFFER: '1' } })
+test('declined: a Claude tab that cannot start brings one notice; Settings › Claude Code has the command and the button', async () => {
+  test.setTimeout(90_000)
+  const { cockpit: c, close } = await launchCockpit({ env: NO_CLAUDE })
   try {
-    await c.page.waitForTimeout(1500)
-    await expect(c.page.getByRole('alertdialog')).toHaveCount(0)
+    const { page } = c
+    const dialog = page.getByRole('alertdialog', { name: 'Claude Code was not found' })
+    await dialog.getByRole('button', { name: 'Not now' }).click()
+    await expect(page.getByRole('alertdialog')).toHaveCount(0)
+
+    // No `claude` on the PATH: the tab ends at once, and main points at Settings once per launch.
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await expect
+      .poll(() => c.hook<string[]>('notifications'))
+      .toContain('Claude Code was not found. Settings › Claude Code has the install command.')
+    await page.getByRole('button', { name: 'New tab' }).click()
+    await page.getByRole('menuitem', { name: 'Claude' }).click()
+    await expect.poll(async () => (await c.hook<TabInfo[]>('tabs', c.projectDir)).filter((t) => t.exit !== undefined)).toHaveLength(2)
+    expect((await c.hook<string[]>('notifications')).filter((n) => n.startsWith('Claude Code was not found'))).toHaveLength(1)
+
+    await page.keyboard.press('ControlOrMeta+,')
+    const settings = page.getByRole('dialog', { name: 'Settings' })
+    await settings.getByRole('button', { name: 'General', exact: true }).click()
+    const row = settings.getByTestId('claude-install')
+    await expect(row.getByTestId('claude-settings-command')).toHaveText(INSTALL)
+    await row.getByRole('button', { name: 'Install in a new tab' }).click()
+    await expect(row).toContainText('The installer is running in a new tab.')
+    await expect
+      .poll(async () => (await c.hook<TabInfo[]>('tabs', c.projectDir)).filter((t) => t.kind === 'command').map((t) => t.command))
+      .toEqual([STAND_IN])
+  } finally {
+    await close()
+  }
+})
+
+test('found: no dialog (the harness PATH has the fake claude first)', async () => {
+  // The ccc question is forced too: it is asked only after claude.offer answered (null here), so its dialog is
+  // the deterministic sign that the Claude Code question was settled without a dialog.
+  const { cockpit: c, close } = await launchCockpit({ env: { CC_COCKPIT_CLAUDE_OFFER: '1', CC_COCKPIT_CCC_OFFER: '1' } })
+  try {
+    await expect(c.page.getByRole('alertdialog', { name: 'Install the ccc command?' })).toBeVisible()
+    await expect(c.page.getByRole('alertdialog')).toHaveCount(1)
   } finally {
     await close()
   }

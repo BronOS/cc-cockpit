@@ -1,8 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { ClaudeCodeView } from '../../shared/ipc'
-import { ipcErrorMessage } from '../ipc-error'
-import { copyText } from '../guests/copy-text'
 import { claudeOfferText } from './claude-offer-model'
+import { CommandLine, InstallInTabButton } from './ClaudeInstallControls'
 
 /**
  * "Claude Code was not found" at start-up, when `claude` is not on the PATH the Claude tabs get (main
@@ -14,14 +13,14 @@ import { claudeOfferText } from './claude-offer-model'
  *
  * "Install in a new tab" (only when main says this host can, `installInTab`) sends the intent alone
  * (`claude.install`): main opens a command tab running its own constant, which the person watches and
- * can stop; the dialog then closes so the tab is in view. 'off-path' (the launcher is there, its folder
+ * can stop; the dialog then closes so the tab is in view. It is armed only after about a second of the
+ * page being seen (ClaudeInstallControls), as an approval's Allow is. 'off-path' (the launcher is there, its folder
  * is not on PATH) shows the profile line instead, and no install. "Don't ask again" is saved
  * (`settings.claudeOfferSet`) on either answer.
  */
 export function ClaudeOfferDialog(props: { view: ClaudeCodeView; onDone: () => void }): React.JSX.Element {
   const { view } = props
   const [dontAsk, setDontAsk] = useState(false)
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const first = useRef<HTMLButtonElement>(null)
   const titleId = useId()
@@ -35,21 +34,7 @@ export function ClaudeOfferDialog(props: { view: ClaudeCodeView; onDone: () => v
     dontAsk ? window.cockpit.invoke('settings.claudeOfferSet', { value: false }).catch(() => undefined) : Promise.resolve()
 
   const decline = (): void => {
-    if (busy) return
     void saveDontAsk().then(props.onDone)
-  }
-
-  const install = (): void => {
-    if (busy) return
-    setBusy(true)
-    setError(null)
-    void saveDontAsk()
-      .then(() => window.cockpit.invoke('claude.install'))
-      .then(
-        () => props.onDone(),
-        (err: unknown) => setError(ipcErrorMessage(err))
-      )
-      .finally(() => setBusy(false))
   }
 
   const openDocs = (): void => {
@@ -109,34 +94,18 @@ export function ClaudeOfferDialog(props: { view: ClaudeCodeView; onDone: () => v
           {" Don't ask again"}
         </label>
         <div className="confirm-buttons">
-          <button type="button" ref={first} disabled={busy} onClick={decline}>
+          <button type="button" ref={first} onClick={decline}>
             Not now
           </button>
           {view.installInTab && (
-            <button type="button" disabled={busy} onClick={install}>
-              Install in a new tab
-            </button>
+            <InstallInTabButton
+              before={saveDontAsk}
+              onOpened={props.onDone}
+              onError={(message) => setError(message)}
+            />
           )}
         </div>
       </div>
-    </div>
-  )
-}
-
-/** One command, in monospace and selectable, with its Copy button (Copied for a moment), as the picker's. */
-function CommandLine(props: { text: string; label: string; testId: string }): React.JSX.Element {
-  const [copied, setCopied] = useState<boolean | null>(null)
-  useEffect(() => {
-    if (copied === null) return
-    const timer = setTimeout(() => setCopied(null), 1500)
-    return () => clearTimeout(timer)
-  }, [copied])
-  return (
-    <div className="connect-command">
-      <code data-testid={props.testId}>{props.text}</code>
-      <button type="button" className="picker-quiet" aria-label={`Copy ${props.label}`} onClick={() => setCopied(copyText(props.text))}>
-        {copied === true ? 'Copied' : copied === false ? 'Select it to copy' : 'Copy'}
-      </button>
     </div>
   )
 }

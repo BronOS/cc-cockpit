@@ -1403,8 +1403,11 @@ export interface CccCommandHandlerDeps {
   status(): CccCommandView | Promise<CccCommandView>
   install(): CccCommandView | Promise<CccCommandView>
   setOffer(value: boolean): void
-  /** The start-up question (CccOffer.claim): a view when this window should ask, else null. */
-  offer(): CccCommandView | null | Promise<CccCommandView | null>
+  /**
+   * The start-up question (CccOffer.claim): a view when this window should ask, else null. `viewId` is the
+   * asking view: main holds the claim while the Claude Code question is up in another window.
+   */
+  offer(viewId: ViewId): CccCommandView | null | Promise<CccCommandView | null>
 }
 
 export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHandlerDeps): void {
@@ -1415,7 +1418,7 @@ export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHa
     if (typeof value !== 'boolean') throw new Error('settings.cccOfferSet: value must be a boolean')
     deps.setOffer(value)
   })
-  router.handleProject('ccc.offer', () => deps.offer())
+  router.handleProject('ccc.offer', (_ctx, _payload, view) => deps.offer(view.viewId))
 }
 
 /** Claude Code on the host (main/hooks/claude-offer.ts): the start-up question, its setting, the installer tab. */
@@ -1424,8 +1427,8 @@ export interface ClaudeCodeHandlerDeps {
   server: boolean
   status(): ClaudeCodeView | Promise<ClaudeCodeView>
   setOffer(value: boolean): void
-  /** ClaudeOffer.claim for this caller, then the view when `claude` is not found; else null. */
-  offer(caller: ClaudeOfferCaller): ClaudeCodeView | null | Promise<ClaudeCodeView | null>
+  /** ClaudeOffer.claim for this caller, then the view when `claude` is not found; else null. `viewId` is the asking view. */
+  offer(caller: ClaudeOfferCaller, viewId: ViewId): ClaudeCodeView | null | Promise<ClaudeCodeView | null>
   /** Open the installer tab in the caller's project window (main's constant command); `viewId` is the asking view. */
   install(projectId: string, windowId: number, viewId: ViewId): Promise<TabInfo>
 }
@@ -1445,7 +1448,7 @@ export function registerClaudeCodeHandlers(router: IpcRouter, deps: ClaudeCodeHa
     if (typeof value !== 'boolean') throw new Error('settings.claudeOfferSet: value must be a boolean')
     deps.setOffer(value)
   })
-  router.handleProject('claude.offer', (_ctx, _payload, view) => deps.offer({ remote: view.remote, owner: isOwner(view) }))
+  router.handleProject('claude.offer', (_ctx, _payload, view) => deps.offer({ remote: view.remote, owner: isOwner(view) }, view.viewId))
   // Nothing of the payload is read: the command is main's constant (claude-offer.ts).
   router.handleProject('claude.install', (ctx, _payload, view) => {
     if (!mayAct(view)) throw new Error('claude.install: refused for this view')

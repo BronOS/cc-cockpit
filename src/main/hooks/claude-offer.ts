@@ -25,13 +25,22 @@
 //  - Never in a test run (every e2e launch would grow a dialog) unless the spec sets
 //    CC_COCKPIT_CLAUDE_OFFER=1, honoured only in a test run. "Don't ask again" (claudeOffer: false)
 //    silences the dialog and the server's start-up notice alike: both are the same question.
-//  - Asked before the ccc offer (the renderer waits for this one to end before asking `ccc.offer`):
-//    without Claude Code the Claude tabs, which `ccc` serves, cannot start at all.
+//  - Asked before the ccc offer, app-wide: the renderer asks `ccc.offer` only after this one, and
+//    main answers `ccc.offer` only once this question is settled (ClaudeOffer.cccMayAsk): when the
+//    dialog went to a view, the ccc claim waits for that view (it asks once the dialog closed), so
+//    two windows reopened at start never show the two dialogs at once.
+//  - A Claude tab that ends within CLAUDE_FAST_EXIT_MS of its start while `claude` is not found gets
+//    one notice per launch pointing at Settings › Claude Code (claudeTabFailureNotice), behind the
+//    same gate: the start check can miss a `claude` removed later, and a declined dialog is gone.
+//  - The installer tab's exit 0 re-captures the login env before re-checking (index.ts): a profile
+//    that adds ~/.local/bin only when it exists (Debian's ~/.profile) puts it on PATH now, so new
+//    Claude tabs find `claude` with no restart.
 import { accessSync, constants, statSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import type { ClaudeCodeState, ClaudeCodeView, ClaudeInstallOther } from '../../shared/ipc'
 import type { TabCommand } from '../tabs/tab-manager'
 import { commandArgv } from '../tabs/claude-argv'
+import { isTestRun } from '../test-run'
 
 /** Anthropic's setup page: the source of every command below. */
 export const CLAUDE_SETUP_DOCS = 'https://code.claude.com/docs/en/setup'
@@ -47,6 +56,24 @@ export const CLAUDE_INSTALL_LABEL = 'Install Claude Code'
 /** The official install command for `platform`: what the dialog shows and the installer tab runs. */
 export function claudeInstallCommand(platform: NodeJS.Platform): string {
   return platform === 'win32' ? CLAUDE_INSTALL_WIN32 : CLAUDE_INSTALL_POSIX
+}
+
+/** A Claude tab that ends this soon after its start while `claude` is not found failed to start it. */
+export const CLAUDE_FAST_EXIT_MS = 2000
+
+/** The notice for such a tab: plain text, no path (it reaches a server's owner browsers in-page). */
+export const CLAUDE_TAB_FAILED_NOTICE = 'Claude Code was not found. Settings › Claude Code has the install command.'
+
+/**
+ * What the installer tab runs instead of the real command: CC_COCKPIT_CLAUDE_INSTALL_COMMAND, the e2e's
+ * harmless stand-in, honoured only in a test run (isTestRun: CC_COCKPIT_TEST=1 and not packaged) and when
+ * not empty. Undefined everywhere else, so the constant runs: the only outside text that can reach the
+ * tab's `-c`, and only on a developer's unpackaged build with the test switch on.
+ */
+export function claudeInstallOverride(env: Record<string, string | undefined>, isPackaged: boolean): string | undefined {
+  if (!isTestRun(env, isPackaged)) return undefined
+  const value = env.CC_COCKPIT_CLAUDE_INSTALL_COMMAND
+  return value === undefined || value === '' ? undefined : value
 }
 
 /** The other ways the setup page lists, as text only (the app never runs them). Homebrew has no Windows. */
@@ -172,6 +199,9 @@ export function claudeOfferAllowed(g: ClaudeOfferGate): boolean {
 
 export class ClaudeOffer {
   private claimed = false
+  /** Set when the claim was taken with the gate open: resolves to the view shown the dialog, or null. */
+  private outcome: Promise<string | null> | undefined
+  private resolveOutcome: ((holder: string | null) => void) | undefined
 
   constructor(
     private readonly deps: {
@@ -187,13 +217,54 @@ export class ClaudeOffer {
    * and for a view that may never be asked, which leaves the claim for the next. Synchronous, before
    * the caller awaits the login env: two windows asking at once must not both pass. Whether `claude`
    * is found is the caller's next step (it needs the login env): a found one spends the claim too.
+   * A true claim must be followed by `settle`.
    */
   claim(caller: ClaudeOfferCaller): boolean {
     if (!mayAskClaudeOffer(this.deps.server, caller)) return false
     if (this.claimed) return false
     this.claimed = true
-    return claudeOfferAllowed({ testRun: this.deps.testRun, forcedByTest: this.deps.forcedByTest, enabled: this.deps.enabled() })
+    const open = claudeOfferAllowed({ testRun: this.deps.testRun, forcedByTest: this.deps.forcedByTest, enabled: this.deps.enabled() })
+    if (open) this.outcome = new Promise((resolve) => (this.resolveOutcome = resolve))
+    return open
   }
+
+  /** The claim's answer: `holder` is the view the dialog went to, null when nothing was offered. */
+  settle(holder: string | null): void {
+    this.resolveOutcome?.(holder)
+    this.resolveOutcome = undefined
+  }
+
+  /**
+   * Whether `viewId` may take the ccc offer's claim now, waiting until this question is settled. Free
+   * when no dialog was claimed (gate closed, nobody asked yet) or none was shown; when one was, only its
+   * view may (it asks only after its dialog closed), so no other window stacks the ccc dialog on it.
+   */
+  async cccMayAsk(viewId: string): Promise<boolean> {
+    if (this.outcome === undefined) return true
+    const holder = await this.outcome
+    return holder === null || holder === viewId
+  }
+}
+
+/** Whether a Claude tab's exit is the "claude not found" failure worth one notice (index.ts, once per launch). */
+export function claudeTabFailureNotice(i: {
+  /** Milliseconds from the tab's spawn to its exit. */
+  livedMs: number
+  state: ClaudeCodeState
+  /** This launch already showed it. */
+  shown: boolean
+  /** claudeOfferAllowed: "Don't ask again" and the test-run gate. */
+  allowed: boolean
+}): boolean {
+  if (i.shown || !i.allowed) return false
+  if (i.livedMs < 0 || i.livedMs > CLAUDE_FAST_EXIT_MS) return false
+  return i.state !== 'found'
+}
+
+/** The server's start-up line, or undefined: server mode only, behind the offer's gate, and only when `claude` is not found. */
+export function claudeStartNotice(i: { server: boolean; gate: ClaudeOfferGate; state: ClaudeCodeState; launcher: string }): string | undefined {
+  if (!i.server || !claudeOfferAllowed(i.gate)) return undefined
+  return claudeMissingNotice(i.state, i.launcher)
 }
 
 /**
@@ -202,7 +273,7 @@ export class ClaudeOffer {
  */
 export function claudeMissingNotice(state: ClaudeCodeState, launcher: string): string | undefined {
   if (state === 'missing') {
-    return 'Claude Code (claude) was not found on the PATH Claude tabs get, so they cannot start; open cc-cockpit in a browser for the install command.'
+    return 'Claude Code (claude) was not found on the PATH Claude tabs get, so they cannot start; Settings › Claude Code in a browser view has the install command.'
   }
   if (state === 'off-path') {
     return `Claude Code is at ${launcher}, but its folder is not on the PATH Claude tabs get; add it to PATH in the shell profile and restart cc-cockpit.`
@@ -210,11 +281,14 @@ export function claudeMissingNotice(state: ClaudeCodeState, launcher: string): s
   return undefined
 }
 
-/** The installer tab ended with 0: what the re-check found, for a core notice. */
-export function claudeInstalledNotice(state: ClaudeCodeState, launcher: string): string {
+/**
+ * The installer tab ended with 0: what the re-check found (after the login env was read again), for a
+ * core notice and, on a server, an in-page notice to the window's owner browsers. Plain text, no path.
+ */
+export function claudeInstalledNotice(state: ClaudeCodeState): string {
   if (state === 'found') return 'Claude Code is installed: new Claude tabs will use it.'
   if (state === 'off-path') {
-    return `Claude Code is installed at ${launcher}, but its folder is not on the PATH Claude tabs get; add it to PATH in your shell profile and restart cc-cockpit.`
+    return 'Claude Code is installed, but its folder is not on the PATH Claude tabs get; add ~/.local/bin to PATH in your shell profile and restart cc-cockpit.'
   }
   return 'The Claude Code installer finished, but claude is still not found; see its output in the tab.'
 }

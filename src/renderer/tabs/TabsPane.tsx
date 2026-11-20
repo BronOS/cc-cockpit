@@ -313,8 +313,10 @@ export function TabsPane(props: { project?: ProjectSummary; fullScreen?: boolean
   }, [access])
   useEffect(() => {
     // The ccc offer installs a command on the host: the owner's own. Only once the Claude Code question is over.
-    // `claudeOffer !== null` too: an `access` change re-runs the first effect (its claim spent: null, so asked),
-    // and the ccc question must still wait for the Claude Code dialog to close, never stack on it.
+    // `claudeOffer !== null` too, so this page never asks while its own Claude Code dialog is up (main also
+    // holds the ccc claim for that dialog's view app-wide, ClaudeOffer.cccMayAsk). `access` is fixed per mount;
+    // a remount (or StrictMode's double effect in dev) asks again, and a claim spent by the dropped first call
+    // is lost for the launch, as the ccc offer's is.
     if (!claudeAsked || claudeOffer !== null || !shellAllows(access).ownerTools) return
     let cancelled = false
     window.cockpit.invoke('ccc.offer').then(

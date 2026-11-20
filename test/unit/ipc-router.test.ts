@@ -2082,13 +2082,16 @@ describe('registerCccCommandHandlers', () => {
       status: () => (calls.push('status'), view),
       install: async () => (calls.push('install'), { ...view, state: 'installed' }),
       setOffer: (v) => void calls.push(`offer ${v}`),
-      offer: () => null
+      offer: (viewId) => (calls.push(`ccc offer ${viewId}`), null)
     })
     await expect(ipc.invoke('settings.cccInstall', 13, [{}])).rejects.toThrow(/not a project window/)
     expect(calls).toEqual([])
     expect(await ipc.invoke('settings.cccStatus', 11)).toEqual(view)
     expect(await ipc.invoke('settings.cccInstall', 11, [{ path: '/etc/passwd' }])).toMatchObject({ state: 'installed' })
     expect(calls).toEqual(['status', 'install'])
+    // The asking view, for the hold while the Claude Code question is up in another window.
+    await ipc.invoke('ccc.offer', 11)
+    expect(calls).toEqual(['status', 'install', 'ccc offer desktop:1'])
   })
 })
 
@@ -2115,7 +2118,7 @@ describe('registerClaudeCodeHandlers', () => {
       status: () => view,
       setOffer: (value) => void calls.push(['setOffer', value]),
       // Records who asked; answers like a claim that says yes to anyone it is handed.
-      offer: (caller) => (calls.push(['offer', caller]), view),
+      offer: (caller, viewId) => (calls.push(['offer', caller, viewId]), view),
       install: async (projectId, windowId, viewId) => {
         calls.push(['install', projectId, windowId, viewId])
         return { id: 't1', kind: 'command', cwd: '/w', gen: 1 } satisfies TabInfo
@@ -2133,7 +2136,7 @@ describe('registerClaudeCodeHandlers', () => {
     await ipc.invoke('claude.install', 11, [{ command: 'rm -rf ~', projectId: PROJECT_B }])
     expect(calls).toEqual([
       ['setOffer', false],
-      ['offer', { remote: false, owner: true }],
+      ['offer', { remote: false, owner: true }, 'desktop:1'],
       ['install', PROJECT_A, 1, 'desktop:1']
     ])
     await expect(ipc.invoke('claude.install', 13)).rejects.toThrow(/not a project window/)
@@ -2145,7 +2148,7 @@ describe('registerClaudeCodeHandlers', () => {
     await expect(router.dispatch(browser, 'settings.claudeOfferSet', { value: false })).rejects.toThrow(/refused for this view/)
     await expect(router.dispatch(browser, 'claude.install', undefined)).rejects.toThrow(/refused for this view/)
     await router.dispatch(browser, 'claude.offer', undefined)
-    expect(calls).toEqual([['offer', { remote: true, owner: true }]])
+    expect(calls).toEqual([['offer', { remote: true, owner: true }, 'web:5']])
   })
 
   it("server: the owner's browser sets and installs on the server; the hidden page may not install", async () => {

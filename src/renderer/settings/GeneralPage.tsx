@@ -9,6 +9,7 @@ import { LimitsForm, type LimitsSave } from './LimitsForm'
 import { loadSoundGroups, SoundOptions, usePlaySound } from './sound-options'
 import { TabCommandsEditor } from './TabCommandsEditor'
 import { WebAccessSection } from './WebAccessSection'
+import { ClaudeInstallRow } from './ClaudeInstallRow'
 import { NumberField } from './TerminalFontSettings'
 import { Group, PageHeader, Row, Select, Switch } from './ui'
 import { useAction } from './use-action'
@@ -374,7 +375,11 @@ export function GeneralPage(): React.JSX.Element {
                       Ask once at launch, with the install command, when <code>claude</code> is not on the PATH the Claude tabs get.
                       {claude.data.state === 'missing' && <span className="warn"> It is not found now: Claude tabs cannot start.</span>}
                       {claude.data.state === 'off-path' && (
-                        <span className="warn"> It is at {claude.data.launcher}, but {claude.data.binDir} is not on the PATH Claude tabs get.</span>
+                        <span className="warn">
+                          {' '}
+                          It is at {claude.data.launcher}, but {claude.data.binDir} is not on the PATH Claude tabs get: add it in your
+                          shell profile, then restart cc-cockpit.
+                        </span>
                       )}
                       {isWebShell() && !isServerView() ? ' Change it on the computer itself.' : ''}
                     </>
@@ -390,6 +395,7 @@ export function GeneralPage(): React.JSX.Element {
                     }}
                   />
                 </Row>
+                <ClaudeInstallRow view={claude.data} onChanged={claude.reload} />
               </div>
             )}
           </Group>
