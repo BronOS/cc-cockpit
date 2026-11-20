@@ -152,7 +152,10 @@
 //              or a new attachment drops the script (undefined: no popup, no copy), never runs it in
 //              a document the router did not pick for it; a new attachment is checked again right
 //              before a top-document run that follows a walk (codex review 2026-11-20: a reset between
-//              the walk's end and that run ran it in the new attachment's document). A rectangle
+//              the walk's end and that run ran it in the new attachment's document). Every road's value,
+//              the top run's included, is handed over only under the attachment the call was queued
+//              under (ruling 2026-11-20 #12: checked after each run and again in `runCall` as it is
+//              handed over; a top run already sent is not undone, its answer is dropped). A rectangle
 //              the frame's script measured is mapped back through the same owner boxes the route
 //              read (`rectFromFrame`, refused where `pointInFrame` refuses the box).
 //
@@ -590,8 +593,17 @@ type StepBody =
    * waits; 'route', what follows waits until `run` releases it (main's script goes to the top
    * document) or settles (a frame's script, every protocol command of it answered or dropped), so no
    * input command overlaps those queries on a session (C9). Only `blocking: true` waits on a detached road.
+   * `script`: main's own script (`scriptAt` and co.), whose value stands only under the step's epoch
+   * (ruling 2026-11-20 #12, checked in `runCall` as it is handed over).
    */
-  | { kind: 'call'; run: (release: () => void) => unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void; blocking: boolean | 'route' }
+  | {
+      kind: 'call'
+      run: (release: () => void) => unknown
+      resolve: (v: unknown) => void
+      reject: (e: unknown) => void
+      blocking: boolean | 'route'
+      script?: true
+    }
 
 /** A queued step and the attachment it was taken in (`epoch`): the sink sends nothing of it in another (C1). */
 type Step = StepBody & { epoch: number }
@@ -657,7 +669,11 @@ interface RouteRun {
   current?: { lane: Lane; sent: Promise<unknown>; answered: boolean; token: object }
 }
 
-/** The top document's handle (`scriptIn`): its script is the adapter's, whatever the attachment. */
+/**
+ * The top document's handle (`scriptIn`): its script runs in the adapter's world whatever the
+ * attachment (where it runs), but its answer stands only under the epoch its call was queued under
+ * (ruling 2026-11-20 #12, `topScript`).
+ */
 const TOP_FRAME = Object.freeze({}) as unknown as ScriptFrame
 
 /** Thrown inside a hit test that was dropped meanwhile: nothing after it may run. */
@@ -863,7 +879,8 @@ export class PageInputRouter implements ChildFrameObserver {
       const toTop = (rect: unknown): FrameRect | undefined => rectToTop(models, rect)
       if (route.lane === this.page) {
         release()
-        return { value: await this.topScript(code(route.x, route.y)), frame: TOP_FRAME, toTop }
+        const top = await this.topScript(code(route.x, route.y), callEpoch)
+        return top ? { value: top.value, frame: TOP_FRAME, toTop } : undefined
       }
       // ROUTE_TIMEOUT_MS: a press waits for its hit test HIT_TIMEOUT_MS (select-hit.ts) and then
       // goes behind this call, so a frame that does not answer holds the queue at most two route
@@ -884,8 +901,8 @@ export class PageInputRouter implements ChildFrameObserver {
    */
   scriptIn(frame: ScriptFrame, code: string, epoch?: number): Promise<unknown> {
     return this.script(async () => {
-      if (frame === TOP_FRAME) return this.topScript(code)
       const callEpoch = this.epoch
+      if (frame === TOP_FRAME) return (await this.topScript(code, callEpoch))?.value
       const lane = this.scriptFrames.get(frame)
       if (!lane || !this.open(lane)) return undefined
       const ran = await this.bounded((run) => this.evaluate(lane, code, run), STEP_TIMEOUT_MS)
@@ -907,7 +924,7 @@ export class PageInputRouter implements ChildFrameObserver {
       // No cross-site frame: the top document, no protocol command (as before frames had scripts).
       if (!this.hasChildren(this.page)) {
         release()
-        return this.topScript(code)
+        return (await this.topScript(code, callEpoch))?.value
       }
       const ran = await this.bounded(async (run) => {
         const lane = await this.focusedLane(run)
@@ -919,7 +936,7 @@ export class PageInputRouter implements ChildFrameObserver {
       if (!ran || callEpoch !== this.epoch) return undefined
       if (!ran.top) return ran.value
       release()
-      return this.topScript(code)
+      return (await this.topScript(code, callEpoch))?.value
     }, 'route', epoch)
   }
 
@@ -927,20 +944,26 @@ export class PageInputRouter implements ChildFrameObserver {
   private script<T>(run: (release: () => void) => Promise<T>, blocking: boolean | 'route', epoch: number | undefined): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (this.ended(epoch)) return void reject(new InputDroppedError())
-      if (!this.push({ kind: 'call', run, resolve: (v) => resolve(v as T), reject, blocking, epoch: this.epoch })) reject(new Error('webview: input queue full'))
+      if (!this.push({ kind: 'call', run, resolve: (v) => resolve(v as T), reject, blocking, script: true, epoch: this.epoch })) {
+        reject(new Error('webview: input queue full'))
+      }
       void this.pump()
     })
   }
 
-  /** The top document's script (the adapter's isolated world); undefined without one. */
-  private topScript(code: string): Promise<unknown> {
+  /**
+   * The top document's script (the adapter's isolated world): `{ value }`, or undefined without a
+   * runner or when the attachment changed while it ran (ruling 2026-11-20 #12: a value resolves only
+   * under the epoch its call was queued under, `callEpoch`, every road; fuzz seed 65: a top run
+   * answered, the renderer went, and the old page's value reached the caller under the new epoch).
+   * The run itself is not undone (it went to the adapter, whatever the attachment); only its answer
+   * is dropped. A rejection still rejects (the caller's script drops it).
+   */
+  private async topScript(code: string, callEpoch: number): Promise<{ value: unknown } | undefined> {
     const run = this.deps.isolated
-    if (!run) return Promise.resolve(undefined)
-    try {
-      return Promise.resolve(run(code))
-    } catch (err) {
-      return Promise.reject(err)
-    }
+    if (!run) return undefined
+    const value = await run(code)
+    return callEpoch === this.epoch ? { value } : undefined
   }
 
   /** A handle for `lane` (`scriptIn`): a new one each time, bound to the Lane object (never its session id). */
@@ -1138,6 +1161,14 @@ export class PageInputRouter implements ChildFrameObserver {
    * answer, or a detach, calls `pump` again. The check is made at the top of each turn with no wait
    * between it and the return, so a wake that came while a step ran (and found the pump busy) is
    * seen there (review finding: a lost wakeup left a key queued with nothing to restart it).
+   *
+   * The road is read at the top of every turn and never carried across a wait (ruling 2026-11-20
+   * #13): every await in the loop is followed by `continue`, so the attached and the detached road
+   * are picked again from `attached()` (and the stalls, and the head of the queue) before the next
+   * step. Fuzz seeds 1042, 16720, 4016: a reattach while the detached branch waited for a call sent
+   * the next step by the detached road while attached (a focus walk without its hold, a press
+   * hit-tested mid-walk, a move lost); seeds 10114, 17723, 34454: a detach while the attached branch
+   * waited sent the next key or press on the protocol, which refused it.
    */
   private async pump(): Promise<void> {
     if (this.pumping) {
@@ -1151,7 +1182,10 @@ export class PageInputRouter implements ChildFrameObserver {
           // The detached road owes an answer past its deadline: everything waits, in order (by the
           // cap), until it settles or the renderer goes (either pumps again).
           if (this.detachedStall) return
-          if (this.callAhead() && (await this.callHeld())) return
+          if (this.callAhead()) {
+            if (await this.callHeld()) return
+            continue
+          }
           // The protocol went: what waits goes by the roads of a detached view, in order. A text, an
           // edit command or a blocking call answers later (an IPC of its own), so what comes after it
           // waits for that answer, STEP_TIMEOUT_MS at most, as for a command on the protocol.
@@ -1164,7 +1198,10 @@ export class PageInputRouter implements ChildFrameObserver {
           this.queue = this.queue.filter((s) => !isMove(s))
           return
         }
-        if (this.callAhead() && (await this.callHeld())) return
+        if (this.callAhead()) {
+          if (await this.callHeld()) return
+          continue
+        }
         const step = this.queue.shift()
         if (!step) return
         let end: StepEnd = 'done'
@@ -1193,14 +1230,18 @@ export class PageInputRouter implements ChildFrameObserver {
     return this.callOut !== undefined && this.queue[0]?.kind === 'call'
   }
 
-  /** Checked synchronously first (`callAhead`): a pump turn with no wait shifts its step at once. */
+  /**
+   * Checked synchronously first (`callAhead`): a pump turn with no wait shifts its step at once.
+   * True: the call on its way is late (the pump stops; its settle pumps again). False: it settled or
+   * went late while awaited, and the pump turns again from the top (ruling #13: the road, a reset, a
+   * stall are all read anew), where `callAhead` looks at it once more.
+   */
   private async callHeld(): Promise<boolean> {
     const out = this.callOut
     if (this.queue[0]?.kind !== 'call' || !out) return false
     if (out.late) return true
     await out.due
-    // Settled or late now; the pump's own checks (a reset, a stall) come first again, then this one.
-    return this.callHeld()
+    return false
   }
 
   /** A step of an attachment that went (`lost`): nothing of it is sent; a text's, command's or call's caller hears it. */
@@ -1665,7 +1706,12 @@ export class PageInputRouter implements ChildFrameObserver {
     } catch (err) {
       pending = Promise.reject(err)
     }
-    pending.then(step.resolve, step.reject)
+    // A script's value is handed over only under the epoch its step was queued under (ruling 2026-11-20
+    // #12), checked here, synchronously as it is handed over: the script's own checks after each await
+    // come microtasks earlier (its async function's return and this `then` are hops of their own), and
+    // a reset or the renderer going in that gap (fuzz seed 23: a top run's answer, then a reset) handed
+    // the old page's value over under the new epoch. A rejection goes as it is.
+    pending.then((v) => step.resolve(step.script && step.epoch !== this.epoch ? undefined : v), step.reject)
     pending.then(release, release)
     this.callOut = out
     const timer = this.timers.set(() => {
