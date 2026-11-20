@@ -1,8 +1,7 @@
 # Overlays in every view (guests included)
 
-Status: decided (Oleg, 2026-11-20, §8); revised after three independent reviews (codex sol/high: 12 findings, then 5
-still open and 6 new, then 1 blocker on main-routed file opens; all taken, D-4 settled the provenance scope). Next: a
-plan. Builds on design-web.md §5.4 (an html overlay's
+Status: implemented (plan `docs/plans/20261120-overlay-views.md`); decided (Oleg, 2026-11-20, §8); revised after three independent reviews (codex sol/high: 12 findings, then 5
+still open and 6 new, then 1 blocker on main-routed file opens; all taken, D-4 settled the provenance scope). Builds on design-web.md §5.4 (an html overlay's
 page in one view, Take over) and design-guests.md §9 and §16.3 (the `overlays.*` row: "a guest never holds an html
 overlay"), which this reverses for `perView` overlays; design-guests.md gets a pointer here.
 

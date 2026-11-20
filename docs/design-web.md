@@ -356,6 +356,9 @@ Claude tab); the tabs that attach brings are announced to the other views as `ta
 
 ### 5.4 Overlays and settings pages
 
+Take over below is only for plugins that do not opt in (`overlays.perView`): a `perView` plugin's html overlay loads one
+copy in every view, owner's and guests' (docs/design-overlay-views.md).
+
 - **Terminal overlays** are shared, as tabs are (§5.2), and their answer is first-wins (§5.1).
 - **HTML overlays are held by one view.** Main has one `pageReady` flag and one outbox per overlay
   (`overlay-manager.ts:345,721`), and plugins treat the page as one (the reviewer posts `init` once, `host.js:763`,

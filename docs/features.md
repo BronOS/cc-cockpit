@@ -287,6 +287,11 @@ behind it are in [design.md](design.md).
   with the old value struck through in red and the new one on green) on a light "paper" page under the app-themed
   header, in a frame that runs no script and loads nothing from the web; an **Original | Reader** switch sits above
   the document, and the caller hears each switch (Gmail remembers it per sender).
+  The Reviewer's window shows on every screen of yours and on shown guests' screens (see "Web access" › "Guests"). Its
+  notes are shared across the screens: they appear live everywhere, each note keeps its author (a guest's invite name;
+  yours has none), write guests add and edit notes, read-only guests see them and cannot edit. Discuss sends the shared
+  set and then deletes only the notes it sent unchanged (and the general note only if unchanged); a note added or edited
+  meanwhile stays. A read-only guest's Close hides the window for them only.
   The reviewer renders markdown (Rendered / Source switch; the diff first when there is one) and previews images
   (10 MiB) and PDFs (pdf.js, 25 MiB, notes on selected text by page).
 - A built-in editor plugin (`cockpit.editor`, on by default, ships with the app): Edit (Files, a review) opens the file
@@ -722,7 +727,7 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   data and give themselves lasting access (a new device, an SSH key). Kicking ends their session, not what they ran.
   Invite only someone you would hand your unlocked laptop.
 - *Plugins:* hidden from guests by default, bundled ones included. Each plugin's card in Settings › Plugins has a
-  **Guests** choice (Hidden, Shown app-wide) with what showing it gives read-only and write guests; a project overrides
+  **Guests** choice (Hidden, Shown app-wide) with what showing it gives read-only and write guests; it also says whether the plugin's windows (overlays) reach guests; a project overrides
   it in its own settings page. Showing a plugin is done in the cockpit window on the host (a desktop host's browser
   may only hide one; in server mode your browser may show one behind the armed confirm). A plugin that checks who is
   looking (Files and Editor do) limits what guests see and do: Files and Editor refuse a read-only guest any change and
@@ -735,6 +740,16 @@ notices, approvals that are yours. Design and reasons: [design-guests.md](design
   what the plugin pushes to its panels, slots and tabs, and nothing they click or type reaches it, so a page that asks
   for its state first shows them nothing (Usage stays blank for a read-only guest until its numbers change); a write
   guest uses it like you.
+- *Plugin windows (overlays):* a plugin that opts in (`overlays.perView`; the Reviewer does) and is shown to guests
+  shows its windows on their screens too, each guest with its own live copy. A read-only guest sees the window and
+  cannot act in it; its ✕ hides the window for that guest only (it stays hidden for them until the window is gone). A
+  write guest can act in it, for instance add Reviewer notes, and its ✕ closes the window for everyone, you included.
+  A plugin that does not opt in shows guests "Open on <your name>'s screen. <Plugin> does not show its windows to
+  guests."; Settings › Plugins says which case a shown plugin is. What another plugin opens in a shown plugin (a mail
+  Gmail opens in the Reviewer) reaches guests only when that plugin is shown to them too. This follows what plugins ask
+  each other to show: if a shown plugin fetches a hidden plugin's data itself and displays it as its own, a guest sees
+  it, as with panels. Terminal windows from a shared tab are shown as before; windows from `ccc overlay --html` stay on
+  your screens.
 - *The guest list:* the Live chip (with the number of guests here now) opens it: each guest's name, role, tabs, when
   their access ends, whether they are here, away or offline, the tab they look at and whether they are typing.
   **Read-only** / **Write** switches the role (the guest's page reconnects under the new role): Write first asks "Let
@@ -1426,12 +1441,14 @@ so the wrapper's target is gone once the app quits (it then exits 0 silently, as
   keyboards on one machine would; there is no turn-taking. When the last keys in a tab came from another place, its
   terminal shows "Typed last on <device>" (the browser's device name, or "Desktop"); never for your own typing, so
   never with web access off.
-- An html overlay's page (a plugin's page, `ccc overlay --html`) and a plugin's settings page are open in one place at
-  a time: where the overlay was opened (the place whose click opened it, else the desktop), or where the settings page
-  was opened last. The other places show "Open on <device> — Take over"; Take over loads the page there anew (as a
-  reload: whatever the page had typed but not sent is lost) and the other place shows the note instead. When a browser
-  holding an overlay's page leaves (or reconnects), the page goes back to the desktop. When the place holding a settings
-  page closes it, a place showing the note loads it.
+- A plugin's html overlay (a window such as the Reviewer's) shows on every screen of yours at once, desktop and
+  browsers, each with its own live copy, when the plugin opts in (`overlays.perView`, the Reviewer does); no Take over.
+  A plugin that does not opt in, and `ccc overlay --html`, keep one page in one place: where the overlay was opened (the
+  place whose click opened it, else the desktop). The other places show "Open on <device> — Take over"; Take over loads
+  the page there anew (as a reload: whatever the page had typed but not sent is lost) and the other place shows the note
+  instead. When a browser holding such a page leaves (or reconnects), the page goes back to the desktop. A plugin's
+  settings page is open in one place at a time too: where it was opened last; when that place closes it, a place showing
+  the note loads it. A link clicked in an overlay opens on the screen it was clicked on.
 - Some things only the desktop can do. In a browser, a link a page or plugin asks to open (`openExternal`, the update
   notice's release link) opens in a new tab at once when it follows the person's click by a few seconds at most, and
   otherwise shows as a notice to click (a browser blocks a tab nobody clicked for); the host's own browser is not opened. Showing a file in the file

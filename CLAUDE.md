@@ -439,6 +439,24 @@ passes on macOS (2026-11-19) and has not run on Linux.
 - Plugin guest visibility (design.md §5 "Guests"): hidden by default, bundled included, one resolver
   (`shared/guest-access.ts`) for main and the Plugins page; a plugin learns `access` from main's port tag only; read
   guests of a plugin that is not `guests.aware` get one-way ports (D-17). Bundled plugins adopt it through the public API.
+- Overlay copies and `via` (design-overlay-views.md): a plugin that declares `overlays.perView` gets one page per view of an
+  html overlay, not a holder. Main's copies map (`main/overlays/overlay-manager.ts`) mints each copy id and binds it to
+  the view main bound; every page call for a copy (`ready`, `loaded`, `message`, `result`, `release`) carries it and is
+  accepted only from that view while the copy is live (a replaced copy's traffic is dropped), and the router branches on
+  `OverlayManager.isPerView`, never on a payload's `copy`. Owner views always get a copy (never server mode's hidden page:
+  the shell checks `window.info.hiddenPage` too); a guest is admitted by `mayConnectCopy` (`main/web/guest-wiring.ts`,
+  `mayConnectCopyOf` over `overlayVisibleOf`), read live on every connect, message and growth, and a read guest of a
+  plugin that is not `guests.aware` gets a one-way copy. `origin.via` (every plugin an overlay was opened or filled for)
+  only grows, from main's own bound caller chain, `handle.addSources` and `requestedBy`, and only narrows: a guest sees
+  the overlay only when the opener and every `via` plugin are visible to it, and a growth releases that guest's copies
+  before the triggering post is delivered; an unreadable source fails closed. Release and hide are separate:
+  `overlays.release { copy }` only lets go (unmount, reload; every caller), `overlays.release { hide: true }` is a read
+  guest's ✕ (recorded per guest id, `PerViewState.hiddenFrom`, for the overlay's life, refused for the owner and a write
+  guest, who `overlays.close` for everyone). A plugin's `from` (`{ view, access, person? }`) is filled by main and parsed
+  in one place (`host/ctx/views.ts` `viewFromOf`); an author such as a note's comes from `from.person`, never the page.
+  Guest rows: `overlays.ready`, `.loaded`, `.message`, `.release` are `read` with the overlay target and refuse a
+  non-`perView` overlay, `.close`, `.result` stay `write`, `.take` `no`; the events `overlays.message`, `.hide`,
+  `.reload` reach a guest for its own copies only (`ownCopyEvent`, `guest-events.ts`).
 - Guest e2e (`test/e2e/guest-fixtures.ts`): a spec makes a guest with `__ccTest.guestInvite` (the invite dialog's own
   service, `GuestStore.invite`; only a hand-test spec drives the dialog), redeems it as the page does and holds a raw socket
   that records frames, the close code and its time ("no further frame" and "within 1 s" need a client that does not

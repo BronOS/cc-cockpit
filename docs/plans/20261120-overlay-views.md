@@ -450,15 +450,15 @@ External review: sol / high
   `docs/design-overlay-views.md` (status), `CLAUDE.md`, `examples/plugin/sdk/types.ts`
 - Modify: the guide drift tests if they list members (`test/unit/cli-guide.test.ts`)
 
-- [ ] features.md: overlays in every view (owner screens and guests), the Reviewer's shared notes and authors, what a
+- [x] features.md: overlays in every view (owner screens and guests), the Reviewer's shared notes and authors, what a
   read and a write guest can do in an overlay, D-4's rule and its scope limit (Guests and the Reviewer entries)
-- [ ] design-guests.md §9 and the §16.3 `overlays.*` row: a pointer to design-overlay-views.md; design-web.md §5.4: Take
+- [x] design-guests.md §9 and the §16.3 `overlays.*` row: a pointer to design-overlay-views.md; design-web.md §5.4: Take
   over only for non-`perView` plugins
-- [ ] guide `api.md`: `perView`, `onConnect`/`onDisconnect`, `from` and `copy`, `post { copy }`, `hide`, `addSources`
+- [x] guide `api.md`: `perView`, `onConnect`/`onDisconnect`, `from` and `copy`, `post { copy }`, `hide`, `addSources`
   and the provider rule, `ctx.services.callers()`, `ctx.openExternal(url, { view })`, `requestedBy`
-- [ ] CLAUDE.md: one implementation-pattern bullet for overlay copies and `via`
-- [ ] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; `npm run build:example`
-- [ ] run tests (drift tests included) - must pass before task 13
+- [x] CLAUDE.md: one implementation-pattern bullet for overlay copies and `via`
+- [x] `cp src/sdk/types.ts examples/plugin/sdk/types.ts`; `npm run build:example`
+- [x] run tests (drift tests included) - must pass before task 13
 
 ### Task 13: e2e: owner screens and guests on the Reviewer [model: sonnet]
 

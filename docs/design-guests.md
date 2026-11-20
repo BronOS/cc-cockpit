@@ -177,7 +177,8 @@ holds it.
   guests are left out of the "every live view declined" count.
 - Downloads go to the guest's own device: write guests may use Files' Download and accept `ccc download` offers started
   from a shared tab, on any host; read guests never **[D-23]**.
-- Terminal and HTML overlays: shown to a guest only when a `ccc` call from a shared tab or a visible plugin opened them
+- Terminal and HTML overlays (HTML overlays of a plugin that opts in with `overlays.perView` are also shown, one copy
+  per view, by docs/design-overlay-views.md, which reverses "a guest never holds an html overlay" for them): shown to a guest only when a `ccc` call from a shared tab or a visible plugin opened them
   (the open carries its origin, `CliCall.tabId` or the plugin; §18 item 16).
 - Discuss: write guests only, from a visible plugin's overlay, into a shared tab, through the send gate.
 - Quick chat and Ask Claude (the owner's account and quota): never for read guests; allowed for write guests
@@ -430,7 +431,7 @@ Every existing channel (inv = invoke, ev = event). Filters: **T** only tabs in s
 | `overlays.data` ev | yes | — | pass iff `overlayVisible` |
 | `overlays.ack` | yes | read, overlay | — |
 | `overlays.input`, `overlays.resize`, `overlays.close`, `overlays.result`, `overlays.button`, `overlays.discuss` | yes | write, overlay | — |
-| `overlays.message` (both), `overlays.ready`, `overlays.loaded`, `overlays.take` | yes | no | drop (**DECIDED HERE**: a guest never holds an html overlay; it sees the "Open on <device>" note) |
+| `overlays.message` (both), `overlays.ready`, `overlays.loaded`, `overlays.take` | yes | no | drop (**DECIDED HERE**: a guest never holds an html overlay; it sees the "Open on <device>" note; **revised for `perView` overlays**: `ready`, `loaded`, `message` and `release` are guest `read` on a copy of its own, see docs/design-overlay-views.md §5) |
 | `overlays.bounds`, `webviews.placement` | no | no | — |
 | `webviews.current`, `webviews.place` | adapted | read, panel | — |
 | `webviews.step`, `fit`, `input`, `insertText`, `selectChoose` | adapted | write, panel | — |

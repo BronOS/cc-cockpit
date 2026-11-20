@@ -262,6 +262,12 @@ with full Node access.
   `start`, `post` and `setButtons` (the caller chain, `ctx.services.callers()`); for content you show later,
   keep `ctx.services.callers()` from the live call, or a file open's `requestedBy` (`ctx.files.onOpen`), and
   call `addSources` with it before you post that content.
+  A plugin that shows other plugins' content in a window (a viewer service) must do this: a guest of a plugin
+  shown to guests would otherwise see what a hidden plugin asked it to show. Data you fetch from another plugin and
+  show as your own is not followed. Declare `"overlays": { "perView": true }` in `plugin.json` first (`plugins` topic).
+  An older app has no `ctx.services.callers` and sends no `requestedBy`: check `typeof ctx.services.callers ===
+  'function'`; and it ignores `{ view }` on `ctx.openExternal`, so a `perView` plugin needs the app version that
+  has `perView` anyway.
 - `ctx.overlay.buttons(typeName, provider)`: add buttons to every overlay of that `type` in the
   window, whoever opened it. `provider(info)` gets `{ type: { name, data }, title, opener }` and
   answers up to 4 buttons, each with a `run(info, from)`; it is asked when such an overlay opens, after
