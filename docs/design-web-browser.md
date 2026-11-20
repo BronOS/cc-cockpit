@@ -284,7 +284,16 @@ the fallback when the protocol detached:
   owed changes nothing. The renderer going (`render-process-gone`, `destroyed`, or the main frame's `did-navigate`
   into another process) is a full reset as well: after a crash and a reload the old renderer's commands never answer
   and the debugger stays attached (Electron, 2026-11-19), so only that lets input reach the new page. A page that spins
-  forever commits no reload or navigation at all (Chromium's own; main would have to kill its renderer, backlog). The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
+  forever commits no reload and no same-site navigation (Chromium's own: the old renderer must run its unload first;
+  a cross-site one commits into another process by itself), so the
+  adapter watches main's own reload, load, back and forward (`hung-navigation.ts`): one not ended after 3 s while the
+  page answers no probe within 2 s (main's isolated-world script, on the call road below) gets the renderer SIGKILLed
+  (`renderer-kill.ts`: the pid read when the navigation started, only if still the page's) and goes again once it is
+  gone, one kill per navigation, with an in-page notice to the window's browsers; that `render-process-gone` is not the
+  manager's `gone`, so the view, its viewers and its history stay. SIGKILL, never `forcefullyCrashRenderer`: on a Linux
+  host that pipes cores to systemd-coredump a crash sits in `do_exit` 40 s and more before `render-process-gone`, and a
+  navigation sent meanwhile never commits (a SIGKILL ends even a dump in progress). A crash with no navigation after it
+  still holds its input that long (backlog). The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
   selection read; every isolated-world script main runs for the page goes this way) is one at a time too, attached or not: the next call waits for the one on its way, and past its
   deadline holds what follows it until it settles or the renderer goes (that stall is the renderer's too). A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
   only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken

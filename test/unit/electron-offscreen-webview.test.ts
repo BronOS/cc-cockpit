@@ -131,9 +131,17 @@ class FakeWebContents extends FakeEmitter {
     this.calls.push('redo')
   }
   selection: unknown = 'picked'
+  /** The hung-page watchdog's probe (`1`) never answers: a page whose script never yields. */
+  spinning = false
   executeJavaScriptInIsolatedWorld(world: number, scripts: Array<{ code: string }>): Promise<unknown> {
     this.calls.push(`world ${world} ${scripts.length}`)
+    if (this.spinning && scripts[0]?.code === '1') return new Promise(() => {})
     return Promise.resolve(this.selection)
+  }
+  /** The renderer's OS process (renderer-kill.ts reads it; 0 once there is none). */
+  osPid = 4242
+  getOSProcessId(): number {
+    return this.osPid
   }
   reload(): void {
     this.calls.push('reload')
@@ -252,6 +260,7 @@ const { isOffscreenWindow, OffscreenWebviewFactory, OFFSCREEN_INITIAL_SIZE, OFFS
 )
 const { ElectronWebviewFactory } = await import('../../src/main/webview/electron-webview')
 const { CHILD_SETUP_TIMEOUT_MS, PRINT_DISABLED_SOURCE } = await import('../../src/main/webview/webview-hardening')
+const { COMMIT_WAIT_MS, PROBE_WAIT_MS } = await import('../../src/main/webview/hung-navigation')
 
 function events(over: Partial<WebviewEvents> = {}): WebviewEvents & { log: string[] } {
   const log: string[] = []
@@ -953,5 +962,160 @@ describe('OffscreenWebviewFactory', () => {
     b.destroy()
     factory.destroyAll()
     expect(winB.destroyCount).toBe(1)
+  })
+})
+
+// The hung-page watchdog (hung-navigation.ts) as the adapter wires it: main's own reload, load, back
+// and forward are watched; a stalled one on a page that answers no probe gets its renderer SIGKILLed
+// (renderer-kill.ts), the kill's `render-process-gone` stays the adapter's (the view and its viewers
+// stay), and the same navigation goes again once the renderer is gone.
+describe('OffscreenWebviewFactory: the hung-page watchdog', () => {
+  const HANG = COMMIT_WAIT_MS + PROBE_WAIT_MS
+  const killed: Array<[number, unknown]> = []
+  beforeEach(() => {
+    killed.length = 0
+    vi.useFakeTimers()
+    vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      killed.push([pid, signal])
+      return true
+    })
+    return () => {
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+    }
+  })
+
+  it('kills a spinning page\'s renderer when a reload stalls, keeps the view, reloads again and tells the viewers', async () => {
+    const restarted: string[] = []
+    const { view, wc, ev } = make(events({ restarted: () => void restarted.push('restarted') }))
+    wc.spinning = true
+    wc.calls.length = 0
+    view.reload()
+    await vi.advanceTimersByTimeAsync(HANG - 1)
+    expect(killed).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(killed).toEqual([[4242, 'SIGKILL']])
+    // The renderer goes: that is the watchdog's, never the manager's gone (it would drop the view).
+    wc.osPid = 0
+    wc.emit('render-process-gone', {}, { reason: 'killed' })
+    expect(ev.log).not.toContain('gone')
+    expect(restarted).toEqual(['restarted'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(wc.calls.filter((c) => c === 'reload')).toEqual(['reload', 'reload'])
+    // One kill per navigation: the retry is not watched.
+    await vi.advanceTimersByTimeAsync(HANG * 3)
+    expect(killed).toHaveLength(1)
+    // A crash later is the manager's again.
+    wc.emit('render-process-gone', {}, { reason: 'crashed' })
+    expect(ev.log).toContain('gone')
+  })
+
+  it('a load it killed settles as the retried load does, not with the kill\'s ERR_FAILED', async () => {
+    const { view, wc } = make()
+    wc.spinning = true
+    let fail!: (err: unknown) => void
+    wc.nextLoad = () => new Promise<void>((_resolve, reject) => (fail = reject))
+    const outcome = view.load('https://ok/next')
+    let settled: string | undefined
+    outcome.then(
+      () => (settled = 'resolved'),
+      (err: unknown) => (settled = `rejected ${String(err)}`)
+    )
+    await vi.advanceTimersByTimeAsync(HANG)
+    expect(killed).toEqual([[4242, 'SIGKILL']])
+    // As Electron does: the killed navigation's promise rejects before `render-process-gone`.
+    wc.nextLoad = () => Promise.resolve()
+    fail(Object.assign(new Error('ERR_FAILED (-2) loading'), { code: 'ERR_FAILED', errno: -2 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBeUndefined()
+    wc.emit('render-process-gone', {}, { reason: 'killed' })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(settled).toBe('resolved')
+    expect(wc.calls.filter((c) => c.startsWith('load '))).toEqual(['load https://ok/next', 'load https://ok/next'])
+  })
+
+  // Codex review: a load B started after the kill's gone but before the retry's turn stands; the
+  // retry of the killed load A would overwrite it.
+  it('a load started between the kill\'s gone and the retry stands, and the killed load is not retried', async () => {
+    const { view, wc } = make()
+    wc.spinning = true
+    let fail!: (err: unknown) => void
+    wc.nextLoad = () => new Promise<void>((_resolve, reject) => (fail = reject))
+    const a = view.load('https://ok/A')
+    let aSettled: string | undefined
+    a.then(
+      () => (aSettled = 'resolved'),
+      () => (aSettled = 'rejected')
+    )
+    await vi.advanceTimersByTimeAsync(HANG)
+    expect(killed).toEqual([[4242, 'SIGKILL']])
+    wc.nextLoad = () => Promise.resolve()
+    fail(Object.assign(new Error('ERR_FAILED (-2) loading'), { code: 'ERR_FAILED', errno: -2 }))
+    wc.osPid = 0
+    wc.emit('render-process-gone', {}, { reason: 'killed' })
+    // In the same turn, before the retry's: the person's (or a plugin's) next load.
+    void view.load('https://ok/B')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(wc.calls.filter((c) => c.startsWith('load '))).toEqual(['load https://ok/A', 'load https://ok/B'])
+    // A settles as superseded (resolved, as an ERR_ABORTED load does), not with the kill's error.
+    expect(aSettled).toBe('resolved')
+  })
+
+  it('kills nothing for a page that answers, for a navigation that committed, or with no renderer', async () => {
+    const { view, wc } = make()
+    // Answers: a slow navigation on a live page.
+    view.reload()
+    await vi.advanceTimersByTimeAsync(HANG * 4)
+    // Committed.
+    wc.spinning = true
+    view.reload()
+    await vi.advanceTimersByTimeAsync(COMMIT_WAIT_MS - 1)
+    wc.emit('did-navigate')
+    await vi.advanceTimersByTimeAsync(HANG * 2)
+    // No renderer when it started (one already gone, as the input check's own kill leaves it).
+    wc.osPid = 0
+    view.reload()
+    await vi.advanceTimersByTimeAsync(HANG * 2)
+    expect(killed).toEqual([])
+  })
+
+  it('never signals a renderer other than the one the navigation started on', async () => {
+    const { view, wc, ev } = make()
+    wc.spinning = true
+    view.reload()
+    // Replaced in between without an event this test sends (the read right before the kill sees it).
+    wc.osPid = 5000
+    await vi.advanceTimersByTimeAsync(HANG)
+    expect(killed).toEqual([])
+    wc.emit('render-process-gone', {}, { reason: 'crashed' })
+    expect(ev.log).toContain('gone')
+  })
+
+  it('back and forward are watched only when there is history to go to', async () => {
+    const { view, wc } = make()
+    wc.spinning = true
+    wc.canBack = false
+    view.back()
+    view.forward()
+    await vi.advanceTimersByTimeAsync(HANG * 2)
+    expect(killed).toEqual([])
+    wc.canBack = true
+    view.back()
+    await vi.advanceTimersByTimeAsync(HANG)
+    expect(killed).toEqual([[4242, 'SIGKILL']])
+    wc.emit('render-process-gone', {}, { reason: 'killed' })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(wc.calls.filter((c) => c === 'back')).toEqual(['back', 'back'])
+  })
+
+  it('destroy with a kill out: the page\'s `destroyed` is the manager\'s gone, and no timer is left', async () => {
+    const { view, wc, ev } = make()
+    wc.spinning = true
+    view.reload()
+    await vi.advanceTimersByTimeAsync(HANG)
+    expect(killed).toHaveLength(1)
+    view.destroy()
+    expect(ev.log).toContain('gone')
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

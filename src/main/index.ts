@@ -1494,6 +1494,11 @@ function start(server: boolean): void {
     // manager's (webview-manager.ts, top of the file).
     server,
     partitionClosed: (partition) => previewBudgets.drop(partition),
+    // Server mode: a streamed page that answered nothing while a reload or navigation waited was
+    // killed and loaded again (hung-navigation.ts). An in-page notice in the window's browsers, in
+    // main's own words only: no plugin name (a guest may not be shown the plugin; core notices carry
+    // no plugin text), never the page's title or URL. Window-wide: notices have no per-view target.
+    pageRestarted: (owner) => showNotification('A page stopped answering, so cc-cockpit restarted it.', 'cc-cockpit', owner.windowId),
     // A page's window.open, for the view's window (no browser view asked: a page did). `page`: the
     // browsers show it as a notice to click and never open it at once, as the page's open is no
     // click of the person's (open-external.ts OpenExtra).
