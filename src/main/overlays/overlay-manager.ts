@@ -26,6 +26,14 @@
 // leaving (back to the desktop), reload the page as a desktop reload does: `pageReady` false, the
 // loader back, the opener's posts queued again until the new page's port is up.
 //
+// Per-view copies (docs/design-overlay-views.md §5): an html overlay whose opener's manifest says
+// `overlays.perView` has no holder. Every view that may see it loads its own copy of the page, each
+// with a main-minted copy id (`connectCopy`), its own ready flag, loader and outbox, and the opener
+// hears each copy come and go (OverlayChannel.onConnect / onDisconnect) and may post to one copy or to
+// all. Everything a page then says for its copy names the id and is accepted only from that copy's
+// view while it is that view's live copy, so a reloaded page's late traffic never lands on its
+// successor. Take over, `heldBy` and `waiting` are the holder model's and never apply to these.
+//
 // Server mode (design-web.md §9.8): the desktop view is the hidden page nobody looks at, so it never
 // holds a page (every browser would show "Open on Desktop — Take over" with nobody there to answer).
 // With no browser origin the holder is the window's last-acting browser view, else its first live
@@ -75,6 +83,7 @@ import { PLUGIN_SCHEME, pluginFileUrl } from '../plugins/plugin-protocol'
 import { exitStatus, type PtyBackend } from '../pty/pty-backend'
 import { composeDiscuss, deliverDiscuss, discussContextOf, discussTargetProblem, DiscussSessionBudget, type DiscussGuest } from './discuss'
 import { PtyService } from '../pty/pty-service'
+import { CONNECT_WINDOW_MS, MAX_CONNECTS_PER_PANEL } from '../plugins/panel-ports'
 import { isPersonInput, stripQueryReplies } from '../sessions/terminal-reports'
 import type { SendOrigin } from '../sessions/status-reducer'
 import { desktopViewId, isRemoteViewId, type ViewId } from '../../shared/views'
@@ -212,6 +221,43 @@ export interface OverlayManagerOptions {
    * page to a guest's view.
    */
   ownerView(viewId: ViewId): boolean
+  /**
+   * Whether a view that is not the owner's may load a copy of this `perView` overlay (a guest's, by
+   * design-overlay-views.md §4: the opener and every plugin it was opened for visible to it, its port
+   * not `none`). Owner views never ask: they always may (D-1). Absent: no guest view ever gets a copy
+   * (fail closed, as for `ownerView`).
+   */
+  mayConnectCopy?(windowId: number, overlayId: string, viewId: ViewId): boolean
+  /**
+   * Main dropped a copy for its view (its queue overflowed, see `deliverToCopy`): that view's shell
+   * reloads the page, which connects again as a new copy. Absent: the copy is only dropped, and the
+   * view's page stays as it is until it reconnects by itself.
+   */
+  reloadCopy?(viewId: ViewId, windowId: number, overlayId: string, copy: string): void
+}
+
+/** What `start` / `open` know about the opener beyond the spec (main's own, never the spec's). */
+export interface OverlayStartOptions {
+  /**
+   * The opening plugin's manifest says `overlays.perView` (host-api reads it, never the spec): an html
+   * overlay gets per-view copies instead of one holder. Ignored for the other kinds.
+   */
+  perView?: boolean
+}
+
+/** Why `connectCopy` refused (the shell retries `cap` later; the others are final for that view). */
+export type CopyRefusal = 'unknown' | 'not-per-view' | 'hidden-page' | 'not-allowed' | 'cap'
+
+/** A copy as `copyState` / `copies` show it (no outbox). */
+export interface CopyState {
+  copy: string
+  view: ViewId
+  /** The opener's first post addressed to it went out: it gets broadcasts from then on. */
+  joined: boolean
+  /** Its page's port is up: posts go straight out instead of waiting in its outbox. */
+  ready: boolean
+  /** Its loader went (its port for `ready: 'load'`, its page's `ccPanel.ready()` for `manual`). */
+  loaded: boolean
 }
 
 /**
@@ -363,7 +409,19 @@ export interface OverlayChannel {
    * the remote view whose page posted it (main's own id, never the page's word), absent for the
    * desktop's; the opener runs its listeners in it (origin-view.ts), a hint for where they act.
    */
-  onMessage(message: unknown, view?: ViewId): void
+  onMessage(message: unknown, view?: ViewId, copy?: string): void
+  /**
+   * `perView` overlays: a view's copy connected (`connectCopy`), with the id main minted for it and its
+   * view (main's own, the desktop's included). The opener answers with its starting state, a post
+   * addressed to that copy, which is also what joins it to broadcasts.
+   */
+  onConnect?(copy: string, view: ViewId): void
+  /**
+   * `perView` overlays: a copy is gone (released by its shell, replaced by its view's next connect, its
+   * view gone, or dropped by main for an overflowing queue). Called after it left the copies map, so a
+   * post to it from inside the listener is already dropped. Not called when the overlay itself ends.
+   */
+  onDisconnect?(copy: string, view: ViewId): void
   /**
    * A click on one of the opener's own buttons (any kind of overlay): settles when its handlers
    * have. Absent: the opener cannot hear clicks, and they are refused. `view` as for onMessage: the
@@ -483,6 +541,33 @@ interface Overlay {
   discussPrimary?: boolean
   /** A Send is under way: a second one is refused until it ends. */
   discussing: boolean
+  /** Set for a `perView` html overlay (OverlayStartOptions): its copies replace holder, pageReady and outbox. */
+  perView?: PerViewState
+}
+
+/** One view's copy of a `perView` overlay's page (CopyState, plus its queue). */
+interface OverlayCopy {
+  id: string
+  view: ViewId
+  /**
+   * In the copies map. Set false in the same step that takes it out, so a caller still holding the
+   * record from before a release (a fan-out's snapshot, a listener that released it) delivers nothing.
+   */
+  live: boolean
+  joined: boolean
+  ready: boolean
+  loaded: boolean
+  /** Posts while its port is not up, with today's bounds (OverlayOutbox); drained at `copyReady`. */
+  outbox: OverlayOutbox
+}
+
+interface PerViewState {
+  /** copy id -> copy; at most one per view (a view's next connect replaces its previous copy). */
+  copies: Map<string, OverlayCopy>
+  /** Recent connect times per view (the panel ports' cap, panel-ports.ts withinCap). */
+  connects: Map<ViewId, { times: number[]; logged: boolean }>
+  /** A release naming no live copy of that view was logged: once per overlay, so a loop is one line. */
+  staleLogged: boolean
 }
 
 /** A click's key in `running`. */
@@ -557,10 +642,11 @@ export class OverlayManager {
     channel?: OverlayChannel,
     pluginId?: string,
     view?: ViewId,
-    origin?: OverlayOrigin
+    origin?: OverlayOrigin,
+    options?: OverlayStartOptions
   ): Promise<OverlayResult> {
     try {
-      return this.start(windowId, spec, opener, peerGone, channel, pluginId, view, origin)
+      return this.start(windowId, spec, opener, peerGone, channel, pluginId, view, origin, options)
     } catch (err) {
       return Promise.reject(toError(err))
     }
@@ -579,6 +665,9 @@ export class OverlayManager {
    * `view` is the view the opening action came from (HostApi.originOf: a live remote view of THIS
    * window, checked by the caller): an html overlay's page opens there. Absent, or not a remote
    * view's id: the window's desktop view, or in server mode a browser's (see the top of the file).
+   *
+   * `options.perView` (the opener's manifest, host-api's word, never the spec's): an html overlay gets
+   * per-view copies (`connectCopy`) instead of a holder, and `view` only says where the open came from.
    */
   start(
     windowId: number,
@@ -588,7 +677,8 @@ export class OverlayManager {
     channel?: OverlayChannel,
     pluginId?: string,
     view?: ViewId,
-    origin?: OverlayOrigin
+    origin?: OverlayOrigin,
+    options?: OverlayStartOptions
   ): Promise<OverlayResult> {
     const parsed = parseOverlaySpec(spec)
     // By main's own flag, before anything is created (whoever opens it: the CLI, a plugin, a menu).
@@ -635,7 +725,14 @@ export class OverlayManager {
     // Discuss shows for a typed overlay from the start; an onDiscuss handler adds it later.
     overlay.info = withDiscuss(overlay.info, overlay)
     if (parsed.kind === 'html' && 'html' in parsed) overlay.html = parsed.html
-    if (parsed.kind === 'html') {
+    if (parsed.kind === 'html' && options?.perView === true) {
+      // No holder: each view's copy has its own loader (copyState), so the window-wide one never shows,
+      // and nothing here may stamp `heldBy` or `waiting` (no view is "the" page's, D-1).
+      overlay.perView = { copies: new Map(), connects: new Map(), staleLogged: false }
+      const info = { ...overlay.info, perView: true as const }
+      delete info.loading
+      overlay.info = info
+    } else if (parsed.kind === 'html') {
       const origin =
         view !== undefined && isRemoteViewId(view) && (this.options.isViewLive?.(view, windowId) ?? true) && this.ownerView(view) ? view : undefined
       // Server mode: never the hidden page; no browser at all leaves it waiting (holder undefined).
@@ -728,7 +825,8 @@ export class OverlayManager {
     // Never a guest's view (design-guests §9): a guest listing the stack never picks up a waiting page.
     if (this.options.server === true && isRemoteViewId(viewId) && this.ownerView(viewId)) {
       for (const o of stack) {
-        if (o.info.kind !== 'html' || o.holder !== undefined) continue
+        // A perView overlay has no holder by design, not one waiting for a browser: never held.
+        if (o.info.kind !== 'html' || o.holder !== undefined || o.perView) continue
         this.hold(o, viewId)
         this.log(`overlay ${o.id}: its waiting page went to view ${viewId}`)
         taken = true
@@ -752,6 +850,9 @@ export class OverlayManager {
   take(windowId: number, viewId: ViewId, overlayId: string): boolean {
     const overlay = this.find(windowId, overlayId)
     if (overlay?.info.kind !== 'html') return false
+    // D-1: every owner view has its own copy already, so there is nothing to take. Thrown (not false,
+    // which reads as "gone") so a stale shell that still offers the button shows why.
+    if (overlay.perView) throw new Error('overlay: take over is not offered for an overlay shown in every view')
     // Server mode: the hidden page never holds a page (nothing there asks; refused all the same).
     if (this.options.server === true && !isRemoteViewId(viewId)) return false
     // A guest never takes a page over (design-guests §9): its posts carry the opener's data.
@@ -770,6 +871,11 @@ export class OverlayManager {
    * mode they go to another browser of the window instead, else wait for the first to list them.
    */
   viewGone(viewId: ViewId): void {
+    // Its copies of perView overlays go first, whatever the view (the opener hears each disconnect).
+    for (const overlay of [...this.byId.values()]) {
+      if (!overlay.perView) continue
+      for (const copy of [...overlay.perView.copies.values()]) if (copy.view === viewId) this.dropCopy(overlay, copy)
+    }
     // A desktop view goes with its window (whose overlays close with it): only its hidden mark here.
     if (!isRemoteViewId(viewId)) {
       this.sizes.forgetHidden(viewId)
@@ -834,7 +940,8 @@ export class OverlayManager {
    */
   private held(windowId: number, overlayId: string, viewId: ViewId): Overlay | undefined {
     const overlay = this.find(windowId, overlayId)
-    return overlay?.info.kind === 'html' && overlay.holder === viewId ? overlay : undefined
+    // A perView overlay has no holder: its pages speak through their copies (copyReady and the rest).
+    return overlay?.info.kind === 'html' && !overlay.perView && overlay.holder === viewId ? overlay : undefined
   }
 
   /** An opener's post to its page: to the holding view only, when the shell can address one. */
@@ -1029,16 +1136,9 @@ export class OverlayManager {
   result(windowId: number, overlayId: string, value: unknown, viewId: ViewId = desktopViewId(windowId)): boolean {
     const overlay = this.held(windowId, overlayId, viewId)
     if (!overlay) return false
-    let json: string | undefined
-    try {
-      json = JSON.stringify(value)
-    } catch {
-      return false
-    }
-    // `undefined` (or a function) has no JSON form: the page posted "nothing", which is null.
-    json ??= 'null'
-    if (json.length > MAX_RESULT_BYTES) return false
-    this.finish(overlay, { kind: 'value', value: JSON.parse(json) as unknown })
+    const clean = resultValue(value)
+    if (!clean) return false
+    this.finish(overlay, { kind: 'value', value: clean.value })
     return true
   }
 
@@ -1048,13 +1148,34 @@ export class OverlayManager {
    * is gone, of another window, or opened without a channel (only the opener holds the id, and
    * HostApi looks it up by its own plugin and handle). Throws for a message over the limit or a
    * full queue.
+   *
+   * A `perView` overlay (docs/design-overlay-views.md §5): with `copy`, to that copy only (false when
+   * it is gone: dropped, as a post to a gone copy is), and that first addressed post joins it to
+   * broadcasts; without `copy`, to every live copy that has joined. A copy that has not had its
+   * starting state yet gets no broadcast, not even queued: its starting state, sent after every earlier
+   * broadcast by the host's in-order listeners, already reflects them. A full queue never throws here
+   * (one slow copy must not fail the post for every other view): that copy is dropped and reloaded.
+   * `copy` on an overlay that is not perView names nothing: dropped.
    */
-  post(windowId: number, overlayId: string, text: string): boolean {
+  post(windowId: number, overlayId: string, text: string, options?: { copy?: string }): boolean {
     const overlay = this.find(windowId, overlayId)
     if (!overlay?.channel || overlay.info.kind !== 'html') return false
     if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       throw new RangeError(`overlay post: message exceeds ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
     }
+    const target = options?.copy
+    if (overlay.perView) {
+      if (target !== undefined) {
+        const copy = typeof target === 'string' ? overlay.perView.copies.get(target) : undefined
+        if (!copy) return false
+        copy.joined = true
+        return this.deliverToCopy(overlay, copy, text)
+      }
+      // A snapshot: an overflow below drops a copy from the map mid-walk.
+      for (const copy of [...overlay.perView.copies.values()]) if (copy.joined) this.deliverToCopy(overlay, copy, text)
+      return true
+    }
+    if (target !== undefined) return false
     if (overlay.pageReady) this.toPage(overlay, text)
     else overlay.outbox.push(text)
     return true
@@ -1111,6 +1232,236 @@ export class OverlayManager {
     } catch (err) {
       this.log(`overlay ${overlay.id}: delivering a page message failed: ${String(err)}`)
     }
+    return true
+  }
+
+  /**
+   * A view's page of a `perView` overlay connected (docs/design-overlay-views.md §5): main mints the
+   * copy's id (128 random bits, never reused) and the opener hears `onConnect`. `viewId` is the view
+   * main resolved for the caller, never a payload's. A view has one copy per overlay: its previous one
+   * (a reload, a reconnect) is released first, its disconnect before this connect. Refused for an
+   * unknown overlay or one that is not perView, server mode's hidden page (nobody looks at it, and its
+   * copy would run the page's code and take the opener's posts for nobody), a view that is not a live
+   * view of this window, a view that may not see the overlay (owner views always may, D-1; any other
+   * only by `mayConnectCopy`), and past the connect cap (`cap`: the shell tries again later).
+   */
+  connectCopy(windowId: number, overlayId: string, viewId: ViewId): { ok: true; copy: string } | { ok: false; reason: CopyRefusal } {
+    const overlay = this.find(windowId, overlayId)
+    if (!overlay) return { ok: false, reason: 'unknown' }
+    if (!overlay.perView) return { ok: false, reason: 'not-per-view' }
+    if (this.options.server === true && !isRemoteViewId(viewId)) return { ok: false, reason: 'hidden-page' }
+    // The router binds the caller to its window; checked again here so no other path can hand a copy
+    // to another window's view or to a browser that left during the caller's awaits.
+    const ofWindow = isRemoteViewId(viewId) ? (this.options.isViewLive?.(viewId, windowId) ?? true) : viewId === desktopViewId(windowId)
+    if (!ofWindow) return { ok: false, reason: 'not-allowed' }
+    if (!this.ownerView(viewId) && this.options.mayConnectCopy?.(windowId, overlay.id, viewId) !== true) {
+      return { ok: false, reason: 'not-allowed' }
+    }
+    if (!this.withinCopyCap(overlay, overlay.perView, viewId)) return { ok: false, reason: 'cap' }
+    for (const old of [...overlay.perView.copies.values()]) if (old.view === viewId) this.dropCopy(overlay, old)
+    const copy: OverlayCopy = {
+      id: randomBytes(16).toString('hex'),
+      view: viewId,
+      live: true,
+      joined: false,
+      ready: false,
+      loaded: false,
+      outbox: new OverlayOutbox()
+    }
+    overlay.perView.copies.set(copy.id, copy)
+    try {
+      overlay.channel?.onConnect?.(copy.id, viewId)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: the opener's onConnect failed: ${String(err)}`)
+    }
+    return { ok: true, copy: copy.id }
+  }
+
+  /**
+   * The shell let go of a copy (its page unmounted or reloads, a read guest hid it): the opener hears
+   * its disconnect. True when it was `viewId`'s live copy; anything else (gone, replaced, another
+   * view's, made up) is a no-op, logged once per overlay so a looping page is one line.
+   */
+  releaseCopy(windowId: number, overlayId: string, viewId: ViewId, copy: unknown): boolean {
+    const found = this.liveCopy(windowId, overlayId, viewId, copy)
+    if (found) {
+      this.dropCopy(found.overlay, found.copy)
+      return true
+    }
+    const perView = this.find(windowId, overlayId)?.perView
+    if (perView && !perView.staleLogged) {
+      perView.staleLogged = true
+      this.log(`overlay ${String(overlayId)}: a release named no live copy of view ${viewId}; dropped (logged once)`)
+    }
+    return false
+  }
+
+  /**
+   * A copy's page has its port: what was queued for it goes out, in order, and later posts go straight
+   * out. For a `ready: 'load'` overlay its loader goes too (a `manual` page says so itself, copyLoaded).
+   * Dropped (false) unless `copy` is `viewId`'s live copy of this overlay.
+   */
+  copyReady(windowId: number, overlayId: string, viewId: ViewId, copy: unknown): boolean {
+    const found = this.liveCopy(windowId, overlayId, viewId, copy)
+    if (!found) return false
+    const { overlay, copy: c } = found
+    if (overlay.ready === 'load') c.loaded = true
+    c.ready = true
+    // deliverToCopy sends now (ready); one that fails drops the copy and the rest finds it dead.
+    for (const message of c.outbox.drain()) this.deliverToCopy(overlay, c, message)
+    return true
+  }
+
+  /**
+   * A copy's page says it has drawn (`ccPanel.ready()`): that copy's loader goes, no other's (a guest's
+   * page never clears the owner's loader). Dropped (false) unless it is `viewId`'s live copy.
+   */
+  copyLoaded(windowId: number, overlayId: string, viewId: ViewId, copy: unknown): boolean {
+    const found = this.liveCopy(windowId, overlayId, viewId, copy)
+    if (!found) return false
+    found.copy.loaded = true
+    return true
+  }
+
+  /**
+   * A copy's page posted a message that is not a result: to the opener's channel with the copy's id,
+   * as pageMessage does for a holder (`view` only for a remote view, the onMessage convention). Dropped
+   * silently (false) unless `copy` is `viewId`'s live copy, so a replaced page is never heard as its
+   * successor; text that is not JSON within the limit is dropped and logged.
+   */
+  copyMessage(windowId: number, overlayId: string, viewId: ViewId, copy: unknown, text: unknown): boolean {
+    const found = this.liveCopy(windowId, overlayId, viewId, copy)
+    if (!found?.overlay.channel) return false
+    const { overlay } = found
+    if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
+      this.log(`overlay ${overlay.id}: dropped a page message: not a JSON string of at most ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
+      return false
+    }
+    let message: unknown
+    try {
+      message = JSON.parse(text)
+    } catch {
+      this.log(`overlay ${overlay.id}: dropped a page message: not JSON`)
+      return false
+    }
+    try {
+      overlay.channel?.onMessage(message, isRemoteViewId(viewId) ? viewId : undefined, found.copy.id)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: delivering a page message failed: ${String(err)}`)
+    }
+    return true
+  }
+
+  /**
+   * A copy's page posted its result: the overlay ends with it, for every view, as `result` does for a
+   * holder. Dropped (false) unless `copy` is `viewId`'s live copy, or for a value that is not JSON or
+   * too large. Owner views only (design-overlay-views.md §5 "✕ and results"): a guest's copy exists once
+   * mayConnectCopy admits it, and the value settles the opener, so a wiring that forgot the router's rule
+   * must still not let a guest choose it (a read guest's becomes a hide in its shell, a write guest's a
+   * plain close, both decided before this).
+   */
+  copyResult(windowId: number, overlayId: string, viewId: ViewId, copy: unknown, value: unknown): boolean {
+    const found = this.liveCopy(windowId, overlayId, viewId, copy)
+    if (!found || !this.ownerView(viewId)) return false
+    const clean = resultValue(value)
+    if (!clean) return false
+    this.finish(found.overlay, { kind: 'value', value: clean.value })
+    return true
+  }
+
+  /** `viewId`'s live copy `copy` of a perView overlay as it stands (its loader, ready, joined), else undefined. */
+  copyState(windowId: number, overlayId: string, viewId: ViewId, copy: unknown): CopyState | undefined {
+    const found = this.liveCopy(windowId, overlayId, viewId, copy)
+    return found ? stateOf(found.copy) : undefined
+  }
+
+  /** Every live copy of a perView overlay (empty for an unknown overlay or one that is not perView). */
+  copies(windowId: number, overlayId: string): CopyState[] {
+    return [...(this.find(windowId, overlayId)?.perView?.copies.values() ?? [])].map(stateOf)
+  }
+
+  /** The perView overlay's copy `copy` if it is `viewId`'s and live (the one binding rule, §5 "Copy binding"). */
+  private liveCopy(windowId: number, overlayId: unknown, viewId: ViewId, copy: unknown): { overlay: Overlay; copy: OverlayCopy } | undefined {
+    if (typeof copy !== 'string') return undefined
+    const overlay = this.find(windowId, overlayId)
+    const c = overlay?.perView?.copies.get(copy)
+    if (!overlay || !c?.live || c.view !== viewId) return undefined
+    return { overlay, copy: c }
+  }
+
+  /**
+   * Take a copy out (map first, `live` false, queue dropped) and then tell the opener, so a post from
+   * inside its onDisconnect already finds the copy gone. No-op for a copy already out.
+   */
+  private dropCopy(overlay: Overlay, copy: OverlayCopy): void {
+    if (!copy.live || overlay.perView?.copies.get(copy.id) !== copy) return
+    overlay.perView.copies.delete(copy.id)
+    copy.live = false
+    copy.outbox.drain()
+    try {
+      overlay.channel?.onDisconnect?.(copy.id, copy.view)
+    } catch (err) {
+      this.log(`overlay ${overlay.id}: the opener's onDisconnect failed: ${String(err)}`)
+    }
+  }
+
+  /**
+   * One message for one copy: out now when its port is up, else into its outbox. Never throws. A full
+   * outbox (a page that never comes up while the opener keeps posting) drops that copy and has its view
+   * reload the page as a new copy, whose starting state comes from the opener's onConnect again; the
+   * other copies are untouched. A ready copy whose view cannot take the event (it dropped, viewGone not
+   * run yet) is dropped too: unlike a holder's, its queue would never be drained again (copyReady comes
+   * only once per copy), and the view's next page connects as a new copy anyway.
+   */
+  private deliverToCopy(overlay: Overlay, copy: OverlayCopy, text: string): boolean {
+    if (!copy.live) return false
+    if (!copy.ready) {
+      try {
+        copy.outbox.push(text)
+        return true
+      } catch {
+        this.log(`overlay ${overlay.id}: copy ${copy.id} of view ${copy.view} did not come up and its queue is full; reloading it`)
+        this.dropCopy(overlay, copy)
+        try {
+          this.options.reloadCopy?.(copy.view, overlay.windowId, overlay.id, copy.id)
+        } catch (err) {
+          this.log(`overlay ${overlay.id}: asking view ${copy.view} to reload its copy failed: ${String(err)}`)
+        }
+        return false
+      }
+    }
+    const payload = { overlayId: overlay.id, message: text, copy: copy.id }
+    if (this.options.emitToView) {
+      if (this.options.emitToView(copy.view, 'overlays.message', payload)) return true
+      this.dropCopy(overlay, copy)
+      return false
+    }
+    // No per-view addressing (no web access wiring): the window's one page routes it by `copy`.
+    this.options.emit(overlay.windowId, 'overlays.message', payload)
+    return true
+  }
+
+  /**
+   * Count a connect of `viewId` against this overlay's cap (the panel ports' numbers and rule,
+   * panel-ports.ts withinCap): false when over. Per view, so a phone's reload loop does not use up the
+   * desktop's budget; keyed by main's view ids only, and the map goes with the overlay.
+   */
+  private withinCopyCap(overlay: Overlay, perView: PerViewState, viewId: ViewId): boolean {
+    const now = Date.now()
+    for (const [k, v] of perView.connects) if (v.times.every((t) => now - t >= CONNECT_WINDOW_MS)) perView.connects.delete(k)
+    const entry = perView.connects.get(viewId) ?? { times: [], logged: false }
+    entry.times = entry.times.filter((t) => now - t < CONNECT_WINDOW_MS)
+    perView.connects.set(viewId, entry)
+    if (entry.times.length >= MAX_CONNECTS_PER_PANEL) {
+      // Once per burst: a reload loop must not turn into a log line per load.
+      if (!entry.logged) {
+        this.log(`overlay ${overlay.id}: more than ${MAX_CONNECTS_PER_PANEL} copy connects from view ${viewId} in ${CONNECT_WINDOW_MS / 1000} s, refusing`)
+      }
+      entry.logged = true
+      return false
+    }
+    entry.times.push(now)
+    entry.logged = false
     return true
   }
 
@@ -1390,6 +1741,15 @@ export class OverlayManager {
     overlay.unlinkPeer = undefined
     // Posts still waiting for a page that never loaded go nowhere; the opener hears the result.
     overlay.outbox.drain()
+    // Its copies end with it, with no disconnects: the opener's handle ends here and hears the result.
+    if (overlay.perView) {
+      for (const copy of overlay.perView.copies.values()) {
+        copy.live = false
+        copy.outbox.drain()
+      }
+      overlay.perView.copies.clear()
+      overlay.perView.connects.clear()
+    }
     overlay.channel = undefined
     // The host forgets the type buttons' runs (a click still running there finds the overlay gone).
     if (overlay.buttonsKey !== undefined) {
@@ -1460,6 +1820,26 @@ function withDiscuss(
   next.discuss = tabId === undefined ? {} : { tabId }
   if (overlay.discussPrimary) next.discuss.primary = true
   return next
+}
+
+/**
+ * A page's result as the opener gets it: copied through JSON (plain data, at most MAX_RESULT_BYTES),
+ * undefined when it has no JSON form or is too large. `undefined` (or a function) is "nothing": null.
+ */
+function resultValue(value: unknown): { value: unknown } | undefined {
+  let json: string | undefined
+  try {
+    json = JSON.stringify(value)
+  } catch {
+    return undefined
+  }
+  json ??= 'null'
+  if (json.length > MAX_RESULT_BYTES) return undefined
+  return { value: JSON.parse(json) as unknown }
+}
+
+function stateOf(copy: OverlayCopy): CopyState {
+  return { copy: copy.id, view: copy.view, joined: copy.joined, ready: copy.ready, loaded: copy.loaded }
 }
 
 /** The renderer's view of an overlay; an html page stays in main and is served at `src`. */

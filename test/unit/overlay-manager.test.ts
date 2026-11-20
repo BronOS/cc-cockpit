@@ -2470,3 +2470,395 @@ describe('Discuss with Claude (design-next §3.5)', () => {
     expect((await plain.discuss(W1, plain.infos(W1)[0]!.id, { kind: 'new' })).ok).toBe(false)
   })
 })
+
+describe('perView overlays: one copy per view (docs/design-overlay-views.md §5)', () => {
+  const page = { kind: 'html', src: 'cc-plugin://a.one/review.html' }
+  const D = desktopViewId(W1)
+  /** Remote views that left (emitToView false, isViewLive false). */
+  const gone = new Set<string>()
+  /** Views that are a guest's (ownerView false). */
+  const guests = new Set<string>()
+  /** Guest views mayConnectCopy lets through. */
+  const allowed = new Set<string>()
+  /** The channel's calls, in order: what the opener (host-api, Task 3) hears. */
+  let heard: Array<[string, ...unknown[]]>
+  let toView: Array<{ viewId: string; channel: EventChannel; payload: unknown }>
+  let reloads: Array<[string, number, string, string]>
+  beforeEach(() => {
+    gone.clear()
+    guests.clear()
+    allowed.clear()
+    heard = []
+    toView = []
+    reloads = []
+  })
+  function pvManager(opts: { server?: boolean } = {}): OverlayManager {
+    return new OverlayManager({
+      ownerView: (viewId) => !guests.has(viewId),
+      ...opts,
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: <C extends EventChannel>(windowId: number, channel: C, payload: IpcEventMap[C]) => {
+        events.push({ windowId, channel, payload })
+      },
+      emitToView: <C extends EventChannel>(viewId: string, channel: C, payload: IpcEventMap[C]) => {
+        toView.push({ viewId, channel, payload })
+        return !gone.has(viewId)
+      },
+      isViewLive: (viewId) => !gone.has(viewId),
+      mayConnectCopy: (_windowId, _overlayId, viewId) => allowed.has(viewId),
+      reloadCopy: (viewId, windowId, overlayId, copy) => reloads.push([viewId, windowId, overlayId, copy]),
+      deviceOf: () => 'Device',
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+  }
+  const channel: OverlayChannel = {
+    onMessage: (message, view, copy) => heard.push(['message', message, view, copy]),
+    onConnect: (copy, view) => heard.push(['connect', copy, view]),
+    onDisconnect: (copy, view) => heard.push(['disconnect', copy, view])
+  }
+  function openPv(m: OverlayManager, perView = true): { result: Promise<OverlayResult>; id: string } {
+    const result = m.open(W1, page, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView })
+    return { result, id: m.infos(W1).at(-1)!.id }
+  }
+  function connect(m: OverlayManager, id: string, view: string): string {
+    const r = m.connectCopy(W1, id, view)
+    if (!r.ok) throw new Error(`connect refused: ${r.reason}`)
+    return r.copy
+  }
+  /** The messages each view got, as [view, copy, message]. */
+  const sent = (): Array<[string, string | undefined, string]> =>
+    toView
+      .filter((e) => e.channel === 'overlays.message')
+      .map((e) => {
+        const p = e.payload as { message: string; copy?: string }
+        return [e.viewId, p.copy, p.message]
+      })
+
+  it('info says perView, with no holder, no waiting and no window-wide loader', () => {
+    const m = pvManager()
+    openPv(m)
+    const info = m.infos(W1)[0]!
+    expect(info.perView).toBe(true)
+    expect(info).not.toHaveProperty('heldBy')
+    expect(info).not.toHaveProperty('waiting')
+    expect(info).not.toHaveProperty('loading')
+    // Opened from a browser it is still nobody's page.
+    void m.open(W1, page, 'plugin a.one', undefined, channel, 'a.one', 'web:1', undefined, { perView: true })
+    expect(m.infos(W1)[1]).not.toHaveProperty('heldBy')
+    // The flag is for html only; a terminal overlay ignores it.
+    void m.open(W1, terminal(['sleep', '9']), 'test', undefined, undefined, undefined, undefined, undefined, { perView: true })
+    expect(m.infos(W1)[2]).not.toHaveProperty('perView')
+  })
+
+  it('connect, release and viewGone fire connect and disconnect in order; copy ids are 128-bit hex', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const a = connect(m, id, D)
+    const b = connect(m, id, 'web:1')
+    expect(a).toMatch(/^[0-9a-f]{32}$/)
+    expect(b).not.toBe(a)
+    expect(m.copies(W1, id).map((c) => c.view)).toEqual([D, 'web:1'])
+    expect(m.releaseCopy(W1, id, D, a)).toBe(true)
+    m.viewGone('web:1')
+    expect(heard).toEqual([
+      ['connect', a, D],
+      ['connect', b, 'web:1'],
+      ['disconnect', a, D],
+      ['disconnect', b, 'web:1']
+    ])
+    expect(m.copies(W1, id)).toEqual([])
+    // The overlay itself stays open for the next view.
+    expect(m.infos(W1)).toHaveLength(1)
+  })
+
+  it("a view's reconnect replaces its copy: disconnect of the old one, then connect of the new", () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const first = connect(m, id, 'web:1')
+    const other = connect(m, id, 'web:2')
+    const second = connect(m, id, 'web:1')
+    expect(second).not.toBe(first)
+    expect(heard.slice(2)).toEqual([
+      ['disconnect', first, 'web:1'],
+      ['connect', second, 'web:1']
+    ])
+    expect(m.copies(W1, id).map((c) => c.copy).sort()).toEqual([other, second].sort())
+  })
+
+  it("server mode: the hidden page never gets a copy; a browser does", () => {
+    const m = pvManager({ server: true })
+    const { id } = openPv(m)
+    expect(m.connectCopy(W1, id, D)).toEqual({ ok: false, reason: 'hidden-page' })
+    expect(connect(m, id, 'web:1')).toMatch(/^[0-9a-f]{32}$/)
+    // Listing the stack never makes a browser "hold" it.
+    m.list(W1, 'web:1')
+    expect(m.infos(W1)[0]).not.toHaveProperty('heldBy')
+    expect(m.infos(W1)[0]).not.toHaveProperty('waiting')
+    expect(heard.map((h) => h[0])).toEqual(['connect'])
+  })
+
+  it('a guest view connects only when mayConnectCopy says so; owner views always may', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    guests.add('web:7')
+    expect(m.connectCopy(W1, id, 'web:7')).toEqual({ ok: false, reason: 'not-allowed' })
+    allowed.add('web:7')
+    const guestCopy = m.connectCopy(W1, id, 'web:7')
+    expect(guestCopy.ok).toBe(true)
+    // A guest's copy talks, but its result never settles the opener (owner views only).
+    if (guestCopy.ok) expect(m.copyResult(W1, id, 'web:7', guestCopy.copy, { pick: 1 })).toBe(false)
+    expect(m.infos(W1)).toHaveLength(1)
+    // Fail closed: with no mayConnectCopy wired, a guest gets nothing.
+    const bare = new OverlayManager({
+      ownerView: (viewId) => viewId !== 'web:7',
+      backend,
+      views,
+      isWindowOpen: () => true,
+      env: () => ({}),
+      emit: () => {},
+      commandForChord: () => undefined,
+      log: () => {}
+    })
+    void bare.open(W1, page, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView: true })
+    const bareId = bare.infos(W1)[0]!.id
+    expect(bare.connectCopy(W1, bareId, 'web:7')).toEqual({ ok: false, reason: 'not-allowed' })
+    expect(bare.connectCopy(W1, bareId, 'web:1').ok).toBe(true)
+  })
+
+  it('refuses unknown overlays, non-perView ones, another window and a gone browser', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const { id: plain } = openPv(m, false)
+    expect(m.connectCopy(W1, 'nope', D)).toEqual({ ok: false, reason: 'unknown' })
+    expect(m.connectCopy(W2, id, desktopViewId(W2))).toEqual({ ok: false, reason: 'unknown' })
+    expect(m.connectCopy(W1, plain, D)).toEqual({ ok: false, reason: 'not-per-view' })
+    expect(m.connectCopy(W1, id, desktopViewId(W2))).toEqual({ ok: false, reason: 'not-allowed' })
+    gone.add('web:3')
+    expect(m.connectCopy(W1, id, 'web:3')).toEqual({ ok: false, reason: 'not-allowed' })
+    expect(heard).toEqual([])
+  })
+
+  it("a stale copy's loaded, ready, message and result are dropped and never touch its successor", async () => {
+    const m = pvManager()
+    const { id, result } = openPv(m)
+    const r = track(result)
+    const old = connect(m, id, 'web:1')
+    const next = connect(m, id, 'web:1')
+    expect(m.copyReady(W1, id, 'web:1', old)).toBe(false)
+    expect(m.copyLoaded(W1, id, 'web:1', old)).toBe(false)
+    expect(m.copyMessage(W1, id, 'web:1', old, '"late"')).toBe(false)
+    expect(m.copyResult(W1, id, 'web:1', old, 1)).toBe(false)
+    expect(m.copyState(W1, id, 'web:1', next)).toEqual({ copy: next, view: 'web:1', joined: false, ready: false, loaded: false })
+    // Another view naming a live copy that is not its own is dropped the same way.
+    expect(m.copyMessage(W1, id, 'web:2', next, '"forged"')).toBe(false)
+    expect(m.copyResult(W1, id, D, next, 1)).toBe(false)
+    expect(m.copyState(W1, id, 'web:2', next)).toBeUndefined()
+    expect(m.releaseCopy(W1, id, 'web:2', next)).toBe(false)
+    expect(m.releaseCopy(W1, id, 'web:1', old)).toBe(false)
+    expect(m.releaseCopy(W1, id, 'web:1', 42)).toBe(false)
+    expect(heard.filter((h) => h[0] === 'message')).toEqual([])
+    // The live copy's own traffic counts.
+    expect(m.copyMessage(W1, id, 'web:1', next, '{"a":1}')).toBe(true)
+    expect(heard.at(-1)).toEqual(['message', { a: 1 }, 'web:1', next])
+    expect(m.copyMessage(W1, id, D, connect(m, id, D), '"desk"')).toBe(true)
+    // The desktop is no remote view: absent, as for a holder's message.
+    expect(heard.at(-1)?.slice(0, 3)).toEqual(['message', 'desk', undefined])
+    expect(m.copyResult(W1, id, 'web:1', next, { ok: true })).toBe(true)
+    await flush()
+    expect(r.results).toEqual([{ kind: 'value', value: { ok: true } }])
+    expect(m.infos(W1)).toEqual([])
+  })
+
+  it('the holder paths never act on a perView overlay', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const copy = connect(m, id, D)
+    expect(m.result(W1, id, 1, D)).toBe(false)
+    expect(m.pageMessage(W1, id, '"x"', D)).toBe(false)
+    m.pageReady(W1, id, D)
+    m.pageLoaded(W1, id, D)
+    expect(m.copyState(W1, id, D, copy)).toMatchObject({ ready: false, loaded: false })
+    expect(m.infos(W1)).toHaveLength(1)
+  })
+
+  it('a broadcast before the first targeted post is neither delivered nor queued; the targeted post joins', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const a = connect(m, id, 'web:1')
+    m.copyReady(W1, id, 'web:1', a)
+    expect(m.post(W1, id, '"early"')).toBe(true)
+    expect(sent()).toEqual([])
+    expect(m.copyState(W1, id, 'web:1', a)?.joined).toBe(false)
+    expect(m.post(W1, id, '"init"', { copy: a })).toBe(true)
+    expect(m.copyState(W1, id, 'web:1', a)?.joined).toBe(true)
+    m.post(W1, id, '"later"')
+    expect(sent()).toEqual([
+      ['web:1', a, '"init"'],
+      ['web:1', a, '"later"']
+    ])
+    // A copy that joined before its port was up: its starting state and later broadcasts wait in its own
+    // queue and go out in order at its ready; the unjoined copy gets nothing.
+    const b = connect(m, id, 'web:2')
+    m.post(W1, id, '"b-init"', { copy: b })
+    m.post(W1, id, '"both"')
+    const c = connect(m, id, D)
+    m.post(W1, id, '"no-c"')
+    expect(sent().slice(2)).toEqual([
+      ['web:1', a, '"both"'],
+      ['web:1', a, '"no-c"']
+    ])
+    m.copyReady(W1, id, 'web:2', b)
+    expect(sent().slice(4)).toEqual([
+      ['web:2', b, '"b-init"'],
+      ['web:2', b, '"both"'],
+      ['web:2', b, '"no-c"']
+    ])
+    m.copyReady(W1, id, D, c)
+    expect(sent()).toHaveLength(7)
+    // Nothing went to the window as a whole.
+    expect(events.filter((e) => e.channel === 'overlays.message')).toEqual([])
+  })
+
+  it('a post to a gone copy is dropped; copy on a plain overlay names nothing', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const a = connect(m, id, 'web:1')
+    m.releaseCopy(W1, id, 'web:1', a)
+    expect(m.post(W1, id, '"x"', { copy: a })).toBe(false)
+    expect(m.post(W1, id, '"x"', { copy: 'made-up' })).toBe(false)
+    expect(sent()).toEqual([])
+    const { id: plain } = openPv(m, false)
+    expect(m.post(W1, plain, '"x"', { copy: a })).toBe(false)
+    // An oversized message is still the opener's own error.
+    expect(() => m.post(W1, id, 'x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH + 1))).toThrow(RangeError)
+  })
+
+  it("an overflowing copy is dropped and reloaded alone; the post still succeeds for the others and never throws", () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const slow = connect(m, id, 'web:1')
+    const fast = connect(m, id, 'web:2')
+    m.copyReady(W1, id, 'web:2', fast)
+    m.post(W1, id, '"s"', { copy: slow })
+    m.post(W1, id, '"f"', { copy: fast })
+    // The slow copy's queue fills (its starting state plus 99 broadcasts), the next broadcast overflows it.
+    for (let i = 0; i < MAX_QUEUED_OVERLAY_MESSAGES - 1; i++) expect(m.post(W1, id, `${i}`)).toBe(true)
+    expect(reloads).toEqual([])
+    expect(() => m.post(W1, id, '"over"')).not.toThrow()
+    expect(reloads).toEqual([['web:1', W1, id, slow]])
+    expect(heard.at(-1)).toEqual(['disconnect', slow, 'web:1'])
+    expect(m.copies(W1, id).map((c) => c.copy)).toEqual([fast])
+    // The fast copy got every one of them, the last included.
+    expect(sent().filter(([v]) => v === 'web:2')).toHaveLength(MAX_QUEUED_OVERLAY_MESSAGES + 1)
+    expect(sent().at(-1)).toEqual(['web:2', fast, '"over"'])
+    // Its successor starts clean.
+    const again = connect(m, id, 'web:1')
+    m.post(W1, id, '"fresh"', { copy: again })
+    m.copyReady(W1, id, 'web:1', again)
+    expect(sent().at(-1)).toEqual(['web:1', again, '"fresh"'])
+  })
+
+  it("the size bound overflows a copy too, and a targeted post's overflow does not throw", () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const slow = connect(m, id, 'web:1')
+    const big = `"${'x'.repeat(MAX_OVERLAY_MESSAGE_LENGTH - 2)}"`
+    let posted = 0
+    while (posted * big.length <= MAX_QUEUED_OVERLAY_LENGTH) {
+      expect(() => m.post(W1, id, big, { copy: slow })).not.toThrow()
+      posted++
+    }
+    expect(reloads).toEqual([['web:1', W1, id, slow]])
+    expect(m.copies(W1, id)).toEqual([])
+  })
+
+  it('a ready copy whose view dropped (viewGone not run yet) is released, not queued for ever', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const a = connect(m, id, 'web:1')
+    m.copyReady(W1, id, 'web:1', a)
+    m.post(W1, id, '"init"', { copy: a })
+    gone.add('web:1')
+    expect(m.post(W1, id, '"lost"', { copy: a })).toBe(false)
+    expect(heard.at(-1)).toEqual(['disconnect', a, 'web:1'])
+    expect(m.copies(W1, id)).toEqual([])
+    expect(reloads).toEqual([])
+  })
+
+  it('connects per (overlay, view) are capped like panel ports; another view keeps its budget', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    for (let i = 0; i < 10; i++) expect(m.connectCopy(W1, id, 'web:1').ok).toBe(true)
+    expect(m.connectCopy(W1, id, 'web:1')).toEqual({ ok: false, reason: 'cap' })
+    // The refusal released nothing: the view keeps its last copy.
+    expect(m.copies(W1, id).map((c) => c.view)).toEqual(['web:1'])
+    expect(m.connectCopy(W1, id, 'web:2').ok).toBe(true)
+    vi.advanceTimersByTime(10_000)
+    expect(m.connectCopy(W1, id, 'web:1').ok).toBe(true)
+  })
+
+  it('take over is refused for a perView overlay with a clear error; an unknown id still answers false', () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    expect(() => m.take(W1, 'web:1', id)).toThrow(/not offered/)
+    expect(m.take(W1, 'web:1', 'nope')).toBe(false)
+  })
+
+  it("loaded is per copy: one copy's report never clears another's loader, and the info never changes", () => {
+    const m = pvManager()
+    const { id } = openPv(m)
+    const a = connect(m, id, D)
+    const b = connect(m, id, 'web:1')
+    const updates = events.filter((e) => e.channel === 'overlays.updated').length
+    // `ready: 'load'` (the default): a copy's port clears that copy's loader.
+    m.copyReady(W1, id, D, a)
+    expect(m.copyState(W1, id, D, a)).toMatchObject({ ready: true, loaded: true })
+    expect(m.copyState(W1, id, 'web:1', b)).toMatchObject({ ready: false, loaded: false })
+    expect(events.filter((e) => e.channel === 'overlays.updated')).toHaveLength(updates)
+    expect(m.infos(W1)[0]).not.toHaveProperty('loading')
+
+    // `ready: 'manual'`: the port is not the loader; the page's own word is, per copy.
+    void m.open(W1, { ...page, ready: 'manual' }, 'plugin a.one', undefined, channel, 'a.one', undefined, undefined, { perView: true })
+    const manual = m.infos(W1)[1]!.id
+    const c = connect(m, manual, D)
+    const d = connect(m, manual, 'web:1')
+    m.copyReady(W1, manual, D, c)
+    expect(m.copyState(W1, manual, D, c)).toMatchObject({ ready: true, loaded: false })
+    expect(m.copyLoaded(W1, manual, 'web:1', d)).toBe(true)
+    expect(m.copyState(W1, manual, 'web:1', d)?.loaded).toBe(true)
+    expect(m.copyState(W1, manual, D, c)?.loaded).toBe(false)
+  })
+
+  it('the overlay ending (✕) drops its copies with no disconnects', async () => {
+    const m = pvManager()
+    const { id, result } = openPv(m)
+    const r = track(result)
+    const a = connect(m, id, 'web:1')
+    m.post(W1, id, '"queued"', { copy: a })
+    expect(m.close(W1, id)).toBe(true)
+    await flush()
+    expect(r.results).toEqual([{ kind: 'dismissed' }])
+    expect(heard).toEqual([['connect', a, 'web:1']])
+    expect(m.copies(W1, id)).toEqual([])
+    expect(m.copyReady(W1, id, 'web:1', a)).toBe(false)
+    expect(sent()).toEqual([])
+  })
+
+  it('a non-perView overlay keeps one holder alongside a perView one', () => {
+    const m = pvManager()
+    const { id: pv } = openPv(m)
+    const { id: plain } = openPv(m, false)
+    connect(m, pv, 'web:1')
+    expect(m.infos(W1)[1]).not.toHaveProperty('perView')
+    expect(m.infos(W1)[1]?.loading).toBe(true)
+    m.pageReady(W1, plain, D)
+    m.post(W1, plain, '"held"')
+    expect(toView.at(-1)).toEqual({ viewId: D, channel: 'overlays.message', payload: { overlayId: plain, message: '"held"' } })
+    expect(m.take(W1, 'web:1', plain)).toBe(true)
+    expect(m.infos(W1)[1]?.heldBy).toEqual({ viewId: 'web:1', device: 'Device' })
+  })
+})

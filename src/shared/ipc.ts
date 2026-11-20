@@ -1062,6 +1062,13 @@ export type OverlayInfo = OverlayInfoBody & {
    * "the desktop holds it" and the hidden window would run the page's code for nobody.
    */
   waiting?: true
+  /**
+   * The opener's manifest says `overlays.perView` (docs/design-overlay-views.md §5): every view that may
+   * see the overlay loads its own copy of the page, so there is no holder (`heldBy`, `waiting` and Take
+   * over are never set) and `loading` is not shown here: each copy's loader is its own (main keeps it
+   * per copy, OverlayManager.copyState).
+   */
+  perView?: true
 }
 
 /** Request/response pairs for `cockpit.invoke(channel, payload)`. */
@@ -2073,8 +2080,12 @@ export interface IpcEventMap {
   'overlays.updated': OverlayInfo[]
   /** Batched output of a terminal overlay. Ack it with `overlays.ack`. */
   'overlays.data': { overlayId: string; data: string }
-  /** The opener of a plugin's html overlay posted to its page: one JSON text for the page's port. */
-  'overlays.message': { overlayId: string; message: string }
+  /**
+   * The opener of a plugin's html overlay posted to its page: one JSON text for the page's port.
+   * `copy`: a `perView` overlay's copy it is for (main's id, docs/design-overlay-views.md §5); the shell
+   * hands it to that copy's page only, so a replaced copy's late message never reaches its successor.
+   */
+  'overlays.message': { overlayId: string; message: string; copy?: string }
   /** The project's commands changed (a plugin registered or dropped one): replace the key table. */
   'commands.updated': CommandsView
   /**

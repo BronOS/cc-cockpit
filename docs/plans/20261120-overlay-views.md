@@ -119,21 +119,24 @@ External review: sol / high
 - Modify: `src/main/overlays/overlay-manager.ts`
 - Modify: `test/unit/overlay-manager.test.ts`
 
-- [ ] keep the per-overlay `perView` flag (from the opener's manifest, passed by host-api at `start`) and, for `perView`
+- [x] keep the per-overlay `perView` flag (from the opener's manifest, passed by host-api at `start`) and, for `perView`
   overlays, the copies map instead of `holder`/`pageReady`/`outbox`; non-`perView` code paths unchanged
-- [ ] `connect(view)` mints a copy id (refused for server mode's hidden page and for a view not allowed by the caller's
+- [x] `connect(view)` mints a copy id (refused for server mode's hidden page and for a view not allowed by the caller's
   visibility callback); `release(view, copy)`; `viewGone(view)` releases that view's copies; each fires the host's
   connect/disconnect
-- [ ] binding: `loaded`, `message`, `result` accepted only when `copy` belongs to the calling view and is live; stale
+- [x] binding: `loaded`, `message`, `result` accepted only when `copy` belongs to the calling view and is live; stale
   copies dropped silently
-- [ ] fan-out: `post(message, { copy? })`; a copy joins broadcasts with its first targeted post; per-copy outbox while not
+- [x] fan-out: `post(message, { copy? })`; a copy joins broadcasts with its first targeted post; per-copy outbox while not
   ready; overflow drops and reloads that copy only (disconnect + the shell told to reload it); connects capped per
   (overlay, view) per minute
-- [ ] `loaded` clears that copy's loader only; `info` carries `perView: true` and no `heldBy` for `perView` overlays
-- [ ] tests: every transition in the Testing Strategy list, the hidden page refused, a stale copy's traffic dropped,
+- [x] `loaded` clears that copy's loader only; `info` carries `perView: true` and no `heldBy` for `perView` overlays
+- [x] tests: every transition in the Testing Strategy list, the hidden page refused, a stale copy's traffic dropped,
   a broadcast before the first targeted post not delivered, overflow isolation, the connect cap; non-`perView` regression
   cases unchanged
-- [ ] run tests - must pass before task 3
+- [x] run tests - must pass before task 3
+- ⚠️ the connect cap reuses the panel ports' numbers (`MAX_CONNECTS_PER_PANEL` per `CONNECT_WINDOW_MS`: 10 per 10 s), not
+  a per-minute window; `list()` (a renderer reload) does not release that view's copies: the shell's release or its next
+  connect does (Task 8 must release on unmount/reload)
 
 ### Task 3: Channels, router and the caller's view for every overlay call [model: opus]
 
@@ -147,6 +150,13 @@ External review: sol / high
   included (today `:1235`, `:1276` lose it); host-api's RPC events carry `from` `{ view, access, person? }`, with
   `person` = the guest's invite name from main's `GuestStore`, absent for the owner
 - [ ] host-api RPCs for `post { copy? }`, `hide { copy }` (event to that copy's view), connect/disconnect events to the host
+- [ ] ➕ wire Task 2's manager API: `open(..., origin, { perView })` from the opener's manifest; `connectCopy` /
+  `copyReady` (or one `overlays.ready` doing both, answering `{ copy }` or the `CopyRefusal`), `copyLoaded`, `copyMessage`,
+  `copyResult`, `releaseCopy` (all `(windowId, overlayId, view, copy, ...)`), `post(..., { copy })`; the channel's
+  `onConnect(copy, view)` / `onDisconnect(copy, view)` / `onMessage(message, view?, copy)` to the host; the options
+  `mayConnectCopy` (owner views never asked; guests by Task 5) and `reloadCopy(view, windowId, overlayId, copy)`, which
+  needs an event to that view (e.g. `overlays.reload`, with its REMOTE_CLASS / GUEST_EVENT rows) for Task 8's shell. The
+  `overlays.message` event already carries `copy` for a perView overlay; the shell must route by it (Task 8)
 - [ ] tests: an owner browser's Discuss and button carry its view (not the desktop); a guest's carries its `person`;
   `post` to a gone copy is dropped; `hide` reaches only that copy's view
 - [ ] run tests - must pass before task 4
