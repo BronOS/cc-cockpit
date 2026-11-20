@@ -1828,6 +1828,9 @@ describe('rectFromFrame / rectToTop', () => {
 function scripts(s: ReturnType<typeof setup>) {
   const contexts = new Map<string, number>()
   let next = 100
+  /** Each session's document's loader id (`Page.getFrameTree`): a navigation makes a new one. */
+  const loaders = new Map<string, string>()
+  let nextLoader = 0
   const calls: Array<{ method: string; session: string; params: Record<string, unknown> }> = []
   const focus = new Map<string, string>()
   const held = new Map<string, Array<() => void>>()
@@ -1836,7 +1839,14 @@ function scripts(s: ReturnType<typeof setup>) {
     value: (session: string, code: string): unknown => `${session || 'page'}:${code}`,
     throws: new Set<string>(),
     /** Methods held per `${session} ${method}` until `release` (a frame that goes meanwhile). */
-    hold: new Set<string>()
+    hold: new Set<string>(),
+    /** Sessions whose frame tree names no loader id (a malformed or failed read). */
+    noLoader: new Set<string>()
+  }
+  const loaderOf = (session: string): string => {
+    let id = loaders.get(session)
+    if (id === undefined) loaders.set(session, (id = `L${++nextLoader}`))
+    return id
   }
   const contextOf = (session: string): number => {
     let id = contexts.get(session)
@@ -1848,7 +1858,11 @@ function scripts(s: ReturnType<typeof setup>) {
     if (!scriptMethod) return undefined
     calls.push({ method, session, params: p })
     const compute = (): unknown => {
-      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'MAIN' } } }
+      if (method === 'Page.getFrameTree') {
+        const frame = { id: session ? `T-${session}` : 'MAIN', ...(opts.noLoader.has(session) ? {} : { loaderId: loaderOf(session) }) }
+        // A child frame of the same process under the root, as Chromium lists them (never the one asked for).
+        return { frameTree: { frame, childFrames: [{ frame: { id: `same-site-${session}`, loaderId: 'LS' } }] } }
+      }
       if (method === 'Page.createIsolatedWorld') return { executionContextId: contextOf(session) }
       if (method === 'DOM.describeNode') return { node: { nodeName: 'IFRAME', frameId: String(p.objectId).slice('obj-'.length) } }
       if (method === 'Runtime.releaseObjectGroup') return {}
@@ -1881,7 +1895,15 @@ function scripts(s: ReturnType<typeof setup>) {
     focus,
     opts,
     /** The frame's document replaced (a navigation in its process): a new context, the old one refused. */
-    navigate: (session: string) => void contexts.delete(session),
+    navigate: (session: string) => {
+      contexts.delete(session)
+      loaders.delete(session)
+    },
+    /**
+     * The frame's document replaced by a cross-process navigation whose new renderer has a context
+     * under the old id (V8 ids are per process): the old id still answers, only the loader id tells.
+     */
+    swapProcess: (session: string) => void loaders.delete(session),
     release: (key: string) => {
       for (const go of held.get(key)?.splice(0) ?? []) go()
     },
@@ -1912,16 +1934,19 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     expect(hit?.value).toBe('B:hit 30 30')
     const mapped = hit?.toTop({ x: 10, y: 120, width: 150, height: 24 })
     expect(mapped && Object.values(mapped).map((n) => Math.round(n * 1000) / 1000)).toEqual([310, 420, 150, 24])
+    // The bracket: B's loader id read before the world and again after the answer, on B's session.
     expect(sc.calls).toEqual([
+      { method: 'Page.getFrameTree', session: 'B', params: {} },
       { method: 'Page.createIsolatedWorld', session: 'B', params: { frameId: 'T-B', worldName: FRAME_WORLD_NAME, grantUniveralAccess: false } },
-      { method: 'Runtime.evaluate', session: 'B', params: { expression: 'hit 30 30', contextId: 101, returnByValue: true, awaitPromise: false, silent: true } }
+      { method: 'Runtime.evaluate', session: 'B', params: { expression: 'hit 30 30', contextId: 101, returnByValue: true, awaitPromise: false, silent: true } },
+      { method: 'Page.getFrameTree', session: 'B', params: {} }
     ])
     // Never in the top document, no input command.
     expect(s.tops).toEqual([])
     expect(s.page.sent).toEqual([])
     // The answer later, in the same frame (the same world), by its handle.
     await expect(s.router.scriptIn(hit!.frame, 'choose')).resolves.toBe('B:choose')
-    expect(sc.on('B').slice(2)).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    expect(sc.on('B').slice(4)).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate', 'Page.getFrameTree'])
     // A point outside every frame: the top document, at the top point.
     const top = await s.router.scriptAt(620, 20, (x, y) => `hit ${x} ${y}`)
     expect(top?.value).toBe('top:hit 620 20')
@@ -1971,7 +1996,7 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     sc.opts.hold.add('A Runtime.evaluate')
     const gone = s.router.scriptAt(20, 220, () => 'hit')
     await s.flush()
-    expect(sc.on('A')).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    expect(sc.on('A')).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate'])
     s.router.frameDetached('A')
     sc.release('A Runtime.evaluate')
     await expect(gone).resolves.toBeUndefined()
@@ -2033,7 +2058,7 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     await s.flush()
     s.router.input([down(20, 220), up(20, 220)])
     await s.flush()
-    expect(sc.on('A')).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    expect(sc.on('A')).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate'])
     // Two timers now: the call's (set first) and the frame script's. Only the call's fires.
     const ids = [...s.timers.keys()].sort((a, b) => a - b)
     expect(ids).toHaveLength(2)
@@ -2071,11 +2096,11 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     sc.focus.set('', 'T-A')
     sc.focus.set('A', 'T-B')
     await expect(s.router.scriptInFocus('sel')).resolves.toBe('B:sel')
-    expect(sc.on('')).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate', 'DOM.describeNode', 'Runtime.releaseObjectGroup'])
+    expect(sc.on('')).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate', 'DOM.describeNode', 'Runtime.releaseObjectGroup', 'Page.getFrameTree'])
     expect(sc.calls.find((c) => c.session === '' && c.method === 'Page.createIsolatedWorld')?.params).toMatchObject({ frameId: 'MAIN', worldName: FRAME_WORLD_NAME })
     expect(sc.calls.find((c) => c.session === '' && c.method === 'Runtime.evaluate')?.params).toMatchObject({ returnByValue: false, contextId: 101 })
     // B has no cross-site child: no walk there, the read only.
-    expect(sc.on('B')).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    expect(sc.on('B')).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate', 'Page.getFrameTree'])
     // Every evaluation names its isolated context (never the main world).
     expect(sc.calls.filter((c) => c.method === 'Runtime.evaluate').every((c) => typeof c.params.contextId === 'number')).toBe(true)
     expect(s.tops).toEqual([])
@@ -2113,6 +2138,134 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     sc.release('A2 Runtime.evaluate')
     await expect(again).resolves.toBeUndefined()
     expect(s.tops).toEqual([])
+  })
+
+  // codex review 2026-11-20: a frame's session outlives a cross-process navigation of the frame, and
+  // V8 context ids are per process, so the old id can name the new renderer's main world.
+  it("a frame's script is bracketed by its loader id: a new document between the two reads drops it, the same one passes", async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    sc.opts.hold.add('A Runtime.evaluate')
+    const same = s.router.scriptAt(20, 220, () => 'hit')
+    await s.flush()
+    sc.release('A Runtime.evaluate')
+    const hit = await same
+    expect(hit?.value).toBe('A:hit')
+    // The process swapped while the evaluation was on its way: the old context id still answered.
+    const swapped = s.router.scriptAt(20, 220, () => 'hit')
+    await s.flush()
+    sc.swapProcess('A')
+    sc.release('A Runtime.evaluate')
+    await expect(swapped).resolves.toBeUndefined()
+    expect(sc.on('A').slice(-4)).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate', 'Page.getFrameTree'])
+    // The choice, the same way.
+    const choice = s.router.scriptIn(hit!.frame, 'choose')
+    await s.flush()
+    sc.swapProcess('A')
+    sc.release('A Runtime.evaluate')
+    await expect(choice).resolves.toBeUndefined()
+    // A frame tree with no loader id for the frame: dropped, not run.
+    sc.opts.hold.clear()
+    sc.opts.noLoader.add('A')
+    const before = sc.calls.length
+    await expect(s.router.scriptAt(20, 220, () => 'hit')).resolves.toBeUndefined()
+    expect(sc.calls.slice(before).map((c) => c.method)).toEqual(['Page.getFrameTree'])
+    expect(s.tops).toEqual([])
+  })
+
+  it('the focus walk is bracketed too: a new document while its owner was described drops the read, at the top and in a frame', async () => {
+    for (const [session, key] of [
+      ['', ' DOM.describeNode'],
+      ['A', 'A DOM.describeNode']
+    ] as const) {
+      const s = setup()
+      const sc = scripts(s)
+      s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+      s.frame('B', 'A', 9, rect(300, 100, 280, 180), 280, 180)
+      sc.focus.set('', 'T-A')
+      sc.focus.set('A', 'T-B')
+      sc.opts.hold.add(key)
+      const read = s.router.scriptInFocus('sel')
+      await s.flush()
+      sc.swapProcess(session)
+      sc.release(key)
+      await expect(read).resolves.toBeUndefined()
+      expect(sc.on('B')).toEqual([])
+      expect(s.tops).toEqual([])
+      // The same document: the walk goes on down to B.
+      const again = s.router.scriptInFocus('sel')
+      await s.flush()
+      sc.release(key)
+      await expect(again).resolves.toBe('B:sel')
+    }
+    // The page's tree with no loader id: dropped, never the top document.
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    sc.opts.noLoader.add('')
+    await expect(s.router.scriptInFocus('sel')).resolves.toBeUndefined()
+    expect(sc.on('')).toEqual(['Page.getFrameTree'])
+    expect(s.tops).toEqual([])
+  })
+
+  // codex review 2026-11-20: the walk's promise (`bounded`) resolves first and the call's continuation
+  // runs microtasks later; a new attachment in that gap must drop what the old walk found. The gap is
+  // hit by a reset from the bounded deadline's own clear (the walk's end, before the continuation).
+  it('a new attachment between the end of a walk and what the call does with it: dropped, nothing run in the new document', async () => {
+    // `newest`: whether the walk's deadline was set after the call's (scriptAt routes first, then
+    // starts the frame's script) or before it (scriptInFocus starts its walk as the call starts).
+    const cases: Array<{ name: string; newest: boolean; prep: (sc: ReturnType<typeof scripts>) => string; run: (r: PageInputRouter) => Promise<unknown> }> = [
+      // The walk found no focused frame: the top document's run must not go to the new attachment.
+      { name: 'scriptInFocus, top', newest: false, prep: () => ' Runtime.evaluate', run: (r) => r.scriptInFocus('sel') },
+      // The walk read A's selection: the old attachment's answer.
+      {
+        name: 'scriptInFocus, frame',
+        newest: false,
+        prep: (sc) => {
+          sc.focus.set('', 'T-A')
+          return 'A Runtime.evaluate'
+        },
+        run: (r) => r.scriptInFocus('sel')
+      },
+      // A's hit test: no value and no handle of the old attachment's frame.
+      { name: 'scriptAt, frame', newest: true, prep: () => 'A Runtime.evaluate', run: (r) => r.scriptAt(20, 220, () => 'hit') }
+    ]
+    for (const how of ['reset', 'rendererGone'] as const) {
+      for (const c of cases) {
+        const s = setup()
+        const sc = scripts(s)
+        s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+        const key = c.prep(sc)
+        sc.opts.hold.add(key)
+        const epochs: number[] = []
+        s.top.answer = (code) => {
+          epochs.push(s.router.inputEpoch())
+          return Promise.resolve(`top:${code}`)
+        }
+        const result = c.run(s.router)
+        await s.flush()
+        // Two timers: the call's and the walk's own deadline.
+        expect(s.timers.size).toBe(2)
+        const walkTimer = c.newest ? Math.max(...s.timers.keys()) : Math.min(...s.timers.keys())
+        let ended = false
+        const timers = s.timers
+        const clear = timers.delete.bind(timers)
+        timers.delete = (h: number): boolean => {
+          const had = clear(h)
+          if (h === walkTimer && !ended) {
+            ended = true
+            if (how === 'reset') s.router.reset()
+            else s.router.rendererGone()
+          }
+          return had
+        }
+        sc.release(key)
+        await expect(result, `${c.name}, ${how}`).resolves.toBeUndefined()
+        expect(ended, `${c.name}, ${how}`).toBe(true)
+        expect(epochs, `${c.name}, ${how}`).toEqual([])
+      }
+    }
   })
 
   it('a script asked under an attachment that ended is rejected as dropped', async () => {

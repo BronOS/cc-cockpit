@@ -418,10 +418,17 @@ held.
 **In a cross-site (out-of-process) iframe** (2026-11-20): the off-screen view runs main's scripts through its input
 router (`page-input.ts` `scriptAt`, `scriptIn`, `scriptInFocus`). The hit test's document is the one the router's own
 route for that press picks (§4.1's hit test, with capture and a stalled frame's press going to the top, exactly as the
-press itself would go; no second hit test), `hitScript` given the point in that frame's CSS px. In a frame the script
+press itself would go; no second hit test), `hitScript` given the point in that frame's CSS px. A frame that navigates
+between the route's hit test and the script gets the hit script in its replacement document at the same frame-relative
+point; a browser does the same (a press lands in whatever document the frame holds), so this is accepted, not a bug
+(codex review, 2026-11-20). In a frame the script
 runs in an isolated world `Page.createIsolatedWorld` makes on the frame's own DevTools session right before each
 `Runtime.evaluate` with that context id: the same world while the document lives (what the hit keeps there, the
-`WeakRef`, is found by the choice), a fresh one for a new document (the old context id is refused). Never the main
+`WeakRef`, is found by the choice), a fresh one for a new document (the old context id is refused). A frame's session
+survives a cross-process navigation of that frame and V8 context ids are per process, so a stale id could name a
+main-world context in the replacement renderer: each frame run is bracketed by the frame's `loaderId` (`Page.getFrameTree`
+on the same session, read before `Page.createIsolatedWorld` and again after `Runtime.evaluate` answers, the focus
+walk's `DOM.describeNode` inside the bracket), and a change or a failed read drops the result. Never the main
 world, never `Runtime.evaluate` without the context id; the top document keeps `executeJavaScriptInIsolatedWorld` in
 world 1717. The select's rectangle is mapped back to the top page through the owner boxes that route read (the four
 corners through each content quad, deepest first, their bounding box: a rotated or scaled frame's select gets the box
@@ -432,7 +439,11 @@ gone, replaced or owing an answer chooses nothing, never in another document. Th
 focused cross-site frame, which main finds: per level with cross-site children, `document.activeElement` read in that
 document's isolated world (into open shadow roots and same-site frames' documents), and when it is a frame owner the
 script cannot look into, its `frameId` from `DOM.describeNode` names the child session; no focused frame owner, the
-top document. A focused frame that goes mid-walk, or mid-read, drops the read (no copy), never reads its parent.
+top document. A focused frame that goes mid-walk, or mid-read, drops the read (no copy), never reads its parent. Accepted
+for now: a page script that moves the focus from frame A to B during the walk's remaining round trips leaves the read in
+A, so the copy takes A's selection (text the person really selected there); a re-check of the focus after the read
+would fix it. A reset or the renderer going after the walk ends and before its top-document read drops the read (the
+attachment is checked again synchronously before that run).
 
 Every one of these is a call (§4.1: one at a time, its deadline, the epoch carried; a press held for its hit test
 carries its epoch as before), and each protocol command of it is a hit-test query: checked synchronously before it goes

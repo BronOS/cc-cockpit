@@ -136,7 +136,12 @@
 //              its own session right before (the same world while the document lives, so what a hit
 //              test keeps there is found by the choice; a new document gets a fresh one and the old
 //              context id is refused: never the main world, never `Runtime.evaluate` without the
-//              context id). Each of those protocol commands is a hit-test query (`query`: checked
+//              context id). A frame's session outlives a cross-process navigation of the frame, and
+//              V8 context ids are per process, so a stale id could name a main-world context of the
+//              replacement renderer: each frame run is bracketed by the frame's `loaderId`
+//              (`Page.getFrameTree` on the same session, read before the world is made and again
+//              after the evaluation answers, the focus walk's `DOM.describeNode` inside it), and a
+//              change or a failed read drops the result. Each of those protocol commands is a hit-test query (`query`: checked
 //              synchronously before it goes, a deadline that stalls its session as a late command
 //              does), and the pump waits for the route and the frame's script before the next step
 //              (`blocking: 'route'`), so no input command overlaps them on a session (C9); a run in
@@ -145,7 +150,9 @@
 //              hit test, STEP_TIMEOUT_MS for a read), never at the call's: past them the frame is
 //              stalled. A frame gone, replaced or stalled, a refusal, a script that threw, a deadline
 //              or a new attachment drops the script (undefined: no popup, no copy), never runs it in
-//              a document the router did not pick for it. A rectangle
+//              a document the router did not pick for it; a new attachment is checked again right
+//              before a top-document run that follows a walk (codex review 2026-11-20: a reset between
+//              the walk's end and that run ran it in the new attachment's document). A rectangle
 //              the frame's script measured is mapped back through the same owner boxes the route
 //              read (`rectFromFrame`, refused where `pointInFrame` refuses the box).
 //
@@ -862,7 +869,9 @@ export class PageInputRouter implements ChildFrameObserver {
       // deadlines, once (it is stalled from then on and asked nothing).
       const lane = route.lane
       const ran = await this.bounded((run) => this.evaluate(lane, code(route.x, route.y), run))
-      return ran ? { value: ran.value, frame: this.frameHandle(lane), toTop } : undefined
+      // The walk ended, then a new attachment came before this continuation: the old page's answer.
+      if (!ran || callEpoch !== this.epoch) return undefined
+      return { value: ran.value, frame: this.frameHandle(lane), toTop }
     }, 'route', epoch)
   }
 
@@ -888,6 +897,7 @@ export class PageInputRouter implements ChildFrameObserver {
    */
   scriptInFocus(code: string, epoch?: number): Promise<unknown> {
     return this.script(async (release) => {
+      const callEpoch = this.epoch
       // No cross-site frame: the top document, no protocol command (as before frames had scripts).
       if (!this.hasChildren(this.page)) {
         release()
@@ -897,7 +907,10 @@ export class PageInputRouter implements ChildFrameObserver {
         const lane = await this.focusedLane(run)
         return lane === this.page ? { top: true as const } : { top: false as const, value: (await this.evaluate(lane, code, run)).value }
       }, STEP_TIMEOUT_MS)
-      if (!ran) return undefined
+      // Checked here, synchronously before the top run (codex review 2026-11-20): `bounded` resolves
+      // first and this continuation runs microtasks later, so a reset or the renderer going in that
+      // gap ran the old walk's top script in the new attachment's document.
+      if (!ran || callEpoch !== this.epoch) return undefined
       if (!ran.top) return ran.value
       release()
       return this.topScript(code)
@@ -933,18 +946,56 @@ export class PageInputRouter implements ChildFrameObserver {
 
   /**
    * `code` in main's isolated world of `lane`'s frame (see `scripts` at the top of the file): the
-   * world made (or found again) right before, then evaluated there by value. Both are queries
-   * (`ask`): a frame that went, owes an answer or refuses, a script that threw, a malformed answer
-   * end it (RouteDropped). `{ value }`, so a script's own undefined is told from a drop.
+   * world made (or found again) right before, then evaluated there by value, bracketed by the
+   * frame's `loaderId` (`frameLoader`, before the world and after the answer: a document replaced
+   * meanwhile drops it). All are queries (`ask`): a frame that went, owes an answer or refuses, a
+   * script that threw, a malformed answer end it (RouteDropped). `{ value }`, so a script's own
+   * undefined is told from a drop.
    */
   private async evaluate(lane: Lane, code: string, run: RouteRun): Promise<{ value: unknown }> {
-    const contextId = await this.isolatedContext(lane, lane.targetId, run)
+    const frame = await this.frameLoader(lane, lane.targetId, run)
+    const contextId = await this.isolatedContext(lane, frame.id, run)
     const answer = (await this.ask('Runtime.evaluate', { expression: code, contextId, returnByValue: true, awaitPromise: false, silent: true }, lane, run)) as {
       result?: { value?: unknown }
       exceptionDetails?: unknown
     }
+    await this.sameLoader(lane, frame, run)
     if (answer.exceptionDetails !== undefined) throw new RouteDropped()
     return { value: answer.result?.value }
+  }
+
+  /**
+   * The frame `frameId` of `lane`'s session's frame tree (undefined: the tree's root, the page's main
+   * frame) and its `loaderId`, which a new document in it gets anew. A frame's session survives a
+   * cross-process navigation of that frame, and V8 context ids are per process: the id
+   * `Page.createIsolatedWorld` gave can name another context (a main world) in the replacement
+   * renderer, so every frame run is bracketed by this read (codex review 2026-11-20). No such frame,
+   * or no loader id, drops the run (RouteDropped).
+   */
+  private async frameLoader(lane: Lane, frameId: string | undefined, run: RouteRun): Promise<{ id: string; loaderId: string }> {
+    type Node = { frame?: { id?: unknown; loaderId?: unknown }; childFrames?: unknown }
+    const tree = (await this.ask('Page.getFrameTree', undefined, lane, run)) as { frameTree?: Node }
+    const stack: unknown[] = [tree.frameTree]
+    // A bound on the walk: the tree is the session's own process's frames, small, but a count keeps a
+    // malformed answer from looping.
+    for (let seen = 0; stack.length > 0 && seen < 1000; seen++) {
+      const node = stack.pop() as Node | undefined
+      if (typeof node !== 'object' || node === null) continue
+      const id = node.frame?.id
+      const loaderId = node.frame?.loaderId
+      if (typeof id === 'string' && id !== '' && (frameId === undefined || id === frameId)) {
+        if (typeof loaderId !== 'string' || loaderId === '') throw new RouteDropped()
+        return { id, loaderId }
+      }
+      if (frameId !== undefined && Array.isArray(node.childFrames)) stack.push(...(node.childFrames as unknown[]))
+    }
+    throw new RouteDropped()
+  }
+
+  /** The bracket's second read: `frame`'s document still the one `frameLoader` found, else RouteDropped. */
+  private async sameLoader(lane: Lane, frame: { id: string; loaderId: string }, run: RouteRun): Promise<void> {
+    const now = await this.frameLoader(lane, frame.id, run)
+    if (now.loaderId !== frame.loaderId) throw new RouteDropped()
   }
 
   /** The execution context of main's isolated world in the frame `frameId` of `lane`'s session. */
@@ -969,14 +1020,9 @@ export class PageInputRouter implements ChildFrameObserver {
       // read (it, not its parent, held the focus), where an owner that never was one (a same-site
       // frame's, or a frame not ready yet) is no cross-site frame's: its parent's document is read.
       const children = [...this.frames.values()].filter((f) => f.parent === lane && f.ready)
-      let frameId = lane.targetId
-      if (lane === this.page) {
-        const tree = (await this.ask('Page.getFrameTree', undefined, lane, run)) as { frameTree?: { frame?: { id?: unknown } } }
-        const id = tree.frameTree?.frame?.id
-        if (typeof id !== 'string' || id === '') throw new RouteDropped()
-        frameId = id
-      }
-      const contextId = await this.isolatedContext(lane, frameId, run)
+      // The page's main frame is the tree's root (its id read there); the bracket as `evaluate`'s.
+      const frame = await this.frameLoader(lane, lane === this.page ? undefined : lane.targetId, run)
+      const contextId = await this.isolatedContext(lane, frame.id, run)
       const answer = (await this.ask(
         'Runtime.evaluate',
         { expression: FOCUSED_FRAME_SCRIPT, contextId, returnByValue: false, objectGroup: FOCUS_OBJECT_GROUP, silent: true },
@@ -985,10 +1031,15 @@ export class PageInputRouter implements ChildFrameObserver {
       )) as { result?: { objectId?: unknown }; exceptionDetails?: unknown }
       if (answer.exceptionDetails !== undefined) throw new RouteDropped()
       const objectId = answer.result?.objectId
+      let owned: unknown
+      if (typeof objectId === 'string') {
+        const described = (await this.ask('DOM.describeNode', { objectId }, lane, run)) as { node?: { frameId?: unknown } }
+        await this.ask('Runtime.releaseObjectGroup', { objectGroup: FOCUS_OBJECT_GROUP }, lane, run)
+        owned = described.node?.frameId
+      }
+      // After the evaluation and the owner's description: both were of the document the world was made in.
+      await this.sameLoader(lane, frame, run)
       if (typeof objectId !== 'string') break
-      const described = (await this.ask('DOM.describeNode', { objectId }, lane, run)) as { node?: { frameId?: unknown } }
-      await this.ask('Runtime.releaseObjectGroup', { objectGroup: FOCUS_OBJECT_GROUP }, lane, run)
-      const owned = described.node?.frameId
       const child = typeof owned === 'string' ? this.childOf(lane, owned) : undefined
       if (!child) {
         if (children.some((f) => f.targetId === owned)) throw new RouteDropped()

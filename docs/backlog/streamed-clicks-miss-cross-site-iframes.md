@@ -23,4 +23,11 @@ proven on macOS and the Linux VM, Electron 45.1.0, 2026-11-20, by `scripts/offsc
   own CSS `zoom`.
 - Cost: no hit-test cache. A page with cross-site frames pays four protocol round trips per frame level per pointer
   event (about 0.1 ms each here); a pointer event is answered in about one frame either way (16 ms on macOS, 33 ms on
-  the Linux VM). A selection read there walks the focus first (five round trips at the top, four per frame level).
+  the Linux VM). A selection read there walks the focus first (up to six round trips per level, the frame's `loaderId`
+  bracket included), then four for the read in a frame; a select's hit test or choice in a frame is four.
+- Copy after the focus moves mid-walk: the walk finds frame A, a page script focuses B during the remaining round
+  trips, and the read takes A's selection. That is text the person really selected in A. Later; the fix would be a
+  re-check of the focus after the read (codex review, 2026-11-20).
+- Accepted, not a bug: a frame that navigates between the route's hit test and the script gets the hit script in its
+  replacement document at the same frame-relative point. A browser does the same (a press lands in whatever document
+  the frame holds) (codex review, 2026-11-20).
