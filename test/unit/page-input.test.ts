@@ -1489,3 +1489,93 @@ describe('PageInputRouter scheduling: a page refusal while attached', () => {
     expect(s.logs.filter((l) => /refused input; dropped/.test(l))).toHaveLength(1)
   })
 })
+
+// The sixth codex review (of de01148): one MUST, two SHOULDs and a nit, by its words.
+describe('PageInputRouter scheduling: review 6', () => {
+  const answerAll = async (s: ReturnType<typeof setup>): Promise<void> => {
+    s.page.opts.hold = false
+    s.page.opts.holdSessions.clear()
+    for (let n = 0; n < 4000; n++) {
+      for (const h of s.page.held.splice(0)) h.resolve({})
+      await new Promise((r) => setImmediate(r))
+    }
+  }
+
+  // MUST: "Hover A, then press outside A. Refuse A's synthetic exit; after sendInput settles its
+  // outcome, detach A in a microtask before moveTo resumes. moveTo ignores the outcome and checks
+  // only epoch/page stall, so the dead session's continuation still dispatches the waiting press."
+  it("a hover exit whose session went before the step goes on: the step is stale, nothing of it is sent", async () => {
+    for (const microtasks of [0, 1]) {
+      const s = setup()
+      s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+      s.router.input([move(20, 225)])
+      await s.flush()
+      s.page.opts.holdSessions.add('A')
+      s.router.input([down(20, 25)])
+      await s.flush()
+      const exit = s.page.held.shift()
+      expect(exit?.sent.params).toMatchObject({ type: 'mouseMoved', x: -1, y: -1 })
+      exit?.reject(new Error('No session with given id'))
+      if (microtasks === 0) s.router.frameDetached('A')
+      else queueMicrotask(() => s.router.frameDetached('A'))
+      await s.flush()
+      expect([microtasks, s.mice().filter((m) => m[1] === 'mousePressed')]).toEqual([microtasks, []])
+      expect(s.fallback).toEqual([])
+    }
+  })
+
+  // Nit: "Hover A; refuse its exit while pressing outside. The ignored outcome produces no refusal log."
+  it("a live frame refusing its hover exit: logged once, and the press is routed again (to the page)", async () => {
+    const s = setup()
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    s.router.input([move(20, 225)])
+    await s.flush()
+    s.page.opts.refuse.add('A')
+    s.router.input([down(20, 25), up(20, 25)])
+    await s.flush()
+    expect(s.mice().slice(-2)).toEqual([
+      ['', 'mousePressed', 20, 25],
+      ['', 'mouseReleased', 20, 25]
+    ])
+    expect(s.logs.filter((l) => /refused/.test(l))).toHaveLength(1)
+  })
+
+  // SHOULD: "Detach; start call(asyncChoice, true); enqueue a key. The key immediately uses
+  // fallback before the choice finishes."
+  it('detached: a blocking call holds the input behind it until it settles', async () => {
+    const s = setup()
+    s.detach()
+    let finish: () => void = () => {}
+    const order: string[] = []
+    void s.router.call(() => new Promise<void>((r) => (finish = () => (order.push('choice'), r()))), true)
+    s.router.input([keyDown('b')])
+    await s.flush()
+    expect(s.fallback).toEqual([])
+    finish()
+    await s.flush()
+    expect(order).toEqual(['choice'])
+    expect(s.fallback.map((e) => e.type)).toEqual(['keyDown', 'char'])
+  })
+
+  // SHOULD: "Deliver KeyA down; reset/reconnect; stall the new page and fill its queue with 512
+  // steps; submit KeyA up. pressed still contains the old attachment's KeyA, admitting step 513."
+  it("a reset forgets the presses it discarded: past the new queue's cap their releases are dropped", async () => {
+    const s = setup()
+    s.router.input([keyDown('a'), down(10, 10)])
+    await s.flush()
+    s.detach()
+    s.router.reset()
+    s.attach()
+    s.page.opts.hold = true
+    s.router.input([keyDown('c')])
+    await s.flush()
+    s.fire()
+    await s.flush()
+    const many: ElectronInputEvent[] = []
+    for (let n = 0; n < MAX_QUEUED_STEPS + 10; n++) many.push(keyDown('d'))
+    s.router.input([...many, { type: 'keyUp', keyCode: 'a', modifiers: [] }, up(10, 10)])
+    await answerAll(s)
+    expect(s.page.sent.filter((x) => x.params.type === 'keyUp').map((x) => x.params.code)).toEqual([])
+    expect(s.mice().filter((m) => m[1] === 'mouseReleased')).toEqual([])
+  })
+})

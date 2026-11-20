@@ -203,7 +203,20 @@ function makeScript(seed: number): Action[] {
     } else {
       out.push({ a: 'reattach' })
     }
-    if (stress && i === 5) out.push({ a: 'burst', n: 300 + Math.floor(r() * 400) })
+    if (stress && i === 5) {
+      // Half the time across a lost protocol: keys held before it, then released past the cap of the
+      // new attachment's queue (rule 5: a press of an older attachment admits no release there).
+      if (r() < 0.5) {
+        out.push({ a: 'lose', resetNow: true, rejectPending: r() < 0.5 }, { a: 'reattach' })
+        // A key down the never-answering page stalls on (held from now on, as any key down).
+        if (!keys.has('Tab')) {
+          keys.set('Tab', [])
+          out.push({ a: 'key', type: 'down', key: 'Tab', mods: [] })
+        }
+        out.push({ a: 'advance', ms: 600 })
+      }
+      out.push({ a: 'burst', n: 300 + Math.floor(r() * 400) })
+    }
   }
   return out
 }
@@ -313,6 +326,35 @@ interface Session {
 
 const TAG_SCALE = 1024
 
+/** A step in the router's queue, as the oracle reads it. */
+interface QStep {
+  kind: string
+  event?: { type: string; keyCode?: string; button?: string; x?: number; y?: number }
+  method?: string
+  params?: Record<string, unknown>
+}
+
+function isQMove(step: QStep): boolean {
+  return step.kind === 'mouse' && step.event?.type === 'mouseMove'
+}
+
+/** The router's press id of a queued step (keys by physical code, buttons by name). */
+function stepPress(step: QStep): { id: string; release: boolean } | undefined {
+  if (step.kind === 'command' && step.method === 'Input.dispatchKeyEvent') {
+    const type = step.params?.type
+    const code = step.params?.code
+    return (type === 'rawKeyDown' || type === 'keyDown') && typeof code === 'string' && code !== '' ? { id: `key:${code}`, release: false } : undefined
+  }
+  if (step.kind === 'key' && (step.event?.type === 'keyDown' || step.event?.type === 'keyUp')) {
+    const keyCode = step.event.keyCode ?? ''
+    return { id: `key:${webviewKeyInfo(keyCode)?.code ?? keyCode}`, release: step.event.type === 'keyUp' }
+  }
+  if (step.kind === 'mouse' && (step.event?.type === 'mouseDown' || step.event?.type === 'mouseUp')) {
+    return { id: `button:${step.event.button}`, release: step.event.type === 'mouseUp' }
+  }
+  return undefined
+}
+
 function tagOf(x: number, y: number): number {
   const fx = Math.round((((x % 1) + 1) % 1) * TAG_SCALE) % TAG_SCALE
   const fy = Math.round((((y % 1) + 1) % 1) * TAG_SCALE) % TAG_SCALE
@@ -387,10 +429,27 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   /** The last pointer event's tag delivered (presses, moves, wheels keep their order). */
   let lastPointerTag = 0
   /** Key downs (by code) and key ups delivered, for rule 6. */
+  /** Key downs (by code) and key ups delivered in this attachment (cleared at each reset), for rule 6. */
   const keyDowns = new Map<string, number>()
   const keyUps = new Map<string, number>()
-  let lostHappened = false
-  let peakQueue = 0
+  /**
+   * Rule 7 for the synthetic hover exits: the exit last sent (a move outside a frame's viewport) and
+   * the highest tag its step's event can have (the steps still queued come after it). If its session
+   * goes before the router sends anything more, the step is stale there: no pointer event of it (tag
+   * up to `bound`: pointer events keep their order) is to be delivered.
+   */
+  let exitFor: { session: Session; bound: number } | undefined
+  let deadExitBound = 0
+  let lastHandedTag = 0
+  /** Rule 9: a refusal the router saw (its session still there when it went on) is logged. */
+  let pendingRefusal: Session | undefined
+  let refusalSeen = false
+  let refusalLogged = false
+  /**
+   * Rule 5, exactly: the presses a release past the queue's cap may match (taken into the queue in
+   * this attachment and not released, or still queued at a reset), by the router's ids.
+   */
+  const eligible = new Set<string>()
   let armed: Extract<Action, { a: 'arm' }> | undefined
   /**
    * The pointer event a live frame just refused, until the router sends anything again: if the frame
@@ -463,6 +522,14 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (withTrace) trace.push(`  t=${clock.now} send ${id || 'page'} ${method} ${JSON.stringify(p)}`)
     // The router went on from the refusal (to the page, attached or not): the frame going now changes nothing.
     justRefused = undefined
+    if (exitFor) {
+      if (exitFor.session.ended) deadExitBound = Math.max(deadExitBound, exitFor.bound)
+      exitFor = undefined
+    }
+    if (pendingRefusal) {
+      if (!pendingRefusal.ended) refusalSeen = true
+      pendingRefusal = undefined
+    }
     if (!attached) {
       // Refused at once, as Electron's debugger does when detached; nothing to check.
       const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: true, resolve: () => {}, reject: () => {} }
@@ -508,6 +575,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       // Rule 5: presses, moves and wheels never reorder (moves coalesce to the latest).
       if (tag < lastPointerTag) violate('pointer-order', `${String(p.type)} tag ${tag} after tag ${lastPointerTag}`)
       lastPointerTag = Math.max(lastPointerTag, tag)
+      if (tag <= deadExitBound) violate('stale-exit-continued', `${String(p.type)} tag ${tag} sent to ${id || 'page'} after its hover exit's session went`)
       if (p.type === 'mousePressed' && noReplay.has(tag)) violate('dead-replay', `the press tag ${tag}, refused by a session that went or an older attachment, sent again to ${id || 'page'}`)
       // Rule 3: a press or wheel into a frame is hit-tested after the last hover move that changed a
       // document on its way (not under capture, which follows the press).
@@ -518,6 +586,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       }
     }
     if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseWheel') wheelOut += p.deltaY as number
+    if (method === 'Input.dispatchMouseEvent' && p.type === 'mouseMoved' && p.x === -1 && p.y === -1 && session && session.doc !== 'page') {
+      const queued = queueOf().find((st) => st.kind === 'mouse' && typeof st.event?.x === 'number')
+      exitFor = { session, bound: queued?.event ? tagOf(queued.event.x as number, queued.event.y as number) - 1 : lastHandedTag }
+    }
     const c: Command = { session: id, gen, sentAt: clock.now, answered: false, method, params: p, detached: false, resolve: () => {}, reject: () => {} }
     commands.push(c)
     if (session) {
@@ -560,6 +632,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         if (withTrace) trace.push(`  t=${clock.now} ${ok ? 'answer' : 'refuse'} ${id || 'page'} ${String(p.type ?? method)}`)
         fireArmed()
         if (ok) return resolve({})
+        if (!c.detached && c.gen === gen && session && !session.ended && clock.now - c.sentAt < STEP_TIMEOUT_MS) pendingRefusal = session
         // A wheel or press refused past its deadline, by a session that went or by the page's own
         // session is lost with it (the router had moved on, or drops a page refusal).
         const lostWith = clock.now - c.sentAt >= STEP_TIMEOUT_MS || (session?.ended ?? false) || c.gen !== gen || session?.doc === 'page'
@@ -579,7 +652,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (!c.logged.entry.startsWith('k:')) refusedEntries.add(c.logged.entry)
           // A refused key down never went down; a refused key up is excused (the session refusing
           // it is the end of what the router can do: it never sends one by another road).
-          countKey(p.type === 'rawKeyDown' ? keyDowns : undefined, p.code, -1)
+          if (c.gen === gen) countKey(p.type === 'rawKeyDown' ? keyDowns : undefined, p.code, -1)
         }
         if (session && method === 'Input.dispatchMouseEvent') {
           if (p.type === 'mousePressed') {
@@ -624,6 +697,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       // sendInputEvent only while detached: a refusal while attached is dropped, never sent this way.
       if (attached) violate('fallback-while-attached', `${JSON.stringify(event)} by sendInputEvent while attached`)
       if (event.type === 'mouseWheel') wheelOut -= event.deltaY
+      if ((event.type === 'mouseDown' || event.type === 'mouseMove' || event.type === 'mouseWheel') && tagOf(event.x, event.y) <= deadExitBound) {
+        violate('stale-exit-continued', `${event.type} tag ${tagOf(event.x, event.y)} by sendInputEvent after its hover exit's session went`)
+      }
       if (event.type === 'mouseDown' && noReplay.has(tagOf(event.x, event.y))) violate('dead-replay', `the press tag ${tagOf(event.x, event.y)} sent again by sendInputEvent`)
       if (event.type === 'keyDown' || event.type === 'keyUp' || event.type === 'char') {
         const info = webviewKeyInfo(event.keyCode)
@@ -640,6 +716,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     // The router's own logs: a step that threw, or a command its sender held back, drops input
     // silently; either is a broken rule here.
     log: (message) => {
+      if (/refused/.test(message)) refusalLogged = true
       if (/input step failed|held back/.test(message)) violate('router-log', message)
     },
     timers: {
@@ -648,6 +725,35 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
   })
 
+  /** The router's queue (read only: what is taken and not run yet). */
+  function queueOf(): QStep[] {
+    return (router as unknown as { queue: QStep[] }).queue
+  }
+  /**
+   * One hand-in, checked against rule 5 exactly: the queue grows past its cap only by a release
+   * that matches an eligible press, and every such release is taken. `press`: the hand-in's press or
+   * release (its first event, by the router's id) and the object the router queues for it.
+   */
+  function handIn(fn: () => void, press?: { id: string; release: boolean; ref: object }): void {
+    const before = queueOf().length
+    const room = before < MAX_QUEUED_STEPS || queueOf().some(isQMove)
+    const wasEligible = press ? eligible.has(press.id) : false
+    fn()
+    const now = queueOf()
+    let pastCap = false
+    if (press?.release) {
+      if (before >= MAX_QUEUED_STEPS) pastCap = now.some((st) => st.event === press.ref || st.params === press.ref)
+      // Checked while attached (a detached router learns of the loss only when it runs next).
+      if (attached && before >= MAX_QUEUED_STEPS) {
+        if (pastCap && !wasEligible) violate('past-cap-ineligible', `${press.id} released past the cap with no press taken in this attachment`)
+        if (!pastCap && wasEligible) violate('past-cap-refused', `${press.id} released past the cap, its press taken, but dropped`)
+      }
+      eligible.delete(press.id)
+    } else if (press && room) {
+      eligible.add(press.id)
+    }
+    if (now.length > Math.max(before, MAX_QUEUED_STEPS) + (pastCap ? 1 : 0)) violate('queue-over-cap', `the queue went from ${before} to ${now.length} (cap ${MAX_QUEUED_STEPS})`)
+  }
   function countKey(map: Map<string, number> | undefined, code: unknown, by = 1): void {
     if (map && typeof code === 'string') map.set(code, (map.get(code) ?? 0) + by)
   }
@@ -704,7 +810,8 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     mouseSeq++
     const fx = mouseSeq % TAG_SCALE
     const fy = Math.floor(mouseSeq / TAG_SCALE) % TAG_SCALE
-    return { fx: fx / TAG_SCALE, fy: fy / TAG_SCALE, tag: fx + fy * TAG_SCALE }
+    lastHandedTag = fx + fy * TAG_SCALE
+    return { fx: fx / TAG_SCALE, fy: fy / TAG_SCALE, tag: lastHandedTag }
   }
   const mods = (held: readonly Button[]): InputModifier[] => held.map((b) => BUTTON_MOD[b])
 
@@ -716,9 +823,14 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       const params = { ...editKeyEvent({ type: 'editCommand', command, key: event.key, modifiers: event.modifiers }), __tag: ++commandSeq }
       expected.push(`c:${commandSeq}`)
       const tag = commandSeq
-      router.command('Input.dispatchKeyEvent', params, detachedRoad(`c:${tag}`, tag)).then(
-        () => {},
-        () => {}
+      const code = (params as { code?: unknown }).code
+      handIn(
+        () =>
+          void router.command('Input.dispatchKeyEvent', params, detachedRoad(`c:${tag}`, tag)).then(
+            () => {},
+            () => {}
+          ),
+        typeof code === 'string' && code !== '' ? { id: `key:${code}`, release: false, ref: params } : undefined
       )
       return
     }
@@ -726,7 +838,12 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (const e of events) {
       if (e.type === 'keyDown' || e.type === 'keyUp' || e.type === 'char') expected.push(keyEntry(e.type === 'keyDown' ? 'rawKeyDown' : e.type, webviewKeyInfo(e.keyCode)?.code))
     }
-    if (events.length > 0) router.input(events)
+    const first = events[0]
+    const press =
+      first && (first.type === 'keyDown' || first.type === 'keyUp')
+        ? { id: `key:${webviewKeyInfo(first.keyCode)?.code ?? first.keyCode}`, release: first.type === 'keyUp', ref: first }
+        : undefined
+    if (events.length > 0) handIn(() => router.input(events), press)
   }
 
   const attachFrame = (name: FrameName, ready: boolean): void => {
@@ -742,6 +859,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
 
   const endSession = (s: Session, rejectPending: boolean): void => {
     s.ended = true
+    if (pendingRefusal === s) pendingRefusal = undefined
     if (justRefused?.session === s) {
       wheelOut += justRefused.wheel
       if (justRefused.press !== undefined) {
@@ -774,13 +892,20 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (const s of [...sessionOf.values()]) endSession(s, rejectPending)
     gen++
     router.reset()
+    keyDowns.clear()
+    keyUps.clear()
+    eligible.clear()
+    for (const step of queueOf()) {
+      const k = stepPress(step)
+      if (k?.release) eligible.delete(k.id)
+      else if (k) eligible.add(k.id)
+    }
   }
 
   const lose = (resetNow: boolean, rejectPending: boolean): void => {
     if (!attached) return
     attached = false
     dropsPossible = true
-    lostHappened = true
     // Every session of this attachment refuses from now on (Electron's debugger).
     for (const c of commands) if (!c.answered && rejectPending) c.reject(new Error('Debugger is not attached'))
     if (resetNow) doReset(false)
@@ -800,20 +925,21 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     switch (action.a) {
       case 'move': {
         const t = nextTag()
-        router.input([{ type: 'mouseMove', x: action.x + t.fx, y: action.y + t.fy, modifiers: mods(action.held) }])
+        handIn(() => router.input([{ type: 'mouseMove', x: action.x + t.fx, y: action.y + t.fy, modifiers: mods(action.held) }]))
         break
       }
       case 'down':
       case 'up': {
         const t = nextTag()
         if (action.a === 'down') clientPressTags.add(t.tag)
-        router.input([{ type: action.a === 'down' ? 'mouseDown' : 'mouseUp', x: action.x + t.fx, y: action.y + t.fy, button: action.button, clickCount: 1, modifiers: mods(action.held) }])
+        const event: ElectronInputEvent = { type: action.a === 'down' ? 'mouseDown' : 'mouseUp', x: action.x + t.fx, y: action.y + t.fy, button: action.button, clickCount: 1, modifiers: mods(action.held) }
+        handIn(() => router.input([event]), { id: `button:${action.button}`, release: action.a === 'up', ref: event })
         break
       }
       case 'wheel': {
         const t = nextTag()
         wheelIn += action.dy
-        router.input([{ type: 'mouseWheel', x: action.x + t.fx, y: action.y + t.fy, deltaX: 0, deltaY: -action.dy, modifiers: [] }])
+        handIn(() => router.input([{ type: 'mouseWheel', x: action.x + t.fx, y: action.y + t.fy, deltaX: 0, deltaY: -action.dy, modifiers: [] }]))
         break
       }
       case 'key':
@@ -830,23 +956,42 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       case 'text': {
         const text = `t${++textSeq}`
         expected.push(`t:${text}`)
-        router.command('Input.insertText', { text }, detachedRoad(`t:${text}`, textSeq)).then(
-          () => {},
-          () => {}
+        handIn(
+          () =>
+            void router.command('Input.insertText', { text }, detachedRoad(`t:${text}`, textSeq)).then(
+              () => {},
+              () => {}
+            )
         )
         break
       }
       case 'call': {
         const n = ++callSeq
-        router
-          .call(() => {
-            if (withTrace) trace.push(`  t=${clock.now} call ${n}`)
-            return new Promise((resolve) => clock.set(() => resolve(n), action.ms, false))
-          }, action.blocking)
-          .then(
-            () => {},
-            () => {}
-          )
+        // A blocking call that ends within STEP_TIMEOUT_MS holds what comes after it (attached or
+        // not: chooseSelect's choice), so its end is an entry of the order check.
+        const ordered = action.blocking && action.ms < STEP_TIMEOUT_MS
+        if (ordered) expected.push(`call:${n}`)
+        handIn(
+          () =>
+            void router
+              .call(() => {
+                if (withTrace) trace.push(`  t=${clock.now} call ${n}`)
+                return new Promise((resolve) =>
+                  clock.set(
+                    () => {
+                      if (ordered) delivered.push(`call:${n}`)
+                      resolve(n)
+                    },
+                    action.ms,
+                    false
+                  )
+                )
+              }, action.blocking)
+              .then(
+                () => {},
+                () => {}
+              )
+        )
         break
       }
       case 'advance':
@@ -897,8 +1042,6 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         break
     }
     await clock.advance(0)
-    // Rule 5: the queue's cap, a few matched releases past it at most.
-    for (const [, size] of collectionSizes(router)) peakQueue = Math.max(peakQueue, size)
   }
 
   try {
@@ -952,12 +1095,11 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
     if (!dropsPossible && delivered.length !== expected.length - refusedCount) violate('key-lost', `delivered ${delivered.length} of ${expected.length} (${refusedCount} refused): ${firstDiff(delivered, expected)}`)
     if (!dropsPossible && Math.abs(wheelOut - wheelIn) > 1e-9) violate('wheel-lost', `wheel deltas handed in ${wheelIn}, delivered ${wheelOut}`)
-    if (peakQueue > MAX_QUEUED_STEPS + 32) violate('queue-over-cap', `the router held ${peakQueue} steps (cap ${MAX_QUEUED_STEPS})`)
     // Rule 6: every key down delivered got its key up, the release matched by the physical key
     // whatever its spelling (Shift let go first), past the queue's cap too.
-    if (!lostHappened) {
-      for (const [code, n] of keyDowns) if ((keyUps.get(code) ?? 0) < n) violate('key-stuck', `${code} went down ${n} times, up ${keyUps.get(code) ?? 0}`)
-    }
+    for (const [code, n] of keyDowns) if ((keyUps.get(code) ?? 0) < n) violate('key-stuck', `${code} went down ${n} times in this attachment, up ${keyUps.get(code) ?? 0}`)
+    if (pendingRefusal && !pendingRefusal.ended) refusalSeen = true
+    if (refusalSeen && !refusalLogged) violate('refusal-unlogged', 'a session refused input the router acted on, and it logged no refusal')
     // Presses too: with nothing that could drop one (a detach, a full queue), every viewer press
     // reached the page once (a session that took it, or sendInputEvent).
     if (!dropsPossible) {
@@ -1050,8 +1192,10 @@ describe('PageInputRouter, randomized against its rules', () => {
       const seeds = ONE_SEED === undefined ? Array.from({ length: SEEDS }, (_, i) => i + 1) : [ONE_SEED]
       const failures = new Map<string, { seed: number; detail: string; count: number }>()
       for (const seed of seeds) {
-        const script = makeScript(seed)
-        const { violations } = await runScript(seed, script)
+        // FUZZ_SCRIPT: one script of actions (JSON) instead of the seed's, to try a case by hand.
+        const script = process.env.FUZZ_SCRIPT !== undefined ? (JSON.parse(process.env.FUZZ_SCRIPT) as Action[]) : makeScript(seed)
+        const { violations, trace } = await runScript(seed, script, process.env.FUZZ_SCRIPT !== undefined)
+        if (process.env.FUZZ_SCRIPT !== undefined) console.log(trace.join('\n'))
         for (const v of violations) {
           const f = failures.get(v.id)
           if (f) f.count++
@@ -1066,7 +1210,7 @@ describe('PageInputRouter, randomized against its rules', () => {
         // The first failing class's smallest script and its trace.
         const chosen = process.env.FUZZ_CLASS !== undefined ? [...failures].find(([k]) => k === process.env.FUZZ_CLASS) : undefined
         const [id, first] = (chosen ?? [...failures][0]) as [string, { seed: number }]
-        const small = await shrink(first.seed, makeScript(first.seed), id)
+        const small = process.env.FUZZ_SCRIPT !== undefined ? (JSON.parse(process.env.FUZZ_SCRIPT) as Action[]) : await shrink(first.seed, makeScript(first.seed), id)
         const { violations, trace } = await runScript(first.seed, small, true)
         lines.push('', `minimal script for ${id} (seed ${first.seed}, ${small.length} actions):`, ...small.map((a) => `  ${JSON.stringify(a)}`))
         lines.push('', 'its trace (sends, answers, fallbacks):', ...trace.slice(-120), '', ...violations.map((v) => v.detail))
