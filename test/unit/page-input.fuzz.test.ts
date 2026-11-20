@@ -84,6 +84,8 @@ export type Action =
   | { a: 'reattach' }
   /** From here on, at each resolution point the fault injector fires with this probability. */
   | { a: 'faults'; rate: number }
+  /** From here on every external await (command, query, hover exit) never settles with this probability (ruling 2026-11-19 #10). */
+  | { a: 'hangrate'; rate: number }
   /** A frame A seen at 100x100 px with a 10,000x10,000 viewport, its quad skewed by 0.4 px, and a child B at (4995, 4000) size 1005x2000. */
   | { a: 'bigframe' }
   /** The big frame is gone again (A and B back at their usual boxes). */
@@ -140,6 +142,7 @@ function makeScript(seed: number): Action[] {
   const held = new Set<Button>()
   const keys = new Map<string, InputModifier[]>()
   const stress = r() < 0.05
+  if (r() < 0.3) out.push({ a: 'hangrate', rate: pick(r, [0.03, 0.1, 0.3] as const) })
   if (r() < 0.75) out.push({ a: 'faults', rate: pick(r, [0.05, 0.1, 0.2, 0.4] as const) })
   const length = stress ? 40 : 20 + Math.floor(r() * 100)
   if (stress) out.push({ a: 'mode', doc: 'page', mode: 'never' })
@@ -913,10 +916,24 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (!input) {
       if (method === 'DOM.getNodeForLocation') dirty.delete(doc)
       const mode = qmodes.get(doc) as QueryMode
+      const aw = trackAwait(method, id)
+      const hang = hangRate > 0 && hangRng() < hangRate
       return new Promise((resolve, reject) => {
-        if (mode === 'never') return
+        const answer = (): void => {
+          aw.settled = true
+          try {
+            resolve(answerQuery(doc, method, p))
+          } catch (err) {
+            reject(err)
+          }
+        }
+        if (hang || mode === 'never') {
+          hungAwaits.push(answer)
+          return
+        }
         clock.set(
           () => {
+            aw.settled = true
             if (mode === 'reject') reject(new Error('No session with given id'))
             else {
               try {
@@ -953,10 +970,13 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       if (rec && rec.n === (ev?.n ?? -1)) rec.by = c
     }
     const mode = modes.get(doc) as Mode
+    const aw = trackAwait(`${method}${String(p.type ?? '') === 'mouseMoved' && (p.x as number) < 0 ? ' (hover exit)' : ''}`, id)
+    const hang = hangRate > 0 && hangRng() < hangRate
     return new Promise((resolve, reject) => {
       const settle = (ok: boolean): void => {
         if (c.answered) return
         c.answered = true
+        aw.settled = true
         if (withTrace) trace.push(`  t=${clock.now} ${ok ? 'answer' : 'refuse'} ${id || 'page'} ${String(p.type ?? method)}`)
         if (ok) resolve({})
         else {
@@ -985,6 +1005,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       c.resolve = () => settle(true)
       c.reject = () => settle(false)
       if (mode === 'never') return
+      if (hang) {
+        hungAwaits.push(() => settle(true))
+        return
+      }
       // 'ooo': answers out of order (a later command answers before an earlier one); 'latereject': refused past the deadline.
       const delay = mode === 'slow' ? 300 : mode === 'late' || mode === 'latereject' ? STEP_TIMEOUT_MS + LATE[commands.length % LATE.length]! : mode === 'ooo' ? [620, 540, 900, 100, 700, 30][commands.length % 6]! : 0
       clock.set(() => settle(mode !== 'reject' && mode !== 'latereject'), delay, false)
@@ -1172,6 +1196,42 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   /** A detached road as Electron's: it lands a little later (an IPC), so a router that does not wait for it reorders. */
   let detachedHang = false
   let callsOut = 0
+  /** Ruling 2026-11-19 #10: every external await of the live renderer, until it settles; hung ones wait here for the heal. */
+  interface Await {
+    kind: string
+    session: string
+    gen: number
+    settled: boolean
+  }
+  const awaits = new Set<Await>()
+  const hungAwaits: Array<() => void> = []
+  let hangRate = 0
+  const hangRng = prng(seed ^ 0x2545f491)
+  /** The unsettled awaits of the live renderer on live sessions (a dead session's or an old attachment's are not counted). */
+  const liveAwaits = (): Await[] => {
+    const out: Await[] = []
+    for (const a of awaits) {
+      if (a.settled) awaits.delete(a)
+      else if (a.gen === gen && !(docOfSession(a.session)?.ended ?? true)) out.push(a)
+    }
+    return out
+  }
+  /**
+   * C5 / C9 (O4), ruling 2026-11-19 #10: at every step the unsettled external promises of the live renderer are bounded by, for each
+   * live session, 1 plus the releases owed to it (live records there, and releases outstanding); plus 1 detached; plus 1 call.
+   */
+  const trackAwait = (kind: string, session: string): Await => {
+    const aw: Await = { kind, session, gen, settled: false }
+    awaits.add(aw)
+    const live = liveAwaits()
+    const sessionsLive = new Set(live.map((a) => a.session))
+    let bound = 0
+    for (const sid of sessionsLive) bound += 1 + allRecs().filter((r) => r.session === sid).length + commands.filter((c) => !c.answered && !c.detached && c.session === sid && c.gen === gen && c.params.type === 'mouseReleased').length
+    if (live.length > bound) {
+      violate('C9', 'global-outstanding', `${live.length} unsettled awaits (bound ${bound}) after ${kind} to ${session || 'page'}; kinds: ${[...new Set(live.map((a) => a.kind))].join(', ')}`)
+    }
+    return aw
+  }
   /** Calls outstanding on the current renderer (a renderer-gone ends them: their late settling changes nothing). */
   const liveCalls = new Set<Ev>()
   const callHung: Array<() => void> = []
@@ -1488,6 +1548,9 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
       case 'faults':
         faultRate = action.rate
         break
+      case 'hangrate':
+        hangRate = action.rate
+        break
       case 'bigframe':
         layoutEpoch++
         rects.set('A', [0, 200, 100, 100])
@@ -1518,6 +1581,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
         break
     }
     await clock.advance(0)
+    // C9 (O4): queued steps with nothing outstanding and no timer while the renderer is live are a stuck queue.
+    if (queueOf().length > 0 && liveAwaits().length === 0 && liveDetached.size === 0 && liveCalls.size === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)) {
+      violate('C9', 'stuck-queue-live', `${queueOf().length} steps queued with nothing outstanding and no timer, after ${action.a}`)
+    }
   }
 
   try {
@@ -1525,6 +1592,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     // Heal: every session answers from now on, every unanswered command is answered, the protocol
     // comes back, no more faults; then the viewer lets go of everything and moves once with no button held.
     faultRate = 0
+    hangRate = 0
     if (!attached) reattach()
     for (const d of DOCS) {
       modes.set(d, 'fast')
@@ -1540,9 +1608,10 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     for (let i = 0; i < 300 && !quiet; i++) {
       for (const h of callHung.splice(0)) h()
       for (const h of hung.splice(0)) h()
+      for (const h of hungAwaits.splice(0)) h()
       for (const c of commands) if (!c.answered) c.resolve({})
       await clock.advance(600)
-      quiet = callHung.length === 0 && hung.length === 0 && callsOut === 0 && detachedOut === 0 && queueOf().length === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)
+      quiet = hungAwaits.length === 0 && liveAwaits().length === 0 && callHung.length === 0 && hung.length === 0 && callsOut === 0 && detachedOut === 0 && queueOf().length === 0 && clock.routerTimers() === 0 && !commands.some((c) => !c.answered && !c.detached && c.gen === gen)
     }
     if (!quiet) violate('C9', 'stuck-queue', `quiescence never reached after 300 release rounds (calls ${callHung.length}/${callsOut}, detached ${hung.length}/${detachedOut}, queued ${queueOf().length}, timers ${clock.routerTimers()}, open commands ${commands.filter((c) => !c.answered && !c.detached && c.gen === gen).length})`)
     const heldButtons = new Set<Button>()
