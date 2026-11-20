@@ -55,8 +55,9 @@
 // SELECTION_DEBOUNCE_MS, one read in flight per view and panel (a hung page holds one promise,
 // not one per key), deduplicated against the last push. The read runs SELECTION_SCRIPT in an
 // isolated world (WEBVIEW_WORLD_ID in the top document, one made on the frame's own session in a
-// focused cross-site frame): the page's scripts can neither see it nor replace the `getSelection`
-// it calls. What comes back is cleaned (cleanSelection): control characters but
+// focused cross-site frame), which follows the focus on down into same-origin frames (their
+// documents are readable from it) and reads the innermost document's selection: the page's scripts
+// can neither see it nor replace the `getSelection` it calls. What comes back is cleaned (cleanSelection): control characters but
 // \n and \t stripped (a selection of them, JSON-escaped at six bytes each, could pass the socket's
 // frame limit, and an oversize event closes the browser view, terminals included) and capped at
 // MAX_SELECTION_BYTES of the JSON-encoded string.
@@ -140,6 +141,11 @@ export const MAX_SELECTION_BYTES = 256 * 1024
  * can hold (a unit is at least one byte).
  */
 export const MAX_SELECTION_CHARS = MAX_SELECTION_BYTES
+/**
+ * Most steps SELECTION_SCRIPT takes following the focus down (shadow roots and same-origin frames):
+ * past it the element reached is read (a page nesting this deep is not one a person selects in).
+ */
+export const MAX_FOCUS_STEPS = 64
 /** Quiet time after the last selection-changing input before main reads the selection. */
 export const SELECTION_DEBOUNCE_MS = 100
 /**
@@ -156,16 +162,30 @@ export const WEBVIEW_WORLD_ID = 1717
 export const PAGE_WAIT_MS = 500
 
 /**
- * The selection script, run in WEBVIEW_WORLD_ID (fresh globals, the page's DOM): the selected slice
- * of a focused text field (walking into open shadow roots), never anything of a password field, else
- * the document's selection; cut to MAX_SELECTION_CHARS here, before it crosses. Fields whose type
- * has no selection API (email, number) throw on `selectionStart` and fall back to the document's
- * selection, which Chromium keeps empty for a password field anyway.
+ * The selection script, run in WEBVIEW_WORLD_ID (fresh globals, the page's DOM): the focus followed
+ * down from the document it runs in, through open shadow roots and same-origin frames (a focused
+ * IFRAME whose `contentDocument` the isolated world can read: null for a cross-origin or sandboxed
+ * one, where the walk stops and that document's own selection is read, as before), at most
+ * MAX_FOCUS_STEPS steps; then, in the innermost document, the selected slice of a focused text field,
+ * never anything of a password field, else that document's selection (a same-origin frame's text is
+ * in its own document's selection, not its parent's); cut to MAX_SELECTION_CHARS here, before it
+ * crosses. Fields whose type has no selection API (email, number) throw on `selectionStart` and fall
+ * back to the document's selection, which Chromium keeps empty for a password field anyway.
  */
 export const SELECTION_SCRIPT = `(() => {
   const cap = ${MAX_SELECTION_CHARS};
-  let el = document.activeElement;
-  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  let doc = document;
+  let el = doc.activeElement;
+  for (let n = 0; el && n < ${MAX_FOCUS_STEPS}; n++) {
+    if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+    const frame = typeof el.tagName === 'string' ? el.tagName.toUpperCase() : '';
+    if (frame !== 'IFRAME' && frame !== 'FRAME') break;
+    let inner = null;
+    try { inner = el.contentDocument; } catch (e) {}
+    if (!inner) break;
+    doc = inner;
+    el = doc.activeElement;
+  }
   const tag = el && typeof el.tagName === 'string' ? el.tagName.toUpperCase() : '';
   if (tag === 'INPUT' && String(el.type).toLowerCase() === 'password') return '';
   if (tag === 'INPUT' || tag === 'TEXTAREA') {
@@ -177,7 +197,7 @@ export const SELECTION_SCRIPT = `(() => {
       }
     } catch (e) {}
   }
-  const selection = getSelection();
+  const selection = doc.getSelection();
   return selection ? String(selection).slice(0, cap) : '';
 })()`
 

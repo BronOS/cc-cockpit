@@ -11,11 +11,24 @@ own route; the deepest focused cross-site frame for copy) through an isolated wo
 session (`main/webview/page-input.ts` `scriptAt` / `scriptIn` / `scriptInFocus`, design-web-browser.md §4.1 and §4.4;
 proven on macOS and the Linux VM, Electron 45.1.0, 2026-11-20, by `scripts/offscreen-input-check.mjs`). Left:
 
-- Same-site (same-process) iframes: a `<select>` inside one is still keyboard-only (`hitScript`'s `elementFromPoint`
-  stops at the frame element, and the router's route for that press is the top document's), and text selected inside
-  one is not copied (`SELECTION_SCRIPT` reads the top document's own selection). Doing it: descend same-origin
-  `contentDocument`s in the two scripts, the point mapped through the frame element's box (its border, padding and
-  transform) for the hit test.
+- Same-site but cross-origin iframes (another port or subdomain of the page's site), and sandboxed ones without
+  allow-same-origin that Chromium keeps in the parent's process: a `<select>` inside one is still keyboard-only and
+  its selected text is not copied. Same-origin iframes work since 2026-11-20 (`hitScript` and `SELECTION_SCRIPT` step
+  through `contentDocument`, design-web-browser.md §4.4), but the isolated world reads no cross-origin document, and
+  the router's route for such a press is the parent document's. Doing it: in `page-input.ts`, when a script's
+  document holds the press's (or the focus's) frame element and that element's `contentDocument` is null, resolve its
+  `frameId` (`DOM.describeNode`, as the focus walk does), make the world in that frame by id on the owning session
+  (`Page.createIsolatedWorld { frameId }`, the `loaderId` bracket read on the same frame id), map the point through
+  the frame element's content quad (`DOM.getContentQuads`, the router's three-corner rule), and bind the popup's
+  `ScriptFrame` to (lane, frame id, loaderId) so the choice runs there or nowhere.
+- A sandboxed iframe (allow-scripts only) that Chromium isolates in its own process (Electron 45.1.0 does on macOS
+  and Linux, `scripts/offscreen-input-check.mjs` D, 2026-11-20): copy worked in it on both, and on macOS its select
+  got a popup, but in the one Linux VM run the press went to the page (no popup). One observation, not looked into;
+  the check prints it. Next step: press D's select a second time on the VM; a popup then means the frame's first
+  script missed the 50 ms hit deadline (a world made cold), none means a real gap in the route to that frame.
+- A same-origin iframe under a transform other than a translation (scale, rotation, skew, 3D, `zoom`, an SVG
+  ancestor): the scripts refuse it (no popup; the press goes to the page), since the DOM gives no box corners to
+  invert through. The route above (`DOM.getContentQuads` on the frame element) would map it exactly.
 - A frame under a perspective transform is not routed into (the router maps through three corners of its box, exact
   for translate, scale, rotate and skew only, and refuses a box that is no parallelogram): its parent takes the event,
   and a select in it gets no popup. A homography inverse would route it.
@@ -28,6 +41,12 @@ proven on macOS and the Linux VM, Electron 45.1.0, 2026-11-20, by `scripts/offsc
 - Copy after the focus moves mid-walk: the walk finds frame A, a page script focuses B during the remaining round
   trips, and the read takes A's selection. That is text the person really selected in A. Later; the fix would be a
   re-check of the focus after the read (codex review, 2026-11-20).
+- Accepted, not a bug (codex review 2026-11-20), each because a same-origin frame is its parent's origin and gains
+  nothing the parent's own document cannot already do: a select partly outside its same-origin iframe's box anchors
+  the popup at its whole rectangle, beyond the frame (the parent can place a select there anyway); a zero-size or
+  hidden same-origin frame can hold the focused selection copy reads (a page can focus a hidden input and select text
+  in its own document); a kept select the page moves into another document is still chosen by the old popup (the
+  page moved its own element).
 - Accepted, not a bug: a frame that navigates between the route's hit test and the script gets the hit script in its
   replacement document at the same frame-relative point. A browser does the same (a press lands in whatever document
   the frame holds) (codex review, 2026-11-20).

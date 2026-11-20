@@ -1036,13 +1036,16 @@ toolbar (back, forward, reload, URL and title, the load error) behave as on the 
   Cmd+arrows and Cmd+Backspace; the shell's own chords stay with the shell), all of it inside embedded cross-site
   frames too (a video player, a sign-in or payment form), typing including IME, dead keys and non-ASCII text, paste (Ctrl/Cmd+V),
   copy and cut (Ctrl/Cmd+C/X: the selection where the page's focus is goes to your clipboard, inside an embedded
-  cross-site frame too), and `<select>` dropdowns, in the page and inside embedded cross-site frames (the browser draws
+  cross-site or same-origin frame too), and `<select>` dropdowns, in the page and inside embedded cross-site and
+  same-origin frames (the browser draws
   its own list over the select; the page sees focus, `input` and `change`, not the mouse events of that click).
 - *What does not:* file uploads (a file input does nothing), downloads, drag and drop into the page, sound, camera and
   other permissions, and URL overlays (`ccc overlay --url`, still refused). The page's own `alert`, `confirm` and
   `prompt` are silenced (`alert` returns at once, `confirm` answers no, `prompt` throws in the page). A `<select>`
-  inside a same-site iframe or a closed shadow root, and a `multiple` or `size` > 1 list, are keyboard-only (focus it,
-  arrows, Enter); text selected inside a same-site iframe is not copied by Ctrl/Cmd+C. A Mac's Option+arrows and
+  inside a same-site but cross-origin iframe (another port or subdomain of the same site), a sandboxed iframe (one
+  kept in the page's process always; an isolated one was seen keyboard-only on a Linux server), a same-origin iframe that is scaled, rotated or otherwise transformed beyond a move, or a closed
+  shadow root, and a `multiple` or `size` > 1 list, are keyboard-only (focus it, arrows, Enter); text selected inside
+  such a frame is not copied by Ctrl/Cmd+C or cut. A Mac's Option+arrows and
   Option+Backspace (by word) work only on a macOS server, and a Mac's Ctrl+E and Ctrl+K on none. A touch drag on a phone
   is a mouse drag. A link that opens a new window (`window.open`,
   `target="_blank"`) becomes a link notice to click; it never opens a tab by itself.
