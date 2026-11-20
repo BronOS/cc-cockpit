@@ -15,7 +15,8 @@
 //                                                 `ccPanel.view.access`. Both are UI hints only: the
 //                                                 plugin's host learns the access from main's tag.
 //   { type: 'cc-plugin.theme', theme: { kind, vars }, mac }   the app's theme, again on every change;
-//                                                 `mac` is the shell's platform (no scrollbar rule there)
+//                                                 `mac` is the shell's platform (no scrollbar rule there:
+//                                                 the edge shadows only, scroll-edges-core.ts)
 //   { type: 'cc-plugin.slot', slot: { type } }     the page is a slot frame of that type (sent once, with
 //                                                 the port); from then on `ccPanel.slot` exists
 //   { type: 'cc-plugin.tab', tab: { type }, keys? } the page is a page tab of that type (sent before every
@@ -43,6 +44,8 @@
 // Messages on the port are ONE JSON string each, the format of the host side (host/ctx/ui.ts), with
 // the same 1 MiB cap. A page may post before its port arrived (it usually does, at load): those
 // wait in a bounded queue and go out, in order, once it does.
+
+import { BASE_SCROLLBAR_CSS, SCROLL_EDGES_CSS } from './scroll-edges-core'
 
 export const MAX_PANEL_MESSAGE_LENGTH = 1024 * 1024
 /** Posts kept while the page has no port yet; more is a page in a loop, not a page loading. */
@@ -101,7 +104,7 @@ export interface ThemeRoot {
 /**
  * Where the SDK's stylesheets go: in the browser, each `install` is a constructable sheet adopted
  * after the SDK's earlier ones and before the page's own (`sdkSheetsFirst`), so the order is the
- * components, then the scrollbars, then whatever the page adopts.
+ * components, then the scroll edges, then the scrollbars, then whatever the page adopts.
  */
 export interface BaseStyles {
   install(css: string): void
@@ -116,16 +119,9 @@ export function sdkSheetsFirst<T>(sdk: readonly T[], current: readonly T[]): T[]
   return [...sdk, ...current.filter((sheet) => !sdk.includes(sheet))]
 }
 
-/**
- * Thin themed scrollbars for every plugin page, at zero specificity (`:where`) so the plugin's own
- * CSS wins. The same rule, for the shell, is in src/renderer/styles.css. `scrollbar-color` inherits,
- * `scrollbar-width` does not, hence the `*`. Not installed on macOS (the theme message's `mac`): its
- * overlay scrollbars already look right, and these properties turn them into always-visible classic bars.
- */
-export const BASE_SCROLLBAR_CSS =
-  ':where(:root) { scrollbar-color: color-mix(in srgb, var(--cc-fg, #888) 22%, transparent) transparent; }\n' +
-  ':where(*) { scrollbar-width: thin; }\n' +
-  ':where(*:hover) { scrollbar-color: color-mix(in srgb, var(--cc-fg, #888) 38%, transparent) transparent; }'
+// The scrollbar and edge-shadow sheets (edges-only scrolling) live in scroll-edges-core.ts, shared
+// with the shell; the page script that marks scroll containers for them is scroll-edges.ts.
+export { BASE_SCROLLBAR_CSS, SCROLL_EDGES_CSS }
 
 /** `ccPanel.slot`: present when the page is shown as a slot (design-next §2). */
 export interface SlotPageApi {
@@ -316,9 +312,9 @@ export class PanelClient {
   readonly api: PanelApi
 
   /**
-   * `componentsCss` is the app's component stylesheet (src/sdk/components.css), installed at once:
-   * unlike the scrollbars it does not wait for the theme message (it is on macOS too, and a page
-   * should not draw its first frame with bare controls). Its colours are theme variables, which
+   * `componentsCss` is the app's component stylesheet (src/sdk/components.css), installed at once
+   * (then the scroll edges): unlike the scrollbars it does not wait for the theme message (it is on
+   * macOS too, and a page should not draw its first frame with bare controls). Its colours are theme variables, which
    * resolve when the theme lands on `:root`.
    */
   constructor(
@@ -348,6 +344,15 @@ export class PanelClient {
         styles.install(componentsCss)
       } catch (err) {
         this.warn(`could not install the component styles: ${errorText(err)}`)
+      }
+    }
+    // The edge shadows go on at once, on every platform (macOS too); only the bars wait for the
+    // theme, which says whether this is macOS.
+    if (styles) {
+      try {
+        styles.install(SCROLL_EDGES_CSS)
+      } catch (err) {
+        this.warn(`could not install the scroll edges: ${errorText(err)}`)
       }
     }
     // A getter with no setter on a frozen object: the page reads what the shell said and cannot

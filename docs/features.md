@@ -237,7 +237,10 @@ behind it are in [design.md](design.md).
   shell tab with `ctx.sessions.openShell` (the person's "+" > shell: their login shell, with no command or environment
   from the plugin). Both take a cwd inside the project folder (checked by real path), open unselected unless the
   plugin passes `focus: true` for a click, and share one budget of 5 a minute per plugin.
-- Thin themed scrollbars in the shell and in every plugin page (overridable by the plugin; macOS keeps its overlay scrollbars).
+- Edges-only scrolling in the shell and in every plugin page: no scrollbar at rest, a dark shadow at the top or bottom edge
+  while content is hidden past it (with a light line along it on dark themes), the thin bar while scrolling (gone about
+  a second later) or with the pointer near the right edge; the bar's strip is always reserved, so rows never shift.
+  Overridable by the plugin; macOS keeps its overlay scrollbars and gets only the edges.
 - Themes, commands, a command palette and editable keybindings, a Settings screen (`Cmd+,`) with one page per
   kind of setting, each setting on exactly one: General (tabs, side panels, notifications and sound, session gist,
   app-wide new-tab commands, the `ccc` command line, updates), Appearance (theme, window background, tab close
