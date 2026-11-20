@@ -2515,3 +2515,37 @@ test('a queued delivery is told from the prompt before the delivered ask, not fr
   assert.equal(store.get('draft:a.js').notes.length, 1, 'kept until a newer prompt carries it')
   host.deactivate()
 })
+
+test('a queued Discuss delivered while the file\'s review is open again clears the sent notes from its draft and copies too', async () => {
+  const tab = { tabId: 't1', status: 'working', lastPrompt: 'earlier work' }
+  const changes = []
+  const { f, store, h } = await sharedReview({ sessions: { list: async () => [tab], onChange: (l) => (changes.push(l), () => {}) } })
+  h.say({ type: 'draft', draft: { global: 'g', notes: [{ id: 'a', ...lineNote('sent') }, { id: 'b', ...lineNote('edit me') }] } })
+  const { text } = await h.discussFn()
+  h.end({ kind: 'discussed', tabId: 't1', queued: true })
+  await wait(50)
+  // Reopened while queued: its draft is the host's, with a copy of a write guest's beside the owner's.
+  await f.provided.reviewer.open('a.js')
+  await wait(0)
+  const h2 = f.handles[1]
+  const ann = h2.connect(WRITER)
+  const idA = h.idOf(OWNER.copy, 'a')
+  h2.sayAs(OWNER, { type: 'note-change', id: h.idOf(OWNER.copy, 'b'), text: 'edited' })
+  h2.sayAs(WRITER, { type: 'note-add', tag: '~0', note: lineNote('new') })
+  changes.at(-1)([{ ...tab, lastPrompt: `About: Review: a.js\nFile: a.js\n\n${text}` }])
+  await wait(30)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['edited', 'new'])
+  assert.equal(store.get('draft:a.js').global, '')
+  assert.deepEqual(lastOf(ann, 'note-deleted'), { type: 'note-deleted', id: idA })
+  assert.deepEqual(lastOf(ann, 'global'), { type: 'global', text: '' })
+  assert.ok(h2.posts.some((m) => m.type === 'note-deleted' && m.id === idA), 'the owner\'s copy is told too')
+  // The open draft's next save does not bring the sent notes back.
+  h2.sayAs(WRITER, { type: 'note-add', tag: '~1', note: lineNote('later') })
+  await wait(SAVE_WAIT)
+  assert.equal(store.get('draft:a.js').global, '')
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['edited', 'new', 'later'])
+  h2.end({ kind: 'dismissed' })
+  await wait(30)
+  assert.deepEqual(store.get('draft:a.js').notes.map((n) => n.text), ['edited', 'new', 'later'])
+  host.deactivate()
+})

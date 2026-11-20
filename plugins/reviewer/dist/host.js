@@ -563,6 +563,11 @@ exports.activate = (ctx) => {
         // Only what was sent goes (by note id and text, the global note when unchanged): a note added since
         // (the editor's addNote works while the overlay is closed) or an edit from a reopened review stays.
         const gone = await serialNotes(draftKey, async () => {
+          // An open review of the file holds its own draft (the host's, written on each change): it drops
+          // the sent notes too, or its next save would bring them back.
+          for (const entry of open.values()) {
+            if (entry.draftKey === draftKey && typeof entry.dropSent === 'function') await entry.dropSent(sentDraft)
+          }
           const now = review.cleanDraft(await ctx.storage.get(draftKey))
           const left = review.subtractSent(now, sentDraft)
           if (left.notes.length === now.notes.length && left.global === now.global) return false
@@ -967,6 +972,25 @@ exports.activate = (ctx) => {
       return saving
     }
     flushers.add(flush)
+    /**
+     * A queued Discuss of this file was delivered (watchQueued): what it sent leaves this open draft too, by
+     * the same rule as storage's (review.subtractSent), and every copy is told (`note-deleted`, `global`).
+     * Else the draft, the host's, still held the sent notes and wrote them back on its next save. Resolves
+     * once the draft is written, so storage and the open draft agree.
+     */
+    entry.draftKey = draftKey
+    entry.dropSent = (sent) => {
+      const left = review.subtractSent(draft, sent)
+      if (left.notes.length === draft.notes.length && left.global === draft.global) return Promise.resolve()
+      const kept = new Set(left.notes.map((n) => n.id))
+      const all = (c) => c.inited
+      for (const n of draft.notes) if (!kept.has(n.id)) page.each({ type: 'note-deleted', id: n.id }, all)
+      if (left.global !== draft.global) page.each({ type: 'global', text: left.global }, all)
+      draft = left
+      markDiscuss(draft)
+      pending = draft
+      return flush()
+    }
 
     /**
      * Resolves once every editing copy up now said its ops are all out (`draft-sync`: it answers after the
