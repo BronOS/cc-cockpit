@@ -588,17 +588,29 @@ export interface UiApiDeps {
    * sent as an overlay call's `via`. Absent, or one that throws: none.
    */
   callers?(): string[]
+  /**
+   * Whether an id is one of this host's plugins (ServiceRegistry.knows): sources are filtered to these before
+   * anything else. Absent: every non-empty string is kept, and a list past MAX_OVERLAY_SOURCES throws instead.
+   */
+  isHostPlugin?(pluginId: string): boolean
 }
 
 /**
- * Sources as main takes them: strings only, each once, at most MAX_OVERLAY_SOURCES (the rest dropped;
- * main checks every id against its host's plugins again).
+ * Sources as main takes them: this host's plugins only (`isHostPlugin`), each once. Never cut to a bound: `via`
+ * only narrows who sees an overlay, so a dropped source would fail open (a guest kept seeing content shown for a
+ * hidden plugin; Task 4 review). Filtered first, the list is bounded by the host's plugin count, which main
+ * accepts; ids that name nothing are dropped before they could use up anything. With no filter wired, a list
+ * past MAX_OVERLAY_SOURCES throws at the call site (fail closed) rather than lose an id.
  */
-function cleanSources(ids: readonly unknown[]): string[] {
+function cleanSources(ids: readonly unknown[], isHostPlugin?: (id: string) => boolean): string[] {
   const out = new Set<string>()
   for (const id of ids) {
-    if (out.size >= MAX_OVERLAY_SOURCES) break
-    if (typeof id === 'string' && id !== '') out.add(id)
+    if (typeof id !== 'string' || id === '') continue
+    if (isHostPlugin !== undefined && !isHostPlugin(id)) continue
+    out.add(id)
+  }
+  if (isHostPlugin === undefined && out.size > MAX_OVERLAY_SOURCES) {
+    throw new RangeError(`overlay sources: more than ${MAX_OVERLAY_SOURCES} plugin ids`)
   }
   return [...out]
 }
@@ -633,12 +645,14 @@ export function createUiApi(
 
   /** `{ via }` for the call being made now (the service chain at this call site), nothing outside a service call. */
   const viaNow = (): { via?: string[] } => {
-    let chain: string[]
+    let raw: string[]
     try {
-      chain = cleanSources(deps.callers?.() ?? [])
+      raw = deps.callers?.() ?? []
     } catch {
-      chain = []
+      raw = []
     }
+    // Outside the try: a list that cannot be sent whole throws at the plugin's call site (fail closed).
+    const chain = cleanSources(raw, deps.isHostPlugin)
     return chain.length > 0 ? { via: chain } : {}
   }
 
@@ -732,7 +746,7 @@ export function createUiApi(
       // Any kind (a terminal overlay has a title too). Checked at the call site; main keeps only this host's plugins.
       addSources: (pluginIds: string[]): void => {
         if (!Array.isArray(pluginIds)) throw new TypeError('overlay addSources needs an array of plugin ids')
-        const ids = cleanSources(pluginIds)
+        const ids = cleanSources(pluginIds, deps.isHostPlugin)
         if (!link || link.ended || ids.length === 0) return
         deps.alive()
         // Fire and forget like post, and on the same port before it: a post after this call reaches main

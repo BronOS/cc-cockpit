@@ -231,6 +231,20 @@ export interface OverlayManagerOptions {
    */
   mayConnectCopy?(windowId: number, overlayId: string, viewId: ViewId): boolean
   /**
+   * The port a view that is not the owner's has to the opener for this overlay's copies, read live for every
+   * page message (D-17, as panels: shared/guest-access.ts guestPort): `full` passes them to the opener; `oneWay`
+   * (a read guest of a plugin that is not `guests.aware`) and anything else drops them, so a plugin that never
+   * checks `access` cannot be driven by a watcher. The opener's posts still reach the copy. Absent: no guest
+   * page's message ever reaches the opener (fail closed). Owner views never ask.
+   */
+  copyPort?(windowId: number, overlayId: string, viewId: ViewId): 'none' | 'oneWay' | 'full'
+  /**
+   * The guest behind a view (ViewRegistry.whoOf; main's own, never a payload's), undefined for the owner's and
+   * a gone view: a guest's hide of a perView overlay is recorded under it, so the overlay stays off every view of
+   * that guest, a reconnect's new view included. Absent: no hide is recorded (each hide only releases its copy).
+   */
+  guestOf?(viewId: ViewId): string | undefined
+  /**
    * Main dropped a copy for its view (its queue overflowed, see `deliverToCopy`): that view's shell
    * reloads the page, which connects again as a new copy. Absent: the copy is only dropped, and the
    * view's page stays as it is until it reconnects by itself.
@@ -268,6 +282,9 @@ export interface CopyState {
   /** Its loader went (its port for `ready: 'load'`, its page's `ccPanel.ready()` for `manual`). */
   loaded: boolean
 }
+
+/** How many released copies an overlay remembers the view of (copyViewOf): the events about them go out at once. */
+const RETIRED_COPIES = 32
 
 /**
  * What opened an overlay (design-guests §9, spec-review 16): the tab a `ccc` call came from (CliCall.tabId, main's)
@@ -577,6 +594,8 @@ interface OverlayCopy {
   loaded: boolean
   /** Posts while its port is not up, with today's bounds (OverlayOutbox); drained at `copyReady`. */
   outbox: OverlayOutbox
+  /** A page message it sent was dropped for its one-way port: logged once per copy. */
+  oneWayLogged?: boolean
 }
 
 interface PerViewState {
@@ -586,6 +605,20 @@ interface PerViewState {
   connects: Map<ViewId, { times: number[]; logged: boolean }>
   /** A release naming no live copy of that view was logged: once per overlay, so a loop is one line. */
   staleLogged: boolean
+  /**
+   * Guests (by id, OverlayManagerOptions.guestOf) who hid the overlay: a read guest's ✕ (`releaseCopy` with
+   * `hide`) or the opener's `hideCopy` of a guest's copy. Keyed by the guest, not the view: a reconnect is a new
+   * view id, and the overlay must not come back on it (docs/design-overlay-views.md §5 "✕ and results"). Lives
+   * as long as the overlay; at most one entry per guest. Never set by a growth release (`addSources`), which is
+   * visibility and lifts when the owner shows the plugin.
+   */
+  hiddenFrom: Set<string>
+  /**
+   * The views of the most recently released copies (copy id -> view, oldest first, RETIRED_COPIES at most): an
+   * `overlays.hide` or `overlays.reload` goes out right after its copy is released, and the guest sink checks the
+   * copy against the receiving view by this record (copyViewOf), never by the payload alone.
+   */
+  retired: Map<string, ViewId>
 }
 
 /** A click's key in `running`. */
@@ -749,7 +782,7 @@ export class OverlayManager {
     if (parsed.kind === 'html' && options?.perView === true) {
       // No holder: each view's copy has its own loader (copyState), so the window-wide one never shows,
       // and nothing here may stamp `heldBy` or `waiting` (no view is "the" page's, D-1).
-      overlay.perView = { copies: new Map(), connects: new Map(), staleLogged: false }
+      overlay.perView = { copies: new Map(), connects: new Map(), staleLogged: false, hiddenFrom: new Set(), retired: new Map() }
       const info = { ...overlay.info, perView: true as const }
       delete info.loading
       overlay.info = info
@@ -1323,8 +1356,11 @@ export class OverlayManager {
     // to another window's view or to a browser that left during the caller's awaits.
     const ofWindow = isRemoteViewId(viewId) ? (this.options.isViewLive?.(viewId, windowId) ?? true) : viewId === desktopViewId(windowId)
     if (!ofWindow) return { ok: false, reason: 'not-allowed' }
-    if (!this.ownerView(viewId) && this.options.mayConnectCopy?.(windowId, overlay.id, viewId) !== true) {
-      return { ok: false, reason: 'not-allowed' }
+    if (!this.ownerView(viewId)) {
+      // A guest that hid it never gets it back (also in the wiring's rule; checked here so no wiring can skip it).
+      const guest = this.options.guestOf?.(viewId)
+      if (guest !== undefined && overlay.perView.hiddenFrom.has(guest)) return { ok: false, reason: 'not-allowed' }
+      if (this.options.mayConnectCopy?.(windowId, overlay.id, viewId) !== true) return { ok: false, reason: 'not-allowed' }
     }
     if (!this.withinCopyCap(overlay, overlay.perView, viewId)) return { ok: false, reason: 'cap' }
     for (const old of [...overlay.perView.copies.values()]) if (old.view === viewId) this.dropCopy(overlay, old)
@@ -1363,11 +1399,16 @@ export class OverlayManager {
    * The shell let go of a copy (its page unmounted or reloads, a read guest hid it): the opener hears
    * its disconnect. True when it was `viewId`'s live copy; anything else (gone, replaced, another
    * view's, made up) is a no-op, logged once per overlay so a looping page is one line.
+   *
+   * `hide` (the router's, for a read guest's release, docs/design-overlay-views.md §5): the release is that
+   * guest's ✕, so the hide is recorded too (recordHide): the overlay leaves every view of that guest and does
+   * not come back, on a list or a reconnect. Only for a live copy of `viewId`: a made-up id hides nothing.
    */
-  releaseCopy(windowId: number, overlayId: string, viewId: ViewId, copy: unknown): boolean {
+  releaseCopy(windowId: number, overlayId: string, viewId: ViewId, copy: unknown, options?: { hide?: boolean }): boolean {
     const found = this.liveCopy(windowId, overlayId, viewId, copy)
     if (found) {
       this.dropCopy(found.overlay, found.copy)
+      if (options?.hide === true) this.recordHide(found.overlay, viewId)
       return true
     }
     const perView = this.find(windowId, overlayId)?.perView
@@ -1415,6 +1456,23 @@ export class OverlayManager {
     const found = this.liveCopy(windowId, overlayId, viewId, copy)
     if (!found?.overlay.channel) return false
     const { overlay } = found
+    // D-17, read live for every message: a guest's copy talks to the opener only over a full port. A one-way
+    // copy (a read guest of a plugin that is not guests.aware) still gets the opener's posts.
+    if (!this.ownerView(viewId)) {
+      let port: string | undefined
+      try {
+        port = this.options.copyPort?.(windowId, overlay.id, viewId)
+      } catch (err) {
+        this.log(`overlay ${overlay.id}: reading view ${viewId}'s port failed: ${String(err)}`)
+      }
+      if (port !== 'full') {
+        if (!found.copy.oneWayLogged) {
+          found.copy.oneWayLogged = true
+          this.log(`overlay ${overlay.id}: copy ${found.copy.id} of view ${viewId} is one-way; dropped its page messages (logged once)`)
+        }
+        return false
+      }
+    }
     if (typeof text !== 'string' || text.length > MAX_OVERLAY_MESSAGE_LENGTH) {
       this.log(`overlay ${overlay.id}: dropped a page message: not a JSON string of at most ${MAX_OVERLAY_MESSAGE_LENGTH} chars`)
       return false
@@ -1476,15 +1534,60 @@ export class OverlayManager {
    * `overlays.hide` goes to that copy's view only, which unloads it and takes the overlay off its stack.
    * Looked up by the copy id alone: the opener names copies, not views, and the view is the copy's own
    * record. Released even when the view cannot take the event (it is going anyway). False for an
-   * overlay that is gone or not perView, or a copy that is not live. Recording the hide so the overlay
-   * stays off that view's stack is the read guest's rule (Task 5 of the plan), not this call's.
+   * overlay that is gone or not perView, or a copy that is not live. A guest's copy: the hide is recorded
+   * for that guest (recordHide), so the overlay stays off its stack, on every view and after a reconnect. An
+   * owner's copy is only released: the owner's views get every overlay (D-1), and the shell keeps its own hide.
    */
   hideCopy(windowId: number, overlayId: string, copy: unknown): boolean {
     const overlay = this.find(windowId, overlayId)
     const c = typeof copy === 'string' ? overlay?.perView?.copies.get(copy) : undefined
     if (!overlay || !c?.live) return false
     this.hideCopyRecord(overlay, c)
+    if (!this.ownerView(c.view)) this.recordHide(overlay, c.view)
     return true
+  }
+
+  /**
+   * Whether the guest `guestId` hid this perView overlay (a read guest's ✕, the opener's hideCopy of its copy).
+   * The wiring's visibility rule reads it (guest-wiring.ts overlayVisible), so the guest's list, `ready`
+   * snapshot, events and connects all drop the overlay alike. False for an unknown overlay or one not perView.
+   */
+  hiddenFrom(windowId: number, overlayId: unknown, guestId: string): boolean {
+    return this.find(windowId, overlayId)?.perView?.hiddenFrom.has(guestId) === true
+  }
+
+  /**
+   * The plugin that opened the overlay (main's record, from the host call it checked; never the spec): the one
+   * whose guest port decides a guest's copy (guest-wiring.ts mayConnectCopyOf). Undefined for the CLI's, core's
+   * and an unknown overlay.
+   */
+  openerPluginOf(windowId: number, overlayId: unknown): string | undefined {
+    return this.find(windowId, overlayId)?.pluginId
+  }
+
+  /**
+   * The view a copy of this perView overlay belongs to, live or among the last released (RETIRED_COPIES): the
+   * guest sink passes `overlays.message`, `.hide` and `.reload` to a view only for its own copies, decided by this
+   * record rather than by the event's payload (`overlays.hide` goes out after its copy is released).
+   */
+  copyViewOf(windowId: number, overlayId: unknown, copy: unknown): ViewId | undefined {
+    const perView = this.find(windowId, overlayId)?.perView
+    if (!perView || typeof copy !== 'string') return undefined
+    return perView.copies.get(copy)?.view ?? perView.retired.get(copy)
+  }
+
+  /**
+   * A guest hid the overlay from `viewId`: recorded under the guest (not the view, which a reconnect replaces),
+   * that guest's other copies released with `overlays.hide` to their views, and the list sent again, which the
+   * guest filter now drops it from for that guest. No-op for an owner's view or with no `guestOf` wired.
+   */
+  private recordHide(overlay: Overlay, viewId: ViewId): void {
+    const perView = overlay.perView
+    const guest = this.options.guestOf?.(viewId)
+    if (!perView || guest === undefined || perView.hiddenFrom.has(guest)) return
+    perView.hiddenFrom.add(guest)
+    for (const other of [...perView.copies.values()]) if (this.options.guestOf?.(other.view) === guest) this.hideCopyRecord(overlay, other)
+    this.changed(overlay.windowId)
   }
 
   /** hideCopy's work on a live copy: released, then `overlays.hide` to its view only (also addSources' release). */
@@ -1517,6 +1620,12 @@ export class OverlayManager {
   private dropCopy(overlay: Overlay, copy: OverlayCopy): void {
     if (!copy.live || overlay.perView?.copies.get(copy.id) !== copy) return
     overlay.perView.copies.delete(copy.id)
+    const retired = overlay.perView.retired
+    retired.set(copy.id, copy.view)
+    for (const old of retired.keys()) {
+      if (retired.size <= RETIRED_COPIES) break
+      retired.delete(old)
+    }
     copy.live = false
     copy.outbox.drain()
     try {

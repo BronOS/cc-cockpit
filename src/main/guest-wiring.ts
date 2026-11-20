@@ -9,7 +9,7 @@
 
 import type { GuestOnlyAccess } from '../shared/guests'
 import type { SlotHost } from '../shared/slots'
-import { desktopViewId, type ViewId, type Who } from '../shared/views'
+import { desktopViewId, type GuestRole, type ViewId, type Who } from '../shared/views'
 import { askInfoFrom, downloadOfferSource, trashAskSource } from './asks/guest-asks'
 import type { GuestService, PluginGuestAccessService, PresenceService } from './ipc/guest-deps'
 import type { GuestRouterDeps, GuestTabDeps } from './ipc/router'
@@ -28,8 +28,8 @@ export interface GuestRouterSources {
   presence: PresenceFeed
   pluginAccess: PluginGuestAccessService
   windowIdOf(projectId: string): number | undefined
-  /** OverlayManager.visibleTo: an overlay opened from a tab or plugin the guest sees. */
-  overlays: { visibleTo(windowId: number, overlayId: string, tabVisible: (tabId: string) => boolean, pluginVisible: (pluginId: string) => boolean): boolean }
+  /** OverlayManager's visibility record: visibleTo (origin and via) and hiddenFrom (the guest's own hides). */
+  overlays: OverlayVisibilitySource
   /** LayoutService.slotFrame: the slot frame's record, whose page is `info.pluginId`'s, placed by `host`. */
   slotFrame(projectId: string, frameId: string): { info: { pluginId: string }; host: SlotHost } | undefined
   /** TrashAsks.pluginOf: the plugin behind a pending trash ask. */
@@ -55,23 +55,85 @@ export function guestRouterDeps(s: GuestRouterSources): Required<GuestRouterDeps
       if (frame.host.kind === 'panel' && !s.guests.pluginVisible(projectId, frame.host.pluginId)) return undefined
       return frame.info.pluginId
     },
-    overlayVisible: (projectId: string, overlayId: string, access: GuestOnlyAccess) => {
-      const windowId = s.windowIdOf(projectId)
-      return (
-        windowId !== undefined &&
-        s.overlays.visibleTo(
-          windowId,
-          overlayId,
-          (tabId) => s.guests.tabVisible(access.id, tabId),
-          (pluginId) => s.guests.pluginVisible(projectId, pluginId)
-        )
-      )
-    },
+    overlayVisible: overlayVisibleOf(s),
     // Only trash asks and download offers can be a guest's (asks/guest-asks.ts); any other id is unknown, refused.
     askInfo: askInfoFrom([trashAskSource(s.trashAsks), downloadOfferSource(s.downloads)]),
     personOf: (viewId) => s.presence.personOf(viewId),
     projectRoot: (projectId) => s.projectPath(projectId)
   }
+}
+
+/** What the overlay visibility rule reads from OverlayManager. */
+export interface OverlayVisibilitySource {
+  visibleTo(windowId: number, overlayId: string, tabVisible: (tabId: string) => boolean, pluginVisible: (pluginId: string) => boolean): boolean
+  hiddenFrom(windowId: number, overlayId: string, guestId: string): boolean
+}
+
+/**
+ * The one overlay rule for a guest (design-guests §9, docs/design-overlay-views.md §4, §5), shared by the router's
+ * target check, the guest sink's filters (index.ts guestSources) and a copy's connect (mayConnectCopyOf), so they
+ * cannot drift apart: opened from a tab the guest sees or by a plugin it sees, every plugin of `via` visible to it
+ * (D-4), and not hidden by that guest (its ✕ on a perView overlay). Read live on every call.
+ */
+export function overlayVisibleOf(s: {
+  guests: Pick<GuestService, 'tabVisible' | 'pluginVisible'>
+  windowIdOf(projectId: string): number | undefined
+  overlays: OverlayVisibilitySource
+}): (projectId: string, overlayId: string, access: GuestOnlyAccess) => boolean {
+  return (projectId, overlayId, access) => {
+    const windowId = s.windowIdOf(projectId)
+    if (windowId === undefined) return false
+    if (s.overlays.hiddenFrom(windowId, overlayId, access.id)) return false
+    return s.overlays.visibleTo(
+      windowId,
+      overlayId,
+      (tabId) => s.guests.tabVisible(access.id, tabId),
+      (pluginId) => s.guests.pluginVisible(projectId, pluginId)
+    )
+  }
+}
+
+/** What a guest's copy of a perView overlay is decided from (index.ts wires main's live services). */
+export interface OverlayCopySources {
+  whoOf(viewId: ViewId): Who | undefined
+  guests: Pick<GuestService, 'access'>
+  windowIdOf(projectId: string): number | undefined
+  /** overlayVisibleOf over the same services. */
+  overlayVisible(projectId: string, overlayId: string, access: GuestOnlyAccess): boolean
+  /** OverlayManager.isPerView / openerPluginOf. */
+  overlays: { isPerView(windowId: number, overlayId: string): boolean; openerPluginOf(windowId: number, overlayId: string): string | undefined }
+  /** PluginGuestAccessStore.port (shared/guest-access.ts guestPort, D-17). */
+  port(projectId: string, pluginId: string, role: GuestRole): 'none' | 'oneWay' | 'full'
+}
+
+/**
+ * The port a guest's view has to a perView overlay's opener now, read live (GuestStore, the plugin's guest
+ * setting): `none` unless the view is a live guest of the overlay's own window's project, the overlay is perView
+ * and visible to that guest (overlayVisibleOf: origin, via, its hides) and the opener plugin's guest port is not
+ * `none`; else that port (`oneWay` for a read guest of a plugin that is not guests.aware, D-17). An owner's view
+ * or a gone one: `none` (owner views never ask; a gone view is nobody).
+ */
+export function overlayCopyPortOf(s: OverlayCopySources): (windowId: number, overlayId: string, viewId: ViewId) => 'none' | 'oneWay' | 'full' {
+  return (windowId, overlayId, viewId) => {
+    const who = s.whoOf(viewId)
+    if (who === undefined || who === 'owner') return 'none'
+    const access = s.guests.access(who)
+    if (access.kind !== 'guest' || s.windowIdOf(access.projectId) !== windowId) return 'none'
+    if (!s.overlays.isPerView(windowId, overlayId) || !s.overlayVisible(access.projectId, overlayId, access)) return 'none'
+    const opener = s.overlays.openerPluginOf(windowId, overlayId)
+    if (opener === undefined) return 'none'
+    return s.port(access.projectId, opener, access.role)
+  }
+}
+
+/**
+ * OverlayManager's `mayConnectCopy` (docs/design-overlay-views.md §5): a guest's view may load a copy of a perView
+ * overlay exactly when its port is not `none` (overlayCopyPortOf). Owner views never ask (D-1); server mode's
+ * hidden page is the owner's and the manager refuses it before asking.
+ */
+export function mayConnectCopyOf(s: OverlayCopySources): (windowId: number, overlayId: string, viewId: ViewId) => boolean {
+  const port = overlayCopyPortOf(s)
+  return (windowId, overlayId, viewId) => port(windowId, overlayId, viewId) !== 'none'
 }
 
 export interface GuestTabSources {

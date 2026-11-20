@@ -2620,13 +2620,15 @@ export class HostApi {
 
   /**
    * The sources an overlay call names (`via`, addSources' `ids`): absent is none; anything but an array of at
-   * most MAX_OVERLAY_SOURCES entries is refused; entries that are not one of this host's plugins are dropped
+   * most MAX_OVERLAY_SOURCES entries, or the host's plugin count when larger (the host filters to its plugins
+   * and dedupes first, so a real list is never longer), is refused, never cut (a dropped source fails open); entries that are not one of this host's plugins are dropped
    * (main's own list, so nothing outside this project's host can be named), duplicates once.
    */
   private overlaySources(raw: unknown, what: string): string[] {
     if (raw === undefined) return []
     if (!Array.isArray(raw)) throw new Error(`${what}: via must be an array of plugin ids`)
-    if (raw.length > MAX_OVERLAY_SOURCES) throw new Error(`${what}: more than ${MAX_OVERLAY_SOURCES} sources`)
+    const bound = Math.max(MAX_OVERLAY_SOURCES, this.scope.plugins.length)
+    if (raw.length > bound) throw new Error(`${what}: more than ${bound} sources`)
     const out = new Set<string>()
     for (const id of raw) if (typeof id === 'string' && this.scope.plugins.some((p) => p.id === id)) out.add(id)
     return [...out]

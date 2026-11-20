@@ -39,7 +39,10 @@ export interface GuestFilterContext {
   /** `tabVisible` with the guest's live data (scope, opened tabs, plugin visibility). */
   tabVisible(tabId: string): boolean
   pluginVisible(pluginId: string): boolean
-  /** An overlay a shared tab or a visible plugin opened (OverlayManager's internal `origin`). */
+  /**
+   * The guest sees the overlay: a shared tab or a visible plugin opened it (OverlayManager's internal `origin`),
+   * AND every plugin of its `via` is visible too (D-4), and the guest did not hide it (its ✕ on a perView one).
+   */
   overlayVisible(overlayId: string): boolean
   /** The name of the person behind a view (the owner's D-24 name, or a guest's); undefined when unknown. */
   personOf(viewId: string | null): string | undefined
@@ -286,8 +289,10 @@ function guestHolder(h: PageHolder, ctx: GuestFilterContext): PageHolder {
 }
 
 /**
- * `overlays.list` / `overlays.updated`: overlays a shared tab or a visible plugin opened; other plugins'
- * type buttons only when visible; Discuss only for a write guest and only into a visible tab.
+ * `overlays.list` / `overlays.updated`: overlays a shared tab or a visible plugin opened and whose every `via`
+ * plugin is visible (D-4), less the ones this guest hid (`overlayVisible` decides all three); other plugins'
+ * type buttons only when visible; Discuss only for a write guest and only into a visible tab. A perView overlay
+ * keeps `perView` (the guest's shell loads its own copy, docs/design-overlay-views.md §5) and has no `heldBy`.
  */
 export function guestOverlays(list: readonly OverlayInfo[], ctx: GuestFilterContext): OverlayInfo[] {
   return list

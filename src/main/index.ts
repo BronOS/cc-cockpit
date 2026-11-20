@@ -207,7 +207,11 @@ import {
   guestUnsavedOf,
   offerTakerOf,
   guestMayDeliverOf,
+  mayConnectCopyOf,
+  overlayCopyPortOf,
+  overlayVisibleOf,
   ownerViewOf,
+  type OverlayCopySources,
   pageSelectTargetOf,
   pluginFocusSelectOf,
   pluginFocusViewOf,
@@ -1230,6 +1234,9 @@ function start(server: boolean): void {
       )
     }
   }
+  // A guest's copies of perView overlays read the guest services, built further down (they need `overlays`);
+  // set there before any view can connect. Until then no guest copy is admitted (fail closed).
+  const overlayCopyWiring: { sources?: () => OverlayCopySources } = {}
   const overlays: OverlayManager = new OverlayManager({
     backend: new NodePtyBackend(),
     // Server mode: the hidden page never sizes a terminal overlay nor answers it (design-web.md §9.8),
@@ -1277,9 +1284,23 @@ function start(server: boolean): void {
     pluginTitle: (pluginId) => plugins.get(pluginId)?.manifest?.name ?? pluginId,
     discuss: discussSessions,
     // perView copies (docs/design-overlay-views.md §5): owner views always get one (D-1, the manager never
-    // asks for them); a guest's view is refused until Task 5 of docs/plans/20261120-overlay-views.md wires
-    // the §4 rule (the opener and every plugin it was opened for visible to that guest, its port not `none`).
-    mayConnectCopy: () => false,
+    // asks for them); a guest's view by the §4 rule, read live on every connect and every page message
+    // (`guestStore`, `pluginGuestAccess`, defined below): the opener and every plugin it was opened for
+    // visible to that guest, not hidden by it, and the opener's guest port not `none` (one-way for a read
+    // guest of a plugin that is not guests.aware, D-17). The hidden page is refused by the manager itself.
+    mayConnectCopy: (windowId, overlayId, viewId) => {
+      const sources = overlayCopyWiring.sources
+      return sources !== undefined && mayConnectCopyOf(sources())(windowId, overlayId, viewId)
+    },
+    copyPort: (windowId, overlayId, viewId) => {
+      const sources = overlayCopyWiring.sources
+      return sources === undefined ? 'none' : overlayCopyPortOf(sources())(windowId, overlayId, viewId)
+    },
+    // A guest's hide is kept under the guest (a reconnect is a new view), main's own record of the view.
+    guestOf: (viewId) => {
+      const who = views.whoOf(viewId)
+      return who === undefined || who === 'owner' ? undefined : who.guest
+    },
     // A copy dropped for an overflowing queue: that view's shell reloads its page as a new copy (Task 8).
     reloadCopy: (viewId, _windowId, overlayId, copy) => {
       views.toView(viewId, 'overlays.reload', { overlayId, copy })
@@ -2474,16 +2495,28 @@ function start(server: boolean): void {
   guestsForget.project = (id) => guestStore.projectRemoved(id)
   pluginGuestAccess.onChange(() => guestStore.pluginAccessChanged())
   /** What a guest view's filters read (guest-events.ts guestContext): main's live tables, never the payload. */
+  // The one overlay rule (guest-wiring.ts overlayVisibleOf): the router's target check, these filters and a
+  // copy's connect all read it, so the guest's hides and `via` hold on every route.
+  const overlayVisible = overlayVisibleOf({ guests: guestStore, windowIdOf: (projectId) => windows.windowIdOf(projectId), overlays })
+  overlayCopyWiring.sources = () => ({
+    whoOf: (viewId) => views.whoOf(viewId),
+    guests: guestStore,
+    windowIdOf: (projectId) => windows.windowIdOf(projectId),
+    overlayVisible,
+    overlays,
+    port: (projectId, pluginId, role) => pluginGuestAccess.port(projectId, pluginId, role)
+  })
   const guestSources: GuestContextSources = {
     guests: guestStore,
     overlayVisible: (guestId, overlayId) => {
       const access = guestStore.access({ guest: guestId })
-      if (access.kind !== 'guest') return false
-      const windowId = windows.windowIdOf(access.projectId)
-      return (
-        windowId !== undefined &&
-        overlays.visibleTo(windowId, overlayId, (t) => guestStore.tabVisible(guestId, t), (p) => guestStore.pluginVisible(access.projectId, p))
-      )
+      return access.kind === 'guest' && overlayVisible(access.projectId, overlayId, access)
+    },
+    // The guest sink's per-copy events (overlays.message, .hide, .reload): the receiving view's own copy only,
+    // by the manager's record of which view each copy is (or was) for, never the payload's word.
+    ownCopy: (viewId, overlayId, copy) => {
+      const windowId = views.windowOf(viewId as ViewId)
+      return windowId !== undefined && overlays.copyViewOf(windowId, overlayId, copy) === viewId
     },
     personOf: (viewId) => presence.personOf(viewId),
     tabOrder: (projectId) => tabs.list(projectId).map((t) => t.id),
@@ -3676,7 +3709,7 @@ function start(server: boolean): void {
     copyLoaded: (windowId, overlayId, viewId, copy) => overlays.copyLoaded(windowId, overlayId, viewId, copy),
     copyMessage: (windowId, overlayId, viewId, copy, text) => overlays.copyMessage(windowId, overlayId, viewId, copy, text),
     copyResult: (windowId, overlayId, viewId, copy, value) => overlays.copyResult(windowId, overlayId, viewId, copy, value),
-    releaseCopy: (windowId, overlayId, viewId, copy) => overlays.releaseCopy(windowId, overlayId, viewId, copy),
+    releaseCopy: (windowId, overlayId, viewId, copy, options) => overlays.releaseCopy(windowId, overlayId, viewId, copy, options),
     // A guest's size report is remembered for its explicit take only (D-14).
     guestResize: (windowId, overlayId, cols, rows, viewId) => overlays.guestResize(windowId, overlayId, cols, rows, viewId)
   })

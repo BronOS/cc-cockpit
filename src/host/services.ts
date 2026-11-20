@@ -831,6 +831,15 @@ export class ServiceRegistry {
    * counts only while every frame after it is live (`liveChain`'s tail rule), so a stale outer
    * frame never names a consumer that is already gone. Empty outside any frame.
    */
+  /**
+   * Whether `pluginId` is one of this host's plugins now (its declarations are set from its activate, every
+   * plugin's, until it unloads): an overlay's sources are filtered to these before anything else, so ids that
+   * name nothing never use up a bound and push a real source out (docs/design-overlay-views.md §4).
+   */
+  knows(pluginId: string): boolean {
+    return this.specs.has(pluginId)
+  }
+
   callers(pluginId: string): string[] {
     const frames = this.chain.getStore()
     const last = frames?.[frames.length - 1]

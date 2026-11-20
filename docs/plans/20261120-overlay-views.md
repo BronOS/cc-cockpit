@@ -232,17 +232,49 @@ External review: sol / high
 - Modify: `test/unit/guest-class.test.ts`, `test/unit/guest-events.test.ts`, `test/unit/guest-filter.test.ts`,
   `test/unit/guest-overlays.test.ts`
 
-- [ ] `overlays.ready`, `.loaded`, `.message`, `.release` become guest `read` with the overlay target; the handlers
+- [x] `overlays.ready`, `.loaded`, `.message`, `.release` become guest `read` with the overlay target; the handlers
   refuse a non-`perView` overlay to a guest; `overlays.take` stays `no`; `overlays.result` and `.close` stay `write`
-- [ ] `overlays.message` / `overlays.hide` events pass to a guest only for its own copies; `guestOverlays` keeps
+- [x] `overlays.message` / `overlays.hide` events pass to a guest only for its own copies; `guestOverlays` keeps
   `perView` and the per-view state, honours `via` and the guest's hides
-- [ ] guest ports: a read guest of a plugin that is not `guests.aware` gets a one-way copy (messages dropped, logged
+- [x] guest ports: a read guest of a plugin that is not `guests.aware` gets a one-way copy (messages dropped, logged
   once), as panels (D-17)
-- [ ] read guest's hide: `overlays.release` from a read guest also records the hide for that view (the overlay leaves
+- [x] read guest's hide: `overlays.release` from a read guest also records the hide for that view (the overlay leaves
   its stack and does not come back); a write guest's `overlays.close` closes for everyone (D-2)
-- [ ] tests: each widened row refuses a non-`perView` overlay, a forged copy id, another view's copy, a hidden `via`
+- [x] tests: each widened row refuses a non-`perView` overlay, a forged copy id, another view's copy, a hidden `via`
   plugin; read vs write guest close and hide; one-way copy for a non-aware plugin
-- [ ] run tests - must pass before task 6
+- [x] run tests - must pass before task 6
+- [x] ➕ (Task 4 review) `via` sources are never cut to a bound (a dropped source fails open): the host filters to its
+  own plugins (`ServiceRegistry.knows`) and dedupes before anything else, and with no filter throws past
+  `MAX_OVERLAY_SOURCES` at the call site; main refuses (never trims) a list longer than that or than its host's plugin
+  count, whichever is larger; stale `overlayVisible` comments now name the `via` rule
+- ⚠️ the hide is keyed by the guest id, not the view (`PerViewState.hiddenFrom`, read through
+  `OverlayManager.hiddenFrom`), unlike Technical Details' `hiddenFor: Set<viewId>`: a reconnect is a new view id and
+  the overlay must not come back on it. A guest's hide releases that guest's copies on every view (`overlays.hide` to
+  each) and lives as long as the overlay. A growth release (`addSources`) never records one. Owner views' hides are
+  not recorded in main (D-1: every owner view gets every overlay); the shell keeps its own.
+- ⚠️ one rule, three callers: `guest-wiring.ts` `overlayVisibleOf` (origin, every `via` plugin, not hidden by that
+  guest) feeds the router's target check, the guest sink's filters (index.ts `guestSources`) and
+  `overlayCopyPortOf` / `mayConnectCopyOf` (also live guest, the overlay's own window, perView, the opener's
+  `guestPort` not `none`). One-way is read live per page message through the manager's new `copyPort` option
+  (`copyMessage` drops a non-`full` guest copy's messages, logged once per copy); connect, `loaded`, release and the
+  opener's posts still flow. The guest sink checks a copy's view through `OverlayManager.copyViewOf` (live copies
+  plus the last 32 released, since `overlays.hide` goes out after its copy is released); `overlays.message` and
+  `.reload` also need the overlay still visible, `.hide` does not.
+- ⚠️ Task 8: a read guest's `overlays.release` IS its hide (recorded for good). The shell of a read guest must send it
+  only for its ✕ or a page `{ result }`, never on unmount or reload: a reload relies on the next `overlays.ready`
+  replacing the view's copy (connectCopy drops the old one), and an unmount because the overlay ended needs no
+  release. Owner and write guest shells release as Task 2's note says.
+- ⚠️ Task 8: a perView overlay a shared tab opened whose opener plugin is hidden from guests is in the guest's list
+  (the tab rule) but its `overlays.ready` answers `{ refused: 'not-allowed' }` (port `none`): the shell needs a state
+  for that (the reworded note, not a spinner).
+- ⚠️ Task 12: the `handle.hide` doc says a guest's hide covers every view of that guest, for the overlay's life.
+- ⚠️ (known, not built) the owner hiding the plugin while a guest holds a copy leaks nothing (the gate and the sink
+  re-read visibility live, and `copyPort` drops its messages), but the copy record stays until that view reconnects
+  or the overlay ends.
+- ⚠️ Task 7 / 10: a one-way copy still fires `onConnect` / `onDisconnect`; the Reviewer must not count on its
+  messages (it declares `guests.aware`, so its read guests get full copies and the host drops their edits by
+  `from.access`). `handle.hide({ copy })` of a guest's copy records the hide for that guest (Task 10's read guest
+  Close).
 
 ### Task 6: View-addressed `ctx.openExternal` [model: opus]
 

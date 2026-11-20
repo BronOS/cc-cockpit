@@ -2598,7 +2598,8 @@ describe('overlays: per-view copies through the router', () => {
     await expect(desktop('overlays.release', { overlayId: pv })).rejects.toThrow(/copy is required/)
   })
 
-  it('a guest cannot release a copy (guest class no until Task 5)', async () => {
+  // The guest rows themselves (read, own copy, perView only) are guest-overlays.test.ts's, with guest deps wired.
+  it('a guest cannot release a copy while no guest deps are wired (fail closed)', async () => {
     const { router, pv } = copiesSetup()
     await expect(
       Promise.resolve().then(() => router.dispatch(webCaller(A_WIN, 'web:4', { guest: 'g1' }), 'overlays.release', { overlayId: pv, copy: 'c' }))

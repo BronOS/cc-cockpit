@@ -260,7 +260,10 @@ export function guestCall(view: Pick<CallView, 'who' | 'access'>, channel: strin
 export interface GuestRouterDeps extends GuestDeps {
   /** The plugin whose slot frame `frameId` is in the project now (the layout's slot frames). */
   frameOwner?(projectId: string, frameId: string): string | undefined
-  /** Whether a guest may see the overlay: opened from a tab or plugin it sees (OverlayManager's `origin`). */
+  /**
+   * Whether a guest may see the overlay (guest-wiring.ts overlayVisibleOf): opened from a tab it sees or by a plugin
+   * it sees, AND every plugin of its `via` visible to it (D-4), and not hidden by that guest.
+   */
   overlayVisible?(projectId: string, overlayId: string, access: GuestOnlyAccess): boolean
   /**
    * What the ask `requestId` of the window is about (asks/guest-asks.ts askInfoFrom over the trash asks and the
@@ -2453,8 +2456,11 @@ export interface OverlayHandlerDeps {
   copyMessage?(windowId: number, overlayId: string, viewId: ViewId, copy: string, text: string): boolean
   /** OverlayManager.copyResult: owner views only, `viewId`'s live copy only. */
   copyResult?(windowId: number, overlayId: string, viewId: ViewId, copy: string, value: unknown): boolean
-  /** OverlayManager.releaseCopy: `viewId`'s own live copy only. */
-  releaseCopy?(windowId: number, overlayId: string, viewId: ViewId, copy: string): boolean
+  /**
+   * OverlayManager.releaseCopy: `viewId`'s own live copy only. `hide`: a read guest's release, which is its ✕
+   * (docs/design-overlay-views.md §5): the hide is recorded for that guest too.
+   */
+  releaseCopy?(windowId: number, overlayId: string, viewId: ViewId, copy: string, options?: { hide?: boolean }): boolean
 }
 
 /**
@@ -2520,7 +2526,18 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
   // live copy. Any other overlay keeps the holder's calls; a `copy` there names nothing and is dropped.
   const perView = (windowId: number, overlayId: string): boolean => deps.perView?.(windowId, overlayId) === true
 
+  // A guest's page calls (docs/design-overlay-views.md §5 "Guest rows"): `ready`, `loaded`, `message` and `release`
+  // are guest `read` for a perView overlay's copies only. A guest never gets a non-perView overlay's single-holder
+  // page (design-guests §9), so its call there is refused here, before the holder's path, with the gate's answer:
+  // the class widens nothing for an older plugin. Who is a guest is the view main bound (guestCall), never the payload.
+  const refuseGuestHolder = (channel: string, ctx: ProjectContext, view: CallView, overlayId: string): void => {
+    if (guestCall(view, channel) && !perView(ctx.windowId, overlayId)) throw new Error(`${channel}: refused`)
+  }
+
+  // Results are the owner's (docs/design-overlay-views.md §5): a guest's is refused on both paths, whatever its
+  // role (`write` by class so a read guest's forged one fails at the gate; a write guest's ✕ closes with no result).
   router.handleProject('overlays.result', (ctx, payload, view) => {
+    if (guestCall(view, 'overlays.result')) throw new Error('overlays.result: refused')
     const overlayId = overlayIdOf('overlays.result', payload)
     const { value } = fields('overlays.result', payload)
     const copy = copyOf('overlays.result', payload)
@@ -2536,6 +2553,7 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
     const message = fields('overlays.message', payload).message
     if (typeof message !== 'string') throw new Error('overlays.message: message must be a string')
     const overlayId = overlayIdOf('overlays.message', payload)
+    refuseGuestHolder('overlays.message', ctx, view, overlayId)
     const copy = copyOf('overlays.message', payload)
     if (perView(ctx.windowId, overlayId)) {
       return deps.copyMessage?.(ctx.windowId, overlayId, view.viewId, requireCopy('overlays.message', copy), message) ?? false
@@ -2548,6 +2566,7 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
   // answers its id, which every later call of that page names. Any other overlay answers nothing, as before.
   router.handleProject('overlays.ready', (ctx, payload, view): OverlayReadyAnswer | undefined => {
     const overlayId = overlayIdOf('overlays.ready', payload)
+    refuseGuestHolder('overlays.ready', ctx, view, overlayId)
     if (perView(ctx.windowId, overlayId)) return deps.connectCopy?.(ctx.windowId, overlayId, view.viewId) ?? { refused: 'not-allowed' }
     deps.ready(ctx.windowId, overlayId, view.viewId)
     return undefined
@@ -2555,6 +2574,7 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
 
   router.handleProject('overlays.loaded', (ctx, payload, view) => {
     const overlayId = overlayIdOf('overlays.loaded', payload)
+    refuseGuestHolder('overlays.loaded', ctx, view, overlayId)
     const copy = copyOf('overlays.loaded', payload)
     if (perView(ctx.windowId, overlayId)) {
       deps.copyLoaded?.(ctx.windowId, overlayId, view.viewId, requireCopy('overlays.loaded', copy))
@@ -2565,11 +2585,15 @@ export function registerOverlayHandlers(router: IpcRouter, deps: OverlayHandlerD
   })
 
   // The calling view's own copy only: the manager matches the copy against the view main bound the call to,
-  // so a view cannot release another's (a guest's is refused by its class before this, Task 5 widens it).
+  // so a view cannot release another's. A read guest's release is its ✕ (D-2: it can only hide its own copy),
+  // so the hide is recorded with it, by the role main read live for this call; a write guest's ✕ is
+  // overlays.close, and its release (an unmount, a reload) only lets go.
   router.handleProject('overlays.release', (ctx, payload, view) => {
     const overlayId = overlayIdOf('overlays.release', payload)
+    refuseGuestHolder('overlays.release', ctx, view, overlayId)
     const copy = requireCopy('overlays.release', copyOf('overlays.release', payload))
-    return deps.releaseCopy?.(ctx.windowId, overlayId, view.viewId, copy) ?? false
+    const hide = guestCall(view, 'overlays.release')?.role === 'read'
+    return deps.releaseCopy?.(ctx.windowId, overlayId, view.viewId, copy, hide ? { hide: true } : undefined) ?? false
   })
 
   // The calling view's own id from the router, never a view named in the payload.

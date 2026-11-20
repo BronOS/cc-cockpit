@@ -41,9 +41,11 @@ export type CleanTypeButton = CleanOverlayButton & { pluginId: string }
 export const OVERLAY_CLICK_TIMEOUT_MS = 30_000
 
 /**
- * The most plugin ids one overlay call may name as its sources (provenance, docs/design-overlay-views.md §4:
- * a service caller chain or `handle.addSources`). The host trims to it; main refuses a longer list. A chain
- * deeper than this is no real case, and main filters every id against its host's plugins anyway.
+ * A floor on the plugin ids one overlay call may name as its sources (provenance, docs/design-overlay-views.md §4:
+ * a service caller chain or `handle.addSources`). Never a trim: `via` only narrows who sees an overlay, so a cut
+ * list would fail open. The host filters to its own plugins and dedupes first (a list bounded by its plugin count)
+ * and, with no such filter, throws past this at the call site; main refuses a list longer than this or than its
+ * host's plugin count, whichever is larger, and never truncates.
  */
 export const MAX_OVERLAY_SOURCES = 32
 

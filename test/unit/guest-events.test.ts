@@ -81,15 +81,63 @@ describe('guestEvent', () => {
   })
 
   // docs/design-overlay-views.md §5: no guest copy yet (Task 5 of its plan passes a guest its own copies' events).
-  it("drops a perView overlay copy's hide and reload until guests hold copies", () => {
-    for (const name of ['overlays.hide', 'overlays.reload'] as const) {
-      expect(GUEST_EVENT[name], name).toBe('drop')
-      expect(guestEvent(name, { overlayId: 'o', copy: 'c' }, ctx()), name).toBeUndefined()
-    }
+  // docs/design-overlay-views.md §5: a perView overlay's per-copy events reach a guest for its own copy only, by main's
+  // record of the copy's view (ownCopy), never the payload alone.
+  describe("a perView overlay's per-copy events", () => {
+    /** The guest's view web:9 owns copy `mine` of o1 (live or just released); `theirs` is another view's. */
+    const own = (over: Partial<GuestEventContext> = {}): GuestEventContext =>
+      ctx({ overlayVisible: (o) => o === 'o1', ownCopy: (o, c) => o === 'o1' && c === 'mine', ...over })
+    const msg = (copy?: string, overlayId = 'o1') => ({ overlayId, message: '"x"', ...(copy !== undefined ? { copy } : {}) })
+
+    it('overlays.message: its own copy of an overlay it sees only', () => {
+      expect(guestEvent('overlays.message', msg('mine'), own())).toEqual(msg('mine'))
+      expect(guestEvent('overlays.message', msg('theirs'), own())).toBeUndefined()
+      // A holder's message (no copy) never: a guest never holds a single-holder page.
+      expect(guestEvent('overlays.message', msg(), own())).toBeUndefined()
+      // Its own copy of an overlay it no longer sees (a growth in flight, a hide): dropped.
+      expect(guestEvent('overlays.message', msg('mine'), own({ overlayVisible: () => false }))).toBeUndefined()
+      // A forged copy id on another overlay.
+      expect(guestEvent('overlays.message', msg('mine', 'o2'), own())).toBeUndefined()
+    })
+
+    it('overlays.hide: its own copy, even once the overlay is no longer visible to it (the growth hide)', () => {
+      expect(guestEvent('overlays.hide', { overlayId: 'o1', copy: 'mine' }, own({ overlayVisible: () => false }))).toEqual({ overlayId: 'o1', copy: 'mine' })
+      expect(guestEvent('overlays.hide', { overlayId: 'o1', copy: 'theirs' }, own())).toBeUndefined()
+    })
+
+    it('overlays.reload: its own copy of an overlay it sees', () => {
+      expect(guestEvent('overlays.reload', { overlayId: 'o1', copy: 'mine' }, own())).toEqual({ overlayId: 'o1', copy: 'mine' })
+      expect(guestEvent('overlays.reload', { overlayId: 'o1', copy: 'theirs' }, own())).toBeUndefined()
+      expect(guestEvent('overlays.reload', { overlayId: 'o1', copy: 'mine' }, own({ overlayVisible: () => false }))).toBeUndefined()
+    })
+
+    it('with no ownCopy source wired, none of them reaches a guest (fail closed)', () => {
+      for (const name of ['overlays.message', 'overlays.hide', 'overlays.reload'] as const) {
+        expect(guestEvent(name, { overlayId: 'o1', copy: 'mine', message: '"x"' }, ctx({ overlayVisible: () => true })), name).toBeUndefined()
+      }
+    })
+
+    it("guestContext asks the source with the receiving view's own id", () => {
+      const asked: string[] = []
+      const g = guestContext(
+        {
+          guests: { tabVisible: () => true, pluginVisible: () => true },
+          overlayVisible: () => true,
+          ownCopy: (viewId, overlayId, copy) => (asked.push(`${viewId} ${overlayId} ${copy}`), viewId === 'web:4'),
+          personOf: () => undefined,
+          tabOrder: () => [],
+          ownerName: () => 'Host'
+        },
+        'web:4',
+        guest()
+      )
+      expect(guestEvent('overlays.hide', { overlayId: 'o1', copy: 'c1' }, g)).toEqual({ overlayId: 'o1', copy: 'c1' })
+      expect(asked).toEqual(['web:4 o1 c1'])
+    })
   })
 
   it('drops what is the owner\'s: terminals, notices, link asks, access, the guest list', () => {
-    for (const name of ['notices.show', 'notices.gone', 'links.ask', 'webAccess.changed', 'guests.changed', 'tabs.data', 'rooms.changed', 'sessions.closeAsk', 'tabs.guestCloseAsk', 'overlays.message', 'window.state']) {
+    for (const name of ['notices.show', 'notices.gone', 'links.ask', 'webAccess.changed', 'guests.changed', 'tabs.data', 'rooms.changed', 'sessions.closeAsk', 'tabs.guestCloseAsk', 'window.state']) {
       expect(GUEST_EVENT[name as keyof typeof GUEST_EVENT], name).toBe('drop')
       expect(guestEvent(name, { anything: true }, ctx()), name).toBeUndefined()
     }

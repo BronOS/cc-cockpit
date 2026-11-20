@@ -830,7 +830,7 @@ describe('ctx.overlay provenance (via, addSources)', () => {
     expect('via' in of(calls, 'overlay.post')[0]!).toBe(false)
   })
 
-  it('deferred addSources: strings only, each once, capped; any kind; refused for a non-array; a no-op when nothing is left', async () => {
+  it('deferred addSources: strings only, each once; any kind; refused for a non-array; a no-op when nothing is left', async () => {
     const { calls, rev, mail } = chain()
     // Recorded while B's call was live, used later (the Reviewer keeps it with the stored content).
     let kept: string[] = []
@@ -839,15 +839,66 @@ describe('ctx.overlay provenance (via, addSources)', () => {
     expect(kept).toEqual(['a.two'])
     const term = rev.overlay.start({ kind: 'terminal', argv: ['less'] })
     term.addSources!([...kept, 'a.two', 5 as never, '', 'a.three'])
-    const many = Array.from({ length: MAX_OVERLAY_SOURCES + 5 }, (_, i) => `p.${i}`)
-    term.addSources!(many)
     const sent = of(calls, 'overlay.addSources')
     expect(sent[0]).toEqual({ pluginId: 'a.one', handle: of(calls, 'overlay.open')[0]!.handle, ids: ['a.two', 'a.three'] })
-    expect((sent[1]!.ids as string[]).length).toBe(MAX_OVERLAY_SOURCES)
     expect(() => term.addSources!('a.two' as never)).toThrow('needs an array')
     term.addSources!([])
     term.addSources!([7 as never])
-    expect(of(calls, 'overlay.addSources')).toHaveLength(2)
+    expect(of(calls, 'overlay.addSources')).toHaveLength(1)
+  })
+
+  // Task 4 review: `via` only narrows, so a source cut to a bound fails open (a guest kept seeing a hidden plugin's
+  // content). The host filters to its own plugins first and never truncates.
+  it('never cuts sources: ids that name no plugin of this host first do not push real ones out; more than the floor all go', () => {
+    const { calls, rev } = chain()
+    const term = rev.overlay.start({ kind: 'terminal', argv: ['less'] })
+    const junk = Array.from({ length: MAX_OVERLAY_SOURCES + 8 }, (_, i) => `x.${i}`)
+    term.addSources!([...junk, 'a.two', 'a.three'])
+    expect(of(calls, 'overlay.addSources')[0]!.ids).toEqual(['a.two', 'a.three'])
+  })
+
+  it('more than MAX_OVERLAY_SOURCES real plugins: every one attributed (addSources and a deep caller chain)', async () => {
+    const calls: Call[] = []
+    const registry = new ServiceRegistry({ activationOf: () => Promise.resolve({ state: 'active' }), isActivating: () => false, log: () => {} })
+    const contexts = new HostContexts({
+      log: () => {},
+      call: async (method, params) => {
+        calls.push({ method, params })
+        return method === 'overlay.open' ? new Promise(() => {}) : true
+      },
+      services: () => registry
+    })
+    // p.0 -> p.1 -> ... -> p.(n-1) -> a.rev: a chain deeper than the floor.
+    const n = MAX_OVERLAY_SOURCES + 6
+    const ids = Array.from({ length: n }, (_, i) => `p.${i}`)
+    registry.setSpec({ id: 'a.rev', services: { provides: { review: 1 } } })
+    ids.forEach((id, i) =>
+      registry.setSpec({ id, services: { provides: { [`s${i}`]: 1 }, uses: { [i === n - 1 ? 'review' : `s${i + 1}`]: 1 } } })
+    )
+    const rev = contexts.create(hostSpec({ id: 'a.rev', dir: '/p/rev', main: 'h.js' }))
+    const ctxs = ids.map((id) => contexts.create(hostSpec({ id, dir: `/p/${id}`, main: 'h.js' })))
+    rev.services.provide('review', { show: () => void rev.overlay.start({ kind: 'html', file: 'review.html' }) })
+    ctxs.forEach((c, i) => {
+      if (i === 0) return
+      const next = i === n - 1 ? c.services.use('review') : c.services.use(`s${i + 1}`)
+      c.services.provide(`s${i}`, { go: () => (i === n - 1 ? next.show!() : next.go!()) })
+    })
+    // p.0 is the outermost consumer: it calls s1 (p.1).
+    await ctxs[0]!.services.use('s1').go!()
+    expect(of(calls, 'overlay.open')[0]!.via).toEqual(ids)
+    const term = rev.overlay.start({ kind: 'terminal', argv: ['less'] })
+    term.addSources!(ids)
+    expect(of(calls, 'overlay.addSources')[0]!.ids).toEqual(ids)
+  })
+
+  it('with no plugin filter (no registry), a list past the floor throws at the call site instead of losing an id', () => {
+    const calls: Call[] = []
+    const contexts = new HostContexts({ log: () => {}, call: async (method, params) => (calls.push({ method, params }), method === 'overlay.open' ? new Promise(() => {}) : true) })
+    const ctx = contexts.create(hostSpec({ id: 'a.one', dir: '/p/one', main: 'h.js' }))
+    const term = ctx.overlay.start({ kind: 'terminal', argv: ['less'] })
+    expect(() => term.addSources!(Array.from({ length: MAX_OVERLAY_SOURCES + 1 }, (_, i) => `p.${i}`))).toThrow(RangeError)
+    term.addSources!(Array.from({ length: MAX_OVERLAY_SOURCES }, (_, i) => `p.${i}`))
+    expect((calls.find((c) => c.method === 'overlay.addSources')!.params as { ids: string[] }).ids).toHaveLength(MAX_OVERLAY_SOURCES)
   })
 })
 

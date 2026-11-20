@@ -268,6 +268,15 @@ describe('overlays', () => {
     expect(guestByOverlay({ overlayId: 'o2', data: MARKER }, ctx())).toBeUndefined()
     expect(guestByOverlay({ overlayId: 'o1', data: 'x' }, ctx())).toEqual({ overlayId: 'o1', data: 'x' })
   })
+  // docs/design-overlay-views.md §5: a perView overlay keeps its flag (the guest's shell loads its own copy) and has no
+  // holder; `overlayVisible` (the wiring's one rule: origin, every via plugin, the guest's own hides) decides the rest.
+  it('keeps a perView overlay as perView; drops one whose via is hidden or that this guest hid', () => {
+    const list = [overlay('pv', { kind: 'html', perView: true, loading: true }), overlay('pv-via'), overlay('pv-hid')]
+    const visible = (o: string): boolean => o === 'pv'
+    const got = guestOverlays(list, ctx({ overlayVisible: visible }))
+    expect(got).toEqual([{ id: 'pv', kind: 'html', title: 't', size: 'default', perView: true, loading: true }])
+    expect(got[0]!.heldBy).toBeUndefined()
+  })
 })
 
 describe('the project (D-33)', () => {

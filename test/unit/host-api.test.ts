@@ -3349,16 +3349,18 @@ describe('overlay provenance (via) and requestedBy', () => {
     for (const m of managers.splice(0)) m.disposeAll()
   })
 
-  const scope = (): HostScope => ({
+  /** `extra`: that many more plugins (`p.0`...), for a host with more plugins than MAX_OVERLAY_SOURCES. */
+  const scope = (extra = 0): HostScope => ({
     ...scopeA(),
     plugins: [
       { id: 'a.one', dir: pluginOne, panels: ['board'], overlaysPerView: true },
       { id: 'a.two', dir: pluginTwo, panels: ['inbox'] },
-      { id: 'a.three', dir: pluginTwo, panels: [] }
+      { id: 'a.three', dir: pluginTwo, panels: [] },
+      ...Array.from({ length: extra }, (_, i) => ({ id: `p.${i}`, dir: pluginTwo, panels: [] }))
     ]
   })
 
-  function setup(opts: { sources?: boolean } = {}) {
+  function setup(opts: { sources?: boolean; extra?: number } = {}) {
     const log: string[] = []
     /** Whether the guest could see each overlay at the moment its list went out (what the guest filter decides then). */
     const listed: boolean[][] = []
@@ -3394,7 +3396,7 @@ describe('overlay provenance (via) and requestedBy', () => {
     deps.viewAccess = (viewId): GuestAccess =>
       viewId === GUEST ? { kind: 'guest', id: 'g7', name: 'Ann', role: 'write', projectId: A, scope: { kind: 'all' } as never } : { kind: 'owner' }
     const events: { event: string; params: unknown }[] = []
-    const api = new HostApi(deps, scope(), (event, params) => {
+    const api = new HostApi(deps, scope(opts.extra ?? 0), (event, params) => {
       events.push({ event, params })
       if (event === 'overlay.disconnect') log.push(`disconnect ${(params as { view?: string }).view ?? 'desktop'}`)
     })
@@ -3415,6 +3417,20 @@ describe('overlay provenance (via) and requestedBy', () => {
     const id = await open({ via: ['a.three', 'a.two'] })
     expect(listed).toEqual([[false]])
     expect(visible(id)).toBe(false)
+  })
+
+  // Task 4 review: a source cut to a bound fails open. A host with more plugins than the floor sends a longer list
+  // (filtered to its plugins, deduped); main takes it whole, bounded by the host's plugin count.
+  it('a host with more plugins than MAX_OVERLAY_SOURCES: a list that long is taken whole, one longer refused', async () => {
+    const n = MAX_OVERLAY_SOURCES + 5
+    const { m, open, call } = setup({ extra: n })
+    const id = await open()
+    const ids = Array.from({ length: n }, (_, i) => `p.${i}`)
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids })).resolves.toBe(true)
+    expect(m.visibleTo(WIN_A, id, () => false, (p) => p === 'a.one' || p !== `p.${n - 1}`)).toBe(false)
+    expect(m.visibleTo(WIN_A, id, () => false, () => true)).toBe(true)
+    const tooMany = Array.from({ length: n + 4 }, () => 'p.0')
+    await expect(call('overlay.addSources', { pluginId: 'a.one', handle: H, ids: tooMany })).rejects.toThrow(`more than ${n + 3} sources`)
   })
 
   it("a plugin's own overlay (no via) is unchanged: the guest who sees the opener sees it", async () => {

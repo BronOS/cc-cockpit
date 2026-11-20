@@ -417,6 +417,9 @@ export class HostContexts {
       },
       // An overlay call's `via` (docs/design-overlay-views.md §4): the chain ctx.services.callers() answers.
       callers: () => deps.services?.()?.callers(spec.id) ?? [],
+      // Sources are this host's plugins only (main keeps only those too): filtered before any bound, never cut.
+      // No registry (a test host): no filter, so cleanSources throws past its floor instead.
+      isHostPlugin: deps.services === undefined ? undefined : (id) => deps.services?.().knows(id) === true,
       logError: (m) => logAs('error', m)
     })
 
