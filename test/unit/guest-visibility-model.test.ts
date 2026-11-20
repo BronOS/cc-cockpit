@@ -166,7 +166,7 @@ describe('guestWindowLines', () => {
   it('perView and a service: the D-4 line too', () => {
     expect(guestWindowLines({ guestAccess: shown, overlaysPerView: true, providesServices: true })).toEqual([
       "Its windows show on guests' screens too.",
-      'What another plugin opens in it reaches guests only when that plugin is shown too.'
+      'What another plugin opens in it reaches guests only when that plugin is shown too; data it fetches itself is shown as its own.'
     ])
   })
   it('not shown to guests, or blocked: no line', () => {

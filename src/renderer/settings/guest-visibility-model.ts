@@ -58,7 +58,7 @@ export function guestWindowLines(plugin: Pick<PluginView, 'guestAccess' | 'overl
   if (access.effective !== 'shown' && appGuestValue(access) !== 'shown') return []
   if (plugin.overlaysPerView !== true) return ["Its windows stay on your screen; guests see a note."]
   const lines = ["Its windows show on guests' screens too."]
-  if (plugin.providesServices === true) lines.push('What another plugin opens in it reaches guests only when that plugin is shown too.')
+  if (plugin.providesServices === true) lines.push('What another plugin opens in it reaches guests only when that plugin is shown too; data it fetches itself is shown as its own.')
   return lines
 }
 

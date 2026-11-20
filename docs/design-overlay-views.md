@@ -131,7 +131,7 @@ never taken from a plugin's arguments alone:
   today, by string length). Today an overflow throws to the plugin (`overlay-manager.ts:331`); for a fan-out that would
   let one slow copy fail every post, so a copy whose queue overflows is dropped and reloaded as a new copy (the plugin
   gets its disconnect and a new connect), and the post succeeds for the others. Connects per (overlay, view) are capped
-  per minute as panel ports are (`panel-ports.ts:258`); past it the copy waits for the next window.
+  as panel ports are (`panel-ports.ts:258`: 10 per 10 s); past it the copy waits for the next window.
 - **Guest rows** (`shared/guest-class.ts`, `main/web/guest-events.ts`): `overlays.ready`, `.loaded`, `.message` become
   `read` with the overlay target, and their handlers refuse a non-`perView` overlay to a guest, so the class widens
   nothing for old plugins; `overlays.message` events reach a guest for its own copies only; `overlays.take` stays `no`.
