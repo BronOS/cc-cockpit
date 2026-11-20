@@ -55,6 +55,13 @@ Remote servers' Direct window; plugins hidden from guests unless shown) are impl
 only (never a host on another machine); the server-mode guest e2e spec (`guest-server.spec.ts`, through `launchServer`)
 passes on macOS (2026-11-19) and has not run on Linux.
 
+Overlays in every view (html overlays of plugins that declare `overlays.perView` load one live copy per view: the owner's
+desktop and browsers and allowed guests; provenance `via` keeps what a hidden plugin opened away from guests;
+`ctx.openExternal(url, { view })`; the bundled Reviewer with replayable state and notes shared across screens) are
+implemented; design in `docs/design-overlay-views.md` (D-1 to D-4), plan in `docs/plans/completed/20261120-overlay-views.md`,
+user docs in `docs/features.md` ("Web access" › "Guests", the Reviewer entry). Three external review passes (sol/high);
+the guest e2e (`guest-overlay-views.spec.ts`) has run on macOS only.
+
 ## Commands
 
 - `npm test` (vitest), `npm run test:coverage`; `npm run test:e2e` (builds, then Playwright). The OAuth spec and the
