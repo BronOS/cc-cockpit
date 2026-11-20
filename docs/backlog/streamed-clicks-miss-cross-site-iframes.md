@@ -1,5 +1,5 @@
 ---
-worth: maybe
+worth: yes
 where: src/main/webview/page-input.ts
 added: 2026-11-19
 ---

@@ -1,5 +1,5 @@
 ---
-worth: maybe
+worth: later
 where: src/shared/webview-keys.ts
 added: 2026-11-19
 ---
