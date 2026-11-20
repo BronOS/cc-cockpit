@@ -578,3 +578,61 @@ test('a new PDF or image gets the same head as a new text file; a committed one 
     assert.match(review.buildReview({}, { ...s, head: null }, review.MAX_CONTEXT, { named: false }).text, /^Review: the file as it is now, no git diff\n/)
   }
 })
+
+test('cleanDraft keeps a guest\'s author on every note shape, one line and capped; none on the owner\'s', () => {
+  const { cleanDraft, MAX_AUTHOR } = require('../dist/lib/review')
+  const anchor = { prefix: '', suffix: '', occurrence: 0, length: 1, at: 0 }
+  const d = cleanDraft({
+    notes: [
+      { id: 'l', side: 'new', from: 1, to: 1, quote: '', text: 't', author: 'Ann' },
+      { id: 'p', page: 2, quote: '', text: 't', author: ' Bob\n Smith ' },
+      { id: 'h', quote: 'q', anchor, text: 't', author: 'x'.repeat(MAX_AUTHOR + 10) },
+      { id: 'o', side: 'new', from: 1, to: 1, quote: '', text: 't' },
+      { id: 'b', side: 'new', from: 1, to: 1, quote: '', text: 't', author: 42 },
+    ],
+  })
+  assert.deepEqual(d.notes.map((n) => n.author), ['Ann', 'Bob Smith', 'x'.repeat(MAX_AUTHOR), undefined, undefined])
+  assert.equal('author' in d.notes[3], false)
+  // Through a save and a load (JSON) it stays.
+  assert.deepEqual(cleanDraft(JSON.parse(JSON.stringify(d))), d)
+})
+
+test('applyNoteOp: an add gets the minted id and the given author (never the page\'s), a change or delete by id, global last writer', () => {
+  const { applyNoteOp, cleanDraft, MAX_NOTES, MAX_NOTE_TEXT } = require('../dist/lib/review')
+  let i = 0
+  const mintId = () => `h${i++}`
+  const d0 = cleanDraft(null)
+  const add = applyNoteOp(d0, { type: 'note-add', tag: '~0', note: { id: 'forged', author: 'Owner', side: 'new', from: 2, to: 3, quote: 'q', text: '' } }, { author: 'Ann', mintId })
+  assert.deepEqual(add.note, { id: 'h0', side: 'new', from: 2, to: 3, quote: 'q', text: '', author: 'Ann' })
+  assert.deepEqual(d0, { global: '', notes: [] }, 'never changed in place')
+  const owner = applyNoteOp(add.draft, { type: 'note-add', tag: '~1', note: { side: 'new', from: 1, to: 1, quote: '', text: 'x', author: 'Bob' } }, { mintId })
+  assert.equal('author' in owner.note, false)
+  const changed = applyNoteOp(owner.draft, { type: 'note-change', id: 'h0', text: 'hello' })
+  assert.deepEqual(changed.note, { ...add.note, text: 'hello' })
+  assert.equal(owner.draft.notes[0].text, '', 'the snapshot before the change stays as it was')
+  assert.deepEqual(applyNoteOp(changed.draft, { type: 'note-delete', id: 'h0' }).draft.notes.map((n) => n.id), ['h1'])
+  assert.equal(applyNoteOp(changed.draft, { type: 'global', text: 'g' }).draft.global, 'g')
+  // Of no effect: an unknown id, a malformed op, an unknown type.
+  for (const op of [{ type: 'note-change', id: 'gone', text: 'x' }, { type: 'note-delete', id: 'gone' }, { type: 'note-change', id: 'h0' }, { type: 'note-add', note: {} }, { type: 'draft', draft: {} }, null]) {
+    assert.deepEqual(applyNoteOp(changed.draft, op, { mintId }), { ignored: true })
+  }
+  // Refused, never cut: a text over its cap, the 201st note, a note with no place in the text.
+  assert.match(applyNoteOp(changed.draft, { type: 'note-change', id: 'h0', text: 'x'.repeat(MAX_NOTE_TEXT + 1) }).problem, /note is over/)
+  const full = { global: '', notes: Array.from({ length: MAX_NOTES }, (_, k) => ({ id: `n${k}`, side: 'new', from: 1, to: 1, quote: '', text: '' })) }
+  assert.match(applyNoteOp(full, { type: 'note-add', tag: '~2', note: { side: 'new', from: 1, to: 1, quote: '', text: '' } }, { mintId }).problem, /more than 200 notes/)
+  assert.ok(applyNoteOp(d0, { type: 'note-add', tag: '~3', note: { side: 'new', from: 0, to: 0, quote: '', text: '' } }, { mintId }).problem)
+})
+
+test('commonSent and subtractSent: a delivery clears the notes unchanged in every snapshot, the comment only when unchanged', () => {
+  const { commonSent, subtractSent } = require('../dist/lib/review')
+  const n = (id, text) => ({ id, side: 'new', from: 1, to: 1, quote: '', text })
+  const a = { global: 'g', notes: [n('1', 'one'), n('2', 'two')] }
+  const b = { global: 'g2', notes: [n('1', 'one'), n('2', 'two, edited'), n('3', 'three')] }
+  const sent = commonSent([a, b])
+  assert.deepEqual(sent, { global: null, notes: [n('1', 'one')] })
+  const now = { global: 'g2', notes: [n('1', 'one'), n('2', 'two, edited'), n('3', 'three'), n('4', 'four')] }
+  assert.deepEqual(subtractSent(now, sent), { global: 'g2', notes: [n('2', 'two, edited'), n('3', 'three'), n('4', 'four')] })
+  // One snapshot: what it sent goes, the comment too when unchanged; an edit since keeps its note.
+  assert.deepEqual(subtractSent({ global: 'g', notes: [n('1', 'one'), n('2', 'two!')] }, commonSent([a])), { global: '', notes: [n('2', 'two!')] })
+  assert.deepEqual(subtractSent({ global: 'g, more', notes: [] }, commonSent([a])), { global: 'g, more', notes: [] })
+})

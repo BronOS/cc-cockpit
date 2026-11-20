@@ -10,6 +10,11 @@ const MAX_NOTE_TEXT = 4000 // the page's note and comment inputs carry the same 
 const MAX_QUOTE = 500 // per note, as stored; the message may shorten it further
 const MAX_TAIL = 200 // the end of a long text selection, as stored
 const MAX_PDF_PAGE = 100000 // a page note's page number: past any real PDF, so a bad draft is dropped
+// A guest's note carries its author, the invite name main gave the guest (ViewFrom.person), cut to this
+// many chars; the owner's notes have none. One line, never from the page (the host sets it).
+const MAX_AUTHOR = 60
+// A note id as stored (cleanDraft cuts there) and a page's tag for a note it added and has no id for yet.
+const MAX_NOTE_ID = 40
 const MAX_MESSAGE = 20000 // the most one review text may take; quotes are shortened first
 // What the reviewer hands the app's Discuss with Claude (its onDiscuss answer). The app sends at most
 // 20,000 characters in all: `About: <title>`, the type line (at most 500), this text, then the
@@ -116,11 +121,24 @@ function cleanAnchor(a) {
   }
 }
 
+/** A guest's name as a note's author: one line, cut to MAX_AUTHOR; null for anything else (the owner's notes). */
+function authorName(v) {
+  if (typeof v !== 'string') return null
+  const one = v.replace(/[\x00-\x1f\x7f\s]+/g, ' ').trim().slice(0, MAX_AUTHOR).trim()
+  return one || null
+}
+/** `{ author }` for a note of a guest's, `{}` for the owner's (the field is absent then, as before guests). */
+const authorField = (v) => {
+  const a = authorName(v)
+  return a ? { author: a } : {}
+}
+
 /**
  * A clean draft { global, notes }; drops bad notes. A note is a line note
  * { id, side, from, to, quote, text } (a file, a text), or, with an `anchor` object, an HTML note
  * { id, quote, anchor: { prefix, suffix, occurrence, length, at }, text, doc? } (annotate's HTML
- * mode; `doc: 'companion'` for a note on the companion document, absent for the main one).
+ * mode; `doc: 'companion'` for a note on the companion document, absent for the main one). Any of
+ * them may carry `author`, the guest who made it (design-overlay-views §6; absent: the owner).
  */
 function cleanDraft(d) {
   const out = { global: '', notes: [] }
@@ -131,10 +149,11 @@ function cleanDraft(d) {
       if (!isObj(n)) continue
       if (isObj(n.anchor)) {
         const note = {
-          id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.notes.length + 1),
+          id: typeof n.id === 'string' ? n.id.slice(0, MAX_NOTE_ID) : String(out.notes.length + 1),
           quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '',
           anchor: cleanAnchor(n.anchor),
           text: typeof n.text === 'string' ? n.text.slice(0, MAX_NOTE_TEXT) : '',
+          ...authorField(n.author),
         }
         // A note on annotate's companion (the document beside the main one); absent for the main one,
         // so a draft from before the companion reads the same.
@@ -156,10 +175,11 @@ function cleanDraft(d) {
         if (!(page >= 1 && page <= MAX_PDF_PAGE)) continue
         out.notes.push({
           ...(typeof n.tail === 'string' && n.tail ? { tail: n.tail.slice(-MAX_TAIL) } : {}),
-          id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.notes.length + 1),
+          id: typeof n.id === 'string' ? n.id.slice(0, MAX_NOTE_ID) : String(out.notes.length + 1),
           page,
           quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '',
           text: typeof n.text === 'string' ? n.text.slice(0, MAX_NOTE_TEXT) : '',
+          ...authorField(n.author),
         })
         continue
       }
@@ -167,12 +187,13 @@ function cleanDraft(d) {
       const to = Math.floor(Number(n.to))
       if (!(from >= 1 && to >= from)) continue
       out.notes.push({
-        id: typeof n.id === 'string' ? n.id.slice(0, 40) : String(out.notes.length + 1),
+        id: typeof n.id === 'string' ? n.id.slice(0, MAX_NOTE_ID) : String(out.notes.length + 1),
         side: n.side === 'old' ? 'old' : 'new',
         from,
         to,
         quote: typeof n.quote === 'string' ? n.quote.slice(0, MAX_QUOTE) : '',
         text: typeof n.text === 'string' ? n.text.slice(0, MAX_NOTE_TEXT) : '',
+        ...authorField(n.author),
       })
     }
   }
@@ -762,6 +783,84 @@ function failInput(o) {
   return { key, message, retry: o.retry === true }
 }
 
+// ---- shared notes (design-overlay-views §6, D-3) ----
+//
+// An open review's draft is the host's: each copy of the page sends note ops, the host applies them here
+// to the one draft, saves it and tells the other copies. A page never sends a whole draft, an id it
+// made up (an add carries a page-local `tag`, the host answers with the id) or an author.
+
+const NOTE_OPS = ['note-add', 'note-change', 'note-delete', 'global']
+
+/**
+ * `op` applied to the clean draft `d` (never changed: a new draft comes back, so a Discuss snapshot stays
+ * what it was). `op` is the page's message with `id` already resolved by the host (a change or delete may
+ * name the adding copy's own tag until its id came back):
+ *   { type: 'note-add', tag, note }    note: the note's fields as cleanDraft keeps them; its id and author,
+ *                                      if any, are ignored: the id is `mintId()`'s and the author `author`
+ *   { type: 'note-change', id, text }  the note's text (last writer wins)
+ *   { type: 'note-delete', id }
+ *   { type: 'global', text }           the one comment (last writer wins)
+ * Returns { draft, note? } (note: the added or changed one, as stored), { ignored: true } for an op of no
+ * effect (an id that is not there any more: deleted on another screen; a malformed op), or { problem } when
+ * the result would lose some of the person's text (draftProblem, or an added note cleanDraft drops): the
+ * draft stays as it was and the sending copy is told.
+ */
+function applyNoteOp(d, op, { author = null, mintId } = {}) {
+  if (!isObj(op) || !NOTE_OPS.includes(op.type)) return { ignored: true }
+  if (op.type === 'global') {
+    if (typeof op.text !== 'string') return { ignored: true }
+    const next = { global: op.text, notes: d.notes }
+    const problem = draftProblem(next)
+    return problem ? { problem } : { draft: next }
+  }
+  if (op.type === 'note-add') {
+    if (typeof op.tag !== 'string' || !op.tag || op.tag.length > MAX_NOTE_ID || !isObj(op.note)) return { ignored: true }
+    const { id: _id, author: _author, ...fields } = op.note
+    const raw = { ...fields, id: mintId(), ...authorField(author) }
+    const nextRaw = { global: d.global, notes: [...d.notes, raw] }
+    const problem = draftProblem(nextRaw)
+    if (problem) return { problem }
+    const added = cleanDraft({ notes: [raw] }).notes[0]
+    if (!added) return { problem: 'the note has no place in the text' }
+    return { draft: { global: d.global, notes: [...d.notes, added] }, note: added }
+  }
+  if (typeof op.id !== 'string') return { ignored: true }
+  const at = d.notes.findIndex((n) => n.id === op.id)
+  if (at < 0) return { ignored: true }
+  if (op.type === 'note-delete') return { draft: { global: d.global, notes: d.notes.filter((n) => n.id !== op.id) } }
+  if (typeof op.text !== 'string') return { ignored: true }
+  const changed = { ...d.notes[at], text: op.text }
+  const next = { global: d.global, notes: d.notes.map((n, i) => (i === at ? changed : n)) }
+  const problem = draftProblem(next)
+  return problem ? { problem } : { draft: next, note: changed }
+}
+
+/**
+ * What every snapshot in `drafts` sent alike: the notes in all of them with the same id and text, and the
+ * comment when it is the same in all (else null: never cleared). Two screens can each ask Discuss for the
+ * context and the app's answer does not say which one it sent, so a delivery clears only what all sent.
+ */
+function commonSent(drafts) {
+  const list = drafts.map(cleanDraft)
+  if (!list.length) return { global: null, notes: [] }
+  const keyOf = (n) => `${n.id}\0${n.text}`
+  const rest = list.slice(1).map((d) => new Set(d.notes.map(keyOf)))
+  return {
+    global: list.every((d) => d.global === list[0].global) ? list[0].global : null,
+    notes: list[0].notes.filter((n) => rest.every((s) => s.has(keyOf(n)))),
+  }
+}
+
+/**
+ * `now` with what a delivered review `sent` taken out: only the notes unchanged since (the same id and
+ * text), and the comment only when it too is unchanged (a `sent.global` of null never matches). Anything
+ * added or edited meanwhile, on another screen or by the editor's addNote, stays.
+ */
+function subtractSent(now, sent) {
+  const was = new Set((Array.isArray(sent.notes) ? sent.notes : []).map((n) => `${n.id}\0${n.text}`))
+  return { global: typeof sent.global === 'string' && now.global === sent.global ? '' : now.global, notes: now.notes.filter((n) => !was.has(`${n.id}\0${n.text}`)) }
+}
+
 // A line number in a service call (notes of the editor): well past any file the reviewer opens.
 const MAX_NOTE_LINE = 10000000
 
@@ -1055,6 +1154,12 @@ module.exports = {
   cleanDraft,
   draftProblem,
   isEmpty,
+  authorName,
+  applyNoteOp,
+  commonSent,
+  subtractSent,
+  MAX_AUTHOR,
+  MAX_NOTE_ID,
   formatReview,
   buildReview,
   annotateInput,
