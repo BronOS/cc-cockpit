@@ -405,18 +405,25 @@ External review: sol / high
 - Modify: `plugins/reviewer/plugin.json`, `plugins/reviewer/dist/host.js`
 - Modify: `plugins/reviewer/test/host.test.js`, `test/unit/reviewer-plugin.test.ts`
 
-- [ ] declare `"overlays": { "perView": true }` and `"guests": { "aware": true }`
-- [ ] keep each overlay's current state (content and assets, hidden parts, status, layout, draft) and send it from
+- [x] declare `"overlays": { "perView": true }` and `"guests": { "aware": true }`
+- [x] keep each overlay's current state (content and assets, hidden parts, status, layout, draft) and send it from
   `onConnect` to that copy, prepared (loading or failed) overlays included; the `content` handshake per copy
-- [ ] project payloads for guest copies: no host path (`sides.root`, absolute paths), names relative to the project
-- [ ] enforce the design's §6 table by `from.access`: `layout`/`split` saved for the owner only; `retry` and `action`
+- [x] project payloads for guest copies: no host path (`sides.root`, absolute paths), names relative to the project
+- [x] enforce the design's §6 table by `from.access`: `layout`/`split` saved for the owner only; `retry` and `action`
   owner only (their buttons not drawn in guest copies); `view` re-emitted for the owner only; `open-url`/`open-link` via
   `ctx.openExternal(url, { view: from.view })`; `close` → `handle.close()` for owner and write guests,
   `handle.hide({ copy })` for read guests
-- [ ] `addSources(callers())` in `prepare` and `annotate` (kept with the stored content); `addSources([requestedBy])`
+- [x] `addSources(callers())` in `prepare` and `annotate` (kept with the stored content); `addSources([requestedBy])`
   on `files.onOpen`
-- [ ] tests: every table row per access; replay to a late copy; guest projection has no host path; attribution calls
-- [ ] run `npm run test:plugins` and `npm test` - must pass before task 11
+- [x] tests: every table row per access; replay to a late copy; guest projection has no host path; attribution calls
+- [x] run `npm run test:plugins` and `npm test` - must pass before task 11
+
+- ➕ notes from Task 10 (dcb5313): `close` is honoured only on an error page (fail's, or a copy whose init no longer fits);
+  a filled review has no Close. Every post is addressed to one copy; live updates go only to copies whose content went
+  out (an existing update test changed for that). Kept content can be up to 10 MiB per open overlay. Guest copies hide
+  `data-action` buttons with CSS (`body.no-actions`), so note anchors stay the same. Task 11 still needed: two owner
+  screens post whole drafts, so a stale screen answering Discuss can send and delete an older draft; guest pages still
+  show note editing and their edits are dropped without a word.
 
 ### Task 11: Reviewer shared notes and Discuss cleanup [model: opus]
 
