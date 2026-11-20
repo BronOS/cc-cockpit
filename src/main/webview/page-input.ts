@@ -140,9 +140,12 @@
 //              synchronously before it goes, a deadline that stalls its session as a late command
 //              does), and the pump waits for the route and the frame's script before the next step
 //              (`blocking: 'route'`), so no input command overlaps them on a session (C9); a run in
-//              the top document holds nothing after it, as before. A frame gone, replaced or
-//              stalled, a refusal, a script that threw, a deadline or a new attachment drops the
-//              script (undefined: no popup, no copy), never runs it in another document. A rectangle
+//              the top document holds nothing after it, as before. That wait ends with the script's
+//              own deadlines (the route's and the frame script's, ROUTE_TIMEOUT_MS each for a press's
+//              hit test, STEP_TIMEOUT_MS for a read), never at the call's: past them the frame is
+//              stalled. A frame gone, replaced or stalled, a refusal, a script that threw, a deadline
+//              or a new attachment drops the script (undefined: no popup, no copy), never runs it in
+//              a document the router did not pick for it. A rectangle
 //              the frame's script measured is mapped back through the same owner boxes the route
 //              read (`rectFromFrame`, refused where `pointInFrame` refuses the box).
 //
@@ -854,8 +857,11 @@ export class PageInputRouter implements ChildFrameObserver {
         release()
         return { value: await this.topScript(code(route.x, route.y)), frame: TOP_FRAME, toTop }
       }
+      // ROUTE_TIMEOUT_MS: a press waits for its hit test HIT_TIMEOUT_MS (select-hit.ts) and then
+      // goes behind this call, so a frame that does not answer holds the queue at most two route
+      // deadlines, once (it is stalled from then on and asked nothing).
       const lane = route.lane
-      const ran = await this.bounded((run) => this.evaluate(lane, code(route.x, route.y), run), STEP_TIMEOUT_MS)
+      const ran = await this.bounded((run) => this.evaluate(lane, code(route.x, route.y), run))
       return ran ? { value: ran.value, frame: this.frameHandle(lane), toTop } : undefined
     }, 'route', epoch)
   }
@@ -1586,14 +1592,15 @@ export class PageInputRouter implements ChildFrameObserver {
   /**
    * A call's run, its result handed to its caller, counted as the call on its way (`callOut`) until
    * it settles. `pending` is its own answer, `due` settles with it or at its deadline (then it is late),
-   * `held` with `due` or when the run releases what follows (`blocking: 'route'`).
+   * `held` with it, when the run releases what follows, or when the renderer goes (`blocking: 'route'`),
+   * never at the call's deadline: a frame's script still on its way past that would let the next
+   * input command go to the same session (C9). Its own queries' deadlines (`bounded`) end it instead.
    */
   private runCall(step: Extract<Step, { kind: 'call' }>): { pending: Promise<unknown>; due: Promise<void>; held: Promise<void> } {
     let fire = (): void => {}
     let release = (): void => {}
     const held = new Promise<void>((done) => (release = done))
     const out = { late: false, due: new Promise<void>((done) => (fire = done)), drop: (): void => {} }
-    void out.due.then(release)
     let pending: Promise<unknown>
     try {
       pending = Promise.resolve(step.run(release))
@@ -1601,6 +1608,7 @@ export class PageInputRouter implements ChildFrameObserver {
       pending = Promise.reject(err)
     }
     pending.then(step.resolve, step.reject)
+    pending.then(release, release)
     this.callOut = out
     const timer = this.timers.set(() => {
       out.late = true
@@ -1620,6 +1628,7 @@ export class PageInputRouter implements ChildFrameObserver {
     out.drop = (): void => {
       this.timers.clear(timer)
       fire()
+      release()
       if (this.callOut === out) this.callOut = undefined
     }
     pending.then(end, end)

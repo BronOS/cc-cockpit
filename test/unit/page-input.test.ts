@@ -2022,6 +2022,36 @@ describe("PageInputRouter: main's scripts (scriptAt, scriptIn, scriptInFocus)", 
     expect(s.mice().at(-1)).toEqual(['A', 'mousePressed', 20, 20])
   })
 
+  // Advisor finding: the call's own deadline came before the frame script's, so the pump went on with
+  // the frame's evaluation still on its way, and a press waiting behind the call went to that frame.
+  it("the call's own deadline does not end the wait for a frame's script: nothing goes to that frame until its own deadline", async () => {
+    const s = setup()
+    const sc = scripts(s)
+    s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
+    sc.opts.hold.add('A Runtime.evaluate')
+    const late = s.router.scriptAt(20, 220, () => 'hit')
+    await s.flush()
+    s.router.input([down(20, 220), up(20, 220)])
+    await s.flush()
+    expect(sc.on('A')).toEqual(['Page.createIsolatedWorld', 'Runtime.evaluate'])
+    // Two timers now: the call's (set first) and the frame script's. Only the call's fires.
+    const ids = [...s.timers.keys()].sort((a, b) => a - b)
+    expect(ids).toHaveLength(2)
+    const callTimer = s.timers.get(ids[0] as number) as () => void
+    s.timers.delete(ids[0] as number)
+    callTimer()
+    await s.flush()
+    expect(s.page.sent).toEqual([])
+    // The frame script's deadline: dropped, A stalled, the press and release to the page at the top point.
+    s.fire()
+    await expect(late).resolves.toBeUndefined()
+    await s.flush()
+    expect(s.mice()).toEqual([
+      ['', 'mousePressed', 20, 220],
+      ['', 'mouseReleased', 20, 220]
+    ])
+  })
+
   it('a script in the top document holds nothing after it (as before)', async () => {
     for (const run of [(r: PageInputRouter) => r.scriptAt(5, 5, () => 'hit'), (r: PageInputRouter) => r.scriptInFocus('sel')]) {
       const s = setup()

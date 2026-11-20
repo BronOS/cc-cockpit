@@ -37,7 +37,8 @@
 // the value and firing input and change there and nowhere else); copy of a double-clicked word and
 // of a field's selection in each of those documents, read where the focus is; order: rounds of clicks into A, the top, B and T with
 // keys and texts after each, nothing awaited, and the top document's "abc" é Ctrl+A "x" and
-// "abc" é "d". Printed, never failures: Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
+// "abc" é "d". Printed, never failures: a select and a selection in the same-site S (main's scripts
+// do not reach them), Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
 // and the router's cost per pointer event in each document, and per key event (the protocol's own
 // answer, fast typing and a held key's repeat through the router; that every key lands is a check).
 //
@@ -670,6 +671,24 @@ async function main() {
       want(placed, `select in X inside W: the popup at ${JSON.stringify(r)}, not over the select`)
       want(x.sv === 'four' && x.chg.join() === 'input:four,change:four', `select in X inside W: the choice gave ${JSON.stringify(x.sv)} ${JSON.stringify(x.chg)}`)
       want(word === 'inner' && pushedText.at(-1) === 'inner', `copy in X inside W: the double-clicked word read ${JSON.stringify(word)}`)
+    }
+    // Printed, never failures: the same-site S (scrolled 100, its select and paragraph below its
+    // 110 px), whose select and selection main's scripts do not reach (design-web-browser.md §4.4).
+    {
+      await reset()
+      popups.length = 0
+      await js('same', 'scrollTo(0, 100)')
+      await sleep(80)
+      const inS = ([x, y]) => toTop('same', [x, y - 100])
+      selClick(inS(LOCAL.select))
+      await settle(300)
+      const s = await state('same')
+      selClick(inS(LOCAL.word), 1)
+      selClick(inS(LOCAL.word), 2)
+      await settle(250)
+      const word = await within(view.readSelection(), 3000, 'unanswered')
+      const inPage = await js('same', 'String(getSelection())')
+      console.log(`same-site S (known limitation): select popup ${popups.length ? 'shown' : 'none'}, the press reached it: ${s.log.some((l) => l.startsWith('mousedown:s'))}; double-clicked word ${JSON.stringify(inPage)} in S, read for copy ${JSON.stringify(word)}`)
     }
   }
 

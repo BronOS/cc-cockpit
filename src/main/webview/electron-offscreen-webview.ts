@@ -400,7 +400,8 @@ export class OffscreenWebviewFactory implements WebviewViewFactory {
       // world (the element is kept there between the two; a frame gone or replaced meanwhile
       // chooses nothing). Both on the router's call road (ruling 2026-11-19 #11: a press on a hung
       // page started one unanswered script each); a press waits HIT_TIMEOUT_MS at most for the hit
-      // test. The answer in its place among the input.
+      // test, then goes behind it in the router's queue, which a frame that does not answer holds
+      // two route deadlines at most, once (page-input.ts scriptAt). The answer in its place among the input.
       hitSelect: (x, y, id, epoch) =>
         wc.isDestroyed()
           ? Promise.resolve(undefined)

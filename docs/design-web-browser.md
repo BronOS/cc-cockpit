@@ -440,7 +440,11 @@ carries its epoch as before), and each protocol command of it is a hit-test quer
 script, and one past its deadline (500 ms for the whole frame part) stalls its session as a late command does. One
 command or query outstanding per session (C9) holds for them too: while the route and a frame's script run, the router
 sends nothing else (the call blocks the queue until the script goes to the top document, where nothing waits for it as
-before, or settles). A page with no cross-site frame sends no new protocol command. Proven under Electron
+before, or settles; never released by the call's own deadline, which could come first). So a press still waits at most
+50 ms for its hit test in the lane, then goes into the router's queue behind it: a frame that does not answer holds the
+page's input there two route deadlines at most (200 ms for the route, 200 ms for the frame's script), once, since it is
+stalled from then on and asked nothing more; a copy read waits at most 500 ms for its frame part. A page with no
+cross-site frame sends no new protocol command. Proven under Electron
 (`scripts/offscreen-input-check.mjs`, macOS and the Linux VM, 2026-11-20): a select in a cross-site frame, one nested in
 it, one at `scale(0.5)` and one in a cross-site frame inside a same-site one (that frame scrolled) opens the popup with
 its options over the select, the press reaches no document, the select holds the focus (each frame above it its frame),
