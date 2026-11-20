@@ -316,6 +316,11 @@ export const GUEST_CLASS: { readonly [C in InvokeChannel]: GuestRule<C> } = Obje
   'webAccess.state': NO,
   'webAccess.confirmAnswer': NO,
   'ccc.offer': NO,
+  // Claude Code on the host: the owner's machine setup (main/hooks/claude-offer.ts), never a guest's.
+  'settings.claudeStatus': NO,
+  'settings.claudeOfferSet': NO,
+  'claude.offer': NO,
+  'claude.install': NO,
   'overlays.bounds': NO,
   'overlays.message': NO,
   'overlays.ready': NO,

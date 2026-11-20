@@ -301,6 +301,11 @@ export interface AppSettings {
    * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").
    */
   cccOffer?: boolean
+  /**
+   * Offer to install Claude Code at start-up when `claude` is not found (main/hooks/claude-offer.ts).
+   * Absent or anything but `false` reads as on; stored only as `false` ("Don't ask again").
+   */
+  claudeOffer?: boolean
   /** The newest version the user dismissed in the update notice; a newer release shows again. */
   updateDismissed?: string
   /** Plugin id to the git URL it was last installed from; outlives an uninstall (repo-change warning). */

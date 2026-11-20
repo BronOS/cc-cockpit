@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import type {
   AppearanceView,
   CccCommandView,
+  ClaudeCodeView,
   CommandsView,
   DiscussAnswer,
   InvokeChannel,
@@ -104,6 +105,7 @@ import type { GuestCloseAsk } from '../tabs/guest-close-asks'
 import type { GuestDeps } from './guest-deps'
 import type { OpenTarget } from '../external/open-external'
 import { warnLog } from '../warn-log'
+import { mayAskClaudeOffer, type ClaudeOfferCaller } from '../hooks/claude-offer'
 import { OAUTH_PASTE_REFUSED, type OAuthPasteAnswer } from '../../shared/oauth-paste'
 import { isPlainObject } from '../../shared/guards'
 import { isPaneEdge, type GroupsSnapshot, type PlaceIntent } from '../../shared/tab-groups'
@@ -1414,6 +1416,41 @@ export function registerCccCommandHandlers(router: IpcRouter, deps: CccCommandHa
     deps.setOffer(value)
   })
   router.handleProject('ccc.offer', () => deps.offer())
+}
+
+/** Claude Code on the host (main/hooks/claude-offer.ts): the start-up question, its setting, the installer tab. */
+export interface ClaudeCodeHandlerDeps {
+  /** Main's server flag: who may be asked and may install (mayAskClaudeOffer). */
+  server: boolean
+  status(): ClaudeCodeView | Promise<ClaudeCodeView>
+  setOffer(value: boolean): void
+  /** ClaudeOffer.claim for this caller, then the view when `claude` is not found; else null. */
+  offer(caller: ClaudeOfferCaller): ClaudeCodeView | null | Promise<ClaudeCodeView | null>
+  /** Open the installer tab in the caller's project window (main's constant command); `viewId` is the asking view. */
+  install(projectId: string, windowId: number, viewId: ViewId): Promise<TabInfo>
+}
+
+/**
+ * The status is `yes` (it reads the host's PATH, like settings.cccStatus). The rest is `adapted`: the
+ * owner's own desktop page, or in server mode the owner's browser (the only screen there), decided by
+ * mayAskClaudeOffer over main's flag and the view main bound, never the payload. A refused offer is an
+ * answer (null), not an error, as for every view that will not be asked; a refused set or install throws.
+ */
+export function registerClaudeCodeHandlers(router: IpcRouter, deps: ClaudeCodeHandlerDeps): void {
+  const mayAct = (view: CallView): boolean => mayAskClaudeOffer(deps.server, { remote: view.remote, owner: isOwner(view) })
+  router.handleProject('settings.claudeStatus', () => deps.status())
+  router.handleProject('settings.claudeOfferSet', (_ctx, payload, view) => {
+    if (!mayAct(view)) throw new Error('settings.claudeOfferSet: refused for this view')
+    const value = (payload as { value?: unknown } | undefined)?.value
+    if (typeof value !== 'boolean') throw new Error('settings.claudeOfferSet: value must be a boolean')
+    deps.setOffer(value)
+  })
+  router.handleProject('claude.offer', (_ctx, _payload, view) => deps.offer({ remote: view.remote, owner: isOwner(view) }))
+  // Nothing of the payload is read: the command is main's constant (claude-offer.ts).
+  router.handleProject('claude.install', (ctx, _payload, view) => {
+    if (!mayAct(view)) throw new Error('claude.install: refused for this view')
+    return deps.install(ctx.projectId, ctx.windowId, view.viewId)
+  })
 }
 
 /**

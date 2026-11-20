@@ -1836,6 +1836,18 @@ All decided in phase 1:
   inspected, and never in a test run unless `CC_COCKPIT_CCC_OFFER=1` (itself honoured only in a test run).
   "Don't ask again" sets `cccOffer: false` in `app.json`; Settings > General > Command line >
   "Offer to install at start-up" turns it back on.
+- Claude Code itself is never installed by the app (`src/main/hooks/claude-offer.ts`, `ClaudeOfferDialog`). At start the
+  first view that may be asked (the desktop page; a server's first owner browser, never its hidden page or a guest)
+  gets "Claude Code was not found" once per launch when `claude` is not on the PATH the tabs spawn with (`buildPtyEnv`
+  over the login env, walked with `X_OK` and `isFile`, empty and relative entries skipped), before the ccc question
+  (the renderer asks `ccc.offer` only after it). It shows main's install command for the host's platform with Copy,
+  the setup docs through `app.openExternal`, the other ways as text, and Install in a new tab: `claude.install` carries
+  no text, main opens `createCommand` with its constant (login shell, `-l -i -c`, one argument) and `keepOpen`, so a
+  clean exit keeps the tab, and re-checks at its exit 0 (a core notice). `~/.local/bin/claude` present but off that
+  PATH reads 'off-path': the dialog gives the PATH line, no install. Win32 has no tab spawn path, so no button there.
+  Never in a test run unless `CC_COCKPIT_CLAUDE_OFFER=1`; there `CC_COCKPIT_CLAUDE_INSTALL_COMMAND` replaces what the
+  tab runs (both honoured only in a test run). "Don't ask again" sets `claudeOffer: false`; Settings > General >
+  Claude Code turns it back on.
 - The keybinding editor refuses ctrl+c, ctrl+d and ctrl+z (they would be eaten from the terminal).
 - "Cmd = Ctrl" on Linux is kept as decided: the defaults Cmd+T/W/B/J/O become Ctrl chords that
   Claude Code and readline also use, so on Linux they never reach the terminal until rebound.
