@@ -28,6 +28,11 @@ export type ViewAccess = 'owner' | 'read' | 'write'
 export interface ViewFrom {
   view: string
   access: ViewAccess
+  /**
+   * A guest's invite name, set by main from the connection it bound (never from the page or a payload);
+   * absent for the owner. For per-person state such as a note's author. See docs/design-overlay-views.md.
+   */
+  person?: string
 }
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -290,9 +295,9 @@ export interface OverlayInfo {
   readonly opener: string
 }
 
-/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info on a click. */
+/** A button another plugin adds to every overlay of a type; `run` gets the overlay's info and, as `from`, who clicked (view, access, a guest's `person`; set by main from the connection it bound, never the page; docs/design-overlay-views.md). */
 export interface OverlayTypeButton extends OverlayButton {
-  run: (overlay: OverlayInfo) => unknown | Promise<{ close?: true } | void>
+  run: (overlay: OverlayInfo, from: ViewFrom) => unknown | Promise<{ close?: true } | void>
 }
 
 export type OverlaySpec =
@@ -353,12 +358,31 @@ export interface OverlayHandle {
    * it. Queued until the page has loaded. At most 1,040,384 chars of JSON (1 MiB less 8 KiB for
    * the transport); a larger one throws a RangeError. A no-op once the overlay ended.
    */
-  post(message: JsonValue): void
   /**
    * html only (throws for another kind): hear what the page posts without a `result` key (the
    * overlay stays open). Listeners are dropped when the overlay ends.
    */
-  onMessage(listener: (message: JsonValue) => void): Disposer
+  onMessage(listener: (message: JsonValue, from: ViewFrom & { copy: string }) => void): Disposer
+  /**
+   * `perView` plugins (manifest `overlays.perView`): a view's copy of this overlay connected (its page is
+   * ready). `from` is filled by main from the connection it bound (view, access, `person`) plus the copy id
+   * main minted; never from the page. Reply with `post(msg, { copy })`. See docs/design-overlay-views.md.
+   */
+  onConnect?(listener: (from: ViewFrom & { copy: string }) => void): Disposer
+  /** A copy went away (its view left, was hidden or lost access). Same `from` as `onConnect`. See docs/design-overlay-views.md. */
+  onDisconnect?(listener: (from: ViewFrom & { copy: string }) => void): Disposer
+  /**
+   * With `copy`, post to that one copy only (main refuses a copy id it did not mint for this overlay).
+   * Without it, to every copy that joined broadcasts. See docs/design-overlay-views.md.
+   */
+  post(message: JsonValue, options?: { copy?: string }): void
+  /** Hide one view's copy (a read guest's close); the overlay stays for the others. Main-checked. See docs/design-overlay-views.md. */
+  hide?(options: { copy: string }): void
+  /**
+   * Record that this overlay's content now also comes from these plugins (a deferred fill), so a guest
+   * sees it only when all of them are visible to it (provenance, D-4). See docs/design-overlay-views.md.
+   */
+  addSources?(pluginIds: string[]): void
   /** Dismiss the overlay (`result` resolves `{ kind: 'dismissed' }`). A no-op once it ended. */
   close(): void
   /**
@@ -368,14 +392,14 @@ export interface OverlayHandle {
    */
   focus(): void
   /** A click on one of the buttons the spec (or `setButtons`) gave, by its `id`. Dropped when the overlay ends. */
-  onButton(id: string, handler: () => unknown): Disposer
+  onButton(id: string, handler: (from: ViewFrom) => unknown): Disposer
   /** Replace the opener's buttons (a "Mark read" that became "Mark unread"). Same rules as `buttons` in the spec. A no-op once the overlay ended. */
   setButtons(buttons: OverlayButton[]): void
   /**
    * Answer Discuss with Claude with the context text to send (within 5 s), or `null` for none. A
    * throw or a timeout shows its error to the person and sends nothing.
    */
-  onDiscuss(handler: () => Promise<{ text: string } | null> | { text: string } | null): Disposer
+  onDiscuss(handler: (from: ViewFrom) => Promise<{ text: string } | null> | { text: string } | null): Disposer
   /**
    * Draw Discuss with Claude as the toolbar's primary (accent) button, or plain again with `false`
    * (the default): e.g. once the page holds something worth sending. Held until the overlay exists;
@@ -688,6 +712,11 @@ export interface OpenFileRequest {
    * passed (an id `ctx.sessions` knows). Absent when the open did not come from a tab.
    */
   readonly tabId?: string
+  /**
+   * The plugin whose call or click caused a main-routed open, set by main (never a payload); absent
+   * otherwise. Provenance for overlays opened for it. See docs/design-overlay-views.md.
+   */
+  readonly requestedBy?: string
 }
 
 /** Where `ctx.files.open` sent the file: the project's open-file plugin, or the app's built-in viewer. */
@@ -1407,7 +1436,7 @@ export interface PluginContext {
    * system; whether a browser then showed it is not reported. Use it on a person's click, not
    * unasked: a page opening by itself takes them out of what they were doing.
    */
-  openExternal(url: string): Promise<void>
+  openExternal(url: string, options?: { view?: string }): Promise<void>
 }
 
 /**
@@ -1451,6 +1480,12 @@ export interface ServicesApi {
    * boundary: all plugins of a project share one JS realm.
    */
   caller(): string | undefined
+  /**
+   * The consumers of every live call frame of the current chain, outermost first (for A -> B -> C, C
+   * sees `[A, B]`). Same rules as `caller`: `[]` outside a call, once it settled and for a late timer.
+   * Read from the registry's frames, never from arguments. See docs/design-overlay-views.md.
+   */
+  callers(): string[]
   /**
    * Whether a call on service `name` would reach a provider now: `name` is in this plugin's
    * `services.uses`, an enabled plugin provides it at the same major, and with several providers

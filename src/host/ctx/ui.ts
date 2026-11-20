@@ -637,6 +637,8 @@ export function createUiApi(
     const send = (method: string, params: Record<string, unknown>): void => {
       void deps.call(method, params).catch((err: unknown) => deps.logError(`${method}: ${errorText(err)}`))
     }
+    // The SDK's listeners also get `from` (docs/design-overlay-views.md) and `post` a `copy`; main sends neither
+    // yet (later tasks), so this still dispatches without them and the cast keeps typecheck green until then.
     return Object.freeze({
       result,
       post: (message: JsonValue): void => {
@@ -713,7 +715,7 @@ export function createUiApi(
           if (current.discussHandlers.size === 0) send('overlay.discussable', { pluginId, handle: current.handle, on: false })
         }
       }
-    })
+    }) as unknown as OverlayHandle
   }
 
   return {

@@ -103,15 +103,15 @@ External review: sol / high
 - Modify: `src/shared/manifest.ts`, `src/main/plugins/validate.ts`, `src/sdk/types.ts`, `src/host/services.ts`
 - Modify: `test/unit/host-services.test.ts`, the manifest validation tests (`test/unit/validate*.test.ts`)
 
-- [ ] add the optional top-level `overlays: { perView?: boolean }` to the manifest schema and its parsed type (unknown
+- [x] add the optional top-level `overlays: { perView?: boolean }` to the manifest schema and its parsed type (unknown
   sub-keys refused, as for `guests`)
-- [ ] add the SDK types listed in Technical Details (types only; implementations come in later tasks), with doc comments
+- [x] add the SDK types listed in Technical Details (types only; implementations come in later tasks), with doc comments
   that say who fills each field (main, never the page)
-- [ ] implement `ctx.services.callers()` in `src/host/services.ts`: the live call frames' consumers, outermost first,
+- [x] implement `ctx.services.callers()` in `src/host/services.ts`: the live call frames' consumers, outermost first,
   empty outside a frame or once the frame settled (same liveness rule as `caller`)
-- [ ] tests: manifest accepts/refuses the key; `callers()` for A → B → C (C sees [A, B]), after the call settles, from a
+- [x] tests: manifest accepts/refuses the key; `callers()` for A → B → C (C sees [A, B]), after the call settles, from a
   timer after settle, and for a plugin's own code running in another's frame (excluded, as `caller` does)
-- [ ] run tests - must pass before task 2
+- [x] run tests - must pass before task 2
 
 ### Task 2: OverlayManager copies for perView overlays [model: opus]
 

@@ -705,3 +705,15 @@ describe('guests (design-guests §6)', () => {
     }
   })
 })
+
+describe('overlays (docs/design-overlay-views.md)', () => {
+  it('accepts "overlays": { "perView": true } and refuses anything else in it', async () => {
+    const r = await validateManifest(manifest({ overlays: { perView: true } }), dir)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.manifest.overlays?.perView).toBe(true)
+    expect((await validateManifest(manifest({ overlays: {} }), dir)).ok).toBe(true)
+    for (const overlays of [{ perView: 'yes' }, { perView: true, copies: 2 }, true, []]) {
+      expect((await validateManifest(manifest({ overlays }), dir)).ok, JSON.stringify(overlays)).toBe(false)
+    }
+  })
+})

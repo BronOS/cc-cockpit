@@ -592,6 +592,8 @@ app has no `rooms`: check `typeof ctx.rooms === 'object'`.
       enabled, disabled): call `providers()` again. Several changes at once call it once.
     The Plugins page shows no "pick one" for a name only collectors use. Use `use` when one
     answer is wanted (the person's pick holds), `useAll` when every provider's answer is.
+  - `ctx.services.callers()`: the whole chain behind `caller()`, outermost first (A calls B, B calls C: C sees
+    `[A, B]`); `[]` wherever `caller()` is `undefined`. Provenance for overlays (docs/design-overlay-views.md).
   - `ctx.services.caller()`: in a provider, the id of the plugin whose call it is serving, for
     per-caller usage counts or caps. It holds inside the provided method and in what that method
     awaits or starts (timers, promise callbacks) while the call is still running; with nested calls

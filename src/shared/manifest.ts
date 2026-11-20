@@ -264,6 +264,12 @@ export interface PluginManifest {
    * tolerated by older apps like `access`; strict inside.
    */
   guests?: { aware?: boolean }
+  /**
+   * `perView: true`: each view that may see this plugin's html overlays gets its own copy, with per-view
+   * messages and `from` (docs/design-overlay-views.md). Top level and tolerated by older apps (which
+   * ignore it and keep one shared overlay); strict inside.
+   */
+  overlays?: { perView?: boolean }
 }
 
 /** The manifest declares `"guests": { "aware": true }` (the plugin checks a viewer's access itself). */
@@ -337,6 +343,12 @@ export const MANIFEST_SCHEMA = {
       type: 'object',
       additionalProperties: false,
       properties: { aware: { type: 'boolean' } }
+    },
+    // Strict inside like `guests`: a misspelt `perview` would silently leave one shared overlay.
+    overlays: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { perView: { type: 'boolean' } }
     },
     contributes: {
       type: 'object',

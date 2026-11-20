@@ -522,6 +522,7 @@ export class HostContexts {
         // when the plugin is released finishes on the old copy (see ServiceRegistry.release), and a
         // read with no side effect must not break it.
         caller: () => servicesOf().caller(spec.id),
+        callers: () => servicesOf().callers(spec.id),
         // Resolved on every call (never cached): a provider enabled, disabled or re-picked since the
         // last ask is seen at once. A read with no side effect, so no alive() check either.
         available: (name: string) => servicesOf().available(spec.id, name),

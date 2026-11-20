@@ -44,7 +44,9 @@ const MAX_TITLE_LENGTH = 200
 const MAX_OPENER_LENGTH = 200
 
 type Provider = (o: OverlayInfo) => OverlayTypeButton[] | Promise<OverlayTypeButton[]>
-type Run = OverlayTypeButton['run']
+// Task 1 only widened the SDK's `run` with `from`; main does not send it yet (a later task), so the host still
+// calls with the info alone and the cast keeps typecheck green until then.
+type Run = (info: OverlayInfo) => unknown
 
 interface Registration {
   readonly pluginId: string
@@ -226,7 +228,7 @@ export class OverlayButtonRegistry {
       return clean.map((button, i) => {
         const run = list[i]!.run
         if (typeof run !== 'function') throw new TypeError(`${what}: button "${button.id}" has no run function`)
-        return { button, run: run as Run }
+        return { button, run: run as unknown as Run }
       })
     } catch (err) {
       this.log(reg.pluginId, `${what}: the provider's answer is skipped: ${errorText(err)}`)
