@@ -24,7 +24,7 @@ import { createServer, request, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 // Named apart from the page's own WebSocket, which the foreign page below uses.
 import { WebSocket as WsClient } from 'ws'
 import type { HostStatus } from '../../src/main/plugins/host-manager'
@@ -32,6 +32,7 @@ import type { CockpitApi } from '../../src/shared/ipc'
 import { DEVICE_KEY_HEADER, PROTOCOL_VERSION, socketProtocols } from '../../src/shared/web-protocol'
 import { DEVICE_KEY_STORAGE } from '../../src/renderer/web/device-key'
 import { expect, launchCockpit, test, type Cockpit } from './fixtures'
+import { paneOf, tabsOf, typeInPane, waitPaneText } from './split-fixtures'
 import { enableWebAccess, openBrowser, type WebAccessOn, type WebBrowser } from './web-fixtures'
 
 /** Opens the access link in a fresh browser and joins the cockpit's project from the web picker. */
@@ -72,12 +73,23 @@ test('the Sessions panel shows in the browser and on the desktop; a card click s
     const { page } = c
     // On before the tabs start (a tab running at turn-on mirrors from blank, docs/features.md).
     const web = await enableWebAccess(c)
-    await c.newTab('claude')
-    await c.waitForTerminalText('FAKE-CLAUDE banner')
-    await c.typeLine('/prompt alpha errand')
-    await c.newTab('claude')
-    await c.waitForTerminalText('FAKE-CLAUDE banner')
-    await c.typeLine('/prompt beta errand')
+    // Each tab is addressed by its own pane (SELECTORS.md, "The terminal of the selected pane"): right
+    // after the second New tab, alpha's pane still shows its FAKE-CLAUDE banner, so the visible-terminal
+    // helpers would wait on alpha's screen and click alpha's terminal, which beta's pane then hides
+    // (the click retried on that hidden element until it timed out).
+    const newClaudePane = async (): Promise<Locator> => {
+      const before = new Set((await tabsOf(page)).map((t) => t.id))
+      await c.newTab('claude')
+      await expect.poll(async () => (await tabsOf(page)).filter((t) => !before.has(t.id)).length).toBe(1)
+      const pane = paneOf(page, (await tabsOf(page)).find((t) => !before.has(t.id))!.id)
+      await expect(pane).toBeVisible()
+      await waitPaneText(pane, 'FAKE-CLAUDE banner')
+      return pane
+    }
+    const alphaPane = await newClaudePane()
+    await typeInPane(page, alphaPane, '/prompt alpha errand')
+    const betaPane = await newClaudePane()
+    await typeInPane(page, betaPane, '/prompt beta errand')
     await expect(page.getByRole('tab')).toHaveCount(2)
     // alpha is the first tab, beta the second (and the desktop's selected one, the newest).
     const ALPHA = 0
@@ -120,7 +132,7 @@ test('the Sessions panel shows in the browser and on the desktop; a card click s
     await expectSelected(webPage, BETA)
 
     // The panel is live in the browser: a session that ends leaves both lists.
-    await c.typeLine('/exit')
+    await typeInPane(page, alphaPane, '/exit')
     await expect(panelOf(page).locator('.card')).toHaveCount(1)
     await expect(webPanel.locator('.card')).toHaveCount(1)
   } finally {
