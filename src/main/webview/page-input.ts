@@ -132,7 +132,7 @@
 // as C1 to C9 are the router's contract, the one page-input.fuzz.test.ts checks.
 
 import { webviewKeyInfo } from '../../shared/webview-keys'
-import { protocolModifiers, type ElectronInputEvent, type InputModifier } from './webview-input'
+import { InputDroppedError, protocolModifiers, type ElectronInputEvent, type InputModifier } from './webview-input'
 
 /** One protocol command on the page's session (no `sessionId`) or a child frame's. */
 export type ProtocolSend = (method: string, params: Record<string, unknown> | undefined, sessionId?: string) => Promise<unknown>
@@ -520,6 +520,12 @@ export class PageInputRouter implements ChildFrameObserver {
   private readonly frames = new Map<string, Lane>()
   private queue: Step[] = []
   private pumping = false
+  /**
+   * A wake that came while the pump ran (`pump` found it busy): the pump looks again as it exits
+   * (codex, O4: a late call's answer came between `callHeld` seeing it late and the pump acting on
+   * that, so its wake was lost and the call and key behind it stayed queued with nothing to restart them).
+   */
+  private repump = false
   /** The command on its way and not late yet (at most one per page: `sendInput`). */
   private onWay: object | undefined
   /**
@@ -720,7 +726,10 @@ export class PageInputRouter implements ChildFrameObserver {
    * seen there (review finding: a lost wakeup left a key queued with nothing to restart it).
    */
   private async pump(): Promise<void> {
-    if (this.pumping) return
+    if (this.pumping) {
+      this.repump = true
+      return
+    }
     this.pumping = true
     try {
       for (;;) {
@@ -755,6 +764,10 @@ export class PageInputRouter implements ChildFrameObserver {
       }
     } finally {
       this.pumping = false
+      if (this.repump) {
+        this.repump = false
+        void this.pump()
+      }
     }
   }
 
@@ -778,7 +791,7 @@ export class PageInputRouter implements ChildFrameObserver {
 
   /** A step of an attachment that went (`lost`): nothing of it is sent; a text's, command's or call's caller hears it. */
   private dropped(step: Step): void {
-    if (step.kind === 'command' || step.kind === 'call') step.reject(new Error('webview: input dropped (the protocol was reset)'))
+    if (step.kind === 'command' || step.kind === 'call') step.reject(new InputDroppedError())
   }
 
   /** A step while the protocol is detached: by the detached roads, press records kept (C7). */
@@ -1160,7 +1173,10 @@ export class PageInputRouter implements ChildFrameObserver {
     // deadline, its release and a key were sent press, key, release). One per record, so bounded.
     // It is a command like any other: on its way until answered or its own deadline, and the step
     // waits for that (a late one keeps the session stalled until it answers).
-    if ((lane.stalled && !d.release) || this.page.stalled || this.onWay) {
+    // A release goes even while the page's session is stalled (fuzz: the release's own capture
+    // follow, a box query on the page, missed its deadline and stalled the page under it, so the
+    // owed release was held back and lost).
+    if (((lane.stalled || this.page.stalled) && !d.release) || this.onWay) {
       // The callers check all of it first; this is the contract's last line, never reached.
       this.warn('order', 'webview: an input command was held back (out of order)')
       return notSent('webview: input held back')

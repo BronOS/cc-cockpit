@@ -1668,6 +1668,25 @@ describe('PageInputRouter scheduling: review 6', () => {
     expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
   })
 
+  // Codex (O4): a late call's answer came between callHeld seeing it late and the pump acting on that;
+  // its wake found the pump busy and was lost, so the next call and the key stayed queued for good.
+  it('a call answered right after its deadline wakes the pump even while the pump is still deciding', async () => {
+    const s = setup()
+    const ran: string[] = []
+    let finishA = (): void => {}
+    void s.router.call(() => (ran.push('A'), new Promise<void>((r) => (finishA = r))), false)
+    void s.router.call(() => (ran.push('B'), 'ok'))
+    s.router.input([keyDown('k')])
+    await s.flush()
+    expect(ran).toEqual(['A'])
+    // A's deadline, and its answer one microtask later: before callHeld's verdict reaches the pump.
+    s.fire()
+    finishA()
+    await s.flush()
+    expect(ran).toEqual(['A', 'B'])
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['k'])
+  })
+
   // Rulings 2026-11-19 #9 and #11: the call stall is the renderer's; the renderer going ends it (and
   // drops what waited, a full reset).
   it('the renderer going ends a hung call: the next call goes at once, and the old one settling changes nothing', async () => {

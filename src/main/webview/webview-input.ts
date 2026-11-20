@@ -317,6 +317,19 @@ const PROTOCOL_MODIFIER_BITS: ReadonlyMap<InputModifier, number> = new Map([
 ])
 
 /** The protocol's modifier bits of a list of Electron modifiers (held buttons and autorepeat are no bits). */
+/**
+ * The router's rejection of a step it dropped because the protocol was reset or the renderer went
+ * (page-input.ts `lost`): what waited on it belongs to the attachment that ended, so it is dropped
+ * too, never delivered into the next one (codex, O2: a press held for its select hit test went into
+ * the new attachment once the dropped call rejected).
+ */
+export class InputDroppedError extends Error {
+  constructor() {
+    super('webview: input dropped (the protocol was reset)')
+    this.name = 'InputDroppedError'
+  }
+}
+
 export function protocolModifiers(modifiers: readonly InputModifier[]): number {
   let bits = 0
   for (const m of modifiers) bits |= PROTOCOL_MODIFIER_BITS.get(m) ?? 0
@@ -785,11 +798,21 @@ export class WebviewInput {
       this.hitDone(lane, seq, undefined)
       return
     }
-    // A page that went or failed: the press goes on as a click (hitDone with nothing).
+    // A page that went or failed: the press goes on as a click (hitDone with nothing). A hit test the
+    // router dropped with its attachment drops the press and what waited for it (cause: epoch).
     pending.then(
       (raw) => this.hitDone(lane, seq, raw),
-      () => this.hitDone(lane, seq, undefined)
+      (err) => (err instanceof InputDroppedError ? this.hitDropped(lane, seq) : this.hitDone(lane, seq, undefined))
     )
+  }
+
+  /** The hit-test `seq` was dropped with its attachment: its press and what waited for it go nowhere. */
+  private hitDropped(lane: PressLane, seq: number): void {
+    const hit = lane.wait
+    if (!hit || hit.kind !== 'hit' || hit.seq !== seq || this.lanes.get(lane.viewId)?.get(lane.id) !== lane) return
+    this.timers.clear(hit.timer)
+    lane.wait = undefined
+    lane.held = []
   }
 
   /**

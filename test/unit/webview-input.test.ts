@@ -19,6 +19,7 @@ import {
   SELECTION_SCRIPT,
   type InputModifier,
   INPUT_BURST,
+  InputDroppedError,
   INPUT_RATE,
   MAX_INPUT_EVENTS,
   MAX_WHEEL_DELTA,
@@ -1321,5 +1322,45 @@ describe('textChunks (a paste into insertText calls)', () => {
   it(`stops at ${MAX_TEXT_CHUNKS} calls`, () => {
     expect(textChunks('x'.repeat(10), 2, 3)).toEqual(['xx', 'xx', 'xx'])
     expect(textChunks('x'.repeat(TEXT_CHUNK_UNITS * (MAX_TEXT_CHUNKS + 5)))).toHaveLength(MAX_TEXT_CHUNKS)
+  })
+})
+
+describe('a press held for its select hit test', () => {
+  // Codex (merge bar O2): the router dropped the queued hit test with its attachment, the rejection
+  // read as "no select", and the held press went into the next attachment.
+  it('is dropped with its attachment when the router drops the hit test, never delivered into the next', async () => {
+    const viewers = new WebviewViewers({ setViewed: () => {}, setSize: () => {}, now: () => 0 })
+    const timers = new Map<number, () => void>()
+    let next = 0
+    const sent: ElectronInputEvent[] = []
+    const hits: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
+    const input = new WebviewInput({
+      isViewer: (panel, viewId) => viewers.isViewer(panel, viewId),
+      claimOwner: (panel, viewId) => viewers.claimOwner(panel, viewId),
+      target: () => ({
+        size: () => ({ width: 800, height: 600 }),
+        send: (events) => void sent.push(...events),
+        insertText: () => {},
+        hitSelect: () => new Promise((resolve, reject) => void hits.push({ resolve, reject }))
+      }),
+      pushSelect: () => {},
+      timers: { set: (fn) => (timers.set(++next, fn), next), clear: (h) => void timers.delete(h as number) },
+      now: () => 0
+    })
+    viewers.report(PANEL, 'web:1', shown, 'owner')
+    const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+    input.accept(PANEL, 'web:1', [down(10, 10), { kind: 'pointer', type: 'up', x: 10, y: 10, button: 'left', clickCount: 1 }, key('a')])
+    expect(hits).toHaveLength(1)
+    expect(sent).toEqual([])
+    hits[0]?.reject(new InputDroppedError())
+    await flush()
+    // The press, its release and the key behind them go nowhere, and the hit's timer is gone.
+    expect(sent).toEqual([])
+    expect(timers.size).toBe(0)
+    // Any other failure of the hit test still lets the press go as a click.
+    input.accept(PANEL, 'web:1', [down(20, 20)])
+    hits[1]?.reject(new Error('the page went'))
+    await flush()
+    expect(sent.map((e) => e.type)).toEqual(['mouseDown'])
   })
 })
