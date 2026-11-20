@@ -241,24 +241,24 @@ the fallback when the protocol detached:
   to its press's session. When the pointer changes frame, the frame it left gets one move (over the owner, or outside
   its viewport) so its hover ends.
 - **Order.** One queue per page, one step at a time, and at most one input command on its way per page across all
-  its sessions: every `Input.*` (keys, texts, edit commands, pointer events, the hover moves and the owed releases)
+  its sessions: every `Input.*` (keys, texts, edit commands, pointer events, the hover moves and the lost releases)
   goes through one sender, which holds the rest of this contract too, and the step that sent it waits until it is answered or its 500 ms deadline passed before anything else
   goes (a key sent while a press into a frame was on its way landed in the old focus 15 times in 30; a press
   hit-tested while a move was on its way could pick a frame that move's hover covered). A pointer event does every
   wait first and its hit test last, right before its send; after hover moves it is hit-tested again, at most twice,
   then the page's session takes it at the top point. Keys go one at a time too: the page answers one in about
   0.15 ms. While a step waits, moves behind it coalesce to the latest and wheel deltas sum; presses, releases, keys
-  and texts keep their order. A full queue (512) drops moves first, then lets in only an up that matches a press
-  record or a down still queued (matched by the physical key's `code`, so Shift+A down and `a` up match, or by the
-  button).
+  and texts keep their order. A full queue (512) drops moves first, then lets in only an up that matches a live press
+  record (matched by the physical key's `code`, so Shift+A down and `a` up match, or by the button), one per record:
+  repeated ups for one held key never grow the queue. A refused key down drops its `char` too.
 - **Stalled sessions.** A session whose command missed its deadline gets nothing more until that command answers, so
   a renderer that answers nothing holds one unanswered command, never a pile; that command no longer counts toward
   the page's one on its way (a stalled frame holds itself, not the page). A move for a stalled frame is dropped, its
   press or wheel goes to the page's session at the top point. A release always goes where its press went: a frame
-  that got a press and then stalled is owed the release, sent once it answers (dropped if the frame or the
-  attachment goes), and gets nothing new before it; an edit command's key down is a press like any key. While the
-  page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
-  presses, releases, wheels and owed releases wait in the queue in order (bounded by the cap; no hit test runs), moves
+  that got a press and then stalled still gets the release, at once and in order (one per press, on its way like any
+  command), never parked behind later input (a parked release let a later key go first); an edit command's key down is
+  a press like any key. While the page's own session is stalled nothing at all goes, page-wide: keys, texts, commands,
+  presses, releases and wheels wait in the queue in order (bounded by the cap; no hit test runs), moves
   are dropped, so a page busy for a second loses no key and no press lands in a frame before a key to the page was
   answered; its answer or a reset starts the queue again. A hit-test query that missed its 200 ms deadline marks its
   session the same way for queries (the event goes on unrouted). Each attachment of the protocol has an epoch, bumped

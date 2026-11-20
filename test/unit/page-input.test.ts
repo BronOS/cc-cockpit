@@ -607,7 +607,9 @@ describe('PageInputRouter', () => {
 
   // Review finding (codex): every release was exempt from the queue cap, so releases nothing had
   // pressed queued without bound against a hung page.
-  it('a full queue drops moves first; past it a release goes only for a press it took', async () => {
+  // C7, ruling 2026-11-19 #2: past the cap only an up that matches a live press record gets in (the
+  // left press was sent, so it has one); the key down `c` was still queued, so its up is dropped.
+  it('a full queue drops moves first; past it a release goes only for a live press record', async () => {
     const s = setup()
     s.page.opts.hold = true
     // A press taken and a key down taken, then the pump held on a key and the queue overfilled.
@@ -619,14 +621,14 @@ describe('PageInputRouter', () => {
     for (let n = 0; n < 100; n++) stray.push({ type: 'keyUp', keyCode: 'x', modifiers: [] }, up(9, 9, 'right'))
     s.router.input([...many, ...stray, up(9, 9), { type: 'keyUp', keyCode: 'c', modifiers: [] }])
     expect(s.logs).toEqual(['webview: the page answers no input; input dropped'])
-    // Let everything through: the two matched releases are there, at the end, and no stray one.
+    // Let everything through: the matched release is there, at the end, and no stray one.
     for (let n = 0; n < 4 * MAX_QUEUED_STEPS && (s.page.held.length > 0 || s.timers.size > 0); n++) {
       for (const h of s.page.held.splice(0)) h.resolve({})
       await new Promise((r) => setTimeout(r, 0))
     }
     await s.flush()
-    expect(s.page.sent.slice(-2).map((x) => x.params.type)).toEqual(['mouseReleased', 'keyUp'])
-    expect(s.page.sent.filter((x) => x.params.key === 'x' || x.params.button === 'right')).toEqual([])
+    expect(s.page.sent.slice(-2).map((x) => x.params.type)).toEqual(['rawKeyDown', 'mouseReleased'])
+    expect(s.page.sent.filter((x) => x.params.key === 'x' || x.params.key === 'c' && x.params.type === 'keyUp' || x.params.button === 'right')).toEqual([])
   })
 
   // Review finding (codex): continuous pointer input to one session never drained, so a renderer
@@ -1057,7 +1059,9 @@ describe('PageInputRouter scheduling: review 3', () => {
 
   // MUST: "left press to frame A, A's answer withheld past the deadline, then the release goes only
   // to the page session and capture is cleared; when A answers, nobody sends A its mouseReleased."
-  it('a stalled frame loses its release: the release is owed to A and sent once A answers the press', async () => {
+  // Ruling 2026-11-19 #2 (C5, reversing ruling 3): a stalled session's release is sent to it at once,
+  // in order, never parked behind later input.
+  it('a stalled frame loses its release: the release goes to A at once, never to the page', async () => {
     const s = setup()
     s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
     s.page.opts.holdSessions.add('A')
@@ -1067,8 +1071,11 @@ describe('PageInputRouter scheduling: review 3', () => {
     await s.flush()
     s.router.input([up(30, 230)])
     await s.flush()
-    // Nothing to the page session (it never got the press).
-    expect(s.mice()).toEqual([['A', 'mousePressed', 20, 25]])
+    // To A at once; nothing to the page session (it never got the press).
+    expect(s.mice()).toEqual([
+      ['A', 'mousePressed', 20, 25],
+      ['A', 'mouseReleased', 30, 30]
+    ])
     s.page.opts.holdSessions.clear()
     s.page.held.shift()?.resolve({})
     await s.flush()
@@ -1099,7 +1106,9 @@ describe('PageInputRouter scheduling: review 3', () => {
     ])
   })
 
-  it("an owed release is dropped when A detaches or the protocol does", async () => {
+  // Ruling 2026-11-19 #2: the release went to stalled A at once; A or the protocol going after it
+  // sends nothing more anywhere.
+  it("a stalled frame's release goes at once; A or the protocol going after it sends nothing more", async () => {
     for (const end of ['frame', 'protocol'] as const) {
       const s = setup()
       s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
@@ -1118,7 +1127,13 @@ describe('PageInputRouter scheduling: review 3', () => {
       }
       s.page.held.shift()?.resolve({})
       await s.flush()
-      expect([end, s.mice()]).toEqual([end, [['A', 'mousePressed', 20, 25]]])
+      expect([end, s.mice()]).toEqual([
+        end,
+        [
+          ['A', 'mousePressed', 20, 25],
+          ['A', 'mouseReleased', 30, 30]
+        ]
+      ])
     }
   })
 
@@ -1347,13 +1362,15 @@ describe('PageInputRouter scheduling: review 4', () => {
 })
 
 // Found by page-input.fuzz.test.ts (a mutation it caught at 20,000 seeds; pinned here).
-describe('PageInputRouter scheduling: owed releases', () => {
-  it('a frame that answers while a press is hit-tested gets its owed release before the press', async () => {
+// Ruling 2026-11-19 #2 (C5): there are no owed releases any more; a stalled frame's release goes at
+// once and is on its way like any command, so the next press waits for it.
+describe('PageInputRouter scheduling: a stalled frame\'s release', () => {
+  it('a stalled frame gets its release at once, before the press after it', async () => {
     const s = setup()
     s.frame('A', '', 7, rect(0, 200, 600, 300), 600, 300)
     s.router.input([down(20, 225)])
     await s.flush()
-    // A drag move A does not answer in time (A stalled), then the release: owed to A.
+    // A drag move A does not answer in time (A stalled), then the release: to A at once.
     s.page.opts.holdSessions.add('A')
     s.router.input([move(30, 230, true)])
     await s.flush()
@@ -1361,13 +1378,14 @@ describe('PageInputRouter scheduling: owed releases', () => {
     await s.flush()
     s.router.input([up(30, 230)])
     await s.flush()
-    // The next press is mid-hit-test when A answers.
+    // The next press waits for the release on its way: not even hit-tested.
     s.page.opts.holdQueries = true
     s.router.input([down(40, 240)])
     await s.flush()
-    expect(s.page.heldQueries).toHaveLength(1)
+    expect(s.page.heldQueries).toHaveLength(0)
     s.page.opts.holdSessions.clear()
-    s.page.held.shift()?.resolve({})
+    // A answers the move and the release.
+    for (const h of s.page.held.splice(0)) h.resolve({})
     await s.flush()
     s.page.opts.holdQueries = false
     for (let n = 0; n < 10 && s.page.heldQueries.length > 0; n++) {
