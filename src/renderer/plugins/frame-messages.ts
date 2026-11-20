@@ -82,7 +82,7 @@ export function themeMessage(
   mac = false,
   font?: TerminalFont
 ): { type: string; theme: { kind: Theme['kind']; vars: Record<string, string> }; mac: boolean } {
-  // `mac`: the SDK skips its scrollbar rule there (overlay scrollbars already look right).
+  // `mac`: there the SDK's scrollbar rule is on only while the page measures classic bars.
   const vars = font ? { ...theme.vars, ...terminalFontVars(font) } : { ...theme.vars }
   return { type: THEME_MESSAGE, theme: { kind: theme.kind, vars }, mac }
 }

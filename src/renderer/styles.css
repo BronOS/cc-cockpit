@@ -31,10 +31,25 @@
   --cc-traffic-lights-w: 86px;
 }
 
-/* Scrollbars: edges-only (no bar at rest, shadows at the edges with more content, the bar while
-   scrolling or with the pointer near the edge). The sheets are src/sdk/scroll-edges-core.ts, adopted by
-   main.tsx in a layer at zero specificity, so any rule here (`scrollbar-width: none`, a transparent
-   `scrollbar-color`, a `box-shadow` on a scroller) wins over them. */
+/* Scrollbars: edges-only (no bar at rest, the content fading out at an edge with more content past
+   it, the bar while scrolling or with the pointer near the edge). The sheets are
+   src/sdk/scroll-edges-core.ts, adopted by main.tsx in a layer at zero specificity, so any rule here
+   (`scrollbar-width: none`, a transparent `scrollbar-color`, a `mask-image` on a scroller) wins over
+   them. */
+
+/* The fade is a mask, which clips a box's own drop shadow and fades its border and background at a
+   hidden edge: scrollers that are themselves popups, dialogs or bordered boxes keep their chrome
+   whole (`.confirm-dialog` and its kin: the guest, room, Claude offer, remote secret and page-tab
+   Discuss dialogs scroll in a short window). A scroller holding an open menu drops its mask by the
+   sheet's own rule (OPEN_POPUP). */
+.menu,
+.confirm-dialog,
+.settings .font-picker-list,
+.picker-dialog,
+.room-dialog-doc-text,
+.guest-tab-list {
+  mask-image: none;
+}
 
 html,
 body,

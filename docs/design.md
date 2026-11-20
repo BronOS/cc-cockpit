@@ -665,13 +665,23 @@ from the plugin's files, talking to their plugin backend through a `MessagePort`
 over. The core injects the theme's CSS variables into every panel. The SDK also adopts constructable
 stylesheets (no CSP change): first the component stylesheet `src/sdk/components.css` (`?raw` import,
 every rule in `@layer cc` so a plugin's own rule wins; the shell's `styles.css` imports the same file; `ccc guide style`),
-then edges-only scrolling (`src/sdk/scroll-edges-core.ts`, layer `cc.scroll`, `:where()` selectors): an edge-shadow sheet
-on every platform and a bar sheet (thin, transparent at rest) that waits for the theme message, which carries `mac`, and is
-skipped on macOS, where overlay scrollbars already hide at rest. A page script (`scroll-edges.ts`) marks scroll containers
+then edges-only scrolling (`src/sdk/scroll-edges-core.ts`, layer `cc.scroll`, `:where()` selectors): an edge-fade sheet
+on every platform and a bar sheet (thin, transparent at rest) that waits for the theme message, which carries `mac`. On macOS
+the bar sheet is on only while the page's own bars are classic (a mouse connected and "Show scroll bars" on Automatic, or
+Always): `watchClassicBars` measures a probe in a shadow root that no sheet reaches (the bar sheet would turn overlay bars
+classic and latch itself on) and re-measures on focus, resize, visibility and a pointer move at most every 2 s (plugging a
+mouse in flips Chromium's bars); overlay bars already hide at rest, so the sheet is disabled in place for them. A page script
+(`scroll-edges.ts`) marks scroll containers
 (`data-cc-scroller`, from computed overflow, re-read per batch of DOM changes), the element scrolling
-(`data-cc-scrolling`, 1 s) and the one whose bar the pointer is within 24px of (`data-cc-scroll-near`); the shadows are
-scroll-driven animations of two registered numbers, so nothing runs on the scroll path. The shell adopts the same sheets and
-runs the same script (`startShellScrolling`).
+(`data-cc-scrolling`, 1 s) and the one whose bar the pointer is within 24px of (`data-cc-scroll-near`). The fade is a
+`mask-image` gradient that takes the content from opaque 24px in to transparent at a hidden edge (a shadow painted under
+opaque cards and was lost); its stops are two registered numbers driven by scroll-driven animations, so nothing runs on
+the scroll path, and `if()` keeps the mask `none` while neither edge is hidden (a mask is a stacking context and clips
+fixed descendants to the box; textareas and selects never get it, nor scrollers that are menus or dialogs, and a
+scroller holding an open menu, `role="menu"` or non-modal dialog drops it through `:has()` while that is open). Browsers without scroll timelines or `if()` get the
+same from attributes the script sets. The document scroller gets a fixed `:root::after` veil instead, a gradient of the
+page's own background (`--cc-edge-canvas`, read by the script; else `--cc-bg`), since a mask on the root scrolls with the
+document. The shell adopts the same sheets and runs the same script (`startShellScrolling`).
 
 **Overlay stack.** Opened by plugins (API), the CLI and the user's overlay entries of the new-tab
 menu (§3 Custom commands); covers the whole window (on macOS, everything under the in-page title bar); overlays stack.

@@ -539,6 +539,8 @@ html[data-shell='web']:has(.tabs-pane) body {
   border-radius: var(--cc-radius-md);
   background: var(--cc-bg-menu);
   box-shadow: 0 10px 30px var(--cc-shadow), 0 2px 6px var(--cc-shadow);
+  /* No edge fade (scroll-edges-core.ts): a mask would clip the shadow and fade the border. */
+  mask-image: none;
   color: var(--cc-fg);
   font-size: var(--cc-text-sm);
   outline: none;

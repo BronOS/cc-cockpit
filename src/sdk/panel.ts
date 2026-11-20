@@ -35,15 +35,16 @@
 // script with no `require` in out/sdk/panel.js.
 import componentsCss from './components.css?raw'
 import { PanelClient, sdkSheetsFirst, type PortLike } from './panel-core'
-import { startScrollEdges } from './scroll-edges'
+import { startScrollEdges, watchClassicBars } from './scroll-edges'
 
 // The SDK's stylesheets are constructable ones: not inline <style>s, and the plugin CSP's
 // style-src ('unsafe-inline') allows them anyway, so no CSP change. Missing support: no base styles.
-// In install order (components and scroll edges at once, the scrollbars on the first theme), all
+// In install order (components and the scroll fade at once, the scrollbars on the first theme), all
 // before the page's own adopted sheets. The components are in `@layer cc`, so any unlayered page rule
 // beats them; the scroll sheets are in its sub-layer `cc.scroll` with zero-specificity selectors, so
 // the components and the page's own sheets win on them as well.
 const sdkSheets: CSSStyleSheet[] = []
+const sheetOf = new Map<string, CSSStyleSheet>()
 const client = new PanelClient(
   document.documentElement.style,
   (m) => console.warn(`ccPanel: ${m}`),
@@ -52,14 +53,21 @@ const client = new PanelClient(
       const sheet = new CSSStyleSheet()
       sheet.replaceSync(css)
       sdkSheets.push(sheet)
+      sheetOf.set(css, sheet)
       document.adoptedStyleSheets = sdkSheetsFirst(sdkSheets, document.adoptedStyleSheets)
+    },
+    enable(css, on) {
+      const sheet = sheetOf.get(css)
+      if (sheet) sheet.disabled = !on
     }
   },
   componentsCss,
   // Only the shell frames this page, and only the shell hears this: a height, a width or `ready`.
   (message) => {
     if (window.parent !== window) window.parent.postMessage(message, '*')
-  }
+  },
+  // macOS: this page measures its own bars (classic or overlay) for the scrollbar sheet.
+  (onChange) => watchClassicBars(window, onChange)
 )
 
 window.addEventListener('message', (event: MessageEvent) => {

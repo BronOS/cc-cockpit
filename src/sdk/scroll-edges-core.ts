@@ -1,9 +1,9 @@
-// Edges-only scrolling (the shell and every plugin page): no scrollbar at rest, a dark shadow at
-// the top edge while content is hidden above and at the bottom edge while content is hidden below,
-// and the bar shown while the element scrolls (about a second after the last scroll) or while the
-// pointer is near the container's right edge, to grab it. The bars stay the browser's own (drag,
-// keyboard, accessibility); only their colour changes, and `scrollbar-width: thin` keeps their
-// strip reserved, so rows never move sideways when the thumb appears or goes.
+// Edges-only scrolling (the shell and every plugin page): no scrollbar at rest, the content fading
+// out over the top edge while content is hidden above and over the bottom edge while content is
+// hidden below, and the bar shown while the element scrolls (about a second after the last scroll)
+// or while the pointer is near the container's right edge, to grab it. The bars stay the browser's
+// own (drag, keyboard, accessibility); only their colour changes, and `scrollbar-width: thin` keeps
+// their strip reserved, so rows never move sideways when the thumb appears or goes.
 //
 // DOM-free, so unit tests run it in plain Node: the stylesheets, and the pure rules the page script
 // (scroll-edges.ts) applies. Both the shell (src/renderer/main.tsx, web/main.tsx) and the panel SDK
@@ -12,91 +12,119 @@
 // How the page script and the sheets split the work:
 //   data-cc-scroller        the script marks every element whose computed overflow is auto or scroll
 //                           (not the root: the viewport is handled by `:root::after`). Only these
-//                           get the edge shadows: an animation on every element would cost too much,
-//                           and CSS has no selector for "is a scroll container".
+//                           get the fade: an animation on every element would cost too much, and
+//                           CSS has no selector for "is a scroll container".
 //   --cc-edge-top/-bottom   0 to 1, driven by two scroll-driven animations on the element's own
 //                           scroll position (`animation-timeline: scroll(self)`), ramped over the
 //                           first and last 24px: no script runs while scrolling, and a list that grows
 //                           or shrinks updates by itself. A scroller that does not overflow has an
-//                           inactive timeline, so both stay at 0. Where the browser has no scroll
-//                           timelines (Firefox, through web access), the script sets
-//                           data-cc-edge-top / -bottom from scroll and resize instead.
+//                           inactive timeline, so both stay at 0. Where the browser lacks scroll
+//                           timelines or `if()` (Firefox, Safari, through web access: EDGE_TIMELINES),
+//                           the script sets data-cc-edge-top / -bottom from scroll and resize instead.
 //   data-cc-scrolling       set on the element a `scroll` event came from, removed SCROLLING_MS after
 //                           its last one (ScrollingMarks)
 //   data-cc-scroll-near     the scroller whose right (or bottom) edge is within NEAR_EDGE_PX of the
 //                           pointer (nearScrollbar), at most one at a time
+//   --cc-edge-canvas        on the root, set by the script: the page's own background colour, for the
+//                           document scroller's fade (see SCROLL_EDGES_CSS)
 //
 // Everything is in `@layer cc.scroll` with `:where()` selectors: a sub-layer of the component sheet's
-// `cc` layer, so the components' own rules (a `.cc-menu`'s drop shadow), the shell's rules and any
-// page rule win over it. A page that wants no edges on an element sets its own `box-shadow` (none).
+// `cc` layer, so the components' own rules, the shell's rules and any page rule win over it. A page
+// that wants no fade on an element sets its own `mask-image` (none).
 
 /** How long the bar stays after an element's last `scroll` event. */
 export const SCROLLING_MS = 1000
 /** The pointer within this many px of a scroller's right (or bottom) edge shows its bar. */
 export const NEAR_EDGE_PX = 24
-/** The shadow ramps in over this much scrolling from either end (scroll-driven `animation-range`). */
+/** The fade ramps in over this much scrolling from either end (scroll-driven `animation-range`). */
 export const EDGE_RAMP_PX = 24
+/** How deep the fade reaches into the content from the edge. */
+export const EDGE_FADE_PX = 24
 
 export const SCROLLER_ATTR = 'data-cc-scroller'
 export const SCROLLING_ATTR = 'data-cc-scrolling'
 export const NEAR_ATTR = 'data-cc-scroll-near'
 export const EDGE_TOP_ATTR = 'data-cc-edge-top'
 export const EDGE_BOTTOM_ATTR = 'data-cc-edge-bottom'
-
-// Per edge, a shadow: a negative spread pulls it in from the sides and the offset pushes it down
-// from the edge, so it reads as a band under the edge rather than a frame. Black, denser on a dark
-// theme (`light-dark` follows the `color-scheme` the theme sets on the root). On a near-black
-// background even solid black is only a few levels darker, so a dark theme also gets a 1px line in
-// the text colour along the edge: the owner asked for a shape cue that is plain on every theme, not
-// a near-colour tint. Inset shadows paint under the element's content and stay put as it scrolls.
-const EDGE_SHADOW = 'light-dark(rgb(0 0 0 / 0.7), rgb(0 0 0 / 0.95))'
-const EDGE_LINE = 'light-dark(transparent, color-mix(in srgb, var(--cc-fg, #888) 45%, transparent))'
-const scaled = (colour: string, edge: string): string => `color-mix(in srgb, ${colour} calc(100% * var(${edge})), transparent)`
-const edgeShadow = (sign: 1 | -1, edge: string): string =>
-  // The line first: the first shadow listed paints on top, and under the band it would be darkened away.
-  `inset 0 ${sign}px 0 0 ${scaled(EDGE_LINE, edge)}, inset 0 ${sign * 20}px 16px -14px ${scaled(EDGE_SHADOW, edge)}`
-const SHADOW_TOP = edgeShadow(1, '--cc-edge-top')
-const SHADOW_BOTTOM = edgeShadow(-1, '--cc-edge-bottom')
+/** The page's own background colour, on the root (the document scroller's fade). */
+export const EDGE_CANVAS_VAR = '--cc-edge-canvas'
 
 /**
- * The edge shadows, on every platform (macOS too: its overlay bars already hide at rest, the edges
- * are new there as well). Installed at once, before the first theme.
+ * What the CSS path needs, as `@supports` conditions: scroll timelines drive the numbers, and `if()`
+ * keeps the mask off while neither edge is hidden. Safari 26 has the first and not the second; there
+ * a declaration with `if()` holds `var()`, so it would parse and then compute to nothing (no fade at
+ * all). Both or the attribute path: the script asks `CSS.supports` the same two questions.
+ */
+export const EDGE_TIMELINES = ['animation-timeline: scroll()', 'mask-image: if(style(--cc-edge-top: 0): none; else: none)'] as const
+
+// The fade is a mask: the content goes from opaque 24px in to fully transparent at the edge, so it
+// fades into whatever is behind the scroller (the owner's pick over a shadow: an inset shadow paints
+// under the children, and an opaque card hid it). Its alpha at the edge is 1 - the edge's number.
+const fadeStop = (edge: string): string => `rgb(0 0 0 / calc(1 - var(${edge})))`
+const EDGE_MASK = `linear-gradient(to bottom, ${fadeStop('--cc-edge-top')} 0, #000 ${EDGE_FADE_PX}px, #000 calc(100% - ${EDGE_FADE_PX}px), ${fadeStop('--cc-edge-bottom')} 100%)`
+// A mask makes a stacking context and paints every descendant clipped to the box (position: fixed
+// ones too), so it is on only while an edge is hidden: a scroller at rest with nothing hidden, and
+// one that does not overflow, keep `none`. Form fields that scroll (a textarea, a list box) never
+// get it: it would clip their focus ring and outer shadow, which paint outside the box.
+const MASKED = `[${SCROLLER_ATTR}]:not(textarea):not(select)`
+const EDGE_MASK_GATED = `if(style(--cc-edge-top: 0) and style(--cc-edge-bottom: 0): none; else: ${EDGE_MASK})`
+/**
+ * An open popup that is not in the top layer: the shell's menus (`.menu`, `role="menu"`), the SDK's
+ * `.cc-menu`, the streamed page's select popup, the terminal font list, Discuss's popover and a
+ * non-modal `<dialog>`. A scroller holding one drops its mask while it is open: a mask clips
+ * descendants to the box, `position: fixed` ones included, and exempting the menu itself does not
+ * escape its ancestor's mask (the Remote servers row menu in `.picker-list` lost Edit and Forget
+ * near the list's bottom). Top-layer popups (`popover`, a modal dialog) are never clipped.
+ */
+export const OPEN_POPUP = ':is(.menu, .cc-menu, [role="menu"], .webview-select-menu, .font-picker-list, .discuss-popover, dialog[open]):not([hidden])'
+// The document scroller has no box that stays at the viewport's edges (a mask on the root scrolls
+// with the document), so a fixed overlay above the content veils it in the page's own background:
+// the colour the script found, or the theme's, or the system's canvas.
+const CANVAS = `var(${EDGE_CANVAS_VAR}, var(--cc-bg, Canvas))`
+const veil = (edge: string): string => `color-mix(in srgb, ${CANVAS} calc(100% * var(${edge})), transparent)`
+const EDGE_VEIL = `linear-gradient(to bottom, ${veil('--cc-edge-top')} 0, transparent ${EDGE_FADE_PX}px, transparent calc(100% - ${EDGE_FADE_PX}px), ${veil('--cc-edge-bottom')} 100%)`
+
+/**
+ * The fade, on every platform. Installed at once, before the first theme. Two numbers are
+ * registered (`@property`) so the animations interpolate them and `style()` compares them.
  *
- * The root scroller (a page whose document scrolls) has no box to put an inset shadow on that stays
- * at the viewport's edges, so a fixed `:root::after` overlay carries them, driven by the root's
- * timeline; it is above the content (pointer-events none) and paints nothing while its timeline is
- * inactive. Two numbers are registered (`@property`) so the animations interpolate them.
+ * The root scroller (a page whose document scrolls) gets a fixed `:root::after` overlay instead,
+ * driven by the root's timeline; it is above the content (pointer-events none) and paints nothing
+ * while its timeline is inactive.
  */
 export const SCROLL_EDGES_CSS = `@property --cc-edge-top { syntax: '<number>'; inherits: false; initial-value: 0; }
 @property --cc-edge-bottom { syntax: '<number>'; inherits: false; initial-value: 0; }
 @layer cc.scroll {
   @keyframes cc-edge-top { from { --cc-edge-top: 0; } to { --cc-edge-top: 1; } }
   @keyframes cc-edge-bottom { from { --cc-edge-bottom: 1; } to { --cc-edge-bottom: 0; } }
-  :where([${SCROLLER_ATTR}]), :where(:root)::after {
-    box-shadow: ${SHADOW_TOP}, ${SHADOW_BOTTOM};
-  }
   :where(:root)::after {
     content: '';
     position: fixed;
     inset: 0;
     z-index: 2147483647;
     pointer-events: none;
+    background: ${EDGE_VEIL};
   }
-  @supports (animation-timeline: scroll()) {
+  @supports (${EDGE_TIMELINES[0]}) and (${EDGE_TIMELINES[1]}) {
     :where([${SCROLLER_ATTR}]) {
       animation: cc-edge-top linear both, cc-edge-bottom linear both;
       animation-timeline: scroll(self block), scroll(self block);
       animation-range: 0px ${EDGE_RAMP_PX}px, calc(100% - ${EDGE_RAMP_PX}px) 100%;
     }
+    :where(${MASKED}) { mask-image: ${EDGE_MASK_GATED}; }
     :where(:root)::after {
       animation: cc-edge-top linear both, cc-edge-bottom linear both;
       animation-timeline: scroll(root block), scroll(root block);
       animation-range: 0px ${EDGE_RAMP_PX}px, calc(100% - ${EDGE_RAMP_PX}px) 100%;
     }
   }
-  @supports not (animation-timeline: scroll()) {
+  @supports not ((${EDGE_TIMELINES[0]}) and (${EDGE_TIMELINES[1]})) {
     :where([${SCROLLER_ATTR}][${EDGE_TOP_ATTR}]), :where(:root[${EDGE_TOP_ATTR}])::after { --cc-edge-top: 1; }
     :where([${SCROLLER_ATTR}][${EDGE_BOTTOM_ATTR}]), :where(:root[${EDGE_BOTTOM_ATTR}])::after { --cc-edge-bottom: 1; }
+    :where(${MASKED}[${EDGE_TOP_ATTR}]), :where(${MASKED}[${EDGE_BOTTOM_ATTR}]) { mask-image: ${EDGE_MASK}; }
+  }
+  @supports selector(:has(a)) {
+    :where([${SCROLLER_ATTR}]:has(${OPEN_POPUP})) { mask-image: none; }
   }
 }`
 
@@ -105,8 +133,12 @@ export const SCROLL_EDGES_CSS = `@property --cc-edge-top { syntax: '<number>'; i
  * scrolls or the pointer nears its edge. The thumb is still there while transparent, so a drag that
  * starts on it works; the near rule shows it before the pointer gets there. Every scroller gets the
  * transparent colour of its own, so a scrolling ancestor's visible colour (which inherits) does not
- * light up the bars inside it. Not installed on macOS (the theme message's `mac`): its overlay bars
- * already behave like this, and setting either property turns them into always-visible classic bars.
+ * light up the bars inside it.
+ *
+ * On macOS only while its bars are classic (always shown: a mouse is connected and "Show scroll
+ * bars" is Automatic, or the setting is Always), measured by the page itself (watchClassicBars in
+ * scroll-edges.ts) and turned off again when they become overlay bars: those already hide at rest,
+ * and setting either property turns them into always-visible classic bars.
  */
 export const BASE_SCROLLBAR_CSS = `@layer cc.scroll {
   :where(*) { scrollbar-width: thin; }
@@ -117,6 +149,27 @@ export const BASE_SCROLLBAR_CSS = `@layer cc.scroll {
     :where(:root), :where([${SCROLLER_ATTR}]) { transition: scrollbar-color 0.2s; }
   }
 }`
+
+/**
+ * The bars' style from a probe that scrolls both ways and that no sheet styles: true for classic
+ * bars (they take layout room), false for overlay bars, undefined when the probe has no layout (a
+ * frame that is `display: none`): the caller keeps what it had.
+ */
+export function classicBars(offsetWidth: number, clientWidth: number): boolean | undefined {
+  if (offsetWidth <= 0) return undefined
+  return offsetWidth - clientWidth > 0
+}
+
+/**
+ * A computed background colour that paints nothing (the page leaves its background to the frame
+ * under it): `transparent`, or any colour with a zero alpha in the forms Chromium, WebKit and Gecko
+ * serialise.
+ */
+export function isClearColour(colour: string): boolean {
+  const c = colour.trim().toLowerCase()
+  if (c === '' || c === 'transparent') return true
+  return /^rgba\(.*,\s*0(\.0+)?\s*\)$/.test(c) || /\/\s*0(\.0+)?\s*\)$/.test(c)
+}
 
 /** A computed `overflow-x` / `overflow-y` that makes a scroll container the person can scroll. */
 export function isScrollOverflow(value: string): boolean {

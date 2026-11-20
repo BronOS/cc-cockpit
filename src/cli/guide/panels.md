@@ -102,17 +102,24 @@ load, the strip shows the title's first letter.
 - `ccPanel.ready()`: in an html overlay opened with `ready: 'manual'`, says the page has drawn
   its content, so the app's loader over it goes (without `ready: 'manual'` the loader goes when the
   page has loaded). Harmless in a panel or a slot.
-- The SDK also gives the page edges-only scrolling, as the app has: no scrollbar at rest, a dark
-  shadow under the top edge of a scroll container while content is hidden above it and at the
-  bottom edge while content is hidden below, and the bar (thin, `--cc-fg` tinted, its strip always
-  reserved so rows never move) while the element scrolls and for about a second after, or while the
-  pointer is within 24px of its right edge. The SDK marks scroll containers (computed `overflow`
-  `auto` or `scroll`) with `data-cc-scroller` and drives the shadows with two scroll-driven
-  animations (`cc-edge-top`, `cc-edge-bottom`) and an inset `box-shadow` on the element; a page
-  that listens for `animationstart` / `animationend` on a scroller or its ancestors should check
-  `event.animationName`. Every rule is in the layer `cc.scroll` at zero specificity, so your own
-  `box-shadow` (`none` drops the edges), `animation` or `scrollbar-*` rule on an element wins. macOS
-  keeps its own overlay scrollbars and gets only the edges.
+- The SDK also gives the page edges-only scrolling, as the app has: no scrollbar at rest, the
+  content of a scroll container fading out over its top 24px while content is hidden above and over
+  its bottom 24px while content is hidden below, and the bar (thin, `--cc-fg` tinted, its strip
+  always reserved so rows never move) while the element scrolls and for about a second after, or
+  while the pointer is within 24px of its right edge. The SDK marks scroll containers (computed
+  `overflow` `auto` or `scroll`) with `data-cc-scroller` and drives the fade with two scroll-driven
+  animations (`cc-edge-top`, `cc-edge-bottom`) and a `mask-image` on the element, set only while
+  an edge is hidden; a page that listens for `animationstart` / `animationend` on a scroller or its
+  ancestors should check `event.animationName`. A mask clips everything inside the element to its
+  box, `position: fixed` children too, so a scroller holding an open `.cc-menu`, `role="menu"` or
+  non-modal `<dialog open>` drops its fade while that is open; any other fixed popup belongs on
+  `body` or in the top layer (`popover`), not inside a scroller. It also clips a scroller's own drop shadow and fades its border at a hidden edge, so a
+  scroller that is itself a popup or a bordered box should set `mask-image: none` (`.cc-menu` does). When the page's own document scrolls, a veil in the page's background colour (or
+  `--cc-bg` when the page has none) covers the edges instead. Every rule is in the layer
+  `cc.scroll` at zero specificity, so your own `mask-image` (`none` drops the fade), `animation` or
+  `scrollbar-*` rule on an element wins. On macOS the bar rule applies only while the page measures
+  classic bars (a mouse connected and "Show scroll bars" on Automatic, or Always); overlay bars stay
+  the system's.
 
 ## Theme variables
 

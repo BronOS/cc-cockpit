@@ -212,13 +212,67 @@ describe('panel SDK: base scrollbar style', () => {
     expect(BASE_SCROLLBAR_CSS).toContain('scrollbar-width: thin')
   })
 
-  it('does not install the bars on macOS (the edges stay), and does when the message does not say', () => {
-    const a = withStyles()
-    a.c.receive(msg(true), [])
-    expect(a.sheets).toEqual([SCROLL_EDGES_CSS])
+  it('installs the bars when the message does not say macOS', () => {
     const b = withStyles()
     b.c.receive({ type: THEME_MESSAGE, theme: { kind: 'dark', vars: {} } }, [])
     expect(b.sheets).toEqual([SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
+  })
+
+  /** A page whose bars the test decides: `set` plays the page's measurement. */
+  const onMac = (
+    enable = true
+  ): { c: PanelClient; sheets: string[]; on: Map<string, boolean>; set: (classic: boolean) => void; watched: () => number } => {
+    const sheets: string[] = []
+    const on = new Map<string, boolean>()
+    let listener: ((classic: boolean) => void) | undefined
+    let watches = 0
+    const styles = {
+      install: (css: string) => {
+        sheets.push(css)
+        on.set(css, true)
+      },
+      ...(enable ? { enable: (css: string, value: boolean) => void on.set(css, value) } : {})
+    }
+    const c = new PanelClient(fakeRoot(), () => {}, styles, undefined, undefined, (fn) => {
+      watches++
+      listener = fn
+      fn(false)
+    })
+    return { c, sheets, on, set: (classic) => listener?.(classic), watched: () => watches }
+  }
+
+  it('on macOS keeps the bar sheet in its place but off while the bars are overlay bars, on while classic', () => {
+    const m = onMac()
+    m.c.receive(msg(true), [])
+    expect(m.sheets).toEqual([SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
+    expect(m.on.get(BASE_SCROLLBAR_CSS)).toBe(false)
+    // A mouse plugged in ("Show scroll bars": Automatic): classic bars, which the sheet hides at rest.
+    m.set(true)
+    expect(m.on.get(BASE_SCROLLBAR_CSS)).toBe(true)
+    m.set(false)
+    expect(m.on.get(BASE_SCROLLBAR_CSS)).toBe(false)
+    // The edges never switch, and the next theme installs nothing more and watches once.
+    m.c.receive(msg(true), [])
+    expect(m.sheets).toEqual([SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
+    expect(m.on.get(SCROLL_EDGES_CSS)).toBe(true)
+    expect(m.watched()).toBe(1)
+  })
+
+  it('off macOS installs the bars and never measures', () => {
+    const m = onMac()
+    m.c.receive(msg(false), [])
+    expect(m.on.get(BASE_SCROLLBAR_CSS)).toBe(true)
+    expect(m.watched()).toBe(0)
+  })
+
+  it('on macOS installs no bars when it cannot measure or cannot switch the sheet', () => {
+    const a = withStyles()
+    a.c.receive(msg(true), [])
+    expect(a.sheets).toEqual([SCROLL_EDGES_CSS])
+    const b = onMac(false)
+    b.c.receive(msg(true), [])
+    expect(b.sheets).toEqual([SCROLL_EDGES_CSS])
+    expect(b.watched()).toBe(0)
   })
 
   it('keeps both sheets below any page rule: one sub-layer of `cc`, every selector inside :where()', () => {
@@ -228,19 +282,54 @@ describe('panel SDK: base scrollbar style', () => {
       for (const { prelude } of statements) expect(prelude === '@layer cc.scroll' || prelude.startsWith('@property --cc-edge-')).toBe(true)
       const layer = statements.find((s) => s.prelude === '@layer cc.scroll')!
       for (const selector of selectorsOf(layer.body)) {
-        expect(selector.replace(/:where\([^()]*(\([^()]*\)[^()]*)*\)/g, '').replace(/::after/g, '').trim()).toBe('')
+        expect(withoutWhere(selector).replace(/::after/g, '').trim()).toBe('')
       }
     }
   })
 })
 
 /** The style rules' selectors in a sheet body, through @media / @supports blocks, @keyframes left out. */
+/** The selector with every `:where(...)` removed, its parentheses matched at any depth. */
+function withoutWhere(selector: string): string {
+  let out = ''
+  let i = 0
+  while (i < selector.length) {
+    if (selector.startsWith(':where(', i)) {
+      let depth = 0
+      let j = i + ':where'.length
+      for (; j < selector.length; j++) {
+        if (selector[j] === '(') depth++
+        else if (selector[j] === ')' && --depth === 0) break
+      }
+      i = j + 1
+    } else out += selector[i++]
+  }
+  return out
+}
+
+/** A selector list split at its own commas, not at those inside `:is(...)` or `:has(...)`. */
+function splitTopLevel(list: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] === '(') depth++
+    else if (list[i] === ')') depth--
+    else if (list[i] === ',' && depth === 0) {
+      out.push(list.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  out.push(list.slice(start).trim())
+  return out
+}
+
 function selectorsOf(body: string): string[] {
   const out: string[] = []
   for (const { prelude, body: inner } of topLevel(body)) {
     if (prelude.startsWith('@keyframes')) continue
     if (prelude.startsWith('@media') || prelude.startsWith('@supports')) out.push(...selectorsOf(inner))
-    else out.push(...prelude.split(',').map((s) => s.trim()))
+    else out.push(...splitTopLevel(prelude))
   }
   return out
 }
@@ -249,17 +338,21 @@ const COMPONENTS_CSS = readFileSync(resolve(__dirname, '../../src/sdk/components
 
 /**
  * The top-level statements of a stylesheet, comments removed: each is `prelude { body }` (or an
- * at-rule ending in `;`). A small brace scanner; the component sheet has no braces in strings.
+ * at-rule ending in `;`). A small brace scanner; the component sheet has no braces in strings. A
+ * `;` inside parentheses is not an end (the fade sheet's `@supports (mask-image: if(...; else: ...))`).
  */
 function topLevel(css: string): { prelude: string; body: string }[] {
   const text = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const out: { prelude: string; body: string }[] = []
   let depth = 0
+  let parens = 0
   let start = 0
   let open = -1
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
-    if (ch === '{') {
+    if (ch === '(') parens++
+    else if (ch === ')') parens--
+    else if (ch === '{') {
       if (depth === 0) open = i
       depth++
     } else if (ch === '}') {
@@ -269,7 +362,7 @@ function topLevel(css: string): { prelude: string; body: string }[] {
         out.push({ prelude: text.slice(start, open).trim(), body: text.slice(open + 1, i) })
         start = i + 1
       }
-    } else if (ch === ';' && depth === 0) {
+    } else if (ch === ';' && depth === 0 && parens === 0) {
       out.push({ prelude: text.slice(start, i).trim(), body: '' })
       start = i + 1
     }
@@ -295,7 +388,7 @@ describe('panel SDK: the component stylesheet', () => {
     expect(sheets).toEqual([COMPONENTS_CSS, SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS])
   })
 
-  it('installs the components on macOS too, where the scrollbars are left out', () => {
+  it('installs the components on macOS too, where the scrollbars wait for the bars to be measured', () => {
     const { c, sheets } = withStyles()
     c.receive(theme(true), [])
     expect(sheets).toEqual([COMPONENTS_CSS, SCROLL_EDGES_CSS])

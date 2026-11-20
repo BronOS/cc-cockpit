@@ -5,7 +5,7 @@
 // never import, so it bundles into the SDK's classic script with no shared chunk.
 //
 // Cost, kept off the scroll path: while an element scrolls, one capturing `scroll` listener does a
-// Map write (and one attribute write on the first event); the edges are CSS scroll-driven
+// Map write (and one attribute write on the first event); the fade is CSS scroll-driven
 // animations. Finding scroll containers reads `getComputedStyle` once per element, in one animation
 // frame per batch of DOM changes: an added subtree is read whole, a `class` change re-reads the
 // element and its subtree (a class can switch a descendant's overflow), a `style` change only the
@@ -13,12 +13,16 @@
 import {
   BASE_SCROLLBAR_CSS,
   EDGE_BOTTOM_ATTR,
+  EDGE_CANVAS_VAR,
+  EDGE_TIMELINES,
   EDGE_TOP_ATTR,
   NEAR_ATTR,
   SCROLLER_ATTR,
   SCROLLING_ATTR,
   SCROLL_EDGES_CSS,
   ScrollingMarks,
+  classicBars,
+  isClearColour,
   isScrollOverflow,
   nearScrollbar,
   scrollEdges
@@ -33,8 +37,9 @@ export function startScrollEdges(win: Window & typeof globalThis): void {
   holder[STARTED] = true
   const doc = win.document
   const root = doc.documentElement
-  // Firefox (a web access browser) has no scroll timelines: the script keeps the edge attributes.
-  const timelines = typeof win.CSS?.supports === 'function' && win.CSS.supports('animation-timeline: scroll()')
+  // Firefox (no scroll timelines) and Safari (no `if()`), through web access: the script keeps the
+  // edge attributes. The same two questions as the sheet's `@supports` (EDGE_TIMELINES).
+  const timelines = typeof win.CSS?.supports === 'function' && EDGE_TIMELINES.every((c) => win.CSS.supports(`(${c})`))
 
   // ---- Which elements are scroll containers -------------------------------------------------
   const resized = timelines ? undefined : new win.ResizeObserver((entries) => entries.forEach((e) => edges(e.target)))
@@ -69,7 +74,29 @@ export function startScrollEdges(win: Window & typeof globalThis): void {
     for (const el of shallow) if (el.isConnected && !deep.has(el)) check(el)
     deep.clear()
     shallow.clear()
+    canvas()
     if (!timelines) refreshAllEdges()
+  }
+
+  // The document scroller's fade is a veil in the page's own background (SCROLL_EDGES_CSS): the
+  // root's colour, else the body's (which paints the canvas when the root has none). Read after
+  // every batch of DOM changes, which includes the theme landing on the root's style; a page that
+  // paints neither leaves the variable unset, and the sheet falls back to the theme's --cc-bg.
+  let canvasColour: string | undefined
+  function canvas(): void {
+    let colour: string | undefined
+    for (const el of [root, doc.body]) {
+      const bg = el ? win.getComputedStyle(el).backgroundColor : ''
+      if (!isClearColour(bg)) {
+        colour = bg
+        break
+      }
+    }
+    if (colour === canvasColour) return
+    canvasColour = colour
+    // A write is a `style` mutation on the root, which queues one more scan; it finds the same colour.
+    if (colour === undefined) root.style.removeProperty(EDGE_CANVAS_VAR)
+    else root.style.setProperty(EDGE_CANVAS_VAR, colour)
   }
   function queue(el: Element, whole: boolean): void {
     ;(whole ? deep : shallow).add(el)
@@ -177,19 +204,79 @@ export function startScrollEdges(win: Window & typeof globalThis): void {
   })
 }
 
+/** How often a pointer move may re-measure the bars (watchClassicBars). */
+const POINTER_REMEASURE_MS = 2000
+
 /**
- * The shell's start (renderer main.tsx and web/main.tsx), which has no panel SDK: adopts the edge
- * sheet, and the bar sheet off macOS (whose overlay bars already hide at rest), then starts the
- * script. Constructable sheets come after the document's own, but their sub-layer and `:where()`
- * keep every shell rule above them (`scrollbar-width: none` on the tab strip, xterm's viewport).
+ * Whether the bars are classic (macOS with a mouse connected and "Show scroll bars" on Automatic,
+ * or on Always) or overlay bars: `onChange` runs at once and again on every change. The probe is a
+ * scroller inside a shadow root, appended to the root for one read and removed: no page or SDK
+ * sheet reaches it (a `::-webkit-scrollbar` rule would give it a width; BASE_SCROLLBAR_CSS itself
+ * would turn its overlay bars classic and keep itself on), and its inline `auto`s stop the
+ * inherited `scrollbar-color`. One read forces layout, so it runs only when the style can change:
+ * window focus, resize, visibility, and a pointer move at most every two seconds (a mouse plugged in
+ * while the window has the focus fires nothing else; its first move does). A probe with no layout (a
+ * frame that is `display: none`) keeps the last answer.
+ */
+export function watchClassicBars(win: Window & typeof globalThis, onChange: (classic: boolean) => void): void {
+  const doc = win.document
+  let last: boolean | undefined
+  let lastPointer = -Infinity
+  function measure(): void {
+    const host = doc.createElement('div')
+    host.style.cssText = 'position:fixed;left:-1000px;top:-1000px;width:0;height:0;overflow:visible;pointer-events:none'
+    const probe = doc.createElement('div')
+    probe.style.cssText = 'width:100px;height:100px;overflow:scroll;scrollbar-width:auto;scrollbar-color:auto'
+    host.attachShadow({ mode: 'closed' }).appendChild(probe)
+    doc.documentElement.appendChild(host)
+    const classic = classicBars(probe.offsetWidth, probe.clientWidth)
+    host.remove()
+    if (classic === undefined || classic === last) return
+    last = classic
+    onChange(classic)
+  }
+  measure()
+  win.addEventListener('focus', measure)
+  win.addEventListener('resize', measure)
+  doc.addEventListener('visibilitychange', () => {
+    if (doc.visibilityState === 'visible') measure()
+  })
+  doc.addEventListener(
+    'pointermove',
+    () => {
+      const now = win.performance.now()
+      if (now - lastPointer < POINTER_REMEASURE_MS) return
+      lastPointer = now
+      measure()
+    },
+    { capture: true, passive: true }
+  )
+}
+
+/** The navigator says macOS (the shell's own test; plugin pages get the shell's answer as `mac`). */
+export function isMac(win: Window): boolean {
+  return win.navigator.platform.toLowerCase().includes('mac')
+}
+
+/**
+ * The shell's start (renderer main.tsx and web/main.tsx), which has no panel SDK: adopts the fade
+ * sheet and the bar sheet, then starts the script. On macOS the bar sheet is on only while the bars
+ * are classic (watchClassicBars): overlay bars already hide at rest. Constructable sheets come
+ * after the document's own, but their sub-layer and `:where()` keep every shell rule above them
+ * (`scrollbar-width: none` on the tab strip, xterm's viewport, the tab strip's own sideways mask).
  */
 export function startShellScrolling(win: Window & typeof globalThis): void {
-  const mac = win.navigator.platform.toLowerCase().includes('mac')
-  const made = (mac ? [SCROLL_EDGES_CSS] : [SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS]).map((css) => {
+  const [edges, bars] = [SCROLL_EDGES_CSS, BASE_SCROLLBAR_CSS].map((css) => {
     const sheet = new win.CSSStyleSheet()
     sheet.replaceSync(css)
     return sheet
-  })
-  win.document.adoptedStyleSheets = [...win.document.adoptedStyleSheets, ...made]
+  }) as [CSSStyleSheet, CSSStyleSheet]
+  if (isMac(win)) {
+    bars.disabled = true
+    watchClassicBars(win, (classic) => {
+      bars.disabled = !classic
+    })
+  }
+  win.document.adoptedStyleSheets = [...win.document.adoptedStyleSheets, edges, bars]
   startScrollEdges(win)
 }

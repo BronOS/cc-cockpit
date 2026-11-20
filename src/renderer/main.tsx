@@ -9,8 +9,8 @@ import { startShellScrolling } from '../sdk/scroll-edges'
 import './assets/fonts/fonts.css'
 import './styles.css'
 
-// Edges-only scrolling (src/sdk/scroll-edges-core.ts): the edge shadows, the bars off macOS (whose
-// overlay scrollbars already hide at rest), and the script that marks scroll containers for them.
+// Edges-only scrolling (src/sdk/scroll-edges-core.ts): the edge fade, the bars (on macOS only while
+// they are classic: overlay bars already hide at rest), and the script that marks scroll containers.
 startShellScrolling(window)
 
 // ctx.notify's `sound`: main decides when (setting, throttle); the page plays it.

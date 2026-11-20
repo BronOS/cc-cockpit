@@ -2,9 +2,14 @@
 // script and the sheets in a real page are checked by test/e2e/panels.spec.ts.
 import { describe, expect, it } from 'vitest'
 import {
+  EDGE_TIMELINES,
   NEAR_EDGE_PX,
+  OPEN_POPUP,
   SCROLLING_MS,
+  SCROLL_EDGES_CSS,
   ScrollingMarks,
+  classicBars,
+  isClearColour,
   isScrollOverflow,
   nearScrollbar,
   scrollEdges
@@ -94,5 +99,51 @@ describe('isScrollOverflow', () => {
   it('is a scroll container for auto, scroll and the legacy overlay only', () => {
     expect(['auto', 'scroll', 'overlay'].map(isScrollOverflow)).toEqual([true, true, true])
     expect(['visible', 'hidden', 'clip', ''].map(isScrollOverflow)).toEqual([false, false, false, false])
+  })
+})
+
+describe('classicBars', () => {
+  it('is classic when the bar takes room, overlay when it takes none', () => {
+    expect(classicBars(100, 85)).toBe(true)
+    expect(classicBars(100, 100)).toBe(false)
+  })
+
+  it('knows nothing from a probe with no layout (a hidden frame): the caller keeps its answer', () => {
+    expect(classicBars(0, 0)).toBeUndefined()
+  })
+})
+
+describe('isClearColour', () => {
+  it('is clear for transparent and any zero alpha, in the forms browsers serialise', () => {
+    for (const c of ['transparent', '', 'rgba(0, 0, 0, 0)', 'rgba(255, 0, 0, 0)', 'color(srgb 0.1 0.2 0.3 / 0)', 'rgb(0 0 0 / 0)']) {
+      expect(isClearColour(c)).toBe(true)
+    }
+  })
+
+  it('is not clear for a colour that paints, translucent included', () => {
+    for (const c of ['rgb(26, 24, 23)', 'rgba(0, 0, 0, 0.5)', 'rgba(10, 20, 30, 10)', 'color(srgb 0.1 0.1 0.1)', 'color(srgb 0 0 0 / 0.05)']) {
+      expect(isClearColour(c)).toBe(false)
+    }
+  })
+})
+
+describe('SCROLL_EDGES_CSS', () => {
+  it('fades the content with a mask, gated off while neither edge is hidden, and draws no shadow', () => {
+    expect(SCROLL_EDGES_CSS).not.toContain('box-shadow')
+    expect(SCROLL_EDGES_CSS).toContain('mask-image: if(style(--cc-edge-top: 0) and style(--cc-edge-bottom: 0): none; else: linear-gradient(')
+  })
+
+  it('drops the mask on a scroller holding an open menu, after (so over) both mask rules', () => {
+    const rule = `:where([data-cc-scroller]:has(${OPEN_POPUP})) { mask-image: none; }`
+    expect(SCROLL_EDGES_CSS).toContain(rule)
+    expect(SCROLL_EDGES_CSS.indexOf(rule)).toBeGreaterThan(SCROLL_EDGES_CSS.lastIndexOf('mask-image: linear-gradient('))
+    // The shell's menus and the SDK's, by class and by role; a hidden one does not count.
+    for (const part of ['.menu', '.cc-menu', '[role="menu"]', ':not([hidden])']) expect(OPEN_POPUP).toContain(part)
+  })
+
+  it('takes the CSS path on the same two conditions the script asks, the attribute path otherwise', () => {
+    const both = EDGE_TIMELINES.map((c) => `(${c})`).join(' and ')
+    expect(SCROLL_EDGES_CSS).toContain(`@supports ${both} {`)
+    expect(SCROLL_EDGES_CSS).toContain(`@supports not (${both}) {`)
   })
 })
