@@ -14,13 +14,20 @@
 // page to main exists, so nothing here can be forged by the page; what comes back is still the
 // page's text (labels) and is cleaned and capped (parseHitResult) before it goes out.
 //
-// Not covered, keyboard-only as before: a select inside an iframe (elementFromPoint stops at the
-// frame element, and a cross-origin frame's document is not ours to walk), a select inside a closed
-// shadow root, a listbox (`multiple` or `size` > 1, which is painted in the page and clicked there),
-// and a custom dropdown a page builds itself (painted like any element, nothing to do).
+// A select inside a cross-site (out-of-process) iframe: the off-screen view's router (page-input.ts
+// `scriptAt`) runs hitScript in the document its own route for the press picks, the point in that
+// frame's px, in an isolated world made on the frame's own DevTools session; the rectangle comes back
+// mapped to the top page through the owner boxes that route read (selectHitInTop), and the popup id
+// is bound to that frame (SelectFrames) so chooseScript runs there and nowhere else: a frame gone or
+// replaced meanwhile (a new document has a fresh world, the WeakRef is not found) chooses nothing.
 //
-// Pure: the scripts are strings built from main's own numbers and ids; parseHitResult and
-// SelectPopups (the one open popup per view and panel) have no Electron.
+// Not covered, keyboard-only as before: a select inside a same-site iframe (elementFromPoint stops at
+// the frame element), a select inside a closed shadow root, a listbox (`multiple` or `size` > 1,
+// which is painted in the page and clicked there), and a custom dropdown a page builds itself
+// (painted like any element, nothing to do).
+//
+// Pure: the scripts are strings built from main's own numbers and ids; parseHitResult,
+// selectHitInTop, SelectFrames and SelectPopups (the one open popup per view and panel) have no Electron.
 
 import { randomBytes } from 'node:crypto'
 import { isPlainObject } from '../../shared/guards'
@@ -130,6 +137,40 @@ export function chooseScript(id: string, index: number | null): string {
   select.dispatchEvent(new Event('change', { bubbles: true }));
   return true;
 })()`
+}
+
+/**
+ * hitScript's raw result from a frame, its rectangle in the top page's viewport (`toTop`, the
+ * router's mapping through the route's owner boxes): unchanged when it is no hit (null and the like:
+ * parseHitResult says no select), undefined when the rectangle cannot be mapped (malformed, or a
+ * box the router refuses: then the press goes to the page as a click). Still the page's data:
+ * parseHitResult checks the rest.
+ */
+export function selectHitInTop(raw: unknown, toTop: (rect: unknown) => WebviewSelectRect | undefined): unknown {
+  if (!isPlainObject(raw) || raw.select !== true) return raw
+  const rect = toTop(raw.rect)
+  return rect ? { ...raw, rect } : undefined
+}
+
+/**
+ * The frame each popup's select was found in (page-input.ts ScriptFrame), by popup id, so its answer
+ * runs there: at most REGISTRY_CAP (as the isolated world's registry; old ids go first), taken once.
+ */
+export class SelectFrames<F> {
+  private readonly frames = new Map<string, F>()
+
+  remember(id: string, frame: F): void {
+    this.frames.delete(id)
+    this.frames.set(id, frame)
+    while (this.frames.size > REGISTRY_CAP) this.frames.delete(this.frames.keys().next().value as string)
+  }
+
+  /** The frame of popup `id` (undefined: none, or taken already); forgotten by this. */
+  take(id: string): F | undefined {
+    const frame = this.frames.get(id)
+    this.frames.delete(id)
+    return frame
+  }
 }
 
 /** A hit on a select, as main passes it on (`webviews.select` without the panel and the id). */

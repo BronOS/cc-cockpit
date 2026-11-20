@@ -53,9 +53,10 @@
 // release (a drag, a double or triple click), any key down (shift-arrows, Ctrl+A; typing and
 // Backspace collapse a selection, which must not stay copyable) and inserted text, debounced by
 // SELECTION_DEBOUNCE_MS, one read in flight per view and panel (a hung page holds one promise,
-// not one per key), deduplicated against the last push. The read runs SELECTION_SCRIPT in
-// WEBVIEW_WORLD_ID, an isolated world: the page's scripts can neither see it nor replace the
-// `getSelection` it calls. What comes back is cleaned (cleanSelection): control characters but
+// not one per key), deduplicated against the last push. The read runs SELECTION_SCRIPT in an
+// isolated world (WEBVIEW_WORLD_ID in the top document, one made on the frame's own session in a
+// focused cross-site frame): the page's scripts can neither see it nor replace the `getSelection`
+// it calls. What comes back is cleaned (cleanSelection): control characters but
 // \n and \t stripped (a selection of them, JSON-escaped at six bytes each, could pass the socket's
 // frame limit, and an oversize event closes the browser view, terminals included) and capped at
 // MAX_SELECTION_BYTES of the JSON-encoded string.
@@ -455,14 +456,20 @@ export interface InputTarget {
    * settles once the page has it: the lane holds later input until then.
    */
   insertText?(text: string, epoch?: number): Promise<unknown> | void
-  /** SELECTION_SCRIPT's result in WEBVIEW_WORLD_ID; rejects or never settles for a page that is gone or hung. */
+  /**
+   * SELECTION_SCRIPT's result in main's isolated world of the document holding the focus (a
+   * cross-site frame's, else the top document's WEBVIEW_WORLD_ID; page-input.ts scriptInFocus);
+   * rejects or never settles for a page that is gone or hung.
+   */
   readSelection?(): Promise<unknown>
   /**
-   * select-hit.ts hitScript at page CSS px (x, y) in WEBVIEW_WORLD_ID, keeping the select under
-   * `id` (absent: presses go to the page unasked). Rejects or never settles for a gone or hung page.
+   * select-hit.ts hitScript at page CSS px (x, y) in main's isolated world of the document the press
+   * would go to (a cross-site frame's included, its rectangle mapped to the page; page-input.ts
+   * scriptAt), keeping the select under `id` (absent: presses go to the page unasked). Rejects or
+   * never settles for a gone or hung page.
    */
   hitSelect?(x: number, y: number, id: string, epoch?: number): Promise<unknown>
-  /** select-hit.ts chooseScript for popup `id` in WEBVIEW_WORLD_ID (null: forget it). */
+  /** select-hit.ts chooseScript for popup `id`, in the document its hit ran in only (null: forget it). */
   chooseSelect?(id: string, index: number | null, epoch?: number): Promise<unknown>
   /**
    * An edit chord's key down with its command (editKeyEvent; absent: the chord goes as a plain key

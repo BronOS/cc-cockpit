@@ -253,7 +253,8 @@ passes on macOS (2026-11-19) and has not run on Linux.
   hidden), selection and select only to the acting view. `webviews.input`, `insertText` and `selectChoose` are `adapted`: accepted
   only when `server && view.remote`, from a current viewer, the panel key resolved through the caller's layout, never trusted
   from the payload. Clipboard chords (Ctrl/Cmd+C, X, V, Shift+Insert) are never forwarded to the page; scripts run in the page
-  use the isolated world `WEBVIEW_WORLD_ID` (1717), never the main world. Input goes on the page's DevTools protocol through
+  use the isolated world `WEBVIEW_WORLD_ID` (1717), never the main world, and a cross-site frame's scripts an isolated world
+  `Page.createIsolatedWorld` makes on the frame's own session, bracketed by the frame's `loaderId`. Input goes on the page's DevTools protocol through
   its `PageInputRouter` (`page-input.ts`, one queue per page): keys, text and edit commands on the page's session, pointer
   events on the session of the deepest cross-site frame under the point (the hardening's auto-attached child sessions, never
   a second debugger), `sendInputEvent` only once the protocol detached; a frame's refusal falls back to the page's session,

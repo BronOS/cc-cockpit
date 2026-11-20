@@ -121,12 +121,43 @@
 //              detached when the step runs, in order (never while attached, C8): what follows a
 //              text, a command or a blocking call waits for its answer. Each is logged once per view.
 //
-// Not routed into frames (top document only): the select popup's hit-test and choice and the
-// selection read (select-hit.ts, SELECTION_SCRIPT run in the top document's isolated world; a
-// frame's would need an isolated world per child session, `Page.createIsolatedWorld`): a select in
-// a cross-site frame is keyboard-only and its selected text is not copied. A frame's own scroll
-// chaining to its parent at its end, and the browser's drag and drop between frames, are Chromium's
-// and were not checked.
+//   scripts   main's own scripts (a select's hit test and choice, select-hit.ts; the selection read,
+//              SELECTION_SCRIPT) run in the document they are about, on the call road (`call`: one
+//              call on its way, its deadline, the epoch carried): `scriptAt` in the document the
+//              router's own route for a press at the point picks (routeOf and `deliverable`, as the
+//              press itself would get: capture, a stalled frame's press to the top), `scriptIn` in
+//              the frame an earlier script ran in (a handle, `ScriptFrame`, bound to that session's
+//              Lane, never to an id another session could take), `scriptInFocus` in the deepest
+//              focused cross-site frame (main walks `document.activeElement` down, an IFRAME's
+//              `frameId` from `DOM.describeNode`, a same-site frame's document looked into by the
+//              script), else the top document. The top document's run is the adapter's
+//              (`isolated`, executeJavaScriptInIsolatedWorld in WEBVIEW_WORLD_ID, as before); a
+//              frame's is `Runtime.evaluate` in an isolated world `Page.createIsolatedWorld` makes on
+//              its own session right before (the same world while the document lives, so what a hit
+//              test keeps there is found by the choice; a new document gets a fresh one and the old
+//              context id is refused: never the main world, never `Runtime.evaluate` without the
+//              context id). A frame's session outlives a cross-process navigation of the frame, and
+//              V8 context ids are per process, so a stale id could name a main-world context of the
+//              replacement renderer: each frame run is bracketed by the frame's `loaderId`
+//              (`Page.getFrameTree` on the same session, read before the world is made and again
+//              after the evaluation answers, the focus walk's `DOM.describeNode` inside it), and a
+//              change or a failed read drops the result. Each of those protocol commands is a hit-test query (`query`: checked
+//              synchronously before it goes, a deadline that stalls its session as a late command
+//              does), and the pump waits for the route and the frame's script before the next step
+//              (`blocking: 'route'`), so no input command overlaps them on a session (C9); a run in
+//              the top document holds nothing after it, as before. That wait ends with the script's
+//              own deadlines (the route's and the frame script's, ROUTE_TIMEOUT_MS each for a press's
+//              hit test, STEP_TIMEOUT_MS for a read), never at the call's: past them the frame is
+//              stalled. A frame gone, replaced or stalled, a refusal, a script that threw, a deadline
+//              or a new attachment drops the script (undefined: no popup, no copy), never runs it in
+//              a document the router did not pick for it; a new attachment is checked again right
+//              before a top-document run that follows a walk (codex review 2026-11-20: a reset between
+//              the walk's end and that run ran it in the new attachment's document). A rectangle
+//              the frame's script measured is mapped back through the same owner boxes the route
+//              read (`rectFromFrame`, refused where `pointInFrame` refuses the box).
+//
+// A frame's own scroll chaining to its parent at its end, and the browser's drag and drop between
+// frames, are Chromium's and were not checked.
 //
 // Pure: the protocol's `send`, the `sendInputEvent` fallback and the timers are injected. The clauses cited
 // as C1 to C9 are the router's contract, the one page-input.fuzz.test.ts checks.
@@ -150,6 +181,52 @@ export const MAX_FRAME_DEPTH = 8
 export const MAX_QUEUED_STEPS = 512
 /** How often one pointer event is hit-tested again after its hover moves changed the page under it. */
 export const MAX_RETESTS = 2
+/** The isolated world main's scripts run in inside a cross-site frame (`Page.createIsolatedWorld` on its session). */
+export const FRAME_WORLD_NAME = 'cc-cockpit'
+/** The remote objects the focus walk holds (released after each level). */
+const FOCUS_OBJECT_GROUP = 'cc-cockpit-focus'
+/**
+ * Run in a document's isolated world by the focus walk: the element holding the focus there (into
+ * open shadow roots and same-site frames, whose documents the script can read) when it is a frame
+ * owner it cannot look into (a cross-site frame: main resolves it, `DOM.describeNode`), else null.
+ */
+const FOCUSED_FRAME_SCRIPT = `(() => {
+  let el = document.activeElement;
+  for (let n = 0; el && n < 64; n++) {
+    if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+    const tag = typeof el.tagName === 'string' ? el.tagName.toUpperCase() : '';
+    if (tag !== 'IFRAME' && tag !== 'FRAME') return null;
+    let doc = null;
+    try { doc = el.contentDocument; } catch (e) {}
+    if (!doc) return el;
+    const inner = doc.activeElement;
+    if (!inner || inner === doc.body || inner === doc.documentElement) return null;
+    el = inner;
+  }
+  return null;
+})()`
+
+/** A rectangle in a document's viewport, CSS px. */
+export interface FrameRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * A frame a script of main ran in, for a later script there (`scriptIn`): opaque, bound to that
+ * frame's session of one attachment (or the top document), never to an id.
+ */
+export type ScriptFrame = { readonly __scriptFrame: unique symbol }
+
+/** What `scriptAt` answers: the script's value, where it ran, and its rectangles mapped to the top page. */
+export interface FrameScriptResult {
+  value: unknown
+  frame: ScriptFrame
+  /** A rectangle in that document's viewport, in the top page's (undefined: malformed, or a box the router refuses). */
+  toTop(rect: unknown): FrameRect | undefined
+}
 
 type MouseEvent = Extract<ElectronInputEvent, { type: 'mouseMove' | 'mouseDown' | 'mouseUp' | 'mouseWheel' }>
 type KeyEvent = Extract<ElectronInputEvent, { type: 'keyDown' | 'keyUp' | 'char' }>
@@ -274,14 +351,25 @@ function edge(q: readonly number[], to: 2 | 6): number {
   return Math.hypot((q[to] as number) - (q[0] as number), (q[to + 1] as number) - (q[1] as number))
 }
 
+/** An owner's box as the router uses it: its quads, and the frame's own (untransformed) viewport size. */
+interface FrameBox {
+  content: number[]
+  border: number[]
+  /** The frame's viewport, its own CSS px. */
+  width: number
+  height: number
+}
+
 /**
- * The point (x, y) of a parent's viewport in the frame its owner holds, from the owner's
- * `DOM.getBoxModel` (quads in the parent's viewport, clockwise from the top left; `width` and
- * `height` the untransformed border box). The frame's viewport is the content box: its own size is
- * the border box's scaled by the quads' edge ratios (an affine transform keeps those), so a frame at
- * scale(0.5) maps a quad 150 px wide to its 300 px. Undefined for a malformed or flat box.
+ * The owner's `DOM.getBoxModel` (quads in the parent's viewport, clockwise from the top left;
+ * `width` and `height` the untransformed border box) as the router maps through it, or undefined
+ * for a box it refuses (malformed, flat, or no parallelogram). The frame's viewport is the content
+ * box: its own size is the border box's scaled by the quads' edge ratios (an affine transform keeps
+ * those), so a frame at scale(0.5) maps a quad 150 px wide to its 300 px. The one check for both
+ * directions (pointInFrame, rectFromFrame), so a rectangle is never mapped through a box a point
+ * would not be.
  */
-export function pointInFrame(model: unknown, x: number, y: number): FramePoint | undefined {
+function frameBox(model: unknown): FrameBox | undefined {
   if (typeof model !== 'object' || model === null) return undefined
   const m = model as { content?: unknown; border?: unknown; width?: unknown; height?: unknown }
   const content = quadOf(m.content)
@@ -296,16 +384,75 @@ export function pointInFrame(model: unknown, x: number, y: number): FramePoint |
   // test could pick the wrong child). Refused: the point stays with the parent.
   const width = (m.width * edge(content, 2)) / borderTop
   const height = (m.height * edge(content, 6)) / borderLeft
+  if (!(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) return undefined
   if (!isParallelogram(content, width, height) || !isParallelogram(border, m.width, m.height)) return undefined
-  const c = fractions(content, x, y)
-  const b = fractions(border, x, y)
+  return { content, border, width, height }
+}
+
+/**
+ * The point (x, y) of a parent's viewport in the frame its owner holds, from the owner's
+ * `DOM.getBoxModel` (frameBox). Undefined for a box the router refuses.
+ */
+export function pointInFrame(model: unknown, x: number, y: number): FramePoint | undefined {
+  const box = frameBox(model)
+  if (!box) return undefined
+  const c = fractions(box.content, x, y)
+  const b = fractions(box.border, x, y)
   if (!c || !b) return undefined
   return {
-    x: c.u * width,
-    y: c.v * height,
+    x: c.u * box.width,
+    y: c.v * box.height,
     inside: c.u >= 0 && c.u < 1 && c.v >= 0 && c.v < 1,
     inBorder: b.u >= 0 && b.u <= 1 && b.v >= 0 && b.v <= 1
   }
+}
+
+/** Largest rectangle coordinate taken from a frame's script (CSS px either way; a page can be scrolled far). */
+const MAX_RECT = 100_000
+
+/** A rectangle a page's script measured, if it is one: finite numbers in range, sides not negative. */
+function rectOf(v: unknown): FrameRect | undefined {
+  if (typeof v !== 'object' || v === null) return undefined
+  const r = v as Record<string, unknown>
+  const n = [r.x, r.y, r.width, r.height]
+  if (!n.every((k) => typeof k === 'number' && Number.isFinite(k) && Math.abs(k) <= MAX_RECT)) return undefined
+  const [x, y, width, height] = n as [number, number, number, number]
+  if (width < 0 || height < 0) return undefined
+  return { x, y, width, height }
+}
+
+/**
+ * A rectangle of a frame's viewport (its own CSS px) in its parent's viewport, through the owner's
+ * box (frameBox: the inverse of pointInFrame's map): the four corners mapped, their bounding box (a
+ * rotated frame's rectangle is a tilted one; the box holds it). Undefined for a box the router
+ * refuses or a rectangle that is none.
+ */
+export function rectFromFrame(model: unknown, rect: unknown): FrameRect | undefined {
+  const box = frameBox(model)
+  const r = rectOf(rect)
+  if (!box || !r) return undefined
+  const [x0, y0, x1, y1, , , x3, y3] = box.content as [number, number, number, number, number, number, number, number]
+  const at = (fx: number, fy: number): [number, number] => {
+    const u = fx / box.width
+    const v = fy / box.height
+    return [x0 + u * (x1 - x0) + v * (x3 - x0), y0 + u * (y1 - y0) + v * (y3 - y0)]
+  }
+  const corners = [at(r.x, r.y), at(r.x + r.width, r.y), at(r.x, r.y + r.height), at(r.x + r.width, r.y + r.height)]
+  const xs = corners.map((c) => c[0])
+  const ys = corners.map((c) => c[1])
+  const left = Math.min(...xs)
+  const top = Math.min(...ys)
+  return { x: left, y: top, width: Math.max(...xs) - left, height: Math.max(...ys) - top }
+}
+
+/**
+ * A rectangle of the frame at the end of a route in the top page's viewport: through each owner's
+ * box from the deepest up (`models[i]`, the box of the route's i-th owner as its hit test read it).
+ */
+export function rectToTop(models: readonly unknown[], rect: unknown): FrameRect | undefined {
+  let r = rectOf(rect)
+  for (let i = models.length - 1; i >= 0 && r; i--) r = rectFromFrame(models[i], r)
+  return r
 }
 
 /** Who hears the page's child targets (webview-hardening.ts cancelOffscreenNativeUi). */
@@ -332,6 +479,12 @@ export interface PageInputDeps {
   /** `webContents.sendInputEvent`, the road only while the protocol is detached when a step runs. */
   fallback(event: ElectronInputEvent): void
   log(message: string): void
+  /**
+   * main's script in the top document's isolated world (executeJavaScriptInIsolatedWorld in
+   * WEBVIEW_WORLD_ID; rejects or never settles for a page gone or hung). Absent: the top document
+   * runs no script (`scriptAt`, `scriptIn` and `scriptInFocus` answer undefined there).
+   */
+  isolated?(code: string): Promise<unknown>
   timers?: RouterTimers
 }
 
@@ -384,6 +537,8 @@ interface Route {
   links: Link[]
   /** The point in each link's parent (points[i] in links[i].parent). */
   points: Array<{ x: number; y: number }>
+  /** Each link's owner box as this route read it (`DOM.getBoxModel`'s model; rectToTop maps through them). */
+  models: unknown[]
 }
 
 /** Where the pointer was last delivered: the session and the owners down to it (see `hover` at the top of the file). */
@@ -397,12 +552,19 @@ function parentRoute(route: Route): Route {
   const n = route.links.length
   if (n === 0) return route
   const point = route.points[n - 1] as { x: number; y: number }
-  return { lane: (route.links[n - 1] as Link).parent, x: point.x, y: point.y, links: route.links.slice(0, -1), points: route.points.slice(0, -1) }
+  return {
+    lane: (route.links[n - 1] as Link).parent,
+    x: point.x,
+    y: point.y,
+    links: route.links.slice(0, -1),
+    points: route.points.slice(0, -1),
+    models: route.models.slice(0, -1)
+  }
 }
 
 /** The top document's own point: the page's session, no frame. */
 function topRoute(event: MouseEvent, page: Lane): Route {
-  return { lane: page, x: event.x, y: event.y, links: [], points: [] }
+  return { lane: page, x: event.x, y: event.y, links: [], points: [], models: [] }
 }
 
 /** The `Input.*` commands the router sends (`sendInput`, the only place that does). */
@@ -422,7 +584,13 @@ type StepBody =
       resolve: (v: unknown) => void
       reject: (e: unknown) => void
     }
-  | { kind: 'call'; run: () => unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void; blocking: boolean }
+  /**
+   * `blocking`: true, what follows waits for the call (STEP_TIMEOUT_MS at most); false, nothing
+   * waits; 'route', what follows waits until `run` releases it (main's script goes to the top
+   * document) or settles (a frame's script, every protocol command of it answered or dropped), so no
+   * input command overlaps those queries on a session (C9). Only `blocking: true` waits on a detached road.
+   */
+  | { kind: 'call'; run: (release: () => void) => unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void; blocking: boolean | 'route' }
 
 /** A queued step and the attachment it was taken in (`epoch`): the sink sends nothing of it in another (C1). */
 type Step = StepBody & { epoch: number }
@@ -487,6 +655,9 @@ interface RouteRun {
   /** The query on its way, for the deadline to know which session did not answer. */
   current?: { lane: Lane; sent: Promise<unknown>; answered: boolean; token: object }
 }
+
+/** The top document's handle (`scriptIn`): its script is the adapter's, whatever the attachment. */
+const TOP_FRAME = Object.freeze({}) as unknown as ScriptFrame
 
 /** Thrown inside a hit test that was dropped meanwhile: nothing after it may run. */
 class RouteDropped extends Error {}
@@ -565,6 +736,8 @@ export class PageInputRouter implements ChildFrameObserver {
   private hover: Hover | undefined
   private readonly warned = new Set<string>()
   private readonly timers: RouterTimers
+  /** The frames main's scripts ran in, by their handles (`scriptIn`); a handle of a frame that went finds a dead Lane. */
+  private readonly scriptFrames = new WeakMap<ScriptFrame, Lane>()
 
   constructor(private readonly deps: PageInputDeps) {
     this.timers = deps.timers ?? defaultTimers
@@ -667,6 +840,227 @@ export class PageInputRouter implements ChildFrameObserver {
       if (!this.push({ kind: 'call', run, resolve, reject, blocking, epoch: this.epoch })) reject(new Error('webview: input queue full'))
       void this.pump()
     })
+  }
+
+  /**
+   * main's script in the document a left press at the top page's (x, y) would go to (see `scripts`
+   * at the top of the file): the router's own route for that press, on the call road, `code` given
+   * the point in that document's own CSS px. Its value, the frame it ran in (`scriptIn`), and its
+   * rectangles mapped to the top page; undefined when dropped (a frame gone, replaced or stalled
+   * meanwhile, a refusal, a script that threw, a deadline, a new attachment, no top runner).
+   */
+  scriptAt(x: number, y: number, code: (x: number, y: number) => string, epoch?: number): Promise<FrameScriptResult | undefined> {
+    return this.script(async (release) => {
+      const callEpoch = this.epoch
+      const press: MouseEvent = { type: 'mouseDown', x, y, button: 'left', clickCount: 1, modifiers: [] }
+      const found = await this.routeOf(press)
+      // A new attachment while it was routed: its route is the old page's.
+      if (callEpoch !== this.epoch || !found) return undefined
+      const route = this.deliverable(found, press)
+      if (!route) return undefined
+      const models = route.models
+      const toTop = (rect: unknown): FrameRect | undefined => rectToTop(models, rect)
+      if (route.lane === this.page) {
+        release()
+        return { value: await this.topScript(code(route.x, route.y)), frame: TOP_FRAME, toTop }
+      }
+      // ROUTE_TIMEOUT_MS: a press waits for its hit test HIT_TIMEOUT_MS (select-hit.ts) and then
+      // goes behind this call, so a frame that does not answer holds the queue at most two route
+      // deadlines, once (it is stalled from then on and asked nothing).
+      const lane = route.lane
+      const ran = await this.bounded((run) => this.evaluate(lane, code(route.x, route.y), run))
+      // The walk ended, then a new attachment came before this continuation: the old page's answer.
+      if (!ran || callEpoch !== this.epoch) return undefined
+      return { value: ran.value, frame: this.frameHandle(lane), toTop }
+    }, 'route', epoch)
+  }
+
+  /**
+   * main's script in the document an earlier one ran in (`scriptAt`'s `frame`), on the call road,
+   * blocking (a choice may move focus): undefined, never another document, when that frame went,
+   * was replaced (its new document has a fresh isolated world: what the earlier script kept there is
+   * not found), owes an answer, or the attachment it was of ended.
+   */
+  scriptIn(frame: ScriptFrame, code: string, epoch?: number): Promise<unknown> {
+    return this.script(async () => {
+      if (frame === TOP_FRAME) return this.topScript(code)
+      const callEpoch = this.epoch
+      const lane = this.scriptFrames.get(frame)
+      if (!lane || !this.open(lane)) return undefined
+      const ran = await this.bounded((run) => this.evaluate(lane, code, run), STEP_TIMEOUT_MS)
+      // A new attachment between the run's end and this continuation: the old page's answer is not
+      // the new one's (codex review 2026-11-20, as scriptAt's and scriptInFocus's checks).
+      if (!ran || callEpoch !== this.epoch) return undefined
+      return ran.value
+    }, true, epoch)
+  }
+
+  /**
+   * main's script in the deepest focused cross-site frame (main walks the focus down, see `scripts`
+   * at the top of the file), else in the top document, on the call road; nothing after it waits for
+   * a run in the top document. Undefined when dropped (the frame went or was replaced meanwhile, ...).
+   */
+  scriptInFocus(code: string, epoch?: number): Promise<unknown> {
+    return this.script(async (release) => {
+      const callEpoch = this.epoch
+      // No cross-site frame: the top document, no protocol command (as before frames had scripts).
+      if (!this.hasChildren(this.page)) {
+        release()
+        return this.topScript(code)
+      }
+      const ran = await this.bounded(async (run) => {
+        const lane = await this.focusedLane(run)
+        return lane === this.page ? { top: true as const } : { top: false as const, value: (await this.evaluate(lane, code, run)).value }
+      }, STEP_TIMEOUT_MS)
+      // Checked here, synchronously before the top run (codex review 2026-11-20): `bounded` resolves
+      // first and this continuation runs microtasks later, so a reset or the renderer going in that
+      // gap ran the old walk's top script in the new attachment's document.
+      if (!ran || callEpoch !== this.epoch) return undefined
+      if (!ran.top) return ran.value
+      release()
+      return this.topScript(code)
+    }, 'route', epoch)
+  }
+
+  /** A call of main's own (`scriptAt` and co.): rejects with InputDroppedError for an attachment that ended. */
+  private script<T>(run: (release: () => void) => Promise<T>, blocking: boolean | 'route', epoch: number | undefined): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (this.ended(epoch)) return void reject(new InputDroppedError())
+      if (!this.push({ kind: 'call', run, resolve: (v) => resolve(v as T), reject, blocking, epoch: this.epoch })) reject(new Error('webview: input queue full'))
+      void this.pump()
+    })
+  }
+
+  /** The top document's script (the adapter's isolated world); undefined without one. */
+  private topScript(code: string): Promise<unknown> {
+    const run = this.deps.isolated
+    if (!run) return Promise.resolve(undefined)
+    try {
+      return Promise.resolve(run(code))
+    } catch (err) {
+      return Promise.reject(err)
+    }
+  }
+
+  /** A handle for `lane` (`scriptIn`): a new one each time, bound to the Lane object (never its session id). */
+  private frameHandle(lane: Lane): ScriptFrame {
+    const handle = Object.freeze({}) as unknown as ScriptFrame
+    this.scriptFrames.set(handle, lane)
+    return handle
+  }
+
+  /**
+   * `code` in main's isolated world of `lane`'s frame (see `scripts` at the top of the file): the
+   * world made (or found again) right before, then evaluated there by value, bracketed by the
+   * frame's `loaderId` (`frameLoader`, before the world and after the answer: a document replaced
+   * meanwhile drops it). All are queries (`ask`): a frame that went, owes an answer or refuses, a
+   * script that threw, a malformed answer end it (RouteDropped). `{ value }`, so a script's own
+   * undefined is told from a drop.
+   */
+  private async evaluate(lane: Lane, code: string, run: RouteRun): Promise<{ value: unknown }> {
+    const frame = await this.frameLoader(lane, lane.targetId, run)
+    const contextId = await this.isolatedContext(lane, frame.id, run)
+    const answer = (await this.ask('Runtime.evaluate', { expression: code, contextId, returnByValue: true, awaitPromise: false, silent: true }, lane, run)) as {
+      result?: { value?: unknown }
+      exceptionDetails?: unknown
+    }
+    await this.sameLoader(lane, frame, run)
+    if (answer.exceptionDetails !== undefined) throw new RouteDropped()
+    return { value: answer.result?.value }
+  }
+
+  /**
+   * The frame `frameId` of `lane`'s session's frame tree (undefined: the tree's root, the page's main
+   * frame) and its `loaderId`, which a new document in it gets anew. A frame's session survives a
+   * cross-process navigation of that frame, and V8 context ids are per process: the id
+   * `Page.createIsolatedWorld` gave can name another context (a main world) in the replacement
+   * renderer, so every frame run is bracketed by this read (codex review 2026-11-20). No such frame,
+   * or no loader id, drops the run (RouteDropped).
+   */
+  private async frameLoader(lane: Lane, frameId: string | undefined, run: RouteRun): Promise<{ id: string; loaderId: string }> {
+    type Node = { frame?: { id?: unknown; loaderId?: unknown }; childFrames?: unknown }
+    const tree = (await this.ask('Page.getFrameTree', undefined, lane, run)) as { frameTree?: Node }
+    const stack: unknown[] = [tree.frameTree]
+    // A bound on the walk: the tree is the session's own process's frames, small, but a count keeps a
+    // malformed answer from looping.
+    for (let seen = 0; stack.length > 0 && seen < 1000; seen++) {
+      const node = stack.pop() as Node | undefined
+      if (typeof node !== 'object' || node === null) continue
+      const id = node.frame?.id
+      const loaderId = node.frame?.loaderId
+      if (typeof id === 'string' && id !== '' && (frameId === undefined || id === frameId)) {
+        if (typeof loaderId !== 'string' || loaderId === '') throw new RouteDropped()
+        return { id, loaderId }
+      }
+      if (frameId !== undefined && Array.isArray(node.childFrames)) stack.push(...(node.childFrames as unknown[]))
+    }
+    throw new RouteDropped()
+  }
+
+  /** The bracket's second read: `frame`'s document still the one `frameLoader` found, else RouteDropped. */
+  private async sameLoader(lane: Lane, frame: { id: string; loaderId: string }, run: RouteRun): Promise<void> {
+    const now = await this.frameLoader(lane, frame.id, run)
+    if (now.loaderId !== frame.loaderId) throw new RouteDropped()
+  }
+
+  /** The execution context of main's isolated world in the frame `frameId` of `lane`'s session. */
+  private async isolatedContext(lane: Lane, frameId: string, run: RouteRun): Promise<number> {
+    const world = (await this.ask('Page.createIsolatedWorld', { frameId, worldName: FRAME_WORLD_NAME, grantUniveralAccess: false }, lane, run)) as {
+      executionContextId?: unknown
+    }
+    const id = world.executionContextId
+    if (typeof id !== 'number' || !Number.isInteger(id)) throw new RouteDropped()
+    return id
+  }
+
+  /**
+   * The deepest ready cross-site frame holding the focus, or the page's own lane: at each level
+   * with cross-site children, the focused element (FOCUSED_FRAME_SCRIPT in main's isolated world of
+   * that document) when it owns one (`DOM.describeNode`'s `frameId`, the child's target id).
+   */
+  private async focusedLane(run: RouteRun): Promise<Lane> {
+    let lane = this.page
+    for (let depth = 0; depth < MAX_FRAME_DEPTH && this.hasChildren(lane); depth++) {
+      // Its cross-site children now: one that goes before the walk resolves the focus to it drops the
+      // read (it, not its parent, held the focus), where an owner that never was one (a same-site
+      // frame's, or a frame not ready yet) is no cross-site frame's: its parent's document is read.
+      const children = [...this.frames.values()].filter((f) => f.parent === lane && f.ready)
+      // The page's main frame is the tree's root (its id read there); the bracket as `evaluate`'s.
+      const frame = await this.frameLoader(lane, lane === this.page ? undefined : lane.targetId, run)
+      const contextId = await this.isolatedContext(lane, frame.id, run)
+      const answer = (await this.ask(
+        'Runtime.evaluate',
+        { expression: FOCUSED_FRAME_SCRIPT, contextId, returnByValue: false, objectGroup: FOCUS_OBJECT_GROUP, silent: true },
+        lane,
+        run
+      )) as { result?: { objectId?: unknown }; exceptionDetails?: unknown }
+      if (answer.exceptionDetails !== undefined) throw new RouteDropped()
+      const objectId = answer.result?.objectId
+      let owned: unknown
+      if (typeof objectId === 'string') {
+        const described = (await this.ask('DOM.describeNode', { objectId }, lane, run)) as { node?: { frameId?: unknown } }
+        await this.ask('Runtime.releaseObjectGroup', { objectGroup: FOCUS_OBJECT_GROUP }, lane, run)
+        owned = described.node?.frameId
+      }
+      // After the evaluation and the owner's description: both were of the document the world was made in.
+      await this.sameLoader(lane, frame, run)
+      if (typeof objectId !== 'string') break
+      const child = typeof owned === 'string' ? this.childOf(lane, owned) : undefined
+      if (!child) {
+        if (children.some((f) => f.targetId === owned)) throw new RouteDropped()
+        break
+      }
+      lane = child
+    }
+    return lane
+  }
+
+  /** A query of a script's walk, strict: refused, or a session that owes an answer, ends the walk (RouteDropped). */
+  private async ask(method: string, params: Record<string, unknown> | undefined, lane: Lane, run: RouteRun): Promise<object> {
+    if (lane.stalled) throw new RouteDropped()
+    const answer = await this.query(method, params, lane, run)
+    if (typeof answer !== 'object' || answer === null) throw new RouteDropped()
+    return answer
   }
 
   /** Queue a step (see `order` at the top of the file); false when it was dropped (a full queue). */
@@ -816,7 +1210,7 @@ export class PageInputRouter implements ChildFrameObserver {
   private async runDetached(step: Step): Promise<void> {
     if (step.kind === 'call') {
       const { pending } = this.runCall(step)
-      if (step.blocking) await this.detachedWait(pending)
+      if (step.blocking === true) await this.detachedWait(pending)
       return
     }
     if (step.kind === 'command') {
@@ -908,8 +1302,9 @@ export class PageInputRouter implements ChildFrameObserver {
     const refusedDown = this.refusedDown
     this.refusedDown = undefined
     if (step.kind === 'call') {
-      const { due } = this.runCall(step)
-      if (step.blocking) await due
+      const { due, held } = this.runCall(step)
+      if (step.blocking === true) await due
+      else if (step.blocking === 'route') await held
       return 'done'
     }
     if (step.kind === 'command') {
@@ -1252,18 +1647,24 @@ export class PageInputRouter implements ChildFrameObserver {
 
   /**
    * A call's run, its result handed to its caller, counted as the call on its way (`callOut`) until
-   * it settles. `pending` is its own answer, `due` settles with it or at its deadline (then it is late).
+   * it settles. `pending` is its own answer, `due` settles with it or at its deadline (then it is late),
+   * `held` with it, when the run releases what follows, or when the renderer goes (`blocking: 'route'`),
+   * never at the call's deadline: a frame's script still on its way past that would let the next
+   * input command go to the same session (C9). Its own queries' deadlines (`bounded`) end it instead.
    */
-  private runCall(step: Extract<Step, { kind: 'call' }>): { pending: Promise<unknown>; due: Promise<void> } {
+  private runCall(step: Extract<Step, { kind: 'call' }>): { pending: Promise<unknown>; due: Promise<void>; held: Promise<void> } {
+    let fire = (): void => {}
+    let release = (): void => {}
+    const held = new Promise<void>((done) => (release = done))
+    const out = { late: false, due: new Promise<void>((done) => (fire = done)), drop: (): void => {} }
     let pending: Promise<unknown>
     try {
-      pending = Promise.resolve(step.run())
+      pending = Promise.resolve(step.run(release))
     } catch (err) {
       pending = Promise.reject(err)
     }
     pending.then(step.resolve, step.reject)
-    let fire = (): void => {}
-    const out = { late: false, due: new Promise<void>((done) => (fire = done)), drop: (): void => {} }
+    pending.then(release, release)
     this.callOut = out
     const timer = this.timers.set(() => {
       out.late = true
@@ -1283,10 +1684,11 @@ export class PageInputRouter implements ChildFrameObserver {
     out.drop = (): void => {
       this.timers.clear(timer)
       fire()
+      release()
       if (this.callOut === out) this.callOut = undefined
     }
     pending.then(end, end)
-    return { pending, due: out.due }
+    return { pending, due: out.due, held }
   }
 
   /**
@@ -1363,24 +1765,28 @@ export class PageInputRouter implements ChildFrameObserver {
   private async follow(links: readonly Link[], x: number, y: number, run: RouteRun): Promise<Route | undefined> {
     if (links.length === 0) return undefined
     const points: Array<{ x: number; y: number }> = []
+    const models: unknown[] = []
     let px = x
     let py = y
     for (const link of links) {
       if (!link.lane.live) return undefined
       const box = await this.query('DOM.getBoxModel', { backendNodeId: link.owner }, link.parent, run)
-      const at = pointInFrame((box as { model?: unknown } | undefined)?.model, px, py)
+      const model = (box as { model?: unknown } | undefined)?.model
+      const at = pointInFrame(model, px, py)
       if (!at) return undefined
       points.push({ x: px, y: py })
+      models.push(model)
       px = at.x
       py = at.y
     }
-    return { lane: (links[links.length - 1] as Link).lane, x: px, y: py, links: [...links], points }
+    return { lane: (links[links.length - 1] as Link).lane, x: px, y: py, links: [...links], points, models }
   }
 
   /** The deepest cross-site frame under (x, y) of the top document, and the point there. */
   private async hitTest(x: number, y: number, run: RouteRun): Promise<Route> {
     const links: Link[] = []
     const points: Array<{ x: number; y: number }> = []
+    const models: unknown[] = []
     let lane = this.page
     let px = x
     let py = y
@@ -1389,15 +1795,16 @@ export class PageInputRouter implements ChildFrameObserver {
       if (!next) break
       links.push({ parent: lane, owner: next.owner, lane: next.lane })
       points.push({ x: px, y: py })
+      models.push(next.model)
       lane = next.lane
       px = next.x
       py = next.y
     }
-    return { lane, x: px, y: py, links, points }
+    return { lane, x: px, y: py, links, points, models }
   }
 
   /** The ready child frame of `lane` under its viewport point (x, y), and the point in it. */
-  private async childAt(lane: Lane, x: number, y: number, retry: boolean, run: RouteRun): Promise<{ lane: Lane; owner: number; x: number; y: number } | undefined> {
+  private async childAt(lane: Lane, x: number, y: number, retry: boolean, run: RouteRun): Promise<{ lane: Lane; owner: number; x: number; y: number; model: unknown } | undefined> {
     const metrics = (await this.query('Page.getLayoutMetrics', undefined, lane, run)) as { cssLayoutViewport?: { pageX?: unknown; pageY?: unknown } } | undefined
     const scrollX = Number(metrics?.cssLayoutViewport?.pageX)
     const scrollY = Number(metrics?.cssLayoutViewport?.pageY)
@@ -1417,11 +1824,12 @@ export class PageInputRouter implements ChildFrameObserver {
     const child = this.childOf(lane, frameId)
     if (!child) return undefined
     const box = await this.query('DOM.getBoxModel', { backendNodeId: owner }, lane, run)
-    const at = pointInFrame((box as { model?: unknown } | undefined)?.model, x, y)
+    const model = (box as { model?: unknown } | undefined)?.model
+    const at = pointInFrame(model, x, y)
     if (!at) return undefined
     if (!at.inBorder) return retry ? this.childAt(lane, x, y, false, run) : undefined
     if (!at.inside) return undefined
-    return { lane: child, owner, x: at.x, y: at.y }
+    return { lane: child, owner, x: at.x, y: at.y, model }
   }
 
   /**
@@ -1519,12 +1927,13 @@ export class PageInputRouter implements ChildFrameObserver {
   }
 
   /**
-   * A hit test within ROUTE_TIMEOUT_MS, else undefined (the event goes on unrouted). At the deadline
+   * A walk (a hit test; a frame script's queries, `scriptAt`) within `ms` (ROUTE_TIMEOUT_MS unless
+   * given), else undefined (the event goes on unrouted, the script is dropped). At the deadline
    * the walk is dropped (its next query throws) and the session whose query is on its way is asked
    * nothing more, no command and no query, until it answers: a late query stalls it as a late command
    * does (ruling 2026-11-19 #10; fuzz: a hung getLayoutMetrics, then a mouse event to the page).
    */
-  private bounded(walk: (run: RouteRun) => Promise<Route | undefined>): Promise<Route | undefined> {
+  private bounded<T>(walk: (run: RouteRun) => Promise<T | undefined>, ms = ROUTE_TIMEOUT_MS): Promise<T | undefined> {
     const run: RouteRun = { epoch: this.epoch, cancelled: false }
     return new Promise((done) => {
       const timer = this.timers.set(() => {
@@ -1544,7 +1953,7 @@ export class PageInputRouter implements ChildFrameObserver {
           q.sent.then(clear, clear)
         }
         done(undefined)
-      }, ROUTE_TIMEOUT_MS)
+      }, ms)
       walk(run).then(
         (route) => {
           this.timers.clear(timer)

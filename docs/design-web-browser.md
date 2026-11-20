@@ -315,16 +315,16 @@ the fallback when the protocol detached:
   microtasks of the router's continuations) and detached roads that answer late, each delivery checked against the
   attachment it lands in.
 
-`scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19): click, double click, typing, edit
+`scripts/offscreen-input-check.mjs` proves it under Electron (macOS, 2026-11-19; the Linux VM, headless, 2026-11-20): click, double click, typing, edit
 chords, drag, a drag leaving the frame, wheel, hover cursor and hover leaving, in a cross-site iframe, one nested in it,
 one at `scale(0.5)`, with the top page and the frame scrolled; a same-site frame, and a cross-site one inside a scrolled
 same-site frame; a link dragged; Tab into the frame; the allow-listed keys the same as `sendInputEvent`'s; 50 rounds of
-clicks and typing across four documents in order. A pointer event costs about one frame (16 ms) to be answered, the
-same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
+clicks and typing across four documents in order. A pointer event costs about one frame to be answered (16 ms on
+macOS, 33 ms on the Linux VM), the same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
 by the whole delta (a 120 px wheel moved a 60 px tall box by 120, `sendInputEvent`'s by 60, its height), as a trackpad
 does; the page itself scrolls the same distance either way. A frame under a perspective transform (its box no
 parallelogram within half a px of the frame's own, measured in the frame's px, not the screen's) is not routed into:
-its parent takes the event. Not checked: Linux, a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
+its parent takes the event. Not checked: a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
 by its own CSS `zoom`.
 
 It accepts them only from a current viewer (`server && view.remote`, the panel
@@ -368,7 +368,8 @@ the input layer has focus.
   main pushes the page's selection text (`webviews.selection`, to the acting view only) after any input that can
   change it (a mouse up or key down that went to the page, or inserted text), debounced 100 ms, latest wins,
   deduplicated, read from an isolated world (`executeJavaScriptInIsolatedWorld`, world id **1717**, `WEBVIEW_WORLD_ID`:
-  not 0, the main world, nor 999, Electron's own contextIsolation world; one read in flight per view and panel):
+  not 0, the main world, nor 999, Electron's own contextIsolation world; one read in flight per view and panel), in
+  the deepest focused cross-site frame when one holds the focus (its own isolated world, §4.4), else the top document:
   `getSelection()`, or for a focused text `<input>`/`<textarea>` its selected value slice (never a password field).
   The script slices before returning, main caps the text near 256 KB of encoded bytes and strips control characters (a
   selection of control characters, JSON-escaped, could otherwise exceed the socket's frame limit and close the browser
@@ -412,11 +413,59 @@ to the clicking view only; the id is main's (one per view and panel, taken once)
 element is found again through a `WeakRef` kept under the id in the isolated world's globals. The browser draws a
 `role="listbox"` dropdown (arrows, Home/End, type-ahead, Enter or Space, Escape). The page sees the select take the
 focus and an untrusted `input` and `change`, not the mouse events of that click. Right and middle presses are never
-held. Keyboard-only still: a select inside an iframe (`elementFromPoint` stops at the frame element; a cross-site
-frame's document would need an isolated world per child session, `Page.createIsolatedWorld`, not done; the click
-reaches the frame, whose popup then opens unpainted; whether the keyboard works it there was not checked) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
-paints and takes clicks on itself. Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS
-`zoom`.
+held.
+
+**In a cross-site (out-of-process) iframe** (2026-11-20): the off-screen view runs main's scripts through its input
+router (`page-input.ts` `scriptAt`, `scriptIn`, `scriptInFocus`). The hit test's document is the one the router's own
+route for that press picks (§4.1's hit test, with capture and a stalled frame's press going to the top, exactly as the
+press itself would go; no second hit test), `hitScript` given the point in that frame's CSS px. A frame that navigates
+between the route's hit test and the script gets the hit script in its replacement document at the same frame-relative
+point; a browser does the same (a press lands in whatever document the frame holds), so this is accepted, not a bug
+(codex review, 2026-11-20). In a frame the script
+runs in an isolated world `Page.createIsolatedWorld` makes on the frame's own DevTools session right before each
+`Runtime.evaluate` with that context id: the same world while the document lives (what the hit keeps there, the
+`WeakRef`, is found by the choice), a fresh one for a new document (the old context id is refused). A frame's session
+survives a cross-process navigation of that frame and V8 context ids are per process, so a stale id could name a
+main-world context in the replacement renderer: each frame run is bracketed by the frame's `loaderId` (`Page.getFrameTree`
+on the same session, read before `Page.createIsolatedWorld` and again after `Runtime.evaluate` answers, the focus
+walk's `DOM.describeNode` inside the bracket), and a change or a failed read drops the result. Never the main
+world, never `Runtime.evaluate` without the context id; the top document keeps `executeJavaScriptInIsolatedWorld` in
+world 1717. The select's rectangle is mapped back to the top page through the owner boxes that route read (the four
+corners through each content quad, deepest first, their bounding box: a rotated or scaled frame's select gets the box
+it is drawn in), refused where the router refuses the box (`rectFromFrame` shares `pointInFrame`'s check); a refused
+rectangle is no popup and the press goes as a click. The popup id is bound in main to the frame the hit ran in (the
+router's session object, never its id, which a new attachment can reuse), so the choice runs there or nowhere: a frame
+gone, replaced or owing an answer chooses nothing, never in another document. The copy read (§4.2) runs in the deepest
+focused cross-site frame, which main finds: per level with cross-site children, `document.activeElement` read in that
+document's isolated world (into open shadow roots and same-site frames' documents), and when it is a frame owner the
+script cannot look into, its `frameId` from `DOM.describeNode` names the child session; no focused frame owner, the
+top document. A focused frame that goes mid-walk, or mid-read, drops the read (no copy), never reads its parent. Accepted
+for now: a page script that moves the focus from frame A to B during the walk's remaining round trips leaves the read in
+A, so the copy takes A's selection (text the person really selected there); a re-check of the focus after the read
+would fix it. A reset or the renderer going after the walk ends and before its top-document read drops the read (the
+attachment is checked again synchronously before that run).
+
+Every one of these is a call (§4.1: one at a time, its deadline, the epoch carried; a press held for its hit test
+carries its epoch as before), and each protocol command of it is a hit-test query: checked synchronously before it goes
+(the session live, of this attachment, owing nothing), a refusal, a script that threw or a malformed answer drops the
+script, and one past its deadline (500 ms for the whole frame part) stalls its session as a late command does. One
+command or query outstanding per session (C9) holds for them too: while the route and a frame's script run, the router
+sends nothing else (the call blocks the queue until the script goes to the top document, where nothing waits for it as
+before, or settles; never released by the call's own deadline, which could come first). So a press still waits at most
+50 ms for its hit test in the lane, then goes into the router's queue behind it: a frame that does not answer holds the
+page's input there two route deadlines at most (200 ms for the route, 200 ms for the frame's script), once, since it is
+stalled from then on and asked nothing more; a copy read waits at most 500 ms for its frame part. A page with no
+cross-site frame sends no new protocol command. Proven under Electron
+(`scripts/offscreen-input-check.mjs`, macOS and the Linux VM, 2026-11-20): a select in a cross-site frame, one nested in
+it, one at `scale(0.5)` and one in a cross-site frame inside a same-site one (that frame scrolled) opens the popup with
+its options over the select, the press reaches no document, the select holds the focus (each frame above it its frame),
+and a choice sets the value and fires `input` and `change` there only; a double-clicked word and a field's selected
+text in each of those documents is what the read returns.
+
+Keyboard-only still: a select inside a same-site iframe (`elementFromPoint` stops at the frame element, and the route
+of such a press is the top document's) or a closed shadow root, and listboxes (`multiple`, `size` > 1), which the page
+paints and takes clicks on itself. Text selected inside a same-site iframe is not read for copy (the read takes the top
+document's own selection). Not tested: a real phone (touch on the dropdown), a page zoomed by its own CSS `zoom`.
 
 ## 5. Limits
 

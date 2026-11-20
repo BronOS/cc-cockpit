@@ -31,9 +31,14 @@
 // undo, redo, a prevented chord, one undo per group (the top document, as before); the editing
 // keys (Backspace, Delete, arrows, Shift/Option/Cmd+arrows, Home, End, Option/Cmd+Backspace); the
 // Mac line keys in a textarea with the caret mid-line (Cmd+Left/Right/Up/Down, with Shift,
-// Cmd+Backspace) and a Cmd+Shift+Left in A; order: rounds of clicks into A, the top, B and T with
+// Cmd+Backspace) and a Cmd+Shift+Left in A; a `<select>` in the top, A, B and T and in X under W (X
+// scrolled), through a second WebviewInput wired for popups (the popup with the select's options over
+// it in the top page, the press kept from the document, the focus on the select, a choice setting
+// the value and firing input and change there and nowhere else); copy of a double-clicked word and
+// of a field's selection in each of those documents, read where the focus is; order: rounds of clicks into A, the top, B and T with
 // keys and texts after each, nothing awaited, and the top document's "abc" é Ctrl+A "x" and
-// "abc" é "d". Printed, never failures: Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
+// "abc" é "d". Printed, never failures: a select and a selection in the same-site S (main's scripts
+// do not reach them), Ctrl+E and Ctrl+K (a Mac field's Emacs keys, not mapped),
 // and the router's cost per pointer event in each document, and per key event (the protocol's own
 // answer, fast typing and a held key's repeat through the router; that every key lands is a check).
 //
@@ -120,8 +125,10 @@ function page(port, role) {
 #l{position:absolute;left:250px;top:10px} textarea{position:absolute;left:300px;top:10px;width:250px;height:80px;font:12px monospace;white-space:pre}
 iframe{position:absolute;border:0} #A{left:0;top:200px;width:600px;height:300px} #T{left:650px;top:200px;width:300px;height:300px;transform:scale(0.5);transform-origin:0 0}
 #B{left:300px;top:100px;width:280px;height:180px} #S{left:650px;top:400px;width:300px;height:110px}
-#W{left:0;top:520px;width:600px;height:170px} #X{left:300px;top:40px;width:280px;height:120px}</style>
+#W{left:0;top:520px;width:600px;height:170px} #X{left:300px;top:40px;width:280px;height:120px}
+#s{position:absolute;left:10px;top:120px;width:150px;height:24px;margin:0;font:14px monospace} #p{position:absolute;left:10px;top:150px;margin:0;font:14px monospace;white-space:nowrap}</style>
 <input id="i" autocomplete="off" value=""><div id="box"><div>scroll</div></div><a id="l" href="#x">a link</a><textarea id="t"></textarea>${frames}
+<select id="s"><option>one</option><option>two</option><option disabled>three</option><optgroup label="G"><option>four</option></optgroup></select><p id="p">pick ${role} words</p>
 <script>
   window.__log = []
   // The spin case: once armed, a press makes the renderer spin forever 30 ms later (after its click answered).
@@ -141,8 +148,12 @@ iframe{position:absolute;border:0} #A{left:0;top:200px;width:600px;height:300px}
   }
   const i = document.getElementById('i')
   const ta = document.getElementById('t')
-  window.__state = () => ({ value: i.value, sel: [i.selectionStart, i.selectionEnd], text: ta.value, tsel: [ta.selectionStart, ta.selectionEnd], active: document.activeElement && (document.activeElement.id || document.activeElement.tagName), scroll: document.getElementById('box').scrollTop, log: __log.splice(0) })
-  window.__reset = () => { i.value = ''; ta.value = ''; document.getElementById('box').scrollTop = 0; scrollTo(0, 0); __log.length = 0; __prevent = false; __preventPlain = ''; if (document.activeElement) document.activeElement.blur() }
+  const s = document.getElementById('s')
+  // The select's input and change, trusted or not (a choice main makes fires untrusted ones, as the top's always did).
+  window.__chg = []
+  for (const t of ['input', 'change']) s.addEventListener(t, () => __chg.push(t + ':' + s.value))
+  window.__state = () => ({ value: i.value, sel: [i.selectionStart, i.selectionEnd], text: ta.value, tsel: [ta.selectionStart, ta.selectionEnd], active: document.activeElement && (document.activeElement.id || document.activeElement.tagName), scroll: document.getElementById('box').scrollTop, sv: s.value, chg: __chg.splice(0), log: __log.splice(0) })
+  window.__reset = () => { i.value = ''; ta.value = ''; s.selectedIndex = 0; __chg.length = 0; getSelection().removeAllRanges(); document.getElementById('box').scrollTop = 0; scrollTo(0, 0); __log.length = 0; __prevent = false; __preventPlain = ''; if (document.activeElement) document.activeElement.blur() }
   window.__caret = (value, start, end) => { i.value = value; i.focus(); i.setSelectionRange(start, end === undefined ? start : end) }
   window.__tcaret = (value, start, end) => { ta.value = value; ta.focus(); ta.setSelectionRange(start, end === undefined ? start : end) }
 </script>`
@@ -151,8 +162,10 @@ iframe{position:absolute;border:0} #A{left:0;top:200px;width:600px;height:300px}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const within = (p, ms, fallback) => Promise.race([p, sleep(ms).then(() => fallback)])
 
-/** Each document's own points (its CSS px): the field, the box, the link. */
-const LOCAL = { input: [20, 25], box: [60, 80], link: [260, 18] }
+/** Each document's own points (its CSS px): the field, the box, the link, the select, a word of the paragraph (its role). */
+const LOCAL = { input: [20, 25], box: [60, 80], link: [260, 18], select: [50, 132], word: [65, 158] }
+/** The select's rectangle in each document's own CSS px (#s). */
+const SELECT_RECT = { x: 10, y: 120, width: 150, height: 24 }
 /**
  * Where a document's own point is in the top page's viewport (the top page scrolled by `scroll`, A
  * by `frameScroll`, W by `wrapScroll`). S and W are same-site (the top's process), X in W cross-site.
@@ -532,6 +545,151 @@ async function main() {
     const top = await state('top')
     console.log(`Tab into A: A active ${JSON.stringify(before.active)}, then "qw" é Cmd+A → A ${JSON.stringify(f.value)} ${JSON.stringify(f.sel)}, top ${JSON.stringify(top.value)} ${JSON.stringify(top.log.filter((l) => l.startsWith('keydown')))}`)
     want(f.value === 'qwé' && f.sel[0] === 0 && f.sel[1] === 3 && top.value === '', 'view: keys after Tab into A did not land there')
+  }
+
+  // --- a select in each document (the top, A, B in A, T at scale(0.5)): the popup, a choice ---
+  // Through a second WebviewInput wired as index.ts wires it in server mode (hit tests, popups,
+  // selection pushes); the one above has none, so its left presses are never held. The popup must
+  // come with the select's options at its place in the top page (the frame's rectangle mapped
+  // through its owners' boxes), the press and release must not reach the document, the select must
+  // hold the focus (and every frame above it its frame), and a choice must set the value there
+  // and fire input and change there. Then copy: a word double-clicked in each document, and a
+  // field's selected text, read where the focus is (view.readSelection, and the pushed selection).
+  {
+    const popups = []
+    const pushedText = []
+    const selTarget = {
+      ...target,
+      epoch: () => view.inputEpoch(),
+      send: (events, epoch) => view.sendInput(events, epoch),
+      hitSelect: (x, y, id, epoch) => view.hitSelect(x, y, id, epoch),
+      chooseSelect: (id, index, epoch) => view.chooseSelect(id, index, epoch)
+    }
+    const selInput = new WebviewInput({
+      isViewer: () => true,
+      claimOwner: () => {},
+      target: () => selTarget,
+      now: () => (t += 10_000),
+      pushSelect: (_view, event) => void popups.push(event),
+      pushSelection: (_view, event) => void pushedText.push(event.text)
+    })
+    const selPointer = (type, [x, y], clickCount = 1) =>
+      selInput.accept(PANEL, 'web:2', [type === 'move' ? { kind: 'pointer', type, x, y } : { kind: 'pointer', type, x, y, button: 'left', clickCount }])
+    const selClick = (point, clickCount = 1) => {
+      selPointer('move', point)
+      selPointer('down', point, clickCount)
+      selPointer('up', point, clickCount)
+    }
+    const selKey = (key, modifiers = []) => {
+      selInput.accept(PANEL, 'web:2', [{ kind: 'key', type: 'down', key, modifiers }])
+      selInput.accept(PANEL, 'web:2', [{ kind: 'key', type: 'up', key, modifiers }])
+    }
+    /** The frames above each document, outermost first: [document, its owner's id there]. */
+    const ABOVE = { top: [], frame: [['top', 'A']], nested: [['top', 'A'], ['frame', 'B']], xform: [['top', 'T']] }
+    const SCALE = { top: 1, frame: 1, nested: 1, xform: 0.5 }
+    for (const doc of DOCS) {
+      await reset()
+      popups.length = 0
+      selClick(at(doc, LOCAL.select))
+      for (let k = 0; k < 40 && popups.length === 0; k++) await sleep(25)
+      const popup = popups[0]
+      const s = await state(doc)
+      const above = []
+      for (const [d, owner] of ABOVE[doc]) above.push(`${d} ${(await state(d)).active}${(await state(d)).active === owner ? '' : ` (not ${owner})`}`)
+      const [ex, ey] = at(doc, [SELECT_RECT.x, SELECT_RECT.y])
+      const scale = SCALE[doc]
+      const r = popup?.rect
+      const placed = !!r && Math.abs(r.x - ex) <= 1 && Math.abs(r.y - ey) <= 1 && Math.abs(r.width - SELECT_RECT.width * scale) <= 1 && Math.abs(r.height - SELECT_RECT.height * scale) <= 1
+      const labels = popup ? popup.options.map((o) => `${o.label}${o.disabled ? '(off)' : ''}${o.group ? `[${o.group}]` : ''}`).join(',') : ''
+      const pressed = s.log.filter((l) => l.startsWith('mousedown') || l.startsWith('mouseup') || l.startsWith('click'))
+      console.log(`select in ${doc}: popup ${popup ? `${labels} selected ${popup.selected} at ${JSON.stringify(r)} (want ${ex},${ey} ${SELECT_RECT.width * scale}x${SELECT_RECT.height * scale})` : 'none'}; ${doc} active ${s.active}${above.length ? `, above: ${above.join(', ')}` : ''}; presses there ${JSON.stringify(pressed)}`)
+      want(!!popup, `select in ${doc}: no popup`)
+      if (!popup) continue
+      want(labels === 'one,two,three(off),four[G]' && popup.selected === 0, `select in ${doc}: the popup listed ${labels}, selected ${popup.selected}`)
+      want(placed, `select in ${doc}: the popup at ${JSON.stringify(r)}, not over the select`)
+      want(pressed.length === 0, `select in ${doc}: the press reached the document (${JSON.stringify(pressed)})`)
+      want(s.active === 's' && above.every((a) => !a.includes('(not')), `select in ${doc}: the focus is not on the select (${s.active}; ${above.join(', ')})`)
+      selInput.acceptChoice(PANEL, 'web:2', popup.id, 1)
+      let chosen
+      for (let k = 0; k < 20; k++) {
+        await settle(50)
+        chosen = await state(doc)
+        if (chosen.sv === 'two') break
+      }
+      console.log(`  chose "two" in ${doc}: value ${JSON.stringify(chosen.sv)}, events ${JSON.stringify(chosen.chg)}`)
+      want(chosen.sv === 'two' && chosen.chg.join() === 'input:two,change:two', `select in ${doc}: the choice gave ${JSON.stringify(chosen.sv)} ${JSON.stringify(chosen.chg)}`)
+      // The others' selects are untouched (the choice went to the document the popup came from).
+      for (const other of DOCS.filter((d) => d !== doc)) {
+        const o = await state(other)
+        want(o.sv === 'one' && o.chg.length === 0, `select in ${doc}: ${other}'s select changed too (${o.sv} ${JSON.stringify(o.chg)})`)
+      }
+    }
+    // Copy: a word of each document's paragraph double-clicked (its role's name), then a field's
+    // text selected by Ctrl+A there; each read where the focus is, the top document last again.
+    for (const doc of [...DOCS, 'top']) {
+      await reset()
+      pushedText.length = 0
+      selClick(at(doc, LOCAL.word), 1)
+      selClick(at(doc, LOCAL.word), 2)
+      await settle(250)
+      const word = await within(view.readSelection(), 3000, 'unanswered')
+      const pushedWord = pushedText.at(-1)
+      selClick(at(doc, LOCAL.input))
+      for (const ch of `copy-${doc}`) selKey(ch)
+      selKey('a', ['control'])
+      await settle(250)
+      const field = await within(view.readSelection(), 3000, 'unanswered')
+      const pushedField = pushedText.at(-1)
+      console.log(`copy in ${doc}: word ${JSON.stringify(word)} (pushed ${JSON.stringify(pushedWord)}), field ${JSON.stringify(field)} (pushed ${JSON.stringify(pushedField)})`)
+      want(word === doc && pushedWord === doc, `copy in ${doc}: the double-clicked word read ${JSON.stringify(word)}, pushed ${JSON.stringify(pushedWord)}`)
+      want(field === `copy-${doc}` && pushedField === `copy-${doc}`, `copy in ${doc}: the field's selection read ${JSON.stringify(field)}, pushed ${JSON.stringify(pushedField)}`)
+    }
+    // X (cross-site) inside the same-site W, X scrolled by 100 (its select and paragraph are below
+    // its 120 px): the route through W's document, the rectangle through X's scroll; the focus walk
+    // looks into W's document (same site) to find X.
+    {
+      await reset()
+      popups.length = 0
+      await js('inner', 'scrollTo(0, 100)')
+      await sleep(80)
+      const inX = ([x, y]) => toTop('inner', [x, y - 100])
+      selClick(inX(LOCAL.select))
+      for (let k = 0; k < 40 && popups.length === 0; k++) await sleep(25)
+      const popup = popups[0]
+      const [ex, ey] = inX([SELECT_RECT.x, SELECT_RECT.y])
+      const r = popup?.rect
+      const placed = !!r && Math.abs(r.x - ex) <= 1 && Math.abs(r.y - ey) <= 1 && Math.abs(r.width - SELECT_RECT.width) <= 1 && Math.abs(r.height - SELECT_RECT.height) <= 1
+      if (popup) selInput.acceptChoice(PANEL, 'web:2', popup.id, 3)
+      await settle(250)
+      const x = await state('inner')
+      pushedText.length = 0
+      selClick(inX(LOCAL.word), 1)
+      selClick(inX(LOCAL.word), 2)
+      await settle(250)
+      const word = await within(view.readSelection(), 3000, 'unanswered')
+      console.log(`select and copy in X inside W (X scrolled 100): popup at ${JSON.stringify(r)} (want ${ex},${ey}), chose "four": ${JSON.stringify(x.sv)} ${JSON.stringify(x.chg)}; word ${JSON.stringify(word)} (pushed ${JSON.stringify(pushedText.at(-1))})`)
+      want(placed, `select in X inside W: the popup at ${JSON.stringify(r)}, not over the select`)
+      want(x.sv === 'four' && x.chg.join() === 'input:four,change:four', `select in X inside W: the choice gave ${JSON.stringify(x.sv)} ${JSON.stringify(x.chg)}`)
+      want(word === 'inner' && pushedText.at(-1) === 'inner', `copy in X inside W: the double-clicked word read ${JSON.stringify(word)}`)
+    }
+    // Printed, never failures: the same-site S (scrolled 100, its select and paragraph below its
+    // 110 px), whose select and selection main's scripts do not reach (design-web-browser.md §4.4).
+    {
+      await reset()
+      popups.length = 0
+      await js('same', 'scrollTo(0, 100)')
+      await sleep(80)
+      const inS = ([x, y]) => toTop('same', [x, y - 100])
+      selClick(inS(LOCAL.select))
+      await settle(300)
+      const s = await state('same')
+      selClick(inS(LOCAL.word), 1)
+      selClick(inS(LOCAL.word), 2)
+      await settle(250)
+      const word = await within(view.readSelection(), 3000, 'unanswered')
+      const inPage = await js('same', 'String(getSelection())')
+      console.log(`same-site S (known limitation): select popup ${popups.length ? 'shown' : 'none'}, the press reached it: ${s.log.some((l) => l.startsWith('mousedown:s'))}; double-clicked word ${JSON.stringify(inPage)} in S, read for copy ${JSON.stringify(word)}`)
+    }
   }
 
   // --- every allow-listed key: the view road against the raw road, in the top textarea ---
@@ -1007,7 +1165,7 @@ async function main() {
     console.log('\nFAIL:\n  ' + failures.join('\n  '))
     return 1
   }
-  console.log('\nOK: the view road works in the top document and in cross-site frames (nested, scrolled, transformed): click, double click, keys, text, edit chords, line keys, drag, capture, wheel, cursor, hover, order')
+  console.log('\nOK: the view road works in the top document and in cross-site frames (nested, scrolled, transformed): click, double click, keys, text, edit chords, line keys, drag, capture, wheel, cursor, hover, select popups, copy, order')
   return 0
 }
 

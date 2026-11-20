@@ -16,6 +16,8 @@ import {
   MAX_SELECT_OPTIONS,
   newSelectId,
   parseHitResult,
+  SelectFrames,
+  selectHitInTop,
   SelectPopups
 } from '../../src/main/webview/select-hit'
 import { PAGE_WAIT_MS, WebviewInput, type ElectronInputEvent } from '../../src/main/webview/webview-input'
@@ -300,6 +302,38 @@ describe('parseHitResult: cleaned and capped, or nothing', () => {
     )
     const event: IpcEventMap['webviews.select'] = { panelKey: 'a/b', id: ID, ...(r as NonNullable<typeof r>) }
     expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThan(MAX_FRAME_BYTES / 4)
+  })
+})
+
+// A select in a cross-site frame (page-input.ts scriptAt): its rectangle comes back in the frame's
+// own px and is mapped to the top page by the router; the popup id is bound to that frame.
+describe('a hit in a frame: selectHitInTop and SelectFrames', () => {
+  const raw = { select: true, options: [{ index: 0, label: 'a', disabled: false }], selected: 0, rect: { x: 10, y: 120, width: 150, height: 24 } }
+
+  it("maps a hit's rectangle to the top page; leaves no hit as it is; refuses a rectangle that cannot be mapped", () => {
+    const toTop = (r: unknown) => {
+      const { x, y, width, height } = r as { x: number; y: number; width: number; height: number }
+      return { x: x + 300, y: y + 300, width, height }
+    }
+    expect(parseHitResult(selectHitInTop(raw, toTop))?.rect).toEqual({ x: 310, y: 420, width: 150, height: 24 })
+    // No select under the press: passed on unchanged (parseHitResult says none).
+    expect(selectHitInTop(null, toTop)).toBeNull()
+    expect(selectHitInTop({ select: false }, toTop)).toEqual({ select: false })
+    // A box the router refuses (a perspective transform) or a malformed rectangle: no popup, the press goes.
+    expect(selectHitInTop(raw, () => undefined)).toBeUndefined()
+    expect(parseHitResult(selectHitInTop(raw, () => undefined))).toBeUndefined()
+  })
+
+  it('remembers the frame of each popup id, taken once, the oldest forgotten past 16', () => {
+    const frames = new SelectFrames<string>()
+    frames.remember(ID, 'A')
+    frames.remember(ID2, 'top')
+    expect(frames.take(ID)).toBe('A')
+    expect(frames.take(ID)).toBeUndefined()
+    for (let n = 0; n < 20; n++) frames.remember(n.toString(16).padStart(32, '0'), `f${n}`)
+    expect(frames.take(ID2)).toBeUndefined()
+    expect(frames.take((3).toString(16).padStart(32, '0'))).toBeUndefined()
+    expect(frames.take((4).toString(16).padStart(32, '0'))).toBe('f4')
   })
 })
 
