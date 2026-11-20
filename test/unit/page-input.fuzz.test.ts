@@ -520,6 +520,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
   let refusalLogs = 0
   /** C6: hit tests of the page's document since the last viewer pointer event was delivered, when nothing disturbed them. */
   let exitsSince = 0
+  let exitPending = false
   let disturbed = false
   const pageCommands = (): Command[] => commands.filter((c) => c.session === '' && c.gen === gen && !c.detached && !c.answered)
   const pageStalled = (): boolean => attached && pageCommands().some((c) => clock.now - c.sentAt >= STEP_TIMEOUT_MS)
@@ -731,10 +732,13 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     }
     const input = method.startsWith('Input.')
     // C6, ruling 2026-11-19: only re-tests caused by a synthetic hover exit count (a re-test after a park is required).
-    if (method === 'Input.dispatchMouseEvent' && String(p.type) === 'mouseMoved' && (p.x as number) < 0 && (p.y as number) < 0) {
+    if (method === 'Input.dispatchMouseEvent' && String(p.type) === 'mouseMoved' && (p.x as number) < 0 && (p.y as number) < 0) exitPending = true
+    // C6, ruling 2026-11-19 #4: the cap counts re-tests (a hit test run again after a synthetic hover exit), never exits: one step may
+    // send several exits (nested frames left at once). At most MAX_RETESTS per step, then the page session.
+    if (method === 'DOM.getNodeForLocation' && id === '' && exitPending) {
+      exitPending = false
       exitsSince++
-      // A re-test is caused by an exit: at most MAX_RETESTS exits for one step, then the page session (parks are not counted).
-      if (!disturbed && exitsSince > MAX_RETESTS) violate('C6', 'retests', `${exitsSince} hover exits for one pointer step`)
+      if (!disturbed && exitsSince > MAX_RETESTS) violate('C6', 'retests', `${exitsSince} re-tests after hover exits for one pointer step`)
     }
     // Which viewer event is this (if any), and the checks of its delivery.
     let ev: Ev | undefined
@@ -777,6 +781,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
           if (ev.kind === 'wheel') routeCheck(type, session, id, tag)
           // C6: after a hover exit the hit test runs again at most 2 times (3 tests in all), then the page session.
           exitsSince = 0
+    exitPending = false
           disturbed = false
         } else if (type === 'mouseReleased') {
           recordUp(undefined, `button:${String(p.button)}`, 'protocol', id)
@@ -1149,6 +1154,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     if (!s || s.doc === 'page') return
     disturbed = true
     exitsSince = 0
+    exitPending = false
     // The frame and every frame under it.
     const gone: Session[] = [s]
     for (let i = 0; i < gone.length; i++) {
@@ -1178,6 +1184,7 @@ async function runScript(seed: number, script: readonly Action[], withTrace = fa
     attached = false
     disturbed = true
     exitsSince = 0
+    exitPending = false
     // Every session of this attachment refuses from now on (Electron's debugger).
     for (const c of commands) if (!c.answered && rejectPending) c.reject(new Error('Debugger is not attached'))
     for (const s of [...sessionOf.values()]) endSession(s, false)
