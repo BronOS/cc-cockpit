@@ -257,10 +257,17 @@ function fractions(q: readonly number[], x: number, y: number): { u: number; v: 
   return { u: (dx * by - dy * bx) / det, v: (ax * dy - ay * dx) / det }
 }
 
-/** Whether a quad's diagonals halve each other (any affine image of a rectangle), within half a px. */
-function isParallelogram(q: readonly number[]): boolean {
-  const [x0, y0, x1, y1, x2, y2, x3, y3] = q as [number, number, number, number, number, number, number, number]
-  return Math.abs(x0 + x2 - x1 - x3) <= 0.5 && Math.abs(y0 + y2 - y1 - y3) <= 0.5
+/**
+ * Whether a quad is an affine image of a `width` x `height` box (a parallelogram) closely enough
+ * that the affine map from its three corners (`fractions`) is off by at most half a px of the box
+ * itself anywhere in it: the fourth corner, where that map is worst, is mapped and compared with the
+ * box's corner. Measured in the box's own px, not the screen's (codex: a quad 100 px wide skewed by
+ * 0.4 px over a 10,000 px viewport put a point 10 px off in the frame, into the wrong child).
+ */
+function isParallelogram(q: readonly number[], width: number, height: number): boolean {
+  const corner = fractions(q, q[4] as number, q[5] as number)
+  if (!corner) return false
+  return Math.abs(corner.u - 1) * width <= 0.5 && Math.abs(corner.v - 1) * height <= 0.5
 }
 
 function edge(q: readonly number[], to: 2 | 6): number {
@@ -287,12 +294,12 @@ export function pointInFrame(model: unknown, x: number, y: number): FramePoint |
   // A perspective transform draws the box as a quad that is no parallelogram, which the affine map
   // from three corners gets wrong (review finding: a point picked the wrong spot, so a nested hit
   // test could pick the wrong child). Refused: the point stays with the parent.
-  if (!isParallelogram(content) || !isParallelogram(border)) return undefined
+  const width = (m.width * edge(content, 2)) / borderTop
+  const height = (m.height * edge(content, 6)) / borderLeft
+  if (!isParallelogram(content, width, height) || !isParallelogram(border, m.width, m.height)) return undefined
   const c = fractions(content, x, y)
   const b = fractions(border, x, y)
   if (!c || !b) return undefined
-  const width = (m.width * edge(content, 2)) / borderTop
-  const height = (m.height * edge(content, 6)) / borderLeft
   return {
     x: c.u * width,
     y: c.v * height,
@@ -531,6 +538,22 @@ export class PageInputRouter implements ChildFrameObserver {
    * attached the protocol's sends never wait on it.
    */
   private detachedStall: object | undefined
+  /**
+   * The renderer's number: `rendererGone` bumps it, and a detached delivery's deadline or answer of
+   * an older one changes nothing (codex: a renderer gone before a text's deadline left that deadline
+   * to stall the new renderer's road for good). `detachedWake` ends the one detached wait in
+   * progress at once when the renderer goes.
+   */
+  private renderer = 0
+  private detachedWake: (() => void) | undefined
+  /**
+   * The call (`call`) on its way: at most one, attached or not, across resets (C5 / C9: codex, a
+   * thousand unanswered selection reads, one let through per missed deadline). A queued call waits
+   * for it, STEP_TIMEOUT_MS at most (`due`); past that (`late`) the call stalls what follows it until
+   * it settles, as a command stalls its session. Calls are not the detached road's: a renderer that
+   * goes leaves this one counted until it settles.
+   */
+  private callOut: { late: boolean; due: Promise<void> } | undefined
   /** The key down the page's session just refused (`key:<code>`): its `char`, next in the queue, is dropped too. */
   private refusedDown: string | undefined
   /** Where the pointer was last delivered (for the hover moves when it changes session). */
@@ -574,8 +597,9 @@ export class PageInputRouter implements ChildFrameObserver {
    * delivery it owed will never settle, so the detached road takes input again (ruling 2026-11-19 #7).
    */
   rendererGone(): void {
-    if (!this.detachedStall) return
+    this.renderer++
     this.detachedStall = undefined
+    this.detachedWake?.()
     void this.pump()
   }
 
@@ -700,6 +724,7 @@ export class PageInputRouter implements ChildFrameObserver {
           // The detached road owes an answer past its deadline: everything waits, in order (by the
           // cap), until it settles or the renderer goes (either pumps again).
           if (this.detachedStall) return
+          if (this.callAhead() && (await this.callHeld())) return
           // The protocol went: what waits goes by the roads of a detached view, in order. A text, an
           // edit command or a blocking call answers later (an IPC of its own), so what comes after it
           // waits for that answer, STEP_TIMEOUT_MS at most, as for a command on the protocol.
@@ -712,6 +737,7 @@ export class PageInputRouter implements ChildFrameObserver {
           this.queue = this.queue.filter((s) => !isMove(s))
           return
         }
+        if (this.callAhead() && (await this.callHeld())) return
         const step = this.queue.shift()
         if (!step) return
         let end: StepEnd = 'done'
@@ -728,6 +754,24 @@ export class PageInputRouter implements ChildFrameObserver {
     }
   }
 
+  /**
+   * Whether the call at the head waits for the one on its way: true (the pump stops) while that one
+   * is late, its settle pumps again; else it is awaited up to its deadline and the pump looks again.
+   */
+  private callAhead(): boolean {
+    return this.callOut !== undefined && this.queue[0]?.kind === 'call'
+  }
+
+  /** Checked synchronously first (`callAhead`): a pump turn with no wait shifts its step at once. */
+  private async callHeld(): Promise<boolean> {
+    const out = this.callOut
+    if (this.queue[0]?.kind !== 'call' || !out) return false
+    if (out.late) return true
+    await out.due
+    // Settled or late now; the pump's own checks (a reset, a stall) come first again, then this one.
+    return this.callHeld()
+  }
+
   /** A step of an attachment that went (`lost`): nothing of it is sent; a text's, command's or call's caller hears it. */
   private dropped(step: Step): void {
     if (step.kind === 'command' || step.kind === 'call') step.reject(new Error('webview: input dropped (the protocol was reset)'))
@@ -736,7 +780,7 @@ export class PageInputRouter implements ChildFrameObserver {
   /** A step while the protocol is detached: by the detached roads, press records kept (C7). */
   private async runDetached(step: Step): Promise<void> {
     if (step.kind === 'call') {
-      const pending = this.runCall(step)
+      const { pending } = this.runCall(step)
       if (step.blocking) await this.detachedWait(pending)
       return
     }
@@ -756,18 +800,29 @@ export class PageInputRouter implements ChildFrameObserver {
    * road (`detachedStall`) until it settles, across resets (ruling 2026-11-19 #7).
    */
   private async detachedWait(pending: Promise<unknown>): Promise<void> {
+    const renderer = this.renderer
     let settled = false
     const mark = (): void => {
       settled = true
     }
     pending.then(mark, mark)
-    await this.within(pending, STEP_TIMEOUT_MS)
-    if (settled) return
+    await new Promise<void>((done) => {
+      const finish = (): void => {
+        this.timers.clear(timer)
+        if (this.detachedWake === finish) this.detachedWake = undefined
+        done()
+      }
+      const timer = this.timers.set(finish, STEP_TIMEOUT_MS)
+      this.detachedWake = finish
+      pending.then(finish, finish)
+    })
+    // Settled, or the renderer that owed it went meanwhile: nothing to wait for.
+    if (settled || renderer !== this.renderer) return
     const token = {}
     this.detachedStall = token
     this.warn('detached', 'webview: the detached view did not answer input in time; input waits for it')
     const clear = (): void => {
-      if (this.detachedStall !== token) return
+      if (this.detachedStall !== token || renderer !== this.renderer) return
       this.detachedStall = undefined
       void this.pump()
     }
@@ -818,8 +873,8 @@ export class PageInputRouter implements ChildFrameObserver {
     const refusedDown = this.refusedDown
     this.refusedDown = undefined
     if (step.kind === 'call') {
-      const pending = this.runCall(step)
-      if (step.blocking) await this.within(pending, STEP_TIMEOUT_MS)
+      const { due } = this.runCall(step)
+      if (step.blocking) await due
       return 'done'
     }
     if (step.kind === 'command') {
@@ -1157,8 +1212,11 @@ export class PageInputRouter implements ChildFrameObserver {
     return { sent, outcome, lane: to }
   }
 
-  /** A call's run, its result handed to its caller; the promise the pump may wait on. */
-  private runCall(step: Extract<Step, { kind: 'call' }>): Promise<unknown> {
+  /**
+   * A call's run, its result handed to its caller, counted as the call on its way (`callOut`) until
+   * it settles. `pending` is its own answer, `due` settles with it or at its deadline (then it is late).
+   */
+  private runCall(step: Extract<Step, { kind: 'call' }>): { pending: Promise<unknown>; due: Promise<void> } {
     let pending: Promise<unknown>
     try {
       pending = Promise.resolve(step.run())
@@ -1166,7 +1224,23 @@ export class PageInputRouter implements ChildFrameObserver {
       pending = Promise.reject(err)
     }
     pending.then(step.resolve, step.reject)
-    return pending
+    let fire = (): void => {}
+    const out = { late: false, due: new Promise<void>((done) => (fire = done)) }
+    this.callOut = out
+    const timer = this.timers.set(() => {
+      out.late = true
+      this.warn('call', 'webview: the page did not answer a call in time; the next call waits for it')
+      fire()
+    }, STEP_TIMEOUT_MS)
+    const end = (): void => {
+      this.timers.clear(timer)
+      fire()
+      if (this.callOut !== out) return
+      this.callOut = undefined
+      if (out.late) void this.pump()
+    }
+    pending.then(end, end)
+    return { pending, due: out.due }
   }
 
   /**
@@ -1427,18 +1501,6 @@ export class PageInputRouter implements ChildFrameObserver {
           done(undefined)
         }
       )
-    })
-  }
-
-  /** `pending` settled, or `ms` passed: either way the pump goes on (one reaction on `pending`, one timer). */
-  private within(pending: Promise<unknown>, ms: number): Promise<void> {
-    return new Promise((done) => {
-      const timer = this.timers.set(done, ms)
-      const end = (): void => {
-        this.timers.clear(timer)
-        done()
-      }
-      pending.then(end, end)
     })
   }
 

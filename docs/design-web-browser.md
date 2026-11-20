@@ -267,7 +267,10 @@ the fallback when the protocol detached:
   session the same way for queries (the event goes on unrouted). The detached road is a session too: a text, edit
   command or blocking call there that missed its deadline holds everything after it on that road, in order, until it
   settles or the renderer goes (`render-process-gone`, `destroyed`); the stall is the renderer's, so a reset drops what
-  waits but keeps it, and at most one is outstanding across attachments. The protocol's sends never wait on it. A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
+  waits but keeps it, and at most one is outstanding across attachments; a deadline or answer the renderer that went
+  owed changes nothing. The protocol's sends never wait on it. A call (a script run in the page, a select's hit test, a
+  selection read) is one at a time too, attached or not: the next call waits for the one on its way, and past its
+  deadline holds what follows it until it settles. A key down refused late still drops its `char`. Each attachment of the protocol has an epoch, bumped
   only by the reset its detach brings (which drops the queue and every press record), each step the epoch it was taken
   in, and each session its own lifetime. The one sender checks both synchronously right before it sends, so no wait
   inside a step can carry it across: a step of an older attachment sends nothing by any road, and a pointer event
@@ -295,7 +298,8 @@ clicks and typing across four documents in order. A pointer event costs about on
 same in the top document and in frames. One change from `sendInputEvent`: the protocol's wheel scrolls a small scroller
 by the whole delta (a 120 px wheel moved a 60 px tall box by 120, `sendInputEvent`'s by 60, its height), as a trackpad
 does; the page itself scrolls the same distance either way. A frame under a perspective transform (its box no
-parallelogram) is not routed into: its parent takes the event. Not checked: Linux, a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
+parallelogram within half a px of the frame's own, measured in the frame's px, not the screen's) is not routed into:
+its parent takes the event. Not checked: Linux, a frame's scroll chaining to its parent, drag and drop between frames, a page zoomed
 by its own CSS `zoom`.
 
 It accepts them only from a current viewer (`server && view.remote`, the panel

@@ -140,6 +140,15 @@ describe('pointInFrame', () => {
     expect(pointInFrame(box(q, q, 200, 200), 66.7, 66.7)).toBeUndefined()
   })
 
+  // Codex (merge bar O1): the tolerance was in screen px; over a large viewport a tiny skew put the
+  // point about 10 frame px off, into another child.
+  it("measures the parallelogram tolerance in the frame's own px", () => {
+    const q = [0, 0, 100, 0, 100.4, 100, 0, 100]
+    expect(pointInFrame(box(q, q, 10000, 10000), 50, 50)).toBeUndefined()
+    // The same skew over a viewport its own size is within half a px.
+    expect(pointInFrame(box(q, q, 100, 100), 50, 50)).toMatchObject({ inside: true })
+  })
+
   it('undefined for a flat or malformed box', () => {
     expect(pointInFrame(box([0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0], 10, 10), 0, 0)).toBeUndefined()
     expect(pointInFrame(box(rect(0, 0, 10, 10), rect(0, 0, 10, 10), 0, 10), 1, 1)).toBeUndefined()
@@ -1604,6 +1613,47 @@ describe('PageInputRouter scheduling: review 6', () => {
     await s.flush()
     expect(roads).toEqual(['a', 'b'])
     expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
+  })
+
+  // Codex (merge bar O4): the renderer went before a text's deadline; that deadline then stalled the
+  // new renderer's road for good.
+  it('detached: the renderer going before a delivery\'s deadline leaves no stall behind', async () => {
+    const s = setup()
+    s.detach()
+    const roads: string[] = []
+    void s.router.command('Input.insertText', { text: 'a' }, () => (roads.push('a'), new Promise(() => {}))).catch(() => {})
+    await s.flush()
+    s.router.rendererGone()
+    await s.flush()
+    // The wait ended with the renderer: its deadline timer is gone too.
+    expect(s.timers.size).toBe(0)
+    void s.router.command('Input.insertText', { text: 'b' }, () => (roads.push('b'), 'b')).catch(() => {})
+    s.router.input([keyDown('c')])
+    await s.flush()
+    expect(roads).toEqual(['a', 'b'])
+    expect(s.fallback.map((e) => e.type)).toEqual(['keyDown'])
+  })
+
+  // Codex (merge bar O4): calls were not counted, so each missed deadline let another one through.
+  it('at most one call on its way: the next call waits for it, and past its deadline holds what follows until it settles', async () => {
+    const s = setup()
+    const ran: string[] = []
+    let finish = (): void => {}
+    void s.router.call(() => (ran.push('read'), new Promise<void>((r) => (finish = r))), false)
+    void s.router.call(() => (ran.push('choice'), 'ok'))
+    s.router.input([keyDown('a')])
+    await s.flush()
+    expect(ran).toEqual(['read'])
+    s.fire()
+    await s.flush()
+    // Late: the second call and the key after it wait (no timer of the router's left).
+    expect(ran).toEqual(['read'])
+    expect(s.page.sent).toEqual([])
+    expect(s.timers.size).toBe(0)
+    finish()
+    await s.flush()
+    expect(ran).toEqual(['read', 'choice'])
+    expect(s.page.sent.map((x) => x.params.key)).toEqual(['a'])
   })
 
   // SHOULD: "Deliver KeyA down; reset/reconnect; stall the new page and fill its queue with 512
