@@ -233,18 +233,21 @@ describe('ctx.notify and ctx.log', () => {
     await ctx.openExternal('https://example.com/a', { view: 'web:3' })
     await ctx.openExternal('https://example.com/a', { view: undefined })
     await ctx.openExternal('https://example.com/a', {})
+    // The desktop page's from.view: sent as is, main resolves it to this host's own window.
+    await ctx.openExternal('https://example.com/a', { view: 'desktop' })
     expect(calls).toEqual([
       ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a', view: 'web:3' }],
       ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a' }],
-      ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a' }]
+      ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a' }],
+      ['openExternal', { pluginId: 'a.one', url: 'https://example.com/a', view: 'desktop' }]
     ])
-    for (const view of ['', 'desktop:1', 'web:0', 'web:x', null, 5, {}]) {
+    for (const view of ['', 'desktop:1', 'Desktop', 'web:0', 'web:x', null, 5, {}]) {
       await expect(ctx.openExternal('https://example.com/a', { view } as never), String(view)).rejects.toThrow("browser view's id")
     }
     for (const options of [null, 'web:3', 5]) {
       await expect(ctx.openExternal('https://example.com/a', options as never), String(options)).rejects.toThrow('options must be an object')
     }
-    expect(calls).toHaveLength(3)
+    expect(calls).toHaveLength(4)
   })
 
   it('sends log lines to main tagged with the plugin id and level', () => {

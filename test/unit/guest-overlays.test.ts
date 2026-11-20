@@ -680,6 +680,19 @@ describe('guests and their own overlay copies (router, manager, wiring)', () => 
     expect(m.copies(W1, pv)).toEqual([])
   })
 
+  // The hide is the one release path that needs no copy (Task 6 review): an overlay the guest cannot see, one that
+  // does not exist and a non-perView one are refused like every other row, and nothing is recorded.
+  it("a read guest's hide of an overlay it cannot see, an unknown one or a non-perView one is refused; nothing recorded", async () => {
+    const { m, plain, openPv, call, outcome, heard } = setup()
+    const viaHidden = openPv(['a.gmail'])
+    for (const overlayId of [viaHidden, 'no-such-overlay', plain]) {
+      expect(await outcome(call('web:5', 'overlays.release', { overlayId, hide: true })), overlayId).toBe('refused')
+      expect(await outcome(call('web:5', 'overlays.release', { overlayId, copy: '0'.repeat(32), hide: true })), overlayId).toBe('refused')
+      expect(m.hiddenFrom(W1, overlayId, 'gR'), overlayId).toBe(false)
+    }
+    expect(heard).toEqual([])
+  })
+
   it("hide is a read guest's only: refused for the owner and a write guest, nothing recorded; a bad value refused", async () => {
     const { m, pv, call, outcome } = setup()
     const own = (await call('web:3', 'overlays.ready', { overlayId: pv })) as { copy: string }

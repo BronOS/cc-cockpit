@@ -126,7 +126,9 @@
 //                                                                (a `from.view` id): that view only, a
 //                                                                live view of THIS window (a guest's only
 //                                                                while live and shown the plugin), else
-//                                                                refused; never the system opener
+//                                                                refused; never the system opener but for
+//                                                                `'desktop'`: this window's desktop page
+//                                                                (refused in server mode)
 //   files.reveal    { pluginId, path }         -> null           a project file or folder ('' the project
 //   files.openWithSystem { pluginId, path }    -> null            folder, reveal only) handed to the system:
 //   files.trash     { pluginId, path }         -> { trashed }     main/files/system-files.ts checks the path
@@ -253,7 +255,7 @@
 import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative } from 'node:path'
 import { MAX_RPC_MESSAGE_LENGTH, type RpcHandler, type RpcMeta } from '../../host/rpc'
-import { isRemoteViewId, viewIdOf, type ViewAccess, type ViewId } from '../../shared/views'
+import { desktopViewId, isRemoteViewId, PLUGIN_DESKTOP_VIEW, viewIdOf, type ViewAccess, type ViewId } from '../../shared/views'
 import type { GuestAccess } from '../../shared/guests'
 import { DOWNLOAD_PLUGIN_MAX, DOWNLOAD_PLUGIN_WINDOW_MS } from '../../shared/downloads'
 import { DOWNLOAD_DESKTOP_TEXT, DOWNLOAD_NO_ORIGIN_TEXT } from '../files/downloads'
@@ -2215,25 +2217,33 @@ export class HostApi {
 
   /**
    * ctx.openExternal's `{ view }` (docs/design-overlay-views.md §3): the view the plugin names, an address, so
-   * unlike originOf nothing degrades to "no view" (that would be the owner's system browser). A remote view id
-   * main minted (the `from.view` the plugin got), a live view of THIS host's window, and someone the plugin may
-   * reach: the owner, or a guest of this project, live, to whom the plugin is shown (read live, never cached).
-   * Anything else throws. The desktop page is never named: it has no id a plugin gets (shared/views.ts), so
-   * `{ view }` omitted is how a plugin answers it. Plugins sharing a host can name each other (the boundary is
-   * the project, the header says why); the visibility asked is the named plugin's.
+   * unlike originOf nothing degrades to "no view" (that would be the owner's system browser). Either `'desktop'`
+   * (PLUGIN_DESKTOP_VIEW, the `from.view` of the desktop page): THIS host's window's own desktop page, never a
+   * window the plugin names (the adapter opens it with the system opener; refused here in server mode, where
+   * that page is the hidden one with no screen). Or a remote view id main minted, a live view of THIS host's
+   * window, and someone the plugin may reach: the owner, or a guest of this project, live, to whom the plugin is
+   * shown (read live, never cached). Anything else throws. Every refusal of a view id has one text (GONE): a
+   * plugin hidden from guests must not tell a live guest's view from a gone one by stepping through `web:n`
+   * ids (refusals cost no budget; Task 6 review). Plugins sharing a host can name each other's views (the
+   * boundary is the project, the header says why); the visibility asked is the named plugin's.
    */
   private linkView(pluginId: string, raw: unknown): ViewId {
+    const GONE = 'openExternal: that view is gone, or is not one of this window'
+    if (raw === PLUGIN_DESKTOP_VIEW) {
+      if (this.deps.server === true) throw new Error("openExternal: the server's own page has no screen; name a browser view")
+      return desktopViewId(this.scope.windowId)
+    }
     const view = viewIdOf(raw)
-    if (view === undefined) throw new Error("openExternal: view must be a browser view's id (from.view); omit it for the desktop")
-    if (this.deps.viewWindow?.(view) !== this.scope.windowId) throw new Error('openExternal: that view is gone, or is not one of this window')
+    if (view === undefined) throw new Error("openExternal: view must be a from.view ('desktop' or a browser view's id)")
+    if (this.deps.viewWindow?.(view) !== this.scope.windowId) throw new Error(GONE)
     const access = this.deps.viewAccess?.(view)
     if (access?.kind === 'owner') return view
-    if (access?.kind === 'guest' && access.projectId === this.scope.projectId) {
-      if (this.deps.guestPluginVisible?.(this.scope.projectId, pluginId) === true) return view
-      throw new Error("openExternal: this plugin is not shown to that view's guest")
+    if (access?.kind === 'guest' && access.projectId === this.scope.projectId && this.deps.guestPluginVisible?.(this.scope.projectId, pluginId) === true) {
+      return view
     }
-    // Revoked, another project's guest, or no lookup wired: nobody (never the owner by default).
-    throw new Error('openExternal: that view is gone, or is not one of this window')
+    // Revoked, another project's guest, a guest the plugin is hidden from, or no lookup wired: nobody (never the
+    // owner by default), in the same words.
+    throw new Error(GONE)
   }
 
   /**

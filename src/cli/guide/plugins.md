@@ -228,6 +228,11 @@ chat) stays out of their reach without any code. A plugin the owner shows needs 
   does not see a new one until the owner shares it, and nothing your plugin does widens what a guest sees.
 - A plugin that declares `"access": { "sessions": "all-windows" }` and is not aware is never shown to guests
   (its panel could show another project).
+- `"overlays": { "perView": true }` at the top level of `plugin.json` gives your html overlays one live copy per
+  view (the owner's desktop and browsers, and every guest shown the plugin), each its own page talking to your
+  host (`onConnect`, `post(m, { copy })`, `ccc guide api`). Without it an overlay has one page, held by one
+  owner view, and a guest sees only "Open on the owner's screen". An overlay another plugin asked yours to show
+  (a mail opened in the Reviewer) reaches a guest only when that plugin is shown to guests too (`addSources`).
 
 ## Settings, secrets, sign-in
 

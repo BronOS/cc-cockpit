@@ -2502,17 +2502,20 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     it("a guest's view: only while the guest is live and the plugin is shown to guests (read live)", async () => {
       await host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})
       expect(calls).toEqual([[URL_A, { windowId: WIN_A, viewId: GUEST_VIEW, addressed: true }]])
-      // A plugin hidden from guests (another plugin of the host, or the owner hid it since).
-      await expect(host('openExternal', { pluginId: 'a.two', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow('not shown to')
+      // A plugin hidden from guests (another plugin of the host, or the owner hid it since): refused in the same
+      // words as a gone view, so it cannot tell a live guest's view from a gone one (Task 6 review).
+      const goneText = await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:99' }, {}).catch((err: Error) => err.message)
+      expect(goneText).toMatch(/gone/)
+      await expect(host('openExternal', { pluginId: 'a.two', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(goneText)
       shown = false
-      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow('not shown to')
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(goneText)
       shown = true
       // A revoked guest, and a guest of another project (never this window's business): gone.
       await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: REVOKED_VIEW }, {})).rejects.toThrow('gone')
       await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: OTHER_GUEST_VIEW }, {})).rejects.toThrow('gone')
       // No visibility lookup wired: every guest view refused (fail closed).
       delete deps.guestPluginVisible
-      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow('not shown to')
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: GUEST_VIEW }, {})).rejects.toThrow(goneText)
       // No access lookup wired: every remote view refused, the owner's too (never the owner by default).
       delete deps.viewAccess
       await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, { view: 'web:1' })).rejects.toThrow('gone')
@@ -2520,7 +2523,7 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
     })
 
     it("another window's view, an unknown or gone one, and anything not a view id: refused, never the system opener", async () => {
-      for (const view of ['web:2', 'web:99', 'desktop:1', 'desktop', '', null, 5, {}]) {
+      for (const view of ['web:2', 'web:99', 'desktop:1', 'Desktop', '', null, 5, {}]) {
         await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view }, { view: 'web:1' }), String(view)).rejects.toThrow(/openExternal: /)
       }
       // No view lookup wired at all: the same.
@@ -2539,6 +2542,28 @@ describe('the origin view (design-web.md §5.3 "Where an action came from")', ()
       }
       for (let i = 0; i < MAX_EXTERNAL_OPENS_PER_WINDOW; i++) await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})
       expect(calls).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW)
+      // An addressed open is still budgeted: the next one is refused by the budget, not sent.
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})).rejects.toThrow(/more than \d+ links/)
+      await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})).rejects.toThrow(/more than \d+ links/)
+      expect(calls).toHaveLength(MAX_EXTERNAL_OPENS_PER_WINDOW)
+    })
+
+    it("'desktop' (the desktop page's from.view) names THIS host's window's desktop page; refused in server mode", async () => {
+      // Whatever the hint says: the address is the host's own window, never a window from the plugin.
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, { view: 'web:1' })
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})
+      expect(calls).toEqual([
+        [URL_A, { windowId: WIN_A, viewId: `desktop:${WIN_A}`, addressed: true }],
+        [URL_A, { windowId: WIN_A, viewId: `desktop:${WIN_A}`, addressed: true }]
+      ])
+      // Server mode: the desktop page is the hidden one, with no screen: refused before the budget.
+      deps.server = true
+      for (let i = 0; i <= MAX_EXTERNAL_OPENS_PER_WINDOW; i++) {
+        await expect(host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'desktop' }, {})).rejects.toThrow(/no screen/)
+      }
+      await host('openExternal', { pluginId: 'a.one', url: URL_A, view: 'web:1' }, {})
+      expect(calls).toHaveLength(3)
+      delete deps.server
     })
 
     it("an explicit undefined view is today's request (the hint decides)", async () => {

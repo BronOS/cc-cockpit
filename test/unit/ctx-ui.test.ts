@@ -1038,16 +1038,21 @@ describe('ctx.overlay per-view copies', () => {
     const { overlay, handle } = open(ctx)
     overlay.onMessage((m, from) => {
       void ctx.openExternal('https://example.com/hint')
-      void ctx.openExternal('https://example.com/addressed', { view: from.view === 'desktop' ? undefined : from.view })
+      void ctx.openExternal('https://example.com/addressed', { view: from.view })
       overlay.post({ ack: m }, { copy: from.copy })
     })
     contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'c3', view: 'web:3', from: ANN })
     contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 1, copy: 'c3', view: 'web:3', from: ANN })
+    // The desktop page's copy: no hint, and its from.view 'desktop' is an address main resolves to this window.
+    contexts.handleEvent('overlay.connect', { pluginId: 'a.one', handle, copy: 'd1', from: OWNER })
+    contexts.handleEvent('overlay.message', { pluginId: 'a.one', handle, message: 2, copy: 'd1', from: OWNER })
     await flush()
     const opens = calls.filter((c) => c.method === 'openExternal')
     expect(opens).toEqual([
       { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/hint' }, view: 'web:3' },
-      { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/addressed', view: 'web:3' }, view: 'web:3' }
+      { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/addressed', view: 'web:3' }, view: 'web:3' },
+      { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/hint' } },
+      { method: 'openExternal', params: { pluginId: 'a.one', url: 'https://example.com/addressed', view: 'desktop' } }
     ])
     expect(calls.find((c) => c.method === 'overlay.post')?.params).toEqual({ pluginId: 'a.one', handle, message: { ack: 1 }, copy: 'c3' })
   })

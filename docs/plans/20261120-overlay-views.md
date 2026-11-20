@@ -303,6 +303,12 @@ External review: sol / high
   `GuestStore.pluginVisible`; revoked, another project's guest or an unwired lookup: refused) before the budget; the
   adapter (`OpenTarget.addressed`) sends `{ url, to }` to that view alone or throws `VIEW_GONE_TEXT`, in both modes
   (an unaddressed gone view on the desktop still resolves silently, as before). The URL check runs first on every route.
+- [x] ➕ (Task 6 review) `{ view: 'desktop' }` (the desktop page's `from.view`, as panels) names THIS host's window's
+  desktop page (`desktopViewId(scope.windowId)`, the adapter's addressed desktop branch; refused before the budget in
+  server mode), replacing the "omit `view` for the desktop" note above; every refusal of a view id has one text
+  (a hidden plugin cannot probe `web:n` ids for live guests); the budget test asserts the (MAX+1)th addressed open;
+  a read guest's `hide: true` on an overlay it cannot see, an unknown one or a non-perView one is refused with nothing
+  recorded; the SDK's server-mode text (owner browser views only) and the guide (`api.md`, `plugins.md`) updated.
 - ⚠️ Task 10 / 12: the Reviewer's mail links and `open-url` / `open-link` pass `{ view: from.view }`; the guide
   (`api.md` ctx.openExternal) gets the text of the `openExternal` JSDoc in `src/sdk/types.ts` (already copied to
   `examples/plugin/sdk/types.ts`).

@@ -46,6 +46,8 @@ holder, Take over among the owner's views, and a guest sees the note, reworded (
 On `OverlayHandle` (`src/sdk/types.ts`), for a `perView` plugin; every `from` is filled by main from the connection it
 bound, never from a page or a payload:
 
+- `ViewFrom.view` is `'desktop'` for the desktop page and `web:<n>` for a browser view, as panels have it (main sends
+  `view` absent for the desktop; the host fills `'desktop'`).
 - `ViewFrom` gains `person?: string`: a guest's name as the owner typed it in the invite, set by main; absent for the
   owner. The one trustworthy author for anything a plugin records (§6 notes).
 - `onConnect(listener: (from: ViewFrom & { copy: string }) => void)` and `onDisconnect(listener(from))`: a copy is up or
@@ -58,8 +60,10 @@ bound, never from a page or a payload:
   Discuss and buttons lose their view and act as the desktop (`overlay-manager.ts:1235`, `:1276`); the caller's view now
   travels router → manager → host for every overlay call.
 - `ctx.openExternal(url, { view })`: open on that view's device. Main routes it to that view only (a browser view gets
-  it as its own link open; the desktop page opens it with the system opener only when `view` is the desktop); a gone
-  view or a guest's view never falls back to the system opener: refused. A plugin answering a page message passes
+  it as its own link open; `'desktop'`, the desktop page's `from.view` as for panels, is resolved by main to the
+  asking host's own window's desktop page and opened with the system opener there, refused in server mode where that
+  page is the hidden one); a gone view or a guest's view never falls back to the system opener: refused, in one text
+  for every reason (a plugin hidden from guests cannot probe `web:n` ids for live guests). A plugin answering a page message passes
   `from.view`; it never relies on where its listener runs (the origin-view hint has a 10 s cap and expires to the owner's
   machine, `origin-view.ts:78`, `open-external.ts:93`).
 - `handle.close()` stays "close for everyone"; a `perView` plugin calls it only for an owner's or a write guest's request
